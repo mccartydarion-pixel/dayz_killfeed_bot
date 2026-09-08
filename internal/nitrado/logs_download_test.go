@@ -2,6 +2,7 @@ package nitrado
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,36 +11,30 @@ import (
 
 func TestReadLogUsesFileServerDownload(t *testing.T) {
 	var sawDownload bool
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.RequestURI(), "file_server/download") {
-			sawDownload = true
-			if !strings.Contains(r.URL.Query().Get("file"), "DayZServer_x64.ADM") {
-				t.Errorf("expected file query param to reference the ADM log, got %q", r.URL.Query().Get("file"))
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"status":"success","data":{"token":{"url":"` + srvURLPlaceholder + `"}}}`))
-			return
-		}
-		// The signed URL target returns the raw log bytes.
+
+	// The signed URL target that returns the raw log bytes.
+	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("player connected\nplayer killed\n"))
 	}))
-	defer srv.Close()
+	defer fileSrv.Close()
 
-	// Point the signed URL back at our test server.
-	srvURL := srv.URL
-	_ = srvURL
-
-	client := NewClient(srv.URL, "token", srv.Client())
-	// Resolve the placeholder after server start by rebuilding with real URL.
-	downloadSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// The API server that resolves file_server/download into a signed URL.
+	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.RequestURI(), "file_server/download") {
+			t.Errorf("unexpected API path: %s", r.URL.RequestURI())
+		}
+		sawDownload = true
+		if !strings.Contains(r.URL.Query().Get("file"), "DayZServer_x64.ADM") {
+			t.Errorf("expected file query param to reference the ADM log, got %q", r.URL.Query().Get("file"))
+		}
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"success","data":{"token":{"url":"` + srv.URL + `/signed"}}}`))
+		fmt.Fprintf(w, `{"status":"success","data":{"token":{"url":%q}}}`, fileSrv.URL+"/signed")
 	}))
-	defer downloadSrv.Close()
+	defer apiSrv.Close()
 
-	client = NewClient(downloadSrv.URL, "token", downloadSrv.Client())
+	client := NewClient(apiSrv.URL, "token", apiSrv.Client())
 	content, err := client.ReadLog(context.Background(), "19806451", "/profile/DayZServer_x64.ADM")
 	if err != nil {
 		t.Fatalf("ReadLog returned unexpected error: %v", err)
@@ -52,5 +47,3 @@ func TestReadLogUsesFileServerDownload(t *testing.T) {
 	}
 }
 
-// srvURLPlaceholder is replaced at runtime via the test server URL.
-const srvURLPlaceholder = "http://127.0.0.1/signed"
