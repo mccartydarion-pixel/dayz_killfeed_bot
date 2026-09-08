@@ -145,18 +145,15 @@ type fileServerListEntry struct {
 	ModifiedAt int64  `json:"modified_at"`
 }
 
-// maxDiscoveryDepth bounds recursive directory traversal so discovery cannot
-// scan the entire server. Configurable internally.
-var maxDiscoveryDepth = 4
+// logNameMarkers identify DayZ gameplay/admin log files. Only .ADM files are
+// gameplay/admin logs we select; .RPT/.log are tracked as seen but not selected.
+var logNameMarkers = []string{".adm"}
 
-// logNameMarkers identify DayZ gameplay/admin log files.
-var logNameMarkers = []string{".rpt", ".adm", ".log"}
-
-// ListLogs discovers real log files via the documented file server list API
-// (GET /services/:id/gameservers/file_server/list?dir=...). It traverses only
-// directories that Nitrado actually returns, with bounded depth, visited-path
-// tracking, and duplicate protection. Every returned entry is logged with
-// sanitized metadata. No paths are guessed.
+// ListLogs discovers DayZ .ADM gameplay logs via the documented file server list
+// API (GET /services/:id/gameservers/file_server/list?dir=...). It traverses only
+// directories Nitrado returns, with bounded depth and visited-path protection.
+// Discovery logs a per-directory count summary (not every file) and detailed
+// metadata only for .ADM candidates. No paths are guessed.
 func (c *Client) ListLogs(ctx context.Context, serviceID string) ([]LogFile, error) {
 	if serviceID == "" {
 		return nil, fmt.Errorf("service ID is required")
@@ -167,30 +164,32 @@ func (c *Client) ListLogs(ctx context.Context, serviceID string) ([]LogFile, err
 		serviceID: serviceID,
 		visited:   map[string]struct{}{},
 		found:     map[string]LogFile{},
+		dirStats:  map[string]*dirStat{},
 	}
 
 	permErr := d.walk(ctx, "/", 0)
 
-	// Summarize what discovery actually saw, even when no log file matched.
-	slog.Info("component=nitrado_discovery", "msg", "discovery complete",
-		"dirs_visited", len(d.visited),
-		"dirs_seen", d.dirsSeen,
-		"files_seen", d.filesSeen,
-		"entries_returned", len(d.entries),
-		"log_candidates", len(d.found),
-	)
-
-	// Print every real returned entry exactly once, numbered, sanitized.
-	for i, e := range d.entries {
+	// Summarize per-directory counts (no per-file dump) to avoid log flooding.
+	dirs := make([]string, 0, len(d.dirStats))
+	for dir := range d.dirStats {
+		dirs = append(dirs, dir)
+	}
+	sort.Strings(dirs)
+	for _, dir := range dirs {
+		st := d.dirStats[dir]
 		slog.Info("component=nitrado_discovery",
-			"entry", i+1,
-			"name", e.Name,
-			"path", e.Path,
-			"type", e.Type,
-			"size", e.Size,
-			"modified", unixToTime(e.ModifiedAt).UTC().Format(time.RFC3339),
+			"directory", dir,
+			"files", st.files,
+			"adm_files", st.adm,
+			"rpt_files", st.rpt,
+			"script_logs", st.script,
 		)
 	}
+	slog.Info("component=nitrado_discovery", "msg", "discovery complete",
+		"dirs_visited", len(d.visited),
+		"files_seen", d.filesSeen,
+		"log_candidates", len(d.found),
+	)
 
 	if len(d.found) == 0 && permErr != nil {
 		return nil, permErr
@@ -205,14 +204,21 @@ func (c *Client) ListLogs(ctx context.Context, serviceID string) ([]LogFile, err
 		return nil, fmt.Errorf("no log files discovered for service %s", serviceID)
 	}
 
+	// Newest first by modified time, then by name (timestamped names) as a tiebreak.
 	sort.Slice(found, func(i, j int) bool {
 		if found[i].Modified.Equal(found[j].Modified) {
-			return found[i].Name < found[j].Name
+			return found[i].Name > found[j].Name
 		}
 		return found[i].Modified.After(found[j].Modified)
 	})
 
-	for _, lf := range found {
+	// Detailed metadata only for the newest handful of .ADM candidates.
+	limit := len(found)
+	if limit > 5 {
+		limit = 5
+	}
+	for i := 0; i < limit; i++ {
+		lf := found[i]
 		slog.Info("component=nitrado_discovery", "msg", "LOG CANDIDATE",
 			"name", lf.Name, "path", lf.Path, "size", lf.Size,
 			"modified", lf.Modified.UTC().Format(time.RFC3339), "type", lf.Type)
@@ -221,16 +227,28 @@ func (c *Client) ListLogs(ctx context.Context, serviceID string) ([]LogFile, err
 	return found, nil
 }
 
+// dirStat accumulates per-directory file counts by category.
+type dirStat struct {
+	files  int
+	adm    int
+	rpt    int
+	script int
+}
+
 // discovery holds the per-discovery-run state for bounded recursive traversal.
 type discovery struct {
 	client    *Client
 	serviceID string
 	visited   map[string]struct{}
 	found     map[string]LogFile
-	entries   []fileServerListEntry // every real returned entry, for one-time print
+	dirStats  map[string]*dirStat
 	filesSeen int
 	dirsSeen  int
 }
+
+// maxDiscoveryDepth bounds recursive directory traversal so discovery cannot
+// scan the entire server. Configurable internally.
+var maxDiscoveryDepth = 5
 
 // walk lists dir and recurses into returned subdirectories up to maxDiscoveryDepth.
 // It returns a permission error if every listing is forbidden, else nil.
@@ -261,10 +279,8 @@ func (d *discovery) walk(ctx context.Context, dir string, depth int) *RequestErr
 		if path == "" {
 			path = joinRemotePath(dir, e.Name)
 		}
-		e.Path = path
-		d.entries = append(d.entries, e)
 
-		// Per-entry detail at DEBUG; the one-time INFO print is done by ListLogs.
+		// Per-entry detail at DEBUG only.
 		slog.Debug("component=nitrado_discovery",
 			"path", path,
 			"name", e.Name,
@@ -283,6 +299,7 @@ func (d *discovery) walk(ctx context.Context, dir string, depth int) *RequestErr
 		}
 
 		d.filesSeen++
+		d.recordStat(dir, e.Name)
 		if !isLogFileName(e.Name) {
 			continue
 		}
@@ -517,6 +534,31 @@ func isLogFileName(name string) bool {
 		}
 	}
 	return false
+}
+
+// IsLogFileName reports whether a filename is a DayZ gameplay/admin log (.ADM).
+func IsLogFileName(name string) bool { return isLogFileName(name) }
+
+// recordStat increments the per-directory file counters by category.
+func (d *discovery) recordStat(dir, name string) {
+	if d.dirStats == nil {
+		d.dirStats = map[string]*dirStat{}
+	}
+	st := d.dirStats[dir]
+	if st == nil {
+		st = &dirStat{}
+		d.dirStats[dir] = st
+	}
+	st.files++
+	n := strings.ToLower(strings.TrimSpace(name))
+	switch {
+	case strings.HasSuffix(n, ".adm"):
+		st.adm++
+	case strings.HasSuffix(n, ".rpt"):
+		st.rpt++
+	case strings.HasPrefix(n, "script_") && strings.HasSuffix(n, ".log"):
+		st.script++
+	}
 }
 
 func joinRemotePath(dir, name string) string {

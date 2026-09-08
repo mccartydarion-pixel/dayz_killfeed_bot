@@ -76,8 +76,14 @@ type Engine struct {
 	selected       *nitrado.LogFile
 	confirmPending *nitrado.LogFile // awaiting a second sample to detect growth
 	consecFailures int
-	discoverFails  int // consecutive empty/failed discovery passes, drives backoff
+	discoverFails  int       // consecutive empty/failed discovery passes, drives backoff
+	lastRescan     time.Time // last time we checked for a newer ADM file
 }
+
+// rescanInterval is how often, while polling a selected log, we do a lightweight
+// directory check for a newer ADM file (DayZ creates a new timestamped ADM on
+// restart). This is deliberately far slower than the 2s selected-file poll.
+const rescanInterval = 45 * time.Second
 
 // maxConsecFailures forces rediscovery after this many consecutive read/stat
 // failures on the selected log (file moved, rotated, or server restarted).
@@ -294,6 +300,7 @@ func (e *Engine) selectLog(lf nitrado.LogFile) {
 		e.sink.SetLogSource(candidate.Name, candidate.Path, candidate.Size, candidate.Modified)
 		e.sink.SetDiscovery(string(StatePolling), 0, 0)
 	}
+	e.lastRescan = time.Now()
 }
 
 // pollSelected checks only the selected log for changes and reads new bytes.
@@ -308,6 +315,17 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 	}
 
 	e.lastPoll = time.Now()
+
+	// Periodically check for a newer ADM file (post-restart) on a slow cadence,
+	// separate from the per-2s selected-file poll.
+	if time.Since(e.lastRescan) >= rescanInterval {
+		e.lastRescan = time.Now()
+		e.checkForNewerLog(ctx)
+		if e.state != StatePolling {
+			e.reportPoll()
+			return nil
+		}
+	}
 
 	current, err := e.currentMeta(ctx)
 	if err != nil {
@@ -419,6 +437,25 @@ func (e *Engine) enterDiscovery() {
 	slog.Info("component=killfeed", "state", string(StateDiscovery))
 	if e.sink != nil {
 		e.sink.SetDiscovery(string(StateDiscovery), 0, 0)
+	}
+}
+
+// checkForNewerLog does a lightweight directory scan for a newer ADM file than
+// the currently selected one (DayZ writes a new timestamped ADM after restart).
+// If a strictly newer ADM exists, it switches selection. Runs on rescanInterval.
+func (e *Engine) checkForNewerLog(ctx context.Context) {
+	if e.selected == nil {
+		return
+	}
+	logs, err := e.client.ListLogs(ctx, e.serviceID)
+	if err != nil || len(logs) == 0 {
+		return
+	}
+	newest := logs[0] // ListLogs sorts newest-first
+	if newest.Path != e.selected.Path && newest.Modified.After(e.selected.Modified) {
+		slog.Info("component=killfeed", "msg", "newer ADM detected; switching",
+			"previous", e.selected.Path, "file", newest.Path, "modified", newest.Modified.UTC().Format(time.RFC3339))
+		e.selectLog(newest)
 	}
 }
 
