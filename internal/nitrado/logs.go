@@ -290,7 +290,9 @@ func unixToTime(sec int64) time.Time {
 	return time.Unix(sec, 0).UTC()
 }
 
-// ReadLog reads a discovered log source when the service exposes a direct URL or readable path.
+// ReadLog reads a discovered log source. Remote server paths are fetched via the
+// documented file server download endpoint, which returns a signed URL whose
+// contents are then read. Direct URLs and local files are also supported.
 func (c *Client) ReadLog(ctx context.Context, serviceID string, path string) ([]byte, error) {
 	if serviceID == "" {
 		return nil, fmt.Errorf("service ID is required")
@@ -300,22 +302,65 @@ func (c *Client) ReadLog(ctx context.Context, serviceID string, path string) ([]
 	}
 
 	if strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://") {
-		resp, err := c.httpClient.Get(path)
-		if err != nil {
-			return nil, fmt.Errorf("read remote log: %w", err)
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			return nil, &RequestError{Op: "read remote log", Kind: KindUnknown, Message: fmt.Sprintf("status=%d", resp.StatusCode), StatusCode: resp.StatusCode}
-		}
-		return io.ReadAll(resp.Body)
+		return c.readDirectURL(path)
 	}
 
 	if _, err := os.Stat(path); err == nil {
 		return os.ReadFile(path)
 	}
 
-	return nil, fmt.Errorf("log path must be a discoverable URL or local file; no reliable log source was identified for service %s", serviceID)
+	// Remote file-server path (e.g. /profile/DayZServer_x64.ADM).
+	return c.readRemoteFile(ctx, serviceID, path)
+}
+
+// readRemoteFile resolves a file-server path to a signed download URL and reads it.
+// Uses GET /services/:id/gameservers/file_server/download?file=<path>.
+func (c *Client) readRemoteFile(ctx context.Context, serviceID, path string) ([]byte, error) {
+	endpoint := "/services/" + url.PathEscape(serviceID) + "/gameservers/file_server/download?file=" + url.QueryEscape(path)
+
+	resp, err := c.do(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, classifyStatus("file download", resp.StatusCode, KindNotFound)
+	}
+
+	payload, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read download token: %w", err)
+	}
+
+	var envelope struct {
+		Data struct {
+			Token struct {
+				URL string `json:"url"`
+			} `json:"token"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(payload, &envelope); err != nil {
+		return nil, fmt.Errorf("decode download token: %w", err)
+	}
+	if envelope.Data.Token.URL == "" {
+		return nil, fmt.Errorf("download endpoint returned no URL for %s", path)
+	}
+
+	return c.readDirectURL(envelope.Data.Token.URL)
+}
+
+// readDirectURL reads the contents of a resolved URL (signed file-server URL).
+func (c *Client) readDirectURL(rawURL string) ([]byte, error) {
+	resp, err := c.httpClient.Get(rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("read remote log: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, &RequestError{Op: "read remote log", Kind: KindUnknown, Message: fmt.Sprintf("status=%d", resp.StatusCode), StatusCode: resp.StatusCode}
+	}
+	return io.ReadAll(resp.Body)
 }
 
 func (c *Client) servicePayload(ctx context.Context, serviceID string) ([]byte, error) {
