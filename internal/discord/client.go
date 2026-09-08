@@ -113,7 +113,12 @@ func (c *Client) Verify(guildID, channelID string) Verification {
 		}
 	}
 	if len(result.Missing) > 0 {
-		slog.Error("component=discord", "msg", "missing killfeed channel permissions", "channel_id", channelID, "missing", result.Missing)
+		slog.Error("component=discord",
+			"msg", "missing killfeed channel permissions",
+			"channel_id", channelID,
+			"missing", result.Missing,
+			"fix", "grant the bot these permissions on the channel (or a role it has), then restart",
+		)
 	} else {
 		slog.Info("component=discord", "msg", "killfeed channel permissions verified", "channel_id", channelID)
 	}
