@@ -170,6 +170,15 @@ func (c *Client) ListLogs(ctx context.Context, serviceID string) ([]LogFile, err
 	}
 
 	permErr := d.walk(ctx, "/", 0)
+
+	// Summarize what discovery actually saw, even when no log file matched.
+	slog.Info("component=nitrado_discovery", "msg", "discovery complete",
+		"dirs_visited", len(d.visited),
+		"dirs_seen", d.dirsSeen,
+		"files_seen", d.filesSeen,
+		"log_candidates", len(d.found),
+	)
+
 	if len(d.found) == 0 && permErr != nil {
 		return nil, permErr
 	}
@@ -205,6 +214,8 @@ type discovery struct {
 	serviceID string
 	visited   map[string]struct{}
 	found     map[string]LogFile
+	filesSeen int
+	dirsSeen  int
 }
 
 // walk lists dir and recurses into returned subdirectories up to maxDiscoveryDepth.
@@ -246,14 +257,17 @@ func (d *discovery) walk(ctx context.Context, dir string, depth int) *RequestErr
 			"modified", unixToTime(e.ModifiedAt).UTC().Format(time.RFC3339),
 		)
 
-		if e.Type == "dir" {
+		isDir := e.Type == "dir" || e.Type == "directory"
+		if isDir {
+			d.dirsSeen++
 			if err := d.walk(ctx, path, depth+1); err != nil && permErr == nil {
 				permErr = err
 			}
 			continue
 		}
 
-		if e.Type != "file" || !isLogFileName(e.Name) {
+		d.filesSeen++
+		if !isLogFileName(e.Name) {
 			continue
 		}
 		if _, dup := d.found[path]; dup {
