@@ -21,6 +21,17 @@ func (f *fakeLogSource) ReadLog(ctx context.Context, serviceID string, path stri
 	return f.content, nil
 }
 
+// StatFile implements the cheap per-file change detection used in the polling state.
+func (f *fakeLogSource) StatFile(ctx context.Context, serviceID string, path string) (*nitrado.LogFile, error) {
+	for _, lf := range f.logs {
+		if lf.Path == path {
+			cur := lf
+			return &cur, nil
+		}
+	}
+	return nil, &nitrado.RequestError{Op: "stat file", Kind: nitrado.KindNotFound, Message: "not found", StatusCode: 404}
+}
+
 func newFakeEngine(content string, size int64) (*Engine, *fakeLogSource) {
 	modified := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
 	fake := &fakeLogSource{
@@ -40,12 +51,19 @@ func TestEngineAdvancesOffsetAcrossGrowingFile(t *testing.T) {
 	engine, fake := newFakeEngine("line one\nline two\n", int64(len("line one\nline two\n")))
 	ctx := context.Background()
 
+	// Pass 1: discovery selects the single candidate. Pass 2: read it.
 	if err := engine.PollOnce(ctx); err != nil {
-		t.Fatalf("first poll failed: %v", err)
+		t.Fatalf("discovery poll failed: %v", err)
+	}
+	if err := engine.PollOnce(ctx); err != nil {
+		t.Fatalf("first read poll failed: %v", err)
 	}
 	stats := engine.Stats()
 	if !stats.LogSourceFound {
 		t.Fatal("expected log source to be marked found")
+	}
+	if stats.State != StatePolling {
+		t.Fatalf("expected state POLL_SELECTED_LOG, got %s", stats.State)
 	}
 	if stats.LinesDiscovered != 2 {
 		t.Fatalf("expected 2 lines discovered, got %d", stats.LinesDiscovered)
@@ -83,8 +101,11 @@ func TestEngineBuffersPartialLines(t *testing.T) {
 	engine, fake := newFakeEngine("complete line\npartial li", int64(len("complete line\npartial li")))
 	ctx := context.Background()
 
-	if err := engine.PollOnce(ctx); err != nil {
-		t.Fatalf("poll failed: %v", err)
+	if err := engine.PollOnce(ctx); err != nil { // discovery
+		t.Fatalf("discovery poll failed: %v", err)
+	}
+	if err := engine.PollOnce(ctx); err != nil { // first read
+		t.Fatalf("read poll failed: %v", err)
 	}
 	if got := engine.Stats().LinesDiscovered; got != 1 {
 		t.Fatalf("expected only the complete line to count, got %d", got)
@@ -105,8 +126,11 @@ func TestEngineDetectsTruncationAndRotation(t *testing.T) {
 	engine, fake := newFakeEngine("aaaaaaaa\nbbbbbbbb\n", 18)
 	ctx := context.Background()
 
-	if err := engine.PollOnce(ctx); err != nil {
-		t.Fatalf("initial poll failed: %v", err)
+	if err := engine.PollOnce(ctx); err != nil { // discovery
+		t.Fatalf("discovery poll failed: %v", err)
+	}
+	if err := engine.PollOnce(ctx); err != nil { // first read
+		t.Fatalf("initial read failed: %v", err)
 	}
 
 	// Truncation: same file, smaller size than the stored offset.
@@ -120,14 +144,24 @@ func TestEngineDetectsTruncationAndRotation(t *testing.T) {
 		t.Fatalf("expected offset reset to truncated end, got %d", engine.tracker.LastByteOffset)
 	}
 
-	// Rotation: a different file becomes the newest candidate.
+	// Rotation: the selected file disappears; engine re-enters discovery and
+	// selects the rotated file on the next passes.
 	fake.logs[0].Path = "/logs/DayZServer_x64_1.ADM"
 	fake.logs[0].Name = "DayZServer_x64_1.ADM"
 	fake.content = []byte("rotated line\n")
 	fake.logs[0].Size = int64(len(fake.content))
 	fake.logs[0].Modified = fake.logs[0].Modified.Add(time.Minute)
-	if err := engine.PollOnce(ctx); err != nil {
-		t.Fatalf("rotation poll failed: %v", err)
+	if err := engine.PollOnce(ctx); err != nil { // stat 404 -> re-enter discovery
+		t.Fatalf("rotation detection poll failed: %v", err)
+	}
+	if engine.Stats().State != StateDiscovery {
+		t.Fatalf("expected re-entry into DISCOVERY, got %s", engine.Stats().State)
+	}
+	if err := engine.PollOnce(ctx); err != nil { // rediscover + select rotated file
+		t.Fatalf("rediscovery poll failed: %v", err)
+	}
+	if err := engine.PollOnce(ctx); err != nil { // read rotated file
+		t.Fatalf("rotated read poll failed: %v", err)
 	}
 	if engine.tracker.CurrentLogFile != "/logs/DayZServer_x64_1.ADM" {
 		t.Fatalf("expected tracker to follow rotated file, got %q", engine.tracker.CurrentLogFile)

@@ -11,11 +11,29 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/nitrado"
 )
 
+// EngineState is the current phase of the log pipeline.
+type EngineState string
+
+const (
+	// StateDiscovery is searching the file server for a gameplay log.
+	StateDiscovery EngineState = "DISCOVERY"
+	// StateLogSelected means a candidate log was chosen and is being confirmed.
+	StateLogSelected EngineState = "LOG_SELECTED"
+	// StatePolling means the engine polls only the selected log each interval.
+	StatePolling EngineState = "POLL_SELECTED_LOG"
+)
+
 // LogSource is the minimal log access contract the engine depends on.
 // *nitrado.Client satisfies it in production; tests use fakes.
 type LogSource interface {
 	ListLogs(ctx context.Context, serviceID string) ([]nitrado.LogFile, error)
 	ReadLog(ctx context.Context, serviceID string, path string) ([]byte, error)
+}
+
+// StatSource is an optional capability for cheap per-file change detection
+// without re-running full discovery. *nitrado.Client implements it.
+type StatSource interface {
+	StatFile(ctx context.Context, serviceID, path string) (*nitrado.LogFile, error)
 }
 
 // StateSink receives sanitized engine progress updates for the status endpoint.
@@ -26,6 +44,7 @@ type StateSink interface {
 
 // EngineStats is a point-in-time copy of the engine counters.
 type EngineStats struct {
+	State           EngineState
 	LastPoll        time.Time
 	LastLogChange   time.Time
 	PollInterval    time.Duration
@@ -33,9 +52,10 @@ type EngineStats struct {
 	LinesDiscovered int64
 	APIFailures     int
 	LogSourceFound  bool
+	SelectedPath    string
 }
 
-// Engine is the future orchestrator for the log ingestion pipeline.
+// Engine orchestrates log discovery, selection, and incremental polling.
 type Engine struct {
 	parser          Parser
 	tracker         *Tracker
@@ -50,9 +70,18 @@ type Engine struct {
 	apiFailures     int
 	logSourceFound  bool
 	noSourceLogged  bool
+
+	state          EngineState
+	selected       *nitrado.LogFile
+	confirmPending *nitrado.LogFile // awaiting a second sample to detect growth
+	consecFailures int
 }
 
-// NewEngine creates the killfeed engine skeleton.
+// maxConsecFailures forces rediscovery after this many consecutive read/stat
+// failures on the selected log (file moved, rotated, or server restarted).
+const maxConsecFailures = 3
+
+// NewEngine creates the killfeed engine.
 func NewEngine(client LogSource, serviceID string, parser Parser) *Engine {
 	interval := envPollInterval("NITRADO_POLL_INTERVAL", 2*time.Second)
 	return &Engine{
@@ -61,6 +90,7 @@ func NewEngine(client LogSource, serviceID string, parser Parser) *Engine {
 		serviceID:    serviceID,
 		pollInterval: interval,
 		tracker:      NewTracker(serviceID),
+		state:        StateDiscovery,
 	}
 }
 
@@ -77,7 +107,12 @@ func (e *Engine) Stats() EngineStats {
 	if e == nil {
 		return EngineStats{}
 	}
+	selected := ""
+	if e.selected != nil {
+		selected = e.selected.Path
+	}
 	return EngineStats{
+		State:           e.state,
 		LastPoll:        e.lastPoll,
 		LastLogChange:   e.lastLogChange,
 		PollInterval:    e.pollInterval,
@@ -85,6 +120,7 @@ func (e *Engine) Stats() EngineStats {
 		LinesDiscovered: e.linesDiscovered,
 		APIFailures:     e.apiFailures,
 		LogSourceFound:  e.logSourceFound,
+		SelectedPath:    selected,
 	}
 }
 
@@ -100,6 +136,11 @@ func (e *Engine) Start(ctx context.Context) error {
 	if e.tracker == nil {
 		e.tracker = NewTracker(e.serviceID)
 	}
+	if e.state == "" {
+		e.state = StateDiscovery
+	}
+
+	slog.Info("component=killfeed", "state", string(e.state))
 
 	ticker := time.NewTicker(e.pollInterval)
 	defer ticker.Stop()
@@ -109,8 +150,6 @@ func (e *Engine) Start(ctx context.Context) error {
 			return nil
 		case <-ticker.C:
 			if err := e.PollOnce(ctx); err != nil {
-				// Recoverable failures are logged once-per-change and retried; the
-				// engine must never crash on them (e.g. no log source found yet).
 				slog.Warn("component=killfeed", "msg", "poll failed", "err", err.Error())
 				e.apiFailures++
 			}
@@ -118,22 +157,31 @@ func (e *Engine) Start(ctx context.Context) error {
 	}
 }
 
-// PollOnce executes a single incremental discovery/read cycle. A missing log
-// source is recoverable (returns nil) so the engine keeps polling rather than
-// crash-looping; genuine transport errors are returned for the caller to count.
+// PollOnce executes one cycle of the state machine. In DISCOVERY it scans for a
+// log; once selected it polls only that file each interval.
 func (e *Engine) PollOnce(ctx context.Context) error {
 	if e == nil || e.client == nil {
 		return nil
 	}
 
+	switch e.state {
+	case StateDiscovery, StateLogSelected:
+		return e.discoverOnce(ctx)
+	default:
+		return e.pollSelected(ctx)
+	}
+}
+
+// discoverOnce runs directory discovery until a candidate is confirmed as the
+// active gameplay log, then transitions to polling only that file.
+func (e *Engine) discoverOnce(ctx context.Context) error {
 	logs, err := e.client.ListLogs(ctx, e.serviceID)
 	if err != nil {
-		// "No log files discovered" is a recoverable empty state, not a crash.
 		var reqErr *nitrado.RequestError
 		if !errors.As(err, &reqErr) && strings.Contains(err.Error(), "no log files discovered") {
 			if !e.noSourceLogged {
 				e.noSourceLogged = true
-				slog.Info("component=killfeed", "msg", "no gameplay log source discovered yet; will keep polling")
+				slog.Info("component=killfeed", "state", string(StateDiscovery), "msg", "no gameplay log discovered yet; will keep polling")
 			}
 			e.reportPoll()
 			return nil
@@ -147,9 +195,77 @@ func (e *Engine) PollOnce(ctx context.Context) error {
 		return nil
 	}
 
+	// If a candidate is pending confirmation, compare its size across the two
+	// passes to detect an actively-growing gameplay log.
+	if e.confirmPending != nil {
+		prev := e.confirmPending
+		for _, cur := range logs {
+			if cur.Path != prev.Path {
+				continue
+			}
+			changed := cur.Size != prev.Size
+			slog.Info("component=killfeed", "msg", "candidate activity check",
+				"candidate", cur.Path, "old_size", prev.Size, "new_size", cur.Size, "changed", changed)
+			e.selectLog(cur)
+			e.confirmPending = nil
+			e.reportPoll()
+			return nil
+		}
+		// Pending candidate disappeared; fall through to re-select.
+		e.confirmPending = nil
+	}
+
+	// First pass: choose the most recently modified candidate. If only one
+	// exists, select it immediately; otherwise confirm growth on the next pass.
 	candidate := logs[0]
-	if candidate.Path == "" {
+	if len(logs) == 1 {
+		e.selectLog(candidate)
 		e.reportPoll()
+		return nil
+	}
+	e.confirmPending = &candidate
+	e.state = StateLogSelected
+	slog.Info("component=killfeed", "state", string(StateLogSelected), "path", candidate.Path, "msg", "candidate pending confirmation")
+	e.reportPoll()
+	return nil
+}
+
+// selectLog locks in the active gameplay log and switches to polling only it.
+func (e *Engine) selectLog(lf nitrado.LogFile) {
+	candidate := lf
+	e.selected = &candidate
+	e.confirmPending = nil
+	e.state = StatePolling
+	e.consecFailures = 0
+
+	if e.tracker == nil {
+		e.tracker = NewTracker(e.serviceID)
+	}
+	if e.tracker.CurrentLogFile != "" && e.tracker.CurrentLogFile != candidate.Path {
+		e.tracker.ResetForRotation(candidate.Path)
+	}
+
+	if !e.logSourceFound {
+		e.logSourceFound = true
+		e.lastLogChange = time.Now()
+	}
+	slog.Info("component=killfeed", "state", string(StatePolling),
+		"msg", "log source selected",
+		"file", candidate.Name,
+		"path", candidate.Path,
+		"size", candidate.Size,
+		"modified", candidate.Modified.UTC().Format(time.RFC3339),
+	)
+	if e.sink != nil {
+		e.sink.SetLogSource(candidate.Name, candidate.Path, candidate.Size, candidate.Modified)
+	}
+}
+
+// pollSelected checks only the selected log for changes and reads new bytes.
+// No directory discovery happens here.
+func (e *Engine) pollSelected(ctx context.Context) error {
+	if e.selected == nil || e.selected.Path == "" {
+		e.enterDiscovery()
 		return nil
 	}
 	if e.tracker == nil {
@@ -157,73 +273,56 @@ func (e *Engine) PollOnce(ctx context.Context) error {
 	}
 
 	e.lastPoll = time.Now()
-	if !e.logSourceFound {
-		e.logSourceFound = true
-		slog.Info("component=killfeed", "msg", "log source identified",
-			"file", candidate.Name,
-			"path", candidate.Path,
-			"size", candidate.Size,
-			"modified", candidate.Modified.UTC().Format(time.RFC3339),
-		)
-	}
-	if e.sink != nil {
-		e.sink.SetLogSource(candidate.Name, candidate.Path, candidate.Size, candidate.Modified)
-	}
 
-	if !e.tracker.ShouldReadAgain(candidate.Path, candidate.Size, candidate.Modified) {
+	current, err := e.currentMeta(ctx)
+	if err != nil {
+		return e.handleSelectedFailure(ctx, err)
+	}
+	e.consecFailures = 0
+
+	if !e.tracker.ShouldReadAgain(current.Path, current.Size, current.Modified) {
 		e.reportPoll()
 		return nil
 	}
 
-	// Rotation: a different file became the newest candidate.
-	if e.tracker.CurrentLogFile != "" && e.tracker.CurrentLogFile != candidate.Path {
-		slog.Debug("component=killfeed", "msg", "log rotation detected",
-			"previous_file", e.tracker.CurrentLogFile,
-			"file", candidate.Path,
-		)
-		e.tracker.ResetForRotation(candidate.Path)
+	if current.Path != e.tracker.CurrentLogFile && e.tracker.CurrentLogFile != "" {
+		slog.Debug("component=killfeed", "msg", "log rotation detected", "previous_file", e.tracker.CurrentLogFile, "file", current.Path)
+		e.tracker.ResetForRotation(current.Path)
 	}
-	// Truncation: the same file shrank below our offset.
-	if candidate.Path == e.tracker.CurrentLogFile && candidate.Size < e.tracker.LastByteOffset {
-		slog.Debug("component=killfeed", "msg", "log truncation detected",
-			"file", candidate.Path,
-			"old_offset", e.tracker.LastByteOffset,
-			"current_size", candidate.Size,
-		)
-		e.tracker.ResetForRotation(candidate.Path)
+	if current.Path == e.tracker.CurrentLogFile && current.Size < e.tracker.LastByteOffset {
+		slog.Debug("component=killfeed", "msg", "log truncation detected", "file", current.Path, "old_offset", e.tracker.LastByteOffset, "current_size", current.Size)
+		e.tracker.ResetForRotation(current.Path)
 	}
 
 	oldOffset := e.tracker.LastByteOffset
 	oldSize := e.tracker.CurrentSize
 
-	content, err := e.client.ReadLog(ctx, e.serviceID, candidate.Path)
+	content, err := e.client.ReadLog(ctx, e.serviceID, current.Path)
 	if err != nil {
-		return err
+		return e.handleSelectedFailure(ctx, err)
 	}
+	e.consecFailures = 0
 
 	readOffset := oldOffset
 	if readOffset > int64(len(content)) || readOffset < 0 {
-		// File changed between stat and read; restart from the beginning safely.
 		readOffset = 0
-		e.tracker.ResetForRotation(candidate.Path)
+		e.tracker.ResetForRotation(current.Path)
 	}
 
 	newBytes := content[readOffset:]
 	e.tracker.AppendPartialLine(string(newBytes))
 	lines := e.tracker.DrainCompleteLines()
 
-	// Only complete lines advance the durable offset; the trailing partial
-	// line stays buffered until its newline arrives in a later poll.
 	newOffset := int64(len(content)) - int64(len(e.tracker.LineBuffer))
 	bytesConsumed := newOffset - oldOffset
 
 	e.bytesProcessed += bytesConsumed
 	e.linesDiscovered += int64(len(lines))
 	e.lastLogChange = e.lastPoll
-	e.tracker.UpdateCheckpoint(e.serviceID, candidate.Path, int64(len(content)), candidate.Modified, newOffset)
+	e.tracker.UpdateCheckpoint(e.serviceID, current.Path, int64(len(content)), current.Modified, newOffset)
 
-	slog.Debug("component=killfeed",
-		"file", candidate.Name,
+	slog.Debug("component=killfeed", "state", "POLLING",
+		"file", current.Name,
 		"old_size", oldSize,
 		"new_size", int64(len(content)),
 		"old_offset", oldOffset,
@@ -234,6 +333,55 @@ func (e *Engine) PollOnce(ctx context.Context) error {
 
 	e.reportPoll()
 	return nil
+}
+
+// currentMeta returns fresh metadata for the selected log, preferring the cheap
+// per-file stat when the client supports it to avoid full directory scans.
+func (e *Engine) currentMeta(ctx context.Context) (*nitrado.LogFile, error) {
+	if stat, ok := e.client.(StatSource); ok {
+		return stat.StatFile(ctx, e.serviceID, e.selected.Path)
+	}
+
+	logs, err := e.client.ListLogs(ctx, e.serviceID)
+	if err != nil {
+		return nil, err
+	}
+	for _, lf := range logs {
+		if lf.Path == e.selected.Path {
+			current := lf
+			return &current, nil
+		}
+	}
+	return nil, &nitrado.RequestError{Op: "stat file", Kind: nitrado.KindNotFound, Message: "selected log no longer present", StatusCode: 404}
+}
+
+// handleSelectedFailure counts consecutive failures on the selected log and
+// re-enters discovery only after the file is confirmed repeatedly unreachable.
+func (e *Engine) handleSelectedFailure(ctx context.Context, err error) error {
+	e.consecFailures++
+
+	var reqErr *nitrado.RequestError
+	isNotFound := errors.As(err, &reqErr) && reqErr.Kind == nitrado.KindNotFound
+
+	if isNotFound || e.consecFailures >= maxConsecFailures {
+		slog.Warn("component=killfeed", "msg", "selected log lost; re-entering discovery", "path", e.selected.Path, "err", err.Error())
+		e.enterDiscovery()
+		e.reportPoll()
+		return nil
+	}
+
+	slog.Debug("component=killfeed", "state", "POLLING", "msg", "transient read/stat failure; will retry", "path", e.selected.Path, "failures", e.consecFailures, "err", err.Error())
+	e.reportPoll()
+	return nil
+}
+
+// enterDiscovery resets selection so the next poll re-runs discovery.
+func (e *Engine) enterDiscovery() {
+	e.state = StateDiscovery
+	e.selected = nil
+	e.confirmPending = nil
+	e.consecFailures = 0
+	slog.Info("component=killfeed", "state", string(StateDiscovery))
 }
 
 func (e *Engine) reportPoll() {

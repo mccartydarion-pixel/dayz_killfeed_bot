@@ -145,76 +145,41 @@ type fileServerListEntry struct {
 	ModifiedAt int64  `json:"modified_at"`
 }
 
-// logSearchDirs are the directory candidates most likely to contain DayZ logs,
-// tried in order. The DayZ profile directory is profile/ on Nitrado.
-var logSearchDirs = []string{"/", "/profile", "/profiles", "/dayz", "/config"}
+// maxDiscoveryDepth bounds recursive directory traversal so discovery cannot
+// scan the entire server. Configurable internally.
+var maxDiscoveryDepth = 4
 
 // logNameMarkers identify DayZ gameplay/admin log files.
 var logNameMarkers = []string{".rpt", ".adm", ".log"}
 
-// ListLogs discovers real log files via the documented file server API
-// (GET /services/:id/gameservers/file_server/list?dir=...). It no longer
-// guesses paths from the service detail payload, which exposes none.
+// ListLogs discovers real log files via the documented file server list API
+// (GET /services/:id/gameservers/file_server/list?dir=...). It traverses only
+// directories that Nitrado actually returns, with bounded depth, visited-path
+// tracking, and duplicate protection. Every returned entry is logged with
+// sanitized metadata. No paths are guessed.
 func (c *Client) ListLogs(ctx context.Context, serviceID string) ([]LogFile, error) {
 	if serviceID == "" {
 		return nil, fmt.Errorf("service ID is required")
 	}
 
-	found := make([]LogFile, 0)
-	seen := map[string]struct{}{}
-	permissionDenied := false
+	d := &discovery{
+		client:    c,
+		serviceID: serviceID,
+		visited:   map[string]struct{}{},
+		found:     map[string]LogFile{},
+	}
 
-	for _, dir := range logSearchDirs {
-		entries, err := c.listFileServerDir(ctx, serviceID, dir)
-		if err != nil {
-			var reqErr *RequestError
-			if errors.As(err, &reqErr) {
-				if reqErr.Kind == KindPermission {
-					permissionDenied = true
-				}
-				if reqErr.Kind == KindAuthentication || reqErr.Kind == KindInvalidEndpoint {
-					return nil, err
-				}
-			}
-			continue
-		}
+	permErr := d.walk(ctx, "/", 0)
+	if len(d.found) == 0 && permErr != nil {
+		return nil, permErr
+	}
 
-		for _, e := range entries {
-			// Descend one level into a directory that likely holds the DayZ profile.
-			if e.Type == "dir" && isProfileDir(e.Name) {
-				sub, err := c.listFileServerDir(ctx, serviceID, e.Path)
-				if err == nil {
-					entries = append(entries, sub...)
-				}
-				continue
-			}
-			if e.Type != "file" || !isLogFileName(e.Name) {
-				continue
-			}
-			path := e.Path
-			if path == "" {
-				path = joinRemotePath(dir, e.Name)
-			}
-			if _, dup := seen[path]; dup {
-				continue
-			}
-			seen[path] = struct{}{}
-			found = append(found, LogFile{
-				Name:      e.Name,
-				Path:      path,
-				Directory: dir,
-				Size:      e.Size,
-				Modified:  unixToTime(e.ModifiedAt),
-				Type:      inferLogType(e.Name, path, "file_server"),
-				Source:    "file_server",
-			})
-		}
+	found := make([]LogFile, 0, len(d.found))
+	for _, lf := range d.found {
+		found = append(found, lf)
 	}
 
 	if len(found) == 0 {
-		if permissionDenied {
-			return nil, &RequestError{Op: "log discovery", Kind: KindPermission, Message: "token lacks ROLE_WEBINTERFACE_FILEBROWSER_READ", StatusCode: http.StatusForbidden}
-		}
 		return nil, fmt.Errorf("no log files discovered for service %s", serviceID)
 	}
 
@@ -225,7 +190,86 @@ func (c *Client) ListLogs(ctx context.Context, serviceID string) ([]LogFile, err
 		return found[i].Modified.After(found[j].Modified)
 	})
 
+	for _, lf := range found {
+		slog.Info("component=nitrado_discovery", "msg", "LOG CANDIDATE",
+			"name", lf.Name, "path", lf.Path, "size", lf.Size,
+			"modified", lf.Modified.UTC().Format(time.RFC3339), "type", lf.Type)
+	}
+
 	return found, nil
+}
+
+// discovery holds the per-discovery-run state for bounded recursive traversal.
+type discovery struct {
+	client    *Client
+	serviceID string
+	visited   map[string]struct{}
+	found     map[string]LogFile
+}
+
+// walk lists dir and recurses into returned subdirectories up to maxDiscoveryDepth.
+// It returns a permission error if every listing is forbidden, else nil.
+func (d *discovery) walk(ctx context.Context, dir string, depth int) *RequestError {
+	if depth > maxDiscoveryDepth {
+		return nil
+	}
+	if _, seen := d.visited[dir]; seen {
+		return nil
+	}
+	d.visited[dir] = struct{}{}
+
+	entries, err := d.client.listFileServerDir(ctx, d.serviceID, dir)
+	if err != nil {
+		var reqErr *RequestError
+		if errors.As(err, &reqErr) {
+			if reqErr.Kind == KindPermission || reqErr.Kind == KindAuthentication || reqErr.Kind == KindInvalidEndpoint {
+				return reqErr
+			}
+		}
+		// Non-fatal: directory may not exist; skip it.
+		return nil
+	}
+
+	var permErr *RequestError
+	for _, e := range entries {
+		path := e.Path
+		if path == "" {
+			path = joinRemotePath(dir, e.Name)
+		}
+
+		// Log sanitized metadata for every entry Nitrado actually returns.
+		slog.Info("component=nitrado_discovery",
+			"path", path,
+			"name", e.Name,
+			"type", e.Type,
+			"size", e.Size,
+			"modified", unixToTime(e.ModifiedAt).UTC().Format(time.RFC3339),
+		)
+
+		if e.Type == "dir" {
+			if err := d.walk(ctx, path, depth+1); err != nil && permErr == nil {
+				permErr = err
+			}
+			continue
+		}
+
+		if e.Type != "file" || !isLogFileName(e.Name) {
+			continue
+		}
+		if _, dup := d.found[path]; dup {
+			continue
+		}
+		d.found[path] = LogFile{
+			Name:      e.Name,
+			Path:      path,
+			Directory: dir,
+			Size:      e.Size,
+			Modified:  unixToTime(e.ModifiedAt),
+			Type:      inferLogType(e.Name, path, "file_server"),
+			Source:    "file_server",
+		}
+	}
+	return permErr
 }
 
 // listFileServerDir lists one directory via the documented file server list endpoint.
@@ -261,9 +305,60 @@ func (c *Client) listFileServerDir(ctx context.Context, serviceID, dir string) (
 	return envelope.Data.Entries, nil
 }
 
-func isProfileDir(name string) bool {
-	n := strings.ToLower(strings.TrimSpace(name))
-	return n == "profile" || n == "profiles" || n == "config" || n == "dayz"
+// StatFile returns live size/modified metadata for a known file path by
+// listing its parent directory via the documented file server list API. This
+// lets the engine check the selected log for changes without re-running full
+// discovery. Returns a not_found RequestError if the file is absent.
+func (c *Client) StatFile(ctx context.Context, serviceID, path string) (*LogFile, error) {
+	if serviceID == "" {
+		return nil, fmt.Errorf("service ID is required")
+	}
+	if path == "" {
+		return nil, fmt.Errorf("file path is required")
+	}
+
+	dir := parentDir(path)
+	name := baseName(path)
+
+	entries, err := c.listFileServerDir(ctx, serviceID, dir)
+	if err != nil {
+		return nil, err
+	}
+	for _, e := range entries {
+		if e.Type == "file" && e.Name == name {
+			p := e.Path
+			if p == "" {
+				p = path
+			}
+			lf := &LogFile{
+				Name:      e.Name,
+				Path:      p,
+				Directory: dir,
+				Size:      e.Size,
+				Modified:  unixToTime(e.ModifiedAt),
+				Type:      inferLogType(e.Name, p, "file_server"),
+				Source:    "file_server",
+			}
+			return lf, nil
+		}
+	}
+	return nil, &RequestError{Op: "stat file", Kind: KindNotFound, Message: "file not found: " + path, StatusCode: http.StatusNotFound}
+}
+
+func parentDir(path string) string {
+	idx := strings.LastIndex(strings.TrimRight(path, "/"), "/")
+	if idx <= 0 {
+		return "/"
+	}
+	return path[:idx]
+}
+
+func baseName(path string) string {
+	idx := strings.LastIndex(strings.TrimRight(path, "/"), "/")
+	if idx < 0 {
+		return path
+	}
+	return path[idx+1:]
 }
 
 func isLogFileName(name string) bool {
