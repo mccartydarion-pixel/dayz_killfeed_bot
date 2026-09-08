@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -32,6 +33,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	slog.Info("component=startup", "msg", "starting DayZ killfeed")
 
 	nitradoClient := nitrado.NewClient("https://api.nitrado.net", cfg.NitradoToken, nil)
+	slog.Info("component=nitrado", "msg", "client configured", "base_url", nitradoClient.BaseURL())
 
 	discordClient, err := discord.New(cfg.DiscordToken)
 	if err != nil {
@@ -67,16 +69,26 @@ func (a *App) Run() error {
 		a.State = state
 	}
 
+	// Sanitized configuration presence. Values are never logged.
+	slog.Info("component=startup", "msg", "configuration loaded",
+		"NITRADO_TOKEN_configured", a.Config.NitradoToken != "",
+		"NITRADO_SERVICE_ID_configured", a.Config.NitradoServiceID != "",
+		"DISCORD_TOKEN_configured", a.Config.DiscordToken != "",
+		"KILLFEED_CHANNEL_ID_configured", a.Config.KillfeedChannelID != "",
+	)
+
 	// --- Nitrado authentication and service verification ---
 	if err := a.Nitrado.AuthenticationCheck(ctx); err != nil {
 		state.SetNitrado(false, false, "", "", "")
-		return fmt.Errorf("nitrado authentication failed: %w", err)
+		logNitradoFailure("authentication", err)
+		return fmt.Errorf("nitrado startup failed during authentication: %w", err)
 	}
 
 	services, err := a.Nitrado.GetServices(ctx)
 	if err != nil {
 		state.SetNitrado(false, false, "", "", "")
-		return fmt.Errorf("discover Nitrado services: %w", err)
+		logNitradoFailure("service discovery", err)
+		return fmt.Errorf("nitrado startup failed during service discovery: %w", err)
 	}
 
 	dayZServices := nitrado.FindDayZServices(services)
@@ -96,7 +108,8 @@ func (a *App) Run() error {
 		service, err := a.Nitrado.ValidateServiceID(ctx, a.Config.NitradoServiceID, services)
 		if err != nil {
 			state.SetNitrado(true, false, "", "", "")
-			return err
+			slog.Error("component=nitrado", "operation", "service verification", "msg", "service ID not found", "service_id", a.Config.NitradoServiceID)
+			return fmt.Errorf("nitrado service verification failed: %w", err)
 		}
 		serviceVerified = true
 		serviceGame, serviceType, serviceStatus = service.Game, service.Type, service.Status
@@ -187,4 +200,38 @@ func (a *App) shutdown() {
 	}
 	slog.Info("component=shutdown", "msg", "shutdown complete")
 	time.Sleep(50 * time.Millisecond)
+}
+
+// logNitradoFailure emits a sanitized, classified failure line. It never
+// includes tokens or headers — only HTTP status, operation, and failure kind.
+func logNitradoFailure(operation string, err error) {
+	var reqErr *nitrado.RequestError
+	if errors.As(err, &reqErr) {
+		slog.Error("component=nitrado",
+			"status", reqErr.StatusCode,
+			"operation", operation,
+			"kind", string(reqErr.Kind),
+			"msg", nitradoFailureMessage(reqErr.Kind),
+		)
+		return
+	}
+	slog.Error("component=nitrado", "operation", operation, "kind", string(nitrado.KindTemporary), "msg", err.Error())
+}
+
+// nitradoFailureMessage maps a failure kind to a human-readable cause.
+func nitradoFailureMessage(kind nitrado.ErrorKind) string {
+	switch kind {
+	case nitrado.KindAuthentication:
+		return "authentication failed"
+	case nitrado.KindInvalidEndpoint:
+		return "invalid API endpoint"
+	case nitrado.KindNotFound:
+		return "service ID not found"
+	case nitrado.KindPermission:
+		return "API permission problem"
+	case nitrado.KindTemporary:
+		return "temporary Nitrado failure"
+	default:
+		return "unexpected Nitrado response"
+	}
 }
