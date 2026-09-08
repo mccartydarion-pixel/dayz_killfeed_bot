@@ -359,6 +359,45 @@ func (c *Client) listFileServerDir(ctx context.Context, serviceID, dir string) (
 	return entries, nil
 }
 
+// ListLogsInDir lists .ADM files in a single known directory (no recursion).
+// Used for cheap periodic refresh once the config directory is known, so we
+// never rescan the whole ftproot tree.
+func (c *Client) ListLogsInDir(ctx context.Context, serviceID, dir string) ([]LogFile, error) {
+	if serviceID == "" {
+		return nil, fmt.Errorf("service ID is required")
+	}
+	entries, err := c.listFileServerDir(ctx, serviceID, dir)
+	if err != nil {
+		return nil, err
+	}
+	found := make([]LogFile, 0)
+	for _, e := range entries {
+		if e.Type == "dir" || e.Type == "directory" || !isLogFileName(e.Name) {
+			continue
+		}
+		path := e.Path
+		if path == "" {
+			path = joinRemotePath(dir, e.Name)
+		}
+		found = append(found, LogFile{
+			Name:      e.Name,
+			Path:      path,
+			Directory: dir,
+			Size:      e.Size,
+			Modified:  unixToTime(e.ModifiedAt),
+			Type:      inferLogType(e.Name, path, "file_server"),
+			Source:    "file_server",
+		})
+	}
+	sort.Slice(found, func(i, j int) bool {
+		if found[i].Modified.Equal(found[j].Modified) {
+			return found[i].Name > found[j].Name
+		}
+		return found[i].Modified.After(found[j].Modified)
+	})
+	return found, nil
+}
+
 // decodeDiagnostics describes how the file_server/list JSON was interpreted.
 type decodeDiagnostics struct {
 	decodeSuccess bool

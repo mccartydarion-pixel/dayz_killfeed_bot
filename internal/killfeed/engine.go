@@ -78,6 +78,7 @@ type Engine struct {
 	consecFailures int
 	discoverFails  int       // consecutive empty/failed discovery passes, drives backoff
 	lastRescan     time.Time // last time we checked for a newer ADM file
+	sampleCaptured bool      // whether we've logged the gameplay sample for the selected log
 }
 
 // rescanInterval is how often, while polling a selected log, we do a lightweight
@@ -235,39 +236,52 @@ func (e *Engine) discoverOnce(ctx context.Context) error {
 	// Discovery produced real candidates; clear the backoff counter.
 	e.discoverFails = 0
 
-	// If a candidate is pending confirmation, compare its size across the two
-	// passes to detect an actively-growing gameplay log.
-	if e.confirmPending != nil {
-		prev := e.confirmPending
-		for _, cur := range logs {
-			if cur.Path != prev.Path {
-				continue
-			}
-			changed := cur.Size != prev.Size
-			slog.Info("component=killfeed", "msg", "candidate activity check",
-				"candidate", cur.Path, "old_size", prev.Size, "new_size", cur.Size, "changed", changed)
-			e.selectLog(cur)
-			e.confirmPending = nil
-			e.reportPoll()
-			return nil
-		}
-		// Pending candidate disappeared; fall through to re-select.
-		e.confirmPending = nil
-	}
-
-	// First pass: choose the most recently modified candidate. If only one
-	// exists, select it immediately; otherwise confirm growth on the next pass.
-	candidate := logs[0]
-	if len(logs) == 1 {
-		e.selectLog(candidate)
-		e.reportPoll()
-		return nil
-	}
-	e.confirmPending = &candidate
-	e.state = StateLogSelected
-	slog.Info("component=killfeed", "state", string(StateLogSelected), "path", candidate.Path, "msg", "candidate pending confirmation")
+	// Phase 2.8: select the best candidate immediately. Ranking (ListLogs already
+	// sorts newest-modified first): prefer a non-trivial file (has content) over a
+	// brand-new empty ADM, but do not require active growth — an inactive ADM with
+	// real gameplay events is a valid source. ListLogs returns newest-first, so the
+	// first candidate with meaningful size wins; fall back to logs[0] if all are tiny.
+	candidate := selectBestCandidate(logs)
+	e.selectLog(candidate)
 	e.reportPoll()
 	return nil
+}
+
+// selectBestCandidate picks the newest ADM that actually has content; if every
+// candidate is empty (e.g. a freshly-created ADM after restart), it falls back to
+// selectBestCandidate picks the newest ADM that actually has content. A fresh ADM
+// created after a restart is just a small header, while an ADM with real gameplay
+// events is much larger. We prefer the newest candidate whose size is a meaningful
+// fraction of the largest ADM seen; if all are tiny, we track the newest one that
+// will grow. Input is newest-modified-first.
+func selectBestCandidate(logs []nitrado.LogFile) nitrado.LogFile {
+	if len(logs) == 0 {
+		return nitrado.LogFile{}
+	}
+
+	// Find the largest ADM to establish what "has content" means for this server.
+	var maxSize int64
+	for _, lf := range logs {
+		if lf.Size > maxSize {
+			maxSize = lf.Size
+		}
+	}
+
+	// A candidate counts as having content if it's at least a fraction of the
+	// largest ADM. This makes a fresh ~472-byte header lose to a 100KB log but
+	// still win when nothing bigger exists.
+	const contentFraction = 0.10 // 10% of the largest ADM
+	threshold := int64(float64(maxSize) * contentFraction)
+	if threshold < 200 {
+		threshold = 200 // absolute floor so a totally fresh set still selects something
+	}
+
+	for _, lf := range logs {
+		if lf.Size >= threshold {
+			return lf
+		}
+	}
+	return logs[0]
 }
 
 // selectLog locks in the active gameplay log and switches to polling only it.
@@ -277,6 +291,7 @@ func (e *Engine) selectLog(lf nitrado.LogFile) {
 	e.confirmPending = nil
 	e.state = StatePolling
 	e.consecFailures = 0
+	e.sampleCaptured = false
 
 	if e.tracker == nil {
 		e.tracker = NewTracker(e.serviceID)
@@ -374,6 +389,19 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 	e.lastLogChange = e.lastPoll
 	e.tracker.UpdateCheckpoint(e.serviceID, current.Path, int64(len(content)), current.Modified, newOffset)
 
+	// Capture a representative real gameplay sample once per selected log for
+	// parser design. Only IPs are redacted; gameplay syntax is preserved verbatim.
+	if !e.sampleCaptured && len(content) > 0 {
+		sample := SelectSampleLines(string(content), 45)
+		if len(sample) > 0 {
+			e.sampleCaptured = true
+			slog.Info("component=killfeed", "msg", "REAL DAYZ ADM SAMPLE", "file", current.Name, "path", current.Path, "lines", len(sample))
+			for _, line := range sample {
+				slog.Info("component=killfeed_adm_sample", "line", line)
+			}
+		}
+	}
+
 	slog.Debug("component=killfeed", "state", "POLLING",
 		"file", current.Name,
 		"old_size", oldSize,
@@ -440,18 +468,27 @@ func (e *Engine) enterDiscovery() {
 	}
 }
 
-// checkForNewerLog does a lightweight directory scan for a newer ADM file than
-// the currently selected one (DayZ writes a new timestamped ADM after restart).
-// If a strictly newer ADM exists, it switches selection. Runs on rescanInterval.
+// checkForNewerLog does a lightweight scan of the selected file's own directory
+// for a newer ADM (DayZ writes a new timestamped ADM after restart). If a strictly
+// newer ADM exists, it switches selection. Runs on rescanInterval; never rescans
+// the whole ftproot tree.
 func (e *Engine) checkForNewerLog(ctx context.Context) {
 	if e.selected == nil {
 		return
 	}
-	logs, err := e.client.ListLogs(ctx, e.serviceID)
+	var logs []nitrado.LogFile
+	var err error
+	if scoped, ok := e.client.(interface {
+		ListLogsInDir(ctx context.Context, serviceID, dir string) ([]nitrado.LogFile, error)
+	}); ok {
+		logs, err = scoped.ListLogsInDir(ctx, e.serviceID, e.selected.Directory)
+	} else {
+		logs, err = e.client.ListLogs(ctx, e.serviceID)
+	}
 	if err != nil || len(logs) == 0 {
 		return
 	}
-	newest := logs[0] // ListLogs sorts newest-first
+	newest := logs[0] // newest-first
 	if newest.Path != e.selected.Path && newest.Modified.After(e.selected.Modified) {
 		slog.Info("component=killfeed", "msg", "newer ADM detected; switching",
 			"previous", e.selected.Path, "file", newest.Path, "modified", newest.Modified.UTC().Format(time.RFC3339))
