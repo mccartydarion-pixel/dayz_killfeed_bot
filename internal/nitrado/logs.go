@@ -193,27 +193,17 @@ func (c *Client) ReadLog(ctx context.Context, serviceID string, path string) ([]
 }
 
 func (c *Client) servicePayload(ctx context.Context, serviceID string) ([]byte, error) {
-	endpoint := "/v1/services/" + url.PathEscape(serviceID)
+	endpoint := "/services/" + url.PathEscape(serviceID)
 	resp, err := c.do(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusUnauthorized {
-		return nil, &RequestError{Op: "nitrado service details", Message: "unauthorized", StatusCode: http.StatusUnauthorized}
-	}
-	if resp.StatusCode == http.StatusForbidden {
-		return nil, &RequestError{Op: "nitrado service details", Message: "forbidden", StatusCode: http.StatusForbidden}
-	}
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, &RequestError{Op: "nitrado service details", Message: "not found", StatusCode: http.StatusNotFound}
-	}
-	if resp.StatusCode >= http.StatusInternalServerError {
-		return nil, &RequestError{Op: "nitrado service details", Message: fmt.Sprintf("status=%d", resp.StatusCode), StatusCode: resp.StatusCode}
-	}
+	// A 404 on a service-specific path means the service ID was not found,
+	// which is a lookup failure — never an authentication failure.
 	if resp.StatusCode != http.StatusOK {
-		return nil, &RequestError{Op: "nitrado service details", Message: fmt.Sprintf("status=%d", resp.StatusCode), StatusCode: resp.StatusCode}
+		return nil, classifyStatus("service verification", resp.StatusCode, KindNotFound)
 	}
 
 	return io.ReadAll(resp.Body)

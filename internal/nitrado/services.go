@@ -10,30 +10,16 @@ import (
 )
 
 // GetServices fetches the Nitrado service list for the authenticated account.
+// Uses the documented endpoint GET /services (no /v1 prefix exists).
 func (c *Client) GetServices(ctx context.Context) ([]Service, error) {
-	resp, err := c.do(ctx, http.MethodGet, "/v1/services", nil)
+	resp, err := c.do(ctx, http.MethodGet, "/services", nil)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusUnauthorized {
-		return nil, &RequestError{Op: "nitrado services", Message: "unauthorized", StatusCode: http.StatusUnauthorized}
-	}
-	if resp.StatusCode == http.StatusForbidden {
-		return nil, &RequestError{Op: "nitrado services", Message: "forbidden", StatusCode: http.StatusForbidden}
-	}
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, &RequestError{Op: "nitrado services", Message: "not found", StatusCode: http.StatusNotFound}
-	}
-	if resp.StatusCode == http.StatusTooManyRequests {
-		return nil, &RequestError{Op: "nitrado services", Message: "rate limited", StatusCode: http.StatusTooManyRequests}
-	}
-	if resp.StatusCode >= http.StatusInternalServerError {
-		return nil, &RequestError{Op: "nitrado services", Message: fmt.Sprintf("status=%d", resp.StatusCode), StatusCode: resp.StatusCode}
-	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, &RequestError{Op: "nitrado services", Message: fmt.Sprintf("status=%d", resp.StatusCode), StatusCode: resp.StatusCode}
+		return nil, classifyStatus("service list", resp.StatusCode, KindInvalidEndpoint)
 	}
 
 	payload, err := io.ReadAll(resp.Body)
@@ -51,10 +37,11 @@ func (c *Client) GetServices(ctx context.Context) ([]Service, error) {
 }
 
 // FindDayZServices filters the service list for DayZ-like entries.
+// Real payloads carry names like "DayZ (PS4)", so matching is a substring check.
 func FindDayZServices(services []Service) []Service {
 	matches := make([]Service, 0, len(services))
 	for _, service := range services {
-		if strings.EqualFold(service.Game, "DayZ") || strings.Contains(strings.ToLower(service.Type), "dayz") || strings.Contains(strings.ToLower(service.Details.Type), "dayz") {
+		if strings.Contains(strings.ToLower(service.Game), "dayz") || strings.Contains(strings.ToLower(service.Type), "dayz") || strings.Contains(strings.ToLower(service.Details.Type), "dayz") {
 			matches = append(matches, service)
 		}
 	}
