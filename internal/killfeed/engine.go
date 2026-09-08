@@ -41,6 +41,7 @@ type StateSink interface {
 	SetLogSource(filename, path string, size int64, modified time.Time)
 	SetPollStats(lastPoll, lastLogChange time.Time, interval time.Duration, bytesRead, lines int64)
 	SetDiscovery(state string, dirsVisited, filesDiscovered int)
+	SetMetrics(m map[string]int64, lastKill time.Time)
 }
 
 // EngineStats is a point-in-time copy of the engine counters.
@@ -56,7 +57,29 @@ type EngineStats struct {
 	SelectedPath    string
 }
 
-// Engine orchestrates log discovery, selection, and incremental polling.
+// Metrics counts parser and publisher activity for the status endpoint.
+type Metrics struct {
+	ADMLinesProcessed      int64
+	EventsParsed           int64
+	EventsIgnored          int64
+	HitsParsed             int64
+	ExplicitKillsParsed    int64
+	DeathsParsed           int64
+	ConnectsParsed         int64
+	DisconnectsParsed      int64
+	DuplicateEventsDropped int64
+	DiscordKillsPublished  int64
+	DiscordPublishErrors   int64
+	LastKillTime           time.Time
+}
+
+// KillPublisher is the consumer for authoritative PLAYER_KILL events.
+// Implementations must not propagate errors that would stop log processing.
+type KillPublisher interface {
+	PublishKill(ev *Event) error
+}
+
+// Engine orchestrates log discovery, selection, incremental polling, and parsing.
 type Engine struct {
 	parser          Parser
 	tracker         *Tracker
@@ -79,6 +102,10 @@ type Engine struct {
 	discoverFails  int       // consecutive empty/failed discovery passes, drives backoff
 	lastRescan     time.Time // last time we checked for a newer ADM file
 	sampleCaptured bool      // whether we've logged the gameplay sample for the selected log
+
+	dedupe    *Deduplicator
+	publisher KillPublisher
+	metrics   Metrics
 }
 
 // rescanInterval is how often, while polling a selected log, we do a lightweight
@@ -109,6 +136,9 @@ func discoveryBackoff(fails int) time.Duration {
 // NewEngine creates the killfeed engine.
 func NewEngine(client LogSource, serviceID string, parser Parser) *Engine {
 	interval := envPollInterval("NITRADO_POLL_INTERVAL", 2*time.Second)
+	if parser == nil {
+		parser = NewADMParser()
+	}
 	return &Engine{
 		parser:       parser,
 		client:       client,
@@ -116,7 +146,24 @@ func NewEngine(client LogSource, serviceID string, parser Parser) *Engine {
 		pollInterval: interval,
 		tracker:      NewTracker(serviceID),
 		state:        StateDiscovery,
+		dedupe:       NewDeduplicator(90*time.Second, 8192),
 	}
+}
+
+// SetKillPublisher attaches the consumer for authoritative kill events.
+func (e *Engine) SetKillPublisher(p KillPublisher) {
+	if e == nil {
+		return
+	}
+	e.publisher = p
+}
+
+// Metrics returns a copy of the parser/publisher counters.
+func (e *Engine) Metrics() Metrics {
+	if e == nil {
+		return Metrics{}
+	}
+	return e.metrics
 }
 
 // SetStateSink attaches a sanitized status reporter.
@@ -381,6 +428,9 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 	e.tracker.AppendPartialLine(string(newBytes))
 	lines := e.tracker.DrainCompleteLines()
 
+	// Process complete lines in order through parse -> dedupe -> publish.
+	e.processLines(lines)
+
 	newOffset := int64(len(content)) - int64(len(e.tracker.LineBuffer))
 	bytesConsumed := newOffset - oldOffset
 
@@ -414,6 +464,64 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 
 	e.reportPoll()
 	return nil
+}
+
+// processLines runs the ordered pipeline for complete ADM lines:
+// parse -> dedupe -> (PLAYER_KILL only) publish. Runs sequentially on the
+// polling goroutine; line order is preserved and no per-line goroutines spawn.
+func (e *Engine) processLines(lines []string) {
+	if e == nil || len(lines) == 0 {
+		return
+	}
+	if e.dedupe == nil {
+		e.dedupe = NewDeduplicator(90*time.Second, 8192)
+	}
+	for _, line := range lines {
+		e.metrics.ADMLinesProcessed++
+
+		ev, err := e.parser.ParseLine(line)
+		if err != nil {
+			slog.Debug("component=killfeed", "msg", "malformed line ignored", "err", err.Error())
+			e.metrics.EventsIgnored++
+			continue
+		}
+		if ev == nil {
+			e.metrics.EventsIgnored++
+			continue
+		}
+		e.metrics.EventsParsed++
+
+		switch ev.Type {
+		case EventPlayerHit:
+			e.metrics.HitsParsed++
+		case EventPlayerKill:
+			e.metrics.ExplicitKillsParsed++
+		case EventPlayerDeath:
+			e.metrics.DeathsParsed++
+		case EventPlayerConnect:
+			e.metrics.ConnectsParsed++
+		case EventPlayerDisconnect:
+			e.metrics.DisconnectsParsed++
+		}
+
+		slog.Debug("component=killfeed", "msg", "event parsed", "type", string(ev.Type), "time", ev.TimeOfDay)
+
+		if e.dedupe.IsDuplicate(ev) {
+			e.metrics.DuplicateEventsDropped++
+			slog.Debug("component=killfeed", "msg", "duplicate event dropped", "type", string(ev.Type))
+			continue
+		}
+
+		// Only authoritative explicit kills are published in Phase 3.0.
+		if ev.Type == EventPlayerKill && e.publisher != nil {
+			if err := e.publisher.PublishKill(ev); err != nil {
+				e.metrics.DiscordPublishErrors++
+			} else {
+				e.metrics.DiscordKillsPublished++
+				e.metrics.LastKillTime = time.Now()
+			}
+		}
+	}
 }
 
 // currentMeta returns fresh metadata for the selected log, preferring the cheap
@@ -501,6 +609,19 @@ func (e *Engine) reportPoll() {
 		return
 	}
 	e.sink.SetPollStats(e.lastPoll, e.lastLogChange, e.pollInterval, e.bytesProcessed, e.linesDiscovered)
+	e.sink.SetMetrics(map[string]int64{
+		"adm_lines_processed":      e.metrics.ADMLinesProcessed,
+		"events_parsed":            e.metrics.EventsParsed,
+		"events_ignored":           e.metrics.EventsIgnored,
+		"hits_parsed":              e.metrics.HitsParsed,
+		"explicit_kills_parsed":    e.metrics.ExplicitKillsParsed,
+		"deaths_parsed":            e.metrics.DeathsParsed,
+		"connects_parsed":          e.metrics.ConnectsParsed,
+		"disconnects_parsed":       e.metrics.DisconnectsParsed,
+		"duplicate_events_dropped": e.metrics.DuplicateEventsDropped,
+		"discord_kills_published":  e.metrics.DiscordKillsPublished,
+		"discord_publish_errors":   e.metrics.DiscordPublishErrors,
+	}, e.metrics.LastKillTime)
 }
 
 func envPollInterval(name string, fallback time.Duration) time.Duration {

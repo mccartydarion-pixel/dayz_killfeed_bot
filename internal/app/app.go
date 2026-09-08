@@ -144,9 +144,14 @@ func (a *App) Run() error {
 	verification := a.Discord.Verify(a.Config.DiscordGuildID, a.Config.KillfeedChannelID)
 	state.SetDiscord(true, a.Discord.BotUsername(), verification.GuildFound, verification.ChannelFound, verification.Missing)
 
-	// --- Nitrado log polling engine ---
-	engine := killfeed.NewEngine(a.Nitrado, a.Config.NitradoServiceID, &killfeed.PlaceholderParser{})
+	// --- Nitrado log polling engine (real ADM parser + killfeed publisher) ---
+	engine := killfeed.NewEngine(a.Nitrado, a.Config.NitradoServiceID, killfeed.NewADMParser())
 	engine.SetStateSink(state)
+	if verification.ChannelFound && len(verification.Missing) == 0 {
+		engine.SetKillPublisher(discord.NewKillfeedPublisher(a.Discord, a.Config.KillfeedChannelID))
+	} else {
+		slog.Warn("component=killfeed", "msg", "killfeed publishing disabled until channel permissions are granted")
+	}
 	go func() {
 		if err := engine.Start(ctx); err != nil {
 			slog.Warn("component=killfeed", "msg", "engine stopped", "err", err.Error())

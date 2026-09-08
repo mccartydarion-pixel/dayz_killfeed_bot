@@ -38,11 +38,45 @@ type State struct {
 	PollInterval    time.Duration
 	BytesRead       int64
 	LinesDiscovered int64
+
+	ADMLinesProcessed      int64
+	EventsParsed           int64
+	EventsIgnored          int64
+	HitsParsed             int64
+	ExplicitKillsParsed    int64
+	DeathsParsed           int64
+	ConnectsParsed         int64
+	DisconnectsParsed      int64
+	DuplicateEventsDropped int64
+	DiscordKillsPublished  int64
+	DiscordPublishErrors   int64
+	LastKillTime           time.Time
 }
 
 // NewState creates an empty runtime state container.
 func NewState() *State {
 	return &State{}
+}
+
+// SetMetrics records parser and publisher counters from the killfeed engine.
+func (s *State) SetMetrics(m map[string]int64, lastKill time.Time) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ADMLinesProcessed = m["adm_lines_processed"]
+	s.EventsParsed = m["events_parsed"]
+	s.EventsIgnored = m["events_ignored"]
+	s.HitsParsed = m["hits_parsed"]
+	s.ExplicitKillsParsed = m["explicit_kills_parsed"]
+	s.DeathsParsed = m["deaths_parsed"]
+	s.ConnectsParsed = m["connects_parsed"]
+	s.DisconnectsParsed = m["disconnects_parsed"]
+	s.DuplicateEventsDropped = m["duplicate_events_dropped"]
+	s.DiscordKillsPublished = m["discord_kills_published"]
+	s.DiscordPublishErrors = m["discord_publish_errors"]
+	s.LastKillTime = lastKill
 }
 
 // SetDiscovery records the current discovery state and traversal counters.
@@ -158,6 +192,19 @@ func (s *State) Snapshot() map[string]any {
 		"poll_interval":        interval,
 		"bytes_read":           s.BytesRead,
 		"lines_discovered":     s.LinesDiscovered,
+
+		"adm_lines_processed":      s.ADMLinesProcessed,
+		"events_parsed":            s.EventsParsed,
+		"events_ignored":           s.EventsIgnored,
+		"hits_parsed":              s.HitsParsed,
+		"explicit_kills_parsed":    s.ExplicitKillsParsed,
+		"deaths_parsed":            s.DeathsParsed,
+		"connects_parsed":          s.ConnectsParsed,
+		"disconnects_parsed":       s.DisconnectsParsed,
+		"duplicate_events_dropped": s.DuplicateEventsDropped,
+		"discord_kills_published":  s.DiscordKillsPublished,
+		"discord_publish_errors":   s.DiscordPublishErrors,
+		"last_kill_time":           formatTime(s.LastKillTime),
 	}
 }
 
