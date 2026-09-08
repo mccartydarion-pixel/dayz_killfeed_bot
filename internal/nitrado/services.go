@@ -54,7 +54,8 @@ func (c *Client) ValidateServiceID(ctx context.Context, serviceID string, servic
 	for i := range services {
 		service := services[i]
 		if service.ID == serviceID {
-			if !strings.EqualFold(service.Game, "DayZ") {
+			// Real payloads use names like "DayZ (PS4)"; match by substring.
+			if !strings.Contains(strings.ToLower(service.Game), "dayz") {
 				slog.Warn("component=nitrado", "msg", "configured service does not appear to be DayZ", "service_id", serviceID, "game", service.Game)
 			} else {
 				slog.Info("component=nitrado", "msg", "DayZ service discovered", "service_id", serviceID)

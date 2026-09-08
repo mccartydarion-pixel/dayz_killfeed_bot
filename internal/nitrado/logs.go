@@ -3,6 +3,7 @@ package nitrado
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -135,33 +136,158 @@ func (c *Client) DiscoverLogs(ctx context.Context, serviceID string) error {
 	return err
 }
 
-// ListLogs inspects the authenticated service payload for known file and log metadata.
+// fileServerListEntry is one entry returned by the documented file server list API.
+type fileServerListEntry struct {
+	Type       string `json:"type"`
+	Path       string `json:"path"`
+	Name       string `json:"name"`
+	Size       int64  `json:"size"`
+	ModifiedAt int64  `json:"modified_at"`
+}
+
+// logSearchDirs are the directory candidates most likely to contain DayZ logs,
+// tried in order. The DayZ profile directory is profile/ on Nitrado.
+var logSearchDirs = []string{"/", "/profile", "/profiles", "/dayz", "/config"}
+
+// logNameMarkers identify DayZ gameplay/admin log files.
+var logNameMarkers = []string{".rpt", ".adm", ".log"}
+
+// ListLogs discovers real log files via the documented file server API
+// (GET /services/:id/gameservers/file_server/list?dir=...). It no longer
+// guesses paths from the service detail payload, which exposes none.
 func (c *Client) ListLogs(ctx context.Context, serviceID string) ([]LogFile, error) {
 	if serviceID == "" {
 		return nil, fmt.Errorf("service ID is required")
 	}
 
-	payload, err := c.servicePayload(ctx, serviceID)
-	if err != nil {
-		return nil, err
+	found := make([]LogFile, 0)
+	seen := map[string]struct{}{}
+	permissionDenied := false
+
+	for _, dir := range logSearchDirs {
+		entries, err := c.listFileServerDir(ctx, serviceID, dir)
+		if err != nil {
+			var reqErr *RequestError
+			if errors.As(err, &reqErr) {
+				if reqErr.Kind == KindPermission {
+					permissionDenied = true
+				}
+				if reqErr.Kind == KindAuthentication || reqErr.Kind == KindInvalidEndpoint {
+					return nil, err
+				}
+			}
+			continue
+		}
+
+		for _, e := range entries {
+			// Descend one level into a directory that likely holds the DayZ profile.
+			if e.Type == "dir" && isProfileDir(e.Name) {
+				sub, err := c.listFileServerDir(ctx, serviceID, e.Path)
+				if err == nil {
+					entries = append(entries, sub...)
+				}
+				continue
+			}
+			if e.Type != "file" || !isLogFileName(e.Name) {
+				continue
+			}
+			path := e.Path
+			if path == "" {
+				path = joinRemotePath(dir, e.Name)
+			}
+			if _, dup := seen[path]; dup {
+				continue
+			}
+			seen[path] = struct{}{}
+			found = append(found, LogFile{
+				Name:      e.Name,
+				Path:      path,
+				Directory: dir,
+				Size:      e.Size,
+				Modified:  unixToTime(e.ModifiedAt),
+				Type:      inferLogType(e.Name, path, "file_server"),
+				Source:    "file_server",
+			})
+		}
 	}
 
-	logFiles, err := parseLogCandidates(payload)
-	if err != nil {
-		return nil, err
-	}
-	if len(logFiles) == 0 {
+	if len(found) == 0 {
+		if permissionDenied {
+			return nil, &RequestError{Op: "log discovery", Kind: KindPermission, Message: "token lacks ROLE_WEBINTERFACE_FILEBROWSER_READ", StatusCode: http.StatusForbidden}
+		}
 		return nil, fmt.Errorf("no log files discovered for service %s", serviceID)
 	}
 
-	sort.Slice(logFiles, func(i, j int) bool {
-		if logFiles[i].Modified.Equal(logFiles[j].Modified) {
-			return logFiles[i].Name < logFiles[j].Name
+	sort.Slice(found, func(i, j int) bool {
+		if found[i].Modified.Equal(found[j].Modified) {
+			return found[i].Name < found[j].Name
 		}
-		return logFiles[i].Modified.After(logFiles[j].Modified)
+		return found[i].Modified.After(found[j].Modified)
 	})
 
-	return logFiles, nil
+	return found, nil
+}
+
+// listFileServerDir lists one directory via the documented file server list endpoint.
+func (c *Client) listFileServerDir(ctx context.Context, serviceID, dir string) ([]fileServerListEntry, error) {
+	endpoint := "/services/" + url.PathEscape(serviceID) + "/gameservers/file_server/list"
+	if dir != "" && dir != "/" {
+		endpoint += "?dir=" + url.QueryEscape(dir)
+	}
+
+	resp, err := c.do(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, classifyStatus("file server list", resp.StatusCode, KindNotFound)
+	}
+
+	payload, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read file server list: %w", err)
+	}
+
+	var envelope struct {
+		Data struct {
+			Entries []fileServerListEntry `json:"entries"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(payload, &envelope); err != nil {
+		return nil, fmt.Errorf("decode file server list: %w", err)
+	}
+	return envelope.Data.Entries, nil
+}
+
+func isProfileDir(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	return n == "profile" || n == "profiles" || n == "config" || n == "dayz"
+}
+
+func isLogFileName(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	for _, marker := range logNameMarkers {
+		if strings.HasSuffix(n, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func joinRemotePath(dir, name string) string {
+	if dir == "" || dir == "/" {
+		return "/" + name
+	}
+	return strings.TrimRight(dir, "/") + "/" + name
+}
+
+func unixToTime(sec int64) time.Time {
+	if sec <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(sec, 0).UTC()
 }
 
 // ReadLog reads a discovered log source when the service exposes a direct URL or readable path.
@@ -180,7 +306,7 @@ func (c *Client) ReadLog(ctx context.Context, serviceID string, path string) ([]
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
-			return nil, &RequestError{Op: "read remote log", Message: fmt.Sprintf("status=%d", resp.StatusCode), StatusCode: resp.StatusCode}
+			return nil, &RequestError{Op: "read remote log", Kind: KindUnknown, Message: fmt.Sprintf("status=%d", resp.StatusCode), StatusCode: resp.StatusCode}
 		}
 		return io.ReadAll(resp.Body)
 	}
