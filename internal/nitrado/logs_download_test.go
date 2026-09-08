@@ -46,4 +46,3 @@ func TestReadLogUsesFileServerDownload(t *testing.T) {
 		t.Fatalf("expected raw log content, got %q", string(content))
 	}
 }
-
