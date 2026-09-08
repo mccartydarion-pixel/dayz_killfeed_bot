@@ -75,11 +75,28 @@ type Engine struct {
 	selected       *nitrado.LogFile
 	confirmPending *nitrado.LogFile // awaiting a second sample to detect growth
 	consecFailures int
+	discoverFails  int // consecutive empty/failed discovery passes, drives backoff
 }
 
 // maxConsecFailures forces rediscovery after this many consecutive read/stat
 // failures on the selected log (file moved, rotated, or server restarted).
 const maxConsecFailures = 3
+
+// discoveryBackoff caps how often failed discovery retries, so we do not hammer
+// Nitrado every 2 seconds when no log is found. Sequence: 5s, 10s, 20s, 30s max.
+const discoveryBackoffMax = 30 * time.Second
+
+// discoveryBackoff returns the wait before the next discovery attempt.
+func discoveryBackoff(fails int) time.Duration {
+	if fails < 1 {
+		fails = 1
+	}
+	d := time.Duration(5*fails) * time.Second
+	if d > discoveryBackoffMax {
+		return discoveryBackoffMax
+	}
+	return d
+}
 
 // NewEngine creates the killfeed engine.
 func NewEngine(client LogSource, serviceID string, parser Parser) *Engine {
@@ -142,19 +159,30 @@ func (e *Engine) Start(ctx context.Context) error {
 
 	slog.Info("component=killfeed", "state", string(e.state))
 
-	ticker := time.NewTicker(e.pollInterval)
-	defer ticker.Stop()
+	// State-aware scheduler: poll the selected log at pollInterval, but back off
+	// during failed discovery to avoid hammering Nitrado.
+	timer := time.NewTimer(e.pollInterval)
+	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-ticker.C:
+		case <-timer.C:
 			if err := e.PollOnce(ctx); err != nil {
 				slog.Warn("component=killfeed", "msg", "poll failed", "err", err.Error())
 				e.apiFailures++
 			}
+			timer.Reset(e.nextInterval())
 		}
 	}
+}
+
+// nextInterval returns how long to wait before the next cycle based on state.
+func (e *Engine) nextInterval() time.Duration {
+	if e.state == StatePolling {
+		return e.pollInterval
+	}
+	return discoveryBackoff(e.discoverFails)
 }
 
 // PollOnce executes one cycle of the state machine. In DISCOVERY it scans for a
@@ -179,21 +207,26 @@ func (e *Engine) discoverOnce(ctx context.Context) error {
 	if err != nil {
 		var reqErr *nitrado.RequestError
 		if !errors.As(err, &reqErr) && strings.Contains(err.Error(), "no log files discovered") {
+			e.discoverFails++
 			if !e.noSourceLogged {
 				e.noSourceLogged = true
-				slog.Info("component=killfeed", "state", string(StateDiscovery), "msg", "no gameplay log discovered yet; will keep polling")
+				slog.Warn("component=killfeed", "state", string(StateDiscovery), "msg", "no gameplay log discovered yet; backing off", "retry_in", discoveryBackoff(e.discoverFails).String())
 			}
 			e.reportPoll()
 			return nil
 		}
 		e.noSourceLogged = false
+		e.discoverFails++
 		return err
 	}
 	e.noSourceLogged = false
 	if len(logs) == 0 {
+		e.discoverFails++
 		e.reportPoll()
 		return nil
 	}
+	// Discovery produced real candidates; clear the backoff counter.
+	e.discoverFails = 0
 
 	// If a candidate is pending confirmation, compare its size across the two
 	// passes to detect an actively-growing gameplay log.

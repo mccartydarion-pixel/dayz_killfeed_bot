@@ -287,6 +287,8 @@ func (d *discovery) walk(ctx context.Context, dir string, depth int) *RequestErr
 }
 
 // listFileServerDir lists one directory via the documented file server list endpoint.
+// It logs decode diagnostics so we can distinguish an empty directory from a
+// struct/schema mismatch (HTTP 200 but entries_found=0 due to wrong nesting).
 func (c *Client) listFileServerDir(ctx context.Context, serviceID, dir string) ([]fileServerListEntry, error) {
 	endpoint := "/services/" + url.PathEscape(serviceID) + "/gameservers/file_server/list"
 	if dir != "" && dir != "/" {
@@ -308,15 +310,129 @@ func (c *Client) listFileServerDir(ctx context.Context, serviceID, dir string) (
 		return nil, fmt.Errorf("read file server list: %w", err)
 	}
 
-	var envelope struct {
-		Data struct {
-			Entries []fileServerListEntry `json:"entries"`
-		} `json:"data"`
+	entries, diagnostics := decodeFileServerEntries(payload)
+	slog.Info("component=nitrado_discovery", "msg", "list response decoded",
+		"dir", dir,
+		"http_status", resp.StatusCode,
+		"content_type", resp.Header.Get("Content-Type"),
+		"response_received", true,
+		"decode_success", diagnostics.decodeSuccess,
+		"top_level_keys", diagnostics.topLevelKeys,
+		"entry_location", diagnostics.entryLocation,
+		"entries_found", len(entries),
+	)
+	return entries, nil
+}
+
+// decodeDiagnostics describes how the file_server/list JSON was interpreted.
+type decodeDiagnostics struct {
+	decodeSuccess bool
+	topLevelKeys  string
+	entryLocation string
+}
+
+// decodeFileServerEntries tolerantly locates the entry array in the real
+// Nitrado response. It tries the documented data.entries shape first, then a
+// set of alternate nestings observed in the wild, without fabricating fields.
+func decodeFileServerEntries(payload []byte) ([]fileServerListEntry, decodeDiagnostics) {
+	diag := decodeDiagnostics{}
+
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &top); err != nil {
+		return nil, diag
 	}
-	if err := json.Unmarshal(payload, &envelope); err != nil {
-		return nil, fmt.Errorf("decode file server list: %w", err)
+	diag.decodeSuccess = true
+
+	keys := make([]string, 0, len(top))
+	for k := range top {
+		keys = append(keys, k)
 	}
-	return envelope.Data.Entries, nil
+	sort.Strings(keys)
+	diag.topLevelKeys = strings.Join(keys, ",")
+
+	// Candidate paths where the entries array may live.
+	type candidate struct {
+		location string
+		resolve  func() (json.RawMessage, bool)
+	}
+	dataRaw, hasData := top["data"]
+
+	candidates := []candidate{
+		{"data.entries", func() (json.RawMessage, bool) {
+			if !hasData {
+				return nil, false
+			}
+			var d map[string]json.RawMessage
+			if json.Unmarshal(dataRaw, &d) != nil {
+				return nil, false
+			}
+			v, ok := d["entries"]
+			return v, ok
+		}},
+		{"data.files", func() (json.RawMessage, bool) {
+			if !hasData {
+				return nil, false
+			}
+			var d map[string]json.RawMessage
+			if json.Unmarshal(dataRaw, &d) != nil {
+				return nil, false
+			}
+			v, ok := d["files"]
+			return v, ok
+		}},
+		{"data.items", func() (json.RawMessage, bool) {
+			if !hasData {
+				return nil, false
+			}
+			var d map[string]json.RawMessage
+			if json.Unmarshal(dataRaw, &d) != nil {
+				return nil, false
+			}
+			v, ok := d["items"]
+			return v, ok
+		}},
+		{"data(array)", func() (json.RawMessage, bool) {
+			if !hasData {
+				return nil, false
+			}
+			var arr []json.RawMessage
+			if json.Unmarshal(dataRaw, &arr) != nil {
+				return nil, false
+			}
+			return dataRaw, true
+		}},
+		{"entries(top)", func() (json.RawMessage, bool) { v, ok := top["entries"]; return v, ok }},
+		{"files(top)", func() (json.RawMessage, bool) { v, ok := top["files"]; return v, ok }},
+		{"message.entries", func() (json.RawMessage, bool) {
+			m, ok := top["message"]
+			if !ok {
+				return nil, false
+			}
+			var mm map[string]json.RawMessage
+			if json.Unmarshal(m, &mm) != nil {
+				return nil, false
+			}
+			v, ok := mm["entries"]
+			return v, ok
+		}},
+	}
+
+	for _, cand := range candidates {
+		raw, ok := cand.resolve()
+		if !ok || len(raw) == 0 {
+			continue
+		}
+		var entries []fileServerListEntry
+		if err := json.Unmarshal(raw, &entries); err != nil {
+			continue
+		}
+		diag.entryLocation = cand.location
+		return entries, diag
+	}
+
+	// Decoded fine but we could not locate an entries array anywhere.
+	diag.entryLocation = "not_found"
+	return nil, diag
 }
 
 // StatFile returns live size/modified metadata for a known file path by
