@@ -29,6 +29,10 @@ type State struct {
 	LogSize        int64
 	LogModified    time.Time
 
+	DiscoveryState  string
+	DirsVisited     int
+	FilesDiscovered int
+
 	LastPoll        time.Time
 	LastLogChange   time.Time
 	PollInterval    time.Duration
@@ -39,6 +43,18 @@ type State struct {
 // NewState creates an empty runtime state container.
 func NewState() *State {
 	return &State{}
+}
+
+// SetDiscovery records the current discovery state and traversal counters.
+func (s *State) SetDiscovery(state string, dirsVisited, filesDiscovered int) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.DiscoveryState = state
+	s.DirsVisited = dirsVisited
+	s.FilesDiscovered = filesDiscovered
 }
 
 // SetDiscord records Discord connectivity and access validation results.
@@ -114,27 +130,34 @@ func (s *State) Snapshot() map[string]any {
 	}
 
 	return map[string]any{
-		"status":           "online",
-		"discord":          s.DiscordConnected,
-		"bot_username":     s.BotUsername,
-		"guild_found":      s.GuildFound,
-		"channel_found":    s.ChannelFound,
-		"missing_perms":    s.MissingPermissions,
-		"nitrado":          s.NitradoAuthenticated,
-		"service_verified": s.ServiceVerified,
-		"service_game":     s.ServiceGame,
-		"service_type":     s.ServiceType,
-		"service_status":   s.ServiceStatus,
-		"log_source_found": s.LogSourceFound,
-		"log_filename":     s.LogFilename,
-		"log_path":         s.LogPath,
-		"log_size":         s.LogSize,
-		"log_modified":     formatTime(s.LogModified),
-		"last_poll":        formatTime(s.LastPoll),
-		"last_log_change":  formatTime(s.LastLogChange),
-		"poll_interval":    interval,
-		"bytes_read":       s.BytesRead,
-		"lines_discovered": s.LinesDiscovered,
+		"status":               "online",
+		"discord":              s.DiscordConnected,
+		"discord_connected":    s.DiscordConnected,
+		"bot_username":         s.BotUsername,
+		"guild_found":          s.GuildFound,
+		"channel_found":        s.ChannelFound,
+		"missing_perms":        s.MissingPermissions,
+		"nitrado":              s.NitradoAuthenticated,
+		"nitrado_connected":    s.NitradoAuthenticated,
+		"service_verified":     s.ServiceVerified,
+		"service_game":         s.ServiceGame,
+		"service_type":         s.ServiceType,
+		"service_status":       s.ServiceStatus,
+		"discovery_state":      s.DiscoveryState,
+		"directories_visited":  s.DirsVisited,
+		"files_discovered":     s.FilesDiscovered,
+		"log_source_found":     s.LogSourceFound,
+		"selected_log":         s.LogPath,
+		"log_filename":         s.LogFilename,
+		"log_path":             s.LogPath,
+		"log_size":             s.LogSize,
+		"log_modified":         formatTime(s.LogModified),
+		"last_poll":            formatTime(s.LastPoll),
+		"last_log_change":      formatTime(s.LastLogChange),
+		"last_successful_poll": formatTime(s.LastLogChange),
+		"poll_interval":        interval,
+		"bytes_read":           s.BytesRead,
+		"lines_discovered":     s.LinesDiscovered,
 	}
 }
 

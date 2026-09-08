@@ -176,8 +176,21 @@ func (c *Client) ListLogs(ctx context.Context, serviceID string) ([]LogFile, err
 		"dirs_visited", len(d.visited),
 		"dirs_seen", d.dirsSeen,
 		"files_seen", d.filesSeen,
+		"entries_returned", len(d.entries),
 		"log_candidates", len(d.found),
 	)
+
+	// Print every real returned entry exactly once, numbered, sanitized.
+	for i, e := range d.entries {
+		slog.Info("component=nitrado_discovery",
+			"entry", i+1,
+			"name", e.Name,
+			"path", e.Path,
+			"type", e.Type,
+			"size", e.Size,
+			"modified", unixToTime(e.ModifiedAt).UTC().Format(time.RFC3339),
+		)
+	}
 
 	if len(d.found) == 0 && permErr != nil {
 		return nil, permErr
@@ -214,6 +227,7 @@ type discovery struct {
 	serviceID string
 	visited   map[string]struct{}
 	found     map[string]LogFile
+	entries   []fileServerListEntry // every real returned entry, for one-time print
 	filesSeen int
 	dirsSeen  int
 }
@@ -247,9 +261,11 @@ func (d *discovery) walk(ctx context.Context, dir string, depth int) *RequestErr
 		if path == "" {
 			path = joinRemotePath(dir, e.Name)
 		}
+		e.Path = path
+		d.entries = append(d.entries, e)
 
-		// Log sanitized metadata for every entry Nitrado actually returns.
-		slog.Info("component=nitrado_discovery",
+		// Per-entry detail at DEBUG; the one-time INFO print is done by ListLogs.
+		slog.Debug("component=nitrado_discovery",
 			"path", path,
 			"name", e.Name,
 			"type", e.Type,
@@ -311,7 +327,9 @@ func (c *Client) listFileServerDir(ctx context.Context, serviceID, dir string) (
 	}
 
 	entries, diagnostics := decodeFileServerEntries(payload)
-	slog.Info("component=nitrado_discovery", "msg", "list response decoded",
+	// Routine per-list diagnostics at DEBUG. The one-time summary and entry print
+	// happen in ListLogs after the full walk completes.
+	slog.Debug("component=nitrado_discovery", "msg", "list response decoded",
 		"dir", dir,
 		"http_status", resp.StatusCode,
 		"content_type", resp.Header.Get("Content-Type"),

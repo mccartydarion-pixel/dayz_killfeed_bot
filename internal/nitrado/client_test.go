@@ -99,7 +99,8 @@ func TestServiceLookup404IsNotAuthentication(t *testing.T) {
 func TestRequestLoggingNeverContainsToken(t *testing.T) {
 	var buf bytes.Buffer
 	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	// Request logs are DEBUG level; capture them explicitly.
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	t.Cleanup(func() { slog.SetDefault(previous) })
 
 	client := newStatusServer(t, http.StatusOK, "/services")

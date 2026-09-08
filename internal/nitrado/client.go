@@ -62,8 +62,9 @@ func (c *Client) do(ctx context.Context, method string, path string, body io.Rea
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	// Log only the method and sanitized path. Never log the token or any header.
-	slog.Info("component=nitrado", "method", method, "path", path)
+	// Log only the method and sanitized path at DEBUG. Routine polling must not
+	// emit INFO on every request. Never log the token or any header.
+	slog.Debug("component=nitrado", "method", method, "path", path)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

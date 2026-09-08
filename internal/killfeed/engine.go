@@ -40,6 +40,7 @@ type StatSource interface {
 type StateSink interface {
 	SetLogSource(filename, path string, size int64, modified time.Time)
 	SetPollStats(lastPoll, lastLogChange time.Time, interval time.Duration, bytesRead, lines int64)
+	SetDiscovery(state string, dirsVisited, filesDiscovered int)
 }
 
 // EngineStats is a point-in-time copy of the engine counters.
@@ -291,6 +292,7 @@ func (e *Engine) selectLog(lf nitrado.LogFile) {
 	)
 	if e.sink != nil {
 		e.sink.SetLogSource(candidate.Name, candidate.Path, candidate.Size, candidate.Modified)
+		e.sink.SetDiscovery(string(StatePolling), 0, 0)
 	}
 }
 
@@ -415,6 +417,9 @@ func (e *Engine) enterDiscovery() {
 	e.confirmPending = nil
 	e.consecFailures = 0
 	slog.Info("component=killfeed", "state", string(StateDiscovery))
+	if e.sink != nil {
+		e.sink.SetDiscovery(string(StateDiscovery), 0, 0)
+	}
 }
 
 func (e *Engine) reportPoll() {

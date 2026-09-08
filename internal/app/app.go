@@ -125,21 +125,9 @@ func (a *App) Run() error {
 			slog.Warn("component=nitrado", "msg", "service payload inspection failed", "err", err.Error())
 		}
 
-		// One startup discovery pass so the real candidates are visible immediately.
-		if logs, err := a.Nitrado.ListLogs(ctx, a.Config.NitradoServiceID); err != nil {
-			slog.Warn("component=nitrado", "msg", "no log source discovered at startup", "err", err.Error())
-		} else {
-			for _, candidate := range logs {
-				slog.Info("component=nitrado", "msg", "log candidate",
-					"filename", candidate.Name,
-					"path", candidate.Path,
-					"size", candidate.Size,
-					"modified", candidate.Modified.UTC().Format(time.RFC3339),
-					"type", candidate.Type,
-				)
-			}
-			logSourceVerified = len(logs) > 0 && logs[0].Path != ""
-		}
+		// NOTE: discovery runs exclusively inside the killfeed engine worker.
+		// A second inline ListLogs here would create a duplicate discovery worker
+		// and a log storm, so it has been removed.
 	}
 	state.SetNitrado(true, serviceVerified, serviceGame, serviceType, serviceStatus)
 
