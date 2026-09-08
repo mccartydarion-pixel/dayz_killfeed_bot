@@ -2,8 +2,10 @@ package killfeed
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/yourname/dayz-killfeed/internal/nitrado"
@@ -47,6 +49,7 @@ type Engine struct {
 	linesDiscovered int64
 	apiFailures     int
 	logSourceFound  bool
+	noSourceLogged  bool
 }
 
 // NewEngine creates the killfeed engine skeleton.
@@ -106,6 +109,8 @@ func (e *Engine) Start(ctx context.Context) error {
 			return nil
 		case <-ticker.C:
 			if err := e.PollOnce(ctx); err != nil {
+				// Recoverable failures are logged once-per-change and retried; the
+				// engine must never crash on them (e.g. no log source found yet).
 				slog.Warn("component=killfeed", "msg", "poll failed", "err", err.Error())
 				e.apiFailures++
 			}
@@ -113,7 +118,9 @@ func (e *Engine) Start(ctx context.Context) error {
 	}
 }
 
-// PollOnce executes a single incremental discovery/read cycle.
+// PollOnce executes a single incremental discovery/read cycle. A missing log
+// source is recoverable (returns nil) so the engine keeps polling rather than
+// crash-looping; genuine transport errors are returned for the caller to count.
 func (e *Engine) PollOnce(ctx context.Context) error {
 	if e == nil || e.client == nil {
 		return nil
@@ -121,8 +128,20 @@ func (e *Engine) PollOnce(ctx context.Context) error {
 
 	logs, err := e.client.ListLogs(ctx, e.serviceID)
 	if err != nil {
+		// "No log files discovered" is a recoverable empty state, not a crash.
+		var reqErr *nitrado.RequestError
+		if !errors.As(err, &reqErr) && strings.Contains(err.Error(), "no log files discovered") {
+			if !e.noSourceLogged {
+				e.noSourceLogged = true
+				slog.Info("component=killfeed", "msg", "no gameplay log source discovered yet; will keep polling")
+			}
+			e.reportPoll()
+			return nil
+		}
+		e.noSourceLogged = false
 		return err
 	}
+	e.noSourceLogged = false
 	if len(logs) == 0 {
 		e.reportPoll()
 		return nil
