@@ -1,0 +1,68 @@
+PHASE 2 REPORT
+
+Project: DayZ Killfeed
+Status: Completed foundation work for log acquisition discovery and polling architecture
+
+Summary:
+This project now includes a conservative Nitrado log-discovery foundation and incremental checkpoint-based polling logic. It does not invent undocumented endpoints or guessed DayZ log formats. The implementation is intentionally safe and Railway-friendly, and it is designed to work only once a real Nitrado service exposes the actual log source.
+
+Validation performed:
+- go fmt ./...
+- go vet ./...
+- go test ./...
+- go build ./...
+
+Results:
+- go vet: PASS
+- go test: PASS
+- go build: PASS
+
+Nitrado service:
+- Service ID: not live-verified in this environment
+- Game: not live-verified
+- Status: not live-verified
+
+Log access foundation:
+- Method: API-driven service inspection with safe file/log metadata parsing
+- Protocol: HTTP-first
+- Endpoint type: service detail inspection and any file/log metadata exposed by the authenticated response
+- Partial reads supported: not live-verified
+- Range reads supported: not live-verified
+- Authentication method: Bearer token via Authorization header
+
+DayZ logs discovered:
+- File: none live-verified
+- Directory: none live-verified
+- Size: not available
+- Modified: not available
+
+Selected gameplay log:
+- File: not selected
+- Reason: no real DayZ Nitrado server logs were available in this environment, so no gameplay log could be trusted
+
+Polling:
+- Interval: default 2s, configurable with NITRADO_POLL_INTERVAL
+- Average poll duration: not measured live
+- Incremental reads: modeled via checkpoint offset tracking
+- Duplicate protection: in-memory offset and file metadata tracking
+- Rotation handling: supported via truncation/rotation detection and checkpoint reset
+
+Sample log lines:
+- none captured live
+
+Important discoveries:
+- The project does not rely on guessed Nitrado endpoints.
+- The code is structured to inspect file/log metadata only when it is actually exposed by the authenticated service.
+- The log acquisition path is intentionally conservative and avoids parsing unsupported assumptions.
+- The implementation is ready for real Nitrado log discovery once a valid service token and service ID are available.
+
+Errors:
+- No code-level Go build, vet, or test errors remain.
+- Live Nitrado log discovery remains unverified because the environment does not include a real Nitrado token and service configuration.
+
+Recommended Phase 3:
+- Configure a real Nitrado token and service ID.
+- Retrieve a small sample of the actual DayZ log file from the live service.
+- Build the DayZ parser around the real log format for kills, deaths, weapons, distance, suicides, environment deaths, and connection/disconnection events.
+
+This phase deliberately avoids implementing kill parsing, stats, leaderboards, or PostgreSQL persistence until real log samples are available.

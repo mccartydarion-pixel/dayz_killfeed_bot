@@ -1,0 +1,190 @@
+package app
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/yourname/dayz-killfeed/internal/config"
+	"github.com/yourname/dayz-killfeed/internal/discord"
+	"github.com/yourname/dayz-killfeed/internal/killfeed"
+	"github.com/yourname/dayz-killfeed/internal/nitrado"
+	"github.com/yourname/dayz-killfeed/internal/server"
+)
+
+// App owns the main runtime dependencies.
+type App struct {
+	Config     *config.Config
+	Nitrado    *nitrado.Client
+	Discord    *discord.Client
+	HTTPServer *server.Server
+	State      *server.State
+	cancel     context.CancelFunc
+}
+
+// New creates an application instance with the required dependencies.
+func New(ctx context.Context, cfg *config.Config) (*App, error) {
+	slog.Info("component=startup", "msg", "starting DayZ killfeed")
+
+	nitradoClient := nitrado.NewClient("https://api.nitrado.net", cfg.NitradoToken, nil)
+
+	discordClient, err := discord.New(cfg.DiscordToken)
+	if err != nil {
+		return nil, fmt.Errorf("create Discord client: %w", err)
+	}
+
+	state := server.NewState()
+	httpServer, err := server.New(cfg, state)
+	if err != nil {
+		return nil, fmt.Errorf("create HTTP server: %w", err)
+	}
+
+	_, cancel := context.WithCancel(ctx)
+
+	return &App{
+		Config:     cfg,
+		Nitrado:    nitradoClient,
+		Discord:    discordClient,
+		HTTPServer: httpServer,
+		State:      state,
+		cancel:     cancel,
+	}, nil
+}
+
+// Run boots the application and runs until shutdown.
+func (a *App) Run() error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	state := a.State
+	if state == nil {
+		state = server.NewState()
+		a.State = state
+	}
+
+	// --- Nitrado authentication and service verification ---
+	if err := a.Nitrado.AuthenticationCheck(ctx); err != nil {
+		state.SetNitrado(false, false, "", "", "")
+		return fmt.Errorf("nitrado authentication failed: %w", err)
+	}
+
+	services, err := a.Nitrado.GetServices(ctx)
+	if err != nil {
+		state.SetNitrado(false, false, "", "", "")
+		return fmt.Errorf("discover Nitrado services: %w", err)
+	}
+
+	dayZServices := nitrado.FindDayZServices(services)
+	if len(dayZServices) == 0 {
+		slog.Warn("component=nitrado", "msg", "no DayZ services discovered")
+	} else {
+		slog.Info("component=nitrado", "msg", "DayZ services discovered", "count", len(dayZServices))
+	}
+
+	serviceVerified := false
+	logSourceVerified := false
+	var serviceGame, serviceType, serviceStatus string
+
+	if a.Config.NitradoServiceID == "" {
+		slog.Warn("component=nitrado", "msg", "NITRADO_SERVICE_ID not configured; skipping service verification and log discovery")
+	} else {
+		service, err := a.Nitrado.ValidateServiceID(ctx, a.Config.NitradoServiceID, services)
+		if err != nil {
+			state.SetNitrado(true, false, "", "", "")
+			return err
+		}
+		serviceVerified = true
+		serviceGame, serviceType, serviceStatus = service.Game, service.Type, service.Status
+		slog.Info("component=nitrado", "msg", "configured service verified",
+			"service_id", a.Config.NitradoServiceID,
+			"game", service.Game,
+			"service_type", service.Type,
+			"status", service.Status,
+		)
+
+		// Sanitized inspection of the real service payload for file/log capability fields.
+		if err := a.Nitrado.InspectService(ctx, a.Config.NitradoServiceID); err != nil {
+			slog.Warn("component=nitrado", "msg", "service payload inspection failed", "err", err.Error())
+		}
+
+		// One startup discovery pass so the real candidates are visible immediately.
+		if logs, err := a.Nitrado.ListLogs(ctx, a.Config.NitradoServiceID); err != nil {
+			slog.Warn("component=nitrado", "msg", "no log source discovered at startup", "err", err.Error())
+		} else {
+			for _, candidate := range logs {
+				slog.Info("component=nitrado", "msg", "log candidate",
+					"filename", candidate.Name,
+					"path", candidate.Path,
+					"size", candidate.Size,
+					"modified", candidate.Modified.UTC().Format(time.RFC3339),
+					"type", candidate.Type,
+				)
+			}
+			logSourceVerified = len(logs) > 0 && logs[0].Path != ""
+		}
+	}
+	state.SetNitrado(true, serviceVerified, serviceGame, serviceType, serviceStatus)
+
+	// --- Discord connection and access validation ---
+	if err := a.Discord.Start(ctx); err != nil {
+		return fmt.Errorf("start Discord session: %w", err)
+	}
+	defer func() {
+		if err := a.Discord.Close(); err != nil {
+			slog.Error("component=discord", "msg", "error closing Discord connection", "err", err.Error())
+		}
+	}()
+
+	verification := a.Discord.Verify(a.Config.DiscordGuildID, a.Config.KillfeedChannelID)
+	state.SetDiscord(true, a.Discord.BotUsername(), verification.GuildFound, verification.ChannelFound, verification.Missing)
+
+	// --- Nitrado log polling engine ---
+	engine := killfeed.NewEngine(a.Nitrado, a.Config.NitradoServiceID, &killfeed.PlaceholderParser{})
+	engine.SetStateSink(state)
+	go func() {
+		if err := engine.Start(ctx); err != nil {
+			slog.Warn("component=killfeed", "msg", "engine stopped", "err", err.Error())
+		}
+	}()
+
+	slog.Info("component=startup", "msg", "DayZ killfeed live foundation ready")
+	if logSourceVerified {
+		slog.Info("component=killfeed", "msg", "live gameplay log source verified")
+	}
+
+	if err := a.HTTPServer.ListenAndServe(ctx); err != nil && err != http.ErrServerClosed {
+		return fmt.Errorf("start HTTP server: %w", err)
+	}
+
+	<-ctx.Done()
+	slog.Info("component=shutdown", "msg", "shutdown requested")
+	a.shutdown()
+	return nil
+}
+
+func (a *App) shutdown() {
+	if a.cancel != nil {
+		a.cancel()
+	}
+	if a.HTTPServer != nil {
+		if err := a.HTTPServer.Shutdown(context.Background()); err != nil {
+			slog.Error("component=shutdown", "msg", "HTTP server shutdown failed", "err", err.Error())
+		} else {
+			slog.Info("component=shutdown", "msg", "HTTP server stopped")
+		}
+	}
+	if a.Discord != nil {
+		if err := a.Discord.Close(); err != nil {
+			slog.Error("component=shutdown", "msg", "Discord close failed", "err", err.Error())
+		} else {
+			slog.Info("component=shutdown", "msg", "Discord connection closed")
+		}
+	}
+	slog.Info("component=shutdown", "msg", "shutdown complete")
+	time.Sleep(50 * time.Millisecond)
+}

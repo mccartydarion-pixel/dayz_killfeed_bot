@@ -1,0 +1,22 @@
+# Secrets and local environment
+.env
+*.env
+!.env.example
+
+# Binaries / build output
+/dayz-killfeed
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test / coverage
+*.test
+*.out
+coverage.*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
