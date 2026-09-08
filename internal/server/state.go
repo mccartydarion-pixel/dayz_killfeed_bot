@@ -51,11 +51,23 @@ type State struct {
 	DiscordKillsPublished  int64
 	DiscordPublishErrors   int64
 	LastKillTime           time.Time
+
+	OnlinePlayers int
 }
 
 // NewState creates an empty runtime state container.
 func NewState() *State {
 	return &State{}
+}
+
+// SetOnlinePlayers records the current online player count (no player IDs).
+func (s *State) SetOnlinePlayers(count int) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.OnlinePlayers = count
 }
 
 // SetMetrics records parser and publisher counters from the killfeed engine.
@@ -205,6 +217,7 @@ func (s *State) Snapshot() map[string]any {
 		"discord_kills_published":  s.DiscordKillsPublished,
 		"discord_publish_errors":   s.DiscordPublishErrors,
 		"last_kill_time":           formatTime(s.LastKillTime),
+		"online_players":           s.OnlinePlayers,
 	}
 }
 

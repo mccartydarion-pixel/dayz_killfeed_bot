@@ -106,6 +106,9 @@ type Engine struct {
 	dedupe    *Deduplicator
 	publisher KillPublisher
 	metrics   Metrics
+
+	players   *PlayerTracker
+	onPlayers func(count int) // optional hook when the online player set changes
 }
 
 // rescanInterval is how often, while polling a selected log, we do a lightweight
@@ -147,6 +150,7 @@ func NewEngine(client LogSource, serviceID string, parser Parser) *Engine {
 		tracker:      NewTracker(serviceID),
 		state:        StateDiscovery,
 		dedupe:       NewDeduplicator(90*time.Second, 8192),
+		players:      NewPlayerTracker(),
 	}
 }
 
@@ -156,6 +160,22 @@ func (e *Engine) SetKillPublisher(p KillPublisher) {
 		return
 	}
 	e.publisher = p
+}
+
+// PlayerTracker exposes the engine's online player tracker.
+func (e *Engine) PlayerTracker() *PlayerTracker {
+	if e == nil {
+		return nil
+	}
+	return e.players
+}
+
+// OnPlayersChanged registers a hook fired when the online player set changes.
+func (e *Engine) OnPlayersChanged(fn func(count int)) {
+	if e == nil {
+		return
+	}
+	e.onPlayers = fn
 }
 
 // Metrics returns a copy of the parser/publisher counters.
@@ -347,6 +367,13 @@ func (e *Engine) selectLog(lf nitrado.LogFile) {
 		e.tracker.ResetForRotation(candidate.Path)
 	}
 
+	// New ADM session (e.g. server restart): clear stale online players so the
+	// list is rebuilt from fresh "is connected" events in the new log.
+	if e.players != nil && e.logSourceFound {
+		e.players.Reset()
+		slog.Info("component=killfeed", "msg", "player tracker reset for new ADM session")
+	}
+
 	if !e.logSourceFound {
 		e.logSourceFound = true
 		e.lastLogChange = time.Now()
@@ -512,6 +539,18 @@ func (e *Engine) processLines(lines []string) {
 			continue
 		}
 
+		// Online player tracking (deduped, authoritative connect/disconnect only).
+		if e.players != nil {
+			switch ev.Type {
+			case EventPlayerConnect:
+				e.players.PlayerConnected(ev.Player)
+				e.firePlayersChanged()
+			case EventPlayerDisconnect:
+				e.players.PlayerDisconnected(ev.Player)
+				e.firePlayersChanged()
+			}
+		}
+
 		// Only authoritative explicit kills are published in Phase 3.0.
 		if ev.Type == EventPlayerKill && e.publisher != nil {
 			if err := e.publisher.PublishKill(ev); err != nil {
@@ -522,6 +561,14 @@ func (e *Engine) processLines(lines []string) {
 			}
 		}
 	}
+}
+
+// firePlayersChanged invokes the registered hook after the online set changes.
+func (e *Engine) firePlayersChanged() {
+	if e == nil || e.onPlayers == nil || e.players == nil {
+		return
+	}
+	e.onPlayers(e.players.OnlineCount())
 }
 
 // currentMeta returns fresh metadata for the selected log, preferring the cheap

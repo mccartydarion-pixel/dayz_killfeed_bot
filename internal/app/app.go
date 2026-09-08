@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/config"
 	"github.com/yourname/dayz-killfeed/internal/discord"
 	"github.com/yourname/dayz-killfeed/internal/killfeed"
@@ -144,14 +145,46 @@ func (a *App) Run() error {
 	verification := a.Discord.Verify(a.Config.DiscordGuildID, a.Config.KillfeedChannelID)
 	state.SetDiscord(true, a.Discord.BotUsername(), verification.GuildFound, verification.ChannelFound, verification.Missing)
 
+	// --- Champion setup: store, manager, slash command ---
+	setupStore := discord.NewInMemorySetupStore() // in-memory for Phase 3.1; PostgreSQL in Phase 4
+	session := a.Discord.Session()
+	api := discord.NewSessionAPI(session)
+	setupManager := discord.NewSetupManager(api, setupStore, a.Discord.BotID())
+	setupHandler := discord.NewSetupHandler(setupManager)
+	if a.Config.DiscordGuildID != "" {
+		if err := discord.RegisterSetupCommand(session, a.Config.DiscordGuildID); err != nil {
+			slog.Warn("component=discord", "msg", "failed to register /setup command", "err", err.Error())
+		}
+	}
+	a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+		switch i.Type {
+		case discordgo.InteractionApplicationCommand:
+			if i.ApplicationCommandData().Name == "setup" {
+				setupHandler.Handle(s, i)
+			}
+		case discordgo.InteractionMessageComponent:
+			setupHandler.HandleResetConfirm(s, i)
+		}
+	})
+
 	// --- Nitrado log polling engine (real ADM parser + killfeed publisher) ---
 	engine := killfeed.NewEngine(a.Nitrado, a.Config.NitradoServiceID, killfeed.NewADMParser())
 	engine.SetStateSink(state)
-	if verification.ChannelFound && len(verification.Missing) == 0 {
-		engine.SetKillPublisher(discord.NewKillfeedPublisher(a.Discord, a.Config.KillfeedChannelID))
-	} else {
-		slog.Warn("component=killfeed", "msg", "killfeed publishing disabled until channel permissions are granted")
-	}
+
+	// Killfeed publisher: stored guild setup wins, env var is the fallback.
+	publisher := discord.NewKillfeedPublisher(a.Discord, a.Config.KillfeedChannelID)
+	publisher.BindStore(setupStore, a.Config.DiscordGuildID)
+	engine.SetKillPublisher(publisher)
+
+	// Online players panel: edited in place on debounced connect/disconnect.
+	onlineChannel := a.Config.KillfeedChannelID // fallback until /setup configures one
+	onlinePanel := discord.NewOnlinePlayersPanel(api, onlineChannel, "")
+	engine.OnPlayersChanged(func(count int) {
+		state.SetOnlinePlayers(count)
+		names := playerNames(engine.PlayerTracker())
+		onlinePanel.MarkDirty(names, true)
+	})
+
 	go func() {
 		if err := engine.Start(ctx); err != nil {
 			slog.Warn("component=killfeed", "msg", "engine stopped", "err", err.Error())
@@ -193,6 +226,19 @@ func (a *App) shutdown() {
 	}
 	slog.Info("component=shutdown", "msg", "shutdown complete")
 	time.Sleep(50 * time.Millisecond)
+}
+
+// playerNames returns the sorted display names of currently online players.
+func playerNames(tracker *killfeed.PlayerTracker) []string {
+	if tracker == nil {
+		return nil
+	}
+	online := tracker.GetOnlinePlayers()
+	names := make([]string, 0, len(online))
+	for _, p := range online {
+		names = append(names, p.Name)
+	}
+	return names
 }
 
 // logNitradoFailure emits a sanitized, classified failure line. It never

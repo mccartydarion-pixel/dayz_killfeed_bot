@@ -43,6 +43,22 @@ func (c *Client) BotUsername() string {
 	return c.session.State.User.Username
 }
 
+// BotID returns the connected bot's user ID, or an empty string.
+func (c *Client) BotID() string {
+	if c == nil || c.session == nil || c.session.State == nil || c.session.State.User == nil {
+		return ""
+	}
+	return c.session.State.User.ID
+}
+
+// AddHandler registers an event handler on the underlying session.
+func (c *Client) AddHandler(fn func(*discordgo.Session, *discordgo.InteractionCreate)) {
+	if c == nil || c.session == nil {
+		return
+	}
+	c.session.AddHandler(fn)
+}
+
 // Verification describes the result of guild/channel/permission validation.
 type Verification struct {
 	GuildFound   bool
