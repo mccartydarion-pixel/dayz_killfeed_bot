@@ -213,3 +213,8 @@ func respondEphemeral(s *discordgo.Session, i *discordgo.InteractionCreate, cont
 		Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral, Content: content},
 	})
 }
+
+// RespondEphemeral is the exported ephemeral response helper for app-level routing.
+func RespondEphemeral(s *discordgo.Session, i *discordgo.InteractionCreate, content string) {
+	respondEphemeral(s, i, content)
+}

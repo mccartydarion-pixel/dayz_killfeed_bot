@@ -62,6 +62,14 @@ type State struct {
 	OnlineCounterLastPublished     int
 	OnlineCounterUpdateErrors      int
 	OnlineCounterPermissionBlocked bool
+	DatabaseConnected              bool
+	DatabasePoolTotal              int32
+	DatabasePoolIdle               int32
+
+	PersistenceQueueDepth   int
+	PersistenceQueueDropped int64
+	CheckpointLoaded        bool
+	CheckpointOffset        int64
 }
 
 // NewState creates an empty runtime state container.
@@ -112,6 +120,40 @@ func (s *State) SetOnlineCounter(lastPublished, updateErrors int, permissionBloc
 	s.OnlineCounterLastPublished = lastPublished
 	s.OnlineCounterUpdateErrors = updateErrors
 	s.OnlineCounterPermissionBlocked = permissionBlocked
+}
+
+// SetDatabase records database connectivity and pool metrics.
+func (s *State) SetDatabase(connected bool, poolTotal, poolIdle int32) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.DatabaseConnected = connected
+	s.DatabasePoolTotal = poolTotal
+	s.DatabasePoolIdle = poolIdle
+}
+
+// SetPersistenceQueue records persistence queue depth and dropped count.
+func (s *State) SetPersistenceQueue(depth int, dropped int64) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.PersistenceQueueDepth = depth
+	s.PersistenceQueueDropped = dropped
+}
+
+// SetCheckpoint records checkpoint resume state.
+func (s *State) SetCheckpoint(loaded bool, offset int64) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.CheckpointLoaded = loaded
+	s.CheckpointOffset = offset
 }
 
 // SetMetrics records parser and publisher counters from the killfeed engine.
@@ -271,7 +313,13 @@ func (s *State) Snapshot() map[string]any {
 		"online_counter_last_published":     s.OnlineCounterLastPublished,
 		"online_counter_update_errors":      s.OnlineCounterUpdateErrors,
 		"online_counter_permission_blocked": s.OnlineCounterPermissionBlocked,
-	}
+		"database_connected":                s.DatabaseConnected,
+		"database_pool_total":               s.DatabasePoolTotal,
+		"database_pool_idle":                s.DatabasePoolIdle,
+		"persistence_queue_depth":           s.PersistenceQueueDepth,
+		"persistence_queue_dropped":         s.PersistenceQueueDropped,
+		"checkpoint_loaded":                 s.CheckpointLoaded,
+		"checkpoint_offset":                 s.CheckpointOffset}
 }
 
 // StatusHandler writes the current sanitized runtime state as JSON.

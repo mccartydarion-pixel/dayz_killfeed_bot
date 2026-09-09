@@ -104,9 +104,10 @@ type Engine struct {
 	lastRescan     time.Time // last time we checked for a newer ADM file
 	sampleCaptured bool      // whether we've logged the gameplay sample for the selected log
 
-	dedupe    *Deduplicator
-	publisher KillPublisher
-	metrics   Metrics
+	dedupe      *Deduplicator
+	publisher   KillPublisher
+	metrics     Metrics
+	persistence *PersistenceQueue
 
 	players   *PlayerTracker
 	onPlayers func(count int) // optional hook when the online player set changes
@@ -161,6 +162,26 @@ func (e *Engine) SetKillPublisher(p KillPublisher) {
 		return
 	}
 	e.publisher = p
+}
+
+// SetPersistence attaches the durable persistence queue and wires Discord
+// publish to happen only after a successful non-duplicate durable insert.
+func (e *Engine) SetPersistence(q *PersistenceQueue) {
+	if e == nil || q == nil {
+		return
+	}
+	e.persistence = q
+	q.SetKillPersistedHook(func(ev *Event) {
+		if e.publisher == nil {
+			return
+		}
+		if err := e.publisher.PublishKill(ev); err != nil {
+			e.metrics.DiscordPublishErrors++
+		} else {
+			e.metrics.DiscordKillsPublished++
+			e.metrics.LastKillTime = time.Now()
+		}
+	})
 }
 
 // PlayerTracker exposes the engine's online player tracker.
@@ -552,13 +573,23 @@ func (e *Engine) processLines(lines []string) {
 			}
 		}
 
-		// Only authoritative explicit kills are published in Phase 3.0.
+		// Persist before publish. When a persistence queue is configured, durable
+		// dedupe is the gate: a DB duplicate means do NOT publish again. When no
+		// persistence is configured (degraded mode), fall back to in-memory dedupe
+		// and publish directly.
 		if ev.Type == EventPlayerKill && e.publisher != nil {
-			if err := e.publisher.PublishKill(ev); err != nil {
-				e.metrics.DiscordPublishErrors++
+			if e.persistence != nil {
+				if !e.persistence.Enqueue(ev) {
+					e.metrics.DiscordPublishErrors++
+				}
+				// Publish happens in the queue's post-persist hook (set in SetPersistence).
 			} else {
-				e.metrics.DiscordKillsPublished++
-				e.metrics.LastKillTime = time.Now()
+				if err := e.publisher.PublishKill(ev); err != nil {
+					e.metrics.DiscordPublishErrors++
+				} else {
+					e.metrics.DiscordKillsPublished++
+					e.metrics.LastKillTime = time.Now()
+				}
 			}
 		}
 	}

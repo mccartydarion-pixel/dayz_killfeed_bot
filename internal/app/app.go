@@ -13,20 +13,31 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/config"
+	"github.com/yourname/dayz-killfeed/internal/database"
 	"github.com/yourname/dayz-killfeed/internal/discord"
 	"github.com/yourname/dayz-killfeed/internal/killfeed"
 	"github.com/yourname/dayz-killfeed/internal/nitrado"
+	"github.com/yourname/dayz-killfeed/internal/repository"
 	"github.com/yourname/dayz-killfeed/internal/server"
 )
 
 // App owns the main runtime dependencies.
 type App struct {
-	Config     *config.Config
-	Nitrado    *nitrado.Client
-	Discord    *discord.Client
-	HTTPServer *server.Server
-	State      *server.State
-	cancel     context.CancelFunc
+	Config       *config.Config
+	Nitrado      *nitrado.Client
+	Discord      *discord.Client
+	HTTPServer   *server.Server
+	State        *server.State
+	DB           *database.DB
+	Guilds       *repository.GuildRepository
+	Players      *repository.PlayerRepository
+	Kills        *repository.KillRepository
+	Deaths       *repository.DeathRepository
+	Stats        *repository.StatsRepository
+	Sessions     *repository.SessionRepository
+	Checkpoints  *repository.CheckpointRepository
+	persistQueue *killfeed.PersistenceQueue
+	cancel       context.CancelFunc
 }
 
 // New creates an application instance with the required dependencies.
@@ -47,16 +58,50 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		return nil, fmt.Errorf("create HTTP server: %w", err)
 	}
 
-	_, cancel := context.WithCancel(ctx)
-
-	return &App{
+	app := &App{
 		Config:     cfg,
 		Nitrado:    nitradoClient,
 		Discord:    discordClient,
 		HTTPServer: httpServer,
 		State:      state,
-		cancel:     cancel,
-	}, nil
+	}
+
+	// --- PostgreSQL (optional): connect + migrate. Degraded mode if unconfigured. ---
+	if cfg.DatabaseURL != "" {
+		dbCtx, dbCancel := context.WithTimeout(ctx, 20*time.Second)
+		db, err := database.Connect(dbCtx, cfg.DatabaseURL)
+		dbCancel()
+		if err != nil {
+			state.SetDatabase(false, 0, 0)
+			slog.Error("component=database", "msg", "database unavailable", "err", err.Error())
+		} else {
+			migCtx, migCancel := context.WithTimeout(ctx, 60*time.Second)
+			if err := db.Migrate(migCtx); err != nil {
+				migCancel()
+				db.Close()
+				state.SetDatabase(false, 0, 0)
+				return nil, fmt.Errorf("run database migrations: %w", err)
+			}
+			migCancel()
+			total, idle, _ := db.PoolStats()
+			state.SetDatabase(true, total, idle)
+			app.DB = db
+			app.Guilds = repository.NewGuildRepository(db.Pool)
+			app.Players = repository.NewPlayerRepository(db.Pool)
+			app.Kills = repository.NewKillRepository(db.Pool)
+			app.Deaths = repository.NewDeathRepository(db.Pool)
+			app.Stats = repository.NewStatsRepository(db.Pool)
+			app.Sessions = repository.NewSessionRepository(db.Pool)
+			app.Checkpoints = repository.NewCheckpointRepository(db.Pool)
+		}
+	} else {
+		slog.Warn("component=database", "msg", "DATABASE_URL not configured; persistence disabled (degraded mode)")
+		state.SetDatabase(false, 0, 0)
+	}
+
+	_, cancel := context.WithCancel(ctx)
+	app.cancel = cancel
+	return app, nil
 }
 
 // Run boots the application and runs until shutdown.
@@ -146,7 +191,15 @@ func (a *App) Run() error {
 	state.SetDiscord(true, a.Discord.BotUsername(), verification.GuildFound, verification.ChannelFound, verification.Missing)
 
 	// --- Champion setup: store, manager, slash command ---
-	setupStore := discord.NewInMemorySetupStore() // in-memory for Phase 3.1; PostgreSQL in Phase 4
+	// Use durable PostgreSQL-backed storage when connected; in-memory otherwise.
+	var setupStore discord.SetupStore
+	if a.Guilds != nil {
+		setupStore = discord.NewPostgresSetupStore(a.Guilds)
+		slog.Info("component=startup", "msg", "guild setup store: postgresql")
+	} else {
+		setupStore = discord.NewInMemorySetupStore()
+		slog.Warn("component=startup", "msg", "guild setup store: in-memory (not durable across restarts)")
+	}
 	session := a.Discord.Session()
 	api := discord.NewSessionAPI(session)
 	setupManager := discord.NewSetupManager(api, setupStore, a.Discord.BotID())
@@ -156,11 +209,55 @@ func (a *App) Run() error {
 			slog.Warn("component=discord", "msg", "failed to register /setup command", "err", err.Error())
 		}
 	}
+
+	// Stats and leaderboard commands require the database + a guild record.
+	if a.Stats != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
+		statsHandler := discord.NewStatsCommandHandler(a.Stats, a.Guilds, a.Config.DiscordGuildID)
+		if err := discord.RegisterStatsCommands(session, a.Config.DiscordGuildID); err != nil {
+			slog.Warn("component=discord", "msg", "failed to register stats commands", "err", err.Error())
+		}
+		a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+			if i.Type != discordgo.InteractionApplicationCommand {
+				return
+			}
+			switch i.ApplicationCommandData().Name {
+			case "stats":
+				statsHandler.HandleStats(s, i)
+			case "leaderboard":
+				statsHandler.HandleLeaderboard(s, i)
+			}
+		})
+	}
+
+	// Stats/leaderboard commands only work with a database.
+	var statsHandler *discord.StatsCommandHandler
+	if a.Stats != nil {
+		statsHandler = discord.NewStatsCommandHandler(a.Stats, a.Guilds, a.Config.DiscordGuildID)
+		if a.Config.DiscordGuildID != "" {
+			if err := discord.RegisterStatsCommands(session, a.Config.DiscordGuildID); err != nil {
+				slog.Warn("component=discord", "msg", "failed to register stats commands", "err", err.Error())
+			}
+		}
+	}
 	a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		switch i.Type {
 		case discordgo.InteractionApplicationCommand:
-			if i.ApplicationCommandData().Name == "setup" {
+			name := i.ApplicationCommandData().Name
+			switch name {
+			case "setup":
 				setupHandler.Handle(s, i)
+			case "stats":
+				if statsHandler != nil {
+					statsHandler.HandleStats(s, i)
+				} else {
+					discord.RespondEphemeral(s, i, "Stats require the database. Set DATABASE_URL.")
+				}
+			case "leaderboard":
+				if statsHandler != nil {
+					statsHandler.HandleLeaderboard(s, i)
+				} else {
+					discord.RespondEphemeral(s, i, "Leaderboard requires the database. Set DATABASE_URL.")
+				}
 			}
 		case discordgo.InteractionMessageComponent:
 			setupHandler.HandleResetConfirm(s, i)
@@ -175,6 +272,24 @@ func (a *App) Run() error {
 	publisher := discord.NewKillfeedPublisher(a.Discord, a.Config.KillfeedChannelID)
 	publisher.BindStore(setupStore, a.Config.DiscordGuildID)
 	engine.SetKillPublisher(publisher)
+
+	// --- Persistence queue (persist-before-publish, durable dedupe) ---
+	if a.DB != nil && a.Players != nil && a.Kills != nil && a.Deaths != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
+		_, guildRowID, err := a.Guilds.GetGuild(ctx, a.Config.DiscordGuildID)
+		if err != nil {
+			slog.Warn("component=database", "msg", "could not resolve guild row; persistence disabled", "err", err.Error())
+		}
+		if guildRowID > 0 {
+			store := &persistenceStoreAdapter{players: a.Players, kills: a.Kills, deaths: a.Deaths}
+			pq := killfeed.NewPersistenceQueue(store, guildRowID, a.Config.NitradoServiceID)
+			engine.SetPersistence(pq)
+			a.persistQueue = pq
+			go pq.Run(ctx)
+			slog.Info("component=database", "msg", "persistence queue started")
+		} else {
+			slog.Warn("component=database", "msg", "no guild record yet; run /setup to enable persistence")
+		}
+	}
 
 	// Online players voice counter: renames the configured voice channel on
 	// debounced count changes. Uses the single PlayerTracker as the source of truth.
@@ -225,6 +340,11 @@ func (a *App) shutdown() {
 	if a.cancel != nil {
 		a.cancel()
 	}
+	// Flush the persistence queue (drain pending events) before closing the DB.
+	if a.persistQueue != nil {
+		a.persistQueue.Close()
+		slog.Info("component=shutdown", "msg", "persistence queue drained")
+	}
 	if a.HTTPServer != nil {
 		if err := a.HTTPServer.Shutdown(context.Background()); err != nil {
 			slog.Error("component=shutdown", "msg", "HTTP server shutdown failed", "err", err.Error())
@@ -239,8 +359,31 @@ func (a *App) shutdown() {
 			slog.Info("component=shutdown", "msg", "Discord connection closed")
 		}
 	}
+	if a.DB != nil {
+		a.DB.Close()
+	}
 	slog.Info("component=shutdown", "msg", "shutdown complete")
 	time.Sleep(50 * time.Millisecond)
+}
+
+// persistenceStoreAdapter adapts the repositories to the killfeed.PersistenceStore
+// interface used by the persistence queue worker.
+type persistenceStoreAdapter struct {
+	players *repository.PlayerRepository
+	kills   *repository.KillRepository
+	deaths  *repository.DeathRepository
+}
+
+func (p *persistenceStoreAdapter) UpsertPlayer(ctx context.Context, guildID int64, dayzID, displayName string, seenAt time.Time) (int64, error) {
+	return p.players.UpsertPlayer(ctx, guildID, dayzID, displayName, seenAt)
+}
+
+func (p *persistenceStoreAdapter) InsertKill(ctx context.Context, k repository.KillRecord) error {
+	return p.kills.InsertKill(ctx, k)
+}
+
+func (p *persistenceStoreAdapter) InsertDeath(ctx context.Context, d repository.DeathRecord) error {
+	return p.deaths.InsertDeath(ctx, d)
 }
 
 // playerNames returns the sorted display names of currently online players.
