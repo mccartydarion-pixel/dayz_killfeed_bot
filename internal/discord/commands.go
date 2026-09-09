@@ -8,6 +8,10 @@ import (
 
 // RegisterServerCommand registers the /server slash command.
 func RegisterServerCommand(session *discordgo.Session, guildID string) error {
+	applicationID, err := ApplicationID(session)
+	if err != nil {
+		return err
+	}
 	if session == nil {
 		return fmt.Errorf("discord session is nil")
 	}
@@ -18,6 +22,6 @@ func RegisterServerCommand(session *discordgo.Session, guildID string) error {
 		Options:     []*discordgo.ApplicationCommandOption{},
 	}
 
-	_, err := session.ApplicationCommandCreate(session.State.User.ID, guildID, cmd)
+	_, err = session.ApplicationCommandCreate(applicationID, guildID, cmd)
 	return err
 }

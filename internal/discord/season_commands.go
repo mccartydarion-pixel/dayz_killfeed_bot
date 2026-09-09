@@ -27,6 +27,10 @@ func NewSeasonCommandHandler(seasons SeasonCommandStore, guilds GuildStore) *Sea
 }
 
 func RegisterSeasonCommands(session *discordgo.Session, guildID string) error {
+	applicationID, err := ApplicationID(session)
+	if err != nil {
+		return err
+	}
 	if session == nil {
 		return fmt.Errorf("discord session is nil")
 	}
@@ -36,7 +40,7 @@ func RegisterSeasonCommands(session *discordgo.Session, guildID string) error {
 		{Name: "end", Description: "Finalize the active season", Type: discordgo.ApplicationCommandOptionSubCommand},
 		{Name: "history", Description: "Show recent seasons", Type: discordgo.ApplicationCommandOptionSubCommand},
 	}}
-	_, err := session.ApplicationCommandCreate(session.State.User.ID, guildID, cmd)
+	_, err = session.ApplicationCommandCreate(applicationID, guildID, cmd)
 	return err
 }
 

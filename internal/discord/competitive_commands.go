@@ -23,8 +23,12 @@ func NewEventCommandHandler(service *competitiveevents.Service, events *reposito
 	return &EventCommandHandler{service: service, events: events, guilds: guilds}
 }
 func RegisterEventCommands(session *discordgo.Session, guildID string) error {
+	applicationID, err := ApplicationID(session)
+	if err != nil {
+		return err
+	}
 	cmd := &discordgo.ApplicationCommand{Name: "event", Description: "Champion competitive events", Options: []*discordgo.ApplicationCommandOption{{Name: "create", Description: "Create an event", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "type", Description: "Event type", Type: discordgo.ApplicationCommandOptionString, Required: true}, {Name: "name", Description: "Event name", Type: discordgo.ApplicationCommandOptionString, Required: true}}}, {Name: "start", Description: "Start an event", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "id", Description: "Event ID", Type: discordgo.ApplicationCommandOptionInteger, Required: true}}}, {Name: "end", Description: "End an event", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "id", Description: "Event ID", Type: discordgo.ApplicationCommandOptionInteger, Required: true}}}, {Name: "cancel", Description: "Cancel an event", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "id", Description: "Event ID", Type: discordgo.ApplicationCommandOptionInteger, Required: true}}}, {Name: "list", Description: "List events", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "status", Description: "Show an event", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "id", Description: "Event ID", Type: discordgo.ApplicationCommandOptionInteger, Required: true}}}, {Name: "leaderboard", Description: "Show event rankings", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "id", Description: "Event ID", Type: discordgo.ApplicationCommandOptionInteger, Required: true}}}, {Name: "history", Description: "Show event history", Type: discordgo.ApplicationCommandOptionSubCommand}}}
-	_, err := session.ApplicationCommandCreate(session.State.User.ID, guildID, cmd)
+	_, err = session.ApplicationCommandCreate(applicationID, guildID, cmd)
 	return err
 }
 func (h *EventCommandHandler) Handle(s *discordgo.Session, i *discordgo.InteractionCreate) {

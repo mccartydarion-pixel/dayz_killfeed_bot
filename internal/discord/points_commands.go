@@ -19,8 +19,12 @@ func NewPointsCommandHandler(points *repository.PointsRepository, players *repos
 	return &PointsCommandHandler{points: points, players: players, guilds: guilds}
 }
 func RegisterPointsCommands(session *discordgo.Session, guildID string) error {
+	applicationID, err := ApplicationID(session)
+	if err != nil {
+		return err
+	}
 	cmd := &discordgo.ApplicationCommand{Name: "points", Description: "Show Champion Points", Options: []*discordgo.ApplicationCommandOption{{Name: "player", Description: "Player name", Type: discordgo.ApplicationCommandOptionString}}}
-	_, err := session.ApplicationCommandCreate(session.State.User.ID, guildID, cmd)
+	_, err = session.ApplicationCommandCreate(applicationID, guildID, cmd)
 	return err
 }
 func (h *PointsCommandHandler) Handle(s *discordgo.Session, i *discordgo.InteractionCreate) {

@@ -15,9 +15,13 @@ func NewAdminCommandHandler(s *admin.Service) *AdminCommandHandler {
 	return &AdminCommandHandler{service: s}
 }
 func RegisterAdminCommands(session *discordgo.Session, guildID string) error {
+	applicationID, err := ApplicationID(session)
+	if err != nil {
+		return err
+	}
 	perms := int64(discordgo.PermissionAdministrator | discordgo.PermissionManageServer)
 	cmd := &discordgo.ApplicationCommand{Name: "admin", Description: "Champion operations and diagnostics", DefaultMemberPermissions: &perms, Options: []*discordgo.ApplicationCommandOption{{Name: "status", Description: "Show system status", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "diagnostics", Description: "Show sanitized diagnostics", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "pipeline", Description: "Show kill pipeline state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "workers", Description: "Show worker state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "permissions", Description: "Show Discord permission state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "health", Description: "Show component health", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "logs", Description: "Show recent operational state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "checkpoint", Description: "Show checkpoint state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "resync", Description: "Refresh safe runtime state", Type: discordgo.ApplicationCommandOptionSubCommand}}}
-	_, err := session.ApplicationCommandCreate(session.State.User.ID, guildID, cmd)
+	_, err = session.ApplicationCommandCreate(applicationID, guildID, cmd)
 	return err
 }
 func (h *AdminCommandHandler) Handle(s *discordgo.Session, i *discordgo.InteractionCreate) {

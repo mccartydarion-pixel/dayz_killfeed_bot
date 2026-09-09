@@ -33,6 +33,10 @@ func NewStatsCommandHandler(stats StatsReader, guilds GuildStore, guildID string
 
 // RegisterStatsCommands registers /stats and /leaderboard.
 func RegisterStatsCommands(session *discordgo.Session, guildID string) error {
+	applicationID, err := ApplicationID(session)
+	if err != nil {
+		return err
+	}
 	if session == nil {
 		return fmt.Errorf("discord session is nil")
 	}
@@ -56,10 +60,10 @@ func RegisterStatsCommands(session *discordgo.Session, guildID string) error {
 			Required:    false,
 		}},
 	}
-	if _, err := session.ApplicationCommandCreate(session.State.User.ID, guildID, statsCmd); err != nil {
+	if _, err := session.ApplicationCommandCreate(applicationID, guildID, statsCmd); err != nil {
 		return err
 	}
-	_, err := session.ApplicationCommandCreate(session.State.User.ID, guildID, lbCmd)
+	_, err = session.ApplicationCommandCreate(applicationID, guildID, lbCmd)
 	return err
 }
 

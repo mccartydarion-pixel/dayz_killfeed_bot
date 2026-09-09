@@ -23,7 +23,7 @@ func New(token string) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	session.Identify.Intents = discordgo.IntentsGuildMessages | discordgo.IntentsGuilds | discordgo.IntentsGuildMembers
+	session.Identify.Intents = discordgo.IntentsGuildMessages | discordgo.IntentsGuilds
 	return &Client{session: session}, nil
 }
 
@@ -171,4 +171,11 @@ func (c *Client) Session() *discordgo.Session {
 		return nil
 	}
 	return c.session
+}
+
+func ApplicationID(s *discordgo.Session) (string, error) {
+	if s == nil || s.State == nil || s.State.User == nil || s.State.User.ID == "" {
+		return "", fmt.Errorf("discord application ID is not available")
+	}
+	return s.State.User.ID, nil
 }

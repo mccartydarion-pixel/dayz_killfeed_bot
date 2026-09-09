@@ -13,6 +13,10 @@ const adminPerms = discordgo.PermissionAdministrator | discordgo.PermissionManag
 
 // RegisterSetupCommand registers the admin-only /setup command with subcommands.
 func RegisterSetupCommand(session *discordgo.Session, guildID string) error {
+	applicationID, err := ApplicationID(session)
+	if err != nil {
+		return err
+	}
 	if session == nil {
 		return fmt.Errorf("discord session is nil")
 	}
@@ -28,7 +32,7 @@ func RegisterSetupCommand(session *discordgo.Session, guildID string) error {
 			{Name: "reset", Description: "Remove Champion Killfeed configuration (requires confirmation)", Type: discordgo.ApplicationCommandOptionSubCommand},
 		},
 	}
-	_, err := session.ApplicationCommandCreate(session.State.User.ID, guildID, cmd)
+	_, err = session.ApplicationCommandCreate(applicationID, guildID, cmd)
 	return err
 }
 

@@ -19,12 +19,16 @@ func NewAnalyticsCommandHandler(r *repository.AnalyticsRepository, g GuildStore)
 	return &AnalyticsCommandHandler{repo: r, guilds: g}
 }
 func RegisterAnalyticsCommands(s *discordgo.Session, guildID string) error {
-	match := &discordgo.ApplicationCommand{Name: "matchup", Description: "Show player kill exchange", Options: []*discordgo.ApplicationCommandOption{{Name: "player", Description: "Player A", Type: discordgo.ApplicationCommandOptionString, Required: true}, {Name: "opponent", Description: "Player B", Type: discordgo.ApplicationCommandOptionString, Required: true}}}
-	weapon := &discordgo.ApplicationCommand{Name: "weapon", Description: "Weapon analytics", Options: []*discordgo.ApplicationCommandOption{{Name: "stats", Description: "Show weapon stats", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "weapon", Description: "Weapon name", Type: discordgo.ApplicationCommandOptionString, Required: true}}}}}
-	if _, err := s.ApplicationCommandCreate(s.State.User.ID, guildID, match); err != nil {
+	applicationID, err := ApplicationID(s)
+	if err != nil {
 		return err
 	}
-	_, err := s.ApplicationCommandCreate(s.State.User.ID, guildID, weapon)
+	match := &discordgo.ApplicationCommand{Name: "matchup", Description: "Show player kill exchange", Options: []*discordgo.ApplicationCommandOption{{Name: "player", Description: "Player A", Type: discordgo.ApplicationCommandOptionString, Required: true}, {Name: "opponent", Description: "Player B", Type: discordgo.ApplicationCommandOptionString, Required: true}}}
+	weapon := &discordgo.ApplicationCommand{Name: "weapon", Description: "Weapon analytics", Options: []*discordgo.ApplicationCommandOption{{Name: "stats", Description: "Show weapon stats", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "weapon", Description: "Weapon name", Type: discordgo.ApplicationCommandOptionString, Required: true}}}}}
+	if _, err := s.ApplicationCommandCreate(applicationID, guildID, match); err != nil {
+		return err
+	}
+	_, err = s.ApplicationCommandCreate(applicationID, guildID, weapon)
 	return err
 }
 func (h *AnalyticsCommandHandler) Handle(s *discordgo.Session, i *discordgo.InteractionCreate) {

@@ -21,8 +21,9 @@ func NewLinkCommandHandler(service *linking.LinkVerificationService, guilds Guil
 }
 
 func RegisterLinkCommands(session *discordgo.Session, guildID string) error {
-	if session == nil {
-		return fmt.Errorf("discord session nil")
+	applicationID, err := ApplicationID(session)
+	if err != nil {
+		return err
 	}
 	cmds := []*discordgo.ApplicationCommand{
 		{Name: "link", Description: "Request PlayStation username verification", Options: []*discordgo.ApplicationCommandOption{{Name: "username", Description: "PlayStation Username", Type: discordgo.ApplicationCommandOptionString, Required: true}}},
@@ -30,7 +31,7 @@ func RegisterLinkCommands(session *discordgo.Session, guildID string) error {
 		{Name: "unlink", Description: "Request removal of your Champion account link"},
 	}
 	for _, cmd := range cmds {
-		if _, err := session.ApplicationCommandCreate(session.State.User.ID, guildID, cmd); err != nil {
+		if _, err := session.ApplicationCommandCreate(applicationID, guildID, cmd); err != nil {
 			return err
 		}
 	}

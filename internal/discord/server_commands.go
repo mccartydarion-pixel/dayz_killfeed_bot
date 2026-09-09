@@ -17,8 +17,12 @@ func NewServerCommandHandler(s *repository.ServerRepository, g GuildStore) *Serv
 	return &ServerCommandHandler{servers: s, guilds: g}
 }
 func RegisterServerCommands(s *discordgo.Session, guildID string) error {
+	applicationID, err := ApplicationID(s)
+	if err != nil {
+		return err
+	}
 	cmd := &discordgo.ApplicationCommand{Name: "server", Description: "Manage connected game servers", Options: []*discordgo.ApplicationCommandOption{{Name: "status", Description: "Show connected server status", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "diagnostics", Description: "Show server diagnostics", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "services", Description: "Show configured services", Type: discordgo.ApplicationCommandOptionSubCommand}}}
-	_, err := s.ApplicationCommandCreate(s.State.User.ID, guildID, cmd)
+	_, err = s.ApplicationCommandCreate(applicationID, guildID, cmd)
 	return err
 }
 func (h *ServerCommandHandler) Handle(s *discordgo.Session, i *discordgo.InteractionCreate) {
