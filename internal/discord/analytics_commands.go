@@ -18,8 +18,12 @@ type AnalyticsCommandHandler struct {
 func NewAnalyticsCommandHandler(r *repository.AnalyticsRepository, g GuildStore) *AnalyticsCommandHandler {
 	return &AnalyticsCommandHandler{repo: r, guilds: g}
 }
-func RegisterAnalyticsCommands(s *discordgo.Session, guildID string) error {
+func RegisterAnalyticsCommands(s *discordgo.Session, guildID string, configuredID ...string) error {
 	applicationID, err := ApplicationID(s)
+	if err != nil && len(configuredID) > 0 && configuredID[0] != "" {
+		applicationID = configuredID[0]
+		err = nil
+	}
 	if err != nil {
 		return err
 	}

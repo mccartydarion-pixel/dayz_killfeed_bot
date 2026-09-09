@@ -328,7 +328,7 @@ func (a *App) Run() error {
 	welcomeHandler := discord.NewPersistentWelcomeHandler(setupStore, a.WelcomeRepository, a.Guilds)
 	if a.AnalyticsRepository != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
 		analyticsHandler := discord.NewAnalyticsCommandHandler(a.AnalyticsRepository, a.Guilds)
-		if err := discord.RegisterAnalyticsCommands(session, a.Config.DiscordGuildID); err != nil {
+		if err := discord.RegisterAnalyticsCommands(session, a.Config.DiscordGuildID, a.Config.DiscordApplicationID); err != nil {
 			slog.Warn("component=discord", "msg", "failed to register analytics commands", "err", err.Error())
 		}
 		a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {

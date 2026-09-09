@@ -153,8 +153,12 @@ func NewBountyCommandHandler(b *repository.BountyRepository, p *repository.Playe
 	return &BountyCommandHandler{bounties: b, players: p, guilds: g}
 }
 func RegisterBountyCommands(session *discordgo.Session, guildID string) error {
+	applicationID, err := ApplicationID(session)
+	if err != nil {
+		return err
+	}
 	cmd := &discordgo.ApplicationCommand{Name: "bounty", Description: "Champion target bounties", Options: []*discordgo.ApplicationCommandOption{{Name: "create", Description: "Create a bounty", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "player", Description: "Target player", Type: discordgo.ApplicationCommandOptionString, Required: true}, {Name: "points", Description: "Champion Points", Type: discordgo.ApplicationCommandOptionInteger, Required: true}, {Name: "duration", Description: "Duration such as 2h", Type: discordgo.ApplicationCommandOptionString, Required: true}}}, {Name: "list", Description: "List active bounties", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "status", Description: "Show a target bounty", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "player", Description: "Target player", Type: discordgo.ApplicationCommandOptionString, Required: true}}}, {Name: "cancel", Description: "Cancel a bounty", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "id", Description: "Bounty ID", Type: discordgo.ApplicationCommandOptionInteger, Required: true}}}}}
-	_, err := session.ApplicationCommandCreate(session.State.User.ID, guildID, cmd)
+	_, err = session.ApplicationCommandCreate(applicationID, guildID, cmd)
 	return err
 }
 func (h *BountyCommandHandler) Handle(s *discordgo.Session, i *discordgo.InteractionCreate) {
