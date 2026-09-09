@@ -64,6 +64,7 @@ type App struct {
 	Workers             *health.WorkerRegistry
 	ADMHealth           *operations.ADMMonitor
 	AdminService        *admin.Service
+	AnalyticsRepository *repository.AnalyticsRepository
 	CompletionPublisher *discord.LiveCompletionPublisher
 	PanelService        *panels.RefreshService
 	Links               *repository.LinkRepository
@@ -146,6 +147,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.FactionStats = repository.NewFactionStatsRepository(db.Pool)
 			app.FactionPresentation = repository.NewFactionPresentationRepository(db.Pool)
 			app.Anomalies = repository.NewAnomalyRepository(db.Pool)
+			app.AnalyticsRepository = repository.NewAnalyticsRepository(db.Pool)
 			app.Links = repository.NewLinkRepository(db.Pool)
 			app.LinkService = linking.NewService(app.Links)
 			seedCtx, seedCancel := context.WithTimeout(ctx, 10*time.Second)
@@ -309,6 +311,17 @@ func (a *App) Run() error {
 	setupManager := discord.NewSetupManager(api, setupStore, a.Discord.BotID())
 	setupHandler := discord.NewSetupHandler(setupManager)
 	welcomeHandler := discord.NewWelcomeHandler(setupStore)
+	if a.AnalyticsRepository != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
+		analyticsHandler := discord.NewAnalyticsCommandHandler(a.AnalyticsRepository, a.Guilds)
+		if err := discord.RegisterAnalyticsCommands(session, a.Config.DiscordGuildID); err != nil {
+			slog.Warn("component=discord", "msg", "failed to register analytics commands", "err", err.Error())
+		}
+		a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+			if i.Type == discordgo.InteractionApplicationCommand && (i.ApplicationCommandData().Name == "matchup" || i.ApplicationCommandData().Name == "weapon") {
+				analyticsHandler.Handle(s, i)
+			}
+		})
+	}
 	if a.AdminService != nil && a.Config.DiscordGuildID != "" {
 		adminHandler := discord.NewAdminCommandHandler(a.AdminService)
 		if err := discord.RegisterAdminCommands(session, a.Config.DiscordGuildID); err != nil {
