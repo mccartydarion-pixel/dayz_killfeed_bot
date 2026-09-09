@@ -11,15 +11,6 @@ type Parser interface {
 	ParseLine(line string) (*Event, error)
 }
 
-// PlaceholderParser is kept for callers that have not been wired to the real parser.
-type PlaceholderParser struct{}
-
-// ParseLine is a no-op stub retained for backwards compatibility.
-func (p *PlaceholderParser) ParseLine(line string) (*Event, error) {
-	_ = line
-	return nil, nil
-}
-
 // ADMParser parses real PlayStation DayZ ADM log lines using ordered dedicated
 // sub-parsers. It never fabricates fields and treats unknown lines as ignored.
 type ADMParser struct{}

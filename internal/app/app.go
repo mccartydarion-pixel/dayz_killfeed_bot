@@ -28,35 +28,37 @@ import (
 
 // App owns the main runtime dependencies.
 type App struct {
-	Config        *config.Config
-	Nitrado       *nitrado.Client
-	Discord       *discord.Client
-	HTTPServer    *server.Server
-	State         *server.State
-	DB            *database.DB
-	Guilds        *repository.GuildRepository
-	Players       *repository.PlayerRepository
-	Kills         *repository.KillRepository
-	Deaths        *repository.DeathRepository
-	Stats         *repository.StatsRepository
-	Sessions      *repository.SessionRepository
-	Checkpoints   *repository.CheckpointRepository
-	Streaks       *repository.StreakRepository
-	Achievements  *repository.AchievementRepository
-	Events        *repository.EventRepository
-	EventService  *competitiveevents.Service
-	Bounties      *repository.BountyRepository
-	Points        *repository.PointsRepository
-	Seasons       *repository.SeasonRepository
-	SeasonService *seasons.Service
-	Factions      *repository.FactionRepository
-	Wars          *repository.PostgresWarRepository
-	FactionStats  *repository.FactionStatsRepository
-	Anomalies     *repository.AnomalyRepository
-	Links         *repository.LinkRepository
-	LinkService   *linking.LinkVerificationService
-	persistQueue  *killfeed.PersistenceQueue
-	cancel        context.CancelFunc
+	Config              *config.Config
+	Nitrado             *nitrado.Client
+	Discord             *discord.Client
+	HTTPServer          *server.Server
+	State               *server.State
+	DB                  *database.DB
+	Guilds              *repository.GuildRepository
+	Players             *repository.PlayerRepository
+	Kills               *repository.KillRepository
+	Deaths              *repository.DeathRepository
+	Stats               *repository.StatsRepository
+	Sessions            *repository.SessionRepository
+	Checkpoints         *repository.CheckpointRepository
+	Streaks             *repository.StreakRepository
+	Achievements        *repository.AchievementRepository
+	Events              *repository.EventRepository
+	EventService        *competitiveevents.Service
+	Bounties            *repository.BountyRepository
+	Points              *repository.PointsRepository
+	Seasons             *repository.SeasonRepository
+	SeasonService       *seasons.Service
+	Factions            *repository.FactionRepository
+	Wars                *repository.PostgresWarRepository
+	FactionStats        *repository.FactionStatsRepository
+	Anomalies           *repository.AnomalyRepository
+	Announcements       *repository.AnnouncementRepository
+	AnnouncementService *discord.CompletionAnnouncementService
+	Links               *repository.LinkRepository
+	LinkService         *linking.LinkVerificationService
+	persistQueue        *killfeed.PersistenceQueue
+	cancel              context.CancelFunc
 }
 
 // New creates an application instance with the required dependencies.
@@ -116,6 +118,8 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.Achievements = repository.NewAchievementRepository(db.Pool)
 			app.Events = repository.NewEventRepository(db.Pool)
 			app.EventService = competitiveevents.NewService(app.Events)
+			app.Announcements = repository.NewAnnouncementRepository(db.Pool)
+			app.AnnouncementService = discord.NewCompletionAnnouncementService(app.Announcements)
 			app.Bounties = repository.NewBountyRepository(db.Pool)
 			app.Points = repository.NewPointsRepository(db.Pool)
 			app.Seasons = repository.NewSeasonRepository(db.Pool)

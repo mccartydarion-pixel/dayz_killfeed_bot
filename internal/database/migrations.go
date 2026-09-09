@@ -516,6 +516,22 @@ ALTER TABLE competitive_events ADD COLUMN IF NOT EXISTS second_place_points INTE
 ALTER TABLE competitive_events ADD COLUMN IF NOT EXISTS third_place_points INTEGER NOT NULL DEFAULT 250;
 `,
 	},
+	{
+		Name: "0011_phase45_announcement_claims",
+		SQL: `
+CREATE TABLE IF NOT EXISTS completion_announcements (
+    kind TEXT NOT NULL,
+    object_id BIGINT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'PENDING',
+    claimed_at TIMESTAMPTZ,
+    announced_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY(kind,object_id),
+    CHECK(status IN ('PENDING','CLAIMED','ANNOUNCED'))
+);
+CREATE INDEX IF NOT EXISTS idx_completion_announcements_retry ON completion_announcements(status,claimed_at);
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order, each transactionally. A

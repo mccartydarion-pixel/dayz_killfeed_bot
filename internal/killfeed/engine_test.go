@@ -13,6 +13,10 @@ type fakeLogSource struct {
 	content []byte
 }
 
+type testParser struct{}
+
+func (testParser) ParseLine(string) (*Event, error) { return nil, nil }
+
 func (f *fakeLogSource) ListLogs(ctx context.Context, serviceID string) ([]nitrado.LogFile, error) {
 	return f.logs, nil
 }
@@ -44,7 +48,7 @@ func newFakeEngine(content string, size int64) (*Engine, *fakeLogSource) {
 		}},
 		content: []byte(content),
 	}
-	return NewEngine(fake, "svc-1", &PlaceholderParser{}), fake
+	return NewEngine(fake, "svc-1", testParser{}), fake
 }
 
 func TestEngineAdvancesOffsetAcrossGrowingFile(t *testing.T) {
