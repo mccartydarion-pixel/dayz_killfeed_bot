@@ -3,9 +3,10 @@ package discord
 import (
 	"context"
 	"fmt"
+	"strings"
+
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/repository"
-	"strings"
 )
 
 type ServerCommandHandler struct {

@@ -7,6 +7,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/killfeed"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 )
 
 // KillEmbedStyle selects the visual presentation for a kill.
@@ -74,8 +75,13 @@ func distanceOf(ev *killfeed.Event) float64 {
 // BuildPresentation chooses the embed style with deterministic priority:
 // EXTREME_RANGE > HEADSHOT > LONG_RANGE > CLOSE_RANGE > STANDARD.
 func BuildPresentation(ev *killfeed.Event) KillPresentation {
+	if ev == nil {
+		return KillPresentation{Style: KillEmbedStandard, Title: "🏆 CHAMPION KILLFEED", AccentColor: ColorChampionGold, Footer: "CHAMPION • EVERY KILL TELLS A STORY"}
+	}
 	d := distanceOf(ev)
 	headshot := isHeadshot(ev)
+	melee := strings.Contains(strings.ToLower(ev.Weapon), "fist") || strings.Contains(strings.ToLower(ev.Weapon), "melee")
+	story := presentation.SelectPrimary(presentation.Context{Distance: ev.Distance, Headshot: headshot, Melee: melee, BountyClaimed: ev.BountyClaimed, WarKill: ev.WarBadge != "", EventBadges: ev.ActiveEventBadges})
 
 	badges := []string{}
 	if headshot {
@@ -100,6 +106,9 @@ func BuildPresentation(ev *killfeed.Event) KillPresentation {
 			}
 			return KillPresentation{Style: KillEmbedBountyClaim, Badges: badges, Title: "🎯 CHAMPION • BOUNTY CLAIMED", AccentColor: ColorChampionGold, Footer: "BOUNTY CLAIM • CHAMPION"}
 		}
+	}
+	if story == presentation.StoryMelee {
+		return KillPresentation{Style: KillEmbedCloseRange, Badges: badges, Title: "🥊 CHAMPION • HANDS ON", AccentColor: ColorCloseRange, Footer: "CHAMPION • EVERY KILL TELLS A STORY"}
 	}
 
 	switch {
