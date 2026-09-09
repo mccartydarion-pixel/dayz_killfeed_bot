@@ -211,6 +211,7 @@ func (q *PersistenceQueue) persistOne(ctx context.Context, ev *Event) {
 		}
 		rec := repository.KillRecord{
 			GuildID:         q.guildID,
+			ServerID:        q.serverID,
 			SessionID:       q.session,
 			Fingerprint:     eventFingerprint(ev),
 			KillerPlayerID:  killerID,
@@ -268,6 +269,7 @@ func (q *PersistenceQueue) persistOne(ctx context.Context, ev *Event) {
 		}
 		rec := repository.DeathRecord{
 			GuildID:     q.guildID,
+			ServerID:    q.serverID,
 			SessionID:   q.session,
 			Fingerprint: eventFingerprint(ev),
 			PlayerID:    playerID,
