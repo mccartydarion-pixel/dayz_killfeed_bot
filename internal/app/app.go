@@ -66,6 +66,7 @@ type App struct {
 	ADMHealth           *operations.ADMMonitor
 	AdminService        *admin.Service
 	AnalyticsRepository *repository.AnalyticsRepository
+	WelcomeRepository   *repository.WelcomeRepository
 	Servers             *repository.ServerRepository
 	CredentialCipher    *security.AESGCM
 	CompletionPublisher *discord.LiveCompletionPublisher
@@ -83,7 +84,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	nitradoClient := nitrado.NewClient("https://api.nitrado.net", cfg.NitradoToken, nil)
 	slog.Info("component=nitrado", "msg", "client configured", "base_url", nitradoClient.BaseURL())
 
-	discordClient, err := discord.New(cfg.DiscordToken)
+	discordClient, err := discord.New(cfg.DiscordToken, cfg.DiscordGuildMembersIntent)
 	if err != nil {
 		return nil, fmt.Errorf("create Discord client: %w", err)
 	}
@@ -159,6 +160,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.Anomalies = repository.NewAnomalyRepository(db.Pool)
 			app.AnalyticsRepository = repository.NewAnalyticsRepository(db.Pool)
 			app.Servers = repository.NewServerRepository(db.Pool)
+			app.WelcomeRepository = repository.NewWelcomeRepository(db.Pool)
 			app.Links = repository.NewLinkRepository(db.Pool)
 			app.LinkService = linking.NewService(app.Links)
 			seedCtx, seedCancel := context.WithTimeout(ctx, 10*time.Second)
@@ -321,7 +323,7 @@ func (a *App) Run() error {
 	api := discord.NewSessionAPI(session)
 	setupManager := discord.NewSetupManager(api, setupStore, a.Discord.BotID())
 	setupHandler := discord.NewSetupHandler(setupManager)
-	welcomeHandler := discord.NewWelcomeHandler(setupStore)
+	welcomeHandler := discord.NewPersistentWelcomeHandler(setupStore, a.WelcomeRepository, a.Guilds)
 	if a.AnalyticsRepository != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
 		analyticsHandler := discord.NewAnalyticsCommandHandler(a.AnalyticsRepository, a.Guilds)
 		if err := discord.RegisterAnalyticsCommands(session, a.Config.DiscordGuildID); err != nil {

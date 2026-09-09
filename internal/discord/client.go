@@ -15,7 +15,7 @@ type Client struct {
 }
 
 // New creates a Discord session using the minimally required intents for Phase 1.
-func New(token string) (*Client, error) {
+func New(token string, membersIntent ...bool) (*Client, error) {
 	if strings.TrimSpace(token) == "" {
 		return nil, fmt.Errorf("discord token is required")
 	}
@@ -24,6 +24,9 @@ func New(token string) (*Client, error) {
 		return nil, err
 	}
 	session.Identify.Intents = discordgo.IntentsGuildMessages | discordgo.IntentsGuilds
+	if len(membersIntent) > 0 && membersIntent[0] {
+		session.Identify.Intents |= discordgo.IntentsGuildMembers
+	}
 	return &Client{session: session}, nil
 }
 

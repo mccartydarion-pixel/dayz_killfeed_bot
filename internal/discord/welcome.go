@@ -1,10 +1,14 @@
 package discord
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/yourname/dayz-killfeed/internal/repository"
+	welcomeservice "github.com/yourname/dayz-killfeed/internal/welcome"
 )
 
 // WelcomeEmbed builds the Champion-branded new-member welcome card.
@@ -29,11 +33,16 @@ func WelcomeEmbed(member *discordgo.Member) *discordgo.MessageEmbed {
 
 // WelcomeHandler handles GuildMemberAdd without affecting the ADM pipeline.
 type WelcomeHandler struct {
-	store SetupStore
+	store  SetupStore
+	repo   *repository.WelcomeRepository
+	guilds GuildStore
 }
 
 func NewWelcomeHandler(store SetupStore) *WelcomeHandler {
 	return &WelcomeHandler{store: store}
+}
+func NewPersistentWelcomeHandler(store SetupStore, repo *repository.WelcomeRepository, guilds GuildStore) *WelcomeHandler {
+	return &WelcomeHandler{store: store, repo: repo, guilds: guilds}
 }
 
 // HandleMemberJoin sends one safe welcome message to the configured channel.
@@ -42,16 +51,64 @@ func (h *WelcomeHandler) HandleMemberJoin(s *discordgo.Session, event *discordgo
 		return
 	}
 	setup, err := h.store.Get(event.GuildID)
-	if err != nil || setup == nil || !setup.WelcomeEnabled || setup.WelcomeChannelID == "" {
+	if err != nil || setup == nil {
+		return
+	}
+	channelID := setup.WelcomeChannelID
+	enabled := setup.WelcomeEnabled
+	mention := true
+	welcomeBots := false
+	messageText := ""
+	titleText := ""
+	footerText := ""
+	var guildRowID int64
+	if h.repo != nil && h.guilds != nil {
+		_, rowID, guildErr := h.guilds.GetGuild(context.Background(), event.GuildID)
+		if guildErr == nil && rowID > 0 {
+			var cfg *repository.WelcomeConfig
+			cfg, err = h.repo.Get(context.Background(), rowID)
+			if err == nil && cfg != nil {
+				channelID = cfg.ChannelID
+				enabled = cfg.Enabled
+				mention = cfg.MentionUser
+				welcomeBots = cfg.WelcomeBots
+				messageText = cfg.MessageText
+				titleText = cfg.TitleText
+				footerText = cfg.FooterText
+				guildRowID = rowID
+			}
+		}
+	}
+	if !enabled || channelID == "" {
 		return
 	}
 	if event.Member.User == nil {
 		return
 	}
-	_, err = s.ChannelMessageSendComplex(setup.WelcomeChannelID, &discordgo.MessageSend{
-		Embeds: []*discordgo.MessageEmbed{WelcomeEmbed(event.Member)},
+	if event.Member.User.Bot && !welcomeBots {
+		return
+	}
+	embed := WelcomeEmbed(event.Member)
+	if titleText != "" {
+		embed.Title = titleText
+	}
+	if footerText != "" {
+		embed.Footer.Text = footerText
+	}
+	if messageText != "" {
+		if rendered, renderErr := welcomeservice.Render(messageText, map[string]string{"user": "<@" + event.Member.User.ID + ">", "username": event.Member.User.Username, "server": "Champion", "member_count": "", "link_command": "/link"}); renderErr == nil {
+			embed.Description = rendered
+		}
+	}
+	_, err = s.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
+		Embeds: []*discordgo.MessageEmbed{embed},
 		AllowedMentions: &discordgo.MessageAllowedMentions{
-			Users: []string{event.Member.User.ID},
+			Users: func() []string {
+				if mention {
+					return []string{event.Member.User.ID}
+				}
+				return nil
+			}(),
 			Parse: []discordgo.AllowedMentionType{},
 		},
 	})
@@ -60,4 +117,7 @@ func (h *WelcomeHandler) HandleMemberJoin(s *discordgo.Session, event *discordgo
 		return
 	}
 	slog.Info("component=discord", "msg", "welcome message sent", "guild_id", event.GuildID)
+	if h.repo != nil && guildRowID > 0 {
+		_ = h.repo.MarkWelcomeSent(context.Background(), guildRowID, time.Now().UTC())
+	}
 }

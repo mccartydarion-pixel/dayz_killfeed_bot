@@ -583,6 +583,33 @@ CREATE TABLE IF NOT EXISTS server_configs (
 );
 `,
 	},
+	{
+		Name: "0013_phase48_welcome_configuration",
+		SQL: `
+CREATE TABLE IF NOT EXISTS guild_welcome_configs (
+    guild_id BIGINT PRIMARY KEY REFERENCES guilds(id) ON DELETE CASCADE,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    channel_id TEXT,
+    message_text TEXT,
+    title_text TEXT,
+    footer_text TEXT,
+    image_url TEXT,
+    thumbnail_url TEXT,
+    color INTEGER,
+    mention_user BOOLEAN NOT NULL DEFAULT TRUE,
+    welcome_bots BOOLEAN NOT NULL DEFAULT FALSE,
+    show_member_count BOOLEAN NOT NULL DEFAULT TRUE,
+    show_server_name BOOLEAN NOT NULL DEFAULT TRUE,
+    show_link_instructions BOOLEAN NOT NULL DEFAULT TRUE,
+    last_welcome_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+INSERT INTO guild_welcome_configs(guild_id,channel_id)
+SELECT id,welcome_channel_id FROM guilds WHERE welcome_channel_id IS NOT NULL
+ON CONFLICT(guild_id) DO NOTHING;
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order, each transactionally. A

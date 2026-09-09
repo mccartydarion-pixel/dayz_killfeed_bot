@@ -21,9 +21,10 @@ type Config struct {
 	NitradoToken     string
 	NitradoServiceID string
 
-	KillfeedChannelID       string
-	DatabaseURL             string
-	CredentialEncryptionKey string
+	KillfeedChannelID         string
+	DatabaseURL               string
+	CredentialEncryptionKey   string
+	DiscordGuildMembersIntent bool
 }
 
 // Load reads configuration from environment variables and validates required fields.
@@ -31,17 +32,18 @@ func Load() (*Config, error) {
 	_ = godotenv.Load()
 
 	cfg := &Config{
-		AppEnv:                  getEnv("APP_ENV", "development"),
-		HTTPPort:                getEnv("HTTP_PORT", "8080"),
-		Port:                    getEnv("PORT", "8080"),
-		DiscordToken:            strings.TrimSpace(os.Getenv("DISCORD_TOKEN")),
-		DiscordApplicationID:    strings.TrimSpace(os.Getenv("DISCORD_APPLICATION_ID")),
-		DiscordGuildID:          strings.TrimSpace(os.Getenv("DISCORD_GUILD_ID")),
-		NitradoToken:            strings.TrimSpace(os.Getenv("NITRADO_TOKEN")),
-		NitradoServiceID:        strings.TrimSpace(os.Getenv("NITRADO_SERVICE_ID")),
-		KillfeedChannelID:       strings.TrimSpace(os.Getenv("KILLFEED_CHANNEL_ID")),
-		DatabaseURL:             strings.TrimSpace(os.Getenv("DATABASE_URL")),
-		CredentialEncryptionKey: strings.TrimSpace(os.Getenv("CREDENTIAL_ENCRYPTION_KEY")),
+		AppEnv:                    getEnv("APP_ENV", "development"),
+		HTTPPort:                  getEnv("HTTP_PORT", "8080"),
+		Port:                      getEnv("PORT", "8080"),
+		DiscordToken:              strings.TrimSpace(os.Getenv("DISCORD_TOKEN")),
+		DiscordApplicationID:      strings.TrimSpace(os.Getenv("DISCORD_APPLICATION_ID")),
+		DiscordGuildID:            strings.TrimSpace(os.Getenv("DISCORD_GUILD_ID")),
+		NitradoToken:              strings.TrimSpace(os.Getenv("NITRADO_TOKEN")),
+		NitradoServiceID:          strings.TrimSpace(os.Getenv("NITRADO_SERVICE_ID")),
+		KillfeedChannelID:         strings.TrimSpace(os.Getenv("KILLFEED_CHANNEL_ID")),
+		DatabaseURL:               strings.TrimSpace(os.Getenv("DATABASE_URL")),
+		CredentialEncryptionKey:   strings.TrimSpace(os.Getenv("CREDENTIAL_ENCRYPTION_KEY")),
+		DiscordGuildMembersIntent: strings.EqualFold(strings.TrimSpace(os.Getenv("DISCORD_GUILD_MEMBERS_INTENT_ENABLED")), "true"),
 	}
 
 	if cfg.HTTPPort == "" {
