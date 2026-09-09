@@ -13,6 +13,13 @@ type LeaderboardEntry struct {
 	Value       string
 }
 
+type SeasonPlayerStats struct {
+	DisplayName   string
+	Kills, Deaths int64
+	LongestKill   *float64
+	BestStreak    int
+}
+
 // StatsRepository answers player stat and leaderboard queries from kills/deaths.
 // It queries the source tables directly (no fragile manually-maintained stats table).
 type StatsRepository struct {
@@ -126,6 +133,35 @@ LIMIT $2`
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+func (r *StatsRepository) GetPlayerSeasonStats(ctx context.Context, guildID, seasonID int64, displayName string) (*SeasonPlayerStats, error) {
+	var s SeasonPlayerStats
+	err := r.pool.QueryRow(ctx, `SELECT p.display_name,COUNT(k.id),COUNT(d.id),MAX(k.distance),0 FROM players p LEFT JOIN kills k ON k.killer_player_id=p.id AND k.guild_id=$1 AND k.season_id=$2 LEFT JOIN deaths d ON d.player_id=p.id AND d.guild_id=$1 AND d.season_id=$2 WHERE p.guild_id=$1 AND LOWER(p.display_name)=LOWER($3) GROUP BY p.id,p.display_name`, guildID, seasonID, displayName).Scan(&s.DisplayName, &s.Kills, &s.Deaths, &s.LongestKill, &s.BestStreak)
+	if err != nil {
+		return nil, fmt.Errorf("season player stats: %w", err)
+	}
+	return &s, nil
+}
+func (r *StatsRepository) GetPlayerSeasonKillRank(ctx context.Context, guildID, seasonID, playerID int64) (int64, error) {
+	var rank int64
+	err := r.pool.QueryRow(ctx, `SELECT COUNT(*)+1 FROM (SELECT killer_player_id,COUNT(*) kills FROM kills WHERE guild_id=$1 AND season_id=$2 GROUP BY killer_player_id) q WHERE q.kills>(SELECT COUNT(*) FROM kills WHERE guild_id=$1 AND season_id=$2 AND killer_player_id=$3)`, guildID, seasonID, playerID).Scan(&rank)
+	return rank, err
+}
+func (r *StatsRepository) GetPlayerSeasonKDRank(ctx context.Context, guildID, seasonID, playerID int64) (int64, error) {
+	var rank int64
+	err := r.pool.QueryRow(ctx, `WITH scores AS (SELECT p.id,COUNT(k.id)::float/GREATEST(COUNT(d.id),1) kd FROM players p LEFT JOIN kills k ON k.killer_player_id=p.id AND k.guild_id=$1 AND k.season_id=$2 LEFT JOIN deaths d ON d.player_id=p.id AND d.guild_id=$1 AND d.season_id=$2 WHERE p.guild_id=$1 GROUP BY p.id) SELECT COUNT(*)+1 FROM scores WHERE kd>(SELECT kd FROM scores WHERE id=$3)`, guildID, seasonID, playerID).Scan(&rank)
+	return rank, err
+}
+func (r *StatsRepository) GetPlayerSeasonLongestRank(ctx context.Context, guildID, seasonID, playerID int64) (int64, error) {
+	var rank int64
+	err := r.pool.QueryRow(ctx, `SELECT COUNT(*)+1 FROM (SELECT killer_player_id,MAX(distance) longest FROM kills WHERE guild_id=$1 AND season_id=$2 GROUP BY killer_player_id) q WHERE q.longest>(SELECT COALESCE(MAX(distance),0) FROM kills WHERE guild_id=$1 AND season_id=$2 AND killer_player_id=$3)`, guildID, seasonID, playerID).Scan(&rank)
+	return rank, err
+}
+func (r *StatsRepository) GetPlayerSeasonBestStreak(ctx context.Context, guildID, seasonID, playerID int64) (int, error) {
+	var streak int
+	err := r.pool.QueryRow(ctx, `SELECT COALESCE(best_streak,0) FROM player_combat_stats WHERE guild_id=$1 AND player_id=$2`, guildID, playerID).Scan(&streak)
+	return streak, err
 }
 
 func (r *StatsRepository) queryLeaderboard(ctx context.Context, q string, guildID int64, limit int) ([]LeaderboardEntry, error) {

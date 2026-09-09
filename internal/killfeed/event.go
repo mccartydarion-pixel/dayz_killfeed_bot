@@ -62,4 +62,12 @@ type Event struct {
 	Dead bool // the (DEAD) marker was present
 
 	Raw string
+	// Competitive context is populated only after durable persistence and is
+	// rendered into the same kill embed; it never creates another message.
+	BountyTarget      bool
+	BountyClaimed     bool
+	BountyPoints      int64
+	ActiveEventBadges []string
+	WarBadge          string
+	SeasonName        string
 }

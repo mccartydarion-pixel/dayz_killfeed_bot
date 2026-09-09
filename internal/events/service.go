@@ -55,6 +55,7 @@ type Event struct {
 type KillInput struct {
 	KillID, KillerPlayerID, VictimPlayerID int64
 	KillerFactionID, VictimFactionID       *int64
+	WarID                                  *int64
 	WeaponDisplay                          string
 	Distance                               *float64
 	Headshot                               bool
@@ -74,6 +75,17 @@ type Store interface {
 	StartEvent(context.Context, int64, int64, time.Time) error
 	EndEvent(context.Context, int64, int64, time.Time) error
 	CancelEvent(context.Context, int64, int64) error
+}
+
+type SchedulerStore interface {
+	ActivateDue(context.Context, time.Time) error
+	EndDue(context.Context, time.Time) error
+}
+
+type FinalizerStore interface {
+	GetEvent(context.Context, int64, int64) (*repository.CompetitiveEvent, error)
+	Leaderboard(context.Context, int64, int) ([]repository.EventScore, error)
+	FinalizeEvent(context.Context, int64, repository.EventResult) error
 }
 
 type Service struct{ store Store }
@@ -105,6 +117,36 @@ func (s *Service) End(ctx context.Context, guildID, eventID int64, at time.Time)
 
 func (s *Service) Cancel(ctx context.Context, guildID, eventID int64) error {
 	return s.store.CancelEvent(ctx, guildID, eventID)
+}
+
+func (s *Service) SchedulerTick(ctx context.Context, now time.Time) error {
+	store, ok := s.store.(SchedulerStore)
+	if !ok {
+		return fmt.Errorf("event store does not support scheduling")
+	}
+	if err := store.ActivateDue(ctx, now); err != nil {
+		return err
+	}
+	return store.EndDue(ctx, now)
+}
+
+func (s *Service) FinalizeEvent(ctx context.Context, guildID, eventID int64, at time.Time) error {
+	store, ok := s.store.(FinalizerStore)
+	if !ok {
+		return fmt.Errorf("event store does not support finalization")
+	}
+	if _, err := store.GetEvent(ctx, guildID, eventID); err != nil {
+		return err
+	}
+	rankings, err := store.Leaderboard(ctx, eventID, 2)
+	if err != nil {
+		return err
+	}
+	if len(rankings) == 0 {
+		return store.FinalizeEvent(ctx, eventID, repository.EventResult{EventID: eventID, FinalizedAt: at})
+	}
+	winner := rankings[0]
+	return store.FinalizeEvent(ctx, eventID, repository.EventResult{EventID: eventID, WinnerPlayerID: winner.PlayerID, WinnerFactionID: winner.FactionID, WinningScore: winner.Score, FinalizedAt: at})
 }
 
 func ValidateConfig(eventType string, config any) error {
@@ -211,7 +253,7 @@ func Qualify(event Event, kill KillInput) Qualification {
 		}
 		out.FactionID = *kill.KillerFactionID
 	case TypeFactionWarKills:
-		if kill.KillerFactionID == nil || kill.VictimFactionID == nil || *kill.KillerFactionID == *kill.VictimFactionID {
+		if kill.WarID == nil || kill.KillerFactionID == nil || kill.VictimFactionID == nil || *kill.KillerFactionID == *kill.VictimFactionID {
 			return Qualification{}
 		}
 		out.FactionID = *kill.KillerFactionID

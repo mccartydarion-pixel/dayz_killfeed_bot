@@ -56,6 +56,14 @@ func (r *EventRepository) GetScheduledEvents(ctx context.Context, guildID int64)
 func (r *EventRepository) GetRecentEvents(ctx context.Context, guildID int64, limit int) ([]CompetitiveEvent, error) {
 	return r.list(ctx, `SELECT id,guild_id,COALESCE(season_id,0),event_type,name,COALESCE(description,''),status,starts_at,ends_at,config FROM competitive_events WHERE guild_id=$1 ORDER BY created_at DESC LIMIT $2`, guildID, limit)
 }
+
+func (r *EventRepository) GetEndedUnfinalized(ctx context.Context, guildID int64, limit int) ([]CompetitiveEvent, error) {
+	return r.list(ctx, `SELECT e.id,e.guild_id,COALESCE(e.season_id,0),e.event_type,e.name,COALESCE(e.description,''),e.status,e.starts_at,e.ends_at,e.config FROM competitive_events e LEFT JOIN event_results r ON r.event_id=e.id WHERE e.guild_id=$1 AND e.status='ENDED' AND r.event_id IS NULL ORDER BY e.ends_at LIMIT $2`, guildID, limit)
+}
+
+func (r *EventRepository) GetEventLeaderboard(ctx context.Context, eventID int64, limit int) ([]EventScore, error) {
+	return r.Leaderboard(ctx, eventID, limit)
+}
 func (r *EventRepository) list(ctx context.Context, q string, args ...any) ([]CompetitiveEvent, error) {
 	rows, err := r.pool.Query(ctx, q, args...)
 	if err != nil {
@@ -86,6 +94,16 @@ func (r *EventRepository) EndEvent(ctx context.Context, guildID, eventID int64, 
 }
 func (r *EventRepository) CancelEvent(ctx context.Context, guildID, eventID int64) error {
 	_, err := r.pool.Exec(ctx, `UPDATE competitive_events SET status='CANCELLED',updated_at=NOW() WHERE guild_id=$1 AND id=$2 AND status IN ('DRAFT','SCHEDULED','ACTIVE')`, guildID, eventID)
+	return err
+}
+
+func (r *EventRepository) ActivateDue(ctx context.Context, now time.Time) error {
+	_, err := r.pool.Exec(ctx, `UPDATE competitive_events SET status='ACTIVE',starts_at=COALESCE(starts_at,$1),updated_at=NOW() WHERE status='SCHEDULED' AND starts_at IS NOT NULL AND starts_at<=$1`, now)
+	return err
+}
+
+func (r *EventRepository) EndDue(ctx context.Context, now time.Time) error {
+	_, err := r.pool.Exec(ctx, `UPDATE competitive_events SET status='ENDED',updated_at=NOW() WHERE status='ACTIVE' AND ends_at IS NOT NULL AND ends_at<=$1`, now)
 	return err
 }
 func (r *EventRepository) ScoreKill(ctx context.Context, eventID, killID, playerID, factionID int64, points float64, distance *float64, streak int) (bool, error) {

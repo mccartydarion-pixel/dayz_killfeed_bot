@@ -18,6 +18,7 @@ const (
 	KillEmbedLongRange    KillEmbedStyle = "LONG_RANGE"
 	KillEmbedExtremeRange KillEmbedStyle = "EXTREME_RANGE"
 	KillEmbedCloseRange   KillEmbedStyle = "CLOSE_RANGE"
+	KillEmbedBountyClaim  KillEmbedStyle = "BOUNTY_CLAIM"
 )
 
 // Champion brand color palette. Named constants keep branding consistent; no
@@ -43,6 +44,7 @@ const (
 	badgeCloseQuarters = "🔥 Close Range"
 	badgeLongShot      = "🎯 Long Shot"
 	badgeExtremeRange  = "👑 Extreme Range"
+	badgeMostWanted    = "🎯 Most Wanted"
 )
 
 // KillPresentation is the style decision, computed before rendering. Keeping it
@@ -78,6 +80,26 @@ func BuildPresentation(ev *killfeed.Event) KillPresentation {
 	badges := []string{}
 	if headshot {
 		badges = append(badges, badgeHeadshot)
+	}
+	if ev != nil {
+		if ev.BountyTarget {
+			badges = append(badges, badgeMostWanted)
+		}
+		for _, badge := range ev.ActiveEventBadges {
+			if len(badges) >= 3 {
+				break
+			}
+			badges = append(badges, badge)
+		}
+		if ev.WarBadge != "" && len(badges) < 3 {
+			badges = append(badges, ev.WarBadge)
+		}
+		if ev.BountyClaimed {
+			if len(badges) > 3 {
+				badges = badges[:3]
+			}
+			return KillPresentation{Style: KillEmbedBountyClaim, Badges: badges, Title: "🎯 CHAMPION • BOUNTY CLAIMED", AccentColor: ColorChampionGold, Footer: "BOUNTY CLAIM • CHAMPION"}
+		}
 	}
 
 	switch {

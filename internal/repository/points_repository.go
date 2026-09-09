@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -37,4 +38,27 @@ func (r *PointsRepository) Get(ctx context.Context, guildID, playerID int64) (*P
 func (r *PointsRepository) ResetSeason(ctx context.Context, guildID int64) error {
 	_, err := r.pool.Exec(ctx, `UPDATE player_points SET season_points=0,updated_at=NOW() WHERE guild_id=$1`, guildID)
 	return err
+}
+
+func (r *PointsRepository) Leaderboard(ctx context.Context, guildID int64, season bool, limit int) ([]LeaderboardEntry, error) {
+	column := "lifetime_points"
+	if season {
+		column = "season_points"
+	}
+	rows, err := r.pool.Query(ctx, `SELECT p.display_name,pp.`+column+` FROM player_points pp JOIN players p ON p.id=pp.player_id WHERE pp.guild_id=$1 ORDER BY pp.`+column+` DESC,p.display_name LIMIT $2`, guildID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []LeaderboardEntry
+	for rows.Next() {
+		var e LeaderboardEntry
+		var points int64
+		if err := rows.Scan(&e.DisplayName, &points); err != nil {
+			return nil, err
+		}
+		e.Value = fmt.Sprintf("%d", points)
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }

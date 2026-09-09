@@ -18,6 +18,22 @@ type PersistenceStore interface {
 	InsertDeath(ctx context.Context, d repository.DeathRecord) error
 }
 
+type KillAttributionResolver interface {
+	ResolveKillAttribution(ctx context.Context, guildID, killerID, victimID int64, at time.Time) (killerFactionID, victimFactionID, seasonID, warID *int64)
+}
+
+type DeathSeasonResolver interface {
+	ResolveDeathSeason(ctx context.Context, guildID int64, at time.Time) *int64
+}
+
+type KillIDStore interface {
+	InsertKillReturning(ctx context.Context, k repository.KillRecord) (int64, error)
+}
+
+type KillPostProcessor interface {
+	ProcessPersistedKill(ctx context.Context, killID int64, record repository.KillRecord, event *Event)
+}
+
 // PersistenceQueue is a bounded, ordered queue of events awaiting durable
 // persistence before Discord publish. Overflow drops the oldest-eligible policy
 // is deterministic: when full, the newest event is dropped and counted.
@@ -36,6 +52,11 @@ type PersistenceQueue struct {
 	// onKillPersisted is invoked after a kill is durably inserted. If the insert
 	// is a duplicate (already persisted), it is NOT invoked — preventing reposts.
 	onKillPersisted func(ev *Event)
+	postProcessor   KillPostProcessor
+}
+
+func (q *PersistenceQueue) SetKillPostProcessor(processor KillPostProcessor) {
+	q.postProcessor = processor
 }
 
 // maxPersistenceQueue bounds in-flight events so memory stays flat.
@@ -132,20 +153,34 @@ func (q *PersistenceQueue) persistOne(ctx context.Context, ev *Event) {
 	case EventPlayerKill:
 		killerID := q.upsertPlayer(ctx, ev.Killer)
 		victimID := q.upsertPlayer(ctx, ev.Victim)
-		rec := repository.KillRecord{
-			GuildID:        q.guildID,
-			SessionID:      q.session,
-			Fingerprint:    eventFingerprint(ev),
-			KillerPlayerID: killerID,
-			VictimPlayerID: victimID,
-			WeaponRaw:      ev.Weapon,
-			WeaponDisplay:  ev.Weapon,
-			Distance:       ev.Distance,
-			Headshot:       isHeadshotEvent(ev),
-			KillStyle:      "",
-			EventTime:      eventTimePtr(ev),
+		var killerFactionID, victimFactionID, seasonID, warID *int64
+		if resolver, ok := q.store.(KillAttributionResolver); ok {
+			killerFactionID, victimFactionID, seasonID, warID = resolver.ResolveKillAttribution(ctx, q.guildID, killerID, victimID, eventTime(ev))
 		}
-		err := q.store.InsertKill(ctx, rec)
+		rec := repository.KillRecord{
+			GuildID:         q.guildID,
+			SessionID:       q.session,
+			Fingerprint:     eventFingerprint(ev),
+			KillerPlayerID:  killerID,
+			VictimPlayerID:  victimID,
+			KillerFactionID: killerFactionID,
+			VictimFactionID: victimFactionID,
+			SeasonID:        seasonID,
+			WarID:           warID,
+			WeaponRaw:       ev.Weapon,
+			WeaponDisplay:   ev.Weapon,
+			Distance:        ev.Distance,
+			Headshot:        isHeadshotEvent(ev),
+			KillStyle:       "",
+			EventTime:       eventTimePtr(ev),
+		}
+		var killID int64
+		var err error
+		if inserter, ok := q.store.(KillIDStore); ok {
+			killID, err = inserter.InsertKillReturning(ctx, rec)
+		} else {
+			err = q.store.InsertKill(ctx, rec)
+		}
 		if errors.Is(err, repository.ErrDuplicate) {
 			// Durable dedupe: already persisted — do NOT publish again.
 			slog.Debug("component=killfeed", "msg", "kill already persisted; skipping publish", "fingerprint", rec.Fingerprint)
@@ -154,6 +189,9 @@ func (q *PersistenceQueue) persistOne(ctx context.Context, ev *Event) {
 		if err != nil {
 			slog.Warn("component=killfeed", "msg", "kill persistence failed; not published", "err", err.Error())
 			return
+		}
+		if q.postProcessor != nil && killID > 0 {
+			q.postProcessor.ProcessPersistedKill(ctx, killID, rec, ev)
 		}
 		// Publish only after a successful, non-duplicate durable insert.
 		q.mu.Lock()
@@ -168,6 +206,10 @@ func (q *PersistenceQueue) persistOne(ctx context.Context, ev *Event) {
 		return
 	case EventPlayerDeath, EventSuicideAction:
 		playerID := q.upsertPlayer(ctx, ev.Player)
+		var seasonID *int64
+		if resolver, ok := q.store.(DeathSeasonResolver); ok {
+			seasonID = resolver.ResolveDeathSeason(ctx, q.guildID, eventTime(ev))
+		}
 		deathType := repository.DeathTypeUnknown
 		if ev.Type == EventSuicideAction {
 			deathType = repository.DeathTypeSuicide
@@ -177,6 +219,7 @@ func (q *PersistenceQueue) persistOne(ctx context.Context, ev *Event) {
 			SessionID:   q.session,
 			Fingerprint: eventFingerprint(ev),
 			PlayerID:    playerID,
+			SeasonID:    seasonID,
 			DeathType:   deathType,
 			EventTime:   eventTimePtr(ev),
 		}
@@ -243,4 +286,11 @@ func eventTimePtr(ev *Event) *time.Time {
 	}
 	t := ev.Timestamp.UTC()
 	return &t
+}
+
+func eventTime(ev *Event) time.Time {
+	if ev == nil || ev.Timestamp.IsZero() {
+		return time.Now().UTC()
+	}
+	return ev.Timestamp.UTC()
 }

@@ -480,6 +480,13 @@ CREATE TABLE IF NOT EXISTS combat_pair_activity (
 );
 `,
 	},
+	{
+		Name: "0008_phase44_death_season_snapshots",
+		SQL: `
+ALTER TABLE deaths ADD COLUMN IF NOT EXISTS season_id BIGINT REFERENCES seasons(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_deaths_guild_season_player ON deaths(guild_id,season_id,player_id);
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order, each transactionally. A

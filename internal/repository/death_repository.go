@@ -31,6 +31,7 @@ type DeathRecord struct {
 	SessionID   string
 	Fingerprint string
 	PlayerID    int64
+	SeasonID    *int64
 	DeathType   string
 	EventTime   *time.Time
 }
@@ -38,10 +39,10 @@ type DeathRecord struct {
 // InsertDeath persists a death. Returns ErrDuplicate on (guild, fingerprint) conflict.
 func (r *DeathRepository) InsertDeath(ctx context.Context, d DeathRecord) error {
 	const q = `
-INSERT INTO deaths (guild_id, session_id, event_fingerprint, player_id, death_type, event_time)
-VALUES ($1,$2,$3,$4,$5,$6)`
+INSERT INTO deaths (guild_id, session_id, event_fingerprint, player_id, season_id, death_type, event_time)
+VALUES ($1,$2,$3,$4,$5,$6,$7)`
 
-	_, err := r.pool.Exec(ctx, q, d.GuildID, d.SessionID, d.Fingerprint, d.PlayerID, d.DeathType, d.EventTime)
+	_, err := r.pool.Exec(ctx, q, d.GuildID, d.SessionID, d.Fingerprint, d.PlayerID, d.SeasonID, d.DeathType, d.EventTime)
 	if isUniqueViolation(err) {
 		return ErrDuplicate
 	}

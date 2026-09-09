@@ -42,6 +42,12 @@ RETURNING id`
 	return id, nil
 }
 
+func (r *PlayerRepository) FindByDisplayName(ctx context.Context, guildID int64, displayName string) (int64, error) {
+	var id int64
+	err := r.pool.QueryRow(ctx, `SELECT id FROM players WHERE guild_id=$1 AND LOWER(display_name)=LOWER($2) ORDER BY last_seen_at DESC LIMIT 1`, guildID, displayName).Scan(&id)
+	return id, err
+}
+
 // PlayerProfile is a player's persistent stats snapshot.
 type PlayerProfile struct {
 	DisplayName string
