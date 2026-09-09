@@ -3,6 +3,7 @@ package discord
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -142,6 +143,27 @@ func (m *SetupManager) EnsureConfigured(guildID string) (*GuildSetup, *SetupRepo
 			report.Created = append(report.Created, spec.label)
 		} else {
 			report.Repaired = append(report.Repaired, spec.label)
+		}
+	}
+
+	// Create each persistent panel exactly once. Stored IDs are reused on restart;
+	// missing messages are recreated by setup/repair.
+	if setup.LeaderboardsChannelID != "" && setup.LeaderboardMessageID == "" {
+		msg, err := m.api.ChannelMessageSendEmbed(setup.LeaderboardsChannelID, BuildLeaderboardEmbed(LeaderboardSnapshot{GeneratedAt: time.Now()}, DefaultLeaderboardConfig()))
+		if err != nil {
+			report.Failed["leaderboard-message"] = err.Error()
+		} else {
+			setup.LeaderboardMessageID = msg.ID
+			report.Created = append(report.Created, "leaderboard-message")
+		}
+	}
+	if setup.PlayerStatsChannelID != "" && setup.PlayerStatsInfoMessageID == "" {
+		msg, err := m.api.ChannelMessageSendEmbed(setup.PlayerStatsChannelID, PlayerStatsInfoEmbed())
+		if err != nil {
+			report.Failed["player-stats-message"] = err.Error()
+		} else {
+			setup.PlayerStatsInfoMessageID = msg.ID
+			report.Created = append(report.Created, "player-stats-message")
 		}
 	}
 

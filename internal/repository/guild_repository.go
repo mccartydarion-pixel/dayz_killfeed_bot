@@ -19,17 +19,19 @@ type GuildRecord struct {
 	DiscordGuildID string
 	WelcomeEnabled bool
 
-	CategoryID             string
-	WelcomeChannelID       string
-	ServerStatusChannelID  string
-	KillfeedChannelID      string
-	OnlinePlayersChannelID string
-	LeaderboardsChannelID  string
-	PlayerStatsChannelID   string
-	ServerStatusMessageID  string
-	OnlinePlayersMessageID string
-	NitradoServiceID       string
-	SetupComplete          bool
+	CategoryID               string
+	WelcomeChannelID         string
+	ServerStatusChannelID    string
+	KillfeedChannelID        string
+	OnlinePlayersChannelID   string
+	LeaderboardsChannelID    string
+	PlayerStatsChannelID     string
+	ServerStatusMessageID    string
+	OnlinePlayersMessageID   string
+	LeaderboardMessageID     string
+	PlayerStatsInfoMessageID string
+	NitradoServiceID         string
+	SetupComplete            bool
 }
 
 // isUniqueViolation reports whether err is a PostgreSQL unique-constraint violation (23505).
@@ -55,8 +57,8 @@ func (r *GuildRepository) UpsertGuild(ctx context.Context, s GuildRecord) (int64
 INSERT INTO guilds (
 	discord_guild_id, welcome_enabled, category_id, welcome_channel_id, server_status_channel_id, killfeed_channel_id,
     online_players_channel_id, leaderboards_channel_id, player_stats_channel_id,
-    server_status_message_id, online_players_message_id, nitrado_service_id, setup_complete
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+	server_status_message_id, online_players_message_id, leaderboard_message_id, player_stats_info_message_id, nitrado_service_id, setup_complete
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
 ON CONFLICT (discord_guild_id) DO UPDATE SET
 	category_id = COALESCE(EXCLUDED.category_id, guilds.category_id),
 	welcome_enabled = EXCLUDED.welcome_enabled,
@@ -68,6 +70,8 @@ ON CONFLICT (discord_guild_id) DO UPDATE SET
     player_stats_channel_id = COALESCE(EXCLUDED.player_stats_channel_id, guilds.player_stats_channel_id),
     server_status_message_id = COALESCE(EXCLUDED.server_status_message_id, guilds.server_status_message_id),
     online_players_message_id = COALESCE(EXCLUDED.online_players_message_id, guilds.online_players_message_id),
+	leaderboard_message_id = COALESCE(EXCLUDED.leaderboard_message_id, guilds.leaderboard_message_id),
+	player_stats_info_message_id = COALESCE(EXCLUDED.player_stats_info_message_id, guilds.player_stats_info_message_id),
     nitrado_service_id = COALESCE(EXCLUDED.nitrado_service_id, guilds.nitrado_service_id),
     setup_complete = EXCLUDED.setup_complete,
     updated_at = NOW()
@@ -77,7 +81,7 @@ RETURNING id`
 	err := r.pool.QueryRow(ctx, q,
 		s.DiscordGuildID, s.WelcomeEnabled, emptyToNil(s.CategoryID), emptyToNil(s.WelcomeChannelID), emptyToNil(s.ServerStatusChannelID), emptyToNil(s.KillfeedChannelID),
 		emptyToNil(s.OnlinePlayersChannelID), emptyToNil(s.LeaderboardsChannelID), emptyToNil(s.PlayerStatsChannelID),
-		emptyToNil(s.ServerStatusMessageID), emptyToNil(s.OnlinePlayersMessageID), emptyToNil(s.NitradoServiceID),
+		emptyToNil(s.ServerStatusMessageID), emptyToNil(s.OnlinePlayersMessageID), emptyToNil(s.LeaderboardMessageID), emptyToNil(s.PlayerStatsInfoMessageID), emptyToNil(s.NitradoServiceID),
 		isComplete(s),
 	).Scan(&id)
 	if err != nil {
@@ -103,7 +107,7 @@ func (r *GuildRepository) GetGuild(ctx context.Context, discordGuildID string) (
 SELECT id, welcome_enabled, COALESCE(category_id,''), COALESCE(welcome_channel_id,''), COALESCE(server_status_channel_id,''),
        COALESCE(killfeed_channel_id,''), COALESCE(online_players_channel_id,''),
        COALESCE(leaderboards_channel_id,''), COALESCE(player_stats_channel_id,''),
-       COALESCE(server_status_message_id,''), COALESCE(online_players_message_id,''),
+	COALESCE(server_status_message_id,''), COALESCE(online_players_message_id,''), COALESCE(leaderboard_message_id,''), COALESCE(player_stats_info_message_id,''),
        COALESCE(nitrado_service_id,''), setup_complete
 FROM guilds WHERE discord_guild_id=$1`
 
@@ -112,7 +116,7 @@ FROM guilds WHERE discord_guild_id=$1`
 	err := r.pool.QueryRow(ctx, q, discordGuildID).Scan(
 		&rowID, &s.WelcomeEnabled, &s.CategoryID, &s.WelcomeChannelID, &s.ServerStatusChannelID, &s.KillfeedChannelID,
 		&s.OnlinePlayersChannelID, &s.LeaderboardsChannelID, &s.PlayerStatsChannelID,
-		&s.ServerStatusMessageID, &s.OnlinePlayersMessageID, &s.NitradoServiceID, &s.SetupComplete,
+		&s.ServerStatusMessageID, &s.OnlinePlayersMessageID, &s.LeaderboardMessageID, &s.PlayerStatsInfoMessageID, &s.NitradoServiceID, &s.SetupComplete,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, 0, nil

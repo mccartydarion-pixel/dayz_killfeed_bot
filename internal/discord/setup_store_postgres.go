@@ -61,34 +61,38 @@ func (s *PostgresSetupStore) Delete(guildID string) error {
 // setupToRecord maps the Discord-facing setup to the persistence record.
 func setupToRecord(s GuildSetup) repository.GuildRecord {
 	return repository.GuildRecord{
-		DiscordGuildID:         s.GuildID,
-		WelcomeEnabled:         s.WelcomeEnabled,
-		CategoryID:             s.CategoryID,
-		WelcomeChannelID:       s.WelcomeChannelID,
-		ServerStatusChannelID:  s.ServerStatusChannelID,
-		KillfeedChannelID:      s.KillfeedChannelID,
-		OnlinePlayersChannelID: s.OnlinePlayersChannelID,
-		LeaderboardsChannelID:  s.LeaderboardsChannelID,
-		PlayerStatsChannelID:   s.PlayerStatsChannelID,
-		ServerStatusMessageID:  s.ServerStatusMessageID,
-		OnlinePlayersMessageID: s.OnlinePlayersMessageID,
-		SetupComplete:          s.CategoryID != "" && s.WelcomeChannelID != "" && s.KillfeedChannelID != "" && s.OnlinePlayersChannelID != "",
+		DiscordGuildID:           s.GuildID,
+		WelcomeEnabled:           s.WelcomeEnabled,
+		CategoryID:               s.CategoryID,
+		WelcomeChannelID:         s.WelcomeChannelID,
+		ServerStatusChannelID:    s.ServerStatusChannelID,
+		KillfeedChannelID:        s.KillfeedChannelID,
+		OnlinePlayersChannelID:   s.OnlinePlayersChannelID,
+		LeaderboardsChannelID:    s.LeaderboardsChannelID,
+		PlayerStatsChannelID:     s.PlayerStatsChannelID,
+		ServerStatusMessageID:    s.ServerStatusMessageID,
+		OnlinePlayersMessageID:   s.OnlinePlayersMessageID,
+		LeaderboardMessageID:     s.LeaderboardMessageID,
+		PlayerStatsInfoMessageID: s.PlayerStatsInfoMessageID,
+		SetupComplete:            s.CategoryID != "" && s.WelcomeChannelID != "" && s.KillfeedChannelID != "" && s.OnlinePlayersChannelID != "",
 	}
 }
 
 // recordToSetup maps the persistence record back to the Discord-facing setup.
 func recordToSetup(r *repository.GuildRecord) *GuildSetup {
 	return &GuildSetup{
-		GuildID:                r.DiscordGuildID,
-		WelcomeEnabled:         r.WelcomeEnabled,
-		CategoryID:             r.CategoryID,
-		WelcomeChannelID:       r.WelcomeChannelID,
-		ServerStatusChannelID:  r.ServerStatusChannelID,
-		KillfeedChannelID:      r.KillfeedChannelID,
-		OnlinePlayersChannelID: r.OnlinePlayersChannelID,
-		LeaderboardsChannelID:  r.LeaderboardsChannelID,
-		PlayerStatsChannelID:   r.PlayerStatsChannelID,
-		ServerStatusMessageID:  r.ServerStatusMessageID,
-		OnlinePlayersMessageID: r.OnlinePlayersMessageID,
+		GuildID:                  r.DiscordGuildID,
+		WelcomeEnabled:           r.WelcomeEnabled,
+		CategoryID:               r.CategoryID,
+		WelcomeChannelID:         r.WelcomeChannelID,
+		ServerStatusChannelID:    r.ServerStatusChannelID,
+		KillfeedChannelID:        r.KillfeedChannelID,
+		OnlinePlayersChannelID:   r.OnlinePlayersChannelID,
+		LeaderboardsChannelID:    r.LeaderboardsChannelID,
+		PlayerStatsChannelID:     r.PlayerStatsChannelID,
+		ServerStatusMessageID:    r.ServerStatusMessageID,
+		OnlinePlayersMessageID:   r.OnlinePlayersMessageID,
+		LeaderboardMessageID:     r.LeaderboardMessageID,
+		PlayerStatsInfoMessageID: r.PlayerStatsInfoMessageID,
 	}
 }

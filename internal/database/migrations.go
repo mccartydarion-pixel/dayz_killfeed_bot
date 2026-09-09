@@ -145,6 +145,26 @@ CREATE TABLE IF NOT EXISTS link_verifications (
 CREATE INDEX IF NOT EXISTS idx_link_verifications_expiry ON link_verifications(guild_id, expires_at);
 `,
 	},
+	{
+		Name: "0003_phase41_panels_records",
+		SQL: `
+ALTER TABLE guilds ADD COLUMN IF NOT EXISTS leaderboard_message_id TEXT;
+ALTER TABLE guilds ADD COLUMN IF NOT EXISTS player_stats_info_message_id TEXT;
+
+CREATE TABLE IF NOT EXISTS server_records (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    record_type TEXT NOT NULL,
+    player_id BIGINT REFERENCES players(id) ON DELETE SET NULL,
+    kill_id BIGINT REFERENCES kills(id) ON DELETE SET NULL,
+    numeric_value DOUBLE PRECISION,
+    text_value TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(guild_id, record_type)
+);
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order, each transactionally. A
