@@ -17,6 +17,7 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/config"
 	"github.com/yourname/dayz-killfeed/internal/database"
 	"github.com/yourname/dayz-killfeed/internal/discord"
+	"github.com/yourname/dayz-killfeed/internal/discord/panels"
 	competitiveevents "github.com/yourname/dayz-killfeed/internal/events"
 	"github.com/yourname/dayz-killfeed/internal/killfeed"
 	"github.com/yourname/dayz-killfeed/internal/linking"
@@ -55,6 +56,8 @@ type App struct {
 	Anomalies           *repository.AnomalyRepository
 	Announcements       *repository.AnnouncementRepository
 	AnnouncementService *discord.CompletionAnnouncementService
+	CompletionPublisher *discord.LiveCompletionPublisher
+	PanelService        *panels.RefreshService
 	Links               *repository.LinkRepository
 	LinkService         *linking.LinkVerificationService
 	persistQueue        *killfeed.PersistenceQueue
@@ -248,6 +251,19 @@ func (a *App) Run() error {
 	setupManager := discord.NewSetupManager(api, setupStore, a.Discord.BotID())
 	setupHandler := discord.NewSetupHandler(setupManager)
 	welcomeHandler := discord.NewWelcomeHandler(setupStore)
+	if a.AnnouncementService != nil && a.Config.DiscordGuildID != "" {
+		a.CompletionPublisher = discord.NewLiveCompletionPublisher(a.AnnouncementService, api, setupStore, a.Seasons, a.Wars, a.Events, a.Guilds, a.Config.DiscordGuildID)
+	}
+	var livePanel *panels.Service
+	if a.Config.DiscordGuildID != "" && a.Events != nil && a.Bounties != nil && a.Points != nil {
+		if gs, setupErr := setupStore.Get(a.Config.DiscordGuildID); setupErr == nil && gs != nil && gs.LeaderboardsChannelID != "" {
+			livePanel = panels.NewService(contentPanelEditor{api: api}, gs.LeaderboardsChannelID, gs.LeaderboardMessageID)
+			livePanel.SetMessageIDHook(func(messageID string) { gs.LeaderboardMessageID = messageID; _ = setupStore.Save(*gs) })
+			loader := &competitivePanelLoader{guildID: 0, events: a.Events, bounties: a.Bounties, points: a.Points, seasons: a.Seasons, guilds: a.Guilds, discordGuildID: a.Config.DiscordGuildID}
+			a.PanelService = panels.NewRefreshService(livePanel, loader)
+			go a.PanelService.Run(ctx)
+		}
+	}
 	if a.SeasonService != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
 		seasonHandler := discord.NewSeasonCommandHandler(a.SeasonService, a.Guilds)
 		if err := discord.RegisterSeasonCommands(session, a.Config.DiscordGuildID); err != nil {
@@ -407,7 +423,11 @@ func (a *App) Run() error {
 				}
 				seasonCancel()
 			}
-			store := &persistenceStoreAdapter{players: a.Players, kills: a.Kills, deaths: a.Deaths, seasons: a.Seasons, factions: a.Factions, wars: a.Wars, events: a.Events, bounties: a.Bounties, streaks: a.Streaks, anomalies: a.Anomalies}
+			store := &persistenceStoreAdapter{players: a.Players, kills: a.Kills, deaths: a.Deaths, seasons: a.Seasons, factions: a.Factions, wars: a.Wars, events: a.Events, bounties: a.Bounties, streaks: a.Streaks, anomalies: a.Anomalies, panelDirty: func() {
+				if livePanel != nil {
+					livePanel.MarkDirty()
+				}
+			}}
 			pq := killfeed.NewPersistenceQueue(store, guildRowID, a.Config.NitradoServiceID)
 			pq.SetKillPostProcessor(store)
 			engine.SetPersistence(pq)
@@ -479,6 +499,10 @@ func (a *App) runCompetitiveSchedulers(ctx context.Context, guildID int64) {
 			for _, event := range ended {
 				if err := a.EventService.FinalizeEvent(ctx, guildID, event.ID, now); err != nil {
 					slog.Warn("component=events", "msg", "event finalization failed", "event_id", event.ID, "err", err.Error())
+				} else if a.CompletionPublisher != nil {
+					if err := a.CompletionPublisher.PublishPendingEventCompletion(ctx, guildID, event.ID); err != nil {
+						slog.Warn("component=events", "msg", "event completion announcement failed", "event_id", event.ID, "err", err.Error())
+					}
 				}
 			}
 		}
@@ -532,16 +556,17 @@ func (a *App) shutdown() {
 // persistenceStoreAdapter adapts the repositories to the killfeed.PersistenceStore
 // interface used by the persistence queue worker.
 type persistenceStoreAdapter struct {
-	players   *repository.PlayerRepository
-	kills     *repository.KillRepository
-	deaths    *repository.DeathRepository
-	seasons   *repository.SeasonRepository
-	factions  *repository.FactionRepository
-	wars      *repository.PostgresWarRepository
-	events    *repository.EventRepository
-	bounties  *repository.BountyRepository
-	streaks   *repository.StreakRepository
-	anomalies *repository.AnomalyRepository
+	players    *repository.PlayerRepository
+	kills      *repository.KillRepository
+	deaths     *repository.DeathRepository
+	seasons    *repository.SeasonRepository
+	factions   *repository.FactionRepository
+	wars       *repository.PostgresWarRepository
+	events     *repository.EventRepository
+	bounties   *repository.BountyRepository
+	streaks    *repository.StreakRepository
+	anomalies  *repository.AnomalyRepository
+	panelDirty func()
 }
 
 func (p *persistenceStoreAdapter) UpsertPlayer(ctx context.Context, guildID int64, dayzID, displayName string, seenAt time.Time) (int64, error) {
@@ -664,6 +689,71 @@ func (p *persistenceStoreAdapter) ProcessPersistedKill(ctx context.Context, kill
 			}
 		}
 	}
+	if p.panelDirty != nil {
+		p.panelDirty()
+	}
+}
+
+type contentPanelEditor struct{ api *discord.SessionAPI }
+
+func (e contentPanelEditor) Send(channelID, content string) (string, error) {
+	m, err := e.api.ChannelMessageSendContent(channelID, content)
+	if m == nil {
+		return "", err
+	}
+	return m.ID, err
+}
+func (e contentPanelEditor) Edit(channelID, messageID, content string) error {
+	_, err := e.api.ChannelMessageEditContent(channelID, messageID, content)
+	return err
+}
+
+type competitivePanelLoader struct {
+	guildID        int64
+	events         *repository.EventRepository
+	bounties       *repository.BountyRepository
+	points         *repository.PointsRepository
+	seasons        *repository.SeasonRepository
+	guilds         *repository.GuildRepository
+	discordGuildID string
+}
+
+func (l *competitivePanelLoader) Load(ctx context.Context) (panels.Snapshot, error) {
+	if l.guildID == 0 {
+		_, id, err := l.guilds.GetGuild(ctx, l.discordGuildID)
+		if err != nil {
+			return panels.Snapshot{}, err
+		}
+		l.guildID = id
+	}
+	out := panels.Snapshot{GeneratedAt: time.Now()}
+	active, err := l.events.GetActiveEvents(ctx, l.guildID)
+	if err != nil {
+		return out, err
+	}
+	for _, event := range active {
+		rows, _ := l.events.Leaderboard(ctx, event.ID, 3)
+		line := fmt.Sprintf("%s (%s)", event.Name, event.Type)
+		if len(rows) > 0 {
+			line += fmt.Sprintf(" — %.0f", rows[0].Score)
+		}
+		out.EventLines = append(out.EventLines, line)
+	}
+	bounties, err := l.bounties.ListActive(ctx, l.guildID, 5)
+	if err != nil {
+		return out, err
+	}
+	for _, b := range bounties {
+		out.BountyLines = append(out.BountyLines, fmt.Sprintf("Player %d — %d pts", b.TargetPlayerID, b.RewardPoints))
+	}
+	points, err := l.points.Leaderboard(ctx, l.guildID, true, 5)
+	if err != nil {
+		return out, err
+	}
+	for _, p := range points {
+		out.PointLines = append(out.PointLines, p.DisplayName+" — "+p.Value)
+	}
+	return out, nil
 }
 
 func valueOfID(v *int64) int64 {

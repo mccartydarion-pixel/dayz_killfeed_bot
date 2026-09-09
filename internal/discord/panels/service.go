@@ -31,7 +31,10 @@ type Service struct {
 	debounce                       time.Duration
 	dirtyAt                        time.Time
 	mu                             sync.Mutex
+	onMessageID                    func(string)
 }
+
+func (s *Service) SetMessageIDHook(fn func(string)) { s.mu.Lock(); s.onMessageID = fn; s.mu.Unlock() }
 
 func NewService(editor Editor, channelID, messageID string) *Service {
 	return &Service{editor: editor, channelID: channelID, messageID: messageID, debounce: 15 * time.Second}
@@ -81,6 +84,9 @@ func (s *Service) Flush(snapshot Snapshot, force bool) (bool, error) {
 	var err error
 	if s.messageID == "" {
 		s.messageID, err = s.editor.Send(s.channelID, content)
+		if err == nil && s.onMessageID != nil {
+			s.onMessageID(s.messageID)
+		}
 	} else {
 		err = s.editor.Edit(s.channelID, s.messageID, content)
 	}

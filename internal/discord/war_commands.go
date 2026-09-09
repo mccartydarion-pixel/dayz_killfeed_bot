@@ -23,7 +23,8 @@ func NewWarCommandHandler(wars *repository.PostgresWarRepository, guilds GuildSt
 	return &WarCommandHandler{wars: wars, guilds: guilds, seasons: seasons, factions: factionRepo, links: links, factionStats: factionStats}
 }
 func RegisterWarCommands(session *discordgo.Session, guildID string) error {
-	war := &discordgo.ApplicationCommandOption{Name: "war", Description: "Manage faction wars", Type: discordgo.ApplicationCommandOptionSubCommandGroup, Options: []*discordgo.ApplicationCommandOption{{Name: "challenge", Description: "Challenge two factions", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "faction_a", Description: "First faction ID", Type: discordgo.ApplicationCommandOptionInteger, Required: true}, {Name: "faction_b", Description: "Second faction ID", Type: discordgo.ApplicationCommandOptionInteger, Required: true}}}, {Name: "accept", Description: "Accept a challenge", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "id", Description: "War ID", Type: discordgo.ApplicationCommandOptionInteger, Required: true}}}, {Name: "decline", Description: "Decline a challenge", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "id", Description: "War ID", Type: discordgo.ApplicationCommandOptionInteger, Required: true}}}, {Name: "end", Description: "End an active war", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "id", Description: "War ID", Type: discordgo.ApplicationCommandOptionInteger, Required: true}}}, {Name: "cancel", Description: "Cancel a war", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "id", Description: "War ID", Type: discordgo.ApplicationCommandOptionInteger, Required: true}}}, {Name: "history", Description: "Show war history", Type: discordgo.ApplicationCommandOptionSubCommand}}}
+	warStatus := &discordgo.ApplicationCommandOption{Name: "status", Description: "Show an active or completed war", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "id", Description: "War ID", Type: discordgo.ApplicationCommandOptionInteger}, {Name: "opponent", Description: "Opponent faction tag", Type: discordgo.ApplicationCommandOptionString}}}
+	war := &discordgo.ApplicationCommandOption{Name: "war", Description: "Manage faction wars", Type: discordgo.ApplicationCommandOptionSubCommandGroup, Options: []*discordgo.ApplicationCommandOption{{Name: "challenge", Description: "Challenge two factions", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "faction_a", Description: "First faction ID", Type: discordgo.ApplicationCommandOptionInteger, Required: true}, {Name: "faction_b", Description: "Second faction ID", Type: discordgo.ApplicationCommandOptionInteger, Required: true}}}, {Name: "accept", Description: "Accept a challenge", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "id", Description: "War ID", Type: discordgo.ApplicationCommandOptionInteger, Required: true}}}, {Name: "decline", Description: "Decline a challenge", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "id", Description: "War ID", Type: discordgo.ApplicationCommandOptionInteger, Required: true}}}, {Name: "end", Description: "End an active war", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "id", Description: "War ID", Type: discordgo.ApplicationCommandOptionInteger, Required: true}}}, {Name: "cancel", Description: "Cancel a war", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "id", Description: "War ID", Type: discordgo.ApplicationCommandOptionInteger, Required: true}}}, warStatus, {Name: "history", Description: "Show war history", Type: discordgo.ApplicationCommandOptionSubCommand}}}
 	rivalry := &discordgo.ApplicationCommandOption{Name: "rivalry", Description: "Show faction rivalry stats", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "faction", Description: "Faction tag", Type: discordgo.ApplicationCommandOptionString, Required: true}, {Name: "opponent", Description: "Opponent faction tag", Type: discordgo.ApplicationCommandOptionString, Required: true}}}
 	leaderboard := &discordgo.ApplicationCommandOption{Name: "leaderboard", Description: "Show faction rankings", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "category", Description: "kills | kd | war-kills | longest", Type: discordgo.ApplicationCommandOptionString}, {Name: "scope", Description: "season | lifetime", Type: discordgo.ApplicationCommandOptionString}}}
 	cmd := &discordgo.ApplicationCommand{Name: "faction", Description: "Faction systems", Options: []*discordgo.ApplicationCommandOption{war, rivalry, leaderboard}}
@@ -104,6 +105,32 @@ func (h *WarCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interactio
 			return
 		}
 		err = h.wars.CancelWar(ctx, gid, optionInt(sub, "id"))
+	case "status":
+		warID := optionInt(sub, "id")
+		if warID == 0 {
+			respondEphemeral(s, i, "Provide a war ID to view status.")
+			return
+		}
+		war, lookupErr := h.wars.GetWar(ctx, gid, warID)
+		if lookupErr != nil {
+			respondEphemeral(s, i, "War not found.")
+			return
+		}
+		aScore, bScore, scoreErr := h.wars.GetWarScore(ctx, gid, warID)
+		if scoreErr != nil {
+			respondEphemeral(s, i, "Could not load war score.")
+			return
+		}
+		top, topCount, _ := h.wars.GetWarTopKiller(ctx, gid, warID)
+		longestPlayer, longest, _ := h.wars.GetWarLongestKill(ctx, gid, warID)
+		lead := "TIED"
+		if aScore > bScore {
+			lead = fmt.Sprintf("Faction %d +%d", war.FactionAID, aScore-bScore)
+		} else if bScore > aScore {
+			lead = fmt.Sprintf("Faction %d +%d", war.FactionBID, bScore-aScore)
+		}
+		respondEphemeral(s, i, fmt.Sprintf("⚔️ **FACTION WAR STATUS**\n\nFaction %d — %d\nFaction %d — %d\n\nLead: %s\nTop killer: Player %d — %d\nLongest kill: Player %d — %.1fm\nStatus: %s", war.FactionAID, aScore, war.FactionBID, bScore, lead, top, topCount, longestPlayer, longest, war.Status))
+		return
 	case "history":
 		rows, historyErr := h.wars.GetWarHistory(ctx, gid, 10)
 		if historyErr != nil {

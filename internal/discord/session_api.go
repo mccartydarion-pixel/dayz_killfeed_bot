@@ -29,6 +29,14 @@ func (a *SessionAPI) ChannelMessageEditEmbed(channelID, messageID string, embed 
 	return a.S.ChannelMessageEditEmbed(channelID, messageID, embed)
 }
 
+func (a *SessionAPI) ChannelMessageSendContent(channelID, content string) (*discordgo.Message, error) {
+	return a.S.ChannelMessageSend(channelID, content)
+}
+
+func (a *SessionAPI) ChannelMessageEditContent(channelID, messageID, content string) (*discordgo.Message, error) {
+	return a.S.ChannelMessageEdit(channelID, messageID, content)
+}
+
 func (a *SessionAPI) ChannelMessage(channelID, messageID string) (*discordgo.Message, error) {
 	return a.S.ChannelMessage(channelID, messageID)
 }
