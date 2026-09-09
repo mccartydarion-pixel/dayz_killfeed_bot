@@ -104,11 +104,13 @@ func (q *PersistenceQueue) Enqueue(ev *Event) bool {
 	if q == nil || ev == nil {
 		return false
 	}
+	// Stamp before sending to the channel. Assigning after enqueue creates a
+	// race where the worker can consume the event before its tenant context is set.
+	ev.GuildID = q.guildID
+	ev.ServerID = q.serverID
+	ev.SessionID = q.session
 	select {
 	case q.queue <- ev:
-		ev.GuildID = q.guildID
-		ev.ServerID = q.serverID
-		ev.SessionID = q.session
 		q.mu.Lock()
 		q.enqueued++
 		if len(q.queue) > q.highWater {
