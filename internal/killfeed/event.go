@@ -36,6 +36,9 @@ type PlayerRef struct {
 // Event is the normalized DayZ killfeed event model. Fields are pointers or
 // zero-omitted so events never carry fabricated values.
 type Event struct {
+	GuildID   int64
+	ServerID  int64
+	SessionID string
 	Type      EventType
 	Timestamp time.Time
 	// TimeOfDay preserves the raw HH:MM:SS clock from the ADM line when a full

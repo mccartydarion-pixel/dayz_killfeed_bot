@@ -106,6 +106,9 @@ func (q *PersistenceQueue) Enqueue(ev *Event) bool {
 	}
 	select {
 	case q.queue <- ev:
+		ev.GuildID = q.guildID
+		ev.ServerID = q.serverID
+		ev.SessionID = q.session
 		q.mu.Lock()
 		q.enqueued++
 		if len(q.queue) > q.highWater {

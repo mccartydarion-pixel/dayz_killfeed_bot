@@ -29,6 +29,7 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/seasons"
 	"github.com/yourname/dayz-killfeed/internal/security"
 	"github.com/yourname/dayz-killfeed/internal/server"
+	"github.com/yourname/dayz-killfeed/internal/servers"
 )
 
 // App owns the main runtime dependencies.
@@ -63,6 +64,7 @@ type App struct {
 	AnnouncementService *discord.CompletionAnnouncementService
 	HealthRegistry      *health.Registry
 	Workers             *health.WorkerRegistry
+	WorkerManager       *servers.WorkerManager
 	ADMHealth           *operations.ADMMonitor
 	AdminService        *admin.Service
 	AnalyticsRepository *repository.AnalyticsRepository
@@ -568,6 +570,15 @@ func (a *App) Run() error {
 			if a.EventService != nil || a.CompletionPublisher != nil {
 				go a.runCompetitiveSchedulers(ctx, guildRowID)
 			}
+			a.WorkerManager = servers.NewWorkerManager(func(workerCtx context.Context, workerServerID int64) error {
+				if workerServerID != serverID {
+					return fmt.Errorf("server worker %d is not configured for this runtime", workerServerID)
+				}
+				return engine.Start(workerCtx)
+			})
+			if err := a.WorkerManager.Start(ctx, serverID); err != nil {
+				return fmt.Errorf("start server worker: %w", err)
+			}
 			slog.Info("component=database", "msg", "persistence queue started")
 		} else {
 			slog.Warn("component=database", "msg", "no guild record yet; run /setup to enable persistence")
@@ -597,12 +608,6 @@ func (a *App) Run() error {
 			gs.ServerStatusChannelID != "",
 		)
 	}
-
-	go func() {
-		if err := engine.Start(ctx); err != nil {
-			slog.Warn("component=killfeed", "msg", "engine stopped", "err", err.Error())
-		}
-	}()
 
 	slog.Info("component=startup", "msg", "DayZ killfeed live foundation ready")
 	if logSourceVerified {
@@ -665,6 +670,9 @@ func (a *App) runCompetitiveSchedulers(ctx context.Context, guildID int64) {
 func (a *App) shutdown() {
 	if a.cancel != nil {
 		a.cancel()
+	}
+	if a.WorkerManager != nil {
+		a.WorkerManager.StopAll()
 	}
 	// Flush the persistence queue (drain pending events) before closing the DB.
 	if a.persistQueue != nil {
