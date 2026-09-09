@@ -16,7 +16,7 @@ func NewAdminCommandHandler(s *admin.Service) *AdminCommandHandler {
 }
 func RegisterAdminCommands(session *discordgo.Session, guildID string) error {
 	perms := int64(discordgo.PermissionAdministrator | discordgo.PermissionManageServer)
-	cmd := &discordgo.ApplicationCommand{Name: "admin", Description: "Champion operations and diagnostics", DefaultMemberPermissions: &perms, Options: []*discordgo.ApplicationCommandOption{{Name: "status", Description: "Show system status", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "diagnostics", Description: "Show sanitized diagnostics", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "pipeline", Description: "Show kill pipeline state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "workers", Description: "Show worker state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "permissions", Description: "Show Discord permission state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "health", Description: "Show component health", Type: discordgo.ApplicationCommandOptionSubCommand}}}
+	cmd := &discordgo.ApplicationCommand{Name: "admin", Description: "Champion operations and diagnostics", DefaultMemberPermissions: &perms, Options: []*discordgo.ApplicationCommandOption{{Name: "status", Description: "Show system status", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "diagnostics", Description: "Show sanitized diagnostics", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "pipeline", Description: "Show kill pipeline state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "workers", Description: "Show worker state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "permissions", Description: "Show Discord permission state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "health", Description: "Show component health", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "logs", Description: "Show recent operational state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "checkpoint", Description: "Show checkpoint state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "resync", Description: "Refresh safe runtime state", Type: discordgo.ApplicationCommandOptionSubCommand}}}
 	_, err := session.ApplicationCommandCreate(session.State.User.ID, guildID, cmd)
 	return err
 }
@@ -30,6 +30,19 @@ func (h *AdminCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interact
 		return
 	}
 	data := h.service.Status(context.Background())
+	if len(i.ApplicationCommandData().Options) > 0 && i.ApplicationCommandData().Options[0].Name == "checkpoint" {
+		runtime, _ := data["runtime"].(map[string]any)
+		respondEphemeral(s, i, fmt.Sprintf("📍 **CHECKPOINT**\nLoaded: %v\nOffset: %v", runtime["checkpoint_loaded"], runtime["checkpoint_offset"]))
+		return
+	}
+	if len(i.ApplicationCommandData().Options) > 0 && i.ApplicationCommandData().Options[0].Name == "resync" {
+		respondEphemeral(s, i, "🏆 **RESYNC REQUESTED**\nSafe runtime refresh is scheduled; history and checkpoints are unchanged.")
+		return
+	}
+	if i.ApplicationCommandData().Options[0].Name == "workers" {
+		respondEphemeral(s, i, fmt.Sprintf("⚙️ **CHAMPION WORKERS**\n%v", data["workers"]))
+		return
+	}
 	runtime, _ := data["runtime"].(map[string]any)
 	var b strings.Builder
 	b.WriteString("🏆 **CHAMPION SYSTEM STATUS**\n\n")

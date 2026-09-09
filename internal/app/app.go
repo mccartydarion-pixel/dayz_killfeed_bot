@@ -24,6 +24,7 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/killfeed"
 	"github.com/yourname/dayz-killfeed/internal/linking"
 	"github.com/yourname/dayz-killfeed/internal/nitrado"
+	"github.com/yourname/dayz-killfeed/internal/operations"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 	"github.com/yourname/dayz-killfeed/internal/seasons"
 	"github.com/yourname/dayz-killfeed/internal/server"
@@ -60,6 +61,8 @@ type App struct {
 	Announcements       *repository.AnnouncementRepository
 	AnnouncementService *discord.CompletionAnnouncementService
 	HealthRegistry      *health.Registry
+	Workers             *health.WorkerRegistry
+	ADMHealth           *operations.ADMMonitor
 	AdminService        *admin.Service
 	CompletionPublisher *discord.LiveCompletionPublisher
 	PanelService        *panels.RefreshService
@@ -95,7 +98,10 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		State:      state,
 	}
 	app.HealthRegistry = health.NewRegistry()
+	app.Workers = health.NewWorkerRegistry()
+	app.ADMHealth = operations.NewADMMonitor()
 	app.AdminService = admin.NewService(state, app.HealthRegistry)
+	app.AdminService.SetWorkers(app.Workers)
 	go app.refreshHealth(ctx)
 
 	// --- PostgreSQL (optional): connect + migrate. Degraded mode if unconfigured. ---
@@ -172,6 +178,24 @@ func (a *App) refreshHealth(ctx context.Context) {
 		a.HealthRegistry.Set(health.Component{Name: "discord", State: map[bool]health.State{true: health.Healthy, false: health.Degraded}[critical("discord_connected")]})
 		a.HealthRegistry.Set(health.Component{Name: "nitrado", State: map[bool]health.State{true: health.Healthy, false: health.Degraded}[critical("nitrado_authenticated")]})
 		a.HealthRegistry.Set(health.Component{Name: "adm_pipeline", State: map[bool]health.State{true: health.Healthy, false: health.Unhealthy}[critical("log_source_found")], Critical: true})
+		if a.ADMHealth != nil {
+			var poll, change time.Time
+			if v, ok := snap["last_poll"].(string); ok {
+				poll, _ = time.Parse(time.RFC3339, v)
+			}
+			if v, ok := snap["last_log_change"].(string); ok {
+				change, _ = time.Parse(time.RFC3339, v)
+			}
+			online, _ := snap["online_players"].(int)
+			file, _ := snap["log_filename"].(string)
+			st, reason := a.ADMHealth.Evaluate(operations.ADMHealthSnapshot{LastPollSuccessAt: poll, LastChangeAt: change, OnlinePlayers: online, CurrentFile: file}, time.Now())
+			a.HealthRegistry.Set(health.Component{Name: "adm_stall", State: st, Message: reason, Critical: st == health.Unhealthy})
+		}
+		if a.persistQueue != nil {
+			depth, capacity, highWater, dropped, oldest := a.persistQueue.QueueHealth()
+			q := health.EvaluateQueue(health.QueueHealth{Name: "persistence", Depth: depth, Capacity: capacity, HighWaterMark: highWater, Dropped: uint64(dropped), OldestAge: oldest})
+			a.HealthRegistry.Set(health.Component{Name: "persistence_queue", State: q.State, Message: fmt.Sprintf("queue %d/%d high-water %d oldest %s", depth, capacity, highWater, oldest.Round(time.Second)), Critical: true})
+		}
 	}
 	update()
 	for {
@@ -477,7 +501,15 @@ func (a *App) Run() error {
 			pq.SetKillPostProcessor(store)
 			engine.SetPersistence(pq)
 			a.persistQueue = pq
-			go pq.Run(ctx)
+			if a.Workers != nil {
+				a.Workers.Register("persistence")
+			}
+			go func() {
+				if a.Workers != nil {
+					a.Workers.Heartbeat("persistence")
+				}
+				pq.Run(ctx)
+			}()
 			if a.EventService != nil || a.CompletionPublisher != nil {
 				go a.runCompetitiveSchedulers(ctx, guildRowID)
 			}

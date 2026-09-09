@@ -53,6 +53,9 @@ type PersistenceQueue struct {
 	// is a duplicate (already persisted), it is NOT invoked — preventing reposts.
 	onKillPersisted func(ev *Event)
 	postProcessor   KillPostProcessor
+	enqueued        int64
+	highWater       int
+	oldestAt        time.Time
 }
 
 func (q *PersistenceQueue) SetKillPostProcessor(processor KillPostProcessor) {
@@ -90,6 +93,15 @@ func (q *PersistenceQueue) Enqueue(ev *Event) bool {
 	}
 	select {
 	case q.queue <- ev:
+		q.mu.Lock()
+		q.enqueued++
+		if len(q.queue) > q.highWater {
+			q.highWater = len(q.queue)
+		}
+		if q.oldestAt.IsZero() {
+			q.oldestAt = time.Now()
+		}
+		q.mu.Unlock()
 		return true
 	default:
 		q.mu.Lock()
@@ -112,6 +124,19 @@ func (q *PersistenceQueue) Depth() int {
 	return len(q.queue)
 }
 
+func (q *PersistenceQueue) QueueHealth() (depth, capacity, highWater int, dropped int64, oldestAge time.Duration) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	depth = len(q.queue)
+	capacity = cap(q.queue)
+	highWater = q.highWater
+	dropped = q.dropped
+	if !q.oldestAt.IsZero() {
+		oldestAge = time.Since(q.oldestAt)
+	}
+	return
+}
+
 // Run processes queued events in order until the queue is closed and drained.
 func (q *PersistenceQueue) Run(ctx context.Context) {
 	defer close(q.done)
@@ -122,6 +147,11 @@ func (q *PersistenceQueue) Run(ctx context.Context) {
 				continue
 			}
 			q.persistOne(ctx, ev)
+			q.mu.Lock()
+			if len(q.queue) == 0 {
+				q.oldestAt = time.Time{}
+			}
+			q.mu.Unlock()
 		case <-q.closed:
 			// Drain remaining queued events before exit.
 			for {
