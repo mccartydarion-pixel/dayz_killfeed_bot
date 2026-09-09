@@ -347,6 +347,139 @@ CREATE INDEX IF NOT EXISTS idx_kills_guild_season_faction ON kills(guild_id,seas
 CREATE INDEX IF NOT EXISTS idx_kills_guild_war ON kills(guild_id,war_id);
 `,
 	},
+	{
+		Name: "0007_phase45_events_bounties_points",
+		SQL: `
+CREATE TABLE IF NOT EXISTS competitive_events (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    season_id BIGINT REFERENCES seasons(id) ON DELETE SET NULL,
+    event_type TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT,
+    status TEXT NOT NULL,
+    starts_at TIMESTAMPTZ,
+    ends_at TIMESTAMPTZ,
+    created_by_discord_user_id TEXT,
+    config JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_competitive_events_guild_status ON competitive_events(guild_id,status);
+CREATE INDEX IF NOT EXISTS idx_competitive_events_starts ON competitive_events(guild_id,starts_at);
+CREATE INDEX IF NOT EXISTS idx_competitive_events_ends ON competitive_events(guild_id,ends_at);
+
+CREATE TABLE IF NOT EXISTS event_scores (
+    id BIGSERIAL PRIMARY KEY,
+    event_id BIGINT NOT NULL REFERENCES competitive_events(id) ON DELETE CASCADE,
+    player_id BIGINT REFERENCES players(id) ON DELETE CASCADE,
+    faction_id BIGINT REFERENCES factions(id) ON DELETE CASCADE,
+    score DOUBLE PRECISION NOT NULL DEFAULT 0,
+    kills BIGINT NOT NULL DEFAULT 0,
+    best_distance DOUBLE PRECISION,
+    best_streak INTEGER,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CHECK ((player_id IS NOT NULL) <> (faction_id IS NOT NULL))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_event_player_score ON event_scores(event_id,player_id) WHERE player_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_event_faction_score ON event_scores(event_id,faction_id) WHERE faction_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_event_scores_rank ON event_scores(event_id,score DESC);
+
+CREATE TABLE IF NOT EXISTS event_kills (
+    event_id BIGINT NOT NULL REFERENCES competitive_events(id) ON DELETE CASCADE,
+    kill_id BIGINT NOT NULL REFERENCES kills(id) ON DELETE CASCADE,
+    points DOUBLE PRECISION NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY(event_id,kill_id)
+);
+CREATE INDEX IF NOT EXISTS idx_event_kills_event ON event_kills(event_id,kill_id);
+
+CREATE TABLE IF NOT EXISTS event_results (
+    event_id BIGINT PRIMARY KEY REFERENCES competitive_events(id) ON DELETE CASCADE,
+    winner_player_id BIGINT REFERENCES players(id) ON DELETE SET NULL,
+    winner_faction_id BIGINT REFERENCES factions(id) ON DELETE SET NULL,
+    winning_score DOUBLE PRECISION NOT NULL,
+    runner_up_player_id BIGINT REFERENCES players(id) ON DELETE SET NULL,
+    runner_up_faction_id BIGINT REFERENCES factions(id) ON DELETE SET NULL,
+    finalized_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    metadata JSONB NOT NULL DEFAULT '{}'
+);
+CREATE TABLE IF NOT EXISTS player_event_results (
+    event_id BIGINT NOT NULL REFERENCES competitive_events(id) ON DELETE CASCADE,
+    player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    placement INTEGER NOT NULL,
+    score DOUBLE PRECISION NOT NULL,
+    reward_points INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY(event_id,player_id)
+);
+CREATE TABLE IF NOT EXISTS faction_event_results (
+    event_id BIGINT NOT NULL REFERENCES competitive_events(id) ON DELETE CASCADE,
+    faction_id BIGINT NOT NULL REFERENCES factions(id) ON DELETE CASCADE,
+    placement INTEGER NOT NULL,
+    score DOUBLE PRECISION NOT NULL,
+    reward_points INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY(event_id,faction_id)
+);
+
+CREATE TABLE IF NOT EXISTS bounties (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    season_id BIGINT REFERENCES seasons(id) ON DELETE SET NULL,
+    target_player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    created_by_type TEXT NOT NULL,
+    created_by_discord_user_id TEXT,
+    status TEXT NOT NULL,
+    reward_points INTEGER NOT NULL CHECK (reward_points > 0),
+    reason TEXT,
+    starts_at TIMESTAMPTZ NOT NULL,
+    expires_at TIMESTAMPTZ,
+    claimed_by_player_id BIGINT REFERENCES players(id) ON DELETE SET NULL,
+    claimed_kill_id BIGINT REFERENCES kills(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    claimed_at TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_active_bounty_target ON bounties(guild_id,target_player_id) WHERE status='ACTIVE';
+CREATE INDEX IF NOT EXISTS idx_bounties_status ON bounties(guild_id,status);
+CREATE INDEX IF NOT EXISTS idx_bounties_target_status ON bounties(guild_id,target_player_id,status);
+CREATE INDEX IF NOT EXISTS idx_bounties_expiry ON bounties(expires_at);
+
+CREATE TABLE IF NOT EXISTS player_points (
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    lifetime_points BIGINT NOT NULL DEFAULT 0,
+    season_points BIGINT NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY(guild_id,player_id)
+);
+CREATE TABLE IF NOT EXISTS point_transactions (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    season_id BIGINT REFERENCES seasons(id) ON DELETE SET NULL,
+    player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    amount INTEGER NOT NULL,
+    reason_type TEXT NOT NULL,
+    source_id BIGINT,
+    source_key TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(guild_id,player_id,reason_type,source_key)
+);
+CREATE INDEX IF NOT EXISTS idx_point_transactions_player ON point_transactions(guild_id,player_id);
+CREATE INDEX IF NOT EXISTS idx_point_transactions_season ON point_transactions(guild_id,season_id);
+
+CREATE TABLE IF NOT EXISTS combat_pair_activity (
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    killer_player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    victim_player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    kill_count BIGINT NOT NULL DEFAULT 0,
+    first_kill_at TIMESTAMPTZ,
+    last_kill_at TIMESTAMPTZ,
+    suspicious BOOLEAN NOT NULL DEFAULT FALSE,
+    PRIMARY KEY(guild_id,killer_player_id,victim_player_id)
+);
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order, each transactionally. A

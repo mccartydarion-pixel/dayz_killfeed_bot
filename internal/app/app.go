@@ -40,6 +40,9 @@ type App struct {
 	Checkpoints  *repository.CheckpointRepository
 	Streaks      *repository.StreakRepository
 	Achievements *repository.AchievementRepository
+	Events       *repository.EventRepository
+	Bounties     *repository.BountyRepository
+	Points       *repository.PointsRepository
 	Links        *repository.LinkRepository
 	LinkService  *linking.LinkVerificationService
 	persistQueue *killfeed.PersistenceQueue
@@ -101,6 +104,9 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.Checkpoints = repository.NewCheckpointRepository(db.Pool)
 			app.Streaks = repository.NewStreakRepository(db.Pool)
 			app.Achievements = repository.NewAchievementRepository(db.Pool)
+			app.Events = repository.NewEventRepository(db.Pool)
+			app.Bounties = repository.NewBountyRepository(db.Pool)
+			app.Points = repository.NewPointsRepository(db.Pool)
 			app.Links = repository.NewLinkRepository(db.Pool)
 			app.LinkService = linking.NewService(app.Links)
 			seedCtx, seedCancel := context.WithTimeout(ctx, 10*time.Second)

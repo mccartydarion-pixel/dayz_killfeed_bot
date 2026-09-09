@@ -28,6 +28,8 @@ type KillRecord struct {
 	VictimPlayerID  int64
 	KillerFactionID *int64
 	VictimFactionID *int64
+	SeasonID        *int64
+	WarID           *int64
 	WeaponRaw       string
 	WeaponDisplay   string
 	Distance        *float64
@@ -40,12 +42,12 @@ type KillRecord struct {
 // pair already exists — the durable dedupe that prevents reposts after restart.
 func (r *KillRepository) InsertKill(ctx context.Context, k KillRecord) error {
 	const q = `
-INSERT INTO kills (guild_id, session_id, event_fingerprint, killer_player_id, victim_player_id,
-	killer_faction_id, victim_faction_id, weapon_raw, weapon_display, distance, headshot, kill_style, event_time)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`
+	INSERT INTO kills (guild_id, session_id, event_fingerprint, killer_player_id, victim_player_id,
+	killer_faction_id, victim_faction_id, season_id, war_id, weapon_raw, weapon_display, distance, headshot, kill_style, event_time)
+	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`
 
 	_, err := r.pool.Exec(ctx, q, k.GuildID, k.SessionID, k.Fingerprint,
-		nilIfZero(k.KillerPlayerID), nilIfZero(k.VictimPlayerID), k.KillerFactionID, k.VictimFactionID,
+		nilIfZero(k.KillerPlayerID), nilIfZero(k.VictimPlayerID), k.KillerFactionID, k.VictimFactionID, k.SeasonID, k.WarID,
 		k.WeaponRaw, k.WeaponDisplay, k.Distance, k.Headshot, k.KillStyle, k.EventTime)
 	if isUniqueViolation(err) {
 		return ErrDuplicate
