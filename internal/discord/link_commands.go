@@ -65,6 +65,8 @@ func (h *LinkCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interacti
 			switch {
 			case errors.Is(err, linking.ErrPlayerNotFound):
 				respondEphemeral(s, i, "❌ **PLAYER NOT FOUND**\nChampion has not seen that PlayStation username on the DayZ server yet.")
+			case errors.Is(err, linking.ErrPlaytimeRequired):
+				respondEphemeral(s, i, "⏱️ **MORE PLAYTIME REQUIRED**\nChampion has detected that account, but it has not been observed on the server for the required 5 minutes yet. Stay connected and try `/link` again.")
 			case errors.Is(err, linking.ErrAlreadyLinked):
 				respondEphemeral(s, i, "⚠️ **ACCOUNT ALREADY LINKED**\nUse `/unlink` before linking another account.")
 			case errors.Is(err, linking.ErrPlayerClaimed):

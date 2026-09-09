@@ -13,6 +13,7 @@ import (
 var ErrPlayerNotFound = errors.New("player not found")
 var ErrAlreadyLinked = errors.New("account already linked")
 var ErrPlayerClaimed = errors.New("player already linked")
+var ErrPlaytimeRequired = errors.New("minimum observed playtime required")
 
 // PlayerCandidate is a known player returned by the repository.
 type PlayerCandidate struct {
@@ -52,12 +53,30 @@ type Repository interface {
 // LinkVerificationService creates pending links. It intentionally does not
 // auto-verify a typed username: current ADM data cannot prove Discord ownership.
 type LinkVerificationService struct {
-	repo    Repository
-	expires time.Duration
+	repo     Repository
+	expires  time.Duration
+	activity ActivityReader
+	serverID ServerResolver
 }
 
-func NewService(repo Repository) *LinkVerificationService {
-	return &LinkVerificationService{repo: repo, expires: 10 * time.Minute}
+type ActivityReader interface {
+	GetObservedPlaytime(context.Context, int64, int64, int64, time.Time) (time.Duration, error)
+}
+type ServerResolver interface {
+	DefaultServerID(context.Context, int64) (int64, error)
+}
+
+func NewService(repo Repository, extras ...any) *LinkVerificationService {
+	s := &LinkVerificationService{repo: repo, expires: 10 * time.Minute}
+	for _, extra := range extras {
+		if v, ok := extra.(ActivityReader); ok {
+			s.activity = v
+		}
+		if v, ok := extra.(ServerResolver); ok {
+			s.serverID = v
+		}
+	}
+	return s
 }
 
 // Request creates a PENDING link after exact case-insensitive player resolution.
@@ -82,6 +101,19 @@ func (s *LinkVerificationService) Request(ctx context.Context, guildID int64, di
 		return nil, ErrPlayerNotFound
 	}
 	candidate := candidates[0]
+	if s.activity != nil && s.serverID != nil {
+		serverID, serverErr := s.serverID.DefaultServerID(ctx, guildID)
+		if serverErr != nil {
+			return nil, serverErr
+		}
+		playtime, activityErr := s.activity.GetObservedPlaytime(ctx, guildID, serverID, candidate.ID, time.Now())
+		if activityErr != nil {
+			return nil, ErrPlayerNotFound
+		}
+		if playtime < 5*time.Minute {
+			return nil, ErrPlaytimeRequired
+		}
+	}
 	if claimed, err := s.repo.GetByPlayer(ctx, guildID, candidate.ID); err != nil {
 		return nil, err
 	} else if claimed != nil && claimed.Status == StatusVerified {

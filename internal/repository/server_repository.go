@@ -3,8 +3,9 @@ package repository
 import (
 	"context"
 	"fmt"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type GameServer struct {
@@ -50,6 +51,11 @@ func (r *ServerRepository) ListActive(ctx context.Context) ([]GameServer, error)
 		out = append(out, s)
 	}
 	return out, rows.Err()
+}
+func (r *ServerRepository) DefaultServerID(ctx context.Context, guildID int64) (int64, error) {
+	var id int64
+	err := r.pool.QueryRow(ctx, `SELECT id FROM game_servers WHERE guild_id=$1 AND active ORDER BY id LIMIT 1`, guildID).Scan(&id)
+	return id, err
 }
 func (r *ServerRepository) SaveConnection(ctx context.Context, c NitradoConnection) error {
 	_, err := r.pool.Exec(ctx, `INSERT INTO nitrado_connections(guild_id,credential_ciphertext,credential_nonce,credential_key_version,status,last_validated_at,last_success_at,last_failure_at,last_error_class) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(guild_id) DO UPDATE SET credential_ciphertext=EXCLUDED.credential_ciphertext,credential_nonce=EXCLUDED.credential_nonce,credential_key_version=EXCLUDED.credential_key_version,status=EXCLUDED.status,last_validated_at=EXCLUDED.last_validated_at,last_success_at=EXCLUDED.last_success_at,last_failure_at=EXCLUDED.last_failure_at,last_error_class=EXCLUDED.last_error_class,updated_at=NOW()`, c.GuildID, c.Ciphertext, c.Nonce, c.KeyVersion, c.Status, c.LastValidatedAt, c.LastSuccessAt, c.LastFailureAt, c.LastErrorClass)

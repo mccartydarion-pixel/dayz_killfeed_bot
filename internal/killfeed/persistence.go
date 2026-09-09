@@ -33,6 +33,10 @@ type KillIDStore interface {
 type KillPostProcessor interface {
 	ProcessPersistedKill(ctx context.Context, killID int64, record repository.KillRecord, event *Event)
 }
+type ActivityRecorder interface {
+	RecordConnect(context.Context, int64, int64, time.Time) error
+	RecordDisconnect(context.Context, int64, int64, time.Time) error
+}
 
 // PersistenceQueue is a bounded, ordered queue of events awaiting durable
 // persistence before Discord publish. Overflow drops the oldest-eligible policy
@@ -262,6 +266,15 @@ func (q *PersistenceQueue) persistOne(ctx context.Context, ev *Event) {
 		q.upsertPlayer(ctx, ev.Player)
 		q.upsertPlayer(ctx, ev.Victim)
 		q.upsertPlayer(ctx, ev.Attacker)
+		if recorder, ok := q.store.(ActivityRecorder); ok && (ev.Type == EventPlayerConnect || ev.Type == EventPlayerDisconnect) {
+			playerID := q.upsertPlayer(ctx, ev.Player)
+			at := eventTime(ev)
+			if ev.Type == EventPlayerConnect {
+				_ = recorder.RecordConnect(ctx, q.guildID, playerID, at)
+			} else {
+				_ = recorder.RecordDisconnect(ctx, q.guildID, playerID, at)
+			}
+		}
 	}
 
 	q.mu.Lock()

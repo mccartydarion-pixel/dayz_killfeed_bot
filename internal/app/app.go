@@ -67,6 +67,7 @@ type App struct {
 	AdminService        *admin.Service
 	AnalyticsRepository *repository.AnalyticsRepository
 	WelcomeRepository   *repository.WelcomeRepository
+	ActivityRepository  *repository.ActivityRepository
 	Servers             *repository.ServerRepository
 	CredentialCipher    *security.AESGCM
 	CompletionPublisher *discord.LiveCompletionPublisher
@@ -161,8 +162,9 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.AnalyticsRepository = repository.NewAnalyticsRepository(db.Pool)
 			app.Servers = repository.NewServerRepository(db.Pool)
 			app.WelcomeRepository = repository.NewWelcomeRepository(db.Pool)
+			app.ActivityRepository = repository.NewActivityRepository(db.Pool)
 			app.Links = repository.NewLinkRepository(db.Pool)
-			app.LinkService = linking.NewService(app.Links)
+			app.LinkService = linking.NewService(app.Links, app.ActivityRepository, app.Servers)
 			seedCtx, seedCancel := context.WithTimeout(ctx, 10*time.Second)
 			seedErr := app.Achievements.EnsureDefinitions(seedCtx)
 			seedCancel()
@@ -529,7 +531,7 @@ func (a *App) Run() error {
 				}
 				seasonCancel()
 			}
-			store := &persistenceStoreAdapter{players: a.Players, kills: a.Kills, deaths: a.Deaths, seasons: a.Seasons, factions: a.Factions, wars: a.Wars, events: a.Events, bounties: a.Bounties, streaks: a.Streaks, anomalies: a.Anomalies, panelDirty: func() {
+			store := &persistenceStoreAdapter{players: a.Players, kills: a.Kills, deaths: a.Deaths, seasons: a.Seasons, factions: a.Factions, wars: a.Wars, events: a.Events, bounties: a.Bounties, streaks: a.Streaks, anomalies: a.Anomalies, activity: a.ActivityRepository, servers: a.Servers, panelDirty: func() {
 				if livePanel != nil {
 					livePanel.MarkDirty()
 				}
@@ -687,7 +689,30 @@ type persistenceStoreAdapter struct {
 	bounties   *repository.BountyRepository
 	streaks    *repository.StreakRepository
 	anomalies  *repository.AnomalyRepository
+	activity   *repository.ActivityRepository
+	servers    *repository.ServerRepository
 	panelDirty func()
+}
+
+func (p *persistenceStoreAdapter) RecordConnect(ctx context.Context, guildID, playerID int64, at time.Time) error {
+	if p.activity == nil || p.servers == nil {
+		return nil
+	}
+	sid, err := p.servers.DefaultServerID(ctx, guildID)
+	if err != nil {
+		return err
+	}
+	return p.activity.Connect(ctx, guildID, sid, playerID, at)
+}
+func (p *persistenceStoreAdapter) RecordDisconnect(ctx context.Context, guildID, playerID int64, at time.Time) error {
+	if p.activity == nil || p.servers == nil {
+		return nil
+	}
+	sid, err := p.servers.DefaultServerID(ctx, guildID)
+	if err != nil {
+		return err
+	}
+	return p.activity.Disconnect(ctx, guildID, sid, playerID, at)
 }
 
 func (p *persistenceStoreAdapter) UpsertPlayer(ctx context.Context, guildID int64, dayzID, displayName string, seenAt time.Time) (int64, error) {

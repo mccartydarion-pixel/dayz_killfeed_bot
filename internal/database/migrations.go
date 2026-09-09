@@ -610,6 +610,24 @@ SELECT id,welcome_channel_id FROM guilds WHERE welcome_channel_id IS NOT NULL
 ON CONFLICT(guild_id) DO NOTHING;
 `,
 	},
+	{
+		Name: "0014_link_observed_server_playtime",
+		SQL: `
+CREATE TABLE IF NOT EXISTS player_server_activity (
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    server_id BIGINT NOT NULL REFERENCES game_servers(id) ON DELETE CASCADE,
+    player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    total_observed_seconds BIGINT NOT NULL DEFAULT 0,
+    current_session_started_at TIMESTAMPTZ,
+    currently_connected BOOLEAN NOT NULL DEFAULT FALSE,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY(guild_id,server_id,player_id)
+);
+CREATE INDEX IF NOT EXISTS idx_player_server_activity_lookup ON player_server_activity(guild_id,server_id,last_seen_at);
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order, each transactionally. A
