@@ -505,6 +505,17 @@ CREATE TABLE IF NOT EXISTS combat_anomaly_flags (
 CREATE INDEX IF NOT EXISTS idx_combat_anomaly_guild_created ON combat_anomaly_flags(guild_id,created_at DESC);
 `,
 	},
+	{
+		Name: "0010_phase44_45_completion_rewards",
+		SQL: `
+ALTER TABLE season_results ADD COLUMN IF NOT EXISTS completion_announced_at TIMESTAMPTZ;
+ALTER TABLE faction_wars ADD COLUMN IF NOT EXISTS completion_announced_at TIMESTAMPTZ;
+ALTER TABLE event_results ADD COLUMN IF NOT EXISTS completion_announced_at TIMESTAMPTZ;
+ALTER TABLE competitive_events ADD COLUMN IF NOT EXISTS winner_points INTEGER NOT NULL DEFAULT 1000;
+ALTER TABLE competitive_events ADD COLUMN IF NOT EXISTS second_place_points INTEGER NOT NULL DEFAULT 500;
+ALTER TABLE competitive_events ADD COLUMN IF NOT EXISTS third_place_points INTEGER NOT NULL DEFAULT 250;
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order, each transactionally. A

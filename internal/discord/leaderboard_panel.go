@@ -76,10 +76,13 @@ func (p *LeaderboardPanel) Update(snapshot LeaderboardSnapshot) (string, bool, e
 
 // LeaderboardSnapshot contains already-queried data; rendering does not touch SQL.
 type LeaderboardSnapshot struct {
-	TopKills    []repository.LeaderboardEntry
-	TopKD       []repository.LeaderboardEntry
-	TopLongest  []repository.LeaderboardEntry
-	GeneratedAt time.Time
+	TopKills       []repository.LeaderboardEntry
+	TopKD          []repository.LeaderboardEntry
+	TopLongest     []repository.LeaderboardEntry
+	GeneratedAt    time.Time
+	LiveEvents     []string
+	ActiveBounties []string
+	Points         []repository.LeaderboardEntry
 }
 
 func BuildLeaderboardEmbed(s LeaderboardSnapshot, cfg LeaderboardConfig) *discordgo.MessageEmbed {
@@ -91,6 +94,22 @@ func BuildLeaderboardEmbed(s LeaderboardSnapshot, cfg LeaderboardConfig) *discor
 	appendEntries(&b, s.TopLongest)
 	b.WriteString("\n━━━━━━━━━━━━━━━━\n\n🔥 **BEST K/D**\n")
 	appendEntries(&b, s.TopKD)
+	if len(s.LiveEvents) > 0 {
+		b.WriteString("\n━━━━━━━━━━━━━━━━\n\n🔥 **LIVE EVENTS**\n")
+		for _, line := range s.LiveEvents {
+			fmt.Fprintf(&b, "%s\n", safePanelText(line))
+		}
+	}
+	if len(s.ActiveBounties) > 0 {
+		b.WriteString("\n━━━━━━━━━━━━━━━━\n\n🎯 **MOST WANTED**\n")
+		for _, line := range s.ActiveBounties {
+			fmt.Fprintf(&b, "%s\n", safePanelText(line))
+		}
+	}
+	if len(s.Points) > 0 {
+		b.WriteString("\n━━━━━━━━━━━━━━━━\n\n🏆 **CHAMPION POINTS**\n")
+		appendEntries(&b, s.Points)
+	}
 	fmt.Fprintf(&b, "\nLast Updated\n<t:%d:R>", s.GeneratedAt.Unix())
 	return &discordgo.MessageEmbed{
 		Title:       "🏆 CHAMPION LEADERBOARD",

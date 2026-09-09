@@ -151,15 +151,97 @@ func (r *EventRepository) FinalizeEvent(ctx context.Context, eventID int64, resu
 		return err
 	}
 	defer tx.Rollback(ctx)
-	_, err = tx.Exec(ctx, `INSERT INTO event_results(event_id,winner_player_id,winner_faction_id,winning_score,finalized_at) VALUES($1,NULLIF($2,0),NULLIF($3,0),$4,$5) ON CONFLICT(event_id) DO NOTHING`, eventID, result.WinnerPlayerID, result.WinnerFactionID, result.WinningScore, result.FinalizedAt)
+	var status string
+	var winnerPoints, secondPoints, thirdPoints int
+	err = tx.QueryRow(ctx, `SELECT status,winner_points,second_place_points,third_place_points FROM competitive_events WHERE id=$1 FOR UPDATE`, eventID).Scan(&status, &winnerPoints, &secondPoints, &thirdPoints)
 	if err != nil {
 		return err
+	}
+	if status == "CANCELLED" {
+		return nil
+	}
+	var already bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM event_results WHERE event_id=$1)`, eventID).Scan(&already); err != nil {
+		return err
+	}
+	if already {
+		return tx.Commit(ctx)
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO event_results(event_id,winner_player_id,winner_faction_id,winning_score,finalized_at) VALUES($1,NULLIF($2,0),NULLIF($3,0),$4,$5)`, eventID, result.WinnerPlayerID, result.WinnerFactionID, result.WinningScore, result.FinalizedAt)
+	if err != nil {
+		return err
+	}
+	rows, err := tx.Query(ctx, `SELECT COALESCE(player_id,0),COALESCE(faction_id,0),score FROM event_scores WHERE event_id=$1 ORDER BY score DESC,kills DESC,id`, eventID)
+	if err != nil {
+		return err
+	}
+	type ranked struct {
+		playerID, factionID int64
+		score               float64
+	}
+	var rankings []ranked
+	for rows.Next() {
+		var item ranked
+		if err := rows.Scan(&item.playerID, &item.factionID, &item.score); err != nil {
+			rows.Close()
+			return err
+		}
+		rankings = append(rankings, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	placement := 0
+	for _, item := range rankings {
+		placement++
+		playerID, factionID, score := item.playerID, item.factionID, item.score
+		reward := 0
+		switch placement {
+		case 1:
+			reward = winnerPoints
+		case 2:
+			reward = secondPoints
+		case 3:
+			reward = thirdPoints
+		}
+		if playerID > 0 {
+			if _, err = tx.Exec(ctx, `INSERT INTO player_event_results(event_id,player_id,placement,score,reward_points) VALUES($1,$2,$3,$4,$5) ON CONFLICT(event_id,player_id) DO NOTHING`, eventID, playerID, placement, score, reward); err != nil {
+				return err
+			}
+			if reward > 0 {
+				if _, err = tx.Exec(ctx, `INSERT INTO point_transactions(guild_id,season_id,player_id,amount,reason_type,source_id,source_key) SELECT e.guild_id,e.season_id,$1,$2,$3,$4,$5 FROM competitive_events e WHERE e.id=$4 ON CONFLICT DO NOTHING`, playerID, reward, eventRewardReason(placement), eventID, fmt.Sprintf("event:%d:%d", eventID, placement)); err != nil {
+					return err
+				}
+				if _, err = tx.Exec(ctx, `INSERT INTO player_points(guild_id,player_id,lifetime_points,season_points) SELECT e.guild_id,$1,$2,$2 FROM competitive_events e WHERE e.id=$3 ON CONFLICT(guild_id,player_id) DO UPDATE SET lifetime_points=player_points.lifetime_points+EXCLUDED.lifetime_points,season_points=player_points.season_points+EXCLUDED.season_points,updated_at=NOW()`, playerID, reward, eventID); err != nil {
+					return err
+				}
+			}
+		} else if factionID > 0 {
+			if _, err = tx.Exec(ctx, `INSERT INTO faction_event_results(event_id,faction_id,placement,score,reward_points) VALUES($1,$2,$3,$4,$5) ON CONFLICT(event_id,faction_id) DO NOTHING`, eventID, factionID, placement, score, reward); err != nil {
+				return err
+			}
+		}
 	}
 	_, err = tx.Exec(ctx, `UPDATE competitive_events SET status='ENDED',updated_at=NOW() WHERE id=$1 AND status<>'CANCELLED'`, eventID)
 	if err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+func eventRewardReason(placement int) string {
+	switch placement {
+	case 1:
+		return "EVENT_FIRST_PLACE"
+	case 2:
+		return "EVENT_SECOND_PLACE"
+	case 3:
+		return "EVENT_THIRD_PLACE"
+	default:
+		return "EVENT_PLACEMENT"
+	}
 }
 
 var _ = errors.Is

@@ -28,6 +28,7 @@ import (
 
 // App owns the main runtime dependencies.
 type App struct {
+	Config        *config.Config
 	Nitrado       *nitrado.Client
 	Discord       *discord.Client
 	HTTPServer    *server.Server
@@ -50,6 +51,7 @@ type App struct {
 	SeasonService *seasons.Service
 	Factions      *repository.FactionRepository
 	Wars          *repository.PostgresWarRepository
+	FactionStats  *repository.FactionStatsRepository
 	Anomalies     *repository.AnomalyRepository
 	Links         *repository.LinkRepository
 	LinkService   *linking.LinkVerificationService
@@ -120,6 +122,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.SeasonService = seasons.NewService(app.Seasons)
 			app.Factions = repository.NewFactionRepository(db.Pool)
 			app.Wars = repository.NewPostgresWarRepository(db.Pool)
+			app.FactionStats = repository.NewFactionStatsRepository(db.Pool)
 			app.Anomalies = repository.NewAnomalyRepository(db.Pool)
 			app.Links = repository.NewLinkRepository(db.Pool)
 			app.LinkService = linking.NewService(app.Links)
@@ -286,7 +289,7 @@ func (a *App) Run() error {
 		})
 	}
 	if a.Wars != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
-		warHandler := discord.NewWarCommandHandler(a.Wars, a.Guilds, a.Seasons)
+		warHandler := discord.NewWarCommandHandler(a.Wars, a.Guilds, a.Seasons, a.Factions, a.Links, a.FactionStats)
 		if err := discord.RegisterWarCommands(session, a.Config.DiscordGuildID); err != nil {
 			slog.Warn("component=discord", "msg", "failed to register faction war commands", "err", err.Error())
 		}
@@ -677,7 +680,7 @@ func (p *persistenceStoreAdapter) ensureAutomaticBounty(ctx context.Context, rec
 		}
 		return
 	}
-	_, _ = p.bounties.Create(ctx, repository.Bounty{GuildID: record.GuildID, SeasonID: valueOfID(record.SeasonID), TargetPlayerID: record.KillerPlayerID, CreatedByType: repository.BountyAutomatic, RewardPoints: int64(reward), Reason: fmt.Sprintf("%d kill streak", streak), StartsAt: at}, "")
+	_, _ = p.bounties.Create(ctx, repository.Bounty{GuildID: record.GuildID, SeasonID: valueOfID(record.SeasonID), TargetPlayerID: record.KillerPlayerID, CreatedByType: repository.BountyAutomatic, RewardPoints: int64(reward), Reason: fmt.Sprintf("%d kill streak", streak), StartsAt: &at}, "")
 }
 
 // playerNames returns the sorted display names of currently online players.

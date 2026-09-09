@@ -15,12 +15,17 @@ const (
 type Capability string
 
 const (
-	CanInvite   Capability = "INVITE"
-	CanKick     Capability = "KICK"
-	CanPromote  Capability = "PROMOTE"
-	CanDemote   Capability = "DEMOTE"
-	CanTransfer Capability = "TRANSFER"
-	CanDisband  Capability = "DISBAND"
+	CanInvite       Capability = "INVITE"
+	CanKick         Capability = "KICK"
+	CanPromote      Capability = "PROMOTE"
+	CanDemote       Capability = "DEMOTE"
+	CanTransfer     Capability = "TRANSFER"
+	CanDisband      Capability = "DISBAND"
+	CanChallengeWar Capability = "CHALLENGE_WAR"
+	CanAcceptWar    Capability = "ACCEPT_WAR"
+	CanDeclineWar   Capability = "DECLINE_WAR"
+	CanEndWar       Capability = "END_WAR"
+	CanViewWar      Capability = "VIEW_WAR"
 )
 
 var ErrInvalidFaction = errors.New("invalid faction name or tag")
@@ -52,6 +57,10 @@ func Can(role string, capability Capability) bool {
 		return role == RoleOwner || role == RoleLeader
 	case CanTransfer, CanDisband:
 		return role == RoleOwner
+	case CanChallengeWar, CanAcceptWar, CanDeclineWar, CanEndWar:
+		return role == RoleOwner || role == RoleLeader
+	case CanViewWar:
+		return IsValidRole(role)
 	default:
 		return false
 	}

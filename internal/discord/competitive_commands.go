@@ -206,7 +206,7 @@ func (h *BountyCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interac
 			respondEphemeral(s, i, "Use positive points and a valid duration.")
 			return
 		}
-		created, err := h.bounties.Create(context.Background(), repository.Bounty{GuildID: gid, TargetPlayerID: pid, RewardPoints: points, CreatedByType: repository.BountyAdmin, StartsAt: time.Now().UTC(), ExpiresAt: ptrTime(time.Now().UTC().Add(duration))}, i.Member.User.ID)
+		created, err := h.bounties.Create(context.Background(), repository.Bounty{GuildID: gid, TargetPlayerID: pid, RewardPoints: points, CreatedByType: repository.BountyAdmin, StartsAt: ptrTime(time.Now().UTC()), ExpiresAt: ptrTime(time.Now().UTC().Add(duration))}, i.Member.User.ID)
 		if err != nil {
 			respondEphemeral(s, i, "Could not create bounty: "+err.Error())
 			return

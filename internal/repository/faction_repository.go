@@ -67,6 +67,16 @@ func (r *FactionRepository) GetActiveFactionForPlayer(ctx context.Context, guild
 	return &m, nil
 }
 
+func (r *FactionRepository) GetMembership(ctx context.Context, guildID, playerID int64) (*FactionMember, error) {
+	return r.GetActiveFactionForPlayer(ctx, guildID, playerID)
+}
+
+func (r *FactionRepository) GetByTag(ctx context.Context, guildID int64, tag string) (*Faction, error) {
+	var f Faction
+	err := r.pool.QueryRow(ctx, `SELECT id,guild_id,name,tag,owner_player_id,COALESCE(discord_role_id,''),active FROM factions WHERE guild_id=$1 AND LOWER(tag)=LOWER($2)`, guildID, tag).Scan(&f.ID, &f.GuildID, &f.Name, &f.Tag, &f.OwnerPlayerID, &f.DiscordRoleID, &f.Active)
+	return &f, err
+}
+
 func (r *FactionRepository) Invite(ctx context.Context, guildID, factionID, playerID, invitedBy int64, expires time.Time) error {
 	_, err := r.pool.Exec(ctx, `INSERT INTO faction_invites(guild_id,faction_id,player_id,invited_by_player_id,status,expires_at) VALUES($1,$2,$3,$4,'PENDING',$5)`, guildID, factionID, playerID, invitedBy, expires)
 	return err

@@ -36,6 +36,12 @@ func (r *LinkRepository) GetByDiscord(ctx context.Context, guildID int64, discor
 	return r.get(ctx, `WHERE guild_id=$1 AND discord_user_id=$2`, guildID, discordUserID)
 }
 
+func (r *LinkRepository) GetVerifiedPlayerByDiscord(ctx context.Context, guildID int64, discordUserID string) (int64, error) {
+	var playerID int64
+	err := r.pool.QueryRow(ctx, `SELECT player_id FROM player_links WHERE guild_id=$1 AND discord_user_id=$2 AND status=$3`, guildID, discordUserID, linking.StatusVerified).Scan(&playerID)
+	return playerID, err
+}
+
 func (r *LinkRepository) GetByPlayer(ctx context.Context, guildID, playerID int64) (*linking.LinkRecord, error) {
 	return r.get(ctx, `WHERE guild_id=$1 AND player_id=$2`, guildID, playerID)
 }

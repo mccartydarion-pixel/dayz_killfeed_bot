@@ -119,6 +119,12 @@ func (r *PostgresWarRepository) GetActivePair(ctx context.Context, guildID, fact
 func (r *PostgresWarRepository) GetActiveWarForPair(ctx context.Context, guildID, factionA, factionB int64) (*War, error) {
 	return r.GetActivePair(ctx, guildID, factionA, factionB)
 }
+
+func (r *PostgresWarRepository) GetWar(ctx context.Context, guildID, warID int64) (*War, error) {
+	var w War
+	err := r.pool.QueryRow(ctx, `SELECT id,guild_id,COALESCE(season_id,0),faction_a_id,faction_b_id,status,started_at,ended_at,faction_a_score,faction_b_score,winner_faction_id FROM faction_wars WHERE guild_id=$1 AND id=$2`, guildID, warID).Scan(&w.ID, &w.GuildID, &w.SeasonID, &w.FactionAID, &w.FactionBID, &w.Status, &w.StartedAt, &w.EndedAt, &w.ScoreA, &w.ScoreB, &w.WinnerFactionID)
+	return &w, err
+}
 func (r *PostgresWarRepository) GetFactionActiveWars(ctx context.Context, guildID, factionID int64) ([]War, error) {
 	return r.listWars(ctx, `SELECT id,guild_id,COALESCE(season_id,0),faction_a_id,faction_b_id,status,started_at,ended_at,faction_a_score,faction_b_score,winner_faction_id FROM faction_wars WHERE guild_id=$1 AND (faction_a_id=$2 OR faction_b_id=$2) AND status='ACTIVE' ORDER BY started_at`, guildID, factionID)
 }

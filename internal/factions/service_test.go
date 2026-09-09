@@ -25,3 +25,23 @@ func TestCapabilities(t *testing.T) {
 		t.Fatal("unexpected elevated capability")
 	}
 }
+
+func TestWarCapabilitiesFollowFactionLeadership(t *testing.T) {
+	for _, role := range []string{RoleOwner, RoleLeader} {
+		for _, capability := range []Capability{CanChallengeWar, CanAcceptWar, CanDeclineWar, CanEndWar} {
+			if !Can(role, capability) {
+				t.Fatalf("%s should have %s", role, capability)
+			}
+		}
+	}
+	for _, role := range []string{RoleOfficer, RoleMember} {
+		for _, capability := range []Capability{CanChallengeWar, CanAcceptWar, CanDeclineWar, CanEndWar} {
+			if Can(role, capability) {
+				t.Fatalf("%s should not have %s", role, capability)
+			}
+		}
+		if !Can(role, CanViewWar) {
+			t.Fatalf("%s should view wars", role)
+		}
+	}
+}

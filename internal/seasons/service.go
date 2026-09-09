@@ -37,6 +37,9 @@ func (s *Service) StartSeason(ctx context.Context, guildID int64, name string, a
 	}
 	return s.store.Start(ctx, guildID, name, at)
 }
+func (s *Service) Start(ctx context.Context, guildID int64, name string, at time.Time) (*repository.Season, error) {
+	return s.StartSeason(ctx, guildID, name, at)
+}
 func (s *Service) EndSeason(ctx context.Context, guildID, seasonID int64, at time.Time) (*repository.SeasonResult, error) {
 	return s.store.FinalizeSeason(ctx, guildID, seasonID, at)
 }
