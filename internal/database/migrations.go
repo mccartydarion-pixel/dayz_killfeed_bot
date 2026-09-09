@@ -278,6 +278,75 @@ CREATE INDEX IF NOT EXISTS idx_kills_victim_faction ON kills(guild_id, victim_fa
 CREATE INDEX IF NOT EXISTS idx_kills_faction_pair ON kills(guild_id, killer_faction_id, victim_faction_id);
 `,
 	},
+	{
+		Name: "0006_phase44_seasons_wars",
+		SQL: `
+CREATE TABLE IF NOT EXISTS seasons (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    starts_at TIMESTAMPTZ NOT NULL,
+    ends_at TIMESTAMPTZ,
+    status TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_active_season_per_guild ON seasons(guild_id) WHERE status='ACTIVE';
+CREATE INDEX IF NOT EXISTS idx_seasons_guild_status ON seasons(guild_id,status);
+
+CREATE TABLE IF NOT EXISTS faction_wars (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    season_id BIGINT REFERENCES seasons(id) ON DELETE SET NULL,
+    faction_a_id BIGINT NOT NULL REFERENCES factions(id),
+    faction_b_id BIGINT NOT NULL REFERENCES factions(id),
+    status TEXT NOT NULL,
+    started_at TIMESTAMPTZ,
+    ended_at TIMESTAMPTZ,
+    created_by_player_id BIGINT REFERENCES players(id),
+    faction_a_score BIGINT NOT NULL DEFAULT 0,
+    faction_b_score BIGINT NOT NULL DEFAULT 0,
+    winner_faction_id BIGINT REFERENCES factions(id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CHECK(faction_a_id < faction_b_id),
+    CHECK(faction_a_id <> faction_b_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_active_war_pair ON faction_wars(guild_id,faction_a_id,faction_b_id) WHERE status='ACTIVE';
+CREATE INDEX IF NOT EXISTS idx_faction_wars_status ON faction_wars(guild_id,status);
+
+CREATE TABLE IF NOT EXISTS faction_rivalries (
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    faction_a_id BIGINT NOT NULL REFERENCES factions(id),
+    faction_b_id BIGINT NOT NULL REFERENCES factions(id),
+    total_a_kills BIGINT NOT NULL DEFAULT 0,
+    total_b_kills BIGINT NOT NULL DEFAULT 0,
+    war_count BIGINT NOT NULL DEFAULT 0,
+    last_fought_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY(guild_id,faction_a_id,faction_b_id),
+    CHECK(faction_a_id < faction_b_id)
+);
+
+CREATE TABLE IF NOT EXISTS season_results (
+    season_id BIGINT PRIMARY KEY REFERENCES seasons(id) ON DELETE CASCADE,
+    top_player_id BIGINT REFERENCES players(id),
+    top_faction_id BIGINT REFERENCES factions(id),
+    top_player_kills BIGINT,
+    top_faction_kills BIGINT,
+    longest_kill_player_id BIGINT REFERENCES players(id),
+    longest_kill_value DOUBLE PRECISION,
+    best_streak_player_id BIGINT REFERENCES players(id),
+    best_streak_value INTEGER,
+    finalized_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE kills ADD COLUMN IF NOT EXISTS season_id BIGINT REFERENCES seasons(id) ON DELETE SET NULL;
+ALTER TABLE kills ADD COLUMN IF NOT EXISTS war_id BIGINT REFERENCES faction_wars(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_kills_guild_season_killer ON kills(guild_id,season_id,killer_player_id);
+CREATE INDEX IF NOT EXISTS idx_kills_guild_season_faction ON kills(guild_id,season_id,killer_faction_id);
+CREATE INDEX IF NOT EXISTS idx_kills_guild_war ON kills(guild_id,war_id);
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order, each transactionally. A

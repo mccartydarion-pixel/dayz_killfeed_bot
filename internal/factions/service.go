@@ -1,4 +1,5 @@
 package factions
+package factions
 
 import (
 	"errors"
@@ -6,21 +7,20 @@ import (
 )
 
 const (
-	RoleOwner   = "OWNER"
-	RoleLeader  = "LEADER"
+	RoleOwner  = "OWNER"
+	RoleLeader = "LEADER"
 	RoleOfficer = "OFFICER"
-	RoleMember  = "MEMBER"
+	RoleMember = "MEMBER"
 )
 
 type Capability string
-
 const (
-	CanInvite   Capability = "INVITE"
-	CanKick     Capability = "KICK"
-	CanPromote  Capability = "PROMOTE"
-	CanDemote   Capability = "DEMOTE"
+	CanInvite Capability = "INVITE"
+	CanKick Capability = "KICK"
+	CanPromote Capability = "PROMOTE"
+	CanDemote Capability = "DEMOTE"
 	CanTransfer Capability = "TRANSFER"
-	CanDisband  Capability = "DISBAND"
+	CanDisband Capability = "DISBAND"
 )
 
 var ErrInvalidFaction = errors.New("invalid faction name or tag")
@@ -35,9 +35,7 @@ func ValidateNameTag(name, tag string) error {
 		return ErrInvalidFaction
 	}
 	for _, r := range name + tag {
-		if r < 0x20 || r == '@' {
-			return ErrInvalidFaction
-		}
+		if r < 0x20 || r == '@' { return ErrInvalidFaction }
 	}
 	return nil
 }
