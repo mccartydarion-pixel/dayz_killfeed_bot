@@ -15,8 +15,15 @@ import (
 func TestAnnouncementClaimRace(t *testing.T) {
 	url := os.Getenv("TEST_DATABASE_URL")
 	if url == "" {
+		if os.Getenv("REQUIRE_INTEGRATION_DB") == "1" {
+			t.Fatal("TEST_DATABASE_URL is required for integration suite")
+		}
 		t.Skip("TEST_DATABASE_URL is not set")
 	}
+	if os.Getenv("ALLOW_INTEGRATION_DB_TESTS") != "true" {
+		t.Fatal("set ALLOW_INTEGRATION_DB_TESTS=true for an explicit non-production integration database")
+	}
+	t.Log("PostgreSQL integration tests: RUNNING")
 	ctx := context.Background()
 	db, err := database.Connect(ctx, url)
 	if err != nil {

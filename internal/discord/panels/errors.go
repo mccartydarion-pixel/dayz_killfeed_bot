@@ -1,6 +1,9 @@
 package panels
 
-import "errors"
+import (
+	"errors"
+	"time"
+)
 
 var (
 	ErrNotFound    = errors.New("panel message not found")
@@ -18,8 +21,9 @@ const (
 )
 
 type ClassifiedError struct {
-	Kind ErrorKind
-	Err  error
+	Kind       ErrorKind
+	Err        error
+	RetryAfter time.Duration
 }
 
 func (e *ClassifiedError) Error() string { return e.Err.Error() }
