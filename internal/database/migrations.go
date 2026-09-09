@@ -218,6 +218,66 @@ CREATE TABLE IF NOT EXISTS record_events (
 );
 `,
 	},
+	{
+		Name: "0005_phase43_factions",
+		SQL: `
+CREATE TABLE IF NOT EXISTS factions (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    tag TEXT NOT NULL,
+    owner_player_id BIGINT NOT NULL REFERENCES players(id),
+    discord_role_id TEXT,
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_factions_guild_name ON factions(guild_id, LOWER(name));
+CREATE UNIQUE INDEX IF NOT EXISTS uq_factions_guild_tag ON factions(guild_id, LOWER(tag));
+CREATE INDEX IF NOT EXISTS idx_factions_active ON factions(guild_id, active);
+
+CREATE TABLE IF NOT EXISTS faction_members (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    faction_id BIGINT NOT NULL REFERENCES factions(id) ON DELETE CASCADE,
+    player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    role TEXT NOT NULL,
+    joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    active BOOLEAN NOT NULL DEFAULT TRUE
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_active_faction_player ON faction_members(guild_id, player_id) WHERE active;
+CREATE INDEX IF NOT EXISTS idx_faction_members_faction ON faction_members(faction_id, active);
+
+CREATE TABLE IF NOT EXISTS faction_invites (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    faction_id BIGINT NOT NULL REFERENCES factions(id) ON DELETE CASCADE,
+    player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    invited_by_player_id BIGINT NOT NULL REFERENCES players(id),
+    status TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_pending_faction_invite ON faction_invites(guild_id, faction_id, player_id) WHERE status='PENDING';
+CREATE INDEX IF NOT EXISTS idx_faction_invites_player ON faction_invites(guild_id, player_id, status);
+
+CREATE TABLE IF NOT EXISTS faction_membership_history (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    faction_id BIGINT NOT NULL REFERENCES factions(id) ON DELETE CASCADE,
+    player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    role TEXT NOT NULL,
+    joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    left_at TIMESTAMPTZ
+);
+
+ALTER TABLE kills ADD COLUMN IF NOT EXISTS killer_faction_id BIGINT REFERENCES factions(id) ON DELETE SET NULL;
+ALTER TABLE kills ADD COLUMN IF NOT EXISTS victim_faction_id BIGINT REFERENCES factions(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_kills_killer_faction ON kills(guild_id, killer_faction_id);
+CREATE INDEX IF NOT EXISTS idx_kills_victim_faction ON kills(guild_id, victim_faction_id);
+CREATE INDEX IF NOT EXISTS idx_kills_faction_pair ON kills(guild_id, killer_faction_id, victim_faction_id);
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order, each transactionally. A
