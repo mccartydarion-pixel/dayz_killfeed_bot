@@ -487,6 +487,24 @@ ALTER TABLE deaths ADD COLUMN IF NOT EXISTS season_id BIGINT REFERENCES seasons(
 CREATE INDEX IF NOT EXISTS idx_deaths_guild_season_player ON deaths(guild_id,season_id,player_id);
 `,
 	},
+	{
+		Name: "0009_phase45_combat_anomaly_flags",
+		SQL: `
+CREATE TABLE IF NOT EXISTS combat_anomaly_flags (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    season_id BIGINT REFERENCES seasons(id) ON DELETE SET NULL,
+    killer_player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    victim_player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    flag_type TEXT NOT NULL,
+    occurrences BIGINT NOT NULL DEFAULT 1,
+    window_started_at TIMESTAMPTZ NOT NULL,
+    window_ended_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_combat_anomaly_guild_created ON combat_anomaly_flags(guild_id,created_at DESC);
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order, each transactionally. A

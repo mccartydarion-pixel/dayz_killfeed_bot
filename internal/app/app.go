@@ -50,6 +50,7 @@ type App struct {
 	SeasonService *seasons.Service
 	Factions      *repository.FactionRepository
 	Wars          *repository.PostgresWarRepository
+	Anomalies     *repository.AnomalyRepository
 	Links         *repository.LinkRepository
 	LinkService   *linking.LinkVerificationService
 	persistQueue  *killfeed.PersistenceQueue
@@ -119,6 +120,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.SeasonService = seasons.NewService(app.Seasons)
 			app.Factions = repository.NewFactionRepository(db.Pool)
 			app.Wars = repository.NewPostgresWarRepository(db.Pool)
+			app.Anomalies = repository.NewAnomalyRepository(db.Pool)
 			app.Links = repository.NewLinkRepository(db.Pool)
 			app.LinkService = linking.NewService(app.Links)
 			seedCtx, seedCancel := context.WithTimeout(ctx, 10*time.Second)
@@ -283,6 +285,17 @@ func (a *App) Run() error {
 			}
 		})
 	}
+	if a.Wars != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
+		warHandler := discord.NewWarCommandHandler(a.Wars, a.Guilds, a.Seasons)
+		if err := discord.RegisterWarCommands(session, a.Config.DiscordGuildID); err != nil {
+			slog.Warn("component=discord", "msg", "failed to register faction war commands", "err", err.Error())
+		}
+		a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+			if i.Type == discordgo.InteractionApplicationCommand && i.ApplicationCommandData().Name == "faction" {
+				warHandler.Handle(s, i)
+			}
+		})
+	}
 	if a.Config.DiscordGuildID != "" {
 		if err := discord.RegisterSetupCommand(session, a.Config.DiscordGuildID); err != nil {
 			slog.Warn("component=discord", "msg", "failed to register /setup command", "err", err.Error())
@@ -387,7 +400,7 @@ func (a *App) Run() error {
 				}
 				seasonCancel()
 			}
-			store := &persistenceStoreAdapter{players: a.Players, kills: a.Kills, deaths: a.Deaths, seasons: a.Seasons, factions: a.Factions, wars: a.Wars, events: a.Events, bounties: a.Bounties, streaks: a.Streaks}
+			store := &persistenceStoreAdapter{players: a.Players, kills: a.Kills, deaths: a.Deaths, seasons: a.Seasons, factions: a.Factions, wars: a.Wars, events: a.Events, bounties: a.Bounties, streaks: a.Streaks, anomalies: a.Anomalies}
 			pq := killfeed.NewPersistenceQueue(store, guildRowID, a.Config.NitradoServiceID)
 			pq.SetKillPostProcessor(store)
 			engine.SetPersistence(pq)
@@ -512,15 +525,16 @@ func (a *App) shutdown() {
 // persistenceStoreAdapter adapts the repositories to the killfeed.PersistenceStore
 // interface used by the persistence queue worker.
 type persistenceStoreAdapter struct {
-	players  *repository.PlayerRepository
-	kills    *repository.KillRepository
-	deaths   *repository.DeathRepository
-	seasons  *repository.SeasonRepository
-	factions *repository.FactionRepository
-	wars     *repository.PostgresWarRepository
-	events   *repository.EventRepository
-	bounties *repository.BountyRepository
-	streaks  *repository.StreakRepository
+	players   *repository.PlayerRepository
+	kills     *repository.KillRepository
+	deaths    *repository.DeathRepository
+	seasons   *repository.SeasonRepository
+	factions  *repository.FactionRepository
+	wars      *repository.PostgresWarRepository
+	events    *repository.EventRepository
+	bounties  *repository.BountyRepository
+	streaks   *repository.StreakRepository
+	anomalies *repository.AnomalyRepository
 }
 
 func (p *persistenceStoreAdapter) UpsertPlayer(ctx context.Context, guildID int64, dayzID, displayName string, seenAt time.Time) (int64, error) {
@@ -590,6 +604,11 @@ func (p *persistenceStoreAdapter) ProcessPersistedKill(ctx context.Context, kill
 	at := time.Now().UTC()
 	if ev != nil && !ev.Timestamp.IsZero() {
 		at = ev.Timestamp.UTC()
+	}
+	if p.anomalies != nil && record.KillerPlayerID > 0 && record.VictimPlayerID > 0 && record.KillerPlayerID != record.VictimPlayerID {
+		if suspicious, anomalyErr := p.anomalies.ObservePair(ctx, record.GuildID, valueOfID(record.SeasonID), record.KillerPlayerID, record.VictimPlayerID, at); anomalyErr == nil && suspicious {
+			slog.Debug("component=anti-farming", "msg", "repeated pair activity observed", "killer_player_id", record.KillerPlayerID, "victim_player_id", record.VictimPlayerID)
+		}
 	}
 
 	if p.events != nil {
