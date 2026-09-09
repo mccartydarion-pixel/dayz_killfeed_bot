@@ -32,6 +32,7 @@ type Service struct {
 	dirtyAt                        time.Time
 	mu                             sync.Mutex
 	onMessageID                    func(string)
+	recreateMu                     sync.Mutex
 }
 
 func (s *Service) SetMessageIDHook(fn func(string)) { s.mu.Lock(); s.onMessageID = fn; s.mu.Unlock() }
@@ -91,9 +92,39 @@ func (s *Service) Flush(snapshot Snapshot, force bool) (bool, error) {
 		err = s.editor.Edit(s.channelID, s.messageID, content)
 	}
 	if err != nil {
+		if Classify(err) == ErrorPermissionKind {
+			s.blocked = true
+		}
+		if Classify(err) == ErrorNotFoundKind {
+			return s.recreate(snapshot)
+		}
 		return false, err
 	}
 	s.lastHash = hash
+	s.dirty = false
+	return true, nil
+}
+
+func (s *Service) recreate(snapshot Snapshot) (bool, error) {
+	s.recreateMu.Lock()
+	defer s.recreateMu.Unlock()
+	if s.messageID == "" {
+		return false, nil
+	}
+	content := Render(snapshot)
+	id, err := s.editor.Send(s.channelID, content)
+	if err != nil {
+		if Classify(err) == ErrorPermissionKind {
+			s.blocked = true
+		}
+		return false, err
+	}
+	s.messageID = id
+	if s.onMessageID != nil {
+		s.onMessageID(id)
+	}
+	sum := sha256.Sum256([]byte(content))
+	s.lastHash = hex.EncodeToString(sum[:])
 	s.dirty = false
 	return true, nil
 }

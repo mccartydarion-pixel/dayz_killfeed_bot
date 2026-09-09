@@ -11,23 +11,25 @@ import (
 )
 
 type WarCommandHandler struct {
-	wars         *repository.PostgresWarRepository
-	guilds       GuildStore
-	seasons      *repository.SeasonRepository
-	factions     *repository.FactionRepository
-	links        *repository.LinkRepository
-	factionStats *repository.FactionStatsRepository
+	wars                *repository.PostgresWarRepository
+	guilds              GuildStore
+	seasons             *repository.SeasonRepository
+	factions            *repository.FactionRepository
+	links               *repository.LinkRepository
+	factionStats        *repository.FactionStatsRepository
+	factionPresentation *repository.FactionPresentationRepository
 }
 
-func NewWarCommandHandler(wars *repository.PostgresWarRepository, guilds GuildStore, seasons *repository.SeasonRepository, factionRepo *repository.FactionRepository, links *repository.LinkRepository, factionStats *repository.FactionStatsRepository) *WarCommandHandler {
-	return &WarCommandHandler{wars: wars, guilds: guilds, seasons: seasons, factions: factionRepo, links: links, factionStats: factionStats}
+func NewWarCommandHandler(wars *repository.PostgresWarRepository, guilds GuildStore, seasons *repository.SeasonRepository, factionRepo *repository.FactionRepository, links *repository.LinkRepository, factionStats *repository.FactionStatsRepository, factionPresentation *repository.FactionPresentationRepository) *WarCommandHandler {
+	return &WarCommandHandler{wars: wars, guilds: guilds, seasons: seasons, factions: factionRepo, links: links, factionStats: factionStats, factionPresentation: factionPresentation}
 }
 func RegisterWarCommands(session *discordgo.Session, guildID string) error {
 	warStatus := &discordgo.ApplicationCommandOption{Name: "status", Description: "Show an active or completed war", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "id", Description: "War ID", Type: discordgo.ApplicationCommandOptionInteger}, {Name: "opponent", Description: "Opponent faction tag", Type: discordgo.ApplicationCommandOptionString}}}
 	war := &discordgo.ApplicationCommandOption{Name: "war", Description: "Manage faction wars", Type: discordgo.ApplicationCommandOptionSubCommandGroup, Options: []*discordgo.ApplicationCommandOption{{Name: "challenge", Description: "Challenge two factions", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "faction_a", Description: "First faction ID", Type: discordgo.ApplicationCommandOptionInteger, Required: true}, {Name: "faction_b", Description: "Second faction ID", Type: discordgo.ApplicationCommandOptionInteger, Required: true}}}, {Name: "accept", Description: "Accept a challenge", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "id", Description: "War ID", Type: discordgo.ApplicationCommandOptionInteger, Required: true}}}, {Name: "decline", Description: "Decline a challenge", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "id", Description: "War ID", Type: discordgo.ApplicationCommandOptionInteger, Required: true}}}, {Name: "end", Description: "End an active war", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "id", Description: "War ID", Type: discordgo.ApplicationCommandOptionInteger, Required: true}}}, {Name: "cancel", Description: "Cancel a war", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "id", Description: "War ID", Type: discordgo.ApplicationCommandOptionInteger, Required: true}}}, warStatus, {Name: "history", Description: "Show war history", Type: discordgo.ApplicationCommandOptionSubCommand}}}
 	rivalry := &discordgo.ApplicationCommandOption{Name: "rivalry", Description: "Show faction rivalry stats", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "faction", Description: "Faction tag", Type: discordgo.ApplicationCommandOptionString, Required: true}, {Name: "opponent", Description: "Opponent faction tag", Type: discordgo.ApplicationCommandOptionString, Required: true}}}
 	leaderboard := &discordgo.ApplicationCommandOption{Name: "leaderboard", Description: "Show faction rankings", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "category", Description: "kills | kd | war-kills | longest", Type: discordgo.ApplicationCommandOptionString}, {Name: "scope", Description: "season | lifetime", Type: discordgo.ApplicationCommandOptionString}}}
-	cmd := &discordgo.ApplicationCommand{Name: "faction", Description: "Faction systems", Options: []*discordgo.ApplicationCommandOption{war, rivalry, leaderboard}}
+	info := &discordgo.ApplicationCommandOption{Name: "info", Description: "Show faction profile", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "tag", Description: "Faction tag", Type: discordgo.ApplicationCommandOptionString, Required: true}}}
+	cmd := &discordgo.ApplicationCommand{Name: "faction", Description: "Faction systems", Options: []*discordgo.ApplicationCommandOption{war, rivalry, leaderboard, info}}
 	_, err := session.ApplicationCommandCreate(session.State.User.ID, guildID, cmd)
 	return err
 }
@@ -53,6 +55,10 @@ func (h *WarCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interactio
 	}
 	if group.Name == "leaderboard" {
 		h.handleLeaderboard(s, i, ctx, gid, group)
+		return
+	}
+	if group.Name == "info" {
+		h.handleInfo(s, i, ctx, gid, group)
 		return
 	}
 	switch sub.Name {
@@ -162,6 +168,38 @@ func (h *WarCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interactio
 		return
 	}
 	respondEphemeral(s, i, fmt.Sprintf("⚔️ War %s.", strings.ToLower(sub.Name)))
+}
+
+func (h *WarCommandHandler) handleInfo(s *discordgo.Session, i *discordgo.InteractionCreate, ctx context.Context, guildID int64, group *discordgo.ApplicationCommandInteractionDataOption) {
+	if h.factionPresentation == nil || h.factions == nil {
+		respondEphemeral(s, i, "Faction profiles are unavailable.")
+		return
+	}
+	f, err := h.factions.GetByTag(ctx, guildID, optionString(group, "tag"))
+	if err != nil {
+		respondEphemeral(s, i, "Faction not found.")
+		return
+	}
+	seasonID := int64(0)
+	seasonName := ""
+	if h.seasons != nil {
+		if season, _ := h.seasons.GetActiveSeason(ctx, guildID); season != nil {
+			seasonID = season.ID
+			seasonName = season.Name
+		}
+	}
+	p, err := h.factionPresentation.Load(ctx, guildID, seasonID, f.ID)
+	if err != nil {
+		respondEphemeral(s, i, "Could not load faction profile.")
+		return
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "🏆 **[%s] %s**\n\n👑 **OWNER**\n%s\n\n👥 **MEMBERS**\n%d / %d\n\n", safePanelText(p.Tag), safePanelText(p.Name), safePanelText(p.OwnerName), p.MemberCount, p.MaxMembers)
+	if seasonName != "" {
+		fmt.Fprintf(&b, "🏆 **SEASON**\n%s\n\n", safePanelText(seasonName))
+	}
+	fmt.Fprintf(&b, "⚔️ **SEASON COMBAT**\n%d Kills\n%d Deaths\n%.2f K/D\n\n🛡️ **FACTION COMBAT**\n%d Enemy Faction Kills\n%d Team Kills\n%d War Kills\n\n🏆 **CHAMPION POINTS**\n%d", p.SeasonKills, p.SeasonDeaths, p.SeasonKD, p.EnemyFactionKills, p.TeamKills, p.WarKills, p.ChampionPoints)
+	respondEphemeral(s, i, b.String())
 }
 
 func (h *WarCommandHandler) authorized(ctx context.Context, i *discordgo.InteractionCreate, guildID, factionID int64, capability factions.Capability) bool {

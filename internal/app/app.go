@@ -53,6 +53,7 @@ type App struct {
 	Factions            *repository.FactionRepository
 	Wars                *repository.PostgresWarRepository
 	FactionStats        *repository.FactionStatsRepository
+	FactionPresentation *repository.FactionPresentationRepository
 	Anomalies           *repository.AnomalyRepository
 	Announcements       *repository.AnnouncementRepository
 	AnnouncementService *discord.CompletionAnnouncementService
@@ -130,6 +131,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.Factions = repository.NewFactionRepository(db.Pool)
 			app.Wars = repository.NewPostgresWarRepository(db.Pool)
 			app.FactionStats = repository.NewFactionStatsRepository(db.Pool)
+			app.FactionPresentation = repository.NewFactionPresentationRepository(db.Pool)
 			app.Anomalies = repository.NewAnomalyRepository(db.Pool)
 			app.Links = repository.NewLinkRepository(db.Pool)
 			app.LinkService = linking.NewService(app.Links)
@@ -309,7 +311,7 @@ func (a *App) Run() error {
 		})
 	}
 	if a.Wars != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
-		warHandler := discord.NewWarCommandHandler(a.Wars, a.Guilds, a.Seasons, a.Factions, a.Links, a.FactionStats)
+		warHandler := discord.NewWarCommandHandler(a.Wars, a.Guilds, a.Seasons, a.Factions, a.Links, a.FactionStats, a.FactionPresentation)
 		if err := discord.RegisterWarCommands(session, a.Config.DiscordGuildID); err != nil {
 			slog.Warn("component=discord", "msg", "failed to register faction war commands", "err", err.Error())
 		}
