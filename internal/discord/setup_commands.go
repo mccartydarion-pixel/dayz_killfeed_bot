@@ -27,6 +27,7 @@ func RegisterSetupCommand(session *discordgo.Session, guildID string) error {
 		Description:              "Configure Champion Killfeed for this server",
 		DefaultMemberPermissions: &defaultMemberPerms,
 		Options: []*discordgo.ApplicationCommandOption{
+			{Name: "run", Description: "Create the Champion Killfeed structure", Type: discordgo.ApplicationCommandOptionSubCommand},
 			{Name: "status", Description: "Show Champion Killfeed configuration status", Type: discordgo.ApplicationCommandOptionSubCommand},
 			{Name: "repair", Description: "Recreate any missing Champion Killfeed resources", Type: discordgo.ApplicationCommandOptionSubCommand},
 			{Name: "reset", Description: "Remove Champion Killfeed configuration (requires confirmation)", Type: discordgo.ApplicationCommandOptionSubCommand},
@@ -67,6 +68,8 @@ func (h *SetupHandler) Handle(s *discordgo.Session, i *discordgo.InteractionCrea
 	switch sub {
 	case "status":
 		h.handleStatus(s, i)
+	case "run":
+		h.handleSetup(s, i, false)
 	case "repair":
 		h.handleSetup(s, i, true)
 	case "reset":

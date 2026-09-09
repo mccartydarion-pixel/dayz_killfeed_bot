@@ -326,6 +326,17 @@ func (a *App) Run() error {
 	setupManager := discord.NewSetupManager(api, setupStore, a.Discord.BotID())
 	setupHandler := discord.NewSetupHandler(setupManager)
 	welcomeHandler := discord.NewPersistentWelcomeHandler(setupStore, a.WelcomeRepository, a.Guilds)
+	if a.WelcomeRepository != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
+		welcomeCommands := discord.NewWelcomeCommandHandler(a.WelcomeRepository, a.Guilds, setupStore)
+		if err := discord.RegisterWelcomeCommands(session, a.Config.DiscordGuildID); err != nil {
+			slog.Warn("component=discord", "msg", "failed to register welcome commands", "err", err.Error())
+		}
+		a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+			if i.Type == discordgo.InteractionApplicationCommand && i.ApplicationCommandData().Name == "welcome" {
+				welcomeCommands.Handle(s, i)
+			}
+		})
+	}
 	if a.AnalyticsRepository != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
 		analyticsHandler := discord.NewAnalyticsCommandHandler(a.AnalyticsRepository, a.Guilds)
 		if err := discord.RegisterAnalyticsCommands(session, a.Config.DiscordGuildID, a.Config.DiscordApplicationID); err != nil {
@@ -356,6 +367,17 @@ func (a *App) Run() error {
 		a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			if i.Type == discordgo.InteractionApplicationCommand && i.ApplicationCommandData().Name == "server" {
 				serverHandler.Handle(s, i)
+			}
+		})
+	}
+	if a.WelcomeRepository != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
+		welcomeCommands := discord.NewWelcomeCommandHandler(a.WelcomeRepository, a.Guilds, setupStore)
+		if err := discord.RegisterWelcomeCommands(session, a.Config.DiscordGuildID); err != nil {
+			slog.Warn("component=discord", "msg", "failed to register welcome commands", "err", err.Error())
+		}
+		a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+			if i.Type == discordgo.InteractionApplicationCommand && i.ApplicationCommandData().Name == "welcome" {
+				welcomeCommands.Handle(s, i)
 			}
 		})
 	}
