@@ -38,6 +38,8 @@ type App struct {
 	Stats        *repository.StatsRepository
 	Sessions     *repository.SessionRepository
 	Checkpoints  *repository.CheckpointRepository
+	Streaks      *repository.StreakRepository
+	Achievements *repository.AchievementRepository
 	Links        *repository.LinkRepository
 	LinkService  *linking.LinkVerificationService
 	persistQueue *killfeed.PersistenceQueue
@@ -97,8 +99,16 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.Stats = repository.NewStatsRepository(db.Pool)
 			app.Sessions = repository.NewSessionRepository(db.Pool)
 			app.Checkpoints = repository.NewCheckpointRepository(db.Pool)
+			app.Streaks = repository.NewStreakRepository(db.Pool)
+			app.Achievements = repository.NewAchievementRepository(db.Pool)
 			app.Links = repository.NewLinkRepository(db.Pool)
 			app.LinkService = linking.NewService(app.Links)
+			seedCtx, seedCancel := context.WithTimeout(ctx, 10*time.Second)
+			seedErr := app.Achievements.EnsureDefinitions(seedCtx)
+			seedCancel()
+			if seedErr != nil {
+				return nil, fmt.Errorf("seed achievement definitions: %w", seedErr)
+			}
 		}
 	} else {
 		slog.Warn("component=database", "msg", "DATABASE_URL not configured; persistence disabled (degraded mode)")

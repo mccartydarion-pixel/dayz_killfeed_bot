@@ -165,6 +165,59 @@ CREATE TABLE IF NOT EXISTS server_records (
 );
 `,
 	},
+	{
+		Name: "0004_phase42_streaks_achievements",
+		SQL: `
+CREATE TABLE IF NOT EXISTS player_combat_stats (
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    current_streak INTEGER NOT NULL DEFAULT 0,
+    best_streak INTEGER NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY(guild_id, player_id)
+);
+
+CREATE TABLE IF NOT EXISTS player_session_stats (
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    session_id TEXT NOT NULL,
+    player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    kills BIGINT NOT NULL DEFAULT 0,
+    deaths BIGINT NOT NULL DEFAULT 0,
+    best_streak INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(guild_id, session_id, player_id)
+);
+
+CREATE TABLE IF NOT EXISTS achievements (
+    key TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL,
+    emoji TEXT NOT NULL,
+    hidden BOOLEAN NOT NULL DEFAULT FALSE
+);
+
+CREATE TABLE IF NOT EXISTS player_achievements (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    achievement_key TEXT NOT NULL REFERENCES achievements(key),
+    unlocked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    source_kill_id BIGINT REFERENCES kills(id) ON DELETE SET NULL,
+    UNIQUE(guild_id, player_id, achievement_key)
+);
+CREATE INDEX IF NOT EXISTS idx_player_achievements_player ON player_achievements(guild_id, player_id);
+
+CREATE TABLE IF NOT EXISTS record_events (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    record_type TEXT NOT NULL,
+    player_id BIGINT REFERENCES players(id) ON DELETE SET NULL,
+    kill_id BIGINT REFERENCES kills(id) ON DELETE SET NULL,
+    old_value DOUBLE PRECISION,
+    new_value DOUBLE PRECISION NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order, each transactionally. A
