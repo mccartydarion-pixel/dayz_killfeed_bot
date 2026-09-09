@@ -86,36 +86,42 @@ type LeaderboardSnapshot struct {
 }
 
 func BuildLeaderboardEmbed(s LeaderboardSnapshot, cfg LeaderboardConfig) *discordgo.MessageEmbed {
-	var b strings.Builder
-	b.WriteString("🏆 **CHAMPION LEADERBOARD**\n\n")
-	b.WriteString("⚔️ **TOP KILLERS**\n")
-	appendEntries(&b, s.TopKills)
-	b.WriteString("\n━━━━━━━━━━━━━━━━\n\n🎯 **LONGEST KILL**\n")
-	appendEntries(&b, s.TopLongest)
-	b.WriteString("\n━━━━━━━━━━━━━━━━\n\n🔥 **BEST K/D**\n")
-	appendEntries(&b, s.TopKD)
+	embed := &discordgo.MessageEmbed{Title: "🏆 CHAMPION LEADERBOARD", Description: "Competitive rankings", Color: ColorChampionGold, Footer: &discordgo.MessageEmbedFooter{Text: "CHAMPION KILLFEED • EVERY KILL TELLS A STORY"}}
+	appendRankFields(embed, "⚔️ TOP KILLERS", s.TopKills)
+	appendRankFields(embed, "🎯 LONGEST KILL", s.TopLongest)
+	appendRankFields(embed, "🔥 BEST K/D", s.TopKD)
 	if len(s.LiveEvents) > 0 {
-		b.WriteString("\n━━━━━━━━━━━━━━━━\n\n🔥 **LIVE EVENTS**\n")
-		for _, line := range s.LiveEvents {
-			fmt.Fprintf(&b, "%s\n", safePanelText(line))
+		for idx, line := range s.LiveEvents {
+			embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: fmt.Sprintf("🔥 LIVE EVENT #%d", idx+1), Value: safePanelText(line), Inline: false})
 		}
 	}
 	if len(s.ActiveBounties) > 0 {
-		b.WriteString("\n━━━━━━━━━━━━━━━━\n\n🎯 **MOST WANTED**\n")
-		for _, line := range s.ActiveBounties {
-			fmt.Fprintf(&b, "%s\n", safePanelText(line))
+		for idx, line := range s.ActiveBounties {
+			embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: fmt.Sprintf("🎯 MOST WANTED #%d", idx+1), Value: safePanelText(line), Inline: false})
 		}
 	}
 	if len(s.Points) > 0 {
-		b.WriteString("\n━━━━━━━━━━━━━━━━\n\n🏆 **CHAMPION POINTS**\n")
-		appendEntries(&b, s.Points)
+		appendRankFields(embed, "🏆 CHAMPION POINTS", s.Points)
 	}
-	fmt.Fprintf(&b, "\nLast Updated\n<t:%d:R>", s.GeneratedAt.Unix())
-	return &discordgo.MessageEmbed{
-		Title:       "🏆 CHAMPION LEADERBOARD",
-		Description: b.String(),
-		Color:       ColorChampionGold,
-		Footer:      &discordgo.MessageEmbedFooter{Text: "CHAMPION KILLFEED • EVERY KILL TELLS A STORY"},
+	return embed
+}
+
+func appendRankFields(embed *discordgo.MessageEmbed, heading string, entries []repository.LeaderboardEntry) {
+	if len(entries) == 0 {
+		return
+	}
+	for i, entry := range entries {
+		medal := fmt.Sprintf("#%d", i+1)
+		if i == 0 {
+			medal = "#1"
+		}
+		if i == 1 {
+			medal = "#2"
+		}
+		if i == 2 {
+			medal = "#3"
+		}
+		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: heading + " • " + medal + " " + safePanelText(entry.DisplayName), Value: "**Value**  " + safePanelText(entry.Value), Inline: false})
 	}
 }
 

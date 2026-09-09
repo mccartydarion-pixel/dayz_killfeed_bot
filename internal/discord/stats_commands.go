@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -152,20 +153,16 @@ func (h *StatsCommandHandler) HandleLeaderboard(s *discordgo.Session, i *discord
 	}
 	if err != nil {
 		slog.Warn("component=discord", "msg", "leaderboard query failed", "err", err.Error())
-		respondEphemeral(s, i, "Could not load the leaderboard right now.")
+		respondLeaderboardEmbed(s, i, presentation.BuildLeaderboardErrorEmbed(title))
 		return
 	}
-
-	var b strings.Builder
-	fmt.Fprintf(&b, "🏆 **CHAMPION LEADERBOARD — %s**\n\n", strings.ToUpper(title))
-	if len(entries) == 0 {
-		b.WriteString("_No data yet._")
-	}
+	ranked := make([]presentation.RankedEntry, 0, len(entries))
 	for idx, e := range entries {
-		fmt.Fprintf(&b, "%d. %s — %s\n", idx+1, e.DisplayName, e.Value)
+		ranked = append(ranked, presentation.RankedEntry{Rank: idx + 1, Name: e.DisplayName, Value: e.Value})
 	}
-	if kind == "kd" {
-		fmt.Fprintf(&b, "\n_min %d kills to qualify_", h.minKillsKD)
-	}
-	respondEphemeral(s, i, b.String())
+	respondLeaderboardEmbed(s, i, presentation.BuildPlayerLeaderboardEmbed(title, ranked, "Lifetime"))
+}
+
+func respondLeaderboardEmbed(s *discordgo.Session, i *discordgo.InteractionCreate, embed *discordgo.MessageEmbed) {
+	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{Type: discordgo.InteractionResponseChannelMessageWithSource, Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral, Embeds: []*discordgo.MessageEmbed{embed}}})
 }
