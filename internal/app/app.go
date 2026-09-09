@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/database"
 	"github.com/yourname/dayz-killfeed/internal/discord"
 	"github.com/yourname/dayz-killfeed/internal/killfeed"
+	"github.com/yourname/dayz-killfeed/internal/linking"
 	"github.com/yourname/dayz-killfeed/internal/nitrado"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 	"github.com/yourname/dayz-killfeed/internal/server"
@@ -36,6 +38,8 @@ type App struct {
 	Stats        *repository.StatsRepository
 	Sessions     *repository.SessionRepository
 	Checkpoints  *repository.CheckpointRepository
+	Links        *repository.LinkRepository
+	LinkService  *linking.LinkVerificationService
 	persistQueue *killfeed.PersistenceQueue
 	cancel       context.CancelFunc
 }
@@ -93,6 +97,8 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.Stats = repository.NewStatsRepository(db.Pool)
 			app.Sessions = repository.NewSessionRepository(db.Pool)
 			app.Checkpoints = repository.NewCheckpointRepository(db.Pool)
+			app.Links = repository.NewLinkRepository(db.Pool)
+			app.LinkService = linking.NewService(app.Links)
 		}
 	} else {
 		slog.Warn("component=database", "msg", "DATABASE_URL not configured; persistence disabled (degraded mode)")
@@ -204,6 +210,7 @@ func (a *App) Run() error {
 	api := discord.NewSessionAPI(session)
 	setupManager := discord.NewSetupManager(api, setupStore, a.Discord.BotID())
 	setupHandler := discord.NewSetupHandler(setupManager)
+	welcomeHandler := discord.NewWelcomeHandler(setupStore)
 	if a.Config.DiscordGuildID != "" {
 		if err := discord.RegisterSetupCommand(session, a.Config.DiscordGuildID); err != nil {
 			slog.Warn("component=discord", "msg", "failed to register /setup command", "err", err.Error())
@@ -228,6 +235,27 @@ func (a *App) Run() error {
 			}
 		})
 	}
+	if a.LinkService != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
+		linkHandler := discord.NewLinkCommandHandler(a.LinkService, a.Guilds)
+		if err := discord.RegisterLinkCommands(session, a.Config.DiscordGuildID); err != nil {
+			slog.Warn("component=discord", "msg", "failed to register link commands", "err", err.Error())
+		}
+		a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+			if i.Type == discordgo.InteractionMessageComponent {
+				if strings.HasPrefix(i.MessageComponentData().CustomID, "champion_unlink_") {
+					linkHandler.HandleComponent(s, i)
+				}
+				return
+			}
+			if i.Type == discordgo.InteractionApplicationCommand {
+				name := i.ApplicationCommandData().Name
+				if name == "link" || name == "link-status" || name == "unlink" {
+					linkHandler.Handle(s, i)
+				}
+			}
+		})
+	}
+	a.Discord.AddMemberJoinHandler(welcomeHandler.HandleMemberJoin)
 
 	// Stats/leaderboard commands only work with a database.
 	var statsHandler *discord.StatsCommandHandler

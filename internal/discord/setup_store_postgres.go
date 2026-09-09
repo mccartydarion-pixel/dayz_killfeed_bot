@@ -63,6 +63,7 @@ func setupToRecord(s GuildSetup) repository.GuildRecord {
 	return repository.GuildRecord{
 		DiscordGuildID:         s.GuildID,
 		CategoryID:             s.CategoryID,
+		WelcomeChannelID:       s.WelcomeChannelID,
 		ServerStatusChannelID:  s.ServerStatusChannelID,
 		KillfeedChannelID:      s.KillfeedChannelID,
 		OnlinePlayersChannelID: s.OnlinePlayersChannelID,
@@ -70,7 +71,7 @@ func setupToRecord(s GuildSetup) repository.GuildRecord {
 		PlayerStatsChannelID:   s.PlayerStatsChannelID,
 		ServerStatusMessageID:  s.ServerStatusMessageID,
 		OnlinePlayersMessageID: s.OnlinePlayersMessageID,
-		SetupComplete:          s.CategoryID != "" && s.KillfeedChannelID != "" && s.OnlinePlayersChannelID != "",
+		SetupComplete:          s.CategoryID != "" && s.WelcomeChannelID != "" && s.KillfeedChannelID != "" && s.OnlinePlayersChannelID != "",
 	}
 }
 
@@ -79,6 +80,7 @@ func recordToSetup(r *repository.GuildRecord) *GuildSetup {
 	return &GuildSetup{
 		GuildID:                r.DiscordGuildID,
 		CategoryID:             r.CategoryID,
+		WelcomeChannelID:       r.WelcomeChannelID,
 		ServerStatusChannelID:  r.ServerStatusChannelID,
 		KillfeedChannelID:      r.KillfeedChannelID,
 		OnlinePlayersChannelID: r.OnlinePlayersChannelID,

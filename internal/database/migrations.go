@@ -110,6 +110,41 @@ CREATE TABLE IF NOT EXISTS adm_checkpoints (
 );
 `,
 	},
+	{
+		Name: "0002_welcome_and_links",
+		SQL: `
+ALTER TABLE guilds ADD COLUMN IF NOT EXISTS welcome_enabled BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE guilds ADD COLUMN IF NOT EXISTS welcome_channel_id TEXT;
+
+CREATE TABLE IF NOT EXISTS player_links (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    discord_user_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    requested_username TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    verified_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(guild_id, discord_user_id),
+    UNIQUE(guild_id, player_id)
+);
+CREATE INDEX IF NOT EXISTS idx_player_links_discord ON player_links(guild_id, discord_user_id);
+
+CREATE TABLE IF NOT EXISTS link_verifications (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    discord_user_id TEXT NOT NULL,
+    player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    challenge_hash TEXT NOT NULL,
+    status TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    verified_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_link_verifications_expiry ON link_verifications(guild_id, expires_at);
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order, each transactionally. A

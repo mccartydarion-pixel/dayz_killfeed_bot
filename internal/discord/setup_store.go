@@ -8,7 +8,8 @@ import "sync"
 type GuildSetup struct {
 	GuildID string
 
-	CategoryID string
+	CategoryID       string
+	WelcomeChannelID string
 
 	ServerStatusChannelID  string
 	KillfeedChannelID      string

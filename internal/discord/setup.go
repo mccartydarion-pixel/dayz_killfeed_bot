@@ -11,6 +11,7 @@ import (
 // channel names, so we always store and reference the returned IDs.
 const (
 	CategoryName        = "🏆 CHAMPION KILLFEED"
+	ChannelWelcome      = "👋・welcome"
 	ChannelServerStatus = "📢・server-status"
 	ChannelKillfeed     = "💀・killfeed"
 	ChannelLeaderboards = "📊・leaderboards"
@@ -102,6 +103,7 @@ func (m *SetupManager) EnsureConfigured(guildID string) (*GuildSetup, *SetupRepo
 		label   string
 	}
 	specs := []channelSpec{
+		{ChannelWelcome, false, func(id string) { setup.WelcomeChannelID = id }, func() string { return setup.WelcomeChannelID }, "welcome"},
 		{ChannelServerStatus, false, func(id string) { setup.ServerStatusChannelID = id }, func() string { return setup.ServerStatusChannelID }, "server-status"},
 		{ChannelKillfeed, false, func(id string) { setup.KillfeedChannelID = id }, func() string { return setup.KillfeedChannelID }, "killfeed"},
 		{onlineVoiceChannelName(), true, func(id string) { setup.OnlinePlayersChannelID = id }, func() string { return setup.OnlinePlayersChannelID }, "online-players"},
@@ -249,7 +251,7 @@ func (m *SetupManager) IsConfigured(guildID string) bool {
 	if err != nil || setup == nil {
 		return false
 	}
-	return setup.CategoryID != "" && setup.KillfeedChannelID != "" && setup.OnlinePlayersChannelID != ""
+	return setup.CategoryID != "" && setup.WelcomeChannelID != "" && setup.KillfeedChannelID != "" && setup.OnlinePlayersChannelID != ""
 }
 
 // ChannelNameSafe returns a Discord-safe channel name (lowercase, no spaces).

@@ -93,6 +93,7 @@ func (h *SetupHandler) handleSetup(s *discordgo.Session, i *discordgo.Interactio
 		b.WriteString("Champion Killfeed is already configured.\n\n")
 	}
 	fmt.Fprintf(&b, "Category: `%s`\n", CategoryName)
+	writeLine(&b, "Welcome", setup.WelcomeChannelID)
 	writeLine(&b, "Server Status", setup.ServerStatusChannelID)
 	writeLine(&b, "Killfeed", setup.KillfeedChannelID)
 	writeLine(&b, "Online Players", setup.OnlinePlayersChannelID)
@@ -126,8 +127,9 @@ func (h *SetupHandler) handleStatus(s *discordgo.Session, i *discordgo.Interacti
 	}
 	msg := fmt.Sprintf(
 		"🏆 **Champion Killfeed Status**\n\n"+
-			"Category: %s\nKillfeed: %s\nOnline Players: %s\nServer Status: %s\nLeaderboards: %s\nPlayer Stats: %s\n",
+			"Category: %s\nWelcome: %s\nKillfeed: %s\nOnline Players: %s\nServer Status: %s\nLeaderboards: %s\nPlayer Stats: %s\n",
 		mark(setup.CategoryID),
+		mark(setup.WelcomeChannelID),
 		mark(setup.KillfeedChannelID),
 		mark(setup.OnlinePlayersChannelID),
 		mark(setup.ServerStatusChannelID),

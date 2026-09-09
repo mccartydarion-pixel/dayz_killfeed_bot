@@ -19,7 +19,7 @@ func New(token string) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	session.Identify.Intents = discordgo.IntentsGuildMessages
+	session.Identify.Intents = discordgo.IntentsGuildMessages | discordgo.IntentsGuilds | discordgo.IntentsGuildMembers
 	return &Client{session: session}, nil
 }
 
@@ -53,6 +53,14 @@ func (c *Client) BotID() string {
 
 // AddHandler registers an event handler on the underlying session.
 func (c *Client) AddHandler(fn func(*discordgo.Session, *discordgo.InteractionCreate)) {
+	if c == nil || c.session == nil {
+		return
+	}
+	c.session.AddHandler(fn)
+}
+
+// AddMemberJoinHandler registers a GuildMemberAdd listener.
+func (c *Client) AddMemberJoinHandler(fn func(*discordgo.Session, *discordgo.GuildMemberAdd)) {
 	if c == nil || c.session == nil {
 		return
 	}
