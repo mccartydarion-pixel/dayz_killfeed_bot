@@ -70,6 +70,14 @@ func (q *PersistenceQueue) SetKillPostProcessor(processor KillPostProcessor) {
 	q.postProcessor = processor
 }
 
+// ServerID returns the game_servers row this queue is scoped to (0 if unset).
+func (q *PersistenceQueue) ServerID() int64 {
+	if q == nil {
+		return 0
+	}
+	return q.serverID
+}
+
 // maxPersistenceQueue bounds in-flight events so memory stays flat.
 const maxPersistenceQueue = 500
 

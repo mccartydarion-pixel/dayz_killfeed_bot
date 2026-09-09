@@ -3,6 +3,8 @@ package servers
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"runtime/debug"
 	"sync"
 	"time"
 )
@@ -25,15 +27,28 @@ func (m *WorkerManager) Start(parent context.Context, serverID int64) error {
 	}
 	ctx, cancel := context.WithCancel(parent)
 	m.workers[serverID] = cancel
-	go func() {
-		if m.factory != nil {
-			_ = m.factory(ctx, serverID)
+	go m.run(ctx, serverID)
+	return nil
+}
+
+// run executes the worker factory inside a panic-recovery boundary so a fault on
+// one server (panic, or any other failure) can never take down other workers or
+// the process. This is what makes WorkerManager the safe, sole owner of workers.
+func (m *WorkerManager) run(ctx context.Context, serverID int64) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("component=servers", "msg", "worker panic recovered; other servers unaffected", "server_id", serverID, "panic", fmt.Sprint(r), "stack", string(debug.Stack()))
 		}
 		m.mu.Lock()
 		delete(m.workers, serverID)
 		m.mu.Unlock()
 	}()
-	return nil
+	if m.factory == nil {
+		return
+	}
+	if err := m.factory(ctx, serverID); err != nil {
+		slog.Error("component=servers", "msg", "worker exited with error", "server_id", serverID, "err", err.Error())
+	}
 }
 func (m *WorkerManager) Stop(serverID int64) {
 	m.mu.Lock()

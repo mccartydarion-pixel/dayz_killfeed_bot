@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -76,8 +77,30 @@ type App struct {
 	PanelService        *panels.RefreshService
 	Links               *repository.LinkRepository
 	LinkService         *linking.LinkVerificationService
-	persistQueue        *killfeed.PersistenceQueue
+	persistQueuesMu     sync.Mutex
+	persistQueues       []*killfeed.PersistenceQueue
 	cancel              context.CancelFunc
+}
+
+// addPersistQueue registers a per-server persistence queue for health reporting
+// and shutdown draining. Safe for concurrent use across worker goroutines.
+func (a *App) addPersistQueue(pq *killfeed.PersistenceQueue) {
+	if a == nil || pq == nil {
+		return
+	}
+	a.persistQueuesMu.Lock()
+	a.persistQueues = append(a.persistQueues, pq)
+	a.persistQueuesMu.Unlock()
+}
+
+// allPersistQueues returns a snapshot copy of the currently known persistence
+// queues (one per running server worker).
+func (a *App) allPersistQueues() []*killfeed.PersistenceQueue {
+	a.persistQueuesMu.Lock()
+	defer a.persistQueuesMu.Unlock()
+	out := make([]*killfeed.PersistenceQueue, len(a.persistQueues))
+	copy(out, a.persistQueues)
+	return out
 }
 
 // New creates an application instance with the required dependencies.
@@ -210,10 +233,11 @@ func (a *App) refreshHealth(ctx context.Context) {
 			st, reason := a.ADMHealth.Evaluate(operations.ADMHealthSnapshot{LastPollSuccessAt: poll, LastChangeAt: change, OnlinePlayers: online, CurrentFile: file}, time.Now())
 			a.HealthRegistry.Set(health.Component{Name: "adm_stall", State: st, Message: reason, Critical: st == health.Unhealthy})
 		}
-		if a.persistQueue != nil {
-			depth, capacity, highWater, dropped, oldest := a.persistQueue.QueueHealth()
-			q := health.EvaluateQueue(health.QueueHealth{Name: "persistence", Depth: depth, Capacity: capacity, HighWaterMark: highWater, Dropped: uint64(dropped), OldestAge: oldest})
-			a.HealthRegistry.Set(health.Component{Name: "persistence_queue", State: q.State, Message: fmt.Sprintf("queue %d/%d high-water %d oldest %s", depth, capacity, highWater, oldest.Round(time.Second)), Critical: true})
+		for _, pq := range a.allPersistQueues() {
+			depth, capacity, highWater, dropped, oldest := pq.QueueHealth()
+			name := fmt.Sprintf("persistence_queue_%d", pq.ServerID())
+			q := health.EvaluateQueue(health.QueueHealth{Name: name, Depth: depth, Capacity: capacity, HighWaterMark: highWater, Dropped: uint64(dropped), OldestAge: oldest})
+			a.HealthRegistry.Set(health.Component{Name: name, State: q.State, Message: fmt.Sprintf("queue %d/%d high-water %d oldest %s", depth, capacity, highWater, oldest.Round(time.Second)), Critical: true})
 		}
 	}
 	update()
@@ -521,83 +545,81 @@ func (a *App) Run() error {
 		}
 	})
 
-	// --- Nitrado log polling engine (real ADM parser + killfeed publisher) ---
-	engine := killfeed.NewEngine(a.Nitrado, a.Config.NitradoServiceID, killfeed.NewADMParser())
-	engine.SetStateSink(state)
-
-	// Killfeed publisher: stored guild setup wins, env var is the fallback.
-	publisher := discord.NewKillfeedPublisher(a.Discord, a.Config.KillfeedChannelID)
-	publisher.BindStore(setupStore, a.Config.DiscordGuildID)
-	engine.SetKillPublisher(publisher)
-
-	// --- Persistence queue (persist-before-publish, durable dedupe) ---
-	if a.DB != nil && a.Players != nil && a.Kills != nil && a.Deaths != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
-		_, guildRowID, err := a.Guilds.GetGuild(ctx, a.Config.DiscordGuildID)
-		if err != nil {
-			slog.Warn("component=database", "msg", "could not resolve guild row; persistence disabled", "err", err.Error())
-		}
-		if guildRowID > 0 {
-			serverID, serverErr := a.Servers.ConnectedServerID(ctx, guildRowID)
-			if serverErr != nil || serverID == 0 {
-				slog.Error("component=database", "msg", "no connected game server; persistence disabled", "err", serverErr)
-				return fmt.Errorf("resolve connected game server: %w", serverErr)
-			}
-			if a.SeasonService != nil {
-				seasonCtx, seasonCancel := context.WithTimeout(ctx, 10*time.Second)
-				if _, seasonErr := a.SeasonService.EnsureDefaultSeason(seasonCtx, guildRowID, time.Now().UTC()); seasonErr != nil {
-					slog.Warn("component=seasons", "msg", "could not ensure default season", "err", seasonErr.Error())
-				}
-				seasonCancel()
-			}
-			store := &persistenceStoreAdapter{players: a.Players, kills: a.Kills, deaths: a.Deaths, seasons: a.Seasons, factions: a.Factions, wars: a.Wars, events: a.Events, bounties: a.Bounties, streaks: a.Streaks, anomalies: a.Anomalies, activity: a.ActivityRepository, servers: a.Servers, panelDirty: func() {
-				if livePanel != nil {
-					livePanel.MarkDirty()
-				}
-			}}
-			pq := killfeed.NewPersistenceQueueWithServerID(store, guildRowID, serverID, a.Config.NitradoServiceID)
-			pq.SetKillPostProcessor(store)
-			engine.SetPersistence(pq)
-			a.persistQueue = pq
-			if a.Workers != nil {
-				a.Workers.Register("persistence")
-			}
-			go func() {
-				if a.Workers != nil {
-					a.Workers.Heartbeat("persistence")
-				}
-				pq.Run(ctx)
-			}()
-			if a.EventService != nil || a.CompletionPublisher != nil {
-				go a.runCompetitiveSchedulers(ctx, guildRowID)
-			}
-			a.WorkerManager = servers.NewWorkerManager(func(workerCtx context.Context, workerServerID int64) error {
-				if workerServerID != serverID {
-					return fmt.Errorf("server worker %d is not configured for this runtime", workerServerID)
-				}
-				return engine.Start(workerCtx)
-			})
-			if err := a.WorkerManager.Start(ctx, serverID); err != nil {
-				return fmt.Errorf("start server worker: %w", err)
-			}
-			slog.Info("component=database", "msg", "persistence queue started")
-		} else {
-			slog.Warn("component=database", "msg", "no guild record yet; run /setup to enable persistence")
-		}
-	}
-
-	// Online players voice counter: renames the configured voice channel on
-	// debounced count changes. Uses the single PlayerTracker as the source of truth.
+	// --- Online players voice counter: renames the configured voice channel on
+	// debounced count changes. Shared across servers (one voice channel per guild
+	// today; per-server counters are a known gap, see Section 1 report). ---
 	onlineCounter := discord.NewVoiceChannelCounter(api, "")
 	if cfg := setupStore; cfg != nil {
 		if gs, err := cfg.Get(a.Config.DiscordGuildID); err == nil && gs != nil && gs.OnlinePlayersChannelID != "" {
 			onlineCounter.SetChannelID(gs.OnlinePlayersChannelID)
 		}
 	}
-	engine.OnPlayersChanged(func(count int) {
-		state.SetOnlinePlayers(count)
-		onlineCounter.Publish(count)
-		state.SetOnlineCounter(onlineCounter.LastPublished(), onlineCounter.UpdateErrors(), onlineCounter.PermissionBlocked())
-	})
+
+	// --- Multi-server ADM runtime ---
+	// WorkerManager is the sole production owner of ADM engines: it constructs one
+	// independent Engine (own PlayerTracker/checkpoint tracker) and one independent
+	// PersistenceQueue per active game_servers row, and isolates each with a
+	// recover() boundary so a panic or Nitrado outage on one server cannot affect
+	// any other server's worker.
+	if a.DB != nil && a.Players != nil && a.Kills != nil && a.Deaths != nil && a.Guilds != nil && a.Servers != nil && a.Config.DiscordGuildID != "" {
+		_, guildRowID, err := a.Guilds.GetGuild(ctx, a.Config.DiscordGuildID)
+		if err != nil {
+			slog.Warn("component=database", "msg", "could not resolve guild row; persistence disabled", "err", err.Error())
+		}
+		if guildRowID > 0 {
+			activeServers, listErr := a.Servers.ListActiveByGuild(ctx, guildRowID)
+			if listErr != nil {
+				return fmt.Errorf("enumerate active game servers: %w", listErr)
+			}
+			if len(activeServers) == 0 {
+				slog.Warn("component=servers", "msg", "no active game servers for this guild; run /server connect to enable the killfeed")
+			} else {
+				if a.SeasonService != nil {
+					seasonCtx, seasonCancel := context.WithTimeout(ctx, 10*time.Second)
+					if _, seasonErr := a.SeasonService.EnsureDefaultSeason(seasonCtx, guildRowID, time.Now().UTC()); seasonErr != nil {
+						slog.Warn("component=seasons", "msg", "could not ensure default season", "err", seasonErr.Error())
+					}
+					seasonCancel()
+				}
+				store := &persistenceStoreAdapter{players: a.Players, kills: a.Kills, deaths: a.Deaths, seasons: a.Seasons, factions: a.Factions, wars: a.Wars, events: a.Events, bounties: a.Bounties, streaks: a.Streaks, anomalies: a.Anomalies, activity: a.ActivityRepository, servers: a.Servers, panelDirty: func() {
+					if livePanel != nil {
+						livePanel.MarkDirty()
+					}
+				}}
+
+				serversByID := make(map[int64]repository.GameServer, len(activeServers))
+				for _, row := range activeServers {
+					serversByID[row.ID] = row
+				}
+
+				a.WorkerManager = servers.NewWorkerManager(func(workerCtx context.Context, workerServerID int64) error {
+					row, ok := serversByID[workerServerID]
+					if !ok {
+						if fetched, fetchErr := a.Servers.GetByID(workerCtx, workerServerID); fetchErr == nil && fetched != nil {
+							row = *fetched
+						} else {
+							return fmt.Errorf("server worker %d: unknown game_servers row", workerServerID)
+						}
+					}
+					return a.runServerWorker(workerCtx, row, store, setupStore, onlineCounter)
+				})
+
+				for _, row := range activeServers {
+					if err := a.WorkerManager.Start(ctx, row.ID); err != nil {
+						slog.Error("component=servers", "msg", "failed to start server worker", "server_id", row.ID, "err", err.Error())
+						continue
+					}
+					slog.Info("component=servers", "msg", "server worker started", "server_id", row.ID, "display_name", row.DisplayName)
+				}
+
+				if a.EventService != nil || a.CompletionPublisher != nil {
+					go a.runCompetitiveSchedulers(ctx, guildRowID)
+				}
+			}
+		} else {
+			slog.Warn("component=database", "msg", "no guild record yet; run /setup to enable persistence")
+		}
+	}
 
 	// Reflect initial setup readiness into the status endpoint.
 	if gs, err := setupStore.Get(a.Config.DiscordGuildID); err == nil && gs != nil {
@@ -622,6 +644,65 @@ func (a *App) Run() error {
 	slog.Info("component=shutdown", "msg", "shutdown requested")
 	a.shutdown()
 	return nil
+}
+
+// runServerWorker builds and runs one fully isolated ADM pipeline for a single
+// game_servers row: its own Engine (own PlayerTracker and checkpoint tracker),
+// its own PersistenceQueue, and its own killfeed publisher binding. It blocks
+// until workerCtx is cancelled (by WorkerManager.Stop/StopAll or shutdown).
+// A panic here is caught by WorkerManager's recover() boundary, not here, so
+// that the failure is always logged with server_id context in one place.
+func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServer, store *persistenceStoreAdapter, setupStore discord.SetupStore, onlineCounter *discord.VoiceChannelCounter) error {
+	workerName := fmt.Sprintf("adm_worker_%d", row.ID)
+
+	engine := killfeed.NewEngine(a.Nitrado, row.ProviderServiceID, killfeed.NewADMParser())
+	engine.SetStateSink(a.State)
+
+	publisher := discord.NewKillfeedPublisher(a.Discord, a.Config.KillfeedChannelID)
+	publisher.BindStore(setupStore, a.Config.DiscordGuildID)
+	engine.SetKillPublisher(publisher)
+
+	pq := killfeed.NewPersistenceQueueWithServerID(store, row.GuildID, row.ID, row.ProviderServiceID)
+	pq.SetKillPostProcessor(store)
+	engine.SetPersistence(pq)
+	a.addPersistQueue(pq)
+
+	engine.OnPlayersChanged(func(count int) {
+		a.State.SetOnlinePlayers(count)
+		if onlineCounter != nil {
+			onlineCounter.Publish(count)
+			a.State.SetOnlineCounter(onlineCounter.LastPublished(), onlineCounter.UpdateErrors(), onlineCounter.PermissionBlocked())
+		}
+	})
+
+	if a.Workers != nil {
+		a.Workers.Register(workerName)
+		a.Workers.Heartbeat(workerName)
+	}
+
+	queueDone := make(chan struct{})
+	go func() {
+		defer close(queueDone)
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("component=servers", "msg", "persistence queue panic recovered", "server_id", row.ID, "panic", fmt.Sprint(r))
+				if a.Workers != nil {
+					a.Workers.Error(workerName, fmt.Errorf("persistence queue panic: %v", r))
+				}
+			}
+		}()
+		pq.Run(workerCtx)
+	}()
+
+	slog.Info("component=servers", "msg", "server worker running", "server_id", row.ID, "display_name", row.DisplayName)
+	err := engine.Start(workerCtx)
+	pq.Close()
+	<-queueDone
+	if err != nil && a.Workers != nil {
+		a.Workers.Error(workerName, err)
+	}
+	slog.Info("component=servers", "msg", "server worker stopped", "server_id", row.ID)
+	return err
 }
 
 func (a *App) runCompetitiveSchedulers(ctx context.Context, guildID int64) {
@@ -674,10 +755,15 @@ func (a *App) shutdown() {
 	if a.WorkerManager != nil {
 		a.WorkerManager.StopAll()
 	}
-	// Flush the persistence queue (drain pending events) before closing the DB.
-	if a.persistQueue != nil {
-		a.persistQueue.Close()
-		slog.Info("component=shutdown", "msg", "persistence queue drained")
+	// Flush every per-server persistence queue (drain pending events) before
+	// closing the DB. Each worker already closes its own queue when its context
+	// is cancelled; this is a defensive second pass (Close is idempotent).
+	queues := a.allPersistQueues()
+	for _, pq := range queues {
+		pq.Close()
+	}
+	if len(queues) > 0 {
+		slog.Info("component=shutdown", "msg", "persistence queues drained", "count", len(queues))
 	}
 	if a.HTTPServer != nil {
 		if err := a.HTTPServer.Shutdown(context.Background()); err != nil {
