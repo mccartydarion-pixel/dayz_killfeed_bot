@@ -17,6 +17,7 @@ var ErrDuplicate = errors.New("duplicate record")
 // package to avoid an import cycle. Callers map to/from their own setup type.
 type GuildRecord struct {
 	DiscordGuildID string
+	WelcomeEnabled bool
 
 	CategoryID             string
 	WelcomeChannelID       string
@@ -52,12 +53,13 @@ func NewGuildRepository(pool *pgxpool.Pool) *GuildRepository {
 func (r *GuildRepository) UpsertGuild(ctx context.Context, s GuildRecord) (int64, error) {
 	const q = `
 INSERT INTO guilds (
-	discord_guild_id, category_id, welcome_channel_id, server_status_channel_id, killfeed_channel_id,
+	discord_guild_id, welcome_enabled, category_id, welcome_channel_id, server_status_channel_id, killfeed_channel_id,
     online_players_channel_id, leaderboards_channel_id, player_stats_channel_id,
     server_status_message_id, online_players_message_id, nitrado_service_id, setup_complete
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
 ON CONFLICT (discord_guild_id) DO UPDATE SET
 	category_id = COALESCE(EXCLUDED.category_id, guilds.category_id),
+	welcome_enabled = EXCLUDED.welcome_enabled,
 	welcome_channel_id = COALESCE(EXCLUDED.welcome_channel_id, guilds.welcome_channel_id),
     server_status_channel_id = COALESCE(EXCLUDED.server_status_channel_id, guilds.server_status_channel_id),
     killfeed_channel_id = COALESCE(EXCLUDED.killfeed_channel_id, guilds.killfeed_channel_id),
@@ -73,7 +75,7 @@ RETURNING id`
 
 	var id int64
 	err := r.pool.QueryRow(ctx, q,
-		s.DiscordGuildID, emptyToNil(s.CategoryID), emptyToNil(s.WelcomeChannelID), emptyToNil(s.ServerStatusChannelID), emptyToNil(s.KillfeedChannelID),
+		s.DiscordGuildID, s.WelcomeEnabled, emptyToNil(s.CategoryID), emptyToNil(s.WelcomeChannelID), emptyToNil(s.ServerStatusChannelID), emptyToNil(s.KillfeedChannelID),
 		emptyToNil(s.OnlinePlayersChannelID), emptyToNil(s.LeaderboardsChannelID), emptyToNil(s.PlayerStatsChannelID),
 		emptyToNil(s.ServerStatusMessageID), emptyToNil(s.OnlinePlayersMessageID), emptyToNil(s.NitradoServiceID),
 		isComplete(s),
@@ -98,7 +100,7 @@ func emptyToNil(s string) any {
 // GetGuild returns the stored setup for a Discord guild, or nil if none exists.
 func (r *GuildRepository) GetGuild(ctx context.Context, discordGuildID string) (*GuildRecord, int64, error) {
 	const q = `
-SELECT id, COALESCE(category_id,''), COALESCE(welcome_channel_id,''), COALESCE(server_status_channel_id,''),
+SELECT id, welcome_enabled, COALESCE(category_id,''), COALESCE(welcome_channel_id,''), COALESCE(server_status_channel_id,''),
        COALESCE(killfeed_channel_id,''), COALESCE(online_players_channel_id,''),
        COALESCE(leaderboards_channel_id,''), COALESCE(player_stats_channel_id,''),
        COALESCE(server_status_message_id,''), COALESCE(online_players_message_id,''),
@@ -108,7 +110,7 @@ FROM guilds WHERE discord_guild_id=$1`
 	var rowID int64
 	var s GuildRecord
 	err := r.pool.QueryRow(ctx, q, discordGuildID).Scan(
-		&rowID, &s.CategoryID, &s.WelcomeChannelID, &s.ServerStatusChannelID, &s.KillfeedChannelID,
+		&rowID, &s.WelcomeEnabled, &s.CategoryID, &s.WelcomeChannelID, &s.ServerStatusChannelID, &s.KillfeedChannelID,
 		&s.OnlinePlayersChannelID, &s.LeaderboardsChannelID, &s.PlayerStatsChannelID,
 		&s.ServerStatusMessageID, &s.OnlinePlayersMessageID, &s.NitradoServiceID, &s.SetupComplete,
 	)

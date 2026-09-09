@@ -67,7 +67,7 @@ func (m *SetupManager) EnsureConfigured(guildID string) (*GuildSetup, *SetupRepo
 		return nil, nil, fmt.Errorf("read setup store: %w", err)
 	}
 
-	setup := &GuildSetup{GuildID: guildID}
+	setup := &GuildSetup{GuildID: guildID, WelcomeEnabled: true}
 	if existing != nil {
 		*setup = *existing
 	}

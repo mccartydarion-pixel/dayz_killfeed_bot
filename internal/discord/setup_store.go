@@ -6,7 +6,8 @@ import "sync"
 // Discord resource IDs captured at setup time; names are never relied on after.
 // This model is designed to be persisted in PostgreSQL in Phase 4.
 type GuildSetup struct {
-	GuildID string
+	GuildID        string
+	WelcomeEnabled bool
 
 	CategoryID       string
 	WelcomeChannelID string

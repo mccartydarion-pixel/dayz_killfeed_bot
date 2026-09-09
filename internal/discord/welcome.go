@@ -42,7 +42,7 @@ func (h *WelcomeHandler) HandleMemberJoin(s *discordgo.Session, event *discordgo
 		return
 	}
 	setup, err := h.store.Get(event.GuildID)
-	if err != nil || setup == nil || setup.WelcomeChannelID == "" {
+	if err != nil || setup == nil || !setup.WelcomeEnabled || setup.WelcomeChannelID == "" {
 		return
 	}
 	if event.Member.User == nil {

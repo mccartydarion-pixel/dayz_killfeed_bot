@@ -62,6 +62,7 @@ func (s *PostgresSetupStore) Delete(guildID string) error {
 func setupToRecord(s GuildSetup) repository.GuildRecord {
 	return repository.GuildRecord{
 		DiscordGuildID:         s.GuildID,
+		WelcomeEnabled:         s.WelcomeEnabled,
 		CategoryID:             s.CategoryID,
 		WelcomeChannelID:       s.WelcomeChannelID,
 		ServerStatusChannelID:  s.ServerStatusChannelID,
@@ -79,6 +80,7 @@ func setupToRecord(s GuildSetup) repository.GuildRecord {
 func recordToSetup(r *repository.GuildRecord) *GuildSetup {
 	return &GuildSetup{
 		GuildID:                r.DiscordGuildID,
+		WelcomeEnabled:         r.WelcomeEnabled,
 		CategoryID:             r.CategoryID,
 		WelcomeChannelID:       r.WelcomeChannelID,
 		ServerStatusChannelID:  r.ServerStatusChannelID,
