@@ -37,6 +37,9 @@ type ActivityRecorder interface {
 	RecordConnect(context.Context, int64, int64, time.Time) error
 	RecordDisconnect(context.Context, int64, int64, time.Time) error
 }
+type ActivityCheckpointer interface {
+	CheckpointConnected(context.Context, int64, time.Time) error
+}
 
 // PersistenceQueue is a bounded, ordered queue of events awaiting durable
 // persistence before Discord publish. Overflow drops the oldest-eligible policy
@@ -144,6 +147,8 @@ func (q *PersistenceQueue) QueueHealth() (depth, capacity, highWater int, droppe
 // Run processes queued events in order until the queue is closed and drained.
 func (q *PersistenceQueue) Run(ctx context.Context) {
 	defer close(q.done)
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
 	for {
 		select {
 		case ev := <-q.queue:
@@ -156,6 +161,10 @@ func (q *PersistenceQueue) Run(ctx context.Context) {
 				q.oldestAt = time.Time{}
 			}
 			q.mu.Unlock()
+		case <-ticker.C:
+			if checkpointer, ok := q.store.(ActivityCheckpointer); ok {
+				_ = checkpointer.CheckpointConnected(ctx, q.guildID, time.Now().UTC())
+			}
 		case <-q.closed:
 			// Drain remaining queued events before exit.
 			for {

@@ -54,7 +54,7 @@ func (r *ServerRepository) ListActive(ctx context.Context) ([]GameServer, error)
 }
 func (r *ServerRepository) DefaultServerID(ctx context.Context, guildID int64) (int64, error) {
 	var id int64
-	err := r.pool.QueryRow(ctx, `SELECT id FROM game_servers WHERE guild_id=$1 AND active ORDER BY id LIMIT 1`, guildID).Scan(&id)
+	err := r.pool.QueryRow(ctx, `SELECT id FROM game_servers WHERE guild_id=$1 AND active AND LOWER(status) IN ('connected','ready','active') ORDER BY id LIMIT 1`, guildID).Scan(&id)
 	return id, err
 }
 func (r *ServerRepository) SaveConnection(ctx context.Context, c NitradoConnection) error {

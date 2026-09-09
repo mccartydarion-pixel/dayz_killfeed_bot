@@ -628,6 +628,13 @@ CREATE TABLE IF NOT EXISTS player_server_activity (
 CREATE INDEX IF NOT EXISTS idx_player_server_activity_lookup ON player_server_activity(guild_id,server_id,last_seen_at);
 `,
 	},
+	{
+		Name: "0015_link_activity_observation_checkpoints",
+		SQL: `
+ALTER TABLE player_server_activity ADD COLUMN IF NOT EXISTS last_observed_at TIMESTAMPTZ;
+UPDATE player_server_activity SET last_observed_at=COALESCE(last_observed_at,last_seen_at) WHERE currently_connected;
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order, each transactionally. A

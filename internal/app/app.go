@@ -714,6 +714,16 @@ func (p *persistenceStoreAdapter) RecordDisconnect(ctx context.Context, guildID,
 	}
 	return p.activity.Disconnect(ctx, guildID, sid, playerID, at)
 }
+func (p *persistenceStoreAdapter) CheckpointConnected(ctx context.Context, guildID int64, at time.Time) error {
+	if p.activity == nil || p.servers == nil {
+		return nil
+	}
+	sid, err := p.servers.DefaultServerID(ctx, guildID)
+	if err != nil {
+		return err
+	}
+	return p.activity.CheckpointConnected(ctx, guildID, sid, at)
+}
 
 func (p *persistenceStoreAdapter) UpsertPlayer(ctx context.Context, guildID int64, dayzID, displayName string, seenAt time.Time) (int64, error) {
 	return p.players.UpsertPlayer(ctx, guildID, dayzID, displayName, seenAt)

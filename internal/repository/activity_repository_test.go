@@ -7,7 +7,7 @@ import (
 
 func TestObservedPlaytimeIncludesActiveSession(t *testing.T) {
 	start := time.Unix(1000, 0)
-	a := &PlayerActivity{TotalObservedSeconds: 120, CurrentlyConnected: true, CurrentSessionStartedAt: &start}
+	a := &PlayerActivity{TotalObservedSeconds: 120, CurrentlyConnected: true, CurrentSessionStartedAt: &start, LastObservedAt: &start}
 	if got := a.Effective(start.Add(180 * time.Second)); got != 300*time.Second {
 		t.Fatalf("got %s", got)
 	}
