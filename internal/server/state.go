@@ -53,6 +53,15 @@ type State struct {
 	LastKillTime           time.Time
 
 	OnlinePlayers int
+
+	SelectedLogActive              bool
+	SetupComplete                  bool
+	KillfeedChannelReady           bool
+	OnlinePlayersChannelReady      bool
+	ServerStatusChannelReady       bool
+	OnlineCounterLastPublished     int
+	OnlineCounterUpdateErrors      int
+	OnlineCounterPermissionBlocked bool
 }
 
 // NewState creates an empty runtime state container.
@@ -68,6 +77,41 @@ func (s *State) SetOnlinePlayers(count int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.OnlinePlayers = count
+}
+
+// SetSelectedLogActive records whether the selected ADM log is currently growing.
+func (s *State) SetSelectedLogActive(active bool) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.SelectedLogActive = active
+}
+
+// SetSetupReadiness records which Champion Discord resources are configured.
+func (s *State) SetSetupReadiness(complete, killfeed, onlinePlayers, serverStatus bool) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.SetupComplete = complete
+	s.KillfeedChannelReady = killfeed
+	s.OnlinePlayersChannelReady = onlinePlayers
+	s.ServerStatusChannelReady = serverStatus
+}
+
+// SetOnlineCounter records the voice counter publish state.
+func (s *State) SetOnlineCounter(lastPublished, updateErrors int, permissionBlocked bool) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.OnlineCounterLastPublished = lastPublished
+	s.OnlineCounterUpdateErrors = updateErrors
+	s.OnlineCounterPermissionBlocked = permissionBlocked
 }
 
 // SetMetrics records parser and publisher counters from the killfeed engine.
@@ -218,6 +262,15 @@ func (s *State) Snapshot() map[string]any {
 		"discord_publish_errors":   s.DiscordPublishErrors,
 		"last_kill_time":           formatTime(s.LastKillTime),
 		"online_players":           s.OnlinePlayers,
+
+		"selected_log_active":               s.SelectedLogActive,
+		"setup_complete":                    s.SetupComplete,
+		"killfeed_channel_ready":            s.KillfeedChannelReady,
+		"online_players_channel_ready":      s.OnlinePlayersChannelReady,
+		"server_status_channel_ready":       s.ServerStatusChannelReady,
+		"online_counter_last_published":     s.OnlineCounterLastPublished,
+		"online_counter_update_errors":      s.OnlineCounterUpdateErrors,
+		"online_counter_permission_blocked": s.OnlineCounterPermissionBlocked,
 	}
 }
 

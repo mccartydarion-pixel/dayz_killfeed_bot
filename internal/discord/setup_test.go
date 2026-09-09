@@ -60,6 +60,18 @@ func (f *fakeGuildAPI) Channel(channelID string) (*discordgo.Channel, error) {
 	return nil, errNotFound
 }
 
+func (f *fakeGuildAPI) ChannelEdit(channelID string, data *discordgo.ChannelEdit) (*discordgo.Channel, error) {
+	for _, ch := range f.channels {
+		if ch.ID == channelID {
+			if data.Name != "" {
+				ch.Name = data.Name
+			}
+			return ch, nil
+		}
+	}
+	return nil, errNotFound
+}
+
 type errString string
 
 func (e errString) Error() string { return string(e) }

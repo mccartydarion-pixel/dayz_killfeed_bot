@@ -36,3 +36,8 @@ func (a *SessionAPI) ChannelMessage(channelID, messageID string) (*discordgo.Mes
 func (a *SessionAPI) Channel(channelID string) (*discordgo.Channel, error) {
 	return a.S.Channel(channelID)
 }
+
+// ChannelEdit renames or edits a channel (used by the voice counter).
+func (a *SessionAPI) ChannelEdit(channelID string, data *discordgo.ChannelEdit) (*discordgo.Channel, error) {
+	return a.S.ChannelEditComplex(channelID, data)
+}

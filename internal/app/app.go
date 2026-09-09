@@ -176,14 +176,29 @@ func (a *App) Run() error {
 	publisher.BindStore(setupStore, a.Config.DiscordGuildID)
 	engine.SetKillPublisher(publisher)
 
-	// Online players panel: edited in place on debounced connect/disconnect.
-	onlineChannel := a.Config.KillfeedChannelID // fallback until /setup configures one
-	onlinePanel := discord.NewOnlinePlayersPanel(api, onlineChannel, "")
+	// Online players voice counter: renames the configured voice channel on
+	// debounced count changes. Uses the single PlayerTracker as the source of truth.
+	onlineCounter := discord.NewVoiceChannelCounter(api, "")
+	if cfg := setupStore; cfg != nil {
+		if gs, err := cfg.Get(a.Config.DiscordGuildID); err == nil && gs != nil && gs.OnlinePlayersChannelID != "" {
+			onlineCounter.SetChannelID(gs.OnlinePlayersChannelID)
+		}
+	}
 	engine.OnPlayersChanged(func(count int) {
 		state.SetOnlinePlayers(count)
-		names := playerNames(engine.PlayerTracker())
-		onlinePanel.MarkDirty(names, true)
+		onlineCounter.Publish(count)
+		state.SetOnlineCounter(onlineCounter.LastPublished(), onlineCounter.UpdateErrors(), onlineCounter.PermissionBlocked())
 	})
+
+	// Reflect initial setup readiness into the status endpoint.
+	if gs, err := setupStore.Get(a.Config.DiscordGuildID); err == nil && gs != nil {
+		state.SetSetupReadiness(
+			gs.CategoryID != "" && gs.KillfeedChannelID != "" && gs.OnlinePlayersChannelID != "",
+			gs.KillfeedChannelID != "",
+			gs.OnlinePlayersChannelID != "",
+			gs.ServerStatusChannelID != "",
+		)
+	}
 
 	go func() {
 		if err := engine.Start(ctx); err != nil {

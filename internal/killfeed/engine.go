@@ -42,6 +42,7 @@ type StateSink interface {
 	SetPollStats(lastPoll, lastLogChange time.Time, interval time.Duration, bytesRead, lines int64)
 	SetDiscovery(state string, dirsVisited, filesDiscovered int)
 	SetMetrics(m map[string]int64, lastKill time.Time)
+	SetSelectedLogActive(active bool)
 }
 
 // EngineStats is a point-in-time copy of the engine counters.
@@ -466,15 +467,15 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 	e.lastLogChange = e.lastPoll
 	e.tracker.UpdateCheckpoint(e.serviceID, current.Path, int64(len(content)), current.Modified, newOffset)
 
-	// Capture a representative real gameplay sample once per selected log for
-	// parser design. Only IPs are redacted; gameplay syntax is preserved verbatim.
-	if !e.sampleCaptured && len(content) > 0 {
+	// ADM sample capture is disabled by default in production. Enable with
+	// ADM_SAMPLE_DEBUG=true for parser diagnostics; even then it logs at DEBUG.
+	if !e.sampleCaptured && len(content) > 0 && admSampleDebugEnabled() {
 		sample := SelectSampleLines(string(content), 45)
 		if len(sample) > 0 {
 			e.sampleCaptured = true
-			slog.Info("component=killfeed", "msg", "REAL DAYZ ADM SAMPLE", "file", current.Name, "path", current.Path, "lines", len(sample))
+			slog.Debug("component=killfeed", "msg", "ADM sample captured", "file", current.Name, "lines", len(sample))
 			for _, line := range sample {
-				slog.Info("component=killfeed_adm_sample", "line", line)
+				slog.Debug("component=killfeed_adm_sample", "line", line)
 			}
 		}
 	}
@@ -656,6 +657,9 @@ func (e *Engine) reportPoll() {
 		return
 	}
 	e.sink.SetPollStats(e.lastPoll, e.lastLogChange, e.pollInterval, e.bytesProcessed, e.linesDiscovered)
+	// The selected log is "active" if it changed within roughly two poll cycles.
+	active := !e.lastLogChange.IsZero() && time.Since(e.lastLogChange) <= 2*e.pollInterval
+	e.sink.SetSelectedLogActive(active)
 	e.sink.SetMetrics(map[string]int64{
 		"adm_lines_processed":      e.metrics.ADMLinesProcessed,
 		"events_parsed":            e.metrics.EventsParsed,
@@ -688,4 +692,9 @@ func envPollInterval(name string, fallback time.Duration) time.Duration {
 
 func stringsFromEnv(name string) string {
 	return os.Getenv(name)
+}
+
+// admSampleDebugEnabled reports whether ADM sample dumping is enabled. Default off.
+func admSampleDebugEnabled() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("ADM_SAMPLE_DEBUG")), "true")
 }
