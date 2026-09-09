@@ -532,6 +532,57 @@ CREATE TABLE IF NOT EXISTS completion_announcements (
 CREATE INDEX IF NOT EXISTS idx_completion_announcements_retry ON completion_announcements(status,claimed_at);
 `,
 	},
+	{
+		Name: "0012_phase48_multitenant_servers_credentials",
+		SQL: `
+CREATE TABLE IF NOT EXISTS game_servers (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL,
+    provider_service_id TEXT NOT NULL,
+    game TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    display_name TEXT,
+    status TEXT NOT NULL,
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(guild_id,provider,provider_service_id)
+);
+CREATE INDEX IF NOT EXISTS idx_game_servers_guild_active ON game_servers(guild_id,active);
+
+CREATE TABLE IF NOT EXISTS nitrado_connections (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    credential_ciphertext BYTEA NOT NULL,
+    credential_nonce BYTEA NOT NULL,
+    credential_key_version INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    last_validated_at TIMESTAMPTZ,
+    last_success_at TIMESTAMPTZ,
+    last_failure_at TIMESTAMPTZ,
+    last_error_class TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(guild_id)
+);
+
+CREATE TABLE IF NOT EXISTS server_configs (
+    server_id BIGINT PRIMARY KEY REFERENCES game_servers(id) ON DELETE CASCADE,
+    adm_poll_interval_ms INTEGER NOT NULL DEFAULT 2000 CHECK(adm_poll_interval_ms >= 1000),
+    directory_rescan_interval_seconds INTEGER NOT NULL DEFAULT 45,
+    startup_mode TEXT NOT NULL DEFAULT 'tail',
+    publish_pvp_kills BOOLEAN NOT NULL DEFAULT TRUE,
+    publish_suicides BOOLEAN NOT NULL DEFAULT FALSE,
+    publish_unknown_deaths BOOLEAN NOT NULL DEFAULT FALSE,
+    online_counter_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    killfeed_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    analytics_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order, each transactionally. A

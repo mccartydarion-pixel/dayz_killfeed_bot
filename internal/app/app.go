@@ -27,6 +27,7 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/operations"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 	"github.com/yourname/dayz-killfeed/internal/seasons"
+	"github.com/yourname/dayz-killfeed/internal/security"
 	"github.com/yourname/dayz-killfeed/internal/server"
 )
 
@@ -65,6 +66,8 @@ type App struct {
 	ADMHealth           *operations.ADMMonitor
 	AdminService        *admin.Service
 	AnalyticsRepository *repository.AnalyticsRepository
+	Servers             *repository.ServerRepository
+	CredentialCipher    *security.AESGCM
 	CompletionPublisher *discord.LiveCompletionPublisher
 	PanelService        *panels.RefreshService
 	Links               *repository.LinkRepository
@@ -104,6 +107,13 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	app.AdminService = admin.NewService(state, app.HealthRegistry)
 	app.AdminService.SetWorkers(app.Workers)
 	go app.refreshHealth(ctx)
+	if cfg.CredentialEncryptionKey != "" {
+		cipher, err := security.NewAESGCM(cfg.CredentialEncryptionKey, 1)
+		if err != nil {
+			return nil, fmt.Errorf("credential encryption configuration: %w", err)
+		}
+		app.CredentialCipher = cipher
+	}
 
 	// --- PostgreSQL (optional): connect + migrate. Degraded mode if unconfigured. ---
 	if cfg.DatabaseURL != "" {
@@ -148,6 +158,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.FactionPresentation = repository.NewFactionPresentationRepository(db.Pool)
 			app.Anomalies = repository.NewAnomalyRepository(db.Pool)
 			app.AnalyticsRepository = repository.NewAnalyticsRepository(db.Pool)
+			app.Servers = repository.NewServerRepository(db.Pool)
 			app.Links = repository.NewLinkRepository(db.Pool)
 			app.LinkService = linking.NewService(app.Links)
 			seedCtx, seedCancel := context.WithTimeout(ctx, 10*time.Second)
@@ -330,6 +341,17 @@ func (a *App) Run() error {
 		a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			if i.Type == discordgo.InteractionApplicationCommand && i.ApplicationCommandData().Name == "admin" {
 				adminHandler.Handle(s, i)
+			}
+		})
+	}
+	if a.Servers != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
+		serverHandler := discord.NewServerCommandHandler(a.Servers, a.Guilds)
+		if err := discord.RegisterServerCommands(session, a.Config.DiscordGuildID); err != nil {
+			slog.Warn("component=discord", "msg", "failed to register server commands", "err", err.Error())
+		}
+		a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+			if i.Type == discordgo.InteractionApplicationCommand && i.ApplicationCommandData().Name == "server" {
+				serverHandler.Handle(s, i)
 			}
 		})
 	}
