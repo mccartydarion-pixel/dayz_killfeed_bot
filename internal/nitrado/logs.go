@@ -111,18 +111,18 @@ func logInspectedField(path string, value any) {
 		leaf = path[idx+1:]
 	}
 	if IsSensitiveKey(leaf) {
-		slog.Info("component=nitrado", "path", path, "value", "<redacted>")
+		slog.Debug("component=nitrado", "path", path, "value", "<redacted>")
 		return
 	}
 	switch v := value.(type) {
 	case map[string]any, []any:
-		slog.Info("component=nitrado", "path", path, "available", true)
+		slog.Debug("component=nitrado", "path", path, "available", true)
 	case string:
-		slog.Info("component=nitrado", "path", path, "value", v)
+		slog.Debug("component=nitrado", "path", path, "value", v)
 	case nil:
-		slog.Info("component=nitrado", "path", path, "available", false)
+		slog.Debug("component=nitrado", "path", path, "available", false)
 	default:
-		slog.Info("component=nitrado", "path", path, "value", fmt.Sprintf("%v", v))
+		slog.Debug("component=nitrado", "path", path, "value", fmt.Sprintf("%v", v))
 	}
 }
 

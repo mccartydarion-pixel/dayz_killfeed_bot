@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -15,6 +16,9 @@ type Client struct {
 
 // New creates a Discord session using the minimally required intents for Phase 1.
 func New(token string) (*Client, error) {
+	if strings.TrimSpace(token) == "" {
+		return nil, fmt.Errorf("discord token is required")
+	}
 	session, err := discordgo.New("Bot " + token)
 	if err != nil {
 		return nil, err
@@ -29,9 +33,13 @@ func (c *Client) Start(ctx context.Context) error {
 		return fmt.Errorf("discord session not initialized")
 	}
 	if err := c.session.Open(); err != nil {
-		return err
+		return fmt.Errorf("open discord session: %w", err)
 	}
-	slog.Info("component=discord", "msg", "connected", "user", c.session.State.User.Username)
+	username := ""
+	if c.session.State != nil && c.session.State.User != nil {
+		username = c.session.State.User.Username
+	}
+	slog.Info("component=discord", "msg", "connected", "user", username)
 	return nil
 }
 
