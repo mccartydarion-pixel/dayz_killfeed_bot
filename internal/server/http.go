@@ -27,6 +27,8 @@ func New(cfg *config.Config, state *State) (*Server, error) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", HealthHandler)
+	mux.HandleFunc("/live", LiveHandler)
+	mux.HandleFunc("/ready", state.ReadyHandler)
 	mux.HandleFunc("/api/v1/status", state.StatusHandler)
 
 	addr := "0.0.0.0:" + cfg.Port

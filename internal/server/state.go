@@ -334,3 +334,18 @@ func (s *State) StatusHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, s.Snapshot())
 }
+
+func (s *State) ReadyHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	s.mu.RLock()
+	ready := s.DatabaseConnected && s.DiscordConnected
+	s.mu.RUnlock()
+	if !ready {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "not_ready"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+}

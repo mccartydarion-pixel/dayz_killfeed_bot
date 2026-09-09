@@ -13,12 +13,14 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/yourname/dayz-killfeed/internal/admin"
 	"github.com/yourname/dayz-killfeed/internal/bounties"
 	"github.com/yourname/dayz-killfeed/internal/config"
 	"github.com/yourname/dayz-killfeed/internal/database"
 	"github.com/yourname/dayz-killfeed/internal/discord"
 	"github.com/yourname/dayz-killfeed/internal/discord/panels"
 	competitiveevents "github.com/yourname/dayz-killfeed/internal/events"
+	"github.com/yourname/dayz-killfeed/internal/health"
 	"github.com/yourname/dayz-killfeed/internal/killfeed"
 	"github.com/yourname/dayz-killfeed/internal/linking"
 	"github.com/yourname/dayz-killfeed/internal/nitrado"
@@ -57,6 +59,8 @@ type App struct {
 	Anomalies           *repository.AnomalyRepository
 	Announcements       *repository.AnnouncementRepository
 	AnnouncementService *discord.CompletionAnnouncementService
+	HealthRegistry      *health.Registry
+	AdminService        *admin.Service
 	CompletionPublisher *discord.LiveCompletionPublisher
 	PanelService        *panels.RefreshService
 	Links               *repository.LinkRepository
@@ -90,6 +94,9 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		HTTPServer: httpServer,
 		State:      state,
 	}
+	app.HealthRegistry = health.NewRegistry()
+	app.AdminService = admin.NewService(state, app.HealthRegistry)
+	go app.refreshHealth(ctx)
 
 	// --- PostgreSQL (optional): connect + migrate. Degraded mode if unconfigured. ---
 	if cfg.DatabaseURL != "" {
@@ -150,6 +157,31 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	_, cancel := context.WithCancel(ctx)
 	app.cancel = cancel
 	return app, nil
+}
+
+func (a *App) refreshHealth(ctx context.Context) {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	update := func() {
+		if a.HealthRegistry == nil || a.State == nil {
+			return
+		}
+		snap := a.State.Snapshot()
+		critical := func(key string) bool { v, _ := snap[key].(bool); return v }
+		a.HealthRegistry.Set(health.Component{Name: "database", State: map[bool]health.State{true: health.Healthy, false: health.Unhealthy}[critical("database_connected")], Critical: true})
+		a.HealthRegistry.Set(health.Component{Name: "discord", State: map[bool]health.State{true: health.Healthy, false: health.Degraded}[critical("discord_connected")]})
+		a.HealthRegistry.Set(health.Component{Name: "nitrado", State: map[bool]health.State{true: health.Healthy, false: health.Degraded}[critical("nitrado_authenticated")]})
+		a.HealthRegistry.Set(health.Component{Name: "adm_pipeline", State: map[bool]health.State{true: health.Healthy, false: health.Unhealthy}[critical("log_source_found")], Critical: true})
+	}
+	update()
+	for {
+		select {
+		case <-ticker.C:
+			update()
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 // Run boots the application and runs until shutdown.
@@ -253,6 +285,17 @@ func (a *App) Run() error {
 	setupManager := discord.NewSetupManager(api, setupStore, a.Discord.BotID())
 	setupHandler := discord.NewSetupHandler(setupManager)
 	welcomeHandler := discord.NewWelcomeHandler(setupStore)
+	if a.AdminService != nil && a.Config.DiscordGuildID != "" {
+		adminHandler := discord.NewAdminCommandHandler(a.AdminService)
+		if err := discord.RegisterAdminCommands(session, a.Config.DiscordGuildID); err != nil {
+			slog.Warn("component=discord", "msg", "failed to register admin commands", "err", err.Error())
+		}
+		a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+			if i.Type == discordgo.InteractionApplicationCommand && i.ApplicationCommandData().Name == "admin" {
+				adminHandler.Handle(s, i)
+			}
+		})
+	}
 	if a.AnnouncementService != nil && a.Config.DiscordGuildID != "" {
 		a.CompletionPublisher = discord.NewLiveCompletionPublisher(a.AnnouncementService, api, setupStore, a.Seasons, a.Wars, a.Events, a.Guilds, a.Config.DiscordGuildID)
 	}
