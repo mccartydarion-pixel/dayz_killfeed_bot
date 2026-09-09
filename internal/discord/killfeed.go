@@ -3,7 +3,6 @@ package discord
 import (
 	"fmt"
 	"log/slog"
-	"math"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/killfeed"
@@ -59,33 +58,26 @@ func (p *KillfeedPublisher) PublishKill(ev *killfeed.Event) error {
 		return nil // only authoritative kills are published in Phase 3.0
 	}
 
-	victim := "Unknown"
-	if ev.Victim != nil && ev.Victim.Name != "" {
+	// Build the style-aware Champion embed (one kill = one embed).
+	embed := BuildKillEmbed(ev)
+
+	// Suppress all mentions: no @everyone/@here/role/user pings from player names.
+	send := &discordgo.MessageSend{
+		Embeds: []*discordgo.MessageEmbed{embed},
+		AllowedMentions: &discordgo.MessageAllowedMentions{
+			Parse: []discordgo.AllowedMentionType{}, // parse nothing
+		},
+	}
+
+	victim, killer := "", ""
+	if ev.Victim != nil {
 		victim = ev.Victim.Name
 	}
-	killer := "Unknown"
-	if ev.Killer != nil && ev.Killer.Name != "" {
+	if ev.Killer != nil {
 		killer = ev.Killer.Name
 	}
 
-	fields := []*discordgo.MessageEmbedField{}
-	if ev.Weapon != "" {
-		fields = append(fields, &discordgo.MessageEmbedField{Name: "Weapon", Value: ev.Weapon, Inline: true})
-	}
-	if ev.Distance != nil {
-		// Round to one decimal place for display; full precision stays internal.
-		rounded := math.Round(*ev.Distance*10) / 10
-		fields = append(fields, &discordgo.MessageEmbedField{Name: "Distance", Value: fmt.Sprintf("%.1fm", rounded), Inline: true})
-	}
-
-	embed := &discordgo.MessageEmbed{
-		Title:       "🏆 CHAMPION KILLFEED",
-		Description: fmt.Sprintf("💀 **%s** was killed by ⚔️ **%s**", victim, killer),
-		Color:       0xC0392B,
-		Fields:      fields,
-	}
-
-	if _, err := p.client.Session().ChannelMessageSendEmbed(channelID, embed); err != nil {
+	if _, err := p.client.Session().ChannelMessageSendComplex(channelID, send); err != nil {
 		slog.Error("component=discord", "msg", "killfeed publish failed", "err", err.Error())
 		return nil // never propagate; log processing must continue
 	}
