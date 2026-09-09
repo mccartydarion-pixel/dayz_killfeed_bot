@@ -34,20 +34,21 @@ type KillPostProcessor interface {
 	ProcessPersistedKill(ctx context.Context, killID int64, record repository.KillRecord, event *Event)
 }
 type ActivityRecorder interface {
-	RecordConnect(context.Context, int64, int64, time.Time) error
-	RecordDisconnect(context.Context, int64, int64, time.Time) error
+	RecordConnect(context.Context, int64, int64, int64, time.Time) error
+	RecordDisconnect(context.Context, int64, int64, int64, time.Time) error
 }
 type ActivityCheckpointer interface {
-	CheckpointConnected(context.Context, int64, time.Time) error
+	CheckpointConnected(context.Context, int64, int64, time.Time) error
 }
 
 // PersistenceQueue is a bounded, ordered queue of events awaiting durable
 // persistence before Discord publish. Overflow drops the oldest-eligible policy
 // is deterministic: when full, the newest event is dropped and counted.
 type PersistenceQueue struct {
-	store   PersistenceStore
-	guildID int64
-	session string
+	store    PersistenceStore
+	guildID  int64
+	serverID int64
+	session  string
 
 	mu        sync.Mutex
 	queue     chan *Event
@@ -82,6 +83,11 @@ func NewPersistenceQueue(store PersistenceStore, guildID int64, sessionID string
 		closed:  make(chan struct{}),
 		done:    make(chan struct{}),
 	}
+}
+func NewPersistenceQueueWithServerID(store PersistenceStore, guildID, serverID int64, sessionID string) *PersistenceQueue {
+	q := NewPersistenceQueue(store, guildID, sessionID)
+	q.serverID = serverID
+	return q
 }
 
 // SetKillPersistedHook registers the callback fired after a kill is durably
@@ -162,8 +168,8 @@ func (q *PersistenceQueue) Run(ctx context.Context) {
 			}
 			q.mu.Unlock()
 		case <-ticker.C:
-			if checkpointer, ok := q.store.(ActivityCheckpointer); ok {
-				_ = checkpointer.CheckpointConnected(ctx, q.guildID, time.Now().UTC())
+			if checkpointer, ok := q.store.(ActivityCheckpointer); ok && q.serverID > 0 {
+				_ = checkpointer.CheckpointConnected(ctx, q.guildID, q.serverID, time.Now().UTC())
 			}
 		case <-q.closed:
 			// Drain remaining queued events before exit.
@@ -279,9 +285,13 @@ func (q *PersistenceQueue) persistOne(ctx context.Context, ev *Event) {
 			playerID := q.upsertPlayer(ctx, ev.Player)
 			at := eventTime(ev)
 			if ev.Type == EventPlayerConnect {
-				_ = recorder.RecordConnect(ctx, q.guildID, playerID, at)
+				if q.serverID > 0 {
+					_ = recorder.RecordConnect(ctx, q.guildID, q.serverID, playerID, at)
+				}
 			} else {
-				_ = recorder.RecordDisconnect(ctx, q.guildID, playerID, at)
+				if q.serverID > 0 {
+					_ = recorder.RecordDisconnect(ctx, q.guildID, q.serverID, playerID, at)
+				}
 			}
 		}
 	}

@@ -635,6 +635,21 @@ ALTER TABLE player_server_activity ADD COLUMN IF NOT EXISTS last_observed_at TIM
 UPDATE player_server_activity SET last_observed_at=COALESCE(last_observed_at,last_seen_at) WHERE currently_connected;
 `,
 	},
+	{
+		Name: "0016_server_context_backfill",
+		SQL: `
+INSERT INTO game_servers(guild_id,provider,provider_service_id,game,platform,display_name,status,active)
+SELECT id,'NITRADO',nitrado_service_id,'DAYZ','PLAYSTATION','Legacy DayZ Server','CONNECTED',TRUE
+FROM guilds WHERE COALESCE(nitrado_service_id,'')<>''
+ON CONFLICT(guild_id,provider,provider_service_id) DO NOTHING;
+ALTER TABLE kills ADD COLUMN IF NOT EXISTS server_id BIGINT REFERENCES game_servers(id) ON DELETE SET NULL;
+ALTER TABLE deaths ADD COLUMN IF NOT EXISTS server_id BIGINT REFERENCES game_servers(id) ON DELETE SET NULL;
+UPDATE kills k SET server_id=s.id FROM game_servers s WHERE k.server_id IS NULL AND s.guild_id=k.guild_id AND s.provider_service_id=(SELECT g.nitrado_service_id FROM guilds g WHERE g.id=k.guild_id) AND s.active;
+UPDATE deaths d SET server_id=s.id FROM game_servers s WHERE d.server_id IS NULL AND s.guild_id=d.guild_id AND s.provider_service_id=(SELECT g.nitrado_service_id FROM guilds g WHERE g.id=d.guild_id) AND s.active;
+CREATE INDEX IF NOT EXISTS idx_kills_server ON kills(guild_id,server_id,created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_deaths_server ON deaths(guild_id,server_id,event_time DESC);
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order, each transactionally. A

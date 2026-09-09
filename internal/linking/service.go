@@ -63,7 +63,7 @@ type ActivityReader interface {
 	GetObservedPlaytime(context.Context, int64, int64, int64, time.Time) (time.Duration, error)
 }
 type ServerResolver interface {
-	DefaultServerID(context.Context, int64) (int64, error)
+	ConnectedServerID(context.Context, int64) (int64, error)
 }
 
 func NewService(repo Repository, extras ...any) *LinkVerificationService {
@@ -102,7 +102,7 @@ func (s *LinkVerificationService) Request(ctx context.Context, guildID int64, di
 	}
 	candidate := candidates[0]
 	if s.activity != nil && s.serverID != nil {
-		serverID, serverErr := s.serverID.DefaultServerID(ctx, guildID)
+		serverID, serverErr := s.serverID.ConnectedServerID(ctx, guildID)
 		if serverErr != nil {
 			return nil, serverErr
 		}

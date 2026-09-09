@@ -535,6 +535,11 @@ func (a *App) Run() error {
 			slog.Warn("component=database", "msg", "could not resolve guild row; persistence disabled", "err", err.Error())
 		}
 		if guildRowID > 0 {
+			serverID, serverErr := a.Servers.ConnectedServerID(ctx, guildRowID)
+			if serverErr != nil || serverID == 0 {
+				slog.Error("component=database", "msg", "no connected game server; persistence disabled", "err", serverErr)
+				return fmt.Errorf("resolve connected game server: %w", serverErr)
+			}
 			if a.SeasonService != nil {
 				seasonCtx, seasonCancel := context.WithTimeout(ctx, 10*time.Second)
 				if _, seasonErr := a.SeasonService.EnsureDefaultSeason(seasonCtx, guildRowID, time.Now().UTC()); seasonErr != nil {
@@ -547,7 +552,7 @@ func (a *App) Run() error {
 					livePanel.MarkDirty()
 				}
 			}}
-			pq := killfeed.NewPersistenceQueue(store, guildRowID, a.Config.NitradoServiceID)
+			pq := killfeed.NewPersistenceQueueWithServerID(store, guildRowID, serverID, a.Config.NitradoServiceID)
 			pq.SetKillPostProcessor(store)
 			engine.SetPersistence(pq)
 			a.persistQueue = pq
@@ -705,35 +710,23 @@ type persistenceStoreAdapter struct {
 	panelDirty func()
 }
 
-func (p *persistenceStoreAdapter) RecordConnect(ctx context.Context, guildID, playerID int64, at time.Time) error {
-	if p.activity == nil || p.servers == nil {
+func (p *persistenceStoreAdapter) RecordConnect(ctx context.Context, guildID, serverID, playerID int64, at time.Time) error {
+	if p.activity == nil || serverID == 0 {
 		return nil
 	}
-	sid, err := p.servers.DefaultServerID(ctx, guildID)
-	if err != nil {
-		return err
-	}
-	return p.activity.Connect(ctx, guildID, sid, playerID, at)
+	return p.activity.Connect(ctx, guildID, serverID, playerID, at)
 }
-func (p *persistenceStoreAdapter) RecordDisconnect(ctx context.Context, guildID, playerID int64, at time.Time) error {
-	if p.activity == nil || p.servers == nil {
+func (p *persistenceStoreAdapter) RecordDisconnect(ctx context.Context, guildID, serverID, playerID int64, at time.Time) error {
+	if p.activity == nil || serverID == 0 {
 		return nil
 	}
-	sid, err := p.servers.DefaultServerID(ctx, guildID)
-	if err != nil {
-		return err
-	}
-	return p.activity.Disconnect(ctx, guildID, sid, playerID, at)
+	return p.activity.Disconnect(ctx, guildID, serverID, playerID, at)
 }
-func (p *persistenceStoreAdapter) CheckpointConnected(ctx context.Context, guildID int64, at time.Time) error {
-	if p.activity == nil || p.servers == nil {
+func (p *persistenceStoreAdapter) CheckpointConnected(ctx context.Context, guildID, serverID int64, at time.Time) error {
+	if p.activity == nil || serverID == 0 {
 		return nil
 	}
-	sid, err := p.servers.DefaultServerID(ctx, guildID)
-	if err != nil {
-		return err
-	}
-	return p.activity.CheckpointConnected(ctx, guildID, sid, at)
+	return p.activity.CheckpointConnected(ctx, guildID, serverID, at)
 }
 
 func (p *persistenceStoreAdapter) UpsertPlayer(ctx context.Context, guildID int64, dayzID, displayName string, seenAt time.Time) (int64, error) {
