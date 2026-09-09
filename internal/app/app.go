@@ -433,7 +433,7 @@ func (a *App) Run() error {
 			engine.SetPersistence(pq)
 			a.persistQueue = pq
 			go pq.Run(ctx)
-			if a.EventService != nil && a.Events != nil {
+			if a.EventService != nil || a.CompletionPublisher != nil {
 				go a.runCompetitiveSchedulers(ctx, guildRowID)
 			}
 			slog.Info("component=database", "msg", "persistence queue started")
@@ -492,8 +492,15 @@ func (a *App) runCompetitiveSchedulers(ctx context.Context, guildID int64) {
 	defer ticker.Stop()
 	tick := func() {
 		now := time.Now().UTC()
-		if err := a.EventService.SchedulerTick(ctx, now); err != nil {
-			slog.Warn("component=events", "msg", "event scheduler tick failed", "err", err.Error())
+		if a.CompletionPublisher != nil {
+			if err := a.CompletionPublisher.RecoverPending(ctx, guildID); err != nil {
+				slog.Warn("component=announcements", "msg", "completion recovery failed", "err", err.Error())
+			}
+		}
+		if a.EventService != nil {
+			if err := a.EventService.SchedulerTick(ctx, now); err != nil {
+				slog.Warn("component=events", "msg", "event scheduler tick failed", "err", err.Error())
+			}
 		}
 		if ended, err := a.Events.GetEndedUnfinalized(ctx, guildID, 25); err == nil {
 			for _, event := range ended {

@@ -61,6 +61,10 @@ func (r *EventRepository) GetEndedUnfinalized(ctx context.Context, guildID int64
 	return r.list(ctx, `SELECT e.id,e.guild_id,COALESCE(e.season_id,0),e.event_type,e.name,COALESCE(e.description,''),e.status,e.starts_at,e.ends_at,e.config FROM competitive_events e LEFT JOIN event_results r ON r.event_id=e.id WHERE e.guild_id=$1 AND e.status='ENDED' AND r.event_id IS NULL ORDER BY e.ends_at LIMIT $2`, guildID, limit)
 }
 
+func (r *EventRepository) GetEndedEvents(ctx context.Context, guildID int64, limit int) ([]CompetitiveEvent, error) {
+	return r.list(ctx, `SELECT id,guild_id,COALESCE(season_id,0),event_type,name,COALESCE(description,''),status,starts_at,ends_at,config FROM competitive_events WHERE guild_id=$1 AND status='ENDED' ORDER BY ends_at DESC LIMIT $2`, guildID, limit)
+}
+
 func (r *EventRepository) GetEventLeaderboard(ctx context.Context, eventID int64, limit int) ([]EventScore, error) {
 	return r.Leaderboard(ctx, eventID, limit)
 }

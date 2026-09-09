@@ -180,3 +180,20 @@ func (r *SeasonRepository) GetSeasonResults(ctx context.Context, guildID, season
 	}
 	return &out, err
 }
+
+func (r *SeasonRepository) GetEndedSeasons(ctx context.Context, guildID int64, limit int) ([]Season, error) {
+	rows, err := r.pool.Query(ctx, `SELECT s.id,s.guild_id,s.name,s.status,s.starts_at,s.ends_at FROM seasons s JOIN season_results r ON r.season_id=s.id WHERE s.guild_id=$1 AND s.status=$2 ORDER BY s.ends_at DESC LIMIT $3`, guildID, SeasonEnded, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Season
+	for rows.Next() {
+		var s Season
+		if err := rows.Scan(&s.ID, &s.GuildID, &s.Name, &s.Status, &s.StartsAt, &s.EndsAt); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}

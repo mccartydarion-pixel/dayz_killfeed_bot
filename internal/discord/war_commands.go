@@ -108,7 +108,19 @@ func (h *WarCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interactio
 	case "status":
 		warID := optionInt(sub, "id")
 		if warID == 0 {
-			respondEphemeral(s, i, "Provide a war ID to view status.")
+			wars, listErr := h.wars.GetActiveWars(ctx, gid)
+			if listErr != nil || len(wars) == 0 {
+				respondEphemeral(s, i, "No active faction wars.")
+				return
+			}
+			var b strings.Builder
+			b.WriteString("⚔️ **ACTIVE WARS**\n\n")
+			for _, active := range wars {
+				aScore, bScore, _ := h.wars.GetWarScore(ctx, gid, active.ID)
+				fmt.Fprintf(&b, "War %d\nFaction %d %d • Faction %d %d\n\n", active.ID, active.FactionAID, aScore, active.FactionBID, bScore)
+			}
+			b.WriteString("Use `/faction war status id:<war>` for details.")
+			respondEphemeral(s, i, b.String())
 			return
 		}
 		war, lookupErr := h.wars.GetWar(ctx, gid, warID)

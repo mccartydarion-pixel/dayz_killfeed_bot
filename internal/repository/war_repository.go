@@ -128,8 +128,16 @@ func (r *PostgresWarRepository) GetWar(ctx context.Context, guildID, warID int64
 func (r *PostgresWarRepository) GetFactionActiveWars(ctx context.Context, guildID, factionID int64) ([]War, error) {
 	return r.listWars(ctx, `SELECT id,guild_id,COALESCE(season_id,0),faction_a_id,faction_b_id,status,started_at,ended_at,faction_a_score,faction_b_score,winner_faction_id FROM faction_wars WHERE guild_id=$1 AND (faction_a_id=$2 OR faction_b_id=$2) AND status='ACTIVE' ORDER BY started_at`, guildID, factionID)
 }
+
+func (r *PostgresWarRepository) GetActiveWars(ctx context.Context, guildID int64) ([]War, error) {
+	return r.listWars(ctx, `SELECT id,guild_id,COALESCE(season_id,0),faction_a_id,faction_b_id,status,started_at,ended_at,faction_a_score,faction_b_score,winner_faction_id FROM faction_wars WHERE guild_id=$1 AND status='ACTIVE' ORDER BY started_at`, guildID)
+}
 func (r *PostgresWarRepository) GetWarHistory(ctx context.Context, guildID int64, limit int) ([]War, error) {
 	return r.listWars(ctx, `SELECT id,guild_id,COALESCE(season_id,0),faction_a_id,faction_b_id,status,started_at,ended_at,faction_a_score,faction_b_score,winner_faction_id FROM faction_wars WHERE guild_id=$1 ORDER BY created_at DESC LIMIT $2`, guildID, limit)
+}
+
+func (r *PostgresWarRepository) GetEndedWars(ctx context.Context, guildID int64, limit int) ([]War, error) {
+	return r.GetWarHistory(ctx, guildID, limit)
 }
 func (r *PostgresWarRepository) listWars(ctx context.Context, q string, args ...any) ([]War, error) {
 	rows, err := r.pool.Query(ctx, q, args...)

@@ -100,6 +100,44 @@ func (p *LiveCompletionPublisher) PublishPendingEventCompletion(ctx context.Cont
 	return err
 }
 func (p *LiveCompletionPublisher) RecoverPending(ctx context.Context, guildID int64) error {
+	if p == nil {
+		return nil
+	}
+	if p.seasons != nil {
+		seasons, err := p.seasons.GetEndedSeasons(ctx, guildID, 25)
+		if err != nil {
+			return err
+		}
+		for _, season := range seasons {
+			if err := p.PublishPendingSeasonCompletion(ctx, guildID, season.ID); err != nil {
+				return err
+			}
+		}
+	}
+	if p.wars != nil {
+		wars, err := p.wars.GetEndedWars(ctx, guildID, 25)
+		if err != nil {
+			return err
+		}
+		for _, war := range wars {
+			if war.Status == repository.WarEnded {
+				if err := p.PublishPendingWarCompletion(ctx, guildID, war.ID); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if p.events != nil {
+		events, err := p.events.GetEndedEvents(ctx, guildID, 25)
+		if err != nil {
+			return err
+		}
+		for _, event := range events {
+			if err := p.PublishPendingEventCompletion(ctx, guildID, event.ID); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 func valueID(v *int64) int64 {
