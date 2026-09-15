@@ -453,6 +453,12 @@ func (e *Engine) selectLog(lf nitrado.LogFile) {
 	}
 	if e.tracker.CurrentLogFile != "" && e.tracker.CurrentLogFile != candidate.Path {
 		e.tracker.ResetForRotation(candidate.Path)
+		if e.checkpointStore != nil && e.guildID > 0 && e.serverID > 0 {
+			if checkpoint, err := e.checkpointStore.LoadADMCheckpoint(context.Background(), e.guildID, e.serverID); err == nil && checkpoint != nil && checkpoint.Filename == candidate.Path {
+				e.tracker.UpdateCheckpoint(e.serviceID, candidate.Path, checkpoint.RemoteSize, checkpoint.RemoteModifiedAt, checkpoint.ProcessedOffset)
+				e.tracker.LineBuffer = checkpoint.PendingPartialLine
+			}
+		}
 	}
 
 	// Safe first-connect behavior: skip any history already in the log by
@@ -484,7 +490,6 @@ func (e *Engine) selectLog(lf nitrado.LogFile) {
 	slog.Info("component=killfeed", "state", string(StatePolling),
 		"msg", "log source selected",
 		"file", candidate.Name,
-		"path", candidate.Path,
 		"size", candidate.Size,
 		"modified", candidate.Modified.UTC().Format(time.RFC3339),
 	)
@@ -582,18 +587,34 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 		return nil
 	}
 
-	newBytes := content[readOffset:]
-	e.tracker.AppendPartialLine(string(newBytes))
-	lines := e.tracker.DrainCompleteLines()
-
-	// Process complete lines in order through parse -> dedupe -> publish.
-	eventsParsed := e.processLines(lines)
-
-	newOffset := int64(len(content)) - int64(len(e.tracker.LineBuffer))
+	e.tracker.LineBuffer = string(content[readOffset:])
+	lineChunks := e.tracker.DrainCompleteLinesWithOffsets(readOffset)
+	eventsParsed := 0
+	newOffset := oldOffset
+	for _, chunk := range lineChunks {
+		parsed, processErr := e.processLine(chunk.Text)
+		if parsed {
+			eventsParsed++
+		}
+		if processErr != nil {
+			e.tracker.LineBuffer = string(content[newOffset:])
+			e.tracker.UpdateCheckpoint(e.serviceID, current.Path, int64(len(content)), current.Modified, newOffset)
+			checkpointOK := e.saveDurableCheckpoint(ctx, current, newOffset)
+			report := DownloadReport{ServerID: e.serverID, File: current.Name, PreviousFile: previousFile, RemoteSize: current.Size, DownloadedBytes: int64(len(content)), PreviousOffset: oldOffset, NewOffset: newOffset, NewBytes: newOffset - oldOffset, EventsParsed: eventsParsed, Duration: downloadDuration, Result: "persistence_failed", Rotation: rotation, CheckpointCurrent: checkpointOK, At: time.Now()}
+			e.emitDownloadReport(report)
+			e.rotationPending = false
+			e.reportPoll()
+			return nil
+		}
+		newOffset = chunk.EndOffset
+	}
+	if len(lineChunks) == 0 {
+		newOffset = int64(len(content)) - int64(len(e.tracker.LineBuffer))
+	}
 	bytesConsumed := newOffset - oldOffset
 
 	e.bytesProcessed += bytesConsumed
-	e.linesDiscovered += int64(len(lines))
+	e.linesDiscovered += int64(len(lineChunks))
 	e.lastLogChange = e.lastPoll
 	e.tracker.UpdateCheckpoint(e.serviceID, current.Path, int64(len(content)), current.Modified, newOffset)
 	checkpointOK := e.saveDurableCheckpoint(ctx, current, newOffset)
@@ -629,7 +650,7 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 		"old_offset", oldOffset,
 		"new_offset", newOffset,
 		"bytes", bytesConsumed,
-		"lines", len(lines),
+		"lines", len(lineChunks),
 	)
 
 	e.reportPoll()
@@ -678,88 +699,76 @@ func (e *Engine) processLines(lines []string) int {
 	}
 	parsedCount := 0
 	for _, line := range lines {
-		e.metrics.ADMLinesProcessed++
-
-		ev, err := e.parser.ParseLine(line)
+		parsed, err := e.processLine(line)
+		if parsed {
+			parsedCount++
+		}
 		if err != nil {
-			slog.Debug("component=killfeed", "msg", "malformed line ignored", "err", err.Error())
-			e.metrics.EventsIgnored++
-			continue
-		}
-		if ev == nil {
-			e.metrics.EventsIgnored++
-			continue
-		}
-		e.metrics.EventsParsed++
-		parsedCount++
-
-		switch ev.Type {
-		case EventPlayerHit:
-			e.metrics.HitsParsed++
-		case EventPlayerKill:
-			e.metrics.ExplicitKillsParsed++
-		case EventPlayerDeath:
-			e.metrics.DeathsParsed++
-		case EventPlayerConnect:
-			e.metrics.ConnectsParsed++
-		case EventPlayerDisconnect:
-			e.metrics.DisconnectsParsed++
-		}
-
-		slog.Debug("component=killfeed", "msg", "event parsed", "type", string(ev.Type), "time", ev.TimeOfDay)
-
-		if e.dedupe.IsDuplicate(ev) {
-			e.metrics.DuplicateEventsDropped++
-			slog.Debug("component=killfeed", "msg", "duplicate event dropped", "type", string(ev.Type))
-			continue
-		}
-
-		// Online player tracking (deduped, authoritative connect/disconnect only).
-		// Voice counter/state updates fire only on an actual membership change, not
-		// on a duplicate connect/disconnect for an already-known state.
-		if e.players != nil {
-			switch ev.Type {
-			case EventPlayerConnect:
-				slog.Debug("component=presence", "stage", "parsed_connect", "matched", true)
-				if e.players.PlayerConnected(ev.Player) {
-					e.lastConnectAt = time.Now()
-					slog.Info("component=presence", "event", "connect", "server_resolved", true, "online_count", e.players.OnlineCount())
-					e.firePlayersChanged()
-				} else {
-					slog.Debug("component=presence", "event", "duplicate_connect", "state_unchanged", true)
-				}
-			case EventPlayerDisconnect:
-				if e.players.PlayerDisconnected(ev.Player) {
-					e.lastDisconnectAt = time.Now()
-					slog.Info("component=presence", "event", "disconnect", "server_resolved", true, "online_count", e.players.OnlineCount())
-					e.firePlayersChanged()
-				} else {
-					slog.Debug("component=presence", "event", "duplicate_disconnect", "state_unchanged", true)
-				}
-			}
-		}
-
-		// Persist before publish. When a persistence queue is configured, durable
-		// dedupe is the gate: a DB duplicate means do NOT publish again. When no
-		// persistence is configured (degraded mode), fall back to in-memory dedupe
-		// and publish directly.
-		if e.persistence != nil && (ev.Type == EventPlayerConnect || ev.Type == EventPlayerDisconnect || ev.Type == EventPlayerDeath || ev.Type == EventSuicideAction || ev.Type == EventPlayerKill) {
-			if !e.persistence.Enqueue(ev) {
-				if ev.Type == EventPlayerKill {
-					e.metrics.DiscordPublishErrors++
-				}
-			}
-			// Kill publication happens in the queue's post-persist hook.
-		} else if ev.Type == EventPlayerKill && e.publisher != nil {
-			if err := e.publisher.PublishKill(ev); err != nil {
-				e.metrics.DiscordPublishErrors++
-			} else {
-				e.metrics.DiscordKillsPublished++
-				e.metrics.LastKillTime = time.Now()
-			}
+			break
 		}
 	}
 	return parsedCount
+}
+
+func (e *Engine) processLine(line string) (bool, error) {
+	e.metrics.ADMLinesProcessed++
+	ev, err := e.parser.ParseLine(line)
+	if err != nil {
+		e.metrics.EventsIgnored++
+		return false, nil
+	}
+	if ev == nil {
+		e.metrics.EventsIgnored++
+		return false, nil
+	}
+	e.metrics.EventsParsed++
+	switch ev.Type {
+	case EventPlayerHit:
+		e.metrics.HitsParsed++
+	case EventPlayerKill:
+		e.metrics.ExplicitKillsParsed++
+	case EventPlayerDeath:
+		e.metrics.DeathsParsed++
+	case EventPlayerConnect:
+		e.metrics.ConnectsParsed++
+	case EventPlayerDisconnect:
+		e.metrics.DisconnectsParsed++
+	}
+	if e.dedupe == nil {
+		e.dedupe = NewDeduplicator(90*time.Second, 8192)
+	}
+	if e.dedupe.Contains(ev) {
+		e.metrics.DuplicateEventsDropped++
+		return true, nil
+	}
+	if e.persistence != nil && (ev.Type == EventPlayerConnect || ev.Type == EventPlayerDisconnect || ev.Type == EventPlayerDeath || ev.Type == EventSuicideAction || ev.Type == EventPlayerKill) {
+		if err := e.persistence.EnqueueAndWait(context.Background(), ev); err != nil {
+			return true, err
+		}
+	} else if ev.Type == EventPlayerKill && e.publisher != nil {
+		if err := e.publisher.PublishKill(ev); err != nil {
+			e.metrics.DiscordPublishErrors++
+		} else {
+			e.metrics.DiscordKillsPublished++
+			e.metrics.LastKillTime = time.Now()
+		}
+	}
+	e.dedupe.Remember(ev)
+	if e.players != nil {
+		switch ev.Type {
+		case EventPlayerConnect:
+			if e.players.PlayerConnected(ev.Player) {
+				e.lastConnectAt = time.Now()
+				e.firePlayersChanged()
+			}
+		case EventPlayerDisconnect:
+			if e.players.PlayerDisconnected(ev.Player) {
+				e.lastDisconnectAt = time.Now()
+				e.firePlayersChanged()
+			}
+		}
+	}
+	return true, nil
 }
 
 // firePlayersChanged invokes the registered hook after the online set changes.
@@ -844,10 +853,51 @@ func (e *Engine) checkForNewerLog(ctx context.Context) {
 	}
 	newest := logs[0] // newest-first
 	if newest.Path != e.selected.Path && newest.Modified.After(e.selected.Modified) {
+		e.drainRotationTail(ctx)
 		slog.Info("component=killfeed", "msg", "newer ADM detected; switching",
 			"previous", e.selected.Path, "file", newest.Path, "modified", newest.Modified.UTC().Format(time.RFC3339))
 		e.selectLog(newest)
 	}
+}
+
+func (e *Engine) drainRotationTail(ctx context.Context) {
+	if e == nil || e.selected == nil || e.tracker == nil {
+		return
+	}
+	old := *e.selected
+	meta, err := e.currentMeta(ctx)
+	if err != nil || meta.Size <= e.tracker.LastByteOffset {
+		return
+	}
+	started := time.Now()
+	content, err := e.client.ReadLog(ctx, e.serviceID, old.Path)
+	if err != nil {
+		slog.Warn("component=adm", "event", "rotation_tail_incomplete", "server_id", e.serverID, "file", old.Name, "error_class", safeDownloadErrorClass(err))
+		return
+	}
+	readOffset := e.tracker.LastByteOffset
+	if readOffset < 0 || readOffset > int64(len(content)) {
+		return
+	}
+	e.tracker.LineBuffer = string(content[readOffset:])
+	chunks := e.tracker.DrainCompleteLinesWithOffsets(readOffset)
+	safeOffset := readOffset
+	parsed := 0
+	for _, chunk := range chunks {
+		ok, processErr := e.processLine(chunk.Text)
+		if processErr != nil {
+			slog.Warn("component=adm", "event", "rotation_tail_incomplete", "server_id", e.serverID, "file", old.Name, "error_class", safeDownloadErrorClass(processErr))
+			break
+		}
+		if ok {
+			parsed++
+		}
+		safeOffset = chunk.EndOffset
+	}
+	e.tracker.LineBuffer = string(content[safeOffset:])
+	e.tracker.UpdateCheckpoint(e.serviceID, old.Path, int64(len(content)), old.Modified, safeOffset)
+	checkpointOK := e.saveDurableCheckpoint(ctx, &old, safeOffset)
+	e.emitDownloadReport(DownloadReport{ServerID: e.serverID, File: old.Name, DownloadedBytes: int64(len(content)), RemoteSize: meta.Size, PreviousOffset: readOffset, NewOffset: safeOffset, NewBytes: safeOffset - readOffset, EventsParsed: parsed, Duration: time.Since(started), Result: "success", CheckpointCurrent: checkpointOK, At: time.Now()})
 }
 
 func (e *Engine) reportPoll() {

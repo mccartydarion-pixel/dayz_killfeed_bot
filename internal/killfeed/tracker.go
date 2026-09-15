@@ -1,6 +1,9 @@
 package killfeed
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // LogCheckpoint records the last safely processed log state.
 type LogCheckpoint struct {
@@ -22,6 +25,11 @@ type Tracker struct {
 	CurrentModified   time.Time
 	Checkpoints       map[string]LogCheckpoint
 	LineBuffer        string
+}
+
+type CompleteLine struct {
+	Text      string
+	EndOffset int64
 }
 
 // NewTracker creates a new checkpoint tracker.
@@ -143,6 +151,27 @@ func (t *Tracker) DrainCompleteLines() []string {
 		}
 		lines = append(lines, line)
 		t.LineBuffer = t.LineBuffer[idx+1:]
+	}
+	return lines
+}
+
+func (t *Tracker) DrainCompleteLinesWithOffsets(baseOffset int64) []CompleteLine {
+	if t == nil || t.LineBuffer == "" {
+		return nil
+	}
+	lines := make([]CompleteLine, 0)
+	for {
+		idx := strings.IndexByte(t.LineBuffer, '\n')
+		if idx < 0 {
+			break
+		}
+		line := t.LineBuffer[:idx]
+		if len(line) > 0 && line[len(line)-1] == '\r' {
+			line = line[:len(line)-1]
+		}
+		lines = append(lines, CompleteLine{Text: line, EndOffset: baseOffset + int64(idx) + 1})
+		t.LineBuffer = t.LineBuffer[idx+1:]
+		baseOffset = lines[len(lines)-1].EndOffset
 	}
 	return lines
 }

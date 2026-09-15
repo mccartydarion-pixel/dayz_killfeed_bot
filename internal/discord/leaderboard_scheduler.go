@@ -3,6 +3,7 @@ package discord
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 )
 
@@ -20,6 +21,17 @@ type LeaderboardScheduler struct {
 	guildRowID  int64
 	cfg         LeaderboardConfig
 	onMessageID func(string)
+	mu          sync.Mutex
+	dirty       bool
+}
+
+func (s *LeaderboardScheduler) MarkDirty() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.dirty = true
+	s.mu.Unlock()
 }
 
 // NewLeaderboardScheduler creates a scheduler bound to one guild's panel.
@@ -46,6 +58,9 @@ func (s *LeaderboardScheduler) RefreshOnce(ctx context.Context) error {
 	if changed && s.onMessageID != nil && id != "" {
 		s.onMessageID(id)
 	}
+	s.mu.Lock()
+	s.dirty = false
+	s.mu.Unlock()
 	return nil
 }
 

@@ -145,6 +145,20 @@ func TestDBOutageDoesNotPublish(t *testing.T) {
 	}
 }
 
+func TestEnqueueAndWaitReturnsPersistenceFailure(t *testing.T) {
+	store := newFakePersistenceStore()
+	store.failKills = true
+	pq := NewPersistenceQueue(store, 1, "sess-ack")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go pq.Run(ctx)
+	err := pq.EnqueueAndWait(context.Background(), killEvent("v", "k", "M4-A1", 10, "16:40:12"))
+	pq.Close()
+	if err == nil {
+		t.Fatal("expected persistence acknowledgement failure")
+	}
+}
+
 func TestPersistenceQueueOverflowDropsNewest(t *testing.T) {
 	store := newFakePersistenceStore()
 	// Don't run the worker so the queue fills.

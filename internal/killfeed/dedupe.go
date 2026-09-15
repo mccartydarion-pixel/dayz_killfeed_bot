@@ -48,6 +48,28 @@ func (d *Deduplicator) IsDuplicate(ev *Event) bool {
 	return false
 }
 
+func (d *Deduplicator) Contains(ev *Event) bool {
+	if d == nil || ev == nil {
+		return false
+	}
+	key := fingerprint(ev)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.pruneLocked(time.Now())
+	_, exists := d.seen[key]
+	return exists
+}
+
+func (d *Deduplicator) Remember(ev *Event) {
+	if d == nil || ev == nil {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.pruneLocked(time.Now())
+	d.seen[fingerprint(ev)] = time.Now()
+}
+
 // pruneLocked removes expired entries and evicts oldest if over capacity.
 func (d *Deduplicator) pruneLocked(now time.Time) {
 	for k, ts := range d.seen {

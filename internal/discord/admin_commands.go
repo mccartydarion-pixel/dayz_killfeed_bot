@@ -8,6 +8,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/admin"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 )
 
 type AdminCommandHandler struct{ service *admin.Service }
@@ -49,7 +50,7 @@ func (h *AdminCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interact
 		return
 	}
 	if i.ApplicationCommandData().Options[0].Name == "link-diagnostics" {
-		respondEphemeral(s, i, fmt.Sprintf("🔗 **LINK DIAGNOSTICS**\n%v", data["link_diagnostics"]))
+		respondLinkDiagnostics(s, i, data["link_diagnostics"])
 		return
 	}
 	if i.ApplicationCommandData().Options[0].Name == "leaderboard-refresh" {
@@ -69,4 +70,23 @@ func (h *AdminCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interact
 		fmt.Fprintf(&b, "Database: %v\nDiscord: %v\nNitrado: %v\nADM: %v\nOnline Players: %v\nPersistence Queue: %v\n", runtime["database_connected"], runtime["discord_connected"], runtime["nitrado_authenticated"], runtime["log_source_found"], runtime["online_players"], runtime["persistence_queue_depth"])
 	}
 	respondEphemeral(s, i, b.String())
+}
+
+func respondLinkDiagnostics(s *discordgo.Session, i *discordgo.InteractionCreate, raw any) {
+	embed := presentation.NewChampionEmbed("LINK DIAGNOSTICS", presentation.InfoSteel)
+	values, _ := raw.(map[string]any)
+	add := func(label, key string) {
+		if value, ok := values[key]; ok {
+			embed.Fields = append(embed.Fields, presentation.StatusField(label, fmt.Sprint(value), true))
+		}
+	}
+	add("DATABASE", "database")
+	add("PLAYER REPOSITORY", "player_repository")
+	add("ACTIVITY REPOSITORY", "activity_repository")
+	add("SELECTED SERVER", "selected_server")
+	add("OBSERVED PLAYERS", "observed_players")
+	add("LAST CONNECT PERSISTED", "last_player_connect_persisted")
+	add("LAST DISCONNECT", "last_player_disconnect")
+	add("PRESENCE EVENT", "last_presence_event")
+	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{Type: discordgo.InteractionResponseChannelMessageWithSource, Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral, Embeds: []*discordgo.MessageEmbed{embed}}})
 }

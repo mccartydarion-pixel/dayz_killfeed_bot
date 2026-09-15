@@ -51,7 +51,7 @@ type PersistenceQueue struct {
 	session  string
 
 	mu        sync.Mutex
-	queue     chan *Event
+	queue     chan *persistRequest
 	dropped   int64
 	persisted int64
 	closed    chan struct{}
@@ -64,6 +64,11 @@ type PersistenceQueue struct {
 	enqueued        int64
 	highWater       int
 	oldestAt        time.Time
+}
+
+type persistRequest struct {
+	event *Event
+	ack   chan error
 }
 
 func (q *PersistenceQueue) SetKillPostProcessor(processor KillPostProcessor) {
@@ -87,7 +92,7 @@ func NewPersistenceQueue(store PersistenceStore, guildID int64, sessionID string
 		store:   store,
 		guildID: guildID,
 		session: sessionID,
-		queue:   make(chan *Event, maxPersistenceQueue),
+		queue:   make(chan *persistRequest, maxPersistenceQueue),
 		closed:  make(chan struct{}),
 		done:    make(chan struct{}),
 	}
@@ -109,6 +114,28 @@ func (q *PersistenceQueue) SetKillPersistedHook(fn func(ev *Event)) {
 	q.onKillPersisted = fn
 }
 func (q *PersistenceQueue) Enqueue(ev *Event) bool {
+	return q.enqueue(ev, nil)
+}
+
+// EnqueueAndWait preserves per-worker event order and returns only after the
+// event's database work and post-persistence hooks have completed.
+func (q *PersistenceQueue) EnqueueAndWait(ctx context.Context, ev *Event) error {
+	if q == nil || ev == nil {
+		return errors.New("persistence queue unavailable")
+	}
+	ack := make(chan error, 1)
+	if !q.enqueue(ev, ack) {
+		return errors.New("persistence queue full")
+	}
+	select {
+	case err := <-ack:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (q *PersistenceQueue) enqueue(ev *Event, ack chan error) bool {
 	if q == nil || ev == nil {
 		return false
 	}
@@ -118,7 +145,7 @@ func (q *PersistenceQueue) Enqueue(ev *Event) bool {
 	ev.ServerID = q.serverID
 	ev.SessionID = q.session
 	select {
-	case q.queue <- ev:
+	case q.queue <- &persistRequest{event: ev, ack: ack}:
 		q.mu.Lock()
 		q.enqueued++
 		if len(q.queue) > q.highWater {
@@ -170,11 +197,14 @@ func (q *PersistenceQueue) Run(ctx context.Context) {
 	defer ticker.Stop()
 	for {
 		select {
-		case ev := <-q.queue:
-			if ev == nil {
+		case request := <-q.queue:
+			if request == nil || request.event == nil {
 				continue
 			}
-			q.persistOne(ctx, ev)
+			err := q.persistOne(ctx, request.event)
+			if request.ack != nil {
+				request.ack <- err
+			}
 			q.mu.Lock()
 			if len(q.queue) == 0 {
 				q.oldestAt = time.Time{}
@@ -188,9 +218,12 @@ func (q *PersistenceQueue) Run(ctx context.Context) {
 			// Drain remaining queued events before exit.
 			for {
 				select {
-				case ev := <-q.queue:
-					if ev != nil {
-						q.persistOne(ctx, ev)
+				case request := <-q.queue:
+					if request != nil && request.event != nil {
+						err := q.persistOne(ctx, request.event)
+						if request.ack != nil {
+							request.ack <- err
+						}
 					}
 				default:
 					return
@@ -204,30 +237,41 @@ func (q *PersistenceQueue) Run(ctx context.Context) {
 
 // persistOne persists a single event. Kills and deaths are persisted; other
 // event types only upsert the player identity.
-func (q *PersistenceQueue) persistOne(ctx context.Context, ev *Event) {
+func (q *PersistenceQueue) persistOne(ctx context.Context, ev *Event) error {
 	if q.store == nil {
-		return
+		return errors.New("persistence store unavailable")
 	}
 
 	// Persist based on event type. Only kills/deaths become durable records here;
 	// all events upsert their player identities for last_seen tracking.
 	switch ev.Type {
 	case EventPlayerConnect, EventPlayerDisconnect:
-		playerID := q.upsertPlayer(ctx, ev.Player)
+		playerID, err := q.upsertPlayer(ctx, ev.Player)
+		if err != nil {
+			return err
+		}
 		if recorder, ok := q.store.(ActivityRecorder); ok && playerID > 0 {
 			at := eventTime(ev)
 			if ev.Type == EventPlayerConnect {
 				if err := recorder.RecordConnect(ctx, q.guildID, q.serverID, playerID, at); err != nil {
 					slog.Warn("component=activity", "msg", "connect activity persistence failed", "err", err.Error())
+					return err
 				}
 			} else if err := recorder.RecordDisconnect(ctx, q.guildID, q.serverID, playerID, at); err != nil {
 				slog.Warn("component=activity", "msg", "disconnect activity persistence failed", "err", err.Error())
+				return err
 			}
 		}
-		return
+		return nil
 	case EventPlayerKill:
-		killerID := q.upsertPlayer(ctx, ev.Killer)
-		victimID := q.upsertPlayer(ctx, ev.Victim)
+		killerID, err := q.upsertPlayer(ctx, ev.Killer)
+		if err != nil {
+			return err
+		}
+		victimID, err := q.upsertPlayer(ctx, ev.Victim)
+		if err != nil {
+			return err
+		}
 		var killerFactionID, victimFactionID, seasonID, warID *int64
 		if resolver, ok := q.store.(KillAttributionResolver); ok {
 			killerFactionID, victimFactionID, seasonID, warID = resolver.ResolveKillAttribution(ctx, q.guildID, killerID, victimID, eventTime(ev))
@@ -251,7 +295,6 @@ func (q *PersistenceQueue) persistOne(ctx context.Context, ev *Event) {
 			EventTime:       eventTimePtr(ev),
 		}
 		var killID int64
-		var err error
 		if inserter, ok := q.store.(KillIDStore); ok {
 			killID, err = inserter.InsertKillReturning(ctx, rec)
 		} else {
@@ -260,11 +303,11 @@ func (q *PersistenceQueue) persistOne(ctx context.Context, ev *Event) {
 		if errors.Is(err, repository.ErrDuplicate) {
 			// Durable dedupe: already persisted — do NOT publish again.
 			slog.Debug("component=killfeed", "msg", "kill already persisted; skipping publish", "fingerprint", rec.Fingerprint)
-			return
+			return nil
 		}
 		if err != nil {
 			slog.Warn("component=killfeed", "msg", "kill persistence failed; not published", "err", err.Error())
-			return
+			return err
 		}
 		if q.postProcessor != nil && killID > 0 {
 			q.postProcessor.ProcessPersistedKill(ctx, killID, rec, ev)
@@ -279,9 +322,12 @@ func (q *PersistenceQueue) persistOne(ctx context.Context, ev *Event) {
 		q.mu.Lock()
 		q.persisted++
 		q.mu.Unlock()
-		return
+		return nil
 	case EventPlayerDeath, EventSuicideAction:
-		playerID := q.upsertPlayer(ctx, ev.Player)
+		playerID, err := q.upsertPlayer(ctx, ev.Player)
+		if err != nil {
+			return err
+		}
 		var seasonID *int64
 		if resolver, ok := q.store.(DeathSeasonResolver); ok {
 			seasonID = resolver.ResolveDeathSeason(ctx, q.guildID, eventTime(ev))
@@ -302,36 +348,24 @@ func (q *PersistenceQueue) persistOne(ctx context.Context, ev *Event) {
 		}
 		if err := q.store.InsertDeath(ctx, rec); err != nil && !errors.Is(err, repository.ErrDuplicate) {
 			slog.Warn("component=killfeed", "msg", "death persistence failed", "err", err.Error())
-			return
+			return err
 		}
 	default:
 		// connect/disconnect/hit/etc: just track the player's identity/last_seen.
-		q.upsertPlayer(ctx, ev.Player)
-		q.upsertPlayer(ctx, ev.Victim)
-		q.upsertPlayer(ctx, ev.Attacker)
-		if recorder, ok := q.store.(ActivityRecorder); ok && (ev.Type == EventPlayerConnect || ev.Type == EventPlayerDisconnect) {
-			playerID := q.upsertPlayer(ctx, ev.Player)
-			at := eventTime(ev)
-			if ev.Type == EventPlayerConnect {
-				if q.serverID > 0 {
-					_ = recorder.RecordConnect(ctx, q.guildID, q.serverID, playerID, at)
-				}
-			} else {
-				if q.serverID > 0 {
-					_ = recorder.RecordDisconnect(ctx, q.guildID, q.serverID, playerID, at)
-				}
-			}
-		}
+		_, _ = q.upsertPlayer(ctx, ev.Player)
+		_, _ = q.upsertPlayer(ctx, ev.Victim)
+		_, _ = q.upsertPlayer(ctx, ev.Attacker)
 	}
 
 	q.mu.Lock()
 	q.persisted++
 	q.mu.Unlock()
+	return nil
 }
 
-func (q *PersistenceQueue) upsertPlayer(ctx context.Context, p *PlayerRef) int64 {
+func (q *PersistenceQueue) upsertPlayer(ctx context.Context, p *PlayerRef) (int64, error) {
 	if p == nil || p.ID == "" {
-		return 0
+		return 0, nil
 	}
 	seen := time.Now()
 	if p != nil && !q.sessionStart().IsZero() {
@@ -340,9 +374,9 @@ func (q *PersistenceQueue) upsertPlayer(ctx context.Context, p *PlayerRef) int64
 	id, err := q.store.UpsertPlayer(ctx, q.guildID, p.ID, p.Name, seen)
 	if err != nil {
 		slog.Debug("component=killfeed", "msg", "player upsert failed", "err", err.Error())
-		return 0
+		return 0, err
 	}
-	return id
+	return id, nil
 }
 
 func (q *PersistenceQueue) sessionStart() time.Time { return time.Time{} }

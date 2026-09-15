@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -52,26 +53,48 @@ func (c *Client) BaseURL() string {
 }
 
 func (c *Client) do(ctx context.Context, method string, path string, body io.Reader) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
+	const maxAttempts = 3
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
+		if err != nil {
+			return nil, fmt.Errorf("create request: %w", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+c.token)
+		req.Header.Set("Accept", "application/json")
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		slog.Debug("component=nitrado", "method", method, "path", path)
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return nil, &RequestError{Op: "request", Kind: KindTemporary, Message: err.Error(), StatusCode: 0}
+		}
+		if resp.StatusCode != http.StatusTooManyRequests || attempt == maxAttempts {
+			return resp, nil
+		}
+		delay := retryAfter(resp.Header.Get("Retry-After"))
+		resp.Body.Close()
+		if delay <= 0 {
+			delay = time.Duration(attempt*attempt)*250*time.Millisecond + time.Duration((attempt*37)%100)*time.Millisecond
+		}
+		slog.Warn("component=nitrado", "event", "rate_limited", "operation", "adm_metadata", "retry_after_ms", delay.Milliseconds(), "attempt", attempt)
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
-	req.Header.Set("Accept", "application/json")
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+	return nil, fmt.Errorf("request retry exhausted")
+}
+
+func retryAfter(value string) time.Duration {
+	seconds, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	if err != nil || seconds < 0 {
+		return 0
 	}
-
-	// Log only the method and sanitized path at DEBUG. Routine polling must not
-	// emit INFO on every request. Never log the token or any header.
-	slog.Debug("component=nitrado", "method", method, "path", path)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, &RequestError{Op: "request", Kind: KindTemporary, Message: err.Error(), StatusCode: 0}
-	}
-
-	return resp, nil
+	return time.Duration(seconds * float64(time.Second))
 }
 
 // RequestError wraps API request failures in a useful form.
