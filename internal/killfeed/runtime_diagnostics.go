@@ -44,6 +44,9 @@ type RuntimeDiagnosticSnapshot struct {
 	LastErrorStage          string
 	LastErrorClass          string
 	LastErrorAt             time.Time
+	SourceClassification    string
+	ColdStartBaseline       bool
+	ColdStartBaselineOffset int64
 	RecentEvents            []string
 	CandidateCount          int
 
@@ -107,6 +110,10 @@ func (s RuntimeDiagnosticSnapshot) Classification() string {
 		return "PARSER_FAILURE"
 	case s.LastParsedEventType != "" && s.LastPersistenceResult == "FAILURE":
 		return "PERSISTENCE_FAILURE"
+	case s.LastMetadataCheck.IsZero():
+		return "UNKNOWN"
+	case !s.LastMetadataChanged && !s.LastMetadataCheck.IsZero() && time.Since(s.RemoteModified) > 10*time.Minute:
+		return "LIVE_SOURCE_STALE"
 	case s.LastKillParsedAt.After(s.LastKillPersistedAt) && !s.LastKillPersistedAt.IsZero():
 		return "KILL_NOT_PUBLISHED"
 	default:

@@ -225,6 +225,17 @@ func diagnosticTime(value time.Time) string {
 	return value.UTC().Format(time.RFC3339)
 }
 
+func diagnosticDuration(value time.Time) string {
+	if value.IsZero() {
+		return "NEVER"
+	}
+	duration := time.Since(value)
+	if duration < 0 {
+		duration = 0
+	}
+	return duration.Round(time.Second).String()
+}
+
 func selectPublicCounterServer(selectedID int64, active []repository.GameServer) (int64, bool) {
 	if selectedID > 0 {
 		for _, server := range active {
@@ -861,6 +872,8 @@ func (a *App) Run() error {
 			out["voice"] = fmt.Sprintf("desired=%d published=%d actual=%d result=%s", snapshot.DesiredVoiceCount, snapshot.LastVoicePublishedCount, snapshot.ActualDiscordVoiceCount, snapshot.LastVoicePublishResult)
 			out["kill"] = fmt.Sprintf("parsed=%s persisted=%s published=%s", diagnosticTime(snapshot.LastKillParsedAt), diagnosticTime(snapshot.LastKillPersistedAt), diagnosticTime(snapshot.LastKillPublishedAt))
 			out["last_failure"] = fmt.Sprintf("stage=%s class=%s at=%s", snapshot.LastErrorStage, snapshot.LastErrorClass, diagnosticTime(snapshot.LastErrorAt))
+			out["source_freshness"] = fmt.Sprintf("selected_age=%s last_remote_write=%s last_new_bytes=%s classification=%s", diagnosticDuration(snapshot.RemoteModified), diagnosticTime(snapshot.RemoteModified), diagnosticDuration(snapshot.LastDownloadSuccess), snapshot.Classification())
+			out["cold_start"] = fmt.Sprintf("baseline=%t offset=%d", snapshot.ColdStartBaseline, snapshot.ColdStartBaselineOffset)
 			out["classification"] = snapshot.Classification()
 			out["timeline"] = strings.Join(snapshot.RecentEvents, "\n")
 			return out

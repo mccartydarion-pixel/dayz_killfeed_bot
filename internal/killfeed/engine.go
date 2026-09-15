@@ -571,8 +571,9 @@ func (e *Engine) selectLog(lf nitrado.LogFile) {
 			e.tracker.UpdateCheckpoint(e.serviceID, candidate.Path, checkpoint.RemoteSize, checkpoint.RemoteModifiedAt, checkpoint.ProcessedOffset)
 			e.tracker.LineBuffer = checkpoint.PendingPartialLine
 			slog.Info("component=adm", "event", "checkpoint_loaded", "server_id", e.serverID, "offset", checkpoint.ProcessedOffset)
-		} else if checkpoint == nil && !e.startAtTail {
+		} else if !e.logSourceFound && !e.startAtTail {
 			e.startAtTail = true
+			slog.Info("component=adm", "event", "cold_start_baseline_required", "server_id", e.serverID, "file", candidate.Name)
 		}
 		e.checkpointLoaded = true
 	}
@@ -596,6 +597,15 @@ func (e *Engine) selectLog(lf nitrado.LogFile) {
 	if e.startAtTail && !e.logSourceFound {
 		e.tracker.UpdateCheckpoint(e.serviceID, candidate.Path, candidate.Size, candidate.Modified, candidate.Size)
 		e.saveDurableCheckpoint(context.Background(), &candidate, candidate.Size)
+		if e.diagnostics != nil {
+			e.diagnostics.Update(func(s *RuntimeDiagnosticSnapshot) {
+				s.ColdStartBaseline = true
+				s.ColdStartBaselineOffset = candidate.Size
+				s.CheckpointOffset = candidate.Size
+				s.CheckpointRemoteSize = candidate.Size
+				s.CheckpointLastSaved = time.Now()
+			})
+		}
 		slog.Info("component=killfeed", "msg", "first connect: starting at log tail, existing history skipped", "file", candidate.Name, "size", candidate.Size)
 	}
 
@@ -961,19 +971,33 @@ func (e *Engine) processLine(line string) (bool, error) {
 		switch ev.Type {
 		case EventPlayerConnect:
 			if e.players.PlayerConnected(ev.Player) {
+				connectAt := time.Now()
 				e.presenceMu.Lock()
 				e.lastPresenceEvent = "PLAYER_CONNECT"
-				e.lastConnectAt = time.Now()
+				e.lastConnectAt = connectAt
 				e.presenceMu.Unlock()
+				if e.diagnostics != nil {
+					e.diagnostics.Update(func(s *RuntimeDiagnosticSnapshot) {
+						s.LastConnectAt = connectAt
+						s.TrackerCount = e.players.OnlineCount()
+					})
+				}
 				slog.Info("component=presence", "event", "connect_committed", "server_id", e.serverID, "online_count", e.players.OnlineCount())
 				e.firePlayersChanged()
 			}
 		case EventPlayerDisconnect:
 			if e.players.PlayerDisconnected(ev.Player) {
+				disconnectAt := time.Now()
 				e.presenceMu.Lock()
 				e.lastPresenceEvent = "PLAYER_DISCONNECT"
-				e.lastDisconnectAt = time.Now()
+				e.lastDisconnectAt = disconnectAt
 				e.presenceMu.Unlock()
+				if e.diagnostics != nil {
+					e.diagnostics.Update(func(s *RuntimeDiagnosticSnapshot) {
+						s.LastDisconnectAt = disconnectAt
+						s.TrackerCount = e.players.OnlineCount()
+					})
+				}
 				slog.Info("component=presence", "event", "disconnect_committed", "server_id", e.serverID, "online_count", e.players.OnlineCount())
 				e.firePlayersChanged()
 			}
