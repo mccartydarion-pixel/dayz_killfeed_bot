@@ -912,6 +912,11 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 	if credentialErr != nil {
 		return credentialErr
 	}
+	if a.ActivityRepository != nil {
+		if err := a.ActivityRepository.ResetConnectedForRestart(workerCtx, row.GuildID, row.ID); err != nil {
+			return fmt.Errorf("reset stale activity session for server %d: %w", row.ID, err)
+		}
+	}
 	bindOnlineCounter(setupStore, a.Config.DiscordGuildID, onlineCounter)
 	engine := killfeed.NewEngine(client, row.ProviderServiceID, killfeed.NewADMParser())
 	engine.SetStateSink(a.State)
