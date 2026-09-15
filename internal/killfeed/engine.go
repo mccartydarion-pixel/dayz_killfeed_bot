@@ -389,6 +389,9 @@ func (e *Engine) selectLog(lf nitrado.LogFile) {
 	// ADM session != player session: switching which file Champion reads (first
 	// selection or later rotation) must never clear live presence. Only
 	// authoritative PLAYER_CONNECT/PLAYER_DISCONNECT events change who is online.
+	if e.logSourceFound {
+		slog.Info("component=presence", "event", "rotation", "presence_retained", true, "online_count", e.players.OnlineCount())
+	}
 	if !e.logSourceFound {
 		e.logSourceFound = true
 		e.lastLogChange = time.Now()
@@ -560,15 +563,16 @@ func (e *Engine) processLines(lines []string) {
 		if e.players != nil {
 			switch ev.Type {
 			case EventPlayerConnect:
+				slog.Debug("component=presence", "stage", "parsed_connect", "matched", true)
 				if e.players.PlayerConnected(ev.Player) {
-					slog.Info("component=presence", "event", "connect", "online_count", e.players.OnlineCount())
+					slog.Info("component=presence", "event", "connect", "server_resolved", true, "online_count", e.players.OnlineCount())
 					e.firePlayersChanged()
 				} else {
 					slog.Debug("component=presence", "event", "duplicate_connect", "state_unchanged", true)
 				}
 			case EventPlayerDisconnect:
 				if e.players.PlayerDisconnected(ev.Player) {
-					slog.Info("component=presence", "event", "disconnect", "online_count", e.players.OnlineCount())
+					slog.Info("component=presence", "event", "disconnect", "server_resolved", true, "online_count", e.players.OnlineCount())
 					e.firePlayersChanged()
 				} else {
 					slog.Debug("component=presence", "event", "duplicate_disconnect", "state_unchanged", true)

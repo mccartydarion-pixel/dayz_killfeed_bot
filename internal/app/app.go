@@ -81,7 +81,40 @@ type App struct {
 	persistQueues       []*killfeed.PersistenceQueue
 	firstConnectMu      sync.Mutex
 	firstConnectServers map[int64]bool
+	presenceMu          sync.Mutex
+	presenceTrackers    map[int64]*killfeed.PlayerTracker
 	cancel              context.CancelFunc
+}
+
+// registerPresenceTracker exposes a running ServerWorker's live PlayerTracker
+// for diagnostics, keyed by the exact game_servers row ID it owns.
+func (a *App) registerPresenceTracker(serverID int64, tracker *killfeed.PlayerTracker) {
+	a.presenceMu.Lock()
+	if a.presenceTrackers == nil {
+		a.presenceTrackers = make(map[int64]*killfeed.PlayerTracker)
+	}
+	a.presenceTrackers[serverID] = tracker
+	a.presenceMu.Unlock()
+}
+
+// unregisterPresenceTracker removes a worker's tracker once it stops, so
+// diagnostics never read a stale reference for a server that is no longer live.
+func (a *App) unregisterPresenceTracker(serverID int64) {
+	a.presenceMu.Lock()
+	delete(a.presenceTrackers, serverID)
+	a.presenceMu.Unlock()
+}
+
+// livePresenceCount returns the exact running worker's online count for a
+// server, or (0, false) if no worker is currently registered for it.
+func (a *App) livePresenceCount(serverID int64) (int, bool) {
+	a.presenceMu.Lock()
+	tracker, ok := a.presenceTrackers[serverID]
+	a.presenceMu.Unlock()
+	if !ok || tracker == nil {
+		return 0, false
+	}
+	return tracker.OnlineCount(), true
 }
 
 // markFirstConnect flags a server so its next worker start seeds the ADM
@@ -292,12 +325,16 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 				return result
 			}
 			result["selected_server"] = "RESOLVED"
-			count, lastObserved, activityErr := app.ActivityRepository.Diagnostic(diagCtx, guildID, serverID)
+			// observed_players must reflect the live running worker's tracker,
+			// never a database row count, so it matches Online Players exactly.
+			if liveCount, ok := app.livePresenceCount(serverID); ok {
+				result["observed_players"] = liveCount
+			}
+			_, lastObserved, activityErr := app.ActivityRepository.Diagnostic(diagCtx, guildID, serverID)
 			if activityErr != nil {
 				return result
 			}
 			result["activity_repository"] = "HEALTHY"
-			result["observed_players"] = count
 			if lastObserved != nil {
 				result["last_player_connect_persisted"] = lastObserved.UTC().Format(time.RFC3339)
 			}
@@ -833,6 +870,7 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 		if a.Workers != nil {
 			a.Workers.Stop(workerName)
 		}
+		a.unregisterPresenceTracker(row.ID)
 	}()
 
 	client, credentialErr := a.nitradoClientForServer(workerCtx, row)
@@ -842,6 +880,7 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 	bindOnlineCounter(setupStore, a.Config.DiscordGuildID, onlineCounter)
 	engine := killfeed.NewEngine(client, row.ProviderServiceID, killfeed.NewADMParser())
 	engine.SetStateSink(a.State)
+	a.registerPresenceTracker(row.ID, engine.PlayerTracker())
 	if a.consumeFirstConnect(row.ID) {
 		engine.StartAtLogTail()
 	}
