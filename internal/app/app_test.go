@@ -5,6 +5,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yourname/dayz-killfeed/internal/config"
+	"github.com/yourname/dayz-killfeed/internal/repository"
+	"github.com/yourname/dayz-killfeed/internal/security"
 	"github.com/yourname/dayz-killfeed/internal/servers"
 )
 
@@ -122,5 +125,46 @@ func TestDisconnectServerStopsWorker(t *testing.T) {
 	}
 	if a.WorkerManager.Running(3) {
 		t.Fatal("expected worker to stop after DisconnectServer")
+	}
+}
+
+func TestNitradoStartupIsOptional(t *testing.T) {
+	a := &App{Config: &config.Config{NitradoToken: ""}}
+	if a.nitradoEnabled() {
+		t.Fatal("expected Nitrado startup to be disabled when token is blank")
+	}
+
+	a = &App{Config: &config.Config{NitradoToken: "token"}}
+	if !a.nitradoEnabled() {
+		t.Fatal("expected Nitrado startup to be enabled when token is configured")
+	}
+}
+
+func TestNitradoClientFromConnectionDecryptsGuildCredential(t *testing.T) {
+	cipher, err := security.NewAESGCM("12345678901234567890123456789012", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ciphertext, nonce, version, err := cipher.Encrypt([]byte("guild-token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	client, err := nitradoClientFromConnection(cipher, repository.NitradoConnection{
+		Ciphertext: ciphertext,
+		Nonce:      nonce,
+		KeyVersion: version,
+	})
+	if err != nil {
+		t.Fatalf("expected encrypted credential to resolve: %v", err)
+	}
+	if client.BaseURL() != "https://api.nitrado.net" {
+		t.Fatalf("unexpected client base URL: %q", client.BaseURL())
+	}
+}
+
+func TestNitradoClientFromConnectionRejectsMissingCipher(t *testing.T) {
+	if _, err := nitradoClientFromConnection(nil, repository.NitradoConnection{}); err == nil {
+		t.Fatal("expected missing cipher to reject credential resolution")
 	}
 }

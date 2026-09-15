@@ -1,0 +1,37 @@
+PHASE 4.9 READINESS REPORT
+
+Project: DayZ Killfeed
+Date: 2026-09-15
+
+IMPLEMENTED
+- Phase 4.4 multi-server runtime: one WorkerManager-owned worker per active game server.
+- Phase 4.5 server onboarding: encrypted per-guild Nitrado credentials, service discovery,
+  selection, disconnect, repair, and status commands.
+- Phase 4.6 server scoping audit: guild ownership checks for competitive IDs and repository
+  writes; server-specific activity remains server-scoped.
+- Phase 4.7 welcomer: persistent guild configuration, presets, member-join delivery, and
+  Discord members-intent configuration.
+- Phase 4.8 setup live verification: Discord guild/channel/permission verification, setup
+  readiness state, /ready, and sanitized runtime status.
+- Linking: pending-only ownership workflow, playtime gate, guild scoping, status, and
+  user-bound unlink confirmation.
+- Runtime hardening: workers use the encrypted Nitrado credential belonging to their guild;
+  worker failures and exits are visible in health state.
+
+AUTOMATED VALIDATION
+- go test ./...: passing.
+- Focused app, health, and worker lifecycle tests: passing.
+- go vet ./... and go build ./...: must be run in the release checklist.
+- PostgreSQL migration gate: available with `go test -tags=integration ./...` and an explicit
+  TEST_DATABASE_URL plus ALLOW_INTEGRATION_DB_TESTS=true.
+
+LIVE VALIDATION REQUIRED BEFORE PRODUCTION
+- Dedicated PostgreSQL integration database run.
+- Real Discord test guild with required bot permissions and Server Members Intent enabled.
+- Real Nitrado test service and valid token; verify service discovery and ADM log polling.
+- Container/Railway deployment smoke test for /health, /ready, and /api/v1/status.
+
+CONCLUSION
+The previously reported NOT STARTED/PARTIAL labels are no longer accurate for the code paths
+listed under IMPLEMENTED. Production readiness remains conditional until the live validation
+items above have been executed against dedicated external services.

@@ -78,7 +78,7 @@ docker build -t dayz-killfeed .
 docker run --rm -p 8080:8080 --env-file .env dayz-killfeed
 ```
 
-## Current Phase 2.2 functionality
+## Current Phase 4.9 functionality
 
 - typed configuration with startup validation (`PORT` preferred for Railway, `HTTP_PORT` local fallback)
 - structured logging via `slog` (`LOG_LEVEL=debug` enables checkpoint debug logs)
@@ -92,11 +92,35 @@ docker run --rm -p 8080:8080 --env-file .env dayz-killfeed
   partial-line buffering, truncation and rotation detection
 - graceful shutdown using `signal.NotifyContext`
 - Railway-aware `PORT` and `0.0.0.0` binding behavior
+- multi-server runtime with one isolated worker, parser, tracker, persistence queue,
+    and guild-scoped Nitrado credential per active `game_servers` row
+- secure `/server connect`, `/server services`, `/server select`, `/server disconnect`,
+    `/server repair`, and `/server status` onboarding flow
+- guild-scoped competitive commands, persistent welcomer configuration, and pending-only
+    account linking with destructive-action confirmation
+- `/ready` readiness endpoint and worker health reporting
 
-## Planned Phase 3
+## Validation
 
-Phase 3 will implement the real DayZ event parser and kill reconstruction based on the
-live log sample captured during Phase 2.2. No event parsing exists yet by design.
+The normal suite is self-contained:
+
+```bash
+go test ./...
+go vet ./...
+go build ./...
+```
+
+PostgreSQL integration tests are explicit and never use an unspecified database:
+
+```bash
+$env:TEST_DATABASE_URL = "postgres://.../dayz_killfeed_test"
+$env:ALLOW_INTEGRATION_DB_TESTS = "true"
+go test -tags=integration ./...
+```
+
+Live Discord and Nitrado verification still requires real credentials and a dedicated
+test guild/service. The application reports those dependencies through `/ready` and
+`/api/v1/status`; they are not fabricated as passing in local CI.
 
 ## Notes
 

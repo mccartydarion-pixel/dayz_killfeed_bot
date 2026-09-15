@@ -54,6 +54,20 @@ func (r *WorkerRegistry) Error(name string, err error) {
 	w.Name = name
 	w.LastErrorAt = &now
 	w.LastError = err.Error()
+	w.Running = false
+	w.State = Degraded
+	r.workers[name] = w
+	r.mu.Unlock()
+}
+
+func (r *WorkerRegistry) Stop(name string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	w := r.workers[name]
+	w.Name = name
+	w.Running = false
 	w.State = Degraded
 	r.workers[name] = w
 	r.mu.Unlock()
