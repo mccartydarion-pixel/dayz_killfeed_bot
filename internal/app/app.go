@@ -935,6 +935,7 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 				}
 			})
 			engine.OnAdmSnapshot(monitor.Update)
+			engine.OnDownload(monitor.HandleDownload)
 		}
 	}
 

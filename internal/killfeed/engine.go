@@ -135,11 +135,13 @@ type Engine struct {
 	lastConnectAt    time.Time
 	lastDisconnectAt time.Time
 	lastDownloadAt   time.Time
+	rotationPending  bool
 
 	// onAdmSnapshot fires once per poll cycle from this engine's own goroutine
 	// (never concurrently), so the ADM monitor can read a consistent snapshot
 	// without needing its own synchronization on Engine's internal fields.
 	onAdmSnapshot func(AdmSnapshot)
+	onDownload    func(DownloadReport)
 
 	// startAtTail, when set before the first log selection, seeds the checkpoint
 	// at the current end of file instead of byte 0 so pre-existing log history
@@ -264,6 +266,13 @@ func (e *Engine) OnAdmSnapshot(fn func(AdmSnapshot)) {
 		return
 	}
 	e.onAdmSnapshot = fn
+}
+
+func (e *Engine) OnDownload(fn func(DownloadReport)) {
+	if e == nil {
+		return
+	}
+	e.onDownload = fn
 }
 
 // Metrics returns a copy of the parser/publisher counters.
@@ -461,6 +470,7 @@ func (e *Engine) selectLog(lf nitrado.LogFile) {
 	if e.logSourceFound {
 		if previousName != "" && previousName != candidate.Name {
 			e.previousFileName = previousName
+			e.rotationPending = true
 			e.lastRotationAt = time.Now()
 			slog.Info("component=adm", "event", "rotation", "previous", previousName, "current", candidate.Name, "presence_retained", true)
 		}
@@ -533,22 +543,41 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 
 	oldOffset := e.tracker.LastByteOffset
 	oldSize := e.tracker.CurrentSize
+	previousFile := e.previousFileName
+	rotation := e.rotationPending
+	if !rotation {
+		previousFile = ""
+	}
+	downloadStarted := time.Now()
 
-	slog.Debug("component=adm", "event", "download_started", "file", current.Name, "size", current.Size)
+	slog.Info("component=adm", "event", "download_started", "server_id", e.serverID, "file", current.Name, "remote_size", current.Size)
 	content, err := e.client.ReadLog(ctx, e.serviceID, current.Path)
 	if err != nil {
+		report := DownloadReport{ServerID: e.serverID, File: current.Name, PreviousFile: previousFile, RemoteSize: current.Size, PreviousOffset: oldOffset, Duration: time.Since(downloadStarted), Result: "failure", ErrorClass: safeDownloadErrorClass(err), At: time.Now()}
+		slog.Warn("component=adm", "event", "download_failed", "server_id", e.serverID, "file", current.Name, "error_class", report.ErrorClass, "result", report.Result, "timestamp", report.At.UTC().Format(time.RFC3339))
+		if e.onDownload != nil {
+			e.onDownload(report)
+		}
 		return e.handleSelectedFailure(ctx, err)
 	}
 	e.consecFailures = 0
 	e.lastDownloadAt = time.Now()
-	slog.Debug("component=adm", "event", "download_complete", "file", current.Name, "bytes", len(content))
+	downloadDuration := time.Since(downloadStarted)
 
 	readOffset := oldOffset
 	if readOffset > int64(len(content)) || readOffset < 0 {
 		slog.Warn("component=adm", "event", "file_truncated", "file", current.Name, "old_offset", oldOffset, "size", len(content))
 		e.tracker.ResetForRotation(current.Path)
 		e.tracker.UpdateCheckpoint(e.serviceID, current.Path, current.Size, current.Modified, int64(len(content)))
-		e.saveDurableCheckpoint(ctx, current, int64(len(content)))
+		checkpointOK := e.saveDurableCheckpoint(ctx, current, int64(len(content)))
+		result := "success_no_new_events"
+		if !checkpointOK {
+			result = "checkpoint_failed"
+		}
+		report := DownloadReport{ServerID: e.serverID, File: current.Name, PreviousFile: previousFile, RemoteSize: current.Size, DownloadedBytes: int64(len(content)), PreviousOffset: oldOffset, NewOffset: int64(len(content)), NewBytes: int64(len(content)) - oldOffset, Duration: downloadDuration, Result: result, Truncated: true, Rotation: rotation, CheckpointCurrent: checkpointOK, At: time.Now()}
+		e.emitDownloadReport(report)
+		slog.Info("component=adm", "event", "download_complete", "server_id", e.serverID, "file", current.Name, "remote_size", current.Size, "downloaded_bytes", len(content), "previous_offset", oldOffset, "new_offset", len(content), "new_bytes", int64(len(content))-oldOffset, "events_parsed", 0, "duration_ms", downloadDuration.Milliseconds(), "result", result, "timestamp", report.At.UTC().Format(time.RFC3339))
+		e.rotationPending = false
 		e.reportPoll()
 		return nil
 	}
@@ -558,7 +587,7 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 	lines := e.tracker.DrainCompleteLines()
 
 	// Process complete lines in order through parse -> dedupe -> publish.
-	e.processLines(lines)
+	eventsParsed := e.processLines(lines)
 
 	newOffset := int64(len(content)) - int64(len(e.tracker.LineBuffer))
 	bytesConsumed := newOffset - oldOffset
@@ -567,8 +596,18 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 	e.linesDiscovered += int64(len(lines))
 	e.lastLogChange = e.lastPoll
 	e.tracker.UpdateCheckpoint(e.serviceID, current.Path, int64(len(content)), current.Modified, newOffset)
-	e.saveDurableCheckpoint(ctx, current, newOffset)
-	slog.Debug("component=adm", "event", "incremental_parse", "new_bytes", bytesConsumed, "events", len(lines))
+	checkpointOK := e.saveDurableCheckpoint(ctx, current, newOffset)
+	result := "success"
+	if eventsParsed == 0 {
+		result = "success_no_new_events"
+	}
+	if !checkpointOK {
+		result = "checkpoint_failed"
+	}
+	report := DownloadReport{ServerID: e.serverID, File: current.Name, PreviousFile: previousFile, RemoteSize: current.Size, DownloadedBytes: int64(len(content)), PreviousOffset: oldOffset, NewOffset: newOffset, NewBytes: int64(len(content)) - oldOffset, EventsParsed: eventsParsed, Duration: downloadDuration, Result: result, Rotation: rotation, CheckpointCurrent: checkpointOK, At: time.Now()}
+	e.emitDownloadReport(report)
+	e.rotationPending = false
+	slog.Info("component=adm", "event", "download_complete", "server_id", e.serverID, "file", current.Name, "remote_size", current.Size, "downloaded_bytes", len(content), "previous_offset", oldOffset, "new_offset", newOffset, "new_bytes", int64(len(content))-oldOffset, "events_parsed", eventsParsed, "duration_ms", downloadDuration.Milliseconds(), "result", result, "timestamp", report.At.UTC().Format(time.RFC3339))
 
 	// ADM sample capture is disabled by default in production. Enable with
 	// ADM_SAMPLE_DEBUG=true for parser diagnostics; even then it logs at DEBUG.
@@ -597,9 +636,9 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 	return nil
 }
 
-func (e *Engine) saveDurableCheckpoint(ctx context.Context, current *nitrado.LogFile, offset int64) {
+func (e *Engine) saveDurableCheckpoint(ctx context.Context, current *nitrado.LogFile, offset int64) bool {
 	if e == nil || e.checkpointStore == nil || current == nil || e.guildID == 0 || e.serverID == 0 {
-		return
+		return true
 	}
 	checkpoint := DurableCheckpoint{Filename: current.Path, RemoteModifiedAt: current.Modified, RemoteSize: current.Size, ProcessedOffset: offset}
 	if e.tracker != nil {
@@ -607,21 +646,37 @@ func (e *Engine) saveDurableCheckpoint(ctx context.Context, current *nitrado.Log
 	}
 	if err := e.checkpointStore.SaveADMCheckpoint(ctx, e.guildID, e.serverID, e.serviceID, checkpoint); err != nil {
 		slog.Warn("component=adm", "event", "checkpoint_failed", "server_id", e.serverID, "err", err.Error())
-		return
+		return false
 	}
 	slog.Debug("component=adm", "event", "checkpoint_saved", "server_id", e.serverID, "offset", offset)
+	return true
+}
+
+func (e *Engine) emitDownloadReport(report DownloadReport) {
+	if e != nil && e.onDownload != nil {
+		e.onDownload(report)
+	}
+}
+
+func safeDownloadErrorClass(err error) string {
+	var reqErr *nitrado.RequestError
+	if errors.As(err, &reqErr) {
+		return string(reqErr.Kind)
+	}
+	return "download_error"
 }
 
 // processLines runs the ordered pipeline for complete ADM lines:
 // parse -> dedupe -> (PLAYER_KILL only) publish. Runs sequentially on the
 // polling goroutine; line order is preserved and no per-line goroutines spawn.
-func (e *Engine) processLines(lines []string) {
+func (e *Engine) processLines(lines []string) int {
 	if e == nil || len(lines) == 0 {
-		return
+		return 0
 	}
 	if e.dedupe == nil {
 		e.dedupe = NewDeduplicator(90*time.Second, 8192)
 	}
+	parsedCount := 0
 	for _, line := range lines {
 		e.metrics.ADMLinesProcessed++
 
@@ -636,6 +691,7 @@ func (e *Engine) processLines(lines []string) {
 			continue
 		}
 		e.metrics.EventsParsed++
+		parsedCount++
 
 		switch ev.Type {
 		case EventPlayerHit:
@@ -703,6 +759,7 @@ func (e *Engine) processLines(lines []string) {
 			}
 		}
 	}
+	return parsedCount
 }
 
 // firePlayersChanged invokes the registered hook after the online set changes.
