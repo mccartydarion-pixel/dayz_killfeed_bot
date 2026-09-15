@@ -2,11 +2,14 @@ package app
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/yourname/dayz-killfeed/internal/config"
 	"github.com/yourname/dayz-killfeed/internal/discord"
+	"github.com/yourname/dayz-killfeed/internal/nitrado"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 	"github.com/yourname/dayz-killfeed/internal/security"
 	"github.com/yourname/dayz-killfeed/internal/servers"
@@ -180,5 +183,21 @@ func TestBindOnlineCounterRefreshesSetupCreatedAfterStartup(t *testing.T) {
 	bindOnlineCounter(store, "guild-1", counter)
 	if counter.ChannelID() != "voice-1" {
 		t.Fatalf("expected counter to bind setup channel, got %q", counter.ChannelID())
+	}
+}
+
+func TestVerifyNitradoContinuesAfterUnauthorizedToken(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	a := &App{
+		Config:  &config.Config{NitradoToken: "expired-token"},
+		Nitrado: nitrado.NewClient(server.URL, "expired-token", server.Client()),
+	}
+	authenticated, verified, _, _, _ := a.verifyNitrado(context.Background())
+	if authenticated || verified {
+		t.Fatalf("expected unauthorized Nitrado token to remain degraded, got authenticated=%v verified=%v", authenticated, verified)
 	}
 }

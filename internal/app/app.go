@@ -299,6 +299,51 @@ func (a *App) nitradoClientForServer(ctx context.Context, row repository.GameSer
 	return nitradoClientFromConnection(a.CredentialCipher, *connection)
 }
 
+func (a *App) verifyNitrado(ctx context.Context) (authenticated, verified bool, game, serviceType, status string) {
+	if !a.nitradoEnabled() {
+		slog.Warn("component=nitrado", "msg", "NITRADO_TOKEN not configured; operating in degraded mode without live service verification")
+		return false, false, "", "", ""
+	}
+	if err := a.Nitrado.AuthenticationCheck(ctx); err != nil {
+		logNitradoFailure("authentication", err)
+		slog.Warn("component=nitrado", "msg", "Nitrado verification unavailable; continuing in degraded mode so credentials can be repaired with /server connect")
+		return false, false, "", "", ""
+	}
+
+	services, err := a.Nitrado.GetServices(ctx)
+	if err != nil {
+		logNitradoFailure("service discovery", err)
+		slog.Warn("component=nitrado", "msg", "Nitrado service discovery unavailable; continuing in degraded mode")
+		return true, false, "", "", ""
+	}
+	dayZServices := nitrado.FindDayZServices(services)
+	if len(dayZServices) == 0 {
+		slog.Warn("component=nitrado", "msg", "no DayZ services discovered")
+	} else {
+		slog.Info("component=nitrado", "msg", "DayZ services discovered", "count", len(dayZServices))
+	}
+
+	if a.Config.NitradoServiceID == "" {
+		slog.Warn("component=nitrado", "msg", "NITRADO_SERVICE_ID not configured; skipping service verification and log discovery")
+		return true, false, "", "", ""
+	}
+	service, err := a.Nitrado.ValidateServiceID(ctx, a.Config.NitradoServiceID, services)
+	if err != nil {
+		slog.Warn("component=nitrado", "operation", "service verification", "msg", "configured service could not be verified; continuing in degraded mode", "service_id", a.Config.NitradoServiceID, "err", err.Error())
+		return true, false, "", "", ""
+	}
+	slog.Info("component=nitrado", "msg", "configured service verified",
+		"service_id", a.Config.NitradoServiceID,
+		"game", service.Game,
+		"service_type", service.Type,
+		"status", service.Status,
+	)
+	if err := a.Nitrado.InspectService(ctx, a.Config.NitradoServiceID); err != nil {
+		slog.Warn("component=nitrado", "msg", "service payload inspection failed", "err", err.Error())
+	}
+	return true, true, service.Game, service.Type, service.Status
+}
+
 func bindOnlineCounter(store discord.SetupStore, guildID string, counter *discord.VoiceChannelCounter) {
 	if store == nil || counter == nil || guildID == "" {
 		return
@@ -373,61 +418,9 @@ func (a *App) Run() error {
 	)
 
 	// --- Nitrado authentication and service verification ---
-	serviceVerified := false
 	logSourceVerified := false
-	var serviceGame, serviceType, serviceStatus string
-
-	if !a.nitradoEnabled() {
-		state.SetNitrado(false, false, "", "", "")
-		slog.Warn("component=nitrado", "msg", "NITRADO_TOKEN not configured; operating in degraded mode without live service verification")
-	} else if err := a.Nitrado.AuthenticationCheck(ctx); err != nil {
-		state.SetNitrado(false, false, "", "", "")
-		logNitradoFailure("authentication", err)
-		return fmt.Errorf("nitrado startup failed during authentication: %w", err)
-	} else {
-		services, err := a.Nitrado.GetServices(ctx)
-		if err != nil {
-			state.SetNitrado(false, false, "", "", "")
-			logNitradoFailure("service discovery", err)
-			return fmt.Errorf("nitrado startup failed during service discovery: %w", err)
-		}
-
-		dayZServices := nitrado.FindDayZServices(services)
-		if len(dayZServices) == 0 {
-			slog.Warn("component=nitrado", "msg", "no DayZ services discovered")
-		} else {
-			slog.Info("component=nitrado", "msg", "DayZ services discovered", "count", len(dayZServices))
-		}
-
-		if a.Config.NitradoServiceID == "" {
-			slog.Warn("component=nitrado", "msg", "NITRADO_SERVICE_ID not configured; skipping service verification and log discovery")
-		} else {
-			service, err := a.Nitrado.ValidateServiceID(ctx, a.Config.NitradoServiceID, services)
-			if err != nil {
-				state.SetNitrado(true, false, "", "", "")
-				slog.Error("component=nitrado", "operation", "service verification", "msg", "service ID not found", "service_id", a.Config.NitradoServiceID)
-				return fmt.Errorf("nitrado service verification failed: %w", err)
-			}
-			serviceVerified = true
-			serviceGame, serviceType, serviceStatus = service.Game, service.Type, service.Status
-			slog.Info("component=nitrado", "msg", "configured service verified",
-				"service_id", a.Config.NitradoServiceID,
-				"game", service.Game,
-				"service_type", service.Type,
-				"status", service.Status,
-			)
-
-			// Sanitized inspection of the real service payload for file/log capability fields.
-			if err := a.Nitrado.InspectService(ctx, a.Config.NitradoServiceID); err != nil {
-				slog.Warn("component=nitrado", "msg", "service payload inspection failed", "err", err.Error())
-			}
-
-			// NOTE: discovery runs exclusively inside the killfeed engine worker.
-			// A second inline ListLogs here would create a duplicate discovery worker
-			// and a log storm, so it has been removed.
-		}
-		state.SetNitrado(true, serviceVerified, serviceGame, serviceType, serviceStatus)
-	}
+	authenticated, serviceVerified, serviceGame, serviceType, serviceStatus := a.verifyNitrado(ctx)
+	state.SetNitrado(authenticated, serviceVerified, serviceGame, serviceType, serviceStatus)
 
 	// --- Discord connection and access validation ---
 	if err := a.Discord.Start(ctx); err != nil {
