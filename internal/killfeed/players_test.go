@@ -78,3 +78,24 @@ func TestPlayerTrackerReconnect(t *testing.T) {
 		t.Fatalf("expected reconnect to track 1 player, got %d", tr.OnlineCount())
 	}
 }
+
+func TestPlayerConnectedReportsChangeOnlyOnce(t *testing.T) {
+	tr := NewPlayerTracker()
+	if !tr.PlayerConnected(&PlayerRef{ID: "p1", Name: "TCP"}) {
+		t.Fatal("expected the first connect to report a change")
+	}
+	if tr.PlayerConnected(&PlayerRef{ID: "p1", Name: "TCP"}) {
+		t.Fatal("expected a duplicate connect to report no change")
+	}
+}
+
+func TestPlayerDisconnectedReportsChangeOnlyOnce(t *testing.T) {
+	tr := NewPlayerTracker()
+	tr.PlayerConnected(&PlayerRef{ID: "p1", Name: "TCP"})
+	if !tr.PlayerDisconnected(&PlayerRef{ID: "p1"}) {
+		t.Fatal("expected the first disconnect to report a change")
+	}
+	if tr.PlayerDisconnected(&PlayerRef{ID: "p1"}) {
+		t.Fatal("expected a duplicate disconnect to report no change")
+	}
+}

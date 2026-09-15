@@ -351,39 +351,13 @@ func (e *Engine) discoverOnce(ctx context.Context) error {
 	return nil
 }
 
-// selectBestCandidate picks the newest ADM that actually has content; if every
-// candidate is empty (e.g. a freshly-created ADM after restart), it falls back to
-// selectBestCandidate picks the newest ADM that actually has content. A fresh ADM
-// created after a restart is just a small header, while an ADM with real gameplay
-// events is much larger. We prefer the newest candidate whose size is a meaningful
-// fraction of the largest ADM seen; if all are tiny, we track the newest one that
-// will grow. Input is newest-modified-first.
+// selectBestCandidate picks the current gameplay log: the newest-modified ADM.
+// ListLogs already sorts candidates newest-first; file size must never decide
+// this, since an old, already-rotated-out ADM can be far larger than the
+// current one and would otherwise wrongly win.
 func selectBestCandidate(logs []nitrado.LogFile) nitrado.LogFile {
 	if len(logs) == 0 {
 		return nitrado.LogFile{}
-	}
-
-	// Find the largest ADM to establish what "has content" means for this server.
-	var maxSize int64
-	for _, lf := range logs {
-		if lf.Size > maxSize {
-			maxSize = lf.Size
-		}
-	}
-
-	// A candidate counts as having content if it's at least a fraction of the
-	// largest ADM. This makes a fresh ~472-byte header lose to a 100KB log but
-	// still win when nothing bigger exists.
-	const contentFraction = 0.10 // 10% of the largest ADM
-	threshold := int64(float64(maxSize) * contentFraction)
-	if threshold < 200 {
-		threshold = 200 // absolute floor so a totally fresh set still selects something
-	}
-
-	for _, lf := range logs {
-		if lf.Size >= threshold {
-			return lf
-		}
 	}
 	return logs[0]
 }
@@ -412,13 +386,9 @@ func (e *Engine) selectLog(lf nitrado.LogFile) {
 		slog.Info("component=killfeed", "msg", "first connect: starting at log tail, existing history skipped", "file", candidate.Name, "size", candidate.Size)
 	}
 
-	// New ADM session (e.g. server restart): clear stale online players so the
-	// list is rebuilt from fresh "is connected" events in the new log.
-	if e.players != nil && e.logSourceFound {
-		e.players.Reset()
-		slog.Info("component=killfeed", "msg", "player tracker reset for new ADM session")
-	}
-
+	// ADM session != player session: switching which file Champion reads (first
+	// selection or later rotation) must never clear live presence. Only
+	// authoritative PLAYER_CONNECT/PLAYER_DISCONNECT events change who is online.
 	if !e.logSourceFound {
 		e.logSourceFound = true
 		e.lastLogChange = time.Now()
@@ -585,14 +555,24 @@ func (e *Engine) processLines(lines []string) {
 		}
 
 		// Online player tracking (deduped, authoritative connect/disconnect only).
+		// Voice counter/state updates fire only on an actual membership change, not
+		// on a duplicate connect/disconnect for an already-known state.
 		if e.players != nil {
 			switch ev.Type {
 			case EventPlayerConnect:
-				e.players.PlayerConnected(ev.Player)
-				e.firePlayersChanged()
+				if e.players.PlayerConnected(ev.Player) {
+					slog.Info("component=presence", "event", "connect", "online_count", e.players.OnlineCount())
+					e.firePlayersChanged()
+				} else {
+					slog.Debug("component=presence", "event", "duplicate_connect", "state_unchanged", true)
+				}
 			case EventPlayerDisconnect:
-				e.players.PlayerDisconnected(ev.Player)
-				e.firePlayersChanged()
+				if e.players.PlayerDisconnected(ev.Player) {
+					slog.Info("component=presence", "event", "disconnect", "online_count", e.players.OnlineCount())
+					e.firePlayersChanged()
+				} else {
+					slog.Debug("component=presence", "event", "duplicate_disconnect", "state_unchanged", true)
+				}
 			}
 		}
 

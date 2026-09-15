@@ -41,32 +41,40 @@ func playerKey(p *PlayerRef) string {
 
 // PlayerConnected records an authoritative "is connected" event. Duplicate
 // connections for the same player refresh the record rather than double-counting.
-func (t *PlayerTracker) PlayerConnected(p *PlayerRef) {
+// Returns true only when the player was not already tracked as online.
+func (t *PlayerTracker) PlayerConnected(p *PlayerRef) bool {
 	if t == nil || p == nil {
-		return
+		return false
 	}
 	key := playerKey(p)
 	if key == "" {
-		return
+		return false
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	_, alreadyOnline := t.players[key]
 	t.players[key] = OnlinePlayer{ID: p.ID, Name: p.Name, ConnectedAt: time.Now()}
+	return !alreadyOnline
 }
 
 // PlayerDisconnected removes a player on "has been disconnected". Unknown
-// disconnects are ignored safely.
-func (t *PlayerTracker) PlayerDisconnected(p *PlayerRef) {
+// disconnects are ignored safely. Returns true only when a tracked player was
+// actually removed (never goes negative).
+func (t *PlayerTracker) PlayerDisconnected(p *PlayerRef) bool {
 	if t == nil || p == nil {
-		return
+		return false
 	}
 	key := playerKey(p)
 	if key == "" {
-		return
+		return false
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if _, ok := t.players[key]; !ok {
+		return false
+	}
 	delete(t.players, key)
+	return true
 }
 
 // GetOnlinePlayers returns a copy of current online players sorted by name.

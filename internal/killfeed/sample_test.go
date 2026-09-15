@@ -58,16 +58,17 @@ func TestSelectSampleLinesFallbackWhenNoTerms(t *testing.T) {
 	}
 }
 
-func TestSelectBestCandidatePrefersMeaningfulSize(t *testing.T) {
+func TestSelectBestCandidateNeverPrefersSizeOverRecency(t *testing.T) {
 	now := time.Now()
-	// Newest-first ordering: newest is tiny/empty, the next has real content.
+	// A large, stale ADM from a previous rotated-out session must never win
+	// over the small, current ADM just because it is bigger.
 	logs := []nitrado.LogFile{
-		{Name: "DayZServer_PS4_x64_newest.ADM", Path: "/c/newest.ADM", Size: 472, Modified: now},
-		{Name: "DayZServer_PS4_x64_older.ADM", Path: "/c/older.ADM", Size: 108766, Modified: now.Add(-time.Hour)},
+		{Name: "DayZServer_PS4_x64_new.ADM", Path: "/c/new.ADM", Size: 3000, Modified: now},
+		{Name: "DayZServer_PS4_x64_old.ADM", Path: "/c/old.ADM", Size: 260087, Modified: now.Add(-time.Hour)},
 	}
 	best := selectBestCandidate(logs)
-	if best.Path != "/c/older.ADM" {
-		t.Fatalf("expected the meaningful-size ADM to win over the tiny newest one, got %q", best.Path)
+	if best.Path != "/c/new.ADM" {
+		t.Fatalf("expected the newest ADM regardless of size, got %q", best.Path)
 	}
 }
 
