@@ -111,11 +111,11 @@ func (r *BountyRepository) Expire(ctx context.Context, now time.Time) error {
 	return err
 }
 
-func (r *BountyRepository) Upgrade(ctx context.Context, bountyID int64, reward int) error {
+func (r *BountyRepository) Upgrade(ctx context.Context, guildID, bountyID int64, reward int) error {
 	if reward <= 0 {
 		return fmt.Errorf("reward must be positive")
 	}
-	_, err := r.pool.Exec(ctx, `UPDATE bounties SET reward_points=GREATEST(reward_points,$1) WHERE id=$2 AND status='ACTIVE' AND created_by_type='AUTOMATIC'`, reward, bountyID)
+	_, err := r.pool.Exec(ctx, `UPDATE bounties SET reward_points=GREATEST(reward_points,$1) WHERE guild_id=$2 AND id=$3 AND status='ACTIVE' AND created_by_type='AUTOMATIC'`, reward, guildID, bountyID)
 	return err
 }
 func (r *BountyRepository) Cancel(ctx context.Context, guildID, bountyID int64) error {

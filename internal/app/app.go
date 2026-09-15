@@ -1096,7 +1096,7 @@ func (p *persistenceStoreAdapter) ensureAutomaticBounty(ctx context.Context, rec
 	}
 	if current, err := p.bounties.GetActive(ctx, record.GuildID, record.KillerPlayerID); err == nil && current != nil {
 		if current.CreatedByType == repository.BountyAutomatic && int64(reward) > current.RewardPoints {
-			_ = p.bounties.Upgrade(ctx, current.ID, reward)
+			_ = p.bounties.Upgrade(ctx, record.GuildID, current.ID, reward)
 		}
 		return
 	}

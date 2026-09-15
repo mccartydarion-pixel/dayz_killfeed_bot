@@ -13,14 +13,35 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
+// EventStore is the narrow read surface EventCommandHandler needs from the
+// events repository. Kept as an interface (rather than the concrete
+// *repository.EventRepository) so cross-guild-leakage regression tests can
+// fake it without a database.
+type EventStore interface {
+	GetRecentEvents(ctx context.Context, guildID int64, limit int) ([]repository.CompetitiveEvent, error)
+	GetEvent(ctx context.Context, guildID, eventID int64) (*repository.CompetitiveEvent, error)
+	Leaderboard(ctx context.Context, eventID int64, limit int) ([]repository.EventScore, error)
+}
+
 type EventCommandHandler struct {
 	service *competitiveevents.Service
-	events  *repository.EventRepository
+	events  EventStore
 	guilds  GuildStore
 }
 
-func NewEventCommandHandler(service *competitiveevents.Service, events *repository.EventRepository, guilds GuildStore) *EventCommandHandler {
+func NewEventCommandHandler(service *competitiveevents.Service, events EventStore, guilds GuildStore) *EventCommandHandler {
 	return &EventCommandHandler{service: service, events: events, guilds: guilds}
+}
+
+// leaderboardForGuild verifies the event belongs to the invoking guild before
+// returning its leaderboard. Event IDs are a global sequence shared by every
+// guild, so this ownership check is what prevents a guessed/iterated ID from
+// leaking another guild's event data (cross-guild leakage guard).
+func (h *EventCommandHandler) leaderboardForGuild(ctx context.Context, guildID, eventID int64, limit int) ([]repository.EventScore, error) {
+	if _, err := h.events.GetEvent(ctx, guildID, eventID); err != nil {
+		return nil, err
+	}
+	return h.events.Leaderboard(ctx, eventID, limit)
 }
 func RegisterEventCommands(session *discordgo.Session, guildID string) error {
 	applicationID, err := ApplicationID(session)
@@ -72,7 +93,7 @@ func (h *EventCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interact
 		respondEphemeral(s, i, fmt.Sprintf("🔥 **%s**\nType: %s\nStatus: %s", e.Name, e.Type, e.Status))
 	case "leaderboard":
 		id := optionInt(sub, "id")
-		rows, err := h.events.Leaderboard(context.Background(), id, 10)
+		rows, err := h.leaderboardForGuild(context.Background(), gid, id, 10)
 		if err != nil {
 			respondEphemeral(s, i, "Could not load event leaderboard.")
 			return
