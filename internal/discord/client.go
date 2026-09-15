@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -31,6 +32,12 @@ func New(token string, membersIntent ...bool) (*Client, error) {
 }
 
 // Start connects the bot and registers the /server command.
+//
+// Open() returns as soon as the gateway handshake (Op 10 Hello) completes; it
+// does NOT wait for the READY event that populates session.State.User. Command
+// registration needs the bot's application ID from that user, so Start blocks
+// (bounded) until READY arrives or a timeout is reached, to avoid the
+// "discord application ID is not available" race during startup.
 func (c *Client) Start(ctx context.Context) error {
 	if c == nil || c.session == nil {
 		return fmt.Errorf("discord session not initialized")
@@ -39,12 +46,42 @@ func (c *Client) Start(ctx context.Context) error {
 		return fmt.Errorf("open discord session: %w", err)
 	}
 	slog.Info("component=discord", "msg", "guild members intent requested in code", "requested", c.session.Identify.Intents&discordgo.IntentsGuildMembers != 0, "developer_portal_required", true)
-	username := ""
-	if c.session.State != nil && c.session.State.User != nil {
-		username = c.session.State.User.Username
+
+	if !waitForSessionUser(ctx, c.session, 10*time.Second) {
+		slog.Error("component=discord", "msg", "discord application ID is not available after connecting; command registration will fail", "err", "ready_event_timeout")
+		return fmt.Errorf("discord application ID is not available: READY event did not arrive in time")
 	}
-	slog.Info("component=discord", "msg", "connected", "user", username)
+
+	slog.Info("component=discord", "msg", "connected", "user", c.session.State.User.Username)
 	return nil
+}
+
+// waitForSessionUser polls (bounded) for the READY event to populate
+// session.State.User, which discordgo delivers asynchronously after Open()
+// returns. Returns false if ctx is cancelled or timeout elapses first.
+func waitForSessionUser(ctx context.Context, session *discordgo.Session, timeout time.Duration) bool {
+	if session == nil {
+		return false
+	}
+	if session.State != nil && session.State.User != nil {
+		return true
+	}
+	deadline := time.Now().Add(timeout)
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-ticker.C:
+			if session.State != nil && session.State.User != nil {
+				return true
+			}
+			if time.Now().After(deadline) {
+				return session.State != nil && session.State.User != nil
+			}
+		}
+	}
 }
 
 // GuildMembersIntentRequested reports whether the session requests the

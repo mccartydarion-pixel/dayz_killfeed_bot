@@ -70,6 +70,8 @@ type State struct {
 	PersistenceQueueDropped int64
 	CheckpointLoaded        bool
 	CheckpointOffset        int64
+
+	HandlersReady bool
 }
 
 // NewState creates an empty runtime state container.
@@ -143,6 +145,17 @@ func (s *State) SetPersistenceQueue(depth int, dropped int64) {
 	defer s.mu.Unlock()
 	s.PersistenceQueueDepth = depth
 	s.PersistenceQueueDropped = dropped
+}
+
+// SetHandlersReady records whether Discord interaction handlers and required
+// commands finished registering. /ready must not report ready before this.
+func (s *State) SetHandlersReady(ready bool) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.HandlersReady = ready
 }
 
 // SetCheckpoint records checkpoint resume state.
@@ -319,7 +332,8 @@ func (s *State) Snapshot() map[string]any {
 		"persistence_queue_depth":           s.PersistenceQueueDepth,
 		"persistence_queue_dropped":         s.PersistenceQueueDropped,
 		"checkpoint_loaded":                 s.CheckpointLoaded,
-		"checkpoint_offset":                 s.CheckpointOffset}
+		"checkpoint_offset":                 s.CheckpointOffset,
+		"handlers_ready":                    s.HandlersReady}
 }
 
 // StatusHandler writes the current sanitized runtime state as JSON.
@@ -341,11 +355,18 @@ func (s *State) ReadyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.RLock()
-	ready := s.DatabaseConnected && s.DiscordConnected
+	ready := readinessSatisfied(s.DatabaseConnected, s.DiscordConnected, s.HandlersReady)
 	s.mu.RUnlock()
 	if !ready {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "not_ready"})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+}
+
+// readinessSatisfied is the pure readiness rule: the app is only ready once
+// the database (if required) and Discord are connected AND interaction
+// handlers/required commands finished registering.
+func readinessSatisfied(databaseConnected, discordConnected, handlersReady bool) bool {
+	return databaseConnected && discordConnected && handlersReady
 }

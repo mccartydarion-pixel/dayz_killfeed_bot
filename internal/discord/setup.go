@@ -2,6 +2,7 @@ package discord
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -67,12 +68,14 @@ func (m *SetupManager) EnsureConfigured(guildID string) (*GuildSetup, *SetupRepo
 	if err != nil {
 		return nil, nil, fmt.Errorf("read setup store: %w", err)
 	}
+	slog.Debug("component=setup", "stage", "loaded_setup", "guild_id", guildID)
 
 	setup := &GuildSetup{GuildID: guildID, WelcomeEnabled: true}
 	if existing != nil {
 		*setup = *existing
 	}
 
+	slog.Debug("component=setup", "stage", "discord_validation", "guild_id", guildID)
 	channels, err := m.api.GuildChannels(guildID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("list guild channels: %w", err)

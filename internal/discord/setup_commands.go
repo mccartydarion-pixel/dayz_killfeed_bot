@@ -92,14 +92,34 @@ func (h *SetupHandler) Handle(s *discordgo.Session, i *discordgo.InteractionCrea
 	}
 }
 
+// handleSetup defers the interaction immediately so Discord's ~3 second ack
+// window can never expire while EnsureConfigured does Discord/DB work; the
+// result is delivered later via an edit to the deferred response.
 func (h *SetupHandler) handleSetup(s *discordgo.Session, i *discordgo.InteractionCreate, repair bool) {
+	action := "run"
+	if repair {
+		action = "repair"
+	}
+	slog.Info("component=setup", "action", action, "stage", "received", "guild_id", i.GuildID)
+
+	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral},
+	}); err != nil {
+		slog.Warn("component=setup", "action", action, "stage", "deferred", "error_class", "discord_unavailable", "err", err.Error())
+		return
+	}
+	slog.Info("component=setup", "action", action, "stage", "deferred", "guild_id", i.GuildID)
+
 	setup, report, err := h.manager.EnsureConfigured(i.GuildID)
 	if err != nil && report == nil {
-		respondEphemeral(s, i, "❌ Setup failed: "+err.Error())
+		slog.Error("component=setup", "action", action, "stage", "failed", "error_class", "setup_manager_error")
+		h.editEphemeral(s, i, "❌ Setup failed: "+err.Error())
 		return
 	}
 	if setup == nil {
-		respondEphemeral(s, i, "❌ Setup failed.")
+		slog.Error("component=setup", "action", action, "stage", "failed", "error_class", "setup_manager_nil_result")
+		h.editEphemeral(s, i, "❌ Setup failed.")
 		return
 	}
 	h.syncWelcomeChannel(i.GuildID, setup.WelcomeChannelID)
@@ -125,12 +145,21 @@ func (h *SetupHandler) handleSetup(s *discordgo.Session, i *discordgo.Interactio
 	}
 	if len(report.Failed) > 0 {
 		b.WriteString("\nFix permissions and run `/setup repair`.")
+		slog.Warn("component=setup", "action", action, "stage", "completed", "error_class", "partial_failure", "failed_count", len(report.Failed))
 	} else {
 		b.WriteString("\nChampion Killfeed is ready.")
+		slog.Info("component=setup", "action", action, "stage", "completed")
 	}
 
-	respondEphemeral(s, i, b.String())
+	h.editEphemeral(s, i, b.String())
 	slog.Info("component=discord", "msg", "setup complete", "guild_id", i.GuildID, "created", len(report.Created), "repaired", len(report.Repaired), "failed", len(report.Failed))
+}
+
+// editEphemeral edits a previously deferred ephemeral interaction response.
+func (h *SetupHandler) editEphemeral(s *discordgo.Session, i *discordgo.InteractionCreate, content string) {
+	if _, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &content}); err != nil {
+		slog.Warn("component=setup", "msg", "response edit failed", "err", err.Error())
+	}
 }
 
 func (h *SetupHandler) syncWelcomeChannel(discordGuildID, channelID string) {
