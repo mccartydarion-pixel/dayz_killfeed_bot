@@ -2,6 +2,7 @@ package killfeed
 
 import (
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -35,7 +36,7 @@ func playerKey(p *PlayerRef) string {
 	if p.ID != "" {
 		return "id:" + p.ID
 	}
-	return "name:" + p.Name
+	return "name:" + strings.ToLower(strings.TrimSpace(p.Name))
 }
 
 // PlayerConnected records an authoritative "is connected" event. Duplicate

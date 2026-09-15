@@ -35,6 +35,15 @@ func TestPlayerTrackerConnectDisconnect(t *testing.T) {
 	}
 }
 
+func TestPlayerTrackerNameOnlyKeysAreCaseInsensitive(t *testing.T) {
+	tracker := NewPlayerTracker()
+	tracker.PlayerConnected(&PlayerRef{Name: "Survivor"})
+	tracker.PlayerConnected(&PlayerRef{Name: "survivor"})
+	if tracker.OnlineCount() != 1 {
+		t.Fatalf("expected case-only reconnect to remain one player, got %d", tracker.OnlineCount())
+	}
+}
+
 func TestPlayerTrackerKeyedByIDNotName(t *testing.T) {
 	tr := NewPlayerTracker()
 	// Same display name, different IDs -> two distinct players.

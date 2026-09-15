@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/yourname/dayz-killfeed/internal/config"
+	"github.com/yourname/dayz-killfeed/internal/discord"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 	"github.com/yourname/dayz-killfeed/internal/security"
 	"github.com/yourname/dayz-killfeed/internal/servers"
@@ -166,5 +167,18 @@ func TestNitradoClientFromConnectionDecryptsGuildCredential(t *testing.T) {
 func TestNitradoClientFromConnectionRejectsMissingCipher(t *testing.T) {
 	if _, err := nitradoClientFromConnection(nil, repository.NitradoConnection{}); err == nil {
 		t.Fatal("expected missing cipher to reject credential resolution")
+	}
+}
+
+func TestBindOnlineCounterRefreshesSetupCreatedAfterStartup(t *testing.T) {
+	store := discord.NewInMemorySetupStore()
+	counter := discord.NewVoiceChannelCounter(nil, "")
+	if err := store.Save(discord.GuildSetup{GuildID: "guild-1", OnlinePlayersChannelID: "voice-1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	bindOnlineCounter(store, "guild-1", counter)
+	if counter.ChannelID() != "voice-1" {
+		t.Fatalf("expected counter to bind setup channel, got %q", counter.ChannelID())
 	}
 }

@@ -299,6 +299,16 @@ func (a *App) nitradoClientForServer(ctx context.Context, row repository.GameSer
 	return nitradoClientFromConnection(a.CredentialCipher, *connection)
 }
 
+func bindOnlineCounter(store discord.SetupStore, guildID string, counter *discord.VoiceChannelCounter) {
+	if store == nil || counter == nil || guildID == "" {
+		return
+	}
+	setup, err := store.Get(guildID)
+	if err == nil && setup != nil && setup.OnlinePlayersChannelID != "" {
+		counter.SetChannelID(setup.OnlinePlayersChannelID)
+	}
+}
+
 func (a *App) refreshHealth(ctx context.Context) {
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
@@ -768,6 +778,7 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 	if credentialErr != nil {
 		return credentialErr
 	}
+	bindOnlineCounter(setupStore, a.Config.DiscordGuildID, onlineCounter)
 	engine := killfeed.NewEngine(client, row.ProviderServiceID, killfeed.NewADMParser())
 	engine.SetStateSink(a.State)
 	if a.consumeFirstConnect(row.ID) {
@@ -786,6 +797,7 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 	engine.OnPlayersChanged(func(count int) {
 		a.State.SetOnlinePlayers(count)
 		if onlineCounter != nil {
+			bindOnlineCounter(setupStore, a.Config.DiscordGuildID, onlineCounter)
 			onlineCounter.Publish(count)
 			a.State.SetOnlineCounter(onlineCounter.LastPublished(), onlineCounter.UpdateErrors(), onlineCounter.PermissionBlocked())
 		}
