@@ -158,6 +158,24 @@ func (m *SetupManager) EnsureConfigured(guildID string) (*GuildSetup, *SetupRepo
 
 	// Create each persistent panel exactly once. Stored IDs are reused on restart;
 	// missing messages are recreated by setup/repair.
+	if setup.LeaderboardsChannelID != "" && setup.LeaderboardMessageID != "" {
+		if _, err := m.api.ChannelMessage(setup.LeaderboardsChannelID, setup.LeaderboardMessageID); err != nil {
+			setup.LeaderboardMessageID = ""
+			report.Repaired = append(report.Repaired, "leaderboard-message")
+		}
+	}
+	if setup.PlayerStatsChannelID != "" && setup.PlayerStatsInfoMessageID != "" {
+		if _, err := m.api.ChannelMessage(setup.PlayerStatsChannelID, setup.PlayerStatsInfoMessageID); err != nil {
+			setup.PlayerStatsInfoMessageID = ""
+			report.Repaired = append(report.Repaired, "player-stats-message")
+		}
+	}
+	if setup.LinkPanelChannelID != "" && setup.LinkPanelMessageID != "" {
+		if _, err := m.api.ChannelMessage(setup.LinkPanelChannelID, setup.LinkPanelMessageID); err != nil {
+			setup.LinkPanelMessageID = ""
+			report.Repaired = append(report.Repaired, "link-username-message")
+		}
+	}
 	if setup.LeaderboardsChannelID != "" && setup.LeaderboardMessageID == "" {
 		msg, err := m.api.ChannelMessageSendEmbed(setup.LeaderboardsChannelID, BuildLeaderboardEmbed(LeaderboardSnapshot{GeneratedAt: time.Now()}, DefaultLeaderboardConfig()))
 		if err != nil {
