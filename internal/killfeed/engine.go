@@ -166,6 +166,8 @@ type Engine struct {
 	// without needing its own synchronization on Engine's internal fields.
 	onAdmSnapshot func(AdmSnapshot)
 	onDownload    func(DownloadReport)
+	diagnostics   *RuntimeDiagnostics
+	onDiagnostics func(*RuntimeDiagnostics)
 
 	// startAtTail, when set before the first log selection, seeds the checkpoint
 	// at the current end of file instead of byte 0 so pre-existing log history
@@ -194,6 +196,9 @@ func (e *Engine) SetDurableCheckpoint(store CheckpointStore, guildID, serverID i
 	e.checkpointStore = store
 	e.guildID = guildID
 	e.serverID = serverID
+	if e.diagnostics != nil {
+		e.diagnostics.Update(func(s *RuntimeDiagnosticSnapshot) { s.ServerID = serverID; s.WorkerRunning = true })
+	}
 }
 
 // rescanInterval is how often, while polling a selected log, we do a lightweight
@@ -236,7 +241,37 @@ func NewEngine(client LogSource, serviceID string, parser Parser) *Engine {
 		state:        StateDiscovery,
 		dedupe:       NewDeduplicator(90*time.Second, 8192),
 		players:      NewPlayerTracker(),
+		diagnostics:  NewRuntimeDiagnostics(0),
 	}
+}
+
+func (e *Engine) SetDiagnostics(d *RuntimeDiagnostics) {
+	if e != nil {
+		e.diagnostics = d
+	}
+}
+func (e *Engine) Diagnostics() *RuntimeDiagnostics {
+	if e == nil {
+		return nil
+	}
+	return e.diagnostics
+}
+func (e *Engine) OnDiagnostics(fn func(*RuntimeDiagnostics)) {
+	if e != nil {
+		e.onDiagnostics = fn
+	}
+}
+func (e *Engine) reportDiagnostics() {
+	if e != nil && e.onDiagnostics != nil {
+		e.onDiagnostics(e.diagnostics)
+	}
+}
+
+func nameOfSelected(e *Engine) string {
+	if e == nil || e.selected == nil {
+		return ""
+	}
+	return e.selected.Name
 }
 
 // SetKillPublisher attaches the consumer for authoritative kill events.
@@ -447,6 +482,15 @@ func (e *Engine) discoverOnce(ctx context.Context) error {
 		return nil
 	}
 	e.recordCandidates(logs)
+	if e.diagnostics != nil {
+		e.diagnostics.Update(func(s *RuntimeDiagnosticSnapshot) {
+			s.SelectedADM = nameOfSelected(e)
+			s.NewestADM = logs[0].Name
+			s.SelectionMatch = nameOfSelected(e) == logs[0].Name
+			s.SelectionReason = e.selectionReason
+			s.CandidateCount = len(logs)
+		})
+	}
 	// Discovery produced real candidates; clear the backoff counter.
 	e.discoverFails = 0
 
@@ -508,6 +552,13 @@ func (e *Engine) selectLog(lf nitrado.LogFile) {
 	}
 	candidate := lf
 	e.selected = &candidate
+	if e.diagnostics != nil {
+		e.diagnostics.Update(func(s *RuntimeDiagnosticSnapshot) {
+			s.SelectedADM = candidate.Name
+			s.SelectionMatch = e.newestDiscoveredFile == "" || candidate.Name == e.newestDiscoveredFile
+			s.SelectionReason = e.selectionReason
+		})
+	}
 	e.confirmPending = nil
 	e.state = StatePolling
 	e.consecFailures = 0
@@ -614,6 +665,14 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 	e.consecFailures = 0
 
 	changed := e.tracker.ShouldReadAgain(current.Path, current.Size, current.Modified)
+	if e.diagnostics != nil {
+		e.diagnostics.Update(func(s *RuntimeDiagnosticSnapshot) {
+			s.LastMetadataCheck = time.Now()
+			s.LastMetadataChanged = changed
+			s.RemoteSize = current.Size
+			s.RemoteModified = current.Modified
+		})
+	}
 	slog.Debug("component=adm", "event", "metadata_checked", "changed", changed, "file", current.Name, "size", current.Size)
 	if !changed {
 		e.reportPoll()
@@ -639,6 +698,10 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 	downloadStarted := time.Now()
 
 	slog.Info("component=adm", "event", "download_started", "server_id", e.serverID, "file", current.Name, "remote_size", current.Size)
+	if e.diagnostics != nil {
+		e.diagnostics.Update(func(s *RuntimeDiagnosticSnapshot) { s.LastDownloadAttempt = time.Now() })
+		e.diagnostics.Event("download started")
+	}
 	content, err := e.client.ReadLog(ctx, e.serviceID, current.Path)
 	if err != nil {
 		report := DownloadReport{ServerID: e.serverID, File: current.Name, PreviousFile: previousFile, RemoteSize: current.Size, PreviousOffset: oldOffset, Duration: time.Since(downloadStarted), Result: "failure", ErrorClass: safeDownloadErrorClass(err), At: time.Now()}
@@ -650,6 +713,13 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 	}
 	e.consecFailures = 0
 	e.lastDownloadAt = time.Now()
+	if e.diagnostics != nil {
+		e.diagnostics.Update(func(s *RuntimeDiagnosticSnapshot) {
+			s.LastDownloadSuccess = e.lastDownloadAt
+			s.DownloadedBytes = int64(len(content))
+			s.NewBytes = int64(len(content)) - oldOffset
+		})
+	}
 	downloadDuration := time.Since(downloadStarted)
 
 	readOffset := oldOffset
@@ -701,6 +771,17 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 	e.lastLogChange = e.lastPoll
 	e.tracker.UpdateCheckpoint(e.serviceID, current.Path, int64(len(content)), current.Modified, newOffset)
 	checkpointOK := e.saveDurableCheckpoint(ctx, current, newOffset)
+	if e.diagnostics != nil {
+		e.diagnostics.Update(func(s *RuntimeDiagnosticSnapshot) {
+			s.CheckpointOffset = newOffset
+			s.CheckpointRemoteSize = current.Size
+			s.CheckpointLastSaved = time.Now()
+			s.LastIncrementalParse = time.Now()
+			s.CompleteLines = len(lineChunks)
+			s.PartialLineBuffered = len(e.tracker.LineBuffer) > 0
+			s.TrackerCount = e.players.OnlineCount()
+		})
+	}
 	result := "success"
 	if eventsParsed == 0 {
 		result = "success_no_new_events"
@@ -805,6 +886,16 @@ func (e *Engine) processLine(line string) (bool, error) {
 		return false, nil
 	}
 	e.metrics.EventsParsed++
+	if e.diagnostics != nil {
+		e.diagnostics.Update(func(s *RuntimeDiagnosticSnapshot) {
+			s.LastParsedEventType = string(ev.Type)
+			s.LastParsedEventAt = time.Now()
+			if ev.Type == EventPlayerKill {
+				s.LastKillParsedAt = time.Now()
+			}
+		})
+		e.diagnostics.Event("parser " + string(ev.Type))
+	}
 	if ev.Type == EventPlayerDisconnect {
 		slog.Info("component=presence", "event", "disconnect_parsed", "matched", true)
 	}
@@ -832,11 +923,31 @@ func (e *Engine) processLine(line string) (bool, error) {
 			e.presenceMu.Lock()
 			e.lastPersistenceResult = "FAILURE"
 			e.presenceMu.Unlock()
+			if e.diagnostics != nil {
+				e.diagnostics.Update(func(s *RuntimeDiagnosticSnapshot) {
+					s.LastPersistenceEvent = string(ev.Type)
+					s.LastPersistenceResult = "FAILURE"
+					s.LastPersistenceAt = time.Now()
+					s.LastErrorStage = "PERSISTENCE_FAILURE"
+					s.LastErrorAt = time.Now()
+				})
+			}
 			return true, err
 		}
 		e.presenceMu.Lock()
 		e.lastPersistenceResult = "SUCCESS"
 		e.presenceMu.Unlock()
+		if e.diagnostics != nil {
+			e.diagnostics.Update(func(s *RuntimeDiagnosticSnapshot) {
+				s.LastPersistenceEvent = string(ev.Type)
+				s.LastPersistenceResult = "SUCCESS"
+				s.LastPersistenceAt = time.Now()
+				if ev.Type == EventPlayerKill {
+					s.LastKillPersistedAt = time.Now()
+				}
+			})
+			e.diagnostics.Event("persistence success")
+		}
 	} else if ev.Type == EventPlayerKill && e.publisher != nil {
 		if err := e.publisher.PublishKill(ev); err != nil {
 			e.metrics.DiscordPublishErrors++

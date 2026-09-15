@@ -129,6 +129,16 @@ func (a *App) livePresenceSnapshot(serverID int64) (killfeed.PresenceSnapshot, b
 	return engine.PresenceSnapshot(), true
 }
 
+func (a *App) livePipelineSnapshot(serverID int64) (killfeed.RuntimeDiagnosticSnapshot, bool) {
+	a.presenceMu.Lock()
+	engine, ok := a.presenceEngines[serverID]
+	a.presenceMu.Unlock()
+	if !ok || engine == nil || engine.Diagnostics() == nil {
+		return killfeed.RuntimeDiagnosticSnapshot{}, false
+	}
+	return engine.Diagnostics().Snapshot(), true
+}
+
 func (a *App) recordPublicVoicePublish(count int, result string) {
 	a.counterOwnerMu.RLock()
 	serverID := a.publicCounterServerID
@@ -825,6 +835,38 @@ func (a *App) Run() error {
 		}
 	}
 	if a.AdminService != nil {
+		a.AdminService.SetPipelineDiagnostics(func(diagCtx context.Context) map[string]any {
+			out := map[string]any{"worker": "NOT FOUND", "classification": "UNKNOWN"}
+			guild, _, err := a.Guilds.GetGuild(diagCtx, a.Config.DiscordGuildID)
+			if err != nil || guild == nil || guild.SelectedPublicServerID == 0 {
+				return out
+			}
+			snapshot, found := a.livePipelineSnapshot(guild.SelectedPublicServerID)
+			if !found {
+				return out
+			}
+			out["worker"] = snapshot.WorkerRunning
+			out["server_id"] = snapshot.ServerID
+			out["selected_adm"] = snapshot.SelectedADM
+			out["newest_adm"] = snapshot.NewestADM
+			out["selection_match"] = snapshot.SelectionMatch
+			out["selection_reason"] = snapshot.SelectionReason
+			out["metadata"] = fmt.Sprintf("last=%s changed=%t size=%d modified=%s", diagnosticTime(snapshot.LastMetadataCheck), snapshot.LastMetadataChanged, snapshot.RemoteSize, diagnosticTime(snapshot.RemoteModified))
+			out["download"] = fmt.Sprintf("attempt=%s success=%s bytes=%d new_bytes=%d", diagnosticTime(snapshot.LastDownloadAttempt), diagnosticTime(snapshot.LastDownloadSuccess), snapshot.DownloadedBytes, snapshot.NewBytes)
+			out["reader"] = fmt.Sprintf("complete_lines=%d partial=%t", snapshot.CompleteLines, snapshot.PartialLineBuffered)
+			out["parser"] = fmt.Sprintf("event=%s at=%s", snapshot.LastParsedEventType, diagnosticTime(snapshot.LastParsedEventAt))
+			out["persistence"] = fmt.Sprintf("event=%s result=%s at=%s", snapshot.LastPersistenceEvent, snapshot.LastPersistenceResult, diagnosticTime(snapshot.LastPersistenceAt))
+			out["checkpoint"] = fmt.Sprintf("offset=%d remote_size=%d saved=%s", snapshot.CheckpointOffset, snapshot.CheckpointRemoteSize, diagnosticTime(snapshot.CheckpointLastSaved))
+			out["presence"] = fmt.Sprintf("tracker=%d connect=%s disconnect=%s", snapshot.TrackerCount, diagnosticTime(snapshot.LastConnectAt), diagnosticTime(snapshot.LastDisconnectAt))
+			out["voice"] = fmt.Sprintf("desired=%d published=%d actual=%d result=%s", snapshot.DesiredVoiceCount, snapshot.LastVoicePublishedCount, snapshot.ActualDiscordVoiceCount, snapshot.LastVoicePublishResult)
+			out["kill"] = fmt.Sprintf("parsed=%s persisted=%s published=%s", diagnosticTime(snapshot.LastKillParsedAt), diagnosticTime(snapshot.LastKillPersistedAt), diagnosticTime(snapshot.LastKillPublishedAt))
+			out["last_failure"] = fmt.Sprintf("stage=%s class=%s at=%s", snapshot.LastErrorStage, snapshot.LastErrorClass, diagnosticTime(snapshot.LastErrorAt))
+			out["classification"] = snapshot.Classification()
+			out["timeline"] = strings.Join(snapshot.RecentEvents, "\n")
+			return out
+		})
+	}
+	if a.AdminService != nil {
 		a.AdminService.SetPresenceDiagnostics(func(diagCtx context.Context) map[string]any {
 			out := map[string]any{"selected_server_id_resolved": false, "selected_server_worker_found": false, "classification": "UNKNOWN"}
 			guild, _, err := a.Guilds.GetGuild(diagCtx, a.Config.DiscordGuildID)
@@ -1021,6 +1063,7 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 	bindOnlineCounter(setupStore, a.Config.DiscordGuildID, onlineCounter)
 	engine := killfeed.NewEngine(client, row.ProviderServiceID, killfeed.NewADMParser())
 	engine.SetStateSink(a.State)
+	engine.SetDiagnostics(killfeed.NewRuntimeDiagnostics(row.ID))
 	a.registerPresenceEngine(row.ID, engine)
 	if a.Checkpoints != nil {
 		engine.SetDurableCheckpoint(&admCheckpointStoreAdapter{repo: a.Checkpoints}, row.GuildID, row.ID)

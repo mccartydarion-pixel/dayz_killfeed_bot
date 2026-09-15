@@ -17,6 +17,7 @@ type Service struct {
 	workers             *health.WorkerRegistry
 	linkDiagnostics     func(context.Context) map[string]any
 	presenceDiagnostics func(context.Context) map[string]any
+	pipelineDiagnostics func(context.Context) map[string]any
 	leaderboardRefresh  func(context.Context) error
 	started             time.Time
 }
@@ -28,6 +29,9 @@ func (s *Service) SetWorkers(w *health.WorkerRegistry)                        { 
 func (s *Service) SetLinkDiagnostics(fn func(context.Context) map[string]any) { s.linkDiagnostics = fn }
 func (s *Service) SetPresenceDiagnostics(fn func(context.Context) map[string]any) {
 	s.presenceDiagnostics = fn
+}
+func (s *Service) SetPipelineDiagnostics(fn func(context.Context) map[string]any) {
+	s.pipelineDiagnostics = fn
 }
 func (s *Service) SetLeaderboardRefresh(fn func(context.Context) error) { s.leaderboardRefresh = fn }
 
@@ -55,6 +59,9 @@ func (s *Service) Status(ctx context.Context) map[string]any {
 	}
 	if s.presenceDiagnostics != nil {
 		out["presence_diagnostics"] = s.presenceDiagnostics(ctx)
+	}
+	if s.pipelineDiagnostics != nil {
+		out["pipeline_diagnostics"] = s.pipelineDiagnostics(ctx)
 	}
 	return out
 }
