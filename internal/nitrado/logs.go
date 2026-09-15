@@ -220,7 +220,7 @@ func (c *Client) ListLogs(ctx context.Context, serviceID string) ([]LogFile, err
 	for i := 0; i < limit; i++ {
 		lf := found[i]
 		slog.Info("component=nitrado_discovery", "msg", "LOG CANDIDATE",
-			"name", lf.Name, "path", lf.Path, "size", lf.Size,
+			"file", lf.Name, "size", lf.Size,
 			"modified", lf.Modified.UTC().Format(time.RFC3339), "type", lf.Type)
 	}
 
@@ -626,7 +626,7 @@ func (c *Client) ReadLog(ctx context.Context, serviceID string, path string) ([]
 	}
 
 	if strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://") {
-		return c.readDirectURL(path)
+		return c.readDirectURL(ctx, path)
 	}
 
 	if _, err := os.Stat(path); err == nil {
@@ -671,20 +671,43 @@ func (c *Client) readRemoteFile(ctx context.Context, serviceID, path string) ([]
 		return nil, fmt.Errorf("download endpoint returned no URL for %s", path)
 	}
 
-	return c.readDirectURL(envelope.Data.Token.URL)
+	return c.readDirectURL(ctx, envelope.Data.Token.URL)
 }
 
 // readDirectURL reads the contents of a resolved URL (signed file-server URL).
-func (c *Client) readDirectURL(rawURL string) ([]byte, error) {
-	resp, err := c.httpClient.Get(rawURL)
-	if err != nil {
-		return nil, fmt.Errorf("read remote log: %w", err)
+func (c *Client) readDirectURL(ctx context.Context, rawURL string) ([]byte, error) {
+	const maxAttempts = 3
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("create signed download request: %w", err)
+		}
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("read remote log: %w", err)
+		}
+		if resp.StatusCode == http.StatusOK {
+			defer resp.Body.Close()
+			return io.ReadAll(resp.Body)
+		}
+		delay := retryAfter(resp.Header.Get("Retry-After"))
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusTooManyRequests || attempt == maxAttempts {
+			return nil, &RequestError{Op: "read remote log", Kind: KindUnknown, Message: fmt.Sprintf("status=%d", resp.StatusCode), StatusCode: resp.StatusCode}
+		}
+		if delay <= 0 {
+			delay = time.Duration(attempt*attempt)*250*time.Millisecond + time.Duration((attempt*37)%100)*time.Millisecond
+		}
+		slog.Warn("component=nitrado", "event", "rate_limited", "operation", "adm_download", "retry_after_ms", delay.Milliseconds(), "attempt", attempt)
+		timer := time.NewTimer(delay)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		}
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, &RequestError{Op: "read remote log", Kind: KindUnknown, Message: fmt.Sprintf("status=%d", resp.StatusCode), StatusCode: resp.StatusCode}
-	}
-	return io.ReadAll(resp.Body)
+	return nil, fmt.Errorf("signed download retry exhausted")
 }
 
 func (c *Client) servicePayload(ctx context.Context, serviceID string) ([]byte, error) {

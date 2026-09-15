@@ -156,6 +156,13 @@ func (a *App) ConnectServer(ctx context.Context, serverID int64) error {
 	a.counterOwnerMu.Lock()
 	a.publicCounterServerID = serverID
 	a.counterOwnerMu.Unlock()
+	if a.Guilds != nil && a.Config != nil {
+		if _, guildID, err := a.Guilds.GetGuild(ctx, a.Config.DiscordGuildID); err == nil && guildID > 0 {
+			if err := a.Guilds.SetSelectedPublicServer(ctx, a.Config.DiscordGuildID, serverID); err != nil {
+				slog.Warn("component=servers", "event", "public_counter_selection_persist_failed", "err", err.Error())
+			}
+		}
+	}
 	if a.WorkerManager.Running(serverID) {
 		return nil
 	}
@@ -166,6 +173,21 @@ func (a *App) ownsPublicCounter(serverID int64) bool {
 	a.counterOwnerMu.RLock()
 	defer a.counterOwnerMu.RUnlock()
 	return a.publicCounterServerID == serverID
+}
+
+func selectPublicCounterServer(selectedID int64, active []repository.GameServer) (int64, bool) {
+	if selectedID > 0 {
+		for _, server := range active {
+			if server.ID == selectedID {
+				return selectedID, true
+			}
+		}
+		return 0, false
+	}
+	if len(active) == 0 {
+		return 0, false
+	}
+	return active[0].ID, true
 }
 
 // DisconnectServer implements discord.ServerRuntime: stops the worker, if any.
@@ -782,9 +804,22 @@ func (a *App) Run() error {
 				slog.Warn("component=servers", "msg", "no active game servers for this guild yet; run /server connect and /server select to enable the killfeed")
 			}
 			if len(activeServers) > 0 {
+				guildRecord, _, guildRecordErr := a.Guilds.GetGuild(ctx, a.Config.DiscordGuildID)
+				persistedSelection := int64(0)
+				if guildRecordErr == nil && guildRecord != nil {
+					persistedSelection = guildRecord.SelectedPublicServerID
+				}
+				selectedServerID, selectedOK := selectPublicCounterServer(persistedSelection, activeServers)
 				a.counterOwnerMu.Lock()
-				if a.publicCounterServerID == 0 {
-					a.publicCounterServerID = activeServers[0].ID
+				if selectedOK {
+					a.publicCounterServerID = selectedServerID
+					if persistedSelection == 0 {
+						if err := a.Guilds.SetSelectedPublicServer(ctx, a.Config.DiscordGuildID, a.publicCounterServerID); err != nil {
+							slog.Warn("component=servers", "event", "public_counter_selection_persist_failed", "err", err.Error())
+						}
+					}
+				} else if persistedSelection > 0 {
+					slog.Warn("component=servers", "event", "public_counter_selection_unresolved", "selected_server_id", persistedSelection)
 				}
 				a.counterOwnerMu.Unlock()
 			}

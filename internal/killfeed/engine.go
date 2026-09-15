@@ -808,7 +808,7 @@ func (e *Engine) handleSelectedFailure(ctx context.Context, err error) error {
 	isNotFound := errors.As(err, &reqErr) && reqErr.Kind == nitrado.KindNotFound
 
 	if isNotFound || e.consecFailures >= maxConsecFailures {
-		slog.Warn("component=killfeed", "msg", "selected log lost; re-entering discovery", "path", e.selected.Path, "err", err.Error())
+		slog.Warn("component=killfeed", "msg", "selected log lost; re-entering discovery", "file", e.selected.Name, "err", err.Error())
 		e.enterDiscovery()
 		e.reportPoll()
 		return nil
@@ -855,7 +855,7 @@ func (e *Engine) checkForNewerLog(ctx context.Context) {
 	if newest.Path != e.selected.Path && newest.Modified.After(e.selected.Modified) {
 		e.drainRotationTail(ctx)
 		slog.Info("component=killfeed", "msg", "newer ADM detected; switching",
-			"previous", e.selected.Path, "file", newest.Path, "modified", newest.Modified.UTC().Format(time.RFC3339))
+			"previous", e.selected.Name, "file", newest.Name, "modified", newest.Modified.UTC().Format(time.RFC3339))
 		e.selectLog(newest)
 	}
 }

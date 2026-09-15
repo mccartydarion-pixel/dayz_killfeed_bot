@@ -12,13 +12,14 @@ import (
 
 // fakePersistenceStore records inserts and can simulate duplicates/failures.
 type fakePersistenceStore struct {
-	mu         sync.Mutex
-	kills      []repository.KillRecord
-	deaths     []repository.DeathRecord
-	players    map[string]int64
-	connects   []struct{ guildID, serverID, playerID int64 }
-	dupeOnKill bool
-	failKills  bool
+	mu          sync.Mutex
+	kills       []repository.KillRecord
+	deaths      []repository.DeathRecord
+	players     map[string]int64
+	connects    []struct{ guildID, serverID, playerID int64 }
+	disconnects int
+	dupeOnKill  bool
+	failKills   bool
 }
 
 func newFakePersistenceStore() *fakePersistenceStore {
@@ -74,7 +75,59 @@ func (f *fakePersistenceStore) RecordConnect(ctx context.Context, guildID, serve
 }
 
 func (f *fakePersistenceStore) RecordDisconnect(context.Context, int64, int64, int64, time.Time) error {
+	f.mu.Lock()
+	f.disconnects++
+	f.mu.Unlock()
 	return nil
+}
+
+type sequenceParser struct{}
+
+func (sequenceParser) ParseLine(line string) (*Event, error) {
+	switch line {
+	case "CONNECT":
+		return &Event{Type: EventPlayerConnect, Player: &PlayerRef{ID: "p1", Name: "TCP"}}, nil
+	case "KILL":
+		return killEvent("v", "k", "M4-A1", 10, "16:40:12"), nil
+	case "DISCONNECT":
+		return &Event{Type: EventPlayerDisconnect, Player: &PlayerRef{ID: "p1", Name: "TCP"}}, nil
+	default:
+		return nil, nil
+	}
+}
+
+func TestPersistenceFailureStopsLaterADMEventsUntilRecovery(t *testing.T) {
+	store := newFakePersistenceStore()
+	store.failKills = true
+	queue := NewPersistenceQueueWithServerID(store, 1, 2, "session")
+	var published int
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go queue.Run(ctx)
+
+	engine := NewEngine(nil, "service", sequenceParser{})
+	engine.SetPersistence(queue)
+	queue.SetKillPersistedHook(func(*Event) { published++ })
+	engine.processLines([]string{"CONNECT", "KILL", "DISCONNECT"})
+	if engine.PlayerTracker().OnlineCount() != 1 {
+		t.Fatalf("expected connect to mutate tracker, got %d", engine.PlayerTracker().OnlineCount())
+	}
+	if len(store.connects) != 1 || store.disconnects != 0 {
+		t.Fatalf("expected only connect persisted, connects=%d disconnects=%d", len(store.connects), store.disconnects)
+	}
+	if published != 0 {
+		t.Fatalf("failed kill must not publish, got %d", published)
+	}
+
+	store.failKills = false
+	engine.processLines([]string{"KILL", "DISCONNECT"})
+	queue.Close()
+	if len(store.kills) != 1 || published != 1 {
+		t.Fatalf("expected one recovered kill/publication, kills=%d published=%d", len(store.kills), published)
+	}
+	if store.disconnects != 1 || engine.PlayerTracker().OnlineCount() != 0 {
+		t.Fatalf("expected disconnect after recovery, disconnects=%d online=%d", store.disconnects, engine.PlayerTracker().OnlineCount())
+	}
 }
 
 func TestPersistBeforePublish(t *testing.T) {

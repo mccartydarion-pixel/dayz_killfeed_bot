@@ -674,6 +674,13 @@ ALTER TABLE adm_checkpoints ADD COLUMN IF NOT EXISTS pending_partial_line TEXT N
 CREATE INDEX IF NOT EXISTS idx_adm_checkpoints_server ON adm_checkpoints(guild_id, server_id);
 `,
 	},
+	{
+		Name: "0020_selected_public_server",
+		SQL: `
+ALTER TABLE guilds ADD COLUMN IF NOT EXISTS selected_public_server_id BIGINT;
+CREATE INDEX IF NOT EXISTS idx_guilds_selected_public_server ON guilds(selected_public_server_id);
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order, each transactionally. A
