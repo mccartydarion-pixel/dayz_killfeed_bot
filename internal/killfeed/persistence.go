@@ -212,6 +212,19 @@ func (q *PersistenceQueue) persistOne(ctx context.Context, ev *Event) {
 	// Persist based on event type. Only kills/deaths become durable records here;
 	// all events upsert their player identities for last_seen tracking.
 	switch ev.Type {
+	case EventPlayerConnect, EventPlayerDisconnect:
+		playerID := q.upsertPlayer(ctx, ev.Player)
+		if recorder, ok := q.store.(ActivityRecorder); ok && playerID > 0 {
+			at := eventTime(ev)
+			if ev.Type == EventPlayerConnect {
+				if err := recorder.RecordConnect(ctx, q.guildID, q.serverID, playerID, at); err != nil {
+					slog.Warn("component=activity", "msg", "connect activity persistence failed", "err", err.Error())
+				}
+			} else if err := recorder.RecordDisconnect(ctx, q.guildID, q.serverID, playerID, at); err != nil {
+				slog.Warn("component=activity", "msg", "disconnect activity persistence failed", "err", err.Error())
+			}
+		}
+		return
 	case EventPlayerKill:
 		killerID := q.upsertPlayer(ctx, ev.Killer)
 		victimID := q.upsertPlayer(ctx, ev.Victim)

@@ -915,9 +915,22 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 	bindOnlineCounter(setupStore, a.Config.DiscordGuildID, onlineCounter)
 	engine := killfeed.NewEngine(client, row.ProviderServiceID, killfeed.NewADMParser())
 	engine.SetStateSink(a.State)
+	if a.Checkpoints != nil {
+		engine.SetDurableCheckpoint(&admCheckpointStoreAdapter{repo: a.Checkpoints}, row.GuildID, row.ID)
+	}
 	a.registerPresenceTracker(row.ID, engine.PlayerTracker())
 	if a.consumeFirstConnect(row.ID) {
 		engine.StartAtLogTail()
+	}
+	if a.Discord != nil && a.Servers != nil {
+		if config, configErr := a.Servers.EnsureConfig(workerCtx, row.ID); configErr == nil {
+			monitor := discord.NewADMMonitorPublisher(discord.NewSessionAPI(a.Discord.Session()), setupStore, a.Config.DiscordGuildID, row.ID, config.ADMMonitorMessageID, func(messageID string) {
+				if err := a.Servers.SetADMMonitorMessage(context.Background(), row.ID, messageID); err != nil {
+					slog.Warn("component=adm", "event", "monitor_message_save_failed", "server_id", row.ID, "err", err.Error())
+				}
+			})
+			engine.OnAdmSnapshot(monitor.Update)
+		}
 	}
 
 	publisher := discord.NewKillfeedPublisher(a.Discord, a.Config.KillfeedChannelID)
@@ -1065,6 +1078,22 @@ type persistenceStoreAdapter struct {
 	activity   *repository.ActivityRepository
 	servers    *repository.ServerRepository
 	panelDirty func()
+}
+
+type admCheckpointStoreAdapter struct {
+	repo *repository.CheckpointRepository
+}
+
+func (s *admCheckpointStoreAdapter) LoadADMCheckpoint(ctx context.Context, guildID, serverID int64) (*killfeed.DurableCheckpoint, error) {
+	checkpoint, err := s.repo.LoadADMCheckpoint(ctx, guildID, serverID)
+	if err != nil || checkpoint == nil {
+		return nil, err
+	}
+	return &killfeed.DurableCheckpoint{Filename: checkpoint.Filename, RemoteModifiedAt: checkpoint.RemoteModifiedAt, RemoteSize: checkpoint.RemoteSize, ProcessedOffset: checkpoint.ProcessedOffset, PendingPartialLine: checkpoint.PendingPartialLine}, nil
+}
+
+func (s *admCheckpointStoreAdapter) SaveADMCheckpoint(ctx context.Context, guildID, serverID int64, sessionID string, checkpoint killfeed.DurableCheckpoint) error {
+	return s.repo.SaveADMCheckpoint(ctx, repository.ADMCheckpoint{ServerID: serverID, SessionID: sessionID, Filename: checkpoint.Filename, RemoteModifiedAt: checkpoint.RemoteModifiedAt, RemoteSize: checkpoint.RemoteSize, ProcessedOffset: checkpoint.ProcessedOffset, PendingPartialLine: checkpoint.PendingPartialLine}, guildID)
 }
 
 func (p *persistenceStoreAdapter) RecordConnect(ctx context.Context, guildID, serverID, playerID int64, at time.Time) error {

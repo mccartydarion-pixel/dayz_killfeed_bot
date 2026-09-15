@@ -36,6 +36,24 @@ type StatSource interface {
 	StatFile(ctx context.Context, serviceID, path string) (*nitrado.LogFile, error)
 }
 
+const (
+	ADMRemoteMetadataPollInterval = 10 * time.Second
+	ADMMonitorRefreshInterval     = 5 * time.Minute
+)
+
+type DurableCheckpoint struct {
+	Filename           string
+	RemoteModifiedAt   time.Time
+	RemoteSize         int64
+	ProcessedOffset    int64
+	PendingPartialLine string
+}
+
+type CheckpointStore interface {
+	LoadADMCheckpoint(context.Context, int64, int64) (*DurableCheckpoint, error)
+	SaveADMCheckpoint(context.Context, int64, int64, string, DurableCheckpoint) error
+}
+
 // StateSink receives sanitized engine progress updates for the status endpoint.
 type StateSink interface {
 	SetLogSource(filename, path string, size int64, modified time.Time)
@@ -116,6 +134,7 @@ type Engine struct {
 	lastRotationAt   time.Time
 	lastConnectAt    time.Time
 	lastDisconnectAt time.Time
+	lastDownloadAt   time.Time
 
 	// onAdmSnapshot fires once per poll cycle from this engine's own goroutine
 	// (never concurrently), so the ADM monitor can read a consistent snapshot
@@ -125,7 +144,11 @@ type Engine struct {
 	// startAtTail, when set before the first log selection, seeds the checkpoint
 	// at the current end of file instead of byte 0 so pre-existing log history
 	// (from before this server was connected) is never replayed as new events.
-	startAtTail bool
+	startAtTail      bool
+	guildID          int64
+	serverID         int64
+	checkpointStore  CheckpointStore
+	checkpointLoaded bool
 }
 
 // StartAtLogTail marks this engine to begin at the end of the log on its first
@@ -138,10 +161,19 @@ func (e *Engine) StartAtLogTail() {
 	e.startAtTail = true
 }
 
+func (e *Engine) SetDurableCheckpoint(store CheckpointStore, guildID, serverID int64) {
+	if e == nil {
+		return
+	}
+	e.checkpointStore = store
+	e.guildID = guildID
+	e.serverID = serverID
+}
+
 // rescanInterval is how often, while polling a selected log, we do a lightweight
 // directory check for a newer ADM file (DayZ creates a new timestamped ADM on
 // restart). This is deliberately far slower than the 2s selected-file poll.
-const rescanInterval = 45 * time.Second
+const rescanInterval = ADMRemoteMetadataPollInterval
 
 // maxConsecFailures forces rediscovery after this many consecutive read/stat
 // failures on the selected log (file moved, rotated, or server restarted).
@@ -165,7 +197,7 @@ func discoveryBackoff(fails int) time.Duration {
 
 // NewEngine creates the killfeed engine.
 func NewEngine(client LogSource, serviceID string, parser Parser) *Engine {
-	interval := envPollInterval("NITRADO_POLL_INTERVAL", 2*time.Second)
+	interval := envPollInterval("NITRADO_POLL_INTERVAL", ADMRemoteMetadataPollInterval)
 	if parser == nil {
 		parser = NewADMParser()
 	}
@@ -393,6 +425,19 @@ func (e *Engine) selectLog(lf nitrado.LogFile) {
 	e.state = StatePolling
 	e.consecFailures = 0
 	e.sampleCaptured = false
+	if !e.checkpointLoaded && e.checkpointStore != nil && e.guildID > 0 && e.serverID > 0 {
+		checkpoint, err := e.checkpointStore.LoadADMCheckpoint(context.Background(), e.guildID, e.serverID)
+		if err != nil {
+			slog.Warn("component=adm", "event", "checkpoint_load_failed", "server_id", e.serverID, "err", err.Error())
+		} else if checkpoint != nil && checkpoint.Filename == candidate.Path {
+			e.tracker.UpdateCheckpoint(e.serviceID, candidate.Path, checkpoint.RemoteSize, checkpoint.RemoteModifiedAt, checkpoint.ProcessedOffset)
+			e.tracker.LineBuffer = checkpoint.PendingPartialLine
+			slog.Info("component=adm", "event", "checkpoint_loaded", "server_id", e.serverID, "offset", checkpoint.ProcessedOffset)
+		} else if checkpoint == nil && !e.startAtTail {
+			e.startAtTail = true
+		}
+		e.checkpointLoaded = true
+	}
 
 	if e.tracker == nil {
 		e.tracker = NewTracker(e.serviceID)
@@ -406,6 +451,7 @@ func (e *Engine) selectLog(lf nitrado.LogFile) {
 	// first selection of this engine instance (never on rotation/restart).
 	if e.startAtTail && !e.logSourceFound {
 		e.tracker.UpdateCheckpoint(e.serviceID, candidate.Path, candidate.Size, candidate.Modified, candidate.Size)
+		e.saveDurableCheckpoint(context.Background(), &candidate, candidate.Size)
 		slog.Info("component=killfeed", "msg", "first connect: starting at log tail, existing history skipped", "file", candidate.Name, "size", candidate.Size)
 	}
 
@@ -469,7 +515,9 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 	}
 	e.consecFailures = 0
 
-	if !e.tracker.ShouldReadAgain(current.Path, current.Size, current.Modified) {
+	changed := e.tracker.ShouldReadAgain(current.Path, current.Size, current.Modified)
+	slog.Debug("component=adm", "event", "metadata_checked", "changed", changed, "file", current.Name, "size", current.Size)
+	if !changed {
 		e.reportPoll()
 		return nil
 	}
@@ -486,16 +534,23 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 	oldOffset := e.tracker.LastByteOffset
 	oldSize := e.tracker.CurrentSize
 
+	slog.Debug("component=adm", "event", "download_started", "file", current.Name, "size", current.Size)
 	content, err := e.client.ReadLog(ctx, e.serviceID, current.Path)
 	if err != nil {
 		return e.handleSelectedFailure(ctx, err)
 	}
 	e.consecFailures = 0
+	e.lastDownloadAt = time.Now()
+	slog.Debug("component=adm", "event", "download_complete", "file", current.Name, "bytes", len(content))
 
 	readOffset := oldOffset
 	if readOffset > int64(len(content)) || readOffset < 0 {
-		readOffset = 0
+		slog.Warn("component=adm", "event", "file_truncated", "file", current.Name, "old_offset", oldOffset, "size", len(content))
 		e.tracker.ResetForRotation(current.Path)
+		e.tracker.UpdateCheckpoint(e.serviceID, current.Path, current.Size, current.Modified, int64(len(content)))
+		e.saveDurableCheckpoint(ctx, current, int64(len(content)))
+		e.reportPoll()
+		return nil
 	}
 
 	newBytes := content[readOffset:]
@@ -512,6 +567,8 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 	e.linesDiscovered += int64(len(lines))
 	e.lastLogChange = e.lastPoll
 	e.tracker.UpdateCheckpoint(e.serviceID, current.Path, int64(len(content)), current.Modified, newOffset)
+	e.saveDurableCheckpoint(ctx, current, newOffset)
+	slog.Debug("component=adm", "event", "incremental_parse", "new_bytes", bytesConsumed, "events", len(lines))
 
 	// ADM sample capture is disabled by default in production. Enable with
 	// ADM_SAMPLE_DEBUG=true for parser diagnostics; even then it logs at DEBUG.
@@ -538,6 +595,21 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 
 	e.reportPoll()
 	return nil
+}
+
+func (e *Engine) saveDurableCheckpoint(ctx context.Context, current *nitrado.LogFile, offset int64) {
+	if e == nil || e.checkpointStore == nil || current == nil || e.guildID == 0 || e.serverID == 0 {
+		return
+	}
+	checkpoint := DurableCheckpoint{Filename: current.Path, RemoteModifiedAt: current.Modified, RemoteSize: current.Size, ProcessedOffset: offset}
+	if e.tracker != nil {
+		checkpoint.PendingPartialLine = e.tracker.LineBuffer
+	}
+	if err := e.checkpointStore.SaveADMCheckpoint(ctx, e.guildID, e.serverID, e.serviceID, checkpoint); err != nil {
+		slog.Warn("component=adm", "event", "checkpoint_failed", "server_id", e.serverID, "err", err.Error())
+		return
+	}
+	slog.Debug("component=adm", "event", "checkpoint_saved", "server_id", e.serverID, "offset", offset)
 }
 
 // processLines runs the ordered pipeline for complete ADM lines:
@@ -615,19 +687,19 @@ func (e *Engine) processLines(lines []string) {
 		// dedupe is the gate: a DB duplicate means do NOT publish again. When no
 		// persistence is configured (degraded mode), fall back to in-memory dedupe
 		// and publish directly.
-		if ev.Type == EventPlayerKill && e.publisher != nil {
-			if e.persistence != nil {
-				if !e.persistence.Enqueue(ev) {
+		if e.persistence != nil && (ev.Type == EventPlayerConnect || ev.Type == EventPlayerDisconnect || ev.Type == EventPlayerDeath || ev.Type == EventSuicideAction || ev.Type == EventPlayerKill) {
+			if !e.persistence.Enqueue(ev) {
+				if ev.Type == EventPlayerKill {
 					e.metrics.DiscordPublishErrors++
 				}
-				// Publish happens in the queue's post-persist hook (set in SetPersistence).
+			}
+			// Kill publication happens in the queue's post-persist hook.
+		} else if ev.Type == EventPlayerKill && e.publisher != nil {
+			if err := e.publisher.PublishKill(ev); err != nil {
+				e.metrics.DiscordPublishErrors++
 			} else {
-				if err := e.publisher.PublishKill(ev); err != nil {
-					e.metrics.DiscordPublishErrors++
-				} else {
-					e.metrics.DiscordKillsPublished++
-					e.metrics.LastKillTime = time.Now()
-				}
+				e.metrics.DiscordKillsPublished++
+				e.metrics.LastKillTime = time.Now()
 			}
 		}
 	}

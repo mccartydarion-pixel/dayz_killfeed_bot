@@ -11,6 +11,7 @@ import (
 type fakeLogSource struct {
 	logs    []nitrado.LogFile
 	content []byte
+	reads   int
 }
 
 type testParser struct{}
@@ -22,6 +23,7 @@ func (f *fakeLogSource) ListLogs(ctx context.Context, serviceID string) ([]nitra
 }
 
 func (f *fakeLogSource) ReadLog(ctx context.Context, serviceID string, path string) ([]byte, error) {
+	f.reads++
 	return f.content, nil
 }
 
@@ -98,6 +100,9 @@ func TestEngineAdvancesOffsetAcrossGrowingFile(t *testing.T) {
 	}
 	if engine.tracker.LastByteOffset != int64(len(grown)) {
 		t.Fatalf("expected offset at end of grown file, got %d", engine.tracker.LastByteOffset)
+	}
+	if fake.reads != 2 {
+		t.Fatalf("expected one initial and one growth download, got %d", fake.reads)
 	}
 }
 

@@ -664,6 +664,16 @@ ALTER TABLE guilds ADD COLUMN IF NOT EXISTS link_panel_channel_id TEXT;
 ALTER TABLE guilds ADD COLUMN IF NOT EXISTS link_panel_message_id TEXT;
 `,
 	},
+	{
+		Name: "0019_adm_incremental_checkpoints",
+		SQL: `
+ALTER TABLE adm_checkpoints ADD COLUMN IF NOT EXISTS server_id BIGINT;
+ALTER TABLE adm_checkpoints ADD COLUMN IF NOT EXISTS remote_modified_at TIMESTAMPTZ;
+ALTER TABLE adm_checkpoints ADD COLUMN IF NOT EXISTS remote_size BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE adm_checkpoints ADD COLUMN IF NOT EXISTS pending_partial_line TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_adm_checkpoints_server ON adm_checkpoints(guild_id, server_id);
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order, each transactionally. A

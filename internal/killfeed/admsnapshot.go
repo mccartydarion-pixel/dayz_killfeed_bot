@@ -18,20 +18,23 @@ const (
 // the private admin monitor. It never includes raw ADM lines, player IDs, or
 // private filesystem paths (CurrentFile/PreviousFile are basenames only).
 type AdmSnapshot struct {
-	State            EngineState
-	CurrentFile      string
-	PreviousFile     string
-	FileSize         int64
-	Modified         time.Time
-	LastPoll         time.Time
-	LastLogChange    time.Time
-	LastRotationAt   time.Time
-	PollInterval     time.Duration
-	BytesProcessed   int64
-	APIFailures      int
-	OnlineCount      int
-	LastConnectAt    time.Time
-	LastDisconnectAt time.Time
+	State              EngineState
+	CurrentFile        string
+	PreviousFile       string
+	FileSize           int64
+	Modified           time.Time
+	LastPoll           time.Time
+	LastLogChange      time.Time
+	LastRotationAt     time.Time
+	PollInterval       time.Duration
+	BytesProcessed     int64
+	ProcessedOffset    int64
+	PendingPartialLine string
+	LastDownload       time.Time
+	APIFailures        int
+	OnlineCount        int
+	LastConnectAt      time.Time
+	LastDisconnectAt   time.Time
 }
 
 // AdmSnapshot returns a sanitized snapshot of this engine's current ADM and
@@ -48,6 +51,7 @@ func (e *Engine) AdmSnapshot() AdmSnapshot {
 		LastRotationAt:   e.lastRotationAt,
 		PollInterval:     e.pollInterval,
 		BytesProcessed:   e.bytesProcessed,
+		LastDownload:     e.lastDownloadAt,
 		APIFailures:      e.apiFailures,
 		LastConnectAt:    e.lastConnectAt,
 		LastDisconnectAt: e.lastDisconnectAt,
@@ -59,6 +63,10 @@ func (e *Engine) AdmSnapshot() AdmSnapshot {
 	}
 	if e.players != nil {
 		snap.OnlineCount = e.players.OnlineCount()
+	}
+	if e.tracker != nil {
+		snap.ProcessedOffset = e.tracker.LastByteOffset
+		snap.PendingPartialLine = e.tracker.LineBuffer
 	}
 	return snap
 }

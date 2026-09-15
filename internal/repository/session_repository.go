@@ -15,6 +15,16 @@ type CheckpointRepository struct {
 	pool *pgxpool.Pool
 }
 
+type ADMCheckpoint struct {
+	ServerID           int64
+	SessionID          string
+	Filename           string
+	RemoteModifiedAt   time.Time
+	RemoteSize         int64
+	ProcessedOffset    int64
+	PendingPartialLine string
+}
+
 // NewCheckpointRepository creates a checkpoint repository.
 func NewCheckpointRepository(pool *pgxpool.Pool) *CheckpointRepository {
 	return &CheckpointRepository{pool: pool}
@@ -49,6 +59,35 @@ func (r *CheckpointRepository) LoadCheckpoint(ctx context.Context, guildID int64
 		return -1, fmt.Errorf("load checkpoint: %w", err)
 	}
 	return offset, nil
+}
+
+func (r *CheckpointRepository) SaveADMCheckpoint(ctx context.Context, checkpoint ADMCheckpoint, guildID int64) error {
+	const q = `
+INSERT INTO adm_checkpoints (guild_id, server_id, session_id, adm_filename, byte_offset, remote_modified_at, remote_size, pending_partial_line)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+ON CONFLICT (guild_id, session_id) DO UPDATE SET
+    server_id=EXCLUDED.server_id, adm_filename=EXCLUDED.adm_filename,
+    byte_offset=EXCLUDED.byte_offset, remote_modified_at=EXCLUDED.remote_modified_at,
+    remote_size=EXCLUDED.remote_size, pending_partial_line=EXCLUDED.pending_partial_line,
+    updated_at=NOW()`
+	_, err := r.pool.Exec(ctx, q, guildID, checkpoint.ServerID, checkpoint.SessionID, checkpoint.Filename, checkpoint.ProcessedOffset, checkpoint.RemoteModifiedAt, checkpoint.RemoteSize, checkpoint.PendingPartialLine)
+	if err != nil {
+		return fmt.Errorf("save ADM checkpoint: %w", err)
+	}
+	return nil
+}
+
+func (r *CheckpointRepository) LoadADMCheckpoint(ctx context.Context, guildID, serverID int64) (*ADMCheckpoint, error) {
+	const q = `SELECT server_id, session_id, adm_filename, COALESCE(remote_modified_at, 'epoch'), remote_size, byte_offset, COALESCE(pending_partial_line, '') FROM adm_checkpoints WHERE guild_id=$1 AND server_id=$2 ORDER BY updated_at DESC LIMIT 1`
+	var checkpoint ADMCheckpoint
+	err := r.pool.QueryRow(ctx, q, guildID, serverID).Scan(&checkpoint.ServerID, &checkpoint.SessionID, &checkpoint.Filename, &checkpoint.RemoteModifiedAt, &checkpoint.RemoteSize, &checkpoint.ProcessedOffset, &checkpoint.PendingPartialLine)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load ADM checkpoint: %w", err)
+	}
+	return &checkpoint, nil
 }
 
 // SessionRepository tracks ADM sessions (one per rotated log file).
