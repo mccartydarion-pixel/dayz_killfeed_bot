@@ -48,6 +48,13 @@ func (r *PlayerRepository) FindByDisplayName(ctx context.Context, guildID int64,
 	return id, err
 }
 
+// CountForGuild is a lightweight read used for diagnostics only.
+func (r *PlayerRepository) CountForGuild(ctx context.Context, guildID int64) (int64, error) {
+	var count int64
+	err := r.pool.QueryRow(ctx, `SELECT COUNT(*) FROM players WHERE guild_id=$1`, guildID).Scan(&count)
+	return count, err
+}
+
 // PlayerProfile is a player's persistent stats snapshot.
 type PlayerProfile struct {
 	DisplayName string

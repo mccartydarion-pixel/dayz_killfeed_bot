@@ -125,7 +125,12 @@ func (s *LinkVerificationService) Request(ctx context.Context, guildID int64, di
 	slog.Debug("component=link", "guild", guildID, "server_resolved", true, "database_available", true, "activity_query", "pending", "error_class", "SERVER_RESOLVED")
 	playtime, activityErr := s.activity.GetObservedPlaytime(ctx, guildID, serverID, candidate.ID, time.Now())
 	if activityErr != nil {
-		slog.Warn("component=link", "guild", guildID, "server_resolved", true, "database_available", false, "activity_query", "failure", "error_class", "ACTIVITY_LOOKUP_FAILED")
+		var sqlState string
+		var stater sqlStater
+		if errors.As(activityErr, &stater) {
+			sqlState = stater.SQLState()
+		}
+		slog.Warn("component=link", "stage", "activity_lookup", "guild", guildID, "server_resolved", true, "database_available", false, "activity_query", "failure", "error_class", "ACTIVITY_LOOKUP_FAILED", "sql_state", sqlState, "message", sanitizeLinkError(activityErr))
 		return nil, ErrLinkCheckUnavailable
 	}
 	slog.Debug("component=link", "guild", guildID, "server_resolved", true, "database_available", true, "activity_query", "success", "error_class", "ACTIVITY_LOOKUP_SUCCESS")
@@ -164,4 +169,28 @@ func (s *LinkVerificationService) Unlink(ctx context.Context, guildID int64, dis
 // Status returns the current link for a Discord user without exposing internal IDs.
 func (s *LinkVerificationService) Status(ctx context.Context, guildID int64, discordUserID string) (*LinkRecord, error) {
 	return s.repo.GetByDiscord(ctx, guildID, discordUserID)
+}
+
+// sqlStater matches *pgconn.PgError without importing pgx into this package.
+type sqlStater interface{ SQLState() string }
+
+// sanitizeLinkError returns a bounded, credential-free error message safe to
+// log. Query-execution errors do not normally carry secrets, but connection
+// setup errors can echo a DSN, so anything resembling one is redacted.
+func sanitizeLinkError(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	lower := strings.ToLower(msg)
+	for _, marker := range []string{"password", "://", "@", "token", "secret"} {
+		if strings.Contains(lower, marker) {
+			return "redacted"
+		}
+	}
+	const maxLen = 200
+	if len(msg) > maxLen {
+		msg = msg[:maxLen]
+	}
+	return msg
 }

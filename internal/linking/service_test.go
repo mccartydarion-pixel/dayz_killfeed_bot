@@ -85,3 +85,58 @@ func TestRequestDoesNotConvertActivityFailureToPlayerNotFound(t *testing.T) {
 		t.Fatalf("expected link-check-unavailable, got %v", err)
 	}
 }
+
+// TestRequestTreatsMissingActivityRowAsZeroPlaytime is the ACTIVITY_LOOKUP_FAILED
+// regression test: a player who has never connected to the selected server has
+// no player_server_activity row. That is zero observed playtime (playtime
+// required), not a database/lookup failure.
+func TestRequestTreatsMissingActivityRowAsZeroPlaytime(t *testing.T) {
+	repo := &linkTestRepository{players: []PlayerCandidate{{ID: 10, DayZID: "tcp-id", DisplayName: "TCP"}}}
+	service := NewService(repo, linkTestActivity{playtime: 0, err: nil}, linkTestServer{id: 7})
+	_, err := service.Request(context.Background(), 1, "discord", "TCP")
+	if !errors.Is(err, ErrPlaytimeRequired) {
+		t.Fatalf("expected playtime-required for an unobserved player, got %v", err)
+	}
+}
+
+func TestRequestEligibleOverFiveMinutes(t *testing.T) {
+	repo := &linkTestRepository{players: []PlayerCandidate{{ID: 10, DayZID: "tcp-id", DisplayName: "TCP"}}}
+	_, err := newLinkTestService(repo, 301*time.Second).Request(context.Background(), 1, "discord", "TCP")
+	if err != nil {
+		t.Fatalf("expected eligible player over the minimum to succeed, got %v", err)
+	}
+}
+
+// TestRequestPropagatesResolvedServerAndGuildScope guards against a
+// wrong-server/wrong-guild regression: the activity lookup must use the exact
+// guild ID passed to Request and the exact server ID the resolver returns.
+func TestRequestPropagatesResolvedServerAndGuildScope(t *testing.T) {
+	repo := &linkTestRepository{players: []PlayerCandidate{{ID: 10, DayZID: "tcp-id", DisplayName: "TCP"}}}
+	spy := &scopeSpyActivity{playtime: 5 * time.Minute}
+	service := NewService(repo, spy, linkTestServer{id: 42})
+	if _, err := service.Request(context.Background(), 99, "discord", "TCP"); err != nil {
+		t.Fatalf("expected eligible request to succeed, got %v", err)
+	}
+	if spy.gotGuildID != 99 || spy.gotServerID != 42 || spy.gotPlayerID != 10 {
+		t.Fatalf("expected activity lookup scoped to guild=99 server=42 player=10, got guild=%d server=%d player=%d", spy.gotGuildID, spy.gotServerID, spy.gotPlayerID)
+	}
+}
+
+type scopeSpyActivity struct {
+	playtime                             time.Duration
+	gotGuildID, gotServerID, gotPlayerID int64
+}
+
+func (a *scopeSpyActivity) GetObservedPlaytime(_ context.Context, guildID, serverID, playerID int64, _ time.Time) (time.Duration, error) {
+	a.gotGuildID, a.gotServerID, a.gotPlayerID = guildID, serverID, playerID
+	return a.playtime, nil
+}
+
+func TestSanitizeLinkErrorRedactsConnectionSecrets(t *testing.T) {
+	if got := sanitizeLinkError(errors.New("postgres://user:pass@host:5432/db")); got != "redacted" {
+		t.Fatalf("expected DSN-like error to be redacted, got %q", got)
+	}
+	if got := sanitizeLinkError(errors.New("column \"foo\" does not exist")); got == "redacted" {
+		t.Fatal("expected an ordinary query error to pass through unredacted")
+	}
+}

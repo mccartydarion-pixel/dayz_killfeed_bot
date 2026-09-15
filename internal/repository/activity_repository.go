@@ -2,8 +2,10 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -37,10 +39,20 @@ func (r *ActivityRepository) Disconnect(ctx context.Context, guildID, serverID, 
 	_, err := r.pool.Exec(ctx, `UPDATE player_server_activity SET total_observed_seconds=total_observed_seconds+CASE WHEN currently_connected AND last_observed_at IS NOT NULL AND $4>=last_observed_at THEN EXTRACT(EPOCH FROM ($4-last_observed_at))::BIGINT ELSE 0 END,last_seen_at=$4,last_observed_at=NULL,current_session_started_at=NULL,currently_connected=FALSE,updated_at=NOW() WHERE guild_id=$1 AND server_id=$2 AND player_id=$3 AND currently_connected`, guildID, serverID, playerID, at)
 	return err
 }
+
+// Get returns the persisted activity row, or (nil, nil) if the player has no
+// row yet for this guild/server (not yet observed there) — a normal state,
+// not a failure.
 func (r *ActivityRepository) Get(ctx context.Context, guildID, serverID, playerID int64) (*PlayerActivity, error) {
 	var a PlayerActivity
 	err := r.pool.QueryRow(ctx, `SELECT guild_id,server_id,player_id,first_seen_at,last_seen_at,total_observed_seconds,current_session_started_at,last_observed_at,currently_connected FROM player_server_activity WHERE guild_id=$1 AND server_id=$2 AND player_id=$3`, guildID, serverID, playerID).Scan(&a.GuildID, &a.ServerID, &a.PlayerID, &a.FirstSeenAt, &a.LastSeenAt, &a.TotalObservedSeconds, &a.CurrentSessionStartedAt, &a.LastObservedAt, &a.CurrentlyConnected)
-	return &a, err
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &a, nil
 }
 func (r *ActivityRepository) Checkpoint(ctx context.Context, guildID, serverID, playerID int64, at time.Time) error {
 	_, err := r.pool.Exec(ctx, `UPDATE player_server_activity SET total_observed_seconds=total_observed_seconds+CASE WHEN currently_connected AND last_observed_at IS NOT NULL AND $4>=last_observed_at AND EXTRACT(EPOCH FROM ($4-last_observed_at)) BETWEEN 0 AND 300 THEN EXTRACT(EPOCH FROM ($4-last_observed_at))::BIGINT ELSE 0 END,last_observed_at=CASE WHEN currently_connected THEN $4 ELSE last_observed_at END,last_seen_at=CASE WHEN currently_connected THEN $4 ELSE last_seen_at END,updated_at=NOW() WHERE guild_id=$1 AND server_id=$2 AND player_id=$3 AND currently_connected`, guildID, serverID, playerID, at)
@@ -50,10 +62,16 @@ func (r *ActivityRepository) CheckpointConnected(ctx context.Context, guildID, s
 	_, err := r.pool.Exec(ctx, `UPDATE player_server_activity SET total_observed_seconds=total_observed_seconds+CASE WHEN last_observed_at IS NOT NULL AND $3>=last_observed_at AND EXTRACT(EPOCH FROM ($3-last_observed_at)) BETWEEN 0 AND 300 THEN EXTRACT(EPOCH FROM ($3-last_observed_at))::BIGINT ELSE 0 END,last_observed_at=$3,last_seen_at=$3,updated_at=NOW() WHERE guild_id=$1 AND server_id=$2 AND currently_connected`, guildID, serverID, at)
 	return err
 }
+
+// GetObservedPlaytime returns the observed playtime for a player on a server.
+// No activity row yet is zero playtime, not an error.
 func (r *ActivityRepository) GetObservedPlaytime(ctx context.Context, guildID, serverID, playerID int64, at time.Time) (time.Duration, error) {
 	a, err := r.Get(ctx, guildID, serverID, playerID)
 	if err != nil {
 		return 0, err
+	}
+	if a == nil {
+		return 0, nil
 	}
 	return a.Effective(at), nil
 }

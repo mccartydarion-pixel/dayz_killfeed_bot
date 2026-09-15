@@ -266,13 +266,17 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	if app.AdminService != nil {
 		app.AdminService.SetLinkDiagnostics(func(diagCtx context.Context) map[string]any {
 			result := map[string]any{
-				"database":                      "UNAVAILABLE",
-				"game_server":                   "NOT SELECTED",
+				"database":                      "ERROR",
+				"player_repository":             "ERROR",
 				"activity_repository":           "ERROR",
+				"selected_server":               "NOT RESOLVED",
 				"observed_players":              "unavailable",
 				"last_player_connect_persisted": "unknown",
 			}
-			if app.DB == nil || app.Guilds == nil || app.Servers == nil || app.ActivityRepository == nil {
+			if app.DB == nil || app.Guilds == nil || app.Servers == nil || app.ActivityRepository == nil || app.Players == nil {
+				return result
+			}
+			if pingErr := app.DB.Pool.Ping(diagCtx); pingErr != nil {
 				return result
 			}
 			result["database"] = "CONNECTED"
@@ -280,11 +284,14 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			if guildErr != nil || guildID == 0 {
 				return result
 			}
+			if _, playerErr := app.Players.CountForGuild(diagCtx, guildID); playerErr == nil {
+				result["player_repository"] = "HEALTHY"
+			}
 			serverID, serverErr := app.Servers.ConnectedServerID(diagCtx, guildID)
 			if serverErr != nil {
 				return result
 			}
-			result["game_server"] = "CONNECTED"
+			result["selected_server"] = "RESOLVED"
 			count, lastObserved, activityErr := app.ActivityRepository.Diagnostic(diagCtx, guildID, serverID)
 			if activityErr != nil {
 				return result
