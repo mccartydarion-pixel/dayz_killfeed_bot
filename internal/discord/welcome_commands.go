@@ -3,6 +3,8 @@ package discord
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/bwmarrin/discordgo"
@@ -51,6 +53,7 @@ func (h *WelcomeCommandHandler) Handle(s *discordgo.Session, i *discordgo.Intera
 		return
 	}
 	cfg, err := h.repo.Get(context.Background(), gid)
+	configErr := err
 	if err != nil || cfg == nil {
 		cfg = &repository.WelcomeConfig{GuildID: gid, Enabled: true}
 	}
@@ -63,11 +66,7 @@ func (h *WelcomeCommandHandler) Handle(s *discordgo.Session, i *discordgo.Intera
 		return
 	}
 	if name == "status" {
-		state := "🔴 Disabled"
-		if cfg.Enabled {
-			state = "🟢 Enabled"
-		}
-		respondEphemeral(s, i, fmt.Sprintf("🏆 **CHAMPION WELCOMER**\n\nStatus\n%s\nChannel\n%s\nPersistent\n✅", state, cfg.ChannelID))
+		respondEphemeral(s, i, h.welcomeStatus(s, *cfg, configErr))
 		return
 	}
 	if name == "enable" || name == "disable" {
@@ -104,7 +103,7 @@ func (h *WelcomeCommandHandler) Handle(s *discordgo.Session, i *discordgo.Intera
 		respondEphemeral(s, i, "🏆 **WELCOME PREVIEW**\n\nWelcome to Champion!\n\nUse `/link` to connect your PlayStation username.")
 		return
 	} else if name == "test" {
-		respondEphemeral(s, i, "Test welcome configuration loaded.")
+		h.sendWelcomeTest(s, i, *cfg)
 		return
 	}
 
@@ -113,6 +112,138 @@ func (h *WelcomeCommandHandler) Handle(s *discordgo.Session, i *discordgo.Intera
 		return
 	}
 	respondEphemeral(s, i, "Welcomer updated.")
+}
+
+type welcomeChannelStatus struct {
+	exists, view, send, embed bool
+	errClass                  string
+	retryAfter                string
+}
+
+func inspectWelcomeChannel(s *discordgo.Session, channelID string) welcomeChannelStatus {
+	status := welcomeChannelStatus{}
+	if strings.TrimSpace(channelID) == "" {
+		status.errClass = "not_configured"
+		return status
+	}
+	if s == nil {
+		status.errClass = "discord_unavailable"
+		return status
+	}
+	if _, err := s.Channel(channelID); err != nil {
+		status.errClass = welcomeErrorClass(err)
+		return status
+	}
+	status.exists = true
+	if s.State == nil || s.State.User == nil || s.State.User.ID == "" {
+		status.errClass = "bot_user_unavailable"
+		return status
+	}
+	perms, err := s.UserChannelPermissions(s.State.User.ID, channelID)
+	if err != nil {
+		status.errClass = welcomeErrorClass(err)
+		return status
+	}
+	status.view = perms&discordgo.PermissionViewChannel != 0
+	status.send = perms&discordgo.PermissionSendMessages != 0
+	status.embed = perms&discordgo.PermissionEmbedLinks != 0
+	if !status.view || !status.send || !status.embed {
+		status.errClass = "missing_permission"
+	}
+	return status
+}
+
+func (h *WelcomeCommandHandler) welcomeStatus(s *discordgo.Session, cfg repository.WelcomeConfig, configErr error) string {
+	channel := inspectWelcomeChannel(s, cfg.ChannelID)
+	lastWelcome := "never"
+	if cfg.LastWelcomeAt != nil {
+		lastWelcome = fmt.Sprintf("<t:%d:R>", cfg.LastWelcomeAt.Unix())
+	}
+	lastError := channel.errClass
+	if lastError == "" && configErr != nil {
+		lastError = welcomeErrorClass(configErr)
+	}
+	if lastError == "" {
+		lastError = "none"
+	}
+	state := "disabled"
+	if cfg.Enabled {
+		state = "enabled"
+	}
+	intentRequested := false
+	if s != nil {
+		intentRequested = s.Identify.Intents&discordgo.IntentsGuildMembers != 0
+	}
+	return fmt.Sprintf("🏆 **CHAMPION WELCOMER**\n\nEnabled\n%s\nChannel\n%s\nChannel Exists\n%s\nView Permission\n%s\nSend Permission\n%s\nEmbed Permission\n%s\nGuild Members Intent Required\n%s\nLast Successful Welcome\n%s\nLast Error Class\n%s", state, configuredLabel(cfg.ChannelID), boolLabel(channel.exists), boolLabel(channel.view), boolLabel(channel.send), boolLabel(channel.embed), boolLabel(intentRequested), lastWelcome, lastError)
+}
+
+func (h *WelcomeCommandHandler) sendWelcomeTest(s *discordgo.Session, i *discordgo.InteractionCreate, cfg repository.WelcomeConfig) {
+	channel := inspectWelcomeChannel(s, cfg.ChannelID)
+	if !channel.exists {
+		respondEphemeral(s, i, "❌ TEST WELCOME FAILED\nWelcome channel was not found.\nError class: "+channel.errClass)
+		return
+	}
+	if !channel.view || !channel.send || !channel.embed {
+		respondEphemeral(s, i, fmt.Sprintf("❌ TEST WELCOME FAILED\nMissing permission: View=%s Send=%s Embed=%s\nError class: %s", boolLabel(channel.view), boolLabel(channel.send), boolLabel(channel.embed), channel.errClass))
+		return
+	}
+	embed := welcomeEmbedFromConfig(cfg, &discordgo.Member{User: &discordgo.User{ID: "0", Username: "Test Member"}}, true)
+	_, err := s.ChannelMessageSendComplex(cfg.ChannelID, &discordgo.MessageSend{Embeds: []*discordgo.MessageEmbed{embed}, AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}}})
+	if err != nil {
+		class := welcomeErrorClass(err)
+		if class == "rate_limited" {
+			respondEphemeral(s, i, "❌ TEST WELCOME FAILED\nDiscord rate limited the test send. Retry-After: "+retryAfterFromError(err))
+			return
+		}
+		respondEphemeral(s, i, "❌ TEST WELCOME FAILED\nError class: "+class)
+		return
+	}
+	respondEphemeral(s, i, "✅ TEST WELCOME SENT\nOne TEST WELCOME embed was sent to the configured channel.")
+}
+
+func configuredLabel(channelID string) string {
+	if strings.TrimSpace(channelID) == "" {
+		return "not configured"
+	}
+	return "configured"
+}
+
+func boolLabel(value bool) string {
+	if value {
+		return "yes"
+	}
+	return "no"
+}
+
+func welcomeErrorClass(err error) string {
+	if err == nil {
+		return "none"
+	}
+	if restErr, ok := err.(*discordgo.RESTError); ok && restErr.Response != nil {
+		switch restErr.Response.StatusCode {
+		case http.StatusNotFound:
+			return "not_found"
+		case http.StatusForbidden:
+			return "missing_permission_50013"
+		case http.StatusTooManyRequests:
+			return "rate_limited"
+		}
+		if restErr.Response.StatusCode >= 500 {
+			return "discord_5xx"
+		}
+	}
+	return "unavailable"
+}
+
+func retryAfterFromError(err error) string {
+	if restErr, ok := err.(*discordgo.RESTError); ok && restErr.Response != nil {
+		if value := restErr.Response.Header.Get("Retry-After"); value != "" {
+			if seconds, parseErr := strconv.ParseFloat(value, 64); parseErr == nil {
+				return fmt.Sprintf("%gs", seconds)
+			}
+		}
+	}
+	return "unknown"
 }
 
 func colorFromValue(value string) *int {

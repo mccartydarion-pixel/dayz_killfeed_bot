@@ -16,6 +16,7 @@ type fakePersistenceStore struct {
 	kills      []repository.KillRecord
 	deaths     []repository.DeathRecord
 	players    map[string]int64
+	connects   []struct{ guildID, serverID, playerID int64 }
 	dupeOnKill bool
 	failKills  bool
 }
@@ -62,6 +63,17 @@ func (f *fakePersistenceStore) InsertDeath(ctx context.Context, d repository.Dea
 		}
 	}
 	f.deaths = append(f.deaths, d)
+	return nil
+}
+
+func (f *fakePersistenceStore) RecordConnect(ctx context.Context, guildID, serverID, playerID int64, at time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.connects = append(f.connects, struct{ guildID, serverID, playerID int64 }{guildID, serverID, playerID})
+	return nil
+}
+
+func (f *fakePersistenceStore) RecordDisconnect(context.Context, int64, int64, int64, time.Time) error {
 	return nil
 }
 
@@ -167,5 +179,25 @@ func TestPlayerUpsertTracksIdentity(t *testing.T) {
 
 	if len(store.players) != 1 {
 		t.Fatalf("expected 1 unique player by ID, got %d", len(store.players))
+	}
+}
+
+func TestPlayerConnectPersistsServerActivity(t *testing.T) {
+	store := newFakePersistenceStore()
+	pq := NewPersistenceQueueWithServerID(store, 11, 22, "service-22")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go pq.Run(ctx)
+
+	pq.Enqueue(&Event{Type: EventPlayerConnect, Player: &PlayerRef{ID: "p1", Name: "TCP"}})
+	pq.Close()
+
+	if len(store.connects) != 1 {
+		t.Fatalf("expected one persisted connect activity row, got %d", len(store.connects))
+	}
+	got := store.connects[0]
+	if got.guildID != 11 || got.serverID != 22 || got.playerID == 0 {
+		t.Fatalf("unexpected activity scope: %+v", got)
 	}
 }

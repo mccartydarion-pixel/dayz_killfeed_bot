@@ -27,3 +27,20 @@ func TestNewInitializesSession(t *testing.T) {
 		t.Fatal("empty token should be rejected")
 	}
 }
+
+func TestNewRequestsOnlyConfiguredMembersIntent(t *testing.T) {
+	without, err := New("test-token", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if without.GuildMembersIntentRequested() {
+		t.Fatal("members intent should not be requested when disabled")
+	}
+	with, err := New("test-token", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !with.GuildMembersIntentRequested() {
+		t.Fatal("members intent should be requested when enabled")
+	}
+}

@@ -14,6 +14,7 @@ var ErrPlayerNotFound = errors.New("player not found")
 var ErrAlreadyLinked = errors.New("account already linked")
 var ErrPlayerClaimed = errors.New("player already linked")
 var ErrPlaytimeRequired = errors.New("minimum observed playtime required")
+var ErrLinkCheckUnavailable = errors.New("link check unavailable")
 
 // PlayerCandidate is a known player returned by the repository.
 type PlayerCandidate struct {
@@ -81,12 +82,15 @@ func NewService(repo Repository, extras ...any) *LinkVerificationService {
 
 // Request creates a PENDING link after exact case-insensitive player resolution.
 func (s *LinkVerificationService) Request(ctx context.Context, guildID int64, discordUserID, username string) (*LinkRecord, error) {
+	if s == nil || s.repo == nil || s.activity == nil || s.serverID == nil {
+		return nil, ErrLinkCheckUnavailable
+	}
 	username = strings.TrimSpace(username)
 	if username == "" {
 		return nil, ErrPlayerNotFound
 	}
 	if existing, err := s.repo.GetByDiscord(ctx, guildID, discordUserID); err != nil {
-		return nil, err
+		return nil, ErrLinkCheckUnavailable
 	} else if existing != nil && existing.Status == StatusVerified {
 		return existing, ErrAlreadyLinked
 	} else if existing != nil && existing.Status == StatusPending && time.Now().Before(existing.ExpiresAt) {
@@ -95,27 +99,25 @@ func (s *LinkVerificationService) Request(ctx context.Context, guildID int64, di
 
 	candidates, err := s.repo.FindPlayers(ctx, guildID, username)
 	if err != nil {
-		return nil, err
+		return nil, ErrLinkCheckUnavailable
 	}
 	if len(candidates) != 1 {
 		return nil, ErrPlayerNotFound
 	}
 	candidate := candidates[0]
-	if s.activity != nil && s.serverID != nil {
-		serverID, serverErr := s.serverID.ConnectedServerID(ctx, guildID)
-		if serverErr != nil {
-			return nil, serverErr
-		}
-		playtime, activityErr := s.activity.GetObservedPlaytime(ctx, guildID, serverID, candidate.ID, time.Now())
-		if activityErr != nil {
-			return nil, ErrPlayerNotFound
-		}
-		if playtime < 5*time.Minute {
-			return nil, ErrPlaytimeRequired
-		}
+	serverID, serverErr := s.serverID.ConnectedServerID(ctx, guildID)
+	if serverErr != nil {
+		return nil, ErrLinkCheckUnavailable
+	}
+	playtime, activityErr := s.activity.GetObservedPlaytime(ctx, guildID, serverID, candidate.ID, time.Now())
+	if activityErr != nil {
+		return nil, ErrLinkCheckUnavailable
+	}
+	if playtime < 5*time.Minute {
+		return nil, ErrPlaytimeRequired
 	}
 	if claimed, err := s.repo.GetByPlayer(ctx, guildID, candidate.ID); err != nil {
-		return nil, err
+		return nil, ErrLinkCheckUnavailable
 	} else if claimed != nil && claimed.Status == StatusVerified {
 		return nil, ErrPlayerClaimed
 	}

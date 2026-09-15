@@ -38,12 +38,19 @@ func (c *Client) Start(ctx context.Context) error {
 	if err := c.session.Open(); err != nil {
 		return fmt.Errorf("open discord session: %w", err)
 	}
+	slog.Info("component=discord", "msg", "guild members intent requested in code", "requested", c.session.Identify.Intents&discordgo.IntentsGuildMembers != 0, "developer_portal_required", true)
 	username := ""
 	if c.session.State != nil && c.session.State.User != nil {
 		username = c.session.State.User.Username
 	}
 	slog.Info("component=discord", "msg", "connected", "user", username)
 	return nil
+}
+
+// GuildMembersIntentRequested reports whether the session requests the
+// privileged intent required for GuildMemberAdd delivery.
+func (c *Client) GuildMembersIntentRequested() bool {
+	return c != nil && c.session != nil && c.session.Identify.Intents&discordgo.IntentsGuildMembers != 0
 }
 
 // BotUsername returns the connected bot's username, or an empty string.

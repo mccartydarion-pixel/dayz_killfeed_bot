@@ -31,6 +31,29 @@ func WelcomeEmbed(member *discordgo.Member) *discordgo.MessageEmbed {
 	}
 }
 
+func welcomeEmbedFromConfig(cfg repository.WelcomeConfig, member *discordgo.Member, test bool) *discordgo.MessageEmbed {
+	embed := WelcomeEmbed(member)
+	if cfg.TitleText != "" {
+		embed.Title = cfg.TitleText
+	}
+	if test {
+		embed.Title = "[TEST WELCOME] " + embed.Title
+	}
+	if cfg.FooterText != "" {
+		embed.Footer = &discordgo.MessageEmbedFooter{Text: cfg.FooterText}
+	}
+	if cfg.Color != nil {
+		embed.Color = *cfg.Color
+	}
+	if cfg.ImageURL != "" {
+		embed.Image = &discordgo.MessageEmbedImage{URL: cfg.ImageURL}
+	}
+	if cfg.ThumbnailURL != "" {
+		embed.Thumbnail = &discordgo.MessageEmbedThumbnail{URL: cfg.ThumbnailURL}
+	}
+	return embed
+}
+
 // WelcomeHandler handles GuildMemberAdd without affecting the ADM pipeline.
 type WelcomeHandler struct {
 	store  SetupStore
@@ -59,8 +82,7 @@ func (h *WelcomeHandler) HandleMemberJoin(s *discordgo.Session, event *discordgo
 	mention := true
 	welcomeBots := false
 	messageText := ""
-	titleText := ""
-	footerText := ""
+	welcomeCfg := repository.WelcomeConfig{MentionUser: true}
 	var guildRowID int64
 	if h.repo != nil && h.guilds != nil {
 		_, rowID, guildErr := h.guilds.GetGuild(context.Background(), event.GuildID)
@@ -73,8 +95,7 @@ func (h *WelcomeHandler) HandleMemberJoin(s *discordgo.Session, event *discordgo
 				mention = cfg.MentionUser
 				welcomeBots = cfg.WelcomeBots
 				messageText = cfg.MessageText
-				titleText = cfg.TitleText
-				footerText = cfg.FooterText
+				welcomeCfg = *cfg
 				guildRowID = rowID
 			}
 		}
@@ -88,15 +109,24 @@ func (h *WelcomeHandler) HandleMemberJoin(s *discordgo.Session, event *discordgo
 	if event.Member.User.Bot && !welcomeBots {
 		return
 	}
-	embed := WelcomeEmbed(event.Member)
-	if titleText != "" {
-		embed.Title = titleText
+	channelStatus := inspectWelcomeChannel(s, channelID)
+	if !channelStatus.exists || !channelStatus.view || !channelStatus.send || !channelStatus.embed {
+		slog.Warn("component=discord", "msg", "welcome send skipped: channel or permission check failed", "guild_id", event.GuildID, "error_class", channelStatus.errClass)
+		return
 	}
-	if footerText != "" {
-		embed.Footer.Text = footerText
-	}
+	embed := welcomeEmbedFromConfig(welcomeCfg, event.Member, false)
 	if messageText != "" {
-		if rendered, renderErr := welcomeservice.Render(messageText, map[string]string{"user": "<@" + event.Member.User.ID + ">", "username": event.Member.User.Username, "server": "Champion", "member_count": "", "link_command": "/link"}); renderErr == nil {
+		serverName := "Champion"
+		memberCount := ""
+		if s != nil {
+			if guild, guildErr := s.Guild(event.GuildID); guildErr == nil && guild != nil {
+				serverName = guild.Name
+				if welcomeCfg.ShowMemberCount {
+					memberCount = fmt.Sprintf("%d", guild.MemberCount)
+				}
+			}
+		}
+		if rendered, renderErr := welcomeservice.Render(messageText, map[string]string{"user": "<@" + event.Member.User.ID + ">", "username": event.Member.User.Username, "server": serverName, "member_count": memberCount, "link_command": "/link"}); renderErr == nil {
 			embed.Description = rendered
 		}
 	}
@@ -113,7 +143,7 @@ func (h *WelcomeHandler) HandleMemberJoin(s *discordgo.Session, event *discordgo
 		},
 	})
 	if err != nil {
-		slog.Warn("component=discord", "msg", "welcome message failed", "err", err.Error())
+		slog.Warn("component=discord", "msg", "welcome message failed", "error_class", welcomeErrorClass(err), "retry_after", retryAfterFromError(err), "err", err.Error())
 		return
 	}
 	slog.Info("component=discord", "msg", "welcome message sent", "guild_id", event.GuildID)

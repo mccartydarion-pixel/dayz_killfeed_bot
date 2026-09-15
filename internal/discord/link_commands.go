@@ -63,6 +63,8 @@ func (h *LinkCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interacti
 		link, err := h.service.Request(context.Background(), guildID, i.Member.User.ID, username)
 		if err != nil {
 			switch {
+			case errors.Is(err, linking.ErrLinkCheckUnavailable):
+				respondEphemeral(s, i, "⚠️ **LINK CHECK UNAVAILABLE**\nChampion is currently unable to verify server activity. Please try again shortly.")
 			case errors.Is(err, linking.ErrPlayerNotFound):
 				respondEphemeral(s, i, "❌ **PLAYER NOT FOUND**\nChampion has not seen that PlayStation username on the DayZ server yet.")
 			case errors.Is(err, linking.ErrPlaytimeRequired):
