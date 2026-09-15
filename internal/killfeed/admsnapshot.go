@@ -7,34 +7,40 @@ import "time"
 type AdmHealth string
 
 const (
-	AdmHealthy   AdmHealth = "HEALTHY"
-	AdmIdle      AdmHealth = "IDLE"
-	AdmStale     AdmHealth = "STALE"
-	AdmSwitching AdmHealth = "SWITCHING"
-	AdmError     AdmHealth = "ERROR"
+	AdmHealthy         AdmHealth = "HEALTHY"
+	AdmIdle            AdmHealth = "IDLE"
+	AdmStale           AdmHealth = "STALE"
+	AdmSelectionStale  AdmHealth = "SELECTION_STALE"
+	AdmDiscoveryFailed AdmHealth = "DISCOVERY_FAILED"
+	AdmSwitching       AdmHealth = "SWITCHING"
+	AdmError           AdmHealth = "ERROR"
 )
 
 // AdmSnapshot is a sanitized, point-in-time view of one Engine's ADM state for
 // the private admin monitor. It never includes raw ADM lines, player IDs, or
 // private filesystem paths (CurrentFile/PreviousFile are basenames only).
 type AdmSnapshot struct {
-	State              EngineState
-	CurrentFile        string
-	PreviousFile       string
-	FileSize           int64
-	Modified           time.Time
-	LastPoll           time.Time
-	LastLogChange      time.Time
-	LastRotationAt     time.Time
-	PollInterval       time.Duration
-	BytesProcessed     int64
-	ProcessedOffset    int64
-	PendingPartialLine string
-	LastDownload       time.Time
-	APIFailures        int
-	OnlineCount        int
-	LastConnectAt      time.Time
-	LastDisconnectAt   time.Time
+	State                    EngineState
+	CurrentFile              string
+	PreviousFile             string
+	FileSize                 int64
+	Modified                 time.Time
+	LastPoll                 time.Time
+	LastLogChange            time.Time
+	LastRotationAt           time.Time
+	PollInterval             time.Duration
+	BytesProcessed           int64
+	ProcessedOffset          int64
+	PendingPartialLine       string
+	LastDownload             time.Time
+	APIFailures              int
+	OnlineCount              int
+	LastConnectAt            time.Time
+	LastDisconnectAt         time.Time
+	NewestDiscoveredFile     string
+	NewestDiscoveredModified time.Time
+	CandidateCount           int
+	SelectionReason          string
 }
 
 // AdmSnapshot returns a sanitized snapshot of this engine's current ADM and
@@ -44,17 +50,21 @@ func (e *Engine) AdmSnapshot() AdmSnapshot {
 		return AdmSnapshot{}
 	}
 	snap := AdmSnapshot{
-		State:            e.state,
-		PreviousFile:     e.previousFileName,
-		LastPoll:         e.lastPoll,
-		LastLogChange:    e.lastLogChange,
-		LastRotationAt:   e.lastRotationAt,
-		PollInterval:     e.pollInterval,
-		BytesProcessed:   e.bytesProcessed,
-		LastDownload:     e.lastDownloadAt,
-		APIFailures:      e.apiFailures,
-		LastConnectAt:    e.lastConnectAt,
-		LastDisconnectAt: e.lastDisconnectAt,
+		State:                    e.state,
+		PreviousFile:             e.previousFileName,
+		LastPoll:                 e.lastPoll,
+		LastLogChange:            e.lastLogChange,
+		LastRotationAt:           e.lastRotationAt,
+		PollInterval:             e.pollInterval,
+		BytesProcessed:           e.bytesProcessed,
+		LastDownload:             e.lastDownloadAt,
+		APIFailures:              e.apiFailures,
+		LastConnectAt:            e.lastConnectAt,
+		LastDisconnectAt:         e.lastDisconnectAt,
+		NewestDiscoveredFile:     e.newestDiscoveredFile,
+		NewestDiscoveredModified: e.newestDiscoveredModified,
+		CandidateCount:           e.candidateCount,
+		SelectionReason:          e.selectionReason,
 	}
 	if e.selected != nil {
 		snap.CurrentFile = e.selected.Name
@@ -80,6 +90,9 @@ func (s AdmSnapshot) Health(now time.Time, staleAfter time.Duration) AdmHealth {
 	}
 	if s.LastLogChange.IsZero() {
 		return AdmIdle
+	}
+	if s.NewestDiscoveredFile != "" && s.CurrentFile != s.NewestDiscoveredFile {
+		return AdmSelectionStale
 	}
 	if staleAfter > 0 && now.Sub(s.LastLogChange) > staleAfter {
 		return AdmStale

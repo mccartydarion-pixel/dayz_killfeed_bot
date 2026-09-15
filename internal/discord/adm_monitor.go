@@ -156,6 +156,9 @@ func BuildADMMonitorEmbed(snapshot killfeed.AdmSnapshot, now time.Time) *discord
 	if health == killfeed.AdmStale || health == killfeed.AdmSwitching {
 		color = presentation.WarningAmber
 	}
+	if health == killfeed.AdmSelectionStale {
+		color = presentation.ErrorRed
+	}
 	if health == killfeed.AdmError {
 		color = presentation.ErrorRed
 	}
@@ -167,6 +170,15 @@ func BuildADMMonitorEmbed(snapshot killfeed.AdmSnapshot, now time.Time) *discord
 		}
 	}
 	add("CURRENT ADM", safeMonitorText(snapshot.CurrentFile))
+	add("NEWEST DISCOVERED ADM", safeMonitorText(snapshot.NewestDiscoveredFile))
+	if !snapshot.NewestDiscoveredModified.IsZero() {
+		add("NEWEST MODIFIED", fmt.Sprintf("<t:%d:R>", snapshot.NewestDiscoveredModified.Unix()))
+	}
+	add("CANDIDATE COUNT", fmt.Sprintf("%d", snapshot.CandidateCount))
+	add("SELECTION REASON", snapshot.SelectionReason)
+	if snapshot.NewestDiscoveredFile != "" && snapshot.CurrentFile != snapshot.NewestDiscoveredFile {
+		add("SELECTION MATCH", "NO")
+	}
 	if !snapshot.Modified.IsZero() {
 		add("REMOTE MODIFIED", fmt.Sprintf("<t:%d:R>", snapshot.Modified.Unix()))
 	}

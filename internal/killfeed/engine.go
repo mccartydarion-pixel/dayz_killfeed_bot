@@ -144,18 +144,22 @@ type Engine struct {
 	players   *PlayerTracker
 	onPlayers func(count int) // optional hook when the online player set changes
 
-	previousFileName       string
-	lastRotationAt         time.Time
-	lastConnectAt          time.Time
-	lastDisconnectAt       time.Time
-	lastPresenceEvent      string
-	lastPersistenceResult  string
-	lastVoicePublishCount  int
-	lastVoicePublishAt     time.Time
-	lastVoicePublishResult string
-	presenceMu             sync.RWMutex
-	lastDownloadAt         time.Time
-	rotationPending        bool
+	previousFileName         string
+	lastRotationAt           time.Time
+	lastConnectAt            time.Time
+	lastDisconnectAt         time.Time
+	lastPresenceEvent        string
+	lastPersistenceResult    string
+	lastVoicePublishCount    int
+	lastVoicePublishAt       time.Time
+	lastVoicePublishResult   string
+	presenceMu               sync.RWMutex
+	lastDownloadAt           time.Time
+	rotationPending          bool
+	newestDiscoveredFile     string
+	newestDiscoveredModified time.Time
+	candidateCount           int
+	selectionReason          string
 
 	// onAdmSnapshot fires once per poll cycle from this engine's own goroutine
 	// (never concurrently), so the ADM monitor can read a consistent snapshot
@@ -442,6 +446,7 @@ func (e *Engine) discoverOnce(ctx context.Context) error {
 		e.reportPoll()
 		return nil
 	}
+	e.recordCandidates(logs)
 	// Discovery produced real candidates; clear the backoff counter.
 	e.discoverFails = 0
 
@@ -451,9 +456,37 @@ func (e *Engine) discoverOnce(ctx context.Context) error {
 	// real gameplay events is a valid source. ListLogs returns newest-first, so the
 	// first candidate with meaningful size wins; fall back to logs[0] if all are tiny.
 	candidate := selectBestCandidate(logs)
+	e.selectionReason = "newest_remote_modified"
+	if len(logs) > 1 && logs[0].Modified.Equal(logs[1].Modified) {
+		e.selectionReason = "newest_filename_timestamp"
+	}
+	slog.Info("component=adm_discovery", "event", "selection_decision", "selected", candidate.Name, "reason", e.selectionReason)
 	e.selectLog(candidate)
 	e.reportPoll()
 	return nil
+}
+
+func (e *Engine) recordCandidates(logs []nitrado.LogFile) {
+	e.candidateCount = len(logs)
+	if len(logs) == 0 {
+		return
+	}
+	e.newestDiscoveredFile = logs[0].Name
+	e.newestDiscoveredModified = logs[0].Modified
+	for _, candidate := range logs {
+		slog.Info("component=adm_discovery", "event", "candidate", "file", candidate.Name, "modified_at", candidate.Modified.UTC().Format(time.RFC3339), "size", candidate.Size, "filename_timestamp", filenameTimestamp(candidate.Name))
+	}
+}
+
+func filenameTimestamp(name string) string {
+	for _, layout := range []string{"2006-01-02_15-04-05", "2006-01-02_15-04"} {
+		for start := 0; start+len(layout) <= len(name); start++ {
+			if parsed, err := time.ParseInLocation(layout, name[start:start+len(layout)], time.UTC); err == nil {
+				return parsed.Format(time.RFC3339)
+			}
+		}
+	}
+	return ""
 }
 
 // selectBestCandidate picks the current gameplay log: the newest-modified ADM.
@@ -557,6 +590,11 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 	}
 
 	e.lastPoll = time.Now()
+	if !e.lastLogChange.IsZero() && time.Since(e.lastLogChange) > 5*time.Minute {
+		slog.Warn("component=adm", "event", "selected_stale", "file", e.selected.Name)
+		e.state = StateDiscovery
+		return e.discoverOnce(ctx)
+	}
 
 	// Periodically check for a newer ADM file (post-restart) on a slow cadence,
 	// separate from the per-2s selected-file poll.
