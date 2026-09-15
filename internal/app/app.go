@@ -86,6 +86,7 @@ type App struct {
 	publicCounterServerID int64
 	presenceMu            sync.Mutex
 	presenceTrackers      map[int64]*killfeed.PlayerTracker
+	presenceEngines       map[int64]*killfeed.Engine
 	cancel                context.CancelFunc
 }
 
@@ -100,12 +101,44 @@ func (a *App) registerPresenceTracker(serverID int64, tracker *killfeed.PlayerTr
 	a.presenceMu.Unlock()
 }
 
+func (a *App) registerPresenceEngine(serverID int64, engine *killfeed.Engine) {
+	a.presenceMu.Lock()
+	if a.presenceEngines == nil {
+		a.presenceEngines = make(map[int64]*killfeed.Engine)
+	}
+	a.presenceEngines[serverID] = engine
+	a.presenceMu.Unlock()
+}
+
 // unregisterPresenceTracker removes a worker's tracker once it stops, so
 // diagnostics never read a stale reference for a server that is no longer live.
 func (a *App) unregisterPresenceTracker(serverID int64) {
 	a.presenceMu.Lock()
 	delete(a.presenceTrackers, serverID)
+	delete(a.presenceEngines, serverID)
 	a.presenceMu.Unlock()
+}
+
+func (a *App) livePresenceSnapshot(serverID int64) (killfeed.PresenceSnapshot, bool) {
+	a.presenceMu.Lock()
+	engine, ok := a.presenceEngines[serverID]
+	a.presenceMu.Unlock()
+	if !ok || engine == nil {
+		return killfeed.PresenceSnapshot{}, false
+	}
+	return engine.PresenceSnapshot(), true
+}
+
+func (a *App) recordPublicVoicePublish(count int, result string) {
+	a.counterOwnerMu.RLock()
+	serverID := a.publicCounterServerID
+	a.counterOwnerMu.RUnlock()
+	a.presenceMu.Lock()
+	engine := a.presenceEngines[serverID]
+	a.presenceMu.Unlock()
+	if engine != nil {
+		engine.RecordVoicePublish(count, result)
+	}
 }
 
 // livePresenceCount returns the exact running worker's online count for a
@@ -173,6 +206,13 @@ func (a *App) ownsPublicCounter(serverID int64) bool {
 	a.counterOwnerMu.RLock()
 	defer a.counterOwnerMu.RUnlock()
 	return a.publicCounterServerID == serverID
+}
+
+func diagnosticTime(value time.Time) string {
+	if value.IsZero() {
+		return "NEVER OBSERVED"
+	}
+	return value.UTC().Format(time.RFC3339)
 }
 
 func selectPublicCounterServer(selectedID int64, active []repository.GameServer) (int64, bool) {
@@ -778,10 +818,43 @@ func (a *App) Run() error {
 	// debounced count changes. Shared across servers (one voice channel per guild
 	// today; per-server counters are a known gap, see Section 1 report). ---
 	onlineCounter := discord.NewVoiceChannelCounter(api, "")
+	onlineCounter.OnPublish(func(count int, result string) { a.recordPublicVoicePublish(count, result) })
 	if cfg := setupStore; cfg != nil {
 		if gs, err := cfg.Get(a.Config.DiscordGuildID); err == nil && gs != nil && gs.OnlinePlayersChannelID != "" {
 			onlineCounter.SetChannelID(gs.OnlinePlayersChannelID)
 		}
+	}
+	if a.AdminService != nil {
+		a.AdminService.SetPresenceDiagnostics(func(diagCtx context.Context) map[string]any {
+			out := map[string]any{"selected_server_id_resolved": false, "selected_server_worker_found": false, "classification": "UNKNOWN"}
+			guild, _, err := a.Guilds.GetGuild(diagCtx, a.Config.DiscordGuildID)
+			if err != nil || guild == nil || guild.SelectedPublicServerID == 0 {
+				return out
+			}
+			selectedID := guild.SelectedPublicServerID
+			out["selected_server_id"] = selectedID
+			out["selected_server_id_resolved"] = true
+			snapshot, found := a.livePresenceSnapshot(selectedID)
+			out["selected_server_worker_found"] = found
+			if !found {
+				out["classification"] = "WRONG_SERVER_WORKER_SELECTED"
+				return out
+			}
+			out["tracker_count"] = snapshot.OnlineCount
+			out["tracked_entries"] = snapshot.TrackedEntries
+			out["last_presence_event"] = snapshot.LastEventType
+			out["last_connect_at"] = diagnosticTime(snapshot.LastConnectAt)
+			out["last_disconnect_at"] = diagnosticTime(snapshot.LastDisconnectAt)
+			out["last_persistence_result"] = snapshot.LastPersistenceResult
+			out["last_voice_publish_count"] = snapshot.LastVoicePublishCount
+			out["last_voice_publish_result"] = snapshot.LastVoicePublishResult
+			out["discord_voice_counter"] = onlineCounter.LastPublished()
+			if channel, channelErr := api.Channel(onlineCounter.ChannelID()); channelErr == nil && channel != nil {
+				out["discord_voice_channel"] = channel.Name
+			}
+			out["classification"] = classifyPresence(snapshot, onlineCounter.LastPublished(), true, true)
+			return out
+		})
 	}
 
 	// --- Multi-server ADM runtime ---
@@ -941,6 +1014,7 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 	bindOnlineCounter(setupStore, a.Config.DiscordGuildID, onlineCounter)
 	engine := killfeed.NewEngine(client, row.ProviderServiceID, killfeed.NewADMParser())
 	engine.SetStateSink(a.State)
+	a.registerPresenceEngine(row.ID, engine)
 	if a.Checkpoints != nil {
 		engine.SetDurableCheckpoint(&admCheckpointStoreAdapter{repo: a.Checkpoints}, row.GuildID, row.ID)
 	}

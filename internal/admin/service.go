@@ -12,12 +12,13 @@ import (
 var errLeaderboardRefreshUnavailable = errors.New("leaderboard refresh is not available")
 
 type Service struct {
-	state              *server.State
-	registry           *health.Registry
-	workers            *health.WorkerRegistry
-	linkDiagnostics    func(context.Context) map[string]any
-	leaderboardRefresh func(context.Context) error
-	started            time.Time
+	state               *server.State
+	registry            *health.Registry
+	workers             *health.WorkerRegistry
+	linkDiagnostics     func(context.Context) map[string]any
+	presenceDiagnostics func(context.Context) map[string]any
+	leaderboardRefresh  func(context.Context) error
+	started             time.Time
 }
 
 func NewService(state *server.State, registry *health.Registry) *Service {
@@ -25,7 +26,10 @@ func NewService(state *server.State, registry *health.Registry) *Service {
 }
 func (s *Service) SetWorkers(w *health.WorkerRegistry)                        { s.workers = w }
 func (s *Service) SetLinkDiagnostics(fn func(context.Context) map[string]any) { s.linkDiagnostics = fn }
-func (s *Service) SetLeaderboardRefresh(fn func(context.Context) error)       { s.leaderboardRefresh = fn }
+func (s *Service) SetPresenceDiagnostics(fn func(context.Context) map[string]any) {
+	s.presenceDiagnostics = fn
+}
+func (s *Service) SetLeaderboardRefresh(fn func(context.Context) error) { s.leaderboardRefresh = fn }
 
 // RefreshLeaderboard triggers an immediate manual leaderboard refresh, reusing
 // the same scheduler used for the automatic 3-hour refresh.
@@ -48,6 +52,9 @@ func (s *Service) Status(ctx context.Context) map[string]any {
 	}
 	if s.linkDiagnostics != nil {
 		out["link_diagnostics"] = s.linkDiagnostics(ctx)
+	}
+	if s.presenceDiagnostics != nil {
+		out["presence_diagnostics"] = s.presenceDiagnostics(ctx)
 	}
 	return out
 }

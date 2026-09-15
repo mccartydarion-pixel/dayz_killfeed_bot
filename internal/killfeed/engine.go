@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yourname/dayz-killfeed/internal/nitrado"
@@ -92,6 +93,19 @@ type Metrics struct {
 	LastKillTime           time.Time
 }
 
+type PresenceSnapshot struct {
+	ServerID               int64
+	OnlineCount            int
+	TrackedEntries         int
+	LastEventType          string
+	LastConnectAt          time.Time
+	LastDisconnectAt       time.Time
+	LastPersistenceResult  string
+	LastVoicePublishCount  int
+	LastVoicePublishAt     time.Time
+	LastVoicePublishResult string
+}
+
 // KillPublisher is the consumer for authoritative PLAYER_KILL events.
 // Implementations must not propagate errors that would stop log processing.
 type KillPublisher interface {
@@ -130,12 +144,18 @@ type Engine struct {
 	players   *PlayerTracker
 	onPlayers func(count int) // optional hook when the online player set changes
 
-	previousFileName string
-	lastRotationAt   time.Time
-	lastConnectAt    time.Time
-	lastDisconnectAt time.Time
-	lastDownloadAt   time.Time
-	rotationPending  bool
+	previousFileName       string
+	lastRotationAt         time.Time
+	lastConnectAt          time.Time
+	lastDisconnectAt       time.Time
+	lastPresenceEvent      string
+	lastPersistenceResult  string
+	lastVoicePublishCount  int
+	lastVoicePublishAt     time.Time
+	lastVoicePublishResult string
+	presenceMu             sync.RWMutex
+	lastDownloadAt         time.Time
+	rotationPending        bool
 
 	// onAdmSnapshot fires once per poll cycle from this engine's own goroutine
 	// (never concurrently), so the ADM monitor can read a consistent snapshot
@@ -257,6 +277,31 @@ func (e *Engine) OnPlayersChanged(fn func(count int)) {
 		return
 	}
 	e.onPlayers = fn
+}
+
+func (e *Engine) RecordVoicePublish(count int, result string) {
+	if e == nil {
+		return
+	}
+	e.presenceMu.Lock()
+	e.lastVoicePublishCount = count
+	e.lastVoicePublishAt = time.Now()
+	e.lastVoicePublishResult = result
+	e.presenceMu.Unlock()
+}
+
+func (e *Engine) PresenceSnapshot() PresenceSnapshot {
+	if e == nil {
+		return PresenceSnapshot{}
+	}
+	e.presenceMu.RLock()
+	snapshot := PresenceSnapshot{ServerID: e.serverID, LastEventType: e.lastPresenceEvent, LastConnectAt: e.lastConnectAt, LastDisconnectAt: e.lastDisconnectAt, LastPersistenceResult: e.lastPersistenceResult, LastVoicePublishCount: e.lastVoicePublishCount, LastVoicePublishAt: e.lastVoicePublishAt, LastVoicePublishResult: e.lastVoicePublishResult}
+	e.presenceMu.RUnlock()
+	if e.players != nil {
+		snapshot.OnlineCount = e.players.OnlineCount()
+		snapshot.TrackedEntries = len(e.players.GetOnlinePlayers())
+	}
+	return snapshot
 }
 
 // OnAdmSnapshot registers a hook fired once per poll cycle with a sanitized
@@ -722,6 +767,9 @@ func (e *Engine) processLine(line string) (bool, error) {
 		return false, nil
 	}
 	e.metrics.EventsParsed++
+	if ev.Type == EventPlayerDisconnect {
+		slog.Info("component=presence", "event", "disconnect_parsed", "matched", true)
+	}
 	switch ev.Type {
 	case EventPlayerHit:
 		e.metrics.HitsParsed++
@@ -743,8 +791,14 @@ func (e *Engine) processLine(line string) (bool, error) {
 	}
 	if e.persistence != nil && (ev.Type == EventPlayerConnect || ev.Type == EventPlayerDisconnect || ev.Type == EventPlayerDeath || ev.Type == EventSuicideAction || ev.Type == EventPlayerKill) {
 		if err := e.persistence.EnqueueAndWait(context.Background(), ev); err != nil {
+			e.presenceMu.Lock()
+			e.lastPersistenceResult = "FAILURE"
+			e.presenceMu.Unlock()
 			return true, err
 		}
+		e.presenceMu.Lock()
+		e.lastPersistenceResult = "SUCCESS"
+		e.presenceMu.Unlock()
 	} else if ev.Type == EventPlayerKill && e.publisher != nil {
 		if err := e.publisher.PublishKill(ev); err != nil {
 			e.metrics.DiscordPublishErrors++
@@ -758,12 +812,20 @@ func (e *Engine) processLine(line string) (bool, error) {
 		switch ev.Type {
 		case EventPlayerConnect:
 			if e.players.PlayerConnected(ev.Player) {
+				e.presenceMu.Lock()
+				e.lastPresenceEvent = "PLAYER_CONNECT"
 				e.lastConnectAt = time.Now()
+				e.presenceMu.Unlock()
+				slog.Info("component=presence", "event", "connect_committed", "server_id", e.serverID, "online_count", e.players.OnlineCount())
 				e.firePlayersChanged()
 			}
 		case EventPlayerDisconnect:
 			if e.players.PlayerDisconnected(ev.Player) {
+				e.presenceMu.Lock()
+				e.lastPresenceEvent = "PLAYER_DISCONNECT"
 				e.lastDisconnectAt = time.Now()
+				e.presenceMu.Unlock()
+				slog.Info("component=presence", "event", "disconnect_committed", "server_id", e.serverID, "online_count", e.players.OnlineCount())
 				e.firePlayersChanged()
 			}
 		}

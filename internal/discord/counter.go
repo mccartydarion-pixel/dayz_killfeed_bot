@@ -31,15 +31,18 @@ type VoiceChannelCounter struct {
 	namer     VoiceChannelNamer
 	channelID string
 
-	mu            sync.Mutex
-	lastPublished int // last count reflected in the channel name
-	pending       int // latest known count awaiting publish
-	dirty         bool
-	timer         *time.Timer
-	debounce      time.Duration
-	blocked       bool      // 403/permission: stop retrying until repair
-	retryAfter    time.Time // Discord 429: do not retry before this
-	updateErrors  int
+	mu                sync.Mutex
+	lastPublished     int // last count reflected in the channel name
+	pending           int // latest known count awaiting publish
+	dirty             bool
+	timer             *time.Timer
+	debounce          time.Duration
+	blocked           bool      // 403/permission: stop retrying until repair
+	retryAfter        time.Time // Discord 429: do not retry before this
+	updateErrors      int
+	lastPublishedAt   time.Time
+	lastPublishResult string
+	onPublish         func(count int, result string)
 }
 
 // NewVoiceChannelCounter creates a counter bound to a voice channel ID.
@@ -99,6 +102,33 @@ func (c *VoiceChannelCounter) LastPublished() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.lastPublished
+}
+
+func (c *VoiceChannelCounter) LastPublishedAt() time.Time {
+	if c == nil {
+		return time.Time{}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lastPublishedAt
+}
+
+func (c *VoiceChannelCounter) LastPublishResult() string {
+	if c == nil {
+		return ""
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lastPublishResult
+}
+
+func (c *VoiceChannelCounter) OnPublish(fn func(int, string)) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.onPublish = fn
+	c.mu.Unlock()
 }
 
 // Publish schedules a debounced rename to the given count. If the count matches
@@ -162,11 +192,23 @@ func (c *VoiceChannelCounter) flush() {
 	defer c.mu.Unlock()
 	if err == nil {
 		c.lastPublished = count
+		c.lastPublishedAt = time.Now()
+		c.lastPublishResult = "SUCCESS"
+		callback := c.onPublish
+		if callback != nil {
+			go callback(count, "SUCCESS")
+		}
+		slog.Info("component=presence", "event", "voice_counter_publish", "count", count, "result", "success")
 		slog.Debug("component=discord", "msg", "online counter renamed", "count", count)
 		return
 	}
 
 	c.updateErrors++
+	c.lastPublishResult = "FAILURE"
+	callback := c.onPublish
+	if callback != nil {
+		go callback(count, "FAILURE")
+	}
 	handleRenameError(err, c)
 }
 

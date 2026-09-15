@@ -126,3 +126,17 @@ func TestPresenceOnPlayersChangedFiresOnlyOnRealChange(t *testing.T) {
 		t.Fatalf("expected exactly 2 total change notifications, got %d", updates)
 	}
 }
+
+func TestPresenceSnapshotReportsCommittedLifecycle(t *testing.T) {
+	e := newPresenceEngine()
+	e.processLines([]string{`16:16:10 | Player "TCP" (id=a001) is connected`})
+	snapshot := e.PresenceSnapshot()
+	if snapshot.OnlineCount != 1 || snapshot.TrackedEntries != 1 || snapshot.LastEventType != "PLAYER_CONNECT" {
+		t.Fatalf("unexpected connect snapshot: %+v", snapshot)
+	}
+	e.processLines([]string{`16:20:00 | Player "TCP" (id=a001) has been disconnected`})
+	snapshot = e.PresenceSnapshot()
+	if snapshot.OnlineCount != 0 || snapshot.TrackedEntries != 0 || snapshot.LastEventType != "PLAYER_DISCONNECT" {
+		t.Fatalf("unexpected disconnect snapshot: %+v", snapshot)
+	}
+}
