@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 	welcomeservice "github.com/yourname/dayz-killfeed/internal/welcome"
 )
@@ -19,16 +20,13 @@ func WelcomeEmbed(member *discordgo.Member) *discordgo.MessageEmbed {
 		name = member.User.Username
 		userID = member.User.ID
 	}
-	return &discordgo.MessageEmbed{
-		Title:       "🏆 WELCOME TO CHAMPION",
-		Description: fmt.Sprintf("Welcome <@%s>, %s.\n\nYour combat record starts here.", userID, name),
-		Color:       ColorChampionGold,
-		Fields: []*discordgo.MessageEmbedField{
-			{Name: "🎮 LINK YOUR PLAYSTATION", Value: "Connect your Discord account to your DayZ/PlayStation username:\n`/link username:<PlayStationName>`\n\nOnce linked, Champion can associate your verified DayZ combat stats with your Discord profile.", Inline: false},
-			{Name: "⚔️ Track Your Combat", Value: "💀 Kills & Deaths\n🎯 Longest Kill\n📊 Leaderboards\n👑 Records", Inline: false},
-		},
-		Footer: &discordgo.MessageEmbedFooter{Text: "CHAMPION KILLFEED • EVERY KILL TELLS A STORY"},
+	embed := presentation.NewChampionEmbed("WELCOME TO CHAMPIONS", presentation.ChampionGold)
+	embed.Description = fmt.Sprintf("Welcome <@%s>, %s.\n\nYou are now connected to the Champions competitive community.", userID, name)
+	embed.Fields = []*discordgo.MessageEmbedField{
+		presentation.StatusField("GET STARTED", "Link your PlayStation username\nView player stats\nCheck leaderboards\nFollow active wars and events", false),
+		presentation.StatusField("NEXT STEP", "Use #link-username to connect your account.", false),
 	}
+	return embed
 }
 
 func welcomeEmbedFromConfig(cfg repository.WelcomeConfig, member *discordgo.Member, test bool) *discordgo.MessageEmbed {

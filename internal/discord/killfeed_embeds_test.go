@@ -27,7 +27,7 @@ func TestBuildKillEmbedStandard(t *testing.T) {
 	ev := killEv("MmeyAFK_7", "Ceiyxe", "SCR 17", 62.2, "Torso")
 	embed := BuildKillEmbed(ev)
 
-	if embed.Title != "🏆 CHAMPION KILLFEED" {
+	if embed.Title != "CHAMPION KILLFEED\nKILL REPORT" {
 		t.Fatalf("expected standard title, got %q", embed.Title)
 	}
 	if embed.Color != ColorChampionGold {
@@ -39,7 +39,7 @@ func TestBuildKillEmbedStandard(t *testing.T) {
 	if embed.Footer == nil || embed.Footer.Text == "" {
 		t.Fatal("expected a footer")
 	}
-	if embed.Author == nil || embed.Author.Name != "🏆 CHAMPION KILLFEED" {
+	if embed.Author == nil || embed.Author.Name != "CHAMPION KILLFEED" {
 		t.Fatal("expected Champion author branding")
 	}
 }
@@ -47,7 +47,7 @@ func TestBuildKillEmbedStandard(t *testing.T) {
 func TestBuildKillEmbedHeadshot(t *testing.T) {
 	ev := killEv("V", "K", "M4-A1", 87.4, "Head")
 	embed := BuildKillEmbed(ev)
-	if embed.Title != "🎯 CHAMPION • HEADSHOT" {
+	if embed.Title != "CHAMPION KILLFEED\nHEADSHOT" {
 		t.Fatalf("expected headshot title, got %q", embed.Title)
 	}
 	if embed.Color != ColorHeadshotRed {
@@ -61,7 +61,7 @@ func TestBuildKillEmbedHeadshot(t *testing.T) {
 func TestBuildKillEmbedLongRange(t *testing.T) {
 	ev := killEv("V", "K", "SCR 17", 147.6, "Torso")
 	embed := BuildKillEmbed(ev)
-	if embed.Title != "🎯 CHAMPION • LONG SHOT" {
+	if embed.Title != "CHAMPION KILLFEED\nLONG RANGE" {
 		t.Fatalf("expected long range title, got %q", embed.Title)
 	}
 	if embed.Color != ColorLongRange {
@@ -72,7 +72,7 @@ func TestBuildKillEmbedLongRange(t *testing.T) {
 func TestBuildKillEmbedExtremeRange(t *testing.T) {
 	ev := killEv("V", "K", "SCR 17", 324.8, "Torso")
 	embed := BuildKillEmbed(ev)
-	if embed.Title != "👑 CHAMPION • EXTREME RANGE" {
+	if embed.Title != "CHAMPION KILLFEED\nEXTREME RANGE" {
 		t.Fatalf("expected extreme range title, got %q", embed.Title)
 	}
 	if embed.Color != ColorExtremeRange {
@@ -83,7 +83,7 @@ func TestBuildKillEmbedExtremeRange(t *testing.T) {
 func TestBuildKillEmbedCloseRange(t *testing.T) {
 	ev := killEv("V", "K", "AKM", 4.2, "Torso")
 	embed := BuildKillEmbed(ev)
-	if embed.Title != "🔥 CHAMPION • CLOSE QUARTERS" {
+	if embed.Title != "CHAMPION KILLFEED\nCLOSE COMBAT" {
 		t.Fatalf("expected close range title, got %q", embed.Title)
 	}
 	if embed.Color != ColorCloseRange {
@@ -95,7 +95,7 @@ func TestExtremeRangeBeatsHeadshot(t *testing.T) {
 	// 250m headshot: EXTREME_RANGE primary, headshot as a secondary badge.
 	ev := killEv("V", "K", "M4-A1", 250.0, "Head")
 	embed := BuildKillEmbed(ev)
-	if embed.Title != "👑 CHAMPION • EXTREME RANGE" {
+	if embed.Title != "CHAMPION KILLFEED\nEXTREME RANGE" {
 		t.Fatalf("expected extreme range to win priority, got %q", embed.Title)
 	}
 	if !strings.Contains(embed.Description, "🎯 Headshot") {
@@ -107,7 +107,7 @@ func TestHeadshotBeatsCloseRange(t *testing.T) {
 	// 8m headshot: HEADSHOT primary, close-range as a secondary badge.
 	ev := killEv("V", "K", "M4-A1", 8.0, "Head")
 	embed := BuildKillEmbed(ev)
-	if embed.Title != "🎯 CHAMPION • HEADSHOT" {
+	if embed.Title != "CHAMPION KILLFEED\nHEADSHOT" {
 		t.Fatalf("expected headshot to win over close range, got %q", embed.Title)
 	}
 	if !strings.Contains(embed.Description, "🔥 Close Range") {
@@ -120,7 +120,7 @@ func TestDistanceRoundingAndPrecision(t *testing.T) {
 	embed := BuildKillEmbed(ev)
 	var distField *discordgo.MessageEmbedField
 	for _, f := range embed.Fields {
-		if strings.Contains(f.Name, "Distance") {
+		if strings.Contains(f.Name, "DISTANCE") {
 			distField = f
 		}
 	}

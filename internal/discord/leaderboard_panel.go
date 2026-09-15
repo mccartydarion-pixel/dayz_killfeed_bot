@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -86,7 +87,9 @@ type LeaderboardSnapshot struct {
 }
 
 func BuildLeaderboardEmbed(s LeaderboardSnapshot, cfg LeaderboardConfig) *discordgo.MessageEmbed {
-	embed := &discordgo.MessageEmbed{Title: "🏆 CHAMPION LEADERBOARD", Description: "Competitive rankings", Color: ColorChampionGold, Footer: &discordgo.MessageEmbedFooter{Text: "CHAMPION KILLFEED • EVERY KILL TELLS A STORY"}}
+	embed := presentation.NewChampionEmbed("SEASON LEADERBOARD", presentation.ChampionGold)
+	embed.Description = "Competitive rankings"
+	embed.Footer = presentation.AutoRefreshFooter()
 	appendRankFields(embed, "⚔️ TOP KILLERS", s.TopKills)
 	appendRankFields(embed, "🎯 LONGEST KILL", s.TopLongest)
 	appendRankFields(embed, "🔥 BEST K/D", s.TopKD)
@@ -160,10 +163,7 @@ func hashEmbed(e *discordgo.MessageEmbed) string {
 
 // PlayerStatsInfoEmbed is the persistent instruction panel for #player-stats.
 func PlayerStatsInfoEmbed() *discordgo.MessageEmbed {
-	return &discordgo.MessageEmbed{
-		Title:       "🏆 CHAMPION PLAYER STATS",
-		Description: "Track your combat record.\n\nUse `/stats` to view kills, deaths, K/D, longest kill, top weapon, and server records.\n\n🎮 Link your PlayStation account with `/link username:<PSN>`.\n\nVerified linked players can use `/stats` without a player argument.",
-		Color:       ColorChampionGold,
-		Footer:      &discordgo.MessageEmbedFooter{Text: "CHAMPION KILLFEED"},
-	}
+	embed := presentation.NewChampionEmbed("PLAYER STATS", presentation.InfoSteel)
+	embed.Description = "View your Champion profile or search another player."
+	return embed
 }

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -75,7 +76,8 @@ func (p *LiveCompletionPublisher) PublishPendingWarCompletion(ctx context.Contex
 		if err != nil {
 			return err
 		}
-		embed := &discordgo.MessageEmbed{Title: "🏆 FACTION WAR COMPLETE", Description: BuildWarCompletionText(fmt.Sprintf("Faction %d", war.FactionAID), a, fmt.Sprintf("Faction %d", war.FactionBID), b, fmt.Sprintf("Winner %d", valueID(war.WinnerFactionID)), "Player", 0, 0, "Season"), Color: ColorChampionGold, Footer: &discordgo.MessageEmbedFooter{Text: "CHAMPION • FACTION WAR"}}
+		embed := presentation.NewChampionEmbed("FACTION WAR", presentation.FactionGold)
+		embed.Description = BuildWarCompletionText(fmt.Sprintf("Faction %d", war.FactionAID), a, fmt.Sprintf("Faction %d", war.FactionBID), b, fmt.Sprintf("Winner %d", valueID(war.WinnerFactionID)), "Player", 0, 0, "Season")
 		return p.send(ctx, embed)
 	})
 	return err
@@ -94,7 +96,8 @@ func (p *LiveCompletionPublisher) PublishPendingEventCompletion(ctx context.Cont
 		for i, row := range rows {
 			placements = append(placements, fmt.Sprintf("%d. Player %d — %.1f", i+1, row.PlayerID, row.Score))
 		}
-		embed := &discordgo.MessageEmbed{Title: "👑 CHAMPION EVENT COMPLETE", Description: BuildEventCompletionText(event.Name, placements), Color: ColorChampionGold, Footer: &discordgo.MessageEmbedFooter{Text: "CHAMPION • COMPETITIVE EVENTS"}}
+		embed := presentation.NewChampionEmbed("COMPETITIVE EVENT", presentation.EventGold)
+		embed.Description = BuildEventCompletionText(event.Name, placements)
 		return p.send(ctx, embed)
 	})
 	return err

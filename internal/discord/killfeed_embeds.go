@@ -25,15 +25,15 @@ const (
 // Champion brand color palette. Named constants keep branding consistent; no
 // random per-message colors.
 const (
-	ColorChampionGold  = 0xC9A227 // STANDARD: dark gold / amber
-	ColorDangerRed     = 0xD62828 // Welcome presets: danger/warning red
-	ColorSuccessGreen  = 0x2ECC71 // Welcome presets: success green
-	ColorInfoBlue      = 0x3498DB // Welcome presets: informational blue
-	ColorWarningOrange = 0xF39C12 // Welcome presets: warning orange
-	ColorHeadshotRed   = 0x8B0000 // HEADSHOT: deep red
-	ColorLongRange     = 0x4682B4 // LONG_RANGE: steel blue
-	ColorExtremeRange  = 0xB8860B // EXTREME_RANGE: royal gold accent
-	ColorCloseRange    = 0xE67E22 // CLOSE_RANGE: aggressive orange
+	ColorChampionGold  = presentation.ChampionGold
+	ColorDangerRed     = presentation.ErrorRed
+	ColorSuccessGreen  = presentation.SuccessGreen
+	ColorInfoBlue      = presentation.InfoSteel
+	ColorWarningOrange = presentation.WarningAmber
+	ColorHeadshotRed   = presentation.CombatRed
+	ColorLongRange     = presentation.InfoSteel
+	ColorExtremeRange  = presentation.EventGold
+	ColorCloseRange    = presentation.CombatRed
 )
 
 // Range thresholds (meters) for style selection.
@@ -80,7 +80,7 @@ func distanceOf(ev *killfeed.Event) float64 {
 // EXTREME_RANGE > HEADSHOT > LONG_RANGE > CLOSE_RANGE > STANDARD.
 func BuildPresentation(ev *killfeed.Event) KillPresentation {
 	if ev == nil {
-		return KillPresentation{Style: KillEmbedStandard, Title: "🏆 CHAMPION KILLFEED", AccentColor: ColorChampionGold, Footer: "CHAMPION • EVERY KILL TELLS A STORY"}
+		return KillPresentation{Style: KillEmbedStandard, Title: "CHAMPION KILLFEED\nKILL REPORT", AccentColor: ColorChampionGold, Footer: presentation.ChampionSlogan}
 	}
 	d := distanceOf(ev)
 	headshot := isHeadshot(ev)
@@ -108,11 +108,11 @@ func BuildPresentation(ev *killfeed.Event) KillPresentation {
 			if len(badges) > 3 {
 				badges = badges[:3]
 			}
-			return KillPresentation{Style: KillEmbedBountyClaim, Badges: badges, Title: "🎯 CHAMPION • BOUNTY CLAIMED", AccentColor: ColorChampionGold, Footer: "BOUNTY CLAIM • CHAMPION"}
+			return KillPresentation{Style: KillEmbedBountyClaim, Badges: badges, Title: "CHAMPION KILLFEED\nBOUNTY CLAIMED", AccentColor: ColorChampionGold, Footer: presentation.ChampionSlogan}
 		}
 	}
 	if story == presentation.StoryMelee {
-		return KillPresentation{Style: KillEmbedCloseRange, Badges: badges, Title: "🥊 CHAMPION • HANDS ON", AccentColor: ColorCloseRange, Footer: "CHAMPION • EVERY KILL TELLS A STORY"}
+		return KillPresentation{Style: KillEmbedCloseRange, Badges: badges, Title: "CHAMPION KILLFEED\nCLOSE COMBAT", AccentColor: ColorCloseRange, Footer: presentation.ChampionSlogan}
 	}
 
 	switch {
@@ -121,9 +121,9 @@ func BuildPresentation(ev *killfeed.Event) KillPresentation {
 		return KillPresentation{
 			Style:       KillEmbedExtremeRange,
 			Badges:      badges,
-			Title:       "👑 CHAMPION • EXTREME RANGE",
+			Title:       "CHAMPION KILLFEED\nEXTREME RANGE",
 			AccentColor: ColorExtremeRange,
-			Footer:      "DISTANCE DOMINANCE • CHAMPION",
+			Footer:      presentation.ChampionSlogan,
 		}
 	case headshot:
 		if d >= 0 && d <= closeRangeMax {
@@ -132,35 +132,35 @@ func BuildPresentation(ev *killfeed.Event) KillPresentation {
 		return KillPresentation{
 			Style:       KillEmbedHeadshot,
 			Badges:      badges,
-			Title:       "🎯 CHAMPION • HEADSHOT",
+			Title:       "CHAMPION KILLFEED\nHEADSHOT",
 			AccentColor: ColorHeadshotRed,
-			Footer:      "PRECISION ELIMINATION • CHAMPION KILLFEED",
+			Footer:      presentation.ChampionSlogan,
 		}
 	case d >= longRangeMin && d < extremeRangeMin:
 		badges = append(badges, badgeLongShot)
 		return KillPresentation{
 			Style:       KillEmbedLongRange,
 			Badges:      badges,
-			Title:       "🎯 CHAMPION • LONG SHOT",
+			Title:       "CHAMPION KILLFEED\nLONG RANGE",
 			AccentColor: ColorLongRange,
-			Footer:      "LONG RANGE ELIMINATION",
+			Footer:      presentation.ChampionSlogan,
 		}
 	case d >= 0 && d <= closeRangeMax:
 		badges = append(badges, badgeCloseQuarters)
 		return KillPresentation{
 			Style:       KillEmbedCloseRange,
 			Badges:      badges,
-			Title:       "🔥 CHAMPION • CLOSE QUARTERS",
+			Title:       "CHAMPION KILLFEED\nCLOSE COMBAT",
 			AccentColor: ColorCloseRange,
-			Footer:      "POINT-BLANK ELIMINATION",
+			Footer:      presentation.ChampionSlogan,
 		}
 	default:
 		return KillPresentation{
 			Style:       KillEmbedStandard,
 			Badges:      badges,
-			Title:       "🏆 CHAMPION KILLFEED",
+			Title:       "CHAMPION KILLFEED\nKILL REPORT",
 			AccentColor: ColorChampionGold,
-			Footer:      "CHAMPION • EVERY KILL TELLS A STORY",
+			Footer:      presentation.ChampionSlogan,
 		}
 	}
 }
@@ -221,7 +221,7 @@ func BuildKillEmbed(ev *killfeed.Event) *discordgo.MessageEmbed {
 
 	// Killer dominates; victim secondary. Badge line is optional and compact.
 	var desc strings.Builder
-	fmt.Fprintf(&desc, "⚔️ **KILLER**  %s\n\n💀 **VICTIM**  %s", killer, victim)
+	fmt.Fprintf(&desc, "**KILLER**  %s\n\n**VICTIM**  %s", killer, victim)
 	if len(p.Badges) > 0 {
 		fmt.Fprintf(&desc, "\n\n%s", strings.Join(p.Badges, "  "))
 	}
@@ -229,7 +229,7 @@ func BuildKillEmbed(ev *killfeed.Event) *discordgo.MessageEmbed {
 	fields := []*discordgo.MessageEmbedField{}
 	if ev.Weapon != "" {
 		fields = append(fields, &discordgo.MessageEmbedField{
-			Name:   "🔫 Weapon",
+			Name:   "WEAPON",
 			Value:  safeTrunc(ev.Weapon, maxWeaponLen),
 			Inline: true,
 		})
@@ -237,7 +237,7 @@ func BuildKillEmbed(ev *killfeed.Event) *discordgo.MessageEmbed {
 	if ev.Distance != nil {
 		rounded := math.Round(*ev.Distance*10) / 10
 		fields = append(fields, &discordgo.MessageEmbedField{
-			Name:   "📏 Distance",
+			Name:   "DISTANCE",
 			Value:  fmt.Sprintf("%.1fm", rounded),
 			Inline: true,
 		})
@@ -249,7 +249,7 @@ func BuildKillEmbed(ev *killfeed.Event) *discordgo.MessageEmbed {
 		Color:       p.AccentColor,
 		Fields:      fields,
 		Author: &discordgo.MessageEmbedAuthor{
-			Name: "🏆 CHAMPION KILLFEED",
+			Name: "CHAMPION KILLFEED",
 		},
 		Footer: &discordgo.MessageEmbedFooter{
 			Text: safeTrunc(p.Footer, maxFooterLen),

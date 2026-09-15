@@ -5,10 +5,13 @@ import (
 	"strings"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 )
 
 func BuildSeasonCompletionEmbed(name string, topPlayer string, topPlayerKills int64, topFaction string, topFactionKills int64, longestPlayer string, longest float64, streakPlayer string, streak int) *discordgo.MessageEmbed {
-	return &discordgo.MessageEmbed{Title: "👑 CHAMPION • " + safePanelText(name) + " COMPLETE", Description: fmt.Sprintf("🏆 **TOP PLAYER**\n%s\n%d Kills\n\n⚔️ **TOP FACTION**\n%s\n%d Kills\n\n🎯 **LONGEST KILL**\n%.1fm\n%s\n\n🔥 **BEST STREAK**\n%d\n%s", safePanelText(topPlayer), topPlayerKills, safePanelText(topFaction), topFactionKills, longest, safePanelText(longestPlayer), streak, safePanelText(streakPlayer)), Color: ColorChampionGold, Footer: &discordgo.MessageEmbedFooter{Text: "CHAMPION • EVERY KILL TELLS A STORY"}}
+	embed := presentation.NewChampionEmbed("SEASON COMPLETE", presentation.ChampionGold)
+	embed.Description = fmt.Sprintf("**SEASON**\n%s\n\n**TOP PLAYER**\n%s\n%d Kills\n\n**TOP FACTION**\n%s\n%d Kills\n\n**LONGEST KILL**\n%.1fm\n%s\n\n**BEST STREAK**\n%d\n%s", safePanelText(name), safePanelText(topPlayer), topPlayerKills, safePanelText(topFaction), topFactionKills, longest, safePanelText(longestPlayer), streak, safePanelText(streakPlayer))
+	return embed
 }
 
 func BuildWarCompletionText(factionA string, scoreA int64, factionB string, scoreB int64, winner string, topKiller string, topCount int64, longest float64, season string) string {

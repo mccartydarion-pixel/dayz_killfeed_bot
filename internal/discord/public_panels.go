@@ -8,6 +8,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/linking"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -25,7 +26,9 @@ type ProfileReader interface {
 }
 
 func LinkUsernameInfoEmbed() *discordgo.MessageEmbed {
-	return &discordgo.MessageEmbed{Title: "🔗 LINK YOUR PLAYSTATION USERNAME", Description: "Verify your observed DayZ account with Champion. Your request remains private and expires automatically.", Color: 0x2F80ED}
+	embed := presentation.NewChampionEmbed("LINK YOUR PLAYSTATION ACCOUNT", presentation.InfoSteel)
+	embed.Description = "Connect your PlayStation username to unlock personal stats, rankings, faction profile, Champion score, records, and competitive tracking.\n\n**REQUIREMENTS**\n• Join the connected DayZ server\n• Champion must observe at least 5 minutes\n• Use your exact PlayStation username"
+	return embed
 }
 
 func LinkUsernamePanelComponents() []discordgo.MessageComponent {

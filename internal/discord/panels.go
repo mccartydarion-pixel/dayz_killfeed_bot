@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 )
 
 // maxPlayersListed caps how many names are rendered before collapsing to a
@@ -97,9 +98,9 @@ func (p *OnlinePlayersPanel) render(players []string, online bool) {
 
 // OnlinePlayersEmbed renders the online-players embed, safely capping large lists.
 func OnlinePlayersEmbed(players []string, online bool) *discordgo.MessageEmbed {
-	status := "🔴 Server Offline"
+	status := "OFFLINE"
 	if online {
-		status = "🟢 Server Online"
+		status = "ONLINE"
 	}
 
 	shown := players
@@ -120,38 +121,35 @@ func OnlinePlayersEmbed(players []string, online bool) *discordgo.MessageEmbed {
 		fmt.Fprintf(&list, "\n+ %d more players", extra)
 	}
 
-	return &discordgo.MessageEmbed{
-		Title:       "🏆 CHAMPION — ONLINE PLAYERS",
-		Description: fmt.Sprintf("%s\n\n**Players Online**\n%d\n\n━━━━━━━━━━━━━━━━\n%s\n━━━━━━━━━━━━━━━━\n\n*Last Updated: <t:%d:R>*\n\nCHAMPION KILLFEED", status, len(players), list.String(), time.Now().Unix()),
-		Color:       0x2ECC71,
-	}
+	embed := presentation.NewChampionEmbed("LIVE PLAYERS", presentation.SuccessGreen)
+	embed.Description = fmt.Sprintf("**STATUS**\n%s\n\n**ONLINE PLAYERS**\n%d\n\n%s", status, len(players), list.String())
+	embed.Footer = presentation.UpdatedFooter(time.Now())
+	return embed
 }
 
 // ServerStatusEmbed builds the persistent server-status embed using only values
 // we actually know. No ping/FPS/queue/map/restart data is fabricated.
 func ServerStatusPanel(nitradoConnected, admConnected bool, playersOnline int, killfeedActive bool) *discordgo.MessageEmbed {
-	nitrado := "🔴 Disconnected"
+	nitrado := "DISCONNECTED"
 	if nitradoConnected {
-		nitrado = "🟢 Connected"
+		nitrado = "CONNECTED"
 	}
-	adm := "🔴 Disconnected"
+	adm := "DISCONNECTED"
 	if admConnected {
-		adm = "🟢 Connected"
+		adm = "CONNECTED"
 	}
-	kf := "🔴 Inactive"
+	kf := "DEGRADED"
 	if killfeedActive {
-		kf = "🟢 Active"
+		kf = "HEALTHY"
 	}
 
-	return &discordgo.MessageEmbed{
-		Title: "🏆 CHAMPION SERVER STATUS",
-		Color: 0x3498DB,
-		Fields: []*discordgo.MessageEmbedField{
-			{Name: "Nitrado", Value: nitrado, Inline: true},
-			{Name: "ADM Log", Value: adm, Inline: true},
-			{Name: "Killfeed", Value: kf, Inline: true},
-			{Name: "Players Online", Value: fmt.Sprintf("%d", playersOnline), Inline: true},
-		},
-		Footer: &discordgo.MessageEmbedFooter{Text: fmt.Sprintf("CHAMPION KILLFEED • Last Update <t:%d:R>", time.Now().Unix())},
+	embed := presentation.NewChampionEmbed("SERVER STATUS", presentation.InfoSteel)
+	embed.Fields = []*discordgo.MessageEmbedField{
+		presentation.StatusField("NITRADO", nitrado, true),
+		presentation.StatusField("ADM LOG", adm, true),
+		presentation.StatusField("KILLFEED", kf, true),
+		presentation.StatusField("ONLINE PLAYERS", fmt.Sprintf("%d", playersOnline), true),
 	}
+	embed.Footer = presentation.UpdatedFooter(time.Now())
+	return embed
 }

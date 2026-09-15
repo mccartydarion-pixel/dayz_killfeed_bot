@@ -2,8 +2,9 @@ package presentation
 
 import (
 	"fmt"
-	"github.com/bwmarrin/discordgo"
 	"strings"
+
+	"github.com/bwmarrin/discordgo"
 )
 
 type RankedEntry struct {
@@ -20,7 +21,8 @@ func safe(s string) string {
 	return s
 }
 func BuildPlayerLeaderboardEmbed(category string, entries []RankedEntry, subtitle string) *discordgo.MessageEmbed {
-	embed := &discordgo.MessageEmbed{Title: "🏆 CHAMPION LEADERBOARD", Color: 0xC9A227, Footer: &discordgo.MessageEmbedFooter{Text: "CHAMPION • EVERY KILL TELLS A STORY"}}
+	embed := NewChampionEmbed("SEASON LEADERBOARD", ChampionGold)
+	embed.Footer = AutoRefreshFooter()
 	embed.Description = fmt.Sprintf("**%s**\n%s\nTop %d Players", strings.ToUpper(category), subtitle, len(entries))
 	for _, e := range entries {
 		medal := ""
@@ -53,5 +55,7 @@ func formatValue(category, value string) string {
 	}
 }
 func BuildLeaderboardErrorEmbed(category string) *discordgo.MessageEmbed {
-	return &discordgo.MessageEmbed{Title: "🏆 CHAMPION LEADERBOARD", Description: fmt.Sprintf("**Leaderboard temporarily unavailable.**\n\n**Category**\n%s\n\n**Status**\nData service unavailable\n\n**Retry**\nPlease try again shortly.\n\nAdmin Diagnostics\n`/admin diagnostics`", strings.ToUpper(category)), Color: 0xC0392B, Footer: &discordgo.MessageEmbedFooter{Text: "CHAMPION • COMPETITIVE DATA"}}
+	embed := NewChampionEmbed("LEADERBOARD", ErrorRed)
+	embed.Description = fmt.Sprintf("**SERVICE UNAVAILABLE**\n\n**Category**\n%s\n\n**Status**\nTEMPORARILY UNAVAILABLE\n\nTry again shortly.", strings.ToUpper(category))
+	return embed
 }
