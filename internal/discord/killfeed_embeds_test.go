@@ -27,11 +27,11 @@ func TestBuildKillEmbedStandard(t *testing.T) {
 	ev := killEv("MmeyAFK_7", "Ceiyxe", "SCR 17", 62.2, "Torso")
 	embed := BuildKillEmbed(ev)
 
-	if embed.Title != "CHAMPION KILLFEED\nKILL REPORT" {
+	if embed.Title != "💀 CHAMPION • PLAYER ELIMINATED" {
 		t.Fatalf("expected standard title, got %q", embed.Title)
 	}
-	if embed.Color != ColorChampionGold {
-		t.Fatalf("expected gold color, got %x", embed.Color)
+	if embed.Color != ColorNeutralGraphite {
+		t.Fatalf("expected graphite color, got %x", embed.Color)
 	}
 	if !strings.Contains(embed.Description, "Ceiyxe") || !strings.Contains(embed.Description, "MmeyAFK_7") {
 		t.Fatalf("expected killer+victim in description, got %q", embed.Description)
@@ -47,7 +47,7 @@ func TestBuildKillEmbedStandard(t *testing.T) {
 func TestBuildKillEmbedHeadshot(t *testing.T) {
 	ev := killEv("V", "K", "M4-A1", 87.4, "Head")
 	embed := BuildKillEmbed(ev)
-	if embed.Title != "CHAMPION KILLFEED\nHEADSHOT" {
+	if embed.Title != "🎯 CHAMPION • HEADSHOT" {
 		t.Fatalf("expected headshot title, got %q", embed.Title)
 	}
 	if embed.Color != ColorHeadshotRed {
@@ -61,7 +61,7 @@ func TestBuildKillEmbedHeadshot(t *testing.T) {
 func TestBuildKillEmbedLongRange(t *testing.T) {
 	ev := killEv("V", "K", "SCR 17", 147.6, "Torso")
 	embed := BuildKillEmbed(ev)
-	if embed.Title != "CHAMPION KILLFEED\nLONG RANGE" {
+	if embed.Title != "🎯 CHAMPION • LONG RANGE ELIMINATION" {
 		t.Fatalf("expected long range title, got %q", embed.Title)
 	}
 	if embed.Color != ColorLongRange {
@@ -72,7 +72,7 @@ func TestBuildKillEmbedLongRange(t *testing.T) {
 func TestBuildKillEmbedExtremeRange(t *testing.T) {
 	ev := killEv("V", "K", "SCR 17", 324.8, "Torso")
 	embed := BuildKillEmbed(ev)
-	if embed.Title != "CHAMPION KILLFEED\nEXTREME RANGE" {
+	if embed.Title != "🏆 CHAMPION • EXTREME RANGE" {
 		t.Fatalf("expected extreme range title, got %q", embed.Title)
 	}
 	if embed.Color != ColorExtremeRange {
@@ -83,11 +83,11 @@ func TestBuildKillEmbedExtremeRange(t *testing.T) {
 func TestBuildKillEmbedCloseRange(t *testing.T) {
 	ev := killEv("V", "K", "AKM", 4.2, "Torso")
 	embed := BuildKillEmbed(ev)
-	if embed.Title != "CHAMPION KILLFEED\nCLOSE COMBAT" {
+	if embed.Title != "💀 CHAMPION • PLAYER ELIMINATED" {
 		t.Fatalf("expected close range title, got %q", embed.Title)
 	}
-	if embed.Color != ColorCloseRange {
-		t.Fatalf("expected close-range color, got %x", embed.Color)
+	if embed.Color != ColorNeutralGraphite {
+		t.Fatalf("expected standard graphite color, got %x", embed.Color)
 	}
 }
 
@@ -95,7 +95,7 @@ func TestExtremeRangeBeatsHeadshot(t *testing.T) {
 	// 250m headshot: EXTREME_RANGE primary, headshot as a secondary badge.
 	ev := killEv("V", "K", "M4-A1", 250.0, "Head")
 	embed := BuildKillEmbed(ev)
-	if embed.Title != "CHAMPION KILLFEED\nEXTREME RANGE" {
+	if embed.Title != "🏆 CHAMPION • EXTREME RANGE" {
 		t.Fatalf("expected extreme range to win priority, got %q", embed.Title)
 	}
 	if !strings.Contains(embed.Description, "🎯 Headshot") {
@@ -107,7 +107,7 @@ func TestHeadshotBeatsCloseRange(t *testing.T) {
 	// 8m headshot: HEADSHOT primary, close-range as a secondary badge.
 	ev := killEv("V", "K", "M4-A1", 8.0, "Head")
 	embed := BuildKillEmbed(ev)
-	if embed.Title != "CHAMPION KILLFEED\nHEADSHOT" {
+	if embed.Title != "🎯 CHAMPION • HEADSHOT" {
 		t.Fatalf("expected headshot to win over close range, got %q", embed.Title)
 	}
 	if !strings.Contains(embed.Description, "🔥 Close Range") {
@@ -120,14 +120,14 @@ func TestDistanceRoundingAndPrecision(t *testing.T) {
 	embed := BuildKillEmbed(ev)
 	var distField *discordgo.MessageEmbedField
 	for _, f := range embed.Fields {
-		if strings.Contains(f.Name, "DISTANCE") {
+		if strings.Contains(f.Name, "KILL DETAILS") && strings.Contains(f.Value, "Distance") {
 			distField = f
 		}
 	}
 	if distField == nil {
 		t.Fatal("expected a distance field")
 	}
-	if distField.Value != "62.2m" {
+	if !strings.Contains(distField.Value, "62.2m") {
 		t.Fatalf("expected distance rounded to 62.2m, got %q", distField.Value)
 	}
 	// Internal precision retained on the event.

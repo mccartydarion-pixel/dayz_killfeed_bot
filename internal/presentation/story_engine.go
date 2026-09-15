@@ -5,18 +5,29 @@ import "strings"
 type StoryType string
 
 const (
-	StoryStandard        StoryType = "STANDARD"
-	StoryMelee           StoryType = "MELEE"
-	StoryHeadshot        StoryType = "HEADSHOT"
-	StoryLongRange       StoryType = "LONG_RANGE"
-	StoryExtremeRange    StoryType = "EXTREME_RANGE"
-	StoryStreakMilestone StoryType = "STREAK_MILESTONE"
-	StoryStreakEnded     StoryType = "STREAK_ENDED"
-	StoryWarKill         StoryType = "WAR_KILL"
-	StoryBountyClaimed   StoryType = "BOUNTY_CLAIMED"
-	StoryEventKill       StoryType = "EVENT_KILL"
-	StoryTeamKill        StoryType = "TEAM_KILL"
-	StoryFactionKill     StoryType = "FACTION_KILL"
+	StoryStandard            StoryType = "STANDARD"
+	StoryMelee               StoryType = "MELEE"
+	StoryHeadshot            StoryType = "HEADSHOT"
+	StoryLongRange           StoryType = "LONG_RANGE"
+	StoryExtremeRange        StoryType = "EXTREME_RANGE"
+	StoryStreakMilestone     StoryType = "STREAK_MILESTONE"
+	StoryStreakEnded         StoryType = "STREAK_ENDED"
+	StoryWarKill             StoryType = "WAR_KILL"
+	StoryBountyClaimed       StoryType = "BOUNTY_CLAIMED"
+	StoryEventKill           StoryType = "EVENT_KILL"
+	StoryTeamKill            StoryType = "TEAM_KILL"
+	StoryFactionKill         StoryType = "FACTION_KILL"
+	StoryPersonalRecord      StoryType = "PERSONAL_RECORD"
+	StoryServerRecord        StoryType = "SERVER_RECORD"
+	StoryRevenge             StoryType = "REVENGE"
+	StoryNemesis             StoryType = "NEMESIS"
+	StoryWarLeadChange       StoryType = "WAR_LEAD_CHANGE"
+	StoryWarTie              StoryType = "WAR_TIE"
+	StoryFirstBlood          StoryType = "FIRST_BLOOD"
+	StoryEventLeadChange     StoryType = "EVENT_LEAD_CHANGE"
+	StoryRankPromotion       StoryType = "RANK_PROMOTION"
+	StoryLeaderboardTakeover StoryType = "LEADERBOARD_TAKEOVER"
+	StoryRapidKill           StoryType = "RAPID_KILL"
 )
 
 type Context struct {
@@ -25,17 +36,35 @@ type Context struct {
 	EventBadges                                                         []string
 	StreakMilestone, VictimEndedStreak                                  int
 	StreakEndedThreshold                                                int
+	PersonalRecord, ServerRecord, Revenge, Nemesis                      bool
+	WarLeadChange, WarTie, FirstBlood, EventLeadChange                  bool
+	RankPromotion, LeaderboardTakeover, RapidKill                       bool
 }
 
 func SelectPrimary(c Context) StoryType {
+	if c.ServerRecord {
+		return StoryServerRecord
+	}
 	if c.BountyClaimed {
 		return StoryBountyClaimed
 	}
-	if c.WarKill && len(c.EventBadges) > 0 {
-		return StoryWarKill
+	if c.WarLeadChange {
+		return StoryWarLeadChange
 	}
-	if c.TeamKill {
-		return StoryTeamKill
+	if c.WarTie {
+		return StoryWarTie
+	}
+	if c.FirstBlood {
+		return StoryFirstBlood
+	}
+	if c.EventLeadChange {
+		return StoryEventLeadChange
+	}
+	if c.LeaderboardTakeover {
+		return StoryLeaderboardTakeover
+	}
+	if c.RankPromotion {
+		return StoryRankPromotion
 	}
 	if c.StreakEndedThreshold > 0 && c.VictimEndedStreak >= c.StreakEndedThreshold {
 		return StoryStreakEnded
@@ -43,11 +72,26 @@ func SelectPrimary(c Context) StoryType {
 	if c.StreakMilestone > 0 {
 		return StoryStreakMilestone
 	}
+	if c.PersonalRecord {
+		return StoryPersonalRecord
+	}
 	if c.Distance != nil && *c.Distance >= 200 {
 		return StoryExtremeRange
 	}
 	if c.Headshot {
 		return StoryHeadshot
+	}
+	if c.Revenge {
+		return StoryRevenge
+	}
+	if c.Nemesis {
+		return StoryNemesis
+	}
+	if c.WarKill && len(c.EventBadges) > 0 {
+		return StoryWarKill
+	}
+	if c.TeamKill {
+		return StoryTeamKill
 	}
 	if c.EnemyFactionKill {
 		return StoryFactionKill
@@ -57,6 +101,9 @@ func SelectPrimary(c Context) StoryType {
 	}
 	if len(c.EventBadges) > 0 {
 		return StoryEventKill
+	}
+	if c.RapidKill {
+		return StoryRapidKill
 	}
 	if c.Melee {
 		return StoryMelee
