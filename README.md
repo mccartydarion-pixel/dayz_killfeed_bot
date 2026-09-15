@@ -41,6 +41,7 @@ NITRADO_SERVICE_ID=
 KILLFEED_CHANNEL_ID=
 
 DATABASE_URL=
+CREDENTIAL_ENCRYPTION_KEY=
 ```
 
 Important notes:
@@ -48,7 +49,19 @@ Important notes:
 - `PORT` is preferred for Railway deployment.
 - `HTTP_PORT` is used as a local fallback.
 - `DATABASE_URL` is optional during Phase 1 and should be configured in production via Railway Variables.
+- `CREDENTIAL_ENCRYPTION_KEY` is required for `/server connect`. It must be a stable 32-byte
+    value or base64-encoded 32-byte value. Generate one once, store it as a deployment secret,
+    and do not rotate it casually because existing encrypted Nitrado credentials depend on it.
 - Secrets must never be committed to the repository.
+
+PowerShell example for generating a base64 key:
+
+```powershell
+[Convert]::ToBase64String([byte[]](1..32 | ForEach-Object { Get-Random -Maximum 256 }))
+```
+
+Set the resulting value as `CREDENTIAL_ENCRYPTION_KEY` in Railway or the deployment
+environment, then redeploy the bot. `/server connect` will be enabled after startup.
 
 ## Local development
 
