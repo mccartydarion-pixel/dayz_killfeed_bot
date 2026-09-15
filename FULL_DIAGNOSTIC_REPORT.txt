@@ -1,0 +1,785 @@
+CHAMPION KILLFEED — FULL DIAGNOSTIC REPORT
+
+EXECUTIVE SUMMARY
+
+Production readiness: NOT READY
+
+Critical blockers: 2
+High severity: 6
+Medium severity: 9
+Low severity: 3
+
+PostgreSQL validated: NO
+Multi-server proven: NO, only locally/unit tested
+Multi-guild proven: NO, only statically/unit tested
+Live Discord proven: NO
+Live Nitrado proven: NO
+
+The repository builds and the automated unit/mock suite passes. The remaining risk is primarily lack of real-service validation and insufficient end-to-end proof across Nitrado, PostgreSQL, Discord, multiple guilds, and multiple servers.
+
+No code was modified during this audit.
+
+TOP 20 ISSUES
+
+ISSUE #1
+Severity: CRITICAL
+Subsystem: Production credentials
+File: Deployment environment / .env handling
+Function: Configuration loading
+Line / Block: internal/config/config.go, config.Load
+
+Problem:
+Production depends on secrets that must be correctly configured and rotated safely:
+- DISCORD_TOKEN
+- DATABASE_URL
+- CREDENTIAL_ENCRYPTION_KEY
+- Nitrado credentials
+
+The repository must not contain real .env secrets.
+
+Root Cause:
+Environment configuration is external to the Go test suite and was not verified against the live deployment.
+
+User-visible Symptom:
+The bot starts with missing or invalid credentials, or Nitrado remains unavailable.
+
+Production Risk:
+Discord, database, or Nitrado compromise; failed startup; inaccessible encrypted credentials.
+
+Recommended Fix:
+Verify Git history and deployment variables. Rotate any exposed secrets. Keep only .env.example in Git.
+
+Dependencies:
+Deployment platform access.
+
+Blocks Production: YES
+
+ISSUE #2
+Severity: CRITICAL
+Subsystem: PostgreSQL validation
+Files: internal/database/migrations.go, internal/database/*_integration_test.go, internal/repository/*
+
+Problem:
+PostgreSQL migrations, constraints, indexes, and repository queries have not been run against a real test database.
+
+Root Cause:
+TEST_DATABASE_URL was not configured.
+
+User-visible Symptom:
+Commands may compile but fail when querying real PostgreSQL.
+
+Production Risk:
+Migration failure, missing columns, invalid SQL, incorrect scoping, or data leakage.
+
+Recommended Fix:
+Run the integration suite against an isolated PostgreSQL instance:
+
+PowerShell:
+$env:TEST_DATABASE_URL = "postgres://user:password@host:5432/dayz_killfeed_test"
+$env:ALLOW_INTEGRATION_DB_TESTS = "true"
+$env:REQUIRE_INTEGRATION_DB = "1"
+go test -tags=integration ./...
+
+Dependencies:
+Isolated non-production PostgreSQL database.
+
+Blocks Production: YES
+
+ISSUE #3
+Severity: HIGH
+Subsystem: Concurrency
+Files: internal/servers/workermanager.go, internal/health/workers.go, internal/killfeed/*
+
+Problem:
+The race detector has not been run.
+
+Root Cause:
+Worker maps, health registries, queues, timers, and player trackers all use concurrent goroutines.
+
+User-visible Symptom:
+Duplicate workers, stale status, lost updates, or intermittent shutdown issues under load.
+
+Production Risk:
+Data races and nondeterministic runtime behavior.
+
+Recommended Fix:
+Run:
+
+go test -race ./...
+
+Run this in CI and against worker lifecycle tests.
+
+Dependencies:
+Race-safe test environment.
+
+Blocks Production: YES for multi-server deployment.
+
+ISSUE #4
+Severity: HIGH
+Subsystem: Live Discord integration
+Files: cmd/server/main.go, internal/app/app.go, internal/discord/client.go
+
+Problem:
+Discord gateway connection, command registration, intents, permissions, and live interaction routing have not been validated against a real guild.
+
+Root Cause:
+Tests use mocks and local Discord abstractions.
+
+User-visible Symptom:
+Commands appear but do not respond, welcome events are missed, or channels cannot be edited.
+
+Production Risk:
+Bot appears online but core features are unusable.
+
+Recommended Fix:
+Test in a disposable guild with:
+- Server Members Intent enabled
+- View Channels
+- Send Messages
+- Embed Links
+- Read Message History
+- Manage Channels
+- Use Application Commands
+
+Dependencies:
+Discord application and test guild.
+
+Blocks Production: YES.
+
+ISSUE #5
+Severity: HIGH
+Subsystem: Nitrado integration
+Files: internal/nitrado/client.go, internal/nitrado/services.go, internal/nitrado/logs.go
+
+Problem:
+Live authentication, service discovery, fileserver listing, signed download URLs, and ADM reads have not been validated.
+
+Root Cause:
+Nitrado tests use mocked HTTP responses.
+
+User-visible Symptom:
+Nitrado appears configured but no ADM events arrive.
+
+Production Risk:
+Killfeed, player tracking, and onboarding do not function.
+
+Recommended Fix:
+Validate with a real Nitrado token and dedicated DayZ server:
+1. Authentication
+2. Service discovery
+3. DayZ filtering
+4. ADM discovery
+5. ADM download
+6. Log rotation
+7. New kill detection
+
+Dependencies:
+Valid Nitrado account and service.
+
+Blocks Production: YES.
+
+ISSUE #6
+Severity: HIGH
+Subsystem: Multi-guild and multi-server isolation
+Files: internal/repository/*, internal/killfeed/persistence.go, internal/app/app.go
+
+Problem:
+Static code paths appear scoped, but there is no complete two-guild/two-server integration proof.
+
+Root Cause:
+Unit tests cannot prove all repository and publisher combinations under concurrent operation.
+
+User-visible Symptom:
+One guild or server could receive another server's stats, kills, players, or announcements.
+
+Production Risk:
+Cross-tenant data disclosure.
+
+Recommended Fix:
+Create integration scenarios with:
+- Guild A / Server A
+- Guild B / Server B
+- Two servers in one guild
+
+Validate kills, deaths, players, activity, workers, channels, and leaderboards.
+
+Dependencies:
+PostgreSQL and Discord test environments.
+
+Blocks Production: YES.
+
+ISSUE #7
+Severity: HIGH
+Subsystem: Worker lifecycle
+File: internal/servers/workermanager.go
+Functions: Start, Stop, StopAll, run
+
+Problem:
+Worker lifecycle is locally tested but not proven through startup, failure, restart, repair, and shutdown in a real application process.
+
+Root Cause:
+WorkerManager owns cancellation and cleanup in memory only.
+
+User-visible Symptom:
+A server worker may stop without automatic recovery or may leave stale health state.
+
+Production Risk:
+Silent killfeed stoppage.
+
+Recommended Fix:
+Add lifecycle tests for worker errors, panics, restart, /server repair, process shutdown, and independent workers.
+
+Dependencies:
+Runtime integration harness.
+
+Blocks Production: YES for multi-server operation.
+
+ISSUE #8
+Severity: HIGH
+Subsystem: Shutdown
+Files: internal/app/app.go, internal/servers/workermanager.go, internal/killfeed/persistence.go, internal/server/http.go
+
+Problem:
+Shutdown behavior is not proven end to end.
+
+Root Cause:
+Multiple goroutines and queues must stop in the correct order.
+
+User-visible Symptom:
+Events may be lost or workers may continue after shutdown.
+
+Production Risk:
+Duplicate processing after restart and incomplete persistence.
+
+Recommended Fix:
+Test shutdown ordering:
+1. Stop accepting HTTP work
+2. Stop schedulers
+3. Stop workers
+4. Drain persistence queues
+5. Close Discord
+6. Close PostgreSQL
+
+Dependencies:
+Shutdown integration test.
+
+Blocks Production: YES.
+
+ISSUE #9
+Severity: MEDIUM
+Subsystem: Command registration
+Files: internal/discord/*.go
+
+Problem:
+Source-level command registration exists, but live Discord command synchronization has not been verified.
+
+Root Cause:
+Commands are registered dynamically at startup and depend on Discord application/guild IDs.
+
+User-visible Symptom:
+A command may be absent, stale, duplicated, or routed to the wrong handler.
+
+Production Risk:
+Broken onboarding and administration.
+
+Recommended Fix:
+Test the exact registered command tree against a live guild.
+
+Blocks Production: NO individually; YES collectively.
+
+ISSUE #10
+Severity: MEDIUM
+Subsystem: Discord permissions and intents
+Files: internal/discord/client.go, internal/discord/setup.go, internal/discord/counter.go
+
+Problem:
+Required permissions and privileged intents are not live-tested.
+
+Root Cause:
+Permission checks are primarily runtime API calls and mocks.
+
+User-visible Symptom:
+Setup cannot create channels, voice counter cannot rename, or welcomer never receives member events.
+
+Production Risk:
+Discord features silently fail.
+
+Recommended Fix:
+Validate permission failures for 403, missing channels, and insufficient intents.
+
+Blocks Production: YES for Discord feature completeness.
+
+ISSUE #11
+Severity: MEDIUM
+Subsystem: Setup
+Files: internal/discord/setup.go, internal/discord/setup_commands.go, internal/discord/setup_store*.go
+
+Problem:
+Setup is implemented and unit-tested, but deleted channels, partial setup, and real Discord permission behavior are not fully proven.
+
+User-visible Symptom:
+/setup status may show stored IDs for channels that no longer exist.
+
+Recommended Fix:
+Test fresh setup, repeated setup, deleted-channel repair, reset confirmation, permission-denied creation, and voice-channel migration.
+
+Blocks Production: NO individually.
+
+ISSUE #12
+Severity: MEDIUM
+Subsystem: Welcomer
+Files: internal/discord/welcome.go, internal/discord/welcome_commands.go, internal/app/app.go
+
+Problem:
+The handler and persistent configuration exist, but real GuildMemberAdd delivery has not been tested.
+
+User-visible Symptom:
+A member joins but receives no welcome message.
+
+Root Cause:
+The feature requires both gateway event delivery and Server Members Intent.
+
+Recommended Fix:
+Test a real member join with the intent enabled, valid welcome channel, send permissions, disabled configuration, and deleted-channel behavior.
+
+Blocks Production: YES for claiming welcomer is live.
+
+ISSUE #13
+Severity: MEDIUM
+Subsystem: Account linking
+Files: internal/linking/service.go, internal/discord/link_commands.go, internal/repository/link_repository.go
+
+Problem:
+/link depends on a player having been observed and persisted from ADM events.
+
+User-visible Symptom:
+Known players receive PLAYER NOT FOUND.
+
+Root Cause:
+First-connect tail mode intentionally skips old log history. Existing online players are not reconstructed.
+
+Recommended Fix:
+Add player-state reconciliation or clearly require reconnect after onboarding. Validate case, whitespace, server, and guild scope.
+
+Blocks Production: YES for account-linking claims.
+
+ISSUE #14
+Severity: MEDIUM
+Subsystem: ADM pipeline
+Files: internal/killfeed/engine.go, internal/nitrado/logs.go, internal/killfeed/parser.go
+
+Problem:
+Pipeline behavior is mocked rather than live-tested against real ADM samples.
+
+Potential risks:
+- Nitrado download latency
+- Full-file downloads on every poll
+- File rotation
+- Truncation
+- Partial lines
+- Unsupported line formats
+- New player event formats
+- Missed connect events
+
+Recommended Fix:
+Test with captured production ADM files and real Nitrado responses.
+
+Blocks Production: YES for killfeed confidence.
+
+ISSUE #15
+Severity: MEDIUM
+Subsystem: Persistence queue
+File: internal/killfeed/persistence.go
+
+Problem:
+Discord publishing depends on persistence processing when PostgreSQL is enabled.
+
+User-visible Symptom:
+A slow database or full queue delays killfeed messages.
+
+Root Cause:
+Persistence-before-publish is intentional for deduplication, but creates latency coupling.
+
+Recommended Fix:
+Measure queue latency and test slow database, full queue, duplicate kill, cancellation, publisher failure, and shutdown drain.
+
+Blocks Production: NO if queue health is monitored; YES if queue can silently stall.
+
+ISSUE #16
+Severity: MEDIUM
+Subsystem: Nitrado operational protection
+Files: internal/nitrado/client.go, internal/nitrado/logs.go
+
+Problem:
+HTTP error classification exists, but circuit breaking, global request budgeting, and live retry behavior are not proven.
+
+User-visible Symptom:
+Repeated Nitrado failures may cause slow updates or excessive requests.
+
+Recommended Fix:
+Add bounded retries, request budgets, backoff metrics, and live 401/403/404/429/5xx validation.
+
+Blocks Production: YES for sustained production operation.
+
+ISSUE #17
+Severity: MEDIUM
+Subsystem: Completion publishers
+Files: internal/discord/completion_announcements.go, internal/discord/live_completion_publishers.go, internal/app/app.go
+
+Problem:
+Completion publishing paths exist, but end-to-end finalization, pending claims, announcement state, and startup recovery are not proven.
+
+User-visible Symptom:
+An event or season may finalize in PostgreSQL but never announce in Discord.
+
+Recommended Fix:
+Test finalize, commit, pending announcement, publish, retry, and recovery after restart.
+
+Blocks Production: NO for basic killfeed; YES for competitive feature completeness.
+
+ISSUE #18
+Severity: LOW
+Subsystem: Test coverage
+Packages: achievements, admin, database, linking, logger, seasons, streaks, welcome
+
+Problem:
+Several packages have no direct tests.
+
+User-visible Symptom:
+Regressions in service logic can pass go test ./....
+
+Recommended Fix:
+Add focused unit tests.
+
+Blocks Production: NO individually.
+
+ISSUE #19
+Severity: LOW
+Subsystem: Operational visibility
+Files: internal/server/state.go, internal/health/*, internal/discord/admin_commands.go
+
+Problem:
+Runtime diagnostics exist but have not been validated against live dependency failures.
+
+User-visible Symptom:
+Admin status may look healthy while a worker or Nitrado pipeline is stale.
+
+Recommended Fix:
+Validate transitions for Nitrado auth failure, database unavailable, queue critical, worker stale, Discord permission failure, ADM stalled, and recovery.
+
+Blocks Production: NO, but strongly recommended.
+
+ISSUE #20
+Severity: LOW
+Subsystem: Phase acceptance evidence
+Files: PHASE_4_9_REPORT.txt, README.md
+
+Problem:
+Phase reports describe implementation, but do not constitute live acceptance evidence.
+
+User-visible Symptom:
+The project can be described as complete while real deployment remains unverified.
+
+Recommended Fix:
+Create an acceptance matrix mapping each requirement to source implementation, automated test, integration test, and live evidence.
+
+Blocks Production: YES for formal release approval.
+
+COMMAND STATUS
+
+Command | Registered | Handler | Service | DB | Production-Wired | Status
+
+/setup run | Yes | Yes | SetupManager | Optional/config store | Yes | Unit-tested, live-unverified
+/setup status | Yes | Yes | Setup store | Yes when configured | Yes | Unit-tested, live-unverified
+/setup repair | Yes | Yes | SetupManager | Optional/config store | Yes | Unit-tested, live-unverified
+/setup reset | Yes | Yes | Setup store | Yes when configured | Yes | Unit-tested, live-unverified
+/welcome | Yes | Yes | WelcomeRepository | Required for persistence | Yes | Live Discord unverified
+/server connect | Yes | Yes | Nitrado + encryption | Yes | Yes | Depends on valid key/token
+/server services | Yes | Yes | Nitrado client | Yes | Yes | Live Nitrado unverified
+/server select | Yes | Yes | ServerRepository + WorkerManager | Yes | Yes | Live Nitrado/runtime unverified
+/server status | Yes | Yes | ServerRepository/runtime | Yes | Yes | Live-unverified
+/server disconnect | Yes | Yes | ServerRepository + WorkerManager | Yes | Yes | Unit/static only
+/server repair | Yes | Yes | ServerRepository + WorkerManager | Yes | Yes | Unit/static only
+/link | Yes | Yes | LinkVerificationService | Yes | Yes | Depends on observed player
+/link-status | Yes | Yes | LinkVerificationService | Yes | Yes | Live DB unverified
+/unlink | Yes | Yes | LinkVerificationService | Yes | Yes | Live DB/Discord unverified
+/stats | Yes | Yes | StatsRepository | Yes | Yes | Data path unverified
+/leaderboard | Yes | Yes | StatsRepository | Yes | Yes | Empty/error path exists
+/matchup | Yes | Yes | AnalyticsRepository | Yes | Yes | Live DB unverified
+/weapon | Yes | Yes | AnalyticsRepository | Yes | Yes | Live DB unverified
+/faction | Yes | Yes | War/faction services | Yes | Yes | Live DB unverified
+/season | Yes | Yes | SeasonService | Yes | Yes | Live DB unverified
+/event | Yes | Yes | EventService/EventRepository | Yes | Yes | Guild ownership guard exists
+/bounty | Yes | Yes | BountyRepository | Yes | Yes | Guild scoping improved
+/points | Yes | Yes | PointsRepository | Yes | Yes | Live DB unverified
+/admin status | Yes | Yes | AdminService | State/health | Yes | Local tested
+/admin diagnostics | Yes | Yes | AdminService | State/health | Yes | Live state unverified
+/admin pipeline | Yes | Yes | AdminService | State/health | Yes | Live state unverified
+/admin workers | Yes | Yes | WorkerRegistry | No | Yes | Local tested
+/admin permissions | Yes | Yes | Discord state | No | Yes | Live Discord unverified
+/admin health | Yes | Yes | HealthRegistry | No | Yes | Local/static only
+/admin logs | Yes | Yes | Runtime state | No | Yes | Live state unverified
+/admin checkpoint | Yes | Yes | Runtime state | No direct live restore proof | Partial | Checkpoint restore remains limited
+/admin resync | Yes | Yes | Runtime state | No | Partial | Mostly reports/schedules state
+
+RUNTIME STATUS
+
+App startup: PARTIAL. Dependencies are constructed, but no complete startup integration test exists.
+Discord: IMPLEMENTED, LIVE-UNVERIFIED.
+Nitrado: IMPLEMENTED, LIVE-UNVERIFIED. Previous live deployment showed HTTP 401.
+WorkerManager: IMPLEMENTED, LOCALLY TESTED.
+ServerWorker: IMPLEMENTED, LIVE-UNVERIFIED.
+ADM: IMPLEMENTED, LIVE-UNVERIFIED.
+Persistence: IMPLEMENTED, PostgreSQL-UNVALIDATED.
+Publisher: IMPLEMENTED, LIVE-UNVERIFIED.
+Health: PARTIAL. Endpoints and registries exist, but live failure/recovery transitions are unverified.
+Shutdown: PARTIAL. Cancellation and queue shutdown paths exist, but complete drain ordering is not integration-tested.
+
+DATABASE SCOPING
+
+Table/Repository | Guild Scope | Server Scope | Correct? | Risk
+
+guilds | Yes | No | Correct | Guild configuration is intentionally guild-wide.
+players | Yes | No direct server column | Ambiguous | Same player may exist on multiple servers in one guild.
+player_server_activity | Yes | Yes | Correct | Activity is server-specific.
+kills | Yes | Requires integration verification | Unverified | Must validate server identity and all query predicates.
+deaths | Yes | Requires integration verification | Unverified | Must validate server identity and all query predicates.
+adm_sessions | Yes | No direct server column | Risk | Server identity may rely on session/provider ID.
+adm_checkpoints | Yes | No direct server column | Risk | Requires strict session identity discipline.
+seasons | Yes | Intentionally guild-wide | Likely correct | Requires SQL validation.
+factions | Yes | Intentionally guild-wide | Likely correct | Requires SQL validation.
+wars | Yes | Intentionally guild-wide | Unverified | Requires integration validation.
+events | Yes | Intentionally guild-wide | Guard exists | Requires SQL validation.
+bounties | Yes | Intentionally guild-wide | Improved | Upgrade guild scoping was fixed.
+points | Yes | Intentionally guild-wide | Unverified | Requires SQL validation.
+records | Yes | Depends on source event | Unverified | Requires repository audit.
+analytics | Yes | Activity can be server-scoped | Unverified | Requires multi-server integration.
+completion announcements | Yes | Usually guild-wide | Unverified | Requires recovery testing.
+leaderboards | Yes | Depends on leaderboard type | Unverified | Requires query and data validation.
+
+PRODUCTION WIRING
+
+Implemented but not fully proven:
+- Discord gateway
+- Nitrado API client
+- ADM discovery
+- ADM parser
+- WorkerManager
+- Server onboarding
+- Persistent setup
+- Welcomer
+- Linking
+- Stats and leaderboards
+- Factions and wars
+- Events, bounties, points, seasons
+- Completion publishers
+- Health endpoints
+- Queue health
+- Online counter
+
+Dead or weakly evidenced paths:
+- Direct checkpoint/session repositories are not fully wired into restart recovery.
+- Several packages have no direct test files.
+- Live publishers and panel refresh paths have no real Discord evidence.
+- /admin resync is primarily a safe state refresh/reporting path, not a full data rebuild.
+
+Legacy fallbacks:
+- DISCORD_GUILD_ID
+- KILLFEED_CHANNEL_ID
+- NITRADO_SERVICE_ID
+- Global startup Nitrado client
+- Environment-based startup configuration
+
+These are acceptable for bootstrap compatibility, but production onboarding should use persisted guild/server configuration.
+
+Duplicate systems:
+The main risk area is not obvious duplicate worker construction; WorkerManager is intended to be the production owner. Duplicate command/handler registration if startup is called more than once in one process has not been integration-tested.
+
+TEST COVERAGE
+
+Unit tests: PASSING.
+Mock tests: PASSING.
+PostgreSQL integration: NOT RUN.
+Real PostgreSQL: NOT RUN.
+Restart tests: LIMITED.
+Concurrency/race tests: NOT RUN.
+Multi-guild tests: PARTIAL/STATIC.
+Multi-server tests: PARTIAL/UNIT.
+Live Discord: NOT RUN.
+Live Nitrado: NOT RUN.
+Performance/load: NOT RUN.
+Deployment smoke test: NOT RUN.
+
+Standard local validation:
+
+go test ./...
+go vet ./...
+go build ./...
+
+Additional required validation:
+
+go test -race ./...
+
+TEST_DATABASE_URL
+
+Expected variables:
+
+TEST_DATABASE_URL
+ALLOW_INTEGRATION_DB_TESTS=true
+REQUIRE_INTEGRATION_DB=1
+
+Behavior:
+- If TEST_DATABASE_URL is missing, integration tests skip by default.
+- If REQUIRE_INTEGRATION_DB=1, missing TEST_DATABASE_URL fails.
+- If ALLOW_INTEGRATION_DB_TESTS is not true, integration tests fail intentionally.
+- Tests use an explicitly provided database.
+- Migration tests apply migrations against that database.
+- Cleanup safety depends on each integration test and the database being dedicated to testing.
+
+PostgreSQL integration status: NOT RUN
+
+No database URL should be fabricated.
+
+RACE / CONCURRENCY
+
+Race validation: NOT RUN.
+
+Concurrency-sensitive areas:
+- WorkerManager.workers
+- WorkerRegistry.workers
+- PlayerTracker.players
+- PersistenceQueue.queue
+- Voice counter timers
+- App first-connect map
+- Persistence queue list
+- Discord event handlers
+- Panel refresh goroutines
+- Scheduler goroutines
+- Shutdown cancellation
+
+The code uses mutexes in several areas, but only go test -race ./... can validate the tested paths.
+
+PHASE STATUS
+
+Phase 4.4: PARTIAL
+Implemented: WorkerManager, per-server workers, worker isolation, multi-server enumeration.
+Missing evidence: live two-server validation, race validation, restart recovery, per-server online counter.
+
+Phase 4.5: PARTIAL
+Implemented: secure token modal, credential encryption, service discovery, selection, server persistence, worker startup, disconnect/repair.
+Missing evidence: live Nitrado validation, real onboarding flow, credential rotation/recovery testing.
+
+Phase 4.6: PARTIAL
+Implemented: guild ownership checks, event leaderboard ownership fix, bounty upgrade guild scoping, worker/server context propagation.
+Missing evidence: complete SQL integration scoping matrix, two-guild/two-server test, race validation.
+
+Phase 4.7: PARTIAL
+Implemented: welcomer commands, persistent welcome configuration, presets/colors, member join handler.
+Missing evidence: real member join, Server Members Intent validation, permission failure/recovery validation.
+
+Phase 4.8: PARTIAL
+Implemented: setup verification, Discord guild/channel checks, permission reporting, /ready, runtime status, worker health.
+Missing evidence: live deployment smoke test, failure/recovery transitions, real Discord permission matrix.
+
+Phase 4.9: PARTIAL
+The code and reports exist, but formal production acceptance is incomplete until PostgreSQL, Discord, Nitrado, race, and deployment validation are complete.
+
+EXACT FIX ORDER
+
+STEP 1
+What to fix: Verify deployment secrets and remove any exposed credentials.
+Why first: Invalid or exposed credentials can invalidate every other test.
+Files: internal/config/config.go, .env.example, deployment configuration.
+Dependencies: Railway/hosting access.
+How to validate: Rotate credentials if necessary; confirm CREDENTIAL_ENCRYPTION_KEY; confirm a valid Nitrado token through /server connect; confirm no real secrets exist in Git history.
+
+STEP 2
+What to fix: Run PostgreSQL migrations and integration tests.
+Why first: Repository and scoping behavior cannot be trusted without real SQL execution.
+Files: internal/database/migrations.go, internal/repository/*_integration_test.go.
+Dependencies: Dedicated PostgreSQL test database.
+How to validate: Set TEST_DATABASE_URL, ALLOW_INTEGRATION_DB_TESTS=true, REQUIRE_INTEGRATION_DB=1, then run go test -tags=integration ./....
+
+STEP 3
+What to fix: Execute race and lifecycle validation.
+Why first: Worker and queue concurrency can invalidate multi-server safety.
+Files: internal/servers/workermanager.go, internal/health/workers.go, internal/killfeed/persistence.go.
+Dependencies: Race-capable Go toolchain.
+How to validate: go test -race ./...
+
+STEP 4
+What to fix: Prove two-guild and two-server isolation.
+Why first: This is the highest-impact security property.
+Files: repositories, persistence, app worker setup, Discord publishers.
+Dependencies: PostgreSQL and test doubles or disposable Discord guild.
+How to validate: Create two guild records, two servers in one guild, insert scoped events, and assert no cross-scope reads or publishes.
+
+STEP 5
+What to fix: Validate Discord onboarding and permissions.
+Why first: The user-facing workflow begins in Discord.
+Files: internal/discord/setup.go, welcome.go, server_commands.go, client.go.
+Dependencies: Disposable Discord guild.
+How to validate: Run /setup, /setup repair, /welcome, /server connect, /server services, /server select, /link, and /leaderboard.
+
+STEP 6
+What to fix: Validate Nitrado ADM ingestion.
+Why first: Killfeed and player tracking depend on it.
+Files: internal/nitrado/logs.go, internal/killfeed/engine.go, parser.go.
+Dependencies: Valid Nitrado token and DayZ server.
+How to validate: Confirm ADM discovery, selected file, player reconnect, connects_parsed, online count, kill generation, and Discord publish.
+
+STEP 7
+What to fix: Validate shutdown and restart behavior.
+Why first: Production deployments restart and redeploy regularly.
+Files: internal/app/app.go, workermanager.go, persistence.go.
+Dependencies: Test database and staging deployment.
+How to validate: Start workers, send shutdown, confirm queues drain, restart, and confirm workers resume without duplicate publishing.
+
+STEP 8
+What to fix: Validate competitive and completion features.
+Why first: These are secondary to core killfeed but still production-facing.
+Files: events, bounties, points, seasons, factions, wars, completion publishers.
+Dependencies: PostgreSQL and Discord staging.
+How to validate: Start/finalize events, claim bounties, award points, complete season/war, and confirm exactly-once announcements.
+
+STEP 9
+What to fix: Add tests for uncovered packages.
+Why: The current suite passes without directly testing several services.
+Files: achievements, admin, linking, logger, seasons, streaks, welcome.
+Dependencies: None for unit tests.
+How to validate: go test ./..., go vet ./..., go build ./...
+
+STEP 10
+What to fix: Run deployment smoke validation.
+Why last: Release approval requires all external dependencies to be proven.
+Files: Deployment configuration and runtime endpoints.
+Dependencies: Staging deployment.
+How to validate: /health, /ready, /api/v1/status, /admin diagnostics, /admin workers.
+
+FINAL CONCLUSION
+
+The project is not broken at compile/test level. The core code exists and local automated tests pass.
+
+However, the project is not yet production-certified because the following are unproven:
+1. Real PostgreSQL migrations and queries
+2. Race safety
+3. Live Discord permissions and intents
+4. Live Nitrado authentication and ADM files
+5. Multi-guild isolation
+6. Multi-server isolation
+7. Full startup/shutdown lifecycle
+8. Deployment readiness and recovery
+
+Correct repair order:
+
+Credentials
+→ PostgreSQL integration
+→ Race testing
+→ Multi-guild/server isolation
+→ Discord onboarding
+→ Nitrado/ADM validation
+→ Shutdown/restart
+→ Competitive features
+→ Production smoke test
+
+No code was changed, created, committed, or pushed during the audit.
