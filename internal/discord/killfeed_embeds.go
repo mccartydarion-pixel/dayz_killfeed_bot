@@ -25,11 +25,15 @@ const (
 // Champion brand color palette. Named constants keep branding consistent; no
 // random per-message colors.
 const (
-	ColorChampionGold = 0xC9A227 // STANDARD: dark gold / amber
-	ColorHeadshotRed  = 0x8B0000 // HEADSHOT: deep red
-	ColorLongRange    = 0x4682B4 // LONG_RANGE: steel blue
-	ColorExtremeRange = 0xB8860B // EXTREME_RANGE: royal gold accent
-	ColorCloseRange   = 0xE67E22 // CLOSE_RANGE: aggressive orange
+	ColorChampionGold  = 0xC9A227 // STANDARD: dark gold / amber
+	ColorDangerRed     = 0xD62828 // Welcome presets: danger/warning red
+	ColorSuccessGreen  = 0x2ECC71 // Welcome presets: success green
+	ColorInfoBlue      = 0x3498DB // Welcome presets: informational blue
+	ColorWarningOrange = 0xF39C12 // Welcome presets: warning orange
+	ColorHeadshotRed   = 0x8B0000 // HEADSHOT: deep red
+	ColorLongRange     = 0x4682B4 // LONG_RANGE: steel blue
+	ColorExtremeRange  = 0xB8860B // EXTREME_RANGE: royal gold accent
+	ColorCloseRange    = 0xE67E22 // CLOSE_RANGE: aggressive orange
 )
 
 // Range thresholds (meters) for style selection.

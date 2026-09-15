@@ -3,6 +3,7 @@ package discord
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/repository"
@@ -50,9 +51,8 @@ func (h *WelcomeCommandHandler) Handle(s *discordgo.Session, i *discordgo.Intera
 		return
 	}
 	cfg, err := h.repo.Get(context.Background(), gid)
-	if err != nil {
-		respondEphemeral(s, i, "Run `/setup run` first.")
-		return
+	if err != nil || cfg == nil {
+		cfg = &repository.WelcomeConfig{GuildID: gid, Enabled: true}
 	}
 	if len(i.ApplicationCommandData().Options) == 0 {
 		return
@@ -79,9 +79,79 @@ func (h *WelcomeCommandHandler) Handle(s *discordgo.Session, i *discordgo.Intera
 		respondEphemeral(s, i, "Welcomer updated.")
 		return
 	}
-	if name == "preview" {
+	if name == "channel" {
+		cfg.ChannelID = strings.TrimSpace(optionString(i.ApplicationCommandData().Options[0], "channel"))
+	} else if name == "message" {
+		cfg.MessageText = strings.TrimSpace(optionString(i.ApplicationCommandData().Options[0], "text"))
+	} else if name == "title" {
+		cfg.TitleText = strings.TrimSpace(optionString(i.ApplicationCommandData().Options[0], "text"))
+	} else if name == "footer" {
+		cfg.FooterText = strings.TrimSpace(optionString(i.ApplicationCommandData().Options[0], "text"))
+	} else if name == "color" {
+		if val := colorFromValue(optionString(i.ApplicationCommandData().Options[0], "value")); val != nil {
+			cfg.Color = val
+		} else {
+			respondEphemeral(s, i, "Unsupported welcome color. Use gold, red, green, blue, or orange.")
+			return
+		}
+	} else if name == "image" {
+		cfg.ImageURL = strings.TrimSpace(optionString(i.ApplicationCommandData().Options[0], "url"))
+	} else if name == "thumbnail" {
+		cfg.ThumbnailURL = strings.TrimSpace(optionString(i.ApplicationCommandData().Options[0], "url"))
+	} else if name == "preset" {
+		cfg = welcomePresetConfig(strings.TrimSpace(optionString(i.ApplicationCommandData().Options[0], "name")), *cfg)
+	} else if name == "preview" {
 		respondEphemeral(s, i, "🏆 **WELCOME PREVIEW**\n\nWelcome to Champion!\n\nUse `/link` to connect your PlayStation username.")
 		return
+	} else if name == "test" {
+		respondEphemeral(s, i, "Test welcome configuration loaded.")
+		return
 	}
-	respondEphemeral(s, i, "Test welcome configuration loaded.")
+
+	if err := h.repo.Upsert(context.Background(), *cfg); err != nil {
+		respondEphemeral(s, i, "Could not update welcome configuration.")
+		return
+	}
+	respondEphemeral(s, i, "Welcomer updated.")
+}
+
+func colorFromValue(value string) *int {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "gold":
+		v := ColorChampionGold
+		return &v
+	case "red":
+		v := ColorDangerRed
+		return &v
+	case "green":
+		v := ColorSuccessGreen
+		return &v
+	case "blue":
+		v := ColorInfoBlue
+		return &v
+	case "orange":
+		v := ColorWarningOrange
+		return &v
+	default:
+		return nil
+	}
+}
+
+func welcomePresetConfig(name string, cfg repository.WelcomeConfig) *repository.WelcomeConfig {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "minimal":
+		cfg.TitleText = "Welcome to Champion"
+		cfg.MessageText = "Welcome {user} to {server}!"
+		cfg.FooterText = "Champion Killfeed"
+		v := ColorInfoBlue
+		cfg.Color = &v
+		return &cfg
+	default:
+		cfg.TitleText = "🏆 WELCOME TO CHAMPION"
+		cfg.MessageText = "Welcome {user} to {server}.\n\nUse `/link` to connect your PlayStation username and unlock your combat history."
+		cfg.FooterText = "CHAMPION KILLFEED • EVERY KILL TELLS A STORY"
+		v := ColorChampionGold
+		cfg.Color = &v
+		return &cfg
+	}
 }
