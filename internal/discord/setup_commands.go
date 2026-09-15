@@ -140,6 +140,8 @@ func (h *SetupHandler) handleSetup(s *discordgo.Session, i *discordgo.Interactio
 	writeLine(&b, "Online Players", setup.OnlinePlayersChannelID)
 	writeLine(&b, "Leaderboards", setup.LeaderboardsChannelID)
 	writeLine(&b, "Player Stats", setup.PlayerStatsChannelID)
+	writeLine(&b, "Link Username", setup.LinkPanelChannelID)
+	writeLine(&b, "ADM Monitor", setup.ADMMonitorChannelID)
 	for name, reason := range report.Failed {
 		fmt.Fprintf(&b, "❌ %s: %s\n", name, reason)
 	}
@@ -198,7 +200,7 @@ func (h *SetupHandler) handleStatus(s *discordgo.Session, i *discordgo.Interacti
 	}
 	msg := fmt.Sprintf(
 		"🏆 **Champion Killfeed Status**\n\n"+
-			"Category: %s\nWelcome: %s\nKillfeed: %s\nOnline Players: %s\nServer Status: %s\nLeaderboards: %s\nPlayer Stats: %s\n",
+			"Category: %s\nWelcome: %s\nKillfeed: %s\nOnline Players: %s\nServer Status: %s\nLeaderboards: %s\nPlayer Stats: %s\nLink Username: %s\nADM Monitor: %s\n",
 		mark(setup.CategoryID),
 		mark(setup.WelcomeChannelID),
 		mark(setup.KillfeedChannelID),
@@ -206,6 +208,8 @@ func (h *SetupHandler) handleStatus(s *discordgo.Session, i *discordgo.Interacti
 		mark(setup.ServerStatusChannelID),
 		mark(setup.LeaderboardsChannelID),
 		mark(setup.PlayerStatsChannelID),
+		mark(setup.LinkPanelChannelID),
+		mark(setup.ADMMonitorChannelID),
 	)
 	respondEphemeral(s, i, msg)
 }

@@ -49,3 +49,17 @@ func (a *SessionAPI) Channel(channelID string) (*discordgo.Channel, error) {
 func (a *SessionAPI) ChannelEdit(channelID string, data *discordgo.ChannelEdit) (*discordgo.Channel, error) {
 	return a.S.ChannelEditComplex(channelID, data)
 }
+
+// ChannelMessageSendComplex sends a message with an embed and components
+// (buttons), used by the public interactive panels.
+func (a *SessionAPI) ChannelMessageSendComplex(channelID string, embed *discordgo.MessageEmbed, components []discordgo.MessageComponent) (*discordgo.Message, error) {
+	return a.S.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{Embeds: []*discordgo.MessageEmbed{embed}, Components: components})
+}
+
+// ChannelMessageEditComplex edits an existing panel message's embed/components.
+func (a *SessionAPI) ChannelMessageEditComplex(channelID, messageID string, embed *discordgo.MessageEmbed, components []discordgo.MessageComponent) (*discordgo.Message, error) {
+	edit := discordgo.NewMessageEdit(channelID, messageID)
+	edit.Embeds = &[]*discordgo.MessageEmbed{embed}
+	edit.Components = &components
+	return a.S.ChannelMessageEditComplex(edit)
+}

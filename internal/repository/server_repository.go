@@ -27,6 +27,7 @@ type ServerConfig struct {
 	PollIntervalMS, RescanSeconds                                                                                   int
 	StartupMode                                                                                                     string
 	PublishPvPKills, PublishSuicides, PublishUnknownDeaths, OnlineCounterEnabled, KillfeedEnabled, AnalyticsEnabled bool
+	ADMMonitorMessageID                                                                                             string
 }
 type ServerRepository struct{ pool *pgxpool.Pool }
 
@@ -145,9 +146,16 @@ func (r *ServerRepository) GetConnection(ctx context.Context, guildID int64) (*N
 }
 func (r *ServerRepository) EnsureConfig(ctx context.Context, serverID int64) (*ServerConfig, error) {
 	var c ServerConfig
-	err := r.pool.QueryRow(ctx, `INSERT INTO server_configs(server_id) VALUES($1) ON CONFLICT(server_id) DO UPDATE SET updated_at=NOW() RETURNING server_id,adm_poll_interval_ms,directory_rescan_interval_seconds,startup_mode,publish_pvp_kills,publish_suicides,publish_unknown_deaths,online_counter_enabled,killfeed_enabled,analytics_enabled`, serverID).Scan(&c.ServerID, &c.PollIntervalMS, &c.RescanSeconds, &c.StartupMode, &c.PublishPvPKills, &c.PublishSuicides, &c.PublishUnknownDeaths, &c.OnlineCounterEnabled, &c.KillfeedEnabled, &c.AnalyticsEnabled)
+	err := r.pool.QueryRow(ctx, `INSERT INTO server_configs(server_id) VALUES($1) ON CONFLICT(server_id) DO UPDATE SET updated_at=NOW() RETURNING server_id,adm_poll_interval_ms,directory_rescan_interval_seconds,startup_mode,publish_pvp_kills,publish_suicides,publish_unknown_deaths,online_counter_enabled,killfeed_enabled,analytics_enabled,COALESCE(adm_monitor_message_id,'')`, serverID).Scan(&c.ServerID, &c.PollIntervalMS, &c.RescanSeconds, &c.StartupMode, &c.PublishPvPKills, &c.PublishSuicides, &c.PublishUnknownDeaths, &c.OnlineCounterEnabled, &c.KillfeedEnabled, &c.AnalyticsEnabled, &c.ADMMonitorMessageID)
 	if err != nil {
 		return nil, fmt.Errorf("ensure server config: %w", err)
 	}
 	return &c, nil
+}
+
+// SetADMMonitorMessage persists the ADM monitor's per-server status message ID
+// so restarts edit the existing message instead of creating a new one.
+func (r *ServerRepository) SetADMMonitorMessage(ctx context.Context, serverID int64, messageID string) error {
+	_, err := r.pool.Exec(ctx, `UPDATE server_configs SET adm_monitor_message_id=$2,updated_at=NOW() WHERE server_id=$1`, serverID, messageID)
+	return err
 }

@@ -47,6 +47,15 @@ func (f *fakeGuildAPI) ChannelMessageSendEmbed(channelID string, embed *discordg
 	return &discordgo.Message{ID: "msg-" + channelID, ChannelID: channelID}, nil
 }
 
+func (f *fakeGuildAPI) ChannelMessageSendComplex(channelID string, embed *discordgo.MessageEmbed, components []discordgo.MessageComponent) (*discordgo.Message, error) {
+	f.nextID++
+	return &discordgo.Message{ID: "msg-" + itoa(f.nextID), ChannelID: channelID}, nil
+}
+
+func (f *fakeGuildAPI) ChannelMessageEditComplex(channelID, messageID string, embed *discordgo.MessageEmbed, components []discordgo.MessageComponent) (*discordgo.Message, error) {
+	return &discordgo.Message{ID: messageID, ChannelID: channelID}, nil
+}
+
 func (f *fakeGuildAPI) ChannelMessage(channelID, messageID string) (*discordgo.Message, error) {
 	return &discordgo.Message{ID: messageID, ChannelID: channelID}, nil
 }

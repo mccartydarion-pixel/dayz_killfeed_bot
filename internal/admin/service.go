@@ -2,18 +2,22 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/yourname/dayz-killfeed/internal/health"
 	"github.com/yourname/dayz-killfeed/internal/server"
 )
 
+var errLeaderboardRefreshUnavailable = errors.New("leaderboard refresh is not available")
+
 type Service struct {
-	state           *server.State
-	registry        *health.Registry
-	workers         *health.WorkerRegistry
-	linkDiagnostics func(context.Context) map[string]any
-	started         time.Time
+	state              *server.State
+	registry           *health.Registry
+	workers            *health.WorkerRegistry
+	linkDiagnostics    func(context.Context) map[string]any
+	leaderboardRefresh func(context.Context) error
+	started            time.Time
 }
 
 func NewService(state *server.State, registry *health.Registry) *Service {
@@ -21,6 +25,16 @@ func NewService(state *server.State, registry *health.Registry) *Service {
 }
 func (s *Service) SetWorkers(w *health.WorkerRegistry)                        { s.workers = w }
 func (s *Service) SetLinkDiagnostics(fn func(context.Context) map[string]any) { s.linkDiagnostics = fn }
+func (s *Service) SetLeaderboardRefresh(fn func(context.Context) error)       { s.leaderboardRefresh = fn }
+
+// RefreshLeaderboard triggers an immediate manual leaderboard refresh, reusing
+// the same scheduler used for the automatic 3-hour refresh.
+func (s *Service) RefreshLeaderboard(ctx context.Context) error {
+	if s == nil || s.leaderboardRefresh == nil {
+		return errLeaderboardRefreshUnavailable
+	}
+	return s.leaderboardRefresh(ctx)
+}
 func (s *Service) Status(ctx context.Context) map[string]any {
 	out := map[string]any{"uptime": time.Since(s.started).String()}
 	if s.state != nil {

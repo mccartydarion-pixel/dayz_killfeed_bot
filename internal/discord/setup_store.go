@@ -17,11 +17,14 @@ type GuildSetup struct {
 	OnlinePlayersChannelID string
 	LeaderboardsChannelID  string
 	PlayerStatsChannelID   string
+	ADMMonitorChannelID    string
+	LinkPanelChannelID     string
 
 	ServerStatusMessageID    string
 	OnlinePlayersMessageID   string
 	LeaderboardMessageID     string
 	PlayerStatsInfoMessageID string
+	LinkPanelMessageID       string
 }
 
 // SetupStore is the guild-keyed configuration abstraction. Phase 4 will replace

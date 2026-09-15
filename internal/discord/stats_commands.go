@@ -102,11 +102,17 @@ func (h *StatsCommandHandler) HandleStats(s *discordgo.Session, i *discordgo.Int
 		return
 	}
 
+	respondEphemeral(s, i, formatPlayerProfile(prof))
+}
+
+// formatPlayerProfile is the single authoritative rendering for a player
+// profile, shared by /stats and the public "My Stats"/"Search Player" panels.
+func formatPlayerProfile(prof *repository.PlayerProfile) string {
 	longest := "—"
 	if prof.LongestKill != nil {
 		longest = fmt.Sprintf("%.1fm", *prof.LongestKill)
 	}
-	msg := fmt.Sprintf(
+	return fmt.Sprintf(
 		"🏆 **CHAMPION PLAYER PROFILE**\n\n"+
 			"**Player**\n%s\n\n"+
 			"**Kills**\n%d\n\n"+
@@ -116,7 +122,6 @@ func (h *StatsCommandHandler) HandleStats(s *discordgo.Session, i *discordgo.Int
 			"**Last Seen**\n<t:%d:R>",
 		prof.DisplayName, prof.Kills, prof.Deaths, prof.KD(), longest, prof.LastSeen.Unix(),
 	)
-	respondEphemeral(s, i, msg)
 }
 
 // HandleLeaderboard processes /leaderboard.

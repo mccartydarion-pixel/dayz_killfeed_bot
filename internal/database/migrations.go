@@ -650,6 +650,20 @@ CREATE INDEX IF NOT EXISTS idx_kills_server ON kills(guild_id,server_id,created_
 CREATE INDEX IF NOT EXISTS idx_deaths_server ON deaths(guild_id,server_id,event_time DESC);
 `,
 	},
+	{
+		Name: "0017_adm_monitor",
+		SQL: `
+ALTER TABLE guilds ADD COLUMN IF NOT EXISTS adm_monitor_channel_id TEXT;
+ALTER TABLE server_configs ADD COLUMN IF NOT EXISTS adm_monitor_message_id TEXT;
+`,
+	},
+	{
+		Name: "0018_public_link_panel",
+		SQL: `
+ALTER TABLE guilds ADD COLUMN IF NOT EXISTS link_panel_channel_id TEXT;
+ALTER TABLE guilds ADD COLUMN IF NOT EXISTS link_panel_message_id TEXT;
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order, each transactionally. A

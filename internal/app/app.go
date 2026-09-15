@@ -35,55 +35,56 @@ import (
 
 // App owns the main runtime dependencies.
 type App struct {
-	Config              *config.Config
-	Nitrado             *nitrado.Client
-	Discord             *discord.Client
-	HTTPServer          *server.Server
-	State               *server.State
-	DB                  *database.DB
-	Guilds              *repository.GuildRepository
-	Players             *repository.PlayerRepository
-	Kills               *repository.KillRepository
-	Deaths              *repository.DeathRepository
-	Stats               *repository.StatsRepository
-	Sessions            *repository.SessionRepository
-	Checkpoints         *repository.CheckpointRepository
-	Streaks             *repository.StreakRepository
-	Achievements        *repository.AchievementRepository
-	Events              *repository.EventRepository
-	EventService        *competitiveevents.Service
-	Bounties            *repository.BountyRepository
-	Points              *repository.PointsRepository
-	Seasons             *repository.SeasonRepository
-	SeasonService       *seasons.Service
-	Factions            *repository.FactionRepository
-	Wars                *repository.PostgresWarRepository
-	FactionStats        *repository.FactionStatsRepository
-	FactionPresentation *repository.FactionPresentationRepository
-	Anomalies           *repository.AnomalyRepository
-	Announcements       *repository.AnnouncementRepository
-	AnnouncementService *discord.CompletionAnnouncementService
-	HealthRegistry      *health.Registry
-	Workers             *health.WorkerRegistry
-	WorkerManager       *servers.WorkerManager
-	ADMHealth           *operations.ADMMonitor
-	AdminService        *admin.Service
-	AnalyticsRepository *repository.AnalyticsRepository
-	WelcomeRepository   *repository.WelcomeRepository
-	ActivityRepository  *repository.ActivityRepository
-	Servers             *repository.ServerRepository
-	CredentialCipher    *security.AESGCM
-	CompletionPublisher *discord.LiveCompletionPublisher
-	PanelService        *panels.RefreshService
-	Links               *repository.LinkRepository
-	LinkService         *linking.LinkVerificationService
-	persistQueuesMu     sync.Mutex
-	persistQueues       []*killfeed.PersistenceQueue
-	firstConnectMu      sync.Mutex
-	firstConnectServers map[int64]bool
-	presenceMu          sync.Mutex
-	presenceTrackers    map[int64]*killfeed.PlayerTracker
-	cancel              context.CancelFunc
+	Config               *config.Config
+	Nitrado              *nitrado.Client
+	Discord              *discord.Client
+	HTTPServer           *server.Server
+	State                *server.State
+	DB                   *database.DB
+	Guilds               *repository.GuildRepository
+	Players              *repository.PlayerRepository
+	Kills                *repository.KillRepository
+	Deaths               *repository.DeathRepository
+	Stats                *repository.StatsRepository
+	Sessions             *repository.SessionRepository
+	Checkpoints          *repository.CheckpointRepository
+	Streaks              *repository.StreakRepository
+	Achievements         *repository.AchievementRepository
+	Events               *repository.EventRepository
+	EventService         *competitiveevents.Service
+	Bounties             *repository.BountyRepository
+	Points               *repository.PointsRepository
+	Seasons              *repository.SeasonRepository
+	SeasonService        *seasons.Service
+	Factions             *repository.FactionRepository
+	Wars                 *repository.PostgresWarRepository
+	FactionStats         *repository.FactionStatsRepository
+	FactionPresentation  *repository.FactionPresentationRepository
+	Anomalies            *repository.AnomalyRepository
+	Announcements        *repository.AnnouncementRepository
+	AnnouncementService  *discord.CompletionAnnouncementService
+	HealthRegistry       *health.Registry
+	Workers              *health.WorkerRegistry
+	WorkerManager        *servers.WorkerManager
+	ADMHealth            *operations.ADMMonitor
+	AdminService         *admin.Service
+	AnalyticsRepository  *repository.AnalyticsRepository
+	WelcomeRepository    *repository.WelcomeRepository
+	ActivityRepository   *repository.ActivityRepository
+	Servers              *repository.ServerRepository
+	CredentialCipher     *security.AESGCM
+	CompletionPublisher  *discord.LiveCompletionPublisher
+	PanelService         *panels.RefreshService
+	LeaderboardScheduler *discord.LeaderboardScheduler
+	Links                *repository.LinkRepository
+	LinkService          *linking.LinkVerificationService
+	persistQueuesMu      sync.Mutex
+	persistQueues        []*killfeed.PersistenceQueue
+	firstConnectMu       sync.Mutex
+	firstConnectServers  map[int64]bool
+	presenceMu           sync.Mutex
+	presenceTrackers     map[int64]*killfeed.PlayerTracker
+	cancel               context.CancelFunc
 }
 
 // registerPresenceTracker exposes a running ServerWorker's live PlayerTracker
@@ -713,6 +714,23 @@ func (a *App) Run() error {
 			}
 		})
 	}
+	if a.Guilds != nil && (a.LinkService != nil || a.Stats != nil) && a.Config.DiscordGuildID != "" {
+		publicPanels := discord.NewPublicPanelHandler(a.LinkService, a.Stats, a.Guilds)
+		a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+			switch i.Type {
+			case discordgo.InteractionMessageComponent:
+				customID := i.MessageComponentData().CustomID
+				if strings.HasPrefix(customID, "champion:link:") || strings.HasPrefix(customID, "champion:stats:") {
+					publicPanels.HandleComponent(s, i)
+				}
+			case discordgo.InteractionModalSubmit:
+				customID := i.ModalSubmitData().CustomID
+				if customID == "champion:link:modal:v1" || customID == "champion:stats:search:modal:v1" {
+					publicPanels.HandleModal(s, i)
+				}
+			}
+		})
+	}
 	a.Discord.AddMemberJoinHandler(welcomeHandler.HandleMemberJoin)
 
 	// Stats/leaderboard commands only work with a database.
@@ -790,6 +808,23 @@ func (a *App) Run() error {
 					slog.Warn("component=seasons", "msg", "could not ensure default season", "err", seasonErr.Error())
 				}
 				seasonCancel()
+			}
+			if a.Stats != nil {
+				if gs, gsErr := setupStore.Get(a.Config.DiscordGuildID); gsErr == nil && gs != nil && gs.LeaderboardsChannelID != "" {
+					leaderboardPanel := discord.NewLeaderboardPanel(api, gs.LeaderboardsChannelID, gs.LeaderboardMessageID, discord.DefaultLeaderboardConfig())
+					a.LeaderboardScheduler = discord.NewLeaderboardScheduler(leaderboardPanel, a.Stats, guildRowID, discord.DefaultLeaderboardConfig(), func(messageID string) {
+						if latest, latestErr := setupStore.Get(a.Config.DiscordGuildID); latestErr == nil && latest != nil {
+							latest.LeaderboardMessageID = messageID
+							_ = setupStore.Save(*latest)
+						}
+					})
+					go a.LeaderboardScheduler.Run(ctx)
+					if a.AdminService != nil {
+						a.AdminService.SetLeaderboardRefresh(func(refreshCtx context.Context) error {
+							return a.LeaderboardScheduler.RefreshOnce(refreshCtx)
+						})
+					}
+				}
 			}
 			store := &persistenceStoreAdapter{players: a.Players, kills: a.Kills, deaths: a.Deaths, seasons: a.Seasons, factions: a.Factions, wars: a.Wars, events: a.Events, bounties: a.Bounties, streaks: a.Streaks, anomalies: a.Anomalies, activity: a.ActivityRepository, servers: a.Servers, panelDirty: func() {
 				if livePanel != nil {

@@ -56,6 +56,32 @@ WHERE p.guild_id=$1 AND LOWER(p.display_name)=LOWER($2)`
 	return &prof, nil
 }
 
+// GetPlayerProfileByPlayerID is the linked-account variant of GetPlayerProfile,
+// used by the public "My Stats" panel so a resolved player ID never has to
+// round-trip through a display name lookup.
+func (r *StatsRepository) GetPlayerProfileByPlayerID(ctx context.Context, guildID, playerID int64) (*PlayerProfile, error) {
+	const q = `
+SELECT p.display_name,
+       (SELECT COUNT(*) FROM kills k WHERE k.guild_id=$1 AND k.killer_player_id=p.id) AS kills,
+       (SELECT COUNT(*) FROM deaths d WHERE d.guild_id=$1 AND d.player_id=p.id) AS deaths,
+       (SELECT MAX(k.distance) FROM kills k WHERE k.guild_id=$1 AND k.killer_player_id=p.id) AS longest,
+       p.last_seen_at
+FROM players p
+WHERE p.guild_id=$1 AND p.id=$2`
+
+	var prof PlayerProfile
+	err := r.pool.QueryRow(ctx, q, guildID, playerID).Scan(
+		&prof.DisplayName, &prof.Kills, &prof.Deaths, &prof.LongestKill, &prof.LastSeen,
+	)
+	if err != nil {
+		if err.Error() == "no rows in result set" {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get player profile by id: %w", err)
+	}
+	return &prof, nil
+}
+
 // TopByKills returns the top players by kill count.
 func (r *StatsRepository) TopByKills(ctx context.Context, guildID int64, limit int) ([]LeaderboardEntry, error) {
 	const q = `

@@ -70,10 +70,13 @@ func setupToRecord(s GuildSetup) repository.GuildRecord {
 		OnlinePlayersChannelID:   s.OnlinePlayersChannelID,
 		LeaderboardsChannelID:    s.LeaderboardsChannelID,
 		PlayerStatsChannelID:     s.PlayerStatsChannelID,
+		ADMMonitorChannelID:      s.ADMMonitorChannelID,
+		LinkPanelChannelID:       s.LinkPanelChannelID,
 		ServerStatusMessageID:    s.ServerStatusMessageID,
 		OnlinePlayersMessageID:   s.OnlinePlayersMessageID,
 		LeaderboardMessageID:     s.LeaderboardMessageID,
 		PlayerStatsInfoMessageID: s.PlayerStatsInfoMessageID,
+		LinkPanelMessageID:       s.LinkPanelMessageID,
 		SetupComplete:            s.CategoryID != "" && s.WelcomeChannelID != "" && s.KillfeedChannelID != "" && s.OnlinePlayersChannelID != "",
 	}
 }
@@ -90,9 +93,12 @@ func recordToSetup(r *repository.GuildRecord) *GuildSetup {
 		OnlinePlayersChannelID:   r.OnlinePlayersChannelID,
 		LeaderboardsChannelID:    r.LeaderboardsChannelID,
 		PlayerStatsChannelID:     r.PlayerStatsChannelID,
+		ADMMonitorChannelID:      r.ADMMonitorChannelID,
+		LinkPanelChannelID:       r.LinkPanelChannelID,
 		ServerStatusMessageID:    r.ServerStatusMessageID,
 		OnlinePlayersMessageID:   r.OnlinePlayersMessageID,
 		LeaderboardMessageID:     r.LeaderboardMessageID,
 		PlayerStatsInfoMessageID: r.PlayerStatsInfoMessageID,
+		LinkPanelMessageID:       r.LinkPanelMessageID,
 	}
 }

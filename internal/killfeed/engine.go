@@ -112,6 +112,16 @@ type Engine struct {
 	players   *PlayerTracker
 	onPlayers func(count int) // optional hook when the online player set changes
 
+	previousFileName string
+	lastRotationAt   time.Time
+	lastConnectAt    time.Time
+	lastDisconnectAt time.Time
+
+	// onAdmSnapshot fires once per poll cycle from this engine's own goroutine
+	// (never concurrently), so the ADM monitor can read a consistent snapshot
+	// without needing its own synchronization on Engine's internal fields.
+	onAdmSnapshot func(AdmSnapshot)
+
 	// startAtTail, when set before the first log selection, seeds the checkpoint
 	// at the current end of file instead of byte 0 so pre-existing log history
 	// (from before this server was connected) is never replayed as new events.
@@ -213,6 +223,15 @@ func (e *Engine) OnPlayersChanged(fn func(count int)) {
 		return
 	}
 	e.onPlayers = fn
+}
+
+// OnAdmSnapshot registers a hook fired once per poll cycle with a sanitized
+// snapshot of ADM/presence state, for the private admin monitor.
+func (e *Engine) OnAdmSnapshot(fn func(AdmSnapshot)) {
+	if e == nil {
+		return
+	}
+	e.onAdmSnapshot = fn
 }
 
 // Metrics returns a copy of the parser/publisher counters.
@@ -364,6 +383,10 @@ func selectBestCandidate(logs []nitrado.LogFile) nitrado.LogFile {
 
 // selectLog locks in the active gameplay log and switches to polling only it.
 func (e *Engine) selectLog(lf nitrado.LogFile) {
+	previousName := ""
+	if e.selected != nil {
+		previousName = e.selected.Name
+	}
 	candidate := lf
 	e.selected = &candidate
 	e.confirmPending = nil
@@ -390,11 +413,17 @@ func (e *Engine) selectLog(lf nitrado.LogFile) {
 	// selection or later rotation) must never clear live presence. Only
 	// authoritative PLAYER_CONNECT/PLAYER_DISCONNECT events change who is online.
 	if e.logSourceFound {
+		if previousName != "" && previousName != candidate.Name {
+			e.previousFileName = previousName
+			e.lastRotationAt = time.Now()
+			slog.Info("component=adm", "event", "rotation", "previous", previousName, "current", candidate.Name, "presence_retained", true)
+		}
 		slog.Info("component=presence", "event", "rotation", "presence_retained", true, "online_count", e.players.OnlineCount())
 	}
 	if !e.logSourceFound {
 		e.logSourceFound = true
 		e.lastLogChange = time.Now()
+		slog.Info("component=adm", "event", "current_selected", "file", candidate.Name)
 	}
 	slog.Info("component=killfeed", "state", string(StatePolling),
 		"msg", "log source selected",
@@ -565,6 +594,7 @@ func (e *Engine) processLines(lines []string) {
 			case EventPlayerConnect:
 				slog.Debug("component=presence", "stage", "parsed_connect", "matched", true)
 				if e.players.PlayerConnected(ev.Player) {
+					e.lastConnectAt = time.Now()
 					slog.Info("component=presence", "event", "connect", "server_resolved", true, "online_count", e.players.OnlineCount())
 					e.firePlayersChanged()
 				} else {
@@ -572,6 +602,7 @@ func (e *Engine) processLines(lines []string) {
 				}
 			case EventPlayerDisconnect:
 				if e.players.PlayerDisconnected(ev.Player) {
+					e.lastDisconnectAt = time.Now()
 					slog.Info("component=presence", "event", "disconnect", "server_resolved", true, "online_count", e.players.OnlineCount())
 					e.firePlayersChanged()
 				} else {
@@ -691,7 +722,13 @@ func (e *Engine) checkForNewerLog(ctx context.Context) {
 }
 
 func (e *Engine) reportPoll() {
-	if e == nil || e.sink == nil {
+	if e == nil {
+		return
+	}
+	if e.onAdmSnapshot != nil {
+		e.onAdmSnapshot(e.AdmSnapshot())
+	}
+	if e.sink == nil {
 		return
 	}
 	e.sink.SetPollStats(e.lastPoll, e.lastLogChange, e.pollInterval, e.bytesProcessed, e.linesDiscovered)

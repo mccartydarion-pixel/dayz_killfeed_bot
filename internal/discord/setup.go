@@ -18,6 +18,8 @@ const (
 	ChannelKillfeed     = "💀・killfeed"
 	ChannelLeaderboards = "📊・leaderboards"
 	ChannelPlayerStats  = "📈・player-stats"
+	ChannelLinkUsername = "🔗・link-username"
+	ChannelADMMonitor   = "🔒・adm-monitor"
 
 	// ChannelOnlinePlayersPrefix is the voice-counter prefix; the live count is
 	// appended as the channel name (e.g. "🟢・Online Players: 0").
@@ -33,6 +35,8 @@ type GuildAPI interface {
 	GuildChannels(guildID string) ([]*discordgo.Channel, error)
 	GuildChannelCreateComplex(guildID string, data discordgo.GuildChannelCreateData) (*discordgo.Channel, error)
 	ChannelMessageSendEmbed(channelID string, embed *discordgo.MessageEmbed) (*discordgo.Message, error)
+	ChannelMessageSendComplex(channelID string, embed *discordgo.MessageEmbed, components []discordgo.MessageComponent) (*discordgo.Message, error)
+	ChannelMessageEditComplex(channelID, messageID string, embed *discordgo.MessageEmbed, components []discordgo.MessageComponent) (*discordgo.Message, error)
 	ChannelMessage(channelID, messageID string) (*discordgo.Message, error)
 	Channel(channelID string) (*discordgo.Channel, error)
 	ChannelEdit(channelID string, data *discordgo.ChannelEdit) (*discordgo.Channel, error)
@@ -102,17 +106,20 @@ func (m *SetupManager) EnsureConfigured(guildID string) (*GuildSetup, *SetupRepo
 	type channelSpec struct {
 		name    string
 		voice   bool
+		private bool
 		assign  func(id string)
 		current func() string
 		label   string
 	}
 	specs := []channelSpec{
-		{ChannelWelcome, false, func(id string) { setup.WelcomeChannelID = id }, func() string { return setup.WelcomeChannelID }, "welcome"},
-		{ChannelServerStatus, false, func(id string) { setup.ServerStatusChannelID = id }, func() string { return setup.ServerStatusChannelID }, "server-status"},
-		{ChannelKillfeed, false, func(id string) { setup.KillfeedChannelID = id }, func() string { return setup.KillfeedChannelID }, "killfeed"},
-		{onlineVoiceChannelName(), true, func(id string) { setup.OnlinePlayersChannelID = id }, func() string { return setup.OnlinePlayersChannelID }, "online-players"},
-		{ChannelLeaderboards, false, func(id string) { setup.LeaderboardsChannelID = id }, func() string { return setup.LeaderboardsChannelID }, "leaderboards"},
-		{ChannelPlayerStats, false, func(id string) { setup.PlayerStatsChannelID = id }, func() string { return setup.PlayerStatsChannelID }, "player-stats"},
+		{ChannelWelcome, false, false, func(id string) { setup.WelcomeChannelID = id }, func() string { return setup.WelcomeChannelID }, "welcome"},
+		{ChannelServerStatus, false, false, func(id string) { setup.ServerStatusChannelID = id }, func() string { return setup.ServerStatusChannelID }, "server-status"},
+		{ChannelKillfeed, false, false, func(id string) { setup.KillfeedChannelID = id }, func() string { return setup.KillfeedChannelID }, "killfeed"},
+		{onlineVoiceChannelName(), true, false, func(id string) { setup.OnlinePlayersChannelID = id }, func() string { return setup.OnlinePlayersChannelID }, "online-players"},
+		{ChannelLeaderboards, false, false, func(id string) { setup.LeaderboardsChannelID = id }, func() string { return setup.LeaderboardsChannelID }, "leaderboards"},
+		{ChannelPlayerStats, false, false, func(id string) { setup.PlayerStatsChannelID = id }, func() string { return setup.PlayerStatsChannelID }, "player-stats"},
+		{ChannelLinkUsername, false, false, func(id string) { setup.LinkPanelChannelID = id }, func() string { return setup.LinkPanelChannelID }, "link-username"},
+		{ChannelADMMonitor, false, true, func(id string) { setup.ADMMonitorChannelID = id }, func() string { return setup.ADMMonitorChannelID }, "adm-monitor"},
 	}
 	for _, spec := range specs {
 		currentID := spec.current()
@@ -122,7 +129,7 @@ func (m *SetupManager) EnsureConfigured(guildID string) (*GuildSetup, *SetupRepo
 		if spec.label == "online-players" && existing != nil && existing.Type != discordgo.ChannelTypeGuildVoice {
 			// Create the voice counter and repoint the stored ID. The old text channel
 			// is left in place (no automatic deletion) and reported for manual cleanup.
-			ch, err := m.createChannel(guildID, setup.CategoryID, spec.name, true)
+			ch, err := m.createChannel(guildID, setup.CategoryID, spec.name, true, false)
 			if err != nil {
 				report.Failed[spec.label] = err.Error()
 				continue
@@ -136,7 +143,7 @@ func (m *SetupManager) EnsureConfigured(guildID string) (*GuildSetup, *SetupRepo
 			report.Existing = append(report.Existing, spec.label)
 			continue
 		}
-		ch, err := m.createChannel(guildID, setup.CategoryID, spec.name, spec.voice)
+		ch, err := m.createChannel(guildID, setup.CategoryID, spec.name, spec.voice, spec.private)
 		if err != nil {
 			report.Failed[spec.label] = err.Error()
 			continue
@@ -161,12 +168,21 @@ func (m *SetupManager) EnsureConfigured(guildID string) (*GuildSetup, *SetupRepo
 		}
 	}
 	if setup.PlayerStatsChannelID != "" && setup.PlayerStatsInfoMessageID == "" {
-		msg, err := m.api.ChannelMessageSendEmbed(setup.PlayerStatsChannelID, PlayerStatsInfoEmbed())
+		msg, err := m.api.ChannelMessageSendComplex(setup.PlayerStatsChannelID, PlayerStatsInfoEmbed(), PlayerStatsPanelComponents())
 		if err != nil {
 			report.Failed["player-stats-message"] = err.Error()
 		} else {
 			setup.PlayerStatsInfoMessageID = msg.ID
 			report.Created = append(report.Created, "player-stats-message")
+		}
+	}
+	if setup.LinkPanelChannelID != "" && setup.LinkPanelMessageID == "" {
+		msg, err := m.api.ChannelMessageSendComplex(setup.LinkPanelChannelID, LinkUsernameInfoEmbed(), LinkUsernamePanelComponents())
+		if err != nil {
+			report.Failed["link-username-message"] = err.Error()
+		} else {
+			setup.LinkPanelMessageID = msg.ID
+			report.Created = append(report.Created, "link-username-message")
 		}
 	}
 
@@ -210,19 +226,46 @@ func (m *SetupManager) createCategory(guildID string, channels []*discordgo.Chan
 	return cat, nil
 }
 
-func (m *SetupManager) createChannel(guildID, parentID, name string, voice bool) (*discordgo.Channel, error) {
+func (m *SetupManager) createChannel(guildID, parentID, name string, voice, private bool) (*discordgo.Channel, error) {
 	data := discordgo.GuildChannelCreateData{
 		Name:     name,
 		ParentID: parentID,
 	}
-	if voice {
+	switch {
+	case voice:
 		data.Type = discordgo.ChannelTypeGuildVoice
 		data.PermissionOverwrites = m.voiceCounterOverwrites(guildID)
-	} else {
+	case private:
+		data.Type = discordgo.ChannelTypeGuildText
+		data.PermissionOverwrites = m.privateChannelOverwrites(guildID)
+	default:
 		data.Type = discordgo.ChannelTypeGuildText
 		data.PermissionOverwrites = m.channelPermissionOverwrites(guildID)
 	}
 	return m.api.GuildChannelCreateComplex(guildID, data)
+}
+
+// privateChannelOverwrites hides an admin-only channel from @everyone. Members
+// with Administrator or Manage Server retain access under Discord's own
+// permission model; no separate admin-role configuration is required.
+func (m *SetupManager) privateChannelOverwrites(guildID string) []*discordgo.PermissionOverwrite {
+	overwrites := []*discordgo.PermissionOverwrite{
+		{
+			ID:   guildID, // @everyone role ID == guild ID
+			Type: discordgo.PermissionOverwriteTypeRole,
+			Deny: discordgo.PermissionViewChannel,
+		},
+	}
+	if m.botID != "" {
+		overwrites = append(overwrites, &discordgo.PermissionOverwrite{
+			ID:   m.botID,
+			Type: discordgo.PermissionOverwriteTypeMember,
+			Allow: discordgo.PermissionViewChannel | discordgo.PermissionSendMessages |
+				discordgo.PermissionEmbedLinks | discordgo.PermissionReadMessageHistory |
+				discordgo.PermissionManageMessages,
+		})
+	}
+	return overwrites
 }
 
 // voiceCounterOverwrites makes the online counter display-only: everyone can see
