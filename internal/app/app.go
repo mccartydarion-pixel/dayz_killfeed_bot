@@ -849,10 +849,17 @@ func (a *App) Run() error {
 			out["last_voice_publish_count"] = snapshot.LastVoicePublishCount
 			out["last_voice_publish_result"] = snapshot.LastVoicePublishResult
 			out["discord_voice_counter"] = onlineCounter.LastPublished()
+			actualCount, actualKnown, actualErr := onlineCounter.ActualCount()
+			if actualKnown {
+				out["actual_discord_count"] = actualCount
+			}
 			if channel, channelErr := api.Channel(onlineCounter.ChannelID()); channelErr == nil && channel != nil {
 				out["discord_voice_channel"] = channel.Name
 			}
-			out["classification"] = classifyPresence(snapshot, onlineCounter.LastPublished(), true, true)
+			if actualErr != nil {
+				out["actual_discord_count"] = "UNAVAILABLE"
+			}
+			out["classification"] = classifyPresenceActual(snapshot, actualCount, actualKnown, true, true)
 			return out
 		})
 	}
@@ -1051,9 +1058,14 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 		if onlineCounter != nil {
 			bindOnlineCounter(setupStore, a.Config.DiscordGuildID, onlineCounter)
 			onlineCounter.Publish(count)
+			_ = onlineCounter.Reconcile(count)
 			a.State.SetOnlineCounter(onlineCounter.LastPublished(), onlineCounter.UpdateErrors(), onlineCounter.PermissionBlocked())
 		}
 	})
+	if a.ownsPublicCounter(row.ID) && onlineCounter != nil {
+		bindOnlineCounter(setupStore, a.Config.DiscordGuildID, onlineCounter)
+		_ = onlineCounter.Reconcile(engine.PlayerTracker().OnlineCount())
+	}
 
 	if a.Workers != nil {
 		a.Workers.Register(workerName)

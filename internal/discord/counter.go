@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,6 +15,10 @@ import (
 // VoiceChannelNamer is the subset of Discord ops the counter needs.
 type VoiceChannelNamer interface {
 	ChannelEdit(channelID string, data *discordgo.ChannelEdit) (*discordgo.Channel, error)
+}
+
+type VoiceChannelInspector interface {
+	Channel(channelID string) (*discordgo.Channel, error)
 }
 
 // OnlineCounterName formats the voice channel name for a given online count.
@@ -131,6 +136,48 @@ func (c *VoiceChannelCounter) OnPublish(fn func(int, string)) {
 	c.mu.Unlock()
 }
 
+func (c *VoiceChannelCounter) ActualCount() (int, bool, error) {
+	if c == nil {
+		return 0, false, nil
+	}
+	inspector, ok := c.namer.(VoiceChannelInspector)
+	if !ok {
+		return 0, false, nil
+	}
+	channel, err := inspector.Channel(c.ChannelID())
+	if err != nil || channel == nil {
+		return 0, false, err
+	}
+	marker := "Online Players:"
+	idx := strings.LastIndex(channel.Name, marker)
+	if idx < 0 {
+		return 0, false, nil
+	}
+	value := strings.TrimSpace(channel.Name[idx+len(marker):])
+	count, err := strconv.Atoi(value)
+	if err != nil || count < 0 {
+		return 0, false, err
+	}
+	return count, true, nil
+}
+
+// Reconcile fetches the authoritative channel name and edits only when its
+// actual numeric count differs from the selected worker's desired count.
+func (c *VoiceChannelCounter) Reconcile(desired int) error {
+	actual, known, err := c.ActualCount()
+	if err != nil {
+		return err
+	}
+	if known && actual == desired {
+		c.mu.Lock()
+		c.lastPublished = actual
+		c.mu.Unlock()
+		return nil
+	}
+	slog.Info("component=voice_counter", "event", "reconcile", "desired", desired, "actual", actual)
+	return c.editConfirmed(desired, actual)
+}
+
 // Publish schedules a debounced rename to the given count. If the count matches
 // the last published value, nothing happens. Multiple rapid changes collapse
 // into one rename.
@@ -185,8 +232,7 @@ func (c *VoiceChannelCounter) flush() {
 		return
 	}
 
-	name := OnlineCounterName(count)
-	_, err := c.namer.ChannelEdit(channelID, &discordgo.ChannelEdit{Name: name})
+	_, err := c.namer.ChannelEdit(channelID, &discordgo.ChannelEdit{Name: OnlineCounterName(count)})
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -210,6 +256,31 @@ func (c *VoiceChannelCounter) flush() {
 		go callback(count, "FAILURE")
 	}
 	handleRenameError(err, c)
+}
+
+func (c *VoiceChannelCounter) editConfirmed(count, previous int) error {
+	if c == nil || c.namer == nil || c.ChannelID() == "" {
+		return nil
+	}
+	slog.Info("component=voice_counter", "event", "channel_edit_started", "desired", count)
+	_, err := c.namer.ChannelEdit(c.ChannelID(), &discordgo.ChannelEdit{Name: OnlineCounterName(count)})
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err != nil {
+		c.updateErrors++
+		c.lastPublishResult = "FAILURE"
+		handleRenameError(err, c)
+		slog.Warn("component=voice_counter", "event", "channel_edit_failed", "desired", count, "error_class", "discord_edit_failed")
+		return err
+	}
+	c.lastPublished = count
+	c.lastPublishedAt = time.Now()
+	c.lastPublishResult = "SUCCESS"
+	if c.onPublish != nil {
+		go c.onPublish(count, "SUCCESS")
+	}
+	slog.Info("component=voice_counter", "event", "channel_edit_success", "previous", previous, "current", count)
+	return nil
 }
 
 // handleRenameError classifies a rename failure: 403 blocks until repair, 429

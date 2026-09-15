@@ -11,8 +11,9 @@ import (
 
 // fakeNamer records ChannelEdit calls and can inject errors.
 type fakeNamer struct {
-	renames []string
-	err     error
+	renames     []string
+	err         error
+	channelName string
 }
 
 func (f *fakeNamer) ChannelEdit(channelID string, data *discordgo.ChannelEdit) (*discordgo.Channel, error) {
@@ -20,7 +21,12 @@ func (f *fakeNamer) ChannelEdit(channelID string, data *discordgo.ChannelEdit) (
 		return nil, f.err
 	}
 	f.renames = append(f.renames, data.Name)
+	f.channelName = data.Name
 	return &discordgo.Channel{ID: channelID, Name: data.Name}, nil
+}
+
+func (f *fakeNamer) Channel(channelID string) (*discordgo.Channel, error) {
+	return &discordgo.Channel{ID: channelID, Name: f.channelName}, nil
 }
 
 func newTestCounter(namer VoiceChannelNamer) *VoiceChannelCounter {
@@ -127,5 +133,28 @@ func TestCounterTransientRetries(t *testing.T) {
 	c.flush()
 	if c.UpdateErrors() == 0 {
 		t.Fatal("expected the transient failure to be counted")
+	}
+}
+
+func TestCounterReconcilesStaleActualChannel(t *testing.T) {
+	n := &fakeNamer{channelName: OnlineCounterName(1)}
+	c := newTestCounter(n)
+	c.lastPublished = 0
+	if err := c.Reconcile(0); err != nil {
+		t.Fatal(err)
+	}
+	if c.LastPublished() != 0 || n.channelName != OnlineCounterName(0) {
+		t.Fatalf("expected actual channel reconciliation, published=%d name=%q", c.LastPublished(), n.channelName)
+	}
+}
+
+func TestCounterFailedReconcileDoesNotAdvancePublishedState(t *testing.T) {
+	n := &fakeNamer{channelName: OnlineCounterName(1), err: errors.New("edit failed")}
+	c := newTestCounter(n)
+	if err := c.Reconcile(0); err == nil {
+		t.Fatal("expected reconcile failure")
+	}
+	if c.LastPublished() != 0 || c.LastPublishResult() == "SUCCESS" {
+		t.Fatalf("published state advanced on failure: %d %s", c.LastPublished(), c.LastPublishResult())
 	}
 }
