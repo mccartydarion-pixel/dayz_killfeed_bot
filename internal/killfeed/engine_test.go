@@ -180,3 +180,58 @@ func TestEngineSurvivesRecoverableFailures(t *testing.T) {
 		t.Fatalf("empty log list must be recoverable, got: %v", err)
 	}
 }
+
+// TestEngineStartAtLogTailSkipsExistingHistory proves the safe first-connect
+// behavior: when StartAtLogTail is set before the first log selection, a log
+// that already has content (simulating a server connected mid-history) does
+// not get replayed as new lines — only bytes appended after selection count.
+func TestEngineStartAtLogTailSkipsExistingHistory(t *testing.T) {
+	existing := "old kill one\nold kill two\nold kill three\n"
+	engine, fake := newFakeEngine(existing, int64(len(existing)))
+	engine.StartAtLogTail()
+	ctx := context.Background()
+
+	if err := engine.PollOnce(ctx); err != nil { // discovery + tail seed
+		t.Fatalf("discovery poll failed: %v", err)
+	}
+	if engine.tracker.LastByteOffset != int64(len(existing)) {
+		t.Fatalf("expected offset seeded to tail (%d), got %d", len(existing), engine.tracker.LastByteOffset)
+	}
+	if err := engine.PollOnce(ctx); err != nil { // first read at the (unchanged) tail
+		t.Fatalf("read poll failed: %v", err)
+	}
+	if got := engine.Stats().LinesDiscovered; got != 0 {
+		t.Fatalf("expected zero pre-existing lines replayed, got %d", got)
+	}
+
+	// New activity appended after connect must still be processed normally.
+	grown := existing + "new kill four\n"
+	fake.content = []byte(grown)
+	fake.logs[0].Size = int64(len(grown))
+	fake.logs[0].Modified = fake.logs[0].Modified.Add(time.Minute)
+	if err := engine.PollOnce(ctx); err != nil {
+		t.Fatalf("post-connect poll failed: %v", err)
+	}
+	if got := engine.Stats().LinesDiscovered; got != 1 {
+		t.Fatalf("expected exactly 1 new line processed, got %d", got)
+	}
+}
+
+// TestEngineWithoutStartAtLogTailReplaysExistingContent documents the default
+// (non-onboarding) behavior: without StartAtLogTail, a fresh engine reads
+// existing log content from byte 0, relying on durable dedupe upstream.
+func TestEngineWithoutStartAtLogTailReplaysExistingContent(t *testing.T) {
+	existing := "old kill one\nold kill two\n"
+	engine, _ := newFakeEngine(existing, int64(len(existing)))
+	ctx := context.Background()
+
+	if err := engine.PollOnce(ctx); err != nil {
+		t.Fatalf("discovery poll failed: %v", err)
+	}
+	if err := engine.PollOnce(ctx); err != nil {
+		t.Fatalf("read poll failed: %v", err)
+	}
+	if got := engine.Stats().LinesDiscovered; got != 2 {
+		t.Fatalf("expected default behavior to read existing content, got %d lines", got)
+	}
+}

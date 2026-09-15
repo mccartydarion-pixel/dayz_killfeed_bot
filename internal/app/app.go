@@ -79,7 +79,67 @@ type App struct {
 	LinkService         *linking.LinkVerificationService
 	persistQueuesMu     sync.Mutex
 	persistQueues       []*killfeed.PersistenceQueue
+	firstConnectMu      sync.Mutex
+	firstConnectServers map[int64]bool
 	cancel              context.CancelFunc
+}
+
+// markFirstConnect flags a server so its next worker start seeds the ADM
+// checkpoint at the log tail instead of byte 0 (see ConnectServer).
+func (a *App) markFirstConnect(serverID int64) {
+	a.firstConnectMu.Lock()
+	if a.firstConnectServers == nil {
+		a.firstConnectServers = make(map[int64]bool)
+	}
+	a.firstConnectServers[serverID] = true
+	a.firstConnectMu.Unlock()
+}
+
+// consumeFirstConnect reports and clears the first-connect flag for a server,
+// so only the triggering start (not later restarts) skips log history.
+func (a *App) consumeFirstConnect(serverID int64) bool {
+	a.firstConnectMu.Lock()
+	defer a.firstConnectMu.Unlock()
+	if a.firstConnectServers[serverID] {
+		delete(a.firstConnectServers, serverID)
+		return true
+	}
+	return false
+}
+
+// ConnectServer implements discord.ServerRuntime: it marks the server as a
+// first connect (tail-start) and starts its worker via WorkerManager. Safe to
+// call for a server that was never active at startup (e.g. /server select on
+// a fresh guild) because WorkerManager's factory resolves unknown IDs from
+// the database.
+func (a *App) ConnectServer(ctx context.Context, serverID int64) error {
+	if a.WorkerManager == nil {
+		return fmt.Errorf("killfeed runtime is not initialized (database required)")
+	}
+	a.markFirstConnect(serverID)
+	if a.WorkerManager.Running(serverID) {
+		return nil
+	}
+	return a.WorkerManager.Start(ctx, serverID)
+}
+
+// DisconnectServer implements discord.ServerRuntime: stops the worker, if any.
+func (a *App) DisconnectServer(serverID int64) {
+	if a.WorkerManager != nil {
+		a.WorkerManager.Stop(serverID)
+	}
+}
+
+// RepairServer implements discord.ServerRuntime: restarts the worker without
+// the first-connect tail-start (a repair must not skip missed activity).
+func (a *App) RepairServer(ctx context.Context, serverID int64) error {
+	if a.WorkerManager == nil {
+		return fmt.Errorf("killfeed runtime is not initialized (database required)")
+	}
+	if a.WorkerManager.Running(serverID) {
+		return nil
+	}
+	return a.WorkerManager.Start(ctx, serverID)
 }
 
 // addPersistQueue registers a per-server persistence queue for health reporting
@@ -386,13 +446,20 @@ func (a *App) Run() error {
 		})
 	}
 	if a.Servers != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
-		serverHandler := discord.NewServerCommandHandler(a.Servers, a.Guilds)
+		serverHandler := discord.NewServerCommandHandler(a.Servers, a.Guilds, a.CredentialCipher, a)
 		if err := discord.RegisterServerCommands(session, a.Config.DiscordGuildID); err != nil {
 			slog.Warn("component=discord", "msg", "failed to register server commands", "err", err.Error())
 		}
 		a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
-			if i.Type == discordgo.InteractionApplicationCommand && i.ApplicationCommandData().Name == "server" {
-				serverHandler.Handle(s, i)
+			switch i.Type {
+			case discordgo.InteractionApplicationCommand, discordgo.InteractionApplicationCommandAutocomplete:
+				if i.ApplicationCommandData().Name == "server" {
+					serverHandler.Handle(s, i)
+				}
+			case discordgo.InteractionModalSubmit:
+				if strings.HasPrefix(i.ModalSubmitData().CustomID, "champion_server_") {
+					serverHandler.Handle(s, i)
+				}
 			}
 		})
 	}
@@ -572,49 +639,51 @@ func (a *App) Run() error {
 				return fmt.Errorf("enumerate active game servers: %w", listErr)
 			}
 			if len(activeServers) == 0 {
-				slog.Warn("component=servers", "msg", "no active game servers for this guild; run /server connect to enable the killfeed")
-			} else {
-				if a.SeasonService != nil {
-					seasonCtx, seasonCancel := context.WithTimeout(ctx, 10*time.Second)
-					if _, seasonErr := a.SeasonService.EnsureDefaultSeason(seasonCtx, guildRowID, time.Now().UTC()); seasonErr != nil {
-						slog.Warn("component=seasons", "msg", "could not ensure default season", "err", seasonErr.Error())
-					}
-					seasonCancel()
+				slog.Warn("component=servers", "msg", "no active game servers for this guild yet; run /server connect and /server select to enable the killfeed")
+			}
+			if a.SeasonService != nil {
+				seasonCtx, seasonCancel := context.WithTimeout(ctx, 10*time.Second)
+				if _, seasonErr := a.SeasonService.EnsureDefaultSeason(seasonCtx, guildRowID, time.Now().UTC()); seasonErr != nil {
+					slog.Warn("component=seasons", "msg", "could not ensure default season", "err", seasonErr.Error())
 				}
-				store := &persistenceStoreAdapter{players: a.Players, kills: a.Kills, deaths: a.Deaths, seasons: a.Seasons, factions: a.Factions, wars: a.Wars, events: a.Events, bounties: a.Bounties, streaks: a.Streaks, anomalies: a.Anomalies, activity: a.ActivityRepository, servers: a.Servers, panelDirty: func() {
-					if livePanel != nil {
-						livePanel.MarkDirty()
-					}
-				}}
-
-				serversByID := make(map[int64]repository.GameServer, len(activeServers))
-				for _, row := range activeServers {
-					serversByID[row.ID] = row
+				seasonCancel()
+			}
+			store := &persistenceStoreAdapter{players: a.Players, kills: a.Kills, deaths: a.Deaths, seasons: a.Seasons, factions: a.Factions, wars: a.Wars, events: a.Events, bounties: a.Bounties, streaks: a.Streaks, anomalies: a.Anomalies, activity: a.ActivityRepository, servers: a.Servers, panelDirty: func() {
+				if livePanel != nil {
+					livePanel.MarkDirty()
 				}
+			}}
 
-				a.WorkerManager = servers.NewWorkerManager(func(workerCtx context.Context, workerServerID int64) error {
-					row, ok := serversByID[workerServerID]
-					if !ok {
-						if fetched, fetchErr := a.Servers.GetByID(workerCtx, workerServerID); fetchErr == nil && fetched != nil {
-							row = *fetched
-						} else {
-							return fmt.Errorf("server worker %d: unknown game_servers row", workerServerID)
-						}
+			serversByID := make(map[int64]repository.GameServer, len(activeServers))
+			for _, row := range activeServers {
+				serversByID[row.ID] = row
+			}
+
+			// WorkerManager is constructed here even with zero active servers so
+			// that /server select (a dynamic first connect) always has a runtime
+			// to attach a worker to on a fresh guild.
+			a.WorkerManager = servers.NewWorkerManager(func(workerCtx context.Context, workerServerID int64) error {
+				row, ok := serversByID[workerServerID]
+				if !ok {
+					if fetched, fetchErr := a.Servers.GetByID(workerCtx, workerServerID); fetchErr == nil && fetched != nil {
+						row = *fetched
+					} else {
+						return fmt.Errorf("server worker %d: unknown game_servers row", workerServerID)
 					}
-					return a.runServerWorker(workerCtx, row, store, setupStore, onlineCounter)
-				})
-
-				for _, row := range activeServers {
-					if err := a.WorkerManager.Start(ctx, row.ID); err != nil {
-						slog.Error("component=servers", "msg", "failed to start server worker", "server_id", row.ID, "err", err.Error())
-						continue
-					}
-					slog.Info("component=servers", "msg", "server worker started", "server_id", row.ID, "display_name", row.DisplayName)
 				}
+				return a.runServerWorker(workerCtx, row, store, setupStore, onlineCounter)
+			})
 
-				if a.EventService != nil || a.CompletionPublisher != nil {
-					go a.runCompetitiveSchedulers(ctx, guildRowID)
+			for _, row := range activeServers {
+				if err := a.WorkerManager.Start(ctx, row.ID); err != nil {
+					slog.Error("component=servers", "msg", "failed to start server worker", "server_id", row.ID, "err", err.Error())
+					continue
 				}
+				slog.Info("component=servers", "msg", "server worker started", "server_id", row.ID, "display_name", row.DisplayName)
+			}
+
+			if a.EventService != nil || a.CompletionPublisher != nil {
+				go a.runCompetitiveSchedulers(ctx, guildRowID)
 			}
 		} else {
 			slog.Warn("component=database", "msg", "no guild record yet; run /setup to enable persistence")
@@ -657,6 +726,9 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 
 	engine := killfeed.NewEngine(a.Nitrado, row.ProviderServiceID, killfeed.NewADMParser())
 	engine.SetStateSink(a.State)
+	if a.consumeFirstConnect(row.ID) {
+		engine.StartAtLogTail()
+	}
 
 	publisher := discord.NewKillfeedPublisher(a.Discord, a.Config.KillfeedChannelID)
 	publisher.BindStore(setupStore, a.Config.DiscordGuildID)

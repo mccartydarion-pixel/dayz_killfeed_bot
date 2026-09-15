@@ -1,0 +1,126 @@
+package app
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/yourname/dayz-killfeed/internal/servers"
+)
+
+func TestConsumeFirstConnectIsOneShot(t *testing.T) {
+	a := &App{}
+	if a.consumeFirstConnect(5) {
+		t.Fatal("expected no flag before markFirstConnect")
+	}
+	a.markFirstConnect(5)
+	if !a.consumeFirstConnect(5) {
+		t.Fatal("expected flag set after markFirstConnect")
+	}
+	if a.consumeFirstConnect(5) {
+		t.Fatal("expected flag to be cleared after first consume")
+	}
+}
+
+func TestConnectServerRequiresWorkerManager(t *testing.T) {
+	a := &App{}
+	if err := a.ConnectServer(context.Background(), 1); err == nil {
+		t.Fatal("expected error when WorkerManager is not initialized")
+	}
+}
+
+func TestConnectServerMarksFirstConnectAndStartsWorker(t *testing.T) {
+	started := make(chan int64, 1)
+	a := &App{}
+	a.WorkerManager = servers.NewWorkerManager(func(ctx context.Context, id int64) error {
+		started <- id
+		<-ctx.Done()
+		return nil
+	})
+
+	if err := a.ConnectServer(context.Background(), 42); err != nil {
+		t.Fatalf("ConnectServer failed: %v", err)
+	}
+	select {
+	case id := <-started:
+		if id != 42 {
+			t.Fatalf("expected worker started for server 42, got %d", id)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("worker never started")
+	}
+	if !a.WorkerManager.Running(42) {
+		t.Fatal("expected worker to be running after ConnectServer")
+	}
+	if !a.consumeFirstConnect(42) {
+		t.Fatal("expected ConnectServer to mark the server as a first connect")
+	}
+	a.WorkerManager.StopAll()
+}
+
+func TestConnectServerIsIdempotentWhileRunning(t *testing.T) {
+	starts := make(chan int64, 4)
+	a := &App{}
+	a.WorkerManager = servers.NewWorkerManager(func(ctx context.Context, id int64) error {
+		starts <- id
+		<-ctx.Done()
+		return nil
+	})
+	if err := a.ConnectServer(context.Background(), 7); err != nil {
+		t.Fatalf("first connect failed: %v", err)
+	}
+	<-starts
+	// Calling ConnectServer again while already running must not error or
+	// start a duplicate worker.
+	if err := a.ConnectServer(context.Background(), 7); err != nil {
+		t.Fatalf("second connect while running should be a no-op, got: %v", err)
+	}
+	select {
+	case <-starts:
+		t.Fatal("expected no duplicate worker start while already running")
+	case <-time.After(50 * time.Millisecond):
+	}
+	a.WorkerManager.StopAll()
+}
+
+func TestRepairServerDoesNotMarkFirstConnect(t *testing.T) {
+	a := &App{}
+	a.WorkerManager = servers.NewWorkerManager(func(ctx context.Context, id int64) error {
+		<-ctx.Done()
+		return nil
+	})
+	if err := a.RepairServer(context.Background(), 9); err != nil {
+		t.Fatalf("RepairServer failed: %v", err)
+	}
+	if a.consumeFirstConnect(9) {
+		t.Fatal("RepairServer must never trigger a tail-start (would skip missed activity)")
+	}
+	a.WorkerManager.StopAll()
+}
+
+func TestDisconnectServerStopsWorker(t *testing.T) {
+	a := &App{}
+	a.WorkerManager = servers.NewWorkerManager(func(ctx context.Context, id int64) error {
+		<-ctx.Done()
+		return nil
+	})
+	if err := a.ConnectServer(context.Background(), 3); err != nil {
+		t.Fatalf("connect failed: %v", err)
+	}
+	// Wait for the worker to actually register as running.
+	deadline := time.Now().Add(time.Second)
+	for !a.WorkerManager.Running(3) && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !a.WorkerManager.Running(3) {
+		t.Fatal("worker never reported running")
+	}
+	a.DisconnectServer(3)
+	deadline = time.Now().Add(time.Second)
+	for a.WorkerManager.Running(3) && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if a.WorkerManager.Running(3) {
+		t.Fatal("expected worker to stop after DisconnectServer")
+	}
+}

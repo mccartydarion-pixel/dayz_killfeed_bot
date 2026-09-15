@@ -111,6 +111,21 @@ type Engine struct {
 
 	players   *PlayerTracker
 	onPlayers func(count int) // optional hook when the online player set changes
+
+	// startAtTail, when set before the first log selection, seeds the checkpoint
+	// at the current end of file instead of byte 0 so pre-existing log history
+	// (from before this server was connected) is never replayed as new events.
+	startAtTail bool
+}
+
+// StartAtLogTail marks this engine to begin at the end of the log on its first
+// selection (safe first-connect behavior), instead of replaying the file's
+// existing history from byte 0. Has no effect after the first log is selected.
+func (e *Engine) StartAtLogTail() {
+	if e == nil {
+		return
+	}
+	e.startAtTail = true
 }
 
 // rescanInterval is how often, while polling a selected log, we do a lightweight
@@ -387,6 +402,14 @@ func (e *Engine) selectLog(lf nitrado.LogFile) {
 	}
 	if e.tracker.CurrentLogFile != "" && e.tracker.CurrentLogFile != candidate.Path {
 		e.tracker.ResetForRotation(candidate.Path)
+	}
+
+	// Safe first-connect behavior: skip any history already in the log by
+	// seeding the checkpoint at the current tail. Only applies to the very
+	// first selection of this engine instance (never on rotation/restart).
+	if e.startAtTail && !e.logSourceFound {
+		e.tracker.UpdateCheckpoint(e.serviceID, candidate.Path, candidate.Size, candidate.Modified, candidate.Size)
+		slog.Info("component=killfeed", "msg", "first connect: starting at log tail, existing history skipped", "file", candidate.Name, "size", candidate.Size)
 	}
 
 	// New ADM session (e.g. server restart): clear stale online players so the

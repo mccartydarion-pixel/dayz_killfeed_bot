@@ -87,6 +87,32 @@ func (r *ServerRepository) GetByID(ctx context.Context, id int64) (*GameServer, 
 	}
 	return &s, nil
 }
+
+// FindByGuildAndService looks up a game_servers row by its provider service ID
+// regardless of active state, for onboarding flows (disconnect/repair) that
+// need to find a server that may already be inactive.
+func (r *ServerRepository) FindByGuildAndService(ctx context.Context, guildID int64, providerServiceID string) (*GameServer, error) {
+	var s GameServer
+	err := r.pool.QueryRow(ctx, `SELECT id,guild_id,provider,provider_service_id,game,platform,COALESCE(display_name,''),status,active,created_at,updated_at FROM game_servers WHERE guild_id=$1 AND provider_service_id=$2`, guildID, providerServiceID).Scan(&s.ID, &s.GuildID, &s.Provider, &s.ProviderServiceID, &s.Game, &s.Platform, &s.DisplayName, &s.Status, &s.Active, &s.CreatedAt, &s.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &s, nil
+}
+
+// Deactivate marks a game_servers row inactive (clean teardown) while keeping
+// its history (kills/deaths/activity) intact for later reconnection.
+func (r *ServerRepository) Deactivate(ctx context.Context, id int64) error {
+	_, err := r.pool.Exec(ctx, `UPDATE game_servers SET active=FALSE, status='DISCONNECTED', updated_at=NOW() WHERE id=$1`, id)
+	return err
+}
+
+// Reactivate marks a previously disconnected game_servers row active again
+// (used by /server repair and /server select re-connecting an existing row).
+func (r *ServerRepository) Reactivate(ctx context.Context, id int64) error {
+	_, err := r.pool.Exec(ctx, `UPDATE game_servers SET active=TRUE, status='CONNECTED', updated_at=NOW() WHERE id=$1`, id)
+	return err
+}
 func (r *ServerRepository) SaveConnection(ctx context.Context, c NitradoConnection) error {
 	_, err := r.pool.Exec(ctx, `INSERT INTO nitrado_connections(guild_id,credential_ciphertext,credential_nonce,credential_key_version,status,last_validated_at,last_success_at,last_failure_at,last_error_class) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(guild_id) DO UPDATE SET credential_ciphertext=EXCLUDED.credential_ciphertext,credential_nonce=EXCLUDED.credential_nonce,credential_key_version=EXCLUDED.credential_key_version,status=EXCLUDED.status,last_validated_at=EXCLUDED.last_validated_at,last_success_at=EXCLUDED.last_success_at,last_failure_at=EXCLUDED.last_failure_at,last_error_class=EXCLUDED.last_error_class,updated_at=NOW()`, c.GuildID, c.Ciphertext, c.Nonce, c.KeyVersion, c.Status, c.LastValidatedAt, c.LastSuccessAt, c.LastFailureAt, c.LastErrorClass)
 	return err
