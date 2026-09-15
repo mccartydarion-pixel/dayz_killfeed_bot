@@ -109,7 +109,7 @@ func (h *WelcomeHandler) HandleMemberJoin(s *discordgo.Session, event *discordgo
 	if event.Member.User.Bot && !welcomeBots {
 		return
 	}
-	channelStatus := inspectWelcomeChannel(s, channelID)
+	channelStatus := inspectWelcomeChannel(s, event.GuildID, channelID)
 	if !channelStatus.exists || !channelStatus.view || !channelStatus.send || !channelStatus.embed {
 		slog.Warn("component=discord", "msg", "welcome send skipped: channel or permission check failed", "guild_id", event.GuildID, "error_class", channelStatus.errClass)
 		return

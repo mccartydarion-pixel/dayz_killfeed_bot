@@ -66,7 +66,7 @@ func (h *WelcomeCommandHandler) Handle(s *discordgo.Session, i *discordgo.Intera
 		return
 	}
 	if name == "status" {
-		respondEphemeral(s, i, h.welcomeStatus(s, *cfg, configErr))
+		respondEphemeral(s, i, h.welcomeStatus(s, i.GuildID, *cfg, configErr))
 		return
 	}
 	if name == "enable" || name == "disable" {
@@ -120,18 +120,23 @@ type welcomeChannelStatus struct {
 	retryAfter                string
 }
 
-func inspectWelcomeChannel(s *discordgo.Session, channelID string) welcomeChannelStatus {
+func inspectWelcomeChannel(s *discordgo.Session, guildID, channelID string) welcomeChannelStatus {
 	status := welcomeChannelStatus{}
 	if strings.TrimSpace(channelID) == "" {
-		status.errClass = "not_configured"
+		status.errClass = "CHANNEL_MISSING"
 		return status
 	}
 	if s == nil {
 		status.errClass = "discord_unavailable"
 		return status
 	}
-	if _, err := s.Channel(channelID); err != nil {
+	channel, err := s.Channel(channelID)
+	if err != nil {
 		status.errClass = welcomeErrorClass(err)
+		return status
+	}
+	if channel == nil || channel.GuildID == "" || (guildID != "" && channel.GuildID != guildID) {
+		status.errClass = "CHANNEL_MISSING"
 		return status
 	}
 	status.exists = true
@@ -153,8 +158,8 @@ func inspectWelcomeChannel(s *discordgo.Session, channelID string) welcomeChanne
 	return status
 }
 
-func (h *WelcomeCommandHandler) welcomeStatus(s *discordgo.Session, cfg repository.WelcomeConfig, configErr error) string {
-	channel := inspectWelcomeChannel(s, cfg.ChannelID)
+func (h *WelcomeCommandHandler) welcomeStatus(s *discordgo.Session, guildID string, cfg repository.WelcomeConfig, configErr error) string {
+	channel := inspectWelcomeChannel(s, guildID, cfg.ChannelID)
 	lastWelcome := "never"
 	if cfg.LastWelcomeAt != nil {
 		lastWelcome = fmt.Sprintf("<t:%d:R>", cfg.LastWelcomeAt.Unix())
@@ -178,7 +183,7 @@ func (h *WelcomeCommandHandler) welcomeStatus(s *discordgo.Session, cfg reposito
 }
 
 func (h *WelcomeCommandHandler) sendWelcomeTest(s *discordgo.Session, i *discordgo.InteractionCreate, cfg repository.WelcomeConfig) {
-	channel := inspectWelcomeChannel(s, cfg.ChannelID)
+	channel := inspectWelcomeChannel(s, i.GuildID, cfg.ChannelID)
 	if !channel.exists {
 		respondEphemeral(s, i, "❌ TEST WELCOME FAILED\nWelcome channel was not found.\nError class: "+channel.errClass)
 		return
@@ -191,7 +196,7 @@ func (h *WelcomeCommandHandler) sendWelcomeTest(s *discordgo.Session, i *discord
 	_, err := s.ChannelMessageSendComplex(cfg.ChannelID, &discordgo.MessageSend{Embeds: []*discordgo.MessageEmbed{embed}, AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}}})
 	if err != nil {
 		class := welcomeErrorClass(err)
-		if class == "rate_limited" {
+		if class == "RATE_LIMITED" {
 			respondEphemeral(s, i, "❌ TEST WELCOME FAILED\nDiscord rate limited the test send. Retry-After: "+retryAfterFromError(err))
 			return
 		}
@@ -219,20 +224,24 @@ func welcomeErrorClass(err error) string {
 	if err == nil {
 		return "none"
 	}
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "404") || strings.Contains(message, "not found") || strings.Contains(message, "unknown channel") {
+		return "CHANNEL_MISSING"
+	}
 	if restErr, ok := err.(*discordgo.RESTError); ok && restErr.Response != nil {
 		switch restErr.Response.StatusCode {
 		case http.StatusNotFound:
-			return "not_found"
+			return "CHANNEL_MISSING"
 		case http.StatusForbidden:
-			return "missing_permission_50013"
+			return "PERMISSION_BLOCKED"
 		case http.StatusTooManyRequests:
-			return "rate_limited"
+			return "RATE_LIMITED"
 		}
 		if restErr.Response.StatusCode >= 500 {
-			return "discord_5xx"
+			return "DISCORD_UNAVAILABLE"
 		}
 	}
-	return "unavailable"
+	return "DISCORD_UNAVAILABLE"
 }
 
 func retryAfterFromError(err error) string {

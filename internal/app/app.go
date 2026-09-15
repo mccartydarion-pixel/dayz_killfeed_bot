@@ -170,7 +170,9 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	nitradoClient := nitrado.NewClient("https://api.nitrado.net", cfg.NitradoToken, nil)
 	slog.Info("component=nitrado", "msg", "client configured", "base_url", nitradoClient.BaseURL())
 
-	discordClient, err := discord.New(cfg.DiscordToken, cfg.DiscordGuildMembersIntent)
+	// Welcomer consumes GuildMemberAdd, so request only the Guild Members
+	// privileged intent. Discord Developer Portal approval remains required.
+	discordClient, err := discord.New(cfg.DiscordToken, true)
 	if err != nil {
 		return nil, fmt.Errorf("create Discord client: %w", err)
 	}
@@ -260,6 +262,40 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	} else {
 		slog.Warn("component=database", "msg", "DATABASE_URL not configured; persistence disabled (degraded mode)")
 		state.SetDatabase(false, 0, 0)
+	}
+	if app.AdminService != nil {
+		app.AdminService.SetLinkDiagnostics(func(diagCtx context.Context) map[string]any {
+			result := map[string]any{
+				"database":                      "UNAVAILABLE",
+				"game_server":                   "NOT SELECTED",
+				"activity_repository":           "ERROR",
+				"observed_players":              "unavailable",
+				"last_player_connect_persisted": "unknown",
+			}
+			if app.DB == nil || app.Guilds == nil || app.Servers == nil || app.ActivityRepository == nil {
+				return result
+			}
+			result["database"] = "CONNECTED"
+			_, guildID, guildErr := app.Guilds.GetGuild(diagCtx, cfg.DiscordGuildID)
+			if guildErr != nil || guildID == 0 {
+				return result
+			}
+			serverID, serverErr := app.Servers.ConnectedServerID(diagCtx, guildID)
+			if serverErr != nil {
+				return result
+			}
+			result["game_server"] = "CONNECTED"
+			count, lastObserved, activityErr := app.ActivityRepository.Diagnostic(diagCtx, guildID, serverID)
+			if activityErr != nil {
+				return result
+			}
+			result["activity_repository"] = "HEALTHY"
+			result["observed_players"] = count
+			if lastObserved != nil {
+				result["last_player_connect_persisted"] = lastObserved.UTC().Format(time.RFC3339)
+			}
+			return result
+		})
 	}
 
 	_, cancel := context.WithCancel(ctx)
@@ -448,7 +484,7 @@ func (a *App) Run() error {
 	session := a.Discord.Session()
 	api := discord.NewSessionAPI(session)
 	setupManager := discord.NewSetupManager(api, setupStore, a.Discord.BotID())
-	setupHandler := discord.NewSetupHandler(setupManager)
+	setupHandler := discord.NewSetupHandler(setupManager, a.Guilds, a.WelcomeRepository)
 	welcomeHandler := discord.NewPersistentWelcomeHandler(setupStore, a.WelcomeRepository, a.Guilds)
 	if a.WelcomeRepository != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
 		welcomeCommands := discord.NewWelcomeCommandHandler(a.WelcomeRepository, a.Guilds, setupStore)

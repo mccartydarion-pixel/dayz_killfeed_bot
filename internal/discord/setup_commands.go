@@ -1,11 +1,13 @@
 package discord
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"strings"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
 // adminPerms is the minimum permission set required to run /setup.
@@ -39,12 +41,23 @@ func RegisterSetupCommand(session *discordgo.Session, guildID string) error {
 
 // SetupHandler processes /setup interactions with admin enforcement.
 type SetupHandler struct {
-	manager *SetupManager
+	manager     *SetupManager
+	guilds      GuildStore
+	welcomeRepo *repository.WelcomeRepository
 }
 
 // NewSetupHandler creates a handler bound to a setup manager.
-func NewSetupHandler(manager *SetupManager) *SetupHandler {
-	return &SetupHandler{manager: manager}
+func NewSetupHandler(manager *SetupManager, extras ...any) *SetupHandler {
+	h := &SetupHandler{manager: manager}
+	for _, extra := range extras {
+		switch value := extra.(type) {
+		case GuildStore:
+			h.guilds = value
+		case *repository.WelcomeRepository:
+			h.welcomeRepo = value
+		}
+	}
+	return h
 }
 
 // Handle processes an incoming /setup interaction.
@@ -89,6 +102,7 @@ func (h *SetupHandler) handleSetup(s *discordgo.Session, i *discordgo.Interactio
 		respondEphemeral(s, i, "❌ Setup failed.")
 		return
 	}
+	h.syncWelcomeChannel(i.GuildID, setup.WelcomeChannelID)
 
 	var b strings.Builder
 	if repair {
@@ -117,6 +131,27 @@ func (h *SetupHandler) handleSetup(s *discordgo.Session, i *discordgo.Interactio
 
 	respondEphemeral(s, i, b.String())
 	slog.Info("component=discord", "msg", "setup complete", "guild_id", i.GuildID, "created", len(report.Created), "repaired", len(report.Repaired), "failed", len(report.Failed))
+}
+
+func (h *SetupHandler) syncWelcomeChannel(discordGuildID, channelID string) {
+	if h == nil || h.guilds == nil || h.welcomeRepo == nil || channelID == "" {
+		return
+	}
+	_, guildID, err := h.guilds.GetGuild(context.Background(), discordGuildID)
+	if err != nil || guildID == 0 {
+		return
+	}
+	cfg, err := h.welcomeRepo.Get(context.Background(), guildID)
+	if err != nil || cfg == nil {
+		cfg = &repository.WelcomeConfig{GuildID: guildID, Enabled: true}
+	}
+	if cfg.ChannelID == channelID {
+		return
+	}
+	cfg.ChannelID = channelID
+	if err := h.welcomeRepo.Upsert(context.Background(), *cfg); err != nil {
+		slog.Warn("component=discord", "msg", "welcome channel persistence sync failed", "guild_id", discordGuildID, "error_class", "database_unavailable", "err", err.Error())
+	}
 }
 
 func (h *SetupHandler) handleStatus(s *discordgo.Session, i *discordgo.InteractionCreate) {

@@ -53,9 +53,30 @@ func (r *ServerRepository) ListActive(ctx context.Context) ([]GameServer, error)
 	return out, rows.Err()
 }
 func (r *ServerRepository) ConnectedServerID(ctx context.Context, guildID int64) (int64, error) {
-	var id int64
-	err := r.pool.QueryRow(ctx, `SELECT id FROM game_servers WHERE guild_id=$1 AND active AND LOWER(status) IN ('connected','ready','active') ORDER BY id LIMIT 1`, guildID).Scan(&id)
-	return id, err
+	rows, err := r.pool.Query(ctx, `SELECT id FROM game_servers WHERE guild_id=$1 AND active AND LOWER(status) IN ('connected','ready','active') ORDER BY id`, guildID)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return 0, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	switch len(ids) {
+	case 0:
+		return 0, fmt.Errorf("no connected server for guild %d", guildID)
+	case 1:
+		return ids[0], nil
+	default:
+		return 0, fmt.Errorf("multiple connected servers for guild %d; explicit server selection required", guildID)
+	}
 }
 
 // ListActiveByGuild returns every active game_servers row for one guild. This is

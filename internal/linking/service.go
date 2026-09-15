@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"strings"
 	"time"
 )
@@ -15,6 +16,8 @@ var ErrAlreadyLinked = errors.New("account already linked")
 var ErrPlayerClaimed = errors.New("player already linked")
 var ErrPlaytimeRequired = errors.New("minimum observed playtime required")
 var ErrLinkCheckUnavailable = errors.New("link check unavailable")
+var ErrNoConnectedServer = errors.New("no connected server")
+var ErrMultipleConnectedServers = errors.New("multiple connected servers")
 
 // PlayerCandidate is a known player returned by the repository.
 type PlayerCandidate struct {
@@ -83,6 +86,7 @@ func NewService(repo Repository, extras ...any) *LinkVerificationService {
 // Request creates a PENDING link after exact case-insensitive player resolution.
 func (s *LinkVerificationService) Request(ctx context.Context, guildID int64, discordUserID, username string) (*LinkRecord, error) {
 	if s == nil || s.repo == nil || s.activity == nil || s.serverID == nil {
+		slog.Warn("component=link", "guild", guildID, "server_resolved", false, "database_available", s != nil && s.repo != nil, "activity_query", "not_run", "error_class", "SERVER_CONTEXT_UNAVAILABLE")
 		return nil, ErrLinkCheckUnavailable
 	}
 	username = strings.TrimSpace(username)
@@ -90,6 +94,7 @@ func (s *LinkVerificationService) Request(ctx context.Context, guildID int64, di
 		return nil, ErrPlayerNotFound
 	}
 	if existing, err := s.repo.GetByDiscord(ctx, guildID, discordUserID); err != nil {
+		slog.Warn("component=link", "guild", guildID, "server_resolved", false, "database_available", false, "activity_query", "not_run", "error_class", "DATABASE_UNAVAILABLE")
 		return nil, ErrLinkCheckUnavailable
 	} else if existing != nil && existing.Status == StatusVerified {
 		return existing, ErrAlreadyLinked
@@ -99,6 +104,7 @@ func (s *LinkVerificationService) Request(ctx context.Context, guildID int64, di
 
 	candidates, err := s.repo.FindPlayers(ctx, guildID, username)
 	if err != nil {
+		slog.Warn("component=link", "guild", guildID, "server_resolved", false, "database_available", false, "activity_query", "not_run", "error_class", "PLAYER_LOOKUP_FAILED")
 		return nil, ErrLinkCheckUnavailable
 	}
 	if len(candidates) != 1 {
@@ -107,12 +113,22 @@ func (s *LinkVerificationService) Request(ctx context.Context, guildID int64, di
 	candidate := candidates[0]
 	serverID, serverErr := s.serverID.ConnectedServerID(ctx, guildID)
 	if serverErr != nil {
+		errorClass := "SERVER_CONTEXT_UNAVAILABLE"
+		if strings.Contains(strings.ToLower(serverErr.Error()), "no connected server") {
+			errorClass = "NO_CONNECTED_SERVER"
+		} else if strings.Contains(strings.ToLower(serverErr.Error()), "multiple connected servers") {
+			errorClass = "MULTIPLE_CONNECTED_SERVERS"
+		}
+		slog.Warn("component=link", "guild", guildID, "server_resolved", false, "database_available", true, "activity_query", "not_run", "error_class", errorClass)
 		return nil, ErrLinkCheckUnavailable
 	}
+	slog.Debug("component=link", "guild", guildID, "server_resolved", true, "database_available", true, "activity_query", "pending", "error_class", "SERVER_RESOLVED")
 	playtime, activityErr := s.activity.GetObservedPlaytime(ctx, guildID, serverID, candidate.ID, time.Now())
 	if activityErr != nil {
+		slog.Warn("component=link", "guild", guildID, "server_resolved", true, "database_available", false, "activity_query", "failure", "error_class", "ACTIVITY_LOOKUP_FAILED")
 		return nil, ErrLinkCheckUnavailable
 	}
+	slog.Debug("component=link", "guild", guildID, "server_resolved", true, "database_available", true, "activity_query", "success", "error_class", "ACTIVITY_LOOKUP_SUCCESS")
 	if playtime < 5*time.Minute {
 		return nil, ErrPlaytimeRequired
 	}

@@ -9,16 +9,18 @@ import (
 )
 
 type Service struct {
-	state    *server.State
-	registry *health.Registry
-	workers  *health.WorkerRegistry
-	started  time.Time
+	state           *server.State
+	registry        *health.Registry
+	workers         *health.WorkerRegistry
+	linkDiagnostics func(context.Context) map[string]any
+	started         time.Time
 }
 
 func NewService(state *server.State, registry *health.Registry) *Service {
 	return &Service{state: state, registry: registry, started: time.Now()}
 }
-func (s *Service) SetWorkers(w *health.WorkerRegistry) { s.workers = w }
+func (s *Service) SetWorkers(w *health.WorkerRegistry)                        { s.workers = w }
+func (s *Service) SetLinkDiagnostics(fn func(context.Context) map[string]any) { s.linkDiagnostics = fn }
 func (s *Service) Status(ctx context.Context) map[string]any {
 	out := map[string]any{"uptime": time.Since(s.started).String()}
 	if s.state != nil {
@@ -29,6 +31,9 @@ func (s *Service) Status(ctx context.Context) map[string]any {
 	}
 	if s.workers != nil {
 		out["workers"] = s.workers.Snapshot(30 * time.Second)
+	}
+	if s.linkDiagnostics != nil {
+		out["link_diagnostics"] = s.linkDiagnostics(ctx)
 	}
 	return out
 }

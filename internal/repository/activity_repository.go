@@ -19,6 +19,13 @@ type PlayerActivity struct {
 }
 type ActivityRepository struct{ pool *pgxpool.Pool }
 
+func (r *ActivityRepository) Diagnostic(ctx context.Context, guildID, serverID int64) (int64, *time.Time, error) {
+	var count int64
+	var last *time.Time
+	err := r.pool.QueryRow(ctx, `SELECT COUNT(*), MAX(last_observed_at) FROM player_server_activity WHERE guild_id=$1 AND server_id=$2`, guildID, serverID).Scan(&count, &last)
+	return count, last, err
+}
+
 func NewActivityRepository(pool *pgxpool.Pool) *ActivityRepository {
 	return &ActivityRepository{pool: pool}
 }
