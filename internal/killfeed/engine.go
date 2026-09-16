@@ -686,9 +686,25 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 
 	e.lastPoll = time.Now()
 	if !e.lastLogChange.IsZero() && time.Since(e.lastLogChange) > 5*time.Minute {
-		slog.Warn("component=adm", "event", "selected_stale", "file", e.selected.Name)
-		e.state = StateDiscovery
-		return e.discoverOnce(ctx)
+		// Directory-listing metadata can lag behind the file Nitrado is actually
+		// writing (see internal/killfeed/adm_source_scan.go). Force a direct read
+		// before giving up: on success this updates lastLogChange, so a genuinely
+		// live file resumes normal polling instead of re-triggering this branch
+		// every tick once discovery reselects the same newest file.
+		e.probeStaleSource(ctx, e.selected)
+		if time.Since(e.lastLogChange) > 5*time.Minute {
+			slog.Warn("component=adm", "event", "selected_stale", "file", e.selected.Name)
+			e.state = StateDiscovery
+			return e.discoverOnce(ctx)
+		}
+		// The probe found and processed genuinely new content directly, using
+		// its own checkpoint-aware read. Stop here rather than falling through
+		// into the metadata-comparison poll below, which would re-derive
+		// changed/truncated state from the same (still stale) directory
+		// metadata that caused this branch to fire and could misread it as a
+		// truncation, double-processing bytes the probe already consumed.
+		e.reportPoll()
+		return nil
 	}
 
 	// Periodically check for a newer ADM file (post-restart) on a slow cadence,
