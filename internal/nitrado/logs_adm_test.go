@@ -50,3 +50,54 @@ func TestListLogsFiltersADMOnly(t *testing.T) {
 		}
 	}
 }
+
+// TestListLogsFindsFileOnlyVisibleViaGameserverDetails reproduces a live
+// Nitrado behavior: a server can expose a second mount (observed live as
+// "noftp") that never appears as a child of any directory the recursive tree
+// walk from "/" can reach, yet is the mount the documented Gameserver Details
+// endpoint (game_specific.path) names as current. A log rotated only into
+// that mount must still be discovered.
+func TestListLogsFindsFileOnlyVisibleViaGameserverDetails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+
+		if strings.HasSuffix(r.URL.Path, "/gameservers") {
+			_, _ = w.Write([]byte(`{"status":"success","data":{"gameserver":{"game_specific":{"path":"/games/ni_1/noftp/dayzps/"}}}}`))
+			return
+		}
+
+		switch r.URL.Query().Get("dir") {
+		case "", "/":
+			// The enumerable mount: only reachable via "/", holds only the stale file.
+			_, _ = w.Write([]byte(`{"status":"success","data":{"entries":[
+				{"type":"dir","path":"/games/ni_1/ftproot/dayzps/config","name":"config","modified_at":1757370000}
+			]}}`))
+		case "/games/ni_1/ftproot/dayzps/config":
+			_, _ = w.Write([]byte(`{"status":"success","data":{"entries":[
+				{"type":"file","path":"/games/ni_1/ftproot/dayzps/config/DayZServer_PS4_x64_2026-09-08_22-00.ADM","name":"DayZServer_PS4_x64_2026-09-08_22-00.ADM","size":629,"modified_at":1757371000}
+			]}}`))
+		case "/games/ni_1/noftp/dayzps/config":
+			// The unlisted mount named by game_specific.path: holds the live file.
+			_, _ = w.Write([]byte(`{"status":"success","data":{"entries":[
+				{"type":"file","path":"/games/ni_1/noftp/dayzps/config/DayZServer_PS4_x64_2026-09-08_23-00.ADM","name":"DayZServer_PS4_x64_2026-09-08_23-00.ADM","size":1200,"modified_at":1757375000}
+			]}}`))
+		default:
+			_, _ = w.Write([]byte(`{"status":"success","data":{"entries":[]}}`))
+		}
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL, "token", srv.Client())
+	logs, err := client.ListLogs(context.Background(), "19806451")
+	if err != nil {
+		t.Fatalf("ListLogs returned unexpected error: %v", err)
+	}
+
+	if len(logs) != 2 {
+		t.Fatalf("expected 2 ADM candidates across both mounts, got %d: %+v", len(logs), logs)
+	}
+	if !strings.HasSuffix(logs[0].Name, "23-00.ADM") {
+		t.Fatalf("expected the file only visible via game_specific.path to be selected as newest, got %q", logs[0].Name)
+	}
+}
