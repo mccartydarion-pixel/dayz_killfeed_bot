@@ -114,6 +114,19 @@ func (a *spyRoleAssigner) AssignVerifiedRole(_ context.Context, discordUserID st
 	return a.err
 }
 
+type spyNotifier struct {
+	calls             int
+	lastDiscordUserID string
+	lastRoleAssigned  bool
+}
+
+func (n *spyNotifier) NotifyVerified(_ context.Context, discordUserID string, roleAssigned bool) error {
+	n.calls++
+	n.lastDiscordUserID = discordUserID
+	n.lastRoleAssigned = roleAssigned
+	return nil
+}
+
 type linkTestActivity struct {
 	playtime time.Duration
 	err      error
@@ -240,6 +253,47 @@ func TestDisconnectThenReconnectCompletesChallenge(t *testing.T) {
 	}
 	if roles.calls != 1 || roles.lastDiscordUserID != "discord-1" {
 		t.Fatalf("expected role assigned once to discord-1, got calls=%d last=%q", roles.calls, roles.lastDiscordUserID)
+	}
+}
+
+// TestCompletionNotifiesPlayerWithRoleAssignedTrue proves the player is
+// notified after their link completes, and told the role was assigned when
+// it actually was.
+func TestCompletionNotifiesPlayerWithRoleAssignedTrue(t *testing.T) {
+	repo := &linkTestRepository{}
+	repo.setPendingChallenge(1, 10, "discord-1", time.Now().Add(10*time.Minute))
+	notifier := &spyNotifier{}
+	service := NewService(repo, repo, &spyRoleAssigner{}, notifier)
+	ctx := context.Background()
+
+	_ = service.ObserveDisconnect(ctx, 1, 10, time.Now())
+	if err := service.ObserveConnect(ctx, 1, 10, time.Now()); err != nil {
+		t.Fatalf("ObserveConnect: %v", err)
+	}
+
+	if notifier.calls != 1 || notifier.lastDiscordUserID != "discord-1" || !notifier.lastRoleAssigned {
+		t.Fatalf("expected one notification for discord-1 with roleAssigned=true, got calls=%d user=%q roleAssigned=%v", notifier.calls, notifier.lastDiscordUserID, notifier.lastRoleAssigned)
+	}
+}
+
+// TestCompletionNotifiesPlayerWithRoleAssignedFalseWhenRoleFails proves the
+// player is still notified (the link completed) even when role assignment
+// itself fails or isn't configured - but is told the role was not assigned.
+func TestCompletionNotifiesPlayerWithRoleAssignedFalseWhenRoleFails(t *testing.T) {
+	repo := &linkTestRepository{}
+	repo.setPendingChallenge(1, 10, "discord-1", time.Now().Add(10*time.Minute))
+	notifier := &spyNotifier{}
+	failingRoles := &spyRoleAssigner{err: errors.New("role not configured")}
+	service := NewService(repo, repo, failingRoles, notifier)
+	ctx := context.Background()
+
+	_ = service.ObserveDisconnect(ctx, 1, 10, time.Now())
+	if err := service.ObserveConnect(ctx, 1, 10, time.Now()); err != nil {
+		t.Fatalf("ObserveConnect: %v", err)
+	}
+
+	if notifier.calls != 1 || notifier.lastRoleAssigned {
+		t.Fatalf("expected one notification with roleAssigned=false, got calls=%d roleAssigned=%v", notifier.calls, notifier.lastRoleAssigned)
 	}
 }
 

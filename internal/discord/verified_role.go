@@ -45,3 +45,25 @@ func (a *VerifiedRoleAssigner) AssignVerifiedRole(ctx context.Context, discordUs
 	}
 	return nil
 }
+
+// NotifyVerified DMs the player that their link finished verifying. Link
+// completion can happen from background ADM log processing (the disconnect/
+// reconnect challenge) with no active Discord interaction to reply to, so a
+// DM is the only way to reach the player at that point.
+func (a *VerifiedRoleAssigner) NotifyVerified(ctx context.Context, discordUserID string, roleAssigned bool) error {
+	if a == nil || a.client == nil || a.client.Session() == nil {
+		return fmt.Errorf("discord client not ready")
+	}
+	channel, err := a.client.Session().UserChannelCreate(discordUserID)
+	if err != nil {
+		return fmt.Errorf("open DM channel: %w", err)
+	}
+	message := "✅ **VERIFICATION COMPLETE**\n\nYour PlayStation account is now verified with Champion."
+	if roleAssigned {
+		message += " Your Verified role has been assigned."
+	}
+	if _, err := a.client.Session().ChannelMessageSend(channel.ID, message); err != nil {
+		return fmt.Errorf("send verification DM: %w", err)
+	}
+	return nil
+}

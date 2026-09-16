@@ -81,6 +81,14 @@ type RoleAssigner interface {
 	AssignVerifiedRole(ctx context.Context, discordUserID string) error
 }
 
+// Notifier tells the player their link finished verifying. Completion can
+// happen with no active Discord interaction to reply to (the ADM
+// disconnect/reconnect challenge completes from background log processing),
+// so this is a DM, not an interaction response.
+type Notifier interface {
+	NotifyVerified(ctx context.Context, discordUserID string, roleAssigned bool) error
+}
+
 // LinkVerificationService creates pending links. It intentionally does not
 // auto-verify a typed username: current ADM data cannot prove Discord ownership.
 // Verification instead comes from ChallengeRepository (an observed ADM
@@ -92,6 +100,7 @@ type LinkVerificationService struct {
 	serverID  ServerResolver
 	challenge ChallengeRepository
 	roles     RoleAssigner
+	notifier  Notifier
 }
 
 type ActivityReader interface {
@@ -111,6 +120,16 @@ func (s *LinkVerificationService) SetRoleAssigner(r RoleAssigner) {
 	s.roles = r
 }
 
+// SetNotifier attaches the notifier after construction, for the same
+// late-binding reason as SetRoleAssigner. Optional: unset means the player
+// is not messaged when their link completes.
+func (s *LinkVerificationService) SetNotifier(n Notifier) {
+	if s == nil {
+		return
+	}
+	s.notifier = n
+}
+
 func NewService(repo Repository, extras ...any) *LinkVerificationService {
 	s := &LinkVerificationService{repo: repo, expires: 10 * time.Minute}
 	for _, extra := range extras {
@@ -125,6 +144,9 @@ func NewService(repo Repository, extras ...any) *LinkVerificationService {
 		}
 		if v, ok := extra.(RoleAssigner); ok {
 			s.roles = v
+		}
+		if v, ok := extra.(Notifier); ok {
+			s.notifier = v
 		}
 	}
 	return s
@@ -265,9 +287,10 @@ func (s *LinkVerificationService) ApproveManually(ctx context.Context, guildID i
 	return s.complete(ctx, guildID, discordUserID)
 }
 
-// complete promotes the link to VERIFIED and assigns the configured role.
-// Role assignment failure (or no role configured) is logged, not fatal - the
-// link itself is the source of truth; the role is a convenience on top of it.
+// complete promotes the link to VERIFIED, assigns the configured role, and
+// DMs the player. Role assignment and notification failures (or either being
+// unconfigured) are logged, not fatal - the link itself is the source of
+// truth; the role and message are conveniences on top of it.
 // Calling Verify here is redundant-but-harmless when reached via
 // ObserveConnect (CompletePendingChallenge already flipped player_links in
 // its own transaction) and required when reached via ApproveManually (which
@@ -276,9 +299,17 @@ func (s *LinkVerificationService) complete(ctx context.Context, guildID int64, d
 	if err := s.repo.Verify(ctx, guildID, discordUserID); err != nil {
 		return err
 	}
+	roleAssigned := false
 	if s.roles != nil {
 		if err := s.roles.AssignVerifiedRole(ctx, discordUserID); err != nil {
 			slog.Warn("component=link", "msg", "verified role assignment failed", "err", err.Error())
+		} else {
+			roleAssigned = true
+		}
+	}
+	if s.notifier != nil {
+		if err := s.notifier.NotifyVerified(ctx, discordUserID, roleAssigned); err != nil {
+			slog.Warn("component=link", "msg", "verification notification failed", "err", err.Error())
 		}
 	}
 	return nil
