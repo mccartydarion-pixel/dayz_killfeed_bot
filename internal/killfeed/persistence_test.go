@@ -154,6 +154,59 @@ func TestPersistBeforePublish(t *testing.T) {
 	}
 }
 
+// TestDeathPersistedHookFiresForDeathAndSuicideOnly proves the death-feed
+// hook (mirroring onKillPersisted) fires for PLAYER_DEATH and SUICIDE_ACTION
+// after a successful durable insert, and does not fire for a plain connect.
+func TestDeathPersistedHookFiresForDeathAndSuicideOnly(t *testing.T) {
+	store := newFakePersistenceStore()
+	pq := NewPersistenceQueue(store, 1, "sess-1")
+
+	var published []EventType
+	pq.SetDeathPersistedHook(func(ev *Event) { published = append(published, ev.Type) })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go pq.Run(ctx)
+
+	pq.Enqueue(&Event{Type: EventPlayerDeath, Player: &PlayerRef{Name: "victim1", ID: "v1"}, TimeOfDay: "10:00:00"})
+	pq.Enqueue(&Event{Type: EventSuicideAction, Player: &PlayerRef{Name: "victim2", ID: "v2"}, TimeOfDay: "10:01:00"})
+	pq.Enqueue(&Event{Type: EventPlayerConnect, Player: &PlayerRef{Name: "victim3", ID: "v3"}})
+	pq.Close()
+
+	if len(store.deaths) != 2 {
+		t.Fatalf("expected 2 persisted deaths, got %d", len(store.deaths))
+	}
+	if len(published) != 2 || published[0] != EventPlayerDeath || published[1] != EventSuicideAction {
+		t.Fatalf("expected hook to fire for death then suicide only, got %v", published)
+	}
+}
+
+// TestDuplicateDeathNotPublished proves durable dedupe suppresses a republish
+// for a death event, same as TestDuplicateKillNotPublished for kills.
+func TestDuplicateDeathNotPublished(t *testing.T) {
+	store := newFakePersistenceStore()
+	pq := NewPersistenceQueue(store, 1, "sess-1")
+
+	var published int
+	pq.SetDeathPersistedHook(func(*Event) { published++ })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go pq.Run(ctx)
+
+	ev := &Event{Type: EventPlayerDeath, Player: &PlayerRef{Name: "victim1", ID: "v1"}, TimeOfDay: "10:00:00"}
+	pq.Enqueue(ev)
+	pq.Enqueue(ev) // same fingerprint -> durable dedupe must suppress second publish
+	pq.Close()
+
+	if len(store.deaths) != 1 {
+		t.Fatalf("expected 1 persisted death, got %d", len(store.deaths))
+	}
+	if published != 1 {
+		t.Fatalf("expected exactly 1 publish (duplicate suppressed), got %d", published)
+	}
+}
+
 func TestDuplicateKillNotPublished(t *testing.T) {
 	store := newFakePersistenceStore()
 	pq := NewPersistenceQueue(store, 1, "sess-1")

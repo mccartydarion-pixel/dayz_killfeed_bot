@@ -121,6 +121,12 @@ type KillPublisher interface {
 	PublishKill(ev *Event) error
 }
 
+// DeathPublisher is the consumer for authoritative PLAYER_DEATH/SUICIDE_ACTION
+// events. Implementations must not propagate errors that would stop log processing.
+type DeathPublisher interface {
+	PublishDeath(ev *Event) error
+}
+
 // Engine orchestrates log discovery, selection, incremental polling, and parsing.
 type Engine struct {
 	parser          Parser
@@ -145,10 +151,11 @@ type Engine struct {
 	lastRescan     time.Time // last time we checked for a newer ADM file
 	sampleCaptured bool      // whether we've logged the gameplay sample for the selected log
 
-	dedupe      *Deduplicator
-	publisher   KillPublisher
-	metrics     Metrics
-	persistence *PersistenceQueue
+	dedupe         *Deduplicator
+	publisher      KillPublisher
+	deathPublisher DeathPublisher
+	metrics        Metrics
+	persistence    *PersistenceQueue
 
 	players   *PlayerTracker
 	onPlayers func(count int) // optional hook when the online player set changes
@@ -316,6 +323,14 @@ func (e *Engine) SetKillPublisher(p KillPublisher) {
 	e.publisher = p
 }
 
+// SetDeathPublisher attaches the consumer for authoritative death/suicide events.
+func (e *Engine) SetDeathPublisher(p DeathPublisher) {
+	if e == nil {
+		return
+	}
+	e.deathPublisher = p
+}
+
 // SetPersistence attaches the durable persistence queue and wires Discord
 // publish to happen only after a successful non-duplicate durable insert.
 func (e *Engine) SetPersistence(q *PersistenceQueue) {
@@ -333,6 +348,12 @@ func (e *Engine) SetPersistence(q *PersistenceQueue) {
 			e.metrics.DiscordKillsPublished++
 			e.metrics.LastKillTime = time.Now()
 		}
+	})
+	q.SetDeathPersistedHook(func(ev *Event) {
+		if e.deathPublisher == nil {
+			return
+		}
+		_ = e.deathPublisher.PublishDeath(ev)
 	})
 }
 

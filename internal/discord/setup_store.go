@@ -19,6 +19,8 @@ type GuildSetup struct {
 	PlayerStatsChannelID   string
 	ADMMonitorChannelID    string
 	LinkPanelChannelID     string
+	DeathChannelID         string
+	VerifiedRoleID         string
 
 	ServerStatusMessageID    string
 	OnlinePlayersMessageID   string

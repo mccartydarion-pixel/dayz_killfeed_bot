@@ -41,6 +41,15 @@ type ActivityCheckpointer interface {
 	CheckpointConnected(context.Context, int64, int64, time.Time) error
 }
 
+// LinkChallengeObserver is notified of durably-persisted connect/disconnect
+// activity so a pending /link request's disconnect-then-reconnect challenge
+// can be observed and completed. Errors are logged only; they never block
+// normal presence/activity persistence.
+type LinkChallengeObserver interface {
+	ObserveConnect(ctx context.Context, guildID, playerID int64, at time.Time) error
+	ObserveDisconnect(ctx context.Context, guildID, playerID int64, at time.Time) error
+}
+
 // PersistenceQueue is a bounded, ordered queue of events awaiting durable
 // persistence before Discord publish. Overflow drops the oldest-eligible policy
 // is deterministic: when full, the newest event is dropped and counted.
@@ -60,10 +69,14 @@ type PersistenceQueue struct {
 	// onKillPersisted is invoked after a kill is durably inserted. If the insert
 	// is a duplicate (already persisted), it is NOT invoked — preventing reposts.
 	onKillPersisted func(ev *Event)
-	postProcessor   KillPostProcessor
-	enqueued        int64
-	highWater       int
-	oldestAt        time.Time
+	// onDeathPersisted is invoked after a PLAYER_DEATH/SUICIDE_ACTION is durably
+	// inserted (same duplicate-guard placement as onKillPersisted).
+	onDeathPersisted func(ev *Event)
+	linkChallenge    LinkChallengeObserver
+	postProcessor    KillPostProcessor
+	enqueued         int64
+	highWater        int
+	oldestAt         time.Time
 }
 
 type persistRequest struct {
@@ -73,6 +86,12 @@ type persistRequest struct {
 
 func (q *PersistenceQueue) SetKillPostProcessor(processor KillPostProcessor) {
 	q.postProcessor = processor
+}
+
+// SetLinkChallengeObserver attaches the /link disconnect-reconnect challenge
+// tracker. Optional: if unset, connect/disconnect persistence is unaffected.
+func (q *PersistenceQueue) SetLinkChallengeObserver(o LinkChallengeObserver) {
+	q.linkChallenge = o
 }
 
 // ServerID returns the game_servers row this queue is scoped to (0 if unset).
@@ -112,6 +131,18 @@ func (q *PersistenceQueue) SetKillPersistedHook(fn func(ev *Event)) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.onKillPersisted = fn
+}
+
+// SetDeathPersistedHook registers the callback fired after a PLAYER_DEATH or
+// SUICIDE_ACTION is durably persisted (and not a duplicate). This is where
+// death-feed Discord publish happens.
+func (q *PersistenceQueue) SetDeathPersistedHook(fn func(ev *Event)) {
+	if q == nil {
+		return
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.onDeathPersisted = fn
 }
 func (q *PersistenceQueue) Enqueue(ev *Event) bool {
 	return q.enqueue(ev, nil)
@@ -262,6 +293,18 @@ func (q *PersistenceQueue) persistOne(ctx context.Context, ev *Event) error {
 				return err
 			}
 		}
+		if q.linkChallenge != nil && playerID > 0 {
+			at := eventTime(ev)
+			var challengeErr error
+			if ev.Type == EventPlayerConnect {
+				challengeErr = q.linkChallenge.ObserveConnect(ctx, q.guildID, playerID, at)
+			} else {
+				challengeErr = q.linkChallenge.ObserveDisconnect(ctx, q.guildID, playerID, at)
+			}
+			if challengeErr != nil {
+				slog.Debug("component=link", "msg", "challenge observation failed", "err", challengeErr.Error())
+			}
+		}
 		return nil
 	case EventPlayerKill:
 		killerID, err := q.upsertPlayer(ctx, ev.Killer)
@@ -346,9 +389,20 @@ func (q *PersistenceQueue) persistOne(ctx context.Context, ev *Event) error {
 			DeathType:   deathType,
 			EventTime:   eventTimePtr(ev),
 		}
-		if err := q.store.InsertDeath(ctx, rec); err != nil && !errors.Is(err, repository.ErrDuplicate) {
-			slog.Warn("component=killfeed", "msg", "death persistence failed", "err", err.Error())
-			return err
+		if err := q.store.InsertDeath(ctx, rec); err != nil {
+			if !errors.Is(err, repository.ErrDuplicate) {
+				slog.Warn("component=killfeed", "msg", "death persistence failed", "err", err.Error())
+				return err
+			}
+			// Durable dedupe: already persisted — do NOT publish again.
+			slog.Debug("component=killfeed", "msg", "death already persisted; skipping publish", "fingerprint", rec.Fingerprint)
+		} else {
+			q.mu.Lock()
+			hook := q.onDeathPersisted
+			q.mu.Unlock()
+			if hook != nil {
+				hook(ev)
+			}
 		}
 	default:
 		// connect/disconnect/hit/etc: just track the player's identity/last_seen.
