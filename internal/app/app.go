@@ -1117,6 +1117,14 @@ func (a *App) Run() error {
 // until workerCtx is cancelled (by WorkerManager.Stop/StopAll or shutdown).
 // A panic here is caught by WorkerManager's recover() boundary, not here, so
 // that the failure is always logged with server_id context in one place.
+// rotatingFeedInterval/rotatingFeedBatchSize control the killfeed and
+// death-feed channels' rolling display: up to rotatingFeedBatchSize embeds
+// visible at once, the whole batch replaced every rotatingFeedInterval.
+const (
+	rotatingFeedInterval  = 10 * time.Minute
+	rotatingFeedBatchSize = 10
+)
+
 func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServer, store *persistenceStoreAdapter, setupStore discord.SetupStore, onlineCounter *discord.VoiceChannelCounter) error {
 	workerName := fmt.Sprintf("adm_worker_%d", row.ID)
 	defer func() {
@@ -1165,6 +1173,27 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 
 	deathPublisher := discord.NewDeathfeedPublisher(a.Discord, setupStore, a.Config.DiscordGuildID)
 	engine.SetDeathPublisher(deathPublisher)
+
+	killFeed := discord.NewRotatingFeed(a.Discord.Session(), setupStore, a.Config.DiscordGuildID, func(s *discord.GuildSetup) string { return s.KillfeedChannelID }, rotatingFeedInterval, rotatingFeedBatchSize)
+	publisher.SetFeed(killFeed)
+	deathFeed := discord.NewRotatingFeed(a.Discord.Session(), setupStore, a.Config.DiscordGuildID, func(s *discord.GuildSetup) string { return s.DeathChannelID }, rotatingFeedInterval, rotatingFeedBatchSize)
+	deathPublisher.SetFeed(deathFeed)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("component=servers", "msg", "killfeed rotating feed panic recovered", "server_id", row.ID, "panic", fmt.Sprint(r))
+			}
+		}()
+		killFeed.Run(workerCtx)
+	}()
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("component=servers", "msg", "death feed rotating feed panic recovered", "server_id", row.ID, "panic", fmt.Sprint(r))
+			}
+		}()
+		deathFeed.Run(workerCtx)
+	}()
 
 	pq := killfeed.NewPersistenceQueueWithServerID(store, row.GuildID, row.ID, row.ProviderServiceID)
 	pq.SetKillPostProcessor(store)
