@@ -25,6 +25,10 @@ type Config struct {
 	DatabaseURL               string
 	CredentialEncryptionKey   string
 	DiscordGuildMembersIntent bool
+
+	// WebsiteAPISecret authenticates the website's read-only runtime status
+	// API (see internal/app/runtime_status.go). Empty disables the endpoint.
+	WebsiteAPISecret string
 }
 
 // Load reads configuration from environment variables and validates required fields.
@@ -44,6 +48,7 @@ func Load() (*Config, error) {
 		DatabaseURL:               strings.TrimSpace(os.Getenv("DATABASE_URL")),
 		CredentialEncryptionKey:   strings.TrimSpace(os.Getenv("CREDENTIAL_ENCRYPTION_KEY")),
 		DiscordGuildMembersIntent: strings.EqualFold(strings.TrimSpace(os.Getenv("DISCORD_GUILD_MEMBERS_INTENT_ENABLED")), "true"),
+		WebsiteAPISecret:          strings.TrimSpace(os.Getenv("WEBSITE_API_SECRET")),
 	}
 
 	if cfg.HTTPPort == "" {
