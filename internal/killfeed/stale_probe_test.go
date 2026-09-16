@@ -73,6 +73,46 @@ func TestStaleProbeDetectsInactiveSource(t *testing.T) {
 	}
 }
 
+// TestStaleProbeRunsPastHardStaleThreshold proves the engine does not give up
+// on a genuinely live ADM once directory metadata has looked unchanged for
+// more than 5 minutes. Before this was fixed, pollSelected jumped straight to
+// full rediscovery at the 5-minute mark, which reselected the same (only)
+// candidate without ever resetting lastLogChange or calling probeStaleSource
+// - so on every following poll the same branch fired again, permanently
+// starving the direct-read probe and leaving new kill/connect lines unread
+// forever even though the server kept writing them.
+func TestStaleProbeRunsPastHardStaleThreshold(t *testing.T) {
+	baseline := "historical line\n"
+	engine, fake := newFakeEngine(baseline, int64(len(baseline)))
+	ctx := context.Background()
+
+	if err := engine.PollOnce(ctx); err != nil { // discovery
+		t.Fatal(err)
+	}
+	if err := engine.PollOnce(ctx); err != nil { // baseline read
+		t.Fatal(err)
+	}
+	baselineLines := engine.Stats().LinesDiscovered
+
+	grown := baseline + "PLAYER CONNECTED\n"
+	fake.content = []byte(grown)
+	engine.lastLogChange = time.Now().Add(-6 * time.Minute)
+
+	if err := engine.PollOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := engine.Stats().LinesDiscovered; got != baselineLines+1 {
+		t.Fatalf("expected the live line to be read via the stale probe, got %d lines (baseline %d)", got, baselineLines)
+	}
+	if engine.Stats().State != StatePolling {
+		t.Fatalf("expected engine to remain polling the live source, got state %s", engine.Stats().State)
+	}
+	if time.Since(engine.lastLogChange) > time.Minute {
+		t.Fatal("expected lastLogChange to be refreshed by the successful probe")
+	}
+}
+
 // TestStaleProbeIsRateLimited proves the forced probe cannot become a download
 // storm while the source stays stale.
 func TestStaleProbeIsRateLimited(t *testing.T) {
