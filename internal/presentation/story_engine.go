@@ -105,9 +105,6 @@ func SelectPrimary(c Context) StoryType {
 	if c.RapidKill {
 		return StoryRapidKill
 	}
-	if c.Melee {
-		return StoryMelee
-	}
 	if c.Distance != nil && *c.Distance >= 100 {
 		return StoryLongRange
 	}
@@ -122,9 +119,6 @@ func Secondary(c Context, primary StoryType) []string {
 	}
 	if c.Headshot && primary != StoryHeadshot {
 		add("🎯 HEADSHOT")
-	}
-	if c.Melee && primary != StoryMelee {
-		add("🥊 MELEE")
 	}
 	if c.Distance != nil && *c.Distance >= 200 && primary != StoryExtremeRange {
 		add("🚀 EXTREME RANGE")
