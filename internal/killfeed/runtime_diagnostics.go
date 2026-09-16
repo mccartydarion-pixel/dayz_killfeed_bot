@@ -47,6 +47,13 @@ type RuntimeDiagnosticSnapshot struct {
 	SourceClassification    string
 	ColdStartBaseline       bool
 	ColdStartBaselineOffset int64
+	LastProbeAt             time.Time
+	ProbeResult             string
+	ProbeMetadataSize       int64
+	ProbeDirectSize         int64
+	ProbeContentChanged     bool
+	ProbeUnreadBytes        int64
+	ProbeClassification     string
 	RecentEvents            []string
 	CandidateCount          int
 
@@ -112,6 +119,10 @@ func (s RuntimeDiagnosticSnapshot) Classification() string {
 		return "PERSISTENCE_FAILURE"
 	case s.LastMetadataCheck.IsZero():
 		return "UNKNOWN"
+	case s.ProbeClassification == "WRONG_OR_INACTIVE_ADM_SOURCE":
+		return "WRONG_OR_INACTIVE_ADM_SOURCE"
+	case s.ProbeClassification == "NITRADO_METADATA_STALE":
+		return "NITRADO_METADATA_STALE"
 	case !s.LastMetadataChanged && !s.LastMetadataCheck.IsZero() && time.Since(s.RemoteModified) > 10*time.Minute:
 		return "LIVE_SOURCE_STALE"
 	case s.LastKillParsedAt.After(s.LastKillPersistedAt) && !s.LastKillPersistedAt.IsZero():

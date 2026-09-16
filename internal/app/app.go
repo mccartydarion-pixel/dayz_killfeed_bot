@@ -874,6 +874,7 @@ func (a *App) Run() error {
 			out["last_failure"] = fmt.Sprintf("stage=%s class=%s at=%s", snapshot.LastErrorStage, snapshot.LastErrorClass, diagnosticTime(snapshot.LastErrorAt))
 			out["source_freshness"] = fmt.Sprintf("selected_age=%s last_remote_write=%s last_new_bytes=%s classification=%s", diagnosticDuration(snapshot.RemoteModified), diagnosticTime(snapshot.RemoteModified), diagnosticDuration(snapshot.LastDownloadSuccess), snapshot.Classification())
 			out["cold_start"] = fmt.Sprintf("baseline=%t offset=%d", snapshot.ColdStartBaseline, snapshot.ColdStartBaselineOffset)
+			out["stale_source_probe"] = fmt.Sprintf("last_probe=%s result=%s metadata_size=%d direct_size=%d content_changed=%t checkpoint=%d unread=%d classification=%s", diagnosticTime(snapshot.LastProbeAt), snapshot.ProbeResult, snapshot.ProbeMetadataSize, snapshot.ProbeDirectSize, snapshot.ProbeContentChanged, snapshot.CheckpointOffset, snapshot.ProbeUnreadBytes, snapshot.ProbeClassification)
 			out["classification"] = snapshot.Classification()
 			out["timeline"] = strings.Join(snapshot.RecentEvents, "\n")
 			return out

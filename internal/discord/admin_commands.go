@@ -87,7 +87,7 @@ func (h *AdminCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interact
 func respondPipelineDiagnostics(s *discordgo.Session, i *discordgo.InteractionCreate, raw any) {
 	values, _ := raw.(map[string]any)
 	embed := presentation.NewChampionEmbed("PIPELINE DIAGNOSTICS", presentation.InfoSteel)
-	for _, field := range []string{"worker", "server_id", "selected_adm", "newest_adm", "selection_match", "selection_reason", "metadata", "download", "reader", "parser", "persistence", "checkpoint", "presence", "voice", "kill", "last_failure", "classification", "timeline"} {
+	for _, field := range []string{"worker", "server_id", "selected_adm", "newest_adm", "selection_match", "selection_reason", "metadata", "download", "reader", "parser", "persistence", "checkpoint", "presence", "voice", "kill", "source_freshness", "cold_start", "stale_source_probe", "last_failure", "classification", "timeline"} {
 		if value, ok := values[field]; ok {
 			embed.Fields = append(embed.Fields, presentation.StatusField(strings.ToUpper(field), fmt.Sprint(value), false))
 		}

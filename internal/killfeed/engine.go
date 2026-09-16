@@ -2,6 +2,8 @@ package killfeed
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"log/slog"
 	"os"
@@ -40,6 +42,13 @@ type StatSource interface {
 const (
 	ADMRemoteMetadataPollInterval = 10 * time.Second
 	ADMMonitorRefreshInterval     = 5 * time.Minute
+
+	// staleProbeAfter is how long the selected ADM may look unchanged before
+	// Champion stops trusting directory metadata and reads the file directly.
+	staleProbeAfter = 2 * time.Minute
+	// staleProbeInterval bounds forced probes so a stale source never causes a
+	// download storm.
+	staleProbeInterval = 60 * time.Second
 )
 
 type DurableCheckpoint struct {
@@ -144,22 +153,24 @@ type Engine struct {
 	players   *PlayerTracker
 	onPlayers func(count int) // optional hook when the online player set changes
 
-	previousFileName         string
-	lastRotationAt           time.Time
-	lastConnectAt            time.Time
-	lastDisconnectAt         time.Time
-	lastPresenceEvent        string
-	lastPersistenceResult    string
-	lastVoicePublishCount    int
-	lastVoicePublishAt       time.Time
-	lastVoicePublishResult   string
-	presenceMu               sync.RWMutex
-	lastDownloadAt           time.Time
-	rotationPending          bool
-	newestDiscoveredFile     string
-	newestDiscoveredModified time.Time
-	candidateCount           int
-	selectionReason          string
+	previousFileName          string
+	lastRotationAt            time.Time
+	lastConnectAt             time.Time
+	lastDisconnectAt          time.Time
+	lastPresenceEvent         string
+	lastPersistenceResult     string
+	lastVoicePublishCount     int
+	lastVoicePublishAt        time.Time
+	lastVoicePublishResult    string
+	presenceMu                sync.RWMutex
+	lastDownloadAt            time.Time
+	rotationPending           bool
+	lastStaleProbeAt          time.Time
+	lastStaleProbeFingerprint string
+	newestDiscoveredFile      string
+	newestDiscoveredModified  time.Time
+	candidateCount            int
+	selectionReason           string
 
 	// onAdmSnapshot fires once per poll cycle from this engine's own goroutine
 	// (never concurrently), so the ADM monitor can read a consistent snapshot
@@ -685,6 +696,7 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 	}
 	slog.Debug("component=adm", "event", "metadata_checked", "changed", changed, "file", current.Name, "size", current.Size)
 	if !changed {
+		e.probeStaleSource(ctx, current)
 		e.reportPoll()
 		return nil
 	}
@@ -851,6 +863,100 @@ func (e *Engine) emitDownloadReport(report DownloadReport) {
 	if e != nil && e.onDownload != nil {
 		e.onDownload(report)
 	}
+}
+
+// probeStaleSource downloads the selected ADM even when directory metadata
+// claims it is unchanged, because Nitrado listings can go stale while the file
+// is still being written. It is rate limited and only reads the unread tail.
+func (e *Engine) probeStaleSource(ctx context.Context, current *nitrado.LogFile) {
+	if e == nil || current == nil || e.tracker == nil || e.client == nil {
+		return
+	}
+	if e.lastLogChange.IsZero() || time.Since(e.lastLogChange) < staleProbeAfter {
+		return
+	}
+	if !e.lastStaleProbeAt.IsZero() && time.Since(e.lastStaleProbeAt) < staleProbeInterval {
+		return
+	}
+	e.lastStaleProbeAt = time.Now()
+
+	content, err := e.client.ReadLog(ctx, e.serviceID, current.Path)
+	if err != nil {
+		if e.diagnostics != nil {
+			e.diagnostics.Update(func(s *RuntimeDiagnosticSnapshot) {
+				s.LastProbeAt = e.lastStaleProbeAt
+				s.ProbeResult = "FAILURE"
+				s.ProbeClassification = "LIVE_SOURCE_STALE"
+			})
+		}
+		slog.Warn("component=adm", "event", "stale_probe_failed", "server_id", e.serverID, "file", current.Name, "error_class", safeDownloadErrorClass(err))
+		return
+	}
+
+	directSize := int64(len(content))
+	sum := sha256.Sum256(content)
+	fingerprint := hex.EncodeToString(sum[:])
+	contentChanged := e.lastStaleProbeFingerprint != "" && e.lastStaleProbeFingerprint != fingerprint
+	e.lastStaleProbeFingerprint = fingerprint
+
+	checkpointOffset := e.tracker.LastByteOffset
+	unread := directSize - checkpointOffset
+	if unread < 0 {
+		unread = 0
+	}
+	classification := "WRONG_OR_INACTIVE_ADM_SOURCE"
+	if directSize > current.Size || contentChanged || unread > 0 {
+		classification = "NITRADO_METADATA_STALE"
+	}
+
+	if e.diagnostics != nil {
+		e.diagnostics.Update(func(s *RuntimeDiagnosticSnapshot) {
+			s.LastProbeAt = e.lastStaleProbeAt
+			s.ProbeResult = "SUCCESS"
+			s.ProbeMetadataSize = current.Size
+			s.ProbeDirectSize = directSize
+			s.ProbeContentChanged = contentChanged
+			s.ProbeUnreadBytes = unread
+			s.ProbeClassification = classification
+		})
+		e.diagnostics.Event("stale probe " + classification)
+	}
+	slog.Info("component=adm", "event", "stale_probe", "server_id", e.serverID, "file", current.Name, "metadata_size", current.Size, "direct_size", directSize, "checkpoint", checkpointOffset, "unread_bytes", unread, "content_changed", contentChanged, "classification", classification)
+
+	if unread > 0 {
+		e.processProbeTail(ctx, current, content, checkpointOffset)
+	}
+}
+
+// processProbeTail processes only the unread tail discovered by a stale probe,
+// using the same acknowledged persistence path as normal polling.
+func (e *Engine) processProbeTail(ctx context.Context, current *nitrado.LogFile, content []byte, startOffset int64) {
+	if startOffset < 0 || startOffset > int64(len(content)) {
+		return
+	}
+	e.tracker.LineBuffer = string(content[startOffset:])
+	lineChunks := e.tracker.DrainCompleteLinesWithOffsets(startOffset)
+	safeOffset := startOffset
+	eventsParsed := 0
+	for _, chunk := range lineChunks {
+		parsed, processErr := e.processLine(chunk.Text)
+		if parsed {
+			eventsParsed++
+		}
+		if processErr != nil {
+			break
+		}
+		safeOffset = chunk.EndOffset
+	}
+	e.tracker.LineBuffer = string(content[safeOffset:])
+	e.bytesProcessed += safeOffset - startOffset
+	e.linesDiscovered += int64(len(lineChunks))
+	e.lastLogChange = time.Now()
+	e.lastDownloadAt = time.Now()
+	e.tracker.UpdateCheckpoint(e.serviceID, current.Path, int64(len(content)), current.Modified, safeOffset)
+	checkpointOK := e.saveDurableCheckpoint(ctx, current, safeOffset)
+	e.emitDownloadReport(DownloadReport{ServerID: e.serverID, File: current.Name, RemoteSize: current.Size, DownloadedBytes: int64(len(content)), PreviousOffset: startOffset, NewOffset: safeOffset, NewBytes: safeOffset - startOffset, EventsParsed: eventsParsed, Result: "success", CheckpointCurrent: checkpointOK, At: time.Now()})
+	slog.Info("component=adm", "event", "stale_probe_processed", "server_id", e.serverID, "file", current.Name, "previous_offset", startOffset, "new_offset", safeOffset, "events_parsed", eventsParsed)
 }
 
 func safeDownloadErrorClass(err error) string {
