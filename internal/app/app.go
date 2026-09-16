@@ -81,6 +81,8 @@ type App struct {
 	LinkService           *linking.LinkVerificationService
 	persistQueuesMu       sync.Mutex
 	persistQueues         []*killfeed.PersistenceQueue
+	rotatingFeedsMu       sync.Mutex
+	rotatingFeeds         []*discord.RotatingFeed
 	firstConnectMu        sync.Mutex
 	firstConnectServers   map[int64]bool
 	counterOwnerMu        sync.RWMutex
@@ -309,6 +311,22 @@ func (a *App) allPersistQueues() []*killfeed.PersistenceQueue {
 	defer a.persistQueuesMu.Unlock()
 	out := make([]*killfeed.PersistenceQueue, len(a.persistQueues))
 	copy(out, a.persistQueues)
+	return out
+}
+
+func (a *App) addRotatingFeed(f *discord.RotatingFeed) {
+	a.rotatingFeedsMu.Lock()
+	a.rotatingFeeds = append(a.rotatingFeeds, f)
+	a.rotatingFeedsMu.Unlock()
+}
+
+// allRotatingFeeds returns a snapshot copy of the currently known rotating
+// feeds (killfeed + death-feed, one pair per running server worker).
+func (a *App) allRotatingFeeds() []*discord.RotatingFeed {
+	a.rotatingFeedsMu.Lock()
+	defer a.rotatingFeedsMu.Unlock()
+	out := make([]*discord.RotatingFeed, len(a.rotatingFeeds))
+	copy(out, a.rotatingFeeds)
 	return out
 }
 
@@ -1178,8 +1196,10 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 
 	killFeed := discord.NewRotatingFeed(a.Discord.Session(), setupStore, a.Config.DiscordGuildID, func(s *discord.GuildSetup) string { return s.KillfeedChannelID }, rotatingFeedInterval, rotatingFeedBatchSize)
 	publisher.SetFeed(killFeed)
+	a.addRotatingFeed(killFeed)
 	deathFeed := discord.NewRotatingFeed(a.Discord.Session(), setupStore, a.Config.DiscordGuildID, func(s *discord.GuildSetup) string { return s.DeathChannelID }, rotatingFeedInterval, rotatingFeedBatchSize)
 	deathPublisher.SetFeed(deathFeed)
+	a.addRotatingFeed(deathFeed)
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -1312,6 +1332,16 @@ func (a *App) shutdown() {
 	}
 	if len(queues) > 0 {
 		slog.Info("component=shutdown", "msg", "persistence queues drained", "count", len(queues))
+	}
+	// Wait for every rotating killfeed/death-feed to finish its on-shutdown
+	// flush (see RotatingFeed.Run) before closing Discord, so a redeploy never
+	// silently drops whatever was enqueued since the last 10-minute cycle.
+	feeds := a.allRotatingFeeds()
+	for _, f := range feeds {
+		f.WaitDone()
+	}
+	if len(feeds) > 0 {
+		slog.Info("component=shutdown", "msg", "rotating feeds flushed", "count", len(feeds))
 	}
 	if a.HTTPServer != nil {
 		if err := a.HTTPServer.Shutdown(context.Background()); err != nil {
