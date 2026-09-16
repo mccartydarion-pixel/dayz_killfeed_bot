@@ -75,7 +75,7 @@ func RangeClass(distance *float64, melee bool) string {
 	switch {
 	case *distance >= 200:
 		return "EXTREME RANGE"
-	case *distance >= 100:
+	case *distance >= LongshotDistanceMeters:
 		return "LONG RANGE"
 	case *distance < 15:
 		return "CLOSE QUARTERS"
