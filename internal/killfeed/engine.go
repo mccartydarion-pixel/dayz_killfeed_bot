@@ -353,7 +353,9 @@ func (e *Engine) SetPersistence(q *PersistenceQueue) {
 		if e.deathPublisher == nil {
 			return
 		}
-		_ = e.deathPublisher.PublishDeath(ev)
+		if err := e.deathPublisher.PublishDeath(ev); err != nil {
+			slog.Warn("component=killfeed", "msg", "death feed publish failed", "err", err.Error())
+		}
 	})
 }
 
