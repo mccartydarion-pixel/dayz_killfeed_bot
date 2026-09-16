@@ -12,6 +12,7 @@ import (
 // Server wraps the HTTP server.
 type Server struct {
 	httpServer *http.Server
+	mux        *http.ServeMux
 	config     *config.Config
 	state      *State
 }
@@ -45,7 +46,17 @@ func New(cfg *config.Config, state *State) (*Server, error) {
 		IdleTimeout:       30 * time.Second,
 	}
 
-	return &Server{httpServer: s, config: cfg, state: state}, nil
+	return &Server{httpServer: s, mux: mux, config: cfg, state: state}, nil
+}
+
+// Handle registers an additional route on the server's existing mux, so
+// callers never bind a second listener/port alongside this one. Must be
+// called before ListenAndServe starts serving.
+func (s *Server) Handle(pattern string, handler http.HandlerFunc) {
+	if s == nil || s.mux == nil || handler == nil {
+		return
+	}
+	s.mux.HandleFunc(pattern, handler)
 }
 
 func configLoadError() error {

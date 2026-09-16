@@ -458,6 +458,8 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		})
 	}
 
+	app.registerRuntimeStatusAPI()
+
 	_, cancel := context.WithCancel(ctx)
 	app.cancel = cancel
 	return app, nil
