@@ -102,3 +102,46 @@ func WeaponStory(weapon string, melee bool) string {
 		return ""
 	}
 }
+
+// WeaponStoryIcon pairs an icon with WeaponStory's flavor text, using the
+// same classification. Empty when WeaponStory has no flavor text either.
+func WeaponStoryIcon(weapon string, melee bool) string {
+	if melee {
+		return "🥊"
+	}
+	lower := strings.ToLower(weapon)
+	switch {
+	case strings.Contains(lower, "shotgun"), strings.Contains(lower, "bk-43"):
+		return "💥"
+	case strings.Contains(lower, "mosin"), strings.Contains(lower, "m70"), strings.Contains(lower, "svd"), strings.Contains(lower, "tundra"):
+		return "🎯"
+	case strings.Contains(lower, "m4"), strings.Contains(lower, "ak-"), strings.Contains(lower, "ka-m"):
+		return "🔫"
+	case strings.Contains(lower, "glock"), strings.Contains(lower, "cz75"), strings.Contains(lower, "deagle"), strings.Contains(lower, "pistol"):
+		return "🔫"
+	default:
+		return ""
+	}
+}
+
+// WeaponCategory labels the weapon's class using the same classification as
+// WeaponStory, for display as "{category} • {weapon}". Empty when the
+// weapon doesn't match a known bucket - never fabricate a category.
+func WeaponCategory(weapon string, melee bool) string {
+	if melee {
+		return "Fists"
+	}
+	lower := strings.ToLower(weapon)
+	switch {
+	case strings.Contains(lower, "shotgun"), strings.Contains(lower, "bk-43"):
+		return "Shotgun"
+	case strings.Contains(lower, "mosin"), strings.Contains(lower, "m70"), strings.Contains(lower, "svd"), strings.Contains(lower, "tundra"):
+		return "Sniper Rifle"
+	case strings.Contains(lower, "m4"), strings.Contains(lower, "ak-"), strings.Contains(lower, "ka-m"):
+		return "Assault Rifle"
+	case strings.Contains(lower, "glock"), strings.Contains(lower, "cz75"), strings.Contains(lower, "deagle"), strings.Contains(lower, "pistol"):
+		return "Sidearm"
+	default:
+		return ""
+	}
+}

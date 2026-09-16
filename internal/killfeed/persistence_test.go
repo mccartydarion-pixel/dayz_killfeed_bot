@@ -181,6 +181,50 @@ func TestDeathPersistedHookFiresForDeathAndSuicideOnly(t *testing.T) {
 	}
 }
 
+// fakeDeathPostProcessor records calls and stamps a fixed CombatRecord onto
+// the event, mirroring how app.go's real implementation enriches it.
+type fakeDeathPostProcessor struct {
+	calls   int
+	lastRec repository.DeathRecord
+}
+
+func (f *fakeDeathPostProcessor) ProcessPersistedDeath(ctx context.Context, rec repository.DeathRecord, ev *Event) {
+	f.calls++
+	f.lastRec = rec
+	ev.PlayerStats = &CombatRecord{Kills: 5, Deaths: 2}
+}
+
+// TestDeathPostProcessorEnrichesEventBeforePublish proves ProcessPersistedDeath
+// runs after a successful durable insert and before the death-feed hook fires,
+// with its enrichment visible to that hook - mirroring how kills already work
+// via KillPostProcessor.
+func TestDeathPostProcessorEnrichesEventBeforePublish(t *testing.T) {
+	store := newFakePersistenceStore()
+	pq := NewPersistenceQueue(store, 1, "sess-1")
+	processor := &fakeDeathPostProcessor{}
+	pq.SetDeathPostProcessor(processor)
+
+	var published *Event
+	pq.SetDeathPersistedHook(func(ev *Event) { published = ev })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go pq.Run(ctx)
+
+	pq.Enqueue(&Event{Type: EventPlayerDeath, Player: &PlayerRef{Name: "victim1", ID: "v1"}, TimeOfDay: "10:00:00"})
+	pq.Close()
+
+	if processor.calls != 1 {
+		t.Fatalf("expected ProcessPersistedDeath called once, got %d", processor.calls)
+	}
+	if processor.lastRec.GuildID != 1 {
+		t.Fatalf("expected the record's guild ID propagated, got %d", processor.lastRec.GuildID)
+	}
+	if published == nil || published.PlayerStats == nil || published.PlayerStats.Kills != 5 {
+		t.Fatalf("expected the hook to see the processor's enrichment, got %+v", published)
+	}
+}
+
 // TestDuplicateDeathNotPublished proves durable dedupe suppresses a republish
 // for a death event, same as TestDuplicateKillNotPublished for kills.
 func TestDuplicateDeathNotPublished(t *testing.T) {

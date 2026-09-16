@@ -39,7 +39,13 @@ func BuildDeathEmbed(ev *killfeed.Event) *discordgo.MessageEmbed {
 
 	fields := []*discordgo.MessageEmbedField{}
 	if len(details) > 0 {
-		fields = append(fields, &discordgo.MessageEmbedField{Name: "DETAILS", Value: safeTrunc(strings.Join(details, "\n"), 1000), Inline: false})
+		fields = append(fields, sectionDividerField())
+		fields = append(fields, &discordgo.MessageEmbedField{Name: "DEATH DETAILS", Value: safeTrunc(strings.Join(details, "\n"), 1000), Inline: false})
+	}
+	if ev.PlayerStats != nil {
+		value := fmt.Sprintf("Kills: %d\nDeaths: %d\nK/D: %.2f", ev.PlayerStats.Kills, ev.PlayerStats.Deaths, ev.PlayerStats.KD())
+		fields = append(fields, sectionDividerField())
+		fields = append(fields, &discordgo.MessageEmbedField{Name: "PLAYER STATS", Value: value, Inline: false})
 	}
 
 	embed := &discordgo.MessageEmbed{
@@ -62,7 +68,7 @@ func BuildDeathEmbed(ev *killfeed.Event) *discordgo.MessageEmbed {
 
 func presentationFooter(ev *killfeed.Event) string {
 	if ev != nil && ev.SeasonName != "" {
-		return fmt.Sprintf("CHAMPION KILLFEED • %s", sanitizeName(ev.SeasonName))
+		return fmt.Sprintf("🏆 CHAMPION • %s\nEVERY KILL TELLS A STORY", sanitizeName(ev.SeasonName))
 	}
 	return "CHAMPION KILLFEED • EVERY KILL TELLS A STORY"
 }

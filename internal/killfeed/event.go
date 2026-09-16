@@ -73,4 +73,39 @@ type Event struct {
 	ActiveEventBadges []string
 	WarBadge          string
 	SeasonName        string
+
+	// Stat fields below are populated post-persistence (see
+	// persistenceStoreAdapter.ProcessPersistedKill/ProcessPersistedDeath in
+	// app.go), same as the competitive context above - best-effort, never
+	// blocking publish, and rendered into the same embed rather than a
+	// separate message. Pointers distinguish "not available" from a real
+	// zero value; a guild without the stats/analytics repositories wired
+	// still gets a working embed, just without these sections.
+	KillerStats  *CombatRecord // kills/deaths for the killer, all-time
+	VictimStats  *CombatRecord // kills/deaths for the victim, all-time
+	PlayerStats  *CombatRecord // kills/deaths for ev.Player, all-time (death/suicide only)
+	KillerStreak *int          // killer's current kill streak after this kill
+	Encounters   *HeadToHead   // killer vs. victim all-time record
+}
+
+// CombatRecord is a lightweight kills/deaths snapshot for the stat-rich kill
+// and death embeds.
+type CombatRecord struct {
+	Kills  int64
+	Deaths int64
+}
+
+// KD returns Kills/Deaths, or Kills if Deaths is zero (matches
+// repository.PlayerProfile.KD's convention).
+func (c CombatRecord) KD() float64 {
+	if c.Deaths == 0 {
+		return float64(c.Kills)
+	}
+	return float64(c.Kills) / float64(c.Deaths)
+}
+
+// HeadToHead is two players' all-time kill record against each other.
+type HeadToHead struct {
+	KillerWins int64
+	VictimWins int64
 }

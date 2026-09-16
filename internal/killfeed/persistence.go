@@ -33,6 +33,14 @@ type KillIDStore interface {
 type KillPostProcessor interface {
 	ProcessPersistedKill(ctx context.Context, killID int64, record repository.KillRecord, event *Event)
 }
+
+// DeathPostProcessor enriches a persisted death/suicide's Event (e.g. with
+// player stats for the death embed) before onDeathPersisted fires. Unlike
+// KillPostProcessor, InsertDeath returns no ID, so there's nothing to pass
+// beyond the record itself.
+type DeathPostProcessor interface {
+	ProcessPersistedDeath(ctx context.Context, record repository.DeathRecord, event *Event)
+}
 type ActivityRecorder interface {
 	RecordConnect(context.Context, int64, int64, int64, time.Time) error
 	RecordDisconnect(context.Context, int64, int64, int64, time.Time) error
@@ -74,6 +82,7 @@ type PersistenceQueue struct {
 	onDeathPersisted func(ev *Event)
 	linkChallenge    LinkChallengeObserver
 	postProcessor    KillPostProcessor
+	deathProcessor   DeathPostProcessor
 	enqueued         int64
 	highWater        int
 	oldestAt         time.Time
@@ -86,6 +95,13 @@ type persistRequest struct {
 
 func (q *PersistenceQueue) SetKillPostProcessor(processor KillPostProcessor) {
 	q.postProcessor = processor
+}
+
+// SetDeathPostProcessor attaches the death enrichment hook (e.g. player
+// stats for the death embed). Optional: if unset, death events publish
+// without it.
+func (q *PersistenceQueue) SetDeathPostProcessor(processor DeathPostProcessor) {
+	q.deathProcessor = processor
 }
 
 // SetLinkChallengeObserver attaches the /link disconnect-reconnect challenge
@@ -397,6 +413,9 @@ func (q *PersistenceQueue) persistOne(ctx context.Context, ev *Event) error {
 			// Durable dedupe: already persisted — do NOT publish again.
 			slog.Debug("component=killfeed", "msg", "death already persisted; skipping publish", "fingerprint", rec.Fingerprint)
 		} else {
+			if q.deathProcessor != nil {
+				q.deathProcessor.ProcessPersistedDeath(ctx, rec, ev)
+			}
 			q.mu.Lock()
 			hook := q.onDeathPersisted
 			q.mu.Unlock()

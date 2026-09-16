@@ -15,6 +15,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/admin"
+	"github.com/yourname/dayz-killfeed/internal/analytics"
 	"github.com/yourname/dayz-killfeed/internal/bounties"
 	"github.com/yourname/dayz-killfeed/internal/config"
 	"github.com/yourname/dayz-killfeed/internal/database"
@@ -1043,7 +1044,7 @@ func (a *App) Run() error {
 					}
 				}
 			}
-			store := &persistenceStoreAdapter{players: a.Players, kills: a.Kills, deaths: a.Deaths, seasons: a.Seasons, factions: a.Factions, wars: a.Wars, events: a.Events, bounties: a.Bounties, streaks: a.Streaks, anomalies: a.Anomalies, activity: a.ActivityRepository, servers: a.Servers, panelDirty: func() {
+			store := &persistenceStoreAdapter{players: a.Players, kills: a.Kills, deaths: a.Deaths, seasons: a.Seasons, factions: a.Factions, wars: a.Wars, events: a.Events, bounties: a.Bounties, streaks: a.Streaks, anomalies: a.Anomalies, activity: a.ActivityRepository, servers: a.Servers, stats: a.Stats, analytics: a.AnalyticsRepository, panelDirty: func() {
 				if a.LeaderboardScheduler != nil {
 					a.LeaderboardScheduler.MarkDirty()
 				}
@@ -1167,6 +1168,7 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 
 	pq := killfeed.NewPersistenceQueueWithServerID(store, row.GuildID, row.ID, row.ProviderServiceID)
 	pq.SetKillPostProcessor(store)
+	pq.SetDeathPostProcessor(store)
 	if a.LinkService != nil {
 		pq.SetLinkChallengeObserver(a.LinkService)
 	}
@@ -1316,6 +1318,8 @@ type persistenceStoreAdapter struct {
 	anomalies  *repository.AnomalyRepository
 	activity   *repository.ActivityRepository
 	servers    *repository.ServerRepository
+	stats      *repository.StatsRepository
+	analytics  *repository.AnalyticsRepository
 	panelDirty func()
 }
 
@@ -1422,6 +1426,29 @@ func (p *persistenceStoreAdapter) ProcessPersistedKill(ctx context.Context, kill
 	if ev != nil && !ev.Timestamp.IsZero() {
 		at = ev.Timestamp.UTC()
 	}
+
+	// Stat-rich embed fields: best-effort, never block the kill from
+	// publishing. A guild without stats/analytics wired just gets an embed
+	// without these sections (nil-checked in BuildKillEmbed).
+	if ev != nil {
+		streakCurrent := streak.Current
+		ev.KillerStreak = &streakCurrent
+		if p.stats != nil {
+			if prof, statErr := p.stats.GetPlayerProfileByPlayerID(ctx, record.GuildID, record.KillerPlayerID); statErr == nil && prof != nil {
+				ev.KillerStats = &killfeed.CombatRecord{Kills: prof.Kills, Deaths: prof.Deaths}
+			}
+			if record.VictimPlayerID > 0 {
+				if prof, statErr := p.stats.GetPlayerProfileByPlayerID(ctx, record.GuildID, record.VictimPlayerID); statErr == nil && prof != nil {
+					ev.VictimStats = &killfeed.CombatRecord{Kills: prof.Kills, Deaths: prof.Deaths}
+				}
+			}
+		}
+		if p.analytics != nil && ev.Killer != nil && ev.Victim != nil && ev.Killer.Name != "" && ev.Victim.Name != "" && ev.Killer.Name != ev.Victim.Name {
+			if m, matchupErr := p.analytics.Matchup(ctx, record.GuildID, ev.Killer.Name, ev.Victim.Name, analytics.ScopeLifetime, 0); matchupErr == nil && m != nil {
+				ev.Encounters = &killfeed.HeadToHead{KillerWins: m.AKills, VictimWins: m.BKills}
+			}
+		}
+	}
 	if p.anomalies != nil && record.KillerPlayerID > 0 && record.VictimPlayerID > 0 && record.KillerPlayerID != record.VictimPlayerID {
 		if suspicious, anomalyErr := p.anomalies.ObservePair(ctx, record.GuildID, valueOfID(record.SeasonID), record.KillerPlayerID, record.VictimPlayerID, at); anomalyErr == nil && suspicious {
 			slog.Debug("component=anti-farming", "msg", "repeated pair activity observed", "killer_player_id", record.KillerPlayerID, "victim_player_id", record.VictimPlayerID)
@@ -1477,6 +1504,20 @@ func (p *persistenceStoreAdapter) ProcessPersistedKill(ctx context.Context, kill
 	if p.panelDirty != nil {
 		p.panelDirty()
 	}
+}
+
+// ProcessPersistedDeath fetches the deceased player's stats for the death
+// embed. Best-effort: on failure ev.PlayerStats stays nil and the embed
+// renders without that section (nil-checked in BuildDeathEmbed).
+func (p *persistenceStoreAdapter) ProcessPersistedDeath(ctx context.Context, record repository.DeathRecord, ev *killfeed.Event) {
+	if p.stats == nil || ev == nil || record.PlayerID == 0 {
+		return
+	}
+	prof, err := p.stats.GetPlayerProfileByPlayerID(ctx, record.GuildID, record.PlayerID)
+	if err != nil || prof == nil {
+		return
+	}
+	ev.PlayerStats = &killfeed.CombatRecord{Kills: prof.Kills, Deaths: prof.Deaths}
 }
 
 type contentPanelEditor struct{ api *discord.SessionAPI }
