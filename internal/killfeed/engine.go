@@ -51,6 +51,11 @@ const (
 	staleProbeInterval = 60 * time.Second
 )
 
+// persistEnqueueTimeout bounds how long processLine waits for a persistence
+// ack. A var (not const) so tests can shrink it instead of waiting for real
+// seconds to prove the timeout actually bounds a hung downstream call.
+var persistEnqueueTimeout = 30 * time.Second
+
 type DurableCheckpoint struct {
 	Filename           string
 	RemoteModifiedAt   time.Time
@@ -1097,7 +1102,19 @@ func (e *Engine) processLine(line string) (bool, error) {
 		return true, nil
 	}
 	if e.persistence != nil && (ev.Type == EventPlayerConnect || ev.Type == EventPlayerDisconnect || ev.Type == EventPlayerDeath || ev.Type == EventSuicideAction || ev.Type == EventPlayerKill) {
-		if err := e.persistence.EnqueueAndWait(context.Background(), ev); err != nil {
+		// Bounded, not context.Background(): a single slow/hung downstream
+		// call (DB, Discord) inside the persistence queue's consumer must
+		// never freeze this engine's entire poll loop indefinitely - observed
+		// live as a ~40 minute stall with no logged error, blocking every
+		// later ADM poll and kill/death publish behind it. On timeout the
+		// checkpoint does not advance past this event, so it is retried on
+		// the next poll (existing persistence-failure path); durable dedupe
+		// (kill/death fingerprints, connect/disconnect upserts) makes a
+		// retry safe even if the original call eventually completes.
+		persistCtx, cancel := context.WithTimeout(context.Background(), persistEnqueueTimeout)
+		err := e.persistence.EnqueueAndWait(persistCtx, ev)
+		cancel()
+		if err != nil {
 			e.presenceMu.Lock()
 			e.lastPersistenceResult = "FAILURE"
 			e.presenceMu.Unlock()
