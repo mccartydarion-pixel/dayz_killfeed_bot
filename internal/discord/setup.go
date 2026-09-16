@@ -20,6 +20,7 @@ const (
 	ChannelPlayerStats  = "📈・player-stats"
 	ChannelLinkUsername = "🔗・link-username"
 	ChannelADMMonitor   = "🔒・adm-monitor"
+	ChannelDeathFeed    = "☠️・death-feed"
 
 	// ChannelOnlinePlayersPrefix is the voice-counter prefix; the live count is
 	// appended as the channel name (e.g. "🟢・Online Players: 0").
@@ -120,6 +121,7 @@ func (m *SetupManager) EnsureConfigured(guildID string) (*GuildSetup, *SetupRepo
 		{ChannelPlayerStats, false, false, func(id string) { setup.PlayerStatsChannelID = id }, func() string { return setup.PlayerStatsChannelID }, "player-stats"},
 		{ChannelLinkUsername, false, false, func(id string) { setup.LinkPanelChannelID = id }, func() string { return setup.LinkPanelChannelID }, "link-username"},
 		{ChannelADMMonitor, false, true, func(id string) { setup.ADMMonitorChannelID = id }, func() string { return setup.ADMMonitorChannelID }, "adm-monitor"},
+		{ChannelDeathFeed, false, false, func(id string) { setup.DeathChannelID = id }, func() string { return setup.DeathChannelID }, "death-feed"},
 	}
 	for _, spec := range specs {
 		currentID := spec.current()

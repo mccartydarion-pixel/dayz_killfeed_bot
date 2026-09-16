@@ -681,6 +681,14 @@ ALTER TABLE guilds ADD COLUMN IF NOT EXISTS selected_public_server_id BIGINT;
 CREATE INDEX IF NOT EXISTS idx_guilds_selected_public_server ON guilds(selected_public_server_id);
 `,
 	},
+	{
+		Name: "0021_death_channel_and_link_challenge",
+		SQL: `
+ALTER TABLE guilds ADD COLUMN IF NOT EXISTS death_channel_id TEXT;
+ALTER TABLE guilds ADD COLUMN IF NOT EXISTS verified_role_id TEXT;
+ALTER TABLE link_verifications ADD COLUMN IF NOT EXISTS challenge_disconnect_at TIMESTAMPTZ;
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order, each transactionally. A

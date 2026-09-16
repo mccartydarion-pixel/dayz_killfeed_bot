@@ -33,6 +33,7 @@ func RegisterSetupCommand(session *discordgo.Session, guildID string) error {
 			{Name: "status", Description: "Show Champion Killfeed configuration status", Type: discordgo.ApplicationCommandOptionSubCommand},
 			{Name: "repair", Description: "Recreate any missing Champion Killfeed resources", Type: discordgo.ApplicationCommandOptionSubCommand},
 			{Name: "reset", Description: "Remove Champion Killfeed configuration (requires confirmation)", Type: discordgo.ApplicationCommandOptionSubCommand},
+			{Name: "verified-role", Description: "Set the role auto-assigned when a /link request is verified", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "role_id", Description: "Discord role ID", Type: discordgo.ApplicationCommandOptionString, Required: true}}},
 		},
 	}
 	_, err = session.ApplicationCommandCreate(applicationID, guildID, cmd)
@@ -87,9 +88,40 @@ func (h *SetupHandler) Handle(s *discordgo.Session, i *discordgo.InteractionCrea
 		h.handleSetup(s, i, true)
 	case "reset":
 		h.handleReset(s, i)
+	case "verified-role":
+		h.handleVerifiedRole(s, i)
 	default:
 		h.handleSetup(s, i, false)
 	}
+}
+
+// handleVerifiedRole stores the Discord role ID auto-assigned when a /link
+// request completes verification (either the ADM disconnect/reconnect
+// challenge or an admin's manual approval).
+func (h *SetupHandler) handleVerifiedRole(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	if !isAdmin(s, i) {
+		respondEphemeral(s, i, "⛔ You need Administrator or Manage Server permission to run /setup.")
+		return
+	}
+	roleID := strings.TrimSpace(optionString(i.ApplicationCommandData().Options[0], "role_id"))
+	if roleID == "" {
+		respondEphemeral(s, i, "❌ role_id is required.")
+		return
+	}
+	setup, err := h.manager.store.Get(i.GuildID)
+	if err != nil {
+		respondEphemeral(s, i, "❌ Could not load configuration.")
+		return
+	}
+	if setup == nil {
+		setup = &GuildSetup{GuildID: i.GuildID}
+	}
+	setup.VerifiedRoleID = roleID
+	if err := h.manager.store.Save(*setup); err != nil {
+		respondEphemeral(s, i, "❌ Could not save the verified role.")
+		return
+	}
+	respondEphemeral(s, i, "✅ Verified role set. It will be assigned automatically when a /link request is verified.")
 }
 
 // handleSetup defers the interaction immediately so Discord's ~3 second ack
@@ -142,6 +174,7 @@ func (h *SetupHandler) handleSetup(s *discordgo.Session, i *discordgo.Interactio
 	writeLine(&b, "Player Stats", setup.PlayerStatsChannelID)
 	writeLine(&b, "Link Username", setup.LinkPanelChannelID)
 	writeLine(&b, "ADM Monitor", setup.ADMMonitorChannelID)
+	writeLine(&b, "Death Feed", setup.DeathChannelID)
 	for name, reason := range report.Failed {
 		fmt.Fprintf(&b, "❌ %s: %s\n", name, reason)
 	}
@@ -200,7 +233,7 @@ func (h *SetupHandler) handleStatus(s *discordgo.Session, i *discordgo.Interacti
 	}
 	msg := fmt.Sprintf(
 		"🏆 **Champion Killfeed Status**\n\n"+
-			"Category: %s\nWelcome: %s\nKillfeed: %s\nOnline Players: %s\nServer Status: %s\nLeaderboards: %s\nPlayer Stats: %s\nLink Username: %s\nADM Monitor: %s\n",
+			"Category: %s\nWelcome: %s\nKillfeed: %s\nOnline Players: %s\nServer Status: %s\nLeaderboards: %s\nPlayer Stats: %s\nLink Username: %s\nADM Monitor: %s\nDeath Feed: %s\nVerified Role: %s\n",
 		mark(setup.CategoryID),
 		mark(setup.WelcomeChannelID),
 		mark(setup.KillfeedChannelID),
@@ -210,6 +243,8 @@ func (h *SetupHandler) handleStatus(s *discordgo.Session, i *discordgo.Interacti
 		mark(setup.PlayerStatsChannelID),
 		mark(setup.LinkPanelChannelID),
 		mark(setup.ADMMonitorChannelID),
+		mark(setup.DeathChannelID),
+		mark(setup.VerifiedRoleID),
 	)
 	respondEphemeral(s, i, msg)
 }

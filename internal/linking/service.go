@@ -52,15 +52,46 @@ type Repository interface {
 	GetByPlayer(ctx context.Context, guildID, playerID int64) (*LinkRecord, error)
 	CreatePending(ctx context.Context, link LinkRecord) error
 	Unlink(ctx context.Context, guildID int64, discordUserID string) error
+	// Verify promotes a guild's pending link for discordUserID to VERIFIED.
+	Verify(ctx context.Context, guildID int64, discordUserID string) error
+}
+
+// ChallengeRepository backs the disconnect-then-reconnect ADM verification
+// challenge and the admin manual-approval fallback. Optional: a Repository
+// that doesn't also implement this can still create pending links, but they
+// can never complete.
+type ChallengeRepository interface {
+	// RecordChallengeDisconnect marks the first observed disconnect for a
+	// pending link's player after the challenge was issued. Returns false if
+	// there was no matching, not-yet-disconnected pending challenge.
+	RecordChallengeDisconnect(ctx context.Context, guildID, playerID int64, at time.Time) (bool, error)
+	// CompletePendingChallenge completes a pending link whose player
+	// disconnected (per RecordChallengeDisconnect) and has now reconnected.
+	// Returns the Discord user ID and ok=true on success.
+	CompletePendingChallenge(ctx context.Context, guildID, playerID int64, at time.Time) (discordUserID string, ok bool, err error)
+	// GetPendingLinkByPlayerName resolves a pending link by DayZ display name,
+	// for the admin manual-approval fallback.
+	GetPendingLinkByPlayerName(ctx context.Context, guildID int64, name string) (discordUserID string, playerID int64, ok bool, err error)
+}
+
+// RoleAssigner assigns the configured @Verified role after a link completes.
+// This app serves a single Discord guild per process (mirroring
+// KillfeedPublisher's binding), so no guild ID is needed per call.
+type RoleAssigner interface {
+	AssignVerifiedRole(ctx context.Context, discordUserID string) error
 }
 
 // LinkVerificationService creates pending links. It intentionally does not
 // auto-verify a typed username: current ADM data cannot prove Discord ownership.
+// Verification instead comes from ChallengeRepository (an observed ADM
+// disconnect-then-reconnect, or an admin's manual approval).
 type LinkVerificationService struct {
-	repo     Repository
-	expires  time.Duration
-	activity ActivityReader
-	serverID ServerResolver
+	repo      Repository
+	expires   time.Duration
+	activity  ActivityReader
+	serverID  ServerResolver
+	challenge ChallengeRepository
+	roles     RoleAssigner
 }
 
 type ActivityReader interface {
@@ -68,6 +99,16 @@ type ActivityReader interface {
 }
 type ServerResolver interface {
 	ConnectedServerID(context.Context, int64) (int64, error)
+}
+
+// SetRoleAssigner attaches the role assigner after construction, for callers
+// (like app.go) where the Discord client isn't ready yet when the service is
+// first built. Optional: unset means role assignment is skipped.
+func (s *LinkVerificationService) SetRoleAssigner(r RoleAssigner) {
+	if s == nil {
+		return
+	}
+	s.roles = r
 }
 
 func NewService(repo Repository, extras ...any) *LinkVerificationService {
@@ -78,6 +119,12 @@ func NewService(repo Repository, extras ...any) *LinkVerificationService {
 		}
 		if v, ok := extra.(ServerResolver); ok {
 			s.serverID = v
+		}
+		if v, ok := extra.(ChallengeRepository); ok {
+			s.challenge = v
+		}
+		if v, ok := extra.(RoleAssigner); ok {
+			s.roles = v
 		}
 	}
 	return s
@@ -169,6 +216,72 @@ func (s *LinkVerificationService) Unlink(ctx context.Context, guildID int64, dis
 // Status returns the current link for a Discord user without exposing internal IDs.
 func (s *LinkVerificationService) Status(ctx context.Context, guildID int64, discordUserID string) (*LinkRecord, error) {
 	return s.repo.GetByDiscord(ctx, guildID, discordUserID)
+}
+
+// ObserveDisconnect records the first leg of the disconnect-then-reconnect
+// verification challenge for playerID's pending link, if one exists. A no-op
+// (not an error) when there is no matching pending challenge - most
+// disconnects have nothing to do with linking.
+func (s *LinkVerificationService) ObserveDisconnect(ctx context.Context, guildID, playerID int64, at time.Time) error {
+	if s == nil || s.challenge == nil {
+		return nil
+	}
+	_, err := s.challenge.RecordChallengeDisconnect(ctx, guildID, playerID, at)
+	return err
+}
+
+// ObserveConnect completes playerID's pending link if it already has an
+// observed disconnect (per ObserveDisconnect) - proving the same account
+// just disconnected and reconnected, which is the whole challenge. A no-op
+// when there is no completable challenge.
+func (s *LinkVerificationService) ObserveConnect(ctx context.Context, guildID, playerID int64, at time.Time) error {
+	if s == nil || s.challenge == nil {
+		return nil
+	}
+	discordUserID, ok, err := s.challenge.CompletePendingChallenge(ctx, guildID, playerID, at)
+	if err != nil || !ok {
+		return err
+	}
+	return s.complete(ctx, guildID, discordUserID)
+}
+
+// ApproveManually completes a pending link for the named player without
+// requiring the disconnect/reconnect challenge - the admin fallback for when
+// a player can't reconnect in time or the ADM pipeline is degraded.
+func (s *LinkVerificationService) ApproveManually(ctx context.Context, guildID int64, playerName string) error {
+	if s == nil {
+		return ErrLinkCheckUnavailable
+	}
+	if s.challenge == nil {
+		return ErrLinkCheckUnavailable
+	}
+	discordUserID, _, ok, err := s.challenge.GetPendingLinkByPlayerName(ctx, guildID, strings.TrimSpace(playerName))
+	if err != nil {
+		return ErrLinkCheckUnavailable
+	}
+	if !ok {
+		return ErrPlayerNotFound
+	}
+	return s.complete(ctx, guildID, discordUserID)
+}
+
+// complete promotes the link to VERIFIED and assigns the configured role.
+// Role assignment failure (or no role configured) is logged, not fatal - the
+// link itself is the source of truth; the role is a convenience on top of it.
+// Calling Verify here is redundant-but-harmless when reached via
+// ObserveConnect (CompletePendingChallenge already flipped player_links in
+// its own transaction) and required when reached via ApproveManually (which
+// never touches player_links itself).
+func (s *LinkVerificationService) complete(ctx context.Context, guildID int64, discordUserID string) error {
+	if err := s.repo.Verify(ctx, guildID, discordUserID); err != nil {
+		return err
+	}
+	if s.roles != nil {
+		if err := s.roles.AssignVerifiedRole(ctx, discordUserID); err != nil {
+			slog.Warn("component=link", "msg", "verified role assignment failed", "err", err.Error())
+		}
+	}
+	return nil
 }
 
 // sqlStater matches *pgconn.PgError without importing pgx into this package.

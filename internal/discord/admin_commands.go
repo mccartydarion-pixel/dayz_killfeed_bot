@@ -2,19 +2,43 @@ package discord
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/admin"
+	"github.com/yourname/dayz-killfeed/internal/linking"
 	"github.com/yourname/dayz-killfeed/internal/presentation"
 )
 
-type AdminCommandHandler struct{ service *admin.Service }
+// linkApprover is the narrow surface admin_commands.go needs from
+// linking.LinkVerificationService, for the /admin verify-link fallback.
+type linkApprover interface {
+	ApproveManually(ctx context.Context, guildID int64, playerName string) error
+}
 
-func NewAdminCommandHandler(s *admin.Service) *AdminCommandHandler {
-	return &AdminCommandHandler{service: s}
+type AdminCommandHandler struct {
+	service *admin.Service
+	links   linkApprover
+	guilds  GuildStore
+}
+
+// NewAdminCommandHandler creates the handler. Pass a linkApprover (typically
+// *linking.LinkVerificationService) and a GuildStore as extras to enable
+// /admin verify-link; without them that subcommand reports unavailable.
+func NewAdminCommandHandler(s *admin.Service, extras ...any) *AdminCommandHandler {
+	h := &AdminCommandHandler{service: s}
+	for _, extra := range extras {
+		if v, ok := extra.(linkApprover); ok {
+			h.links = v
+		}
+		if v, ok := extra.(GuildStore); ok {
+			h.guilds = v
+		}
+	}
+	return h
 }
 func RegisterAdminCommands(session *discordgo.Session, guildID string) error {
 	applicationID, err := ApplicationID(session)
@@ -22,7 +46,7 @@ func RegisterAdminCommands(session *discordgo.Session, guildID string) error {
 		return err
 	}
 	perms := int64(discordgo.PermissionAdministrator | discordgo.PermissionManageServer)
-	cmd := &discordgo.ApplicationCommand{Name: "admin", Description: "Champion operations and diagnostics", DefaultMemberPermissions: &perms, Options: []*discordgo.ApplicationCommandOption{{Name: "status", Description: "Show system status", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "diagnostics", Description: "Show sanitized diagnostics", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "link-diagnostics", Description: "Show account-link readiness", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "presence-diagnostics", Description: "Show live presence and voice counter state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "pipeline-diagnostics", Description: "Show live pipeline state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "pipeline-reset-diagnostics", Description: "Clear live pipeline diagnostics", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "leaderboard-refresh", Description: "Manually refresh the public leaderboard panel", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "adm-source-scan", Description: "Scan live Nitrado ADM candidates for the actual actively-written source", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "pipeline", Description: "Show kill pipeline state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "workers", Description: "Show worker state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "permissions", Description: "Show Discord permission state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "health", Description: "Show component health", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "logs", Description: "Show recent operational state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "checkpoint", Description: "Show checkpoint state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "resync", Description: "Refresh safe runtime state", Type: discordgo.ApplicationCommandOptionSubCommand}}}
+	cmd := &discordgo.ApplicationCommand{Name: "admin", Description: "Champion operations and diagnostics", DefaultMemberPermissions: &perms, Options: []*discordgo.ApplicationCommandOption{{Name: "status", Description: "Show system status", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "diagnostics", Description: "Show sanitized diagnostics", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "link-diagnostics", Description: "Show account-link readiness", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "presence-diagnostics", Description: "Show live presence and voice counter state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "pipeline-diagnostics", Description: "Show live pipeline state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "pipeline-reset-diagnostics", Description: "Clear live pipeline diagnostics", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "leaderboard-refresh", Description: "Manually refresh the public leaderboard panel", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "adm-source-scan", Description: "Scan live Nitrado ADM candidates for the actual actively-written source", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "pipeline", Description: "Show kill pipeline state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "workers", Description: "Show worker state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "permissions", Description: "Show Discord permission state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "health", Description: "Show component health", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "logs", Description: "Show recent operational state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "checkpoint", Description: "Show checkpoint state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "resync", Description: "Refresh safe runtime state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "verify-link", Description: "Manually verify a pending /link request (fallback when ADM verification can't complete)", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "username", Description: "PlayStation username from the pending /link request", Type: discordgo.ApplicationCommandOptionString, Required: true}}}}}
 	_, err = session.ApplicationCommandCreate(applicationID, guildID, cmd)
 	return err
 }
@@ -37,6 +61,10 @@ func (h *AdminCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interact
 	}
 	if len(i.ApplicationCommandData().Options) > 0 && i.ApplicationCommandData().Options[0].Name == "adm-source-scan" {
 		h.handleADMSourceScan(s, i)
+		return
+	}
+	if len(i.ApplicationCommandData().Options) > 0 && i.ApplicationCommandData().Options[0].Name == "verify-link" {
+		h.handleVerifyLink(s, i)
 		return
 	}
 	data := h.service.Status(context.Background())
@@ -103,6 +131,38 @@ func (h *AdminCommandHandler) handleADMSourceScan(s *discordgo.Session, i *disco
 	result, err := h.service.RunADMSourceScan(ctx)
 	embed := buildADMSourceScanEmbed(result, err)
 	_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Embeds: &[]*discordgo.MessageEmbed{embed}})
+}
+
+// handleVerifyLink is the admin fallback for completing a pending /link
+// request without the ADM disconnect/reconnect challenge - for when a player
+// can't reconnect in time or the ADM pipeline is degraded.
+func (h *AdminCommandHandler) handleVerifyLink(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	if h.links == nil || h.guilds == nil {
+		respondEphemeral(s, i, "❌ Manual link verification is unavailable.")
+		return
+	}
+	username := strings.TrimSpace(optionString(i.ApplicationCommandData().Options[0], "username"))
+	if username == "" {
+		respondEphemeral(s, i, "❌ username is required.")
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, guildID, err := h.guilds.GetGuild(ctx, i.GuildID)
+	if err != nil || guildID == 0 {
+		respondEphemeral(s, i, "❌ Run `/setup run` before verifying links.")
+		return
+	}
+	if err := h.links.ApproveManually(ctx, guildID, username); err != nil {
+		switch {
+		case errors.Is(err, linking.ErrPlayerNotFound):
+			respondEphemeral(s, i, fmt.Sprintf("❌ No pending /link request found for `%s`.", username))
+		default:
+			respondEphemeral(s, i, "❌ Could not verify that link right now.")
+		}
+		return
+	}
+	respondEphemeral(s, i, fmt.Sprintf("✅ Verified the pending link for `%s`.", username))
 }
 
 func buildADMSourceScanEmbed(values map[string]any, err error) *discordgo.MessageEmbed {

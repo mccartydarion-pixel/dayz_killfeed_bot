@@ -399,7 +399,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.WelcomeRepository = repository.NewWelcomeRepository(db.Pool)
 			app.ActivityRepository = repository.NewActivityRepository(db.Pool)
 			app.Links = repository.NewLinkRepository(db.Pool)
-			app.LinkService = linking.NewService(app.Links, app.ActivityRepository, app.Servers)
+			app.LinkService = linking.NewService(app.Links, app.ActivityRepository, app.Servers, app.Links)
 			seedCtx, seedCancel := context.WithTimeout(ctx, 10*time.Second)
 			seedErr := app.Achievements.EnsureDefinitions(seedCtx)
 			seedCancel()
@@ -648,6 +648,9 @@ func (a *App) Run() error {
 	session := a.Discord.Session()
 	api := discord.NewSessionAPI(session)
 	setupManager := discord.NewSetupManager(api, setupStore, a.Discord.BotID())
+	if a.LinkService != nil && a.Config.DiscordGuildID != "" {
+		a.LinkService.SetRoleAssigner(discord.NewVerifiedRoleAssigner(a.Discord, setupStore, a.Config.DiscordGuildID))
+	}
 	setupHandler := discord.NewSetupHandler(setupManager, a.Guilds, a.WelcomeRepository)
 	welcomeHandler := discord.NewPersistentWelcomeHandler(setupStore, a.WelcomeRepository, a.Guilds)
 	if a.WelcomeRepository != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
@@ -675,7 +678,7 @@ func (a *App) Run() error {
 		})
 	}
 	if a.AdminService != nil && a.Config.DiscordGuildID != "" {
-		adminHandler := discord.NewAdminCommandHandler(a.AdminService)
+		adminHandler := discord.NewAdminCommandHandler(a.AdminService, a.LinkService, a.Guilds)
 		if err := discord.RegisterAdminCommands(session, a.Config.DiscordGuildID); err != nil {
 			slog.Warn("component=discord", "msg", "failed to register admin commands", "err", err.Error())
 		} else {
@@ -1157,8 +1160,14 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 	publisher.BindStore(setupStore, a.Config.DiscordGuildID)
 	engine.SetKillPublisher(publisher)
 
+	deathPublisher := discord.NewDeathfeedPublisher(a.Discord, setupStore, a.Config.DiscordGuildID)
+	engine.SetDeathPublisher(deathPublisher)
+
 	pq := killfeed.NewPersistenceQueueWithServerID(store, row.GuildID, row.ID, row.ProviderServiceID)
 	pq.SetKillPostProcessor(store)
+	if a.LinkService != nil {
+		pq.SetLinkChallengeObserver(a.LinkService)
+	}
 	engine.SetPersistence(pq)
 	a.addPersistQueue(pq)
 
