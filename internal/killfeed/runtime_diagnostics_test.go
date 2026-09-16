@@ -32,3 +32,21 @@ func TestRuntimeDiagnosticsClassification(t *testing.T) {
 		t.Fatalf("got %s", got)
 	}
 }
+
+// TestRuntimeDiagnosticsProbeClassificationOutranksParserFailure proves a
+// freshly rotated ADM containing only header lines (no player activity yet)
+// is reported by its more specific, direct-read-verified probe classification
+// instead of the misleading PARSER_FAILURE, which reads as a parser bug even
+// though nothing is actually wrong - there is simply nothing to parse yet.
+func TestRuntimeDiagnosticsProbeClassificationOutranksParserFailure(t *testing.T) {
+	diagnostics := RuntimeDiagnosticSnapshot{
+		LastMetadataCheck:   time.Now(),
+		DownloadedBytes:     124,
+		CompleteLines:       4,
+		LastParsedEventType: "",
+		ProbeClassification: "WRONG_OR_INACTIVE_ADM_SOURCE",
+	}
+	if got := diagnostics.Classification(); got != "WRONG_OR_INACTIVE_ADM_SOURCE" {
+		t.Fatalf("expected the probe classification to win, got %s", got)
+	}
+}
