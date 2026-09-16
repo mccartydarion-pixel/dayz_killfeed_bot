@@ -649,7 +649,9 @@ func (a *App) Run() error {
 	api := discord.NewSessionAPI(session)
 	setupManager := discord.NewSetupManager(api, setupStore, a.Discord.BotID())
 	if a.LinkService != nil && a.Config.DiscordGuildID != "" {
-		a.LinkService.SetRoleAssigner(discord.NewVerifiedRoleAssigner(a.Discord, setupStore, a.Config.DiscordGuildID))
+		verifiedRole := discord.NewVerifiedRoleAssigner(a.Discord, setupStore, a.Config.DiscordGuildID)
+		a.LinkService.SetRoleAssigner(verifiedRole)
+		a.LinkService.SetNotifier(verifiedRole)
 	}
 	setupHandler := discord.NewSetupHandler(setupManager, a.Guilds, a.WelcomeRepository)
 	welcomeHandler := discord.NewPersistentWelcomeHandler(setupStore, a.WelcomeRepository, a.Guilds)
