@@ -113,16 +113,22 @@ func (s RuntimeDiagnosticSnapshot) Classification() string {
 		return s.LastErrorStage
 	case s.LastMetadataChanged && s.LastDownloadAttempt.IsZero():
 		return "ADM_DOWNLOAD_FAILURE"
-	case s.DownloadedBytes > 0 && s.CompleteLines > 0 && s.LastParsedEventType == "":
-		return "PARSER_FAILURE"
 	case s.LastParsedEventType != "" && s.LastPersistenceResult == "FAILURE":
 		return "PERSISTENCE_FAILURE"
 	case s.LastMetadataCheck.IsZero():
 		return "UNKNOWN"
+	// Probe-based classifications take priority over PARSER_FAILURE below: a
+	// source the direct-read probe has already proven inactive or stale
+	// explains "nothing parsed yet" on its own. Without this ordering, any
+	// freshly rotated ADM (header lines only, no player activity yet) reports
+	// PARSER_FAILURE - which reads as a parser bug - instead of the far more
+	// specific and accurate WRONG_OR_INACTIVE_ADM_SOURCE/NITRADO_METADATA_STALE.
 	case s.ProbeClassification == "WRONG_OR_INACTIVE_ADM_SOURCE":
 		return "WRONG_OR_INACTIVE_ADM_SOURCE"
 	case s.ProbeClassification == "NITRADO_METADATA_STALE":
 		return "NITRADO_METADATA_STALE"
+	case s.DownloadedBytes > 0 && s.CompleteLines > 0 && s.LastParsedEventType == "":
+		return "PARSER_FAILURE"
 	case !s.LastMetadataChanged && !s.LastMetadataCheck.IsZero() && time.Since(s.RemoteModified) > 10*time.Minute:
 		return "LIVE_SOURCE_STALE"
 	case s.LastKillParsedAt.After(s.LastKillPersistedAt) && !s.LastKillPersistedAt.IsZero():
