@@ -117,7 +117,7 @@ func (h *PublicPanelHandler) handleLink(s *discordgo.Session, i *discordgo.Inter
 		respondEphemeral(s, i, linkErrorMessage(err))
 		return
 	}
-	respondEphemeral(s, i, fmt.Sprintf("🟡 **PENDING VERIFICATION**\n\nPlayStation\n%s\n\nYour request expires <t:%d:R> and remains unverified until ownership is confirmed.", link.RequestedName, link.ExpiresAt.Unix()))
+	respondEphemeral(s, i, fmt.Sprintf("🟡 **PENDING VERIFICATION**\n\nPlayStation\n%s\n\nTo prove you're this account, **disconnect from the server and reconnect** before your request expires <t:%d:R>. Champion will verify it automatically within seconds of you reconnecting.\n\nCan't reconnect in time? Ask an admin to run `/admin verify-link`.", link.RequestedName, link.ExpiresAt.Unix()))
 }
 
 func (h *PublicPanelHandler) handleMyStats(s *discordgo.Session, i *discordgo.InteractionCreate) {
