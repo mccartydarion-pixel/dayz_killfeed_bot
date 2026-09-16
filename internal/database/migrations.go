@@ -698,6 +698,23 @@ ALTER TABLE kills ADD COLUMN IF NOT EXISTS longshot BOOLEAN NOT NULL DEFAULT FAL
 UPDATE kills SET longshot = TRUE WHERE distance IS NOT NULL AND distance >= 100.0 AND longshot = FALSE;
 `,
 	},
+	{
+		// No backfill: unlike longshot (derivable from the still-stored distance),
+		// KILLING_SPREE/STREAK_ENDED depend on the killer/victim streak count at
+		// the moment of that specific historical kill. player_combat_stats only
+		// tracks the CURRENT streak, which has long since moved on for old rows,
+		// and no per-kill streak snapshot exists for rows inserted before this
+		// migration. Guessing from current state would misreport history, so
+		// every pre-existing kill is left as killing_spree=false/streak_ended=false
+		// with NULL counts - only kills persisted after this deploy get real values.
+		Name: "0023_kills_streak_events",
+		SQL: `
+ALTER TABLE kills ADD COLUMN IF NOT EXISTS killing_spree BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE kills ADD COLUMN IF NOT EXISTS killer_streak_after INTEGER;
+ALTER TABLE kills ADD COLUMN IF NOT EXISTS streak_ended BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE kills ADD COLUMN IF NOT EXISTS ended_streak_count INTEGER;
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order, each transactionally. A

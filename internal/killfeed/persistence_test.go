@@ -20,10 +20,31 @@ type fakePersistenceStore struct {
 	disconnects int
 	dupeOnKill  bool
 	failKills   bool
+
+	// streaks is a minimal in-memory stand-in for player_combat_stats.current_streak,
+	// used only to exercise ResolveStreakContext under rapid/consecutive kills.
+	// In production the read (ResolveStreakContext) and the mutation
+	// (StreakRepository.Increment/Reset, in ProcessPersistedKill) are separate
+	// calls against the same durable table; this fake collapses them into one
+	// method purely for test simplicity.
+	streaks map[int64]int
 }
 
 func newFakePersistenceStore() *fakePersistenceStore {
 	return &fakePersistenceStore{players: map[string]int64{}}
+}
+
+func (f *fakePersistenceStore) ResolveStreakContext(ctx context.Context, guildID, killerPlayerID, victimPlayerID int64) (killerStreakBefore, victimStreakBefore int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.streaks == nil {
+		f.streaks = map[int64]int{}
+	}
+	killerStreakBefore = f.streaks[killerPlayerID]
+	victimStreakBefore = f.streaks[victimPlayerID]
+	f.streaks[killerPlayerID] = killerStreakBefore + 1
+	f.streaks[victimPlayerID] = 0
+	return killerStreakBefore, victimStreakBefore
 }
 
 func (f *fakePersistenceStore) UpsertPlayer(ctx context.Context, guildID int64, dayzID, displayName string, seenAt time.Time) (int64, error) {

@@ -1471,6 +1471,29 @@ func (p *persistenceStoreAdapter) ResolveKillAttribution(ctx context.Context, gu
 	return
 }
 
+// ResolveStreakContext reads the killer/victim current_streak values exactly
+// as they stand right now - i.e. before this kill's eventual Increment/Reset
+// below in ProcessPersistedKill - so killfeed.PersistenceQueue can classify
+// and persist KILLING_SPREE/STREAK_ENDED on the kill row itself, before
+// combat stats are mutated. A player with no player_combat_stats row yet
+// (first ever kill/death) has an implicit streak of 0, not an error.
+func (p *persistenceStoreAdapter) ResolveStreakContext(ctx context.Context, guildID, killerPlayerID, victimPlayerID int64) (killerStreakBefore, victimStreakBefore int) {
+	if p.streaks == nil {
+		return 0, 0
+	}
+	if killerPlayerID > 0 {
+		if s, err := p.streaks.Get(ctx, guildID, killerPlayerID); err == nil {
+			killerStreakBefore = s.Current
+		}
+	}
+	if victimPlayerID > 0 {
+		if s, err := p.streaks.Get(ctx, guildID, victimPlayerID); err == nil {
+			victimStreakBefore = s.Current
+		}
+	}
+	return killerStreakBefore, victimStreakBefore
+}
+
 func (p *persistenceStoreAdapter) ProcessPersistedKill(ctx context.Context, killID int64, record repository.KillRecord, ev *killfeed.Event) {
 	if p.streaks == nil {
 		return
@@ -1492,8 +1515,19 @@ func (p *persistenceStoreAdapter) ProcessPersistedKill(ctx context.Context, kill
 	// publishing. A guild without stats/analytics wired just gets an embed
 	// without these sections (nil-checked in BuildKillEmbed).
 	if ev != nil {
+		// Prefer the persisted, authoritative streak-after snapshot (computed
+		// before this kill's own Increment call above, and durably stored on
+		// the kill row) over the value Increment just returned - they agree in
+		// the normal case, but the persisted field is what the website and any
+		// later re-render must treat as the source of truth.
 		streakCurrent := streak.Current
+		if record.KillerStreakAfter != nil {
+			streakCurrent = *record.KillerStreakAfter
+		}
 		ev.KillerStreak = &streakCurrent
+		ev.KillingSpree = record.KillingSpree
+		ev.StreakEnded = record.StreakEnded
+		ev.EndedStreakCount = record.EndedStreakCount
 		if p.stats != nil {
 			if prof, statErr := p.stats.GetPlayerProfileByPlayerID(ctx, record.GuildID, record.KillerPlayerID); statErr == nil && prof != nil {
 				ev.KillerStats = &killfeed.CombatRecord{Kills: prof.Kills, Deaths: prof.Deaths}
