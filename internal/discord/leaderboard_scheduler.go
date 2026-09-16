@@ -95,7 +95,9 @@ func (s *LeaderboardScheduler) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ticker.C:
-			_ = s.RefreshOnce(ctx)
+			if err := s.RefreshOnce(ctx); err != nil {
+				slog.Warn("component=discord", "msg", "scheduled leaderboard refresh failed", "err", err.Error())
+			}
 		case <-ctx.Done():
 			return
 		}
