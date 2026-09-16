@@ -1,8 +1,10 @@
 package discord
 
 import (
+	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -102,5 +104,37 @@ func TestRotatingFeedQuietCycleDeletesAndPostsNothing(t *testing.T) {
 	}
 	if len(api.sent) != 1 {
 		t.Fatalf("expected no new messages posted on a quiet cycle, got %d total sends", len(api.sent))
+	}
+}
+
+// TestRotatingFeedFlushesOnShutdown guards the redeploy data-loss bug: a kill
+// enqueued mid-cycle must still reach Discord even if the process is
+// restarted before the next scheduled flush, since it was already persisted
+// to the database and would otherwise silently vanish from the channel.
+func TestRotatingFeedFlushesOnShutdown(t *testing.T) {
+	api := &fakeRotatingFeedAPI{}
+	store := NewInMemorySetupStore()
+	_ = store.Save(GuildSetup{GuildID: "g1", KillfeedChannelID: "chan-1"})
+	feed := NewRotatingFeed(api, store, "g1", func(s *GuildSetup) string { return s.KillfeedChannelID }, time.Hour, 10)
+
+	feed.Enqueue(&discordgo.MessageEmbed{Title: "kill-1"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		feed.Run(ctx)
+	}()
+	cancel()
+
+	select {
+	case <-runDone:
+	case <-time.After(time.Second):
+		t.Fatal("Run did not return after ctx was cancelled")
+	}
+	feed.WaitDone()
+
+	if len(api.sent) != 1 {
+		t.Fatalf("expected the pending embed flushed on shutdown, got %d sends", len(api.sent))
 	}
 }

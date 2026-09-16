@@ -35,13 +35,15 @@ type RotatingFeed struct {
 	pending       []*discordgo.MessageEmbed
 	lastMsgIDs    []string
 	lastChannelID string
+
+	done chan struct{}
 }
 
 // NewRotatingFeed creates a feed. channelIDFn extracts the relevant channel
 // field from GuildSetup (e.g. KillfeedChannelID or DeathChannelID) so the
 // same type serves both channels.
 func NewRotatingFeed(api rotatingFeedAPI, store SetupStore, guildID string, channelIDFn func(*GuildSetup) string, interval time.Duration, maxItems int) *RotatingFeed {
-	return &RotatingFeed{api: api, store: store, guildID: guildID, channelIDFn: channelIDFn, interval: interval, maxItems: maxItems}
+	return &RotatingFeed{api: api, store: store, guildID: guildID, channelIDFn: channelIDFn, interval: interval, maxItems: maxItems, done: make(chan struct{})}
 }
 
 // Enqueue appends an embed to the current cycle's pending batch. Safe to
@@ -55,22 +57,39 @@ func (f *RotatingFeed) Enqueue(embed *discordgo.MessageEmbed) {
 	f.pending = append(f.pending, embed)
 }
 
-// Run ticks flush() on the configured interval until ctx is done. Intended
-// to be started as its own goroutine for the lifetime of a server worker.
+// Run ticks flush() on the configured interval until ctx is done, then does
+// one final flush before returning so a graceful shutdown/redeploy never
+// silently drops whatever was enqueued since the last cycle (up to
+// interval's worth of kills/deaths would otherwise vanish - never posted,
+// even though they were already persisted to the database). Intended to be
+// started as its own goroutine for the lifetime of a server worker.
 func (f *RotatingFeed) Run(ctx context.Context) {
 	if f == nil {
 		return
 	}
+	defer close(f.done)
 	ticker := time.NewTicker(f.interval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
+			f.flush()
 			return
 		case <-ticker.C:
 			f.flush()
 		}
 	}
+}
+
+// WaitDone blocks until Run has returned, including its final on-shutdown
+// flush. Callers must only call this after Run's ctx is cancelled (or about
+// to be) - see App.shutdown, which mirrors the same pattern already used to
+// drain PersistenceQueue before the process exits.
+func (f *RotatingFeed) WaitDone() {
+	if f == nil {
+		return
+	}
+	<-f.done
 }
 
 func (f *RotatingFeed) channelID() string {
