@@ -169,6 +169,29 @@ func (c *Client) ListLogs(ctx context.Context, serviceID string) ([]LogFile, err
 
 	permErr := d.walk(ctx, "/", 0)
 
+	if len(d.degradedDirs) > 0 {
+		slog.Warn("component=nitrado_discovery", "msg", "retrying directories that failed transiently",
+			"count", len(d.degradedDirs))
+		timer := time.NewTimer(750 * time.Millisecond)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+		}
+		retry := d.degradedDirs
+		d.degradedDirs = nil
+		for _, target := range retry {
+			delete(d.visited, target.dir)
+			if err := d.walk(ctx, target.dir, target.depth); err != nil && permErr == nil {
+				permErr = err
+			}
+		}
+		if len(d.degradedDirs) > 0 {
+			slog.Warn("component=nitrado_discovery", "msg", "directories still unavailable after retry; results may be incomplete",
+				"directories", degradedDirNames(d.degradedDirs))
+		}
+	}
+
 	// Summarize per-directory counts (no per-file dump) to avoid log flooding.
 	dirs := make([]string, 0, len(d.dirStats))
 	for dir := range d.dirStats {
@@ -235,15 +258,34 @@ type dirStat struct {
 	script int
 }
 
+// degradedDir records a directory whose listing failed transiently (rate
+// limited or temporary server error) so it can be retried before discovery
+// results are finalized, instead of silently vanishing from the pass.
+type degradedDir struct {
+	dir   string
+	depth int
+}
+
+// degradedDirNames extracts just the directory names from a degraded-dir list,
+// for a compact final log line.
+func degradedDirNames(dirs []degradedDir) []string {
+	names := make([]string, 0, len(dirs))
+	for _, d := range dirs {
+		names = append(names, d.dir)
+	}
+	return names
+}
+
 // discovery holds the per-discovery-run state for bounded recursive traversal.
 type discovery struct {
-	client    *Client
-	serviceID string
-	visited   map[string]struct{}
-	found     map[string]LogFile
-	dirStats  map[string]*dirStat
-	filesSeen int
-	dirsSeen  int
+	client       *Client
+	serviceID    string
+	visited      map[string]struct{}
+	found        map[string]LogFile
+	dirStats     map[string]*dirStat
+	filesSeen    int
+	dirsSeen     int
+	degradedDirs []degradedDir
 }
 
 // maxDiscoveryDepth bounds recursive directory traversal so discovery cannot
@@ -267,6 +309,13 @@ func (d *discovery) walk(ctx context.Context, dir string, depth int) *RequestErr
 		if errors.As(err, &reqErr) {
 			if reqErr.Kind == KindPermission || reqErr.Kind == KindAuthentication || reqErr.Kind == KindInvalidEndpoint {
 				return reqErr
+			}
+			if reqErr.Kind == KindTemporary {
+				slog.Warn("component=nitrado_discovery", "msg", "directory listing failed transiently; will retry",
+					"directory", dir, "status_code", reqErr.StatusCode, "kind", reqErr.Kind)
+				d.degradedDirs = append(d.degradedDirs, degradedDir{dir: dir, depth: depth})
+				delete(d.visited, dir)
+				return nil
 			}
 		}
 		// Non-fatal: directory may not exist; skip it.

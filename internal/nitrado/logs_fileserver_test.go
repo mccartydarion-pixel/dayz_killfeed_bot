@@ -76,3 +76,48 @@ func TestListLogsPermissionDeniedSurfaced(t *testing.T) {
 		t.Fatalf("expected kind=permission, got %s", reqErr.Kind)
 	}
 }
+
+// TestListLogsRetriesRateLimitedDirectory verifies that a directory listing
+// which is rate limited long enough to exhaust the per-request retry budget
+// in client.do() is retried at the discovery level, instead of silently
+// vanishing from the discovery pass.
+func TestListLogsRetriesRateLimitedDirectory(t *testing.T) {
+	var profileRequests int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.RawQuery, "dir=") {
+			// Root listing: a single subdirectory to recurse into.
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"status":"success","data":{"entries":[
+				{"type":"dir","path":"/profile","name":"profile","modified_at":1757360000}
+			]}}`))
+			return
+		}
+
+		profileRequests++
+		if profileRequests <= 3 {
+			w.Header().Set("Retry-After", "0.01")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"success","data":{"entries":[
+			{"type":"file","path":"/profile/DayZServer_x64.ADM","name":"DayZServer_x64.ADM","size":1024,"modified_at":1757370000}
+		]}}`))
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL, "token", srv.Client())
+	logs, err := client.ListLogs(context.Background(), "19806451")
+	if err != nil {
+		t.Fatalf("ListLogs returned unexpected error: %v", err)
+	}
+
+	if len(logs) != 1 || logs[0].Name != "DayZServer_x64.ADM" {
+		t.Fatalf("expected the ADM file discovered after the rate-limited directory recovered, got %+v", logs)
+	}
+	if profileRequests < 4 {
+		t.Fatalf("expected the profile directory to be requested at least 4 times, got %d", profileRequests)
+	}
+}
