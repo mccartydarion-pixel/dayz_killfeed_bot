@@ -86,6 +86,14 @@ type Event struct {
 	PlayerStats  *CombatRecord // kills/deaths for ev.Player, all-time (death/suicide only)
 	KillerStreak *int          // killer's current kill streak after this kill
 	Encounters   *HeadToHead   // killer vs. victim all-time record
+
+	// Streak event context, copied from the durably persisted KillRecord (see
+	// persistenceStoreAdapter.ProcessPersistedKill) - never recomputed from
+	// current player_combat_stats, so it stays accurate even after the streak
+	// has since moved on.
+	KillingSpree     bool
+	StreakEnded      bool
+	EndedStreakCount *int
 }
 
 // CombatRecord is a lightweight kills/deaths snapshot for the stat-rich kill

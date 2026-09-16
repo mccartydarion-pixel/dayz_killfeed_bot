@@ -8,6 +8,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/killfeed"
 	"github.com/yourname/dayz-killfeed/internal/presentation"
+	"github.com/yourname/dayz-killfeed/internal/streaks"
 )
 
 // KillEmbedStyle selects the visual presentation for a kill.
@@ -54,6 +55,8 @@ const (
 	badgeLongShot      = "🎯 Long Shot"
 	badgeExtremeRange  = "👑 Extreme Range"
 	badgeMostWanted    = "🎯 Most Wanted"
+	badgeKillingSpree  = "🔥 Killing Spree"
+	badgeStreakEnded   = "💀 Streak Ended"
 )
 
 // KillPresentation is the style decision, computed before rendering. Keeping it
@@ -94,7 +97,27 @@ func BuildPresentation(ev *killfeed.Event) KillPresentation {
 	d := distanceOf(ev)
 	headshot := isHeadshot(ev)
 	melee := strings.Contains(strings.ToLower(ev.Weapon), "fist") || strings.Contains(strings.ToLower(ev.Weapon), "melee")
-	story := presentation.SelectPrimary(presentation.Context{Distance: ev.Distance, Headshot: headshot, Melee: melee, BountyClaimed: ev.BountyClaimed, WarKill: ev.WarBadge != "", EventBadges: ev.ActiveEventBadges})
+
+	// KILLING_SPREE/STREAK_ENDED are read from the persisted classification
+	// (ev.KillingSpree/ev.StreakEnded, copied from the durable KillRecord) -
+	// never recomputed from current player_combat_stats - and fed into the
+	// existing generic milestone/streak-ended slots the story engine already
+	// prioritizes, rather than a second competing story path.
+	streakMilestone := 0
+	if ev.KillingSpree && ev.KillerStreak != nil {
+		streakMilestone = *ev.KillerStreak
+	}
+	victimEndedStreak, streakEndedThreshold := 0, 0
+	if ev.StreakEnded && ev.EndedStreakCount != nil {
+		victimEndedStreak = *ev.EndedStreakCount
+		streakEndedThreshold = streaks.MeaningfulStreakThreshold
+	}
+	story := presentation.SelectPrimary(presentation.Context{
+		Distance: ev.Distance, Headshot: headshot, Melee: melee, BountyClaimed: ev.BountyClaimed, WarKill: ev.WarBadge != "", EventBadges: ev.ActiveEventBadges,
+		StreakMilestone:      streakMilestone,
+		VictimEndedStreak:    victimEndedStreak,
+		StreakEndedThreshold: streakEndedThreshold,
+	})
 	header := presentation.BuildStoryHeader(story)
 
 	badges := []string{}
@@ -124,6 +147,12 @@ func BuildPresentation(ev *killfeed.Event) KillPresentation {
 	}
 	if headshot && d >= 0 && d <= closeRangeMax && story == presentation.StoryHeadshot {
 		badges = append(badges, badgeCloseQuarters)
+	}
+	if ev.KillingSpree && story != presentation.StoryStreakMilestone {
+		badges = append(badges, badgeKillingSpree)
+	}
+	if ev.StreakEnded && story != presentation.StoryStreakEnded {
+		badges = append(badges, badgeStreakEnded)
 	}
 	if len(badges) > 5 {
 		badges = badges[:5]

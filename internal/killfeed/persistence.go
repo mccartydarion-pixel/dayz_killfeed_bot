@@ -9,6 +9,7 @@ import (
 
 	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/repository"
+	"github.com/yourname/dayz-killfeed/internal/streaks"
 )
 
 // PersistenceStore is the database surface the persistence worker needs.
@@ -25,6 +26,18 @@ type KillAttributionResolver interface {
 
 type DeathSeasonResolver interface {
 	ResolveDeathSeason(ctx context.Context, guildID int64, at time.Time) *int64
+}
+
+// StreakContextResolver exposes read-only killer/victim streak snapshots
+// (current_streak BEFORE this kill mutates them) so KILLING_SPREE/STREAK_ENDED
+// can be classified and persisted on the kill row itself, before combat stats
+// are actually mutated. Implementations must not mutate streak state here -
+// that still happens afterward, in KillPostProcessor.ProcessPersistedKill,
+// preserving persistence-before-publish (and now persistence-before-mutation)
+// ordering: the kill row, including its streak context, is durable before any
+// stat changes are applied.
+type StreakContextResolver interface {
+	ResolveStreakContext(ctx context.Context, guildID, killerPlayerID, victimPlayerID int64) (killerStreakBefore, victimStreakBefore int)
 }
 
 type KillIDStore interface {
@@ -336,24 +349,49 @@ func (q *PersistenceQueue) persistOne(ctx context.Context, ev *Event) error {
 		if resolver, ok := q.store.(KillAttributionResolver); ok {
 			killerFactionID, victimFactionID, seasonID, warID = resolver.ResolveKillAttribution(ctx, q.guildID, killerID, victimID, eventTime(ev))
 		}
+		// Streak context is captured here, BEFORE the kill row is persisted and
+		// BEFORE combat stats are mutated (mutation still happens afterward, in
+		// ProcessPersistedKill via StreakRepository.Increment/Reset) - so the
+		// persisted classification always reflects the streak state at the
+		// moment of this specific kill, never a value re-derived later from
+		// player_combat_stats after it has moved on.
+		var killingSpree, streakEnded bool
+		var killerStreakAfter, endedStreakCount *int
+		if resolver, ok := q.store.(StreakContextResolver); ok {
+			killerBefore, victimBefore := resolver.ResolveStreakContext(ctx, q.guildID, killerID, victimID)
+			if killerID > 0 {
+				after := killerBefore + 1
+				killerStreakAfter = &after
+				killingSpree = after >= streaks.KillingSpreeThreshold()
+			}
+			if victimID > 0 && streaks.EndedAnnouncement(victimBefore) {
+				streakEnded = true
+				endedCount := victimBefore
+				endedStreakCount = &endedCount
+			}
+		}
 		rec := repository.KillRecord{
-			GuildID:         q.guildID,
-			ServerID:        q.serverID,
-			SessionID:       q.session,
-			Fingerprint:     eventFingerprint(ev),
-			KillerPlayerID:  killerID,
-			VictimPlayerID:  victimID,
-			KillerFactionID: killerFactionID,
-			VictimFactionID: victimFactionID,
-			SeasonID:        seasonID,
-			WarID:           warID,
-			WeaponRaw:       ev.Weapon,
-			WeaponDisplay:   ev.Weapon,
-			Distance:        ev.Distance,
-			Headshot:        isHeadshotEvent(ev),
-			Longshot:        isLongshotEvent(ev),
-			KillStyle:       "",
-			EventTime:       eventTimePtr(ev),
+			GuildID:           q.guildID,
+			ServerID:          q.serverID,
+			SessionID:         q.session,
+			Fingerprint:       eventFingerprint(ev),
+			KillerPlayerID:    killerID,
+			VictimPlayerID:    victimID,
+			KillerFactionID:   killerFactionID,
+			VictimFactionID:   victimFactionID,
+			SeasonID:          seasonID,
+			WarID:             warID,
+			WeaponRaw:         ev.Weapon,
+			WeaponDisplay:     ev.Weapon,
+			Distance:          ev.Distance,
+			Headshot:          isHeadshotEvent(ev),
+			Longshot:          isLongshotEvent(ev),
+			KillStyle:         "",
+			EventTime:         eventTimePtr(ev),
+			KillingSpree:      killingSpree,
+			KillerStreakAfter: killerStreakAfter,
+			StreakEnded:       streakEnded,
+			EndedStreakCount:  endedStreakCount,
 		}
 		var killID int64
 		if inserter, ok := q.store.(KillIDStore); ok {
