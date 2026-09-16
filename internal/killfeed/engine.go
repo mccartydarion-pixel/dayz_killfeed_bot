@@ -285,6 +285,29 @@ func nameOfSelected(e *Engine) string {
 	return e.selected.Name
 }
 
+// SelectedName returns the basename of the currently selected ADM, or "" if
+// none is selected yet.
+func (e *Engine) SelectedName() string {
+	return nameOfSelected(e)
+}
+
+// LogSource exposes the engine's Nitrado client so diagnostics tooling (such
+// as the live ADM source scan) can reuse the exact same authenticated client.
+func (e *Engine) LogSource() LogSource {
+	if e == nil {
+		return nil
+	}
+	return e.client
+}
+
+// ServiceID returns the Nitrado service ID this engine polls.
+func (e *Engine) ServiceID() string {
+	if e == nil {
+		return ""
+	}
+	return e.serviceID
+}
+
 // SetKillPublisher attaches the consumer for authoritative kill events.
 func (e *Engine) SetKillPublisher(p KillPublisher) {
 	if e == nil {

@@ -19,6 +19,7 @@ type Service struct {
 	presenceDiagnostics func(context.Context) map[string]any
 	pipelineDiagnostics func(context.Context) map[string]any
 	leaderboardRefresh  func(context.Context) error
+	admSourceScan       func(context.Context) (map[string]any, error)
 	started             time.Time
 }
 
@@ -34,6 +35,20 @@ func (s *Service) SetPipelineDiagnostics(fn func(context.Context) map[string]any
 	s.pipelineDiagnostics = fn
 }
 func (s *Service) SetLeaderboardRefresh(fn func(context.Context) error) { s.leaderboardRefresh = fn }
+func (s *Service) SetADMSourceScan(fn func(context.Context) (map[string]any, error)) {
+	s.admSourceScan = fn
+}
+
+var errADMSourceScanUnavailable = errors.New("ADM source scan is not available")
+
+// RunADMSourceScan runs the live ADM source scan. This is a slow (~30s)
+// operation and is intentionally excluded from Status()/Diagnostics().
+func (s *Service) RunADMSourceScan(ctx context.Context) (map[string]any, error) {
+	if s == nil || s.admSourceScan == nil {
+		return nil, errADMSourceScanUnavailable
+	}
+	return s.admSourceScan(ctx)
+}
 
 // RefreshLeaderboard triggers an immediate manual leaderboard refresh, reusing
 // the same scheduler used for the automatic 3-hour refresh.

@@ -139,6 +139,26 @@ func (a *App) livePipelineSnapshot(serverID int64) (killfeed.RuntimeDiagnosticSn
 	return engine.Diagnostics().Snapshot(), true
 }
 
+// selectedServerEngine returns the live Engine for the guild's currently
+// selected public server, so live tooling (e.g. the ADM source scan) reuses
+// the exact same running Nitrado client instead of constructing a new one.
+func (a *App) selectedServerEngine(ctx context.Context) (*killfeed.Engine, int64, bool) {
+	if a.Guilds == nil {
+		return nil, 0, false
+	}
+	guild, _, err := a.Guilds.GetGuild(ctx, a.Config.DiscordGuildID)
+	if err != nil || guild == nil || guild.SelectedPublicServerID == 0 {
+		return nil, 0, false
+	}
+	a.presenceMu.Lock()
+	engine, ok := a.presenceEngines[guild.SelectedPublicServerID]
+	a.presenceMu.Unlock()
+	if !ok || engine == nil {
+		return nil, guild.SelectedPublicServerID, false
+	}
+	return engine, guild.SelectedPublicServerID, true
+}
+
 func (a *App) recordPublicVoicePublish(count int, result string) {
 	a.counterOwnerMu.RLock()
 	serverID := a.publicCounterServerID
@@ -878,6 +898,41 @@ func (a *App) Run() error {
 			out["classification"] = snapshot.Classification()
 			out["timeline"] = strings.Join(snapshot.RecentEvents, "\n")
 			return out
+		})
+	}
+	if a.AdminService != nil {
+		a.AdminService.SetADMSourceScan(func(scanCtx context.Context) (map[string]any, error) {
+			engine, serverID, found := a.selectedServerEngine(scanCtx)
+			if !found {
+				return map[string]any{"server": serverID, "candidates": 0, "root_cause": "NITRADO_SOURCE_UNAVAILABLE"}, nil
+			}
+			result, err := killfeed.ScanADMSources(scanCtx, engine.LogSource(), engine.ServiceID(), engine.SelectedName(), 30*time.Second)
+			if err != nil || result == nil {
+				return map[string]any{"server": serverID, "candidates": 0, "root_cause": "NITRADO_SOURCE_UNAVAILABLE"}, nil
+			}
+			activeSource := result.ActiveSource
+			if activeSource == "" {
+				activeSource = "NONE"
+			}
+			out := map[string]any{
+				"server":             serverID,
+				"candidates":         len(result.Candidates),
+				"current_selected":   result.CurrentSelected,
+				"active_source":      activeSource,
+				"active_size_before": result.ActiveSizeBefore,
+				"active_size_after":  result.ActiveSizeAfter,
+				"content_changed":    result.ContentChanged,
+				"new_adm_created":    result.NewADMCreated,
+				"recommendation":     result.Recommendation,
+				"root_cause":         result.RootCause,
+			}
+			for _, c := range result.Candidates {
+				if c.Name == result.CurrentSelected {
+					out["current_classification"] = c.Classification
+					break
+				}
+			}
+			return out, nil
 		})
 	}
 	if a.AdminService != nil {

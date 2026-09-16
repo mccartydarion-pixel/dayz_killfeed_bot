@@ -22,7 +22,7 @@ func RegisterAdminCommands(session *discordgo.Session, guildID string) error {
 		return err
 	}
 	perms := int64(discordgo.PermissionAdministrator | discordgo.PermissionManageServer)
-	cmd := &discordgo.ApplicationCommand{Name: "admin", Description: "Champion operations and diagnostics", DefaultMemberPermissions: &perms, Options: []*discordgo.ApplicationCommandOption{{Name: "status", Description: "Show system status", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "diagnostics", Description: "Show sanitized diagnostics", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "link-diagnostics", Description: "Show account-link readiness", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "presence-diagnostics", Description: "Show live presence and voice counter state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "pipeline-diagnostics", Description: "Show live pipeline state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "pipeline-reset-diagnostics", Description: "Clear live pipeline diagnostics", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "leaderboard-refresh", Description: "Manually refresh the public leaderboard panel", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "pipeline", Description: "Show kill pipeline state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "workers", Description: "Show worker state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "permissions", Description: "Show Discord permission state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "health", Description: "Show component health", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "logs", Description: "Show recent operational state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "checkpoint", Description: "Show checkpoint state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "resync", Description: "Refresh safe runtime state", Type: discordgo.ApplicationCommandOptionSubCommand}}}
+	cmd := &discordgo.ApplicationCommand{Name: "admin", Description: "Champion operations and diagnostics", DefaultMemberPermissions: &perms, Options: []*discordgo.ApplicationCommandOption{{Name: "status", Description: "Show system status", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "diagnostics", Description: "Show sanitized diagnostics", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "link-diagnostics", Description: "Show account-link readiness", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "presence-diagnostics", Description: "Show live presence and voice counter state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "pipeline-diagnostics", Description: "Show live pipeline state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "pipeline-reset-diagnostics", Description: "Clear live pipeline diagnostics", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "leaderboard-refresh", Description: "Manually refresh the public leaderboard panel", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "adm-source-scan", Description: "Scan live Nitrado ADM candidates for the actual actively-written source", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "pipeline", Description: "Show kill pipeline state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "workers", Description: "Show worker state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "permissions", Description: "Show Discord permission state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "health", Description: "Show component health", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "logs", Description: "Show recent operational state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "checkpoint", Description: "Show checkpoint state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "resync", Description: "Refresh safe runtime state", Type: discordgo.ApplicationCommandOptionSubCommand}}}
 	_, err = session.ApplicationCommandCreate(applicationID, guildID, cmd)
 	return err
 }
@@ -33,6 +33,10 @@ func (h *AdminCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interact
 	}
 	if !isAdminInteraction(i) {
 		respondEphemeral(s, i, "Administrator or Manage Server permission required.")
+		return
+	}
+	if len(i.ApplicationCommandData().Options) > 0 && i.ApplicationCommandData().Options[0].Name == "adm-source-scan" {
+		h.handleADMSourceScan(s, i)
 		return
 	}
 	data := h.service.Status(context.Background())
@@ -82,6 +86,50 @@ func (h *AdminCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interact
 		fmt.Fprintf(&b, "Database: %v\nDiscord: %v\nNitrado: %v\nADM: %v\nOnline Players: %v\nPersistence Queue: %v\n", runtime["database_connected"], runtime["discord_connected"], runtime["nitrado_authenticated"], runtime["log_source_found"], runtime["online_players"], runtime["persistence_queue_depth"])
 	}
 	respondEphemeral(s, i, b.String())
+}
+
+// handleADMSourceScan defers the interaction because the scan waits ~30s
+// between discovery rounds to observe real content growth, which exceeds
+// Discord's initial interaction ack window.
+func (h *AdminCommandHandler) handleADMSourceScan(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral},
+	}); err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	result, err := h.service.RunADMSourceScan(ctx)
+	embed := buildADMSourceScanEmbed(result, err)
+	_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Embeds: &[]*discordgo.MessageEmbed{embed}})
+}
+
+func buildADMSourceScanEmbed(values map[string]any, err error) *discordgo.MessageEmbed {
+	embed := presentation.NewChampionEmbed("CHAMPION • LIVE ADM SOURCE SCAN", presentation.InfoSteel)
+	if err != nil {
+		embed.Fields = append(embed.Fields, presentation.StatusField("ERROR", err.Error(), false))
+		return embed
+	}
+	add := func(label, key string) {
+		if value, ok := values[key]; ok {
+			embed.Fields = append(embed.Fields, presentation.StatusField(label, fmt.Sprint(value), true))
+		}
+	}
+	add("SERVER", "server")
+	add("CANDIDATES", "candidates")
+	add("CURRENT SELECTED", "current_selected")
+	add("CURRENT CLASSIFICATION", "current_classification")
+	add("ACTIVE SOURCE", "active_source")
+	if before, ok := values["active_size_before"]; ok {
+		after := values["active_size_after"]
+		embed.Fields = append(embed.Fields, presentation.StatusField("ACTIVE SOURCE SIZE", fmt.Sprintf("%v -> %v", before, after), true))
+	}
+	add("CONTENT CHANGED", "content_changed")
+	add("NEW ADM CREATED", "new_adm_created")
+	add("RECOMMENDATION", "recommendation")
+	add("ROOT CAUSE", "root_cause")
+	return embed
 }
 
 func respondPipelineDiagnostics(s *discordgo.Session, i *discordgo.InteractionCreate, raw any) {
