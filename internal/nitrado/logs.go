@@ -169,6 +169,19 @@ func (c *Client) ListLogs(ctx context.Context, serviceID string) ([]LogFile, err
 
 	permErr := d.walk(ctx, "/", 0)
 
+	// Nitrado can expose more than one mount for the same server (observed:
+	// "ftproot", reachable and enumerable from "/", and "noftp", which never
+	// appears as a child of any directory the tree walk can reach but is what
+	// the documented Gameserver Details endpoint names as the server's current
+	// directory via game_specific.path). The two mounts can disagree about
+	// which log files exist, so a log rotated only into the unlisted mount is
+	// otherwise permanently invisible to discovery. Walk it directly too.
+	if configDir, err := c.gameserverConfigDir(ctx, serviceID); err != nil {
+		slog.Debug("component=nitrado_discovery", "msg", "gameserver details path unavailable; continuing with tree walk only", "err", err.Error())
+	} else if err := d.walk(ctx, configDir, 0); err != nil && permErr == nil {
+		permErr = err
+	}
+
 	if len(d.degradedDirs) > 0 {
 		slog.Warn("component=nitrado_discovery", "msg", "retrying directories that failed transiently",
 			"count", len(d.degradedDirs))
@@ -757,6 +770,46 @@ func (c *Client) readDirectURL(ctx context.Context, rawURL string) ([]byte, erro
 		}
 	}
 	return nil, fmt.Errorf("signed download retry exhausted")
+}
+
+// gameserverConfigDir fetches the documented Gameserver Details endpoint
+// (GET /services/:id/gameservers) and returns game_specific.path with a
+// "config" segment appended - the DayZ log directory under whichever mount
+// Nitrado currently considers authoritative for this server.
+func (c *Client) gameserverConfigDir(ctx context.Context, serviceID string) (string, error) {
+	endpoint := "/services/" + url.PathEscape(serviceID) + "/gameservers"
+	resp, err := c.do(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", classifyStatus("gameserver details", resp.StatusCode, KindNotFound)
+	}
+
+	payload, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read gameserver details body: %w", err)
+	}
+
+	var decoded struct {
+		Data struct {
+			Gameserver struct {
+				GameSpecific struct {
+					Path string `json:"path"`
+				} `json:"game_specific"`
+			} `json:"gameserver"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		return "", fmt.Errorf("decode gameserver details: %w", err)
+	}
+	path := strings.TrimSpace(decoded.Data.Gameserver.GameSpecific.Path)
+	if path == "" {
+		return "", fmt.Errorf("gameserver details: game_specific.path is empty")
+	}
+	return strings.TrimRight(path, "/") + "/config", nil
 }
 
 func (c *Client) servicePayload(ctx context.Context, serviceID string) ([]byte, error) {
