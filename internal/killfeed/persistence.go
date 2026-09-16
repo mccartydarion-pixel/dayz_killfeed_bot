@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -350,6 +351,7 @@ func (q *PersistenceQueue) persistOne(ctx context.Context, ev *Event) error {
 			WeaponDisplay:   ev.Weapon,
 			Distance:        ev.Distance,
 			Headshot:        isHeadshotEvent(ev),
+			Longshot:        isLongshotEvent(ev),
 			KillStyle:       "",
 			EventTime:       eventTimePtr(ev),
 		}
@@ -475,6 +477,14 @@ func eventFingerprint(ev *Event) string {
 // isHeadshotEvent reports whether the event is a confirmed headshot.
 func isHeadshotEvent(ev *Event) bool {
 	return ev != nil && ev.HitZone == "Head"
+}
+
+// isLongshotEvent reports whether the kill's confirmed distance meets the
+// authoritative longshot threshold. Classified once, here, at persistence
+// time - never re-derived at read time - so it stays independent of (and can
+// freely coexist with) headshot, server-record, and bounty classification.
+func isLongshotEvent(ev *Event) bool {
+	return ev != nil && ev.Distance != nil && *ev.Distance >= presentation.LongshotDistanceMeters
 }
 
 func eventTimePtr(ev *Event) *time.Time {

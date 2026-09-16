@@ -37,12 +37,15 @@ const (
 	ColorNeutralGraphite = presentation.NeutralGraphite
 )
 
-// Range thresholds (meters) for style selection.
+// Range thresholds (meters) for style selection. longRangeMin defers to the
+// shared presentation.LongshotDistanceMeters constant so the Discord embed,
+// the story engine, and the persisted per-kill classification never drift.
 const (
 	closeRangeMax   = 15.0  // 0–15m
-	longRangeMin    = 100.0 // 100–199.9m
 	extremeRangeMin = 200.0 // 200m+
 )
+
+const longRangeMin = presentation.LongshotDistanceMeters // 100–199.9m
 
 // Badge strings (derived only from confirmed data).
 const (

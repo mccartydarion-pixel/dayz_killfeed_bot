@@ -689,6 +689,15 @@ ALTER TABLE guilds ADD COLUMN IF NOT EXISTS verified_role_id TEXT;
 ALTER TABLE link_verifications ADD COLUMN IF NOT EXISTS challenge_disconnect_at TIMESTAMPTZ;
 `,
 	},
+	{
+		// Backfill runs in the same transaction as the column add, so it applies
+		// exactly once, atomically with the schema change (see Migrate below).
+		Name: "0022_kills_longshot",
+		SQL: `
+ALTER TABLE kills ADD COLUMN IF NOT EXISTS longshot BOOLEAN NOT NULL DEFAULT FALSE;
+UPDATE kills SET longshot = TRUE WHERE distance IS NOT NULL AND distance >= 100.0 AND longshot = FALSE;
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order, each transactionally. A

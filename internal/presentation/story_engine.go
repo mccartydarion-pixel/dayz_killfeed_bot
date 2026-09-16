@@ -4,6 +4,13 @@ import "strings"
 
 type StoryType string
 
+// LongshotDistanceMeters is the single authoritative long-range/"longshot"
+// threshold, shared by the presentation story engine, the Discord embed
+// styling, and the durable per-kill classification persisted at kill time
+// (see internal/killfeed/persistence.go). The separate 200m extreme-range
+// tier is unrelated and intentionally not derived from this constant.
+const LongshotDistanceMeters = 100.0
+
 const (
 	StoryStandard            StoryType = "STANDARD"
 	StoryMelee               StoryType = "MELEE"
@@ -105,7 +112,7 @@ func SelectPrimary(c Context) StoryType {
 	if c.RapidKill {
 		return StoryRapidKill
 	}
-	if c.Distance != nil && *c.Distance >= 100 {
+	if c.Distance != nil && *c.Distance >= LongshotDistanceMeters {
 		return StoryLongRange
 	}
 	return StoryStandard
