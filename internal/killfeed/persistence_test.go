@@ -81,6 +81,60 @@ func (f *fakePersistenceStore) RecordDisconnect(context.Context, int64, int64, i
 	return nil
 }
 
+// hangingPersistenceStore never returns from UpsertPlayer within a test's
+// lifetime, simulating a hung DB/driver call that does not respect context
+// cancellation - the exact failure mode a bounded EnqueueAndWait must survive.
+type hangingPersistenceStore struct{ release chan struct{} }
+
+func (s *hangingPersistenceStore) UpsertPlayer(ctx context.Context, guildID int64, dayzID, displayName string, seenAt time.Time) (int64, error) {
+	<-s.release
+	return 1, nil
+}
+func (s *hangingPersistenceStore) InsertKill(ctx context.Context, k repository.KillRecord) error {
+	return nil
+}
+func (s *hangingPersistenceStore) InsertDeath(ctx context.Context, d repository.DeathRecord) error {
+	return nil
+}
+
+// TestProcessLinePersistenceTimeoutDoesNotHangEngine reproduces a live
+// incident: a downstream persistence call hung with no timeout
+// (EnqueueAndWait used context.Background()), freezing this engine's entire
+// poll loop for ~40 minutes with no error logged anywhere - every later ADM
+// poll and kill/death publish queued up behind it. processLine must return
+// promptly once persistEnqueueTimeout elapses, even while the store is still
+// hung, so the engine can continue instead of stalling indefinitely.
+func TestProcessLinePersistenceTimeoutDoesNotHangEngine(t *testing.T) {
+	original := persistEnqueueTimeout
+	persistEnqueueTimeout = 50 * time.Millisecond
+	defer func() { persistEnqueueTimeout = original }()
+
+	store := &hangingPersistenceStore{release: make(chan struct{})}
+	defer close(store.release) // let the queue's goroutine unblock and exit cleanly after the test
+
+	pq := NewPersistenceQueue(store, 1, "sess-1")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go pq.Run(ctx)
+
+	engine := NewEngine(nil, "svc-1", sequenceParser{})
+	engine.persistence = pq
+
+	start := time.Now()
+	parsed, err := engine.processLine("CONNECT")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected EnqueueAndWait to time out and return an error")
+	}
+	if !parsed {
+		t.Fatal("expected parsed=true even on a persistence timeout, matching the existing PERSISTENCE_FAILURE contract")
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("expected processLine to return promptly once persistEnqueueTimeout elapsed, took %s", elapsed)
+	}
+}
+
 type sequenceParser struct{}
 
 func (sequenceParser) ParseLine(line string) (*Event, error) {
