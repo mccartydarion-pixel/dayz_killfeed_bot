@@ -16,6 +16,17 @@ type KillfeedPublisher struct {
 	store    SetupStore
 	guildID  string
 	fallback string // legacy KILLFEED_CHANNEL_ID env fallback
+	feed     *RotatingFeed
+}
+
+// SetFeed attaches the rotating batch/cycle feed. When set, PublishKill
+// enqueues into it instead of sending immediately. Optional: unset falls
+// back to sending immediately, same as before the rotating feed existed.
+func (p *KillfeedPublisher) SetFeed(feed *RotatingFeed) {
+	if p == nil {
+		return
+	}
+	p.feed = feed
 }
 
 // NewKillfeedPublisher creates a publisher. channelID is the legacy env fallback;
@@ -61,14 +72,6 @@ func (p *KillfeedPublisher) PublishKill(ev *killfeed.Event) error {
 	// Build the style-aware Champion embed (one kill = one embed).
 	embed := BuildKillEmbed(ev)
 
-	// Suppress all mentions: no @everyone/@here/role/user pings from player names.
-	send := &discordgo.MessageSend{
-		Embeds: []*discordgo.MessageEmbed{embed},
-		AllowedMentions: &discordgo.MessageAllowedMentions{
-			Parse: []discordgo.AllowedMentionType{}, // parse nothing
-		},
-	}
-
 	victim, killer := "", ""
 	if ev.Victim != nil {
 		victim = ev.Victim.Name
@@ -77,6 +80,21 @@ func (p *KillfeedPublisher) PublishKill(ev *killfeed.Event) error {
 		killer = ev.Killer.Name
 	}
 
+	// The rotating feed batches embeds and posts them on its own cycle; see
+	// RotatingFeed. Without one configured, fall back to an immediate send.
+	if p.feed != nil {
+		p.feed.Enqueue(embed)
+		slog.Debug("component=discord", "msg", "killfeed queued", "victim", victim, "killer", killer)
+		return nil
+	}
+
+	// Suppress all mentions: no @everyone/@here/role/user pings from player names.
+	send := &discordgo.MessageSend{
+		Embeds: []*discordgo.MessageEmbed{embed},
+		AllowedMentions: &discordgo.MessageAllowedMentions{
+			Parse: []discordgo.AllowedMentionType{}, // parse nothing
+		},
+	}
 	if _, err := p.client.Session().ChannelMessageSendComplex(channelID, send); err != nil {
 		slog.Error("component=discord", "msg", "killfeed publish failed", "err", err.Error())
 		return nil // never propagate; log processing must continue

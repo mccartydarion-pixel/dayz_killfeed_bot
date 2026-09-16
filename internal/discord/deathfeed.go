@@ -79,11 +79,22 @@ type DeathfeedPublisher struct {
 	client  *Client
 	store   SetupStore
 	guildID string
+	feed    *RotatingFeed
 }
 
 // NewDeathfeedPublisher creates a publisher bound to the guild setup store.
 func NewDeathfeedPublisher(client *Client, store SetupStore, guildID string) *DeathfeedPublisher {
 	return &DeathfeedPublisher{client: client, store: store, guildID: guildID}
+}
+
+// SetFeed attaches the rotating batch/cycle feed. When set, PublishDeath
+// enqueues into it instead of sending immediately. Optional: unset falls
+// back to sending immediately, same as before the rotating feed existed.
+func (p *DeathfeedPublisher) SetFeed(feed *RotatingFeed) {
+	if p == nil {
+		return
+	}
+	p.feed = feed
 }
 
 func (p *DeathfeedPublisher) channelID() string {
@@ -110,6 +121,15 @@ func (p *DeathfeedPublisher) PublishDeath(ev *killfeed.Event) error {
 	}
 
 	embed := BuildDeathEmbed(ev)
+
+	// The rotating feed batches embeds and posts them on its own cycle; see
+	// RotatingFeed. Without one configured, fall back to an immediate send.
+	if p.feed != nil {
+		p.feed.Enqueue(embed)
+		slog.Debug("component=discord", "msg", "death feed queued", "type", string(ev.Type))
+		return nil
+	}
+
 	send := &discordgo.MessageSend{
 		Embeds: []*discordgo.MessageEmbed{embed},
 		AllowedMentions: &discordgo.MessageAllowedMentions{
