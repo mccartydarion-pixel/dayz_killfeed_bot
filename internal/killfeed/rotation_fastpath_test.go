@@ -170,11 +170,12 @@ func TestCheckForNewerLogPreservesCheckpointAndDedupe(t *testing.T) {
 		t.Fatalf("expected A's offset at EOF (%d), got %d", a.Size, offsetAfterA)
 	}
 
-	// A is proven stale; the fast path switches to B.
+	// A is proven stale; B has never been observed before (genuinely
+	// UNKNOWN, not previously-seen-unchanged) so it still gets a first look
+	// and the fast path switches to it.
 	e.staleMarks = map[string]staleMark{pathA: {At: now, Size: a.Size, Modified: a.Modified}}
 	e.candidateHistory = map[string]candidateObservation{
 		pathA: {Size: a.Size, Modified: a.Modified},
-		pathB: {Size: b.Size, Modified: b.Modified},
 	}
 	fake.logs = []nitrado.LogFile{a, b}
 	e.checkForNewerLog(context.Background())

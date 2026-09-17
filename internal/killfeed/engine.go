@@ -552,6 +552,11 @@ func (e *Engine) discoverOnce(ctx context.Context) error {
 		e.reportPoll()
 		return nil
 	}
+	// Collapse ftproot/noftp mount aliases of the same logical ADM into one
+	// candidate before anything else sees the list - ranking, history, and
+	// selection all operate on logical sources from this point on, so a pure
+	// mount-representation change can never look like a rotation.
+	logs = e.deduplicateCandidates(logs)
 	e.recordCandidates(logs)
 	if e.diagnostics != nil {
 		e.diagnostics.Update(func(s *RuntimeDiagnosticSnapshot) {
@@ -586,12 +591,34 @@ func (e *Engine) discoverOnce(ctx context.Context) error {
 	best := ranked[0]
 	candidate := best.File
 	e.selectionReason = best.Reason
-	if best.Reason == "newest_remote_modified" && len(logs) > 1 && logs[0].Modified.Equal(logs[1].Modified) {
+
+	// No candidate anywhere shows real evidence of life (ACTIVE), and the
+	// best alternative is not even a brand-new/never-seen file (UNKNOWN) -
+	// it is just another proven-or-passively-stale candidate. Retain the
+	// current source rather than walking backward to an equally dead
+	// historical file (section 7/9): reselect the SAME path with its freshest
+	// known metadata so state correctly returns to POLL_SELECTED_LOG instead
+	// of spamming full rediscovery every poll.
+	if e.selected != nil && candidate.Path != e.selected.Path && best.State != candidateActive && best.State != candidateUnknown {
+		slog.Info("component=adm_discovery", "event", "no_active_adm_candidate",
+			"current_path", e.selected.Path, "best_alternative_path", candidate.Path,
+			"best_alternative_state", string(best.State), "candidate_count", len(logs))
+		for _, r := range ranked {
+			if r.File.Path == e.selected.Path {
+				candidate = r.File
+				break
+			}
+		}
+		e.selectionReason = "no_active_candidate_retain_current"
+	} else if best.Reason == "newest_remote_modified" && len(logs) > 1 && logs[0].Modified.Equal(logs[1].Modified) {
 		e.selectionReason = "newest_filename_timestamp"
 	}
+
+	logicalChanged := previousPath != "" && canonicalADMID(previousPath) != canonicalADMID(candidate.Path)
 	slog.Info("component=adm_discovery", "event", "selection_decision",
 		"selected_path", candidate.Path, "previous_path", previousPath, "selection_reason", e.selectionReason,
-		"source_switched", previousPath != "" && previousPath != candidate.Path, "candidate_state", string(best.State))
+		"source_switched", logicalChanged, "physical_path_changed", previousPath != "" && previousPath != candidate.Path,
+		"logical_source_changed", logicalChanged, "candidate_state", string(best.State))
 	e.selectLog(candidate)
 	e.reportPoll()
 	return nil
@@ -604,8 +631,10 @@ func (e *Engine) recordCandidates(logs []nitrado.LogFile) {
 	}
 	e.newestDiscoveredFile = logs[0].Name
 	e.newestDiscoveredModified = logs[0].Modified
+	// One line per candidate at DEBUG only - at INFO this was 100+ log lines
+	// per discovery pass on a server with a long ADM history (section 10).
 	for _, candidate := range logs {
-		slog.Info("component=adm_discovery", "event", "candidate", "file", candidate.Name, "modified_at", candidate.Modified.UTC().Format(time.RFC3339), "size", candidate.Size, "filename_timestamp", filenameTimestamp(candidate.Name))
+		slog.Debug("component=adm_discovery", "event", "candidate", "file", candidate.Name, "modified_at", candidate.Modified.UTC().Format(time.RFC3339), "size", candidate.Size, "filename_timestamp", filenameTimestamp(candidate.Name))
 	}
 }
 
@@ -687,6 +716,16 @@ func (e *Engine) selectLog(lf nitrado.LogFile) {
 			e.tracker.CurrentLogFile = candidate.Path
 			e.tracker.LastByteOffset = existing.Offset
 			e.tracker.LineBuffer = ""
+		} else if alias, ok := e.checkpointForCanonicalAlias(canonicalADMID(candidate.Path)); ok {
+			// A different mount's copy of this exact logical ADM was already
+			// being tracked (e.g. the same file previously read as noftp/X.ADM
+			// is now represented as ftproot/X.ADM) - resume from that offset
+			// instead of replaying from byte 0 just because the physical
+			// representation changed (section 4).
+			e.tracker.CurrentLogFile = candidate.Path
+			e.tracker.LastByteOffset = alias.Offset
+			e.tracker.LineBuffer = ""
+			slog.Debug("component=adm", "event", "alias_checkpoint_reused", "canonical_source_id", canonicalADMID(candidate.Path), "physical_path", candidate.Path, "offset", alias.Offset)
 		} else {
 			e.tracker.ResetForRotation(candidate.Path)
 		}
@@ -719,8 +758,16 @@ func (e *Engine) selectLog(lf nitrado.LogFile) {
 	// ADM session != player session: switching which file Champion reads (first
 	// selection or later rotation) must never clear live presence. Only
 	// authoritative PLAYER_CONNECT/PLAYER_DISCONNECT events change who is online.
+	//
+	// Rotation is judged by LOGICAL source identity, not raw path: switching
+	// between mount representations of the exact same ADM (e.g.
+	// noftp/X.ADM -> ftproot/X.ADM) must never emit a rotation or presence
+	// event, reset the staleness clock, or otherwise look like anything
+	// happened (section 5). A real rotation still does all of that exactly
+	// as before.
 	if e.logSourceFound {
-		if previousPath != "" && previousPath != candidate.Path {
+		logicalChanged := previousPath != "" && canonicalADMID(previousPath) != canonicalADMID(candidate.Path)
+		if logicalChanged {
 			e.previousFileName = previousName
 			e.rotationPending = true
 			e.lastRotationAt = time.Now()
@@ -733,8 +780,8 @@ func (e *Engine) selectLog(lf nitrado.LogFile) {
 			// may be perfectly live.
 			e.lastLogChange = time.Now()
 			slog.Info("component=adm", "event", "rotation", "previous", previousName, "current", candidate.Name, "presence_retained", true)
+			slog.Info("component=presence", "event", "rotation", "presence_retained", true, "online_count", e.players.OnlineCount())
 		}
-		slog.Info("component=presence", "event", "rotation", "presence_retained", true, "online_count", e.players.OnlineCount())
 	}
 	if !e.logSourceFound {
 		e.logSourceFound = true
@@ -1342,6 +1389,8 @@ func (e *Engine) checkForNewerLog(ctx context.Context) {
 	if err != nil || len(logs) == 0 {
 		return
 	}
+	// Collapse mount aliases before ranking - same reasoning as discoverOnce.
+	logs = e.deduplicateCandidates(logs)
 
 	now := time.Now()
 	ranked := e.rankCandidates(logs, now)
@@ -1377,10 +1426,21 @@ func (e *Engine) checkForNewerLog(ctx context.Context) {
 		return
 	}
 
+	if best.State != candidateActive && best.State != candidateUnknown {
+		// Nothing shows real evidence of life; do not hop to an equally dead
+		// alternative via the fast path either (section 7).
+		slog.Debug("component=killfeed", "event", "no_active_adm_candidate",
+			"current_path", e.selected.Path, "best_alternative_path", best.File.Path,
+			"best_alternative_state", string(best.State))
+		return
+	}
+
+	logicalChanged := canonicalADMID(e.selected.Path) != canonicalADMID(best.File.Path)
 	slog.Info("component=killfeed", "event", "rotation_check",
 		"current_path", e.selected.Path, "candidate_path", best.File.Path,
 		"current_state", string(currentState), "candidate_state", string(best.State),
-		"selection_reason", best.Reason, "switch", true)
+		"selection_reason", best.Reason, "switch", logicalChanged,
+		"physical_path_changed", true, "logical_source_changed", logicalChanged)
 	e.drainRotationTail(ctx)
 	e.selectLog(best.File)
 }
