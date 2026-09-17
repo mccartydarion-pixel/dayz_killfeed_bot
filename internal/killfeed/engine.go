@@ -184,6 +184,15 @@ type Engine struct {
 	candidateCount            int
 	selectionReason           string
 
+	// candidateHistory/staleMarks/lastStaleRediscoveryAt back the
+	// activity-aware source selection in source_selection.go: they replace
+	// "pick whichever candidate Nitrado reports as newest-modified" with
+	// "pick whichever candidate has actual evidence of being alive,"
+	// demoting (never permanently blacklisting) a source just proven stale.
+	candidateHistory       map[string]candidateObservation
+	staleMarks             map[string]staleMark
+	lastStaleRediscoveryAt time.Time
+
 	// onAdmSnapshot fires once per poll cycle from this engine's own goroutine
 	// (never concurrently), so the ADM monitor can read a consistent snapshot
 	// without needing its own synchronization on Engine's internal fields.
@@ -556,17 +565,33 @@ func (e *Engine) discoverOnce(ctx context.Context) error {
 	// Discovery produced real candidates; clear the backoff counter.
 	e.discoverFails = 0
 
-	// Phase 2.8: select the best candidate immediately. Ranking (ListLogs already
-	// sorts newest-modified first): prefer a non-trivial file (has content) over a
-	// brand-new empty ADM, but do not require active growth — an inactive ADM with
-	// real gameplay events is a valid source. ListLogs returns newest-first, so the
-	// first candidate with meaningful size wins; fall back to logs[0] if all are tiny.
-	candidate := selectBestCandidate(logs)
-	e.selectionReason = "newest_remote_modified"
-	if len(logs) > 1 && logs[0].Modified.Equal(logs[1].Modified) {
+	// Rank candidates by evidence of real activity (growth/modified-advance
+	// across discovery passes, demoting anything just proven stale) rather
+	// than raw "newest modified timestamp" alone - see source_selection.go.
+	// History must be read by ranking BEFORE this pass's observations
+	// overwrite it.
+	now := time.Now()
+	ranked := e.rankCandidates(logs, now)
+	previousPath := ""
+	if e.selected != nil {
+		previousPath = e.selected.Path
+	}
+	for _, r := range ranked {
+		slog.Debug("component=adm_discovery", "event", "candidate_ranked",
+			"candidate_path", r.File.Path, "metadata_size", r.File.Size, "modified_at", r.File.Modified.UTC().Format(time.RFC3339),
+			"candidate_state", string(r.State), "reason", r.Reason, "score", r.Score)
+	}
+	e.updateCandidateHistory(logs, now)
+
+	best := ranked[0]
+	candidate := best.File
+	e.selectionReason = best.Reason
+	if best.Reason == "newest_remote_modified" && len(logs) > 1 && logs[0].Modified.Equal(logs[1].Modified) {
 		e.selectionReason = "newest_filename_timestamp"
 	}
-	slog.Info("component=adm_discovery", "event", "selection_decision", "selected", candidate.Name, "reason", e.selectionReason)
+	slog.Info("component=adm_discovery", "event", "selection_decision",
+		"selected_path", candidate.Path, "previous_path", previousPath, "selection_reason", e.selectionReason,
+		"source_switched", previousPath != "" && previousPath != candidate.Path, "candidate_state", string(best.State))
 	e.selectLog(candidate)
 	e.reportPoll()
 	return nil
@@ -595,10 +620,15 @@ func filenameTimestamp(name string) string {
 	return ""
 }
 
-// selectBestCandidate picks the current gameplay log: the newest-modified ADM.
-// ListLogs already sorts candidates newest-first; file size must never decide
-// this, since an old, already-rotated-out ADM can be far larger than the
-// current one and would otherwise wrongly win.
+// selectBestCandidate picks the newest-modified ADM with no other evidence to
+// go on. ListLogs already sorts candidates newest-first; file size must never
+// decide this, since an old, already-rotated-out ADM can be far larger than
+// the current one and would otherwise wrongly win. This is now only the
+// bottom-tier fallback inside rankCandidates' scoring (source_selection.go) -
+// discoverOnce no longer calls it directly, since "newest modified" alone is
+// exactly the signal that caused Champion to keep reselecting a known-dead
+// file. Kept as its own function because it is still the correct rule once
+// no candidate has any stronger activity evidence.
 func selectBestCandidate(logs []nitrado.LogFile) nitrado.LogFile {
 	if len(logs) == 0 {
 		return nitrado.LogFile{}
@@ -609,8 +639,10 @@ func selectBestCandidate(logs []nitrado.LogFile) nitrado.LogFile {
 // selectLog locks in the active gameplay log and switches to polling only it.
 func (e *Engine) selectLog(lf nitrado.LogFile) {
 	previousName := ""
+	previousPath := ""
 	if e.selected != nil {
 		previousName = e.selected.Name
+		previousPath = e.selected.Path
 	}
 	candidate := lf
 	e.selected = &candidate
@@ -644,7 +676,20 @@ func (e *Engine) selectLog(lf nitrado.LogFile) {
 		e.tracker = NewTracker(e.serviceID)
 	}
 	if e.tracker.CurrentLogFile != "" && e.tracker.CurrentLogFile != candidate.Path {
-		e.tracker.ResetForRotation(candidate.Path)
+		// If this exact path was already polled earlier in this process's
+		// lifetime (e.g. it grew stale, got demoted, and later became
+		// eligible again - see source_selection.go), resume from its own
+		// previously tracked offset instead of discarding it. Only a path
+		// genuinely new to this tracker gets reset to 0. This is what makes
+		// switching sources safe: a re-selected file is never replayed from
+		// the start, and its bytes are never confused with another file's.
+		if existing, ok := e.tracker.Checkpoints[candidate.Path]; ok {
+			e.tracker.CurrentLogFile = candidate.Path
+			e.tracker.LastByteOffset = existing.Offset
+			e.tracker.LineBuffer = ""
+		} else {
+			e.tracker.ResetForRotation(candidate.Path)
+		}
 		if e.checkpointStore != nil && e.guildID > 0 && e.serverID > 0 {
 			if checkpoint, err := e.checkpointStore.LoadADMCheckpoint(context.Background(), e.guildID, e.serverID); err == nil && checkpoint != nil && checkpoint.Filename == candidate.Path {
 				e.tracker.UpdateCheckpoint(e.serviceID, candidate.Path, checkpoint.RemoteSize, checkpoint.RemoteModifiedAt, checkpoint.ProcessedOffset)
@@ -675,10 +720,18 @@ func (e *Engine) selectLog(lf nitrado.LogFile) {
 	// selection or later rotation) must never clear live presence. Only
 	// authoritative PLAYER_CONNECT/PLAYER_DISCONNECT events change who is online.
 	if e.logSourceFound {
-		if previousName != "" && previousName != candidate.Name {
+		if previousPath != "" && previousPath != candidate.Path {
 			e.previousFileName = previousName
 			e.rotationPending = true
 			e.lastRotationAt = time.Now()
+			// A switch to a genuinely different source starts its own fresh
+			// staleness clock: without this, a source just proven stale (which
+			// is why we are switching away from it at all) would leave
+			// lastLogChange already >5 minutes old, so the very next poll of
+			// the newly selected source would immediately re-trigger the
+			// give-up path before it ever got a normal read - even though it
+			// may be perfectly live.
+			e.lastLogChange = time.Now()
 			slog.Info("component=adm", "event", "rotation", "previous", previousName, "current", candidate.Name, "presence_retained", true)
 		}
 		slog.Info("component=presence", "event", "rotation", "presence_retained", true, "online_count", e.players.OnlineCount())
@@ -721,6 +774,18 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 		// every tick once discovery reselects the same newest file.
 		e.probeStaleSource(ctx, e.selected)
 		if time.Since(e.lastLogChange) > 5*time.Minute {
+			// Bound how often a still-stale selection re-runs the (expensive,
+			// full-tree) discovery walk: without this, every poll tick while
+			// stuck (as often as every couple seconds) would call ListLogs
+			// again even though nothing has changed. Reuses staleProbeInterval
+			// so there is one consistent cadence for "how often do we check a
+			// quiet source again," not a second magic number.
+			if !e.lastStaleRediscoveryAt.IsZero() && time.Since(e.lastStaleRediscoveryAt) < staleProbeInterval {
+				e.reportPoll()
+				return nil
+			}
+			e.lastStaleRediscoveryAt = time.Now()
+			e.markSelectedStale(e.selected)
 			slog.Warn("component=adm", "event", "selected_stale", "file", e.selected.Name)
 			e.state = StateDiscovery
 			return e.discoverOnce(ctx)
