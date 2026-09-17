@@ -223,7 +223,7 @@ func TestEngineSwitchesAwayFromStaleSourceToActiveCandidate(t *testing.T) {
 	// A goes quiet (never changes again) and is later proven stale by the
 	// direct probe. B appears and, across two discovery passes, shows real
 	// growth - the exact evidence a genuinely live source produces.
-	engine.lastLogChange = time.Now().Add(-6 * time.Minute)
+	engine.lastLogChange = time.Now().Add(-(staleGiveUpAfter + time.Minute))
 	contentB := "b line one\n"
 	fake.logs = []nitrado.LogFile{
 		{Name: "B.ADM", Path: pathB, Size: int64(len(contentB)), Modified: now.Add(time.Minute), Type: "ADM"},
@@ -260,7 +260,7 @@ func TestEngineDoesNotHealStaleSourceReselectedAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	engine.lastLogChange = time.Now().Add(-6 * time.Minute)
+	engine.lastLogChange = time.Now().Add(-(staleGiveUpAfter + time.Minute))
 	if err := engine.PollOnce(ctx); err != nil { // gives up, rediscovers, only candidate is itself
 		t.Fatal(err)
 	}
@@ -291,13 +291,13 @@ func TestStaleRediscoveryIsThrottled(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	engine.lastLogChange = time.Now().Add(-6 * time.Minute)
+	engine.lastLogChange = time.Now().Add(-(staleGiveUpAfter + time.Minute))
 	if err := engine.PollOnce(ctx); err != nil { // forces one rediscovery
 		t.Fatal(err)
 	}
 	readsAfterFirstGiveUp := fake.reads
 
-	engine.lastLogChange = time.Now().Add(-6 * time.Minute)
+	engine.lastLogChange = time.Now().Add(-(staleGiveUpAfter + time.Minute))
 	if err := engine.PollOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -343,7 +343,7 @@ func TestSourceSwitchResumesFromOwnCheckpointWithoutDuplicatePublish(t *testing.
 	}
 
 	// A goes stale; B appears and wins (unknown beats known-stale).
-	engine.lastLogChange = time.Now().Add(-6 * time.Minute)
+	engine.lastLogChange = time.Now().Add(-(staleGiveUpAfter + time.Minute))
 	contentB := "b line one\n"
 	fake.logs = []nitrado.LogFile{
 		{Name: "B.ADM", Path: pathB, Size: int64(len(contentB)), Modified: now.Add(time.Minute), Type: "ADM"},
@@ -366,7 +366,7 @@ func TestSourceSwitchResumesFromOwnCheckpointWithoutDuplicatePublish(t *testing.
 	// milliseconds, which would otherwise be (correctly) rate-limited.
 	engine.lastStaleRediscoveryAt = time.Time{}
 	engine.lastStaleProbeAt = time.Time{}
-	engine.lastLogChange = time.Now().Add(-6 * time.Minute)
+	engine.lastLogChange = time.Now().Add(-(staleGiveUpAfter + time.Minute))
 	grownA := contentA + killLine + " again\n" // A grew, but the ORIGINAL kill line content is still the same first bytes
 	fake.contentByPath[pathA] = []byte(grownA)
 	fake.logs = []nitrado.LogFile{

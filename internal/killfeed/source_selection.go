@@ -88,7 +88,7 @@ const (
 // Direct-probe evidence (content changed / unread bytes past checkpoint) is
 // handled entirely upstream by probeStaleSource: by the time pollSelected
 // gives up and discovery runs, the probe has already conclusively ruled out
-// life in the selected file (see the >5-minute branch in pollSelected), so
+// life in the selected file (see the staleGiveUpAfter branch in pollSelected), so
 // there is nothing stronger left to fold in here for that candidate.
 func (e *Engine) rankCandidates(logs []nitrado.LogFile, now time.Time) []candidateRank {
 	ranks := make([]candidateRank, len(logs))
@@ -154,7 +154,7 @@ func (e *Engine) updateCandidateHistory(logs []nitrado.LogFile, now time.Time) {
 }
 
 // markSelectedStale records the metadata observed for the given path at the
-// exact moment Champion gave up on it (see pollSelected's >5-minute branch),
+// exact moment Champion gave up on it (see pollSelected's staleGiveUpAfter branch),
 // demoting it in future candidate ranking until new evidence appears. A fresh
 // stat is attempted so the recorded snapshot is as current as possible; if
 // that fails, the last known selected metadata is used instead - still a

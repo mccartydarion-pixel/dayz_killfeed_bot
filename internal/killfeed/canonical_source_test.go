@@ -237,7 +237,7 @@ func TestAllCandidatesStaleRetainsCurrentSource(t *testing.T) {
 		engine.candidateHistory[o.Path] = candidateObservation{Size: o.Size, Modified: o.Modified}
 	}
 
-	engine.lastLogChange = time.Now().Add(-6 * time.Minute)
+	engine.lastLogChange = time.Now().Add(-(staleGiveUpAfter + time.Minute))
 	fake.logs = append([]nitrado.LogFile{fake.logs[0]}, older...)
 	if err := engine.PollOnce(ctx); err != nil { // forces give-up + discovery
 		t.Fatal(err)
@@ -292,7 +292,7 @@ func TestNoActiveCandidateEventLogged(t *testing.T) {
 
 	older := nitrado.LogFile{Name: "old.ADM", Path: "/logs/old.ADM", Size: 124, Modified: time.Now().Add(-6 * time.Hour)}
 	engine.candidateHistory = map[string]candidateObservation{older.Path: {Size: older.Size, Modified: older.Modified}}
-	engine.lastLogChange = time.Now().Add(-6 * time.Minute)
+	engine.lastLogChange = time.Now().Add(-(staleGiveUpAfter + time.Minute))
 	fake.logs = append(fake.logs, older)
 
 	if err := engine.PollOnce(ctx); err != nil {
@@ -303,5 +303,182 @@ func TestNoActiveCandidateEventLogged(t *testing.T) {
 	}
 	if engine.Stats().State != StatePolling {
 		t.Fatalf("expected engine to remain in POLL_SELECTED_LOG after retaining current source, got %s", engine.Stats().State)
+	}
+}
+
+// TestChoosePreferredAliasPrefersNoftpOverSelectedCheckpointedFtproot is
+// scenario A of the noftp API audit: noftp must be preferred over ftproot
+// even when ftproot is the currently selected path AND already has a
+// tracked checkpoint - neither signal may make ftproot win once a noftp
+// alias is present in the listing (section 2).
+func TestChoosePreferredAliasPrefersNoftpOverSelectedCheckpointedFtproot(t *testing.T) {
+	noftpPath := "/games/svc/noftp/dayzps/config/X.ADM"
+	ftprootPath := "/games/svc/ftproot/dayzps/config/X.ADM"
+
+	e := NewEngine(&fakeLogSource{}, "svc-1", testParser{})
+	e.selected = &nitrado.LogFile{Path: ftprootPath}
+	e.tracker.Checkpoints[ftprootPath] = LogCheckpoint{Offset: 500}
+
+	members := []nitrado.LogFile{
+		// ftproot listed first and with a larger size, on top of already
+		// being selected and checkpointed - every old tie-break signal
+		// favors it, and it must still lose to noftp.
+		{Name: "X.ADM", Path: ftprootPath, Size: 900, Modified: time.Now()},
+		{Name: "X.ADM", Path: noftpPath, Size: 100, Modified: time.Now().Add(-time.Hour)},
+	}
+	chosen := e.choosePreferredAlias(members)
+	if chosen.Path != noftpPath {
+		t.Fatalf("expected noftp to win despite ftproot being selected, checkpointed, larger, and listed first; got %q", chosen.Path)
+	}
+}
+
+// TestNoftpMissingRetriesBeforeFtprootFallback is scenario B/section 4: a
+// canonical source that has previously shown a noftp alias must not flap
+// straight to ftproot the moment a single pass's listing lacks noftp - it
+// keeps returning the last known noftp representation for a short bounded
+// retry window, only falling back once that window is exhausted.
+func TestNoftpMissingRetriesBeforeFtprootFallback(t *testing.T) {
+	noftpPath := "/games/svc/noftp/dayzps/config/X.ADM"
+	ftprootPath := "/games/svc/ftproot/dayzps/config/X.ADM"
+	noftpFile := nitrado.LogFile{Name: "X.ADM", Path: noftpPath, Size: 100, Modified: time.Now()}
+	ftprootFile := nitrado.LogFile{Name: "X.ADM", Path: ftprootPath, Size: 100, Modified: noftpFile.Modified}
+
+	e := NewEngine(&fakeLogSource{}, "svc-1", testParser{})
+
+	// Pass 1: both aliases present - noftp wins and is remembered.
+	chosen := e.choosePreferredAlias([]nitrado.LogFile{ftprootFile, noftpFile})
+	if chosen.Path != noftpPath {
+		t.Fatalf("pass 1: expected noftp, got %q", chosen.Path)
+	}
+
+	// Passes 2 and 3: noftp vanishes from the listing entirely (only ftproot
+	// remains a candidate for this canonical group). Within the bounded
+	// retry window, Champion must keep returning the remembered noftp
+	// representation rather than switching mounts.
+	for i := 2; i <= 1+noftpFallbackRetryPasses; i++ {
+		chosen = e.choosePreferredAlias([]nitrado.LogFile{ftprootFile})
+		if chosen.Path != noftpPath {
+			t.Fatalf("pass %d: expected the bounded retry to keep returning noftp, got %q", i, chosen.Path)
+		}
+	}
+
+	// The next pass exhausts the retry window - only now is ftproot allowed
+	// to become the representative.
+	chosen = e.choosePreferredAlias([]nitrado.LogFile{ftprootFile})
+	if chosen.Path != ftprootPath {
+		t.Fatalf("expected ftproot fallback once the retry window is exhausted, got %q", chosen.Path)
+	}
+}
+
+// TestNoftpRecoversWithoutTreatingAliasSwitchAsRotation is scenario E: once
+// Champion has fallen back to ftproot, noftp reappearing in the listing must
+// immediately become the representative again (never a permanent
+// blacklist), and - driven through the real discoverOnce pipeline - that
+// recovery must not look like an ADM rotation or disturb presence state,
+// exactly like any other alias-only change (also covers scenario J).
+func TestNoftpRecoversWithoutTreatingAliasSwitchAsRotation(t *testing.T) {
+	noftpPath := "/games/svc/noftp/dayzps/config/X.ADM"
+	ftprootPath := "/games/svc/ftproot/dayzps/config/X.ADM"
+	now := time.Date(2026, 9, 17, 1, 0, 0, 0, time.UTC)
+	noftpFile := nitrado.LogFile{Name: "X.ADM", Path: noftpPath, Directory: "/games/svc/noftp/dayzps/config", Size: 100, Modified: now}
+	ftprootFile := nitrado.LogFile{Name: "X.ADM", Path: ftprootPath, Size: 100, Modified: now}
+
+	e, fake := newAliasFastPathEngine(noftpFile, 100)
+
+	// Force the fallback state directly (equivalent to noftpFallbackRetryPasses
+	// consecutive misses already having happened).
+	e.rememberNoftpAlias(canonicalADMID(noftpPath), noftpFile)
+	e.noftpMemory[canonicalADMID(noftpPath)].missStreak = noftpFallbackRetryPasses + 1
+	e.noftpMemory[canonicalADMID(noftpPath)].usingFallback = true
+	e.selected = &ftprootFile
+	e.candidateHistory = map[string]candidateObservation{ftprootPath: {Size: 100, Modified: now}}
+	lastLogChangeBefore := time.Now().Add(-90 * time.Second)
+	e.lastLogChange = lastLogChangeBefore
+	e.rotationPending = false
+
+	// noftp reappears in the listing.
+	fake.logs = []nitrado.LogFile{ftprootFile, noftpFile}
+
+	if err := e.discoverOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if e.selected.Path != noftpPath {
+		t.Fatalf("expected recovery back to noftp, got %q", e.selected.Path)
+	}
+	if e.rotationPending {
+		t.Fatal("expected the mount recovery to never be flagged as a rotation")
+	}
+	if !e.lastLogChange.Equal(lastLogChangeBefore) {
+		t.Fatal("expected lastLogChange to be untouched by a mount-only recovery")
+	}
+	if mem := e.noftpMemory[canonicalADMID(noftpPath)]; mem.usingFallback || mem.missStreak != 0 {
+		t.Fatalf("expected fallback state cleared on recovery, got usingFallback=%v missStreak=%d", mem.usingFallback, mem.missStreak)
+	}
+}
+
+// TestNoftpFallbackDoesNotDuplicatePublish is scenario I through the new
+// mount-fallback path specifically: once the bounded retry is exhausted and
+// Champion switches representation to ftproot, it must resume from the
+// logical source's own checkpoint and never reprocess (and republish)
+// content already consumed while reading it as noftp.
+func TestNoftpFallbackDoesNotDuplicatePublish(t *testing.T) {
+	noftpPath := "/games/svc/noftp/dayzps/config/X.ADM"
+	ftprootPath := "/games/svc/ftproot/dayzps/config/X.ADM"
+	now := time.Date(2026, 9, 17, 1, 0, 0, 0, time.UTC)
+	killLine := `16:40:12 | Player "victim1" (DEAD) (id=v1 pos=<1.0, 2.0, 3.0>) killed by Player "killer1" (id=k1 pos=<4.0, 5.0, 6.0>) with M4-A1 from 62.1978 meters`
+	content := killLine + "\n"
+
+	noftpFile := nitrado.LogFile{Name: "X.ADM", Path: noftpPath, Directory: "/games/svc/noftp/dayzps/config", Size: int64(len(content)), Modified: now}
+	fake := &fakeLogSource{contentByPath: map[string][]byte{noftpPath: []byte(content)}}
+	e := NewEngine(fake, "svc-1", NewADMParser())
+	pub := &recordingPublisher{}
+	e.SetKillPublisher(pub)
+	e.state = StatePolling
+	e.selected = &noftpFile
+	e.logSourceFound = true
+
+	fake.logs = []nitrado.LogFile{noftpFile}
+	if err := e.PollOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(pub.kills) != 1 {
+		t.Fatalf("expected 1 published kill from noftp, got %d", len(pub.kills))
+	}
+
+	// Establish noftp alias memory as if a prior discovery pass had already
+	// observed both mounts together - the realistic precondition for "noftp
+	// temporarily disappears" (section 4 only bounds a retry for a source
+	// that has actually been seen as noftp before).
+	mem := e.rememberNoftpAlias(canonicalADMID(noftpPath), noftpFile)
+	mem.lastSeen = noftpFile
+
+	// noftp vanishes from discovery for more than the retry window; ftproot
+	// (the SAME underlying kill line re-appended, exactly like
+	// TestCheckForNewerLogPreservesCheckpointAndDedupe's "again" fixture)
+	// is the only candidate each pass.
+	grownContent := content + killLine + " again\n"
+	fake.contentByPath[ftprootPath] = []byte(grownContent)
+	ftprootFile := nitrado.LogFile{Name: "X.ADM", Path: ftprootPath, Size: int64(len(grownContent)), Modified: now.Add(time.Minute)}
+	e.candidateHistory = map[string]candidateObservation{ftprootPath: {Size: 0, Modified: now.Add(-time.Hour)}}
+
+	for i := 0; i < noftpFallbackRetryPasses+1; i++ {
+		fake.logs = []nitrado.LogFile{ftprootFile}
+		if err := e.discoverOnce(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if e.selected.Path != ftprootPath {
+		t.Fatalf("expected the fallback to have switched to ftproot after %d misses, got %q", noftpFallbackRetryPasses+1, e.selected.Path)
+	}
+	if err := e.PollOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(pub.kills) != 1 {
+		t.Fatalf("expected the original kill to never be republished across the mount fallback, got %d total publishes", len(pub.kills))
+	}
+	if e.tracker.LastByteOffset != int64(len(grownContent)) {
+		t.Fatalf("expected the checkpoint to resume from its reused offset and consume the full tail, got %d", e.tracker.LastByteOffset)
 	}
 }
