@@ -1316,10 +1316,16 @@ func (e *Engine) enterDiscovery() {
 	}
 }
 
-// checkForNewerLog does a lightweight scan of the selected file's own directory
-// for a newer ADM (DayZ writes a new timestamped ADM after restart). If a strictly
-// newer ADM exists, it switches selection. Runs on rescanInterval; never rescans
-// the whole ftproot tree.
+// checkForNewerLog does a lightweight scan of the selected file's own
+// directory (DayZ writes a new timestamped ADM after restart) on
+// rescanInterval; never rescans the whole ftproot tree. It feeds the result
+// through the SAME activity-aware ranking discoverOnce uses
+// (rankCandidates/staleMarks/candidateHistory) - there is exactly one
+// candidate-selection policy, not a second "newer filename wins" rule here.
+// This closes a real production regression: a file just proven stale (see
+// markSelectedStale) kept winning this fast path back solely because Nitrado
+// still reported it as the newest by modified time, undoing the recovery
+// discoverOnce had just performed.
 func (e *Engine) checkForNewerLog(ctx context.Context) {
 	if e.selected == nil {
 		return
@@ -1336,13 +1342,47 @@ func (e *Engine) checkForNewerLog(ctx context.Context) {
 	if err != nil || len(logs) == 0 {
 		return
 	}
-	newest := logs[0] // newest-first
-	if newest.Path != e.selected.Path && newest.Modified.After(e.selected.Modified) {
-		e.drainRotationTail(ctx)
-		slog.Info("component=killfeed", "msg", "newer ADM detected; switching",
-			"previous", e.selected.Name, "file", newest.Name, "modified", newest.Modified.UTC().Format(time.RFC3339))
-		e.selectLog(newest)
+
+	now := time.Now()
+	ranked := e.rankCandidates(logs, now)
+	// Running this scan far more often than full discovery (rescanInterval vs
+	// the 5-minute give-up cycle) means genuine new evidence for a demoted
+	// source, or a freshly rotated file, is picked up quickly - see section
+	// 5/B of the rotation fast-path fix.
+	e.updateCandidateHistory(logs, now)
+
+	currentState := candidateUnknown
+	for _, r := range ranked {
+		if r.File.Path == e.selected.Path {
+			currentState = r.State
+			break
+		}
 	}
+
+	best := ranked[0]
+	if best.File.Path == e.selected.Path {
+		// Nothing beat the current source. Log only when something with a
+		// strictly newer Modified timestamp existed but lost on the evidence
+		// model, so the rejection (the exact regression this guards against)
+		// is still visible without implying a switch happened.
+		for _, r := range ranked {
+			if r.File.Path != e.selected.Path && r.File.Modified.After(e.selected.Modified) {
+				slog.Debug("component=killfeed", "event", "rotation_check",
+					"current_path", e.selected.Path, "candidate_path", r.File.Path,
+					"current_state", string(currentState), "candidate_state", string(r.State),
+					"selection_reason", r.Reason, "switch", false)
+				break
+			}
+		}
+		return
+	}
+
+	slog.Info("component=killfeed", "event", "rotation_check",
+		"current_path", e.selected.Path, "candidate_path", best.File.Path,
+		"current_state", string(currentState), "candidate_state", string(best.State),
+		"selection_reason", best.Reason, "switch", true)
+	e.drainRotationTail(ctx)
+	e.selectLog(best.File)
 }
 
 func (e *Engine) drainRotationTail(ctx context.Context) {
