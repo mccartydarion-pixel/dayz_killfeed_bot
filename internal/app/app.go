@@ -79,6 +79,7 @@ type App struct {
 	LeaderboardScheduler  *discord.LeaderboardScheduler
 	Links                 *repository.LinkRepository
 	LinkService           *linking.LinkVerificationService
+	PresenceManager       *discord.PresenceManager
 	persistQueuesMu       sync.Mutex
 	persistQueues         []*killfeed.PersistenceQueue
 	rotatingFeedsMu       sync.Mutex
@@ -184,6 +185,42 @@ func (a *App) livePresenceCount(serverID int64) (int, bool) {
 		return 0, false
 	}
 	return tracker.OnlineCount(), true
+}
+
+// PresenceCounts implements discord.PresenceStatsProvider by summing the
+// already-running presence trackers/engines - the same in-memory state
+// livePresenceCount/livePipelineSnapshot already read - so the Discord bot
+// presence never triggers a second Nitrado poll of its own. ok is false when
+// no server worker is registered yet (nothing reliable to show).
+func (a *App) PresenceCounts() (totalPlayers, onlineServers, configuredServers int, ok bool) {
+	a.presenceMu.Lock()
+	defer a.presenceMu.Unlock()
+	if len(a.presenceTrackers) == 0 {
+		return 0, 0, 0, false
+	}
+	configuredServers = len(a.presenceTrackers)
+	for id, tracker := range a.presenceTrackers {
+		if tracker == nil {
+			continue
+		}
+		totalPlayers += tracker.OnlineCount()
+		if engine, found := a.presenceEngines[id]; found && engine != nil && engine.Diagnostics() != nil {
+			if engine.Diagnostics().Snapshot().WorkerRunning {
+				onlineServers++
+			}
+		}
+	}
+	return totalPlayers, onlineServers, configuredServers, true
+}
+
+// OverallHealth implements discord.PresenceHealthProvider by reusing the
+// application's existing health registry (populated by refreshHealth) -
+// presence never runs its own duplicate health evaluation.
+func (a *App) OverallHealth() health.State {
+	if a.HealthRegistry == nil {
+		return health.Healthy
+	}
+	return a.HealthRegistry.Snapshot().Overall
 }
 
 // markFirstConnect flags a server so its next worker start seeds the ADM
@@ -650,6 +687,19 @@ func (a *App) Run() error {
 
 	verification := a.Discord.Verify(a.Config.DiscordGuildID, a.Config.KillfeedChannelID)
 	state.SetDiscord(true, a.Discord.BotUsername(), verification.GuildFound, verification.ChannelFound, verification.Missing)
+
+	// --- Discord bot presence: a professional activity, set immediately now
+	// that Discord is connected, then an optional rotation worker. Reuses
+	// already-known application state (PresenceCounts/OverallHealth) -
+	// never a second Nitrado poll or health check. ---
+	if a.Config.DiscordPresenceEnabled {
+		a.PresenceManager = discord.NewPresenceManager(
+			a.Discord, a, a,
+			discord.PresenceMode(a.Config.DiscordPresenceMode),
+			time.Duration(a.Config.DiscordPresenceRotationSeconds)*time.Second,
+		)
+		a.PresenceManager.Start(ctx)
+	}
 
 	// requiredCommandsOK gates readiness: /setup, /server, and /link are the
 	// commands a fresh guild depends on, so a registration failure among them
@@ -1349,6 +1399,12 @@ func (a *App) shutdown() {
 		} else {
 			slog.Info("component=shutdown", "msg", "HTTP server stopped")
 		}
+	}
+	if a.PresenceManager != nil {
+		// Stop blocks until the rotation/health goroutine has fully exited,
+		// so it can never race a presence update against the session closing
+		// right below - no goroutine leak, no use-after-close.
+		a.PresenceManager.Stop()
 	}
 	if a.Discord != nil {
 		if err := a.Discord.Close(); err != nil {

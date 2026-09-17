@@ -204,6 +204,19 @@ func (c *Client) Verify(guildID, channelID string) Verification {
 	return result
 }
 
+// UpdatePresence sets the bot's Discord status and activity (see
+// PresenceManager). Presence updates are purely cosmetic: callers must treat
+// a returned error as non-fatal and simply retry on the next cycle.
+func (c *Client) UpdatePresence(status string, activityType discordgo.ActivityType, text string) error {
+	if c == nil || c.session == nil {
+		return fmt.Errorf("discord session not initialized")
+	}
+	return c.session.UpdateStatusComplex(discordgo.UpdateStatusData{
+		Status:     status,
+		Activities: []*discordgo.Activity{{Name: text, Type: activityType}},
+	})
+}
+
 // Close shuts down the Discord session.
 func (c *Client) Close() error {
 	if c == nil || c.session == nil {
