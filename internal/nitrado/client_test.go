@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -114,5 +115,24 @@ func TestRequestLoggingNeverContainsToken(t *testing.T) {
 	}
 	if strings.Contains(out, "secret-test-token") || strings.Contains(out, "Authorization") {
 		t.Fatalf("request log leaked credentials: %q", out)
+	}
+}
+
+// TestClientHasNoFTPTransportFields is section 9F of the noftp API audit: a
+// guard against ever silently reintroducing an FTP client/protocol
+// dependency into ADM discovery or download. Client's only transport is
+// httpClient (*http.Client, used by every discovery/download call via do/
+// readDirectURL - see logs.go), so no field name should ever suggest an
+// FTP/SFTP connection.
+func TestClientHasNoFTPTransportFields(t *testing.T) {
+	typ := reflect.TypeOf(Client{})
+	for i := 0; i < typ.NumField(); i++ {
+		name := strings.ToLower(typ.Field(i).Name)
+		if strings.Contains(name, "ftp") {
+			t.Fatalf("unexpected FTP-shaped field %q on Client - all ADM discovery/download must go through the Nitrado REST API only", typ.Field(i).Name)
+		}
+	}
+	if reflect.TypeOf((*http.Client)(nil)) != reflect.TypeOf(Client{}.httpClient) {
+		t.Fatal("expected Client's transport to be *http.Client")
 	}
 }

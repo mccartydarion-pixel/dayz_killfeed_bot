@@ -49,6 +49,21 @@ const (
 	// staleProbeInterval bounds forced probes so a stale source never causes a
 	// download storm.
 	staleProbeInterval = 60 * time.Second
+
+	// staleGiveUpAfter is how long the selected ADM may show no read progress
+	// before Champion gives up on it and forces full rediscovery. A trusted
+	// external DayZ server operator (2026-09-17) advised that even a fully
+	// healthy noftp ADM source can naturally go 3-6 minutes between writes;
+	// the previous 5-minute threshold sat inside that normal range and could
+	// occasionally abandon a live source mid-cycle. Widened with margin above
+	// the reported range so normal delayed updates are tolerated without
+	// hiding a genuinely dead source. probeStaleSource's cheap direct-read
+	// safety net (staleProbeAfter/staleProbeInterval, well below this
+	// threshold) keeps actively checking the source the whole time this
+	// threshold is pending, so this only changes how long Champion waits
+	// before the expensive full-discovery fallback, not how quickly it
+	// notices real activity.
+	staleGiveUpAfter = 8 * time.Minute
 )
 
 // persistEnqueueTimeout bounds how long processLine waits for a persistence
@@ -192,6 +207,13 @@ type Engine struct {
 	candidateHistory       map[string]candidateObservation
 	staleMarks             map[string]staleMark
 	lastStaleRediscoveryAt time.Time
+
+	// noftpMemory backs the bounded-retry mount preference in
+	// canonical_source.go: it remembers each canonical ADM source's last
+	// known noftp representation and how many consecutive passes it has been
+	// missing from the live listing, so a transient Nitrado listing gap for
+	// the noftp mount doesn't immediately flap selection onto ftproot.
+	noftpMemory map[string]*noftpAliasMemory
 
 	// onAdmSnapshot fires once per poll cycle from this engine's own goroutine
 	// (never concurrently), so the ADM monitor can read a consistent snapshot
@@ -484,6 +506,20 @@ func (e *Engine) Start(ctx context.Context) error {
 		e.state = StateDiscovery
 	}
 
+	// One-time transport/mount diagnostics (section 3/6 of the noftp API
+	// audit). All ADM discovery and download traffic goes through the
+	// Nitrado REST API (internal/nitrado) - there is no FTP client anywhere
+	// in this runtime - and noftp is the preferred mount representation
+	// whenever it is available (see canonical_source.go).
+	slog.Info("component=nitrado", "event", "log_transport", "transport", "api", "preferred_mount", "noftp")
+	// Nitrado's Gameserver Details API (settings.general/settings.config) was
+	// checked live and exposes several granular ADM verbosity flags (nolog,
+	// adminLogPlayerHitsOnly, adminLogBuildActions, adminLogPlacement) but no
+	// field unambiguously documented as "Reduced Log Output" - guessing which
+	// one that panel toggle maps to would be inventing support that isn't
+	// actually confirmed, so this stays a manual check.
+	slog.Info("component=nitrado", "event", "reduced_log_output", "status", "manual_check_required")
+
 	slog.Info("component=killfeed", "state", string(e.state))
 
 	// State-aware scheduler: poll the selected log at pollInterval, but back off
@@ -774,7 +810,7 @@ func (e *Engine) selectLog(lf nitrado.LogFile) {
 			// A switch to a genuinely different source starts its own fresh
 			// staleness clock: without this, a source just proven stale (which
 			// is why we are switching away from it at all) would leave
-			// lastLogChange already >5 minutes old, so the very next poll of
+			// lastLogChange already past staleGiveUpAfter, so the very next poll of
 			// the newly selected source would immediately re-trigger the
 			// give-up path before it ever got a normal read - even though it
 			// may be perfectly live.
@@ -813,14 +849,14 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 	}
 
 	e.lastPoll = time.Now()
-	if !e.lastLogChange.IsZero() && time.Since(e.lastLogChange) > 5*time.Minute {
+	if !e.lastLogChange.IsZero() && time.Since(e.lastLogChange) > staleGiveUpAfter {
 		// Directory-listing metadata can lag behind the file Nitrado is actually
 		// writing (see internal/killfeed/adm_source_scan.go). Force a direct read
 		// before giving up: on success this updates lastLogChange, so a genuinely
 		// live file resumes normal polling instead of re-triggering this branch
 		// every tick once discovery reselects the same newest file.
 		e.probeStaleSource(ctx, e.selected)
-		if time.Since(e.lastLogChange) > 5*time.Minute {
+		if time.Since(e.lastLogChange) > staleGiveUpAfter {
 			// Bound how often a still-stale selection re-runs the (expensive,
 			// full-tree) discovery walk: without this, every poll tick while
 			// stuck (as often as every couple seconds) would call ListLogs
@@ -1395,7 +1431,7 @@ func (e *Engine) checkForNewerLog(ctx context.Context) {
 	now := time.Now()
 	ranked := e.rankCandidates(logs, now)
 	// Running this scan far more often than full discovery (rescanInterval vs
-	// the 5-minute give-up cycle) means genuine new evidence for a demoted
+	// the staleGiveUpAfter give-up cycle) means genuine new evidence for a demoted
 	// source, or a freshly rotated file, is picked up quickly - see section
 	// 5/B of the rotation fast-path fix.
 	e.updateCandidateHistory(logs, now)

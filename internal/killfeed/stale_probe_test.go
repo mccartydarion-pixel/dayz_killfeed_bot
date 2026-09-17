@@ -75,8 +75,8 @@ func TestStaleProbeDetectsInactiveSource(t *testing.T) {
 
 // TestStaleProbeRunsPastHardStaleThreshold proves the engine does not give up
 // on a genuinely live ADM once directory metadata has looked unchanged for
-// more than 5 minutes. Before this was fixed, pollSelected jumped straight to
-// full rediscovery at the 5-minute mark, which reselected the same (only)
+// more than staleGiveUpAfter. Before this was fixed, pollSelected jumped straight to
+// full rediscovery once that threshold passed, which reselected the same (only)
 // candidate without ever resetting lastLogChange or calling probeStaleSource
 // - so on every following poll the same branch fired again, permanently
 // starving the direct-read probe and leaving new kill/connect lines unread
@@ -96,7 +96,7 @@ func TestStaleProbeRunsPastHardStaleThreshold(t *testing.T) {
 
 	grown := baseline + "PLAYER CONNECTED\n"
 	fake.content = []byte(grown)
-	engine.lastLogChange = time.Now().Add(-6 * time.Minute)
+	engine.lastLogChange = time.Now().Add(-(staleGiveUpAfter + time.Minute))
 
 	if err := engine.PollOnce(ctx); err != nil {
 		t.Fatal(err)

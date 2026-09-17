@@ -11,7 +11,7 @@ import (
 // newRotationFastPathEngine builds an engine already selected on `selected`,
 // ready to exercise checkForNewerLog directly - the same fast path
 // production hits every rescanInterval while polling, independent of the
-// 5-minute give-up cycle in pollSelected.
+// staleGiveUpAfter give-up cycle in pollSelected.
 func newRotationFastPathEngine(selected nitrado.LogFile) (*Engine, *fakeLogSource) {
 	fake := &fakeLogSource{}
 	e := NewEngine(fake, "svc-1", testParser{})
@@ -83,7 +83,7 @@ func TestCheckForNewerLogAllowsStaleSourceBackAfterGrowth(t *testing.T) {
 // TestCheckForNewerLogSwitchesToGrowingRotatedFile is scenario C: a
 // genuinely new/rotated candidate that shows real growth must strongly
 // outrank a known-stale current source - promptly, via the fast path,
-// without waiting for the full 5-minute discovery cycle.
+// without waiting for the full staleGiveUpAfter discovery cycle.
 func TestCheckForNewerLogSwitchesToGrowingRotatedFile(t *testing.T) {
 	now := time.Date(2026, 9, 17, 1, 47, 0, 0, time.UTC)
 	pathA, pathC := "/A.ADM", "/C.ADM"
