@@ -11,7 +11,11 @@ import (
 type fakeLogSource struct {
 	logs    []nitrado.LogFile
 	content []byte
-	reads   int
+	// contentByPath, when set for a path, overrides content for that exact
+	// path - lets multi-candidate tests give each candidate its own bytes
+	// without disturbing every single-candidate test that only sets content.
+	contentByPath map[string][]byte
+	reads         int
 }
 
 type testParser struct{}
@@ -24,6 +28,11 @@ func (f *fakeLogSource) ListLogs(ctx context.Context, serviceID string) ([]nitra
 
 func (f *fakeLogSource) ReadLog(ctx context.Context, serviceID string, path string) ([]byte, error) {
 	f.reads++
+	if f.contentByPath != nil {
+		if c, ok := f.contentByPath[path]; ok {
+			return c, nil
+		}
+	}
 	return f.content, nil
 }
 
