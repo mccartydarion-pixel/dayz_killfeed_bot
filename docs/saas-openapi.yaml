@@ -152,12 +152,14 @@ components:
 
     DayZServerSummary:
       type: object
+      description: Mirrors DayZServerSelection so the website can hydrate the selected DayZ server directly from InstallationSummary.dayzServer after a refresh, without re-selecting it.
       properties:
         id: { type: integer, format: int64 }
+        serviceId: { type: integer, format: int64 }
         displayName: { type: string }
         game: { type: string }
-        platform: { type: string }
-        status: { type: string }
+        platform: { $ref: "#/components/schemas/ConsolePlatform" }
+        status: { type: string, enum: [ONLINE, OFFLINE] }
 
     InstallationSummary:
       type: object

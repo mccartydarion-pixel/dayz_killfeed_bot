@@ -252,6 +252,55 @@ func TestSaaSRateLimiterBlocksAfterMax(t *testing.T) {
 
 // --- console DayZ service filtering (section 14) ---------------------------
 
+// TestToDayZServerSummaryIncludesServiceID is the dayz-server-refresh fix:
+// InstallationSummary.dayzServer must include the persisted Nitrado
+// serviceId, parsed from repository.GameServer.ProviderServiceID (stored as
+// a string), so the website can hydrate the selected DayZ server from a
+// dashboard/installation response after a refresh without re-selecting it.
+func TestToDayZServerSummaryIncludesServiceID(t *testing.T) {
+	server := repository.GameServer{
+		ID:                7,
+		ProviderServiceID: "123456",
+		DisplayName:       "Champions",
+		Game:              "DayZ",
+		Platform:          "PLAYSTATION",
+		Status:            "ONLINE",
+	}
+
+	got := toDayZServerSummary(server)
+
+	want := DayZServerSummary{
+		ID:          7,
+		ServiceID:   123456,
+		DisplayName: "Champions",
+		Game:        "DayZ",
+		Platform:    "PLAYSTATION",
+		Status:      "ONLINE",
+	}
+	if got != want {
+		t.Fatalf("expected %+v, got %+v", want, got)
+	}
+
+	data, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"serviceId":123456`) {
+		t.Fatalf("expected serialized serviceId=123456, got %s", data)
+	}
+}
+
+// TestToDayZServerSummaryDoesNotPanicOnMalformedServiceID proves malformed
+// persisted data (should not happen for a Nitrado-backed row, but this is
+// stored data, not a fresh API response) never panics - ServiceID just
+// stays at its zero value.
+func TestToDayZServerSummaryDoesNotPanicOnMalformedServiceID(t *testing.T) {
+	got := toDayZServerSummary(repository.GameServer{ID: 1, ProviderServiceID: "not-a-number"})
+	if got.ServiceID != 0 {
+		t.Fatalf("expected ServiceID to stay 0 for malformed data, got %d", got.ServiceID)
+	}
+}
+
 // TestSupportedNitradoDayZServicesFiltersAndClassifies is the mixed-list
 // case from section 14: PlayStation and Xbox DayZ services are listed
 // (multiple of each), PC DayZ and an unrelated game are dropped entirely -
