@@ -407,6 +407,171 @@ An unreachable/unsupported server still responds `200` with
 `reachable`/`supported` reflecting reality (this is a status check, not an
 error condition) - e.g. `{ "reachable": false, "supported": false, "message": "this DayZ server was not found on the connected Nitrado account" }`.
 
+### 18. `GET .../installations/{installationID}/discord/channels`
+Lists the installation's Discord guild's Champion-selectable channels - only
+text and announcement channels the bot can currently **view** are ever
+returned (voice/stage/category/forum/thread channels never appear). Any
+member may call it.
+
+Response `200` ([`DiscordChannelSummary[]`](#discordchannelsummary)):
+```json
+[
+  { "id": "111", "name": "champion-killfeed", "type": "TEXT", "position": 0, "canSend": true },
+  { "id": "222", "name": "announcements", "type": "ANNOUNCEMENT", "position": 1, "canSend": false }
+]
+```
+`canSend` is a safe, best-effort hint (the bot can currently post there) -
+it is **not** a substitute for `#13`'s full permission verification, which
+remains the authoritative check before Champion actually relies on a
+channel.
+
+### 19. `GET .../installations/{installationID}/channels`
+Returns the installation's currently persisted channel selection. Any
+member may call it - this is what a page refresh in Customize mode uses to
+restore the form.
+
+Response `200` ([`InstallationChannelSettings`](#installationchannelsettings)):
+```json
+{ "killfeedChannelId": "111", "leaderboardChannelId": "111", "playerStatusChannelId": "", "adminLogChannelId": "222" }
+```
+An empty string means "not configured yet." The same channel ID may appear
+under multiple purposes (shown above: `111` serves both killfeed and
+leaderboard) - Champion never requires four distinct channels.
+
+### 20. `PUT .../installations/{installationID}/channels`
+Saves a manual (Customize mode) channel selection. OWNER/ADMIN only.
+
+Request (same shape as the response above):
+```json
+{ "killfeedChannelId": "111", "leaderboardChannelId": "111", "playerStatusChannelId": "", "adminLogChannelId": "222" }
+```
+`killfeedChannelId` is the only required field - `400 INVALID_REQUEST` if
+missing. Every non-empty channel ID is **re-verified live** against the
+installation's own Discord guild (`#18`'s own channel list) before anything
+is persisted - `400 INVALID_REQUEST` if any of them don't belong to this
+guild or aren't a supported text-capable channel; a channel ID from a
+different guild is never accepted, even if it's a syntactically valid
+Discord snowflake. Every other settings field (timezone, distance unit,
+online-display/leaderboard toggles) is preserved untouched - only the four
+channel columns are ever mutated by this route.
+
+On success: `channelsCompleted=true`, `currentStep=VALIDATION` (never
+`validationCompleted` - `#13` remains the only route that sets that), and
+the installation's channel configuration is marked customer-owned - a later
+`#21` one-click auto-setup call will never silently overwrite it without
+`force=true`. If the installation's status was still `DISCORD_CONNECTED` or
+`NITRADO_CONNECTED`, it advances to `CONFIGURING`.
+
+### 21. `POST .../installations/{installationID}/channels/auto-setup`
+One-click setup: creates (or reuses) Champion's default category and its
+four default channels in the installation's Discord guild, persists the
+resulting IDs, and advances setup exactly like `#20` does. OWNER/ADMIN only.
+
+Request (optional body):
+```json
+{ "force": false }
+```
+
+Behavior:
+1. Verifies the bot is actually installed in the guild (`503
+   DISCORD_UNAVAILABLE` if not).
+2. **Unless `force=true`**, refuses if the installation already has a
+   customer-configured (manual) channel selection - see "Custom
+   configuration protection" below.
+3. Verifies the bot holds **Manage Channels** in the guild - see "Missing
+   permission" below.
+4. Resolves (or creates) the `CHAMPION KILLFEED` category: prefers the
+   previously-persisted category ID (authoritative); if that's gone (or
+   this is the first run), falls back to a case-insensitive name scan for
+   recovery; only creates a new one if neither is found.
+5. Resolves (or creates) each of the four default channels the same way -
+   ID first, then a name scan **scoped to the resolved category** (so
+   recovery never adopts an unrelated same-named channel elsewhere in the
+   guild), then create.
+6. Persists the four resulting channel IDs plus the category ID, advances
+   setup progress, and moves the installation to `CONFIGURING` (same
+   one-directional rule as `#20`).
+
+Default blueprint (section 1):
+
+| Channel | Settings field | Purpose |
+|---|---|---|
+| `#champion-killfeed` | `killfeedChannelId` | kills, deaths, special kill events |
+| `#champion-leaderboard` | `leaderboardChannelId` | leaderboards, rankings, seasonal/competitive standings |
+| `#champion-players` | `playerStatusChannelId` | online players, player-status panels |
+| `#champion-admin` | `adminLogChannelId` | admin/log/diagnostic output for server staff |
+
+All four are created under a `CHAMPION KILLFEED` category.
+
+Response `200` on success ([`AutoSetupChannelsResponse`](#autosetupchannelsresponse)):
+```json
+{
+  "configured": true,
+  "category": { "id": "999", "name": "CHAMPION KILLFEED" },
+  "channels": {
+    "killfeedChannelId": "111",
+    "leaderboardChannelId": "112",
+    "playerStatusChannelId": "113",
+    "adminLogChannelId": "114"
+  }
+}
+```
+
+**Idempotent by design**: calling this route again with the same
+installation reuses the exact same category and channel IDs - it never
+creates `#champion-killfeed-1`/`#champion-killfeed-2` duplicates, because
+step 4/5 above always check the persisted ID (and then existing names)
+before ever creating anything.
+
+**Custom configuration protection** (never destroys manual customization):
+if the installation already has a channel selection that wasn't itself
+produced by a prior auto-setup call, this route responds `200` with a
+safe, structured "did not configure" result instead of overwriting it:
+```json
+{ "configured": false, "reason": "CUSTOM_CONFIGURATION_EXISTS" }
+```
+Pass `{ "force": true }` to override this and run auto-setup anyway
+(an explicit, deliberate customer action - never the default).
+
+**Missing permission**: if the bot lacks Manage Channels in the guild,
+this route also responds `200` with a safe result rather than a raw
+Discord error or a 5xx:
+```json
+{ "configured": false, "reason": "MISSING_MANAGE_CHANNELS" }
+```
+
+`configured: false` responses are deliberately **not** the
+`{"error":{"code","message"}}` envelope (see `## Error contract` below) -
+they're expected, UI-renderable outcomes, not failures to retry blindly.
+
+Auto-setup never replaces `#13` (verify-permissions) - Step 6 on the
+website still runs permission verification against whichever channel IDs
+ended up configured, whether by `#20` or `#21`.
+
+### 22. `POST .../installations/{installationID}/discord/channels`
+Optional, explicit "create a new channel" action for Customize mode -
+lets a customer create a channel Champion doesn't already know about
+without leaving the setup flow. OWNER/ADMIN only.
+
+Request:
+```json
+{ "name": "PvP Feed", "categoryId": "999" }
+```
+`categoryId` is optional; when supplied it must already belong to **this
+installation's own Discord guild** (`400 INVALID_REQUEST` otherwise - never
+trusted blindly, and structurally impossible to target another guild since
+the guild always comes from the installation, never from the request).
+`name` is normalized into a Discord-safe channel name (lowercased,
+whitespace collapsed to single hyphens, unsupported characters dropped) -
+e.g. `"PvP Feed"` becomes `"pvp-feed"`. `400 INVALID_REQUEST` if the name
+normalizes to empty or exceeds 100 characters. `503 DISCORD_UNAVAILABLE` if
+the bot lacks Manage Channels.
+
+Response `201` ([`DiscordChannelSummary`](#discordchannelsummary)):
+```json
+{ "id": "333", "name": "pvp-feed", "type": "TEXT", "position": 0, "canSend": true }
+```
+
 ## Request/response DTOs
 
 None of these ever include a Nitrado ciphertext/IV/auth tag, a Discord
@@ -586,6 +751,37 @@ re-select it via `#16`.
 | `platform` | `"PLAYSTATION"` \| `"XBOX"`? - omitted when the server couldn't be resolved at all |
 | `message` | string - human-readable, safe to display directly |
 
+#### `DiscordChannelSummary` (response of `#18`, `#22`)
+| field | type |
+|---|---|
+| `id` | string - Discord channel snowflake |
+| `name` | string |
+| `type` | `"TEXT"` \| `"ANNOUNCEMENT"` - the stable backend enum, never Discord's raw integer type |
+| `position` | number |
+| `canSend` | boolean - safe hint only, not a substitute for `#13` |
+
+#### `InstallationChannelSettings` (request of `#20`, response of `#19`/`#20`, embedded in `#21`)
+| field | type |
+|---|---|
+| `killfeedChannelId` | string - required on `#20`; empty string means unset elsewhere |
+| `leaderboardChannelId` | string |
+| `playerStatusChannelId` | string |
+| `adminLogChannelId` | string |
+
+#### `ChannelCategorySummary` (embedded in `#21`)
+| field | type |
+|---|---|
+| `id` | string - Discord category channel snowflake |
+| `name` | string |
+
+#### `AutoSetupChannelsResponse` (response of `#21`)
+| field | type |
+|---|---|
+| `configured` | boolean |
+| `reason` | string? - `"MISSING_MANAGE_CHANNELS"` \| `"CUSTOM_CONFIGURATION_EXISTS"`, present only when `configured=false` |
+| `category` | [`ChannelCategorySummary`](#channelcategorysummary)? - present only when `configured=true` |
+| `channels` | [`InstallationChannelSettings`](#installationchannelsettings)? - present only when `configured=true` |
+
 ## Error contract
 
 Every non-2xx response:
@@ -618,7 +814,10 @@ In-memory, per acting Discord user ID, per process:
 | `#12`/`#13` Discord verification (shared budget) | 10 / minute |
 | `#14` Nitrado connect | 10 / hour |
 
-Ordinary reads (`#2`, `#4`, `#5`, `#7`, `#8`, `#15`, `#17`) are never rate limited.
+Ordinary reads (`#2`, `#4`, `#5`, `#7`, `#8`, `#15`, `#17`, `#18`, `#19`) are
+never rate limited. `#20`/`#21`/`#22` (channel writes) aren't separately
+rate limited either, matching `#16`'s precedent - all four are already
+gated to OWNER/ADMIN and organization-scoped.
 
 ## Tenant-scoping rules
 
@@ -684,8 +883,13 @@ PlayStation server works unmodified for a connected Xbox server.
 | Nitrado credential connect (PlayStation + Xbox) | READY |
 | DayZ console server discovery/selection | READY |
 | DayZ server reachability validation | READY |
+| Discord channel discovery | READY |
+| Manual channel configuration (Customize mode) | READY |
+| One-click channel auto-setup | READY |
+| Optional custom channel creation | READY |
 
 Nothing is BLOCKED. Out of scope for this handoff (a later task):
-channel-configuration writes, billing/checkout, entitlement enforcement.
+billing/checkout, entitlement enforcement, Step 6 permission-verification
+website UI (the backend route `#13` already exists from an earlier task).
 DayZ PC and non-console Nitrado services are intentionally unsupported, not
 missing - see the platform contract note above.

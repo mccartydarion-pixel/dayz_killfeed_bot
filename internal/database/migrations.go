@@ -868,6 +868,25 @@ ALTER TABLE nitrado_connections ALTER COLUMN guild_id DROP NOT NULL;
 ALTER TABLE nitrado_connections ADD CONSTRAINT nitrado_connections_organization_id_key UNIQUE(organization_id);
 `,
 	},
+	{
+		// SaaS Step 5 one-click channel auto-setup: channel_setup_source
+		// distinguishes an explicit customer PUT (.../channels, "MANUAL")
+		// from the one-click auto-setup endpoint ("AUTO") so a repeat
+		// auto-setup call can safely reuse its own prior work while never
+		// silently overwriting a customer's manual customization -
+		// installation_settings' existing killfeed/leaderboard/player-status/
+		// admin-log channel ID columns remain the single source of truth for
+		// which channels are actually configured (section 4/13 - "once
+		// created, those IDs become authoritative"). champion_category_id
+		// remembers the Champion-managed category so it can be looked up by
+		// ID (authoritative) instead of by name on every repeat run - name
+		// matching is only a recovery fallback (section 4).
+		Name: "0026_saas_channel_auto_setup",
+		SQL: `
+ALTER TABLE installation_settings ADD COLUMN IF NOT EXISTS channel_setup_source TEXT NOT NULL DEFAULT '';
+ALTER TABLE installation_settings ADD COLUMN IF NOT EXISTS champion_category_id TEXT;
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order, each transactionally. A

@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/config"
 	"github.com/yourname/dayz-killfeed/internal/database"
 	"github.com/yourname/dayz-killfeed/internal/discord"
@@ -34,6 +35,25 @@ type fakeDiscordVerifier struct {
 	// verifyCalls counts live Verify calls, so tests can assert the
 	// zero-network-call eligible-guilds path never invokes it (section 7).
 	verifyCalls int
+
+	// channels backs ListGuildChannels/ListAllGuildChannels/Create* - an
+	// in-memory per-guild channel store standing in for a real Discord
+	// guild's channel list (Step 5 one-click auto-setup + customization).
+	channels     map[string][]fakeGuildChannel
+	channelIDSeq int
+	// permissions overrides GuildPermissions per guild; a guild absent from
+	// this map defaults to full permissions (discordgo.PermissionAll) so
+	// most tests need no extra setup - only the explicit "missing
+	// permission" test cases opt out.
+	permissions map[string]int64
+}
+
+type fakeGuildChannel struct {
+	ID       string
+	Name     string
+	Type     discordgo.ChannelType
+	ParentID string
+	Position int
 }
 
 // BotID returns a fixed fake bot user ID - only used for diagnostic log
@@ -59,6 +79,62 @@ func (f *fakeDiscordVerifier) Verify(guildID, channelID string) discord.Verifica
 		v.Missing = f.missing[key]
 	}
 	return v
+}
+
+// ListGuildChannels mirrors discord.Client.ListGuildChannels's customer-
+// facing filter: only text/announcement channels, always "viewable" in this
+// fake (permission filtering itself is covered at the discord package unit
+// level, not here).
+func (f *fakeDiscordVerifier) ListGuildChannels(guildID string) ([]discord.GuildChannelInfo, error) {
+	out := make([]discord.GuildChannelInfo, 0, len(f.channels[guildID]))
+	for _, ch := range f.channels[guildID] {
+		if ch.Type != discordgo.ChannelTypeGuildText && ch.Type != discordgo.ChannelTypeGuildNews {
+			continue
+		}
+		out = append(out, discord.GuildChannelInfo{ID: ch.ID, Name: ch.Name, Type: ch.Type, Position: ch.Position, CanSend: true})
+	}
+	return out, nil
+}
+
+// ListAllGuildChannels mirrors discord.Client.ListAllGuildChannels: every
+// channel, including categories, unfiltered.
+func (f *fakeDiscordVerifier) ListAllGuildChannels(guildID string) ([]discord.RawGuildChannel, error) {
+	out := make([]discord.RawGuildChannel, 0, len(f.channels[guildID]))
+	for _, ch := range f.channels[guildID] {
+		out = append(out, discord.RawGuildChannel{ID: ch.ID, Name: ch.Name, Type: ch.Type, ParentID: ch.ParentID})
+	}
+	return out, nil
+}
+
+// GuildPermissions returns the configured override for guildID, or full
+// permissions by default (see the permissions field doc comment).
+func (f *fakeDiscordVerifier) GuildPermissions(guildID string) (int64, error) {
+	if perms, ok := f.permissions[guildID]; ok {
+		return perms, nil
+	}
+	return discordgo.PermissionAll, nil
+}
+
+// CreateGuildCategory and CreateGuildTextChannel append to the fake's
+// per-guild channel store and hand back a freshly minted, unique ID -
+// mirroring a real Discord channel create.
+func (f *fakeDiscordVerifier) CreateGuildCategory(guildID, name string) (*discord.RawGuildChannel, error) {
+	return f.createFakeChannel(guildID, name, discordgo.ChannelTypeGuildCategory, "")
+}
+
+func (f *fakeDiscordVerifier) CreateGuildTextChannel(guildID, name, parentCategoryID string) (*discord.RawGuildChannel, error) {
+	return f.createFakeChannel(guildID, name, discordgo.ChannelTypeGuildText, parentCategoryID)
+}
+
+func (f *fakeDiscordVerifier) createFakeChannel(guildID, name string, ctype discordgo.ChannelType, parentID string) (*discord.RawGuildChannel, error) {
+	if f.channels == nil {
+		f.channels = map[string][]fakeGuildChannel{}
+	}
+	f.channelIDSeq++
+	id := fmt.Sprintf("fake-channel-%d", f.channelIDSeq)
+	ch := fakeGuildChannel{ID: id, Name: name, Type: ctype, ParentID: parentID, Position: len(f.channels[guildID])}
+	f.channels[guildID] = append(f.channels[guildID], ch)
+	return &discord.RawGuildChannel{ID: ch.ID, Name: ch.Name, Type: ch.Type, ParentID: ch.ParentID}, nil
 }
 
 func saasIntegrationApp(t *testing.T) (*App, *fakeDiscordVerifier) {
@@ -1038,5 +1114,455 @@ func TestValidateDayZServerReportsReachability(t *testing.T) {
 	result := decodeBody[DayZServerValidation](t, validateRR)
 	if !result.Reachable || !result.Supported || result.Platform != "PLAYSTATION" {
 		t.Fatalf("expected reachable/supported PLAYSTATION, got %+v", result)
+	}
+}
+
+// --- Step 5: Discord channel configuration ----------------------------------
+
+// seedGuildChannels registers channels directly in the fake's per-guild
+// store, standing in for channels a customer's Discord server already has -
+// used to exercise listing/validation without going through Create*.
+func seedGuildChannels(verifier *fakeDiscordVerifier, guildID string, channels ...fakeGuildChannel) {
+	if verifier.channels == nil {
+		verifier.channels = map[string][]fakeGuildChannel{}
+	}
+	verifier.channels[guildID] = append(verifier.channels[guildID], channels...)
+}
+
+func listDiscordChannels(t *testing.T, a *App, orgID, installationID int64, actingDiscordID string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := withPathValues(withActingUser(saasRequest(http.MethodGet, "/x", nil), actingDiscordID),
+		map[string]string{"organizationID": strconv.FormatInt(orgID, 10), "installationID": strconv.FormatInt(installationID, 10)})
+	rr := httptest.NewRecorder()
+	a.handleListDiscordChannels(rr, req)
+	return rr
+}
+
+func getChannelSettings(t *testing.T, a *App, orgID, installationID int64, actingDiscordID string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := withPathValues(withActingUser(saasRequest(http.MethodGet, "/x", nil), actingDiscordID),
+		map[string]string{"organizationID": strconv.FormatInt(orgID, 10), "installationID": strconv.FormatInt(installationID, 10)})
+	rr := httptest.NewRecorder()
+	a.handleGetChannelSettings(rr, req)
+	return rr
+}
+
+func saveChannelSettings(t *testing.T, a *App, orgID, installationID int64, actingDiscordID string, settings InstallationChannelSettings) *httptest.ResponseRecorder {
+	t.Helper()
+	req := withPathValues(withActingUser(saasRequest(http.MethodPut, "/x", settings), actingDiscordID),
+		map[string]string{"organizationID": strconv.FormatInt(orgID, 10), "installationID": strconv.FormatInt(installationID, 10)})
+	rr := httptest.NewRecorder()
+	a.handleSaveChannelSettings(rr, req)
+	return rr
+}
+
+// TestListDiscordChannelsReturnsOnlyTextAndAnnouncement is cases A/B: only
+// the installation's own guild's text/announcement channels come back -
+// voice/category channels are never included (enforced by
+// discord.Client.ListGuildChannels itself; the fake mirrors that same
+// filter so this test also proves the handler wires it through correctly).
+func TestListDiscordChannelsReturnsOnlyTextAndAnnouncement(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixture := buildInstallationFixture(t, a, verifier)
+	seedGuildChannels(verifier, fixture.DiscordGuildID,
+		fakeGuildChannel{ID: "c-text", Name: "general", Type: discordgo.ChannelTypeGuildText, Position: 1},
+		fakeGuildChannel{ID: "c-news", Name: "announcements", Type: discordgo.ChannelTypeGuildNews, Position: 2},
+		fakeGuildChannel{ID: "c-voice", Name: "Lobby", Type: discordgo.ChannelTypeGuildVoice, Position: 0},
+		fakeGuildChannel{ID: "c-cat", Name: "Category", Type: discordgo.ChannelTypeGuildCategory, Position: 0},
+	)
+
+	rr := listDiscordChannels(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	channels := decodeBody[[]DiscordChannelSummary](t, rr)
+	if len(channels) != 2 {
+		t.Fatalf("expected exactly the 2 text/announcement channels, got %+v", channels)
+	}
+	ids := map[string]bool{}
+	for _, c := range channels {
+		ids[c.ID] = true
+	}
+	if !ids["c-text"] || !ids["c-news"] {
+		t.Fatalf("expected c-text and c-news, got %+v", channels)
+	}
+}
+
+// TestSaveChannelSettingsPersistsAndPreservesOtherFields covers D/E/F/I/J:
+// the required killfeed channel plus optional channels persist, the SAME
+// channel can serve multiple purposes, unrelated settings fields survive
+// untouched, and setup advances CHANNELS -> VALIDATION.
+func TestSaveChannelSettingsPersistsAndPreservesOtherFields(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixture := buildInstallationFixture(t, a, verifier)
+	seedGuildChannels(verifier, fixture.DiscordGuildID,
+		fakeGuildChannel{ID: "c-killfeed", Name: "champion-killfeed", Type: discordgo.ChannelTypeGuildText},
+		fakeGuildChannel{ID: "c-admin", Name: "champion-admin", Type: discordgo.ChannelTypeGuildText},
+	)
+
+	// Move server selection along first so ChannelsCompleted is a valid
+	// transition (validateSetupProgressOrder requires ServerSelected).
+	withFakeNitradoServer(t, a, http.StatusOK, psServiceJSON)
+	connectNitrado(t, a, fixture.OrgID, fixture.OwnerDiscordID)
+	if rr := selectDayZServer(t, a, fixture.OrgID, fixture.InstallationID, 111111, fixture.OwnerDiscordID); rr.Code != http.StatusOK {
+		t.Fatalf("select dayz server: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Record a distinctive Timezone/DistanceUnit combination to prove they
+	// survive the channel save untouched (section 12/I).
+	custom := repository.InstallationSettings{
+		InstallationID: fixture.InstallationID, Timezone: "Europe/Berlin", DistanceUnit: "FEET",
+		OnlineDisplayEnabled: false, LeaderboardEnabled: false,
+	}
+	if err := a.SaaSInstallations.UpdateSettings(context.Background(), fixture.OrgID, fixture.InstallationID, custom); err != nil {
+		t.Fatal(err)
+	}
+
+	// Same channel (c-killfeed) reused for both killfeed and admin log purposes (F).
+	rr := saveChannelSettings(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID, InstallationChannelSettings{
+		KillfeedChannelID: "c-killfeed",
+		AdminLogChannelID: "c-killfeed",
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("save channel settings: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	saved := decodeBody[InstallationChannelSettings](t, rr)
+	if saved.KillfeedChannelID != "c-killfeed" || saved.AdminLogChannelID != "c-killfeed" {
+		t.Fatalf("expected the same channel to serve both purposes, got %+v", saved)
+	}
+	if saved.LeaderboardChannelID != "" || saved.PlayerStatusChannelID != "" {
+		t.Fatalf("expected the unset optional channels to remain empty, got %+v", saved)
+	}
+
+	// Refresh restoration (section 16): GET must return exactly what was saved.
+	getRR := getChannelSettings(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("get channel settings: expected 200, got %d: %s", getRR.Code, getRR.Body.String())
+	}
+	got := decodeBody[InstallationChannelSettings](t, getRR)
+	if got != saved {
+		t.Fatalf("expected GET to restore exactly what was saved, got %+v want %+v", got, saved)
+	}
+
+	persisted, err := a.SaaSInstallations.GetSettings(context.Background(), fixture.OrgID, fixture.InstallationID)
+	if err != nil || persisted == nil {
+		t.Fatalf("expected persisted settings, err=%v", err)
+	}
+	if persisted.Timezone != "Europe/Berlin" || persisted.DistanceUnit != "FEET" || persisted.OnlineDisplayEnabled || persisted.LeaderboardEnabled {
+		t.Fatalf("expected unrelated settings preserved untouched, got %+v", persisted)
+	}
+	if persisted.ChannelSetupSource != "MANUAL" {
+		t.Fatalf("expected channel_setup_source=MANUAL after an explicit save, got %q", persisted.ChannelSetupSource)
+	}
+
+	progress, err := a.SaaSInstallations.GetSetupProgress(context.Background(), fixture.OrgID, fixture.InstallationID)
+	if err != nil || progress == nil || !progress.ChannelsCompleted || progress.CurrentStep != "VALIDATION" {
+		t.Fatalf("expected channelsCompleted=true currentStep=VALIDATION, got %+v err=%v", progress, err)
+	}
+
+	inst, err := a.SaaSInstallations.GetScoped(context.Background(), fixture.OrgID, fixture.InstallationID)
+	if err != nil || inst == nil || inst.Status != repository.InstallationConfiguring {
+		t.Fatalf("expected installation status CONFIGURING, got %+v err=%v", inst, err)
+	}
+}
+
+// TestSaveChannelSettingsRejectsMissingKillfeedChannel covers section 10:
+// killfeedChannelId is the only hard requirement.
+func TestSaveChannelSettingsRejectsMissingKillfeedChannel(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixture := buildInstallationFixture(t, a, verifier)
+	seedGuildChannels(verifier, fixture.DiscordGuildID, fakeGuildChannel{ID: "c-1", Name: "general", Type: discordgo.ChannelTypeGuildText})
+
+	rr := saveChannelSettings(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID, InstallationChannelSettings{LeaderboardChannelID: "c-1"})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 without a killfeed channel, got %d: %s", rr.Code, rr.Body.String())
+	}
+	assertErrorCode(t, rr, codeInvalidRequest)
+}
+
+// TestSaveChannelSettingsRejectsForeignGuildChannel is case C: a channel ID
+// that exists but belongs to a DIFFERENT Discord guild must never be
+// accepted, even though it's a syntactically valid Discord snowflake.
+func TestSaveChannelSettingsRejectsForeignGuildChannel(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixtureA := buildInstallationFixture(t, a, verifier)
+	fixtureB := buildInstallationFixture(t, a, verifier)
+	seedGuildChannels(verifier, fixtureB.DiscordGuildID, fakeGuildChannel{ID: "foreign-channel", Name: "general", Type: discordgo.ChannelTypeGuildText})
+
+	rr := saveChannelSettings(t, a, fixtureA.OrgID, fixtureA.InstallationID, fixtureA.OwnerDiscordID, InstallationChannelSettings{KillfeedChannelID: "foreign-channel"})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a foreign-guild channel, got %d: %s", rr.Code, rr.Body.String())
+	}
+	assertErrorCode(t, rr, codeInvalidRequest)
+}
+
+// TestChannelSettingsCrossTenantRejected covers cases G/H: organization B
+// can never read or write organization A's channel settings, even by
+// guessing A's installation ID within its own org-scoped request.
+func TestChannelSettingsCrossTenantRejected(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixtureA := buildInstallationFixture(t, a, verifier)
+	fixtureB := buildInstallationFixture(t, a, verifier)
+	seedGuildChannels(verifier, fixtureA.DiscordGuildID, fakeGuildChannel{ID: "c-1", Name: "champion-killfeed", Type: discordgo.ChannelTypeGuildText})
+
+	// Seed A's settings so there's something real for B to fail to read.
+	if rr := saveChannelSettings(t, a, fixtureA.OrgID, fixtureA.InstallationID, fixtureA.OwnerDiscordID, InstallationChannelSettings{KillfeedChannelID: "c-1"}); rr.Code != http.StatusOK {
+		t.Fatalf("seed A's settings: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// G: B reading A's installation (within B's own org scope) must 404, never leak A's data.
+	readRR := getChannelSettings(t, a, fixtureB.OrgID, fixtureA.InstallationID, fixtureB.OwnerDiscordID)
+	if readRR.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for cross-tenant read, got %d: %s", readRR.Code, readRR.Body.String())
+	}
+
+	// H: B writing to A's installation ID must 404, never modify A's settings.
+	writeRR := saveChannelSettings(t, a, fixtureB.OrgID, fixtureA.InstallationID, fixtureB.OwnerDiscordID, InstallationChannelSettings{KillfeedChannelID: "c-1"})
+	if writeRR.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for cross-tenant write, got %d: %s", writeRR.Code, writeRR.Body.String())
+	}
+
+	stillA, err := a.SaaSInstallations.GetSettings(context.Background(), fixtureA.OrgID, fixtureA.InstallationID)
+	if err != nil || stillA == nil || stillA.KillfeedChannelID != "c-1" {
+		t.Fatalf("expected A's settings untouched by B's attempts, got %+v err=%v", stillA, err)
+	}
+}
+
+// --- Step 5: one-click channel auto-setup -----------------------------------
+
+func autoSetupChannels(t *testing.T, a *App, orgID, installationID int64, actingDiscordID string, force bool) *httptest.ResponseRecorder {
+	t.Helper()
+	req := withPathValues(withActingUser(saasRequest(http.MethodPost, "/x", autoSetupChannelsRequest{Force: force}), actingDiscordID),
+		map[string]string{"organizationID": strconv.FormatInt(orgID, 10), "installationID": strconv.FormatInt(installationID, 10)})
+	rr := httptest.NewRecorder()
+	a.handleAutoSetupChannels(rr, req)
+	return rr
+}
+
+// TestAutoSetupChannelsCreatesCategoryAndFourChannels is case A: a single
+// call creates the Champion category and all four default channels, mapped
+// to the right settings fields.
+func TestAutoSetupChannelsCreatesCategoryAndFourChannels(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixture := buildInstallationFixture(t, a, verifier)
+
+	rr := autoSetupChannels(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID, false)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	resp := decodeBody[AutoSetupChannelsResponse](t, rr)
+	if !resp.Configured {
+		t.Fatalf("expected configured=true, got %+v", resp)
+	}
+	if resp.Category == nil || resp.Category.Name != championManagedCategoryName {
+		t.Fatalf("expected the Champion default category, got %+v", resp.Category)
+	}
+	if resp.Channels == nil || resp.Channels.KillfeedChannelID == "" || resp.Channels.LeaderboardChannelID == "" ||
+		resp.Channels.PlayerStatusChannelID == "" || resp.Channels.AdminLogChannelID == "" {
+		t.Fatalf("expected all four default channels populated, got %+v", resp.Channels)
+	}
+
+	// All four must be distinct fresh channels under the created category.
+	ids := map[string]bool{
+		resp.Channels.KillfeedChannelID: true, resp.Channels.LeaderboardChannelID: true,
+		resp.Channels.PlayerStatusChannelID: true, resp.Channels.AdminLogChannelID: true,
+	}
+	if len(ids) != 4 {
+		t.Fatalf("expected 4 distinct channels, got %+v", resp.Channels)
+	}
+	for _, ch := range verifier.channels[fixture.DiscordGuildID] {
+		if ch.Type == discordgo.ChannelTypeGuildText && ids[ch.ID] && ch.ParentID != resp.Category.ID {
+			t.Fatalf("expected channel %q to sit under the Champion category, got parent %q", ch.ID, ch.ParentID)
+		}
+	}
+
+	progress, err := a.SaaSInstallations.GetSetupProgress(context.Background(), fixture.OrgID, fixture.InstallationID)
+	if err != nil || progress == nil || !progress.ChannelsCompleted || progress.CurrentStep != "VALIDATION" || progress.ValidationCompleted {
+		t.Fatalf("expected channelsCompleted=true currentStep=VALIDATION validationCompleted=false, got %+v err=%v", progress, err)
+	}
+	inst, err := a.SaaSInstallations.GetScoped(context.Background(), fixture.OrgID, fixture.InstallationID)
+	if err != nil || inst == nil || inst.Status != repository.InstallationConfiguring {
+		t.Fatalf("expected installation status CONFIGURING, got %+v err=%v", inst, err)
+	}
+}
+
+// TestAutoSetupChannelsIsIdempotent is case B: calling auto-setup twice must
+// reuse the same category and channels, never create "-1"/"-2" duplicates.
+func TestAutoSetupChannelsIsIdempotent(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixture := buildInstallationFixture(t, a, verifier)
+
+	first := decodeBody[AutoSetupChannelsResponse](t, autoSetupChannels(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID, false))
+	second := decodeBody[AutoSetupChannelsResponse](t, autoSetupChannels(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID, false))
+
+	if second.Category.ID != first.Category.ID {
+		t.Fatalf("expected the same category to be reused, got %q then %q", first.Category.ID, second.Category.ID)
+	}
+	if *second.Channels != *first.Channels {
+		t.Fatalf("expected the exact same channel IDs to be reused, got %+v then %+v", first.Channels, second.Channels)
+	}
+
+	total := 0
+	for _, ch := range verifier.channels[fixture.DiscordGuildID] {
+		if ch.Type == discordgo.ChannelTypeGuildText {
+			total++
+		}
+	}
+	if total != 4 {
+		t.Fatalf("expected exactly 4 text channels after two auto-setup calls, got %d", total)
+	}
+}
+
+// TestAutoSetupChannelsReusesExistingChampionChannelsByName is case C: if
+// the Champion category/channels already exist in the guild (e.g. created
+// manually, or Champion never persisted the IDs), auto-setup recognizes and
+// reuses them by name rather than creating duplicates (section 4 recovery
+// path).
+func TestAutoSetupChannelsReusesExistingChampionChannelsByName(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixture := buildInstallationFixture(t, a, verifier)
+	seedGuildChannels(verifier, fixture.DiscordGuildID, fakeGuildChannel{ID: "existing-category", Name: "champion killfeed", Type: discordgo.ChannelTypeGuildCategory})
+	seedGuildChannels(verifier, fixture.DiscordGuildID,
+		fakeGuildChannel{ID: "existing-killfeed", Name: "champion-killfeed", Type: discordgo.ChannelTypeGuildText, ParentID: "existing-category"},
+	)
+
+	rr := autoSetupChannels(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID, false)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	resp := decodeBody[AutoSetupChannelsResponse](t, rr)
+	if resp.Category.ID != "existing-category" {
+		t.Fatalf("expected the pre-existing category to be reused, got %+v", resp.Category)
+	}
+	if resp.Channels.KillfeedChannelID != "existing-killfeed" {
+		t.Fatalf("expected the pre-existing killfeed channel to be reused, got %q", resp.Channels.KillfeedChannelID)
+	}
+
+	killfeedCount := 0
+	for _, ch := range verifier.channels[fixture.DiscordGuildID] {
+		if ch.Name == "champion-killfeed" {
+			killfeedCount++
+		}
+	}
+	if killfeedCount != 1 {
+		t.Fatalf("expected no duplicate champion-killfeed channel, found %d", killfeedCount)
+	}
+}
+
+// TestAutoSetupChannelsMissingManageChannelsReturnsSafeFailure is case D: a
+// bot lacking Manage Channels gets a safe, structured result - never a raw
+// Discord error, never a 5xx.
+func TestAutoSetupChannelsMissingManageChannelsReturnsSafeFailure(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixture := buildInstallationFixture(t, a, verifier)
+	if verifier.permissions == nil {
+		verifier.permissions = map[string]int64{}
+	}
+	verifier.permissions[fixture.DiscordGuildID] = discordgo.PermissionViewChannel // no Manage Channels
+
+	rr := autoSetupChannels(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID, false)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 (a safe result, not an error), got %d: %s", rr.Code, rr.Body.String())
+	}
+	resp := decodeBody[AutoSetupChannelsResponse](t, rr)
+	if resp.Configured || resp.Reason != "MISSING_MANAGE_CHANNELS" {
+		t.Fatalf("expected configured=false reason=MISSING_MANAGE_CHANNELS, got %+v", resp)
+	}
+	if len(verifier.channels[fixture.DiscordGuildID]) != 0 {
+		t.Fatal("expected no channels to have been created")
+	}
+}
+
+// TestAutoSetupChannelsDoesNotOverwriteManualConfiguration is case E: an
+// existing MANUAL configuration blocks auto-setup unless force=true, and is
+// left completely untouched when it does.
+func TestAutoSetupChannelsDoesNotOverwriteManualConfiguration(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixture := buildInstallationFixture(t, a, verifier)
+	seedGuildChannels(verifier, fixture.DiscordGuildID, fakeGuildChannel{ID: "custom-killfeed", Name: "my-custom-feed", Type: discordgo.ChannelTypeGuildText})
+
+	if rr := saveChannelSettings(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID, InstallationChannelSettings{KillfeedChannelID: "custom-killfeed"}); rr.Code != http.StatusOK {
+		t.Fatalf("manual save: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	blockedRR := autoSetupChannels(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID, false)
+	if blockedRR.Code != http.StatusOK {
+		t.Fatalf("expected 200 (a safe result, not an error), got %d: %s", blockedRR.Code, blockedRR.Body.String())
+	}
+	blocked := decodeBody[AutoSetupChannelsResponse](t, blockedRR)
+	if blocked.Configured || blocked.Reason != "CUSTOM_CONFIGURATION_EXISTS" {
+		t.Fatalf("expected configured=false reason=CUSTOM_CONFIGURATION_EXISTS, got %+v", blocked)
+	}
+
+	stillCustom, err := a.SaaSInstallations.GetSettings(context.Background(), fixture.OrgID, fixture.InstallationID)
+	if err != nil || stillCustom == nil || stillCustom.KillfeedChannelID != "custom-killfeed" {
+		t.Fatalf("expected the manual configuration to remain untouched, got %+v err=%v", stillCustom, err)
+	}
+
+	// force=true is an explicit, deliberate override.
+	forcedRR := autoSetupChannels(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID, true)
+	if forcedRR.Code != http.StatusOK {
+		t.Fatalf("expected 200 with force=true, got %d: %s", forcedRR.Code, forcedRR.Body.String())
+	}
+	forced := decodeBody[AutoSetupChannelsResponse](t, forcedRR)
+	if !forced.Configured || forced.Channels.KillfeedChannelID == "custom-killfeed" {
+		t.Fatalf("expected force=true to actually run auto-setup, got %+v", forced)
+	}
+}
+
+// TestAutoSetupChannelsCrossTenantRejected is case I: organization B can
+// never trigger auto-setup against organization A's installation.
+func TestAutoSetupChannelsCrossTenantRejected(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixtureA := buildInstallationFixture(t, a, verifier)
+	fixtureB := buildInstallationFixture(t, a, verifier)
+
+	rr := autoSetupChannels(t, a, fixtureB.OrgID, fixtureA.InstallationID, fixtureB.OwnerDiscordID, false)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for cross-tenant auto-setup, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if len(verifier.channels[fixtureA.DiscordGuildID]) != 0 {
+		t.Fatal("expected no channels to have been created in A's guild by B's attempt")
+	}
+}
+
+// TestCreateDiscordChannelRejectsForeignGuildCategory is case H for the
+// optional custom-channel-creation endpoint (section 10/19): a categoryId
+// belonging to a different guild must be rejected, never used as a parent.
+func TestCreateDiscordChannelRejectsForeignGuildCategory(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixtureA := buildInstallationFixture(t, a, verifier)
+	fixtureB := buildInstallationFixture(t, a, verifier)
+	seedGuildChannels(verifier, fixtureB.DiscordGuildID, fakeGuildChannel{ID: "foreign-category", Name: "Other Guild Category", Type: discordgo.ChannelTypeGuildCategory})
+
+	req := withPathValues(withActingUser(saasRequest(http.MethodPost, "/x", createDiscordChannelRequest{Name: "pvp-feed", CategoryID: "foreign-category"}), fixtureA.OwnerDiscordID),
+		map[string]string{"organizationID": strconv.FormatInt(fixtureA.OrgID, 10), "installationID": strconv.FormatInt(fixtureA.InstallationID, 10)})
+	rr := httptest.NewRecorder()
+	a.handleCreateDiscordChannel(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a foreign-guild categoryId, got %d: %s", rr.Code, rr.Body.String())
+	}
+	assertErrorCode(t, rr, codeInvalidRequest)
+	if len(verifier.channels[fixtureA.DiscordGuildID]) != 0 {
+		t.Fatal("expected no channel to have been created in A's guild")
+	}
+}
+
+// TestCreateDiscordChannelNormalizesName covers section 12: a human-friendly
+// name is safely normalized before being sent to Discord.
+func TestCreateDiscordChannelNormalizesName(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixture := buildInstallationFixture(t, a, verifier)
+
+	req := withPathValues(withActingUser(saasRequest(http.MethodPost, "/x", createDiscordChannelRequest{Name: "  Kill Feed!! "}), fixture.OwnerDiscordID),
+		map[string]string{"organizationID": strconv.FormatInt(fixture.OrgID, 10), "installationID": strconv.FormatInt(fixture.InstallationID, 10)})
+	rr := httptest.NewRecorder()
+	a.handleCreateDiscordChannel(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	created := decodeBody[DiscordChannelSummary](t, rr)
+	if created.Name != "kill-feed" {
+		t.Fatalf("expected the name to normalize to %q, got %q", "kill-feed", created.Name)
 	}
 }

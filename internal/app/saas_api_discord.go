@@ -34,6 +34,24 @@ type discordGuildVerifier interface {
 	// identity diagnostics (section 4/CHAMPION_VERIFY_IDENTITY_DIAGNOSTIC) -
 	// never for authorization decisions.
 	BotID() string
+	// ListGuildChannels returns guildID's text-capable channels the bot can
+	// currently view (see discord.Client.ListGuildChannels) - used by the
+	// Step 5 channel-selection endpoints in saas_api_channels.go.
+	ListGuildChannels(guildID string) ([]discord.GuildChannelInfo, error)
+	// ListAllGuildChannels returns every channel of guildID, including
+	// categories, unfiltered by view permission - used only by one-click
+	// channel auto-setup's own category/name matching (section 4), never
+	// for a customer-facing listing.
+	ListAllGuildChannels(guildID string) ([]discord.RawGuildChannel, error)
+	// GuildPermissions returns the bot's base role permissions in guildID
+	// (no channel overwrites) - used to gate category/channel creation
+	// (section 5).
+	GuildPermissions(guildID string) (int64, error)
+	// CreateGuildCategory creates a new category channel in guildID.
+	CreateGuildCategory(guildID, name string) (*discord.RawGuildChannel, error)
+	// CreateGuildTextChannel creates a new text channel in guildID, nested
+	// under parentCategoryID when non-empty.
+	CreateGuildTextChannel(guildID, name, parentCategoryID string) (*discord.RawGuildChannel, error)
 }
 
 // --- eligible guilds (section 9) ----------------------------------------

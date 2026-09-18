@@ -62,7 +62,18 @@ type InstallationSettings struct {
 	KillfeedChannelID, LeaderboardChannelID, PlayerStatusChannelID, AdminLogChannelID string
 	Timezone, DistanceUnit                                                            string
 	OnlineDisplayEnabled, LeaderboardEnabled                                          bool
-	CreatedAt, UpdatedAt                                                              time.Time
+	// ChannelSetupSource records how the current channel selection was
+	// produced - "" (never configured), "AUTO" (one-click setup), or
+	// "MANUAL" (customer PUT .../channels) - so a repeat one-click setup
+	// can safely reuse its own prior work while never silently overwriting
+	// a customer's manual customization (see saas_api_channels.go's
+	// hasCustomChannelConfiguration).
+	ChannelSetupSource string
+	// ChampionCategoryID is the Discord category one-click setup created
+	// (or reused), remembered so later runs can look it up by ID -
+	// authoritative - instead of by name (see docs/SAAS_SCHEMA.md).
+	ChampionCategoryID   string
+	CreatedAt, UpdatedAt time.Time
 }
 
 // ErrGameServerAlreadyAssigned is returned by SetGameServer when the target
@@ -300,13 +311,13 @@ WHERE i.id = p.installation_id AND i.organization_id=$1 AND p.installation_id=$2
 // organizationID (section 15).
 func (r *InstallationRepository) GetSettings(ctx context.Context, organizationID, installationID int64) (*InstallationSettings, error) {
 	const q = `
-SELECT s.installation_id, COALESCE(s.killfeed_channel_id,''), COALESCE(s.leaderboard_channel_id,''), COALESCE(s.player_status_channel_id,''), COALESCE(s.admin_log_channel_id,''), s.timezone, s.distance_unit, s.online_display_enabled, s.leaderboard_enabled, s.created_at, s.updated_at
+SELECT s.installation_id, COALESCE(s.killfeed_channel_id,''), COALESCE(s.leaderboard_channel_id,''), COALESCE(s.player_status_channel_id,''), COALESCE(s.admin_log_channel_id,''), s.timezone, s.distance_unit, s.online_display_enabled, s.leaderboard_enabled, s.channel_setup_source, COALESCE(s.champion_category_id,''), s.created_at, s.updated_at
 FROM installation_settings s
 JOIN installations i ON i.id = s.installation_id
 WHERE i.organization_id=$1 AND s.installation_id=$2`
 	var out InstallationSettings
 	err := r.pool.QueryRow(ctx, q, organizationID, installationID).
-		Scan(&out.InstallationID, &out.KillfeedChannelID, &out.LeaderboardChannelID, &out.PlayerStatusChannelID, &out.AdminLogChannelID, &out.Timezone, &out.DistanceUnit, &out.OnlineDisplayEnabled, &out.LeaderboardEnabled, &out.CreatedAt, &out.UpdatedAt)
+		Scan(&out.InstallationID, &out.KillfeedChannelID, &out.LeaderboardChannelID, &out.PlayerStatusChannelID, &out.AdminLogChannelID, &out.Timezone, &out.DistanceUnit, &out.OnlineDisplayEnabled, &out.LeaderboardEnabled, &out.ChannelSetupSource, &out.ChampionCategoryID, &out.CreatedAt, &out.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -322,12 +333,14 @@ func (r *InstallationRepository) UpdateSettings(ctx context.Context, organizatio
 	const q = `
 UPDATE installation_settings s SET
     killfeed_channel_id=$3, leaderboard_channel_id=$4, player_status_channel_id=$5, admin_log_channel_id=$6,
-    timezone=$7, distance_unit=$8, online_display_enabled=$9, leaderboard_enabled=$10, updated_at=NOW()
+    timezone=$7, distance_unit=$8, online_display_enabled=$9, leaderboard_enabled=$10,
+    channel_setup_source=$11, champion_category_id=$12, updated_at=NOW()
 FROM installations i
 WHERE i.id = s.installation_id AND i.organization_id=$1 AND s.installation_id=$2`
 	_, err := r.pool.Exec(ctx, q, organizationID, installationID,
 		emptyToNil(s.KillfeedChannelID), emptyToNil(s.LeaderboardChannelID), emptyToNil(s.PlayerStatusChannelID), emptyToNil(s.AdminLogChannelID),
-		s.Timezone, s.DistanceUnit, s.OnlineDisplayEnabled, s.LeaderboardEnabled)
+		s.Timezone, s.DistanceUnit, s.OnlineDisplayEnabled, s.LeaderboardEnabled,
+		s.ChannelSetupSource, emptyToNil(s.ChampionCategoryID))
 	if err != nil {
 		return fmt.Errorf("update installation settings: %w", err)
 	}
