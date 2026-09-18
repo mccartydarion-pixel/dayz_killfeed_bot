@@ -1,5 +1,10 @@
 # Champion SaaS customer API
 
+> **The website-integration source of truth is [docs/SAAS_API.md](SAAS_API.md)**,
+> which includes base URL/env var setup, example requests/responses, and the
+> tenant-scoping rules. This file remains as supplementary implementation
+> notes and is kept in sync with it.
+
 Server-to-server HTTP bridge between the Champion website and the
 authoritative Go SaaS repositories (see [docs/SAAS_SCHEMA.md](SAAS_SCHEMA.md)
 for the underlying schema). Runs on the bot's existing HTTP server/port -
