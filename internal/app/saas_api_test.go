@@ -223,10 +223,12 @@ func TestNoSensitiveFieldsInAPIResponses(t *testing.T) {
 		[]DiscordChannelSummary{{ID: "1", Name: "champion-killfeed", Type: "TEXT"}},
 		InstallationChannelSettings{KillfeedChannelID: "1", LeaderboardChannelID: "2", PlayerStatusChannelID: "3", AdminLogChannelID: "4"},
 		ChannelCategorySummary{ID: "1", Name: "CHAMPION KILLFEED"},
+		ChannelRouteInfo{ChannelID: "1", ChannelName: "killfeed", ManagedByChampion: true},
+		ChannelRoutesResponse{Routes: map[string]ChannelRouteInfo{"KILLFEED": {ChannelID: "1", ChannelName: "killfeed", ManagedByChampion: true}}},
 		AutoSetupChannelsResponse{
 			Configured: true,
 			Category:   &ChannelCategorySummary{ID: "1", Name: "CHAMPION KILLFEED"},
-			Channels:   &InstallationChannelSettings{KillfeedChannelID: "1", LeaderboardChannelID: "2", PlayerStatusChannelID: "3", AdminLogChannelID: "4"},
+			Routes:     map[string]ChannelRouteInfo{"KILLFEED": {ChannelID: "1", ChannelName: "killfeed", ManagedByChampion: true}},
 		},
 		AutoSetupChannelsResponse{Configured: false, Reason: "MISSING_MANAGE_CHANNELS"},
 		AutoSetupChannelsResponse{Configured: false, Reason: "CUSTOM_CONFIGURATION_EXISTS"},

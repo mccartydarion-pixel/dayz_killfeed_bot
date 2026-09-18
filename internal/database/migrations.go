@@ -887,6 +887,66 @@ ALTER TABLE installation_settings ADD COLUMN IF NOT EXISTS channel_setup_source 
 ALTER TABLE installation_settings ADD COLUMN IF NOT EXISTS champion_category_id TEXT;
 `,
 	},
+	{
+		// SaaS Step 5 full channel routing: replaces the four-field
+		// installation_settings model with a scalable feature -> Discord
+		// channel table, one row per (installation, route_key). Additive
+		// only - installation_settings' four legacy columns are neither
+		// dropped nor stop being read (section 20/5): GET/PUT
+		// .../installations/{id}/channels keeps working exactly as before
+		// for any consumer that hasn't migrated to
+		// GET/PUT .../channel-routes yet.
+		//
+		// The one-time backfill below seeds the new table from whatever
+		// legacy columns are already set, so an existing installation's
+		// configuration is visible under the new system immediately -
+		// route_key choices per section 5's explicit mapping:
+		//   killfeed_channel_id      -> KILLFEED
+		//   leaderboard_channel_id   -> STATS_LEADERBOARDS (explicit instruction)
+		//   player_status_channel_id -> STATS_LEADERBOARDS, but only as a
+		//     fallback when leaderboard_channel_id is unset - audited via
+		//     docs/SAAS_SCHEMA.md's own doc comment, which decouples
+		//     player_status_channel_id from guilds.player_stats_channel_id
+		//     (internal/discord/setup_store.go's PlayerStatsChannelID: an
+		//     on-demand "my stats / search player" panel - the same
+		//     "manually viewed... statistics" purpose STATS_LEADERBOARDS
+		//     describes, not a connections/join-leave log). CONNECTIONS has
+		//     no legacy source: its closest runtime analog,
+		//     OnlinePlayersChannelID, drives a voice-channel-name counter,
+		//     not a text channel, so backfilling it here would be wrong.
+		//   admin_log_channel_id     -> ADMIN_LOGS (explicit instruction)
+		// managed_by_champion is backfilled from channel_setup_source
+		// ('AUTO' -> true), which already distinguishes exactly this.
+		Name: "0027_saas_channel_routes",
+		SQL: `
+CREATE TABLE IF NOT EXISTS installation_channel_routes (
+    id BIGSERIAL PRIMARY KEY,
+    installation_id BIGINT NOT NULL REFERENCES installations(id) ON DELETE CASCADE,
+    route_key TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    managed_by_champion BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(installation_id, route_key)
+);
+CREATE INDEX IF NOT EXISTS idx_installation_channel_routes_installation ON installation_channel_routes(installation_id);
+
+INSERT INTO installation_channel_routes (installation_id, route_key, channel_id, managed_by_champion)
+SELECT installation_id, 'KILLFEED', killfeed_channel_id, (channel_setup_source = 'AUTO')
+FROM installation_settings WHERE killfeed_channel_id IS NOT NULL
+ON CONFLICT (installation_id, route_key) DO NOTHING;
+
+INSERT INTO installation_channel_routes (installation_id, route_key, channel_id, managed_by_champion)
+SELECT installation_id, 'STATS_LEADERBOARDS', COALESCE(leaderboard_channel_id, player_status_channel_id), (channel_setup_source = 'AUTO')
+FROM installation_settings WHERE COALESCE(leaderboard_channel_id, player_status_channel_id) IS NOT NULL
+ON CONFLICT (installation_id, route_key) DO NOTHING;
+
+INSERT INTO installation_channel_routes (installation_id, route_key, channel_id, managed_by_champion)
+SELECT installation_id, 'ADMIN_LOGS', admin_log_channel_id, (channel_setup_source = 'AUTO')
+FROM installation_settings WHERE admin_log_channel_id IS NOT NULL
+ON CONFLICT (installation_id, route_key) DO NOTHING;
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order, each transactionally. A
