@@ -156,12 +156,27 @@ func (c *Client) Verify(guildID, channelID string) Verification {
 	}
 
 	if guildID != "" {
-		if _, err := c.session.Guild(guildID); err != nil {
-			slog.Error("component=discord", "msg", "configured guild not found or not accessible", "guild_id", guildID)
-		} else {
+		// Cache-first: the bot's local gateway state (populated in real
+		// time by GUILD_CREATE) is authoritative for "is the bot in this
+		// guild" and costs no network call, so a cache hit is trusted
+		// immediately. Only fall back to a live REST lookup on a cache
+		// miss - never let a single flaky/rate-limited REST call alone
+		// produce a false "not installed" for a guild the bot is
+		// genuinely, visibly already in (the bug this fixes).
+		cached := c.HasGuildCached(guildID)
+		restChecked := false
+		if cached {
 			result.GuildFound = true
-			slog.Info("component=discord", "msg", "guild verified", "guild_id", guildID)
+		} else {
+			restChecked = true
+			if _, err := c.session.Guild(guildID); err != nil {
+				slog.Error("component=discord", "msg", "configured guild not found or not accessible", "guild_id", guildID)
+			} else {
+				result.GuildFound = true
+			}
 		}
+		slog.Info("component=discord", "event", "discord_guild_verify",
+			"guild_cached", cached, "rest_checked", restChecked, "guild_found", result.GuildFound)
 	} else {
 		slog.Warn("component=discord", "msg", "DISCORD_GUILD_ID not configured; skipping guild verification")
 	}

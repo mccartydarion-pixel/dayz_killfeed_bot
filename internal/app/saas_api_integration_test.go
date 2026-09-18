@@ -504,6 +504,13 @@ func TestVerifyInstallationTransitionsStatus(t *testing.T) {
 		t.Fatalf("expected status to transition to DISCORD_CONNECTED, got %+v err=%v", after, err)
 	}
 
+	// Case E: bot_installed on the guild connection row itself must also be
+	// updated by a successful verification, not just the installation status.
+	conn, err := a.SaaSGuildConnections.GetScoped(context.Background(), fixture.OrgID, fixture.ConnectionID)
+	if err != nil || conn == nil || !conn.BotInstalled {
+		t.Fatalf("expected bot_installed=true on the guild connection after verification, got %+v err=%v", conn, err)
+	}
+
 	// A second verification of an already-DISCORD_CONNECTED installation
 	// must not regress or otherwise misbehave.
 	rr2 := httptest.NewRecorder()

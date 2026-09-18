@@ -304,6 +304,7 @@ func (a *App) handleVerifyInstallation(w http.ResponseWriter, r *http.Request) {
 
 	inst, discordGuildID, errCode, errMsg := a.loadInstallationGuildSnowflake(ctx, organizationID, installationID)
 	if errCode != "" {
+		slog.Info("component=saas_api", "event", "saas_install_verify", "installation_id", installationID, "guild_resolved", false, "installed", false)
 		writeSaaSError(w, errCode, errMsg)
 		return
 	}
@@ -315,6 +316,7 @@ func (a *App) handleVerifyInstallation(w http.ResponseWriter, r *http.Request) {
 		GuildReachable: verification.GuildFound,
 		VerifiedAt:     now.UTC().Format(time.RFC3339),
 	}
+	slog.Info("component=saas_api", "event", "saas_install_verify", "installation_id", installationID, "guild_resolved", true, "installed", result.Installed)
 
 	// Keep the connection's bot_installed flag in sync with this live check
 	// (a narrow, targeted update - never Upsert, which would also overwrite
