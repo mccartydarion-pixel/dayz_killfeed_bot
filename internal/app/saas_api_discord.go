@@ -22,6 +22,14 @@ import (
 // live Discord API call that cannot run in a test environment.
 type discordGuildVerifier interface {
 	Verify(guildID, channelID string) discord.Verification
+	// HasGuildCached is a zero-network-call membership check (local gateway
+	// state cache only - see discord.Client.HasGuildCached). Used for
+	// per-candidate eligibility listing, where calling Verify once per
+	// guild would mean one live Discord REST round-trip per candidate -
+	// fine for a single selected guild (handleConnectDiscordGuild,
+	// handleVerifyInstallation), but not for a loop over every guild the
+	// user's Discord OAuth session returned.
+	HasGuildCached(guildID string) bool
 }
 
 // --- eligible guilds (section 9) ----------------------------------------
@@ -64,11 +72,22 @@ const requiredGuildPermissions = discordgo.PermissionAdministrator | discordgo.P
 // handleEligibleGuilds is POST .../discord/guilds/eligible (section 9): the
 // website submits OAuth-verified candidates, the Go API re-derives
 // eligibility from each candidate's permission bitfield itself and
-// cross-checks bot presence via the bot's own session - never trusting bot
-// guild membership alone as a stand-in for user permissions (a guild the
-// bot happens to already be in says nothing about whether THIS user can
-// administer it).
+// cross-checks bot presence against the bot's local gateway state cache -
+// never trusting bot guild membership alone as a stand-in for user
+// permissions (a guild the bot happens to already be in says nothing about
+// whether THIS user can administer it).
+//
+// This must stay a zero-network-call loop: a website OAuth session can list
+// dozens of guilds for a single user, and calling the live, REST-backed
+// Verify once per candidate turned this into N sequential Discord API round
+// trips - the exact cause of the 12s website timeout this was fixed for.
+// HasGuildCached is a pure in-memory lookup instead, so this handler's cost
+// no longer scales with how many servers the caller happens to be in. The
+// final, single selected guild is still authoritatively verified live by
+// handleConnectDiscordGuild and handleVerifyInstallation - this endpoint
+// only ever produces a candidate list, never persists anything.
 func (a *App) handleEligibleGuilds(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
 	if !a.requireSaaSServiceAuth(w, r) {
 		return
 	}
@@ -104,7 +123,7 @@ func (a *App) handleEligibleGuilds(w http.ResponseWriter, r *http.Request) {
 		eligible := perms&requiredGuildPermissions != 0
 		botInstalled := false
 		if a.saasDiscordVerifier != nil {
-			botInstalled = a.saasDiscordVerifier.Verify(guildID, "").GuildFound
+			botInstalled = a.saasDiscordVerifier.HasGuildCached(guildID)
 		}
 		out = append(out, DiscordGuildSummary{
 			DiscordGuildID: guildID,
@@ -114,6 +133,12 @@ func (a *App) handleEligibleGuilds(w http.ResponseWriter, r *http.Request) {
 			BotInstalled:   botInstalled,
 		})
 	}
+
+	// Safe completion diagnostic: candidate count and duration only - never
+	// guild IDs, permission bitfields, tokens, or any request body/header
+	// content (section 8).
+	slog.Info("component=saas_api", "event", "saas_eligible_guilds_complete",
+		"candidate_count", len(out), "duration_ms", time.Since(start).Milliseconds())
 	writeSaaSJSON(w, http.StatusOK, out)
 }
 

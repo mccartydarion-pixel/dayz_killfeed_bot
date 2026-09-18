@@ -223,7 +223,18 @@ Response `200`: [`SetupProgress`](#setupprogress).
 The website supplies Discord-OAuth-verified candidates (Auth.js `identify
 guilds` scope, which returns a per-guild permission bitfield for the acting
 user); the Go API independently re-derives eligibility from that bitfield
-(never trusts a pre-computed boolean) and cross-checks live bot presence.
+(never trusts a pre-computed boolean) and cross-checks bot presence against
+the bot's **local gateway state cache** - a pure in-memory lookup, never a
+live Discord API call per candidate. This is intentional and load-bearing:
+a website OAuth session can list dozens of guilds for one user, and this
+route is called with all of them at once, so it must not scale with a live
+network round trip per guild (that was the original cause of this route
+timing out for users in many servers). `botInstalled` therefore reflects
+the bot's state as of its last gateway event for that guild (effectively
+real-time - populated from `GUILD_CREATE`/`GUILD_DELETE` - not a periodic
+poll), not a request-time live check. The final, single guild the customer
+actually selects is still authoritatively, live-verified by `#11` and `#12`
+below - this endpoint only ever produces a list, never persists anything.
 
 Request:
 ```json

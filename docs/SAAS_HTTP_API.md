@@ -163,10 +163,21 @@ Auth: member. The website supplies Discord-OAuth-verified guild candidates
 per-guild permission bitfield for the acting user); the Go API independently
 re-derives eligibility from that bitfield (**never** trusts a pre-computed
 `eligible` boolean from the browser/website) and cross-checks bot presence
-via the bot's own live Discord session. A guild the bot happens to already
-be in says nothing about whether *this user* can administer it, so bot
-membership is checked separately from - never as a substitute for -
-permission eligibility.
+against the bot's **local gateway state cache** (`Client.HasGuildCached` -
+zero Discord REST calls, so this route's cost never scales with how many
+guilds the caller happens to be in - see the "N+1 fix" note below). A guild
+the bot happens to already be in says nothing about whether *this user* can
+administer it, so bot membership is checked separately from - never as a
+substitute for - permission eligibility.
+
+> **Performance note**: this route originally called the live,
+> REST-backed `Verify` once per candidate guild, which meant N sequential
+> Discord API round trips for a user in N servers - enough to blow the
+> website's request timeout for users in many guilds. Fixed by adding
+> `discord.Client.HasGuildCached` (a pure in-memory lookup against the
+> gateway state cache) and using it here instead; `Verify` (and its live
+> REST call) is still used - deliberately - for the single, final selected
+> guild in `#discord-connection` and `#verify-installation` below.
 
 Request:
 ```json

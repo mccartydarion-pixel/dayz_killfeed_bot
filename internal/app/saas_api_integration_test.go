@@ -28,9 +28,21 @@ type fakeDiscordVerifier struct {
 	guildFound   map[string]bool
 	channelFound map[string]bool
 	missing      map[string][]string
+
+	// verifyCalls counts live Verify calls, so tests can assert the
+	// zero-network-call eligible-guilds path never invokes it (section 7).
+	verifyCalls int
+}
+
+// HasGuildCached mirrors the production cache-only lookup, backed by the
+// same guildFound map Verify uses (a real cache would agree with a live
+// check for a guild the bot is actually in) - never increments verifyCalls.
+func (f *fakeDiscordVerifier) HasGuildCached(guildID string) bool {
+	return f.guildFound[guildID]
 }
 
 func (f *fakeDiscordVerifier) Verify(guildID, channelID string) discord.Verification {
+	f.verifyCalls++
 	v := discord.Verification{GuildFound: f.guildFound[guildID]}
 	if channelID == "" {
 		return v
@@ -519,4 +531,78 @@ func TestVerifyPermissionsRequiresPriorDiscordConnection(t *testing.T) {
 		t.Fatalf("expected INSTALLATION_NOT_VERIFIED before Discord is connected, got %d: %s", rr.Code, rr.Body.String())
 	}
 	assertErrorCode(t, rr, codeInstallationNotVerified)
+}
+
+// --- section 7: eligible-guilds performance -------------------------------
+
+// TestEligibleGuildsUsesZeroLiveDiscordCalls is the fix's core regression
+// guard: at least 50 candidate guilds, none of which may trigger a live
+// Verify call (the original bug - one sequential Discord REST round trip
+// per candidate - was exactly what blew the website's 12s timeout).
+// Eligibility must still come only from each candidate's own OAuth
+// permission bitfield, and botInstalled only from the fake's cache map.
+func TestEligibleGuildsUsesZeroLiveDiscordCalls(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	suffix := time.Now().UnixNano()
+	owner := syncUser(t, a, fmt.Sprintf("api-perf-owner-%d", suffix), "Owner")
+	org := mustCreateOrg(t, a, owner.DiscordUserID, "Perf Org", fmt.Sprintf("perf-org-%d", suffix))
+
+	const candidateCount = 60
+	type expectation struct {
+		eligible     bool
+		botInstalled bool
+	}
+	expected := make(map[string]expectation, candidateCount)
+	guilds := make([]discordGuildCandidate, 0, candidateCount)
+	for i := 0; i < candidateCount; i++ {
+		guildID := fmt.Sprintf("perf-guild-%d-%d", suffix, i)
+		var perms string
+		var eligible bool
+		switch i % 4 {
+		case 0:
+			perms, eligible = "8", true // ADMINISTRATOR
+		case 1:
+			perms, eligible = "32", true // MANAGE_GUILD
+		case 2:
+			perms, eligible = "0", false
+		case 3:
+			perms, eligible = "not-a-number", false // malformed
+		}
+		// Every other candidate is present in the bot's fake cache.
+		cached := i%2 == 0
+		if cached {
+			verifier.guildFound[guildID] = true
+		}
+		expected[guildID] = expectation{eligible: eligible, botInstalled: cached}
+		guilds = append(guilds, discordGuildCandidate{DiscordGuildID: guildID, GuildName: "Guild " + guildID, Permissions: perms})
+	}
+
+	req := withPathValues(withActingUser(saasRequest(http.MethodPost, "/x", eligibleGuildsRequest{Guilds: guilds}), owner.DiscordUserID),
+		map[string]string{"organizationID": strconv.FormatInt(org.ID, 10)})
+	rr := httptest.NewRecorder()
+	a.handleEligibleGuilds(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	if verifier.verifyCalls != 0 {
+		t.Fatalf("expected 0 live Verify calls for %d candidates, got %d", candidateCount, verifier.verifyCalls)
+	}
+
+	got := decodeBody[[]DiscordGuildSummary](t, rr)
+	if len(got) != candidateCount {
+		t.Fatalf("expected %d results, got %d", candidateCount, len(got))
+	}
+	for _, g := range got {
+		want, ok := expected[g.DiscordGuildID]
+		if !ok {
+			t.Fatalf("unexpected guild in response: %q", g.DiscordGuildID)
+		}
+		if g.Eligible != want.eligible {
+			t.Fatalf("guild %q: expected eligible=%v, got %v", g.DiscordGuildID, want.eligible, g.Eligible)
+		}
+		if g.BotInstalled != want.botInstalled {
+			t.Fatalf("guild %q: expected botInstalled=%v, got %v", g.DiscordGuildID, want.botInstalled, g.BotInstalled)
+		}
+	}
 }
