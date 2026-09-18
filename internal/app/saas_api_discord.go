@@ -30,6 +30,10 @@ type discordGuildVerifier interface {
 	// handleVerifyInstallation), but not for a loop over every guild the
 	// user's Discord OAuth session returned.
 	HasGuildCached(guildID string) bool
+	// BotID is the connected bot's own Discord user ID, used only for safe
+	// identity diagnostics (section 4/CHAMPION_VERIFY_IDENTITY_DIAGNOSTIC) -
+	// never for authorization decisions.
+	BotID() string
 }
 
 // --- eligible guilds (section 9) ----------------------------------------
@@ -304,7 +308,8 @@ func (a *App) handleVerifyInstallation(w http.ResponseWriter, r *http.Request) {
 
 	inst, discordGuildID, errCode, errMsg := a.loadInstallationGuildSnowflake(ctx, organizationID, installationID)
 	if errCode != "" {
-		slog.Info("component=saas_api", "event", "saas_install_verify", "installation_id", installationID, "guild_resolved", false, "installed", false)
+		slog.Info("component=saas_api", "event", "saas_install_verify", "installation_id", installationID,
+			"bot_user_id", a.saasDiscordVerifier.BotID(), "guild_resolved", false, "installed", false)
 		writeSaaSError(w, errCode, errMsg)
 		return
 	}
@@ -316,7 +321,9 @@ func (a *App) handleVerifyInstallation(w http.ResponseWriter, r *http.Request) {
 		GuildReachable: verification.GuildFound,
 		VerifiedAt:     now.UTC().Format(time.RFC3339),
 	}
-	slog.Info("component=saas_api", "event", "saas_install_verify", "installation_id", installationID, "guild_resolved", true, "installed", result.Installed)
+	slog.Info("component=saas_api", "event", "saas_install_verify", "installation_id", installationID,
+		"discord_guild_id", discordGuildID, "bot_user_id", a.saasDiscordVerifier.BotID(),
+		"guild_resolved", true, "installed", result.Installed)
 
 	// Keep the connection's bot_installed flag in sync with this live check
 	// (a narrow, targeted update - never Upsert, which would also overwrite

@@ -52,7 +52,7 @@ func (c *Client) Start(ctx context.Context) error {
 		return fmt.Errorf("discord application ID is not available: READY event did not arrive in time")
 	}
 
-	slog.Info("component=discord", "msg", "connected", "user", c.session.State.User.Username)
+	slog.Info("component=discord", "msg", "connected", "user", c.session.State.User.Username, "bot_user_id", c.session.State.User.ID)
 	return nil
 }
 
@@ -176,6 +176,7 @@ func (c *Client) Verify(guildID, channelID string) Verification {
 			}
 		}
 		slog.Info("component=discord", "event", "discord_guild_verify",
+			"bot_user_id", c.BotID(), "guild_id", guildID,
 			"guild_cached", cached, "rest_checked", restChecked, "guild_found", result.GuildFound)
 	} else {
 		slog.Warn("component=discord", "msg", "DISCORD_GUILD_ID not configured; skipping guild verification")
