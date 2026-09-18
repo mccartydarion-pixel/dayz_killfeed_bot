@@ -73,6 +73,40 @@ func (r *GuildConnectionRepository) ListByOrganization(ctx context.Context, orga
 	return out, rows.Err()
 }
 
+// UpdateBotInstalled refreshes only bot_installed for guildID's connection,
+// requiring it belong to organizationID. Deliberately narrow rather than
+// reusing Upsert: Upsert's ON CONFLICT clause unconditionally overwrites
+// guild_name/guild_icon/permissions_verified from whatever is in the passed
+// struct, so calling it with only BotInstalled set would silently wipe those
+// other fields back to empty/false. Used by the live bot-presence refresh in
+// handleVerifyInstallation (internal/app/saas_api_discord.go).
+func (r *GuildConnectionRepository) UpdateBotInstalled(ctx context.Context, organizationID, guildID int64, installed bool) error {
+	if _, err := r.pool.Exec(ctx, `UPDATE discord_guild_connections SET bot_installed=$3, updated_at=NOW() WHERE organization_id=$1 AND guild_id=$2`, organizationID, guildID, installed); err != nil {
+		return fmt.Errorf("update bot_installed: %w", err)
+	}
+	return nil
+}
+
+// GetByGuildID returns the connection claiming guildID (guilds.id),
+// regardless of which organization owns it, or nil if unclaimed.
+// Deliberately NOT organization-scoped: it exists specifically so a caller
+// can detect a cross-tenant conflict (a guild already claimed by a
+// DIFFERENT organization) before Upsert would otherwise silently reassign
+// it - see handleConnectDiscordGuild in internal/app/saas_api_discord.go.
+func (r *GuildConnectionRepository) GetByGuildID(ctx context.Context, guildID int64) (*DiscordGuildConnection, error) {
+	const q = `SELECT id, organization_id, guild_id, COALESCE(guild_name,''), COALESCE(guild_icon,''), bot_installed, permissions_verified, connected_at, updated_at FROM discord_guild_connections WHERE guild_id=$1`
+	var c DiscordGuildConnection
+	err := r.pool.QueryRow(ctx, q, guildID).
+		Scan(&c.ID, &c.OrganizationID, &c.GuildID, &c.GuildName, &c.GuildIcon, &c.BotInstalled, &c.PermissionsVerified, &c.ConnectedAt, &c.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get guild connection by guild id: %w", err)
+	}
+	return &c, nil
+}
+
 // GetScoped returns one guild connection, requiring it belong to
 // organizationID - the tenant-isolation-safe lookup (section 15): a caller
 // can never resolve another organization's connection by ID guessing.

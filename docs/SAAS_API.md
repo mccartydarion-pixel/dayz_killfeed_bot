@@ -1,0 +1,496 @@
+# Champion SaaS API - website integration handoff
+
+This is the **authoritative** contract for the website's integration
+against the Go backend's SaaS customer API. It supersedes
+[docs/SAAS_HTTP_API.md](SAAS_HTTP_API.md) as the integration source of
+truth (that file remains as supplementary implementation notes and stays in
+sync with this one). See [docs/SAAS_SCHEMA.md](SAAS_SCHEMA.md) for the
+underlying PostgreSQL schema these endpoints read and write.
+
+**The routes and DTO names below are the actual, tested, shipped API.**
+Where an earlier planning draft used different names, this document says so
+explicitly rather than silently renaming a working, already-integration-tested
+route to match a guess.
+
+## Base URL
+
+The SaaS API runs on the bot's existing HTTP server - the same Railway
+service and port as [`GET /api/runtime/status`](runtime-status-api.md), just
+a different path prefix (`/api/saas/...` vs `/api/runtime/...`). There is no
+separate SaaS service, port, or deployment.
+
+Website environment variables:
+
+```
+CHAMPION_SAAS_API_URL=<same Railway URL as CHAMPION_RUNTIME_API_URL>
+CHAMPION_SAAS_API_SECRET=<same value as the bot's WEBSITE_API_SECRET>
+```
+
+`CHAMPION_SAAS_API_URL` is the bot's base origin (e.g.
+`https://dayzkillfeedbot-production.up.railway.app`) - append the paths
+below to it. `CHAMPION_SAAS_API_SECRET` is **not a new/separate secret**:
+the bot has exactly one server-to-server secret
+(`WEBSITE_API_SECRET`, set on the bot's Railway service), already reused for
+the runtime status API under the name `CHAMPION_RUNTIME_API_SECRET` on the
+website side. Set `CHAMPION_SAAS_API_SECRET` to that same value. This
+follows section 2's explicit instruction to prefer the existing trusted
+server-to-server secret mechanism rather than mint a new one.
+
+## Authentication
+
+```
+Authorization: Bearer <CHAMPION_SAAS_API_SECRET>
+```
+
+- **Header**: `Authorization`, standard `Bearer <token>` format.
+- **Env var (website side)**: `CHAMPION_SAAS_API_SECRET`.
+- **Env var (bot side)**: `WEBSITE_API_SECRET` (same value - see above).
+- **On missing/invalid token**: every route returns `401` with body
+  `{"error":{"code":"UNAUTHORIZED","message":"missing or invalid service authentication"}}`,
+  compared in constant time (`crypto/subtle.ConstantTimeCompare`) so a
+  wrong-length or wrong-value token can't be timed to guess the secret.
+- **Never expose this secret to browser code.** Only the website's own
+  server-side code (Next.js API routes / server components / server
+  actions) may call this API. There is no CORS configuration - it is not
+  meant to be reachable directly from a browser.
+
+## Acting user identity
+
+```
+X-Champion-Acting-User: <discord_user_id>
+```
+
+The website has already authenticated this person through Auth.js/Discord
+OAuth on its own side. This header is a **trusted assertion**, not a claim
+the Go backend independently re-verifies against Discord - it is only safe
+to trust because:
+
+1. The request already passed `Authorization` service authentication (a
+   browser can never reach this API directly, so it can never forge this
+   header on its own - it can only be set by the website's own trusted
+   server-side code, which already knows who the visitor is).
+2. The Go backend still resolves this Discord ID to its own `app_users` row
+   and performs its own organization-membership and role checks for every
+   subsequent action - **the header identifies who is acting, it does not
+   grant them anything by itself.**
+
+The website must call `POST /api/saas/users/sync` at least once per user
+(e.g. right after sign-in) before using their Discord ID in this header on
+any other route - an unsynced Discord ID gets `401 UNAUTHORIZED` ("acting
+user has not synced") everywhere else.
+
+`POST /api/saas/users/sync` is the one route that does not require this
+header (it's what establishes the synced row this header will later
+resolve).
+
+## Authorization chain (every route)
+
+1. **Service auth** (`Authorization` header) → `401` if missing/wrong.
+2. **Acting user resolution** (`X-Champion-Acting-User` header → `app_users`
+   row) → `401` if missing header or the Discord ID never synced.
+3. **Organization membership** (for every `{organizationID}`-scoped route) →
+   `403 FORBIDDEN` if the acting user isn't a member of that organization.
+4. **Role authorization** (routes marked "OWNER/ADMIN" below) → `403
+   FORBIDDEN` if the acting user's role is `MEMBER`.
+
+Every organization-scoped resource lookup (installations, guild
+connections, servers) is *additionally* filtered by `organizationID` at the
+database query itself - a correctly-authenticated member of organization A
+who guesses an ID belonging to organization B gets `404 NOT_FOUND` for that
+resource, never a peek at its existence or data.
+
+## Routes
+
+Base path for every route below: prepend `CHAMPION_SAAS_API_URL`.
+
+| # | Method | Path | Role required | Notes |
+|---|---|---|---|---|
+| 1 | POST | `/api/saas/users/sync` | (any synced-or-not user) | |
+| 2 | GET | `/api/saas/organizations` | member (per org returned) | |
+| 3 | POST | `/api/saas/organizations` | (any synced user) | |
+| 4 | GET | `/api/saas/organizations/{organizationID}` | member | |
+| 5 | GET | `/api/saas/organizations/{organizationID}/dashboard` | member | |
+| 6 | POST | `/api/saas/organizations/{organizationID}/installations` | OWNER/ADMIN | |
+| 7 | GET | `/api/saas/organizations/{organizationID}/installations/{installationID}` | member | |
+| 8 | GET | `/api/saas/organizations/{organizationID}/installations/{installationID}/setup` | member | |
+| 9 | PATCH | `/api/saas/organizations/{organizationID}/installations/{installationID}/setup` | OWNER/ADMIN | |
+| 10 | POST | `/api/saas/organizations/{organizationID}/discord/guilds/eligible` | member | see naming note below |
+| 11 | POST | `/api/saas/organizations/{organizationID}/discord/connection` | OWNER/ADMIN | see naming note below |
+| 12 | POST | `/api/saas/organizations/{organizationID}/installations/{installationID}/discord/verify-installation` | member | |
+| 13 | POST | `/api/saas/organizations/{organizationID}/installations/{installationID}/discord/verify-permissions` | member | see naming note below |
+
+### Naming differences from earlier planning drafts
+
+An earlier internal draft of this contract used slightly different route
+names for three of these. Per this task's own instruction ("do not rename
+working routes merely to match this prompt"), the shipped, integration-tested
+names above are authoritative:
+
+- **#10/#11**: planned as a single `POST .../discord-guild`. Shipped as
+  **two** routes instead, because they're genuinely different operations
+  with different authorization levels: `#10` (`.../discord/guilds/eligible`,
+  member-level) lets the website ask "which of these OAuth-verified
+  candidate guilds can this organization actually connect," while `#11`
+  (`.../discord/connection`, OWNER/ADMIN-level) is the one that persists a
+  selection. Splitting them means a MEMBER can browse eligible guilds
+  without being able to commit one.
+- **#13**: planned as `GET .../discord/permissions`. Shipped as **`POST
+  .../discord/verify-permissions`**, because the check requires a request
+  body (`channelId` - which channel to check permissions against), which a
+  `GET` request isn't a good fit for, and because it triggers a live
+  Discord API call each time rather than reading cached state (matching the
+  "verify-" naming already used for `#12`).
+
+### 1. `POST /api/saas/users/sync`
+Upserts safe Discord identity fields. **Never accepts or stores a Discord
+OAuth token.**
+
+Request:
+```json
+{
+  "discord_user_id": "111222333444",
+  "discord_username": "PlayerOne",
+  "discord_global_name": "Player One",
+  "avatar": "a1b2c3d4e5f6"
+}
+```
+`discord_user_id` and `discord_username` are required.
+
+Response `200` ([`UserSummary`](#usersummary)):
+```json
+{ "id": 1, "discordUserId": "111222333444", "discordUsername": "PlayerOne", "discordGlobalName": "Player One", "avatar": "a1b2c3d4e5f6" }
+```
+
+### 2. `GET /api/saas/organizations`
+Response `200` (`[`[`OrganizationSummary`](#organizationsummary)`]`):
+```json
+[{ "id": 5, "name": "Champions", "slug": "champions", "role": "OWNER" }]
+```
+
+### 3. `POST /api/saas/organizations`
+Creates the organization and the caller's OWNER membership atomically. Also
+creates a 14-day TRIAL subscription.
+
+Request:
+```json
+{ "name": "Champions", "slug": "champions" }
+```
+Response `201` ([`OrganizationSummary`](#organizationsummary)):
+```json
+{ "id": 5, "name": "Champions", "slug": "champions", "role": "OWNER" }
+```
+`409 CONFLICT` if the slug is taken.
+
+### 4. `GET /api/saas/organizations/{organizationID}`
+Response `200`: [`OrganizationSummary`](#organizationsummary) (same shape as above).
+
+### 5. `GET /api/saas/organizations/{organizationID}/dashboard`
+Response `200`: [`DashboardSummary`](#dashboardsummary) - see full example below.
+
+### 6. `POST /api/saas/organizations/{organizationID}/installations`
+Request:
+```json
+{ "discordGuildConnectionId": 12 }
+```
+Response `201`: [`InstallationSummary`](#installationsummary). `404` if the
+guild connection isn't this organization's; `409 CONFLICT` if that
+connection already has an installation.
+
+### 7. `GET /api/saas/organizations/{organizationID}/installations/{installationID}`
+Response `200`: [`InstallationSummary`](#installationsummary).
+
+### 8. `GET .../installations/{installationID}/setup`
+Response `200`: [`SetupProgress`](#setupprogress).
+
+### 9. `PATCH .../installations/{installationID}/setup`
+True PATCH - only fields present in the body are changed.
+
+Request:
+```json
+{ "currentStep": "NITRADO", "nitradoCompleted": true }
+```
+`currentStep` must be one of `DISCORD`, `NITRADO`, `SERVER`, `CHANNELS`,
+`VALIDATION`, `COMPLETE`. **Step order is enforced server-side**: the
+resulting merged state must satisfy
+`discord → nitrado → server → channels → validation` (a later flag can only
+be `true` if every earlier one already is, in the same resulting state).
+An invalid transition is rejected whole with `400 INVALID_REQUEST` and
+nothing is written.
+
+Response `200`: [`SetupProgress`](#setupprogress).
+
+### 10. `POST /api/saas/organizations/{organizationID}/discord/guilds/eligible`
+The website supplies Discord-OAuth-verified candidates (Auth.js `identify
+guilds` scope, which returns a per-guild permission bitfield for the acting
+user); the Go API independently re-derives eligibility from that bitfield
+(never trusts a pre-computed boolean) and cross-checks live bot presence.
+
+Request:
+```json
+{
+  "guilds": [
+    { "discordGuildId": "555666777888", "guildName": "My DayZ Server", "guildIcon": "abc123", "permissions": "8" }
+  ]
+}
+```
+`permissions` is the raw Discord permission bitfield for this user in this
+guild, as a **decimal string** (Discord's own API shape). Eligible =
+`ADMINISTRATOR` (`8`) or `MANAGE_GUILD` (`32`) bit set.
+
+Response `200` (`[`[`DiscordGuildConnectionCandidate`](#discordguildsummary)`]`, named `DiscordGuildSummary` in code):
+```json
+[{ "discordGuildId": "555666777888", "guildName": "My DayZ Server", "guildIcon": "abc123", "eligible": true, "botInstalled": false }]
+```
+
+### 11. `POST /api/saas/organizations/{organizationID}/discord/connection`
+Persists a verified guild selection. Re-verifies eligibility from the
+submitted `permissions` (never trusts an earlier `#10` response) and checks
+live bot presence.
+
+Request:
+```json
+{ "discordGuildId": "555666777888", "guildName": "My DayZ Server", "guildIcon": "abc123", "permissions": "8" }
+```
+Response `200`: [`DiscordGuildConnectionSummary`](#discordguildconnectionsummary).
+
+- `403 FORBIDDEN` - permission bitfield doesn't grant ADMINISTRATOR/MANAGE_GUILD.
+- `409 CONFLICT` - this guild is already connected to a **different**
+  organization (never silently reassigned). Reconnecting a guild your own
+  organization already owns succeeds idempotently.
+- `503 DISCORD_UNAVAILABLE` - the bot's Discord session isn't connected.
+
+### 12. `POST .../installations/{installationID}/discord/verify-installation`
+Verifies bot presence using the **live** Discord session - never trusts a
+redirect/query-string success. On success, if the installation is still
+`NOT_STARTED`, transitions it to `DISCORD_CONNECTED` (never further; never
+regresses an installation already past that point). No request body.
+
+Response `200`: [`DiscordInstallationVerification`](#discordinstallationverification) (named `DiscordVerificationResult` in code):
+```json
+{ "installed": true, "guildReachable": true, "verifiedAt": "2026-09-18T02:00:00Z" }
+```
+
+### 13. `POST .../installations/{installationID}/discord/verify-permissions`
+Checks the bot's actual permissions in a specific channel. Requires the
+installation to already be past `NOT_STARTED` (`422
+INSTALLATION_NOT_VERIFIED` otherwise - call `#12` first).
+
+Request:
+```json
+{ "channelId": "999888777666" }
+```
+Response `200`: [`DiscordPermissionVerification`](#discordpermissionverification) (named `PermissionVerificationResult` in code):
+```json
+{
+  "capabilities": [
+    { "capability": "View Channel", "result": "PASS" },
+    { "capability": "Send Messages", "result": "PASS" },
+    { "capability": "Embed Links", "result": "WARNING" },
+    { "capability": "Read Message History", "result": "PASS" }
+  ],
+  "overallPass": true
+}
+```
+`View Channel`/`Send Messages` missing → `FAIL` (blocking - a killfeed
+literally cannot post). `Embed Links`/`Read Message History` missing →
+`WARNING` (degraded, not blocking). Guild/channel unreachable → every
+capability `FAIL`. Never returns a raw Discord permission bitfield.
+
+## Request/response DTOs
+
+None of these ever include a Nitrado ciphertext/IV/auth tag, a Discord
+bot/OAuth token, `WEBSITE_API_SECRET`, a database URL, or any other internal
+credential - enforced by `TestNoSensitiveFieldsInAPIResponses` in
+`internal/app/saas_api_test.go` (section 9).
+
+#### `UserSummary`
+| field | type |
+|---|---|
+| `id` | number |
+| `discordUserId` | string |
+| `discordUsername` | string |
+| `discordGlobalName` | string? |
+| `avatar` | string? |
+
+#### `OrganizationSummary`
+| field | type |
+|---|---|
+| `id` | number |
+| `name` | string |
+| `slug` | string |
+| `role` | `"OWNER"` \| `"ADMIN"` \| `"MEMBER"` - always the **acting user's own** role |
+
+#### `OrganizationMembership`
+Conceptual shape (`organization_id`, `user_id`, `role`, `created_at`) backing
+`OrganizationRepository`'s internal authorization checks
+(`internal/repository/saas_organizations_repository.go`). **Not returned as
+a standalone object by any current route** - the acting user's own
+membership is folded directly into `OrganizationSummary.role` everywhere.
+There is no "list organization members" endpoint yet; add one if/when the
+website needs a team-management UI (not required by this handoff - see
+section 8's feature list, which does not include it).
+
+#### `DashboardSummary`
+| field | type |
+|---|---|
+| `organization` | [`OrganizationSummary`](#organizationsummary) |
+| `subscription` | [`SubscriptionSummary`](#subscriptionsummary)? |
+| `installations` | [`InstallationSummary`](#installationsummary)[] |
+
+Example:
+```json
+{
+  "organization": { "id": 5, "name": "Champions", "slug": "champions", "role": "OWNER" },
+  "subscription": { "plan": "TRIAL", "status": "TRIAL", "trialEndsAt": "2026-10-02T00:00:00Z" },
+  "installations": [
+    {
+      "id": 9,
+      "status": "DISCORD_CONNECTED",
+      "health": "SETTING_UP",
+      "setupProgress": {
+        "currentStep": "NITRADO",
+        "discordCompleted": true, "nitradoCompleted": false, "serverSelected": false,
+        "channelsCompleted": false, "validationCompleted": false
+      },
+      "discordConnection": {
+        "id": 12, "guildName": "My DayZ Server", "guildIcon": "abc123",
+        "botInstalled": true, "permissionsVerified": true, "connectedAt": "2026-09-18T01:00:00Z"
+      },
+      "createdAt": "2026-09-18T01:00:00Z"
+    }
+  ]
+}
+```
+
+#### `InstallationSummary`
+| field | type |
+|---|---|
+| `id` | number |
+| `status` | `"NOT_STARTED"` \| `"DISCORD_CONNECTED"` \| `"NITRADO_CONNECTED"` \| `"CONFIGURING"` \| `"READY"` \| `"DEGRADED"` \| `"DISCONNECTED"` \| `"SUSPENDED"` |
+| `plan` | string? |
+| `health` | `"SETTING_UP"` \| `"HEALTHY"` \| `"DEGRADED"` \| `"OFFLINE"` - derived from `status`, not a stored field |
+| `setupProgress` | [`SetupProgress`](#setupprogress)? |
+| `discordConnection` | [`DiscordGuildConnectionSummary`](#discordguildconnectionsummary)? |
+| `dayzServer` | `DayZServerSummary`? - present only once a server is selected (a later phase, not part of this handoff) |
+| `createdAt` | string (RFC3339) |
+| `setupCompletedAt` | string? - stamped once, the first time `status` reaches `READY` |
+| `lastHealthCheckAt` | string? |
+
+#### `SetupProgress`
+| field | type |
+|---|---|
+| `currentStep` | `"DISCORD"` \| `"NITRADO"` \| `"SERVER"` \| `"CHANNELS"` \| `"VALIDATION"` \| `"COMPLETE"` |
+| `discordCompleted` | boolean |
+| `nitradoCompleted` | boolean |
+| `serverSelected` | boolean |
+| `channelsCompleted` | boolean |
+| `validationCompleted` | boolean |
+| `completedAt` | string? - stamped once, the first time `validationCompleted` becomes true |
+
+#### `DiscordGuildConnectionSummary`
+| field | type |
+|---|---|
+| `id` | number |
+| `guildName` | string? |
+| `guildIcon` | string? |
+| `botInstalled` | boolean |
+| `permissionsVerified` | boolean |
+| `connectedAt` | string (RFC3339) |
+
+#### `DiscordGuildSummary` (eligibility candidate result)
+| field | type |
+|---|---|
+| `discordGuildId` | string |
+| `guildName` | string? |
+| `guildIcon` | string? |
+| `eligible` | boolean |
+| `botInstalled` | boolean |
+
+#### `DiscordInstallationVerification` (code name: `DiscordVerificationResult`)
+| field | type |
+|---|---|
+| `installed` | boolean |
+| `guildReachable` | boolean |
+| `verifiedAt` | string (RFC3339) |
+
+#### `DiscordPermissionVerification` (code name: `PermissionVerificationResult`)
+| field | type |
+|---|---|
+| `capabilities` | `{ capability: string, result: "PASS"\|"WARNING"\|"FAIL" }[]` - always exactly the 4 entries `View Channel`, `Send Messages`, `Embed Links`, `Read Message History`, in that order |
+| `overallPass` | boolean |
+
+#### `SubscriptionSummary`
+| field | type |
+|---|---|
+| `plan` | string |
+| `status` | `"TRIAL"` \| `"ACTIVE"` \| `"PAST_DUE"` \| `"CANCELED"` \| `"SUSPENDED"` |
+| `trialEndsAt` | string? |
+| `currentPeriodEnd` | string? |
+
+## Error contract
+
+Every non-2xx response:
+```json
+{ "error": { "code": "FORBIDDEN", "message": "not a member of this organization" } }
+```
+`message` is always a fixed, safe, human string - never raw SQL or a stack trace (section 9).
+
+| Code | HTTP | Meaning |
+|---|---|---|
+| `UNAUTHORIZED` | 401 | Missing/invalid service auth, or acting user not synced |
+| `FORBIDDEN` | 403 | Not a member of the organization, or lacks OWNER/ADMIN |
+| `NOT_FOUND` | 404 | Resource doesn't exist, or doesn't belong to the acting organization |
+| `CONFLICT` | 409 | Slug or guild already claimed |
+| `INVALID_REQUEST` | 400 | Malformed body, invalid ID, or an invalid setup-progress transition |
+| `DISCORD_UNAVAILABLE` | 503 | The bot's Discord session isn't connected |
+| `INSTALLATION_NOT_VERIFIED` | 422 | Action requires Discord to be verified first |
+| `INTERNAL_ERROR` | 500 | Unexpected server-side failure |
+| `RATE_LIMITED` (not in the code list above, still `{"error":{"code","message"}}`-shaped) | 429 | See rate limits below |
+
+## Rate limits
+
+In-memory, per acting Discord user ID, per process:
+
+| Route(s) | Limit |
+|---|---|
+| `#1` user sync | 10 / minute |
+| `#3` organization creation | 5 / hour |
+| `#12`/`#13` Discord verification (shared budget) | 10 / minute |
+
+Ordinary reads (`#2`, `#4`, `#5`, `#7`, `#8`) are never rate limited.
+
+## Tenant-scoping rules
+
+- Every organization-scoped repository lookup takes `organizationID`
+  explicitly and filters by it at the SQL layer (`WHERE organization_id=$1
+  AND id=$2`), never a bare `GetByID(id)`.
+- A non-member of an organization gets `403 FORBIDDEN` for anything scoped
+  to it.
+- A member of organization A who supplies an ID belonging to organization B
+  (installation, guild connection, etc.) gets `404 NOT_FOUND` - the lookup
+  simply finds no matching row, so B's data (or even its existence) is never
+  revealed to A.
+- Connecting a Discord guild already claimed by a different organization is
+  rejected with `409 CONFLICT`, never silently reassigned.
+- See `internal/app/saas_api_integration_test.go` for the full tenant-isolation
+  test suite (organization A cannot view/list/mutate organization B's data
+  under any tested scenario, including ID guessing).
+
+## Verified feature coverage
+
+| Feature | Status |
+|---|---|
+| User sync | READY |
+| Organization creation | READY |
+| Organization listing | READY |
+| Membership authorization | READY |
+| Dashboard summary | READY |
+| Installation creation/read | READY |
+| Setup progress persistence | READY |
+| Discord guild persistence | READY |
+| Bot installation verification | READY |
+| Permission verification | READY |
+
+Nothing is BLOCKED. Out of scope for this handoff (a later task):
+Nitrado credential submission, DayZ server selection, channel-configuration
+writes, billing/checkout, entitlement enforcement.

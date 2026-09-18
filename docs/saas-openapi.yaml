@@ -1,0 +1,563 @@
+openapi: 3.0.3
+info:
+  title: Champion SaaS Customer API
+  description: >
+    Server-to-server HTTP bridge between the Champion website and the
+    authoritative Go SaaS repositories. See docs/SAAS_API.md for the full
+    narrative handoff (auth model, acting-user contract, examples, tenant
+    scoping). This file is a machine-readable companion to that document,
+    not a replacement for it.
+  version: "1.0.0"
+servers:
+  - url: "{baseUrl}"
+    variables:
+      baseUrl:
+        default: https://dayzkillfeedbot-production.up.railway.app
+        description: CHAMPION_SAAS_API_URL
+
+security:
+  - serviceAuth: []
+
+components:
+  securitySchemes:
+    serviceAuth:
+      type: http
+      scheme: bearer
+      description: >
+        Authorization: Bearer <CHAMPION_SAAS_API_SECRET> - the same value as
+        the bot's WEBSITE_API_SECRET. Server-side only; never expose to
+        browser code.
+  parameters:
+    ActingUser:
+      name: X-Champion-Acting-User
+      in: header
+      required: true
+      description: >
+        The Discord user ID of the person acting on this request. Must have
+        been synced at least once via POST /api/saas/users/sync. Not
+        required on that one route.
+      schema:
+        type: string
+    organizationID:
+      name: organizationID
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+    installationID:
+      name: installationID
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+
+  schemas:
+    ApiError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum:
+                - UNAUTHORIZED
+                - FORBIDDEN
+                - NOT_FOUND
+                - CONFLICT
+                - INVALID_REQUEST
+                - DISCORD_UNAVAILABLE
+                - INSTALLATION_NOT_VERIFIED
+                - INTERNAL_ERROR
+                - RATE_LIMITED
+            message:
+              type: string
+
+    UserSummary:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        discordUserId: { type: string }
+        discordUsername: { type: string }
+        discordGlobalName: { type: string }
+        avatar: { type: string }
+
+    UserSyncRequest:
+      type: object
+      required: [discord_user_id, discord_username]
+      properties:
+        discord_user_id: { type: string }
+        discord_username: { type: string }
+        discord_global_name: { type: string }
+        avatar: { type: string }
+
+    OrganizationSummary:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        name: { type: string }
+        slug: { type: string }
+        role: { type: string, enum: [OWNER, ADMIN, MEMBER] }
+
+    CreateOrganizationRequest:
+      type: object
+      required: [name, slug]
+      properties:
+        name: { type: string }
+        slug: { type: string }
+
+    SubscriptionSummary:
+      type: object
+      properties:
+        plan: { type: string }
+        status: { type: string, enum: [TRIAL, ACTIVE, PAST_DUE, CANCELED, SUSPENDED] }
+        trialEndsAt: { type: string, format: date-time, nullable: true }
+        currentPeriodEnd: { type: string, format: date-time, nullable: true }
+
+    SetupProgress:
+      type: object
+      properties:
+        currentStep: { type: string, enum: [DISCORD, NITRADO, SERVER, CHANNELS, VALIDATION, COMPLETE] }
+        discordCompleted: { type: boolean }
+        nitradoCompleted: { type: boolean }
+        serverSelected: { type: boolean }
+        channelsCompleted: { type: boolean }
+        validationCompleted: { type: boolean }
+        completedAt: { type: string, format: date-time, nullable: true }
+
+    SetupProgressPatchRequest:
+      type: object
+      description: Every field optional - true PATCH semantics, only present fields change.
+      properties:
+        currentStep: { type: string, enum: [DISCORD, NITRADO, SERVER, CHANNELS, VALIDATION, COMPLETE] }
+        discordCompleted: { type: boolean }
+        nitradoCompleted: { type: boolean }
+        serverSelected: { type: boolean }
+        channelsCompleted: { type: boolean }
+        validationCompleted: { type: boolean }
+
+    DiscordGuildConnectionSummary:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        guildName: { type: string }
+        guildIcon: { type: string }
+        botInstalled: { type: boolean }
+        permissionsVerified: { type: boolean }
+        connectedAt: { type: string, format: date-time }
+
+    DayZServerSummary:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        displayName: { type: string }
+        game: { type: string }
+        platform: { type: string }
+        status: { type: string }
+
+    InstallationSummary:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        status:
+          type: string
+          enum: [NOT_STARTED, DISCORD_CONNECTED, NITRADO_CONNECTED, CONFIGURING, READY, DEGRADED, DISCONNECTED, SUSPENDED]
+        plan: { type: string }
+        health: { type: string, enum: [SETTING_UP, HEALTHY, DEGRADED, OFFLINE] }
+        setupProgress:
+          allOf: [{ $ref: "#/components/schemas/SetupProgress" }]
+          nullable: true
+        discordConnection:
+          allOf: [{ $ref: "#/components/schemas/DiscordGuildConnectionSummary" }]
+          nullable: true
+        dayzServer:
+          allOf: [{ $ref: "#/components/schemas/DayZServerSummary" }]
+          nullable: true
+        createdAt: { type: string, format: date-time }
+        setupCompletedAt: { type: string, format: date-time, nullable: true }
+        lastHealthCheckAt: { type: string, format: date-time, nullable: true }
+
+    CreateInstallationRequest:
+      type: object
+      required: [discordGuildConnectionId]
+      properties:
+        discordGuildConnectionId: { type: integer, format: int64 }
+
+    DashboardSummary:
+      type: object
+      properties:
+        organization: { $ref: "#/components/schemas/OrganizationSummary" }
+        subscription:
+          allOf: [{ $ref: "#/components/schemas/SubscriptionSummary" }]
+          nullable: true
+        installations:
+          type: array
+          items: { $ref: "#/components/schemas/InstallationSummary" }
+
+    DiscordGuildCandidate:
+      type: object
+      required: [discordGuildId]
+      properties:
+        discordGuildId: { type: string }
+        guildName: { type: string }
+        guildIcon: { type: string }
+        permissions:
+          type: string
+          description: Raw Discord permission bitfield for this user in this guild, as a decimal string.
+
+    EligibleGuildsRequest:
+      type: object
+      properties:
+        guilds:
+          type: array
+          items: { $ref: "#/components/schemas/DiscordGuildCandidate" }
+
+    DiscordGuildSummary:
+      type: object
+      properties:
+        discordGuildId: { type: string }
+        guildName: { type: string }
+        guildIcon: { type: string }
+        eligible: { type: boolean }
+        botInstalled: { type: boolean }
+
+    ConnectGuildRequest:
+      type: object
+      required: [discordGuildId, permissions]
+      properties:
+        discordGuildId: { type: string }
+        guildName: { type: string }
+        guildIcon: { type: string }
+        permissions: { type: string }
+
+    DiscordInstallationVerification:
+      type: object
+      properties:
+        installed: { type: boolean }
+        guildReachable: { type: boolean }
+        verifiedAt: { type: string, format: date-time }
+
+    VerifyPermissionsRequest:
+      type: object
+      required: [channelId]
+      properties:
+        channelId: { type: string }
+
+    CapabilityCheck:
+      type: object
+      properties:
+        capability: { type: string, enum: ["View Channel", "Send Messages", "Embed Links", "Read Message History"] }
+        result: { type: string, enum: [PASS, WARNING, FAIL] }
+
+    DiscordPermissionVerification:
+      type: object
+      properties:
+        capabilities:
+          type: array
+          items: { $ref: "#/components/schemas/CapabilityCheck" }
+        overallPass: { type: boolean }
+
+  responses:
+    Unauthorized:
+      description: Missing/invalid service auth, or acting user not synced.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    Forbidden:
+      description: Not a member of the organization, or lacks OWNER/ADMIN.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    NotFound:
+      description: Resource doesn't exist, or doesn't belong to the acting organization.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    Conflict:
+      description: Slug or guild already claimed by another organization.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    InvalidRequest:
+      description: Malformed body, invalid ID, or an invalid setup-progress transition.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    RateLimited:
+      description: Too many requests for this route/caller.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+
+paths:
+  /api/saas/users/sync:
+    post:
+      summary: Sync safe Discord identity fields (never an OAuth token).
+      security: [{ serviceAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UserSyncRequest" }
+      responses:
+        "200":
+          description: Synced user.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserSummary" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/saas/organizations:
+    get:
+      summary: List organizations the acting user belongs to.
+      parameters: [{ $ref: "#/components/parameters/ActingUser" }]
+      responses:
+        "200":
+          description: Organizations.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/OrganizationSummary" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      summary: Create an organization + OWNER membership atomically.
+      parameters: [{ $ref: "#/components/parameters/ActingUser" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateOrganizationRequest" }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OrganizationSummary" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/saas/organizations/{organizationID}:
+    get:
+      summary: Get one organization (membership required).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+      responses:
+        "200":
+          description: Organization.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OrganizationSummary" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/saas/organizations/{organizationID}/dashboard:
+    get:
+      summary: One-call customer dashboard summary.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+      responses:
+        "200":
+          description: Dashboard summary.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DashboardSummary" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/saas/organizations/{organizationID}/installations:
+    post:
+      summary: Create an installation (OWNER/ADMIN).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateInstallationRequest" }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InstallationSummary" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}:
+    get:
+      summary: Get one installation.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+      responses:
+        "200":
+          description: Installation.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InstallationSummary" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/setup:
+    get:
+      summary: Get resumable setup progress.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+      responses:
+        "200":
+          description: Setup progress.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SetupProgress" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      summary: Update setup progress (OWNER/ADMIN). Step order enforced server-side.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SetupProgressPatchRequest" }
+      responses:
+        "200":
+          description: Updated setup progress.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SetupProgress" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/saas/organizations/{organizationID}/discord/guilds/eligible:
+    post:
+      summary: Re-derive eligibility for OAuth-verified guild candidates.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EligibleGuildsRequest" }
+      responses:
+        "200":
+          description: Eligibility results.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/DiscordGuildSummary" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/saas/organizations/{organizationID}/discord/connection:
+    post:
+      summary: Persist a verified Discord guild selection (OWNER/ADMIN).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ConnectGuildRequest" }
+      responses:
+        "200":
+          description: Persisted connection.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DiscordGuildConnectionSummary" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "503":
+          description: Discord bot session unavailable.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/discord/verify-installation:
+    post:
+      summary: Verify live bot presence in the connected guild; may advance NOT_STARTED to DISCORD_CONNECTED.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+      responses:
+        "200":
+          description: Verification result.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DiscordInstallationVerification" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503":
+          description: Discord bot session unavailable.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/discord/verify-permissions:
+    post:
+      summary: Check live bot channel permissions (View Channel, Send Messages, Embed Links, Read Message History).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/VerifyPermissionsRequest" }
+      responses:
+        "200":
+          description: Permission verification result.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DiscordPermissionVerification" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422":
+          description: Installation not yet Discord-verified.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503":
+          description: Discord bot session unavailable.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }

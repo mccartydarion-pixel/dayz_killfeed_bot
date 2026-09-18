@@ -36,62 +36,77 @@ import (
 
 // App owns the main runtime dependencies.
 type App struct {
-	Config                *config.Config
-	Nitrado               *nitrado.Client
-	Discord               *discord.Client
-	HTTPServer            *server.Server
-	State                 *server.State
-	DB                    *database.DB
-	Guilds                *repository.GuildRepository
-	Players               *repository.PlayerRepository
-	Kills                 *repository.KillRepository
-	Deaths                *repository.DeathRepository
-	Stats                 *repository.StatsRepository
-	Sessions              *repository.SessionRepository
-	Checkpoints           *repository.CheckpointRepository
-	Streaks               *repository.StreakRepository
-	Achievements          *repository.AchievementRepository
-	Events                *repository.EventRepository
-	EventService          *competitiveevents.Service
-	Bounties              *repository.BountyRepository
-	Points                *repository.PointsRepository
-	Seasons               *repository.SeasonRepository
-	SeasonService         *seasons.Service
-	Factions              *repository.FactionRepository
-	Wars                  *repository.PostgresWarRepository
-	FactionStats          *repository.FactionStatsRepository
-	FactionPresentation   *repository.FactionPresentationRepository
-	Anomalies             *repository.AnomalyRepository
-	Announcements         *repository.AnnouncementRepository
-	AnnouncementService   *discord.CompletionAnnouncementService
-	HealthRegistry        *health.Registry
-	Workers               *health.WorkerRegistry
-	WorkerManager         *servers.WorkerManager
-	ADMHealth             *operations.ADMMonitor
-	AdminService          *admin.Service
-	AnalyticsRepository   *repository.AnalyticsRepository
-	WelcomeRepository     *repository.WelcomeRepository
-	ActivityRepository    *repository.ActivityRepository
-	Servers               *repository.ServerRepository
-	CredentialCipher      *security.AESGCM
-	CompletionPublisher   *discord.LiveCompletionPublisher
-	PanelService          *panels.RefreshService
-	LeaderboardScheduler  *discord.LeaderboardScheduler
-	Links                 *repository.LinkRepository
-	LinkService           *linking.LinkVerificationService
-	PresenceManager       *discord.PresenceManager
-	persistQueuesMu       sync.Mutex
-	persistQueues         []*killfeed.PersistenceQueue
-	rotatingFeedsMu       sync.Mutex
-	rotatingFeeds         []*discord.RotatingFeed
-	firstConnectMu        sync.Mutex
-	firstConnectServers   map[int64]bool
-	counterOwnerMu        sync.RWMutex
-	publicCounterServerID int64
-	presenceMu            sync.Mutex
-	presenceTrackers      map[int64]*killfeed.PlayerTracker
-	presenceEngines       map[int64]*killfeed.Engine
-	cancel                context.CancelFunc
+	Config               *config.Config
+	Nitrado              *nitrado.Client
+	Discord              *discord.Client
+	HTTPServer           *server.Server
+	State                *server.State
+	DB                   *database.DB
+	Guilds               *repository.GuildRepository
+	Players              *repository.PlayerRepository
+	Kills                *repository.KillRepository
+	Deaths               *repository.DeathRepository
+	Stats                *repository.StatsRepository
+	Sessions             *repository.SessionRepository
+	Checkpoints          *repository.CheckpointRepository
+	Streaks              *repository.StreakRepository
+	Achievements         *repository.AchievementRepository
+	Events               *repository.EventRepository
+	EventService         *competitiveevents.Service
+	Bounties             *repository.BountyRepository
+	Points               *repository.PointsRepository
+	Seasons              *repository.SeasonRepository
+	SeasonService        *seasons.Service
+	Factions             *repository.FactionRepository
+	Wars                 *repository.PostgresWarRepository
+	FactionStats         *repository.FactionStatsRepository
+	FactionPresentation  *repository.FactionPresentationRepository
+	Anomalies            *repository.AnomalyRepository
+	Announcements        *repository.AnnouncementRepository
+	AnnouncementService  *discord.CompletionAnnouncementService
+	HealthRegistry       *health.Registry
+	Workers              *health.WorkerRegistry
+	WorkerManager        *servers.WorkerManager
+	ADMHealth            *operations.ADMMonitor
+	AdminService         *admin.Service
+	AnalyticsRepository  *repository.AnalyticsRepository
+	WelcomeRepository    *repository.WelcomeRepository
+	ActivityRepository   *repository.ActivityRepository
+	Servers              *repository.ServerRepository
+	CredentialCipher     *security.AESGCM
+	CompletionPublisher  *discord.LiveCompletionPublisher
+	PanelService         *panels.RefreshService
+	LeaderboardScheduler *discord.LeaderboardScheduler
+	Links                *repository.LinkRepository
+	LinkService          *linking.LinkVerificationService
+	PresenceManager      *discord.PresenceManager
+
+	// SaaS customer API dependencies (internal/app/saas_api*.go) - see
+	// docs/SAAS_HTTP_API.md. SaaSServers/SaaSGuildConnections operate on the
+	// same game_servers/guilds tables as Servers/Guilds above, just through
+	// the organization-scoped lookups those don't provide.
+	SaaSUsers                *repository.UserRepository
+	SaaSOrganizations        *repository.OrganizationRepository
+	SaaSGuildConnections     *repository.GuildConnectionRepository
+	SaaSServers              *repository.SaaSServerRepository
+	SaaSInstallations        *repository.InstallationRepository
+	SaaSSubscriptions        *repository.SubscriptionRepository
+	saasDiscordVerifier      discordGuildVerifier
+	saasSyncLimiter          *saasRateLimiter
+	saasOrgCreateLimiter     *saasRateLimiter
+	saasDiscordVerifyLimiter *saasRateLimiter
+	persistQueuesMu          sync.Mutex
+	persistQueues            []*killfeed.PersistenceQueue
+	rotatingFeedsMu          sync.Mutex
+	rotatingFeeds            []*discord.RotatingFeed
+	firstConnectMu           sync.Mutex
+	firstConnectServers      map[int64]bool
+	counterOwnerMu           sync.RWMutex
+	publicCounterServerID    int64
+	presenceMu               sync.Mutex
+	presenceTrackers         map[int64]*killfeed.PlayerTracker
+	presenceEngines          map[int64]*killfeed.Engine
+	cancel                   context.CancelFunc
 }
 
 // registerPresenceTracker exposes a running ServerWorker's live PlayerTracker
@@ -456,6 +471,12 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.ActivityRepository = repository.NewActivityRepository(db.Pool)
 			app.Links = repository.NewLinkRepository(db.Pool)
 			app.LinkService = linking.NewService(app.Links, app.ActivityRepository, app.Servers, app.Links)
+			app.SaaSUsers = repository.NewUserRepository(db.Pool)
+			app.SaaSOrganizations = repository.NewOrganizationRepository(db.Pool)
+			app.SaaSGuildConnections = repository.NewGuildConnectionRepository(db.Pool)
+			app.SaaSServers = repository.NewSaaSServerRepository(db.Pool)
+			app.SaaSInstallations = repository.NewInstallationRepository(db.Pool)
+			app.SaaSSubscriptions = repository.NewSubscriptionRepository(db.Pool)
 			seedCtx, seedCancel := context.WithTimeout(ctx, 10*time.Second)
 			seedErr := app.Achievements.EnsureDefinitions(seedCtx)
 			seedCancel()
@@ -514,6 +535,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	}
 
 	app.registerRuntimeStatusAPI()
+	app.registerSaaSAPI()
 
 	_, cancel := context.WithCancel(ctx)
 	app.cancel = cancel
