@@ -1,8 +1,11 @@
 package discord
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
+	"sync"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/killfeed"
@@ -17,6 +20,90 @@ type KillfeedPublisher struct {
 	guildID  string
 	fallback string // legacy KILLFEED_CHANNEL_ID env fallback
 	feed     *RotatingFeed
+
+	// Installation route model: when routes is set, the KILLFEED route for
+	// the installation owning (routeGuildID, routeServerID) wins over every
+	// legacy source. See RouteChannelID.
+	routes                      RouteResolver
+	routeGuildID, routeServerID int64
+	logMu                       sync.Mutex
+	lastRouteState              string
+	lastRouteErrLog             time.Time
+}
+
+// RouteResolver resolves a feature route key to the Discord channel an
+// installation configured for it (implemented by routing.Resolver).
+type RouteResolver interface {
+	Resolve(ctx context.Context, guildRowID, serverID int64, routeKey string) (channelID string, found bool, err error)
+}
+
+// routeKeyKillfeed mirrors routing.RouteKillfeed (this package cannot import
+// routing without a needless dependency; the value is asserted equal in
+// tests).
+const routeKeyKillfeed = "KILLFEED"
+
+// SetRouting attaches the installation route resolver for the server this
+// publisher belongs to. guildRowID is the internal guilds.id and serverID
+// the game_servers.id of the worker's server - never resolved by guild
+// alone, since one guild can host several servers with different routes.
+func (p *KillfeedPublisher) SetRouting(resolver RouteResolver, guildRowID, serverID int64) {
+	if p == nil {
+		return
+	}
+	p.routes = resolver
+	p.routeGuildID = guildRowID
+	p.routeServerID = serverID
+}
+
+// RouteChannelID returns the KILLFEED route channel for this publisher's
+// server, or "" when there is none (no route configured, no resolver, or
+// the lookup failed) - in which case callers use the legacy channel. It
+// never returns an error: a lookup failure is logged and treated as "no
+// route" so kill processing and persistence are never affected.
+func (p *KillfeedPublisher) RouteChannelID() string {
+	if p == nil || p.routes == nil {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	channelID, found, err := p.routes.Resolve(ctx, p.routeGuildID, p.routeServerID, routeKeyKillfeed)
+	if err != nil {
+		p.logRouteFallback("lookup_error", err)
+		return ""
+	}
+	if !found || channelID == "" {
+		p.logRouteFallback("no_route", nil)
+		return ""
+	}
+	p.logMu.Lock()
+	p.lastRouteState = "route"
+	p.logMu.Unlock()
+	return channelID
+}
+
+// logRouteFallback records that KILLFEED fell back to the legacy channel.
+// Lookups happen per kill, so a "no_route" fallback is logged only when the
+// state changes (not once per kill), and lookup errors at most once a
+// minute. Only internal IDs are logged - never tokens or channel contents.
+func (p *KillfeedPublisher) logRouteFallback(reason string, err error) {
+	p.logMu.Lock()
+	defer p.logMu.Unlock()
+	now := time.Now()
+	if reason == "lookup_error" {
+		if now.Sub(p.lastRouteErrLog) < time.Minute {
+			return
+		}
+		p.lastRouteErrLog = now
+		slog.Warn("component=discord", "event", "channel_route_fallback", "route_key", routeKeyKillfeed,
+			"guild_id", p.routeGuildID, "server_id", p.routeServerID, "reason", reason, "err", err.Error())
+		return
+	}
+	if p.lastRouteState == reason {
+		return
+	}
+	p.lastRouteState = reason
+	slog.Info("component=discord", "event", "channel_route_fallback", "route_key", routeKeyKillfeed,
+		"guild_id", p.routeGuildID, "server_id", p.routeServerID, "reason", reason)
 }
 
 // SetFeed attaches the rotating batch/cycle feed. When set, PublishKill
@@ -44,8 +131,19 @@ func (p *KillfeedPublisher) BindStore(store SetupStore, guildID string) {
 	p.guildID = guildID
 }
 
-// channelID resolves the active killfeed channel: stored setup first, then env.
+// channelID resolves the active killfeed channel: the installation's
+// KILLFEED route first, then the legacy stored setup, then env. Exactly one
+// channel is chosen, so a guild with both a route and a legacy channel
+// publishes only to the route - never twice.
 func (p *KillfeedPublisher) channelID() string {
+	if id := p.RouteChannelID(); id != "" {
+		return id
+	}
+	return p.legacyChannelID()
+}
+
+// legacyChannelID is the pre-route resolution: stored setup first, then env.
+func (p *KillfeedPublisher) legacyChannelID() string {
 	if p.store != nil && p.guildID != "" {
 		if setup, err := p.store.Get(p.guildID); err == nil && setup != nil && setup.KillfeedChannelID != "" {
 			return setup.KillfeedChannelID
