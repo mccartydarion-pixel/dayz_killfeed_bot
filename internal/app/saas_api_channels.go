@@ -277,6 +277,11 @@ func (a *App) handleSaveChannelSettings(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Setup-completion task, section 13: a killfeed channel CHANGE on an
+	// already-READY installation invalidates its permission verification -
+	// computed before mutating current, so it reflects the real old value.
+	criticalChange := loaded.Status == repository.InstallationReady && current.KillfeedChannelID != "" && current.KillfeedChannelID != req.KillfeedChannelID
+
 	// Section 12: mutate only the channel fields, preserving
 	// timezone/distance unit/display toggles exactly as they were.
 	current.KillfeedChannelID = req.KillfeedChannelID
@@ -296,7 +301,7 @@ func (a *App) handleSaveChannelSettings(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	a.completeChannelsStep(ctx, organizationID, installationID, loaded.Status)
+	a.completeChannelsStep(ctx, organizationID, installationID, loaded.Status, criticalChange)
 
 	slog.Info("component=saas_api", "event", "saas_channels_saved", "installation_id", installationID,
 		"has_leaderboard", req.LeaderboardChannelID != "", "has_player_status", req.PlayerStatusChannelID != "", "has_admin_log", req.AdminLogChannelID != "")
@@ -314,17 +319,38 @@ func (a *App) handleSaveChannelSettings(w http.ResponseWriter, r *http.Request) 
 // CONFIGURING (sections 14/15) - shared by the manual save and the one-click
 // auto-setup paths, since a successfully saved channel configuration means
 // the same thing regardless of which path produced it. Never sets
-// validationCompleted - Step 6 (verify-permissions) remains the only place
-// that does (section 14/18).
-func (a *App) completeChannelsStep(ctx context.Context, organizationID, installationID int64, currentStatus string) {
+// validationCompleted true itself - only POST .../setup/complete's live,
+// multi-channel permission check does that (saas_api_setup_completion.go).
+//
+// criticalChange marks a save that actually changed the KILLFEED route's
+// channel on an installation that was already READY (setup-completion task,
+// section 13): stale permission-verification results for the OLD channel
+// can never be trusted for a different one, so this forces validation back
+// to incomplete and the installation back to CONFIGURING - never silently
+// keeps an installation READY against a channel it was never actually
+// verified against. A non-critical save (first-time configuration, or
+// re-saving the same KILLFEED channel) leaves READY/validationCompleted
+// alone entirely.
+func (a *App) completeChannelsStep(ctx context.Context, organizationID, installationID int64, currentStatus string, criticalChange bool) {
 	if err := a.advanceSetupProgress(ctx, organizationID, installationID, false, func(p *repository.InstallationSetupProgress) {
 		p.ChannelsCompleted = true
 		p.CurrentStep = "VALIDATION"
+		if criticalChange {
+			p.ValidationCompleted = false
+		}
 	}); err != nil {
 		slog.Warn("component=saas_api", "msg", "advance setup progress after channel save failed", "err", err.Error())
 	}
-	if currentStatus == repository.InstallationDiscordConnected || currentStatus == repository.InstallationNitradoConnected {
-		if err := a.SaaSInstallations.UpdateStatus(ctx, organizationID, installationID, repository.InstallationConfiguring); err != nil {
+
+	nextStatus := ""
+	switch {
+	case criticalChange && currentStatus == repository.InstallationReady:
+		nextStatus = repository.InstallationConfiguring
+	case currentStatus == repository.InstallationDiscordConnected, currentStatus == repository.InstallationNitradoConnected:
+		nextStatus = repository.InstallationConfiguring
+	}
+	if nextStatus != "" {
+		if err := a.SaaSInstallations.UpdateStatus(ctx, organizationID, installationID, nextStatus); err != nil {
 			slog.Warn("component=saas_api", "msg", "update installation status failed", "err", err.Error())
 		}
 	}

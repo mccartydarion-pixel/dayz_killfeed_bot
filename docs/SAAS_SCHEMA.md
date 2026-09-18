@@ -110,6 +110,16 @@ DayZ server (`game_servers.id`).
 
 Repository: `InstallationRepository` (`saas_installations_repository.go`) - `Create` (also creates its `installation_setup_progress`/`installation_settings` rows, atomically), `GetScoped`, `ListByOrganization`, `UpdateStatus`, `RecordHealthCheck`.
 
+`status` only reaches `READY` (and `validation_completed` above only
+becomes `true`) via `POST .../installations/{id}/setup/complete`
+(`internal/app/saas_api_setup_completion.go`, `docs/SAAS_API.md`'s "Setup
+completion, customer hub, and revalidation" section) - never a client claim.
+That same route also defines the handful of "critical" configuration
+changes (the `KILLFEED` channel route, the selected DayZ server) that
+downgrade an already-`READY` installation back to `CONFIGURING`/
+`validation_completed=false` without erasing `completed_at`/
+`setup_completed_at`, which are still only ever stamped the first time.
+
 ### `installation_setup_progress`
 Resumable onboarding state, 1:1 with `installations`. Only durable,
 non-derivable progress is stored - nothing the UI can recompute from
@@ -200,9 +210,9 @@ compatibility backfill migration 0027 performs from `installation_settings`.
 
 Repository: `internal/repository/saas_channel_routes_repository.go`
 (`ChannelRouteRepository`) - `ListForInstallation`, `UpsertRoute`,
-`DeleteRoute`, `ListDistinctChannelIDs` (Step 6 permission-verification
-readiness - several routes sharing one channel only need to be verified
-once).
+`DeleteRoute`, `ListDistinctChannelIDs` (used by `POST .../setup/complete`'s
+multi-channel permission check - `internal/app/saas_api_setup_completion.go`
+- so several routes sharing one channel are verified exactly once).
 
 ### `subscriptions`
 Billing-ready state only - **no billing provider is integrated yet**.

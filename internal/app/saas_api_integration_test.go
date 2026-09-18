@@ -1806,3 +1806,481 @@ func TestCreateDiscordChannelNormalizesName(t *testing.T) {
 		t.Fatalf("expected the name to normalize to %q, got %q", "kill-feed", created.Name)
 	}
 }
+
+// --- setup finalization + customer hub --------------------------------------
+
+func boolPtr(b bool) *bool { return &b }
+
+func finalizeSetup(t *testing.T, a *App, orgID, installationID int64, actingDiscordID string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := withPathValues(withActingUser(saasRequest(http.MethodPost, "/x", nil), actingDiscordID),
+		map[string]string{"organizationID": strconv.FormatInt(orgID, 10), "installationID": strconv.FormatInt(installationID, 10)})
+	rr := httptest.NewRecorder()
+	a.handleFinalizeSetup(rr, req)
+	return rr
+}
+
+func getHub(t *testing.T, a *App, orgID, installationID int64, actingDiscordID string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := withPathValues(withActingUser(saasRequest(http.MethodGet, "/x", nil), actingDiscordID),
+		map[string]string{"organizationID": strconv.FormatInt(orgID, 10), "installationID": strconv.FormatInt(installationID, 10)})
+	rr := httptest.NewRecorder()
+	a.handleGetInstallationHub(rr, req)
+	return rr
+}
+
+func getInstallationSettings(t *testing.T, a *App, orgID, installationID int64, actingDiscordID string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := withPathValues(withActingUser(saasRequest(http.MethodGet, "/x", nil), actingDiscordID),
+		map[string]string{"organizationID": strconv.FormatInt(orgID, 10), "installationID": strconv.FormatInt(installationID, 10)})
+	rr := httptest.NewRecorder()
+	a.handleGetInstallationSettings(rr, req)
+	return rr
+}
+
+func saveInstallationSettings(t *testing.T, a *App, orgID, installationID int64, actingDiscordID string, settings InstallationGeneralSettings) *httptest.ResponseRecorder {
+	t.Helper()
+	req := withPathValues(withActingUser(saasRequest(http.MethodPut, "/x", settings), actingDiscordID),
+		map[string]string{"organizationID": strconv.FormatInt(orgID, 10), "installationID": strconv.FormatInt(installationID, 10)})
+	rr := httptest.NewRecorder()
+	a.handleSaveInstallationSettings(rr, req)
+	return rr
+}
+
+// buildFinalizableFixture drives the full onboarding chain (Discord verify +
+// discordCompleted, Nitrado connect, DayZ server select, KILLFEED route with
+// a fully-passing live permission check) so finalize tests can call
+// finalizeSetup and expect success without repeating this setup in every
+// test. killfeedChannelID is returned so tests can flip its permission
+// result to exercise the "cannot finalize before permissions pass" case.
+func buildFinalizableFixture(t *testing.T, a *App, verifier *fakeDiscordVerifier) (fixture installationFixture, killfeedChannelID string) {
+	t.Helper()
+	fixture = buildInstallationFixture(t, a, verifier)
+
+	verifyReq := withPathValues(withActingUser(saasRequest(http.MethodPost, "/x", nil), fixture.OwnerDiscordID),
+		map[string]string{"organizationID": strconv.FormatInt(fixture.OrgID, 10), "installationID": strconv.FormatInt(fixture.InstallationID, 10)})
+	verifyRR := httptest.NewRecorder()
+	a.handleVerifyInstallation(verifyRR, verifyReq)
+	if verifyRR.Code != http.StatusOK {
+		t.Fatalf("verify installation: expected 200, got %d: %s", verifyRR.Code, verifyRR.Body.String())
+	}
+	// discordCompleted is the website wizard's own explicit "Discord step
+	// done" signal (PATCH .../setup, section 8) - verify-installation only
+	// confirms live bot presence, it never sets this flag itself.
+	patchReq := withPathValues(withActingUser(saasRequest(http.MethodPatch, "/x", setupProgressPatchRequest{DiscordCompleted: boolPtr(true), CurrentStep: strPtr("NITRADO")}), fixture.OwnerDiscordID),
+		map[string]string{"organizationID": strconv.FormatInt(fixture.OrgID, 10), "installationID": strconv.FormatInt(fixture.InstallationID, 10)})
+	patchRR := httptest.NewRecorder()
+	a.handleUpdateSetupProgress(patchRR, patchReq)
+	if patchRR.Code != http.StatusOK {
+		t.Fatalf("patch discordCompleted: expected 200, got %d: %s", patchRR.Code, patchRR.Body.String())
+	}
+
+	withFakeNitradoServer(t, a, http.StatusOK, psServiceJSON)
+	connectNitrado(t, a, fixture.OrgID, fixture.OwnerDiscordID)
+
+	if rr := selectDayZServer(t, a, fixture.OrgID, fixture.InstallationID, 111111, fixture.OwnerDiscordID); rr.Code != http.StatusOK {
+		t.Fatalf("select dayz server: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	killfeedChannelID = "c-killfeed"
+	seedGuildChannels(verifier, fixture.DiscordGuildID, fakeGuildChannel{ID: killfeedChannelID, Name: "killfeed", Type: discordgo.ChannelTypeGuildText})
+	if rr := saveChannelRoutes(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID, map[string]string{"KILLFEED": killfeedChannelID}); rr.Code != http.StatusOK {
+		t.Fatalf("save channel routes: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Full live permission pass: channel found, nothing missing.
+	verifier.channelFound[fixture.DiscordGuildID+"|"+killfeedChannelID] = true
+
+	return fixture, killfeedChannelID
+}
+
+// TestSetupProgressSurvivesReloadAtExactStep covers cases A/B: partial setup
+// (Discord connected, Nitrado not yet) persists and GET .../setup returns
+// exactly the saved currentStep on a fresh read - never restarting at step 1.
+func TestSetupProgressSurvivesReloadAtExactStep(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixture := buildInstallationFixture(t, a, verifier)
+
+	patch := setupProgressPatchRequest{DiscordCompleted: boolPtr(true), CurrentStep: strPtr("NITRADO")}
+	patchReq := withPathValues(withActingUser(saasRequest(http.MethodPatch, "/x", patch), fixture.OwnerDiscordID),
+		map[string]string{"organizationID": strconv.FormatInt(fixture.OrgID, 10), "installationID": strconv.FormatInt(fixture.InstallationID, 10)})
+	patchRR := httptest.NewRecorder()
+	a.handleUpdateSetupProgress(patchRR, patchReq)
+	if patchRR.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", patchRR.Code, patchRR.Body.String())
+	}
+
+	// A fresh GET (simulating a reload) must return exactly what was saved.
+	getReq := withPathValues(withActingUser(saasRequest(http.MethodGet, "/x", nil), fixture.OwnerDiscordID),
+		map[string]string{"organizationID": strconv.FormatInt(fixture.OrgID, 10), "installationID": strconv.FormatInt(fixture.InstallationID, 10)})
+	getRR := httptest.NewRecorder()
+	a.handleGetSetupProgress(getRR, getReq)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", getRR.Code, getRR.Body.String())
+	}
+	got := decodeBody[SetupProgressSummary](t, getRR)
+	if !got.DiscordCompleted || got.NitradoCompleted || got.CurrentStep != "NITRADO" {
+		t.Fatalf("expected discordCompleted=true nitradoCompleted=false currentStep=NITRADO exactly as saved, got %+v", got)
+	}
+}
+
+// TestFinalizeSetupRequiresEachPrerequisite covers cases C/D/E/F: finalize
+// must fail cleanly at each missing prerequisite, in the persisted-state
+// order the backend actually checks them, never trusting a client claim.
+func TestFinalizeSetupRequiresEachPrerequisite(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixture := buildInstallationFixture(t, a, verifier)
+
+	// C: before Discord is verified/completed at all.
+	rr := finalizeSetup(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID)
+	if rr.Code == http.StatusOK {
+		t.Fatal("expected finalize to fail before Discord verification")
+	}
+	assertErrorCode(t, rr, codeInstallationNotVerified)
+
+	verifyReq := withPathValues(withActingUser(saasRequest(http.MethodPost, "/x", nil), fixture.OwnerDiscordID),
+		map[string]string{"organizationID": strconv.FormatInt(fixture.OrgID, 10), "installationID": strconv.FormatInt(fixture.InstallationID, 10)})
+	a.handleVerifyInstallation(httptest.NewRecorder(), verifyReq)
+	patchReq := withPathValues(withActingUser(saasRequest(http.MethodPatch, "/x", setupProgressPatchRequest{DiscordCompleted: boolPtr(true), CurrentStep: strPtr("NITRADO")}), fixture.OwnerDiscordID),
+		map[string]string{"organizationID": strconv.FormatInt(fixture.OrgID, 10), "installationID": strconv.FormatInt(fixture.InstallationID, 10)})
+	a.handleUpdateSetupProgress(httptest.NewRecorder(), patchReq)
+
+	// D: Discord done, Nitrado not connected yet.
+	rr = finalizeSetup(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID)
+	if rr.Code == http.StatusOK {
+		t.Fatal("expected finalize to fail before Nitrado is connected")
+	}
+	assertErrorCode(t, rr, codeInstallationNotVerified)
+
+	withFakeNitradoServer(t, a, http.StatusOK, psServiceJSON)
+	connectNitrado(t, a, fixture.OrgID, fixture.OwnerDiscordID)
+
+	// E: Nitrado connected, no DayZ server selected yet.
+	rr = finalizeSetup(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID)
+	if rr.Code == http.StatusOK {
+		t.Fatal("expected finalize to fail before a DayZ server is selected")
+	}
+	assertErrorCode(t, rr, codeInstallationNotVerified)
+
+	if rr := selectDayZServer(t, a, fixture.OrgID, fixture.InstallationID, 111111, fixture.OwnerDiscordID); rr.Code != http.StatusOK {
+		t.Fatalf("select dayz server: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// F: server selected, no KILLFEED route configured yet.
+	rr = finalizeSetup(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID)
+	if rr.Code == http.StatusOK {
+		t.Fatal("expected finalize to fail without a KILLFEED route")
+	}
+	assertErrorCode(t, rr, codeInstallationNotVerified)
+
+	inst, err := a.SaaSInstallations.GetScoped(context.Background(), fixture.OrgID, fixture.InstallationID)
+	if err != nil || inst == nil || inst.Status == repository.InstallationReady {
+		t.Fatalf("expected the installation to never reach READY through any of these failed attempts, got %+v err=%v", inst, err)
+	}
+}
+
+// TestFinalizeSetupRequiresPassingPermissions is case G: even with every
+// other prerequisite met, a configured channel missing a blocking Discord
+// permission (View Channel/Send Messages) must prevent finalization.
+func TestFinalizeSetupRequiresPassingPermissions(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixture, killfeedChannelID := buildFinalizableFixture(t, a, verifier)
+
+	// Override the full pass buildFinalizableFixture set up: this channel is
+	// found, but missing a BLOCKING capability.
+	verifier.channelFound[fixture.DiscordGuildID+"|"+killfeedChannelID] = true
+	verifier.missing[fixture.DiscordGuildID+"|"+killfeedChannelID] = []string{"Send Messages"}
+
+	rr := finalizeSetup(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID)
+	if rr.Code == http.StatusOK {
+		t.Fatal("expected finalize to fail when a configured channel is missing a blocking permission")
+	}
+	assertErrorCode(t, rr, codeInstallationNotVerified)
+
+	inst, err := a.SaaSInstallations.GetScoped(context.Background(), fixture.OrgID, fixture.InstallationID)
+	if err != nil || inst == nil || inst.Status == repository.InstallationReady {
+		t.Fatalf("expected the installation to remain non-READY, got %+v err=%v", inst, err)
+	}
+}
+
+// TestFinalizeSetupNonBlockingWarningsStillPass covers section 4: a missing
+// WARNING-only capability (Embed Links/Read Message History) must NOT block
+// finalization - only View Channel/Send Messages do.
+func TestFinalizeSetupNonBlockingWarningsStillPass(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixture, killfeedChannelID := buildFinalizableFixture(t, a, verifier)
+	verifier.missing[fixture.DiscordGuildID+"|"+killfeedChannelID] = []string{"Embed Links", "Read Message History"}
+
+	rr := finalizeSetup(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 despite non-blocking warnings, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestFinalizeSetupSucceeds covers cases H/I/J/K: a fully-configured,
+// passing-permissions installation finalizes into READY, currentStep
+// COMPLETE, validationCompleted true, with both completion timestamps
+// stamped exactly once.
+func TestFinalizeSetupSucceeds(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixture, _ := buildFinalizableFixture(t, a, verifier)
+
+	rr := finalizeSetup(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	resp := decodeBody[FinalizeSetupResponse](t, rr)
+	if !resp.Completed || resp.Installation.Status != repository.InstallationReady {
+		t.Fatalf("expected completed=true status=READY, got %+v", resp)
+	}
+
+	progress, err := a.SaaSInstallations.GetSetupProgress(context.Background(), fixture.OrgID, fixture.InstallationID)
+	if err != nil || progress == nil || !progress.ValidationCompleted || progress.CurrentStep != "COMPLETE" || progress.CompletedAt == nil {
+		t.Fatalf("expected validationCompleted=true currentStep=COMPLETE completedAt stamped, got %+v err=%v", progress, err)
+	}
+	inst, err := a.SaaSInstallations.GetScoped(context.Background(), fixture.OrgID, fixture.InstallationID)
+	if err != nil || inst == nil || inst.Status != repository.InstallationReady || inst.SetupCompletedAt == nil {
+		t.Fatalf("expected status=READY setupCompletedAt stamped, got %+v err=%v", inst, err)
+	}
+	firstCompletedAt := *progress.CompletedAt
+	firstSetupCompletedAt := *inst.SetupCompletedAt
+
+	// K/L: a repeated finalize call is idempotent - success, never resets
+	// either timestamp.
+	secondRR := finalizeSetup(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID)
+	if secondRR.Code != http.StatusOK {
+		t.Fatalf("expected 200 on repeat finalize, got %d: %s", secondRR.Code, secondRR.Body.String())
+	}
+	secondResp := decodeBody[FinalizeSetupResponse](t, secondRR)
+	if !secondResp.Completed {
+		t.Fatal("expected completed=true on repeat finalize")
+	}
+	progress2, err := a.SaaSInstallations.GetSetupProgress(context.Background(), fixture.OrgID, fixture.InstallationID)
+	if err != nil || progress2 == nil || progress2.CompletedAt == nil || !progress2.CompletedAt.Equal(firstCompletedAt) {
+		t.Fatalf("expected completedAt unchanged across repeat finalize, first=%v second=%+v err=%v", firstCompletedAt, progress2, err)
+	}
+	inst2, err := a.SaaSInstallations.GetScoped(context.Background(), fixture.OrgID, fixture.InstallationID)
+	if err != nil || inst2 == nil || inst2.SetupCompletedAt == nil || !inst2.SetupCompletedAt.Equal(firstSetupCompletedAt) {
+		t.Fatalf("expected setupCompletedAt unchanged across repeat finalize, first=%v second=%+v err=%v", firstSetupCompletedAt, inst2, err)
+	}
+}
+
+// TestFinalizeSetupCrossTenantRejected covers tenant isolation for the
+// finalize endpoint.
+func TestFinalizeSetupCrossTenantRejected(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixtureA, _ := buildFinalizableFixture(t, a, verifier)
+	fixtureB := buildInstallationFixture(t, a, verifier)
+
+	rr := finalizeSetup(t, a, fixtureB.OrgID, fixtureA.InstallationID, fixtureB.OwnerDiscordID)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for cross-tenant finalize, got %d: %s", rr.Code, rr.Body.String())
+	}
+	inst, err := a.SaaSInstallations.GetScoped(context.Background(), fixtureA.OrgID, fixtureA.InstallationID)
+	if err != nil || inst == nil || inst.Status == repository.InstallationReady {
+		t.Fatalf("expected A's installation untouched by B's cross-tenant attempt, got %+v err=%v", inst, err)
+	}
+}
+
+// TestHubSummaryReturnsSavedState is case M: the hub reflects the saved
+// Discord connection, DayZ server, channel routes, and general settings.
+func TestHubSummaryReturnsSavedState(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixture, killfeedChannelID := buildFinalizableFixture(t, a, verifier)
+	if rr := finalizeSetup(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID); rr.Code != http.StatusOK {
+		t.Fatalf("finalize: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if rr := saveInstallationSettings(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID, InstallationGeneralSettings{
+		Timezone: "America/New_York", DistanceUnit: "FEET", OnlineDisplayEnabled: true, LeaderboardEnabled: false,
+	}); rr.Code != http.StatusOK {
+		t.Fatalf("save settings: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	rr := getHub(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	hub := decodeBody[HubSummary](t, rr)
+	if hub.Organization.ID != fixture.OrgID {
+		t.Fatalf("expected the organization summary, got %+v", hub.Organization)
+	}
+	if hub.Installation.Status != repository.InstallationReady {
+		t.Fatalf("expected installation.status=READY, got %+v", hub.Installation)
+	}
+	if hub.Discord == nil || !hub.Discord.BotInstalled {
+		t.Fatalf("expected discord.botInstalled=true, got %+v", hub.Discord)
+	}
+	if hub.DayZServer == nil || hub.DayZServer.Platform != "PLAYSTATION" {
+		t.Fatalf("expected the selected PLAYSTATION dayzServer, got %+v", hub.DayZServer)
+	}
+	if hub.ChannelRoutes["KILLFEED"].ChannelID != killfeedChannelID {
+		t.Fatalf("expected channelRoutes.KILLFEED=%q, got %+v", killfeedChannelID, hub.ChannelRoutes)
+	}
+	if hub.Settings.Timezone != "America/New_York" || hub.Settings.DistanceUnit != "FEET" || !hub.Settings.OnlineDisplayEnabled || hub.Settings.LeaderboardEnabled {
+		t.Fatalf("expected the saved general settings, got %+v", hub.Settings)
+	}
+}
+
+// TestHubSummaryNoSecrets is case N: marshal the hub response and assert it
+// never contains anything credential-shaped, using the same forbidden-token
+// list TestNoSensitiveFieldsInAPIResponses uses.
+func TestHubSummaryNoSecrets(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixture, _ := buildFinalizableFixture(t, a, verifier)
+	withFakeNitradoServer(t, a, http.StatusOK, psServiceJSON)
+
+	rr := getHub(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	body := strings.ToLower(rr.Body.String())
+	forbidden := []string{
+		"ciphertext", "credential_nonce", "authtag", "auth_tag", "bottoken", "bot_token",
+		"oauthtoken", "oauth_token", "websiteapisecret", "website_api_secret", "database_url", "databaseurl",
+		"\"token\"", "nitrado_token", "nitradotoken", "fake-nitrado-token",
+	}
+	for _, bad := range forbidden {
+		if strings.Contains(body, strings.ToLower(bad)) {
+			t.Fatalf("hub response contained forbidden field %q: %s", bad, rr.Body.String())
+		}
+	}
+}
+
+// TestHubCrossTenantRejected is case Q: organization B can never read
+// organization A's hub.
+func TestHubCrossTenantRejected(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixtureA, _ := buildFinalizableFixture(t, a, verifier)
+	fixtureB := buildInstallationFixture(t, a, verifier)
+
+	rr := getHub(t, a, fixtureB.OrgID, fixtureA.InstallationID, fixtureB.OwnerDiscordID)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for cross-tenant hub access, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestInstallationSettingsPersistAndAreCustomerEditable covers the settings
+// GET/PUT contract (section 10/11).
+func TestInstallationSettingsPersistAndAreCustomerEditable(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixture := buildInstallationFixture(t, a, verifier)
+
+	saveRR := saveInstallationSettings(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID, InstallationGeneralSettings{
+		Timezone: "Europe/Berlin", DistanceUnit: "meters", OnlineDisplayEnabled: false, LeaderboardEnabled: true,
+	})
+	if saveRR.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", saveRR.Code, saveRR.Body.String())
+	}
+	saved := decodeBody[InstallationGeneralSettings](t, saveRR)
+	if saved.Timezone != "Europe/Berlin" || saved.DistanceUnit != "METERS" || saved.OnlineDisplayEnabled || !saved.LeaderboardEnabled {
+		t.Fatalf("expected the saved settings (distanceUnit normalized to uppercase), got %+v", saved)
+	}
+
+	getRR := getInstallationSettings(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", getRR.Code, getRR.Body.String())
+	}
+	if got := decodeBody[InstallationGeneralSettings](t, getRR); got != saved {
+		t.Fatalf("expected GET to restore exactly what was saved, got %+v want %+v", got, saved)
+	}
+}
+
+// TestInstallationSettingsRejectsInvalidDistanceUnit covers input
+// validation for the new settings endpoint.
+func TestInstallationSettingsRejectsInvalidDistanceUnit(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixture := buildInstallationFixture(t, a, verifier)
+
+	rr := saveInstallationSettings(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID, InstallationGeneralSettings{
+		Timezone: "UTC", DistanceUnit: "LIGHTYEARS",
+	})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for an invalid distanceUnit, got %d: %s", rr.Code, rr.Body.String())
+	}
+	assertErrorCode(t, rr, codeInvalidRequest)
+}
+
+// TestNonCriticalSettingsChangeKeepsReady is case O: changing timezone/
+// distance unit/display toggles on a READY installation must never
+// invalidate its validation or move it out of READY.
+func TestNonCriticalSettingsChangeKeepsReady(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixture, _ := buildFinalizableFixture(t, a, verifier)
+	if rr := finalizeSetup(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID); rr.Code != http.StatusOK {
+		t.Fatalf("finalize: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	if rr := saveInstallationSettings(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID, InstallationGeneralSettings{
+		Timezone: "Asia/Tokyo", DistanceUnit: "FEET", OnlineDisplayEnabled: true, LeaderboardEnabled: true,
+	}); rr.Code != http.StatusOK {
+		t.Fatalf("save settings: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	inst, err := a.SaaSInstallations.GetScoped(context.Background(), fixture.OrgID, fixture.InstallationID)
+	if err != nil || inst == nil || inst.Status != repository.InstallationReady {
+		t.Fatalf("expected status to remain READY after a non-critical settings change, got %+v err=%v", inst, err)
+	}
+	progress, err := a.SaaSInstallations.GetSetupProgress(context.Background(), fixture.OrgID, fixture.InstallationID)
+	if err != nil || progress == nil || !progress.ValidationCompleted {
+		t.Fatalf("expected validationCompleted to remain true, got %+v err=%v", progress, err)
+	}
+}
+
+// TestCriticalKillfeedRouteChangeInvalidatesValidation is case P: changing
+// the KILLFEED route's channel on a READY installation must downgrade it
+// back to CONFIGURING/VALIDATION - a stale permission-verification result
+// for the OLD channel can never be trusted for a different one.
+func TestCriticalKillfeedRouteChangeInvalidatesValidation(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixture, _ := buildFinalizableFixture(t, a, verifier)
+	if rr := finalizeSetup(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID); rr.Code != http.StatusOK {
+		t.Fatalf("finalize: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	seedGuildChannels(verifier, fixture.DiscordGuildID, fakeGuildChannel{ID: "c-new-killfeed", Name: "new-killfeed", Type: discordgo.ChannelTypeGuildText})
+	if rr := saveChannelRoutes(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID, map[string]string{"KILLFEED": "c-new-killfeed"}); rr.Code != http.StatusOK {
+		t.Fatalf("save channel routes: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	inst, err := a.SaaSInstallations.GetScoped(context.Background(), fixture.OrgID, fixture.InstallationID)
+	if err != nil || inst == nil || inst.Status != repository.InstallationConfiguring {
+		t.Fatalf("expected status=CONFIGURING after a critical KILLFEED route change, got %+v err=%v", inst, err)
+	}
+	progress, err := a.SaaSInstallations.GetSetupProgress(context.Background(), fixture.OrgID, fixture.InstallationID)
+	if err != nil || progress == nil || progress.ValidationCompleted || progress.CurrentStep != "VALIDATION" {
+		t.Fatalf("expected validationCompleted=false currentStep=VALIDATION, got %+v err=%v", progress, err)
+	}
+
+	// Re-finalizing against the NEW channel (also passing) must succeed
+	// again - this is a re-validation, not a one-way lockout.
+	verifier.channelFound[fixture.DiscordGuildID+"|c-new-killfeed"] = true
+	if rr := finalizeSetup(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID); rr.Code != http.StatusOK {
+		t.Fatalf("re-finalize: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestCriticalDayZServerChangeInvalidatesValidation covers the DayZ-server
+// half of section 13's critical-change list: selecting a genuinely
+// different server on a READY installation must also downgrade it.
+func TestCriticalDayZServerChangeInvalidatesValidation(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	withFakeNitradoServer(t, a, http.StatusOK, mixedServicesJSON)
+	fixture, _ := buildFinalizableFixture(t, a, verifier)
+	if rr := finalizeSetup(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID); rr.Code != http.StatusOK {
+		t.Fatalf("finalize: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Select a DIFFERENT server (222222, Xbox) on the same, already-READY installation.
+	if rr := selectDayZServer(t, a, fixture.OrgID, fixture.InstallationID, 222222, fixture.OwnerDiscordID); rr.Code != http.StatusOK {
+		t.Fatalf("select different dayz server: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	inst, err := a.SaaSInstallations.GetScoped(context.Background(), fixture.OrgID, fixture.InstallationID)
+	if err != nil || inst == nil || inst.Status != repository.InstallationConfiguring {
+		t.Fatalf("expected status=CONFIGURING after a critical DayZ server change, got %+v err=%v", inst, err)
+	}
+	progress, err := a.SaaSInstallations.GetSetupProgress(context.Background(), fixture.OrgID, fixture.InstallationID)
+	if err != nil || progress == nil || progress.ValidationCompleted {
+		t.Fatalf("expected validationCompleted=false, got %+v err=%v", progress, err)
+	}
+}

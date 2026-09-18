@@ -689,6 +689,148 @@ Response `201` ([`DiscordChannelSummary`](#discordchannelsummary)):
 { "id": "333", "name": "pvp-feed", "type": "TEXT", "position": 0, "canSend": true }
 ```
 
+## Setup completion, customer hub, and revalidation
+
+**The Go backend is the sole authority on whether setup is complete** - the
+website may request finalization, but every prerequisite below is
+independently re-derived from persisted backend state (plus one live,
+multi-channel Discord permission check). A client-supplied
+`{"discordCompleted": true}`-style claim is never trusted for this.
+
+### 25. `POST .../installations/{installationID}/setup/complete`
+Finalizes onboarding. OWNER/ADMIN only.
+
+Checks, in order, all from persisted backend state:
+1. Installation belongs to the organization (`404 NOT_FOUND` otherwise).
+2. **Idempotent short-circuit**: if the installation is already `READY`,
+   returns success immediately - none of the checks below re-run, and
+   nothing is re-stamped (section 7).
+3. Discord connection exists and Champion is actually installed in the
+   guild (live check, same as `#12`).
+4. Nitrado is connected for the organization.
+5. A DayZ server is selected.
+6. A `KILLFEED` channel route is configured (the new 16-route model - only
+   `KILLFEED` is globally required; no other route blocks finalization
+   merely because it exists in the default blueprint).
+7. The persisted setup-progress flags (`discordCompleted`, `nitradoCompleted`,
+   `serverSelected`, `channelsCompleted`) are all true.
+8. **Multi-channel permission check**: every *unique* Discord channel ID
+   across all configured routes (`ChannelRouteRepository.
+   ListDistinctChannelIDs` - a channel shared by several routes is verified
+   exactly once) must pass the same blocking-capability check `#13`
+   (verify-permissions) uses - **View Channel** and **Send Messages** block;
+   **Embed Links** and **Read Message History** remain warnings and never
+   block finalization.
+
+Any failed check returns `422 INSTALLATION_NOT_VERIFIED` with a message
+naming the specific unmet prerequisite - never a raw Discord error, never a
+5xx for an ordinary "not ready yet" state.
+
+On success: `installation_setup_progress.validation_completed=true`,
+`current_step='COMPLETE'`, `completed_at=NOW()` (only if it was still
+`NULL`); `installations.status='READY'`, `setup_completed_at=NOW()` (only
+if it was still `NULL`) - both via the existing, already-idempotent
+`UpdateSetupProgress`/`UpdateStatus` repository methods, which have carried
+this "stamp once" behavior since the setup-progress table was first
+introduced.
+
+Response `200` ([`FinalizeSetupResponse`](#finalizesetupresponse)):
+```json
+{
+  "completed": true,
+  "installation": { "id": 4, "status": "READY", "health": "HEALTHY", "...": "..." }
+}
+```
+
+### 26. `GET .../installations/{installationID}/hub`
+Everything the customer landing page needs in one call. Any member may
+read. Reuses existing DTOs/repositories throughout - never a duplicate
+installation/organization model.
+
+Response `200` ([`HubSummary`](#hubsummary)):
+```json
+{
+  "organization": { "id": 1, "name": "...", "slug": "...", "role": "OWNER" },
+  "subscription": { "plan": "TRIAL", "status": "TRIAL", "trialEndsAt": "..." },
+  "installation": { "id": 4, "status": "READY", "health": "HEALTHY", "...": "..." },
+  "discord": { "guildName": "...", "guildIcon": "...", "botInstalled": true },
+  "dayzServer": { "id": 7, "serviceId": 111111, "displayName": "...", "platform": "PLAYSTATION", "status": "ONLINE" },
+  "channelRoutes": { "KILLFEED": { "channelId": "111", "channelName": "killfeed", "managedByChampion": true } },
+  "settings": { "timezone": "UTC", "distanceUnit": "METERS", "onlineDisplayEnabled": true, "leaderboardEnabled": true }
+}
+```
+`discord`/`dayzServer`/`subscription` are best-effort and omitted (never a
+hard failure) if that piece isn't configured yet - a not-yet-READY
+installation can still open its hub without a 404, though the website is
+expected to route a non-READY installation back to onboarding (see
+"Completed installation detection" below), not rely on the hub to enforce
+that. Never returns a Nitrado token, encrypted credential, Discord bot
+token, `WEBSITE_API_SECRET`, or database detail.
+
+### 27. `GET .../installations/{installationID}/settings`
+### 28. `PUT .../installations/{installationID}/settings`
+The customer-editable general settings surface (sections 10/11) -
+deliberately separate from the channel-specific endpoints (`#19`/`#20`/
+`#23`/`#24`), never overloaded onto them. Any member may `GET`; OWNER/ADMIN
+only for `PUT`.
+
+Request/response `200` ([`InstallationGeneralSettings`](#installationgeneralsettings)):
+```json
+{ "timezone": "America/New_York", "distanceUnit": "METERS", "onlineDisplayEnabled": true, "leaderboardEnabled": true }
+```
+`timezone` is required (non-empty); `distanceUnit` must be `METERS` or
+`FEET` (case-insensitive on input, normalized to uppercase) -
+`400 INVALID_REQUEST` otherwise. This column exists but isn't yet wired
+into killfeed embed rendering (which computes distance in meters natively -
+`internal/presentation/story_engine.go`), so it's forward-looking, not yet
+runtime-authoritative.
+
+### Completed installation detection
+An installation is complete when, and only when, **`status == "READY"`**
+(`#7`/`#8`'s `InstallationSummary.status`, or `#26`'s
+`installation.status`) - this already implies persisted setup completion
+is valid, since `status` only ever reaches `READY` via `#25`'s checks
+above. The website should never infer completion from UI history or from
+having seen a completed step earlier in the same session - always check
+the current `status`, freshly read.
+
+### Reconfigure flow (never a reset)
+A `READY` installation should never automatically return to the onboarding
+wizard. "Reconfigure" is simply opening the existing, already read-only-safe
+GET endpoints for an individual section - Discord (`#12`), DayZ server
+(`#17`'s validate, or re-select via `#16`), Channels (`#19`/`#23`), General
+Settings (`#27`) - none of which touch `validationCompleted`, `completedAt`,
+or `status` merely by being read, or (for non-critical writes) by being
+saved. There is no separate "enter reconfigure mode" endpoint or flag -
+GET-then-optionally-PUT on the relevant section is the entire model.
+
+### Revalidation rules (critical vs. non-critical changes)
+A `READY` installation's already-passed permission verification is only
+ever trusted for the **exact channels it was verified against**. Changing
+one of those channels means the old verification result no longer applies,
+so these specific changes **downgrade** an already-`READY` installation
+back to `validationCompleted=false`, `currentStep=VALIDATION`,
+`status=CONFIGURING` (never all the way back to step 1, and never erasing
+`completedAt`, which is only ever stamped the first time - see `#25`):
+
+| Change | Endpoint | Critical? |
+|---|---|---|
+| The `KILLFEED` route's channel changes | `#20` (legacy) or `#24` (routes) | **Yes** |
+| `#21` (auto-setup, `force=true`) resolves a different `KILLFEED` channel than before | `#21` | **Yes** |
+| A different DayZ server is selected | `#16` | **Yes** |
+| Any **other** route's channel changes (e.g. `BOUNTY`, `ADMIN_LOGS`) | `#24` | No |
+| Timezone, distance unit, online-display/leaderboard toggles | `#28` | No |
+| Re-saving the SAME `KILLFEED` channel/server (no actual change) | any of the above | No (no-op) |
+
+Only `KILLFEED` and the selected DayZ server are wired to this downgrade
+today, matching this task's explicit critical-change examples and its own
+test requirements. A **Discord guild** change has no corresponding
+operation in this API at all - an installation's `discord_guild_connection_id`
+is never repointed after creation (the duplicate-installation reuse flow,
+`#16`'s "Same-guild reuse", creates or reuses a *different* installation
+instead) - so there is nothing to invalidate for that case; it's called out
+here for completeness, not left silently unhandled.
+
 ## Request/response DTOs
 
 None of these ever include a Nitrado ciphertext/IV/auth tag, a Discord
@@ -913,6 +1055,38 @@ expansion below.
 | `category` | [`ChannelCategorySummary`](#channelcategorysummary)? - present only when `configured=true` |
 | `routes` | object? - map of `route_key` -> [`ChannelRouteInfo`](#channelrouteinfo), all sixteen present when `configured=true` |
 
+#### `FinalizeSetupResponse` (response of `#25`)
+| field | type |
+|---|---|
+| `completed` | boolean |
+| `installation` | [`InstallationSummary`](#installationsummary) - the reused, existing DTO, never a duplicate model |
+
+#### `HubDiscordSummary` (embedded in `HubSummary.discord`)
+| field | type |
+|---|---|
+| `guildName` | string? |
+| `guildIcon` | string? |
+| `botInstalled` | boolean |
+
+#### `HubSummary` (response of `#26`)
+| field | type |
+|---|---|
+| `organization` | [`OrganizationSummary`](#organizationsummary) |
+| `subscription` | [`SubscriptionSummary`](#subscriptionsummary)? |
+| `installation` | [`InstallationSummary`](#installationsummary) |
+| `discord` | [`HubDiscordSummary`](#hubdiscordsummary)? |
+| `dayzServer` | [`DayZServerSummary`](#dayzserversummary)? |
+| `channelRoutes` | object - map of `route_key` -> [`ChannelRouteInfo`](#channelrouteinfo) |
+| `settings` | [`InstallationGeneralSettings`](#installationgeneralsettings) |
+
+#### `InstallationGeneralSettings` (request/response of `#27`/`#28`, embedded in `HubSummary.settings`)
+| field | type |
+|---|---|
+| `timezone` | string - required on `PUT` |
+| `distanceUnit` | `"METERS"` \| `"FEET"` |
+| `onlineDisplayEnabled` | boolean |
+| `leaderboardEnabled` | boolean |
+
 ## Error contract
 
 Every non-2xx response:
@@ -929,7 +1103,7 @@ Every non-2xx response:
 | `CONFLICT` | 409 | Slug or guild already claimed |
 | `INVALID_REQUEST` | 400 | Malformed body, invalid ID, or an invalid setup-progress transition |
 | `DISCORD_UNAVAILABLE` | 503 | The bot's Discord session isn't connected |
-| `INSTALLATION_NOT_VERIFIED` | 422 | Action requires Discord to be verified first |
+| `INSTALLATION_NOT_VERIFIED` | 422 | Action requires Discord to be verified first, or (`#25`) a setup prerequisite isn't met yet - the message names which one |
 | `NITRADO_UNAVAILABLE` | 503 | Nitrado rejected the token, or is unreachable |
 | `INTERNAL_ERROR` | 500 | Unexpected server-side failure |
 | `RATE_LIMITED` (not in the code list above, still `{"error":{"code","message"}}`-shaped) | 429 | See rate limits below |
@@ -946,9 +1120,10 @@ In-memory, per acting Discord user ID, per process:
 | `#14` Nitrado connect | 10 / hour |
 
 Ordinary reads (`#2`, `#4`, `#5`, `#7`, `#8`, `#15`, `#17`, `#18`, `#19`,
-`#23`) are never rate limited. `#20`/`#21`/`#22`/`#24` (channel writes)
-aren't separately rate limited either, matching `#16`'s precedent - all are
-already gated to OWNER/ADMIN and organization-scoped.
+`#23`, `#26`, `#27`) are never rate limited. `#20`/`#21`/`#22`/`#24`/`#25`/
+`#28` (writes) aren't separately rate limited either, matching `#16`'s
+precedent - all are already gated to OWNER/ADMIN (except `#25`, gated the
+same way but effectively a no-op once already `READY`) and organization-scoped.
 
 ## Tenant-scoping rules
 
@@ -1019,15 +1194,20 @@ PlayStation server works unmodified for a connected Xbox server.
 | Full 16-route channel configuration (Customize mode) | READY |
 | One-click channel auto-setup (complete 16-route blueprint) | READY |
 | Optional custom channel creation | READY |
+| Backend-authoritative setup finalization (`#25`) | READY |
+| Multi-channel permission verification at finalize time | READY |
+| Customer hub summary (`#26`) | READY |
+| Customer-editable general settings (`#27`/`#28`) | READY |
+| Critical-change revalidation (KILLFEED route, DayZ server) | READY |
 
 Nothing is BLOCKED. Out of scope for this handoff (a later task):
-billing/checkout, entitlement enforcement, Step 6 permission-verification
-website UI (the backend route `#13` already exists from an earlier task,
-but does not yet verify every unique configured route channel - see
-"Channel routing"'s `ListDistinctChannelIDs` note), and every runtime
-publisher marked "Not implemented" in the channel routing table above
-(PvE feed, hit feed, bounty board/tracking channels, heatmaps, economy,
-casino, shop, connections log, build feed, admin alerts) - one-click setup
-still creates/reserves those channels, but nothing posts to them yet.
-DayZ PC and non-console Nitrado services are intentionally unsupported, not
-missing - see the platform contract note above.
+billing/checkout, entitlement enforcement, a dedicated Step 6
+verify-permissions website UI showing per-channel PASS/WARNING/FAIL (`#13`
+itself still only checks one channel per call - `#25`'s finalize check is
+what actually aggregates every unique route channel today, not `#13`), and
+every runtime publisher marked "Not implemented" in the channel routing
+table above (PvE feed, hit feed, bounty board/tracking channels, heatmaps,
+economy, casino, shop, connections log, build feed, admin alerts) -
+one-click setup still creates/reserves those channels, but nothing posts to
+them yet. DayZ PC and non-console Nitrado services are intentionally
+unsupported, not missing - see the platform contract note above.

@@ -416,11 +416,29 @@ func (a *App) handleSelectDayZServer(w http.ResponseWriter, r *http.Request) {
 		"requested_installation_id", installationID, "resolved_installation_id", resolvedInstallationID,
 		"game_server_id", server.ID, "reused_existing", reused)
 
+	// Setup-completion task, section 13: selecting a genuinely DIFFERENT
+	// DayZ server on an already-READY installation is a critical config
+	// change - permission verification was never run against this server's
+	// context, so it can't stay READY on the strength of stale results.
+	// Only applies to the direct (non-reused) path: a reused installation's
+	// game_server_id never actually changes by definition of the reuse
+	// match, so there's nothing to invalidate there.
+	criticalServerChange := resolvedInstallationID == installationID && loaded.Status == repository.InstallationReady &&
+		loaded.GameServerID != nil && *loaded.GameServerID != server.ID
+
 	if err := a.advanceSetupProgress(ctx, organizationID, resolvedInstallationID, false, func(p *repository.InstallationSetupProgress) {
 		p.ServerSelected = true
 		p.CurrentStep = "CHANNELS"
+		if criticalServerChange {
+			p.ValidationCompleted = false
+		}
 	}); err != nil {
 		slog.Warn("component=saas_api", "msg", "advance setup progress after server selection failed", "err", err.Error())
+	}
+	if criticalServerChange {
+		if err := a.SaaSInstallations.UpdateStatus(ctx, organizationID, resolvedInstallationID, repository.InstallationConfiguring); err != nil {
+			slog.Warn("component=saas_api", "msg", "update installation status failed", "err", err.Error())
+		}
 	}
 
 	if reused && resolvedInstallationID != installationID {
