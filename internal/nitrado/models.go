@@ -60,6 +60,12 @@ type ServiceDetails struct {
 	Description string `json:"description"`
 	Access      string `json:"access"`
 	Game        string `json:"game"`
+	// FolderShort is a stable backend directory identifier (e.g. "dayzps"
+	// for a PlayStation DayZ service - confirmed live) - unlike Name/
+	// ServerName/Hostname, it is not a customer-editable display string,
+	// so ClassifyDayZPlatform (platform.go) uses it as a corroborating
+	// platform signal alongside Game.
+	FolderShort string `json:"folder_short"`
 }
 
 // ServicesEnvelope is the documented top-level object returned by GET /services.

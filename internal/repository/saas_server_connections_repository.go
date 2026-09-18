@@ -42,6 +42,38 @@ RETURNING id, guild_id, provider, provider_service_id, game, platform, COALESCE(
 	return &s, nil
 }
 
+// UpsertForInstallation creates or updates a game_servers row for a
+// customer-selected DayZ console service (section 7 of the console DayZ
+// backend task): guildID is the installation's own resolved guilds.id (via
+// its discord_guild_connection - see loadInstallationGuildSnowflake in
+// internal/app/saas_api_discord.go), so the same unique constraint
+// (guild_id, provider, provider_service_id) ServerRepository.UpsertGameServer
+// already uses applies here too - this never creates a second row for a
+// service the bot's own /setup flow already connected. organization_id and
+// platform are always set explicitly here, unlike the guild-scoped
+// UpsertGameServer (which predates the SaaS platform column's purpose).
+func (r *SaaSServerRepository) UpsertForInstallation(ctx context.Context, organizationID, guildID int64, s GameServer) (*GameServer, error) {
+	const q = `
+INSERT INTO game_servers(guild_id, provider, provider_service_id, game, platform, display_name, status, active, organization_id)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
+ON CONFLICT(guild_id,provider,provider_service_id) DO UPDATE SET
+    game=EXCLUDED.game,
+    platform=EXCLUDED.platform,
+    display_name=EXCLUDED.display_name,
+    status=EXCLUDED.status,
+    active=EXCLUDED.active,
+    organization_id=EXCLUDED.organization_id,
+    updated_at=NOW()
+RETURNING id, guild_id, provider, provider_service_id, game, platform, COALESCE(display_name,''), status, active, created_at, updated_at, organization_id`
+	var out GameServer
+	err := r.pool.QueryRow(ctx, q, guildID, s.Provider, s.ProviderServiceID, s.Game, s.Platform, s.DisplayName, s.Status, s.Active, organizationID).
+		Scan(&out.ID, &out.GuildID, &out.Provider, &out.ProviderServiceID, &out.Game, &out.Platform, &out.DisplayName, &out.Status, &out.Active, &out.CreatedAt, &out.UpdatedAt, &out.OrganizationID)
+	if err != nil {
+		return nil, fmt.Errorf("upsert server for installation: %w", err)
+	}
+	return &out, nil
+}
+
 // ListByOrganization returns every game_servers row claimed by organizationID.
 func (r *SaaSServerRepository) ListByOrganization(ctx context.Context, organizationID int64) ([]GameServer, error) {
 	rows, err := r.pool.Query(ctx, `SELECT id, guild_id, provider, provider_service_id, game, platform, COALESCE(display_name,''), status, active, created_at, updated_at, organization_id FROM game_servers WHERE organization_id=$1 ORDER BY id`, organizationID)

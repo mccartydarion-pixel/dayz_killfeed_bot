@@ -261,6 +261,62 @@ components:
           items: { $ref: "#/components/schemas/CapabilityCheck" }
         overallPass: { type: boolean }
 
+    NitradoConnectRequest:
+      type: object
+      required: [token]
+      properties:
+        token:
+          type: string
+          description: Customer Nitrado account token. Never echoed back, logged, or stored in plaintext.
+
+    NitradoConnectResponse:
+      type: object
+      properties:
+        connected: { type: boolean }
+        servicesFound:
+          type: integer
+          description: Count of supported (PlayStation + Xbox) DayZ console services only, not the account's raw total service count.
+
+    ConsolePlatform:
+      type: string
+      enum: [PLAYSTATION, XBOX]
+      description: Stable, persistence-safe platform identifier. The website renders its own friendly label ("PlayStation"/"Xbox") - never persist or match against a display label.
+
+    NitradoServiceSummary:
+      type: object
+      properties:
+        serviceId: { type: integer, format: int64 }
+        name: { type: string }
+        game: { type: string, description: 'Always "DayZ" - only DayZ services are ever returned.' }
+        platform: { $ref: "#/components/schemas/ConsolePlatform" }
+        status: { type: string, enum: [ONLINE, OFFLINE] }
+
+    SelectDayZServerRequest:
+      type: object
+      required: [serviceId]
+      properties:
+        serviceId: { type: integer, format: int64 }
+
+    DayZServerSelection:
+      type: object
+      properties:
+        id: { type: integer, format: int64, description: The game_servers row ID. }
+        serviceId: { type: integer, format: int64 }
+        displayName: { type: string }
+        game: { type: string }
+        platform: { $ref: "#/components/schemas/ConsolePlatform" }
+        status: { type: string, enum: [ONLINE, OFFLINE] }
+
+    DayZServerValidation:
+      type: object
+      properties:
+        reachable: { type: boolean }
+        supported: { type: boolean }
+        platform:
+          allOf: [{ $ref: "#/components/schemas/ConsolePlatform" }]
+          nullable: true
+        message: { type: string }
+
   responses:
     Unauthorized:
       description: Missing/invalid service auth, or acting user not synced.
@@ -289,6 +345,11 @@ components:
           schema: { $ref: "#/components/schemas/ApiError" }
     RateLimited:
       description: Too many requests for this route/caller.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    NitradoUnavailable:
+      description: Nitrado rejected the request, or is unreachable.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/ApiError" }
@@ -566,3 +627,103 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ApiError" }
+
+  /api/saas/organizations/{organizationID}/nitrado/connect:
+    post:
+      summary: Validate a Nitrado account token live and store its encrypted credential envelope (OWNER/ADMIN).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NitradoConnectRequest" }
+      responses:
+        "200":
+          description: Connected.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NitradoConnectResponse" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/NitradoUnavailable" }
+
+  /api/saas/organizations/{organizationID}/nitrado/services:
+    get:
+      summary: Discover the connected account's supported DayZ console services (PlayStation + Xbox only).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+      responses:
+        "200":
+          description: Supported services.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/NitradoServiceSummary" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: No Nitrado connection exists yet for this organization.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "503": { $ref: "#/components/responses/NitradoUnavailable" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/dayz-server:
+    post:
+      summary: Select a discovered service as the installation's DayZ server (OWNER/ADMIN). Re-verifies live before persisting.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SelectDayZServerRequest" }
+      responses:
+        "200":
+          description: Selected.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DayZServerSelection" }
+        "400":
+          description: Invalid request, or the service is not a supported DayZ console platform.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: Installation not found, or the service isn't on the connected Nitrado account.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "503": { $ref: "#/components/responses/NitradoUnavailable" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/dayz-server/validate:
+    post:
+      summary: Safe, read-only live check that the selected DayZ server is still reachable and supported.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+      responses:
+        "200":
+          description: Validation result (reachable/supported reflect reality even when false - this is a status check, not an error).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DayZServerValidation" }
+        "400":
+          description: No DayZ server has been selected for this installation yet.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }

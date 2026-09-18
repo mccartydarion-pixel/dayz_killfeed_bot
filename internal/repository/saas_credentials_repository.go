@@ -89,3 +89,44 @@ func (r *CredentialRepository) DeleteForOrganization(ctx context.Context, organi
 	}
 	return nil
 }
+
+// UpsertForOrganizationOnly stores an encrypted Nitrado credential envelope
+// for organizationID directly, with no specific guild attached (guild_id
+// stays NULL - see migration 0025_saas_nitrado_console). This backs the
+// organization-scoped "connect Nitrado" flow
+// (POST /api/saas/organizations/{organizationID}/nitrado/connect), which
+// has no guild/installation in its path: a Nitrado account belongs to the
+// organization, not to any one Discord server or installation. One
+// credential per organization (UNIQUE(organization_id)); calling this again
+// for the same organization replaces it (token rotation).
+func (r *CredentialRepository) UpsertForOrganizationOnly(ctx context.Context, e CredentialEnvelope) error {
+	const q = `
+INSERT INTO nitrado_connections(organization_id, credential_ciphertext, credential_nonce, credential_key_version, status)
+VALUES($1,$2,$3,$4,$5)
+ON CONFLICT(organization_id) DO UPDATE SET
+    credential_ciphertext=EXCLUDED.credential_ciphertext,
+    credential_nonce=EXCLUDED.credential_nonce,
+    credential_key_version=EXCLUDED.credential_key_version,
+    status=EXCLUDED.status,
+    updated_at=NOW()`
+	if _, err := r.pool.Exec(ctx, q, e.OrganizationID, e.Ciphertext, e.Nonce, e.KeyVersion, e.Status); err != nil {
+		return fmt.Errorf("upsert organization credential envelope: %w", err)
+	}
+	return nil
+}
+
+// GetForOrganizationOnly returns organizationID's Nitrado credential
+// envelope (the organization-scoped connection - see
+// UpsertForOrganizationOnly), or nil if none exists.
+func (r *CredentialRepository) GetForOrganizationOnly(ctx context.Context, organizationID int64) (*CredentialEnvelope, error) {
+	const q = `SELECT id, organization_id, credential_ciphertext, credential_nonce, credential_key_version, status FROM nitrado_connections WHERE organization_id=$1`
+	var e CredentialEnvelope
+	err := r.pool.QueryRow(ctx, q, organizationID).Scan(&e.ID, &e.OrganizationID, &e.Ciphertext, &e.Nonce, &e.KeyVersion, &e.Status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get organization credential envelope: %w", err)
+	}
+	return &e, nil
+}

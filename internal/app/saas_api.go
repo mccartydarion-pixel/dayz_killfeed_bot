@@ -53,6 +53,10 @@ const (
 	codeDiscordUnavailable      = "DISCORD_UNAVAILABLE"
 	codeInstallationNotVerified = "INSTALLATION_NOT_VERIFIED"
 	codeInternalError           = "INTERNAL_ERROR"
+	// codeNitradoUnavailable mirrors codeDiscordUnavailable's exact pattern
+	// for the same reason: a live external dependency (here, the Nitrado
+	// API) is unreachable or rejected the request, not a client mistake.
+	codeNitradoUnavailable = "NITRADO_UNAVAILABLE"
 )
 
 // httpStatusForCode maps an error code to its HTTP status, so every handler
@@ -66,6 +70,7 @@ var httpStatusForCode = map[string]int{
 	codeDiscordUnavailable:      http.StatusServiceUnavailable,
 	codeInstallationNotVerified: http.StatusUnprocessableEntity,
 	codeInternalError:           http.StatusInternalServerError,
+	codeNitradoUnavailable:      http.StatusServiceUnavailable,
 }
 
 // writeSaaSJSON writes a successful JSON response.
@@ -296,6 +301,9 @@ func (a *App) registerSaaSAPI() {
 	if a.saasDiscordVerifyLimiter == nil {
 		a.saasDiscordVerifyLimiter = newSaaSRateLimiter(time.Minute, 10)
 	}
+	if a.saasNitradoConnectLimiter == nil {
+		a.saasNitradoConnectLimiter = newSaaSRateLimiter(time.Hour, 10)
+	}
 	// Only wire from a.Discord when it's genuinely non-nil: assigning a nil
 	// *discord.Client into the discordGuildVerifier interface field would
 	// produce a non-nil interface wrapping a nil pointer (the classic Go
@@ -321,4 +329,9 @@ func (a *App) registerSaaSAPI() {
 	a.HTTPServer.Handle("POST /api/saas/organizations/{organizationID}/discord/connection", a.handleConnectDiscordGuild)
 	a.HTTPServer.Handle("POST /api/saas/organizations/{organizationID}/installations/{installationID}/discord/verify-installation", a.handleVerifyInstallation)
 	a.HTTPServer.Handle("POST /api/saas/organizations/{organizationID}/installations/{installationID}/discord/verify-permissions", a.handleVerifyPermissions)
+
+	a.HTTPServer.Handle("POST /api/saas/organizations/{organizationID}/nitrado/connect", a.handleNitradoConnect)
+	a.HTTPServer.Handle("GET /api/saas/organizations/{organizationID}/nitrado/services", a.handleNitradoServices)
+	a.HTTPServer.Handle("POST /api/saas/organizations/{organizationID}/installations/{installationID}/dayz-server", a.handleSelectDayZServer)
+	a.HTTPServer.Handle("POST /api/saas/organizations/{organizationID}/installations/{installationID}/dayz-server/validate", a.handleValidateDayZServer)
 }
