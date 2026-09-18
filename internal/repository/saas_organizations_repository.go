@@ -74,6 +74,24 @@ func (r *OrganizationRepository) Create(ctx context.Context, name, slug string, 
 	return &out, nil
 }
 
+// GetByID returns one organization by ID, or nil if it doesn't exist. This
+// is intentionally NOT tenant-scoped by itself (there is no "tenant" above
+// an organization) - callers must authorize the caller against
+// organizationID (e.g. via VerifyMembership) before calling this, exactly
+// like every GetScoped elsewhere in this package does internally.
+func (r *OrganizationRepository) GetByID(ctx context.Context, organizationID int64) (*Organization, error) {
+	const q = `SELECT id, name, slug, owner_user_id, created_at, updated_at FROM organizations WHERE id=$1`
+	var o Organization
+	err := r.pool.QueryRow(ctx, q, organizationID).Scan(&o.ID, &o.Name, &o.Slug, &o.OwnerUserID, &o.CreatedAt, &o.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get organization: %w", err)
+	}
+	return &o, nil
+}
+
 // ListForUser returns every organization userID is a member of.
 func (r *OrganizationRepository) ListForUser(ctx context.Context, userID int64) ([]Organization, error) {
 	rows, err := r.pool.Query(ctx, `

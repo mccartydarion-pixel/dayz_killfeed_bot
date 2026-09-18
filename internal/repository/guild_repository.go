@@ -152,6 +152,37 @@ FROM guilds WHERE discord_guild_id=$1`
 	return &s, rowID, nil
 }
 
+// GetGuildByID returns the stored setup for a guild by its internal row ID
+// (the FK every other table, including discord_guild_connections, actually
+// stores), or nil if it doesn't exist. Complements GetGuild, which looks up
+// by the Discord snowflake instead.
+func (r *GuildRepository) GetGuildByID(ctx context.Context, id int64) (*GuildRecord, error) {
+	const q = `
+SELECT discord_guild_id, welcome_enabled, COALESCE(category_id,''), COALESCE(welcome_channel_id,''), COALESCE(server_status_channel_id,''),
+       COALESCE(killfeed_channel_id,''), COALESCE(online_players_channel_id,''),
+       COALESCE(leaderboards_channel_id,''), COALESCE(player_stats_channel_id,''), COALESCE(adm_monitor_channel_id,''), COALESCE(link_panel_channel_id,''),
+	COALESCE(death_channel_id,''), COALESCE(verified_role_id,''),
+	COALESCE(server_status_message_id,''), COALESCE(online_players_message_id,''), COALESCE(leaderboard_message_id,''), COALESCE(player_stats_info_message_id,''), COALESCE(link_panel_message_id,''),
+	COALESCE(nitrado_service_id,''), COALESCE(selected_public_server_id,0), setup_complete
+FROM guilds WHERE id=$1`
+
+	var s GuildRecord
+	err := r.pool.QueryRow(ctx, q, id).Scan(
+		&s.DiscordGuildID, &s.WelcomeEnabled, &s.CategoryID, &s.WelcomeChannelID, &s.ServerStatusChannelID, &s.KillfeedChannelID,
+		&s.OnlinePlayersChannelID, &s.LeaderboardsChannelID, &s.PlayerStatsChannelID, &s.ADMMonitorChannelID, &s.LinkPanelChannelID,
+		&s.DeathChannelID, &s.VerifiedRoleID,
+		&s.ServerStatusMessageID, &s.OnlinePlayersMessageID, &s.LeaderboardMessageID, &s.PlayerStatsInfoMessageID, &s.LinkPanelMessageID,
+		&s.NitradoServiceID, &s.SelectedPublicServerID, &s.SetupComplete,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get guild by id: %w", err)
+	}
+	return &s, nil
+}
+
 func (r *GuildRepository) SetSelectedPublicServer(ctx context.Context, discordGuildID string, serverID int64) error {
 	_, err := r.pool.Exec(ctx, `UPDATE guilds SET selected_public_server_id=$2, updated_at=NOW() WHERE discord_guild_id=$1`, discordGuildID, serverID)
 	if err != nil {
