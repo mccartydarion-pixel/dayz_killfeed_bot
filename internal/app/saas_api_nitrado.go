@@ -286,6 +286,19 @@ type DayZServerSelection struct {
 	Status      string `json:"status"`
 }
 
+// SelectDayZServerResponse is POST .../dayz-server's actual response
+// envelope. installationId is the RESOLVED installation - it can differ
+// from the installationID in the request path when this exact Discord
+// guild + DayZ server pair was already owned by a different, existing
+// installation (reusedInstallation=true): the existing installation is
+// authoritative, never duplicated or overwritten. The website should
+// switch to installationId for any further setup calls.
+type SelectDayZServerResponse struct {
+	Server             DayZServerSelection `json:"server"`
+	InstallationID     int64               `json:"installationId"`
+	ReusedInstallation bool                `json:"reusedInstallation"`
+}
+
 // handleSelectDayZServer is POST .../installations/{installationID}/dayz-server
 // (section 7). Only OWNER/ADMIN may select a server. Re-verifies the
 // service against the live Nitrado account (never trusts a client-supplied
@@ -383,27 +396,92 @@ func (a *App) handleSelectDayZServer(w http.ResponseWriter, r *http.Request) {
 		writeSaaSError(w, codeInternalError, "could not persist DayZ server")
 		return
 	}
-	if err := a.SaaSInstallations.SetGameServer(ctx, organizationID, installationID, server.ID); err != nil {
-		slog.Warn("component=saas_api", "msg", "associate dayz server with installation failed", "err", err.Error())
+	// UpsertForInstallation never overwrites a DIFFERENT organization's
+	// existing claim (see its own doc comment) - a mismatch here means this
+	// service's game_servers row already belongs to someone else. Never
+	// silently proceed with it (section 6/10).
+	if server.OrganizationID != nil && *server.OrganizationID != organizationID {
+		writeSaaSError(w, codeConflict, "this DayZ server is already connected to a different organization")
+		return
+	}
+
+	resolvedInstallationID, reused, err := a.resolveDayZServerInstallation(ctx, organizationID, installationID, loaded.DiscordGuildConnectionID, server.ID)
+	if err != nil {
+		slog.Warn("component=saas_api", "msg", "resolve dayz server installation failed", "err", err.Error())
 		writeSaaSError(w, codeInternalError, "could not associate DayZ server with installation")
 		return
 	}
 
-	if err := a.advanceSetupProgress(ctx, organizationID, installationID, false, func(p *repository.InstallationSetupProgress) {
+	slog.Info("component=saas_api", "event", "saas_dayz_installation_resolution",
+		"requested_installation_id", installationID, "resolved_installation_id", resolvedInstallationID,
+		"game_server_id", server.ID, "reused_existing", reused)
+
+	if err := a.advanceSetupProgress(ctx, organizationID, resolvedInstallationID, false, func(p *repository.InstallationSetupProgress) {
 		p.ServerSelected = true
 		p.CurrentStep = "CHANNELS"
 	}); err != nil {
 		slog.Warn("component=saas_api", "msg", "advance setup progress after server selection failed", "err", err.Error())
 	}
 
-	writeSaaSJSON(w, http.StatusOK, DayZServerSelection{
-		ID:          server.ID,
-		ServiceID:   req.ServiceID,
-		DisplayName: server.DisplayName,
-		Game:        server.Game,
-		Platform:    server.Platform,
-		Status:      server.Status,
+	if reused && resolvedInstallationID != installationID {
+		// Best-effort cleanup of the redundant, still-empty installation
+		// the customer's request originally targeted (section 7) - never
+		// fails the response, and never touches an installation that has
+		// any real progress/settings (DeleteIfEmpty's own query is the
+		// safety check, not a judgment call made here).
+		if deleted, delErr := a.SaaSInstallations.DeleteIfEmpty(ctx, organizationID, installationID); delErr != nil {
+			slog.Warn("component=saas_api", "msg", "delete redundant empty installation failed", "err", delErr.Error())
+		} else if deleted {
+			slog.Info("component=saas_api", "event", "saas_dayz_installation_resolution", "action", "deleted_redundant_installation", "installation_id", installationID)
+		}
+	}
+
+	writeSaaSJSON(w, http.StatusOK, SelectDayZServerResponse{
+		Server: DayZServerSelection{
+			ID:          server.ID,
+			ServiceID:   req.ServiceID,
+			DisplayName: server.DisplayName,
+			Game:        server.Game,
+			Platform:    server.Platform,
+			Status:      server.Status,
+		},
+		InstallationID:     resolvedInstallationID,
+		ReusedInstallation: reused,
 	})
+}
+
+// resolveDayZServerInstallation implements the reuse flow (sections 1-4):
+// if gameServerID is already associated with a DIFFERENT installation under
+// the same guild connection, that installation is authoritative - return it
+// instead of colliding with UNIQUE(discord_guild_connection_id,
+// game_server_id). Otherwise, associate gameServerID with
+// requestedInstallationID as normal. A genuine race (SetGameServer still
+// hits ErrGameServerAlreadyAssigned despite the pre-check) is handled by
+// re-resolving rather than surfacing a 500.
+func (a *App) resolveDayZServerInstallation(ctx context.Context, organizationID, requestedInstallationID, discordGuildConnectionID, gameServerID int64) (resolvedInstallationID int64, reused bool, err error) {
+	existing, err := a.SaaSInstallations.GetByGuildConnectionAndGameServer(ctx, organizationID, discordGuildConnectionID, gameServerID)
+	if err != nil {
+		return 0, false, err
+	}
+	if existing != nil && existing.ID != requestedInstallationID {
+		return existing.ID, true, nil
+	}
+
+	if err := a.SaaSInstallations.SetGameServer(ctx, organizationID, requestedInstallationID, gameServerID); err != nil {
+		if errors.Is(err, repository.ErrGameServerAlreadyAssigned) {
+			// Lost a race: some other request claimed this pair between our
+			// check above and this write. Re-resolve to whoever won it.
+			again, findErr := a.SaaSInstallations.GetByGuildConnectionAndGameServer(ctx, organizationID, discordGuildConnectionID, gameServerID)
+			if findErr != nil {
+				return 0, false, findErr
+			}
+			if again != nil {
+				return again.ID, again.ID != requestedInstallationID, nil
+			}
+		}
+		return 0, false, err
+	}
+	return requestedInstallationID, false, nil
 }
 
 // --- validate selected DayZ server (section 12) -----------------------------

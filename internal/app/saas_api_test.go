@@ -212,6 +212,11 @@ func TestNoSensitiveFieldsInAPIResponses(t *testing.T) {
 		NitradoServiceSummary{ServiceID: 123456, Name: "x", Game: "DayZ", Platform: "PLAYSTATION", Status: "ONLINE"},
 		[]NitradoServiceSummary{{ServiceID: 987654, Name: "y", Game: "DayZ", Platform: "XBOX", Status: "ONLINE"}},
 		DayZServerSelection{ID: 42, ServiceID: 123456, DisplayName: "x", Game: "DayZ", Platform: "PLAYSTATION", Status: "ONLINE"},
+		SelectDayZServerResponse{
+			Server:             DayZServerSelection{ID: 42, ServiceID: 123456, DisplayName: "x", Game: "DayZ", Platform: "PLAYSTATION", Status: "ONLINE"},
+			InstallationID:     4,
+			ReusedInstallation: true,
+		},
 		DayZServerValidation{Reachable: true, Supported: true, Platform: "XBOX", Message: "DayZ Xbox server connected."},
 	}
 

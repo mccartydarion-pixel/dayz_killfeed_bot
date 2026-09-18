@@ -53,6 +53,12 @@ RETURNING id, guild_id, provider, provider_service_id, game, platform, COALESCE(
 // platform are always set explicitly here, unlike the guild-scoped
 // UpsertGameServer (which predates the SaaS platform column's purpose).
 func (r *SaaSServerRepository) UpsertForInstallation(ctx context.Context, organizationID, guildID int64, s GameServer) (*GameServer, error) {
+	// organization_id is only overwritten when the existing row is
+	// unclaimed (NULL) or already claimed by this same organization - never
+	// when a DIFFERENT organization already owns it. Callers must check the
+	// returned row's OrganizationID against the caller's organizationID and
+	// treat a mismatch as a conflict (never silently proceed with a server
+	// owned by someone else - section 6 of the console DayZ backend task).
 	const q = `
 INSERT INTO game_servers(guild_id, provider, provider_service_id, game, platform, display_name, status, active, organization_id)
 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
@@ -62,7 +68,11 @@ ON CONFLICT(guild_id,provider,provider_service_id) DO UPDATE SET
     display_name=EXCLUDED.display_name,
     status=EXCLUDED.status,
     active=EXCLUDED.active,
-    organization_id=EXCLUDED.organization_id,
+    organization_id=CASE
+        WHEN game_servers.organization_id IS NULL OR game_servers.organization_id=EXCLUDED.organization_id
+        THEN EXCLUDED.organization_id
+        ELSE game_servers.organization_id
+    END,
     updated_at=NOW()
 RETURNING id, guild_id, provider, provider_service_id, game, platform, COALESCE(display_name,''), status, active, created_at, updated_at, organization_id`
 	var out GameServer

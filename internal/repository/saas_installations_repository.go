@@ -65,6 +65,16 @@ type InstallationSettings struct {
 	CreatedAt, UpdatedAt                                                              time.Time
 }
 
+// ErrGameServerAlreadyAssigned is returned by SetGameServer when the target
+// (discord_guild_connection_id, game_server_id) pair is already owned by a
+// DIFFERENT installation (the UNIQUE(discord_guild_connection_id,
+// game_server_id) constraint - SQLSTATE 23505). Callers should resolve to
+// the existing installation instead of retrying the same write (see
+// InstallationRepository.GetByGuildConnectionAndGameServer and
+// handleSelectDayZServer's reuse flow) - this is never returned to a
+// customer as a raw SQL error.
+var ErrGameServerAlreadyAssigned = errors.New("game server already assigned to a different installation")
+
 type InstallationRepository struct{ pool *pgxpool.Pool }
 
 func NewInstallationRepository(pool *pgxpool.Pool) *InstallationRepository {
@@ -161,11 +171,82 @@ WHERE organization_id=$1 AND id=$2`
 // it belong to organizationID (section 15). This is the "select dayz-server"
 // step - it never touches status/setup progress itself, those are updated
 // separately by the caller.
+//
+// Returns ErrGameServerAlreadyAssigned (never a raw SQL/constraint error) if
+// gameServerID is already associated with a DIFFERENT installation under the
+// same guild connection (UNIQUE(discord_guild_connection_id, game_server_id)
+// - SQLSTATE 23505). Callers should check
+// GetByGuildConnectionAndGameServer BEFORE calling this to resolve to the
+// existing installation instead of hitting this path in the first place;
+// it's still hardened here as defense in depth against a race between that
+// check and this write.
 func (r *InstallationRepository) SetGameServer(ctx context.Context, organizationID, installationID, gameServerID int64) error {
-	if _, err := r.pool.Exec(ctx, `UPDATE installations SET game_server_id=$3, updated_at=NOW() WHERE organization_id=$1 AND id=$2`, organizationID, installationID, gameServerID); err != nil {
+	tag, err := r.pool.Exec(ctx, `UPDATE installations SET game_server_id=$3, updated_at=NOW() WHERE organization_id=$1 AND id=$2`, organizationID, installationID, gameServerID)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return ErrGameServerAlreadyAssigned
+		}
 		return fmt.Errorf("set installation game server: %w", err)
 	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("set installation game server: no matching installation for organization %d id %d", organizationID, installationID)
+	}
 	return nil
+}
+
+// GetByGuildConnectionAndGameServer returns the installation (if any) that
+// already owns this exact (discordGuildConnectionID, gameServerID) pair,
+// scoped to organizationID (section 15/10 - a guild connection already
+// belongs to exactly one organization, but this filters explicitly too, so
+// it can never resolve across a tenant boundary). Used by
+// handleSelectDayZServer to detect and reuse an existing installation
+// instead of colliding with UNIQUE(discord_guild_connection_id,
+// game_server_id).
+func (r *InstallationRepository) GetByGuildConnectionAndGameServer(ctx context.Context, organizationID, discordGuildConnectionID, gameServerID int64) (*Installation, error) {
+	const q = `SELECT id, organization_id, discord_guild_connection_id, game_server_id, status, COALESCE(plan,''), created_at, updated_at, setup_completed_at, last_health_check_at FROM installations WHERE organization_id=$1 AND discord_guild_connection_id=$2 AND game_server_id=$3`
+	var out Installation
+	err := r.pool.QueryRow(ctx, q, organizationID, discordGuildConnectionID, gameServerID).
+		Scan(&out.ID, &out.OrganizationID, &out.DiscordGuildConnectionID, &out.GameServerID, &out.Status, &out.Plan, &out.CreatedAt, &out.UpdatedAt, &out.SetupCompletedAt, &out.LastHealthCheckAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get installation by guild connection and game server: %w", err)
+	}
+	return &out, nil
+}
+
+// DeleteIfEmpty removes installationID if - and only if - it has never
+// progressed past Discord being connected: no game server selected, no
+// setup-progress flags beyond discord_completed, and no channel settings
+// configured. Returns deleted=false without error if the installation has
+// any of that state (section 7: "do not delete an installation that
+// contains meaningful history/settings without proving it is safe") - the
+// safety check is the query itself, not a judgment call made in Go.
+// installation_setup_progress/installation_settings cascade-delete with it.
+func (r *InstallationRepository) DeleteIfEmpty(ctx context.Context, organizationID, installationID int64) (bool, error) {
+	const q = `
+DELETE FROM installations i
+USING installation_setup_progress p
+WHERE i.id = p.installation_id
+  AND i.organization_id = $1
+  AND i.id = $2
+  AND i.game_server_id IS NULL
+  AND p.nitrado_completed = FALSE
+  AND p.server_selected = FALSE
+  AND p.channels_completed = FALSE
+  AND p.validation_completed = FALSE
+  AND NOT EXISTS (
+    SELECT 1 FROM installation_settings s
+    WHERE s.installation_id = i.id
+      AND (s.killfeed_channel_id IS NOT NULL OR s.leaderboard_channel_id IS NOT NULL
+           OR s.player_status_channel_id IS NOT NULL OR s.admin_log_channel_id IS NOT NULL)
+  )`
+	tag, err := r.pool.Exec(ctx, q, organizationID, installationID)
+	if err != nil {
+		return false, fmt.Errorf("delete empty installation: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 // RecordHealthCheck stamps last_health_check_at, requiring installationID
