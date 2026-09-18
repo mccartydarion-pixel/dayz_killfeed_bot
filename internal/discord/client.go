@@ -122,6 +122,22 @@ func (c *Client) AddMemberJoinHandler(fn func(*discordgo.Session, *discordgo.Gui
 	c.session.AddHandler(fn)
 }
 
+// HasGuildCached reports whether guildID is present in this session's local
+// gateway state cache (populated by GUILD_CREATE events for every guild the
+// bot is currently a member of) - a pure in-memory lookup
+// (State.Guild -> RLock + map read), never a Discord REST call. Unlike
+// Verify (which calls session.Guild, always a live REST round-trip),
+// this is safe to call once per candidate in a loop without risking a
+// timeout - see internal/app/saas_api_discord.go's eligible-guilds handler,
+// which does exactly that.
+func (c *Client) HasGuildCached(guildID string) bool {
+	if c == nil || guildID == "" || c.session == nil || c.session.State == nil {
+		return false
+	}
+	_, err := c.session.State.Guild(guildID)
+	return err == nil
+}
+
 // Verification describes the result of guild/channel/permission validation.
 type Verification struct {
 	GuildFound   bool

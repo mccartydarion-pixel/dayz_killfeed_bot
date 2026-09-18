@@ -74,6 +74,38 @@ func TestWaitForSessionUserTimesOutWhenReadyNeverArrives(t *testing.T) {
 	}
 }
 
+func TestHasGuildCachedReadsLocalStateOnly(t *testing.T) {
+	var nilClient *Client
+	if nilClient.HasGuildCached("123") {
+		t.Fatal("expected a nil receiver to report false")
+	}
+	if (&Client{}).HasGuildCached("123") {
+		t.Fatal("expected a nil session to report false")
+	}
+	sessionNoState := &discordgo.Session{}
+	if (&Client{session: sessionNoState}).HasGuildCached("123") {
+		t.Fatal("expected a nil session.State to report false")
+	}
+
+	session := &discordgo.Session{State: discordgo.NewState()}
+	client := &Client{session: session}
+	if client.HasGuildCached("") {
+		t.Fatal("expected an empty guildID to report false")
+	}
+	if client.HasGuildCached("999") {
+		t.Fatal("expected an uncached guild to report false")
+	}
+	if err := session.State.GuildAdd(&discordgo.Guild{ID: "123"}); err != nil {
+		t.Fatal(err)
+	}
+	if !client.HasGuildCached("123") {
+		t.Fatal("expected a cached guild to report true")
+	}
+	if client.HasGuildCached("456") {
+		t.Fatal("expected a different, still-uncached guild to report false")
+	}
+}
+
 func TestWaitForSessionUserStopsOnContextCancel(t *testing.T) {
 	session := &discordgo.Session{State: discordgo.NewState()}
 	ctx, cancel := context.WithCancel(context.Background())

@@ -458,6 +458,11 @@ paths:
   /api/saas/organizations/{organizationID}/discord/guilds/eligible:
     post:
       summary: Re-derive eligibility for OAuth-verified guild candidates.
+      description: >
+        botInstalled comes from the bot's local gateway state cache (zero
+        Discord REST calls per candidate) - never a live per-guild lookup.
+        The final selected guild is still live-verified by
+        /discord/connection and /discord/verify-installation.
       parameters:
         - { $ref: "#/components/parameters/ActingUser" }
         - { $ref: "#/components/parameters/organizationID" }
