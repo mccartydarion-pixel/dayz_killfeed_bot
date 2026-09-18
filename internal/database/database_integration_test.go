@@ -49,4 +49,23 @@ func TestPostgreSQLMigrationsApplyCleanly(t *testing.T) {
 	if tableCount != 5 {
 		t.Fatalf("expected all required runtime tables, found %d", tableCount)
 	}
+
+	// SaaS foundation (0024_saas_foundation) must apply cleanly on top of the
+	// full pre-existing chain, and reuse - not duplicate - game_servers and
+	// nitrado_connections (see docs/SAAS_SCHEMA.md).
+	var saasTableCount int
+	if err := db.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('app_users','organizations','organization_members','discord_guild_connections','installations','installation_setup_progress','installation_settings','subscriptions')`).Scan(&saasTableCount); err != nil {
+		t.Fatalf("query required SaaS tables: %v", err)
+	}
+	if saasTableCount != 8 {
+		t.Fatalf("expected all SaaS foundation tables, found %d", saasTableCount)
+	}
+
+	var reusedColumnCount int
+	if err := db.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public' AND column_name='organization_id' AND table_name IN ('game_servers','nitrado_connections')`).Scan(&reusedColumnCount); err != nil {
+		t.Fatalf("query reused table columns: %v", err)
+	}
+	if reusedColumnCount != 2 {
+		t.Fatalf("expected organization_id added to both reused tables, found %d", reusedColumnCount)
+	}
 }
