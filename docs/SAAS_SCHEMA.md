@@ -143,8 +143,66 @@ multiple DayZ servers - wiring the bot runtime to read from here instead of
 | `distance_unit` | TEXT, default `'METERS'` |
 | `online_display_enabled`, `leaderboard_enabled` | BOOLEAN, default `TRUE` |
 | `created_at`, `updated_at` | TIMESTAMPTZ |
+| `channel_setup_source` | TEXT, default `''` - `''` \| `'AUTO'` \| `'MANUAL'`, tracks how the legacy four fields above were last set (never used by the new `installation_channel_routes` table below, which tracks ownership per-route instead) |
+| `champion_category_id` | TEXT, nullable - the Champion-managed Discord category one-click setup created/reused, shared with `installation_channel_routes` (section below) |
 
 Repository methods: `InstallationRepository.GetSettings`/`UpdateSettings`.
+
+### `installation_channel_routes`
+The scalable feature -> Discord channel routing table (migration 0027),
+superseding `installation_settings`' four-field model for anything beyond
+the original killfeed/leaderboard/player-status/admin-log channels.
+**Additive, not a replacement**: `installation_settings`' four columns
+above are neither dropped nor stop being read - see
+`internal/app/saas_api_channels.go` (unchanged legacy `GET`/`PUT
+.../channels` endpoints) vs. `internal/app/saas_api_channel_routes.go` (new
+`GET`/`PUT .../channel-routes` and the upgraded `POST
+.../channels/auto-setup`, which dual-writes into both).
+
+| Column | Notes |
+|---|---|
+| `id` | BIGSERIAL PK |
+| `installation_id` | FK `installations(id)`, `ON DELETE CASCADE` |
+| `route_key` | TEXT - one of the sixteen stable keys below, never a display name |
+| `channel_id` | TEXT - a Discord channel snowflake |
+| `managed_by_champion` | BOOLEAN, default `FALSE` - `TRUE` only for a channel Champion itself created/reused via one-click auto-setup; `FALSE` once a customer explicitly points a route at a channel via a manual save. Any future "reset Champion channels" feature must only ever delete a channel where this is `TRUE`. |
+| `created_at`, `updated_at` | TIMESTAMPTZ |
+|  | `UNIQUE(installation_id, route_key)` - one channel per route per installation; the same `channel_id` may appear under multiple `route_key` rows (a customer may point several features at one channel) |
+
+Index: `installation_id`.
+
+**Stable route keys** (`internal/app/saas_api_channel_routes.go`'s
+`championRouteBlueprint` - the single source of truth; never edit this list
+without updating that Go slice, and vice versa):
+
+| `route_key` | Default channel name | Purpose | Requirement |
+|---|---|---|---|
+| `KILLFEED` | `killfeed` | PvP kill/death/special-kill feed | REQUIRED |
+| `PVE_FEED` | `pvefeed` | Infected/environment/PvE events | OPTIONAL (not implemented yet) |
+| `LINK_GAMERTAG` | `link-gamertag` | Player linking / gamertag linking panel | FEATURE_DEPENDENT |
+| `STATS_LEADERBOARDS` | `stats-leaderboards` | Manually viewed general statistics and leaderboards | OPTIONAL |
+| `AUTO_LEADERBOARD` | `auto-leaderboard` | Automatically refreshed leaderboard panel | OPTIONAL |
+| `HITFEED` | `hitfeed` | Hit/damage event feed | OPTIONAL (not implemented yet) |
+| `BOUNTY` | `bounty` | Public bounty board/events | OPTIONAL (not implemented yet) |
+| `BOUNTY_TRACKING` | `bounty-tracking` | Bounty progression/tracking | OPTIONAL (not implemented yet) |
+| `HEATMAPS` | `heatmaps` | Heatmap/activity output | OPTIONAL (not implemented yet) |
+| `ECONOMY` | `economy` | Economy/credits information | OPTIONAL (not implemented yet) |
+| `CASINO` | `casino` | Casino commands/results | OPTIONAL (not implemented yet) |
+| `SHOP` | `shop` | Store/shop output | OPTIONAL (not implemented yet) |
+| `CONNECTIONS` | `connections` | Connect/disconnect/player connection events | OPTIONAL (not implemented yet) |
+| `BUILD_FEED` | `build-feed` | Building/base-related feed | OPTIONAL (not implemented yet) |
+| `ADMIN_ALERTS` | `admin-alerts` | Important moderation/server alerts | OPTIONAL (not implemented yet) |
+| `ADMIN_LOGS` | `admin-logs` | Detailed administrative/diagnostic logging | FEATURE_DEPENDENT |
+
+See `docs/SAAS_API.md`'s "Channel routing" section for the full runtime
+publisher audit behind each requirement level, and the exact backward-
+compatibility backfill migration 0027 performs from `installation_settings`.
+
+Repository: `internal/repository/saas_channel_routes_repository.go`
+(`ChannelRouteRepository`) - `ListForInstallation`, `UpsertRoute`,
+`DeleteRoute`, `ListDistinctChannelIDs` (Step 6 permission-verification
+readiness - several routes sharing one channel only need to be verified
+once).
 
 ### `subscriptions`
 Billing-ready state only - **no billing provider is integrated yet**.

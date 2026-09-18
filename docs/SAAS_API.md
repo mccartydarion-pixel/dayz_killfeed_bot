@@ -463,9 +463,10 @@ the installation's channel configuration is marked customer-owned - a later
 `NITRADO_CONNECTED`, it advances to `CONFIGURING`.
 
 ### 21. `POST .../installations/{installationID}/channels/auto-setup`
-One-click setup: creates (or reuses) Champion's default category and its
-four default channels in the installation's Discord guild, persists the
-resulting IDs, and advances setup exactly like `#20` does. OWNER/ADMIN only.
+One-click setup: creates (or reuses) Champion's default category and **all
+sixteen** default channels (the full routing blueprint - see "Channel
+routing" below) in the installation's Discord guild, persists the resulting
+route IDs, and advances setup exactly like `#20`/`#24` do. OWNER/ADMIN only.
 
 Request (optional body):
 ```json
@@ -475,8 +476,9 @@ Request (optional body):
 Behavior:
 1. Verifies the bot is actually installed in the guild (`503
    DISCORD_UNAVAILABLE` if not).
-2. **Unless `force=true`**, refuses if the installation already has a
-   customer-configured (manual) channel selection - see "Custom
+2. **Unless `force=true`**, refuses if the installation already has
+   customer-owned routing - either a legacy manual save (`#20`) or any
+   route saved via `#24` with `managedByChampion=false` - see "Custom
    configuration protection" below.
 3. Verifies the bot holds **Manage Channels** in the guild - see "Missing
    permission" below.
@@ -484,54 +486,49 @@ Behavior:
    previously-persisted category ID (authoritative); if that's gone (or
    this is the first run), falls back to a case-insensitive name scan for
    recovery; only creates a new one if neither is found.
-5. Resolves (or creates) each of the four default channels the same way -
+5. Resolves (or creates) each of the sixteen default channels the same way -
    ID first, then a name scan **scoped to the resolved category** (so
    recovery never adopts an unrelated same-named channel elsewhere in the
    guild), then create.
-6. Persists the four resulting channel IDs plus the category ID, advances
+6. Persists all sixteen resulting `(route_key, channel_id)` pairs
+   (`managedByChampion=true`) plus the category ID, mirrors `KILLFEED`/
+   `STATS_LEADERBOARDS`/`ADMIN_LOGS` back onto the legacy
+   `installation_settings` fields so `#19` keeps reflecting reality, advances
    setup progress, and moves the installation to `CONFIGURING` (same
    one-directional rule as `#20`).
 
-Default blueprint (section 1):
-
-| Channel | Settings field | Purpose |
-|---|---|---|
-| `#champion-killfeed` | `killfeedChannelId` | kills, deaths, special kill events |
-| `#champion-leaderboard` | `leaderboardChannelId` | leaderboards, rankings, seasonal/competitive standings |
-| `#champion-players` | `playerStatusChannelId` | online players, player-status panels |
-| `#champion-admin` | `adminLogChannelId` | admin/log/diagnostic output for server staff |
-
-All four are created under a `CHAMPION KILLFEED` category.
+See "Channel routing" below for the full sixteen-route blueprint (default
+channel names and purposes) and the runtime-publisher audit behind each
+route's requirement level.
 
 Response `200` on success ([`AutoSetupChannelsResponse`](#autosetupchannelsresponse)):
 ```json
 {
   "configured": true,
   "category": { "id": "999", "name": "CHAMPION KILLFEED" },
-  "channels": {
-    "killfeedChannelId": "111",
-    "leaderboardChannelId": "112",
-    "playerStatusChannelId": "113",
-    "adminLogChannelId": "114"
+  "routes": {
+    "KILLFEED": { "channelId": "111", "channelName": "killfeed", "managedByChampion": true },
+    "PVE_FEED": { "channelId": "112", "channelName": "pvefeed", "managedByChampion": true },
+    "...": "... all sixteen routes ..."
   }
 }
 ```
 
 **Idempotent by design**: calling this route again with the same
-installation reuses the exact same category and channel IDs - it never
-creates `#champion-killfeed-1`/`#champion-killfeed-2` duplicates, because
+installation reuses the exact same category and channel IDs for every
+route - it never creates `killfeed-1`/`killfeed-2` duplicates, because
 step 4/5 above always check the persisted ID (and then existing names)
 before ever creating anything.
 
-**Custom configuration protection** (never destroys manual customization):
-if the installation already has a channel selection that wasn't itself
-produced by a prior auto-setup call, this route responds `200` with a
-safe, structured "did not configure" result instead of overwriting it:
+**Custom configuration protection** (never destroys customer customization):
+if the installation already has routing that wasn't itself produced by a
+prior auto-setup call, this route responds `200` with a safe, structured
+"did not configure" result instead of overwriting it:
 ```json
 { "configured": false, "reason": "CUSTOM_CONFIGURATION_EXISTS" }
 ```
-Pass `{ "force": true }` to override this and run auto-setup anyway
-(an explicit, deliberate customer action - never the default).
+Pass `{ "force": true }` to override this and restore Champion's defaults
+anyway (an explicit, deliberate customer action - never the default).
 
 **Missing permission**: if the bot lacks Manage Channels in the guild,
 this route also responds `200` with a safe result rather than a raw
@@ -546,7 +543,127 @@ they're expected, UI-renderable outcomes, not failures to retry blindly.
 
 Auto-setup never replaces `#13` (verify-permissions) - Step 6 on the
 website still runs permission verification against whichever channel IDs
-ended up configured, whether by `#20` or `#21`.
+ended up configured, whether by `#20` or `#24`/`#21`. Step 6 should verify
+every **unique** configured channel ID once, not once per route -
+`ChannelRouteRepository.ListDistinctChannelIDs` exists specifically for
+this (see "Channel routing" below).
+
+### 23. `GET .../installations/{installationID}/channel-routes`
+The full routing model's read side (section 11) - returns every currently
+configured route, keyed by `route_key`. Any member may call it. Required for
+refresh persistence, same as `#19`.
+
+Response `200` ([`ChannelRoutesResponse`](#channelroutesresponse)):
+```json
+{
+  "routes": {
+    "KILLFEED": { "channelId": "111", "channelName": "killfeed", "managedByChampion": true },
+    "BOUNTY": { "channelId": "117", "channelName": "bounty", "managedByChampion": false }
+  }
+}
+```
+A route absent from `routes` means it isn't configured (disabled/never set)
+- never a placeholder empty entry. `channelName` is a best-effort live
+lookup and may be omitted if the channel was deleted in Discord;
+`channelId` is always the persisted, authoritative value regardless.
+
+### 24. `PUT .../installations/{installationID}/channel-routes`
+Saves a manual (Customize mode) routing selection (section 9/11/12).
+OWNER/ADMIN only. This is the full-scale successor to `#20` - `#19`/`#20`
+remain available unchanged for any consumer that hasn't migrated.
+
+Request - a **partial merge** keyed by `route_key`, never requiring all
+sixteen (section 9/10):
+```json
+{
+  "routes": {
+    "KILLFEED": "111",
+    "BOUNTY": "117",
+    "PVE_FEED": ""
+  }
+}
+```
+- A key present with a **non-empty** channel ID upserts that route,
+  always as `managedByChampion=false` (an explicit customer selection is
+  never re-labeled Champion-managed, even if it happens to match a
+  channel Champion previously created for a *different* route).
+- A key present with an **empty string** explicitly disables/removes that
+  route (section 9 "disable optional routes").
+- A key **absent** from the request is left completely untouched - you
+  never have to resend all sixteen to change one.
+
+The **same channel ID may serve multiple routes** (section 9) - `KILLFEED`
+and `BOUNTY` may both point at the same Discord channel.
+
+Every supplied non-empty channel ID is **re-verified live** against the
+installation's own Discord guild before anything is persisted (section 12)
+- `400 INVALID_REQUEST` if it doesn't belong to this guild or isn't a
+supported text-capable channel; unknown `route_key`s are also rejected the
+same way.
+
+`KILLFEED` remains required (section 10): a request whose *resulting*
+merged state would leave `KILLFEED` unset is rejected with
+`400 INVALID_REQUEST` before anything is written - nothing is partially
+applied.
+
+Response `200`: the same shape as `#23`'s GET, reflecting the full,
+now-updated route set. On success, `channelsCompleted=true` and
+`currentStep=VALIDATION` advance exactly like `#20`, and the installation
+advances to `CONFIGURING` under the same one-directional rule.
+
+## Channel routing
+
+Champion's full Discord channel structure is sixteen features, each routed
+independently to a Discord channel via a stable `route_key` - never a
+display name (`installation_channel_routes`, migration 0027,
+`docs/SAAS_SCHEMA.md`). This replaces the old assumption that Champion only
+ever needs four channels; `#19`/`#20` (the legacy four-field surface) still
+work exactly as before for `KILLFEED`/leaderboard/player-status/admin-log,
+untouched by this expansion.
+
+Every requirement level below was decided by auditing the actual bot
+runtime (`internal/discord`, `internal/killfeed`), not assumed from the
+route's name - `REQUIRED` only when Champion cannot function without it,
+`FEATURE_DEPENDENT` when it's fully implemented but only matters for guilds
+using that specific feature, `OPTIONAL` otherwise (including every route
+with no runtime publisher yet - one-click setup still creates the channel,
+reserving the slot for when one is built).
+
+| `route_key` | Default channel | Purpose | Requirement | Runtime status |
+|---|---|---|---|---|
+| `KILLFEED` | `killfeed` | PvP kill/death/special-kill feed | **REQUIRED** | Implemented - `internal/discord/killfeed.go` `KillfeedPublisher` |
+| `PVE_FEED` | `pvefeed` | Infected/environment/PvE events | OPTIONAL | Not implemented - no PvE event type exists yet |
+| `LINK_GAMERTAG` | `link-gamertag` | Player linking / gamertag linking panel | FEATURE_DEPENDENT | Implemented - `internal/discord/public_panels.go` link panel |
+| `STATS_LEADERBOARDS` | `stats-leaderboards` | Manually viewed general statistics and leaderboards | OPTIONAL | Implemented - on-demand "My Stats / Search Player" panel |
+| `AUTO_LEADERBOARD` | `auto-leaderboard` | Automatically refreshed leaderboard panel | OPTIONAL | Implemented - `internal/discord/leaderboard_scheduler.go` |
+| `HITFEED` | `hitfeed` | Hit/damage event feed | OPTIONAL | Not implemented - hits are parsed/counted, never posted |
+| `BOUNTY` | `bounty` | Public bounty board/events | OPTIONAL | Not implemented as a channel feed - `/bounty` replies ephemerally only |
+| `BOUNTY_TRACKING` | `bounty-tracking` | Bounty progression/tracking | OPTIONAL | Not implemented as its own channel - renders in the shared live-panels message |
+| `HEATMAPS` | `heatmaps` | Heatmap/activity output | OPTIONAL | Not implemented |
+| `ECONOMY` | `economy` | Economy/credits information | OPTIONAL | Not implemented |
+| `CASINO` | `casino` | Casino commands/results | OPTIONAL | Not implemented |
+| `SHOP` | `shop` | Store/shop output | OPTIONAL | Not implemented |
+| `CONNECTIONS` | `connections` | Connect/disconnect/player connection events | OPTIONAL | Not implemented as a text feed - the closest analog drives a voice-channel-name counter |
+| `BUILD_FEED` | `build-feed` | Building/base-related feed | OPTIONAL | Not implemented |
+| `ADMIN_ALERTS` | `admin-alerts` | Important moderation/server alerts | OPTIONAL | Not implemented - distinct from the diagnostic ADM monitor below |
+| `ADMIN_LOGS` | `admin-logs` | Detailed administrative/diagnostic logging | FEATURE_DEPENDENT | Implemented - `internal/discord/adm_monitor.go` ADM download health |
+
+Single source of truth: `internal/app/saas_api_channel_routes.go`'s
+`championRouteBlueprint` - each entry's comment cites the exact file/type
+behind its runtime-status column above.
+
+**Backward-compatible backfill** (migration 0027, one-time, additive): any
+existing installation's legacy `installation_settings` values were copied
+into the new table so they're visible under `#23` immediately -
+`killfeed_channel_id` -> `KILLFEED`, `leaderboard_channel_id` ->
+`STATS_LEADERBOARDS`, `admin_log_channel_id` -> `ADMIN_LOGS`.
+`player_status_channel_id` also backfills into `STATS_LEADERBOARDS`, but
+only when `leaderboard_channel_id` is unset - audited, not guessed:
+`player_status_channel_id` decouples from `guilds.player_stats_channel_id`
+(`internal/discord/setup_store.go`'s `PlayerStatsChannelID`), which is the
+same on-demand "general statistics" panel `STATS_LEADERBOARDS` describes,
+not a connections/join-leave log. `CONNECTIONS` has no legacy source at all
+for exactly that reason.
 
 ### 22. `POST .../installations/{installationID}/discord/channels`
 Optional, explicit "create a new channel" action for Customize mode -
@@ -760,7 +877,9 @@ re-select it via `#16`.
 | `position` | number |
 | `canSend` | boolean - safe hint only, not a substitute for `#13` |
 
-#### `InstallationChannelSettings` (request of `#20`, response of `#19`/`#20`, embedded in `#21`)
+#### `InstallationChannelSettings` (request of `#20`, response of `#19`/`#20`)
+The legacy four-field surface - still live, unaffected by the routing
+expansion below.
 | field | type |
 |---|---|
 | `killfeedChannelId` | string - required on `#20`; empty string means unset elsewhere |
@@ -774,13 +893,25 @@ re-select it via `#16`.
 | `id` | string - Discord category channel snowflake |
 | `name` | string |
 
+#### `ChannelRouteInfo` (value type of `ChannelRoutesResponse.routes` and `AutoSetupChannelsResponse.routes`)
+| field | type |
+|---|---|
+| `channelId` | string - Discord channel snowflake |
+| `channelName` | string? - best-effort live lookup, omitted if the channel was deleted in Discord |
+| `managedByChampion` | boolean - `true` only for a channel Champion itself created/reused; `false` once a customer explicitly points the route at a channel |
+
+#### `ChannelRoutesResponse` (response of `#23`/`#24`)
+| field | type |
+|---|---|
+| `routes` | object - map of `route_key` -> [`ChannelRouteInfo`](#channelrouteinfo); a key absent from the map means that route isn't configured |
+
 #### `AutoSetupChannelsResponse` (response of `#21`)
 | field | type |
 |---|---|
 | `configured` | boolean |
 | `reason` | string? - `"MISSING_MANAGE_CHANNELS"` \| `"CUSTOM_CONFIGURATION_EXISTS"`, present only when `configured=false` |
 | `category` | [`ChannelCategorySummary`](#channelcategorysummary)? - present only when `configured=true` |
-| `channels` | [`InstallationChannelSettings`](#installationchannelsettings)? - present only when `configured=true` |
+| `routes` | object? - map of `route_key` -> [`ChannelRouteInfo`](#channelrouteinfo), all sixteen present when `configured=true` |
 
 ## Error contract
 
@@ -814,10 +945,10 @@ In-memory, per acting Discord user ID, per process:
 | `#12`/`#13` Discord verification (shared budget) | 10 / minute |
 | `#14` Nitrado connect | 10 / hour |
 
-Ordinary reads (`#2`, `#4`, `#5`, `#7`, `#8`, `#15`, `#17`, `#18`, `#19`) are
-never rate limited. `#20`/`#21`/`#22` (channel writes) aren't separately
-rate limited either, matching `#16`'s precedent - all four are already
-gated to OWNER/ADMIN and organization-scoped.
+Ordinary reads (`#2`, `#4`, `#5`, `#7`, `#8`, `#15`, `#17`, `#18`, `#19`,
+`#23`) are never rate limited. `#20`/`#21`/`#22`/`#24` (channel writes)
+aren't separately rate limited either, matching `#16`'s precedent - all are
+already gated to OWNER/ADMIN and organization-scoped.
 
 ## Tenant-scoping rules
 
@@ -884,12 +1015,19 @@ PlayStation server works unmodified for a connected Xbox server.
 | DayZ console server discovery/selection | READY |
 | DayZ server reachability validation | READY |
 | Discord channel discovery | READY |
-| Manual channel configuration (Customize mode) | READY |
-| One-click channel auto-setup | READY |
+| Manual channel configuration (Customize mode, legacy 4-field) | READY |
+| Full 16-route channel configuration (Customize mode) | READY |
+| One-click channel auto-setup (complete 16-route blueprint) | READY |
 | Optional custom channel creation | READY |
 
 Nothing is BLOCKED. Out of scope for this handoff (a later task):
 billing/checkout, entitlement enforcement, Step 6 permission-verification
-website UI (the backend route `#13` already exists from an earlier task).
+website UI (the backend route `#13` already exists from an earlier task,
+but does not yet verify every unique configured route channel - see
+"Channel routing"'s `ListDistinctChannelIDs` note), and every runtime
+publisher marked "Not implemented" in the channel routing table above
+(PvE feed, hit feed, bounty board/tracking channels, heatmaps, economy,
+casino, shop, connections log, build feed, admin alerts) - one-click setup
+still creates/reserves those channels, but nothing posts to them yet.
 DayZ PC and non-console Nitrado services are intentionally unsupported, not
 missing - see the platform contract note above.

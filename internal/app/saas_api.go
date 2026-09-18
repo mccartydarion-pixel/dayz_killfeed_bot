@@ -340,4 +340,6 @@ func (a *App) registerSaaSAPI() {
 	a.HTTPServer.Handle("GET /api/saas/organizations/{organizationID}/installations/{installationID}/channels", a.handleGetChannelSettings)
 	a.HTTPServer.Handle("PUT /api/saas/organizations/{organizationID}/installations/{installationID}/channels", a.handleSaveChannelSettings)
 	a.HTTPServer.Handle("POST /api/saas/organizations/{organizationID}/installations/{installationID}/channels/auto-setup", a.handleAutoSetupChannels)
+	a.HTTPServer.Handle("GET /api/saas/organizations/{organizationID}/installations/{installationID}/channel-routes", a.handleListChannelRoutes)
+	a.HTTPServer.Handle("PUT /api/saas/organizations/{organizationID}/installations/{installationID}/channel-routes", a.handleSaveChannelRoutes)
 }

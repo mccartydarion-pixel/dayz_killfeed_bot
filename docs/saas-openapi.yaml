@@ -364,12 +364,56 @@ components:
         id: { type: string, description: Discord category channel snowflake. }
         name: { type: string }
 
+    ChannelRouteKey:
+      type: string
+      enum:
+        [
+          KILLFEED, PVE_FEED, LINK_GAMERTAG, STATS_LEADERBOARDS, AUTO_LEADERBOARD,
+          HITFEED, BOUNTY, BOUNTY_TRACKING, HEATMAPS, ECONOMY, CASINO, SHOP,
+          CONNECTIONS, BUILD_FEED, ADMIN_ALERTS, ADMIN_LOGS,
+        ]
+      description: Stable backend feature identifier - never a display name. See docs/SAAS_API.md's "Channel routing" section for each route's purpose and requirement level.
+
+    ChannelRouteInfo:
+      type: object
+      properties:
+        channelId: { type: string, description: Discord channel snowflake. }
+        channelName:
+          type: string
+          nullable: true
+          description: Best-effort live lookup - omitted if the channel was deleted in Discord. channelId is always accurate regardless.
+        managedByChampion:
+          type: boolean
+          description: True only for a channel Champion itself created/reused via one-click auto-setup; false once a customer explicitly points the route at a channel.
+
+    ChannelRoutesResponse:
+      type: object
+      description: A route_key absent from routes means it isn't configured - never a placeholder empty entry.
+      properties:
+        routes:
+          type: object
+          additionalProperties: { $ref: "#/components/schemas/ChannelRouteInfo" }
+
+    SaveChannelRoutesRequest:
+      type: object
+      required: [routes]
+      description: >
+        A partial merge keyed by route_key - never requires all sixteen. A
+        key with a non-empty channel ID upserts that route
+        (managedByChampion becomes false). A key with an empty string
+        explicitly disables/removes that route. An absent key is left
+        untouched.
+      properties:
+        routes:
+          type: object
+          additionalProperties: { type: string }
+
     AutoSetupChannelsRequest:
       type: object
       properties:
         force:
           type: boolean
-          description: Explicitly override an existing customer channel configuration. Defaults to false.
+          description: Explicitly override existing customer-owned routing (legacy four-field or the new routes table) and restore Champion's defaults. Defaults to false.
 
     AutoSetupChannelsResponse:
       type: object
@@ -387,9 +431,11 @@ components:
         category:
           allOf: [{ $ref: "#/components/schemas/ChannelCategorySummary" }]
           nullable: true
-        channels:
-          allOf: [{ $ref: "#/components/schemas/InstallationChannelSettings" }]
+        routes:
+          type: object
           nullable: true
+          description: All sixteen routes, present only when configured=true.
+          additionalProperties: { $ref: "#/components/schemas/ChannelRouteInfo" }
 
     CreateDiscordChannelRequest:
       type: object
@@ -928,7 +974,7 @@ paths:
 
   /api/saas/organizations/{organizationID}/installations/{installationID}/channels/auto-setup:
     post:
-      summary: One-click creation/reuse of Champion's default category and channels (OWNER/ADMIN). Idempotent.
+      summary: One-click creation/reuse of Champion's complete 16-route default channel blueprint (OWNER/ADMIN). Idempotent.
       parameters:
         - { $ref: "#/components/parameters/ActingUser" }
         - { $ref: "#/components/parameters/organizationID" }
@@ -941,10 +987,11 @@ paths:
       responses:
         "200":
           description: >
-            configured=true with the resolved category/channels on success;
-            configured=false with a safe reason (MISSING_MANAGE_CHANNELS or
-            CUSTOM_CONFIGURATION_EXISTS) when auto-setup could not or should
-            not proceed - both are expected outcomes, not errors.
+            configured=true with the resolved category and all sixteen
+            routes on success; configured=false with a safe reason
+            (MISSING_MANAGE_CHANNELS or CUSTOM_CONFIGURATION_EXISTS) when
+            auto-setup could not or should not proceed - both are expected
+            outcomes, not errors.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/AutoSetupChannelsResponse" }
@@ -953,6 +1000,57 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "503":
           description: Discord bot session unavailable, bot not installed in the guild, or category/channel creation failed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/channel-routes:
+    get:
+      summary: Return every currently configured feature -> channel route, keyed by route_key.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+      responses:
+        "200":
+          description: Configured routes.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChannelRoutesResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      summary: Save a manual routing selection (Customize mode, OWNER/ADMIN). Partial merge keyed by route_key - never requires all sixteen.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SaveChannelRoutesRequest" }
+      responses:
+        "200":
+          description: >
+            Saved. Returns the full, now-updated route set. Every route
+            touched by this call becomes managedByChampion=false.
+            channelsCompleted=true and currentStep=VALIDATION advance on
+            success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChannelRoutesResponse" }
+        "400":
+          description: Unknown route_key, a supplied channel ID does not belong to this installation's guild, or the resulting state would leave KILLFEED unset.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503":
+          description: Discord bot session unavailable, or the channel list could not be verified.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ApiError" }

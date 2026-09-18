@@ -229,12 +229,13 @@ func (r *InstallationRepository) GetByGuildConnectionAndGameServer(ctx context.C
 
 // DeleteIfEmpty removes installationID if - and only if - it has never
 // progressed past Discord being connected: no game server selected, no
-// setup-progress flags beyond discord_completed, and no channel settings
-// configured. Returns deleted=false without error if the installation has
-// any of that state (section 7: "do not delete an installation that
-// contains meaningful history/settings without proving it is safe") - the
-// safety check is the query itself, not a judgment call made in Go.
-// installation_setup_progress/installation_settings cascade-delete with it.
+// setup-progress flags beyond discord_completed, no legacy channel settings,
+// and no channel routes configured. Returns deleted=false without error if
+// the installation has any of that state (section 7: "do not delete an
+// installation that contains meaningful history/settings without proving it
+// is safe") - the safety check is the query itself, not a judgment call made
+// in Go. installation_setup_progress/installation_settings/
+// installation_channel_routes cascade-delete with it.
 func (r *InstallationRepository) DeleteIfEmpty(ctx context.Context, organizationID, installationID int64) (bool, error) {
 	const q = `
 DELETE FROM installations i
@@ -252,6 +253,9 @@ WHERE i.id = p.installation_id
     WHERE s.installation_id = i.id
       AND (s.killfeed_channel_id IS NOT NULL OR s.leaderboard_channel_id IS NOT NULL
            OR s.player_status_channel_id IS NOT NULL OR s.admin_log_channel_id IS NOT NULL)
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM installation_channel_routes cr WHERE cr.installation_id = i.id
   )`
 	tag, err := r.pool.Exec(ctx, q, organizationID, installationID)
 	if err != nil {

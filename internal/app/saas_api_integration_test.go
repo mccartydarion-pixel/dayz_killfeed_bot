@@ -1339,10 +1339,38 @@ func autoSetupChannels(t *testing.T, a *App, orgID, installationID int64, acting
 	return rr
 }
 
-// TestAutoSetupChannelsCreatesCategoryAndFourChannels is case A: a single
-// call creates the Champion category and all four default channels, mapped
-// to the right settings fields.
-func TestAutoSetupChannelsCreatesCategoryAndFourChannels(t *testing.T) {
+// championAllRouteKeys is every stable route key in the blueprint, used by
+// tests that need to assert completeness without hand-maintaining a second
+// copy of the list.
+var championAllRouteKeys = []string{
+	"KILLFEED", "PVE_FEED", "LINK_GAMERTAG", "STATS_LEADERBOARDS", "AUTO_LEADERBOARD",
+	"HITFEED", "BOUNTY", "BOUNTY_TRACKING", "HEATMAPS", "ECONOMY", "CASINO", "SHOP",
+	"CONNECTIONS", "BUILD_FEED", "ADMIN_ALERTS", "ADMIN_LOGS",
+}
+
+func listChannelRoutes(t *testing.T, a *App, orgID, installationID int64, actingDiscordID string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := withPathValues(withActingUser(saasRequest(http.MethodGet, "/x", nil), actingDiscordID),
+		map[string]string{"organizationID": strconv.FormatInt(orgID, 10), "installationID": strconv.FormatInt(installationID, 10)})
+	rr := httptest.NewRecorder()
+	a.handleListChannelRoutes(rr, req)
+	return rr
+}
+
+func saveChannelRoutes(t *testing.T, a *App, orgID, installationID int64, actingDiscordID string, routes map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := withPathValues(withActingUser(saasRequest(http.MethodPut, "/x", saveChannelRoutesRequest{Routes: routes}), actingDiscordID),
+		map[string]string{"organizationID": strconv.FormatInt(orgID, 10), "installationID": strconv.FormatInt(installationID, 10)})
+	rr := httptest.NewRecorder()
+	a.handleSaveChannelRoutes(rr, req)
+	return rr
+}
+
+// TestAutoSetupChannelsCreatesCompleteBlueprint is case A/section 21 "all 16
+// default route keys": a single call creates the Champion category and all
+// sixteen default channels, every route populated, KILLFEED marked
+// managed=true.
+func TestAutoSetupChannelsCreatesCompleteBlueprint(t *testing.T) {
 	a, verifier := saasIntegrationApp(t)
 	fixture := buildInstallationFixture(t, a, verifier)
 
@@ -1357,18 +1385,22 @@ func TestAutoSetupChannelsCreatesCategoryAndFourChannels(t *testing.T) {
 	if resp.Category == nil || resp.Category.Name != championManagedCategoryName {
 		t.Fatalf("expected the Champion default category, got %+v", resp.Category)
 	}
-	if resp.Channels == nil || resp.Channels.KillfeedChannelID == "" || resp.Channels.LeaderboardChannelID == "" ||
-		resp.Channels.PlayerStatusChannelID == "" || resp.Channels.AdminLogChannelID == "" {
-		t.Fatalf("expected all four default channels populated, got %+v", resp.Channels)
+	if len(resp.Routes) != len(championAllRouteKeys) {
+		t.Fatalf("expected all %d default routes, got %d: %+v", len(championAllRouteKeys), len(resp.Routes), resp.Routes)
 	}
-
-	// All four must be distinct fresh channels under the created category.
-	ids := map[string]bool{
-		resp.Channels.KillfeedChannelID: true, resp.Channels.LeaderboardChannelID: true,
-		resp.Channels.PlayerStatusChannelID: true, resp.Channels.AdminLogChannelID: true,
+	ids := map[string]bool{}
+	for _, key := range championAllRouteKeys {
+		info, ok := resp.Routes[key]
+		if !ok || info.ChannelID == "" {
+			t.Fatalf("expected route %s to be configured, got %+v", key, resp.Routes)
+		}
+		if !info.ManagedByChampion {
+			t.Fatalf("expected route %s to be managed by Champion, got %+v", key, info)
+		}
+		ids[info.ChannelID] = true
 	}
-	if len(ids) != 4 {
-		t.Fatalf("expected 4 distinct channels, got %+v", resp.Channels)
+	if len(ids) != len(championAllRouteKeys) {
+		t.Fatalf("expected %d distinct channels, got %d", len(championAllRouteKeys), len(ids))
 	}
 	for _, ch := range verifier.channels[fixture.DiscordGuildID] {
 		if ch.Type == discordgo.ChannelTypeGuildText && ids[ch.ID] && ch.ParentID != resp.Category.ID {
@@ -1398,8 +1430,10 @@ func TestAutoSetupChannelsIsIdempotent(t *testing.T) {
 	if second.Category.ID != first.Category.ID {
 		t.Fatalf("expected the same category to be reused, got %q then %q", first.Category.ID, second.Category.ID)
 	}
-	if *second.Channels != *first.Channels {
-		t.Fatalf("expected the exact same channel IDs to be reused, got %+v then %+v", first.Channels, second.Channels)
+	for _, key := range championAllRouteKeys {
+		if second.Routes[key].ChannelID != first.Routes[key].ChannelID {
+			t.Fatalf("expected route %s to reuse the same channel ID, got %q then %q", key, first.Routes[key].ChannelID, second.Routes[key].ChannelID)
+		}
 	}
 
 	total := 0
@@ -1408,8 +1442,8 @@ func TestAutoSetupChannelsIsIdempotent(t *testing.T) {
 			total++
 		}
 	}
-	if total != 4 {
-		t.Fatalf("expected exactly 4 text channels after two auto-setup calls, got %d", total)
+	if total != len(championAllRouteKeys) {
+		t.Fatalf("expected exactly %d text channels after two auto-setup calls, got %d", len(championAllRouteKeys), total)
 	}
 }
 
@@ -1423,7 +1457,7 @@ func TestAutoSetupChannelsReusesExistingChampionChannelsByName(t *testing.T) {
 	fixture := buildInstallationFixture(t, a, verifier)
 	seedGuildChannels(verifier, fixture.DiscordGuildID, fakeGuildChannel{ID: "existing-category", Name: "champion killfeed", Type: discordgo.ChannelTypeGuildCategory})
 	seedGuildChannels(verifier, fixture.DiscordGuildID,
-		fakeGuildChannel{ID: "existing-killfeed", Name: "champion-killfeed", Type: discordgo.ChannelTypeGuildText, ParentID: "existing-category"},
+		fakeGuildChannel{ID: "existing-killfeed", Name: "killfeed", Type: discordgo.ChannelTypeGuildText, ParentID: "existing-category"},
 	)
 
 	rr := autoSetupChannels(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID, false)
@@ -1434,18 +1468,18 @@ func TestAutoSetupChannelsReusesExistingChampionChannelsByName(t *testing.T) {
 	if resp.Category.ID != "existing-category" {
 		t.Fatalf("expected the pre-existing category to be reused, got %+v", resp.Category)
 	}
-	if resp.Channels.KillfeedChannelID != "existing-killfeed" {
-		t.Fatalf("expected the pre-existing killfeed channel to be reused, got %q", resp.Channels.KillfeedChannelID)
+	if resp.Routes["KILLFEED"].ChannelID != "existing-killfeed" {
+		t.Fatalf("expected the pre-existing killfeed channel to be reused, got %q", resp.Routes["KILLFEED"].ChannelID)
 	}
 
 	killfeedCount := 0
 	for _, ch := range verifier.channels[fixture.DiscordGuildID] {
-		if ch.Name == "champion-killfeed" {
+		if ch.Name == "killfeed" {
 			killfeedCount++
 		}
 	}
 	if killfeedCount != 1 {
-		t.Fatalf("expected no duplicate champion-killfeed channel, found %d", killfeedCount)
+		t.Fatalf("expected no duplicate killfeed channel, found %d", killfeedCount)
 	}
 }
 
@@ -1474,8 +1508,9 @@ func TestAutoSetupChannelsMissingManageChannelsReturnsSafeFailure(t *testing.T) 
 }
 
 // TestAutoSetupChannelsDoesNotOverwriteManualConfiguration is case E: an
-// existing MANUAL configuration blocks auto-setup unless force=true, and is
-// left completely untouched when it does.
+// existing MANUAL configuration (via the legacy .../channels endpoint)
+// blocks auto-setup unless force=true, and is left completely untouched
+// when it does.
 func TestAutoSetupChannelsDoesNotOverwriteManualConfiguration(t *testing.T) {
 	a, verifier := saasIntegrationApp(t)
 	fixture := buildInstallationFixture(t, a, verifier)
@@ -1499,14 +1534,42 @@ func TestAutoSetupChannelsDoesNotOverwriteManualConfiguration(t *testing.T) {
 		t.Fatalf("expected the manual configuration to remain untouched, got %+v err=%v", stillCustom, err)
 	}
 
-	// force=true is an explicit, deliberate override.
+	// force=true is an explicit, deliberate override (section 9 "restore defaults").
 	forcedRR := autoSetupChannels(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID, true)
 	if forcedRR.Code != http.StatusOK {
 		t.Fatalf("expected 200 with force=true, got %d: %s", forcedRR.Code, forcedRR.Body.String())
 	}
 	forced := decodeBody[AutoSetupChannelsResponse](t, forcedRR)
-	if !forced.Configured || forced.Channels.KillfeedChannelID == "custom-killfeed" {
+	if !forced.Configured || forced.Routes["KILLFEED"].ChannelID == "custom-killfeed" {
 		t.Fatalf("expected force=true to actually run auto-setup, got %+v", forced)
+	}
+}
+
+// TestAutoSetupChannelsProtectsCustomerOwnedRoute covers section 14/15 via
+// the NEW routes endpoint: a route the customer explicitly pointed at an
+// existing channel via PUT .../channel-routes also blocks auto-setup unless
+// force=true - not just the legacy four-field endpoint.
+func TestAutoSetupChannelsProtectsCustomerOwnedRoute(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixture := buildInstallationFixture(t, a, verifier)
+	seedGuildChannels(verifier, fixture.DiscordGuildID, fakeGuildChannel{ID: "my-killfeed", Name: "my-killfeed", Type: discordgo.ChannelTypeGuildText})
+
+	if rr := saveChannelRoutes(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID, map[string]string{"KILLFEED": "my-killfeed"}); rr.Code != http.StatusOK {
+		t.Fatalf("save channel routes: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	rr := autoSetupChannels(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID, false)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 (a safe result, not an error), got %d: %s", rr.Code, rr.Body.String())
+	}
+	resp := decodeBody[AutoSetupChannelsResponse](t, rr)
+	if resp.Configured || resp.Reason != "CUSTOM_CONFIGURATION_EXISTS" {
+		t.Fatalf("expected configured=false reason=CUSTOM_CONFIGURATION_EXISTS, got %+v", resp)
+	}
+
+	routes, err := a.SaaSChannelRoutes.ListForInstallation(context.Background(), fixture.OrgID, fixture.InstallationID)
+	if err != nil || len(routes) != 1 || routes[0].ChannelID != "my-killfeed" {
+		t.Fatalf("expected the customer's route to remain untouched, got %+v err=%v", routes, err)
 	}
 }
 
@@ -1523,6 +1586,183 @@ func TestAutoSetupChannelsCrossTenantRejected(t *testing.T) {
 	}
 	if len(verifier.channels[fixtureA.DiscordGuildID]) != 0 {
 		t.Fatal("expected no channels to have been created in A's guild by B's attempt")
+	}
+}
+
+// TestAutoSetupChannelsMirrorsLegacySettings covers section 21 "legacy
+// four-field settings remain compatible": after auto-setup, GET
+// .../channels (the OLD endpoint) still reflects the resolved KILLFEED/
+// STATS_LEADERBOARDS/ADMIN_LOGS routes, not stale/empty legacy columns.
+func TestAutoSetupChannelsMirrorsLegacySettings(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixture := buildInstallationFixture(t, a, verifier)
+
+	resp := decodeBody[AutoSetupChannelsResponse](t, autoSetupChannels(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID, false))
+
+	legacyRR := getChannelSettings(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID)
+	if legacyRR.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", legacyRR.Code, legacyRR.Body.String())
+	}
+	legacy := decodeBody[InstallationChannelSettings](t, legacyRR)
+	if legacy.KillfeedChannelID != resp.Routes["KILLFEED"].ChannelID {
+		t.Fatalf("expected legacy killfeedChannelId to mirror the KILLFEED route, got %q want %q", legacy.KillfeedChannelID, resp.Routes["KILLFEED"].ChannelID)
+	}
+	if legacy.LeaderboardChannelID != resp.Routes["STATS_LEADERBOARDS"].ChannelID {
+		t.Fatalf("expected legacy leaderboardChannelId to mirror STATS_LEADERBOARDS, got %q want %q", legacy.LeaderboardChannelID, resp.Routes["STATS_LEADERBOARDS"].ChannelID)
+	}
+	if legacy.AdminLogChannelID != resp.Routes["ADMIN_LOGS"].ChannelID {
+		t.Fatalf("expected legacy adminLogChannelId to mirror ADMIN_LOGS, got %q want %q", legacy.AdminLogChannelID, resp.Routes["ADMIN_LOGS"].ChannelID)
+	}
+}
+
+// TestChannelRoutesPersistenceSurvivesRefresh covers section 21 "route
+// persistence survives refresh" and "same channel can serve multiple
+// routes": saving two routes to the SAME channel, then GET-ing, must return
+// exactly what was saved.
+func TestChannelRoutesPersistenceSurvivesRefresh(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixture := buildInstallationFixture(t, a, verifier)
+	seedGuildChannels(verifier, fixture.DiscordGuildID,
+		fakeGuildChannel{ID: "c-shared", Name: "general", Type: discordgo.ChannelTypeGuildText},
+		fakeGuildChannel{ID: "c-admin", Name: "admin", Type: discordgo.ChannelTypeGuildText},
+	)
+
+	saveRR := saveChannelRoutes(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID, map[string]string{
+		"KILLFEED":   "c-shared",
+		"BOUNTY":     "c-shared", // same channel, two routes (section 9)
+		"ADMIN_LOGS": "c-admin",
+		"PVE_FEED":   "", // explicitly disabled/omitted - never required
+	})
+	if saveRR.Code != http.StatusOK {
+		t.Fatalf("save channel routes: expected 200, got %d: %s", saveRR.Code, saveRR.Body.String())
+	}
+	saved := decodeBody[ChannelRoutesResponse](t, saveRR)
+	if saved.Routes["KILLFEED"].ChannelID != "c-shared" || saved.Routes["BOUNTY"].ChannelID != "c-shared" {
+		t.Fatalf("expected KILLFEED and BOUNTY to share c-shared, got %+v", saved.Routes)
+	}
+	if _, ok := saved.Routes["PVE_FEED"]; ok {
+		t.Fatalf("expected PVE_FEED to be absent (empty string means disabled), got %+v", saved.Routes)
+	}
+	for key, info := range saved.Routes {
+		if info.ManagedByChampion {
+			t.Fatalf("expected every manually-saved route to be managedByChampion=false, route %s was true", key)
+		}
+	}
+
+	getRR := listChannelRoutes(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", getRR.Code, getRR.Body.String())
+	}
+	got := decodeBody[ChannelRoutesResponse](t, getRR)
+	if len(got.Routes) != 3 || got.Routes["KILLFEED"].ChannelID != "c-shared" || got.Routes["BOUNTY"].ChannelID != "c-shared" || got.Routes["ADMIN_LOGS"].ChannelID != "c-admin" {
+		t.Fatalf("expected GET to restore exactly what was saved, got %+v", got.Routes)
+	}
+}
+
+// TestChannelRoutesRequireKillfeed covers section 10: KILLFEED remains
+// required even in the new routes model - disabling it is rejected.
+func TestChannelRoutesRequireKillfeed(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixture := buildInstallationFixture(t, a, verifier)
+	seedGuildChannels(verifier, fixture.DiscordGuildID, fakeGuildChannel{ID: "c-1", Name: "general", Type: discordgo.ChannelTypeGuildText})
+
+	if rr := saveChannelRoutes(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID, map[string]string{"KILLFEED": "c-1"}); rr.Code != http.StatusOK {
+		t.Fatalf("initial save: expected 200, got %d", rr.Code)
+	}
+
+	rr := saveChannelRoutes(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID, map[string]string{"KILLFEED": ""})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 clearing the required killfeed route, got %d: %s", rr.Code, rr.Body.String())
+	}
+	assertErrorCode(t, rr, codeInvalidRequest)
+
+	still, err := a.SaaSChannelRoutes.ListForInstallation(context.Background(), fixture.OrgID, fixture.InstallationID)
+	if err != nil || len(still) != 1 || still[0].ChannelID != "c-1" {
+		t.Fatalf("expected KILLFEED to remain configured, got %+v err=%v", still, err)
+	}
+}
+
+// TestChannelRoutesRejectsForeignGuildChannel covers section 12/21 "cross-
+// guild channel rejected".
+func TestChannelRoutesRejectsForeignGuildChannel(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixtureA := buildInstallationFixture(t, a, verifier)
+	fixtureB := buildInstallationFixture(t, a, verifier)
+	seedGuildChannels(verifier, fixtureB.DiscordGuildID, fakeGuildChannel{ID: "foreign-channel", Name: "general", Type: discordgo.ChannelTypeGuildText})
+
+	rr := saveChannelRoutes(t, a, fixtureA.OrgID, fixtureA.InstallationID, fixtureA.OwnerDiscordID, map[string]string{"KILLFEED": "foreign-channel"})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a foreign-guild channel, got %d: %s", rr.Code, rr.Body.String())
+	}
+	assertErrorCode(t, rr, codeInvalidRequest)
+}
+
+// TestChannelRoutesCrossTenantRejected covers section 21 "cross-tenant
+// access rejected" for the new routes endpoints.
+func TestChannelRoutesCrossTenantRejected(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixtureA := buildInstallationFixture(t, a, verifier)
+	fixtureB := buildInstallationFixture(t, a, verifier)
+	seedGuildChannels(verifier, fixtureA.DiscordGuildID, fakeGuildChannel{ID: "c-1", Name: "killfeed", Type: discordgo.ChannelTypeGuildText})
+
+	if rr := saveChannelRoutes(t, a, fixtureA.OrgID, fixtureA.InstallationID, fixtureA.OwnerDiscordID, map[string]string{"KILLFEED": "c-1"}); rr.Code != http.StatusOK {
+		t.Fatalf("seed A's routes: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	if rr := listChannelRoutes(t, a, fixtureB.OrgID, fixtureA.InstallationID, fixtureB.OwnerDiscordID); rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for cross-tenant read, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if rr := saveChannelRoutes(t, a, fixtureB.OrgID, fixtureA.InstallationID, fixtureB.OwnerDiscordID, map[string]string{"KILLFEED": "c-1"}); rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for cross-tenant write, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	stillA, err := a.SaaSChannelRoutes.ListForInstallation(context.Background(), fixtureA.OrgID, fixtureA.InstallationID)
+	if err != nil || len(stillA) != 1 || stillA[0].ChannelID != "c-1" {
+		t.Fatalf("expected A's routes untouched by B's attempts, got %+v err=%v", stillA, err)
+	}
+}
+
+// TestChannelRoutesManagedOwnershipDistinguishesSource covers section 21
+// "Champion-managed ownership preserved" / "customer-owned channels never
+// marked managed": an auto-created route is managed=true; a manually saved
+// route pointing at the SAME channel ID is managed=false.
+func TestChannelRoutesManagedOwnershipDistinguishesSource(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixture := buildInstallationFixture(t, a, verifier)
+
+	auto := decodeBody[AutoSetupChannelsResponse](t, autoSetupChannels(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID, false))
+	killfeedChannelID := auto.Routes["KILLFEED"].ChannelID
+
+	routes, err := a.SaaSChannelRoutes.ListForInstallation(context.Background(), fixture.OrgID, fixture.InstallationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range routes {
+		if !r.ManagedByChampion {
+			t.Fatalf("expected every auto-setup route to be managed=true, route %s was false", r.RouteKey)
+		}
+	}
+
+	// A manual save pointing PVE_FEED at the SAME Champion-created channel
+	// must still be recorded as customer-owned for THAT route (section 15) -
+	// managed ownership is never implied just because the channel ID matches
+	// one Champion happened to create for a different route.
+	if rr := saveChannelRoutes(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID, map[string]string{"PVE_FEED": killfeedChannelID}); rr.Code != http.StatusOK {
+		t.Fatalf("manual save: expected 200, got %d", rr.Code)
+	}
+	updated, err := a.SaaSChannelRoutes.ListForInstallation(context.Background(), fixture.OrgID, fixture.InstallationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byKey := map[string]repository.ChannelRoute{}
+	for _, r := range updated {
+		byKey[r.RouteKey] = r
+	}
+	if byKey["PVE_FEED"].ManagedByChampion {
+		t.Fatal("expected the manually-set PVE_FEED route to be managed=false")
+	}
+	if !byKey["KILLFEED"].ManagedByChampion {
+		t.Fatal("expected KILLFEED to remain managed=true - untouched by the PVE_FEED save")
 	}
 }
 

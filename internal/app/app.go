@@ -92,6 +92,7 @@ type App struct {
 	SaaSInstallations         *repository.InstallationRepository
 	SaaSSubscriptions         *repository.SubscriptionRepository
 	SaaSCredentials           *repository.CredentialRepository
+	SaaSChannelRoutes         *repository.ChannelRouteRepository
 	saasDiscordVerifier       discordGuildVerifier
 	saasNitradoClientFactory  func(token string) *nitrado.Client
 	saasSyncLimiter           *saasRateLimiter
@@ -481,6 +482,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.SaaSInstallations = repository.NewInstallationRepository(db.Pool)
 			app.SaaSSubscriptions = repository.NewSubscriptionRepository(db.Pool)
 			app.SaaSCredentials = repository.NewCredentialRepository(db.Pool)
+			app.SaaSChannelRoutes = repository.NewChannelRouteRepository(db.Pool)
 			seedCtx, seedCancel := context.WithTimeout(ctx, 10*time.Second)
 			seedErr := app.Achievements.EnsureDefinitions(seedCtx)
 			seedCancel()
