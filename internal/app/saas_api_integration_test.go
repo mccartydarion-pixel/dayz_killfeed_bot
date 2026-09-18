@@ -754,6 +754,7 @@ func connectNitrado(t *testing.T, a *App, orgID int64, ownerDiscordID string) Ni
 func TestNitradoConnectPersistsCredentialAndAdvancesSetup(t *testing.T) {
 	a, verifier := saasIntegrationApp(t)
 	fixture := buildInstallationFixture(t, a, verifier)
+	completeDiscordStep(t, a, fixture)
 	withFakeNitradoServer(t, a, http.StatusOK, psServiceJSON)
 
 	resp := connectNitrado(t, a, fixture.OrgID, fixture.OwnerDiscordID)
@@ -846,6 +847,7 @@ func TestNitradoServicesListsOnlySupportedPlatforms(t *testing.T) {
 func TestSelectDayZServerPersistsPlatformAndAdvancesSetup(t *testing.T) {
 	a, verifier := saasIntegrationApp(t)
 	fixture := buildInstallationFixture(t, a, verifier)
+	completeDiscordStep(t, a, fixture)
 	withFakeNitradoServer(t, a, http.StatusOK, psServiceJSON)
 	connectNitrado(t, a, fixture.OrgID, fixture.OwnerDiscordID)
 
@@ -959,6 +961,7 @@ func selectDayZServer(t *testing.T, a *App, orgID, installationID, serviceID int
 func TestSelectDayZServerReusesExistingInstallation(t *testing.T) {
 	a, verifier := saasIntegrationApp(t)
 	fixture := buildInstallationFixture(t, a, verifier)
+	completeDiscordStep(t, a, fixture)
 	withFakeNitradoServer(t, a, http.StatusOK, psServiceJSON)
 	connectNitrado(t, a, fixture.OrgID, fixture.OwnerDiscordID)
 
@@ -1196,6 +1199,7 @@ func TestListDiscordChannelsReturnsOnlyTextAndAnnouncement(t *testing.T) {
 func TestSaveChannelSettingsPersistsAndPreservesOtherFields(t *testing.T) {
 	a, verifier := saasIntegrationApp(t)
 	fixture := buildInstallationFixture(t, a, verifier)
+	completeDiscordStep(t, a, fixture)
 	seedGuildChannels(verifier, fixture.DiscordGuildID,
 		fakeGuildChannel{ID: "c-killfeed", Name: "champion-killfeed", Type: discordgo.ChannelTypeGuildText},
 		fakeGuildChannel{ID: "c-admin", Name: "champion-admin", Type: discordgo.ChannelTypeGuildText},
@@ -1374,6 +1378,7 @@ func saveChannelRoutes(t *testing.T, a *App, orgID, installationID int64, acting
 func TestAutoSetupChannelsCreatesCompleteBlueprint(t *testing.T) {
 	a, verifier := saasIntegrationApp(t)
 	fixture := buildInstallationFixture(t, a, verifier)
+	advanceFixtureToServerSelected(t, a, fixture)
 
 	rr := autoSetupChannels(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID, false)
 	if rr.Code != http.StatusOK {
@@ -1811,6 +1816,44 @@ func TestCreateDiscordChannelNormalizesName(t *testing.T) {
 // --- setup finalization + customer hub --------------------------------------
 
 func boolPtr(b bool) *bool { return &b }
+
+// completeDiscordStep marks the wizard's Discord step done exactly as the
+// website does (PATCH .../setup, discordCompleted=true). Later steps'
+// progress flags are only persisted when the earlier ones are already true
+// (validateSetupProgressOrder), so any test that asserts nitradoCompleted /
+// serverSelected / channelsCompleted must do this first - buildInstallation
+// Fixture deliberately stops at a fresh, pre-Discord-step installation.
+func completeDiscordStep(t *testing.T, a *App, fixture installationFixture) {
+	t.Helper()
+	// The Discord step also runs verify-installation, which is what moves a
+	// real installation NOT_STARTED -> DISCORD_CONNECTED.
+	verifyReq := withPathValues(withActingUser(saasRequest(http.MethodPost, "/x", nil), fixture.OwnerDiscordID),
+		map[string]string{"organizationID": strconv.FormatInt(fixture.OrgID, 10), "installationID": strconv.FormatInt(fixture.InstallationID, 10)})
+	verifyRR := httptest.NewRecorder()
+	a.handleVerifyInstallation(verifyRR, verifyReq)
+	if verifyRR.Code != http.StatusOK {
+		t.Fatalf("verify installation: expected 200, got %d: %s", verifyRR.Code, verifyRR.Body.String())
+	}
+	req := withPathValues(withActingUser(saasRequest(http.MethodPatch, "/x", setupProgressPatchRequest{DiscordCompleted: boolPtr(true), CurrentStep: strPtr("NITRADO")}), fixture.OwnerDiscordID),
+		map[string]string{"organizationID": strconv.FormatInt(fixture.OrgID, 10), "installationID": strconv.FormatInt(fixture.InstallationID, 10)})
+	rr := httptest.NewRecorder()
+	a.handleUpdateSetupProgress(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("complete discord step: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// advanceFixtureToServerSelected walks a fresh fixture through Discord,
+// Nitrado connect, and DayZ server selection (no channels yet).
+func advanceFixtureToServerSelected(t *testing.T, a *App, fixture installationFixture) {
+	t.Helper()
+	completeDiscordStep(t, a, fixture)
+	withFakeNitradoServer(t, a, http.StatusOK, psServiceJSON)
+	connectNitrado(t, a, fixture.OrgID, fixture.OwnerDiscordID)
+	if rr := selectDayZServer(t, a, fixture.OrgID, fixture.InstallationID, 111111, fixture.OwnerDiscordID); rr.Code != http.StatusOK {
+		t.Fatalf("select dayz server: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
 
 func finalizeSetup(t *testing.T, a *App, orgID, installationID int64, actingDiscordID string) *httptest.ResponseRecorder {
 	t.Helper()
@@ -2265,8 +2308,10 @@ func TestCriticalKillfeedRouteChangeInvalidatesValidation(t *testing.T) {
 // different server on a READY installation must also downgrade it.
 func TestCriticalDayZServerChangeInvalidatesValidation(t *testing.T) {
 	a, verifier := saasIntegrationApp(t)
-	withFakeNitradoServer(t, a, http.StatusOK, mixedServicesJSON)
 	fixture, _ := buildFinalizableFixture(t, a, verifier)
+	// buildFinalizableFixture installs a PlayStation-only fake Nitrado
+	// account; switch to the mixed one so a second server can be selected.
+	withFakeNitradoServer(t, a, http.StatusOK, mixedServicesJSON)
 	if rr := finalizeSetup(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID); rr.Code != http.StatusOK {
 		t.Fatalf("finalize: expected 200, got %d: %s", rr.Code, rr.Body.String())
 	}
