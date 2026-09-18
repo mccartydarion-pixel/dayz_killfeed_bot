@@ -28,6 +28,7 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/nitrado"
 	"github.com/yourname/dayz-killfeed/internal/operations"
 	"github.com/yourname/dayz-killfeed/internal/repository"
+	"github.com/yourname/dayz-killfeed/internal/routing"
 	"github.com/yourname/dayz-killfeed/internal/seasons"
 	"github.com/yourname/dayz-killfeed/internal/security"
 	"github.com/yourname/dayz-killfeed/internal/server"
@@ -85,14 +86,18 @@ type App struct {
 	// docs/SAAS_HTTP_API.md. SaaSServers/SaaSGuildConnections operate on the
 	// same game_servers/guilds tables as Servers/Guilds above, just through
 	// the organization-scoped lookups those don't provide.
-	SaaSUsers                 *repository.UserRepository
-	SaaSOrganizations         *repository.OrganizationRepository
-	SaaSGuildConnections      *repository.GuildConnectionRepository
-	SaaSServers               *repository.SaaSServerRepository
-	SaaSInstallations         *repository.InstallationRepository
-	SaaSSubscriptions         *repository.SubscriptionRepository
-	SaaSCredentials           *repository.CredentialRepository
-	SaaSChannelRoutes         *repository.ChannelRouteRepository
+	SaaSUsers            *repository.UserRepository
+	SaaSOrganizations    *repository.OrganizationRepository
+	SaaSGuildConnections *repository.GuildConnectionRepository
+	SaaSServers          *repository.SaaSServerRepository
+	SaaSInstallations    *repository.InstallationRepository
+	SaaSSubscriptions    *repository.SubscriptionRepository
+	SaaSCredentials      *repository.CredentialRepository
+	SaaSChannelRoutes    *repository.ChannelRouteRepository
+	// ChannelRoutes is the runtime feature -> Discord channel resolver
+	// (internal/routing), a short-TTL cache over SaaSChannelRoutes. Nil-safe:
+	// with no database, publishers simply use their legacy channel.
+	ChannelRoutes             *routing.Resolver
 	saasDiscordVerifier       discordGuildVerifier
 	saasNitradoClientFactory  func(token string) *nitrado.Client
 	saasSyncLimiter           *saasRateLimiter
@@ -483,6 +488,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.SaaSSubscriptions = repository.NewSubscriptionRepository(db.Pool)
 			app.SaaSCredentials = repository.NewCredentialRepository(db.Pool)
 			app.SaaSChannelRoutes = repository.NewChannelRouteRepository(db.Pool)
+			app.ChannelRoutes = routing.NewResolver(app.SaaSChannelRoutes, routing.DefaultTTL)
 			seedCtx, seedCancel := context.WithTimeout(ctx, 10*time.Second)
 			seedErr := app.Achievements.EnsureDefinitions(seedCtx)
 			seedCancel()
@@ -1267,12 +1273,19 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 
 	publisher := discord.NewKillfeedPublisher(a.Discord, a.Config.KillfeedChannelID)
 	publisher.BindStore(setupStore, a.Config.DiscordGuildID)
+	if a.ChannelRoutes != nil {
+		// KILLFEED resolves per (guild, server) through the installation
+		// route model first; the legacy GuildSetup/env channel is only the
+		// fallback when no route is configured.
+		publisher.SetRouting(a.ChannelRoutes, row.GuildID, row.ID)
+	}
 	engine.SetKillPublisher(publisher)
 
 	deathPublisher := discord.NewDeathfeedPublisher(a.Discord, setupStore, a.Config.DiscordGuildID)
 	engine.SetDeathPublisher(deathPublisher)
 
 	killFeed := discord.NewRotatingFeed(a.Discord.Session(), setupStore, a.Config.DiscordGuildID, func(s *discord.GuildSetup) string { return s.KillfeedChannelID }, rotatingFeedInterval, rotatingFeedBatchSize)
+	killFeed.SetRouteChannelResolver(publisher.RouteChannelID)
 	publisher.SetFeed(killFeed)
 	a.addRotatingFeed(killFeed)
 	deathFeed := discord.NewRotatingFeed(a.Discord.Session(), setupStore, a.Config.DiscordGuildID, func(s *discord.GuildSetup) string { return s.DeathChannelID }, rotatingFeedInterval, rotatingFeedBatchSize)

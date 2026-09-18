@@ -423,6 +423,10 @@ func (a *App) handleSelectDayZServer(w http.ResponseWriter, r *http.Request) {
 	// Only applies to the direct (non-reused) path: a reused installation's
 	// game_server_id never actually changes by definition of the reuse
 	// match, so there's nothing to invalidate there.
+	// The installation -> server mapping just changed, which changes which
+	// installation's routes a server's publishers resolve to.
+	a.ChannelRoutes.InvalidateAll()
+
 	criticalServerChange := resolvedInstallationID == installationID && loaded.Status == repository.InstallationReady &&
 		loaded.GameServerID != nil && *loaded.GameServerID != server.ID
 

@@ -171,6 +171,7 @@ func saasIntegrationApp(t *testing.T) (*App, *fakeDiscordVerifier) {
 		SaaSInstallations:    repository.NewInstallationRepository(db.Pool),
 		SaaSSubscriptions:    repository.NewSubscriptionRepository(db.Pool),
 		SaaSCredentials:      repository.NewCredentialRepository(db.Pool),
+		SaaSChannelRoutes:    repository.NewChannelRouteRepository(db.Pool),
 		saasDiscordVerifier:  verifier,
 	}
 	cipher, err := security.NewAESGCM("01234567890123456789012345678901", 1)

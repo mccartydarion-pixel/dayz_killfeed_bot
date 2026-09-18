@@ -36,7 +36,22 @@ type RotatingFeed struct {
 	lastMsgIDs    []string
 	lastChannelID string
 
+	// routeChannelFn, when set, is consulted first each flush (the
+	// installation route model - see KillfeedPublisher.RouteChannelID); an
+	// empty result falls back to the legacy GuildSetup field below, so
+	// guilds without a configured route behave exactly as before.
+	routeChannelFn func() string
+
 	done chan struct{}
+}
+
+// SetRouteChannelResolver attaches the installation-route lookup that takes
+// priority over the legacy GuildSetup channel. Optional.
+func (f *RotatingFeed) SetRouteChannelResolver(fn func() string) {
+	if f == nil {
+		return
+	}
+	f.routeChannelFn = fn
 }
 
 // NewRotatingFeed creates a feed. channelIDFn extracts the relevant channel
@@ -93,6 +108,11 @@ func (f *RotatingFeed) WaitDone() {
 }
 
 func (f *RotatingFeed) channelID() string {
+	if f.routeChannelFn != nil {
+		if id := f.routeChannelFn(); id != "" {
+			return id
+		}
+	}
 	if f.store == nil || f.guildID == "" {
 		return ""
 	}

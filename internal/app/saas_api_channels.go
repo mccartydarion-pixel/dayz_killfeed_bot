@@ -332,6 +332,10 @@ func (a *App) handleSaveChannelSettings(w http.ResponseWriter, r *http.Request) 
 // re-saving the same KILLFEED channel) leaves READY/validationCompleted
 // alone entirely.
 func (a *App) completeChannelsStep(ctx context.Context, organizationID, installationID int64, currentStatus string, criticalChange bool) {
+	// Every caller has just written channel routes: drop the runtime route
+	// cache so publishers use the new channel on their very next lookup
+	// instead of waiting out the resolver TTL.
+	a.ChannelRoutes.InvalidateAll()
 	if err := a.advanceSetupProgress(ctx, organizationID, installationID, false, func(p *repository.InstallationSetupProgress) {
 		p.ChannelsCompleted = true
 		p.CurrentStep = "VALIDATION"

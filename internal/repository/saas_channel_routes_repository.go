@@ -2,9 +2,11 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -117,4 +119,41 @@ ORDER BY cr.channel_id`
 		out = append(out, id)
 	}
 	return out, rows.Err()
+}
+
+// ResolveChannel is the runtime lookup: the channel configured for routeKey
+// on the installation that owns (guildRowID, serverID) - guildRowID being
+// the internal guilds.id and serverID the game_servers.id. It is one joined
+// query (installation -> guild connection -> game server -> route), and is
+// deliberately NOT organization-parameterised like the dashboard reads:
+// the runtime has no acting user, so tenant isolation is enforced
+// structurally instead - the server must belong to the same guild as the
+// connection, and a server already claimed by an organization must be
+// claimed by the SAME organization that owns the installation and the
+// connection. A row failing any of those checks never resolves.
+// found=false with a nil error means no route is configured.
+func (r *ChannelRouteRepository) ResolveChannel(ctx context.Context, guildRowID, serverID int64, routeKey string) (string, bool, error) {
+	const q = `
+SELECT cr.channel_id
+FROM installations i
+JOIN discord_guild_connections c ON c.id = i.discord_guild_connection_id
+JOIN game_servers gs ON gs.id = i.game_server_id
+JOIN installation_channel_routes cr ON cr.installation_id = i.id
+WHERE c.guild_id = $1
+  AND i.game_server_id = $2
+  AND cr.route_key = $3
+  AND gs.guild_id = c.guild_id
+  AND c.organization_id = i.organization_id
+  AND (gs.organization_id IS NULL OR gs.organization_id = i.organization_id)
+ORDER BY i.id
+LIMIT 1`
+	var channelID string
+	err := r.pool.QueryRow(ctx, q, guildRowID, serverID, routeKey).Scan(&channelID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("resolve channel route: %w", err)
+	}
+	return channelID, channelID != "", nil
 }
