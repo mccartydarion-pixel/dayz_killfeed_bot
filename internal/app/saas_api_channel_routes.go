@@ -382,9 +382,13 @@ func (a *App) handleSaveChannelRoutes(w http.ResponseWriter, r *http.Request) {
 	// Section 10: KILLFEED is required - validate the WOULD-BE merged state
 	// before persisting anything, so a request that would clear it is
 	// rejected atomically rather than partially applied.
+	oldKillfeed := ""
 	merged := make(map[string]string, len(existing))
 	for _, rt := range existing {
 		merged[rt.RouteKey] = rt.ChannelID
+		if rt.RouteKey == "KILLFEED" {
+			oldKillfeed = rt.ChannelID
+		}
 	}
 	for key, value := range normalized {
 		merged[key] = value
@@ -393,6 +397,10 @@ func (a *App) handleSaveChannelRoutes(w http.ResponseWriter, r *http.Request) {
 		writeSaaSError(w, codeInvalidRequest, "a killfeed channel is required")
 		return
 	}
+	// Setup-completion task, section 13: changing KILLFEED's channel on an
+	// already-READY installation invalidates its permission verification -
+	// stale results for the OLD channel can never be trusted for a new one.
+	criticalChange := loaded.Status == repository.InstallationReady && oldKillfeed != "" && oldKillfeed != merged["KILLFEED"]
 
 	for key, value := range normalized {
 		if value == "" {
@@ -410,7 +418,7 @@ func (a *App) handleSaveChannelRoutes(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	a.completeChannelsStep(ctx, organizationID, installationID, loaded.Status)
+	a.completeChannelsStep(ctx, organizationID, installationID, loaded.Status, criticalChange)
 
 	slog.Info("component=saas_api", "event", "saas_channel_routes_saved", "installation_id", installationID, "routes_touched", len(normalized))
 
@@ -565,7 +573,12 @@ func (a *App) handleAutoSetupChannels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.completeChannelsStep(ctx, organizationID, installationID, loaded.Status)
+	// Setup-completion task, section 13: force=true restoring defaults over
+	// customer-owned routing on an already-READY installation is exactly the
+	// "critical config change" case - never silently keeps READY against a
+	// channel that was never actually verified.
+	criticalChange := loaded.Status == repository.InstallationReady && persisted["KILLFEED"] != "" && persisted["KILLFEED"] != routes["KILLFEED"].ChannelID
+	a.completeChannelsStep(ctx, organizationID, installationID, loaded.Status, criticalChange)
 
 	slog.Info("component=saas_api", "event", "saas_channels_auto_setup", "installation_id", installationID, "category_id", category.ID, "route_count", len(routes))
 

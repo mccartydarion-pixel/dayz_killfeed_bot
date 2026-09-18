@@ -448,6 +448,56 @@ components:
           type: string
           description: Optional. Must already belong to this installation's own Discord guild.
 
+    FinalizeSetupResponse:
+      type: object
+      properties:
+        completed: { type: boolean }
+        installation: { $ref: "#/components/schemas/InstallationSummary" }
+
+    HubDiscordSummary:
+      type: object
+      properties:
+        guildName: { type: string }
+        guildIcon: { type: string }
+        botInstalled: { type: boolean }
+
+    InstallationGeneralSettings:
+      type: object
+      description: >
+        The customer-editable general settings surface - deliberately
+        separate from the channel-specific settings endpoints, never
+        overloaded onto them.
+      properties:
+        timezone: { type: string, description: Required on PUT. }
+        distanceUnit: { type: string, enum: [METERS, FEET] }
+        onlineDisplayEnabled: { type: boolean }
+        leaderboardEnabled: { type: boolean }
+
+    HubSummary:
+      type: object
+      description: >
+        Everything the customer landing page needs in one call. Reuses
+        existing DTOs/repositories throughout - never a duplicate
+        installation/organization model. Never includes a Nitrado token,
+        encrypted credential, Discord bot token, WEBSITE_API_SECRET, or
+        database detail.
+      properties:
+        organization: { $ref: "#/components/schemas/OrganizationSummary" }
+        subscription:
+          allOf: [{ $ref: "#/components/schemas/SubscriptionSummary" }]
+          nullable: true
+        installation: { $ref: "#/components/schemas/InstallationSummary" }
+        discord:
+          allOf: [{ $ref: "#/components/schemas/HubDiscordSummary" }]
+          nullable: true
+        dayzServer:
+          allOf: [{ $ref: "#/components/schemas/DayZServerSummary" }]
+          nullable: true
+        channelRoutes:
+          type: object
+          additionalProperties: { $ref: "#/components/schemas/ChannelRouteInfo" }
+        settings: { $ref: "#/components/schemas/InstallationGeneralSettings" }
+
   responses:
     Unauthorized:
       description: Missing/invalid service auth, or acting user not synced.
@@ -1054,3 +1104,92 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ApiError" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/setup/complete:
+    post:
+      summary: Finalize onboarding (OWNER/ADMIN). Every prerequisite is re-derived from persisted backend state, never a client claim. Idempotent once READY.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+      responses:
+        "200":
+          description: >
+            completed=true with the resulting installation. If already
+            READY, this is a no-op success - no prerequisite is re-checked
+            and no timestamp is touched.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FinalizeSetupResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422":
+          description: A setup prerequisite isn't met yet (Discord/bot not installed, Nitrado not connected, no DayZ server, no KILLFEED route, setup progress incomplete, or a configured channel is missing a blocking permission). The message names which one.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "503":
+          description: Discord bot session unavailable.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/hub:
+    get:
+      summary: Everything the customer landing page needs in one call.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+      responses:
+        "200":
+          description: Hub summary. discord/dayzServer/subscription are omitted (not a failure) when not yet configured.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HubSummary" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/settings:
+    get:
+      summary: Return the customer-editable general settings (timezone, distance unit, display toggles).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+      responses:
+        "200":
+          description: Persisted general settings.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InstallationGeneralSettings" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      summary: Save general settings (OWNER/ADMIN). Never critical - never touches setup progress, validation, or installation status.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InstallationGeneralSettings" }
+      responses:
+        "200":
+          description: Saved.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InstallationGeneralSettings" }
+        "400":
+          description: timezone missing, or distanceUnit is not METERS/FEET.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }

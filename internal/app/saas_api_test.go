@@ -232,6 +232,20 @@ func TestNoSensitiveFieldsInAPIResponses(t *testing.T) {
 		},
 		AutoSetupChannelsResponse{Configured: false, Reason: "MISSING_MANAGE_CHANNELS"},
 		AutoSetupChannelsResponse{Configured: false, Reason: "CUSTOM_CONFIGURATION_EXISTS"},
+		FinalizeSetupResponse{Completed: true, Installation: InstallationSummary{ID: 1, Status: "READY"}},
+		HubDiscordSummary{GuildName: "x", GuildIcon: "y", BotInstalled: true},
+		InstallationGeneralSettings{Timezone: "UTC", DistanceUnit: "METERS", OnlineDisplayEnabled: true, LeaderboardEnabled: true},
+		HubSummary{
+			Organization: OrganizationSummary{ID: 1, Name: "x", Slug: "x", Role: "OWNER"},
+			Subscription: &SubscriptionSummary{Plan: "TRIAL", Status: "TRIAL"},
+			Installation: InstallationSummary{ID: 1, Status: "READY"},
+			Discord:      &HubDiscordSummary{GuildName: "x", BotInstalled: true},
+			DayZServer:   &DayZServerSummary{ID: 1, Game: "DayZ", Platform: "PLAYSTATION", Status: "ONLINE"},
+			ChannelRoutes: map[string]ChannelRouteInfo{
+				"KILLFEED": {ChannelID: "1", ChannelName: "killfeed", ManagedByChampion: true},
+			},
+			Settings: InstallationGeneralSettings{Timezone: "UTC", DistanceUnit: "METERS", OnlineDisplayEnabled: true, LeaderboardEnabled: true},
+		},
 	}
 
 	forbidden := []string{
