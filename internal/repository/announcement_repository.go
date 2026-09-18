@@ -28,7 +28,7 @@ func (r *AnnouncementRepository) Claim(ctx context.Context, kind string, objectI
 		return false, err
 	}
 	var claimed bool
-	err = r.pool.QueryRow(ctx, `UPDATE completion_announcements SET status='CLAIMED',claimed_at=$3,updated_at=NOW() WHERE kind=$1 AND object_id=$2 AND (status='PENDING' OR (status='CLAIMED' AND claimed_at<$3-$4::interval)) RETURNING TRUE`, kind, objectID, now, fmt.Sprintf("%d seconds", int(lease.Seconds()))).Scan(&claimed)
+	err = r.pool.QueryRow(ctx, `UPDATE completion_announcements SET status='CLAIMED',claimed_at=$3::timestamptz,updated_at=NOW() WHERE kind=$1 AND object_id=$2 AND (status='PENDING' OR (status='CLAIMED' AND claimed_at<$3::timestamptz-$4::interval)) RETURNING TRUE`, kind, objectID, now, fmt.Sprintf("%d seconds", int(lease.Seconds()))).Scan(&claimed)
 	if err == pgx.ErrNoRows {
 		return false, nil
 	}
