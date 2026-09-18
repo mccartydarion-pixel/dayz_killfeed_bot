@@ -17,7 +17,9 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/config"
 	"github.com/yourname/dayz-killfeed/internal/database"
 	"github.com/yourname/dayz-killfeed/internal/discord"
+	"github.com/yourname/dayz-killfeed/internal/nitrado"
 	"github.com/yourname/dayz-killfeed/internal/repository"
+	"github.com/yourname/dayz-killfeed/internal/security"
 )
 
 // fakeDiscordVerifier lets these tests exercise the full SaaS Discord
@@ -92,9 +94,35 @@ func saasIntegrationApp(t *testing.T) (*App, *fakeDiscordVerifier) {
 		SaaSServers:          repository.NewSaaSServerRepository(db.Pool),
 		SaaSInstallations:    repository.NewInstallationRepository(db.Pool),
 		SaaSSubscriptions:    repository.NewSubscriptionRepository(db.Pool),
+		SaaSCredentials:      repository.NewCredentialRepository(db.Pool),
 		saasDiscordVerifier:  verifier,
 	}
+	cipher, err := security.NewAESGCM("01234567890123456789012345678901", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.CredentialCipher = cipher
 	return a, verifier
+}
+
+// withFakeNitradoServer points a's Nitrado client factory at a local test
+// server serving GET /services with the given raw JSON body (any shape
+// nitrado.DecodeServices accepts - see internal/nitrado/models.go), so
+// Nitrado-dependent handlers can be exercised without a live account. If
+// status is not http.StatusOK, AuthenticationCheck fails exactly like an
+// invalid token would.
+func withFakeNitradoServer(t *testing.T, a *App, status int, servicesJSON string) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(status)
+		if status == http.StatusOK {
+			_, _ = w.Write([]byte(servicesJSON))
+		}
+	}))
+	t.Cleanup(srv.Close)
+	a.saasNitradoClientFactory = func(token string) *nitrado.Client {
+		return nitrado.NewClient(srv.URL, token, nil)
+	}
 }
 
 // --- request helpers -------------------------------------------------------
@@ -615,5 +643,231 @@ func TestEligibleGuildsUsesZeroLiveDiscordCalls(t *testing.T) {
 		if g.BotInstalled != want.botInstalled {
 			t.Fatalf("guild %q: expected botInstalled=%v, got %v", g.DiscordGuildID, want.botInstalled, g.BotInstalled)
 		}
+	}
+}
+
+// --- console DayZ backend (Nitrado connect/discover/select) ----------------
+
+const psServiceJSON = `[{"id":"111111","status":"active","game":"DayZ (PS4)","details":{"name":"Champions PS","folder_short":"dayzps"}}]`
+
+const mixedServicesJSON = `[
+  {"id":"111111","status":"active","game":"DayZ (PS4)","details":{"name":"Champions PS","folder_short":"dayzps"}},
+  {"id":"222222","status":"active","game":"DayZ (Xbox)","details":{"name":"Champions Xbox"}},
+  {"id":"333333","status":"active","game":"DayZ","details":{"name":"PC Server"}},
+  {"id":"444444","status":"active","game":"Minecraft","details":{"name":"MC Server"}}
+]`
+
+func connectNitrado(t *testing.T, a *App, orgID int64, ownerDiscordID string) NitradoConnectResponse {
+	t.Helper()
+	req := withPathValues(withActingUser(saasRequest(http.MethodPost, "/x", nitradoConnectRequest{Token: "fake-nitrado-token"}), ownerDiscordID),
+		map[string]string{"organizationID": strconv.FormatInt(orgID, 10)})
+	rr := httptest.NewRecorder()
+	a.handleNitradoConnect(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("connect nitrado: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	return decodeBody[NitradoConnectResponse](t, rr)
+}
+
+// TestNitradoConnectPersistsCredentialAndAdvancesSetup is section 4 + 11:
+// a valid token is validated live, the encrypted envelope is persisted, the
+// raw token never appears in the response, and setup progress advances
+// (nitradoCompleted=true, currentStep=SERVER) for every installation under
+// the organization.
+func TestNitradoConnectPersistsCredentialAndAdvancesSetup(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixture := buildInstallationFixture(t, a, verifier)
+	withFakeNitradoServer(t, a, http.StatusOK, psServiceJSON)
+
+	resp := connectNitrado(t, a, fixture.OrgID, fixture.OwnerDiscordID)
+	if !resp.Connected || resp.ServicesFound != 1 {
+		t.Fatalf("expected connected=true servicesFound=1, got %+v", resp)
+	}
+
+	envelope, err := a.SaaSCredentials.GetForOrganizationOnly(context.Background(), fixture.OrgID)
+	if err != nil || envelope == nil {
+		t.Fatalf("expected a persisted credential envelope: %v", err)
+	}
+	if len(envelope.Ciphertext) == 0 || len(envelope.Nonce) == 0 {
+		t.Fatal("expected a non-empty encrypted envelope")
+	}
+	if strings.Contains(string(envelope.Ciphertext), "fake-nitrado-token") {
+		t.Fatal("expected the token to be encrypted, not stored in plaintext")
+	}
+
+	progress, err := a.SaaSInstallations.GetSetupProgress(context.Background(), fixture.OrgID, fixture.InstallationID)
+	if err != nil || progress == nil || !progress.NitradoCompleted {
+		t.Fatalf("expected nitradoCompleted=true, got %+v err=%v", progress, err)
+	}
+	if progress.CurrentStep != "SERVER" {
+		t.Fatalf("expected currentStep=SERVER after connect, got %q", progress.CurrentStep)
+	}
+}
+
+// TestNitradoConnectRejectsInvalidToken is section 4: an invalid token must
+// never be persisted.
+func TestNitradoConnectRejectsInvalidToken(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixture := buildInstallationFixture(t, a, verifier)
+	withFakeNitradoServer(t, a, http.StatusUnauthorized, "")
+
+	req := withPathValues(withActingUser(saasRequest(http.MethodPost, "/x", nitradoConnectRequest{Token: "bad-token"}), fixture.OwnerDiscordID),
+		map[string]string{"organizationID": strconv.FormatInt(fixture.OrgID, 10)})
+	rr := httptest.NewRecorder()
+	a.handleNitradoConnect(rr, req)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 for a rejected token, got %d: %s", rr.Code, rr.Body.String())
+	}
+	assertErrorCode(t, rr, codeNitradoUnavailable)
+
+	envelope, err := a.SaaSCredentials.GetForOrganizationOnly(context.Background(), fixture.OrgID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if envelope != nil {
+		t.Fatal("expected no credential to be persisted for a rejected token")
+	}
+}
+
+// TestNitradoServicesListsOnlySupportedPlatforms is section 5/14: a mixed
+// PlayStation + Xbox + PC + unrelated-game list is filtered down to just
+// the two supported console services.
+func TestNitradoServicesListsOnlySupportedPlatforms(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixture := buildInstallationFixture(t, a, verifier)
+	withFakeNitradoServer(t, a, http.StatusOK, psServiceJSON)
+	connectNitrado(t, a, fixture.OrgID, fixture.OwnerDiscordID)
+
+	withFakeNitradoServer(t, a, http.StatusOK, mixedServicesJSON)
+	req := withPathValues(withActingUser(saasRequest(http.MethodGet, "/x", nil), fixture.OwnerDiscordID),
+		map[string]string{"organizationID": strconv.FormatInt(fixture.OrgID, 10)})
+	rr := httptest.NewRecorder()
+	a.handleNitradoServices(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	services := decodeBody[[]NitradoServiceSummary](t, rr)
+	if len(services) != 2 {
+		t.Fatalf("expected exactly 2 supported services, got %d: %+v", len(services), services)
+	}
+	platforms := map[string]bool{}
+	for _, s := range services {
+		platforms[s.Platform] = true
+		if s.Game != "DayZ" {
+			t.Fatalf("expected game=DayZ, got %q", s.Game)
+		}
+	}
+	if !platforms["PLAYSTATION"] || !platforms["XBOX"] {
+		t.Fatalf("expected both PLAYSTATION and XBOX represented, got %+v", services)
+	}
+}
+
+// TestSelectDayZServerPersistsPlatformAndAdvancesSetup is sections 7/9/11/14:
+// selecting a valid PlayStation service persists the exact platform on the
+// game_servers row, associates it with the installation, and advances
+// setup progress (serverSelected=true, currentStep=CHANNELS).
+func TestSelectDayZServerPersistsPlatformAndAdvancesSetup(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixture := buildInstallationFixture(t, a, verifier)
+	withFakeNitradoServer(t, a, http.StatusOK, psServiceJSON)
+	connectNitrado(t, a, fixture.OrgID, fixture.OwnerDiscordID)
+
+	req := withPathValues(withActingUser(saasRequest(http.MethodPost, "/x", selectDayZServerRequest{ServiceID: 111111}), fixture.OwnerDiscordID),
+		map[string]string{"organizationID": strconv.FormatInt(fixture.OrgID, 10), "installationID": strconv.FormatInt(fixture.InstallationID, 10)})
+	rr := httptest.NewRecorder()
+	a.handleSelectDayZServer(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	selection := decodeBody[DayZServerSelection](t, rr)
+	if selection.Platform != "PLAYSTATION" || selection.ServiceID != 111111 {
+		t.Fatalf("expected PLAYSTATION/111111, got %+v", selection)
+	}
+
+	server, err := a.SaaSServers.GetScoped(context.Background(), fixture.OrgID, selection.ID)
+	if err != nil || server == nil || server.Platform != "PLAYSTATION" || server.ProviderServiceID != "111111" {
+		t.Fatalf("expected a persisted PLAYSTATION game_servers row, got %+v err=%v", server, err)
+	}
+
+	inst, err := a.SaaSInstallations.GetScoped(context.Background(), fixture.OrgID, fixture.InstallationID)
+	if err != nil || inst == nil || inst.GameServerID == nil || *inst.GameServerID != selection.ID {
+		t.Fatalf("expected the installation's game_server_id to be set to %d, got %+v err=%v", selection.ID, inst, err)
+	}
+
+	progress, err := a.SaaSInstallations.GetSetupProgress(context.Background(), fixture.OrgID, fixture.InstallationID)
+	if err != nil || progress == nil || !progress.ServerSelected || progress.CurrentStep != "CHANNELS" {
+		t.Fatalf("expected serverSelected=true currentStep=CHANNELS, got %+v err=%v", progress, err)
+	}
+}
+
+// TestSelectDayZServerRejectsPCAndCrossTenant covers sections 7/13/14: a PC
+// DayZ service is rejected, and organization B can never select or even see
+// organization A's connected Nitrado services/servers.
+func TestSelectDayZServerRejectsPCAndCrossTenant(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixtureA := buildInstallationFixture(t, a, verifier)
+	withFakeNitradoServer(t, a, http.StatusOK, mixedServicesJSON)
+	connectNitrado(t, a, fixtureA.OrgID, fixtureA.OwnerDiscordID)
+
+	// PC (service 333333) must be rejected even though it's a real service
+	// on the connected account.
+	pcReq := withPathValues(withActingUser(saasRequest(http.MethodPost, "/x", selectDayZServerRequest{ServiceID: 333333}), fixtureA.OwnerDiscordID),
+		map[string]string{"organizationID": strconv.FormatInt(fixtureA.OrgID, 10), "installationID": strconv.FormatInt(fixtureA.InstallationID, 10)})
+	pcRR := httptest.NewRecorder()
+	a.handleSelectDayZServer(pcRR, pcReq)
+	if pcRR.Code != http.StatusBadRequest {
+		t.Fatalf("expected DayZ PC to be rejected, got %d: %s", pcRR.Code, pcRR.Body.String())
+	}
+	assertErrorCode(t, pcRR, codeInvalidRequest)
+
+	// Organization B has its own installation but never connected Nitrado -
+	// listing services must fail cleanly (not see A's credential), and B's
+	// installation must never resolve A's guild connection.
+	fixtureB := buildInstallationFixture(t, a, verifier)
+	servicesReq := withPathValues(withActingUser(saasRequest(http.MethodGet, "/x", nil), fixtureB.OwnerDiscordID),
+		map[string]string{"organizationID": strconv.FormatInt(fixtureB.OrgID, 10)})
+	servicesRR := httptest.NewRecorder()
+	a.handleNitradoServices(servicesRR, servicesReq)
+	if servicesRR.Code != http.StatusNotFound {
+		t.Fatalf("expected organization B (no Nitrado connection) to get 404, got %d: %s", servicesRR.Code, servicesRR.Body.String())
+	}
+
+	// B guessing A's installation ID within B's own organization context
+	// must not leak A's data (tenant isolation - section 13).
+	crossReq := withPathValues(withActingUser(saasRequest(http.MethodPost, "/x", selectDayZServerRequest{ServiceID: 111111}), fixtureB.OwnerDiscordID),
+		map[string]string{"organizationID": strconv.FormatInt(fixtureB.OrgID, 10), "installationID": strconv.FormatInt(fixtureA.InstallationID, 10)})
+	crossRR := httptest.NewRecorder()
+	a.handleSelectDayZServer(crossRR, crossReq)
+	if crossRR.Code != http.StatusNotFound {
+		t.Fatalf("expected organization B selecting into organization A's installation to 404, got %d: %s", crossRR.Code, crossRR.Body.String())
+	}
+}
+
+// TestValidateDayZServerReportsReachability is section 12: a safe live
+// check of the selected server's continued reachability/support.
+func TestValidateDayZServerReportsReachability(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixture := buildInstallationFixture(t, a, verifier)
+	withFakeNitradoServer(t, a, http.StatusOK, psServiceJSON)
+	connectNitrado(t, a, fixture.OrgID, fixture.OwnerDiscordID)
+
+	selectReq := withPathValues(withActingUser(saasRequest(http.MethodPost, "/x", selectDayZServerRequest{ServiceID: 111111}), fixture.OwnerDiscordID),
+		map[string]string{"organizationID": strconv.FormatInt(fixture.OrgID, 10), "installationID": strconv.FormatInt(fixture.InstallationID, 10)})
+	selectRR := httptest.NewRecorder()
+	a.handleSelectDayZServer(selectRR, selectReq)
+	if selectRR.Code != http.StatusOK {
+		t.Fatalf("select: expected 200, got %d: %s", selectRR.Code, selectRR.Body.String())
+	}
+
+	validateReq := withPathValues(withActingUser(saasRequest(http.MethodPost, "/x", nil), fixture.OwnerDiscordID),
+		map[string]string{"organizationID": strconv.FormatInt(fixture.OrgID, 10), "installationID": strconv.FormatInt(fixture.InstallationID, 10)})
+	validateRR := httptest.NewRecorder()
+	a.handleValidateDayZServer(validateRR, validateReq)
+	if validateRR.Code != http.StatusOK {
+		t.Fatalf("validate: expected 200, got %d: %s", validateRR.Code, validateRR.Body.String())
+	}
+	result := decodeBody[DayZServerValidation](t, validateRR)
+	if !result.Reachable || !result.Supported || result.Platform != "PLAYSTATION" {
+		t.Fatalf("expected reachable/supported PLAYSTATION, got %+v", result)
 	}
 }

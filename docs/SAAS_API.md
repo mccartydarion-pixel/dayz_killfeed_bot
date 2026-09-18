@@ -118,6 +118,10 @@ Base path for every route below: prepend `CHAMPION_SAAS_API_URL`.
 | 11 | POST | `/api/saas/organizations/{organizationID}/discord/connection` | OWNER/ADMIN | see naming note below |
 | 12 | POST | `/api/saas/organizations/{organizationID}/installations/{installationID}/discord/verify-installation` | member | |
 | 13 | POST | `/api/saas/organizations/{organizationID}/installations/{installationID}/discord/verify-permissions` | member | see naming note below |
+| 14 | POST | `/api/saas/organizations/{organizationID}/nitrado/connect` | OWNER/ADMIN | |
+| 15 | GET | `/api/saas/organizations/{organizationID}/nitrado/services` | member | |
+| 16 | POST | `/api/saas/organizations/{organizationID}/installations/{installationID}/dayz-server` | OWNER/ADMIN | |
+| 17 | POST | `/api/saas/organizations/{organizationID}/installations/{installationID}/dayz-server/validate` | member | |
 
 ### Naming differences from earlier planning drafts
 
@@ -307,6 +311,79 @@ literally cannot post). `Embed Links`/`Read Message History` missing →
 `WARNING` (degraded, not blocking). Guild/channel unreachable → every
 capability `FAIL`. Never returns a raw Discord permission bitfield.
 
+### 14. `POST /api/saas/organizations/{organizationID}/nitrado/connect`
+Validates a customer's Nitrado account token live (never persisted unless
+valid), discovers accessible services, and stores the encrypted credential
+envelope. **The token is never returned in the response, logged, or stored
+in plaintext anywhere.** One Nitrado connection per organization
+(`UNIQUE(organization_id)`) - connecting again replaces it (token rotation).
+
+Request:
+```json
+{ "token": "<customer Nitrado token>" }
+```
+Response `200`:
+```json
+{ "connected": true, "servicesFound": 3 }
+```
+`servicesFound` counts only **supported** DayZ console services (PlayStation
++ Xbox - see `#15`), not the customer's raw total Nitrado service count.
+`503 NITRADO_UNAVAILABLE` if Nitrado rejects the token or is unreachable -
+nothing is persisted in that case. On success, advances setup progress
+(`nitradoCompleted=true`, `currentStep` advances to `SERVER`) for every
+installation under the organization still mid-setup - the Nitrado
+connection is organization-scoped, not installation-scoped, so it can
+unblock more than one installation's Step 4 at once.
+
+### 15. `GET /api/saas/organizations/{organizationID}/nitrado/services`
+Discovers the connected account's DayZ console services live. Returns only
+supported platforms (section 1) - PC DayZ and unrelated games are dropped
+entirely, never included in the response. `404 NOT_FOUND` if no Nitrado
+connection exists yet for this organization (call `#14` first).
+
+Response `200`: [`NitradoServiceSummary`](#nitradoservicesummary)`[]`:
+```json
+[
+  { "serviceId": 123456, "name": "Champions PS", "game": "DayZ", "platform": "PLAYSTATION", "status": "ONLINE" },
+  { "serviceId": 987654, "name": "Champions Xbox", "game": "DayZ", "platform": "XBOX", "status": "ONLINE" }
+]
+```
+
+### 16. `POST .../installations/{installationID}/dayz-server`
+Selects one discovered service as the installation's DayZ server.
+**Re-verifies live** against the connected Nitrado account (never trusts an
+earlier `#15` response or a client-supplied platform/name) before
+persisting - rejects a service that has since disappeared, and rejects
+anything that isn't a supported console platform (PC included) even if it's
+a real service on the account.
+
+Request:
+```json
+{ "serviceId": 123456 }
+```
+Response `200`:
+```json
+{ "id": 42, "serviceId": 123456, "displayName": "Champions PS", "game": "DayZ", "platform": "PLAYSTATION", "status": "ONLINE" }
+```
+`400 INVALID_REQUEST` if the service isn't a supported DayZ console platform.
+`404 NOT_FOUND` if the service ID isn't on the connected account. On
+success, advances setup progress (`serverSelected=true`,
+`currentStep=CHANNELS`).
+
+### 17. `POST .../installations/{installationID}/dayz-server/validate`
+A safe, read-only live check that the installation's already-selected DayZ
+server is still reachable and still a supported console platform. Any
+member may run it (it never mutates anything). `400 INVALID_REQUEST` if no
+server has been selected yet (call `#16` first).
+
+Response `200`:
+```json
+{ "reachable": true, "supported": true, "platform": "XBOX", "message": "DayZ Xbox server connected." }
+```
+An unreachable/unsupported server still responds `200` with
+`reachable`/`supported` reflecting reality (this is a status check, not an
+error condition) - e.g. `{ "reachable": false, "supported": false, "message": "this DayZ server was not found on the connected Nitrado account" }`.
+
 ## Request/response DTOs
 
 None of these ever include a Nitrado ciphertext/IV/auth tag, a Discord
@@ -438,6 +515,33 @@ Example:
 | `trialEndsAt` | string? |
 | `currentPeriodEnd` | string? |
 
+#### `NitradoServiceSummary`
+| field | type |
+|---|---|
+| `serviceId` | number |
+| `name` | string |
+| `game` | string - always `"DayZ"` (only DayZ services are ever returned) |
+| `platform` | `"PLAYSTATION"` \| `"XBOX"` - the stable backend enum. The website renders its own friendly label ("PlayStation"/"Xbox") - never persist or match against a display label. |
+| `status` | `"ONLINE"` \| `"OFFLINE"` |
+
+#### `DayZServerSelection` (response of `#16`)
+| field | type |
+|---|---|
+| `id` | number - the `game_servers` row ID |
+| `serviceId` | number |
+| `displayName` | string |
+| `game` | string |
+| `platform` | `"PLAYSTATION"` \| `"XBOX"` |
+| `status` | `"ONLINE"` \| `"OFFLINE"` |
+
+#### `DayZServerValidation` (response of `#17`)
+| field | type |
+|---|---|
+| `reachable` | boolean |
+| `supported` | boolean |
+| `platform` | `"PLAYSTATION"` \| `"XBOX"`? - omitted when the server couldn't be resolved at all |
+| `message` | string - human-readable, safe to display directly |
+
 ## Error contract
 
 Every non-2xx response:
@@ -455,6 +559,7 @@ Every non-2xx response:
 | `INVALID_REQUEST` | 400 | Malformed body, invalid ID, or an invalid setup-progress transition |
 | `DISCORD_UNAVAILABLE` | 503 | The bot's Discord session isn't connected |
 | `INSTALLATION_NOT_VERIFIED` | 422 | Action requires Discord to be verified first |
+| `NITRADO_UNAVAILABLE` | 503 | Nitrado rejected the token, or is unreachable |
 | `INTERNAL_ERROR` | 500 | Unexpected server-side failure |
 | `RATE_LIMITED` (not in the code list above, still `{"error":{"code","message"}}`-shaped) | 429 | See rate limits below |
 
@@ -467,8 +572,9 @@ In-memory, per acting Discord user ID, per process:
 | `#1` user sync | 10 / minute |
 | `#3` organization creation | 5 / hour |
 | `#12`/`#13` Discord verification (shared budget) | 10 / minute |
+| `#14` Nitrado connect | 10 / hour |
 
-Ordinary reads (`#2`, `#4`, `#5`, `#7`, `#8`) are never rate limited.
+Ordinary reads (`#2`, `#4`, `#5`, `#7`, `#8`, `#15`, `#17`) are never rate limited.
 
 ## Tenant-scoping rules
 
@@ -487,6 +593,36 @@ Ordinary reads (`#2`, `#4`, `#5`, `#7`, `#8`) are never rate limited.
   test suite (organization A cannot view/list/mutate organization B's data
   under any tested scenario, including ID guessing).
 
+## Console DayZ platform contract
+
+Champion supports exactly two DayZ console platforms in this stage:
+`PLAYSTATION` and `XBOX` - both stable, persistence-safe enum values
+(`internal/nitrado.ConsolePlatform`). DayZ PC and any non-DayZ Nitrado
+service are classified `UNSUPPORTED` and are never exposed by `#15`
+(services discovery) or accepted by `#16` (server selection), even if
+they're real services on the connected account.
+
+Platform is classified centrally, once, in
+`internal/nitrado.ClassifyDayZPlatform` - from Nitrado's own
+game-identifier field (`service.game`, confirmed live as `"DayZ (PS4)"` for
+a real PlayStation service), never from a customer-editable display name
+like the server's hostname or title. No live Xbox DayZ service was
+available to confirm Nitrado's exact Xbox game string; Xbox detection
+covers Nitrado's documented naming patterns as a best-effort match - see
+that function's doc comment if a real Xbox payload is ever observed to
+differ.
+
+**ADM/log ingestion compatibility**: the existing ADM discovery and
+download pipeline (`internal/nitrado/logs.go`, `internal/killfeed/canonical_source.go`)
+was audited and found to already be platform-agnostic by construction - it
+walks Nitrado's generic file-server API and the `noftp`/`ftproot` dual-mount
+alias logic using only Nitrado-reported paths (`game_specific.path` from
+the Gameserver Details endpoint) and a `.ADM` file-extension match, with no
+PlayStation-specific literal anywhere in the actual matching logic (only in
+doc comments, as an example). No platform-specific adapter was needed or
+added for ingestion - the same pipeline that already runs for the
+PlayStation server works unmodified for a connected Xbox server.
+
 ## Verified feature coverage
 
 | Feature | Status |
@@ -501,7 +637,11 @@ Ordinary reads (`#2`, `#4`, `#5`, `#7`, `#8`) are never rate limited.
 | Discord guild persistence | READY |
 | Bot installation verification | READY |
 | Permission verification | READY |
+| Nitrado credential connect (PlayStation + Xbox) | READY |
+| DayZ console server discovery/selection | READY |
+| DayZ server reachability validation | READY |
 
 Nothing is BLOCKED. Out of scope for this handoff (a later task):
-Nitrado credential submission, DayZ server selection, channel-configuration
-writes, billing/checkout, entitlement enforcement.
+channel-configuration writes, billing/checkout, entitlement enforcement.
+DayZ PC and non-console Nitrado services are intentionally unsupported, not
+missing - see the platform contract note above.

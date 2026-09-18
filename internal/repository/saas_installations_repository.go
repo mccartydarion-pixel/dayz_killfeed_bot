@@ -156,6 +156,18 @@ WHERE organization_id=$1 AND id=$2`
 	return nil
 }
 
+// SetGameServer associates gameServerID (a game_servers row, see
+// SaaSServerRepository.UpsertForInstallation) with installationID, requiring
+// it belong to organizationID (section 15). This is the "select dayz-server"
+// step - it never touches status/setup progress itself, those are updated
+// separately by the caller.
+func (r *InstallationRepository) SetGameServer(ctx context.Context, organizationID, installationID, gameServerID int64) error {
+	if _, err := r.pool.Exec(ctx, `UPDATE installations SET game_server_id=$3, updated_at=NOW() WHERE organization_id=$1 AND id=$2`, organizationID, installationID, gameServerID); err != nil {
+		return fmt.Errorf("set installation game server: %w", err)
+	}
+	return nil
+}
+
 // RecordHealthCheck stamps last_health_check_at, requiring installationID
 // belong to organizationID (section 15).
 func (r *InstallationRepository) RecordHealthCheck(ctx context.Context, organizationID, installationID int64, at time.Time) error {

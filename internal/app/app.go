@@ -85,28 +85,31 @@ type App struct {
 	// docs/SAAS_HTTP_API.md. SaaSServers/SaaSGuildConnections operate on the
 	// same game_servers/guilds tables as Servers/Guilds above, just through
 	// the organization-scoped lookups those don't provide.
-	SaaSUsers                *repository.UserRepository
-	SaaSOrganizations        *repository.OrganizationRepository
-	SaaSGuildConnections     *repository.GuildConnectionRepository
-	SaaSServers              *repository.SaaSServerRepository
-	SaaSInstallations        *repository.InstallationRepository
-	SaaSSubscriptions        *repository.SubscriptionRepository
-	saasDiscordVerifier      discordGuildVerifier
-	saasSyncLimiter          *saasRateLimiter
-	saasOrgCreateLimiter     *saasRateLimiter
-	saasDiscordVerifyLimiter *saasRateLimiter
-	persistQueuesMu          sync.Mutex
-	persistQueues            []*killfeed.PersistenceQueue
-	rotatingFeedsMu          sync.Mutex
-	rotatingFeeds            []*discord.RotatingFeed
-	firstConnectMu           sync.Mutex
-	firstConnectServers      map[int64]bool
-	counterOwnerMu           sync.RWMutex
-	publicCounterServerID    int64
-	presenceMu               sync.Mutex
-	presenceTrackers         map[int64]*killfeed.PlayerTracker
-	presenceEngines          map[int64]*killfeed.Engine
-	cancel                   context.CancelFunc
+	SaaSUsers                 *repository.UserRepository
+	SaaSOrganizations         *repository.OrganizationRepository
+	SaaSGuildConnections      *repository.GuildConnectionRepository
+	SaaSServers               *repository.SaaSServerRepository
+	SaaSInstallations         *repository.InstallationRepository
+	SaaSSubscriptions         *repository.SubscriptionRepository
+	SaaSCredentials           *repository.CredentialRepository
+	saasDiscordVerifier       discordGuildVerifier
+	saasNitradoClientFactory  func(token string) *nitrado.Client
+	saasSyncLimiter           *saasRateLimiter
+	saasOrgCreateLimiter      *saasRateLimiter
+	saasDiscordVerifyLimiter  *saasRateLimiter
+	saasNitradoConnectLimiter *saasRateLimiter
+	persistQueuesMu           sync.Mutex
+	persistQueues             []*killfeed.PersistenceQueue
+	rotatingFeedsMu           sync.Mutex
+	rotatingFeeds             []*discord.RotatingFeed
+	firstConnectMu            sync.Mutex
+	firstConnectServers       map[int64]bool
+	counterOwnerMu            sync.RWMutex
+	publicCounterServerID     int64
+	presenceMu                sync.Mutex
+	presenceTrackers          map[int64]*killfeed.PlayerTracker
+	presenceEngines           map[int64]*killfeed.Engine
+	cancel                    context.CancelFunc
 }
 
 // registerPresenceTracker exposes a running ServerWorker's live PlayerTracker
@@ -477,6 +480,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.SaaSServers = repository.NewSaaSServerRepository(db.Pool)
 			app.SaaSInstallations = repository.NewInstallationRepository(db.Pool)
 			app.SaaSSubscriptions = repository.NewSubscriptionRepository(db.Pool)
+			app.SaaSCredentials = repository.NewCredentialRepository(db.Pool)
 			seedCtx, seedCancel := context.WithTimeout(ctx, 10*time.Second)
 			seedErr := app.Achievements.EnsureDefinitions(seedCtx)
 			seedCancel()

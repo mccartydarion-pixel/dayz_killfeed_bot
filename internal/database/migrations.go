@@ -848,6 +848,26 @@ CREATE TABLE IF NOT EXISTS subscriptions (
 );
 `,
 	},
+	{
+		// SaaS Phase 1 / console DayZ backend: the "connect Nitrado" flow is
+		// organization-scoped (one Nitrado account credential per
+		// organization, POST /api/saas/organizations/{id}/nitrado/connect -
+		// no guild/installation in that path), unlike the original
+		// guild-scoped bot /setup flow that created nitrado_connections.
+		// guild_id NOT NULL. Relaxing it to nullable (rather than adding a
+		// parallel nitrado_credentials table - reuse, not duplicate, per
+		// this task) lets a SaaS-created row exist with organization_id set
+		// and guild_id NULL; existing guild-scoped rows are untouched.
+		// UNIQUE(organization_id) is safe alongside the existing
+		// UNIQUE(guild_id): Postgres never treats NULLs as conflicting, so
+		// legacy guild_id-only rows (organization_id NULL) never collide
+		// with each other or with SaaS rows.
+		Name: "0025_saas_nitrado_console",
+		SQL: `
+ALTER TABLE nitrado_connections ALTER COLUMN guild_id DROP NOT NULL;
+ALTER TABLE nitrado_connections ADD CONSTRAINT nitrado_connections_organization_id_key UNIQUE(organization_id);
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order, each transactionally. A

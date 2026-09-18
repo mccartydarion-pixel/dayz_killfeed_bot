@@ -10,6 +10,7 @@ import (
 
 	"github.com/yourname/dayz-killfeed/internal/config"
 	"github.com/yourname/dayz-killfeed/internal/discord"
+	"github.com/yourname/dayz-killfeed/internal/nitrado"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -207,11 +208,17 @@ func TestNoSensitiveFieldsInAPIResponses(t *testing.T) {
 		DiscordVerificationResult{Installed: true, GuildReachable: true, VerifiedAt: now.Format(time.RFC3339)},
 		PermissionVerificationResult{Capabilities: []CapabilityCheck{{Capability: "View Channel", Result: "PASS"}}, OverallPass: true},
 		apiErrorEnvelope{Error: apiError{Code: codeInternalError, Message: "x"}},
+		NitradoConnectResponse{Connected: true, ServicesFound: 3},
+		NitradoServiceSummary{ServiceID: 123456, Name: "x", Game: "DayZ", Platform: "PLAYSTATION", Status: "ONLINE"},
+		[]NitradoServiceSummary{{ServiceID: 987654, Name: "y", Game: "DayZ", Platform: "XBOX", Status: "ONLINE"}},
+		DayZServerSelection{ID: 42, ServiceID: 123456, DisplayName: "x", Game: "DayZ", Platform: "PLAYSTATION", Status: "ONLINE"},
+		DayZServerValidation{Reachable: true, Supported: true, Platform: "XBOX", Message: "DayZ Xbox server connected."},
 	}
 
 	forbidden := []string{
-		"ciphertext", "credential_nonce", "authtag", "auth_tag", "botToken", "bot_token",
+		"ciphertext", "credential_nonce", "authtag", "auth_tag", "bottoken", "bot_token",
 		"oauthtoken", "oauth_token", "websiteapisecret", "website_api_secret", "database_url", "databaseurl",
+		"\"token\"", "nitrado_token", "nitradotoken",
 	}
 
 	for _, sample := range samples {
@@ -240,5 +247,46 @@ func TestSaaSRateLimiterBlocksAfterMax(t *testing.T) {
 	}
 	if !l.Allow("user-2") {
 		t.Fatal("expected a different key to have its own independent budget")
+	}
+}
+
+// --- console DayZ service filtering (section 14) ---------------------------
+
+// TestSupportedNitradoDayZServicesFiltersAndClassifies is the mixed-list
+// case from section 14: PlayStation and Xbox DayZ services are listed
+// (multiple of each), PC DayZ and an unrelated game are dropped entirely -
+// never exposed in a setup response (section 5).
+func TestSupportedNitradoDayZServicesFiltersAndClassifies(t *testing.T) {
+	services := []nitrado.Service{
+		{ID: "1", Game: "DayZ (PS4)", Status: "active", Details: nitrado.ServiceDetails{Name: "PS Server One"}},
+		{ID: "2", Game: "DayZ (PS4)", Status: "suspended", Details: nitrado.ServiceDetails{Name: "PS Server Two"}},
+		{ID: "3", Game: "DayZ (Xbox)", Status: "active", Details: nitrado.ServiceDetails{Name: "Xbox Server One"}},
+		{ID: "4", Game: "DayZ", Status: "active", Details: nitrado.ServiceDetails{Name: "PC Server"}},
+		{ID: "5", Game: "Minecraft", Status: "active", Details: nitrado.ServiceDetails{Name: "MC Server"}},
+	}
+
+	got := supportedNitradoDayZServices(services)
+	if len(got) != 3 {
+		t.Fatalf("expected 3 supported services (2 PS + 1 Xbox), got %d: %+v", len(got), got)
+	}
+
+	byID := map[int64]NitradoServiceSummary{}
+	for _, s := range got {
+		byID[s.ServiceID] = s
+	}
+	if s, ok := byID[1]; !ok || s.Platform != "PLAYSTATION" || s.Status != "ONLINE" || s.Name != "PS Server One" {
+		t.Fatalf("expected PS server 1 online and correctly named, got %+v (ok=%v)", s, ok)
+	}
+	if s, ok := byID[2]; !ok || s.Platform != "PLAYSTATION" || s.Status != "OFFLINE" {
+		t.Fatalf("expected PS server 2 offline (suspended), got %+v (ok=%v)", s, ok)
+	}
+	if s, ok := byID[3]; !ok || s.Platform != "XBOX" {
+		t.Fatalf("expected Xbox server 3, got %+v (ok=%v)", s, ok)
+	}
+	if _, ok := byID[4]; ok {
+		t.Fatal("expected DayZ PC (service 4) to be excluded entirely")
+	}
+	if _, ok := byID[5]; ok {
+		t.Fatal("expected the unrelated game (service 5) to be excluded entirely")
 	}
 }
