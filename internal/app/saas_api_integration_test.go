@@ -779,19 +779,22 @@ func TestSelectDayZServerPersistsPlatformAndAdvancesSetup(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
 	}
-	selection := decodeBody[DayZServerSelection](t, rr)
-	if selection.Platform != "PLAYSTATION" || selection.ServiceID != 111111 {
-		t.Fatalf("expected PLAYSTATION/111111, got %+v", selection)
+	resp := decodeBody[SelectDayZServerResponse](t, rr)
+	if resp.Server.Platform != "PLAYSTATION" || resp.Server.ServiceID != 111111 {
+		t.Fatalf("expected PLAYSTATION/111111, got %+v", resp.Server)
+	}
+	if resp.ReusedInstallation || resp.InstallationID != fixture.InstallationID {
+		t.Fatalf("expected a fresh, non-reused association with installation %d, got %+v", fixture.InstallationID, resp)
 	}
 
-	server, err := a.SaaSServers.GetScoped(context.Background(), fixture.OrgID, selection.ID)
+	server, err := a.SaaSServers.GetScoped(context.Background(), fixture.OrgID, resp.Server.ID)
 	if err != nil || server == nil || server.Platform != "PLAYSTATION" || server.ProviderServiceID != "111111" {
 		t.Fatalf("expected a persisted PLAYSTATION game_servers row, got %+v err=%v", server, err)
 	}
 
 	inst, err := a.SaaSInstallations.GetScoped(context.Background(), fixture.OrgID, fixture.InstallationID)
-	if err != nil || inst == nil || inst.GameServerID == nil || *inst.GameServerID != selection.ID {
-		t.Fatalf("expected the installation's game_server_id to be set to %d, got %+v err=%v", selection.ID, inst, err)
+	if err != nil || inst == nil || inst.GameServerID == nil || *inst.GameServerID != resp.Server.ID {
+		t.Fatalf("expected the installation's game_server_id to be set to %d, got %+v err=%v", resp.Server.ID, inst, err)
 	}
 
 	progress, err := a.SaaSInstallations.GetSetupProgress(context.Background(), fixture.OrgID, fixture.InstallationID)
@@ -840,6 +843,172 @@ func TestSelectDayZServerRejectsPCAndCrossTenant(t *testing.T) {
 	a.handleSelectDayZServer(crossRR, crossReq)
 	if crossRR.Code != http.StatusNotFound {
 		t.Fatalf("expected organization B selecting into organization A's installation to 404, got %d: %s", crossRR.Code, crossRR.Body.String())
+	}
+}
+
+// --- duplicate installation reuse (live SQLSTATE 23505 fix) -----------------
+
+// createSecondInstallation creates another installation under the same
+// Discord guild connection as fixture - exactly how the live duplicate
+// installations that caused this bug arose (a customer restarting the
+// wizard for a guild that already has an installation).
+func createSecondInstallation(t *testing.T, a *App, fixture installationFixture) int64 {
+	t.Helper()
+	req := withPathValues(withActingUser(saasRequest(http.MethodPost, "/x", createInstallationRequest{DiscordGuildConnectionID: fixture.ConnectionID}), fixture.OwnerDiscordID),
+		map[string]string{"organizationID": strconv.FormatInt(fixture.OrgID, 10)})
+	rr := httptest.NewRecorder()
+	a.handleCreateInstallation(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create second installation: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	return decodeBody[InstallationSummary](t, rr).ID
+}
+
+func selectDayZServer(t *testing.T, a *App, orgID, installationID, serviceID int64, ownerDiscordID string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := withPathValues(withActingUser(saasRequest(http.MethodPost, "/x", selectDayZServerRequest{ServiceID: serviceID}), ownerDiscordID),
+		map[string]string{"organizationID": strconv.FormatInt(orgID, 10), "installationID": strconv.FormatInt(installationID, 10)})
+	rr := httptest.NewRecorder()
+	a.handleSelectDayZServer(rr, req)
+	return rr
+}
+
+// TestSelectDayZServerReusesExistingInstallation is the exact live scenario
+// (section 11): installation #4-equivalent already has the server selected;
+// a newer, still-empty installation under the SAME guild connection selects
+// the SAME server. Must reuse #4, not attempt to write a second
+// (discord_guild_connection_id, game_server_id) row - the previously live
+// SQLSTATE 23505 / HTTP 500.
+func TestSelectDayZServerReusesExistingInstallation(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixture := buildInstallationFixture(t, a, verifier)
+	withFakeNitradoServer(t, a, http.StatusOK, psServiceJSON)
+	connectNitrado(t, a, fixture.OrgID, fixture.OwnerDiscordID)
+
+	firstRR := selectDayZServer(t, a, fixture.OrgID, fixture.InstallationID, 111111, fixture.OwnerDiscordID)
+	if firstRR.Code != http.StatusOK {
+		t.Fatalf("first select: expected 200, got %d: %s", firstRR.Code, firstRR.Body.String())
+	}
+	first := decodeBody[SelectDayZServerResponse](t, firstRR)
+	if first.ReusedInstallation || first.InstallationID != fixture.InstallationID {
+		t.Fatalf("expected the first selection to be fresh on %d, got %+v", fixture.InstallationID, first)
+	}
+
+	newInstallationID := createSecondInstallation(t, a, fixture)
+
+	secondRR := selectDayZServer(t, a, fixture.OrgID, newInstallationID, 111111, fixture.OwnerDiscordID)
+	if secondRR.Code != http.StatusOK {
+		t.Fatalf("expected 200 (idempotent reuse, never a 500), got %d: %s", secondRR.Code, secondRR.Body.String())
+	}
+	second := decodeBody[SelectDayZServerResponse](t, secondRR)
+	if !second.ReusedInstallation {
+		t.Fatal("expected reusedInstallation=true")
+	}
+	if second.InstallationID != fixture.InstallationID {
+		t.Fatalf("expected the resolved installation to be the original %d, got %d", fixture.InstallationID, second.InstallationID)
+	}
+	if second.Server.ID != first.Server.ID {
+		t.Fatalf("expected the same game_servers row %d, got %d (no duplicate)", first.Server.ID, second.Server.ID)
+	}
+
+	// The original installation - not the redundant new one - must be the
+	// one whose setup progress advanced.
+	progress, err := a.SaaSInstallations.GetSetupProgress(context.Background(), fixture.OrgID, fixture.InstallationID)
+	if err != nil || progress == nil || !progress.ServerSelected || progress.CurrentStep != "CHANNELS" {
+		t.Fatalf("expected the original installation to show serverSelected=true currentStep=CHANNELS, got %+v err=%v", progress, err)
+	}
+
+	// The redundant, still-empty installation must have been safely deleted
+	// (section 7) - it had no progress beyond Discord and no settings.
+	gone, err := a.SaaSInstallations.GetScoped(context.Background(), fixture.OrgID, newInstallationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gone != nil {
+		t.Fatalf("expected the redundant empty installation %d to be deleted, still found: %+v", newInstallationID, gone)
+	}
+
+	var count int
+	if err := a.DB.Pool.QueryRow(context.Background(), `SELECT COUNT(*) FROM installations WHERE discord_guild_connection_id=$1 AND game_server_id=$2`, fixture.ConnectionID, first.Server.ID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly one installation to own this (guild connection, server) pair, got %d", count)
+	}
+}
+
+// TestSelectDayZServerSameInstallationIsIdempotent is section 12: selecting
+// the same server twice on the same installation is a no-op success, never
+// a conflict.
+func TestSelectDayZServerSameInstallationIsIdempotent(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixture := buildInstallationFixture(t, a, verifier)
+	withFakeNitradoServer(t, a, http.StatusOK, psServiceJSON)
+	connectNitrado(t, a, fixture.OrgID, fixture.OwnerDiscordID)
+
+	first := selectDayZServer(t, a, fixture.OrgID, fixture.InstallationID, 111111, fixture.OwnerDiscordID)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first select: expected 200, got %d: %s", first.Code, first.Body.String())
+	}
+	second := selectDayZServer(t, a, fixture.OrgID, fixture.InstallationID, 111111, fixture.OwnerDiscordID)
+	if second.Code != http.StatusOK {
+		t.Fatalf("re-select: expected 200, got %d: %s", second.Code, second.Body.String())
+	}
+	resp := decodeBody[SelectDayZServerResponse](t, second)
+	if resp.ReusedInstallation {
+		t.Fatal("expected reusedInstallation=false when re-selecting on the SAME installation that already owns it")
+	}
+	if resp.InstallationID != fixture.InstallationID {
+		t.Fatalf("expected installationId=%d, got %d", fixture.InstallationID, resp.InstallationID)
+	}
+
+	// Still installed and functioning - not deleted, since it's not
+	// "redundant and empty," it's the one actually holding the server.
+	still, err := a.SaaSInstallations.GetScoped(context.Background(), fixture.OrgID, fixture.InstallationID)
+	if err != nil || still == nil || still.GameServerID == nil {
+		t.Fatalf("expected the installation to still exist with its game server set, got %+v err=%v", still, err)
+	}
+}
+
+// TestSelectDayZServerDifferentServerSameGuildAllowed is section 13: a
+// second installation under the same guild connection selecting a
+// DIFFERENT DayZ server is a legitimate new pairing, never blocked -
+// multi-server customers must keep working.
+func TestSelectDayZServerDifferentServerSameGuildAllowed(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixture := buildInstallationFixture(t, a, verifier)
+	withFakeNitradoServer(t, a, http.StatusOK, mixedServicesJSON)
+	connectNitrado(t, a, fixture.OrgID, fixture.OwnerDiscordID)
+
+	first := selectDayZServer(t, a, fixture.OrgID, fixture.InstallationID, 111111, fixture.OwnerDiscordID)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first select (PS): expected 200, got %d: %s", first.Code, first.Body.String())
+	}
+
+	secondInstallationID := createSecondInstallation(t, a, fixture)
+	second := selectDayZServer(t, a, fixture.OrgID, secondInstallationID, 222222, fixture.OwnerDiscordID)
+	if second.Code != http.StatusOK {
+		t.Fatalf("second select (Xbox, different server): expected 200, got %d: %s", second.Code, second.Body.String())
+	}
+	resp := decodeBody[SelectDayZServerResponse](t, second)
+	if resp.ReusedInstallation {
+		t.Fatal("expected a genuinely new (guild connection, server) pair to never be treated as reuse")
+	}
+	if resp.InstallationID != secondInstallationID {
+		t.Fatalf("expected installationId=%d, got %d", secondInstallationID, resp.InstallationID)
+	}
+	if resp.Server.Platform != "XBOX" {
+		t.Fatalf("expected XBOX, got %q", resp.Server.Platform)
+	}
+
+	// The first installation must be untouched by the second selection.
+	firstInst, err := a.SaaSInstallations.GetScoped(context.Background(), fixture.OrgID, fixture.InstallationID)
+	if err != nil || firstInst == nil || firstInst.GameServerID == nil {
+		t.Fatalf("expected the first installation's server to remain set, got %+v err=%v", firstInst, err)
+	}
+	firstServer, err := a.SaaSServers.GetScoped(context.Background(), fixture.OrgID, *firstInst.GameServerID)
+	if err != nil || firstServer == nil || firstServer.Platform != "PLAYSTATION" {
+		t.Fatalf("expected the first installation to still point at the PLAYSTATION server, got %+v err=%v", firstServer, err)
 	}
 }
 

@@ -361,14 +361,37 @@ Request:
 ```json
 { "serviceId": 123456 }
 ```
-Response `200`:
+Response `200` ([`SelectDayZServerResponse`](#selectdayzserverresponse)):
 ```json
-{ "id": 42, "serviceId": 123456, "displayName": "Champions PS", "game": "DayZ", "platform": "PLAYSTATION", "status": "ONLINE" }
+{
+  "server": { "id": 42, "serviceId": 123456, "displayName": "Champions PS", "game": "DayZ", "platform": "PLAYSTATION", "status": "ONLINE" },
+  "installationId": 4,
+  "reusedInstallation": true
+}
 ```
 `400 INVALID_REQUEST` if the service isn't a supported DayZ console platform.
-`404 NOT_FOUND` if the service ID isn't on the connected account. On
-success, advances setup progress (`serverSelected=true`,
-`currentStep=CHANNELS`).
+`404 NOT_FOUND` if the service ID isn't on the connected account.
+`409 CONFLICT` if this exact game_servers row is already owned by a
+**different** organization (never silently reassigned - mirrors `#11`'s
+guild-connection conflict rule).
+
+**Same-guild reuse**: `discord_guild_connections` and `game_servers` share
+one `UNIQUE(discord_guild_connection_id, game_server_id)` pair per
+installation. If the Discord guild + DayZ server pair you're selecting is
+already owned by a **different existing installation** in your
+organization (e.g. a customer re-running the setup wizard for a guild they
+already fully set up under an older installation), this endpoint does
+**not** create a duplicate or 500 - it resolves to that existing
+installation instead: `installationId` in the response is that existing
+installation's ID (not necessarily the one in the request path), and
+`reusedInstallation` is `true`. Setup progress (`serverSelected=true`,
+`currentStep=CHANNELS`) advances on the **resolved** installation. If the
+originally-requested installation had no other progress or settings, it is
+safely deleted as redundant; if it had any real progress/settings, it's
+left alone (never deleted without proof it was empty). Selecting a
+**different** DayZ server under the same guild connection is always a
+legitimate new pairing (`reusedInstallation=false`) - multi-server
+customers are unaffected.
 
 ### 17. `POST .../installations/{installationID}/dayz-server/validate`
 A safe, read-only live check that the installation's already-selected DayZ
@@ -524,7 +547,14 @@ Example:
 | `platform` | `"PLAYSTATION"` \| `"XBOX"` - the stable backend enum. The website renders its own friendly label ("PlayStation"/"Xbox") - never persist or match against a display label. |
 | `status` | `"ONLINE"` \| `"OFFLINE"` |
 
-#### `DayZServerSelection` (response of `#16`)
+#### `SelectDayZServerResponse` (response of `#16`)
+| field | type |
+|---|---|
+| `server` | [`DayZServerSelection`](#dayzserverselection) |
+| `installationId` | number - the **resolved** installation; may differ from the request path's `{installationID}` when an existing installation already owned this guild+server pair (see `#16`'s "Same-guild reuse") |
+| `reusedInstallation` | boolean |
+
+#### `DayZServerSelection`
 | field | type |
 |---|---|
 | `id` | number - the `game_servers` row ID |
@@ -535,7 +565,7 @@ Example:
 | `status` | `"ONLINE"` \| `"OFFLINE"` |
 
 #### `DayZServerSummary` (embedded in `InstallationSummary.dayzServer`)
-Same shape as [`DayZServerSelection`](#dayzserverselection-response-of-16) above -
+Same shape as [`DayZServerSelection`](#dayzserverselection) above -
 the website hydrates the selected DayZ server directly from a dashboard/
 installation response (`#5`/`#7`) after a refresh, without needing to
 re-select it via `#16`.

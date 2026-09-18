@@ -309,6 +309,20 @@ components:
         platform: { $ref: "#/components/schemas/ConsolePlatform" }
         status: { type: string, enum: [ONLINE, OFFLINE] }
 
+    SelectDayZServerResponse:
+      type: object
+      description: >
+        installationId is the RESOLVED installation and may differ from the
+        {installationID} in the request path: if the selected Discord guild
+        + DayZ server pair is already owned by a different existing
+        installation in the same organization, that installation is reused
+        (reusedInstallation=true) instead of creating a duplicate or
+        conflicting with UNIQUE(discord_guild_connection_id, game_server_id).
+      properties:
+        server: { $ref: "#/components/schemas/DayZServerSelection" }
+        installationId: { type: integer, format: int64 }
+        reusedInstallation: { type: boolean }
+
     DayZServerValidation:
       type: object
       properties:
@@ -690,10 +704,13 @@ paths:
             schema: { $ref: "#/components/schemas/SelectDayZServerRequest" }
       responses:
         "200":
-          description: Selected.
+          description: >
+            Selected, or reused (see SelectDayZServerResponse.reusedInstallation)
+            when this guild+server pair already belonged to a different
+            existing installation in the same organization.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/DayZServerSelection" }
+              schema: { $ref: "#/components/schemas/SelectDayZServerResponse" }
         "400":
           description: Invalid request, or the service is not a supported DayZ console platform.
           content:
@@ -703,6 +720,11 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404":
           description: Installation not found, or the service isn't on the connected Nitrado account.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "409":
+          description: This game_servers row is already owned by a different organization.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ApiError" }
