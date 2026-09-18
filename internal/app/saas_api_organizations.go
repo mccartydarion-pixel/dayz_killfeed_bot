@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -222,8 +223,13 @@ func toDiscordGuildConnectionSummary(c repository.DiscordGuildConnection) Discor
 	}
 }
 
+// DayZServerSummary mirrors DayZServerSelection's shape (saas_api_nitrado.go)
+// so the website can hydrate the selected DayZ server straight from the
+// dashboard/installation response, without re-selecting it after a refresh
+// (section 3).
 type DayZServerSummary struct {
 	ID          int64  `json:"id"`
+	ServiceID   int64  `json:"serviceId,omitempty"`
 	DisplayName string `json:"displayName,omitempty"`
 	Game        string `json:"game"`
 	Platform    string `json:"platform"`
@@ -231,7 +237,19 @@ type DayZServerSummary struct {
 }
 
 func toDayZServerSummary(s repository.GameServer) DayZServerSummary {
-	return DayZServerSummary{ID: s.ID, DisplayName: s.DisplayName, Game: s.Game, Platform: s.Platform, Status: s.Status}
+	// ProviderServiceID is stored as a string (repository.GameServer); a
+	// malformed/non-numeric value (should not happen for a Nitrado-backed
+	// row, but this is persisted data) must never panic - it just leaves
+	// ServiceID at its zero value rather than failing the whole summary.
+	serviceID, _ := strconv.ParseInt(s.ProviderServiceID, 10, 64)
+	return DayZServerSummary{
+		ID:          s.ID,
+		ServiceID:   serviceID,
+		DisplayName: s.DisplayName,
+		Game:        s.Game,
+		Platform:    s.Platform,
+		Status:      s.Status,
+	}
 }
 
 // InstallationSummary is the customer-safe view of one installation and its

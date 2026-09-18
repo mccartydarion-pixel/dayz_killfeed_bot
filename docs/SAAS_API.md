@@ -459,7 +459,7 @@ Example:
 | `health` | `"SETTING_UP"` \| `"HEALTHY"` \| `"DEGRADED"` \| `"OFFLINE"` - derived from `status`, not a stored field |
 | `setupProgress` | [`SetupProgress`](#setupprogress)? |
 | `discordConnection` | [`DiscordGuildConnectionSummary`](#discordguildconnectionsummary)? |
-| `dayzServer` | `DayZServerSummary`? - present only once a server is selected (a later phase, not part of this handoff) |
+| `dayzServer` | [`DayZServerSummary`](#dayzserversummary)? - present once a server is selected via `#16` |
 | `createdAt` | string (RFC3339) |
 | `setupCompletedAt` | string? - stamped once, the first time `status` reaches `READY` |
 | `lastHealthCheckAt` | string? |
@@ -530,6 +530,20 @@ Example:
 | `id` | number - the `game_servers` row ID |
 | `serviceId` | number |
 | `displayName` | string |
+| `game` | string |
+| `platform` | `"PLAYSTATION"` \| `"XBOX"` |
+| `status` | `"ONLINE"` \| `"OFFLINE"` |
+
+#### `DayZServerSummary` (embedded in `InstallationSummary.dayzServer`)
+Same shape as [`DayZServerSelection`](#dayzserverselection-response-of-16) above -
+the website hydrates the selected DayZ server directly from a dashboard/
+installation response (`#5`/`#7`) after a refresh, without needing to
+re-select it via `#16`.
+| field | type |
+|---|---|
+| `id` | number |
+| `serviceId` | number |
+| `displayName` | string? |
 | `game` | string |
 | `platform` | `"PLAYSTATION"` \| `"XBOX"` |
 | `status` | `"ONLINE"` \| `"OFFLINE"` |
