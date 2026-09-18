@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/config"
 	"github.com/yourname/dayz-killfeed/internal/discord"
 	"github.com/yourname/dayz-killfeed/internal/nitrado"
@@ -218,6 +219,17 @@ func TestNoSensitiveFieldsInAPIResponses(t *testing.T) {
 			ReusedInstallation: true,
 		},
 		DayZServerValidation{Reachable: true, Supported: true, Platform: "XBOX", Message: "DayZ Xbox server connected."},
+		DiscordChannelSummary{ID: "1", Name: "champion-killfeed", Type: "TEXT", Position: 1, CanSend: true},
+		[]DiscordChannelSummary{{ID: "1", Name: "champion-killfeed", Type: "TEXT"}},
+		InstallationChannelSettings{KillfeedChannelID: "1", LeaderboardChannelID: "2", PlayerStatusChannelID: "3", AdminLogChannelID: "4"},
+		ChannelCategorySummary{ID: "1", Name: "CHAMPION KILLFEED"},
+		AutoSetupChannelsResponse{
+			Configured: true,
+			Category:   &ChannelCategorySummary{ID: "1", Name: "CHAMPION KILLFEED"},
+			Channels:   &InstallationChannelSettings{KillfeedChannelID: "1", LeaderboardChannelID: "2", PlayerStatusChannelID: "3", AdminLogChannelID: "4"},
+		},
+		AutoSetupChannelsResponse{Configured: false, Reason: "MISSING_MANAGE_CHANNELS"},
+		AutoSetupChannelsResponse{Configured: false, Reason: "CUSTOM_CONFIGURATION_EXISTS"},
 	}
 
 	forbidden := []string{
@@ -342,5 +354,98 @@ func TestSupportedNitradoDayZServicesFiltersAndClassifies(t *testing.T) {
 	}
 	if _, ok := byID[5]; ok {
 		t.Fatal("expected the unrelated game (service 5) to be excluded entirely")
+	}
+}
+
+// --- channel auto-setup pure functions (Step 5) -----------------------------
+
+func TestNormalizeChannelName(t *testing.T) {
+	cases := []struct {
+		in       string
+		wantName string
+		wantOK   bool
+	}{
+		{"Kill Feed", "kill-feed", true},
+		{"  pvp-feed  ", "pvp-feed", true},
+		{"Kill Feed!!", "kill-feed", true},
+		{"already-lower_case", "already-lower_case", true},
+		{"multiple   spaces", "multiple-spaces", true},
+		{"---leading-and-trailing---", "leading-and-trailing", true},
+		{"", "", false},
+		{"   ", "", false},
+		{"!!!", "", false},
+		{"emoji😀name", "emojiname", true},
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			got, ok := normalizeChannelName(c.in)
+			if ok != c.wantOK {
+				t.Fatalf("normalizeChannelName(%q): expected ok=%v, got ok=%v (name=%q)", c.in, c.wantOK, ok, got)
+			}
+			if ok && got != c.wantName {
+				t.Fatalf("normalizeChannelName(%q): expected %q, got %q", c.in, c.wantName, got)
+			}
+		})
+	}
+}
+
+func TestNormalizeChannelNameRejectsOverlyLongNames(t *testing.T) {
+	_, ok := normalizeChannelName(strings.Repeat("a", 101))
+	if ok {
+		t.Fatal("expected a 101-character name to be rejected")
+	}
+	got, ok := normalizeChannelName(strings.Repeat("a", 100))
+	if !ok || len(got) != 100 {
+		t.Fatalf("expected a 100-character name to be accepted as-is, got %q ok=%v", got, ok)
+	}
+}
+
+func TestChannelTypeLabel(t *testing.T) {
+	if got := channelTypeLabel(discordgo.ChannelTypeGuildNews); got != "ANNOUNCEMENT" {
+		t.Fatalf("expected ANNOUNCEMENT for a news channel, got %q", got)
+	}
+	if got := channelTypeLabel(discordgo.ChannelTypeGuildText); got != "TEXT" {
+		t.Fatalf("expected TEXT for a text channel, got %q", got)
+	}
+}
+
+func TestHasCustomChannelConfiguration(t *testing.T) {
+	cases := []struct {
+		name string
+		s    repository.InstallationSettings
+		want bool
+	}{
+		{"never configured", repository.InstallationSettings{}, false},
+		{"manual with killfeed set", repository.InstallationSettings{KillfeedChannelID: "1"}, true},
+		{"legacy data with empty source", repository.InstallationSettings{KillfeedChannelID: "1", ChannelSetupSource: ""}, true},
+		{"auto-configured is not custom", repository.InstallationSettings{KillfeedChannelID: "1", ChannelSetupSource: "AUTO"}, false},
+		{"explicitly manual", repository.InstallationSettings{KillfeedChannelID: "1", ChannelSetupSource: "MANUAL"}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := hasCustomChannelConfiguration(c.s); got != c.want {
+				t.Fatalf("hasCustomChannelConfiguration(%+v): expected %v, got %v", c.s, c.want, got)
+			}
+		})
+	}
+}
+
+func TestEnsureManagedCategoryPrefersPersistedIDThenName(t *testing.T) {
+	a := &App{}
+	channels := []discord.RawGuildChannel{
+		{ID: "cat-old", Name: "CHAMPION KILLFEED", Type: discordgo.ChannelTypeGuildCategory},
+		{ID: "cat-new", Name: "champion killfeed", Type: discordgo.ChannelTypeGuildCategory},
+	}
+
+	// Persisted ID wins even though a differently-cased name match also exists.
+	got, err := a.ensureManagedCategory("guild-1", channels, "cat-old")
+	if err != nil || got.ID != "cat-old" {
+		t.Fatalf("expected the persisted category ID to win, got %+v err=%v", got, err)
+	}
+
+	// No persisted ID (or a stale one) falls back to the case-insensitive name match.
+	got, err = a.ensureManagedCategory("guild-1", channels, "does-not-exist")
+	if err != nil || got.ID != "cat-old" {
+		t.Fatalf("expected the first name match to be reused, got %+v err=%v", got, err)
 	}
 }

@@ -333,6 +333,75 @@ components:
           nullable: true
         message: { type: string }
 
+    DiscordChannelType:
+      type: string
+      enum: [TEXT, ANNOUNCEMENT]
+      description: Stable backend enum - never Discord's raw channel type integer.
+
+    DiscordChannelSummary:
+      type: object
+      properties:
+        id: { type: string, description: Discord channel snowflake. }
+        name: { type: string }
+        type: { $ref: "#/components/schemas/DiscordChannelType" }
+        position: { type: integer }
+        canSend:
+          type: boolean
+          description: Safe, best-effort hint only - not a substitute for POST .../discord/verify-permissions.
+
+    InstallationChannelSettings:
+      type: object
+      description: Empty string means "not configured yet." The same channel ID may serve multiple purposes.
+      properties:
+        killfeedChannelId: { type: string, description: Required when saving via PUT. }
+        leaderboardChannelId: { type: string }
+        playerStatusChannelId: { type: string }
+        adminLogChannelId: { type: string }
+
+    ChannelCategorySummary:
+      type: object
+      properties:
+        id: { type: string, description: Discord category channel snowflake. }
+        name: { type: string }
+
+    AutoSetupChannelsRequest:
+      type: object
+      properties:
+        force:
+          type: boolean
+          description: Explicitly override an existing customer channel configuration. Defaults to false.
+
+    AutoSetupChannelsResponse:
+      type: object
+      description: >
+        configured=false with a reason is a safe, expected outcome the
+        website must branch on directly - never the {"error":...} envelope,
+        since neither MISSING_MANAGE_CHANNELS nor CUSTOM_CONFIGURATION_EXISTS
+        is a failure to retry blindly.
+      properties:
+        configured: { type: boolean }
+        reason:
+          type: string
+          enum: [MISSING_MANAGE_CHANNELS, CUSTOM_CONFIGURATION_EXISTS]
+          nullable: true
+        category:
+          allOf: [{ $ref: "#/components/schemas/ChannelCategorySummary" }]
+          nullable: true
+        channels:
+          allOf: [{ $ref: "#/components/schemas/InstallationChannelSettings" }]
+          nullable: true
+
+    CreateDiscordChannelRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: Normalized into a Discord-safe channel name (lowercased, hyphenated) before creation.
+        categoryId:
+          type: string
+          description: Optional. Must already belong to this installation's own Discord guild.
+
   responses:
     Unauthorized:
       description: Missing/invalid service auth, or acting user not synced.
@@ -751,3 +820,139 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/discord/channels:
+    get:
+      summary: List the installation's guild's Champion-selectable Discord channels (text/announcement, bot-viewable only).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+      responses:
+        "200":
+          description: Channels, sorted by position then name.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/DiscordChannelSummary" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503":
+          description: Discord bot session unavailable, or the channel list could not be loaded.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+    post:
+      summary: Create a new Discord channel for Customize mode (OWNER/ADMIN).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateDiscordChannelRequest" }
+      responses:
+        "201":
+          description: Channel created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DiscordChannelSummary" }
+        "400":
+          description: Invalid channel name, or categoryId does not belong to this installation's guild.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503":
+          description: Discord bot session unavailable, missing Manage Channels, or channel creation failed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/channels:
+    get:
+      summary: Return the installation's persisted channel selection (refresh restoration for Customize mode).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+      responses:
+        "200":
+          description: Persisted channel settings.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InstallationChannelSettings" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      summary: Save a manual channel selection (Customize mode, OWNER/ADMIN). Preserves every other settings field.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InstallationChannelSettings" }
+      responses:
+        "200":
+          description: >
+            Saved. channelsCompleted=true and currentStep=VALIDATION advance
+            on success; the installation's channel configuration is marked
+            customer-owned (a later auto-setup call will not overwrite it
+            without force=true).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InstallationChannelSettings" }
+        "400":
+          description: killfeedChannelId missing, or a supplied channel ID does not belong to this installation's guild.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503":
+          description: Discord bot session unavailable, or the channel list could not be verified.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/channels/auto-setup:
+    post:
+      summary: One-click creation/reuse of Champion's default category and channels (OWNER/ADMIN). Idempotent.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AutoSetupChannelsRequest" }
+      responses:
+        "200":
+          description: >
+            configured=true with the resolved category/channels on success;
+            configured=false with a safe reason (MISSING_MANAGE_CHANNELS or
+            CUSTOM_CONFIGURATION_EXISTS) when auto-setup could not or should
+            not proceed - both are expected outcomes, not errors.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AutoSetupChannelsResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503":
+          description: Discord bot session unavailable, bot not installed in the guild, or category/channel creation failed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }

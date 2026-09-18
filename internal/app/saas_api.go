@@ -334,4 +334,10 @@ func (a *App) registerSaaSAPI() {
 	a.HTTPServer.Handle("GET /api/saas/organizations/{organizationID}/nitrado/services", a.handleNitradoServices)
 	a.HTTPServer.Handle("POST /api/saas/organizations/{organizationID}/installations/{installationID}/dayz-server", a.handleSelectDayZServer)
 	a.HTTPServer.Handle("POST /api/saas/organizations/{organizationID}/installations/{installationID}/dayz-server/validate", a.handleValidateDayZServer)
+
+	a.HTTPServer.Handle("GET /api/saas/organizations/{organizationID}/installations/{installationID}/discord/channels", a.handleListDiscordChannels)
+	a.HTTPServer.Handle("POST /api/saas/organizations/{organizationID}/installations/{installationID}/discord/channels", a.handleCreateDiscordChannel)
+	a.HTTPServer.Handle("GET /api/saas/organizations/{organizationID}/installations/{installationID}/channels", a.handleGetChannelSettings)
+	a.HTTPServer.Handle("PUT /api/saas/organizations/{organizationID}/installations/{installationID}/channels", a.handleSaveChannelSettings)
+	a.HTTPServer.Handle("POST /api/saas/organizations/{organizationID}/installations/{installationID}/channels/auto-setup", a.handleAutoSetupChannels)
 }
