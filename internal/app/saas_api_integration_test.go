@@ -34,6 +34,10 @@ type fakeDiscordVerifier struct {
 	verifyCalls int
 }
 
+// BotID returns a fixed fake bot user ID - only used for diagnostic log
+// fields in production, never for test assertions.
+func (f *fakeDiscordVerifier) BotID() string { return "fake-bot-id" }
+
 // HasGuildCached mirrors the production cache-only lookup, backed by the
 // same guildFound map Verify uses (a real cache would agree with a live
 // check for a guild the bot is actually in) - never increments verifyCalls.
