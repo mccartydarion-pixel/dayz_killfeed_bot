@@ -61,6 +61,13 @@ func TestAnnouncementClaimRace(t *testing.T) {
 	if wins != 1 {
 		t.Fatalf("expected one claimant, got %d", wins)
 	}
+	// A live lease must not be re-claimable; an expired one must be.
+	if ok, err := repo.Claim(ctx, kind, id, now.Add(30*time.Second), time.Minute); err != nil || ok {
+		t.Fatalf("claim inside live lease: ok=%v err=%v", ok, err)
+	}
+	if ok, err := repo.Claim(ctx, kind, id, now.Add(2*time.Minute), time.Minute); err != nil || !ok {
+		t.Fatalf("claim after lease expiry: ok=%v err=%v", ok, err)
+	}
 	if err := repo.MarkAnnounced(ctx, kind, id, now); err != nil {
 		t.Fatal(err)
 	}
