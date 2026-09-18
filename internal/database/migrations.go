@@ -715,6 +715,139 @@ ALTER TABLE kills ADD COLUMN IF NOT EXISTS streak_ended BOOLEAN NOT NULL DEFAULT
 ALTER TABLE kills ADD COLUMN IF NOT EXISTS ended_streak_count INTEGER;
 `,
 	},
+	{
+		// SaaS Phase 1 / Stage B2: the Go backend is the authoritative owner of
+		// the shared Champion production schema (see the ownership rule
+		// documented in docs/SAAS_SCHEMA.md) - the website reads/writes these
+		// tables through server-side services but never runs its own
+		// migrations against them. Purely additive: no existing table is
+		// renamed, no existing column is dropped or retyped, and every new
+		// foreign key back into gameplay tables (game_servers, guilds) uses
+		// SET NULL/CASCADE only where the cascaded row is SaaS metadata, never
+		// kill/death/player history (section 19/20 of the task).
+		//
+		// organization_id is added directly to the two existing tables that
+		// already represent "DayZ server connection" (game_servers) and
+		// "encrypted Nitrado credential" (nitrado_connections) rather than
+		// creating parallel dayz_server_connections/nitrado_credentials
+		// tables - see docs/SAAS_SCHEMA.md for the full reuse mapping.
+		Name: "0024_saas_foundation",
+		SQL: `
+CREATE TABLE IF NOT EXISTS app_users (
+    id BIGSERIAL PRIMARY KEY,
+    discord_user_id TEXT UNIQUE NOT NULL,
+    discord_username TEXT NOT NULL,
+    discord_global_name TEXT,
+    avatar TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_login_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS organizations (
+    id BIGSERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    slug TEXT UNIQUE NOT NULL,
+    owner_user_id BIGINT NOT NULL REFERENCES app_users(id) ON DELETE RESTRICT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_organizations_owner ON organizations(owner_user_id);
+
+CREATE TABLE IF NOT EXISTS organization_members (
+    id BIGSERIAL PRIMARY KEY,
+    organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    user_id BIGINT NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+    role TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(organization_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_organization_members_user ON organization_members(user_id);
+
+CREATE TABLE IF NOT EXISTS discord_guild_connections (
+    id BIGSERIAL PRIMARY KEY,
+    organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    guild_id BIGINT NOT NULL UNIQUE REFERENCES guilds(id) ON DELETE CASCADE,
+    guild_name TEXT,
+    guild_icon TEXT,
+    bot_installed BOOLEAN NOT NULL DEFAULT TRUE,
+    permissions_verified BOOLEAN NOT NULL DEFAULT FALSE,
+    connected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_discord_guild_connections_org ON discord_guild_connections(organization_id);
+
+-- game_servers already represents "a customer's DayZ/Nitrado server
+-- connection" (see 0012_phase48_multitenant_servers_credentials) - extended
+-- rather than duplicated under a dayz_server_connections table.
+ALTER TABLE game_servers ADD COLUMN IF NOT EXISTS organization_id BIGINT REFERENCES organizations(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_game_servers_org ON game_servers(organization_id);
+
+-- nitrado_connections already represents the encrypted Nitrado credential
+-- envelope (ciphertext/nonce/key_version) - extended rather than duplicated
+-- under a nitrado_credentials table.
+ALTER TABLE nitrado_connections ADD COLUMN IF NOT EXISTS organization_id BIGINT REFERENCES organizations(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_nitrado_connections_org ON nitrado_connections(organization_id);
+
+CREATE TABLE IF NOT EXISTS installations (
+    id BIGSERIAL PRIMARY KEY,
+    organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    discord_guild_connection_id BIGINT NOT NULL REFERENCES discord_guild_connections(id) ON DELETE CASCADE,
+    game_server_id BIGINT REFERENCES game_servers(id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'NOT_STARTED',
+    plan TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    setup_completed_at TIMESTAMPTZ,
+    last_health_check_at TIMESTAMPTZ,
+    UNIQUE(discord_guild_connection_id, game_server_id)
+);
+CREATE INDEX IF NOT EXISTS idx_installations_org ON installations(organization_id);
+CREATE INDEX IF NOT EXISTS idx_installations_status ON installations(status);
+CREATE INDEX IF NOT EXISTS idx_installations_guild_connection ON installations(discord_guild_connection_id);
+CREATE INDEX IF NOT EXISTS idx_installations_server ON installations(game_server_id);
+
+CREATE TABLE IF NOT EXISTS installation_setup_progress (
+    installation_id BIGINT PRIMARY KEY REFERENCES installations(id) ON DELETE CASCADE,
+    current_step TEXT NOT NULL DEFAULT 'DISCORD',
+    discord_completed BOOLEAN NOT NULL DEFAULT FALSE,
+    nitrado_completed BOOLEAN NOT NULL DEFAULT FALSE,
+    server_selected BOOLEAN NOT NULL DEFAULT FALSE,
+    channels_completed BOOLEAN NOT NULL DEFAULT FALSE,
+    validation_completed BOOLEAN NOT NULL DEFAULT FALSE,
+    completed_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS installation_settings (
+    installation_id BIGINT PRIMARY KEY REFERENCES installations(id) ON DELETE CASCADE,
+    killfeed_channel_id TEXT,
+    leaderboard_channel_id TEXT,
+    player_status_channel_id TEXT,
+    admin_log_channel_id TEXT,
+    timezone TEXT NOT NULL DEFAULT 'UTC',
+    distance_unit TEXT NOT NULL DEFAULT 'METERS',
+    online_display_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    leaderboard_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS subscriptions (
+    id BIGSERIAL PRIMARY KEY,
+    organization_id BIGINT NOT NULL UNIQUE REFERENCES organizations(id) ON DELETE CASCADE,
+    provider TEXT,
+    provider_customer_id TEXT,
+    provider_subscription_id TEXT,
+    plan TEXT NOT NULL DEFAULT 'TRIAL',
+    status TEXT NOT NULL DEFAULT 'TRIAL',
+    trial_ends_at TIMESTAMPTZ,
+    current_period_end TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order, each transactionally. A

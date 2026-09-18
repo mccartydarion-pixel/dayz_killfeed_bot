@@ -13,6 +13,11 @@ type GameServer struct {
 	Provider, ProviderServiceID, Game, Platform, DisplayName, Status string
 	Active                                                           bool
 	CreatedAt, UpdatedAt                                             time.Time
+	// OrganizationID links this server to a SaaS organization (see
+	// internal/repository/saas_installations_repository.go). Nil until the
+	// SaaS onboarding flow claims this server - existing guild-scoped
+	// methods on ServerRepository never set or select it.
+	OrganizationID *int64
 }
 type NitradoConnection struct {
 	ID, GuildID                                   int64
@@ -21,6 +26,10 @@ type NitradoConnection struct {
 	Status                                        string
 	LastValidatedAt, LastSuccessAt, LastFailureAt *time.Time
 	LastErrorClass                                string
+	// OrganizationID links this credential envelope to a SaaS organization
+	// (see internal/repository/saas_credentials_repository.go). Nil until
+	// claimed by the SaaS onboarding flow.
+	OrganizationID *int64
 }
 type ServerConfig struct {
 	ServerID                                                                                                        int64
