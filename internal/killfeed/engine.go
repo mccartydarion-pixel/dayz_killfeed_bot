@@ -281,6 +281,11 @@ type Engine struct {
 	lastDownloadAt            time.Time
 	rotationPending           bool
 	lastStaleProbeAt          time.Time
+	// lastAltProbeAt/altProbeHistory/directSizeHint back the direct-read
+	// probing of non-selected candidates (adm_alt_probe.go).
+	lastAltProbeAt  time.Time
+	altProbeHistory map[string]directProbeObservation
+	directSizeHint  directSizeHint
 	lastStaleProbeFingerprint string
 	newestDiscoveredFile      string
 	newestDiscoveredModified  time.Time
@@ -797,6 +802,21 @@ func (e *Engine) discoverOnce(ctx context.Context) error {
 	candidate := best.File
 	e.selectionReason = best.Reason
 
+	// Nothing looks alive by listing metadata. That is also what a live file
+	// looks like when Nitrado's metadata lags, so before retaining a stale
+	// source, direct-read the top alternatives and switch only to one whose
+	// real content is growing (adm_alt_probe.go).
+	var probed *probeSwitch
+	if e.selected != nil && best.State != candidateActive && best.State != candidateUnknown {
+		if sw := e.probeAlternatives(ctx, ranked); sw != nil {
+			probed = sw
+			candidate = sw.File
+			best = candidateRank{File: sw.File, State: candidateActive, Reason: "direct_probe_growth"}
+			e.selectionReason = best.Reason
+			e.seedProbeCheckpoint(sw)
+		}
+	}
+
 	// No candidate anywhere shows real evidence of life (ACTIVE), and the
 	// best alternative is not even a brand-new/never-seen file (UNKNOWN) -
 	// it is just another proven-or-passively-stale candidate. Retain the
@@ -804,7 +824,7 @@ func (e *Engine) discoverOnce(ctx context.Context) error {
 	// historical file (section 7/9): reselect the SAME path with its freshest
 	// known metadata so state correctly returns to POLL_SELECTED_LOG instead
 	// of spamming full rediscovery every poll.
-	if e.selected != nil && candidate.Path != e.selected.Path && best.State != candidateActive && best.State != candidateUnknown {
+	if probed == nil && e.selected != nil && candidate.Path != e.selected.Path && best.State != candidateActive && best.State != candidateUnknown {
 		slog.Info("component=adm_discovery", "event", "no_active_adm_candidate",
 			"current_path", e.selected.Path, "best_alternative_path", candidate.Path,
 			"best_alternative_state", string(best.State), "candidate_count", len(logs))
@@ -815,7 +835,7 @@ func (e *Engine) discoverOnce(ctx context.Context) error {
 			}
 		}
 		e.selectionReason = "no_active_candidate_retain_current"
-	} else if best.Reason == "newest_remote_modified" && len(logs) > 1 && logs[0].Modified.Equal(logs[1].Modified) {
+	} else if probed == nil && best.Reason == "newest_remote_modified" && len(logs) > 1 && logs[0].Modified.Equal(logs[1].Modified) {
 		e.selectionReason = "newest_filename_timestamp"
 	}
 
@@ -825,6 +845,9 @@ func (e *Engine) discoverOnce(ctx context.Context) error {
 		"source_switched", logicalChanged, "physical_path_changed", previousPath != "" && previousPath != candidate.Path,
 		"logical_source_changed", logicalChanged, "candidate_state", string(best.State))
 	e.selectLog(candidate)
+	if probed != nil {
+		e.finishProbeSwitch(ctx, probed)
+	}
 	e.reportPoll()
 	return nil
 }
@@ -1089,7 +1112,7 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 		slog.Debug("component=killfeed", "msg", "log rotation detected", "previous_file", e.tracker.CurrentLogFile, "file", current.Path)
 		e.tracker.ResetForRotation(current.Path)
 	}
-	if current.Path == e.tracker.CurrentLogFile && current.Size < e.tracker.LastByteOffset {
+	if current.Path == e.tracker.CurrentLogFile && current.Size < e.tracker.LastByteOffset && !e.metadataLagsDirect(current.Path, e.tracker.LastByteOffset) {
 		slog.Debug("component=killfeed", "msg", "log truncation detected", "file", current.Path, "old_offset", e.tracker.LastByteOffset, "current_size", current.Size)
 		e.tracker.ResetForRotation(current.Path)
 	}
@@ -1282,6 +1305,7 @@ func (e *Engine) probeStaleSource(ctx context.Context, current *nitrado.LogFile)
 	fingerprint := hex.EncodeToString(sum[:])
 	contentChanged := e.lastStaleProbeFingerprint != "" && e.lastStaleProbeFingerprint != fingerprint
 	e.lastStaleProbeFingerprint = fingerprint
+	e.directSizeHint = directSizeHint{Path: current.Path, Size: directSize}
 
 	checkpointOffset := e.tracker.LastByteOffset
 	unread := directSize - checkpointOffset
