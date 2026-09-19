@@ -1018,17 +1018,39 @@ nothing more, and the platform-admin allowlist is not consulted.
 | `GET .../factions/{factionID}/members` | any synced user |
 | `POST .../members/{memberID}/promote` \| `demote` | LEADER |
 | `DELETE .../members/{memberID}` | LEADER (MEMBER, OFFICER); OFFICER (MEMBER) |
+| `POST .../factions/{factionID}/logo` (multipart `file`; `201` new, `200` replaced) | faction LEADER |
+| `DELETE .../factions/{factionID}/logo` (idempotent) | faction LEADER |
+| `POST .../factions/{factionID}/transfer-leadership` (`{"memberId"}`) | faction LEADER |
+| `POST .../factions/{factionID}/leave` | the member (MEMBER/OFFICER; LEADER gets `409 LEADERSHIP_TRANSFER_REQUIRED`) |
+| `GET /assets/faction-logos/{publicId}.{png\|jpg\|webp}` (public, no auth) | anyone |
+
+**Phase 4 (logo storage, leadership transfer, self-leave)** - full contract in `docs/FACTIONS.md`:
+
+* Every faction summary/profile/`me` object carries `logo`: `null` (Champion default) or
+  `{ "id", "url", "contentType", "width", "height" }`. The upload returns `{ "logo": {...}, "replaced": bool }`, the delete
+  `{ "logo": null, "deleted": bool }`, the transfer `{ "leader": member, "previousLeader": member }`, the leave
+  `{ "left": true, "member": member }`.
+* Upload is `multipart/form-data` with one part named `file`: PNG, JPEG or WebP only, at most 5 MiB, 128-2048 px per side, decided from
+  the bytes (not the name or declared type). Anything else is `415 UNSUPPORTED_MEDIA_TYPE` (format, contradicting declared type, or a
+  non-multipart body), `413` (too large) or `400` (empty, corrupt, bad dimensions, extra fields). Faction LEADER only, checked before the
+  body is read. Rate limited: 3 / minute and 20 / day per user. The website must send it server-side with the service secret.
+* `PUT .../factions/{factionID}` now accepts `flagKey` (`BLACK BLUE GREEN RED`) and `armbandKey` (`BLACK BLUE GREEN ORANGE PINK RED
+  WHITE YELLOW`), validated server-side and normalized to upper-case (`""` clears); colors must be exactly `#RRGGBB`. `logoKey`,
+  `logoUrl`, `logoAssetId` and any URL are still rejected.
+* New error codes: `UNSUPPORTED_MEDIA_TYPE` (415), `LEADERSHIP_TRANSFER_REQUIRED` (409).
 
 Errors use the standard envelope. `409 CONFLICT` covers state conflicts (name or tag taken on the
 installation, already in a faction there, not recruiting, duplicate/non-pending application, invalid role
 change, no DayZ server selected, suspended installation); `403` means the faction role does not allow it or
 the leader is protected; `404` also covers another tenant's ids; `413` a body over 16 KiB; `429` `RATE_LIMITED`.
 Lists use the keyset envelope `{ "items": [], "nextCursor": null, "limit": 25 }` (newest first).
-Request bodies must be one JSON object with **no unknown keys**: image URLs, `logoKey`/`flagKey`/`armbandKey`,
-ids and `answers` are rejected with `400`.
+JSON request bodies must be one JSON object with **no unknown keys**: image URLs, `logoKey`, ids and
+`answers` are rejected with `400` (`flagKey`/`armbandKey` are accepted only as approved catalog keys - Phase 4).
 
 Audit events (`faction_created`, `faction_updated`, `faction_application_created|accepted|denied|withdrawn`,
-`faction_member_promoted|demoted|removed`) log ids only - never names, descriptions or application messages.
+`faction_member_promoted|demoted|removed`, and Phase 4: `faction_logo_uploaded|replaced|deleted`,
+`faction_leadership_transferred`, `faction_member_left`) log ids only - never names, descriptions, application
+messages, file names or image bytes.
 
 ## Request/response DTOs
 
@@ -1320,6 +1342,7 @@ In-memory, per acting Discord user ID, per process:
 | `#14` Nitrado connect | 10 / hour |
 | Faction Hub: create a faction | 1 / 10 seconds and 10 / day |
 | Faction Hub: submit a join application | 5 / minute and 40 / day |
+| Faction Hub: upload a faction logo | 3 / minute and 20 / day |
 
 Ordinary reads (`#2`, `#4`, `#5`, `#7`, `#8`, `#15`, `#17`, `#18`, `#19`,
 `#23`, `#26`, `#27`) are never rate limited. `#20`/`#21`/`#22`/`#24`/`#25`/

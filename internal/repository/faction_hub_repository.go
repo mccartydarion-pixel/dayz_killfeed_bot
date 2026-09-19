@@ -51,6 +51,8 @@ type HubFaction struct {
 	CreatedByUserID                                            int64
 	CreatedAt, UpdatedAt                                       time.Time
 	MemberCount                                                int
+	// Logo is the current logo asset (nil = the Champion default logo).
+	Logo *factionhub.Asset
 	// Settings is filled by single-faction reads (not by the directory).
 	Settings factionhub.Settings
 }
@@ -89,12 +91,14 @@ type HubFactionInput struct {
 }
 
 // HubFactionUpdate is validated, normalized input for updating a faction. A nil field
-// leaves the stored value unchanged; an empty color clears it; a non-nil Settings
+// leaves the stored value unchanged; an empty color/flag/armband clears it; a non-nil Settings
 // replaces the requirements as a whole.
 type HubFactionUpdate struct {
 	Name, Tag, Description, RecruitmentStatus *string
 	PrimaryColor, SecondaryColor              *string
-	Settings                                  *factionhub.Settings
+	// FlagKey / ArmbandKey are validated catalog keys; "" clears.
+	FlagKey, ArmbandKey *string
+	Settings            *factionhub.Settings
 }
 
 // HubAccess identifies the acting user. OrgViewer is true when the user is an
@@ -125,12 +129,27 @@ type HubMyFaction struct {
 
 const hubFactionCols = `f.id, f.organization_id, f.installation_id, f.game_server_id, f.name, f.tag, f.slug, f.description, f.recruitment_status,
  f.logo_key, f.flag_key, f.armband_key, f.primary_color, f.secondary_color, f.created_by_user_id, f.created_at, f.updated_at,
- (SELECT COUNT(*) FROM hub_faction_members m WHERE m.faction_id = f.id)`
+ (SELECT COUNT(*) FROM hub_faction_members m WHERE m.faction_id = f.id),
+ la.id, la.public_id::text, la.storage_key, la.content_type, la.size_bytes, la.width, la.height, la.original_filename, la.created_at`
+
+// hubFactionFrom joins the current logo asset (a faction with no logo has NULLs there).
+const hubFactionFrom = `hub_factions f LEFT JOIN hub_faction_assets la ON la.id = f.logo_asset_id`
 
 func scanHubFaction(row interface{ Scan(...any) error }) (HubFaction, error) {
 	var f HubFaction
+	var la struct {
+		id                                      *int64
+		publicID, storageKey, contentType, name *string
+		size, width, height                     *int
+		created                                 *time.Time
+	}
 	err := row.Scan(&f.ID, &f.OrganizationID, &f.InstallationID, &f.GameServerID, &f.Name, &f.Tag, &f.Slug, &f.Description, &f.RecruitmentStatus,
-		&f.LogoKey, &f.FlagKey, &f.ArmbandKey, &f.PrimaryColor, &f.SecondaryColor, &f.CreatedByUserID, &f.CreatedAt, &f.UpdatedAt, &f.MemberCount)
+		&f.LogoKey, &f.FlagKey, &f.ArmbandKey, &f.PrimaryColor, &f.SecondaryColor, &f.CreatedByUserID, &f.CreatedAt, &f.UpdatedAt, &f.MemberCount,
+		&la.id, &la.publicID, &la.storageKey, &la.contentType, &la.size, &la.width, &la.height, &la.name, &la.created)
+	if err == nil && la.id != nil {
+		f.Logo = &factionhub.Asset{ID: *la.id, PublicID: *la.publicID, FactionID: f.ID, StorageKey: *la.storageKey, ContentType: *la.contentType,
+			SizeBytes: *la.size, Width: *la.width, Height: *la.height, OriginalFilename: *la.name, CreatedAt: *la.created}
+	}
 	return f, err
 }
 
@@ -230,9 +249,9 @@ func lockHubUser(ctx context.Context, tx pgx.Tx, installationID, userID int64) e
 }
 
 // hubFactionScoped selects the faction within (organization, installation), optionally
-// locking the row ("", "FOR SHARE" or "FOR UPDATE").
+// locking the faction row ("", "FOR SHARE OF f" or "FOR UPDATE OF f").
 func hubFactionScoped(ctx context.Context, q hubDB, organizationID, installationID, factionID int64, lock string) (HubFaction, error) {
-	row := q.QueryRow(ctx, `SELECT `+hubFactionCols+` FROM hub_factions f WHERE f.id=$1 AND f.organization_id=$2 AND f.installation_id=$3 `+lock, factionID, organizationID, installationID)
+	row := q.QueryRow(ctx, `SELECT `+hubFactionCols+` FROM `+hubFactionFrom+` WHERE f.id=$1 AND f.organization_id=$2 AND f.installation_id=$3 `+lock, factionID, organizationID, installationID)
 	f, err := scanHubFaction(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return HubFaction{}, factionhub.ErrNotFound
@@ -377,7 +396,7 @@ func (r *FactionHubRepository) Directory(ctx context.Context, organizationID, in
 	}
 	limit := q.Limit
 	rows, err := r.pool.Query(ctx, `SELECT `+hubFactionCols+`
-FROM hub_factions f
+FROM `+hubFactionFrom+`
 WHERE f.organization_id=$1 AND f.installation_id=$2
   AND ($3::boolean = FALSE OR f.recruitment_status = 'OPEN')
   AND ($4::text = '' OR f.name ILIKE $4 ESCAPE '\' OR f.tag ILIKE $4 ESCAPE '\')
@@ -584,12 +603,12 @@ RETURNING id`, organizationID, installationID, gameServerID, in.Name, in.Tag, fa
 }
 
 // UpdateFaction replaces the profile fields (LEADER only). The organization,
-// installation, server, slug and visual keys are never changed here; the slug stays stable
+// installation, server, slug and logo are never changed here (the logo has its own methods); the slug stays stable
 // across renames so links keep working.
 func (r *FactionHubRepository) UpdateFaction(ctx context.Context, organizationID, installationID, factionID, actorUserID int64, in HubFactionUpdate) (*HubFaction, error) {
 	var out HubFaction
 	err := r.inTx(ctx, func(tx pgx.Tx) error {
-		if _, err := hubFactionScoped(ctx, tx, organizationID, installationID, factionID, "FOR UPDATE"); err != nil {
+		if _, err := hubFactionScoped(ctx, tx, organizationID, installationID, factionID, "FOR UPDATE OF f"); err != nil {
 			return err
 		}
 		role, err := hubRole(ctx, tx, factionID, actorUserID)
@@ -600,6 +619,14 @@ func (r *FactionHubRepository) UpdateFaction(ctx context.Context, organizationID
 			return factionhub.ErrForbidden
 		}
 		primary, secondary := "", ""
+		flag, armband := "", ""
+		setFlag, setArmband := in.FlagKey != nil, in.ArmbandKey != nil
+		if setFlag {
+			flag = *in.FlagKey
+		}
+		if setArmband {
+			armband = *in.ArmbandKey
+		}
 		setPrimary, setSecondary := in.PrimaryColor != nil, in.SecondaryColor != nil
 		if setPrimary {
 			primary = *in.PrimaryColor
@@ -611,9 +638,11 @@ func (r *FactionHubRepository) UpdateFaction(ctx context.Context, organizationID
 UPDATE hub_factions SET name=COALESCE($1,name), tag=COALESCE($2,tag), description=COALESCE($3,description), recruitment_status=COALESCE($4,recruitment_status),
   primary_color   = CASE WHEN $5::boolean THEN NULLIF($6,'') ELSE primary_color END,
   secondary_color = CASE WHEN $7::boolean THEN NULLIF($8,'') ELSE secondary_color END,
+  flag_key        = CASE WHEN $9::boolean THEN NULLIF($10,'') ELSE flag_key END,
+  armband_key     = CASE WHEN $11::boolean THEN NULLIF($12,'') ELSE armband_key END,
   updated_at=NOW()
-WHERE id=$9 AND organization_id=$10 AND installation_id=$11`,
-			in.Name, in.Tag, in.Description, in.RecruitmentStatus, setPrimary, primary, setSecondary, secondary, factionID, organizationID, installationID); err != nil {
+WHERE id=$13 AND organization_id=$14 AND installation_id=$15`,
+			in.Name, in.Tag, in.Description, in.RecruitmentStatus, setPrimary, primary, setSecondary, secondary, setFlag, flag, setArmband, armband, factionID, organizationID, installationID); err != nil {
 			return mapHubUnique(fmt.Errorf("hub update faction: %w", err))
 		}
 		if s := in.Settings; s != nil {
@@ -648,7 +677,7 @@ func (r *FactionHubRepository) Apply(ctx context.Context, organizationID, instal
 		if err := lockHubUser(ctx, tx, installationID, userID); err != nil {
 			return err
 		}
-		f, err := hubFactionScoped(ctx, tx, organizationID, installationID, factionID, "FOR SHARE")
+		f, err := hubFactionScoped(ctx, tx, organizationID, installationID, factionID, "FOR SHARE OF f")
 		if err != nil {
 			return err
 		}
@@ -817,7 +846,7 @@ func (r *FactionHubRepository) WithdrawApplication(ctx context.Context, organiza
 func (r *FactionHubRepository) memberChange(ctx context.Context, organizationID, installationID, factionID, memberID, actorUserID int64, fn func(tx pgx.Tx, actorRole string, target HubMember) (*HubMember, error)) (*HubMember, error) {
 	var out *HubMember
 	err := r.inTx(ctx, func(tx pgx.Tx) error {
-		if _, err := hubFactionScoped(ctx, tx, organizationID, installationID, factionID, "FOR UPDATE"); err != nil {
+		if _, err := hubFactionScoped(ctx, tx, organizationID, installationID, factionID, "FOR UPDATE OF f"); err != nil {
 			return err
 		}
 		actorRole, err := hubRole(ctx, tx, factionID, actorUserID)

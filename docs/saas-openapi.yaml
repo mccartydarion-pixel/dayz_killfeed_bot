@@ -110,6 +110,8 @@ components:
                 - INTERNAL_ERROR
                 - PAYLOAD_TOO_LARGE
                 - RATE_LIMITED
+                - UNSUPPORTED_MEDIA_TYPE
+                - LEADERSHIP_TRANSFER_REQUIRED
             message:
               type: string
 
@@ -646,6 +648,7 @@ components:
         armbandKey: { type: string, nullable: true }
         primaryColor: { type: string, nullable: true, description: "#RRGGBB" }
         secondaryColor: { type: string, nullable: true }
+        logo: { $ref: "#/components/schemas/FactionLogo" }
     FactionMember:
       type: object
       properties:
@@ -754,6 +757,8 @@ components:
         recruitmentStatus: { $ref: "#/components/schemas/FactionRecruitmentStatus" }
         primaryColor: { type: string, description: "#RRGGBB, or empty to clear." }
         secondaryColor: { type: string }
+        flagKey: { type: string, description: "An approved flag key (BLACK BLUE GREEN RED), case-insensitive; empty clears. Anything else is 400." }
+        armbandKey: { type: string, description: "An approved armband key (BLACK BLUE GREEN ORANGE PINK RED WHITE YELLOW), case-insensitive; empty clears. Anything else is 400." }
         requirements: { $ref: "#/components/schemas/FactionRequirements" }
     ApplyToFactionRequest:
       type: object
@@ -770,6 +775,59 @@ components:
       properties:
         removed: { type: boolean }
         member: { $ref: "#/components/schemas/FactionMember" }
+
+    FactionLogo:
+      type: object
+      nullable: true
+      description: >
+        The faction's uploaded logo, or null for the Champion default logo. Carries no storage key, bucket or
+        credential. The URL is public and needs no authentication; a new upload always has a new URL.
+      properties:
+        id: { type: integer, format: int64 }
+        url: { type: string, description: "Absolute when the service knows its public origin, otherwise root-relative (/assets/faction-logos/<uuid>.<ext>)." }
+        contentType: { type: string, enum: [image/png, image/jpeg, image/webp] }
+        width: { type: integer, minimum: 128, maximum: 2048 }
+        height: { type: integer, minimum: 128, maximum: 2048 }
+    UploadFactionLogoRequest:
+      type: object
+      description: multipart/form-data with exactly one part named file. Any other field is 400.
+      required: [file]
+      properties:
+        file: { type: string, format: binary, description: "PNG, JPEG or WebP; at most 5 MiB; each side 128-2048 px. Judged from the bytes, not the name or declared type." }
+    UploadFactionLogoResponse:
+      type: object
+      properties:
+        logo: { $ref: "#/components/schemas/FactionLogo" }
+        replaced: { type: boolean, description: "true when an earlier logo was replaced (HTTP 200); false for a first logo (HTTP 201)." }
+    DeleteFactionLogoResponse:
+      type: object
+      properties:
+        logo: { type: object, nullable: true, description: Always null - the faction is back on the Champion default logo. }
+        deleted: { type: boolean, description: "false when there was no logo (the call is idempotent)." }
+    TransferLeadershipRequest:
+      type: object
+      additionalProperties: false
+      required: [memberId]
+      properties:
+        memberId: { type: integer, format: int64, description: "The target's membership id (FactionMember.id) in THIS faction." }
+    TransferLeadershipResponse:
+      type: object
+      properties:
+        leader: { $ref: "#/components/schemas/FactionMember" }
+        previousLeader: { $ref: "#/components/schemas/FactionMember", description: "Now an OFFICER." }
+    LeaveFactionResponse:
+      type: object
+      properties:
+        left: { type: boolean }
+        member: { $ref: "#/components/schemas/FactionMember", description: The membership that ended. }
+    FactionFlagKey:
+      type: string
+      enum: [BLACK, BLUE, GREEN, RED]
+      description: Approved DayZ flag keys (server-validated; the website mirrors this list).
+    FactionArmbandKey:
+      type: string
+      enum: [BLACK, BLUE, GREEN, ORANGE, PINK, RED, WHITE, YELLOW]
+      description: Approved armband keys (server-validated).
 
   responses:
     Unauthorized:
@@ -1851,3 +1909,124 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+
+  # --- Faction Hub Phase 4: logo storage, leadership transfer, self-leave (docs/FACTIONS.md) ---
+  /api/saas/organizations/{organizationID}/installations/{installationID}/factions/{factionID}/logo:
+    post:
+      summary: Upload or replace the faction logo (faction LEADER only; checked before the body is read). PNG/JPEG/WebP, at most 5 MiB, 128-2048 px per side. The website sends this server-side.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { $ref: "#/components/parameters/factionID" }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema: { $ref: "#/components/schemas/UploadFactionLogoRequest" }
+      responses:
+        "200":
+          description: An earlier logo was replaced (its URL stops resolving).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UploadFactionLogoResponse" }
+        "201":
+          description: First logo stored.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UploadFactionLogoResponse" }
+        "400":
+          description: Empty file, corrupt image, dimensions outside 128-2048 px, or an unexpected/duplicate form field (externalUrl, url, base64 text, a second file).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "413": { description: The logo is over 5 MiB. }
+        "415":
+          description: Not PNG/JPEG/WebP (SVG, GIF, HTML, PDF, animated WebP...), a declared Content-Type that contradicts the bytes, or a non-multipart body.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "429": { description: Rate limited (3 per minute, 20 per day per user). }
+    delete:
+      summary: Delete the faction logo (faction LEADER only). Idempotent - the faction returns to the Champion default logo.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { $ref: "#/components/parameters/factionID" }
+      responses:
+        "200":
+          description: Always 200; deleted says whether a logo existed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeleteFactionLogoResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/factions/{factionID}/transfer-leadership:
+    post:
+      summary: Transfer leadership to another member of this faction (current LEADER only). Atomic - the old leader becomes an OFFICER; never zero or two leaders.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { $ref: "#/components/parameters/factionID" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TransferLeadershipRequest" }
+      responses:
+        "200":
+          description: The new leader and the former leader.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TransferLeadershipResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Unknown faction, or the target is not a member of this faction (or another tenant's). }
+        "409": { description: The target is already the leader. }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/factions/{factionID}/leave:
+    post:
+      summary: Leave the faction (the acting user's own membership). MEMBER and OFFICER may; the LEADER gets 409 LEADERSHIP_TRANSFER_REQUIRED and must transfer leadership first.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { $ref: "#/components/parameters/factionID" }
+      responses:
+        "200":
+          description: The membership that ended. Application history is untouched.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LeaveFactionResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: The caller is not a member of this faction (including a repeated leave). }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: code LEADERSHIP_TRANSFER_REQUIRED - the LEADER cannot leave while leading.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+
+  /assets/faction-logos/{file}:
+    get:
+      summary: The public faction logo image (no authentication). file is <publicId>.<png|jpg|webp> - the unguessable id from FactionLogo.url; the extension must match the stored format.
+      security: []
+      parameters:
+        - { name: file, in: path, required: true, schema: { type: string }, description: "<uuid>.<png|jpg|webp>" }
+      responses:
+        "200":
+          description: The image, with nosniff, a sandboxing CSP, an ETag and immutable one-year caching.
+          content:
+            image/png: { schema: { type: string, format: binary } }
+            image/jpeg: { schema: { type: string, format: binary } }
+            image/webp: { schema: { type: string, format: binary } }
+        "304": { description: Not modified (If-None-Match matched the ETag). }
+        "404": { description: Unknown, replaced or deleted logo, or a mismatched extension. }

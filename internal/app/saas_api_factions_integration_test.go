@@ -16,7 +16,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yourname/dayz-killfeed/internal/assetstore"
 	"github.com/yourname/dayz-killfeed/internal/config"
+	"github.com/yourname/dayz-killfeed/internal/factionassets"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 	"github.com/yourname/dayz-killfeed/internal/server"
 )
@@ -26,9 +28,10 @@ import (
 // PostgreSQL. See docs/FACTIONS.md.
 
 type factionWorld struct {
-	t    *testing.T
-	a    *App
-	base string
+	t     *testing.T
+	a     *App
+	base  string
+	store *assetstore.MemoryStore
 
 	a1, b1 installationFixture // two independent organizations
 	admin  string              // ADMIN of org A
@@ -45,6 +48,11 @@ func newFactionWorld(t *testing.T) *factionWorld {
 	a.saasFactionCreateDayLimiter = newSaaSRateLimiter(time.Hour, 1000)
 	a.saasFactionApplyLimiter = newSaaSRateLimiter(time.Hour, 1000)
 	a.saasFactionApplyDayLimiter = newSaaSRateLimiter(time.Hour, 1000)
+	a.saasFactionLogoLimiter = newSaaSRateLimiter(time.Hour, 1000)
+	a.saasFactionLogoDayLimiter = newSaaSRateLimiter(time.Hour, 1000)
+	store := assetstore.NewMemoryStore()
+	a.FactionAssets = factionassets.NewService(store, a.FactionHub)
+	a.Config.PublicBaseURL = "https://champion.example"
 
 	// One listener per test, on a free local port, serving only the faction routes.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -68,7 +76,7 @@ func newFactionWorld(t *testing.T) *factionWorld {
 		_ = srv.Shutdown(shutdown)
 	})
 
-	w := &factionWorld{t: t, a: a, base: "http://127.0.0.1:" + port}
+	w := &factionWorld{t: t, a: a, base: "http://127.0.0.1:" + port, store: store}
 	w.a1 = buildInstallationFixture(t, a, verifier)
 	w.b1 = buildInstallationFixture(t, a, verifier)
 	for _, f := range []installationFixture{w.a1, w.b1} {
@@ -383,7 +391,7 @@ func TestFactionAPIRecruitmentAndUpdate(t *testing.T) {
 	}
 	w.expect(w.do(http.MethodPost, w.path(w.a1, fp+"/applications"), p1, nil), http.StatusConflict, "apply to INVITE_ONLY")
 	for _, body := range []map[string]any{
-		{"logoKey": "wolf"}, {"flagKey": "chernarus"}, {"armbandKey": "red"}, {"logoUrl": "https://evil.example/x.png"},
+		{"logoKey": "wolf"}, {"logoUrl": "https://evil.example/x.png"}, {"logo": "https://evil.example/x.png"}, {"logoAssetId": 1},
 		{"installationId": 999}, {"organizationId": 1}, {"gameServerId": 1}, {"slug": "hijack"}, {"answers": map[string]any{"q": "a"}},
 	} {
 		w.expect(w.do(http.MethodPut, w.path(w.a1, fp), leader, body), http.StatusBadRequest, fmt.Sprintf("unknown/immutable field %v", body))

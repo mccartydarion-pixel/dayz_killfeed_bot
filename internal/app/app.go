@@ -26,6 +26,7 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/embedrender"
 	"github.com/yourname/dayz-killfeed/internal/embedtemplates"
 	competitiveevents "github.com/yourname/dayz-killfeed/internal/events"
+	"github.com/yourname/dayz-killfeed/internal/factionassets"
 	"github.com/yourname/dayz-killfeed/internal/health"
 	"github.com/yourname/dayz-killfeed/internal/killfeed"
 	"github.com/yourname/dayz-killfeed/internal/linking"
@@ -146,7 +147,11 @@ type App struct {
 	saasFactionCreateDayLimiter *saasRateLimiter
 	saasFactionApplyLimiter     *saasRateLimiter
 	saasFactionApplyDayLimiter  *saasRateLimiter
-	persistQueuesMu             sync.Mutex
+	// FactionAssets stores faction logos (Phase 4); the two limiters throttle uploads.
+	FactionAssets             *factionassets.Service
+	saasFactionLogoLimiter    *saasRateLimiter
+	saasFactionLogoDayLimiter *saasRateLimiter
+	persistQueuesMu           sync.Mutex
 	persistQueues             []*killfeed.PersistenceQueue
 	rotatingFeedsMu           sync.Mutex
 	rotatingFeeds             []*discord.RotatingFeed
@@ -536,6 +541,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			embedRepo := repository.NewEmbedTemplateRepository(db.Pool)
 			app.EmbedTemplates = embedtemplates.NewService(embedRepo)
 			app.FactionHub = repository.NewFactionHubRepository(db.Pool)
+			app.FactionAssets = factionassets.NewService(repository.NewPostgresAssetStore(db.Pool), app.FactionHub)
 			app.EmbedRenderer = embedrender.New(embedrender.Options{Source: embedRepo, Enabled: cfg.CustomEmbedsEnabled})
 			if cfg.CustomEmbedsEnabled {
 				slog.Info("component=embedrender", "event", "custom_embeds_enabled")
@@ -748,6 +754,12 @@ func (a *App) Run() error {
 	if state == nil {
 		state = server.NewState()
 		a.State = state
+	}
+
+	// Faction logo bytes orphaned by a failed delete or rollback are swept hourly (only objects
+	// older than two hours and referenced by no asset row).
+	if a.FactionAssets != nil {
+		go a.FactionAssets.RunSweeper(ctx, time.Hour, 2*time.Hour)
 	}
 
 	// Sanitized configuration presence. Values are never logged.

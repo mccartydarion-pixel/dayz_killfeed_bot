@@ -72,6 +72,8 @@ var httpStatusForCode = map[string]int{
 	codeInternalError:           http.StatusInternalServerError,
 	codeNitradoUnavailable:      http.StatusServiceUnavailable,
 	codePayloadTooLarge:         http.StatusRequestEntityTooLarge,
+	codeUnsupportedMediaType:    http.StatusUnsupportedMediaType,
+	codeLeadershipTransfer:      http.StatusConflict,
 }
 
 // writeSaaSJSON writes a successful JSON response.
@@ -316,6 +318,12 @@ func (a *App) registerSaaSAPI() {
 	}
 	if a.saasFactionApplyDayLimiter == nil {
 		a.saasFactionApplyDayLimiter = newSaaSRateLimiter(24*time.Hour, 40)
+	}
+	if a.saasFactionLogoLimiter == nil {
+		a.saasFactionLogoLimiter = newSaaSRateLimiter(time.Minute, 3)
+	}
+	if a.saasFactionLogoDayLimiter == nil {
+		a.saasFactionLogoDayLimiter = newSaaSRateLimiter(24*time.Hour, 20)
 	}
 	// Only wire from a.Discord when it's genuinely non-nil: assigning a nil
 	// *discord.Client into the discordGuildVerifier interface field would
