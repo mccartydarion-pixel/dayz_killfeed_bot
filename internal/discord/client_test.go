@@ -83,7 +83,10 @@ func TestWaitForSessionUserWaitsForReadyThenSucceeds(t *testing.T) {
 	session := &discordgo.Session{State: discordgo.NewState()}
 	go func() {
 		time.Sleep(20 * time.Millisecond)
+		// Mirror discordgo's onReady, which writes State.Ready under the write lock.
+		session.State.Lock()
 		session.State.User = &discordgo.User{ID: "1"}
+		session.State.Unlock()
 	}()
 	if !waitForSessionUser(context.Background(), session, time.Second) {
 		t.Fatal("expected true once READY populates State.User")
