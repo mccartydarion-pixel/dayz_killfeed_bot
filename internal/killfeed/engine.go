@@ -158,6 +158,35 @@ type HitPublisher interface {
 	PublishHit(ev *Event)
 }
 
+// ConnectionKind is what a ConnectionNotice reports. Only the two states the
+// ADM log states explicitly exist: there is deliberately no "reconnect" kind,
+// because Champion never infers one.
+type ConnectionKind string
+
+const (
+	ConnectionConnected    ConnectionKind = "CONNECTED"
+	ConnectionDisconnected ConnectionKind = "DISCONNECTED"
+)
+
+// ConnectionNotice is what the CONNECTIONS feed receives. It carries only what
+// is safe and useful to show: the display name, the kind, and (for a
+// disconnect) the observed session length. The ADM player id and position are
+// deliberately not passed on, so the feed cannot leak them.
+type ConnectionNotice struct {
+	Kind    ConnectionKind
+	Name    string
+	Session time.Duration // 0 = unknown
+}
+
+// ConnectionPublisher is the consumer for authoritative connect/disconnect
+// state changes (the CONNECTIONS feed). PublishConnection runs on the polling
+// goroutine, after the event passed dedupe and durable persistence, so
+// implementations MUST NOT block and have no error to return; a failing
+// consumer must never stop log processing. Panics are recovered by the engine.
+type ConnectionPublisher interface {
+	PublishConnection(n ConnectionNotice)
+}
+
 // Engine orchestrates log discovery, selection, incremental polling, and parsing.
 type Engine struct {
 	parser          Parser
@@ -186,6 +215,7 @@ type Engine struct {
 	publisher      KillPublisher
 	deathPublisher DeathPublisher
 	hitPublisher   HitPublisher
+	connPublisher  ConnectionPublisher
 	metrics        Metrics
 	persistence    *PersistenceQueue
 
@@ -401,6 +431,29 @@ func (e *Engine) publishHit(ev *Event) {
 		}
 	}()
 	e.hitPublisher.PublishHit(ev)
+}
+
+// SetConnectionPublisher attaches the consumer for connect/disconnect state
+// changes. Optional: with none attached presence is tracked exactly as before.
+func (e *Engine) SetConnectionPublisher(p ConnectionPublisher) {
+	if e == nil {
+		return
+	}
+	e.connPublisher = p
+}
+
+// publishConnection hands a state change to the ConnectionPublisher. Like
+// publishHit it is fire-and-forget and panic-safe.
+func (e *Engine) publishConnection(n ConnectionNotice) {
+	if e.connPublisher == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("component=killfeed", "msg", "connection publisher panic recovered", "server_id", e.serverID, "panic", fmt.Sprint(r))
+		}
+	}()
+	e.connPublisher.PublishConnection(n)
 }
 
 // SetPersistence attaches the durable persistence queue and wires Discord
@@ -1359,9 +1412,14 @@ func (e *Engine) processLine(line string) (bool, error) {
 				}
 				slog.Info("component=presence", "event", "connect_committed", "server_id", e.serverID, "online_count", e.players.OnlineCount())
 				e.firePlayersChanged()
+				// Published only here: after dedupe, after durable persistence, and
+				// only when the player was genuinely not online yet - a repeated
+				// "is connected" for an online player is a refresh, not a new
+				// connection.
+				e.publishConnection(ConnectionNotice{Kind: ConnectionConnected, Name: ev.Player.Name})
 			}
 		case EventPlayerDisconnect:
-			if e.players.PlayerDisconnected(ev.Player) {
+			if session, removed := e.players.DisconnectSession(ev.Player); removed {
 				disconnectAt := time.Now()
 				e.presenceMu.Lock()
 				e.lastPresenceEvent = "PLAYER_DISCONNECT"
@@ -1375,6 +1433,7 @@ func (e *Engine) processLine(line string) (bool, error) {
 				}
 				slog.Info("component=presence", "event", "disconnect_committed", "server_id", e.serverID, "online_count", e.players.OnlineCount())
 				e.firePlayersChanged()
+				e.publishConnection(ConnectionNotice{Kind: ConnectionDisconnected, Name: ev.Player.Name, Session: session})
 			}
 		}
 	}

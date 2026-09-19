@@ -7,7 +7,7 @@ fields. This document records the audit of that runtime, the shared resolver
 the publishers migrate onto, and how far the migration has got.
 
 **Migrated to runtime routes: `KILLFEED`, `LINK_GAMERTAG`, `STATS_LEADERBOARDS`,
-`AUTO_LEADERBOARD`, `ADMIN_LOGS`. Built and runtime routed: `HITFEED`.** Every other route either has no publisher at
+`AUTO_LEADERBOARD`, `ADMIN_LOGS`. Built and runtime routed: `HITFEED`, `CONNECTIONS`.** Every other route either has no publisher at
 all (marked *Not implemented* below - nothing was built for them) or has no
 text-channel feed to route. See the table below and "Migrated features".
 
@@ -110,7 +110,7 @@ installation is still `CONFIGURING`.
 | `ECONOMY` | none | - | - | Not implemented |
 | `CASINO` | none | - | - | Not implemented |
 | `SHOP` | none | - | - | Not implemented |
-| `CONNECTIONS` | `VoiceChannelCounter` (`discord/counter.go`) | `GuildSetup.OnlinePlayersChannelID` (a **voice** channel name counter, not a text feed) | `PLAYER_CONNECT`/`DISCONNECT` | Legacy only; no text feed |
+| `CONNECTIONS` | `ConnectionsPublisher` (`discord/connections.go`) | none - no legacy text channel, no KILLFEED/voice-counter fallback (the `OnlinePlayersChannelID` voice counter is a separate, untouched feature) | ADM `is connected` / `has been disconnected`, after dedupe + durable persistence + a real presence state change | **IMPLEMENTED / RUNTIME ROUTED** |
 | `BUILD_FEED` | none | - | no building event type | Not implemented |
 | `ADMIN_ALERTS` | none | - | - | Not implemented |
 | `ADMIN_LOGS` | `ADMMonitorPublisher` (`discord/adm_monitor.go`) | legacy `GuildSetup.ADMMonitorChannelID` | ADM snapshot/download callbacks | **MIGRATED TO RUNTIME ROUTES** (route -> legacy) |
@@ -226,7 +226,7 @@ server_id=<game_servers.id> reason=no_route|lookup_error` - internal ids only.
 ### Not covered
 
 Routes for `PVE_FEED`, `BOUNTY`, `BOUNTY_TRACKING`, `HEATMAPS`,
-`ECONOMY`, `CASINO`, `SHOP`, `CONNECTIONS`, `BUILD_FEED` and `ADMIN_ALERTS` are
+`ECONOMY`, `CASINO`, `SHOP`, `BUILD_FEED` and `ADMIN_ALERTS` are
 **not built**: they have no publisher (or no text feed), and this migration
 deliberately adds none. The runtime is still a single configured Discord guild
 (`DISCORD_GUILD_ID`) with its own set of servers; multi-guild workers are out of
@@ -343,3 +343,137 @@ Feed roles stay separate. The engine hands **only** `PLAYER_HIT` events to the h
 feed, and `HitfeedPublisher` ignores every other type. The lethal hit line (victim
 already `(DEAD)`) renders as an ordinary hit card with no kill wording; the kill
 itself is `PLAYER_KILL` and only ever goes to `KILLFEED`.
+
+## CONNECTIONS (implemented, runtime routed)
+
+`CONNECTIONS` publishes player connect/disconnect notices, from the parsed ADM
+presence lines, to the server's `CONNECTIONS` route.
+
+### Event source (audited)
+
+```
+Nitrado ADM log poll                        internal/killfeed/engine.go (per-server Engine)
+  -> ADMParser.parseConnecting              "... is connecting"           -> PLAYER_CONNECTING
+  -> ADMParser.parseConnected               "... is connected"            -> PLAYER_CONNECT
+  -> ADMParser.parseDisconnected            "... has been disconnected"   -> PLAYER_DISCONNECT
+  -> Engine.processLine                     metrics, dedupe.Contains
+  -> PersistenceQueue.EnqueueAndWait        durable: upsert player + activity session
+       (persistOne)                         (ActivityRepository.Connect/Disconnect) + link challenge
+  -> dedupe.Remember
+  -> PlayerTracker.PlayerConnected /        in-memory online set; true only on a real state change
+     DisconnectSession
+  -> Engine.publishConnection               NEW - recover()-guarded, non-blocking
+  -> ConnectionsPublisher.PublishConnection bounded queue only
+  -> ConnectionsPublisher.Run goroutine     route lookup + Discord send, off the parse loop
+```
+
+Fields the parser produces for these events: `Player` (`Name`, `ID`, optional
+`Position` from `pos=`), `TimeOfDay`, `Raw`. `PLAYER_CONNECTING` is parsed but is
+not a state change (nothing acts on it), so it is never announced.
+
+**Ordering.** A notice is published only after the event passed the ADM dedupe
+**and** the durable persistence acknowledged it, and only when the in-memory
+tracker says the state really changed. If persistence fails, nothing is
+published and the tracker is not updated; the event is retried on the next poll
+(the failed attempt is not remembered by the dedupe) and announced exactly once
+when it succeeds. Nothing bypasses persistence ordering.
+
+### What is (and is not) shown
+
+```
+🟢 CONNECTED                       🔴 DISCONNECTED
+PlayerName joined the server.      PlayerName left the server.
+                                   Session: 42m
+```
+
+Privacy/exposure choices: only the **display name**, the kind and - for a
+disconnect - the session length. The ADM player id, the position/coordinates and
+any Discord/gamertag link state are deliberately **not** passed to the publisher
+at all (`killfeed.ConnectionNotice` has no such fields), so they cannot leak.
+Names are sanitised (`@`/`#`/control characters stripped, length bounded) and
+every message carries an empty `AllowedMentions`.
+
+`Session` is the time between Champion processing the player's connect and
+their disconnect (the same "observed" notion the link/playtime code uses). It is
+shown only when the tracker saw the connect and the session is at least a minute;
+otherwise it is omitted rather than guessed. A duplicate "is connected" does not
+restart the session clock.
+
+### Reconnect
+
+The ADM log has **no explicit reconnect event**, and Champion does not model one:
+a repeated "is connected" for an already-online player is a *refresh* (no new
+notice), and a disconnect followed by a connect is exactly `DISCONNECTED` then
+`CONNECTED`. A `RECONNECTED` state is therefore **not** rendered and is never
+inferred from timing.
+
+### Route and fallback
+
+* Route key `CONNECTIONS`, resolved through the shared `routing.Resolver` on the
+  server's own `(guild row, server id)` via `discord.RouteBinding` - the same
+  identity as `KILLFEED`/`HITFEED`. One `ConnectionsPublisher` per server worker
+  (`runServerWorker`), so two servers of one guild cannot leak into each other.
+* **No fallback.** No legacy CONNECTIONS text channel exists, and it does **not**
+  fall back to `KILLFEED`, `HITFEED` or the player-count voice channel
+  (`GuildSetup.OnlinePlayersChannelID`, which is untouched).
+  * route configured -> publish
+  * route absent -> no-op (events are not even queued)
+  * route lookup error -> no-op; `event=channel_route_fallback route_key=CONNECTIONS
+    reason=lookup_error` warning (at most once a minute); recovers on its own
+* The route is re-resolved every tick (2s) through the shared cache, so an
+  in-process route change (which invalidates the cache) is used within one tick and
+  an out-of-process change within the resolver TTL (30s). No restart.
+
+### Dedupe
+
+The existing ADM dedupe is reused - there is no second dedupe system. Two
+things matter:
+
+1. **Replays** (checkpoint retry after a later persistence failure, rotation
+   overlap) are dropped by `dedupe.Contains` before persistence, tracker or feed.
+2. **State-change gating**: only `PlayerConnected == true` (player was not online)
+   and `DisconnectSession` removed (player was online) publish. A duplicate connect
+   for an online player and a disconnect for a player Champion never saw connect
+   are not announced.
+
+**Fix included:** the ADM dedupe fingerprint previously ignored `ev.Player`, the
+only identity a connect/disconnect carries. Two *different* players connecting in
+the same second - exactly what a server-restart burst looks like - shared a
+fingerprint, so the second was dropped as a "duplicate": never persisted, never
+added to the online set, never announced. The fingerprint now includes the
+player for every event that has one (kill/hit fingerprints are unaffected). A
+genuine replay is the same player and still matches. This also corrects the
+online count and death/suicide handling for same-second events.
+
+### Burst policy
+
+Restarts make many players reconnect within seconds, so delivery is bounded:
+
+* one bounded queue and **one goroutine per server worker** - never a goroutine per
+  event;
+* at most **1 message per 2s tick**, batching up to **20 events** into one embed
+  (a lone event gets the plain single card):
+  ```
+  🔌 SERVER CONNECTIONS
+  🟢 PlayerA connected
+  🟢 PlayerB connected
+  🔴 PlayerC disconnected · 42m
+  ```
+  Every event keeps its own line; different players are never merged;
+* the queue holds at most **300 events**; on overflow the **oldest** are dropped
+  and the next message says `… N earlier connection events were not shown`;
+  drops are also logged once a minute (`connections_flood_drop`);
+* `PublishConnection` only appends to memory; a Discord failure drops that
+  message (no retry backlog), is logged, and cannot stop ADM parsing, presence
+  tracking, persistence, the killfeed or the hitfeed; a panicking consumer is
+  recovered by the engine, a panicking sender by the feed's tick.
+
+Worst case: one message every 2s carrying 20 events (10 events/s sustained).
+
+### Limitations
+
+Connection notices are ephemeral (not stored). After a **process restart** the
+in-memory tracker is empty, so connects replayed from the durable checkpoint may
+be announced again once, and players who joined before Champion started are not
+announced leaving. Session lengths are only known for players Champion saw
+connect. Latency is up to one 2s tick.

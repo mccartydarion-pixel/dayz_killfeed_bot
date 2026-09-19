@@ -1352,6 +1352,24 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 		}()
 	}
 
+	if a.ChannelRoutes != nil && a.Discord != nil && a.Discord.Session() != nil {
+		// CONNECTIONS: only published when this server's installation has a
+		// CONNECTIONS route (no legacy channel, no KILLFEED or voice-counter
+		// fallback). Bounded queue + a single goroutine; route lookups and Discord
+		// I/O happen there, so a Discord/DB failure can never stall ADM parsing,
+		// presence tracking or persistence.
+		connectionsFeed := discord.NewConnectionsPublisher(a.Discord.Session(), a.ChannelRoutes, row.GuildID, row.ID)
+		engine.SetConnectionPublisher(connectionsFeed)
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("component=servers", "msg", "connections feed panic recovered", "server_id", row.ID, "panic", fmt.Sprint(r))
+				}
+			}()
+			connectionsFeed.Run(workerCtx)
+		}()
+	}
+
 	deathPublisher := discord.NewDeathfeedPublisher(a.Discord, setupStore, a.Config.DiscordGuildID)
 	engine.SetDeathPublisher(deathPublisher)
 

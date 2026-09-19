@@ -20,11 +20,12 @@ type OnlinePlayer struct {
 type PlayerTracker struct {
 	mu      sync.RWMutex
 	players map[string]OnlinePlayer
+	now     func() time.Time
 }
 
 // NewPlayerTracker creates an empty tracker.
 func NewPlayerTracker() *PlayerTracker {
-	return &PlayerTracker{players: make(map[string]OnlinePlayer)}
+	return &PlayerTracker{players: make(map[string]OnlinePlayer), now: time.Now}
 }
 
 // playerKey returns the stable tracking key: the DayZ ID when present, else the
@@ -52,8 +53,14 @@ func (t *PlayerTracker) PlayerConnected(p *PlayerRef) bool {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	_, alreadyOnline := t.players[key]
-	t.players[key] = OnlinePlayer{ID: p.ID, Name: p.Name, ConnectedAt: time.Now()}
+	prev, alreadyOnline := t.players[key]
+	connectedAt := t.now()
+	if alreadyOnline && !prev.ConnectedAt.IsZero() {
+		// A duplicate "is connected" refreshes the record but must not restart
+		// the session clock, or the observed session length would be wrong.
+		connectedAt = prev.ConnectedAt
+	}
+	t.players[key] = OnlinePlayer{ID: p.ID, Name: p.Name, ConnectedAt: connectedAt}
 	return !alreadyOnline
 }
 
@@ -61,20 +68,36 @@ func (t *PlayerTracker) PlayerConnected(p *PlayerRef) bool {
 // disconnects are ignored safely. Returns true only when a tracked player was
 // actually removed (never goes negative).
 func (t *PlayerTracker) PlayerDisconnected(p *PlayerRef) bool {
+	_, removed := t.DisconnectSession(p)
+	return removed
+}
+
+// DisconnectSession is PlayerDisconnected that also reports how long Champion
+// observed the player online: from when it processed their connect to now. It
+// is only known for a player this tracker saw connect (a player who joined
+// before Champion started, or before a tracker reset, has no known start), in
+// which case removal still succeeds but the duration is 0.
+func (t *PlayerTracker) DisconnectSession(p *PlayerRef) (session time.Duration, removed bool) {
 	if t == nil || p == nil {
-		return false
+		return 0, false
 	}
 	key := playerKey(p)
 	if key == "" {
-		return false
+		return 0, false
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if _, ok := t.players[key]; !ok {
-		return false
+	tracked, ok := t.players[key]
+	if !ok {
+		return 0, false
 	}
 	delete(t.players, key)
-	return true
+	if !tracked.ConnectedAt.IsZero() {
+		if d := t.now().Sub(tracked.ConnectedAt); d > 0 {
+			session = d
+		}
+	}
+	return session, true
 }
 
 // GetOnlinePlayers returns a copy of current online players sorted by name.
