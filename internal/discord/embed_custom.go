@@ -13,6 +13,7 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/economy"
 	"github.com/yourname/dayz-killfeed/internal/embedrender"
 	"github.com/yourname/dayz-killfeed/internal/killfeed"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 )
 
 // Custom embed templates (Embed Designer Phase 4). Publishers keep building their
@@ -84,6 +85,14 @@ func killfeedVars(ev *killfeed.Event, serverName string) map[string]string {
 	setIf(m, "ammo", ev.Ammo)
 	if ev.KillerStreak != nil && *ev.KillerStreak > 0 {
 		m["streak"] = strconv.Itoa(*ev.KillerStreak)
+	}
+	// Both come from the same authoritative kill classification the default card uses
+	// (BuildPresentation / the persisted bounty claim); absent for an ordinary kill.
+	if p := BuildPresentation(ev); p.Story != presentation.StoryStandard && strings.TrimSpace(p.Hero) != "" {
+		m["special_kill"] = p.Hero
+	}
+	if ev.BountyClaimed && ev.BountyPoints > 0 {
+		m["bounty_amount"] = formatAmount(ev.BountyPoints)
 	}
 	setIf(m, "server_name", serverName)
 	return m

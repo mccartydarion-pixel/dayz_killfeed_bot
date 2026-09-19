@@ -49,6 +49,12 @@ func (p *KillfeedPublisher) SetCustomizer(c EmbedCustomizer, serverName string) 
 // saved an enabled KILLFEED template that renders - the custom card. Exactly one card
 // either way, so nothing is ever published twice.
 func (p *KillfeedPublisher) killCard(ev *killfeed.Event) *discordgo.MessageEmbed {
+	return p.Card(ev)
+}
+
+// Card is the embed PublishKill would post for ev (exported so the whole card path -
+// default, custom, fallback - can be exercised without a Discord session).
+func (p *KillfeedPublisher) Card(ev *killfeed.Event) *discordgo.MessageEmbed {
 	def := BuildKillEmbed(ev)
 	return customEmbed(p.custom, p.routeGuildID, p.routeServerID, routeKeyKillfeed, def, func() map[string]string {
 		return killfeedVars(ev, p.serverName)

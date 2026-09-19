@@ -952,7 +952,7 @@ to `{{name}}`). Only the approved variables of the route in the URL are accepted
 
 | Route | Variables |
 |---|---|
-| `KILLFEED` | `killer` `victim` `weapon` `distance` `ammo` `streak` `server_name` `timestamp` |
+| `KILLFEED` | `killer` `victim` `weapon` `distance` `ammo` `streak` `special_kill` `bounty_amount` `server_name` `timestamp` |
 | `PVE_FEED` | `victim` `cause` `server_name` `timestamp` |
 | `HITFEED` | `killer` `attacker` `victim` `weapon` `ammo` `distance` `hit_zone` `damage` `hits` `server_name` |
 | `BOUNTY` | `victim` `server_name` `timestamp` |
