@@ -254,8 +254,16 @@ func TestAdminAPIPaginationOverRealRows(t *testing.T) {
 	w := newAdminWorld(t)
 	// A third and fourth tenant so there are several rows.
 	a, verifier := w.a, saasVerifierOf(t, w)
-	_ = buildInstallationFixture(t, a, verifier)
-	_ = buildInstallationFixture(t, a, verifier)
+	c3 := buildInstallationFixture(t, a, verifier)
+	c4 := buildInstallationFixture(t, a, verifier)
+	// Give this test's four guilds a unique name and search for it, so the walk covers exactly
+	// these rows however many fixture guilds earlier runs left in a long-lived test database.
+	tag := fmt.Sprintf("PagerGuild-%d", time.Now().UnixNano())
+	for _, id := range []int64{w.a1.ConnectionID, w.b1.ConnectionID, c3.ConnectionID, c4.ConnectionID} {
+		if _, err := a.DB.Pool.Exec(context.Background(), `UPDATE discord_guild_connections SET guild_name=$2 WHERE id=$1`, id, tag); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	type envelope struct {
 		Items      []adminrepo.InstallationSummary `json:"items"`
@@ -266,7 +274,7 @@ func TestAdminAPIPaginationOverRealRows(t *testing.T) {
 	cursor := ""
 	pages := 0
 	for {
-		q := "?limit=2&search=Fixture%20Guild"
+		q := "?limit=2&search=" + tag
 		if cursor != "" {
 			q += "&cursor=" + cursor
 		}
