@@ -45,6 +45,12 @@ components:
       schema:
         type: integer
         format: int64
+    embedRouteKey:
+      name: routeKey
+      in: path
+      required: true
+      description: A fixed channel-route key (see EmbedRouteKey); anything else is 400.
+      schema: { $ref: "#/components/schemas/EmbedRouteKey" }
     installationID:
       name: installationID
       in: path
@@ -73,6 +79,7 @@ components:
                 - DISCORD_UNAVAILABLE
                 - INSTALLATION_NOT_VERIFIED
                 - INTERNAL_ERROR
+                - PAYLOAD_TOO_LARGE
                 - RATE_LIMITED
             message:
               type: string
@@ -386,6 +393,82 @@ components:
           type: boolean
           description: True only for a channel Champion itself created/reused via one-click auto-setup; false once a customer explicitly points the route at a channel.
 
+    EmbedRouteKey:
+      type: string
+      description: A fixed channel-route key (never an arbitrary string).
+      enum: [KILLFEED, PVE_FEED, LINK_GAMERTAG, STATS_LEADERBOARDS, AUTO_LEADERBOARD, HITFEED, BOUNTY, BOUNTY_TRACKING, HEATMAPS, ECONOMY, CASINO, SHOP, CONNECTIONS, BUILD_FEED, ADMIN_ALERTS, ADMIN_LOGS]
+    EmbedTemplate:
+      type: object
+      description: >
+        The website's Phase 1 EmbedTemplate. A fixed typed structure - unknown keys are
+        rejected. Text uses only the approved {{variables}} of the route; every other
+        brace is reserved. The server sets version=1.
+      required: [color]
+      properties:
+        version: { type: integer, readOnly: true }
+        routeKey: { $ref: "#/components/schemas/EmbedRouteKey" }
+        enabled: { type: boolean }
+        color: { type: string, pattern: '^#[0-9A-Fa-f]{6}$', example: "#D4AF37" }
+        title:
+          type: object
+          properties: { enabled: { type: boolean }, template: { type: string, maxLength: 256 } }
+        description:
+          type: object
+          properties: { enabled: { type: boolean }, template: { type: string, maxLength: 4096 } }
+        author:
+          type: object
+          properties: { enabled: { type: boolean }, name: { type: string, maxLength: 256 }, iconUrl: { type: string, maxLength: 2048, description: http(s) only } }
+        thumbnail:
+          type: object
+          properties: { enabled: { type: boolean }, url: { type: string, maxLength: 2048, description: http(s) only; required when enabled } }
+        image:
+          type: object
+          properties: { enabled: { type: boolean }, url: { type: string, maxLength: 2048, description: http(s) only; required when enabled } }
+        footer:
+          type: object
+          properties: { enabled: { type: boolean }, text: { type: string, maxLength: 2048 }, iconUrl: { type: string, maxLength: 2048, description: http(s) only } }
+        timestamp: { type: boolean }
+        fields:
+          type: array
+          maxItems: 25
+          items:
+            type: object
+            properties:
+              key: { type: string, pattern: '^[A-Za-z0-9_-]{1,64}$' }
+              label: { type: string, maxLength: 256 }
+              enabled: { type: boolean }
+              template: { type: string, maxLength: 1024 }
+              inline: { type: boolean }
+              order: { type: integer, minimum: 0, maximum: 10000 }
+    EmbedTemplateResponse:
+      type: object
+      properties:
+        routeKey: { $ref: "#/components/schemas/EmbedRouteKey" }
+        customized: { type: boolean }
+        template: { nullable: true, allOf: [ { $ref: "#/components/schemas/EmbedTemplate" } ] }
+        variables: { type: array, items: { type: string }, description: Approved placeholders for this route. }
+        createdAt: { type: string, format: date-time, nullable: true }
+        updatedAt: { type: string, format: date-time, nullable: true }
+        runtimeRendering: { type: string, enum: [NOT_ENABLED] }
+    EmbedTemplateListResponse:
+      type: object
+      properties:
+        installationId: { type: integer, format: int64 }
+        templates: { type: array, items: { $ref: "#/components/schemas/EmbedTemplateResponse" } }
+        customizedRoutes: { type: array, items: { $ref: "#/components/schemas/EmbedRouteKey" } }
+        variables: { type: object, additionalProperties: { type: array, items: { type: string } } }
+        limits:
+          type: object
+          properties:
+            title: { type: integer }
+            description: { type: integer }
+            fields: { type: integer }
+            fieldLabel: { type: integer }
+            fieldValue: { type: integer }
+            footerText: { type: integer }
+            authorName: { type: integer }
+            totalText: { type: integer }
+        runtimeRendering: { type: string, enum: [NOT_ENABLED] }
     ChannelRoutesResponse:
       type: object
       description: A route_key absent from routes means it isn't configured - never a placeholder empty entry.
@@ -506,6 +589,11 @@ components:
           schema: { $ref: "#/components/schemas/ApiError" }
     Forbidden:
       description: Not a member of the organization, or lacks OWNER/ADMIN.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    BadRequest:
+      description: Invalid request (bad id or route key).
       content:
         application/json:
           schema: { $ref: "#/components/schemas/ApiError" }
@@ -1104,6 +1192,90 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ApiError" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/embed-templates:
+    get:
+      summary: List the installation's customized embed templates (any member). Custom template persistence is live; runtime rendering is NOT enabled.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+      responses:
+        "200":
+          description: Customized routes only, plus the approved variables per route and the enforced limits.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EmbedTemplateListResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/embed-templates/{routeKey}:
+    get:
+      summary: Get one route's template, or the not-customized state (customized=false, template=null).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { $ref: "#/components/parameters/embedRouteKey" }
+      responses:
+        "200":
+          description: Stored template or not-customized state.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EmbedTemplateResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      summary: Validate, normalize and upsert one route's template (OWNER/ADMIN). Concurrent saves converge on one row; created_at is kept, updated_at refreshed.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { $ref: "#/components/parameters/embedRouteKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EmbedTemplate" }
+      responses:
+        "200":
+          description: The normalized stored template.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EmbedTemplateResponse" }
+        "400":
+          description: Invalid route, color, URL, limit, variable or placeholder, an unknown JSON key, or malformed JSON. The message lists up to five path/problem issues and never echoes the input.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "413":
+          description: Request body over 64 KiB.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+    delete:
+      summary: Reset this route to the Champion default (OWNER/ADMIN). Idempotent - deletes only this installation+route.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { $ref: "#/components/parameters/embedRouteKey" }
+      responses:
+        "200":
+          description: The not-customized state, whether or not a template existed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EmbedTemplateResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   /api/saas/organizations/{organizationID}/installations/{installationID}/setup/complete:
     post:

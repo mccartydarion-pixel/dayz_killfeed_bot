@@ -16,6 +16,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/admin"
 	"github.com/yourname/dayz-killfeed/internal/adminrepo"
+	"github.com/yourname/dayz-killfeed/internal/embedtemplates"
 	"github.com/yourname/dayz-killfeed/internal/analytics"
 	"github.com/yourname/dayz-killfeed/internal/bounties"
 	"github.com/yourname/dayz-killfeed/internal/economy"
@@ -120,6 +121,9 @@ type App struct {
 	// /api/admin (internal/adminrepo); adminChannelNames optionally overrides the
 	// Discord-cache channel name lookup (tests).
 	adminSaaS                 adminReader
+	// EmbedTemplates persists custom embed templates (storage + API only; no
+	// publisher reads them - runtime rendering is not enabled).
+	EmbedTemplates            *embedtemplates.Service
 	adminChannelNames         func(channelID string) string
 	saasDiscordVerifier       discordGuildVerifier
 	saasNitradoClientFactory  func(token string) *nitrado.Client
@@ -514,6 +518,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.SaaSCredentials = repository.NewCredentialRepository(db.Pool)
 			app.SaaSChannelRoutes = repository.NewChannelRouteRepository(db.Pool)
 			app.adminSaaS = adminrepo.New(db.Pool)
+			app.EmbedTemplates = embedtemplates.NewService(repository.NewEmbedTemplateRepository(db.Pool))
 			app.ChannelRoutes = routing.NewResolver(app.SaaSChannelRoutes, routing.DefaultTTL)
 			app.GuildRoutePanels = repository.NewGuildRoutePanelRepository(db.Pool)
 			seedCtx, seedCancel := context.WithTimeout(ctx, 10*time.Second)

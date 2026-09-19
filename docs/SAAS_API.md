@@ -831,6 +831,163 @@ is never repointed after creation (the duplicate-installation reuse flow,
 instead) - so there is nothing to invalidate for that case; it's called out
 here for completeness, not left silently unhandled.
 
+## Embed templates (persistence only)
+
+Embed Designer Phase 2: durable, tenant-safe storage of custom embed templates, one per
+`(installation, routeKey)`.
+
+> **CUSTOM TEMPLATE PERSISTENCE: LIVE**
+> **CUSTOM TEMPLATE RUNTIME RENDERING: NOT ENABLED**
+>
+> No Discord publisher reads these rows. Saving, changing or deleting a template never
+> changes any Discord message: with or without a custom template, the current Champion
+> output is exactly what it was. Every response carries `"runtimeRendering": "NOT_ENABLED"`
+> so a client never presents a saved template as live.
+
+Authorization (same chain as every customer route: service auth -> acting user ->
+organization membership -> installation ownership):
+
+| Endpoint | Who |
+|---|---|
+| `GET` list / one | any member (OWNER, ADMIN, MEMBER) - the same read convention as `channel-routes` and `settings` |
+| `PUT`, `DELETE` | OWNER or ADMIN only (MEMBER is `403`) |
+
+The installation must belong to the organization in the path: an installation of another
+organization, and an unknown installation, are the same `404 NOT_FOUND` (the installation id
+alone never selects a row). Templates belong to one installation only - two installations of
+one guild (two DayZ servers) are fully independent.
+
+### 29. `GET .../installations/{installationID}/embed-templates`
+
+Only the **customized** routes are stored, so only those are returned (Champion defaults are
+never copied into the database).
+
+```json
+{
+  "installationId": 9,
+  "templates": [ { "routeKey": "KILLFEED", "customized": true, "template": { "...": "..." },
+                   "variables": ["killer", "victim"], "createdAt": "...", "updatedAt": "...",
+                   "runtimeRendering": "NOT_ENABLED" } ],
+  "customizedRoutes": ["KILLFEED"],
+  "variables": { "KILLFEED": ["killer", "victim", "weapon", "distance", "ammo", "streak", "server_name", "timestamp"], "...": [] },
+  "limits": { "title": 256, "description": 4096, "fields": 25, "fieldLabel": 256, "fieldValue": 1024, "footerText": 2048, "authorName": 256, "totalText": 6000 },
+  "runtimeRendering": "NOT_ENABLED"
+}
+```
+
+`variables` (approved placeholders per route) and `limits` are authoritative and shared with
+the validator, so the designer can stay in step with the server.
+
+### 30. `GET .../installations/{installationID}/embed-templates/{routeKey}`
+
+The stored template, or the not-customized state (the backend does not fabricate a default):
+
+```json
+{ "routeKey": "KILLFEED", "customized": false, "template": null, "variables": ["killer", "..."],
+  "createdAt": null, "updatedAt": null, "runtimeRendering": "NOT_ENABLED" }
+```
+
+An unknown `routeKey` is `400 INVALID_REQUEST`.
+
+### 31. `PUT .../installations/{installationID}/embed-templates/{routeKey}`
+
+OWNER/ADMIN. Body = the website's `EmbedTemplate` (see the model below). Validated, normalized
+and upserted (`(installation_id, route_key)` is unique; concurrent saves converge on one row;
+`created_at` is kept, `updated_at` is refreshed). The response is the **normalized stored**
+template in the same shape as #30 with `customized: true`.
+
+Errors: `400 INVALID_REQUEST` with a message listing up to five `path: problem` issues (never
+echoing the input), `413 PAYLOAD_TOO_LARGE` (body over 64 KiB), `403`, `404`.
+
+### 32. `DELETE .../installations/{installationID}/embed-templates/{routeKey}`
+
+OWNER/ADMIN. Resets that one route to the Champion default by deleting only that
+installation+route row. **Idempotent**: `200` with the not-customized state (as in #30)
+whether or not a custom template existed.
+
+### Template model (`EmbedTemplate`)
+
+```json
+{
+  "routeKey": "KILLFEED", "enabled": true, "color": "#D4AF37",
+  "title":       { "enabled": true, "template": "{{killer}} eliminated {{victim}}" },
+  "description": { "enabled": true, "template": "A {{weapon}} kill from {{distance}} away." },
+  "author":      { "enabled": false, "name": "Champion", "iconUrl": "" },
+  "thumbnail":   { "enabled": false, "url": "" },
+  "image":       { "enabled": false, "url": "" },
+  "footer":      { "enabled": true, "text": "Champion Killfeed", "iconUrl": "" },
+  "timestamp": true,
+  "fields": [ { "key": "killer", "label": "Killer", "enabled": true, "template": "{{killer}}", "inline": true, "order": 0 } ]
+}
+```
+
+The server adds `"version": 1` (the stored schema version; ignored if sent). It is a fixed,
+typed structure: an unknown key anywhere is rejected (`400`), never stored. Omitted sections
+decode as disabled/empty.
+
+### Validation (server-side; the website's checks are not trusted)
+
+| Rule | Limit |
+|---|---|
+| `title.template` | <= 256 characters |
+| `description.template` | <= 4096 |
+| `fields` | <= 25; `key` 1-64 of `A-Za-z0-9_-`, unique (case-insensitive); `order` 0-10000 (fields are sorted by `order`, stable, and renumbered `0..n-1`) |
+| field `label` / `template` | <= 256 / <= 1024 |
+| `footer.text` / `author.name` | <= 2048 / <= 256 |
+| combined enabled text | <= 6000 (title + description + field labels/values + footer + author name, counted as written; the runtime must also truncate rendered output when it is enabled) |
+| lengths | counted in characters (runes), inclusive |
+| `color` | exactly `#RRGGBB` (any case; stored upper-case). `0x...`, decimal, names, 3/8-digit hex are rejected, so a value can never wrap or overflow a Discord color |
+| URLs (`author.iconUrl`, `thumbnail.url`, `image.url`, `footer.iconUrl`) | `http`/`https` only, with a host, <= 2048 chars, no whitespace/control characters, no embedded credentials, no placeholders. `javascript:`, `data:`, `file:` and malformed URLs are rejected. Required when the section is enabled (icons are optional) |
+| enabled sections | `title`, `description`, `author.name`, `footer.text`, field label and template must be non-empty when enabled; an enabled embed needs at least one enabled title/description/field/author/footer/image |
+| control characters | rejected (newline, tab and carriage return are allowed) |
+| request body | <= 64 KiB (`413`) |
+
+### Variables and template safety
+
+Text is plain text with `{{name}}` placeholders (inner spaces are accepted and canonicalized
+to `{{name}}`). Only the approved variables of the route in the URL are accepted:
+
+| Route | Variables |
+|---|---|
+| `KILLFEED` | `killer` `victim` `weapon` `distance` `ammo` `streak` `server_name` `timestamp` |
+| `PVE_FEED` | `victim` `server_name` `timestamp` |
+| `HITFEED` | `killer` `victim` `weapon` `distance` |
+| `BOUNTY` | `victim` `server_name` `timestamp` |
+| `BOUNTY_TRACKING` | `killer` `victim` `server_name` |
+| `ECONOMY` | `player` `amount` `balance` `transaction_type` `server_name` |
+| `CASINO` | `player` `amount` `result` |
+| `SHOP` | `player` `item` `amount` `balance` |
+| `CONNECTIONS` | `player` `event` `server_name` `timestamp` |
+| `BUILD_FEED` | `player` `structure` `server_name` |
+| `ADMIN_ALERTS`, `ADMIN_LOGS` | `event` `player` `server_name` `timestamp` |
+| `HEATMAPS`, `LINK_GAMERTAG`, `STATS_LEADERBOARDS`, `AUTO_LEADERBOARD` | `server_name` `timestamp` (no event vocabulary yet) |
+
+An unknown variable, a variable that belongs to another route, or a wrong-case name is
+rejected. **Every other brace is reserved**: `{{killer}`, `{killer}`, `{{ .Field }}`,
+`{{killer | upper}}`, `{{killer()}}`, `${killer}`, `{% ... %}` are all `400`. There is no
+expression language - no functions, conditionals, HTML execution or evaluation of any kind;
+the text is only ever substituted. Route keys are the fixed channel-route set (the same list
+as `championRouteBlueprint`; a test keeps them identical) - arbitrary strings are rejected.
+
+### Website compatibility
+
+The wire model is the website's Phase 1 `EmbedTemplate` (`lib/saas/embedTypes.ts`); a test
+feeds all 12 of the designer's default templates through the strict decoder and validator
+and checks every designer variable is approved. Differences, documented rather than
+accepted unsafely:
+
+| Website behavior | Backend |
+|---|---|
+| `{{ killer }}` with inner spaces | accepted, stored as `{{killer}}` |
+| URL check is `^https?://` only | also requires a host, no credentials/whitespace/placeholders, <= 2048 |
+| total-text check uses sample values | counted on the template as written (up to 6000) |
+| `order` values may repeat or have gaps | sorted (stable) and renumbered `0..n-1` |
+| routes: 12 | also `HEATMAPS`, `LINK_GAMERTAG`, `STATS_LEADERBOARDS`, `AUTO_LEADERBOARD` (the rest of the channel-route set) |
+| variables | additionally `ammo`, `streak` (KILLFEED) and `transaction_type` (ECONOMY) - values the runtime events carry |
+
+Audit events (`embed_template_saved`, `embed_template_deleted`) log `organization_id`,
+`installation_id`, `route_key` and `acting_user_id` only - never template contents or headers.
+
 ## Request/response DTOs
 
 None of these ever include a Nitrado ciphertext/IV/auth tag, a Discord
@@ -1105,6 +1262,7 @@ Every non-2xx response:
 | `DISCORD_UNAVAILABLE` | 503 | The bot's Discord session isn't connected |
 | `INSTALLATION_NOT_VERIFIED` | 422 | Action requires Discord to be verified first, or (`#25`) a setup prerequisite isn't met yet - the message names which one |
 | `NITRADO_UNAVAILABLE` | 503 | Nitrado rejected the token, or is unreachable |
+| `PAYLOAD_TOO_LARGE` | 413 | Request body over the endpoint's bound (embed templates: 64 KiB) |
 | `INTERNAL_ERROR` | 500 | Unexpected server-side failure |
 | `RATE_LIMITED` (not in the code list above, still `{"error":{"code","message"}}`-shaped) | 429 | See rate limits below |
 
