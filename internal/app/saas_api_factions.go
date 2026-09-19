@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/yourname/dayz-killfeed/internal/factionhub"
+	"github.com/yourname/dayz-killfeed/internal/factionstats"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -60,6 +61,7 @@ func (a *App) registerFactionHubRoutes() {
 	h("POST "+base+"/{factionID}/members/{memberID}/demote", a.handleDemoteFactionMember)
 	h("DELETE "+base+"/{factionID}/members/{memberID}", a.handleRemoveFactionMember)
 	a.registerFactionPhase4Routes()
+	a.registerFactionStatsRoutes()
 }
 
 // --- DTOs -------------------------------------------------------------------------------------
@@ -132,6 +134,9 @@ type factionProfileDTO struct {
 	CreatedAt      string              `json:"createdAt"`
 	UpdatedAt      string              `json:"updatedAt"`
 	Viewer         factionViewerDTO    `json:"viewer"`
+	// Stats is the faction's competitive summary (Phase 5), or null when it could not be
+	// computed. Only figures proven from real runtime data; see docs/FACTION_STATS.md.
+	Stats *factionstats.Summary `json:"stats"`
 }
 
 type factionApplicationDTO struct {
@@ -383,7 +388,15 @@ func (a *App) loadFactionProfile(ctx context.Context, fr factionRequest, faction
 	if err != nil {
 		return factionProfileDTO{}, err
 	}
-	return a.buildFactionProfile(ctx, fr, *f, members), nil
+	profile := a.buildFactionProfile(ctx, fr, *f, members)
+	if a.FactionHubStats != nil {
+		if st, err := a.FactionHubStats.GetFactionStats(ctx, fr.orgID, fr.instID, factionID); err != nil {
+			slog.Warn("component=saas_api", "msg", "faction stats unavailable for profile", "err", err.Error())
+		} else {
+			profile.Stats = &st.Summary
+		}
+	}
+	return profile, nil
 }
 
 // --- directory / profile / me -----------------------------------------------------------------
@@ -519,6 +532,7 @@ func (a *App) handleCreateFaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	factionAudit("faction_created", fr, "faction_id", created.ID)
+	a.factionStatsChanged(fr, created.ID)
 	profile, err := a.loadFactionProfile(ctx, fr, created.ID)
 	if err != nil {
 		factionFailed(w, "load faction", err)
@@ -790,6 +804,7 @@ func (a *App) handleAcceptFactionApplication(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	factionAudit("faction_application_accepted", fr, "faction_id", factionID, "application_id", applicationID, "member_id", member.ID, "applicant_user_id", app.User.ID)
+	a.factionStatsChanged(fr, factionID)
 	writeSaaSJSON(w, http.StatusOK, acceptApplicationResponse{Application: toFactionApplication(*app, false), Member: toFactionMember(*member)})
 }
 
@@ -910,6 +925,7 @@ func (a *App) changeFactionRole(w http.ResponseWriter, r *http.Request, event, w
 		return
 	}
 	factionAudit(event, fr, "faction_id", factionID, "member_id", memberID, "target_user_id", m.User.ID, "new_role", m.RoleKey)
+	a.factionStatsChanged(fr, factionID)
 	writeSaaSJSON(w, http.StatusOK, toFactionMember(*m))
 }
 
@@ -937,5 +953,6 @@ func (a *App) handleRemoveFactionMember(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	factionAudit("faction_member_removed", fr, "faction_id", factionID, "member_id", memberID, "target_user_id", m.User.ID, "removed_role", m.RoleKey)
+	a.factionStatsChanged(fr, factionID)
 	writeSaaSJSON(w, http.StatusOK, removedMemberResponse{Removed: true, Member: toFactionMember(*m)})
 }

@@ -1039,6 +1039,19 @@ nothing more, and the platform-admin allowlist is not consulted.
   `logoUrl`, `logoAssetId` and any URL are still rejected.
 * New error codes: `UNSUPPORTED_MEDIA_TYPE` (415), `LEADERSHIP_TRANSFER_REQUIRED` (409).
 
+**Phase 5 (competitive stats, achievements, activity)** - full contract, attribution rules and DTOs in `docs/FACTION_STATS.md`. Three read-only routes, open to any
+synced user and scoped by organization + installation + faction (another tenant's ids are `404`):
+
+| Route | Returns |
+|---|---|
+| `GET .../factions/{factionID}/stats` | `{ "summary": {kills, deaths, kdRatio, headshots, longshots, currentKillStreak, bestKillStreak, bountiesClaimed, bountyValueClaimed, memberCount, linkedMemberCount, achievementsUnlocked, trackingSince}, "memberContributions": [...], "updatedAt" }` |
+| `GET .../factions/{factionID}/activity?limit=&cursor=` | `{ "items": [event...], "nextCursor": string\|null, "limit" }` - public-safe events, newest first, `limit` default 20 / max 100 |
+| `GET .../factions/{factionID}/achievements` | `{ "items": [{key, name, description, unlocked, unlockedAt, progress, target, unit}...], "unlockedCount", "total" }` |
+
+The faction profile (`GET .../factions/{factionID}` and the create/update responses) now includes `stats` - the same summary, or `null` if it could not be computed.
+Figures come only from real kills, deaths and bounties, attributed through a member's **verified** DayZ link and only while they were a member; unlinked members are
+listed with zero figures and `identity: "UNLINKED"`.
+
 Errors use the standard envelope. `409 CONFLICT` covers state conflicts (name or tag taken on the
 installation, already in a faction there, not recruiting, duplicate/non-pending application, invalid role
 change, no DayZ server selected, suspended installation); `403` means the faction role does not allow it or

@@ -1260,6 +1260,88 @@ CREATE TABLE IF NOT EXISTS hub_asset_blobs (
 CREATE INDEX IF NOT EXISTS idx_hub_asset_blobs_created ON hub_asset_blobs(created_at);
 `,
 	},
+	{
+		// Faction Hub Phase 5: competitive stats, achievements and activity (docs/FACTION_STATS.md).
+		// Nothing here duplicates killfeed data: kills, deaths and bounties stay authoritative in
+		// their existing tables and the Hub only DERIVES faction figures from them. What the Hub
+		// must add is TIME: a kill counts for a faction only while its player was a member, so
+		// membership needs history (hub_faction_members holds only the current state and its rows
+		// are deleted on leave/removal).
+		//
+		//   * hub_faction_membership_history: one row per membership period [joined_at, left_at);
+		//     open while left_at IS NULL (at most one open period per user per installation, the
+		//     same rule as the live membership). player_identity_id is an informational snapshot
+		//     of the verified DayZ identity at join time - attribution always uses the live
+		//     verified link (player_links), never this column.
+		//   * hub_faction_activity: public-safe, non-combat events the Hub itself produces
+		//     (joins, leaves, role changes, leadership transfers, branding). Combat events are
+		//     derived from kills/bounties at read time, achievements from the unlock table; this is
+		//     NOT the internal audit log (slog) and holds no free text.
+		//   * hub_faction_achievement_unlocks: one row per (faction, achievement) - the unique key
+		//     is what makes concurrent evaluation unlock exactly once.
+		//
+		// Current members are backfilled into history with their real joined_at, so their kills
+		// since joining are attributed correctly. Members who left BEFORE this migration have no
+		// recorded period and cannot be reconstructed: their earlier kills are not credited.
+		Name: "0034_faction_stats_history",
+		SQL: `
+CREATE TABLE IF NOT EXISTS hub_faction_membership_history (
+    id BIGSERIAL PRIMARY KEY,
+    organization_id BIGINT NOT NULL,
+    installation_id BIGINT NOT NULL,
+    faction_id BIGINT NOT NULL,
+    user_id BIGINT NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+    player_identity_id BIGINT REFERENCES players(id) ON DELETE SET NULL,
+    joined_at TIMESTAMPTZ NOT NULL,
+    left_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CHECK (left_at IS NULL OR left_at >= joined_at),
+    FOREIGN KEY (faction_id, installation_id) REFERENCES hub_factions(id, installation_id) ON DELETE CASCADE,
+    FOREIGN KEY (installation_id, organization_id) REFERENCES installations(id, organization_id) ON DELETE CASCADE
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_hub_history_open ON hub_faction_membership_history(installation_id, user_id) WHERE left_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_hub_history_faction ON hub_faction_membership_history(faction_id, joined_at);
+CREATE INDEX IF NOT EXISTS idx_hub_history_user ON hub_faction_membership_history(user_id, installation_id);
+
+INSERT INTO hub_faction_membership_history(organization_id, installation_id, faction_id, user_id, player_identity_id, joined_at)
+SELECT f.organization_id, m.installation_id, m.faction_id, m.user_id, m.player_id, m.joined_at
+FROM hub_faction_members m
+JOIN hub_factions f ON f.id = m.faction_id
+WHERE NOT EXISTS (SELECT 1 FROM hub_faction_membership_history h WHERE h.faction_id = m.faction_id AND h.user_id = m.user_id AND h.left_at IS NULL);
+
+CREATE TABLE IF NOT EXISTS hub_faction_activity (
+    id BIGSERIAL PRIMARY KEY,
+    organization_id BIGINT NOT NULL,
+    installation_id BIGINT NOT NULL,
+    faction_id BIGINT NOT NULL,
+    event_type TEXT NOT NULL CHECK (event_type IN ('FACTION_CREATED','MEMBER_JOINED','MEMBER_LEFT','MEMBER_PROMOTED','MEMBER_DEMOTED','LEADERSHIP_TRANSFERRED','FACTION_UPDATED','FACTION_LOGO_CHANGED')),
+    -- The member the event is about, and who caused it (leadership transfer: new / previous leader).
+    subject_user_id BIGINT REFERENCES app_users(id) ON DELETE SET NULL,
+    actor_user_id BIGINT REFERENCES app_users(id) ON DELETE SET NULL,
+    -- A short fixed value (a role key), never free text.
+    detail TEXT CHECK (detail IS NULL OR detail IN ('LEADER','OFFICER','MEMBER')),
+    occurred_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    FOREIGN KEY (faction_id, installation_id) REFERENCES hub_factions(id, installation_id) ON DELETE CASCADE,
+    FOREIGN KEY (installation_id, organization_id) REFERENCES installations(id, organization_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_hub_activity_faction ON hub_faction_activity(faction_id, occurred_at DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS hub_faction_achievement_unlocks (
+    id BIGSERIAL PRIMARY KEY,
+    organization_id BIGINT NOT NULL,
+    installation_id BIGINT NOT NULL,
+    faction_id BIGINT NOT NULL,
+    achievement_key TEXT NOT NULL,
+    unlocked_at TIMESTAMPTZ NOT NULL,
+    metadata_json JSONB CHECK (metadata_json IS NULL OR jsonb_typeof(metadata_json) = 'object'),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    FOREIGN KEY (faction_id, installation_id) REFERENCES hub_factions(id, installation_id) ON DELETE CASCADE,
+    FOREIGN KEY (installation_id, organization_id) REFERENCES installations(id, organization_id) ON DELETE CASCADE,
+    CONSTRAINT uq_hub_achievement_unlock UNIQUE (faction_id, achievement_key)
+);
+CREATE INDEX IF NOT EXISTS idx_hub_unlocks_faction ON hub_faction_achievement_unlocks(faction_id, unlocked_at DESC, id DESC);
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order, each transactionally. A
