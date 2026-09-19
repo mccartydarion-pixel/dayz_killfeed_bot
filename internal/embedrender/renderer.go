@@ -57,12 +57,25 @@ type flight struct {
 	e    entry
 }
 
-// Stats are cumulative counters (no player names, no template contents).
+// Stats are cumulative counters (no player names, no template contents, and labelled by
+// route key only - never by installation, guild or player, so cardinality stays at the
+// number of routes).
 type Stats struct {
 	CustomRender   int64 `json:"templateCustomRender"`   // a custom template was rendered
 	DefaultRender  int64 `json:"templateDefaultRender"`  // no custom template: the Champion default was kept
 	FallbackRender int64 `json:"templateFallbackRender"` // a template existed but the default was used (lookup/validation/render problem)
 	RenderError    int64 `json:"templateRenderError"`    // the fallback was caused by a failed lookup or render
+	// ByRoute breaks the same four counters down per route key.
+	ByRoute map[string]RouteStats `json:"byRoute,omitempty"`
+}
+
+// RouteStats is the per-route breakdown (custom_embed_render_total,
+// default_embed_render_total, embed_fallback_total, embed_render_error_total).
+type RouteStats struct {
+	Custom   int64 `json:"customEmbedRenderTotal"`
+	Default  int64 `json:"defaultEmbedRenderTotal"`
+	Fallback int64 `json:"embedFallbackTotal"`
+	Error    int64 `json:"embedRenderErrorTotal"`
 }
 
 // Renderer is the one shared entry point publishers call. A nil *Renderer, or one
@@ -75,6 +88,8 @@ type Renderer struct {
 	now     func() time.Time
 
 	custom, dflt, fallback, errs atomic.Int64
+	routeMu                      sync.Mutex
+	perRoute                     map[string]*[4]int64 // custom, default, fallback, error
 
 	mu       sync.Mutex
 	entries  map[key]entry
@@ -108,7 +123,45 @@ func (r *Renderer) Stats() Stats {
 	if r == nil {
 		return Stats{}
 	}
-	return Stats{CustomRender: r.custom.Load(), DefaultRender: r.dflt.Load(), FallbackRender: r.fallback.Load(), RenderError: r.errs.Load()}
+	s := Stats{CustomRender: r.custom.Load(), DefaultRender: r.dflt.Load(), FallbackRender: r.fallback.Load(), RenderError: r.errs.Load()}
+	r.routeMu.Lock()
+	if len(r.perRoute) > 0 {
+		s.ByRoute = make(map[string]RouteStats, len(r.perRoute))
+		for k, v := range r.perRoute {
+			s.ByRoute[k] = RouteStats{Custom: v[0], Default: v[1], Fallback: v[2], Error: v[3]}
+		}
+	}
+	r.routeMu.Unlock()
+	return s
+}
+
+// count bumps one global counter and its per-route twin. idx: 0 custom, 1 default,
+// 2 fallback, 3 error. Route keys are the fixed template routes, so the map is bounded.
+func (r *Renderer) count(routeKey string, idx int) {
+	switch idx {
+	case 0:
+		r.custom.Add(1)
+	case 1:
+		r.dflt.Add(1)
+	case 2:
+		r.fallback.Add(1)
+	case 3:
+		r.errs.Add(1)
+	}
+	if !embedtemplates.ValidRoute(routeKey) {
+		return
+	}
+	r.routeMu.Lock()
+	if r.perRoute == nil {
+		r.perRoute = map[string]*[4]int64{}
+	}
+	c := r.perRoute[routeKey]
+	if c == nil {
+		c = &[4]int64{}
+		r.perRoute[routeKey] = c
+	}
+	c[idx]++
+	r.routeMu.Unlock()
 }
 
 // Invalidate drops the cached state of one installation's route so the next event
@@ -148,8 +201,8 @@ func (r *Renderer) Customize(ctx context.Context, guildRowID, serverID int64, ro
 	out = def
 	defer func() {
 		if rec := recover(); rec != nil {
-			r.errs.Add(1)
-			r.fallback.Add(1)
+			r.count(routeKey, 3)
+			r.count(routeKey, 2)
 			r.warn(0, routeKey, "render_panic")
 			out = def
 		}
@@ -157,14 +210,14 @@ func (r *Renderer) Customize(ctx context.Context, guildRowID, serverID int64, ro
 	e := r.lookup(ctx, key{guildRowID, serverID, routeKey})
 	switch e.state {
 	case stateNone:
-		r.dflt.Add(1)
+		r.count(routeKey, 1)
 		return def
 	case stateError:
-		r.fallback.Add(1)
-		r.errs.Add(1)
+		r.count(routeKey, 2)
+		r.count(routeKey, 3)
 		return def
 	case stateMalformed:
-		r.fallback.Add(1)
+		r.count(routeKey, 2)
 		return def
 	}
 	emb, err := Render(*e.cfg, routeKey, approvedOnly(routeKey, vars), at)
@@ -172,19 +225,19 @@ func (r *Renderer) Customize(ctx context.Context, guildRowID, serverID int64, ro
 		if err == ErrNotRenderable {
 			// A disabled template means "use the default"; an empty render is a fallback.
 			if !e.cfg.Enabled {
-				r.dflt.Add(1)
+				r.count(routeKey, 1)
 				return def
 			}
-			r.fallback.Add(1)
+			r.count(routeKey, 2)
 			r.warn(e.installationID, routeKey, "empty_render")
 			return def
 		}
-		r.fallback.Add(1)
-		r.errs.Add(1)
+		r.count(routeKey, 2)
+		r.count(routeKey, 3)
 		r.warn(e.installationID, routeKey, "render_error")
 		return def
 	}
-	r.custom.Add(1)
+	r.count(routeKey, 0)
 	return emb
 }
 

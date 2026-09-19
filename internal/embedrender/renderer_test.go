@@ -3,6 +3,7 @@ package embedrender
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -104,7 +105,7 @@ func TestDisabledRendererAndNilRendererReturnTheDefaultWithoutTouchingTheSource(
 		t.Fatal("a disabled renderer must not query or change anything")
 	}
 	var nilR *Renderer
-	if customize(nilR, def) != def || nilR.Enabled() || nilR.Stats() != (Stats{}) {
+	if customize(nilR, def) != def || nilR.Enabled() || !reflect.DeepEqual(nilR.Stats(), Stats{}) {
 		t.Fatal("a nil renderer is a no-op")
 	}
 	nilR.Invalidate(1, "KILLFEED")
@@ -363,4 +364,102 @@ func TestRendererIsRaceFree(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 	close(stop)
 	wg.Wait()
+}
+
+// Counters are labelled by route only (no installation/guild/player), and add up to the totals.
+func TestMetricsAreCountedPerRoute(t *testing.T) {
+	src := &fakeSource{inst: 7}
+	r, _ := newR(src)
+	def := defEmbed()
+	customize(r, def)                                                    // KILLFEED default
+	r.Customize(context.Background(), 1, 10, "HITFEED", full(), at, def) // HITFEED default
+	src.set(kcfg(), nil)
+	r.InvalidateAll()
+	customize(r, def) // KILLFEED custom
+	src.set(nil, errors.New("db"))
+	r.InvalidateAll()
+	customize(r, def) // KILLFEED lookup error -> fallback + error
+	s := r.Stats()
+	k, h := s.ByRoute["KILLFEED"], s.ByRoute["HITFEED"]
+	if k.Custom != 1 || k.Default != 1 || k.Fallback != 1 || k.Error != 1 || h.Default != 1 || h.Custom != 0 {
+		t.Fatalf("per-route counters: %+v", s.ByRoute)
+	}
+	if s.CustomRender != 1 || s.DefaultRender != 2 || s.FallbackRender != 1 || s.RenderError != 1 {
+		t.Fatalf("totals: %+v", s)
+	}
+	if len(s.ByRoute) != 2 {
+		t.Fatalf("only real route keys are ever labels: %v", s.ByRoute)
+	}
+	// An unknown route can never create a label.
+	r.count("player-name-or-installation-7", 1)
+	if len(r.Stats().ByRoute) != 2 {
+		t.Fatal("a non-route label must not be created (bounded cardinality)")
+	}
+}
+
+// Startup never depends on the template store: building a renderer performs no lookup, and a
+// store that fails or panics only ever produces defaults.
+func TestRendererConstructionNeverTouchesTheStore(t *testing.T) {
+	src := &fakeSource{err: errors.New("storage down"), panic: true}
+	r := New(Options{Source: src, Enabled: true})
+	if src.calls.Load() != 0 {
+		t.Fatal("constructing a renderer must not query anything")
+	}
+	def := defEmbed()
+	if customize(r, def) != def {
+		t.Fatal("an unavailable store means the default card")
+	}
+}
+
+type routeSource struct {
+	mu      sync.Mutex
+	byRoute map[string]*embedtemplates.Config
+	calls   atomic.Int64
+}
+
+func (s *routeSource) ResolveTemplate(_ context.Context, _, _ int64, routeKey string) (int64, *embedtemplates.Config, error) {
+	s.calls.Add(1)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return 7, s.byRoute[routeKey], nil
+}
+
+// Different routes of the same server never share a cache entry.
+func TestRouteIsolationInTheCache(t *testing.T) {
+	hit := killTemplate()
+	hit.RouteKey = "HITFEED"
+	hit.Title.Template = "HIT-STYLE {{attacker}}"
+	hit.Description.Template = "{{victim}}"
+	hit.Fields, hit.Footer.Text = nil, "f"
+	src := &routeSource{byRoute: map[string]*embedtemplates.Config{"HITFEED": &hit}}
+	r, _ := newR(src)
+	def := defEmbed()
+	vars := map[string]string{"killer": "Alice", "attacker": "Alice", "victim": "Bob"}
+	gotHit := r.Customize(context.Background(), 1, 10, "HITFEED", vars, at, def)
+	gotKill := r.Customize(context.Background(), 1, 10, "KILLFEED", vars, at, def)
+	if gotHit == def || !strings.HasPrefix(gotHit.Title, "HIT-STYLE") {
+		t.Fatalf("HITFEED has a template: %+v", gotHit)
+	}
+	if gotKill != def {
+		t.Fatal("the KILLFEED route of the same server must keep the default")
+	}
+	if src.calls.Load() != 2 {
+		t.Fatalf("two routes are two cache entries: %d lookups", src.calls.Load())
+	}
+	// Repeats stay cached per route.
+	r.Customize(context.Background(), 1, 10, "HITFEED", vars, at, def)
+	r.Customize(context.Background(), 1, 10, "KILLFEED", vars, at, def)
+	if src.calls.Load() != 2 {
+		t.Fatalf("both are cached: %d", src.calls.Load())
+	}
+	// Invalidating one route leaves the other cached.
+	r.Invalidate(7, "HITFEED")
+	r.Customize(context.Background(), 1, 10, "KILLFEED", vars, at, def)
+	if src.calls.Load() != 2 {
+		t.Fatal("invalidating HITFEED must not drop KILLFEED")
+	}
+	r.Customize(context.Background(), 1, 10, "HITFEED", vars, at, def)
+	if src.calls.Load() != 3 {
+		t.Fatalf("the invalidated route is re-read: %d", src.calls.Load())
+	}
 }

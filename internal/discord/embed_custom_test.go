@@ -431,3 +431,142 @@ func TestPublishersUseTheDefaultWhenTheCustomizerReturnsIt(t *testing.T) {
 		t.Fatalf("the default card must be exactly the existing one: %q", got)
 	}
 }
+
+// special_kill and bounty_amount come from the same classification the default card uses.
+func TestKillVariablesCarrySpecialKillAndBountyOnlyWhenTheEventDoes(t *testing.T) {
+	stub := &stubCustomizer{}
+	p := &KillfeedPublisher{}
+	p.SetRouting(nil, 7, 1)
+	p.SetCustomizer(stub, "Northstar")
+
+	p.Card(killEvent()) // an ordinary kill: no bounty, whatever the presentation says
+	if _, ok := stub.last().vars["bounty_amount"]; ok {
+		t.Fatal("no bounty was claimed: bounty_amount must be absent")
+	}
+	ev := killEvent()
+	ev.BountyClaimed, ev.BountyPoints = true, 250000
+	p.Card(ev)
+	v := stub.last().vars
+	if v["bounty_amount"] != "250,000" {
+		t.Fatalf("bounty_amount: %q", v["bounty_amount"])
+	}
+	if pres := BuildPresentation(ev); pres.Hero != "" && v["special_kill"] != pres.Hero {
+		t.Fatalf("special_kill must be the default card's own hero label %q, got %q", pres.Hero, v["special_kill"])
+	}
+	ev.BountyClaimed, ev.BountyPoints = false, 250000
+	p.Card(ev)
+	if _, ok := stub.last().vars["bounty_amount"]; ok {
+		t.Fatal("points without a claim are not a bounty")
+	}
+}
+
+// --- real renderer, publisher behavior compared with and without customization ------------------
+
+type staticSource struct {
+	cfg map[string]*embedtemplates.Config
+}
+
+func (s staticSource) ResolveTemplate(_ context.Context, _, _ int64, route string) (int64, *embedtemplates.Config, error) {
+	return 9, s.cfg[route], nil
+}
+
+func mustCfg(t *testing.T, route string, c embedtemplates.Config) *embedtemplates.Config {
+	t.Helper()
+	out, err := embedtemplates.Validate(c, route)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &out
+}
+
+func realRenderer(t *testing.T, cfgs map[string]*embedtemplates.Config) *embedrender.Renderer {
+	return embedrender.New(embedrender.Options{Source: staticSource{cfgs}, Enabled: true})
+}
+
+// Flood protection is independent of presentation: the same burst produces the same number
+// of messages, cards and dropped encounters/backlog cards whether or not a template is used,
+// and every delivered card is the custom one.
+func TestHitfeedFloodProtectionIsIdenticalWithACustomTemplate(t *testing.T) {
+	tmpl := mustCfg(t, "HITFEED", embedtemplates.Config{Enabled: true, Color: "#C98B3D",
+		Title:  embedtemplates.Text{Enabled: true, Template: "HIT {{attacker}} > {{victim}}"},
+		Fields: []embedtemplates.Field{{Key: "d", Label: "Damage", Enabled: true, Template: "{{damage}}", Order: 0}, {Key: "z", Label: "Zone", Enabled: true, Template: "{{hit_zone}}", Order: 1}}})
+	run := func(custom bool) (msgs, cards int, droppedOpen, droppedReady int64, f *hitFixture) {
+		f = newHitFixture()
+		f.res.set(7, 1, "HITFEED", "hit-chan")
+		p := f.publisher(1)
+		if custom {
+			p.SetCustomizer(realRenderer(t, map[string]*embedtemplates.Config{"HITFEED": tmpl}), names)
+		}
+		// hitfeedMaxOpen+50 distinct encounters in one window, then drain over several ticks.
+		for i := 0; i < hitfeedMaxOpen+50; i++ {
+			p.PublishHit(fullHit("A"+strconvI(i), "V"))
+		}
+		f.clock.advance(hitfeedWindow + time.Second)
+		for tick := 0; tick < 30; tick++ {
+			p.tick(false)
+			f.clock.advance(hitfeedTick)
+		}
+		for _, m := range f.sender.messages("hit-chan") {
+			msgs++
+			cards += len(m.embeds)
+			for _, e := range m.embeds {
+				if len(e.Description) > 0 && custom && !strings.HasPrefix(e.Title, "HIT ") {
+					t.Fatalf("a custom run delivered a default card: %+v", e)
+				}
+			}
+		}
+		return msgs, cards, p.droppedOpen, p.droppedReady, f
+	}
+	dm, dc, dOpen, dReady, _ := run(false)
+	cm, cc, cOpen, cReady, f := run(true)
+	if dm != cm || dc != cc || dOpen != cOpen || dReady != cReady {
+		t.Fatalf("flood behavior must not depend on the template: default %d/%d drops %d/%d, custom %d/%d drops %d/%d", dm, dc, dOpen, dReady, cm, cc, cOpen, cReady)
+	}
+	if dOpen != 50 || dc != hitfeedMaxReady || cm > 10 {
+		t.Fatalf("sanity: open-encounter cap and backlog cap still bite (dropped %d, cards %d, msgs %d)", dOpen, dc, cm)
+	}
+	for _, m := range f.sender.messages("hit-chan") {
+		if len(m.embeds) > hitfeedEmbedsPerMessage || m.mention == nil || len(m.mention.Parse) != 0 {
+			t.Fatalf("cards per message and mention safety are unchanged: %d %+v", len(m.embeds), m.mention)
+		}
+	}
+}
+
+func strconvI(i int) string {
+	return strings.Repeat("x", i%7) + string(rune('a'+i%26)) + string(rune('A'+(i/26)%26)) + string(rune('a'+(i/676)%26))
+}
+
+// Classification and claiming are decided before any presentation: the same notices are
+// claimed, queued and ordered whether or not a PVE_FEED template exists.
+func TestPveClassificationAndOrderUnchangedByTemplates(t *testing.T) {
+	tmpl := mustCfg(t, "PVE_FEED", embedtemplates.Config{Enabled: true, Color: "#8C6A2D", Title: embedtemplates.Text{Enabled: true, Template: "PVE {{victim}} {{cause}}"}})
+	drive := func(custom bool) (claims []bool, titles []string) {
+		f := newPveFixture()
+		f.res.set(7, 1, "PVE_FEED", "pve-chan")
+		p := f.publisher(1)
+		if custom {
+			p.SetCustomizer(realRenderer(t, map[string]*embedtemplates.Config{"PVE_FEED": tmpl}), names)
+		}
+		for _, n := range []killfeed.PveDeathNotice{suicide("A"), {Cause: killfeed.DeathCause("UNKNOWN"), Name: "B"}, suicide("C"), {Cause: killfeed.DeathCauseInfected, Name: "D"}} {
+			claims = append(claims, p.PublishPveDeath(n))
+		}
+		p.tick(false)
+		for _, m := range f.sender.messages("pve-chan") {
+			for _, e := range m.embeds {
+				titles = append(titles, e.Title+"|"+e.Description)
+			}
+		}
+		return
+	}
+	dClaims, dCards := drive(false)
+	cClaims, cCards := drive(true)
+	if !reflect.DeepEqual(dClaims, cClaims) || len(dCards) != len(cCards) {
+		t.Fatalf("classification/claims/queue must be identical: %v %v vs %v %v", dClaims, dCards, cClaims, cCards)
+	}
+	if !cClaims[0] || cClaims[1] || !cClaims[2] {
+		t.Fatalf("an unproven cause is never claimed: %v", cClaims)
+	}
+	if cCards[0] != "PVE A suicide|" || cCards[1] != "PVE C suicide|" {
+		t.Fatalf("custom PVE cards, in order: %v", cCards)
+	}
+}

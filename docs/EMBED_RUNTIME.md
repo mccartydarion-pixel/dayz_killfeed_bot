@@ -9,6 +9,34 @@ default as the fallback for everything.
 > and no template lookup happens. On: eligible routes render an installation's enabled
 > template; on any problem the default card is published instead.
 
+## Runtime audit and route compatibility matrix
+
+Performed against the code BEFORE any integration; a route key alone never counts as support.
+"Custom runtime rendering: yes" means the publisher's card path calls the shared renderer.
+
+| Route | Template persistence | Runtime publisher | Output type | Custom runtime rendering | Fallback |
+|---|---|---|---|---|---|
+| `KILLFEED` | yes | yes (`KillfeedPublisher`, batched by the rotating feed) | single embed per kill | **yes** (one card per kill, never a duplicate) | Champion kill card |
+| `HITFEED` | yes | yes (`HitfeedPublisher`) | aggregated embeds, up to 10 per message | **yes** (each aggregated card rendered independently) | Champion hit card |
+| `PVE_FEED` | yes | yes (explicit suicides only today) | embeds, up to 10 per message | **yes** (presentation only) | Champion PvE card |
+| `BOUNTY_TRACKING` | yes | yes (`BountyTracker`) | embeds, up to 10 per message | **yes** (placed / increased / claimed / expired / cancelled) | Champion lifecycle card |
+| `ECONOMY` | yes | yes (`EconomyFeed`: bounty rewards, admin credit/debit) | embeds, up to 10 per message | **yes** | Champion economy card |
+| `CONNECTIONS` | yes | yes (`ConnectionsPublisher`) | one embed per message: a single event, or a batched summary list | **single-event cards only**; a batched summary (several players / "earlier events not shown") keeps the default | Champion connection card |
+| `BOUNTY` | yes | yes (`BountyBoard`) | **persistent board** (one edited message per channel, top-N rows) | **no - INCOMPATIBLE**: a multi-row board reconciled from the database is not a single-event card; left untouched | Champion board |
+| `ADMIN_LOGS` | yes | yes (`ADMMonitorPublisher`) | **persistent live diagnostic panel** (edited in place) plus per-download report embeds, with a fixed diagnostic field model | **no - INCOMPATIBLE** | Champion ADM monitor |
+| `LINK_GAMERTAG` | yes | yes (`RouteSyncer` panel) | **persistent interactive panel** (buttons, modals) | **no - INCOMPATIBLE** (panel, not an event card) | Champion panel |
+| `STATS_LEADERBOARDS` | yes | yes (`RouteSyncer` panel) | **persistent interactive panel** (stable message id, ephemeral replies) | **no - INCOMPATIBLE** | Champion panel |
+| `AUTO_LEADERBOARD` | yes | yes (`LeaderboardScheduler`) | **persistent ranked-rows message** edited on a schedule | **no - INCOMPATIBLE** (rows cannot be expressed by the single-event model) | Champion leaderboard |
+| `ADMIN_ALERTS` | yes | **no** (not implemented) | - | no | n/a |
+| `BUILD_FEED` | yes | **no** (not implemented) | - | no | n/a |
+| `CASINO` | yes | **no** (not implemented) | - | no | n/a |
+| `SHOP` | yes | **no** (not implemented) | - | no | n/a |
+| `HEATMAPS` | yes | **no** (not implemented) | - | no | n/a |
+
+Only the six routes marked **yes** are ever rendered; a template saved for any other route is
+stored but never used, and the API reports that route's `runtimeRendering` as `NOT_ENABLED`
+(`ENABLED` only when the flag is on **and** the route is one of the six).
+
 ## Architecture
 
 ```
@@ -64,15 +92,16 @@ only values the event actually carries are provided; a value that is unknown is 
 
 | Route | Variables provided |
 |---|---|
-| `KILLFEED` | `killer` `victim` `weapon` `distance` (`86.4m`) `ammo` `streak` (when > 0) `server_name` `timestamp` |
+| `KILLFEED` | `killer` `victim` `weapon` `distance` (`86.4m`) `ammo` `streak` (when > 0) `special_kill` (the default card's own hero label, only for a special kill) `bounty_amount` (only when the kill claimed a bounty) `server_name` `timestamp` |
 | `HITFEED` | `attacker` (= `killer`) `victim` `weapon` `ammo` `distance` `hit_zone` `damage` (only when **every** hit in the encounter carried one) `hits` `server_name` |
 | `PVE_FEED` | `victim` `cause` (the parser-proven cause: today only `suicide`) `server_name` `timestamp` |
 | `BOUNTY_TRACKING` | `status` (`placed` `increased` `claimed` `expired` `cancelled`) `target` (= `victim`) `amount`; claims only: `hunter` (= `killer`) `total` `count` `weapon` `distance`; `server_name` |
 | `CONNECTIONS` | `player` `event` (`joined`/`left`) `event_type` (`connected`/`disconnected`) `session` (disconnects with an observed session >= 1 minute) `server_name` `timestamp` |
 | `ECONOMY` | `player` `amount` `transaction_type` (`Bounty reward`, `Admin credit`, `Admin debit`, ...) `balance` (rewards only) `server_name` |
 
-`timestamp` is the publish time in UTC (`2006-01-02 15:04:05 UTC`); the embed's own timestamp
-(template option) is the same instant. `server_name` is the game server's display name. There are no
+`timestamp` is the runtime publish time in UTC (`2006-01-02 15:04:05 UTC`; the ADM log carries only a
+time of day, so no richer event time exists); the embed's own timestamp (template option) is the same
+instant, produced by the renderer - a template cannot inject an arbitrary timestamp string. `server_name` is the game server's display name. There are no
 special-kill variables because the designer schema has none. `ammo` is passed as the event carries
 it (HITFEED strips the `Bullet_` prefix like the default card).
 
@@ -122,7 +151,10 @@ fields dropped. A Discord rejection caused by an oversized embed cannot occur.
 
 Cumulative counters (no player names, no template contents), exposed on `GET /api/admin/health`
 under `embedRender`: `templateCustomRender`, `templateDefaultRender`, `templateFallbackRender`,
-`templateRenderError`, plus `enabled`. Logs (`component=embedrender event=embed_template_fallback`)
+`templateRenderError`, plus `enabled`, and the same four broken down **by route key only**
+(`byRoute.<ROUTE>.customEmbedRenderTotal` / `defaultEmbedRenderTotal` / `embedFallbackTotal` /
+`embedRenderErrorTotal`). They are never labelled by installation, guild or player, so cardinality is
+bounded by the number of routes. Logs (`component=embedrender event=embed_template_fallback`)
 carry `installation_id`, `route_key` and `fallback_reason` only, at most once a minute per
 (installation, route, reason).
 
@@ -134,28 +166,6 @@ without a customizer). PVE_FEED keeps its ownership/claim logic (an unproven cau
 custom template or not) and its "N earlier deaths were not shown" note. Kill persistence, dedupe,
 replay and bounty-claim ordering happen before the embed is built and are not involved. The rotating
 killfeed batching, per-server queues and Discord failure handling are unchanged.
-
-## Route compatibility matrix
-
-| Route | Templates persisted | Runtime publisher exists | Runtime custom rendering | Default fallback |
-|---|---|---|---|---|
-| `KILLFEED` | yes | yes | **yes** (one card per kill, no duplicate) | yes |
-| `HITFEED` | yes | yes | **yes** (per aggregated card) | yes |
-| `PVE_FEED` | yes | yes (explicit suicides only today) | **yes** (presentation only) | yes |
-| `BOUNTY_TRACKING` | yes | yes | **yes** (placed/increased/claimed/expired/cancelled) | yes |
-| `ECONOMY` | yes | yes (bounty rewards, admin credit/debit) | **yes** | yes |
-| `CONNECTIONS` | yes | yes | **single-event cards only**; a batched summary (several players / "earlier events not shown") keeps the default | yes |
-| `BOUNTY` | yes | yes (persistent board) | **no - incompatible**: a multi-row board reconciled from the database is not a single-event card; left on its default | n/a |
-| `ADMIN_LOGS` | yes | yes (ADM monitor) | **no - incompatible**: a live, edited-in-place diagnostic status panel plus download reports with a fixed field model; left on its default | n/a |
-| `ADMIN_ALERTS` | yes | no | no (no publisher) | n/a |
-| `BUILD_FEED` | yes | no | no (no publisher) | n/a |
-| `CASINO` | yes | no | no (no publisher) | n/a |
-| `SHOP` | yes | no | no (no publisher) | n/a |
-| `HEATMAPS` | yes | no | no | n/a |
-| `LINK_GAMERTAG`, `STATS_LEADERBOARDS`, `AUTO_LEADERBOARD` | yes | yes (persistent interactive panels) | no (panels, not event cards) | n/a |
-
-`GET .../embed-templates` reports `runtimeRoutes` (the rows marked yes) and a per-route/global
-`runtimeRendering` of `ENABLED` only when the flag is on **and** the route is one of those.
 
 ## Rollout
 
