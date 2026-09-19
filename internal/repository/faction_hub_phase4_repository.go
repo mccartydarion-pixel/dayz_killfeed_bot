@@ -85,6 +85,9 @@ RETURNING id`, in.PublicID, organizationID, installationID, factionID, in.Storag
 		if _, err := tx.Exec(ctx, `UPDATE hub_factions SET logo_asset_id=$1, updated_at=NOW() WHERE id=$2`, id, factionID); err != nil {
 			return fmt.Errorf("hub point logo: %w", err)
 		}
+		if err := hubActivity(ctx, tx, factionID, ActivityFactionLogoChanged, 0, actorUserID, ""); err != nil {
+			return err
+		}
 		if old != nil {
 			if _, err := tx.Exec(ctx, `DELETE FROM hub_faction_assets WHERE id=$1 AND faction_id=$2`, old.ID, factionID); err != nil {
 				return fmt.Errorf("hub drop old logo asset: %w", err)
@@ -125,6 +128,9 @@ func (r *FactionHubRepository) DeleteLogo(ctx context.Context, organizationID, i
 		}
 		if _, err := tx.Exec(ctx, `DELETE FROM hub_faction_assets WHERE id=$1 AND faction_id=$2`, old.ID, factionID); err != nil {
 			return fmt.Errorf("hub drop logo asset: %w", err)
+		}
+		if err := hubActivity(ctx, tx, factionID, ActivityFactionLogoChanged, 0, actorUserID, ""); err != nil {
+			return err
 		}
 		return nil
 	})
@@ -204,6 +210,9 @@ func (r *FactionHubRepository) TransferLeadership(ctx context.Context, organizat
 		if _, err := tx.Exec(ctx, `UPDATE hub_faction_members SET role_key='LEADER' WHERE id=$1 AND faction_id=$2`, target.ID, factionID); err != nil {
 			return fmt.Errorf("hub transfer promote: %w", err)
 		}
+		if err := hubActivity(ctx, tx, factionID, ActivityLeadershipTransferred, target.User.ID, actorUserID, ""); err != nil {
+			return err
+		}
 		if newLeader, err = hubMemberByID(ctx, tx, factionID, target.ID, ""); err != nil {
 			return err
 		}
@@ -248,6 +257,12 @@ func (r *FactionHubRepository) LeaveFaction(ctx context.Context, organizationID,
 		}
 		if _, err := tx.Exec(ctx, `DELETE FROM hub_faction_members WHERE id=$1`, memberID); err != nil {
 			return fmt.Errorf("hub leave: %w", err)
+		}
+		if err := hubClosePeriod(ctx, tx, factionID, userID); err != nil {
+			return err
+		}
+		if err := hubActivity(ctx, tx, factionID, ActivityMemberLeft, userID, 0, ""); err != nil {
+			return err
 		}
 		return nil
 	})

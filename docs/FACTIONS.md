@@ -1,4 +1,4 @@
-# Faction Hub - backend (Phase 1 foundation, Phase 4 logos / leadership transfer / self-leave)
+# Faction Hub - backend (Phase 1 foundation, Phase 4 logos / leadership transfer / self-leave, Phase 5 competitive stats)
 
 The web-first, installation-scoped faction directory, membership and recruitment API.
 **Backend only**: no website UI here (the website consumes this API). Phase 1 (migration `0032_faction_hub`) is the
@@ -354,6 +354,24 @@ corrupt, wrong dimensions, wrong form fields), `413 PAYLOAD_TOO_LARGE` (over 5 M
 The upload must be sent by the website **server-side** (it holds the service secret): forward the browser's multipart file to the route
 with `Authorization: Bearer <secret>` and `X-Champion-Acting-User`. Browsers never call it directly.
 
+## Phase 5: competitive stats, achievements and activity
+
+Faction profiles now carry real competitive data, all **derived from Champion's runtime data** (kills, deaths, bounties, server records) joined to
+**membership periods** - a kill counts for a faction only while its player was a member, and only through a **verified DayZ link** (never a name match).
+Full model, attribution rules, SQL semantics, cache, performance and the exact website DTOs: **`docs/FACTION_STATS.md`**. Migration `0034_faction_stats_history`
+adds `hub_faction_membership_history` (one row per membership period, written in the same transaction as every join/leave/removal, current members backfilled),
+`hub_faction_activity` (public-safe hub events, no free text) and `hub_faction_achievement_unlocks` (unique per faction + achievement).
+
+| Route | Who | Notes |
+|---|---|---|
+| `GET .../{factionID}/stats` | any synced user | `{summary, memberContributions, updatedAt}`; cached 45 s, invalidated by kills, deaths, bounty claims and membership changes |
+| `GET .../{factionID}/activity` | any synced user | public feed, newest first; `limit` (default 20, max 100), `cursor` |
+| `GET .../{factionID}/achievements` | any synced user | 10 system-defined achievements with `unlocked`, `unlockedAt`, `progress`/`target` |
+| `GET .../factions/{factionID}` | any synced user | the profile now has `stats` (the summary, or `null`) |
+
+Public activity is **not** the audit log: audit events (`faction_*`, ids only) stay in the logs; the feed shows only public-safe events (a removal reads as
+`MEMBER_LEFT`; no application messages, reviewers or internal ids). Unlinked members are listed with all figures zero and `identity: "UNLINKED"`.
+
 ## Tests
 
 Real PostgreSQL 16 (`-tags integration`, throwaway database only; `TEST_DATABASE_URL` +
@@ -368,6 +386,7 @@ server-less installations). Pure rules: `internal/factionhub/factionhub_test.go`
 ## Not in Phase 1 / future
 
 * Disbanding a faction (a sole leader can neither leave nor be removed).
+* A faction leaderboard (Phase 5 exposes comparable figures but no ranking endpoint), playtime and hit statistics.
 * Invite flow for `INVITE_ONLY`; leader-defined application questions (`answers_json`).
 * Custom faction roles and per-role permissions.
 * Logo thumbnails and metadata stripping; banner/profile presentation; an S3-compatible bucket implementation of `assetstore.Store`

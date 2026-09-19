@@ -19,6 +19,7 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/assetstore"
 	"github.com/yourname/dayz-killfeed/internal/config"
 	"github.com/yourname/dayz-killfeed/internal/factionassets"
+	"github.com/yourname/dayz-killfeed/internal/factionstats"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 	"github.com/yourname/dayz-killfeed/internal/server"
 )
@@ -50,6 +51,7 @@ func newFactionWorld(t *testing.T) *factionWorld {
 	a.saasFactionApplyDayLimiter = newSaaSRateLimiter(time.Hour, 1000)
 	a.saasFactionLogoLimiter = newSaaSRateLimiter(time.Hour, 1000)
 	a.saasFactionLogoDayLimiter = newSaaSRateLimiter(time.Hour, 1000)
+	a.FactionHubStats = factionstats.NewService(repository.NewHubStatsRepository(a.DB.Pool), factionstats.Options{})
 	store := assetstore.NewMemoryStore()
 	a.FactionAssets = factionassets.NewService(store, a.FactionHub)
 	a.Config.PublicBaseURL = "https://champion.example"

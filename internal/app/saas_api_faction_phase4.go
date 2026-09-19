@@ -362,6 +362,7 @@ func (a *App) handleTransferFactionLeadership(w http.ResponseWriter, r *http.Req
 		return
 	}
 	factionAudit("faction_leadership_transferred", fr, "faction_id", factionID, "previous_leader_user_id", prev.User.ID, "new_leader_user_id", next.User.ID)
+	a.factionStatsChanged(fr, factionID)
 	writeSaaSJSON(w, http.StatusOK, transferLeadershipResponse{Leader: toFactionMember(next), PreviousLeader: toFactionMember(prev)})
 }
 
@@ -392,5 +393,6 @@ func (a *App) handleLeaveFaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	factionAudit("faction_member_left", fr, "faction_id", factionID, "member_id", m.ID, "left_role", m.RoleKey)
+	a.factionStatsChanged(fr, factionID)
 	writeSaaSJSON(w, http.StatusOK, leaveFactionResponse{Left: true, Member: toFactionMember(*m)})
 }

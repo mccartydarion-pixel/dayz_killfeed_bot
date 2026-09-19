@@ -27,6 +27,7 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/embedtemplates"
 	competitiveevents "github.com/yourname/dayz-killfeed/internal/events"
 	"github.com/yourname/dayz-killfeed/internal/factionassets"
+	"github.com/yourname/dayz-killfeed/internal/factionstats"
 	"github.com/yourname/dayz-killfeed/internal/health"
 	"github.com/yourname/dayz-killfeed/internal/killfeed"
 	"github.com/yourname/dayz-killfeed/internal/linking"
@@ -148,7 +149,9 @@ type App struct {
 	saasFactionApplyLimiter     *saasRateLimiter
 	saasFactionApplyDayLimiter  *saasRateLimiter
 	// FactionAssets stores faction logos (Phase 4); the two limiters throttle uploads.
-	FactionAssets             *factionassets.Service
+	FactionAssets *factionassets.Service
+	// FactionHubStats derives faction competitive stats, achievements and activity (Phase 5).
+	FactionHubStats           *factionstats.Service
 	saasFactionLogoLimiter    *saasRateLimiter
 	saasFactionLogoDayLimiter *saasRateLimiter
 	persistQueuesMu           sync.Mutex
@@ -542,6 +545,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.EmbedTemplates = embedtemplates.NewService(embedRepo)
 			app.FactionHub = repository.NewFactionHubRepository(db.Pool)
 			app.FactionAssets = factionassets.NewService(repository.NewPostgresAssetStore(db.Pool), app.FactionHub)
+			app.FactionHubStats = factionstats.NewService(repository.NewHubStatsRepository(db.Pool), factionstats.Options{})
 			app.EmbedRenderer = embedrender.New(embedrender.Options{Source: embedRepo, Enabled: cfg.CustomEmbedsEnabled})
 			if cfg.CustomEmbedsEnabled {
 				slog.Info("component=embedrender", "event", "custom_embeds_enabled")
@@ -760,6 +764,13 @@ func (a *App) Run() error {
 	// older than two hours and referenced by no asset row).
 	if a.FactionAssets != nil {
 		go a.FactionAssets.RunSweeper(ctx, time.Hour, 2*time.Hour)
+	}
+	// Faction Hub achievements: kills queue an evaluation (drained every 5 seconds, one evaluation
+	// per affected faction), and a reconcile - one minute after start, then daily - backfills
+	// factions that already qualify and unlocks the time-based ones. Unlocking is silent.
+	if a.FactionHubStats != nil {
+		go a.FactionHubStats.Run(ctx, 5*time.Second)
+		go a.FactionHubStats.RunReconciler(ctx, time.Minute, 24*time.Hour)
 	}
 
 	// Sanitized configuration presence. Values are never logged.
@@ -1294,7 +1305,7 @@ func (a *App) Run() error {
 				setupManager.SetRouteGate(a.RouteSyncer.HasRoute)
 				go a.RouteSyncer.Run(ctx)
 			}
-			store := &persistenceStoreAdapter{players: a.Players, kills: a.Kills, deaths: a.Deaths, seasons: a.Seasons, factions: a.Factions, wars: a.Wars, events: a.Events, bounties: a.Bounties, bountySvc: a.BountyService, streaks: a.Streaks, anomalies: a.Anomalies, activity: a.ActivityRepository, servers: a.Servers, stats: a.Stats, analytics: a.AnalyticsRepository, panelDirty: func() {
+			store := &persistenceStoreAdapter{players: a.Players, kills: a.Kills, deaths: a.Deaths, seasons: a.Seasons, factions: a.Factions, wars: a.Wars, events: a.Events, bounties: a.Bounties, bountySvc: a.BountyService, streaks: a.Streaks, anomalies: a.Anomalies, activity: a.ActivityRepository, servers: a.Servers, stats: a.Stats, analytics: a.AnalyticsRepository, factionStats: a.FactionHubStats, panelDirty: func() {
 				if a.LeaderboardScheduler != nil {
 					a.LeaderboardScheduler.MarkDirty()
 				}
@@ -1691,6 +1702,9 @@ type persistenceStoreAdapter struct {
 	stats      *repository.StatsRepository
 	analytics  *repository.AnalyticsRepository
 	panelDirty func()
+	// factionStats is told about every persisted kill and death (nil-safe): it invalidates cached
+	// faction figures and queues the killer for achievement evaluation. It never blocks the kill path.
+	factionStats *factionstats.Service
 }
 
 type admCheckpointStoreAdapter struct {
@@ -1804,6 +1818,9 @@ func (p *persistenceStoreAdapter) ResolveStreakContext(ctx context.Context, guil
 }
 
 func (p *persistenceStoreAdapter) ProcessPersistedKill(ctx context.Context, killID int64, record repository.KillRecord, ev *killfeed.Event) {
+	// Runs on every exit (including the bounty claim at the end): the kill is durable, so cached
+	// faction figures are stale and the killer's factions may have earned an achievement.
+	defer p.factionStats.NotifyCombat(record.GuildID, record.ServerID, record.KillerPlayerID)
 	if p.streaks == nil {
 		return
 	}
@@ -1934,6 +1951,7 @@ func (p *persistenceStoreAdapter) ProcessPersistedKill(ctx context.Context, kill
 // embed. Best-effort: on failure ev.PlayerStats stays nil and the embed
 // renders without that section (nil-checked in BuildDeathEmbed).
 func (p *persistenceStoreAdapter) ProcessPersistedDeath(ctx context.Context, record repository.DeathRecord, ev *killfeed.Event) {
+	defer p.factionStats.NotifyCombat(record.GuildID, record.ServerID, 0) // a death changes deaths/K-D/streaks only
 	if p.stats == nil || ev == nil || record.PlayerID == 0 {
 		return
 	}

@@ -328,6 +328,17 @@ WHERE i.id=$1 AND u.id=$2`, installationID, userID).Scan(&playerID)
 	if err != nil {
 		return 0, mapHubUnique(fmt.Errorf("hub add member: %w", err))
 	}
+	if err := hubOpenPeriod(ctx, q, id); err != nil {
+		return 0, err
+	}
+	if role == factionhub.RoleLeader { // the founding membership is the faction's creation event
+		err = hubActivity(ctx, q, factionID, ActivityFactionCreated, userID, 0, "")
+	} else {
+		err = hubActivity(ctx, q, factionID, ActivityMemberJoined, userID, 0, "")
+	}
+	if err != nil {
+		return 0, err
+	}
 	return id, nil
 }
 
@@ -655,6 +666,10 @@ ON CONFLICT (faction_id) DO UPDATE SET minimum_hours=EXCLUDED.minimum_hours, min
 				return fmt.Errorf("hub update settings: %w", err)
 			}
 		}
+		// The event says THAT the profile changed, never what changed.
+		if err := hubActivity(ctx, tx, factionID, ActivityFactionUpdated, 0, actorUserID, ""); err != nil {
+			return err
+		}
 		out, err = hubFactionFull(ctx, tx, organizationID, installationID, factionID)
 		return err
 	})
@@ -881,6 +896,13 @@ func (r *FactionHubRepository) setRole(ctx context.Context, organizationID, inst
 		if _, err := tx.Exec(ctx, `UPDATE hub_faction_members SET role_key=$1 WHERE id=$2`, role, memberID); err != nil {
 			return nil, fmt.Errorf("hub set role: %w", err)
 		}
+		event := ActivityMemberDemoted
+		if role == factionhub.RoleOfficer {
+			event = ActivityMemberPromoted
+		}
+		if err := hubActivity(ctx, tx, factionID, event, target.User.ID, actorUserID, role); err != nil {
+			return nil, err
+		}
 		m, err := hubMemberByID(ctx, tx, factionID, memberID, "")
 		return &m, err
 	})
@@ -909,6 +931,13 @@ func (r *FactionHubRepository) RemoveMember(ctx context.Context, organizationID,
 		}
 		if _, err := tx.Exec(ctx, `DELETE FROM hub_faction_members WHERE id=$1`, memberID); err != nil {
 			return nil, fmt.Errorf("hub remove member: %w", err)
+		}
+		if err := hubClosePeriod(ctx, tx, factionID, target.User.ID); err != nil {
+			return nil, err
+		}
+		// Public activity does not distinguish leaving from being removed (moderation stays private).
+		if err := hubActivity(ctx, tx, factionID, ActivityMemberLeft, target.User.ID, 0, ""); err != nil {
+			return nil, err
 		}
 		return &target, nil
 	})

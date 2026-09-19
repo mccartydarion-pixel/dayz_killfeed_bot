@@ -676,6 +676,7 @@ components:
             members: { type: array, description: "Most senior first, at most 100.", items: { $ref: "#/components/schemas/FactionMember" } }
             createdAt: { type: string, format: date-time }
             updatedAt: { type: string, format: date-time }
+            stats: { $ref: "#/components/schemas/FactionStatsSummary" }
             viewer:
               type: object
               properties:
@@ -828,6 +829,99 @@ components:
       type: string
       enum: [BLACK, BLUE, GREEN, ORANGE, PINK, RED, WHITE, YELLOW]
       description: Approved armband keys (server-validated).
+
+    FactionStatsSummary:
+      type: object
+      nullable: true
+      description: >
+        The faction's competitive summary. Every figure is derived from real kills, deaths and bounties, attributed through
+        members' verified DayZ links and only while they were members (docs/FACTION_STATS.md). Flat and comparable so a future
+        faction leaderboard can rank on it; there is no overall skill score.
+      properties:
+        kills: { type: integer, format: int64 }
+        deaths: { type: integer, format: int64 }
+        kdRatio: { type: number, description: "kills / max(deaths,1), two decimals; with zero deaths it equals kills." }
+        headshots: { type: integer, format: int64 }
+        longshots: { type: integer, format: int64 }
+        currentKillStreak: { type: integer, description: "Largest ongoing streak among current members." }
+        bestKillStreak: { type: integer, description: "Best single member's streak, per membership period." }
+        bountiesClaimed: { type: integer, format: int64 }
+        bountyValueClaimed: { type: integer, format: int64 }
+        memberCount: { type: integer }
+        linkedMemberCount: { type: integer, description: "Current members whose figures are attributable (verified link)." }
+        achievementsUnlocked: { type: integer }
+        trackingSince: { type: string, format: date-time, nullable: true, description: "Figures cover events from the first recorded membership period on." }
+    FactionMemberContribution:
+      type: object
+      properties:
+        memberId: { type: integer, format: int64, nullable: true, description: "Current membership id; null for a former member." }
+        discordUserId: { type: string }
+        displayName: { type: string }
+        avatar: { type: string }
+        gamertag: { type: string, nullable: true, description: "The verified linked gamertag." }
+        role: { allOf: [{ $ref: "#/components/schemas/FactionRole" }], nullable: true }
+        status: { type: string, enum: [ACTIVE, FORMER] }
+        identity: { type: string, enum: [LINKED, UNLINKED], description: "UNLINKED members have all figures zero and statsEligible false." }
+        statsEligible: { type: boolean }
+        joinedAt: { type: string, format: date-time }
+        kills: { type: integer, format: int64 }
+        deaths: { type: integer, format: int64 }
+        kdRatio: { type: number }
+        headshots: { type: integer, format: int64 }
+        longshots: { type: integer, format: int64 }
+        currentKillStreak: { type: integer }
+        bestKillStreak: { type: integer }
+        bountiesClaimed: { type: integer, format: int64 }
+        bountyValueClaimed: { type: integer, format: int64 }
+    FactionStats:
+      type: object
+      properties:
+        summary: { $ref: "#/components/schemas/FactionStatsSummary" }
+        memberContributions: { type: array, description: "Ordered kills DESC, deaths ASC, member id.", items: { $ref: "#/components/schemas/FactionMemberContribution" } }
+        updatedAt: { type: string, format: date-time, description: "When the figures were computed (cached up to 45 seconds)." }
+    FactionAchievement:
+      type: object
+      properties:
+        key: { type: string, enum: [FIRST_BLOOD, KILLS_100, KILLS_500, KILLS_1000, HEADHUNTERS, LONG_RANGE, BOUNTY_HUNTERS, KILLING_MACHINE, FULL_SQUAD, VETERAN_FACTION] }
+        name: { type: string }
+        description: { type: string }
+        unlocked: { type: boolean }
+        unlockedAt: { type: string, format: date-time, nullable: true, description: "When the condition was really met when the data says so, otherwise when it was recorded." }
+        progress: { type: integer, description: "The real measured value, capped at target." }
+        target: { type: integer }
+        unit: { type: string, enum: [kills, headshots, longshots, bounties, members, days] }
+    FactionAchievementList:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/FactionAchievement" } }
+        unlockedCount: { type: integer }
+        total: { type: integer }
+    FactionActivityMember:
+      type: object
+      nullable: true
+      properties:
+        discordUserId: { type: string }
+        displayName: { type: string }
+        avatar: { type: string }
+        gamertag: { type: string, nullable: true }
+    FactionActivityEvent:
+      type: object
+      description: One public-safe event. Never carries application messages, moderation detail, free text or internal ids. Treat type as an open set.
+      properties:
+        id: { type: string, description: "Opaque, stable event key." }
+        type: { type: string, enum: [FACTION_CREATED, MEMBER_JOINED, MEMBER_LEFT, MEMBER_PROMOTED, MEMBER_DEMOTED, LEADERSHIP_TRANSFERRED, FACTION_UPDATED, FACTION_LOGO_CHANGED, KILL, HEADSHOT, LONGSHOT, BOUNTY_CLAIMED, SERVER_RECORD, ACHIEVEMENT_UNLOCKED] }
+        occurredAt: { type: string, format: date-time }
+        member: { $ref: "#/components/schemas/FactionActivityMember" }
+        details:
+          type: object
+          additionalProperties: true
+          description: "Per type: role (promotions/demotions), previousLeader, victim/weapon/distanceMeters/headshot/longshot (kills), target/rewardPoints/bounties (bounty claims), record, key/name (achievements)."
+    FactionActivityPage:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/FactionActivityEvent" } }
+        nextCursor: { type: string, nullable: true }
+        limit: { type: integer }
 
   responses:
     Unauthorized:
@@ -2030,3 +2124,60 @@ paths:
             image/webp: { schema: { type: string, format: binary } }
         "304": { description: Not modified (If-None-Match matched the ETag). }
         "404": { description: Unknown, replaced or deleted logo, or a mismatched extension. }
+
+  # --- Faction Hub Phase 5: competitive stats, achievements, activity (docs/FACTION_STATS.md). Read-only, any synced user. ---
+  /api/saas/organizations/{organizationID}/installations/{installationID}/factions/{factionID}/stats:
+    get:
+      summary: The faction's competitive stats - summary and per-member contributions. Derived from real kills/deaths/bounties, attributed through verified links and membership periods. Cached up to 45 s.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { $ref: "#/components/parameters/factionID" }
+      responses:
+        "200":
+          description: Summary, contributions and updatedAt.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FactionStats" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/factions/{factionID}/activity:
+    get:
+      summary: The faction's public activity feed, newest first (keyset pagination). Public-safe events only.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { $ref: "#/components/parameters/factionID" }
+        - { name: limit, in: query, required: false, description: "Default 20, maximum 100 (larger values are clamped; 0 or non-numeric is 400).", schema: { type: integer, minimum: 1 } }
+        - { $ref: "#/components/parameters/factionCursor" }
+      responses:
+        "200":
+          description: One page of events and the cursor for the next.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FactionActivityPage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/factions/{factionID}/achievements:
+    get:
+      summary: The faction's system-defined achievements with unlocked state, unlockedAt and progress/target.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { $ref: "#/components/parameters/factionID" }
+      responses:
+        "200":
+          description: All ten achievements in a stable order.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FactionAchievementList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
