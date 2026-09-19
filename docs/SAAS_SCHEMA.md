@@ -381,3 +381,15 @@ Tenant safety is in the schema as well as the queries: a faction cannot name an 
 installation, and a member or application cannot sit in a different installation than its faction. Every repository
 method scopes by organization + installation (+ faction). See `docs/FACTIONS.md` for the concurrency design (an
 advisory lock on `(installation, user)` taken before any row lock).
+
+## Faction logo storage (migration 0033)
+
+Phase 4 of the Faction Hub (`docs/FACTIONS.md`). Champion has no object storage and the bot service filesystem is not durable, so logo
+**bytes** live behind the `assetstore.Store` abstraction (production: the PostgreSQL-backed store below) and only **metadata** is in the
+faction model. Additive: one new column on `hub_factions` and two new tables; nothing existing changes.
+
+| Object | Notes |
+|---|---|
+| `hub_factions.logo_asset_id BIGINT NULL` | the current logo. **`FOREIGN KEY (logo_asset_id, id) REFERENCES hub_faction_assets(id, faction_id) ON DELETE SET NULL (logo_asset_id)`** - a faction can only ever point at one of its own assets; the pointer clears if the asset row is removed (column-list `SET NULL` needs PostgreSQL 15+; production is 18). `NULL` = the Champion default logo |
+| `hub_faction_assets` | `id`, `public_id UUID UNIQUE` (unguessable id in the public URL), `organization_id`, `installation_id`, `faction_id`, `asset_type` (`CHECK IN ('LOGO')`), `storage_key TEXT UNIQUE` (server-generated; `CHECK`: relative, `[A-Za-z0-9/._-]`, no `..`, <= 200), `content_type` (`CHECK IN ('image/png','image/jpeg','image/webp')`), `size_bytes` (`1..5242880`), `width`, `height`, `original_filename` (sanitized, <= 120, display only), `created_by_user_id` (`ON DELETE SET NULL`), `created_at`, `updated_at`. `FOREIGN KEY (faction_id, installation_id)` to the faction and `(installation_id, organization_id)` to `installations`, both `ON DELETE CASCADE`; `UNIQUE (id, faction_id)`; index `(faction_id, asset_type)`. A replaced or deleted logo has **no row** (its URL stops resolving) |
+| `hub_asset_blobs` | the PostgreSQL store's bytes: `storage_key TEXT PRIMARY KEY`, `content_type`, `data BYTEA`, `created_at` (index on `created_at` for the orphan sweep). Deliberately separate from the faction tables so faction reads never touch image data and an S3-compatible store can replace it without touching the metadata model. Bytes with no referencing `hub_faction_assets` row are orphans, removed hourly (only if older than two hours) |

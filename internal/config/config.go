@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -54,6 +55,12 @@ type Config struct {
 	// default on any problem).
 	CustomEmbedsEnabled bool
 
+	// PublicBaseURL is the public origin of this service (no trailing slash), used to build
+	// absolute URLs for publicly served assets such as faction logos
+	// (/assets/faction-logos/...). CHAMPION_PUBLIC_BASE_URL wins; otherwise it is derived from
+	// Railway's RAILWAY_PUBLIC_DOMAIN; otherwise empty and the API returns root-relative URLs.
+	PublicBaseURL string
+
 	// Discord bot presence/activity settings (see internal/discord/presence.go).
 	DiscordPresenceEnabled bool
 	// DiscordPresenceRotationSeconds is already clamped to
@@ -83,6 +90,7 @@ func Load() (*Config, error) {
 		WebsiteAPISecret:          strings.TrimSpace(os.Getenv("WEBSITE_API_SECRET")),
 		AdminDiscordIDs:           ParseAdminDiscordIDs(os.Getenv("CHAMPION_ADMIN_DISCORD_IDS")),
 		CustomEmbedsEnabled:       parseBoolWithDefault(os.Getenv("CHAMPION_CUSTOM_EMBEDS_ENABLED"), false),
+		PublicBaseURL:             ParsePublicBaseURL(os.Getenv("CHAMPION_PUBLIC_BASE_URL"), os.Getenv("RAILWAY_PUBLIC_DOMAIN")),
 
 		DiscordPresenceEnabled:         parseBoolWithDefault(os.Getenv("DISCORD_PRESENCE_ENABLED"), true),
 		DiscordPresenceRotationSeconds: parsePresenceRotationSeconds(os.Getenv("DISCORD_PRESENCE_ROTATION_SECONDS")),
@@ -202,4 +210,22 @@ func parsePresenceMode(raw string) string {
 		return "static"
 	}
 	return "dynamic"
+}
+
+// ParsePublicBaseURL resolves the public origin used for absolute asset URLs. An explicit
+// value must be an http(s) URL with a host and nothing else (no path, query or credentials) or
+// it is ignored; otherwise a Railway public domain becomes https://<domain>; otherwise "".
+func ParsePublicBaseURL(explicit, railwayDomain string) string {
+	if v := strings.TrimSpace(explicit); v != "" {
+		u, err := url.Parse(v)
+		if err == nil && (u.Scheme == "https" || u.Scheme == "http") && u.Host != "" && u.User == nil &&
+			(u.Path == "" || u.Path == "/") && u.RawQuery == "" && u.Fragment == "" {
+			return u.Scheme + "://" + u.Host
+		}
+		return ""
+	}
+	if d := strings.TrimSpace(railwayDomain); d != "" && !strings.ContainsAny(d, "/:@ ?#") {
+		return "https://" + d
+	}
+	return ""
 }

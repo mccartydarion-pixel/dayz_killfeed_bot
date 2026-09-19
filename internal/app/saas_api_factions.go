@@ -59,6 +59,7 @@ func (a *App) registerFactionHubRoutes() {
 	h("POST "+base+"/{factionID}/members/{memberID}/promote", a.handlePromoteFactionMember)
 	h("POST "+base+"/{factionID}/members/{memberID}/demote", a.handleDemoteFactionMember)
 	h("DELETE "+base+"/{factionID}/members/{memberID}", a.handleRemoveFactionMember)
+	a.registerFactionPhase4Routes()
 }
 
 // --- DTOs -------------------------------------------------------------------------------------
@@ -76,12 +77,14 @@ type factionSummaryDTO struct {
 	ArmbandKey         *string `json:"armbandKey"`
 	PrimaryColor       *string `json:"primaryColor"`
 	SecondaryColor     *string `json:"secondaryColor"`
+	// Logo is the faction's uploaded logo, or null for the Champion default logo.
+	Logo *factionLogoDTO `json:"logo"`
 }
 
-func toFactionSummary(f repository.HubFaction) factionSummaryDTO {
+func toFactionSummary(f repository.HubFaction, assetBase string) factionSummaryDTO {
 	return factionSummaryDTO{ID: f.ID, Name: f.Name, Tag: f.Tag, Slug: f.Slug, DescriptionPreview: factionhub.Preview(f.Description),
 		RecruitmentStatus: f.RecruitmentStatus, MemberCount: f.MemberCount, LogoKey: f.LogoKey, FlagKey: f.FlagKey, ArmbandKey: f.ArmbandKey,
-		PrimaryColor: f.PrimaryColor, SecondaryColor: f.SecondaryColor}
+		PrimaryColor: f.PrimaryColor, SecondaryColor: f.SecondaryColor, Logo: toFactionLogo(f.Logo, assetBase)}
 }
 
 type factionMemberDTO struct {
@@ -312,6 +315,10 @@ func factionFailed(w http.ResponseWriter, what string, err error) {
 		writeSaaSError(w, codeNotFound, "not found")
 	case errors.Is(err, factionhub.ErrForbidden):
 		writeSaaSError(w, codeForbidden, "your faction role does not allow this")
+	case errors.Is(err, factionhub.ErrLeadershipTransferRequired):
+		writeSaaSError(w, codeLeadershipTransfer, factionhub.ErrLeadershipTransferRequired.Error())
+	case errors.Is(err, factionhub.ErrAlreadyLeader):
+		writeSaaSError(w, codeConflict, factionhub.ErrAlreadyLeader.Error())
 	case errors.Is(err, factionhub.ErrLeaderProtected):
 		writeSaaSError(w, codeForbidden, factionhub.ErrLeaderProtected.Error())
 	case errors.Is(err, factionhub.ErrNoServer), errors.Is(err, factionhub.ErrInstallationInert),
@@ -337,7 +344,7 @@ func factionAudit(event string, fr factionRequest, attrs ...any) {
 // buildFactionProfile assembles the public profile: the faction, its members (most
 // senior first, capped) and the viewer's own standing. It never includes application data.
 func (a *App) buildFactionProfile(ctx context.Context, fr factionRequest, f repository.HubFaction, members []repository.HubMember) factionProfileDTO {
-	out := factionProfileDTO{factionSummaryDTO: toFactionSummary(f), InstallationID: f.InstallationID, GameServerID: f.GameServerID,
+	out := factionProfileDTO{factionSummaryDTO: toFactionSummary(f, a.assetBaseURL()), InstallationID: f.InstallationID, GameServerID: f.GameServerID,
 		Description: f.Description, Requirements: f.Settings, Officers: []factionMemberDTO{}, Members: []factionMemberDTO{},
 		CreatedAt: f.CreatedAt.UTC().Format(time.RFC3339), UpdatedAt: f.UpdatedAt.UTC().Format(time.RFC3339)}
 	var viewerRole string
@@ -413,7 +420,7 @@ func (a *App) handleFactionDirectory(w http.ResponseWriter, r *http.Request) {
 	}
 	page := factionPage[factionSummaryDTO]{Items: make([]factionSummaryDTO, 0, len(items)), Limit: limit}
 	for _, f := range items {
-		page.Items = append(page.Items, toFactionSummary(f))
+		page.Items = append(page.Items, toFactionSummary(f, a.assetBaseURL()))
 	}
 	if more {
 		page.NextCursor = encodeFactionCursor(items[len(items)-1].ID)
@@ -464,7 +471,7 @@ func (a *App) handleMyFaction(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := myFactionResponse{PendingApplications: make([]factionApplicationDTO, 0, len(my.Pending))}
 	if my.Faction != nil {
-		s := toFactionSummary(*my.Faction)
+		s := toFactionSummary(*my.Faction, a.assetBaseURL())
 		m := toFactionMember(*my.Member)
 		role := my.Member.RoleKey
 		resp.Faction, resp.Membership, resp.Role = &s, &m, &role
@@ -543,18 +550,22 @@ func normalizeFactionInput(req createFactionRequest) (repository.HubFactionInput
 	return repository.HubFactionInput{Name: name, Tag: tag, Description: desc, RecruitmentStatus: status}, nil
 }
 
-// updateFactionRequest: every field is optional (absent = unchanged). primaryColor /
-// secondaryColor take "" to clear. requirements, when present, replaces the requirements as
-// a whole. The organization, installation, server, slug and visual keys are not editable, and
-// unknown keys (an image URL, an installation id) are rejected.
+// updateFactionRequest: every field is optional (absent = unchanged). primaryColor,
+// secondaryColor, flagKey and armbandKey take "" to clear; flagKey/armbandKey must be approved
+// catalog keys. requirements, when present, replaces the requirements as a whole. The
+// organization, installation, server, slug and the logo (its own endpoints) are not editable,
+// and unknown keys (an image URL, logoKey, an installation id) are rejected.
 type updateFactionRequest struct {
-	Name              *string              `json:"name"`
-	Tag               *string              `json:"tag"`
-	Description       *string              `json:"description"`
-	RecruitmentStatus *string              `json:"recruitmentStatus"`
-	PrimaryColor      *string              `json:"primaryColor"`
-	SecondaryColor    *string              `json:"secondaryColor"`
-	Requirements      *factionhub.Settings `json:"requirements"`
+	Name              *string `json:"name"`
+	Tag               *string `json:"tag"`
+	Description       *string `json:"description"`
+	RecruitmentStatus *string `json:"recruitmentStatus"`
+	PrimaryColor      *string `json:"primaryColor"`
+	SecondaryColor    *string `json:"secondaryColor"`
+	// FlagKey / ArmbandKey are approved catalog keys (factionhub.DayzFlags / Armbands); "" clears.
+	FlagKey      *string              `json:"flagKey"`
+	ArmbandKey   *string              `json:"armbandKey"`
+	Requirements *factionhub.Settings `json:"requirements"`
 }
 
 // handleUpdateFaction is PUT .../factions/{factionID}: LEADER only (decided by the faction
@@ -635,6 +646,20 @@ func normalizeFactionUpdate(req updateFactionRequest) (repository.HubFactionUpda
 			return out, err
 		}
 		out.SecondaryColor = &v
+	}
+	if req.FlagKey != nil {
+		v, err := factionhub.ValidateFlagKey(*req.FlagKey)
+		if err != nil {
+			return out, err
+		}
+		out.FlagKey = &v
+	}
+	if req.ArmbandKey != nil {
+		v, err := factionhub.ValidateArmbandKey(*req.ArmbandKey)
+		if err != nil {
+			return out, err
+		}
+		out.ArmbandKey = &v
 	}
 	if req.Requirements != nil {
 		v, err := factionhub.ValidateSettings(*req.Requirements)
