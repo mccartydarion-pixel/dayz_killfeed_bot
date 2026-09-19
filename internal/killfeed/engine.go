@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"strings"
@@ -147,6 +148,16 @@ type DeathPublisher interface {
 	PublishDeath(ev *Event) error
 }
 
+// HitPublisher is the consumer for parsed PLAYER_HIT events (the HITFEED).
+// PublishHit runs on the polling goroutine for every non-duplicate hit line, so
+// implementations MUST NOT block (no network, no database) and have no error to
+// return: hits are not persisted, and a failing consumer must never stop log
+// processing, killfeed publishing or checkpointing. Panics are recovered by the
+// engine as a last resort.
+type HitPublisher interface {
+	PublishHit(ev *Event)
+}
+
 // Engine orchestrates log discovery, selection, incremental polling, and parsing.
 type Engine struct {
 	parser          Parser
@@ -174,6 +185,7 @@ type Engine struct {
 	dedupe         *Deduplicator
 	publisher      KillPublisher
 	deathPublisher DeathPublisher
+	hitPublisher   HitPublisher
 	metrics        Metrics
 	persistence    *PersistenceQueue
 
@@ -365,6 +377,30 @@ func (e *Engine) SetDeathPublisher(p DeathPublisher) {
 		return
 	}
 	e.deathPublisher = p
+}
+
+// SetHitPublisher attaches the consumer for parsed hit events. Optional: with
+// none attached hits are only counted, exactly as before the HITFEED existed.
+func (e *Engine) SetHitPublisher(p HitPublisher) {
+	if e == nil {
+		return
+	}
+	e.hitPublisher = p
+}
+
+// publishHit hands a hit to the attached HitPublisher. It is deliberately
+// fire-and-forget and panic-safe: a broken hit consumer must not be able to
+// stop the polling loop (which also carries kills, deaths and checkpoints).
+func (e *Engine) publishHit(ev *Event) {
+	if e.hitPublisher == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("component=killfeed", "msg", "hit publisher panic recovered", "server_id", e.serverID, "panic", fmt.Sprint(r))
+		}
+	}()
+	e.hitPublisher.PublishHit(ev)
 }
 
 // SetPersistence attaches the durable persistence queue and wires Discord
@@ -1300,6 +1336,12 @@ func (e *Engine) processLine(line string) (bool, error) {
 		}
 	}
 	e.dedupe.Remember(ev)
+	if ev.Type == EventPlayerHit {
+		// Hits are not persisted. Only a non-duplicate hit reaches here, so a
+		// replayed line (retry after a later persistence failure, rotation
+		// overlap) is never fed to the HITFEED twice.
+		e.publishHit(ev)
+	}
 	if e.players != nil {
 		switch ev.Type {
 		case EventPlayerConnect:

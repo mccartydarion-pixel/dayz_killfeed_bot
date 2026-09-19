@@ -117,6 +117,17 @@ func fingerprint(ev *Event) string {
 		ev.Weapon,
 		dist,
 	}
+	if ev.Type == EventPlayerHit {
+		// A hit line carries no unique id, and an automatic weapon fired at a
+		// stationary target repeats time/weapon/distance within a second. The
+		// hit zone and damage tell such distinct hits apart, so they must not
+		// collapse into one; a genuine replay still matches on all of them.
+		zone, dmg := ev.HitZone+"("+ev.HitZoneID+")", ""
+		if ev.Damage != nil {
+			dmg = fmt.Sprintf("%.4f", *ev.Damage)
+		}
+		parts = append(parts, zone, dmg)
+	}
 	sum := sha1.Sum([]byte(joinParts(parts)))
 	return hex.EncodeToString(sum[:])
 }

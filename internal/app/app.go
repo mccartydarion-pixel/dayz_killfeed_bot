@@ -1335,6 +1335,23 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 	}
 	engine.SetKillPublisher(publisher)
 
+	if a.ChannelRoutes != nil && a.Discord != nil && a.Discord.Session() != nil {
+		// HITFEED: only published when this server's installation has a HITFEED
+		// route (no legacy channel, no KILLFEED fallback). Aggregated and rate
+		// capped; all route lookups and Discord I/O happen on its own goroutine,
+		// so a Discord/DB failure can never stall ADM parsing or kill processing.
+		hitFeed := discord.NewHitfeedPublisher(a.Discord.Session(), a.ChannelRoutes, row.GuildID, row.ID)
+		engine.SetHitPublisher(hitFeed)
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("component=servers", "msg", "hitfeed panic recovered", "server_id", row.ID, "panic", fmt.Sprint(r))
+				}
+			}()
+			hitFeed.Run(workerCtx)
+		}()
+	}
+
 	deathPublisher := discord.NewDeathfeedPublisher(a.Discord, setupStore, a.Config.DiscordGuildID)
 	engine.SetDeathPublisher(deathPublisher)
 

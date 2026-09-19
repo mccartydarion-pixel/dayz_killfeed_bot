@@ -7,7 +7,7 @@ fields. This document records the audit of that runtime, the shared resolver
 the publishers migrate onto, and how far the migration has got.
 
 **Migrated to runtime routes: `KILLFEED`, `LINK_GAMERTAG`, `STATS_LEADERBOARDS`,
-`AUTO_LEADERBOARD`, `ADMIN_LOGS`.** Every other route either has no publisher at
+`AUTO_LEADERBOARD`, `ADMIN_LOGS`. Built and runtime routed: `HITFEED`.** Every other route either has no publisher at
 all (marked *Not implemented* below - nothing was built for them) or has no
 text-channel feed to route. See the table below and "Migrated features".
 
@@ -103,7 +103,7 @@ installation is still `CONFIGURING`.
 | `LINK_GAMERTAG` | Link panel posted by `RouteSyncer` (`discord/route_syncer.go`); interactions in `PublicPanelHandler` (`discord/public_panels.go`, channel-agnostic) | legacy `GuildSetup.LinkPanelChannelID` (posted by `discord/setup.go`) | Discord button/modal interaction | **MIGRATED TO RUNTIME ROUTES** (route -> legacy) |
 | `STATS_LEADERBOARDS` | Player-stats panel posted by `RouteSyncer`; interactions in `PublicPanelHandler` | legacy `GuildSetup.PlayerStatsChannelID` | Discord button interaction (on-demand, ephemeral) | **MIGRATED TO RUNTIME ROUTES** (route -> legacy) |
 | `AUTO_LEADERBOARD` | `LeaderboardScheduler` (`discord/leaderboard_scheduler.go`) | legacy `GuildSetup.LeaderboardsChannelID` | 3-hour timer, `/admin` refresh, route change | **MIGRATED TO RUNTIME ROUTES** (route -> legacy) |
-| `HITFEED` | none | - | `PLAYER_HIT` parsed and counted in metrics only | Not implemented |
+| `HITFEED` | `HitfeedPublisher` (`discord/hitfeed.go`) | none - no legacy channel, no KILLFEED fallback | ADM `PLAYER_HIT`, after dedupe (hits are not persisted) | **IMPLEMENTED / RUNTIME ROUTED** |
 | `BOUNTY` | `BountyCommandHandler` (`discord/competitive_commands.go`) | none (ephemeral replies) | `/bounty` slash command | No channel feed |
 | `BOUNTY_TRACKING` | "MOST WANTED" section of the live-panels message (`discord/panels`) | shares the leaderboards panel path | panel flush | No dedicated channel |
 | `HEATMAPS` | none | - | - | Not implemented |
@@ -225,10 +225,121 @@ server_id=<game_servers.id> reason=no_route|lookup_error` - internal ids only.
 
 ### Not covered
 
-Routes for `PVE_FEED`, `HITFEED`, `BOUNTY`, `BOUNTY_TRACKING`, `HEATMAPS`,
+Routes for `PVE_FEED`, `BOUNTY`, `BOUNTY_TRACKING`, `HEATMAPS`,
 `ECONOMY`, `CASINO`, `SHOP`, `CONNECTIONS`, `BUILD_FEED` and `ADMIN_ALERTS` are
 **not built**: they have no publisher (or no text feed), and this migration
 deliberately adds none. The runtime is still a single configured Discord guild
 (`DISCORD_GUILD_ID`) with its own set of servers; multi-guild workers are out of
 scope. Migration `0027` back-filled `STATS_LEADERBOARDS` and `ADMIN_LOGS` routes
 from installation settings, so those existing routes now take effect at runtime.
+
+## HITFEED (implemented, runtime routed)
+
+`HITFEED` publishes a compact card per attacker/victim exchange, from the parsed
+ADM `PLAYER_HIT` lines, to the server's `HITFEED` route.
+
+### Event source (audited)
+
+```
+Nitrado ADM log poll                        internal/killfeed/engine.go (per-server Engine)
+  -> ADMParser.parseHit                     internal/killfeed/parser.go   ("... hit by Player ...")
+  -> Event{Type: PLAYER_HIT}                internal/killfeed/event.go
+  -> Engine.processLine                     metrics.HitsParsed++, dedupe.Contains
+  -> Engine.publishHit                      NEW - after dedupe, recover()-guarded, non-blocking
+  -> HitfeedPublisher.PublishHit            internal/discord/hitfeed.go (in-memory aggregation only)
+  -> HitfeedPublisher.Run goroutine         route lookup + Discord send, off the parse loop
+```
+
+Fields the parser actually produces for a hit (nothing else is assumed):
+
+| Field | Source in the line | Used by the card |
+|---|---|---|
+| `Attacker`, `Victim` (`Name`, `ID`, optional `Position`) | `Player "<n>" (id=... pos=<...>)` | names (ids only key the encounter; never shown) |
+| `Weapon` | `with <weapon>` | yes |
+| `Ammo` | `(Bullet_...)` | yes, minus the `Bullet_` prefix |
+| `Distance` (optional) | `from <n> meters` | yes, latest value |
+| `HitZone`, `HitZoneID` | `into <Zone>(<id>)` | zone name only, latest value |
+| `Damage` (optional) | `for <n> damage` | summed, only if every hit in the card had it |
+| `HP` (optional) | `[HP: <n>]` | **not shown** |
+| `Dead` | `(DEAD)` marker on the victim | not shown (see below) |
+| `TimeOfDay`, `Raw` | clock / raw line | not shown |
+
+Hits are **not persisted**: only connect/disconnect/death/suicide/kill go through
+the durable persistence queue. The hit feed is therefore best-effort and
+ephemeral - a process restart can lose the encounters in the current window, and
+hits replayed after a *restart* (in-memory dedupe is lost) may be re-sent once.
+Replays inside a running process (retry after a later persistence failure,
+rotation overlap) are dropped by the ADM dedupe before reaching the feed.
+
+`HP` is parsed but deliberately not rendered: the ADM line does not say whether
+it is the value before or after the hit, and the feed only shows what it can
+state with certainty. Coordinates are never shown.
+
+The hit fingerprint used by the ADM dedupe now also includes the hit zone and
+damage. A hit line has no unique id, and auto-fire at a stationary target repeats
+time/weapon/distance within a second, so without this distinct hits collapsed
+into one and the feed under-counted. A genuine replay still matches on all
+fields. Kill/death fingerprints are unchanged.
+
+### Route and fallback
+
+* Route key `HITFEED`, resolved through the shared `routing.Resolver` on the
+  server's own `(guild row, server id)` - the same identity as `KILLFEED`, via
+  `discord.RouteBinding`. One `HitfeedPublisher` per server worker
+  (`runServerWorker`), so two servers of one guild cannot leak into each other.
+* **No legacy fallback.** There was never a legacy HITFEED channel, and it does
+  **not** fall back to `KILLFEED`.
+  * route configured -> publish
+  * route absent -> no-op (hits are not even buffered)
+  * route lookup error -> no-op; `event=channel_route_fallback route_key=HITFEED
+    reason=lookup_error` warning (at most once a minute); recovers on its own
+* The route is re-resolved every tick (2s) and at close of each window through
+  the shared cache, so an in-process route change (which invalidates the cache)
+  is used within one tick, and an out-of-process change within the resolver TTL
+  (30s). No restart. Encounters already open when the route changes are sent to
+  the **new** channel; if the route is removed they are dropped.
+
+### Aggregation and flood policy
+
+A firefight can log many hits per second, so hits are never sent one per message:
+
+1. **Per-encounter aggregation** - hits are grouped by `(attacker, victim, weapon)`
+   (ids, or names if the id is missing) over a fixed **5s** window starting at the
+   encounter's first hit. The card shows the hit count, latest distance/zone/ammo
+   and, when every hit carried it, the summed damage. A different weapon is a
+   separate card.
+2. **Batching** - closed encounters are sent as embeds, up to **10 per message**.
+3. **Rate cap** - at most **1 message per 2s tick** per server worker, i.e. at most
+   10 cards / 2s (5 cards/s sustained, well inside Discord's per-channel limit).
+4. **Bounds** - at most **200 open encounters** (new ones beyond that are dropped
+   and counted) and a **100-card send backlog** (oldest dropped and counted). A
+   drop is reported as one `hitfeed_flood_drop` warning per minute, not per hit.
+5. **Isolation** - `PublishHit` only touches an in-memory map; route lookups and
+   Discord I/O run on the feed's own goroutine, panic-guarded. A Discord failure
+   drops that message (no retry backlog) and is logged; it cannot stop ADM
+   parsing, kill/death processing, persistence or checkpointing, and a panicking
+   consumer is recovered by the engine.
+
+Worst case: one message every 2s carrying 10 cards, after a latency of up to 5s
+(window) + 2s (tick). This changes no existing event semantics: hits stay
+unpersisted and still count in `HitsParsed`; aggregation only affects what the
+Discord card shows.
+
+### Card
+
+```
+🎯 HIT  PlayerA  ➜  PlayerB
+M4-A1 · 556x45 · 42m
+Torso · 3 hits · 84 dmg
+```
+
+Only parsed values appear; a missing weapon/ammo/distance/zone/damage is omitted
+rather than shown as "unknown". Names are sanitised (`@`/`#` stripped) and the
+message carries an empty `AllowedMentions`.
+
+### No duplicate kills
+
+Feed roles stay separate. The engine hands **only** `PLAYER_HIT` events to the hit
+feed, and `HitfeedPublisher` ignores every other type. The lethal hit line (victim
+already `(DEAD)`) renders as an ordinary hit card with no kill wording; the kill
+itself is `PLAYER_KILL` and only ever goes to `KILLFEED`.
