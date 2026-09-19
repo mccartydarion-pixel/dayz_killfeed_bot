@@ -33,6 +33,15 @@ type OnlinePlayersPanel struct {
 	lastContent string
 	timer       *time.Timer
 	debounce    time.Duration
+
+	// gen counts MarkDirty calls. A timer callback that has already fired can
+	// not be stopped, so it may start after a newer MarkDirty; comparing its
+	// generation lets the older snapshot be dropped instead of overwriting the
+	// newer one. renderMu serialises renders: messageID/lastContent are read and
+	// written across Discord I/O, and two overlapping renders would both see an
+	// empty messageID and post two persistent messages.
+	gen      uint64
+	renderMu sync.Mutex
 }
 
 // NewOnlinePlayersPanel creates a panel bound to a channel (and existing message ID if known).
@@ -55,17 +64,28 @@ func (p *OnlinePlayersPanel) MarkDirty(players []string, online bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.dirty = true
+	p.gen++
+	gen := p.gen
 	if p.timer != nil {
 		p.timer.Stop()
 	}
 	snapshot := append([]string(nil), players...)
 	p.timer = time.AfterFunc(p.debounce, func() {
+		p.mu.Lock()
+		stale := gen != p.gen
+		p.mu.Unlock()
+		if stale {
+			return // a newer MarkDirty owns the next render
+		}
 		p.render(snapshot, online)
 	})
 }
 
 // render builds the embed and edits the existing message (or sends once if absent).
 func (p *OnlinePlayersPanel) render(players []string, online bool) {
+	p.renderMu.Lock()
+	defer p.renderMu.Unlock()
+
 	p.mu.Lock()
 	p.dirty = false
 	p.mu.Unlock()

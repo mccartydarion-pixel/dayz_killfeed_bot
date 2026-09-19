@@ -3,7 +3,9 @@ package discord
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -195,45 +197,91 @@ func TestOnlinePlayersEmbedCapsLargeLists(t *testing.T) {
 }
 
 func TestOnlinePlayersPanelEditsInsteadOfResending(t *testing.T) {
-	editor := &recordingEditor{}
+	editor := newRecordingEditor()
 	panel := NewOnlinePlayersPanel(editor, "ch-1", "")
-	panel.debounce = 0 // immediate for test
+	panel.debounce = 0 // fire the debounce timer immediately
 
+	// MarkDirty renders on the debounce timer's goroutine; wait for that render
+	// via the editor's signal instead of racing it with a second, direct render.
 	panel.MarkDirty([]string{"A", "B"}, true)
-	panel.render([]string{"A", "B"}, true)
-
-	if editor.sends != 1 {
-		t.Fatalf("expected 1 initial send, got %d", editor.sends)
-	}
-	if editor.edits != 0 {
-		t.Fatalf("expected 0 edits before a message exists, got %d", editor.edits)
+	editor.waitForCall(t)
+	if sends, edits := editor.counts(); sends != 1 || edits != 0 {
+		t.Fatalf("expected 1 initial send and 0 edits, got %d sends %d edits", sends, edits)
 	}
 
 	// Change state -> should edit the existing message, not resend.
 	panel.MarkDirty([]string{"A", "B", "C"}, true)
-	panel.render([]string{"A", "B", "C"}, true)
-	if editor.sends != 1 {
-		t.Fatalf("expected no resend after update, got %d sends", editor.sends)
-	}
-	if editor.edits != 1 {
-		t.Fatalf("expected 1 edit after update, got %d", editor.edits)
+	editor.waitForCall(t)
+	if sends, edits := editor.counts(); sends != 1 || edits != 1 {
+		t.Fatalf("expected 1 send and 1 edit after update, got %d sends %d edits", sends, edits)
 	}
 }
 
+// Overlapping renders (a timer callback that fired just before a newer one)
+// must never both see an empty message id and post two persistent messages.
+func TestOnlinePlayersPanelConcurrentRendersSendOnce(t *testing.T) {
+	editor := newRecordingEditor()
+	panel := NewOnlinePlayersPanel(editor, "ch-1", "")
+
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			panel.render([]string{"A", "B"}, true)
+		}()
+	}
+	wg.Wait()
+
+	if sends, edits := editor.counts(); sends != 1 || edits != 0 {
+		t.Fatalf("expected exactly 1 send and no edits for identical content, got %d sends %d edits", sends, edits)
+	}
+}
+
+// recordingEditor counts sends/edits under a mutex (renders run on timer
+// goroutines) and signals every call so tests can wait for it deterministically.
 type recordingEditor struct {
-	sends int
-	edits int
-	last  *discordgo.MessageEmbed
+	mu     sync.Mutex
+	sends  int
+	edits  int
+	last   *discordgo.MessageEmbed
+	called chan struct{}
+}
+
+func newRecordingEditor() *recordingEditor {
+	return &recordingEditor{called: make(chan struct{}, 16)}
+}
+
+func (r *recordingEditor) counts() (sends, edits int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.sends, r.edits
+}
+
+// waitForCall blocks until the next send/edit has been recorded.
+func (r *recordingEditor) waitForCall(t *testing.T) {
+	t.Helper()
+	select {
+	case <-r.called:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the panel to render")
+	}
 }
 
 func (r *recordingEditor) ChannelMessageSendEmbed(channelID string, embed *discordgo.MessageEmbed) (*discordgo.Message, error) {
+	r.mu.Lock()
 	r.sends++
 	r.last = embed
+	r.mu.Unlock()
+	r.called <- struct{}{}
 	return &discordgo.Message{ID: "m1", ChannelID: channelID}, nil
 }
 
 func (r *recordingEditor) ChannelMessageEditEmbed(channelID, messageID string, embed *discordgo.MessageEmbed) (*discordgo.Message, error) {
+	r.mu.Lock()
 	r.edits++
 	r.last = embed
+	r.mu.Unlock()
+	r.called <- struct{}{}
 	return &discordgo.Message{ID: messageID, ChannelID: channelID}, nil
 }
