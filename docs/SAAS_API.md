@@ -1052,6 +1052,20 @@ The faction profile (`GET .../factions/{factionID}` and the create/update respon
 Figures come only from real kills, deaths and bounties, attributed through a member's **verified** DayZ link and only while they were a member; unlinked members are
 listed with zero figures and `identity: "UNLINKED"`.
 
+**Phase 6 (faction leaderboards)** - full contract, tie-breaks, tracking semantics and DTOs in `docs/FACTION_LEADERBOARDS.md`. One read-only route, open to any synced
+user and scoped by organization + installation (a mismatched pair is `404`):
+
+| Route | Returns |
+|---|---|
+| `GET .../factions/leaderboard?metric=&limit=&cursor=&q=` | `FactionLeaderboardResponse`: `{ "metric", "direction": "DESC"\|"ASC", "items": [FactionLeaderboardEntry...], "nextCursor": string\|null, "limit", "total", "updatedAt" }` |
+
+`metric` is one of `KILLS` (default), `DEATHS` (ascending - fewest first), `KD`, `HEADSHOTS`, `LONGSHOTS`, `BEST_STREAK`, `BOUNTIES_CLAIMED`, `BOUNTY_VALUE`, `ACHIEVEMENTS`;
+any other value, a bad `limit` (default 25, max 100, clamped), a bad or other-metric `cursor`, an over-long `q` or a malformed query string is `400`. `q` matches the faction
+name or tag case-insensitively and never changes a faction's `rank`. Each entry is `{ rank, factionId, name, tag, slug, logo, flagKey, armbandKey, primaryColor,
+secondaryColor, memberCount, value, trackingSince, hasTrackedActivity, stats }` - `value` is an integer except for `KD`; `stats` repeats every figure using the profile's
+names. Factions with no tracked activity are listed with zeros (`hasTrackedActivity: false`). No overall score and no season fields exist. The result is cached 45 s per
+installation; the literal `/leaderboard` route takes precedence over `/{factionID}`.
+
 Errors use the standard envelope. `409 CONFLICT` covers state conflicts (name or tag taken on the
 installation, already in a faction there, not recruiting, duplicate/non-pending application, invalid role
 change, no DayZ server selected, suspended installation); `403` means the faction role does not allow it or

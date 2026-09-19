@@ -146,6 +146,7 @@ func (a *App) handleUploadFactionLogo(w http.ResponseWriter, r *http.Request) {
 	}
 	// Safe identifiers only: never the image bytes or the client-supplied file name.
 	factionAudit(event, fr, "faction_id", factionID, "asset_id", res.Asset.ID, "content_type", res.Asset.ContentType, "size_bytes", res.Asset.SizeBytes)
+	a.factionStatsChanged(fr, factionID) // the logo appears on the leaderboard
 	writeSaaSJSON(w, status, uploadLogoResponse{Logo: toFactionLogo(&res.Asset, a.assetBaseURL()), Replaced: res.Replaced})
 }
 
@@ -248,6 +249,7 @@ func (a *App) handleDeleteFactionLogo(w http.ResponseWriter, r *http.Request) {
 	}
 	if old != nil {
 		factionAudit("faction_logo_deleted", fr, "faction_id", factionID, "asset_id", old.ID)
+		a.factionStatsChanged(fr, factionID)
 	}
 	writeSaaSJSON(w, http.StatusOK, deleteLogoResponse{Deleted: old != nil})
 }

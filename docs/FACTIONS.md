@@ -372,6 +372,15 @@ adds `hub_faction_membership_history` (one row per membership period, written in
 Public activity is **not** the audit log: audit events (`faction_*`, ids only) stay in the logs; the feed shows only public-safe events (a removal reads as
 `MEMBER_LEFT`; no application messages, reviewers or internal ids). Unlinked members are listed with all figures zero and `identity: "UNLINKED"`.
 
+## Phase 6: faction leaderboards
+
+`GET .../factions/leaderboard` ranks the installation's factions by **one explicit metric** (`KILLS`, `DEATHS`, `KD`, `HEADSHOTS`, `LONGSHOTS`, `BEST_STREAK`,
+`BOUNTIES_CLAIMED`, `BOUNTY_VALUE`, `ACHIEVEMENTS`; anything else is `400`), keyset-paged (`limit` default 25 / max 100, `cursor`) and searchable (`q`, name or tag,
+case-insensitive). It is open to any synced user, scoped by organization + installation, and shows the same figures as the faction profile (one shared SQL definition).
+There is no overall or hidden score; `DEATHS` ranks fewest-first; ties are deterministic (ending in the faction id). No table or migration was added; the result is cached
+45 s per installation and invalidated by kills, deaths, bounty claims, membership changes, faction creation/edits/logos and achievement unlocks. The literal `/leaderboard`
+route takes precedence over `/{factionID}`. Full contract, tie-breaks, tracking semantics and the exact DTOs: **`docs/FACTION_LEADERBOARDS.md`**.
+
 ## Tests
 
 Real PostgreSQL 16 (`-tags integration`, throwaway database only; `TEST_DATABASE_URL` +
@@ -386,7 +395,7 @@ server-less installations). Pure rules: `internal/factionhub/factionhub_test.go`
 ## Not in Phase 1 / future
 
 * Disbanding a faction (a sole leader can neither leave nor be removed).
-* A faction leaderboard (Phase 5 exposes comparable figures but no ranking endpoint), playtime and hit statistics.
+* Seasonal / daily / weekly faction leaderboards (Phase 6 ships the all-time board), playtime and hit statistics.
 * Invite flow for `INVITE_ONLY`; leader-defined application questions (`answers_json`).
 * Custom faction roles and per-role permissions.
 * Logo thumbnails and metadata stripping; banner/profile presentation; an S3-compatible bucket implementation of `assetstore.Store`

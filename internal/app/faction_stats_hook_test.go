@@ -85,3 +85,10 @@ func TestPersistedKillAndDeathHooksNotifyFactionStats(t *testing.T) {
 	(&persistenceStoreAdapter{}).ProcessPersistedKill(ctx, 3, repository.KillRecord{GuildID: 7, KillerPlayerID: 5}, nil)
 	(&persistenceStoreAdapter{}).ProcessPersistedDeath(ctx, repository.DeathRecord{GuildID: 7, PlayerID: 5}, nil)
 }
+
+func (h *hookStore) LeaderboardScope(context.Context, int64, int64) (int64, int64, error) {
+	return h.scope.GuildID, h.scope.ServerID, nil
+}
+func (h *hookStore) Leaderboard(context.Context, int64, int64) (*repository.HubLeaderboardData, error) {
+	return &repository.HubLeaderboardData{GuildID: h.scope.GuildID, ServerID: h.scope.ServerID}, nil
+}
