@@ -1066,6 +1066,144 @@ CREATE TABLE IF NOT EXISTS installation_embed_templates (
 );
 `,
 	},
+	{
+		// Faction Hub Phase 1: the web-first, installation-scoped faction directory,
+		// membership and recruitment model. Deliberately PARALLEL to the Discord-side
+		// factions/faction_members tables (migration 0005): those are keyed by guild and
+		// DayZ player_id and are referenced by kills, wars, events and seasons, while the
+		// Hub is keyed by organization + installation (+ DayZ server) and by website
+		// user (app_users). Hub tables carry the hub_ prefix; legacy_faction_id is a
+		// nullable, unused bridge column for a later phase. Nothing here alters the
+		// existing faction tables.
+		//
+		// Tenant integrity is enforced by the schema, not only by handlers:
+		//   * (installation_id, organization_id) is a composite FK to installations, so a
+		//     faction can never claim an organization that does not own its installation;
+		//   * children carry (faction_id, installation_id) as a composite FK to the
+		//     faction, so a member/application can never sit in a different installation
+		//     than its faction;
+		//   * uq_hub_members_installation_user makes "one active faction per user per
+		//     installation" a database guarantee (the service also checks it, for a
+		//     friendly error and inside the accept-application transaction).
+		// Unlike most status text in this schema, the few columns whose corruption
+		// would break the membership rules also carry a CHECK.
+		Name: "0032_faction_hub",
+		SQL: `
+CREATE UNIQUE INDEX IF NOT EXISTS uq_installations_id_org ON installations(id, organization_id);
+
+CREATE TABLE IF NOT EXISTS hub_factions (
+    id BIGSERIAL PRIMARY KEY,
+    organization_id BIGINT NOT NULL,
+    installation_id BIGINT NOT NULL,
+    game_server_id BIGINT NOT NULL REFERENCES game_servers(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    tag TEXT NOT NULL,
+    slug TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    recruitment_status TEXT NOT NULL DEFAULT 'CLOSED' CHECK (recruitment_status IN ('OPEN','INVITE_ONLY','CLOSED')),
+    -- Visual keys: placeholders for the approved catalogs (never URLs; not writable yet).
+    logo_key TEXT,
+    flag_key TEXT,
+    armband_key TEXT,
+    primary_color TEXT CHECK (primary_color IS NULL OR primary_color ~ '^#[0-9A-Fa-f]{6}$'),
+    secondary_color TEXT CHECK (secondary_color IS NULL OR secondary_color ~ '^#[0-9A-Fa-f]{6}$'),
+    -- The founder. RESTRICT: a faction is never left without its founding account.
+    created_by_user_id BIGINT NOT NULL REFERENCES app_users(id) ON DELETE RESTRICT,
+    -- Unused bridge to the Discord-side faction (a later phase).
+    legacy_faction_id BIGINT REFERENCES factions(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    FOREIGN KEY (installation_id, organization_id) REFERENCES installations(id, organization_id) ON DELETE CASCADE,
+    UNIQUE (id, installation_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_hub_factions_installation_slug ON hub_factions(installation_id, slug);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_hub_factions_installation_name ON hub_factions(installation_id, LOWER(name));
+CREATE UNIQUE INDEX IF NOT EXISTS uq_hub_factions_installation_tag ON hub_factions(installation_id, LOWER(tag));
+CREATE INDEX IF NOT EXISTS idx_hub_factions_installation_recruiting ON hub_factions(installation_id, recruitment_status);
+CREATE INDEX IF NOT EXISTS idx_hub_factions_org ON hub_factions(organization_id);
+
+CREATE TABLE IF NOT EXISTS hub_faction_settings (
+    faction_id BIGINT PRIMARY KEY REFERENCES hub_factions(id) ON DELETE CASCADE,
+    minimum_hours INTEGER CHECK (minimum_hours IS NULL OR minimum_hours >= 0),
+    minimum_age INTEGER CHECK (minimum_age IS NULL OR minimum_age BETWEEN 0 AND 120),
+    pvp_required BOOLEAN NOT NULL DEFAULT FALSE,
+    builder_needed BOOLEAN NOT NULL DEFAULT FALSE,
+    mic_required BOOLEAN NOT NULL DEFAULT FALSE,
+    custom_requirements TEXT NOT NULL DEFAULT '',
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Role catalog. Phase 1 has only the three built-in (system) roles, seeded below with
+-- faction_id NULL; a later phase can add per-faction custom roles as rows with a
+-- faction_id and grant them through hub_faction_role_memberships. Neither is exposed
+-- through the API yet.
+CREATE TABLE IF NOT EXISTS hub_faction_roles (
+    id BIGSERIAL PRIMARY KEY,
+    faction_id BIGINT REFERENCES hub_factions(id) ON DELETE CASCADE,
+    role_key TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    rank INTEGER NOT NULL,
+    is_system BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_hub_faction_roles_system_key ON hub_faction_roles(role_key) WHERE faction_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_hub_faction_roles_faction_key ON hub_faction_roles(faction_id, role_key) WHERE faction_id IS NOT NULL;
+INSERT INTO hub_faction_roles(faction_id, role_key, display_name, rank, is_system) VALUES
+    (NULL, 'LEADER', 'Leader', 0, TRUE),
+    (NULL, 'OFFICER', 'Officer', 1, TRUE),
+    (NULL, 'MEMBER', 'Member', 2, TRUE)
+ON CONFLICT (role_key) WHERE faction_id IS NULL DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS hub_faction_members (
+    id BIGSERIAL PRIMARY KEY,
+    faction_id BIGINT NOT NULL,
+    installation_id BIGINT NOT NULL,
+    user_id BIGINT NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+    -- The DayZ identity, when the user has a verified gamertag link on the guild.
+    player_id BIGINT REFERENCES players(id) ON DELETE SET NULL,
+    -- The primary (built-in) role: LEADER, OFFICER or MEMBER.
+    role_key TEXT NOT NULL CHECK (role_key IN ('LEADER','OFFICER','MEMBER')),
+    joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    FOREIGN KEY (faction_id, installation_id) REFERENCES hub_factions(id, installation_id) ON DELETE CASCADE,
+    CONSTRAINT uq_hub_members_faction_user UNIQUE (faction_id, user_id),
+    CONSTRAINT uq_hub_members_installation_user UNIQUE (installation_id, user_id)
+);
+-- At most one LEADER per faction (the creation transaction supplies the first one).
+CREATE UNIQUE INDEX IF NOT EXISTS uq_hub_members_one_leader ON hub_faction_members(faction_id) WHERE role_key = 'LEADER';
+CREATE INDEX IF NOT EXISTS idx_hub_members_faction ON hub_faction_members(faction_id, role_key);
+CREATE INDEX IF NOT EXISTS idx_hub_members_user ON hub_faction_members(user_id);
+
+CREATE TABLE IF NOT EXISTS hub_faction_role_memberships (
+    id BIGSERIAL PRIMARY KEY,
+    member_id BIGINT NOT NULL REFERENCES hub_faction_members(id) ON DELETE CASCADE,
+    role_id BIGINT NOT NULL REFERENCES hub_faction_roles(id) ON DELETE CASCADE,
+    granted_by_user_id BIGINT REFERENCES app_users(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (member_id, role_id)
+);
+
+-- Application history is never deleted: every outcome is a status.
+CREATE TABLE IF NOT EXISTS hub_faction_applications (
+    id BIGSERIAL PRIMARY KEY,
+    faction_id BIGINT NOT NULL,
+    installation_id BIGINT NOT NULL,
+    user_id BIGINT NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING','ACCEPTED','DENIED','WITHDRAWN','CANCELLED')),
+    message TEXT NOT NULL DEFAULT '',
+    -- Reserved for leader-defined questions; the API keeps it disabled in Phase 1.
+    answers_json JSONB CHECK (answers_json IS NULL OR jsonb_typeof(answers_json) = 'object'),
+    reviewed_by_user_id BIGINT REFERENCES app_users(id) ON DELETE SET NULL,
+    reviewed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    FOREIGN KEY (faction_id, installation_id) REFERENCES hub_factions(id, installation_id) ON DELETE CASCADE
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_hub_applications_pending ON hub_faction_applications(faction_id, user_id) WHERE status = 'PENDING';
+CREATE INDEX IF NOT EXISTS idx_hub_applications_faction_status ON hub_faction_applications(faction_id, status, id DESC);
+CREATE INDEX IF NOT EXISTS idx_hub_applications_user ON hub_faction_applications(installation_id, user_id, status);
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order, each transactionally. A

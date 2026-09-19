@@ -358,3 +358,26 @@ copied into the table.
 upserts with `INSERT ... ON CONFLICT DO UPDATE`) and doubles as the lookup index. Tenant safety is
 in the queries: every read and write joins `installations` on `organization_id`, so an installation
 id alone never reaches another organization's row. See `docs/SAAS_API.md` (Embed templates).
+
+## Faction Hub (migration 0032)
+
+The web-first, installation-scoped faction model (`docs/FACTIONS.md`). **Parallel to, and not a change of,** the
+Discord-side `factions` / `faction_members` tables (migration 0005), which are keyed by guild and DayZ `player_id`
+and referenced by kills, wars, events and seasons. Hub tables carry the `hub_` prefix. Migration `0032` is purely
+additive: it creates the six tables below and one unique index on `installations(id, organization_id)` (needed as a
+composite-FK target); it alters no existing table. Unlike most status text in this schema, a few columns whose
+corruption would break the membership rules also carry a `CHECK`.
+
+| Table | Key columns and constraints |
+|---|---|
+| `hub_factions` | `organization_id`, `installation_id`, `game_server_id` (`REFERENCES game_servers ON DELETE CASCADE`), `name`, `tag`, `slug`, `description`, `recruitment_status` (`CHECK IN ('OPEN','INVITE_ONLY','CLOSED')`, default `CLOSED`), `logo_key` / `flag_key` / `armband_key` (nullable placeholders, never URLs), `primary_color` / `secondary_color` (`CHECK ~ '^#[0-9A-Fa-f]{6}$'`), `created_by_user_id` (`REFERENCES app_users ON DELETE RESTRICT`), `legacy_faction_id` (unused bridge, `REFERENCES factions ON DELETE SET NULL`). **`FOREIGN KEY (installation_id, organization_id) REFERENCES installations(id, organization_id) ON DELETE CASCADE`**; `UNIQUE (id, installation_id)`; unique indexes on `(installation_id, slug)`, `(installation_id, LOWER(name))`, `(installation_id, LOWER(tag))`; index on `(installation_id, recruitment_status)` |
+| `hub_faction_settings` | one row per faction (`faction_id` PK, cascade): `minimum_hours`, `minimum_age` (nullable), `pvp_required`, `builder_needed`, `mic_required`, `custom_requirements`. Display-only requirements |
+| `hub_faction_roles` | role catalog: `faction_id` (NULL = built-in system role), `role_key`, `display_name`, `rank`, `is_system`. Seeded with `LEADER`, `OFFICER`, `MEMBER`; unique on `role_key` for system roles and on `(faction_id, role_key)` for custom ones. Room for custom roles later; not exposed |
+| `hub_faction_members` | `faction_id`, `installation_id`, `user_id` (`REFERENCES app_users ON DELETE CASCADE`), `player_id` (nullable, `REFERENCES players ON DELETE SET NULL`: the verified DayZ identity), `role_key` (`CHECK IN ('LEADER','OFFICER','MEMBER')`), `joined_at`. **`FOREIGN KEY (faction_id, installation_id)` to the faction**; `UNIQUE (faction_id, user_id)`; **`UNIQUE (installation_id, user_id)` = one active faction per user per installation**; partial unique index `(faction_id) WHERE role_key='LEADER'` = at most one leader |
+| `hub_faction_role_memberships` | `member_id`, `role_id`, `granted_by_user_id`; `UNIQUE (member_id, role_id)`. For future custom roles; unused |
+| `hub_faction_applications` | `faction_id`, `installation_id`, `user_id`, `status` (`CHECK IN ('PENDING','ACCEPTED','DENIED','WITHDRAWN','CANCELLED')`), `message`, `answers_json` (nullable object, API keeps it disabled), `reviewed_by_user_id`, `reviewed_at`. Composite FK to the faction; **partial unique index `(faction_id, user_id) WHERE status='PENDING'`**; indexes `(faction_id, status, id DESC)` and `(installation_id, user_id, status)`. Rows are never deleted |
+
+Tenant safety is in the schema as well as the queries: a faction cannot name an organization that does not own its
+installation, and a member or application cannot sit in a different installation than its faction. Every repository
+method scopes by organization + installation (+ faction). See `docs/FACTIONS.md` for the concurrency design (an
+advisory lock on `(installation, user)` taken before any row lock).

@@ -991,6 +991,45 @@ accepted unsafely:
 Audit events (`embed_template_saved`, `embed_template_deleted`) log `organization_id`,
 `installation_id`, `route_key` and `acting_user_id` only - never template contents or headers.
 
+## Faction Hub (Phase 1, backend only)
+
+The installation-scoped faction directory, membership and recruitment API. Full model, rules and
+rationale: `docs/FACTIONS.md`; machine-readable contract: `docs/saas-openapi.yaml`.
+All routes are under `/api/saas/organizations/{organizationID}/installations/{installationID}/factions`.
+
+Authorization differs from the rest of this API on purpose: **players are not organization members**, so
+reads and player actions (found, apply, withdraw) need only service auth and a synced acting user - not
+organization membership. The installation must belong to the path's organization (otherwise `404`).
+Faction mutations are decided **only by the acting user's faction role** (LEADER/OFFICER), read inside the
+mutating transaction; an organization OWNER/ADMIN gets a read-only view of a faction's applications and
+nothing more, and the platform-admin allowlist is not consulted.
+
+| Route | Who |
+|---|---|
+| `GET .../factions` (`recruiting`, `q`, `limit`, `cursor`) | any synced user |
+| `POST .../factions` (found; `201`) | any synced user |
+| `GET .../factions/me` | any synced user |
+| `GET .../factions/{factionID}` | any synced user |
+| `PUT .../factions/{factionID}` | faction LEADER |
+| `POST .../factions/{factionID}/applications` (`201`) | any synced user |
+| `GET .../factions/{factionID}/applications` (`status`, `limit`, `cursor`) | LEADER/OFFICER; org OWNER/ADMIN read-only |
+| `POST .../applications/{applicationID}/accept` \| `deny` | LEADER/OFFICER |
+| `POST .../applications/{applicationID}/withdraw` | the applicant |
+| `GET .../factions/{factionID}/members` | any synced user |
+| `POST .../members/{memberID}/promote` \| `demote` | LEADER |
+| `DELETE .../members/{memberID}` | LEADER (MEMBER, OFFICER); OFFICER (MEMBER) |
+
+Errors use the standard envelope. `409 CONFLICT` covers state conflicts (name or tag taken on the
+installation, already in a faction there, not recruiting, duplicate/non-pending application, invalid role
+change, no DayZ server selected, suspended installation); `403` means the faction role does not allow it or
+the leader is protected; `404` also covers another tenant's ids; `413` a body over 16 KiB; `429` `RATE_LIMITED`.
+Lists use the keyset envelope `{ "items": [], "nextCursor": null, "limit": 25 }` (newest first).
+Request bodies must be one JSON object with **no unknown keys**: image URLs, `logoKey`/`flagKey`/`armbandKey`,
+ids and `answers` are rejected with `400`.
+
+Audit events (`faction_created`, `faction_updated`, `faction_application_created|accepted|denied|withdrawn`,
+`faction_member_promoted|demoted|removed`) log ids only - never names, descriptions or application messages.
+
 ## Request/response DTOs
 
 None of these ever include a Nitrado ciphertext/IV/auth tag, a Discord
@@ -1279,6 +1318,8 @@ In-memory, per acting Discord user ID, per process:
 | `#3` organization creation | 5 / hour |
 | `#12`/`#13` Discord verification (shared budget) | 10 / minute |
 | `#14` Nitrado connect | 10 / hour |
+| Faction Hub: create a faction | 1 / 10 seconds and 10 / day |
+| Faction Hub: submit a join application | 5 / minute and 40 / day |
 
 Ordinary reads (`#2`, `#4`, `#5`, `#7`, `#8`, `#15`, `#17`, `#18`, `#19`,
 `#23`, `#26`, `#27`) are never rate limited. `#20`/`#21`/`#22`/`#24`/`#25`/

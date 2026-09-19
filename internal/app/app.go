@@ -139,7 +139,14 @@ type App struct {
 	saasOrgCreateLimiter      *saasRateLimiter
 	saasDiscordVerifyLimiter  *saasRateLimiter
 	saasNitradoConnectLimiter *saasRateLimiter
-	persistQueuesMu           sync.Mutex
+	// FactionHub is the web-first Faction Hub store (docs/FACTIONS.md); the four
+	// limiters throttle faction creation and join applications per acting user.
+	FactionHub                  *repository.FactionHubRepository
+	saasFactionCreateLimiter    *saasRateLimiter
+	saasFactionCreateDayLimiter *saasRateLimiter
+	saasFactionApplyLimiter     *saasRateLimiter
+	saasFactionApplyDayLimiter  *saasRateLimiter
+	persistQueuesMu             sync.Mutex
 	persistQueues             []*killfeed.PersistenceQueue
 	rotatingFeedsMu           sync.Mutex
 	rotatingFeeds             []*discord.RotatingFeed
@@ -528,6 +535,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.adminSaaS = adminrepo.New(db.Pool)
 			embedRepo := repository.NewEmbedTemplateRepository(db.Pool)
 			app.EmbedTemplates = embedtemplates.NewService(embedRepo)
+			app.FactionHub = repository.NewFactionHubRepository(db.Pool)
 			app.EmbedRenderer = embedrender.New(embedrender.Options{Source: embedRepo, Enabled: cfg.CustomEmbedsEnabled})
 			if cfg.CustomEmbedsEnabled {
 				slog.Info("component=embedrender", "event", "custom_embeds_enabled")
