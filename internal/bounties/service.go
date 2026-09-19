@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yourname/dayz-killfeed/internal/economy"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -104,6 +105,9 @@ type Service struct {
 
 	mu       sync.RWMutex
 	notifier Notifier
+	// economyNotifier receives one economy event per bounty payout, after the
+	// claim (and its ledger transactions) committed. Optional.
+	economyNotifier economy.Notifier
 }
 
 func NewService(store Store, notifier Notifier) *Service {
@@ -118,6 +122,32 @@ func (s *Service) SetNotifier(n Notifier) {
 	s.mu.Lock()
 	s.notifier = n
 	s.mu.Unlock()
+}
+
+// SetEconomyNotifier attaches the notifier for the payouts a claim makes (the
+// ECONOMY feed).
+func (s *Service) SetEconomyNotifier(n economy.Notifier) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.economyNotifier = n
+	s.mu.Unlock()
+}
+
+func (s *Service) notifyEconomy(e economy.Event) {
+	s.mu.RLock()
+	n := s.economyNotifier
+	s.mu.RUnlock()
+	if n == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("component=bounty", "msg", "economy notifier panic recovered", "panic", fmt.Sprint(r))
+		}
+	}()
+	n.Notify(e)
 }
 
 func (s *Service) notify(e Event) {
@@ -279,6 +309,18 @@ func (s *Service) ClaimForKill(ctx context.Context, in KillInput) (ClaimResult, 
 		Target: in.TargetName, Hunter: in.HunterName, Amount: total, Count: len(claimed),
 		Weapon: in.Weapon, Distance: in.Distance,
 	})
+	// One economy transaction was committed per bounty (auditable: each bounty is
+	// its own ledger reference); report each one, in payout order, so the shown
+	// balance is the hunter's balance right after that payout.
+	for _, b := range claimed {
+		if b.Reward.ID == 0 || b.Reward.Duplicate {
+			continue
+		}
+		s.notifyEconomy(economy.Event{
+			Type: economy.TypeBountyClaim, GuildID: in.GuildID, ServerID: in.ServerID,
+			PlayerName: in.HunterName, Amount: b.RewardPoints, Credit: true, BalanceAfter: b.Reward.BalanceAfter,
+		})
+	}
 	return ClaimResult{Count: len(claimed), Total: total}, nil
 }
 

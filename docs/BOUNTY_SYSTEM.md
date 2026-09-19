@@ -226,9 +226,10 @@ The seams are deliberately narrow so a Phase 2 can add money without redesign:
 * **Placement** is one method (`Service.Place`); charging the placer (and
   refunding on cancel/expire) belongs there, inside the same transaction as the
   insert.
-* **Payout** is the award loop at the end of `ClaimForKill`; replacing or adding
-  to the `point_transactions` insert with a currency credit keeps the same
-  atomicity and the same idempotency key.
+* **Payout** is the award loop at the end of `ClaimForKill`. As of the economy
+  Phase 1 it pays each bounty through the economy ledger (`CreditTx`, reference
+  `bounty:<id>`, same transaction and idempotency key - see `docs/ECONOMY_SYSTEM.md`),
+  and the claimed bounties carry their ledger entry so an `ECONOMY` card can follow.
 * The amount is already one integer per bounty; a currency would add a
   `currency` column rather than reinterpret `reward_points`.
 

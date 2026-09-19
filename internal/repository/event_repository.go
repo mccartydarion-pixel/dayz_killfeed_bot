@@ -157,7 +157,8 @@ func (r *EventRepository) FinalizeEvent(ctx context.Context, eventID int64, resu
 	defer tx.Rollback(ctx)
 	var status string
 	var winnerPoints, secondPoints, thirdPoints int
-	err = tx.QueryRow(ctx, `SELECT status,winner_points,second_place_points,third_place_points FROM competitive_events WHERE id=$1 FOR UPDATE`, eventID).Scan(&status, &winnerPoints, &secondPoints, &thirdPoints)
+	var eventGuildID, eventSeasonID int64
+	err = tx.QueryRow(ctx, `SELECT status,winner_points,second_place_points,third_place_points,guild_id,COALESCE(season_id,0) FROM competitive_events WHERE id=$1 FOR UPDATE`, eventID).Scan(&status, &winnerPoints, &secondPoints, &thirdPoints, &eventGuildID, &eventSeasonID)
 	if err != nil {
 		return err
 	}
@@ -215,10 +216,13 @@ func (r *EventRepository) FinalizeEvent(ctx context.Context, eventID int64, resu
 				return err
 			}
 			if reward > 0 {
-				if _, err = tx.Exec(ctx, `INSERT INTO point_transactions(guild_id,season_id,player_id,amount,reason_type,source_id,source_key) SELECT e.guild_id,e.season_id,$1,$2,$3,$4,$5 FROM competitive_events e WHERE e.id=$4 ON CONFLICT DO NOTHING`, playerID, reward, eventRewardReason(placement), eventID, fmt.Sprintf("event:%d:%d", eventID, placement)); err != nil {
-					return err
-				}
-				if _, err = tx.Exec(ctx, `INSERT INTO player_points(guild_id,player_id,lifetime_points,season_points) SELECT e.guild_id,$1,$2,$2 FROM competitive_events e WHERE e.id=$3 ON CONFLICT(guild_id,player_id) DO UPDATE SET lifetime_points=player_points.lifetime_points+EXCLUDED.lifetime_points,season_points=player_points.season_points+EXCLUDED.season_points,updated_at=NOW()`, playerID, reward, eventID); err != nil {
+				// Event prizes are earned credits through the same economy ledger as
+				// every other award (same type/key as before, so idempotency holds).
+				if _, err = NewEconomyRepository(r.pool).CreditTx(ctx, tx, LedgerParams{
+					GuildID: eventGuildID, PlayerID: playerID, SeasonID: eventSeasonID,
+					Type: eventRewardReason(placement), Amount: int64(reward), Earned: true,
+					ReferenceID: fmt.Sprintf("event:%d:%d", eventID, placement), SourceID: eventID, CreatedBy: "SYSTEM",
+				}); err != nil {
 					return err
 				}
 			}

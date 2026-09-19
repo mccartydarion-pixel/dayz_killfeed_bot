@@ -7,7 +7,7 @@ fields. This document records the audit of that runtime, the shared resolver
 the publishers migrate onto, and how far the migration has got.
 
 **Migrated to runtime routes: `KILLFEED`, `LINK_GAMERTAG`, `STATS_LEADERBOARDS`,
-`AUTO_LEADERBOARD`, `ADMIN_LOGS`. Built and runtime routed: `HITFEED`, `CONNECTIONS`, `PVE_FEED` (explicit suicides only - see its section), `BOUNTY` and `BOUNTY_TRACKING` (see `docs/BOUNTY_SYSTEM.md`).** Every other route either has no publisher at
+`AUTO_LEADERBOARD`, `ADMIN_LOGS`. Built and runtime routed: `HITFEED`, `CONNECTIONS`, `PVE_FEED` (explicit suicides only - see its section), `BOUNTY` and `BOUNTY_TRACKING` (see `docs/BOUNTY_SYSTEM.md`), `ECONOMY` (see `docs/ECONOMY_SYSTEM.md`).** Every other route either has no publisher at
 all (marked *Not implemented* below - nothing was built for them) or has no
 text-channel feed to route. See the table below and "Migrated features".
 
@@ -107,7 +107,7 @@ installation is still `CONFIGURING`.
 | `BOUNTY` | `BountyBoard` (`discord/bounty_feeds.go`) - one persistent board message per routed channel | none - no fallback (the `/bounty` command is unrelated and still replies ephemerally) | durable `bounties` table; reconciled on lifecycle events, route changes, restart and a 30s tick | **IMPLEMENTED / RUNTIME ROUTED** |
 | `BOUNTY_TRACKING` | `BountyTracker` (`discord/bounty_feeds.go`) - placed / increased / claimed / expired / cancelled cards | none - no fallback (the "MOST WANTED" section of the live panels is unrelated) | `bounties.Service` events, published only after the change committed | **IMPLEMENTED / RUNTIME ROUTED** |
 | `HEATMAPS` | none | - | - | Not implemented |
-| `ECONOMY` | none | - | - | Not implemented |
+| `ECONOMY` | `EconomyFeed` (`discord/economy_feed.go`) - bounty reward / admin credit / admin debit cards | none - no fallback (never `KILLFEED`; the economy works fully without the route) | `economy.Service` and the bounty claim, published only after the transaction committed | **IMPLEMENTED / RUNTIME ROUTED** |
 | `CASINO` | none | - | - | Not implemented |
 | `SHOP` | none | - | - | Not implemented |
 | `CONNECTIONS` | `ConnectionsPublisher` (`discord/connections.go`) | none - no legacy text channel, no KILLFEED/voice-counter fallback (the `OnlinePlayersChannelID` voice counter is a separate, untouched feature) | ADM `is connected` / `has been disconnected`, after dedupe + durable persistence + a real presence state change | **IMPLEMENTED / RUNTIME ROUTED** |
@@ -625,3 +625,24 @@ summary:
   trigger.
 * **Ordering:** persist kill -> atomic claim -> commit -> notify. A claim is never
   made from a raw ADM line, and a Discord failure never rolls back or repeats one.
+
+## ECONOMY (implemented, runtime routed)
+
+Phase 1 of the Champion Points economy. Full ledger/balance model, atomic credit and
+debit, idempotency and commands: **`docs/ECONOMY_SYSTEM.md`**. Routing summary:
+
+* **Route key:** `ECONOMY` = the lifecycle feed (bounty rewards, admin credits and
+  debits). Balances and history are never posted here - they are ephemeral replies.
+* **Resolution:** the shared `routing.Resolver` on the `(guild row, server)` identity,
+  resolved per event: a server-attributed event (a bounty reward) -> the server the
+  kill happened on; a guild-wide event (an admin adjustment) -> every server's route,
+  deduplicated by channel.
+* **Fallback:** none. Route absent -> no cards; lookup error -> no-op with a throttled
+  warning. Never `KILLFEED`. The economy is correct without any route.
+* **Ordering and failure:** the database transaction commits first; the feed is told
+  afterwards and can only describe committed state. A failed send is dropped, never
+  retried, and never rolls back or repeats a transaction.
+* **Propagation:** in-process route writes invalidate the resolver cache, so the next
+  event uses the new route; out-of-process changes are picked up within the resolver TTL.
+* **Privacy:** cards show the display name, type, amount and (rewards only) the new
+  balance - no internal ids, no admin, no reason.

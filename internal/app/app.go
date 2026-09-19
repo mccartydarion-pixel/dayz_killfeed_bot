@@ -17,6 +17,7 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/admin"
 	"github.com/yourname/dayz-killfeed/internal/analytics"
 	"github.com/yourname/dayz-killfeed/internal/bounties"
+	"github.com/yourname/dayz-killfeed/internal/economy"
 	"github.com/yourname/dayz-killfeed/internal/config"
 	"github.com/yourname/dayz-killfeed/internal/database"
 	"github.com/yourname/dayz-killfeed/internal/discord"
@@ -59,6 +60,10 @@ type App struct {
 	// for persisted kills, streak bounties, expiry). Its Discord notifier is
 	// optional: bounties are correct without any route or Discord connection.
 	BountyService *bounties.Service
+	// EconomyService is the Champion Points economy (balances, ledger, credit/debit,
+	// history, admin adjustments). Its Discord notifier is optional: the economy is
+	// correct without any route or Discord connection.
+	EconomyService *economy.Service
 	// BountyBoard keeps the persistent public board (BOUNTY route). Nil-safe.
 	BountyBoard *discord.BountyBoard
 	Points               *repository.PointsRepository
@@ -479,6 +484,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.AnnouncementService = discord.NewCompletionAnnouncementService(app.Announcements)
 			app.Bounties = repository.NewBountyRepository(db.Pool)
 			app.BountyService = bounties.NewService(app.Bounties, nil)
+			app.EconomyService = economy.NewService(repository.NewEconomyRepository(db.Pool), nil)
 			app.Points = repository.NewPointsRepository(db.Pool)
 			app.Seasons = repository.NewSeasonRepository(db.Pool)
 			app.SeasonService = seasons.NewService(app.Seasons)
@@ -868,6 +874,19 @@ func (a *App) Run() error {
 			}
 		})
 	}
+	if a.EconomyService != nil && a.Players != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
+		economyHandler := discord.NewEconomyCommandHandler(a.EconomyService, a.Players, a.Guilds, linkedPlayerLookup{a.LinkService})
+		if err := discord.RegisterEconomyCommands(session, a.Config.DiscordGuildID); err != nil {
+			slog.Warn("component=discord", "msg", "failed to register economy commands", "err", err.Error())
+		} else {
+			slog.Info("component=discord", "msg", "economy commands registered")
+		}
+		a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+			if i.Type == discordgo.InteractionApplicationCommand && i.ApplicationCommandData().Name == "economy" {
+				economyHandler.Handle(s, i)
+			}
+		})
+	}
 	if a.Points != nil && a.Players != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
 		pointsHandler := discord.NewPointsCommandHandler(a.Points, a.Players, a.Guilds)
 		if err := discord.RegisterPointsCommands(session, a.Config.DiscordGuildID); err != nil {
@@ -944,6 +963,7 @@ func (a *App) Run() error {
 	}
 	if a.Guilds != nil && (a.LinkService != nil || a.Stats != nil) && a.Config.DiscordGuildID != "" {
 		publicPanels := discord.NewPublicPanelHandler(a.LinkService, a.Stats, a.Guilds)
+		publicPanels.SetEconomy(a.EconomyService)
 		a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			switch i.Type {
 			case discordgo.InteractionMessageComponent:
@@ -1165,6 +1185,17 @@ func (a *App) Run() error {
 			var routePanels *discord.RoutePanels
 			if routingEnabled {
 				routePanels = discord.NewRoutePanels(api, discord.NewRoutePanelStore(a.GuildRoutePanels))
+			}
+			if routingEnabled && a.EconomyService != nil {
+				// ECONOMY: the public transaction feed, per (guild, server) through the
+				// shared resolver, no fallback. Fed only after a transaction committed
+				// (admin adjustments and bounty payouts).
+				economyFeed := discord.NewEconomyFeed(session, a.ChannelRoutes, guildServers)
+				a.EconomyService.SetNotifier(economyFeed)
+				if a.BountyService != nil {
+					a.BountyService.SetEconomyNotifier(economyFeed)
+				}
+				go economyFeed.Run(ctx)
 			}
 			if routingEnabled && a.BountyService != nil {
 				// BOUNTY (public board, one persistent message per routed channel) and
@@ -1928,6 +1959,21 @@ func valueOfID(v *int64) int64 {
 		return 0
 	}
 	return *v
+}
+
+// linkedPlayerLookup adapts the account-linking service to discord.PlayerLinks:
+// the economy commands resolve "my balance" through a VERIFIED link only.
+type linkedPlayerLookup struct{ svc *linking.LinkVerificationService }
+
+func (l linkedPlayerLookup) LinkedPlayerID(ctx context.Context, guildRowID int64, discordUserID string) (int64, bool) {
+	if l.svc == nil {
+		return 0, false
+	}
+	rec, err := l.svc.Status(ctx, guildRowID, discordUserID)
+	if err != nil {
+		return 0, false
+	}
+	return discord.VerifiedPlayerID(rec)
 }
 
 // playerNames returns the sorted display names of currently online players.

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/yourname/dayz-killfeed/internal/economy"
 	"github.com/yourname/dayz-killfeed/internal/linking"
 	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/repository"
@@ -18,6 +19,9 @@ const (
 	statsPanelMeID     = "champion:stats:me:v1"
 	statsPanelSearchID = "champion:stats:search:v1"
 	statsSearchModalID = "champion:stats:search:modal:v1"
+
+	economyBalanceID = "champion:economy:balance:v1"
+	economyHistoryID = "champion:economy:history:v1"
 )
 
 type ProfileReader interface {
@@ -41,15 +45,28 @@ func PlayerStatsPanelComponents() []discordgo.MessageComponent {
 	return []discordgo.MessageComponent{discordgo.ActionsRow{Components: []discordgo.MessageComponent{
 		discordgo.Button{CustomID: statsPanelMeID, Label: "My Stats", Style: discordgo.PrimaryButton},
 		discordgo.Button{CustomID: statsPanelSearchID, Label: "Search Player", Style: discordgo.SecondaryButton},
+		// Private economy buttons: they only ever answer with the clicker's own
+		// (linked) balance and transactions, ephemerally.
+		discordgo.Button{CustomID: economyBalanceID, Label: "My Balance", Style: discordgo.SecondaryButton},
+		discordgo.Button{CustomID: economyHistoryID, Label: "Recent Transactions", Style: discordgo.SecondaryButton},
 	}}}
 }
 
 // PublicPanelHandler routes persistent panel interactions. It is registered at
 // startup, so components continue working after setup messages are reused.
 type PublicPanelHandler struct {
-	links  *linking.LinkVerificationService
-	stats  ProfileReader
-	guilds GuildStore
+	links   *linking.LinkVerificationService
+	stats   ProfileReader
+	guilds  GuildStore
+	economy *economy.Service
+}
+
+// SetEconomy enables the "My Balance" / "Recent Transactions" buttons. Without it
+// they reply that the economy is unavailable.
+func (h *PublicPanelHandler) SetEconomy(svc *economy.Service) {
+	if h != nil {
+		h.economy = svc
+	}
 }
 
 func NewPublicPanelHandler(links *linking.LinkVerificationService, stats ProfileReader, guilds GuildStore) *PublicPanelHandler {
@@ -67,7 +84,36 @@ func (h *PublicPanelHandler) HandleComponent(s *discordgo.Session, i *discordgo.
 		h.handleMyStats(s, i)
 	case statsPanelSearchID:
 		respondModal(s, i, statsSearchModalID, "Search Player", "player", "DayZ display name", "Enter a player name")
+	case economyBalanceID:
+		h.handleMyEconomy(s, i, false)
+	case economyHistoryID:
+		h.handleMyEconomy(s, i, true)
 	}
+}
+
+// handleMyEconomy answers the clicker's OWN balance or history, resolved through
+// the existing account link - never another player's, and only ephemerally.
+func (h *PublicPanelHandler) handleMyEconomy(s *discordgo.Session, i *discordgo.InteractionCreate, history bool) {
+	if h.links == nil || h.economy == nil {
+		respondEphemeral(s, i, "The economy is unavailable until the database is connected.")
+		return
+	}
+	guildID, err := h.guildRowID(i.GuildID)
+	if err != nil {
+		respondEphemeral(s, i, "Run `/setup` first.")
+		return
+	}
+	link, err := h.links.Status(context.Background(), guildID, i.Member.User.ID)
+	playerID, verified := VerifiedPlayerID(link)
+	if err != nil || !verified {
+		respondEphemeral(s, i, "🔗 **ACCOUNT NOT LINKED**\nLink and verify your PlayStation username first in #link-username.")
+		return
+	}
+	if history {
+		respondEphemeral(s, i, economyHistoryMessage(context.Background(), h.economy, guildID, playerID))
+		return
+	}
+	respondEphemeral(s, i, economyBalanceMessage(context.Background(), h.economy, guildID, playerID))
 }
 
 func (h *PublicPanelHandler) HandleModal(s *discordgo.Session, i *discordgo.InteractionCreate) {
