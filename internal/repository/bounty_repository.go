@@ -36,6 +36,9 @@ type Bounty struct {
 	StartsAt, ExpiresAt, ClaimedAt                      *time.Time
 	ClaimedByPlayerID, ClaimedKillID                    *int64
 	TargetName                                          string
+	// Reward is the ledger entry a claim paid out (set only on the rows ClaimForKill
+	// returns): its BalanceAfter is the hunter's balance right after this payout.
+	Reward LedgerEntry
 }
 
 // BoardEntry is one target on the public bounty board: every active, eligible
@@ -172,16 +175,21 @@ RETURNING `+bountyCols, c.GuildID, c.VictimPlayerID, c.KillerPlayerID, c.KillID,
 	if len(claimed) == 0 {
 		return nil, nil
 	}
-	for _, b := range claimed {
-		tag, err := tx.Exec(ctx, `INSERT INTO point_transactions(guild_id,season_id,player_id,amount,reason_type,source_id,source_key) VALUES($1,NULLIF($2,0),$3,$4,'BOUNTY_CLAIM',$5,$6) ON CONFLICT DO NOTHING`, c.GuildID, c.SeasonID, c.KillerPlayerID, b.RewardPoints, b.ID, fmt.Sprintf("bounty:%d", b.ID))
+	// One ledger transaction PER bounty (auditable: each bounty id is its own
+	// reference), all inside the claim's transaction so the claim and the payout
+	// commit together. Same type and key as ever ("BOUNTY_CLAIM", "bounty:<id>"),
+	// so replays stay idempotent.
+	economy := NewEconomyRepository(r.pool)
+	for i := range claimed {
+		entry, err := economy.CreditTx(ctx, tx, LedgerParams{
+			GuildID: c.GuildID, PlayerID: c.KillerPlayerID, ServerID: c.ServerID, SeasonID: c.SeasonID,
+			Type: TxBountyClaim, Amount: claimed[i].RewardPoints, Earned: true,
+			ReferenceID: fmt.Sprintf("bounty:%d", claimed[i].ID), SourceID: claimed[i].ID, CreatedBy: "SYSTEM",
+		})
 		if err != nil {
 			return nil, err
 		}
-		if tag.RowsAffected() > 0 {
-			if _, err := tx.Exec(ctx, `INSERT INTO player_points(guild_id,player_id,lifetime_points,season_points) VALUES($1,$2,$3,$3) ON CONFLICT(guild_id,player_id) DO UPDATE SET lifetime_points=player_points.lifetime_points+EXCLUDED.lifetime_points,season_points=player_points.season_points+EXCLUDED.season_points,updated_at=NOW()`, c.GuildID, c.KillerPlayerID, b.RewardPoints); err != nil {
-				return nil, err
-			}
-		}
+		claimed[i].Reward = entry
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err

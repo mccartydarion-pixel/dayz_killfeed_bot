@@ -13,6 +13,17 @@ type Migration struct {
 	SQL  string
 }
 
+// EconomyBackfillSQL is migration 0030's one-time data backfill: every historical
+// point award was a credit (there were never debits), so the spendable balance
+// starts equal to the lifetime total, and each ledger row gets its running
+// balance. It is a constant so a test can run it against legacy-shaped rows.
+const EconomyBackfillSQL = `
+UPDATE player_points SET balance = lifetime_points WHERE balance = 0 AND lifetime_points > 0;
+UPDATE point_transactions t SET balance_after = r.running
+FROM (SELECT id, SUM(amount) OVER (PARTITION BY guild_id, player_id ORDER BY id) AS running FROM point_transactions) r
+WHERE t.id = r.id AND t.balance_after IS NULL;
+`
+
 // migrations is the ordered list of schema changes. New migrations append at the
 // end; never edit an applied migration. Each runs once, transactionally.
 var migrations = []Migration{
@@ -983,6 +994,56 @@ CREATE INDEX IF NOT EXISTS idx_bounties_server_status ON bounties(guild_id,serve
 CREATE INDEX IF NOT EXISTS idx_bounties_target_player ON bounties(target_player_id);
 CREATE INDEX IF NOT EXISTS idx_bounties_created_at ON bounties(created_at);
 CREATE INDEX IF NOT EXISTS idx_bounties_claimed_at ON bounties(claimed_at) WHERE claimed_at IS NOT NULL;
+`,
+	},
+	{
+		Name: "0030_economy_ledger",
+		SQL: `
+-- Economy Phase 1: the existing Champion Points tables become the economy's
+-- ledger and balance store (no second currency). Everything stays guild-wide.
+
+-- The ledger amount is now signed (debits are negative) and 64-bit: economy
+-- totals can exceed what a 32-bit column holds. (Rewrites the table once.)
+ALTER TABLE point_transactions ALTER COLUMN amount TYPE BIGINT;
+ALTER TABLE point_transactions ADD COLUMN IF NOT EXISTS balance_after BIGINT;
+ALTER TABLE point_transactions ADD COLUMN IF NOT EXISTS description TEXT;
+ALTER TABLE point_transactions ADD COLUMN IF NOT EXISTS created_by TEXT;
+ALTER TABLE point_transactions ADD COLUMN IF NOT EXISTS server_id BIGINT REFERENCES game_servers(id) ON DELETE SET NULL;
+
+-- The spendable balance. lifetime_points/season_points stay earn-only leaderboard
+-- scores (season_points resets each season; balance never does).
+ALTER TABLE player_points ADD COLUMN IF NOT EXISTS balance BIGINT NOT NULL DEFAULT 0;
+` + EconomyBackfillSQL + `
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'player_points_balance_nonneg') THEN
+        ALTER TABLE player_points ADD CONSTRAINT player_points_balance_nonneg CHECK (balance >= 0);
+    END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_point_transactions_history ON point_transactions(guild_id, player_id, id DESC);
+
+-- Append-only: a ledger row's facts can never be rewritten. (balance_after may be
+-- filled in once for legacy rows, and the ON DELETE SET NULL foreign keys may
+-- null season_id/server_id; row deletion by cascade is unaffected.)
+CREATE OR REPLACE FUNCTION point_transactions_append_only() RETURNS trigger AS $fn$
+BEGIN
+    IF NEW.guild_id IS DISTINCT FROM OLD.guild_id
+       OR NEW.player_id IS DISTINCT FROM OLD.player_id
+       OR NEW.amount IS DISTINCT FROM OLD.amount
+       OR NEW.reason_type IS DISTINCT FROM OLD.reason_type
+       OR NEW.source_key IS DISTINCT FROM OLD.source_key
+       OR NEW.description IS DISTINCT FROM OLD.description
+       OR NEW.created_by IS DISTINCT FROM OLD.created_by
+       OR NEW.created_at IS DISTINCT FROM OLD.created_at
+       OR (OLD.balance_after IS NOT NULL AND NEW.balance_after IS DISTINCT FROM OLD.balance_after) THEN
+        RAISE EXCEPTION 'point_transactions is append-only';
+    END IF;
+    RETURN NEW;
+END;
+$fn$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS trg_point_transactions_append_only ON point_transactions;
+CREATE TRIGGER trg_point_transactions_append_only BEFORE UPDATE ON point_transactions FOR EACH ROW EXECUTE FUNCTION point_transactions_append_only();
 `,
 	},
 }

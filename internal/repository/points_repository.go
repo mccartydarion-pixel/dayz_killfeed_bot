@@ -11,24 +11,18 @@ type Points struct{ Lifetime, Season int64 }
 type PointsRepository struct{ pool *pgxpool.Pool }
 
 func NewPointsRepository(pool *pgxpool.Pool) *PointsRepository { return &PointsRepository{pool: pool} }
+// Award credits earned Champion Points through the economy ledger (the single
+// implementation of every point credit). It returns false, nil when the same
+// (guild, player, reason, sourceKey) was already awarded.
 func (r *PointsRepository) Award(ctx context.Context, guildID, seasonID, playerID int64, amount int, reason string, sourceID int64, sourceKey string) (bool, error) {
-	tx, err := r.pool.Begin(ctx)
+	entry, err := NewEconomyRepository(r.pool).Credit(ctx, LedgerParams{
+		GuildID: guildID, PlayerID: playerID, SeasonID: seasonID, Type: reason, Amount: int64(amount),
+		Earned: true, ReferenceID: sourceKey, SourceID: sourceID, CreatedBy: "SYSTEM",
+	})
 	if err != nil {
 		return false, err
 	}
-	defer tx.Rollback(ctx)
-	tag, err := tx.Exec(ctx, `INSERT INTO point_transactions(guild_id,season_id,player_id,amount,reason_type,source_id,source_key) VALUES($1,NULLIF($2,0),$3,$4,$5,NULLIF($6,0),$7) ON CONFLICT DO NOTHING`, guildID, seasonID, playerID, amount, reason, sourceID, sourceKey)
-	if err != nil {
-		return false, err
-	}
-	if tag.RowsAffected() == 0 {
-		return false, nil
-	}
-	_, err = tx.Exec(ctx, `INSERT INTO player_points(guild_id,player_id,lifetime_points,season_points) VALUES($1,$2,$3,$3) ON CONFLICT(guild_id,player_id) DO UPDATE SET lifetime_points=player_points.lifetime_points+EXCLUDED.lifetime_points,season_points=player_points.season_points+EXCLUDED.season_points,updated_at=NOW()`, guildID, playerID, amount)
-	if err != nil {
-		return false, err
-	}
-	return true, tx.Commit(ctx)
+	return !entry.Duplicate, nil
 }
 func (r *PointsRepository) Get(ctx context.Context, guildID, playerID int64) (*Points, error) {
 	var p Points

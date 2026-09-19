@@ -320,3 +320,20 @@ Indexes: `(guild_id, server_id, status)`, `target_player_id`, `created_at`,
 `claimed_at`. Awards are recorded in `point_transactions` with
 `reason_type = 'BOUNTY_CLAIM'` and `source_key = 'bounty:<id>'` (unique), which makes
 the payout idempotent.
+
+## player_points / point_transactions (migrations 0001 + 0030)
+
+The Champion Points economy (see `docs/ECONOMY_SYSTEM.md`). `player_points` is keyed
+`(guild_id, player_id)` and stays guild-wide: `lifetime_points` / `season_points` are
+the earn-only leaderboard scores (the season score resets each season) and
+**`balance BIGINT NOT NULL DEFAULT 0`** (migration 0030, `CHECK (balance >= 0)`) is
+the spendable balance, which a season reset never touches. `point_transactions` is
+the append-only ledger: `amount` is a signed **BIGINT** (debits negative),
+`balance_after BIGINT` is the balance right after the row, `description` and
+`created_by` (the acting Discord user id, or `SYSTEM`) are the audit trail, and
+`server_id` (nullable, `ON DELETE SET NULL`) records where it happened.
+`UNIQUE (guild_id, player_id, reason_type, source_key)` is the idempotency key
+(`BOUNTY_CLAIM`/`bounty:<id>`, `EVENT_*`/`event:<id>:<place>`, ...). A trigger
+(`trg_point_transactions_append_only`) refuses any update that would rewrite a row's
+facts. Index `(guild_id, player_id, id DESC)` serves history. The 0030 backfill sets
+`balance = lifetime_points` and fills legacy `balance_after` running totals.
