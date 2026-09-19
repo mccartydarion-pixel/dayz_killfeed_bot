@@ -426,6 +426,7 @@ func (a *App) handleSelectDayZServer(w http.ResponseWriter, r *http.Request) {
 	// The installation -> server mapping just changed, which changes which
 	// installation's routes a server's publishers resolve to.
 	a.ChannelRoutes.InvalidateAll()
+	a.RouteSyncer.Trigger() // re-sync routed panels/leaderboard now
 
 	criticalServerChange := resolvedInstallationID == installationID && loaded.Status == repository.InstallationReady &&
 		loaded.GameServerID != nil && *loaded.GameServerID != server.ID

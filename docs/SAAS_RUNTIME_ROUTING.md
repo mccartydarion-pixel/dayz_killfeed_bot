@@ -6,8 +6,10 @@ publishers were built earlier around legacy per-guild `GuildSetup` channel
 fields. This document records the audit of that runtime, the shared resolver
 the publishers migrate onto, and how far the migration has got.
 
-**Migrated so far: `KILLFEED` only.** Every other route is still served by its
-legacy source (or has no publisher at all) - see the table below.
+**Migrated to runtime routes: `KILLFEED`, `LINK_GAMERTAG`, `STATS_LEADERBOARDS`,
+`AUTO_LEADERBOARD`, `ADMIN_LOGS`.** Every other route either has no publisher at
+all (marked *Not implemented* below - nothing was built for them) or has no
+text-channel feed to route. See the table below and "Migrated features".
 
 ## KILLFEED event path (audited)
 
@@ -98,9 +100,9 @@ installation is still `CONFIGURING`.
 |---|---|---|---|---|
 | `KILLFEED` | `KillfeedPublisher` + `RotatingFeed` (`discord/killfeed.go`) | `GuildSetup.KillfeedChannelID`, env `KILLFEED_CHANNEL_ID` | ADM `PLAYER_KILL`, after durable insert | **Migrated** (route -> legacy fallback) |
 | `PVE_FEED` | none | - | no infected/environment event type parsed | Not implemented |
-| `LINK_GAMERTAG` | `PublicPanelHandler.handleLink`; panel posted by `discord/setup.go` | `GuildSetup.LinkPanelChannelID` | Discord button/modal interaction | Legacy only |
-| `STATS_LEADERBOARDS` | `PublicPanelHandler.handleMyStats/handleSearch` | `GuildSetup.PlayerStatsChannelID` | Discord button interaction (on-demand, ephemeral) | Legacy only |
-| `AUTO_LEADERBOARD` | `LeaderboardScheduler` (`discord/leaderboard_scheduler.go`) | `GuildSetup.LeaderboardsChannelID` | 3-hour timer / `/admin` refresh | Legacy only |
+| `LINK_GAMERTAG` | Link panel posted by `RouteSyncer` (`discord/route_syncer.go`); interactions in `PublicPanelHandler` (`discord/public_panels.go`, channel-agnostic) | legacy `GuildSetup.LinkPanelChannelID` (posted by `discord/setup.go`) | Discord button/modal interaction | **MIGRATED TO RUNTIME ROUTES** (route -> legacy) |
+| `STATS_LEADERBOARDS` | Player-stats panel posted by `RouteSyncer`; interactions in `PublicPanelHandler` | legacy `GuildSetup.PlayerStatsChannelID` | Discord button interaction (on-demand, ephemeral) | **MIGRATED TO RUNTIME ROUTES** (route -> legacy) |
+| `AUTO_LEADERBOARD` | `LeaderboardScheduler` (`discord/leaderboard_scheduler.go`) | legacy `GuildSetup.LeaderboardsChannelID` | 3-hour timer, `/admin` refresh, route change | **MIGRATED TO RUNTIME ROUTES** (route -> legacy) |
 | `HITFEED` | none | - | `PLAYER_HIT` parsed and counted in metrics only | Not implemented |
 | `BOUNTY` | `BountyCommandHandler` (`discord/competitive_commands.go`) | none (ephemeral replies) | `/bounty` slash command | No channel feed |
 | `BOUNTY_TRACKING` | "MOST WANTED" section of the live-panels message (`discord/panels`) | shares the leaderboards panel path | panel flush | No dedicated channel |
@@ -111,15 +113,122 @@ installation is still `CONFIGURING`.
 | `CONNECTIONS` | `VoiceChannelCounter` (`discord/counter.go`) | `GuildSetup.OnlinePlayersChannelID` (a **voice** channel name counter, not a text feed) | `PLAYER_CONNECT`/`DISCONNECT` | Legacy only; no text feed |
 | `BUILD_FEED` | none | - | no building event type | Not implemented |
 | `ADMIN_ALERTS` | none | - | - | Not implemented |
-| `ADMIN_LOGS` | `ADMMonitorPublisher` (`discord/adm_monitor.go`) | `GuildSetup.ADMMonitorChannelID` | ADM download/health callbacks | Legacy only |
+| `ADMIN_LOGS` | `ADMMonitorPublisher` (`discord/adm_monitor.go`) | legacy `GuildSetup.ADMMonitorChannelID` | ADM snapshot/download callbacks | **MIGRATED TO RUNTIME ROUTES** (route -> legacy) |
 
 Also outside the route vocabulary: `DeathfeedPublisher` (`GuildSetup.DeathChannelID`,
 non-PvP deaths/suicides) and the server-status panel
 (`GuildSetup.ServerStatusChannelID`) have no route key today.
 
 Migrating another publisher is: give it the same `(guildRowID, serverID)`,
-call `routing.Resolver.Resolve` with its `Route*` key, and fall back to its
-legacy field - `KillfeedPublisher.RouteChannelID` is the reference
-implementation. Publishers that are interaction-driven panels
-(`LINK_GAMERTAG`, `STATS_LEADERBOARDS`) are guild-level today and need a
-per-server decision before they can resolve per server.
+call `routing.Resolver.Resolve` with its `Route*` key (or wrap that in
+`discord.RouteBinding`, which adds the never-fatal fallback and throttled
+diagnostics), and fall back to its legacy field - `KillfeedPublisher.RouteChannelID`
+is the reference implementation.
+
+## Migrated features
+
+All four reuse the one `routing.Resolver` and its single cache - no publisher
+has its own cache. Resolution is always `(guild row, server)`, never guild alone.
+
+Common rule for every migrated feature:
+
+| Situation | Result |
+|---|---|
+| route configured | route only |
+| route absent | legacy channel |
+| route lookup error | legacy channel (logged; never fatal, never cached) |
+| route and legacy both absent | safe no-op / the pre-existing behaviour |
+
+Exactly one destination is chosen, so nothing is ever published to both.
+
+### Per-server vs guild-level
+
+* **`ADMIN_LOGS`** is per server. Each server's `ADMMonitorPublisher` already
+  knows its `game_servers.id`, so it resolves its own route (`SetRouting` in
+  `runServerWorker`); a sibling server without a route does **not** inherit
+  another server's, it falls back to legacy.
+* **`LINK_GAMERTAG`, `STATS_LEADERBOARDS`, `AUTO_LEADERBOARD`** are *guild-level*
+  artifacts: the link/stats panels are buttons that act on the whole guild, and
+  the leaderboard is computed from guild-wide stats (`TopByKills(guildRowID)` ...).
+  There is no per-server leaderboard data to route, and building one is out of
+  scope. They therefore follow the **union of the routes of every active server
+  in the guild**: each server is resolved on its own `(guild, server)` identity
+  (so cross-organization isolation is the resolver's SQL), the distinct channels
+  are collected in server order, and one message is kept per channel. Two servers
+  routing to different channels get a panel in each; two routing to the same
+  channel share one. The legacy channel is used **only when no server of the
+  guild has a route**.
+
+### How persistent messages avoid duplicates
+
+Legacy state was one message id per guild in `GuildSetup`, which cannot describe
+several routed channels. Migration `0028_guild_route_panels` adds
+`guild_route_panels(guild_id, route_key, channel_id, message_id)`, keyed by
+**channel** - so a route change, a restart or two servers sharing a channel can
+never produce a second live copy:
+
+* the reconciler (`discord.RoutePanels.Sync`) makes the panel exist in every
+  desired channel, records it, and retires panels recorded for channels no longer
+  desired;
+* a message is re-created **only** when Discord reports it gone (unknown
+  message/channel) - never on a transient error;
+* if a freshly posted message cannot be recorded it is deleted again, so the next
+  sync cannot post a second copy;
+* `ADMIN_LOGS` keeps its existing per-server id (`server_configs.adm_monitor_message_id`)
+  and additionally remembers, in memory, which channel the message lives in.
+
+### Feature notes
+
+* **`LINK_GAMERTAG` / `STATS_LEADERBOARDS`** - `public_panels.go` never chose a
+  channel (its handlers are channel-agnostic, keyed by the interacting guild), so
+  the "publisher" is the place the panel message is posted: previously
+  `SetupManager.EnsureConfigured`. `RouteSyncer` now posts the same panel
+  (`LinkUsernameInfoEmbed`/`PlayerStatsInfoEmbed` + the same component custom IDs)
+  to routed channels, so interactions behave exactly as before. When route mode
+  is live the legacy panel message is deleted and its id cleared (no second
+  copy); `EnsureConfigured` no longer creates a legacy panel for a routed key
+  (`SetRouteGate`). If every route is later removed, the syncer calls
+  `EnsureConfigured` once to bring the legacy panel back.
+* **`AUTO_LEADERBOARD`** - `LeaderboardScheduler.RefreshOnce` publishes to the
+  routed channels when any server has a route, otherwise edits the legacy panel
+  exactly as before. The first time route mode takes over, the legacy message is
+  retired; on return to legacy a fresh message is posted and persisted. The
+  scheduler now exists whenever routing is available (not only when a legacy
+  leaderboard channel was configured), so a route-only guild gets a leaderboard.
+  Refreshes are serialised. Manual `/admin` refresh uses the same path.
+* **`ADMIN_LOGS`** - `activeChannel()` is re-evaluated on every snapshot and
+  download (it previously cached the legacy channel forever). If the destination
+  changes while a message exists elsewhere, the old message is deleted and a new
+  one posted immediately. If a route is set while the process is down, the stored
+  id belongs to the legacy channel: the first routed edit gets "unknown message",
+  the stray legacy copy is deleted and one message is posted in the routed channel
+  (only on route-derived destinations, so legacy behaviour is unchanged).
+
+### Propagation
+
+`RouteSyncer` (`discord/route_syncer.go`) runs at startup, on `Trigger()`, and
+every `RouteSyncInterval` (30s = `routing.DefaultTTL`):
+
+* **In-process route writes** (`completeChannelsStep`, server (re)selection) call
+  `ChannelRoutes.InvalidateAll()` and `RouteSyncer.Trigger()`, so panels move and
+  the leaderboard refreshes immediately, with no restart.
+* **Out-of-process changes** are seen once the resolver's cache expires: within
+  the 30s TTL plus at most one 30s sync tick.
+* `ADMIN_LOGS` needs no trigger: it re-resolves per snapshot/download.
+* Static panels are re-verified only when the resolved channels change or every
+  10 minutes; the leaderboard is refreshed when its resolved channels change.
+* A failed lookup never tears anything down: nothing is retired while a lookup is
+  failing (it says nothing about whether the route exists).
+
+Diagnostic (all four): `event=channel_route_fallback route_key=<KEY> guild_id=<guilds.id>
+server_id=<game_servers.id> reason=no_route|lookup_error` - internal ids only.
+
+### Not covered
+
+Routes for `PVE_FEED`, `HITFEED`, `BOUNTY`, `BOUNTY_TRACKING`, `HEATMAPS`,
+`ECONOMY`, `CASINO`, `SHOP`, `CONNECTIONS`, `BUILD_FEED` and `ADMIN_ALERTS` are
+**not built**: they have no publisher (or no text feed), and this migration
+deliberately adds none. The runtime is still a single configured Discord guild
+(`DISCORD_GUILD_ID`) with its own set of servers; multi-guild workers are out of
+scope. Migration `0027` back-filled `STATS_LEADERBOARDS` and `ADMIN_LOGS` routes
+from installation settings, so those existing routes now take effect at runtime.

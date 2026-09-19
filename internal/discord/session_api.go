@@ -63,3 +63,8 @@ func (a *SessionAPI) ChannelMessageEditComplex(channelID, messageID string, embe
 	edit.Components = &components
 	return a.S.ChannelMessageEditComplex(edit)
 }
+
+// ChannelMessageDelete removes a message (used to retire a superseded panel).
+func (a *SessionAPI) ChannelMessageDelete(channelID, messageID string) error {
+	return a.S.ChannelMessageDelete(channelID, messageID)
+}

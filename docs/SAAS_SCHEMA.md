@@ -296,3 +296,12 @@ TEST_DATABASE_URL=postgres://... ALLOW_INTEGRATION_DB_TESTS=true go test -tags i
 against a disposable database before this lands somewhere migrations run
 automatically (Railway will run them via `DB.Migrate` on next deploy either
 way, same as every prior migration in this history).
+
+## guild_route_panels (migration 0028)
+
+Which persistent panel message lives in which routed channel, for the
+guild-level route-driven artifacts (`LINK_GAMERTAG`, `STATS_LEADERBOARDS`,
+`AUTO_LEADERBOARD`). One row per `(guild_id, route_key, channel_id)`, with
+`guild_id` referencing `guilds(id)` (`ON DELETE CASCADE`). Keyed by channel so a
+route change, a restart, or several servers sharing a channel can never leave two
+live copies of a panel. See `docs/SAAS_RUNTIME_ROUTING.md`.
