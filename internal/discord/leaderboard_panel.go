@@ -41,6 +41,18 @@ func NewLeaderboardPanel(editor MessageEditor, channelID, messageID string, cfg 
 
 func (p *LeaderboardPanel) MessageID() string { return p.messageID }
 
+// Reset forgets the current message so the next Update posts a fresh one. Used
+// after the legacy panel message was retired in favour of routed panels.
+func (p *LeaderboardPanel) Reset() {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.messageID = ""
+	p.lastHash = ""
+	p.mu.Unlock()
+}
+
 // Update renders and edits/sends exactly one persistent panel. It returns the
 // resulting message ID so callers can persist it in GuildSetup.
 func (p *LeaderboardPanel) Update(snapshot LeaderboardSnapshot) (string, bool, error) {

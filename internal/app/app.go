@@ -98,6 +98,12 @@ type App struct {
 	// (internal/routing), a short-TTL cache over SaaSChannelRoutes. Nil-safe:
 	// with no database, publishers simply use their legacy channel.
 	ChannelRoutes             *routing.Resolver
+	// GuildRoutePanels durably records which message holds each routed panel
+	// (LINK_GAMERTAG, STATS_LEADERBOARDS, AUTO_LEADERBOARD) in which channel.
+	GuildRoutePanels *repository.GuildRoutePanelRepository
+	// RouteSyncer keeps those guild-level routed artifacts in step with the
+	// installation routes. Nil-safe: without it routes are simply not synced.
+	RouteSyncer *discord.RouteSyncer
 	saasDiscordVerifier       discordGuildVerifier
 	saasNitradoClientFactory  func(token string) *nitrado.Client
 	saasSyncLimiter           *saasRateLimiter
@@ -489,6 +495,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.SaaSCredentials = repository.NewCredentialRepository(db.Pool)
 			app.SaaSChannelRoutes = repository.NewChannelRouteRepository(db.Pool)
 			app.ChannelRoutes = routing.NewResolver(app.SaaSChannelRoutes, routing.DefaultTTL)
+			app.GuildRoutePanels = repository.NewGuildRoutePanelRepository(db.Pool)
 			seedCtx, seedCancel := context.WithTimeout(ctx, 10*time.Second)
 			seedErr := app.Achievements.EnsureDefinitions(seedCtx)
 			seedCancel()
@@ -1131,15 +1138,44 @@ func (a *App) Run() error {
 				}
 				seasonCancel()
 			}
+			// Guild-level routed artifacts (link/stats panels, the persistent
+			// leaderboard) follow the union of the AUTO_LEADERBOARD /
+			// LINK_GAMERTAG / STATS_LEADERBOARDS routes of every active
+			// server in the guild, each resolved on its own (guild, server)
+			// identity through the shared resolver.
+			routingEnabled := a.ChannelRoutes != nil && a.GuildRoutePanels != nil
+			guildServers := func(ctx context.Context) (int64, []int64, error) {
+				rows, listErr := a.Servers.ListActiveByGuild(ctx, guildRowID)
+				if listErr != nil {
+					return 0, nil, listErr
+				}
+				ids := make([]int64, 0, len(rows))
+				for _, r := range rows {
+					ids = append(ids, r.ID)
+				}
+				return guildRowID, ids, nil
+			}
+			var routePanels *discord.RoutePanels
+			if routingEnabled {
+				routePanels = discord.NewRoutePanels(api, discord.NewRoutePanelStore(a.GuildRoutePanels))
+			}
 			if a.Stats != nil {
-				if gs, gsErr := setupStore.Get(a.Config.DiscordGuildID); gsErr == nil && gs != nil && gs.LeaderboardsChannelID != "" {
-					leaderboardPanel := discord.NewLeaderboardPanel(api, gs.LeaderboardsChannelID, gs.LeaderboardMessageID, discord.DefaultLeaderboardConfig())
+				legacyLeaderboardChannel, legacyLeaderboardMessage := "", ""
+				if gs, gsErr := setupStore.Get(a.Config.DiscordGuildID); gsErr == nil && gs != nil {
+					legacyLeaderboardChannel, legacyLeaderboardMessage = gs.LeaderboardsChannelID, gs.LeaderboardMessageID
+				}
+				if legacyLeaderboardChannel != "" || routingEnabled {
+					leaderboardPanel := discord.NewLeaderboardPanel(api, legacyLeaderboardChannel, legacyLeaderboardMessage, discord.DefaultLeaderboardConfig())
 					a.LeaderboardScheduler = discord.NewLeaderboardScheduler(leaderboardPanel, a.Stats, guildRowID, discord.DefaultLeaderboardConfig(), func(messageID string) {
 						if latest, latestErr := setupStore.Get(a.Config.DiscordGuildID); latestErr == nil && latest != nil {
 							latest.LeaderboardMessageID = messageID
 							_ = setupStore.Save(*latest)
 						}
 					})
+					if routingEnabled {
+						a.LeaderboardScheduler.SetRouting(a.ChannelRoutes, guildServers, routePanels,
+							discord.NewLegacyLeaderboardRetirer(api, setupStore, a.Config.DiscordGuildID))
+					}
 					go a.LeaderboardScheduler.Run(ctx)
 					if a.AdminService != nil {
 						a.AdminService.SetLeaderboardRefresh(func(refreshCtx context.Context) error {
@@ -1147,6 +1183,19 @@ func (a *App) Run() error {
 						})
 					}
 				}
+			}
+			if routingEnabled {
+				a.RouteSyncer = discord.NewRouteSyncer(a.ChannelRoutes, guildServers, routePanels, api, setupStore, a.Config.DiscordGuildID)
+				if a.LeaderboardScheduler != nil {
+					a.RouteSyncer.SetLeaderboard(a.LeaderboardScheduler)
+				}
+				a.RouteSyncer.SetLegacyRestore(func() {
+					if _, _, ensureErr := setupManager.EnsureConfigured(a.Config.DiscordGuildID); ensureErr != nil {
+						slog.Warn("component=discord", "event", "legacy_panel_restore_failed", "err", ensureErr.Error())
+					}
+				})
+				setupManager.SetRouteGate(a.RouteSyncer.HasRoute)
+				go a.RouteSyncer.Run(ctx)
 			}
 			store := &persistenceStoreAdapter{players: a.Players, kills: a.Kills, deaths: a.Deaths, seasons: a.Seasons, factions: a.Factions, wars: a.Wars, events: a.Events, bounties: a.Bounties, streaks: a.Streaks, anomalies: a.Anomalies, activity: a.ActivityRepository, servers: a.Servers, stats: a.Stats, analytics: a.AnalyticsRepository, panelDirty: func() {
 				if a.LeaderboardScheduler != nil {
@@ -1266,6 +1315,11 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 					slog.Warn("component=adm", "event", "monitor_message_save_failed", "server_id", row.ID, "err", err.Error())
 				}
 			})
+			if a.ChannelRoutes != nil {
+				// ADMIN_LOGS resolves per (guild, server) first; the legacy
+				// GuildSetup.ADMMonitorChannelID is only the fallback.
+				monitor.SetRouting(a.ChannelRoutes, row.GuildID)
+			}
 			engine.OnAdmSnapshot(monitor.Update)
 			engine.OnDownload(monitor.HandleDownload)
 		}

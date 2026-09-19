@@ -947,6 +947,24 @@ FROM installation_settings WHERE admin_log_channel_id IS NOT NULL
 ON CONFLICT (installation_id, route_key) DO NOTHING;
 `,
 	},
+	{
+		Name: "0028_guild_route_panels",
+		SQL: `
+-- Which persistent panel message lives in which routed channel, per guild and
+-- route key (LINK_GAMERTAG, STATS_LEADERBOARDS, AUTO_LEADERBOARD). Keyed by
+-- channel so several servers routing to the same channel share one message and
+-- a route change can never leave two live panels behind.
+CREATE TABLE IF NOT EXISTS guild_route_panels (
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    route_key TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (guild_id, route_key, channel_id)
+);
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order, each transactionally. A

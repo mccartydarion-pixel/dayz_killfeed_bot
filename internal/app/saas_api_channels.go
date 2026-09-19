@@ -336,6 +336,7 @@ func (a *App) completeChannelsStep(ctx context.Context, organizationID, installa
 	// cache so publishers use the new channel on their very next lookup
 	// instead of waiting out the resolver TTL.
 	a.ChannelRoutes.InvalidateAll()
+	a.RouteSyncer.Trigger() // re-sync routed panels/leaderboard now
 	if err := a.advanceSetupProgress(ctx, organizationID, installationID, false, func(p *repository.InstallationSetupProgress) {
 		p.ChannelsCompleted = true
 		p.CurrentStep = "VALIDATION"

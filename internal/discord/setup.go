@@ -57,6 +57,23 @@ type SetupManager struct {
 	api   GuildAPI
 	store SetupStore
 	botID string
+
+	// routed reports whether a route key is served by installation routes for
+	// this guild. When true the matching legacy panel message is not created,
+	// so a routed feature is never also posted in its legacy channel.
+	routed func(routeKey string) bool
+}
+
+// SetRouteGate attaches the "is this feature routed?" check (RouteSyncer.HasRoute).
+// Optional: unset behaves exactly as before routes existed.
+func (m *SetupManager) SetRouteGate(fn func(routeKey string) bool) {
+	if m != nil {
+		m.routed = fn
+	}
+}
+
+func (m *SetupManager) hasRoute(routeKey string) bool {
+	return m.routed != nil && m.routed(routeKey)
 }
 
 // NewSetupManager creates a manager bound to a guild API and store.
@@ -178,7 +195,7 @@ func (m *SetupManager) EnsureConfigured(guildID string) (*GuildSetup, *SetupRepo
 			report.Repaired = append(report.Repaired, "link-username-message")
 		}
 	}
-	if setup.LeaderboardsChannelID != "" && setup.LeaderboardMessageID == "" {
+	if setup.LeaderboardsChannelID != "" && setup.LeaderboardMessageID == "" && !m.hasRoute(routeKeyAutoLeaderboard) {
 		msg, err := m.api.ChannelMessageSendEmbed(setup.LeaderboardsChannelID, BuildLeaderboardEmbed(LeaderboardSnapshot{GeneratedAt: time.Now()}, DefaultLeaderboardConfig()))
 		if err != nil {
 			report.Failed["leaderboard-message"] = err.Error()
@@ -187,7 +204,7 @@ func (m *SetupManager) EnsureConfigured(guildID string) (*GuildSetup, *SetupRepo
 			report.Created = append(report.Created, "leaderboard-message")
 		}
 	}
-	if setup.PlayerStatsChannelID != "" && setup.PlayerStatsInfoMessageID == "" {
+	if setup.PlayerStatsChannelID != "" && setup.PlayerStatsInfoMessageID == "" && !m.hasRoute(routeKeyStatsLeaderboards) {
 		msg, err := m.api.ChannelMessageSendComplex(setup.PlayerStatsChannelID, PlayerStatsInfoEmbed(), PlayerStatsPanelComponents())
 		if err != nil {
 			report.Failed["player-stats-message"] = err.Error()
@@ -196,7 +213,7 @@ func (m *SetupManager) EnsureConfigured(guildID string) (*GuildSetup, *SetupRepo
 			report.Created = append(report.Created, "player-stats-message")
 		}
 	}
-	if setup.LinkPanelChannelID != "" && setup.LinkPanelMessageID == "" {
+	if setup.LinkPanelChannelID != "" && setup.LinkPanelMessageID == "" && !m.hasRoute(routeKeyLinkGamertag) {
 		msg, err := m.api.ChannelMessageSendComplex(setup.LinkPanelChannelID, LinkUsernameInfoEmbed(), LinkUsernamePanelComponents())
 		if err != nil {
 			report.Failed["link-username-message"] = err.Error()

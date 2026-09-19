@@ -25,18 +25,64 @@ type ADMMonitorPublisher struct {
 	saveMessage    func(string)
 	downloadFailed bool
 	forceRefresh   bool
+
+	// Installation route model: when set, the ADMIN_LOGS route for this
+	// server's installation wins over the legacy GuildSetup.ADMMonitorChannelID
+	// (cached in channelID). msgChannel is the channel messageID lives in, so a
+	// route change moves the persistent message instead of editing a stale id.
+	route      *RouteBinding
+	msgChannel string
+}
+
+// SetRouting attaches the shared route resolver for this publisher's server.
+// guildRowID is the internal guilds.id; the publisher already holds serverID,
+// so resolution is per (guild, server) - never by guild alone.
+func (p *ADMMonitorPublisher) SetRouting(resolver RouteResolver, guildRowID int64) {
+	if p == nil || resolver == nil {
+		return
+	}
+	p.route = NewRouteBinding(resolver, guildRowID, p.serverID, routeKeyAdminLogs)
+}
+
+// activeChannel picks exactly one destination: the ADMIN_LOGS route when one
+// is configured (lookup errors and missing routes count as "none"), otherwise
+// the legacy monitor channel. routed reports which. It is re-evaluated on
+// every call, so a changed route takes effect on the next snapshot/download
+// (in-process writes invalidate the shared resolver cache; out-of-process
+// changes land within its TTL).
+func (p *ADMMonitorPublisher) activeChannel() (channelID string, routed bool) {
+	if id := p.route.ChannelID(); id != "" {
+		return id, true
+	}
+	return p.legacyChannel(), false
+}
+
+// legacyChannel is the pre-route lookup, cached once found exactly as before.
+func (p *ADMMonitorPublisher) legacyChannel() string {
+	if p.channelID == "" && p.store != nil {
+		if setup, err := p.store.Get(p.guildID); err == nil && setup != nil {
+			p.channelID = setup.ADMMonitorChannelID
+		}
+	}
+	return p.channelID
+}
+
+// deleteMessage removes a superseded monitor message, best-effort.
+func (p *ADMMonitorPublisher) deleteMessage(channelID, messageID string) {
+	if channelID == "" || messageID == "" {
+		return
+	}
+	if d, ok := p.editor.(messageDeleter); ok {
+		_ = d.ChannelMessageDelete(channelID, messageID)
+	}
 }
 
 func (p *ADMMonitorPublisher) HandleDownload(report killfeed.DownloadReport) {
 	if p == nil || p.editor == nil || p.store == nil {
 		return
 	}
-	if p.channelID == "" {
-		if setup, err := p.store.Get(p.guildID); err == nil && setup != nil {
-			p.channelID = setup.ADMMonitorChannelID
-		}
-	}
-	if p.channelID == "" {
+	channelID, _ := p.activeChannel()
+	if channelID == "" {
 		return
 	}
 	if report.Result == "failure" {
@@ -49,7 +95,7 @@ func (p *ADMMonitorPublisher) HandleDownload(report killfeed.DownloadReport) {
 	}
 	p.forceRefresh = true
 	if report.Result == "recovered" || report.Result == "failure" || report.Result == "success" || report.Result == "success_no_new_events" || report.Result == "checkpoint_failed" || report.Rotation || report.Truncated {
-		_, _ = p.editor.ChannelMessageSendEmbed(p.channelID, BuildADMDownloadEmbed(report))
+		_, _ = p.editor.ChannelMessageSendEmbed(channelID, BuildADMDownloadEmbed(report))
 	}
 }
 
@@ -113,13 +159,18 @@ func (p *ADMMonitorPublisher) Update(snapshot killfeed.AdmSnapshot) {
 	if p == nil || p.editor == nil {
 		return
 	}
-	if p.channelID == "" && p.store != nil {
-		if setup, err := p.store.Get(p.guildID); err == nil && setup != nil {
-			p.channelID = setup.ADMMonitorChannelID
-		}
-	}
-	if p.channelID == "" {
+	channelID, routed := p.activeChannel()
+	if channelID == "" {
 		return
+	}
+	// The destination changed while a monitor message exists elsewhere (route
+	// added, changed or removed): retire the old message and post a fresh one
+	// right away, rather than editing an id that does not exist in the new
+	// channel or waiting out the refresh interval.
+	if p.messageID != "" && p.msgChannel != "" && p.msgChannel != channelID {
+		p.deleteMessage(p.msgChannel, p.messageID)
+		p.messageID = ""
+		p.forceRefresh = true
 	}
 	now := time.Now()
 	health := snapshot.Health(now, 5*time.Minute)
@@ -130,20 +181,35 @@ func (p *ADMMonitorPublisher) Update(snapshot killfeed.AdmSnapshot) {
 	embed := BuildADMMonitorEmbed(snapshot, now)
 	var msg *discordgo.Message
 	var err error
+	posted := false
 	if p.messageID == "" {
-		msg, err = p.editor.ChannelMessageSendEmbed(p.channelID, embed)
+		msg, err = p.editor.ChannelMessageSendEmbed(channelID, embed)
+		posted = true
 	} else {
-		msg, err = p.editor.ChannelMessageEditEmbed(p.channelID, p.messageID, embed)
+		msg, err = p.editor.ChannelMessageEditEmbed(channelID, p.messageID, embed)
+		if err != nil && routed && isUnknownMessage(err) {
+			// The stored id is not in the routed channel: the route was set
+			// while the process was down (the id belongs to the legacy channel)
+			// or the message was deleted. Retire a stray legacy copy, then
+			// post once in the routed channel. Only on route-derived
+			// destinations, so legacy behaviour is unchanged.
+			if legacy := p.legacyChannel(); legacy != "" && legacy != channelID {
+				p.deleteMessage(legacy, p.messageID)
+			}
+			msg, err = p.editor.ChannelMessageSendEmbed(channelID, embed)
+			posted = true
+		}
 	}
 	if err != nil {
 		return
 	}
-	if p.messageID == "" && msg != nil {
+	if posted && msg != nil {
 		p.messageID = msg.ID
 		if p.saveMessage != nil {
 			p.saveMessage(msg.ID)
 		}
 	}
+	p.msgChannel = channelID
 	p.lastHealth = health
 	p.lastFile = snapshot.CurrentFile
 	p.lastRefresh = now
