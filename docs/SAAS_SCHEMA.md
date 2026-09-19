@@ -337,3 +337,24 @@ the append-only ledger: `amount` is a signed **BIGINT** (debits negative),
 (`trg_point_transactions_append_only`) refuses any update that would rewrite a row's
 facts. Index `(guild_id, player_id, id DESC)` serves history. The 0030 backfill sets
 `balance = lifetime_points` and fills legacy `balance_after` running totals.
+
+## installation_embed_templates (migration 0031)
+
+Custom embed templates (Embed Designer Phase 2 - **storage only**: no Discord publisher reads
+this table; custom template runtime rendering is not enabled). One row per customized
+`(installation, route)`; a route without a row uses the Champion default, and defaults are never
+copied into the table.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | `BIGSERIAL` PK | |
+| `installation_id` | `BIGINT NOT NULL` | `REFERENCES installations(id) ON DELETE CASCADE` - a template belongs to exactly one installation (two installations of one guild are independent), and is deleted with it, like `installation_settings` / `installation_channel_routes` |
+| `route_key` | `TEXT NOT NULL` | one of the fixed channel-route keys; validated in Go (this schema's convention: no `CHECK` for enumerated values) |
+| `config_json` | `JSONB NOT NULL` | the typed, server-validated and normalized template (never a raw client blob), carrying `version: 1`. `CHECK`ed to be a JSON object of at most 64 KiB |
+| `created_at` | `TIMESTAMPTZ NOT NULL DEFAULT NOW()` | preserved on update |
+| `updated_at` | `TIMESTAMPTZ NOT NULL DEFAULT NOW()` | refreshed by every upsert |
+
+`UNIQUE (installation_id, route_key)` makes concurrent saves converge on a single row (the API
+upserts with `INSERT ... ON CONFLICT DO UPDATE`) and doubles as the lookup index. Tenant safety is
+in the queries: every read and write joins `installations` on `organization_id`, so an installation
+id alone never reaches another organization's row. See `docs/SAAS_API.md` (Embed templates).

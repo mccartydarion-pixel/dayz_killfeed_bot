@@ -71,6 +71,7 @@ var httpStatusForCode = map[string]int{
 	codeInstallationNotVerified: http.StatusUnprocessableEntity,
 	codeInternalError:           http.StatusInternalServerError,
 	codeNitradoUnavailable:      http.StatusServiceUnavailable,
+	codePayloadTooLarge:         http.StatusRequestEntityTooLarge,
 }
 
 // writeSaaSJSON writes a successful JSON response.
@@ -345,6 +346,10 @@ func (a *App) registerSaaSAPI() {
 
 	a.HTTPServer.Handle("POST /api/saas/organizations/{organizationID}/installations/{installationID}/setup/complete", a.handleFinalizeSetup)
 	a.HTTPServer.Handle("GET /api/saas/organizations/{organizationID}/installations/{installationID}/hub", a.handleGetInstallationHub)
+	a.HTTPServer.Handle("GET /api/saas/organizations/{organizationID}/installations/{installationID}/embed-templates", a.handleListEmbedTemplates)
+	a.HTTPServer.Handle("GET /api/saas/organizations/{organizationID}/installations/{installationID}/embed-templates/{routeKey}", a.handleGetEmbedTemplate)
+	a.HTTPServer.Handle("PUT /api/saas/organizations/{organizationID}/installations/{installationID}/embed-templates/{routeKey}", a.handlePutEmbedTemplate)
+	a.HTTPServer.Handle("DELETE /api/saas/organizations/{organizationID}/installations/{installationID}/embed-templates/{routeKey}", a.handleDeleteEmbedTemplate)
 	a.HTTPServer.Handle("GET /api/saas/organizations/{organizationID}/installations/{installationID}/settings", a.handleGetInstallationSettings)
 	a.HTTPServer.Handle("PUT /api/saas/organizations/{organizationID}/installations/{installationID}/settings", a.handleSaveInstallationSettings)
 }

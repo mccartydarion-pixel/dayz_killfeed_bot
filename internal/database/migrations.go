@@ -1046,6 +1046,26 @@ DROP TRIGGER IF EXISTS trg_point_transactions_append_only ON point_transactions;
 CREATE TRIGGER trg_point_transactions_append_only BEFORE UPDATE ON point_transactions FOR EACH ROW EXECUTE FUNCTION point_transactions_append_only();
 `,
 	},
+	{
+		// Embed Designer Phase 2: durable custom embed templates. One row per
+		// (installation, route). Storage only - no Discord publisher reads this yet.
+		// route_key is TEXT validated in Go against the fixed route set (this schema's
+		// convention: no CHECK for enumerated values); config_json is the typed,
+		// server-validated template (never a raw client blob). Deleting an installation
+		// deletes its templates (same as its other child rows).
+		Name: "0031_installation_embed_templates",
+		SQL: `
+CREATE TABLE IF NOT EXISTS installation_embed_templates (
+    id BIGSERIAL PRIMARY KEY,
+    installation_id BIGINT NOT NULL REFERENCES installations(id) ON DELETE CASCADE,
+    route_key TEXT NOT NULL,
+    config_json JSONB NOT NULL CHECK (jsonb_typeof(config_json) = 'object' AND octet_length(config_json::text) <= 65536),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(installation_id, route_key)
+);
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order, each transactionally. A
