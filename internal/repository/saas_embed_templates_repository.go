@@ -132,3 +132,46 @@ WHERE i.id = t.installation_id AND i.organization_id = $1 AND t.installation_id 
 	}
 	return tag.RowsAffected() > 0, nil
 }
+
+// ResolveTemplate is the RUNTIME read (embedrender.Source): the custom template of the
+// installation that owns the game server (guildRowID, serverID) for routeKey. The
+// installation is chosen exactly as ChannelRouteRepository.ResolveChannel chooses it
+// (same tenant-consistency conditions, lowest id first), so a route's channel and its
+// template always belong to the same installation - never resolved by guild alone.
+// It returns the installation id even when there is no template (cfg == nil), and
+// installationID 0 when the server has no installation.
+func (r *EmbedTemplateRepository) ResolveTemplate(ctx context.Context, guildRowID, serverID int64, routeKey string) (int64, *embedtemplates.Config, error) {
+	const q = `
+SELECT i.id, t.config_json
+FROM installations i
+JOIN discord_guild_connections c ON c.id = i.discord_guild_connection_id
+JOIN game_servers gs ON gs.id = i.game_server_id
+LEFT JOIN installation_embed_templates t ON t.installation_id = i.id AND t.route_key = $3
+WHERE c.guild_id = $1
+  AND i.game_server_id = $2
+  AND gs.guild_id = c.guild_id
+  AND c.organization_id = i.organization_id
+  AND (gs.organization_id IS NULL OR gs.organization_id = i.organization_id)
+ORDER BY i.id
+LIMIT 1`
+	var instID int64
+	var raw []byte
+	err := r.pool.QueryRow(ctx, q, guildRowID, serverID, routeKey).Scan(&instID, &raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil, nil
+	}
+	if err != nil {
+		return 0, nil, fmt.Errorf("resolve embed template: %w", err)
+	}
+	if raw == nil {
+		return instID, nil, nil
+	}
+	var cfg embedtemplates.Config
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		// A stored blob that cannot be decoded: report it as a template that fails
+		// validation (the renderer falls back to the default and logs a safe reason).
+		return instID, &embedtemplates.Config{RouteKey: routeKey, Color: "invalid"}, nil
+	}
+	cfg.RouteKey = routeKey
+	return instID, &cfg, nil
+}

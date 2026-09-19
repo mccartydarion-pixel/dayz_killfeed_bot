@@ -29,6 +29,30 @@ type KillfeedPublisher struct {
 	logMu                       sync.Mutex
 	lastRouteState              string
 	lastRouteErrLog             time.Time
+
+	// Optional custom embed templates (nil = the Champion default, always).
+	custom     EmbedCustomizer
+	serverName string
+}
+
+// SetCustomizer enables custom embed templates for this server's KILLFEED cards.
+// serverName feeds {{server_name}}. Presentation only.
+func (p *KillfeedPublisher) SetCustomizer(c EmbedCustomizer, serverName string) {
+	if p == nil {
+		return
+	}
+	p.custom = c
+	p.serverName = serverName
+}
+
+// killCard is the embed for one kill: the Champion default, or - when the installation
+// saved an enabled KILLFEED template that renders - the custom card. Exactly one card
+// either way, so nothing is ever published twice.
+func (p *KillfeedPublisher) killCard(ev *killfeed.Event) *discordgo.MessageEmbed {
+	def := BuildKillEmbed(ev)
+	return customEmbed(p.custom, p.routeGuildID, p.routeServerID, routeKeyKillfeed, def, func() map[string]string {
+		return killfeedVars(ev, p.serverName)
+	})
 }
 
 // RouteResolver resolves a feature route key to the Discord channel an
@@ -168,7 +192,7 @@ func (p *KillfeedPublisher) PublishKill(ev *killfeed.Event) error {
 	}
 
 	// Build the style-aware Champion embed (one kill = one embed).
-	embed := BuildKillEmbed(ev)
+	embed := p.killCard(ev)
 
 	victim, killer := "", ""
 	if ev.Victim != nil {

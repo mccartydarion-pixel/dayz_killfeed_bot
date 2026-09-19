@@ -449,7 +449,7 @@ components:
         variables: { type: array, items: { type: string }, description: Approved placeholders for this route. }
         createdAt: { type: string, format: date-time, nullable: true }
         updatedAt: { type: string, format: date-time, nullable: true }
-        runtimeRendering: { type: string, enum: [NOT_ENABLED] }
+        runtimeRendering: { type: string, enum: [ENABLED, NOT_ENABLED], description: "ENABLED only when CHAMPION_CUSTOM_EMBEDS_ENABLED is on and the route has a runtime publisher that renders templates." }
     EmbedTemplateListResponse:
       type: object
       properties:
@@ -457,6 +457,7 @@ components:
         templates: { type: array, items: { $ref: "#/components/schemas/EmbedTemplateResponse" } }
         customizedRoutes: { type: array, items: { $ref: "#/components/schemas/EmbedRouteKey" } }
         variables: { type: object, additionalProperties: { type: array, items: { type: string } } }
+        runtimeRoutes: { type: array, items: { $ref: "#/components/schemas/EmbedRouteKey" }, description: Routes whose publishers render templates (independent of the flag). }
         limits:
           type: object
           properties:
@@ -468,7 +469,7 @@ components:
             footerText: { type: integer }
             authorName: { type: integer }
             totalText: { type: integer }
-        runtimeRendering: { type: string, enum: [NOT_ENABLED] }
+        runtimeRendering: { type: string, enum: [ENABLED, NOT_ENABLED], description: "ENABLED only when CHAMPION_CUSTOM_EMBEDS_ENABLED is on and the route has a runtime publisher that renders templates." }
     ChannelRoutesResponse:
       type: object
       description: A route_key absent from routes means it isn't configured - never a placeholder empty entry.
@@ -1195,7 +1196,7 @@ paths:
 
   /api/saas/organizations/{organizationID}/installations/{installationID}/embed-templates:
     get:
-      summary: List the installation's customized embed templates (any member). Custom template persistence is live; runtime rendering is NOT enabled.
+      summary: List the installation's customized embed templates (any member). Runtime rendering is behind CHAMPION_CUSTOM_EMBEDS_ENABLED (see runtimeRendering / runtimeRoutes).
       parameters:
         - { $ref: "#/components/parameters/ActingUser" }
         - { $ref: "#/components/parameters/organizationID" }

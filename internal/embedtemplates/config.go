@@ -99,21 +99,25 @@ type Stored struct {
 }
 
 // routeVariables is the approved variable set per route: the ONLY placeholders a
-// template for that route may contain. The website's Phase 1 sets are the base;
-// `ammo`, `streak` (KILLFEED) and `transaction_type` (ECONOMY) are additions the
-// runtime events can supply (killfeed.Event.Ammo / KillerStreak, economy.Event.Type).
+// template for that route may contain. The website's Phase 1 sets are the base and
+// are only ever WIDENED (a stored template stays valid): the additions are values the
+// runtime events actually carry (killfeed.Event.Ammo/KillerStreak, hit encounters,
+// economy.Event.Type, bounties.Event, connection notices). A variable a given event
+// does not carry is simply absent at render time (Phase 4: EMBED_RUNTIME.md).
+// Aliases kept for the website: HITFEED `killer` = the attacker, BOUNTY_TRACKING
+// `killer` = the hunter and `victim` = the target.
 // Routes without an event vocabulary (panels, reserved routes) only get the
 // generic pair. A test keeps the key set identical to the channel-route blueprint.
 var routeVariables = map[string][]string{
 	"KILLFEED":           {"killer", "victim", "weapon", "distance", "ammo", "streak", "server_name", "timestamp"},
-	"PVE_FEED":           {"victim", "server_name", "timestamp"},
-	"HITFEED":            {"killer", "victim", "weapon", "distance"},
+	"PVE_FEED":           {"victim", "cause", "server_name", "timestamp"},
+	"HITFEED":            {"killer", "attacker", "victim", "weapon", "ammo", "distance", "hit_zone", "damage", "hits", "server_name"},
 	"BOUNTY":             {"victim", "server_name", "timestamp"},
-	"BOUNTY_TRACKING":    {"killer", "victim", "server_name"},
+	"BOUNTY_TRACKING":    {"killer", "victim", "target", "hunter", "amount", "total", "count", "weapon", "distance", "status", "server_name"},
 	"ECONOMY":            {"player", "amount", "balance", "transaction_type", "server_name"},
 	"CASINO":             {"player", "amount", "result"},
 	"SHOP":               {"player", "item", "amount", "balance"},
-	"CONNECTIONS":        {"player", "event", "server_name", "timestamp"},
+	"CONNECTIONS":        {"player", "event", "event_type", "session", "server_name", "timestamp"},
 	"BUILD_FEED":         {"player", "structure", "server_name"},
 	"ADMIN_ALERTS":       {"event", "player", "server_name", "timestamp"},
 	"ADMIN_LOGS":         {"event", "player", "server_name", "timestamp"},

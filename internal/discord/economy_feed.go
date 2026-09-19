@@ -40,6 +40,10 @@ type EconomyFeed struct {
 	resolver RouteResolver
 	servers  GuildServersFunc
 
+	// Optional custom embed templates (nil = the Champion default, always).
+	custom     EmbedCustomizer
+	serverName ServerNameFunc
+
 	mu          sync.Mutex
 	queue       []economy.Event
 	dropped     int64
@@ -57,6 +61,22 @@ const (
 
 func NewEconomyFeed(sender HitSender, resolver RouteResolver, servers GuildServersFunc) *EconomyFeed {
 	return &EconomyFeed{sender: sender, resolver: resolver, servers: servers, lastWarn: make(map[string]time.Time)}
+}
+
+// SetCustomizer enables custom embed templates for ECONOMY cards.
+func (f *EconomyFeed) SetCustomizer(c EmbedCustomizer, serverName ServerNameFunc) {
+	if f == nil {
+		return
+	}
+	f.custom = c
+	f.serverName = serverName
+}
+
+func (f *EconomyFeed) card(e economy.Event, serverID int64) *discordgo.MessageEmbed {
+	def := buildEconomyEmbed(e)
+	return customEmbed(f.custom, e.GuildID, serverID, routeKeyEconomy, def, func() map[string]string {
+		return economyVars(e, serverNameOf(f.serverName, serverID))
+	})
 }
 
 // Notify implements economy.Notifier. It never blocks and never fails.
@@ -135,11 +155,12 @@ func (f *EconomyFeed) tick(final bool) {
 	perChannel := make(map[string][]*discordgo.MessageEmbed)
 	var order []string
 	for _, e := range batch {
-		for _, ch := range f.channelsFor(ctx, e) {
+		for _, target := range f.targetsFor(ctx, e) {
+			ch := target.channel
 			if _, seen := perChannel[ch]; !seen {
 				order = append(order, ch)
 			}
-			perChannel[ch] = append(perChannel[ch], buildEconomyEmbed(e))
+			perChannel[ch] = append(perChannel[ch], f.card(e, target.serverID))
 		}
 	}
 	for _, ch := range order {
@@ -154,7 +175,7 @@ func (f *EconomyFeed) tick(final bool) {
 	}
 }
 
-func (f *EconomyFeed) channelsFor(ctx context.Context, e economy.Event) []string {
+func (f *EconomyFeed) targetsFor(ctx context.Context, e economy.Event) []channelTarget {
 	if f.resolver == nil {
 		return nil
 	}
@@ -172,7 +193,7 @@ func (f *EconomyFeed) channelsFor(ctx context.Context, e economy.Event) []string
 		serverIDs = ids
 	}
 	seen := map[string]bool{}
-	var out []string
+	var out []channelTarget
 	for _, id := range serverIDs {
 		ch, found, err := f.resolver.Resolve(ctx, e.GuildID, id, routeKeyEconomy)
 		if err != nil {
@@ -183,7 +204,7 @@ func (f *EconomyFeed) channelsFor(ctx context.Context, e economy.Event) []string
 			continue
 		}
 		seen[ch] = true
-		out = append(out, ch)
+		out = append(out, channelTarget{channel: ch, serverID: id})
 	}
 	return out
 }

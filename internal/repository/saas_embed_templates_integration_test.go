@@ -376,3 +376,49 @@ func TestEmbedTemplatesAreDeletedWithTheirInstallation(t *testing.T) {
 		t.Fatal("another installation's templates must remain")
 	}
 }
+
+// The runtime read chooses the installation exactly as channel-route resolution does
+// (guild + server), reports the installation even when it has no template, and never
+// crosses organizations or servers.
+func TestEmbedTemplateResolveTemplateByGuildAndServer(t *testing.T) {
+	w := newEmbedWorld(t)
+	org, inst := w.installation()
+	inst2 := w.secondInstallation(org, inst) // second server, same guild
+	var guildRow, server2 int64
+	w.must(w.pool.QueryRow(w.ctx, `SELECT c.guild_id, i.game_server_id FROM installations i JOIN discord_guild_connections c ON c.id=i.discord_guild_connection_id WHERE i.id=$1`, inst2).Scan(&guildRow, &server2))
+
+	if _, err := w.repo.Upsert(w.ctx, org, inst2, sampleConfig("KILLFEED", "second-server")); err != nil {
+		t.Fatal(err)
+	}
+	gotInst, cfg, err := w.repo.ResolveTemplate(w.ctx, guildRow, server2, "KILLFEED")
+	w.must(err)
+	if gotInst != inst2 || cfg == nil || cfg.Title.Template != "second-server" || cfg.RouteKey != "KILLFEED" {
+		t.Fatalf("expected installation %d's template, got %d %+v", inst2, gotInst, cfg)
+	}
+	// A route without a template still reports the installation (so a cached "none" can be invalidated).
+	gotInst, cfg, err = w.repo.ResolveTemplate(w.ctx, guildRow, server2, "HITFEED")
+	if err != nil || gotInst != inst2 || cfg != nil {
+		t.Fatalf("no template: %d %v %v", gotInst, cfg, err)
+	}
+	// A server with no installation, a wrong guild, and another organization's guild resolve to nothing.
+	orgB, instB := w.installation()
+	_ = orgB
+	var guildB int64
+	w.must(w.pool.QueryRow(w.ctx, `SELECT c.guild_id FROM installations i JOIN discord_guild_connections c ON c.id=i.discord_guild_connection_id WHERE i.id=$1`, instB).Scan(&guildB))
+	if id, c, err := w.repo.ResolveTemplate(w.ctx, guildB, server2, "KILLFEED"); err != nil || id != 0 || c != nil {
+		t.Fatalf("another guild must not resolve this server's installation: %d %v %v", id, c, err)
+	}
+	if id, c, err := w.repo.ResolveTemplate(w.ctx, guildRow, 987654321, "KILLFEED"); err != nil || id != 0 || c != nil {
+		t.Fatalf("an unknown server resolves to nothing: %d %v %v", id, c, err)
+	}
+	// An undecodable stored blob is reported as an invalid template, never a panic.
+	w.must(func() error {
+		_, err := w.pool.Exec(w.ctx, `UPDATE installation_embed_templates SET config_json = '{"title": 12}' WHERE installation_id=$1 AND route_key='KILLFEED'`, inst2)
+		return err
+	}())
+	if _, c, err := w.repo.ResolveTemplate(w.ctx, guildRow, server2, "KILLFEED"); err != nil || c == nil {
+		t.Fatalf("a malformed stored template is returned for the renderer to reject: %v %v", c, err)
+	} else if _, verr := embedtemplates.Validate(*c, "KILLFEED"); verr == nil {
+		t.Fatal("...and it must fail validation")
+	}
+}
