@@ -262,6 +262,7 @@ func parseSuicideAction(line string) (*Event, bool) {
 		TimeOfDay: parseTimeOfDay(line),
 		Player:    player,
 		Dead:      hasDeadMarker(line),
+		Cause:     DeathCauseSuicide, // explicit: the log says "performed EmoteSuicide"
 		Raw:       line,
 	}
 	// Weapon follows " with " to end of line (no "from ... meters" clause).

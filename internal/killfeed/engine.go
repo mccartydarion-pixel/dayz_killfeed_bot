@@ -187,6 +187,51 @@ type ConnectionPublisher interface {
 	PublishConnection(n ConnectionNotice)
 }
 
+// PveDeathNotice is what the PVE_FEED receives. Like ConnectionNotice it carries
+// only the display name and the proven cause - never the ADM id or position.
+type PveDeathNotice struct {
+	Cause DeathCause
+	Name  string
+}
+
+// PveDeathPublisher is the consumer for provably non-PvP deaths (the PVE_FEED).
+//
+// PublishPveDeath runs on the persistence queue's goroutine, AFTER the death was
+// durably persisted as a non-duplicate, so it MUST NOT block. It returns whether
+// it CLAIMED the death: true means the PVE_FEED owns it and the legacy death feed
+// must not post it as well; false (no route configured, lookup failed) leaves it
+// to the legacy death feed exactly as before. The decision is made once per
+// event, so a death is never published to both.
+type PveDeathPublisher interface {
+	PublishPveDeath(n PveDeathNotice) (claimed bool)
+}
+
+// PveCause classifies a death/suicide event for the PVE_FEED. ok=false means the
+// event is not the PVE_FEED's and stays wherever it is today. The ordered rules:
+//
+//  1. an explicit player attacker (PLAYER_KILL, or any Killer/Attacker) is PvP
+//     and belongs to the KILLFEED - never PvE;
+//  2. an explicit suicide is PvE;
+//  3. a death whose parser-proven Cause is a non-player source
+//     (infected/animal/environment) is PvE;
+//  4. everything else - notably a generic "died." line, which states no cause -
+//     is ambiguous: no guess is made and current behaviour is preserved.
+func PveCause(ev *Event) (cause DeathCause, ok bool) {
+	if ev == nil || ev.Type == EventPlayerKill || ev.Killer != nil || ev.Attacker != nil {
+		return "", false
+	}
+	switch ev.Type {
+	case EventSuicideAction:
+		return DeathCauseSuicide, true
+	case EventPlayerDeath:
+		switch ev.Cause {
+		case DeathCauseInfected, DeathCauseAnimal, DeathCauseEnvironment:
+			return ev.Cause, true
+		}
+	}
+	return "", false
+}
+
 // Engine orchestrates log discovery, selection, incremental polling, and parsing.
 type Engine struct {
 	parser          Parser
@@ -216,6 +261,7 @@ type Engine struct {
 	deathPublisher DeathPublisher
 	hitPublisher   HitPublisher
 	connPublisher  ConnectionPublisher
+	pvePublisher   PveDeathPublisher
 	metrics        Metrics
 	persistence    *PersistenceQueue
 
@@ -456,6 +502,35 @@ func (e *Engine) publishConnection(n ConnectionNotice) {
 	e.connPublisher.PublishConnection(n)
 }
 
+// SetPveDeathPublisher attaches the consumer for provably non-PvP deaths.
+// Optional: with none attached every death goes to the legacy death feed as before.
+func (e *Engine) SetPveDeathPublisher(p PveDeathPublisher) {
+	if e == nil {
+		return
+	}
+	e.pvePublisher = p
+}
+
+// claimByPveFeed offers a persisted death to the PVE_FEED and reports whether the
+// PVE_FEED took it. Panic-safe: a broken consumer must not stop persistence, and
+// an unclaimed event simply continues to the legacy death feed.
+func (e *Engine) claimByPveFeed(ev *Event) (claimed bool) {
+	if e.pvePublisher == nil {
+		return false
+	}
+	cause, ok := PveCause(ev)
+	if !ok || ev.Player == nil {
+		return false
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			claimed = false
+			slog.Error("component=killfeed", "msg", "pve publisher panic recovered", "server_id", e.serverID, "panic", fmt.Sprint(r))
+		}
+	}()
+	return e.pvePublisher.PublishPveDeath(PveDeathNotice{Cause: cause, Name: ev.Player.Name})
+}
+
 // SetPersistence attaches the durable persistence queue and wires Discord
 // publish to happen only after a successful non-duplicate durable insert.
 func (e *Engine) SetPersistence(q *PersistenceQueue) {
@@ -475,6 +550,11 @@ func (e *Engine) SetPersistence(q *PersistenceQueue) {
 		}
 	})
 	q.SetDeathPersistedHook(func(ev *Event) {
+		// Runs only after a durable, non-duplicate insert. A death the PVE_FEED
+		// claims is not also posted to the legacy death feed.
+		if e.claimByPveFeed(ev) {
+			return
+		}
 		if e.deathPublisher == nil {
 			return
 		}

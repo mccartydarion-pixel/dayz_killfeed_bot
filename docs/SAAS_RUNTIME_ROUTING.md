@@ -7,7 +7,7 @@ fields. This document records the audit of that runtime, the shared resolver
 the publishers migrate onto, and how far the migration has got.
 
 **Migrated to runtime routes: `KILLFEED`, `LINK_GAMERTAG`, `STATS_LEADERBOARDS`,
-`AUTO_LEADERBOARD`, `ADMIN_LOGS`. Built and runtime routed: `HITFEED`, `CONNECTIONS`.** Every other route either has no publisher at
+`AUTO_LEADERBOARD`, `ADMIN_LOGS`. Built and runtime routed: `HITFEED`, `CONNECTIONS`, `PVE_FEED` (explicit suicides only - see its section).** Every other route either has no publisher at
 all (marked *Not implemented* below - nothing was built for them) or has no
 text-channel feed to route. See the table below and "Migrated features".
 
@@ -99,7 +99,7 @@ installation is still `CONFIGURING`.
 | Route key | Existing publisher | Legacy field / source | Event source | Status |
 |---|---|---|---|---|
 | `KILLFEED` | `KillfeedPublisher` + `RotatingFeed` (`discord/killfeed.go`) | `GuildSetup.KillfeedChannelID`, env `KILLFEED_CHANNEL_ID` | ADM `PLAYER_KILL`, after durable insert | **Migrated** (route -> legacy fallback) |
-| `PVE_FEED` | none | - | no infected/environment event type parsed | Not implemented |
+| `PVE_FEED` | `PveFeedPublisher` (`discord/pvefeed.go`) | none - no legacy PvE channel, no KILLFEED fallback (an *unclaimed* death continues to the separate legacy death feed, `GuildSetup.DeathChannelID`) | ADM `SUICIDE_ACTION` after durable persistence (explicit infected/animal/environment causes are supported by the classifier but the parser cannot produce them yet) | **IMPLEMENTED / RUNTIME ROUTED** (suicides) |
 | `LINK_GAMERTAG` | Link panel posted by `RouteSyncer` (`discord/route_syncer.go`); interactions in `PublicPanelHandler` (`discord/public_panels.go`, channel-agnostic) | legacy `GuildSetup.LinkPanelChannelID` (posted by `discord/setup.go`) | Discord button/modal interaction | **MIGRATED TO RUNTIME ROUTES** (route -> legacy) |
 | `STATS_LEADERBOARDS` | Player-stats panel posted by `RouteSyncer`; interactions in `PublicPanelHandler` | legacy `GuildSetup.PlayerStatsChannelID` | Discord button interaction (on-demand, ephemeral) | **MIGRATED TO RUNTIME ROUTES** (route -> legacy) |
 | `AUTO_LEADERBOARD` | `LeaderboardScheduler` (`discord/leaderboard_scheduler.go`) | legacy `GuildSetup.LeaderboardsChannelID` | 3-hour timer, `/admin` refresh, route change | **MIGRATED TO RUNTIME ROUTES** (route -> legacy) |
@@ -116,7 +116,7 @@ installation is still `CONFIGURING`.
 | `ADMIN_LOGS` | `ADMMonitorPublisher` (`discord/adm_monitor.go`) | legacy `GuildSetup.ADMMonitorChannelID` | ADM snapshot/download callbacks | **MIGRATED TO RUNTIME ROUTES** (route -> legacy) |
 
 Also outside the route vocabulary: `DeathfeedPublisher` (`GuildSetup.DeathChannelID`,
-non-PvP deaths/suicides) and the server-status panel
+non-PvP deaths/suicides - a suicide it would have posted is claimed by `PVE_FEED` when that route exists) and the server-status panel
 (`GuildSetup.ServerStatusChannelID`) have no route key today.
 
 Migrating another publisher is: give it the same `(guildRowID, serverID)`,
@@ -225,7 +225,7 @@ server_id=<game_servers.id> reason=no_route|lookup_error` - internal ids only.
 
 ### Not covered
 
-Routes for `PVE_FEED`, `BOUNTY`, `BOUNTY_TRACKING`, `HEATMAPS`,
+Routes for `BOUNTY`, `BOUNTY_TRACKING`, `HEATMAPS`,
 `ECONOMY`, `CASINO`, `SHOP`, `BUILD_FEED` and `ADMIN_ALERTS` are
 **not built**: they have no publisher (or no text feed), and this migration
 deliberately adds none. The runtime is still a single configured Discord guild
@@ -477,3 +477,120 @@ in-memory tracker is empty, so connects replayed from the durable checkpoint may
 be announced again once, and players who joined before Champion started are not
 announced leaving. Session lengths are only known for players Champion saw
 connect. Latency is up to one 2s tick.
+
+## PVE_FEED (implemented, runtime routed - narrowly)
+
+`PVE_FEED` publishes deaths that are **provably not PvP**, to the server's
+`PVE_FEED` route. Read "what the parser can prove" first: with today's ADM
+parser that is **explicit suicides only**. The classifier and the feed already
+support explicit infected/animal/environment causes, but nothing can produce
+them yet, so no such label is ever shown.
+
+### Death event path (audited)
+
+```
+Nitrado ADM log poll                        internal/killfeed/engine.go (per-server Engine)
+  parseExplicitKill  "... killed by Player ..."       -> PLAYER_KILL         (Killer, Victim, Weapon, Distance)
+  parseHit           "... hit by Player ..."          -> PLAYER_HIT
+  parseDeath         "... died ..." (no "killed by")  -> PLAYER_DEATH        (Player, Dead) - NO cause field
+  parseSuicideAction "... performed EmoteSuicide ..." -> SUICIDE_ACTION      (Player, Weapon = item held)
+  -> Engine.processLine                     metrics, dedupe.Contains
+  -> PersistenceQueue.EnqueueAndWait        kill: KillRecord; death/suicide: DeathRecord
+       (persistOne)                           (death_type = SUICIDE or UNKNOWN), durable fingerprint
+  -> killPersistedHook -> KillfeedPublisher       ONLY after a non-duplicate durable insert
+  -> deathPersistedHook                           ONLY after a non-duplicate durable insert
+       -> NEW: Engine.claimByPveFeed -> PveFeedPublisher.PublishPveDeath  (claimed: stop here)
+       -> otherwise the pre-existing DeathfeedPublisher (GuildSetup.DeathChannelID)
+```
+
+What ADM actually distinguishes, from the sample lines this project has (the
+parser tests) - nothing else is assumed:
+
+| Cause | Distinguishable today? |
+|---|---|
+| PvP kill | **yes** - `killed by Player ...` (`PLAYER_KILL`) |
+| Suicide | **yes** - `performed EmoteSuicide` (`SUICIDE_ACTION`) |
+| Generic death | a `died.` line with no `killed by`: states **no cause** (`PLAYER_DEATH`) |
+| Infected, animal, environment | **no** - no such line exists in the samples; the parser does not even read a `killed by <non-player>` line (`parseExplicitKill` needs `killed by Player`, `parseDeath` rejects any `killed by`), so such a line yields **no event at all** |
+| Fall, drowning, bleeding, starvation, dehydration, cold, explosion, fire, gas | **no** - nothing in the model tells them apart; none is implemented and none is inferred from weapon strings or names |
+
+If real ADM logs show `killed by <entity>` or other cause lines for infected,
+animals or the environment, that is a parser extension (it needs real samples,
+not memory of DayZ's formats) - once the parser sets `Event.Cause`, the
+classifier, the claim logic and the feed need no change.
+
+### Classification rules (`killfeed.PveCause`, ordered)
+
+1. **Explicit player attacker** (`PLAYER_KILL`, or any `Killer`/`Attacker`) -> PvP:
+   stays on `KILLFEED`, never PvE. Valid PvP kills are never moved.
+2. **Explicit suicide** (`SUICIDE_ACTION`) -> `PVE_FEED`.
+3. **Explicit non-player source** (`PLAYER_DEATH` whose parser-proven `Cause` is
+   infected / animal / environment) -> `PVE_FEED`. *(Never set by the parser yet.)*
+4. **Anything else is ambiguous**, notably a generic `died.` line: **no guess is
+   made and current behaviour is preserved** - it goes to the legacy death feed
+   as before, exactly like a suicide does when there is no `PVE_FEED` route.
+
+A generic death is deliberately **not** sent to `PVE_FEED` with a neutral "died"
+text: its cause is unknown, and the ordered rules say unknown means "preserve
+current behaviour". That is a one-line policy in `PveCause` if you want it changed.
+
+### Mutual exclusion with KILLFEED and the legacy death feed
+
+Each event has exactly one home; ownership is decided **once**, at the death
+hook, after the durable insert:
+
+* PvP kills go through `KillfeedPublisher` only - the PVE feed is never offered them.
+* A death/suicide the PVE feed **claims** is not posted to the legacy death feed.
+* A death it does **not** claim (no `PVE_FEED` route, lookup error, ambiguous
+  cause, panicking consumer) continues to the legacy death feed unchanged.
+
+A suicide is never reclassified as a kill. Note the ADM logs a `died.` line after
+the emote; that is a separate `PLAYER_DEATH` event which stays on the legacy death
+feed (correlating the two would be inference, so it is not done).
+
+### Route and fallback
+
+* Route key `PVE_FEED`, resolved through the shared `routing.Resolver` on the
+  server's own `(guild row, server id)` via `discord.RouteBinding`. One
+  `PveFeedPublisher` per server worker, so servers of one guild cannot leak.
+* **`PVE_FEED` has no fallback**: no legacy PvE channel, and it never falls back
+  to `KILLFEED`.
+  * route configured -> the feed claims and publishes
+  * route absent -> no-op, claims nothing, buffers nothing
+  * lookup error -> no-op with a throttled `channel_route_fallback` warning; it
+    recovers on its own
+  What happens to an *unclaimed* death is the pre-existing legacy death feed's
+  behaviour, not a `PVE_FEED` fallback.
+* Re-resolved every 2s tick through the shared cache: an in-process route change
+  is used within one tick, an out-of-process one within the resolver TTL (30s). No
+  restart. Removing the route makes the feed stop claiming, so the legacy death
+  feed takes over again.
+
+### Ordering, dedupe, failure isolation
+
+* **Persist before publish.** The notice is offered only from the death-persisted
+  hook, i.e. after the durable insert succeeded; if it fails nothing is published
+  and the retry (next poll) publishes exactly once. Nothing bypasses persistence.
+* **Replays.** The ADM dedupe drops in-process replays before persistence; the
+  durable `(guild, fingerprint)` uniqueness returns `ErrDuplicate` for anything
+  already stored (including after a restart), and the hook does not fire for it.
+* **Failure isolation.** `PublishPveDeath` only appends to a bounded queue (100,
+  oldest dropped and reported); route lookups and Discord I/O run on the feed's
+  own goroutine, one message per 2s tick carrying up to 10 cards. A Discord
+  failure drops that message and is logged; it cannot reach persistence, ADM
+  parsing, killfeed, hitfeed or connections. A panicking consumer is recovered by
+  the engine and the death simply continues to the legacy feed.
+
+### Card
+
+```
+💀 SUICIDE                 ☣️ PVE DEATH               🐺 PVE DEATH               ⚠️ PVE DEATH
+Alice died by suicide.     Bob was killed by an       Bob was killed by an       Bob died to the
+                           infected.                  animal.                    environment.
+```
+
+Only the sanitised display name and the proven cause. No id, no coordinates, and
+no weapon (a suicide's "weapon" is just the item held). A cause label is never
+shown unless it is proven; there is no generic "unknown cause" card. Names are
+sanitised (`@`/`#`/control characters stripped, length bounded) and every message
+has an empty `AllowedMentions`.

@@ -71,8 +71,11 @@ var championRouteBlueprint = []championRouteDefault{
 	// PublishKill (GuildSetup.KillfeedChannelID). PvP kill/death/special-kill
 	// feed - the bot cannot function as a killfeed bot without this.
 	{"KILLFEED", "killfeed", RouteRequired},
-	// NOT_IMPLEMENTED_YET: no infected/environment/PvE event type exists in
-	// internal/killfeed/event.go; no publisher posts here yet.
+	// IMPLEMENTED / RUNTIME ROUTED (narrowly): internal/discord/pvefeed.go
+	// PveFeedPublisher carries provably non-PvP deaths - today only explicit
+	// suicides, because the ADM parser cannot yet tell infected/animal/
+	// environment causes apart (see docs/SAAS_RUNTIME_ROUTING.md). No legacy
+	// channel and no KILLFEED fallback.
 	{"PVE_FEED", "pvefeed", RouteOptional},
 	// ALREADY_IMPLEMENTED: internal/discord/public_panels.go
 	// PublicPanelHandler.handleLink (GuildSetup.LinkPanelChannelID). Matters
