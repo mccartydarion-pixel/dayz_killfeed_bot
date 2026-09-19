@@ -124,9 +124,9 @@ func (r *EventRepository) ScoreKill(ctx context.Context, eventID, killID, player
 		return false, nil
 	}
 	if playerID > 0 {
-		_, err = tx.Exec(ctx, `INSERT INTO event_scores(event_id,player_id,score,kills,best_distance,best_streak) VALUES($1,$2,$3,1,$4,$5) ON CONFLICT(event_id,player_id) DO UPDATE SET score=event_scores.score+EXCLUDED.score,kills=event_scores.kills+1,best_distance=GREATEST(event_scores.best_distance,EXCLUDED.best_distance),best_streak=GREATEST(event_scores.best_streak,EXCLUDED.best_streak),updated_at=NOW()`, eventID, playerID, points, distance, streak)
+		_, err = tx.Exec(ctx, `INSERT INTO event_scores(event_id,player_id,score,kills,best_distance,best_streak) VALUES($1,$2,$3,1,$4,$5) ON CONFLICT(event_id,player_id) WHERE player_id IS NOT NULL DO UPDATE SET score=event_scores.score+EXCLUDED.score,kills=event_scores.kills+1,best_distance=GREATEST(event_scores.best_distance,EXCLUDED.best_distance),best_streak=GREATEST(event_scores.best_streak,EXCLUDED.best_streak),updated_at=NOW()`, eventID, playerID, points, distance, streak)
 	} else {
-		_, err = tx.Exec(ctx, `INSERT INTO event_scores(event_id,faction_id,score,kills,best_distance,best_streak) VALUES($1,$2,$3,1,$4,$5) ON CONFLICT(event_id,faction_id) DO UPDATE SET score=event_scores.score+EXCLUDED.score,kills=event_scores.kills+1,best_distance=GREATEST(event_scores.best_distance,EXCLUDED.best_distance),best_streak=GREATEST(event_scores.best_streak,EXCLUDED.best_streak),updated_at=NOW()`, eventID, factionID, points, distance, streak)
+		_, err = tx.Exec(ctx, `INSERT INTO event_scores(event_id,faction_id,score,kills,best_distance,best_streak) VALUES($1,$2,$3,1,$4,$5) ON CONFLICT(event_id,faction_id) WHERE faction_id IS NOT NULL DO UPDATE SET score=event_scores.score+EXCLUDED.score,kills=event_scores.kills+1,best_distance=GREATEST(event_scores.best_distance,EXCLUDED.best_distance),best_streak=GREATEST(event_scores.best_streak,EXCLUDED.best_streak),updated_at=NOW()`, eventID, factionID, points, distance, streak)
 	}
 	if err != nil {
 		return false, err
