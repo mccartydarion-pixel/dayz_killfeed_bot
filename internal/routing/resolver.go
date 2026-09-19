@@ -17,7 +17,7 @@ import (
 // Stable route keys - identical to the SaaS API's route_key vocabulary
 // (internal/app/saas_api_channel_routes.go's championRouteBlueprint). Runtime
 // publishers migrated onto the resolver so far: KILLFEED, LINK_GAMERTAG,
-// STATS_LEADERBOARDS, AUTO_LEADERBOARD and ADMIN_LOGS (see
+// STATS_LEADERBOARDS, AUTO_LEADERBOARD, ADMIN_LOGS and HITFEED (see
 // docs/SAAS_RUNTIME_ROUTING.md); the rest are declared here so later
 // migrations reuse one vocabulary.
 const (

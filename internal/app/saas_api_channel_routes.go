@@ -87,9 +87,10 @@ var championRouteBlueprint = []championRouteDefault{
 	// LeaderboardScheduler (GuildSetup.LeaderboardsChannelID) - edits one
 	// persistent ranked-leaderboard message on a fixed refresh cycle.
 	{"AUTO_LEADERBOARD", "auto-leaderboard", RouteOptional},
-	// NOT_IMPLEMENTED_YET: PLAYER_HIT events are parsed
-	// (internal/killfeed/engine.go) but only counted in metrics - nothing
-	// publishes them to Discord yet.
+	// IMPLEMENTED / RUNTIME ROUTED: internal/discord/hitfeed.go
+	// HitfeedPublisher publishes aggregated, rate-capped PLAYER_HIT cards to
+	// this route. There is no legacy channel and no KILLFEED fallback: with no
+	// route configured hits are simply not published.
 	{"HITFEED", "hitfeed", RouteOptional},
 	// NOT_IMPLEMENTED_YET (as a channel feed): internal/discord/
 	// competitive_commands.go BountyCommandHandler only replies to /bounty
