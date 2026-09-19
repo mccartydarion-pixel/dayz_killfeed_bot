@@ -18,6 +18,27 @@ const (
 	EventPlayerRespawn     EventType = "PLAYER_RESPAWN"
 )
 
+// DeathCause is a non-player cause of death that the ADM parser PROVED from the
+// log line itself. The empty value means "not proven" and is the default: a
+// cause is never inferred from a weapon string, a name or the surrounding lines.
+//
+// Only DeathCauseSuicide is populated today (the "performed EmoteSuicide" line).
+// The ADM sample lines this project has contain no infected, animal or
+// environment source at all - the parser does not even read "killed by
+// <non-player>" lines - so DeathCauseInfected/Animal/Environment are never set
+// yet. They exist so that a parser extension backed by real log evidence can set
+// them without touching the classification or the feed. Fall, drowning,
+// bleeding, starvation, cold, fire, explosion and gas are deliberately absent:
+// nothing here can tell them apart.
+type DeathCause string
+
+const (
+	DeathCauseSuicide     DeathCause = "SUICIDE"
+	DeathCauseInfected    DeathCause = "INFECTED"
+	DeathCauseAnimal      DeathCause = "ANIMAL"
+	DeathCauseEnvironment DeathCause = "ENVIRONMENT"
+)
+
 // Position is a 3D coordinate from the ADM log. Z can be negative.
 type Position struct {
 	X float64
@@ -63,6 +84,10 @@ type Event struct {
 	HitZoneID string
 
 	Dead bool // the (DEAD) marker was present
+
+	// Cause is the non-player cause of a death/suicide when the parser proved
+	// one (see DeathCause); empty otherwise. Never inferred.
+	Cause DeathCause
 
 	Raw string
 	// Competitive context is populated only after durable persistence and is
