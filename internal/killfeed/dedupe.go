@@ -117,6 +117,14 @@ func fingerprint(ev *Event) string {
 		ev.Weapon,
 		dist,
 	}
+	if ev.Player != nil {
+		// Presence events (connect/disconnect/death/...) identify their subject
+		// only through ev.Player. Without it two DIFFERENT players connecting in
+		// the same second (a server-restart burst) shared a fingerprint, so the
+		// second was dropped as a "duplicate" - never persisted, never tracked.
+		// A genuine replay is the same player and still matches.
+		parts = append(parts, "player:"+playerKey(ev.Player))
+	}
 	if ev.Type == EventPlayerHit {
 		// A hit line carries no unique id, and an automatic weapon fired at a
 		// stationary target repeats time/weapon/distance within a second. The

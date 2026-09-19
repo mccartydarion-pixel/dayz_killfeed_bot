@@ -110,9 +110,11 @@ var championRouteBlueprint = []championRouteDefault{
 	{"CASINO", "casino", RouteOptional},
 	// NOT_IMPLEMENTED_YET: no shop/store code anywhere in the repo.
 	{"SHOP", "shop", RouteOptional},
-	// NOT_IMPLEMENTED_YET (as a text feed): the closest runtime analog,
-	// GuildSetup.OnlinePlayersChannelID, drives a VOICE channel name
-	// counter ("Online Players: N"), not a text join/leave log.
+	// IMPLEMENTED / RUNTIME ROUTED: internal/discord/connections.go
+	// ConnectionsPublisher publishes bounded, batched connect/disconnect
+	// notices to this route. No legacy channel and no fallback: with no route
+	// nothing is published. The unrelated voice counter
+	// (GuildSetup.OnlinePlayersChannelID) is untouched.
 	{"CONNECTIONS", "connections", RouteOptional},
 	// NOT_IMPLEMENTED_YET: no building/base-related event type or
 	// publisher exists.
