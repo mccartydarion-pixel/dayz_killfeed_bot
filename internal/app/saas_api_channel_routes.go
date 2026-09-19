@@ -95,13 +95,14 @@ var championRouteBlueprint = []championRouteDefault{
 	// this route. There is no legacy channel and no KILLFEED fallback: with no
 	// route configured hits are simply not published.
 	{"HITFEED", "hitfeed", RouteOptional},
-	// NOT_IMPLEMENTED_YET (as a channel feed): internal/discord/
-	// competitive_commands.go BountyCommandHandler only replies to /bounty
-	// ephemerally; there is no standing public bounty-board channel post.
+	// IMPLEMENTED / RUNTIME ROUTED: internal/discord/bounty_feeds.go BountyBoard
+	// keeps one persistent public board message per routed channel (see
+	// docs/BOUNTY_SYSTEM.md). No fallback.
 	{"BOUNTY", "bounty", RouteOptional},
-	// NOT_IMPLEMENTED_YET (as its own channel): bounty progression today
-	// renders as a "MOST WANTED" section inside the shared live-panels
-	// message (internal/discord/panels), not a dedicated channel.
+	// IMPLEMENTED / RUNTIME ROUTED: internal/discord/bounty_feeds.go BountyTracker
+	// publishes the bounty lifecycle (placed/increased/claimed/expired/
+	// cancelled). Separate from the board and from the live-panels "MOST
+	// WANTED" section. No fallback.
 	{"BOUNTY_TRACKING", "bounty-tracking", RouteOptional},
 	// NOT_IMPLEMENTED_YET: no heatmap code anywhere in the repo.
 	{"HEATMAPS", "heatmaps", RouteOptional},

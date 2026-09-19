@@ -337,6 +337,7 @@ func (a *App) completeChannelsStep(ctx context.Context, organizationID, installa
 	// instead of waiting out the resolver TTL.
 	a.ChannelRoutes.InvalidateAll()
 	a.RouteSyncer.Trigger() // re-sync routed panels/leaderboard now
+	a.BountyBoard.Trigger()  // re-reconcile the bounty board now
 	if err := a.advanceSetupProgress(ctx, organizationID, installationID, false, func(p *repository.InstallationSetupProgress) {
 		p.ChannelsCompleted = true
 		p.CurrentStep = "VALIDATION"

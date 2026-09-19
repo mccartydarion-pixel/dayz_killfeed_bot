@@ -632,18 +632,18 @@ reserving the slot for when one is built).
 | `route_key` | Default channel | Purpose | Requirement | Runtime status |
 |---|---|---|---|---|
 | `KILLFEED` | `killfeed` | PvP kill/death/special-kill feed | **REQUIRED** | Implemented - `internal/discord/killfeed.go` `KillfeedPublisher` |
-| `PVE_FEED` | `pvefeed` | Infected/environment/PvE events | OPTIONAL | Not implemented - no PvE event type exists yet |
+| `PVE_FEED` | `pvefeed` | Infected/environment/PvE events | OPTIONAL | Implemented (explicit suicides only - the ADM parser cannot yet tell infected/animal/environment causes apart) - `internal/discord/pvefeed.go` |
 | `LINK_GAMERTAG` | `link-gamertag` | Player linking / gamertag linking panel | FEATURE_DEPENDENT | Implemented - `internal/discord/public_panels.go` link panel |
 | `STATS_LEADERBOARDS` | `stats-leaderboards` | Manually viewed general statistics and leaderboards | OPTIONAL | Implemented - on-demand "My Stats / Search Player" panel |
 | `AUTO_LEADERBOARD` | `auto-leaderboard` | Automatically refreshed leaderboard panel | OPTIONAL | Implemented - `internal/discord/leaderboard_scheduler.go` |
-| `HITFEED` | `hitfeed` | Hit/damage event feed | OPTIONAL | Not implemented - hits are parsed/counted, never posted |
-| `BOUNTY` | `bounty` | Public bounty board/events | OPTIONAL | Not implemented as a channel feed - `/bounty` replies ephemerally only |
-| `BOUNTY_TRACKING` | `bounty-tracking` | Bounty progression/tracking | OPTIONAL | Not implemented as its own channel - renders in the shared live-panels message |
+| `HITFEED` | `hitfeed` | Hit/damage event feed | OPTIONAL | Implemented - aggregated, rate-capped `internal/discord/hitfeed.go` |
+| `BOUNTY` | `bounty` | Public bounty board/events | OPTIONAL | Implemented - persistent board, `internal/discord/bounty_feeds.go` (`docs/BOUNTY_SYSTEM.md`) |
+| `BOUNTY_TRACKING` | `bounty-tracking` | Bounty progression/tracking | OPTIONAL | Implemented - lifecycle feed, `internal/discord/bounty_feeds.go` |
 | `HEATMAPS` | `heatmaps` | Heatmap/activity output | OPTIONAL | Not implemented |
 | `ECONOMY` | `economy` | Economy/credits information | OPTIONAL | Not implemented |
 | `CASINO` | `casino` | Casino commands/results | OPTIONAL | Not implemented |
 | `SHOP` | `shop` | Store/shop output | OPTIONAL | Not implemented |
-| `CONNECTIONS` | `connections` | Connect/disconnect/player connection events | OPTIONAL | Not implemented as a text feed - the closest analog drives a voice-channel-name counter |
+| `CONNECTIONS` | `connections` | Connect/disconnect/player connection events | OPTIONAL | Implemented - bounded, batched `internal/discord/connections.go` |
 | `BUILD_FEED` | `build-feed` | Building/base-related feed | OPTIONAL | Not implemented |
 | `ADMIN_ALERTS` | `admin-alerts` | Important moderation/server alerts | OPTIONAL | Not implemented - distinct from the diagnostic ADM monitor below |
 | `ADMIN_LOGS` | `admin-logs` | Detailed administrative/diagnostic logging | FEATURE_DEPENDENT | Implemented - `internal/discord/adm_monitor.go` ADM download health |

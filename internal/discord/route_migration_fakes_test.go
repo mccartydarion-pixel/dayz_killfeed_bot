@@ -87,10 +87,12 @@ type fakeDiscord struct {
 	editErr map[string]error
 	getErr  map[string]error
 	sendErr map[string]error // by channel
+	// lastEmbed is the description last sent/edited per channel (complex messages).
+	lastEmbed map[string]string
 }
 
 func newFakeDiscord() *fakeDiscord {
-	return &fakeDiscord{messages: map[string]map[string]bool{}, editErr: map[string]error{}, getErr: map[string]error{}, sendErr: map[string]error{}}
+	return &fakeDiscord{messages: map[string]map[string]bool{}, editErr: map[string]error{}, getErr: map[string]error{}, sendErr: map[string]error{}, lastEmbed: map[string]string{}}
 }
 
 func (f *fakeDiscord) send(channelID string) (*discordgo.Message, error) {
@@ -123,12 +125,29 @@ func (f *fakeDiscord) edit(channelID, messageID string) (*discordgo.Message, err
 	return &discordgo.Message{ID: messageID, ChannelID: channelID}, nil
 }
 
-func (f *fakeDiscord) ChannelMessageSendComplex(channelID string, _ *discordgo.MessageEmbed, _ []discordgo.MessageComponent) (*discordgo.Message, error) {
-	return f.send(channelID)
+func (f *fakeDiscord) record(channelID string, embed *discordgo.MessageEmbed) {
+	if embed == nil {
+		return
+	}
+	f.mu.Lock()
+	f.lastEmbed[channelID] = embed.Description
+	f.mu.Unlock()
 }
 
-func (f *fakeDiscord) ChannelMessageEditComplex(channelID, messageID string, _ *discordgo.MessageEmbed, _ []discordgo.MessageComponent) (*discordgo.Message, error) {
-	return f.edit(channelID, messageID)
+func (f *fakeDiscord) ChannelMessageSendComplex(channelID string, embed *discordgo.MessageEmbed, _ []discordgo.MessageComponent) (*discordgo.Message, error) {
+	msg, err := f.send(channelID)
+	if err == nil {
+		f.record(channelID, embed)
+	}
+	return msg, err
+}
+
+func (f *fakeDiscord) ChannelMessageEditComplex(channelID, messageID string, embed *discordgo.MessageEmbed, _ []discordgo.MessageComponent) (*discordgo.Message, error) {
+	msg, err := f.edit(channelID, messageID)
+	if err == nil {
+		f.record(channelID, embed)
+	}
+	return msg, err
 }
 
 func (f *fakeDiscord) ChannelMessageSendEmbed(channelID string, _ *discordgo.MessageEmbed) (*discordgo.Message, error) {

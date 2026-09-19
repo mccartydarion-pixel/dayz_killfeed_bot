@@ -7,7 +7,7 @@ fields. This document records the audit of that runtime, the shared resolver
 the publishers migrate onto, and how far the migration has got.
 
 **Migrated to runtime routes: `KILLFEED`, `LINK_GAMERTAG`, `STATS_LEADERBOARDS`,
-`AUTO_LEADERBOARD`, `ADMIN_LOGS`. Built and runtime routed: `HITFEED`, `CONNECTIONS`, `PVE_FEED` (explicit suicides only - see its section).** Every other route either has no publisher at
+`AUTO_LEADERBOARD`, `ADMIN_LOGS`. Built and runtime routed: `HITFEED`, `CONNECTIONS`, `PVE_FEED` (explicit suicides only - see its section), `BOUNTY` and `BOUNTY_TRACKING` (see `docs/BOUNTY_SYSTEM.md`).** Every other route either has no publisher at
 all (marked *Not implemented* below - nothing was built for them) or has no
 text-channel feed to route. See the table below and "Migrated features".
 
@@ -104,8 +104,8 @@ installation is still `CONFIGURING`.
 | `STATS_LEADERBOARDS` | Player-stats panel posted by `RouteSyncer`; interactions in `PublicPanelHandler` | legacy `GuildSetup.PlayerStatsChannelID` | Discord button interaction (on-demand, ephemeral) | **MIGRATED TO RUNTIME ROUTES** (route -> legacy) |
 | `AUTO_LEADERBOARD` | `LeaderboardScheduler` (`discord/leaderboard_scheduler.go`) | legacy `GuildSetup.LeaderboardsChannelID` | 3-hour timer, `/admin` refresh, route change | **MIGRATED TO RUNTIME ROUTES** (route -> legacy) |
 | `HITFEED` | `HitfeedPublisher` (`discord/hitfeed.go`) | none - no legacy channel, no KILLFEED fallback | ADM `PLAYER_HIT`, after dedupe (hits are not persisted) | **IMPLEMENTED / RUNTIME ROUTED** |
-| `BOUNTY` | `BountyCommandHandler` (`discord/competitive_commands.go`) | none (ephemeral replies) | `/bounty` slash command | No channel feed |
-| `BOUNTY_TRACKING` | "MOST WANTED" section of the live-panels message (`discord/panels`) | shares the leaderboards panel path | panel flush | No dedicated channel |
+| `BOUNTY` | `BountyBoard` (`discord/bounty_feeds.go`) - one persistent board message per routed channel | none - no fallback (the `/bounty` command is unrelated and still replies ephemerally) | durable `bounties` table; reconciled on lifecycle events, route changes, restart and a 30s tick | **IMPLEMENTED / RUNTIME ROUTED** |
+| `BOUNTY_TRACKING` | `BountyTracker` (`discord/bounty_feeds.go`) - placed / increased / claimed / expired / cancelled cards | none - no fallback (the "MOST WANTED" section of the live panels is unrelated) | `bounties.Service` events, published only after the change committed | **IMPLEMENTED / RUNTIME ROUTED** |
 | `HEATMAPS` | none | - | - | Not implemented |
 | `ECONOMY` | none | - | - | Not implemented |
 | `CASINO` | none | - | - | Not implemented |
@@ -225,7 +225,7 @@ server_id=<game_servers.id> reason=no_route|lookup_error` - internal ids only.
 
 ### Not covered
 
-Routes for `BOUNTY`, `BOUNTY_TRACKING`, `HEATMAPS`,
+Routes for `HEATMAPS`,
 `ECONOMY`, `CASINO`, `SHOP`, `BUILD_FEED` and `ADMIN_ALERTS` are
 **not built**: they have no publisher (or no text feed), and this migration
 deliberately adds none. The runtime is still a single configured Discord guild
@@ -594,3 +594,34 @@ no weapon (a suicide's "weapon" is just the item held). A cause label is never
 shown unless it is proven; there is no generic "unknown cause" card. Names are
 sanitised (`@`/`#`/control characters stripped, length bounded) and every message
 has an empty `AllowedMentions`.
+
+## BOUNTY and BOUNTY_TRACKING (implemented, runtime routed)
+
+Phase 1 of the bounty system. Full architecture, state model, claim ordering,
+stacking policy and failure behaviour: **`docs/BOUNTY_SYSTEM.md`**. Routing
+summary:
+
+* **Route keys:** `BOUNTY` = the public board (one persistent message per routed
+  channel, top 10 targets by combined active amount, names only);
+  `BOUNTY_TRACKING` = the lifecycle feed (placed, increased, claimed, expired,
+  cancelled). They are independent - either can be configured without the other.
+* **Resolution:** the shared `routing.Resolver` on the `(guild row, server)`
+  identity. The board resolves `BOUNTY` for every active server and keeps one board
+  per distinct channel (a shared channel shows the union of its servers' bounties
+  plus guild-wide ones). The tracker resolves `BOUNTY_TRACKING` per event: a
+  server-scoped bounty -> that server's route; a claim or streak placement -> the
+  server the kill happened on; a guild-wide event -> every server's route,
+  deduplicated by channel.
+* **Fallback:** none. Route absent -> no board / no cards; lookup error -> no-op with
+  a throttled warning (an existing board is left alone). Bounty correctness never
+  depends on either route or on Discord: the database is written first and Discord is
+  only told afterwards.
+* **Board persistence:** the message id is recorded in `guild_route_panels`
+  (`route_key = 'BOUNTY'`), so restarts and route changes edit or move the same
+  board; an edit that would change nothing is skipped.
+* **Propagation:** in-process route writes invalidate the resolver cache and call
+  `BountyBoard.Trigger()`; out-of-process changes are picked up within the resolver
+  TTL plus the board's 30s tick. The tracker re-resolves per event, so it needs no
+  trigger.
+* **Ordering:** persist kill -> atomic claim -> commit -> notify. A claim is never
+  made from a raw ADM line, and a Discord failure never rolls back or repeats one.
