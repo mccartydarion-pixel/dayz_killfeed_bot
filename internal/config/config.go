@@ -47,6 +47,13 @@ type Config struct {
 	// admin API fails closed).
 	AdminDiscordIDs []string
 
+	// CustomEmbedsEnabled (CHAMPION_CUSTOM_EMBEDS_ENABLED, default false) is the rollout
+	// switch for Embed Designer runtime rendering. Off: every publisher uses the
+	// Champion default cards exactly as before, whatever templates are saved. On:
+	// eligible routes render an installation's saved template (falling back to the
+	// default on any problem).
+	CustomEmbedsEnabled bool
+
 	// Discord bot presence/activity settings (see internal/discord/presence.go).
 	DiscordPresenceEnabled bool
 	// DiscordPresenceRotationSeconds is already clamped to
@@ -75,6 +82,7 @@ func Load() (*Config, error) {
 		DiscordGuildMembersIntent: strings.EqualFold(strings.TrimSpace(os.Getenv("DISCORD_GUILD_MEMBERS_INTENT_ENABLED")), "true"),
 		WebsiteAPISecret:          strings.TrimSpace(os.Getenv("WEBSITE_API_SECRET")),
 		AdminDiscordIDs:           ParseAdminDiscordIDs(os.Getenv("CHAMPION_ADMIN_DISCORD_IDS")),
+		CustomEmbedsEnabled:       parseBoolWithDefault(os.Getenv("CHAMPION_CUSTOM_EMBEDS_ENABLED"), false),
 
 		DiscordPresenceEnabled:         parseBoolWithDefault(os.Getenv("DISCORD_PRESENCE_ENABLED"), true),
 		DiscordPresenceRotationSeconds: parsePresenceRotationSeconds(os.Getenv("DISCORD_PRESENCE_ROTATION_SECONDS")),

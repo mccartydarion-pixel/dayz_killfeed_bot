@@ -16,14 +16,15 @@ import (
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/admin"
 	"github.com/yourname/dayz-killfeed/internal/adminrepo"
-	"github.com/yourname/dayz-killfeed/internal/embedtemplates"
 	"github.com/yourname/dayz-killfeed/internal/analytics"
 	"github.com/yourname/dayz-killfeed/internal/bounties"
-	"github.com/yourname/dayz-killfeed/internal/economy"
 	"github.com/yourname/dayz-killfeed/internal/config"
 	"github.com/yourname/dayz-killfeed/internal/database"
 	"github.com/yourname/dayz-killfeed/internal/discord"
 	"github.com/yourname/dayz-killfeed/internal/discord/panels"
+	"github.com/yourname/dayz-killfeed/internal/economy"
+	"github.com/yourname/dayz-killfeed/internal/embedrender"
+	"github.com/yourname/dayz-killfeed/internal/embedtemplates"
 	competitiveevents "github.com/yourname/dayz-killfeed/internal/events"
 	"github.com/yourname/dayz-killfeed/internal/health"
 	"github.com/yourname/dayz-killfeed/internal/killfeed"
@@ -40,24 +41,24 @@ import (
 
 // App owns the main runtime dependencies.
 type App struct {
-	Config               *config.Config
-	Nitrado              *nitrado.Client
-	Discord              *discord.Client
-	HTTPServer           *server.Server
-	State                *server.State
-	DB                   *database.DB
-	Guilds               *repository.GuildRepository
-	Players              *repository.PlayerRepository
-	Kills                *repository.KillRepository
-	Deaths               *repository.DeathRepository
-	Stats                *repository.StatsRepository
-	Sessions             *repository.SessionRepository
-	Checkpoints          *repository.CheckpointRepository
-	Streaks              *repository.StreakRepository
-	Achievements         *repository.AchievementRepository
-	Events               *repository.EventRepository
-	EventService         *competitiveevents.Service
-	Bounties             *repository.BountyRepository
+	Config       *config.Config
+	Nitrado      *nitrado.Client
+	Discord      *discord.Client
+	HTTPServer   *server.Server
+	State        *server.State
+	DB           *database.DB
+	Guilds       *repository.GuildRepository
+	Players      *repository.PlayerRepository
+	Kills        *repository.KillRepository
+	Deaths       *repository.DeathRepository
+	Stats        *repository.StatsRepository
+	Sessions     *repository.SessionRepository
+	Checkpoints  *repository.CheckpointRepository
+	Streaks      *repository.StreakRepository
+	Achievements *repository.AchievementRepository
+	Events       *repository.EventRepository
+	EventService *competitiveevents.Service
+	Bounties     *repository.BountyRepository
 	// BountyService is the bounty application service (placement, the atomic claim
 	// for persisted kills, streak bounties, expiry). Its Discord notifier is
 	// optional: bounties are correct without any route or Discord connection.
@@ -67,7 +68,7 @@ type App struct {
 	// correct without any route or Discord connection.
 	EconomyService *economy.Service
 	// BountyBoard keeps the persistent public board (BOUNTY route). Nil-safe.
-	BountyBoard *discord.BountyBoard
+	BountyBoard          *discord.BountyBoard
 	Points               *repository.PointsRepository
 	Seasons              *repository.SeasonRepository
 	SeasonService        *seasons.Service
@@ -110,7 +111,7 @@ type App struct {
 	// ChannelRoutes is the runtime feature -> Discord channel resolver
 	// (internal/routing), a short-TTL cache over SaaSChannelRoutes. Nil-safe:
 	// with no database, publishers simply use their legacy channel.
-	ChannelRoutes             *routing.Resolver
+	ChannelRoutes *routing.Resolver
 	// GuildRoutePanels durably records which message holds each routed panel
 	// (LINK_GAMERTAG, STATS_LEADERBOARDS, AUTO_LEADERBOARD) in which channel.
 	GuildRoutePanels *repository.GuildRoutePanelRepository
@@ -120,10 +121,17 @@ type App struct {
 	// adminSaaS is the cross-tenant, read-only platform-admin read model behind
 	// /api/admin (internal/adminrepo); adminChannelNames optionally overrides the
 	// Discord-cache channel name lookup (tests).
-	adminSaaS                 adminReader
+	adminSaaS adminReader
 	// EmbedTemplates persists custom embed templates (storage + API only; no
 	// publisher reads them - runtime rendering is not enabled).
-	EmbedTemplates            *embedtemplates.Service
+	EmbedTemplates *embedtemplates.Service
+	// EmbedRenderer renders saved custom templates at publish time (Embed Designer
+	// Phase 4). It exists whenever the database does, but publishers are only wired to
+	// it when CHAMPION_CUSTOM_EMBEDS_ENABLED is true; it is also the cache the template
+	// save/reset handlers invalidate.
+	EmbedRenderer             *embedrender.Renderer
+	serverNames               *serverNameCache
+	serverNamesOnce           sync.Once
 	adminChannelNames         func(channelID string) string
 	saasDiscordVerifier       discordGuildVerifier
 	saasNitradoClientFactory  func(token string) *nitrado.Client
@@ -518,7 +526,12 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.SaaSCredentials = repository.NewCredentialRepository(db.Pool)
 			app.SaaSChannelRoutes = repository.NewChannelRouteRepository(db.Pool)
 			app.adminSaaS = adminrepo.New(db.Pool)
-			app.EmbedTemplates = embedtemplates.NewService(repository.NewEmbedTemplateRepository(db.Pool))
+			embedRepo := repository.NewEmbedTemplateRepository(db.Pool)
+			app.EmbedTemplates = embedtemplates.NewService(embedRepo)
+			app.EmbedRenderer = embedrender.New(embedrender.Options{Source: embedRepo, Enabled: cfg.CustomEmbedsEnabled})
+			if cfg.CustomEmbedsEnabled {
+				slog.Info("component=embedrender", "event", "custom_embeds_enabled")
+			}
 			app.ChannelRoutes = routing.NewResolver(app.SaaSChannelRoutes, routing.DefaultTTL)
 			app.GuildRoutePanels = repository.NewGuildRoutePanelRepository(db.Pool)
 			seedCtx, seedCancel := context.WithTimeout(ctx, 10*time.Second)
@@ -1204,6 +1217,7 @@ func (a *App) Run() error {
 				// shared resolver, no fallback. Fed only after a transaction committed
 				// (admin adjustments and bounty payouts).
 				economyFeed := discord.NewEconomyFeed(session, a.ChannelRoutes, guildServers)
+				economyFeed.SetCustomizer(a.embedCustomizer(), a.serverNameFunc())
 				a.EconomyService.SetNotifier(economyFeed)
 				if a.BountyService != nil {
 					a.BountyService.SetEconomyNotifier(economyFeed)
@@ -1216,6 +1230,7 @@ func (a *App) Run() error {
 				// through the shared resolver. They only report state that is already
 				// committed; with no routes they are no-ops and the database is unaffected.
 				bountyTracker := discord.NewBountyTracker(session, a.ChannelRoutes, guildServers)
+				bountyTracker.SetCustomizer(a.embedCustomizer(), a.serverNameFunc())
 				a.BountyBoard = discord.NewBountyBoard(a.ChannelRoutes, guildServers, routePanels, a.Bounties)
 				a.BountyService.SetNotifier(discord.BountyEvents{Tracker: bountyTracker, Board: a.BountyBoard})
 				go bountyTracker.Run(ctx)
@@ -1395,6 +1410,7 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 		// fallback when no route is configured.
 		publisher.SetRouting(a.ChannelRoutes, row.GuildID, row.ID)
 	}
+	publisher.SetCustomizer(a.embedCustomizer(), row.DisplayName)
 	engine.SetKillPublisher(publisher)
 
 	if a.ChannelRoutes != nil && a.Discord != nil && a.Discord.Session() != nil {
@@ -1403,6 +1419,7 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 		// capped; all route lookups and Discord I/O happen on its own goroutine,
 		// so a Discord/DB failure can never stall ADM parsing or kill processing.
 		hitFeed := discord.NewHitfeedPublisher(a.Discord.Session(), a.ChannelRoutes, row.GuildID, row.ID)
+		hitFeed.SetCustomizer(a.embedCustomizer(), a.serverNameFunc())
 		engine.SetHitPublisher(hitFeed)
 		go func() {
 			defer func() {
@@ -1421,6 +1438,7 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 		// I/O happen there, so a Discord/DB failure can never stall ADM parsing,
 		// presence tracking or persistence.
 		connectionsFeed := discord.NewConnectionsPublisher(a.Discord.Session(), a.ChannelRoutes, row.GuildID, row.ID)
+		connectionsFeed.SetCustomizer(a.embedCustomizer(), a.serverNameFunc())
 		engine.SetConnectionPublisher(connectionsFeed)
 		go func() {
 			defer func() {
@@ -1440,6 +1458,7 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 		// Bounded queue + a single goroutine; Discord/DB failures cannot reach
 		// persistence, ADM parsing or the other feeds.
 		pveFeed := discord.NewPveFeedPublisher(a.Discord.Session(), a.ChannelRoutes, row.GuildID, row.ID)
+		pveFeed.SetCustomizer(a.embedCustomizer(), a.serverNameFunc())
 		engine.SetPveDeathPublisher(pveFeed)
 		go func() {
 			defer func() {
@@ -1976,7 +1995,9 @@ func valueOfID(v *int64) int64 {
 
 // linkedPlayerLookup adapts the account-linking service to discord.PlayerLinks:
 // the economy commands resolve "my balance" through a VERIFIED link only.
-type linkedPlayerLookup struct{ svc *linking.LinkVerificationService }
+type linkedPlayerLookup struct {
+	svc *linking.LinkVerificationService
+}
 
 func (l linkedPlayerLookup) LinkedPlayerID(ctx context.Context, guildRowID int64, discordUserID string) (int64, bool) {
 	if l.svc == nil {

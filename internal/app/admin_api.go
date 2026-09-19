@@ -23,6 +23,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/yourname/dayz-killfeed/internal/adminrepo"
+	"github.com/yourname/dayz-killfeed/internal/embedrender"
 )
 
 // adminReader is the cross-tenant read model (implemented by
@@ -490,6 +491,14 @@ type adminHealthResponse struct {
 	Database      map[string]bool                `json:"database"`
 	Discord       map[string]bool                `json:"discord"`
 	Summary       adminrepo.HealthSummary        `json:"summary"`
+	// EmbedRender: custom embed template rollout state and cumulative counters (no
+	// player names, no template contents).
+	EmbedRender adminEmbedRender `json:"embedRender"`
+}
+
+type adminEmbedRender struct {
+	Enabled bool `json:"enabled"`
+	embedrender.Stats
 }
 
 // backendStatus is the runtime health registry's overall state ("UNKNOWN" when the
@@ -549,6 +558,7 @@ func (a *App) handleAdminHealth(w http.ResponseWriter, r *http.Request, _ adminI
 		return
 	}
 	resp.Summary, resp.Installations = summary, items
+	resp.EmbedRender = adminEmbedRender{Enabled: a.EmbedRenderer.Enabled(), Stats: a.EmbedRenderer.Stats()}
 	a.writeAdminJSON(w, http.StatusOK, resp)
 }
 

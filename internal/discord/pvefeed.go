@@ -48,6 +48,12 @@ type PveFeedPublisher struct {
 	sender HitSender // the narrow Discord surface *discordgo.Session satisfies
 	route  *RouteBinding
 
+	// Optional custom embed templates (nil = the Champion default, always).
+	// Presentation only: which deaths the feed owns is decided elsewhere.
+	custom                      EmbedCustomizer
+	serverName                  ServerNameFunc
+	routeGuildID, routeServerID int64
+
 	// active mirrors "a route is configured", refreshed each tick. It is what
 	// decides claiming: no route -> nothing is claimed and nothing is buffered.
 	active atomic.Bool
@@ -67,7 +73,25 @@ func NewPveFeedPublisher(sender HitSender, resolver RouteResolver, guildRowID, s
 	return &PveFeedPublisher{
 		sender: sender,
 		route:  NewRouteBinding(resolver, guildRowID, serverID, routeKeyPveFeed),
+
+		routeGuildID: guildRowID, routeServerID: serverID,
 	}
+}
+
+// SetCustomizer enables custom embed templates for this server's PVE_FEED cards.
+func (p *PveFeedPublisher) SetCustomizer(c EmbedCustomizer, serverName ServerNameFunc) {
+	if p == nil {
+		return
+	}
+	p.custom = c
+	p.serverName = serverName
+}
+
+func (p *PveFeedPublisher) card(n killfeed.PveDeathNotice) *discordgo.MessageEmbed {
+	def := buildPveEmbed(n)
+	return customEmbed(p.custom, p.routeGuildID, p.routeServerID, routeKeyPveFeed, def, func() map[string]string {
+		return pveVars(n, serverNameOf(p.serverName, p.routeServerID))
+	})
 }
 
 // PublishPveDeath implements killfeed.PveDeathPublisher. It never blocks and
@@ -196,7 +220,7 @@ func (p *PveFeedPublisher) send(channel string, batch []killfeed.PveDeathNotice,
 	}
 	embeds := make([]*discordgo.MessageEmbed, 0, len(batch))
 	for _, n := range batch {
-		embeds = append(embeds, buildPveEmbed(n))
+		embeds = append(embeds, p.card(n))
 	}
 	if omitted > 0 {
 		embeds[0].Description += fmt.Sprintf("\n… %d earlier PvE deaths were not shown", omitted)

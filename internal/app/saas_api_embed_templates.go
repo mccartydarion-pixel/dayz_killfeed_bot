@@ -10,13 +10,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yourname/dayz-killfeed/internal/embedrender"
 	"github.com/yourname/dayz-killfeed/internal/embedtemplates"
 )
 
-// Embed template persistence (Embed Designer Phase 2): STORAGE AND API ONLY.
-// Custom template persistence is live; custom template runtime rendering is not
-// enabled - no Discord publisher reads these rows, so saving, changing or deleting a
-// template never changes any Discord message. See docs/SAAS_API.md.
+// Embed template persistence (Embed Designer Phase 2) and its runtime status (Phase 4).
+// Saving, changing or deleting a template changes a Discord message only when the
+// rollout flag CHAMPION_CUSTOM_EMBEDS_ENABLED is on and the route is one the runtime
+// renders (docs/EMBED_RUNTIME.md); the save/reset handlers invalidate the renderer's
+// cache so the next event sees the change. See docs/SAAS_API.md.
 
 // maxEmbedTemplateBody bounds a template request: a maximal valid template is well
 // under this.
@@ -25,9 +27,21 @@ const maxEmbedTemplateBody = 64 << 10
 // codePayloadTooLarge maps to 413 (registered in httpStatusForCode).
 const codePayloadTooLarge = "PAYLOAD_TOO_LARGE"
 
-// runtimeRenderingStatus is reported on every response so a client never presents a
-// saved template as live.
-const runtimeRenderingStatus = "NOT_ENABLED"
+// Runtime rendering status reported on every response so a client never presents a
+// saved template as live when it is not: ENABLED only when the rollout flag
+// (CHAMPION_CUSTOM_EMBEDS_ENABLED) is on AND the route has a runtime publisher that
+// renders templates (embedrender.SupportedRoutes); otherwise NOT_ENABLED.
+const (
+	runtimeRenderingEnabled = "ENABLED"
+	runtimeRenderingOff     = "NOT_ENABLED"
+)
+
+func (a *App) runtimeRenderingFor(routeKey string) string {
+	if a.EmbedRenderer.Enabled() && embedrender.RouteSupported(routeKey) {
+		return runtimeRenderingEnabled
+	}
+	return runtimeRenderingOff
+}
 
 // EmbedTemplateResponse is one route's state. Customized=false means the route uses
 // the Champion default; Template is then null (defaults are never copied into the
@@ -50,7 +64,10 @@ type EmbedTemplateListResponse struct {
 	CustomizedRoutes []string                `json:"customizedRoutes"`
 	Variables        map[string][]string     `json:"variables"`
 	Limits           embedTemplateLimits     `json:"limits"`
-	RuntimeRendering string                  `json:"runtimeRendering"`
+	// RuntimeRoutes are the routes whose publishers render templates (independent of
+	// the rollout flag); RuntimeRendering is the deployment-wide flag state.
+	RuntimeRoutes    []string `json:"runtimeRoutes"`
+	RuntimeRendering string   `json:"runtimeRendering"`
 }
 
 type embedTemplateLimits struct {
@@ -70,8 +87,8 @@ func embedLimits() embedTemplateLimits {
 		AuthorName: embedtemplates.MaxAuthorName, TotalText: embedtemplates.MaxTotalText}
 }
 
-func embedResponse(routeKey string, s *embedtemplates.Stored) EmbedTemplateResponse {
-	out := EmbedTemplateResponse{RouteKey: routeKey, Variables: embedtemplates.Variables(routeKey), RuntimeRendering: runtimeRenderingStatus}
+func (a *App) embedResponse(routeKey string, s *embedtemplates.Stored) EmbedTemplateResponse {
+	out := EmbedTemplateResponse{RouteKey: routeKey, Variables: embedtemplates.Variables(routeKey), RuntimeRendering: a.runtimeRenderingFor(routeKey)}
 	if s != nil {
 		cfg := s.Config
 		cfg.RouteKey = routeKey
@@ -159,9 +176,12 @@ func (a *App) handleListEmbedTemplates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := EmbedTemplateListResponse{InstallationID: instID, Templates: []EmbedTemplateResponse{}, CustomizedRoutes: []string{},
-		Variables: embedtemplates.AllVariables(), Limits: embedLimits(), RuntimeRendering: runtimeRenderingStatus}
+		Variables: embedtemplates.AllVariables(), Limits: embedLimits(), RuntimeRoutes: embedrender.SupportedRoutes(), RuntimeRendering: runtimeRenderingOff}
+	if a.EmbedRenderer.Enabled() {
+		resp.RuntimeRendering = runtimeRenderingEnabled
+	}
 	for i := range stored {
-		resp.Templates = append(resp.Templates, embedResponse(stored[i].Config.RouteKey, &stored[i]))
+		resp.Templates = append(resp.Templates, a.embedResponse(stored[i].Config.RouteKey, &stored[i]))
 		resp.CustomizedRoutes = append(resp.CustomizedRoutes, stored[i].Config.RouteKey)
 	}
 	writeSaaSJSON(w, http.StatusOK, resp)
@@ -181,7 +201,7 @@ func (a *App) handleGetEmbedTemplate(w http.ResponseWriter, r *http.Request) {
 		a.embedFailed(w, "load", err)
 		return
 	}
-	writeSaaSJSON(w, http.StatusOK, embedResponse(routeKey, stored))
+	writeSaaSJSON(w, http.StatusOK, a.embedResponse(routeKey, stored))
 }
 
 // handlePutEmbedTemplate is PUT .../embed-templates/{routeKey} (OWNER/ADMIN): validate,
@@ -230,9 +250,10 @@ func (a *App) handlePutEmbedTemplate(w http.ResponseWriter, r *http.Request) {
 		a.embedFailed(w, "save", err)
 		return
 	}
+	a.EmbedRenderer.Invalidate(instID, routeKey) // an in-process save is visible on the next event
 	// Never the template contents.
 	slog.Info("component=saas_api", "event", "embed_template_saved", "organization_id", orgID, "installation_id", instID, "route_key", routeKey, "acting_user_id", userID)
-	writeSaaSJSON(w, http.StatusOK, embedResponse(routeKey, &stored))
+	writeSaaSJSON(w, http.StatusOK, a.embedResponse(routeKey, &stored))
 }
 
 // handleDeleteEmbedTemplate is DELETE .../embed-templates/{routeKey} (OWNER/ADMIN):
@@ -250,6 +271,7 @@ func (a *App) handleDeleteEmbedTemplate(w http.ResponseWriter, r *http.Request) 
 		a.embedFailed(w, "reset", err)
 		return
 	}
+	a.EmbedRenderer.Invalidate(instID, routeKey) // an in-process reset is visible on the next event
 	slog.Info("component=saas_api", "event", "embed_template_deleted", "organization_id", orgID, "installation_id", instID, "route_key", routeKey, "acting_user_id", userID, "existed", deleted)
-	writeSaaSJSON(w, http.StatusOK, embedResponse(routeKey, nil))
+	writeSaaSJSON(w, http.StatusOK, a.embedResponse(routeKey, nil))
 }

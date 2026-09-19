@@ -837,12 +837,15 @@ Embed Designer Phase 2: durable, tenant-safe storage of custom embed templates, 
 `(installation, routeKey)`.
 
 > **CUSTOM TEMPLATE PERSISTENCE: LIVE**
-> **CUSTOM TEMPLATE RUNTIME RENDERING: NOT ENABLED**
+> **CUSTOM TEMPLATE RUNTIME RENDERING: behind `CHAMPION_CUSTOM_EMBEDS_ENABLED` (default OFF)**
 >
-> No Discord publisher reads these rows. Saving, changing or deleting a template never
-> changes any Discord message: with or without a custom template, the current Champion
-> output is exactly what it was. Every response carries `"runtimeRendering": "NOT_ENABLED"`
-> so a client never presents a saved template as live.
+> With the flag off no Discord publisher reads these rows and saving, changing or deleting a
+> template never changes any Discord message. With it on, the routes listed in `runtimeRoutes`
+> (`KILLFEED`, `HITFEED`, `PVE_FEED`, `BOUNTY_TRACKING`, `ECONOMY`, `CONNECTIONS` single-event
+> cards) render the saved template - the next event after a save/reset - and fall back to the
+> existing card on any problem. Every response carries `runtimeRendering`: `ENABLED` only when
+> the flag is on and the route is one of those, else `NOT_ENABLED`, so a client never presents a
+> saved template as live when it is not. See `docs/EMBED_RUNTIME.md`.
 
 Authorization (same chain as every customer route: service auth -> acting user ->
 organization membership -> installation ownership):
@@ -950,14 +953,14 @@ to `{{name}}`). Only the approved variables of the route in the URL are accepted
 | Route | Variables |
 |---|---|
 | `KILLFEED` | `killer` `victim` `weapon` `distance` `ammo` `streak` `server_name` `timestamp` |
-| `PVE_FEED` | `victim` `server_name` `timestamp` |
-| `HITFEED` | `killer` `victim` `weapon` `distance` |
+| `PVE_FEED` | `victim` `cause` `server_name` `timestamp` |
+| `HITFEED` | `killer` `attacker` `victim` `weapon` `ammo` `distance` `hit_zone` `damage` `hits` `server_name` |
 | `BOUNTY` | `victim` `server_name` `timestamp` |
-| `BOUNTY_TRACKING` | `killer` `victim` `server_name` |
+| `BOUNTY_TRACKING` | `killer` `victim` `target` `hunter` `amount` `total` `count` `weapon` `distance` `status` `server_name` |
 | `ECONOMY` | `player` `amount` `balance` `transaction_type` `server_name` |
 | `CASINO` | `player` `amount` `result` |
 | `SHOP` | `player` `item` `amount` `balance` |
-| `CONNECTIONS` | `player` `event` `server_name` `timestamp` |
+| `CONNECTIONS` | `player` `event` `event_type` `session` `server_name` `timestamp` |
 | `BUILD_FEED` | `player` `structure` `server_name` |
 | `ADMIN_ALERTS`, `ADMIN_LOGS` | `event` `player` `server_name` `timestamp` |
 | `HEATMAPS`, `LINK_GAMERTAG`, `STATS_LEADERBOARDS`, `AUTO_LEADERBOARD` | `server_name` `timestamp` (no event vocabulary yet) |

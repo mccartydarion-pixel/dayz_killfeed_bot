@@ -62,6 +62,12 @@ type ConnectionsPublisher struct {
 	// without a route pays nothing and buffers nothing.
 	active atomic.Bool
 
+	// Optional custom embed templates (nil = the Champion default, always). Only a
+	// single-event card is customizable; a batched summary keeps the default.
+	custom                      EmbedCustomizer
+	serverName                  ServerNameFunc
+	routeGuildID, routeServerID int64
+
 	mu             sync.Mutex
 	channel        string
 	queue          []killfeed.ConnectionNotice
@@ -77,7 +83,31 @@ func NewConnectionsPublisher(sender HitSender, resolver RouteResolver, guildRowI
 	return &ConnectionsPublisher{
 		sender: sender,
 		route:  NewRouteBinding(resolver, guildRowID, serverID, routeKeyConnections),
+
+		routeGuildID: guildRowID, routeServerID: serverID,
 	}
+}
+
+// SetCustomizer enables custom embed templates for this server's CONNECTIONS cards.
+func (p *ConnectionsPublisher) SetCustomizer(c EmbedCustomizer, serverName ServerNameFunc) {
+	if p == nil {
+		return
+	}
+	p.custom = c
+	p.serverName = serverName
+}
+
+// card renders one message: a lone connect/disconnect may use the custom template;
+// a batch (several players, or "earlier events not shown") is a summary list, which a
+// single-event template cannot describe, so it always keeps the default.
+func (p *ConnectionsPublisher) card(batch []killfeed.ConnectionNotice, omitted int64) *discordgo.MessageEmbed {
+	def := buildConnectionsEmbed(batch, omitted)
+	if len(batch) != 1 || omitted != 0 {
+		return def
+	}
+	return customEmbed(p.custom, p.routeGuildID, p.routeServerID, routeKeyConnections, def, func() map[string]string {
+		return connectionVars(batch[0], serverNameOf(p.serverName, p.routeServerID))
+	})
 }
 
 // PublishConnection implements killfeed.ConnectionPublisher. It never blocks and
@@ -204,7 +234,7 @@ func (p *ConnectionsPublisher) send(channel string, batch []killfeed.ConnectionN
 		return
 	}
 	_, err := p.sender.ChannelMessageSendComplex(channel, &discordgo.MessageSend{
-		Embeds:          []*discordgo.MessageEmbed{buildConnectionsEmbed(batch, omitted)},
+		Embeds:          []*discordgo.MessageEmbed{p.card(batch, omitted)},
 		AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}}, // player names never ping
 	})
 	if err != nil {

@@ -98,6 +98,11 @@ type HitfeedPublisher struct {
 	route  *RouteBinding
 	now    func() time.Time
 
+	// Optional custom embed templates (nil = the Champion default, always).
+	custom                      EmbedCustomizer
+	serverName                  ServerNameFunc
+	routeGuildID, routeServerID int64
+
 	// active mirrors "a route is currently configured", refreshed each tick.
 	// Until a route exists PublishHit returns immediately, so guilds without a
 	// HITFEED route pay nothing and hold no memory.
@@ -120,7 +125,27 @@ func NewHitfeedPublisher(sender HitSender, resolver RouteResolver, guildRowID, s
 		route:  NewRouteBinding(resolver, guildRowID, serverID, routeKeyHitfeed),
 		now:    time.Now,
 		open:   make(map[string]*hitEncounter),
+
+		routeGuildID: guildRowID, routeServerID: serverID,
 	}
+}
+
+// SetCustomizer enables custom embed templates for this server's HITFEED cards. Each
+// aggregated encounter is rendered independently; aggregation, the per-tick message
+// budget and the 10-cards-per-message batching are unchanged.
+func (p *HitfeedPublisher) SetCustomizer(c EmbedCustomizer, serverName ServerNameFunc) {
+	if p == nil {
+		return
+	}
+	p.custom = c
+	p.serverName = serverName
+}
+
+func (p *HitfeedPublisher) card(enc *hitEncounter) *discordgo.MessageEmbed {
+	def := buildHitEmbed(enc)
+	return customEmbed(p.custom, p.routeGuildID, p.routeServerID, routeKeyHitfeed, def, func() map[string]string {
+		return hitfeedVars(enc, serverNameOf(p.serverName, p.routeServerID))
+	})
 }
 
 // PublishHit implements killfeed.HitPublisher. It never blocks and never fails.
@@ -259,7 +284,7 @@ func (p *HitfeedPublisher) send(channel string, encounters []*hitEncounter) {
 	}
 	embeds := make([]*discordgo.MessageEmbed, 0, len(encounters))
 	for _, enc := range encounters {
-		embeds = append(embeds, buildHitEmbed(enc))
+		embeds = append(embeds, p.card(enc))
 	}
 	_, err := p.sender.ChannelMessageSendComplex(channel, &discordgo.MessageSend{
 		Embeds:          embeds,

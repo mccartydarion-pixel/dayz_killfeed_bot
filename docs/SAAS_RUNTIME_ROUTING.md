@@ -646,3 +646,14 @@ debit, idempotency and commands: **`docs/ECONOMY_SYSTEM.md`**. Routing summary:
   event uses the new route; out-of-process changes are picked up within the resolver TTL.
 * **Privacy:** cards show the display name, type, amount and (rewards only) the new
   balance - no internal ids, no admin, no reason.
+
+## Custom embed templates (Embed Designer Phase 4)
+
+Routes whose publishers can render an installation's saved custom embed template: `KILLFEED`,
+`HITFEED`, `PVE_FEED`, `BOUNTY_TRACKING`, `ECONOMY` and `CONNECTIONS` (single-event cards only).
+Behind `CHAMPION_CUSTOM_EMBEDS_ENABLED` (default off); presentation only - route resolution, channel
+selection, aggregation, rate limits and fallbacks are unchanged, and any template problem publishes
+the existing default card. The template is resolved for the same `(guild, server)` installation the
+route channel is, never by guild alone. `BOUNTY` (persistent board), `ADMIN_LOGS` (live monitor) and
+every route without a publisher are not rendered. Full architecture, variables, limits and the
+compatibility matrix: **`docs/EMBED_RUNTIME.md`**.

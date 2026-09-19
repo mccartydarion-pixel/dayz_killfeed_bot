@@ -75,6 +75,12 @@ type BountyTracker struct {
 	resolver RouteResolver
 	servers  GuildServersFunc
 
+	// Optional custom embed templates for the lifecycle cards (nil = default). The
+	// persistent BOUNTY board is NOT customizable: it is a multi-row view, not a
+	// single-event card (docs/EMBED_RUNTIME.md).
+	custom     EmbedCustomizer
+	serverName ServerNameFunc
+
 	mu          sync.Mutex
 	queue       []bounties.Event
 	dropped     int64
@@ -95,6 +101,23 @@ func NewBountyTracker(sender HitSender, resolver RouteResolver, servers GuildSer
 }
 
 // Notify implements bounties.Notifier. It never blocks and never fails.
+// SetCustomizer enables custom embed templates for BOUNTY_TRACKING cards.
+func (t *BountyTracker) SetCustomizer(c EmbedCustomizer, serverName ServerNameFunc) {
+	if t == nil {
+		return
+	}
+	t.custom = c
+	t.serverName = serverName
+}
+
+// card builds the lifecycle card for one event as shown on one server's route.
+func (t *BountyTracker) card(e bounties.Event, serverID int64) *discordgo.MessageEmbed {
+	def := buildBountyEventEmbed(e)
+	return customEmbed(t.custom, e.GuildID, serverID, routeKeyBountyTracking, def, func() map[string]string {
+		return bountyVars(e, serverNameOf(t.serverName, serverID))
+	})
+}
+
 func (t *BountyTracker) Notify(e bounties.Event) {
 	if t == nil || e.Kind == "" {
 		return
@@ -170,11 +193,12 @@ func (t *BountyTracker) tick(final bool) {
 	perChannel := make(map[string][]*discordgo.MessageEmbed)
 	var order []string
 	for _, e := range batch {
-		for _, ch := range t.channelsFor(ctx, e) {
+		for _, target := range t.targetsFor(ctx, e) {
+			ch := target.channel
 			if _, seen := perChannel[ch]; !seen {
 				order = append(order, ch)
 			}
-			perChannel[ch] = append(perChannel[ch], buildBountyEventEmbed(e))
+			perChannel[ch] = append(perChannel[ch], t.card(e, target.serverID))
 		}
 	}
 	for _, ch := range order {
@@ -191,7 +215,14 @@ func (t *BountyTracker) tick(final bool) {
 
 // channelsFor resolves the BOUNTY_TRACKING channels an event goes to. A missing
 // route or a lookup error contributes nothing.
-func (t *BountyTracker) channelsFor(ctx context.Context, e bounties.Event) []string {
+// channelTarget is one destination channel and the server whose route it is (the
+// server decides which installation's template applies).
+type channelTarget struct {
+	channel  string
+	serverID int64
+}
+
+func (t *BountyTracker) targetsFor(ctx context.Context, e bounties.Event) []channelTarget {
 	if t.resolver == nil {
 		return nil
 	}
@@ -212,7 +243,7 @@ func (t *BountyTracker) channelsFor(ctx context.Context, e bounties.Event) []str
 		serverIDs = ids
 	}
 	seen := map[string]bool{}
-	var out []string
+	var out []channelTarget
 	for _, id := range serverIDs {
 		ch, found, err := t.resolver.Resolve(ctx, e.GuildID, id, routeKeyBountyTracking)
 		if err != nil {
@@ -223,7 +254,7 @@ func (t *BountyTracker) channelsFor(ctx context.Context, e bounties.Event) []str
 			continue
 		}
 		seen[ch] = true
-		out = append(out, ch)
+		out = append(out, channelTarget{channel: ch, serverID: id})
 	}
 	return out
 }
