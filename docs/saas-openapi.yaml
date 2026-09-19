@@ -59,6 +59,35 @@ components:
         type: integer
         format: int64
 
+    factionID:
+      name: factionID
+      in: path
+      required: true
+      description: A Faction Hub faction id within this organization and installation; another tenant's id is 404.
+      schema: { type: integer, format: int64 }
+    factionApplicationID:
+      name: applicationID
+      in: path
+      required: true
+      schema: { type: integer, format: int64 }
+    factionMemberID:
+      name: memberID
+      in: path
+      required: true
+      description: The membership id (FactionMember.id), not the user id.
+      schema: { type: integer, format: int64 }
+    factionLimit:
+      name: limit
+      in: query
+      required: false
+      description: Page size (default 25, maximum 100; larger values are clamped, 0 or non-numeric is 400).
+      schema: { type: integer, minimum: 1 }
+    factionCursor:
+      name: cursor
+      in: query
+      required: false
+      description: Opaque; pass the previous page's nextCursor. Invalid is 400.
+      schema: { type: string }
   schemas:
     ApiError:
       type: object
@@ -581,6 +610,166 @@ components:
           type: object
           additionalProperties: { $ref: "#/components/schemas/ChannelRouteInfo" }
         settings: { $ref: "#/components/schemas/InstallationGeneralSettings" }
+
+    FactionRecruitmentStatus:
+      type: string
+      enum: [OPEN, INVITE_ONLY, CLOSED]
+      description: OPEN accepts applications; INVITE_ONLY and CLOSED refuse them (409).
+    FactionRole:
+      type: string
+      enum: [LEADER, OFFICER, MEMBER]
+    FactionApplicationStatus:
+      type: string
+      enum: [PENDING, ACCEPTED, DENIED, WITHDRAWN, CANCELLED]
+    FactionRequirements:
+      type: object
+      description: Display and application requirements only - never enforced, never a real-world identity check.
+      properties:
+        minimumHours: { type: integer, nullable: true, minimum: 0, maximum: 100000 }
+        minimumAge: { type: integer, nullable: true, minimum: 13, maximum: 99 }
+        pvpRequired: { type: boolean }
+        builderNeeded: { type: boolean }
+        micRequired: { type: boolean }
+        customRequirements: { type: string, maxLength: 500, description: "Plain text; render escaped." }
+    FactionSummary:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        name: { type: string }
+        tag: { type: string }
+        slug: { type: string, description: "Unique within the installation only; stable across renames." }
+        descriptionPreview: { type: string, maxLength: 140 }
+        recruitmentStatus: { $ref: "#/components/schemas/FactionRecruitmentStatus" }
+        memberCount: { type: integer }
+        logoKey: { type: string, nullable: true, description: "Placeholder for an approved catalog key; always null in Phase 1." }
+        flagKey: { type: string, nullable: true }
+        armbandKey: { type: string, nullable: true }
+        primaryColor: { type: string, nullable: true, description: "#RRGGBB" }
+        secondaryColor: { type: string, nullable: true }
+    FactionMember:
+      type: object
+      properties:
+        id: { type: integer, format: int64, description: "The membership id used in the member routes." }
+        userId: { type: integer, format: int64 }
+        discordUserId: { type: string }
+        username: { type: string }
+        displayName: { type: string }
+        avatar: { type: string }
+        gamertag: { type: string, nullable: true, description: "The linked DayZ player name when the user has a verified link; never invented." }
+        role: { $ref: "#/components/schemas/FactionRole" }
+        joinedAt: { type: string, format: date-time }
+    FactionProfile:
+      allOf:
+        - { $ref: "#/components/schemas/FactionSummary" }
+        - type: object
+          description: Public profile. Never includes application data.
+          properties:
+            installationId: { type: integer, format: int64 }
+            gameServerId: { type: integer, format: int64 }
+            description: { type: string, maxLength: 500, description: "Plain text; render escaped." }
+            requirements: { $ref: "#/components/schemas/FactionRequirements" }
+            leader: { allOf: [{ $ref: "#/components/schemas/FactionMember" }], nullable: true }
+            officers: { type: array, items: { $ref: "#/components/schemas/FactionMember" } }
+            members: { type: array, description: "Most senior first, at most 100.", items: { $ref: "#/components/schemas/FactionMember" } }
+            createdAt: { type: string, format: date-time }
+            updatedAt: { type: string, format: date-time }
+            viewer:
+              type: object
+              properties:
+                role: { allOf: [{ $ref: "#/components/schemas/FactionRole" }], nullable: true }
+                canEdit: { type: boolean }
+                canManageApplications: { type: boolean }
+                moderationView: { type: boolean, description: "True for an organization OWNER/ADMIN - a read-only view, never a mutation right." }
+    FactionApplication:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        factionId: { type: integer, format: int64 }
+        userId: { type: integer, format: int64 }
+        applicant:
+          type: object
+          properties:
+            discordUserId: { type: string }
+            username: { type: string }
+            displayName: { type: string }
+            avatar: { type: string }
+        status: { $ref: "#/components/schemas/FactionApplicationStatus" }
+        message: { type: string, maxLength: 500 }
+        reviewedByUserId: { type: integer, format: int64, nullable: true }
+        reviewedAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        faction:
+          type: object
+          description: Present on the pendingApplications of GET .../factions/me only.
+          properties:
+            id: { type: integer, format: int64 }
+            name: { type: string }
+            tag: { type: string }
+            slug: { type: string }
+    FactionDirectoryPage:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/FactionSummary" } }
+        nextCursor: { type: string, nullable: true }
+        limit: { type: integer }
+    FactionApplicationPage:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/FactionApplication" } }
+        nextCursor: { type: string, nullable: true }
+        limit: { type: integer }
+    FactionMemberList:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/FactionMember" } }
+        total: { type: integer, description: "The real member count, even when items is capped by limit." }
+        limit: { type: integer }
+    MyFaction:
+      type: object
+      properties:
+        faction: { allOf: [{ $ref: "#/components/schemas/FactionSummary" }], nullable: true }
+        membership: { allOf: [{ $ref: "#/components/schemas/FactionMember" }], nullable: true }
+        role: { allOf: [{ $ref: "#/components/schemas/FactionRole" }], nullable: true }
+        pendingApplications: { type: array, items: { $ref: "#/components/schemas/FactionApplication" } }
+    CreateFactionRequest:
+      type: object
+      additionalProperties: false
+      required: [name, tag]
+      properties:
+        name: { type: string, minLength: 3, maxLength: 32, description: "Letters, digits, spaces and - _ . ' & ! only." }
+        tag: { type: string, minLength: 2, maxLength: 5, description: "ASCII letters/digits; stored upper-case." }
+        description: { type: string, maxLength: 500 }
+        recruitmentStatus: { $ref: "#/components/schemas/FactionRecruitmentStatus" }
+    UpdateFactionRequest:
+      type: object
+      additionalProperties: false
+      description: >
+        Every field is optional (absent = unchanged). Organization, installation, server, slug and the
+        visual keys are not editable; unknown keys are rejected with 400.
+      properties:
+        name: { type: string, minLength: 3, maxLength: 32 }
+        tag: { type: string, minLength: 2, maxLength: 5 }
+        description: { type: string, maxLength: 500 }
+        recruitmentStatus: { $ref: "#/components/schemas/FactionRecruitmentStatus" }
+        primaryColor: { type: string, description: "#RRGGBB, or empty to clear." }
+        secondaryColor: { type: string }
+        requirements: { $ref: "#/components/schemas/FactionRequirements" }
+    ApplyToFactionRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        message: { type: string, maxLength: 500 }
+    AcceptFactionApplicationResponse:
+      type: object
+      properties:
+        application: { $ref: "#/components/schemas/FactionApplication" }
+        member: { $ref: "#/components/schemas/FactionMember" }
+    RemovedFactionMember:
+      type: object
+      properties:
+        removed: { type: boolean }
+        member: { $ref: "#/components/schemas/FactionMember" }
 
   responses:
     Unauthorized:
@@ -1363,6 +1552,302 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ApiError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # --- Faction Hub (Phase 1; docs/FACTIONS.md). Reads and player actions need only a synced acting user
+  # (players are not organization members); faction mutations are decided by the FACTION role. ---
+  /api/saas/organizations/{organizationID}/installations/{installationID}/factions:
+    get:
+      summary: Faction directory (any synced user). Newest first, member counts from one aggregate query.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { name: recruiting, in: query, required: false, description: "true lists OPEN factions only.", schema: { type: boolean } }
+        - { name: q, in: query, required: false, description: "Case-insensitive substring of name or tag, at most 50 characters.", schema: { type: string, maxLength: 50 } }
+        - { $ref: "#/components/parameters/factionLimit" }
+        - { $ref: "#/components/parameters/factionCursor" }
+      responses:
+        "200":
+          description: One page of faction summaries.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FactionDirectoryPage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      summary: Found a faction (any synced user). The creator becomes LEADER; faction and membership are created in one transaction.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateFactionRequest" }
+      responses:
+        "201":
+          description: The new faction profile.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FactionProfile" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Name or tag taken on this installation, the user is already in a faction here, the installation has no DayZ server selected, or it is suspended.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "413": { description: Request body over 16 KiB. }
+        "429": { description: Rate limited (1 per 10 seconds, 10 per day per user). }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/factions/me:
+    get:
+      summary: The caller's faction (if any), role and pending applications on this installation.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+      responses:
+        "200":
+          description: Faction and membership are null when the user is in no faction.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MyFaction" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/factions/{factionID}:
+    get:
+      summary: Public faction profile (any synced user). Never includes application data.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { $ref: "#/components/parameters/factionID" }
+      responses:
+        "200":
+          description: Profile with requirements, leader, officers, members and the viewer block.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FactionProfile" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      summary: Update the profile, recruitment status, colors and requirements (faction LEADER only).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { $ref: "#/components/parameters/factionID" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateFactionRequest" }
+      responses:
+        "200":
+          description: The updated profile.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FactionProfile" }
+        "400":
+          description: Invalid value, or an unknown key (image URLs, logoKey/flagKey/armbandKey, ids, slug).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/factions/{factionID}/applications:
+    get:
+      summary: List applications (faction LEADER/OFFICER; an organization OWNER/ADMIN gets a read-only moderation view).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { $ref: "#/components/parameters/factionID" }
+        - { name: status, in: query, required: false, schema: { $ref: "#/components/schemas/FactionApplicationStatus" } }
+        - { $ref: "#/components/parameters/factionLimit" }
+        - { $ref: "#/components/parameters/factionCursor" }
+      responses:
+        "200":
+          description: Newest first, including the applicant's message.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FactionApplicationPage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      summary: Apply to join (any synced user). Refused unless the faction is OPEN, the user is in no faction here and has no pending application to it.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { $ref: "#/components/parameters/factionID" }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ApplyToFactionRequest" }
+      responses:
+        "201":
+          description: The pending application.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FactionApplication" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "429": { description: Rate limited (5 per minute, 40 per day per user). }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/factions/{factionID}/applications/{applicationID}/accept:
+    post:
+      summary: Accept a pending application (LEADER/OFFICER). One transaction - membership, ACCEPTED status, and cancellation of the applicant's other pending applications on this installation.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { $ref: "#/components/parameters/factionID" }
+        - { $ref: "#/components/parameters/factionApplicationID" }
+      responses:
+        "200":
+          description: The accepted application and the new membership.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AcceptFactionApplicationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: The application is no longer pending, or the applicant is already in a faction on this installation.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/factions/{factionID}/applications/{applicationID}/deny:
+    post:
+      summary: Deny a pending application (LEADER/OFFICER). Records the reviewer and time; history is kept.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { $ref: "#/components/parameters/factionID" }
+        - { $ref: "#/components/parameters/factionApplicationID" }
+      responses:
+        "200":
+          description: The denied application.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FactionApplication" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/factions/{factionID}/applications/{applicationID}/withdraw:
+    post:
+      summary: Withdraw the caller's own pending application. Someone else's application is 404.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { $ref: "#/components/parameters/factionID" }
+        - { $ref: "#/components/parameters/factionApplicationID" }
+      responses:
+        "200":
+          description: The withdrawn application.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FactionApplication" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/factions/{factionID}/members:
+    get:
+      summary: Public member list, most senior first (any synced user).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { $ref: "#/components/parameters/factionID" }
+        - { name: limit, in: query, required: false, description: "Default 100, maximum 200.", schema: { type: integer, minimum: 1 } }
+      responses:
+        "200":
+          description: Members and the real total.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FactionMemberList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/factions/{factionID}/members/{memberID}/promote:
+    post:
+      summary: Promote a MEMBER to OFFICER (LEADER only).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { $ref: "#/components/parameters/factionID" }
+        - { $ref: "#/components/parameters/factionMemberID" }
+      responses:
+        "200":
+          description: The updated member.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FactionMember" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: The member is not a MEMBER (an officer cannot be promoted; there is no promotion to leader). }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/factions/{factionID}/members/{memberID}/demote:
+    post:
+      summary: Demote an OFFICER to MEMBER (LEADER only).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { $ref: "#/components/parameters/factionID" }
+        - { $ref: "#/components/parameters/factionMemberID" }
+      responses:
+        "200":
+          description: The updated member.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FactionMember" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: The member is not an OFFICER. }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/factions/{factionID}/members/{memberID}:
+    delete:
+      summary: Remove a member. The LEADER removes MEMBER and OFFICER, an OFFICER removes MEMBER only, nobody removes the LEADER (403).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { $ref: "#/components/parameters/factionID" }
+        - { $ref: "#/components/parameters/factionMemberID" }
+      responses:
+        "200":
+          description: The removed member.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RemovedFactionMember" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }

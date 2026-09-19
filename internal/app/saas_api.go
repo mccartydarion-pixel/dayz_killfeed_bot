@@ -305,6 +305,18 @@ func (a *App) registerSaaSAPI() {
 	if a.saasNitradoConnectLimiter == nil {
 		a.saasNitradoConnectLimiter = newSaaSRateLimiter(time.Hour, 10)
 	}
+	if a.saasFactionCreateLimiter == nil {
+		a.saasFactionCreateLimiter = newSaaSRateLimiter(10*time.Second, 1)
+	}
+	if a.saasFactionCreateDayLimiter == nil {
+		a.saasFactionCreateDayLimiter = newSaaSRateLimiter(24*time.Hour, 10)
+	}
+	if a.saasFactionApplyLimiter == nil {
+		a.saasFactionApplyLimiter = newSaaSRateLimiter(time.Minute, 5)
+	}
+	if a.saasFactionApplyDayLimiter == nil {
+		a.saasFactionApplyDayLimiter = newSaaSRateLimiter(24*time.Hour, 40)
+	}
 	// Only wire from a.Discord when it's genuinely non-nil: assigning a nil
 	// *discord.Client into the discordGuildVerifier interface field would
 	// produce a non-nil interface wrapping a nil pointer (the classic Go
@@ -352,4 +364,5 @@ func (a *App) registerSaaSAPI() {
 	a.HTTPServer.Handle("DELETE /api/saas/organizations/{organizationID}/installations/{installationID}/embed-templates/{routeKey}", a.handleDeleteEmbedTemplate)
 	a.HTTPServer.Handle("GET /api/saas/organizations/{organizationID}/installations/{installationID}/settings", a.handleGetInstallationSettings)
 	a.HTTPServer.Handle("PUT /api/saas/organizations/{organizationID}/installations/{installationID}/settings", a.handleSaveInstallationSettings)
+	a.registerFactionHubRoutes()
 }
