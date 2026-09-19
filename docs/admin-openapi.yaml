@@ -1,0 +1,431 @@
+openapi: 3.0.3
+info:
+  title: Champion Platform Admin API (read-only)
+  description: >
+    Cross-tenant, READ-ONLY founder/admin API for the Champion website's /admin
+    pages. Machine-readable companion to docs/ADMIN_API.md. Separate from the
+    customer API (docs/saas-openapi.yaml): only platform admins on the
+    CHAMPION_ADMIN_DISCORD_IDS allowlist may call it; organization roles and
+    Discord guild permissions never grant access. Phase 1 has no write routes.
+  version: "1.0.0"
+servers:
+  - url: "{baseUrl}"
+    variables:
+      baseUrl:
+        default: https://dayzkillfeedbot-production.up.railway.app
+security:
+  - serviceAuth: []
+components:
+  securitySchemes:
+    serviceAuth:
+      type: http
+      scheme: bearer
+      description: Bearer WEBSITE_API_SECRET (server-side only).
+  parameters:
+    ActingAdmin:
+      name: X-Champion-Acting-User
+      in: header
+      required: true
+      description: Discord user id of the acting person; must be on CHAMPION_ADMIN_DISCORD_IDS.
+      schema: { type: string }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      description: Values above 100 are clamped to 100; 0, negative or non-numeric is 400.
+    Cursor:
+      name: cursor
+      in: query
+      schema: { type: string }
+      description: Opaque; the previous response's nextCursor.
+    Search:
+      name: search
+      in: query
+      schema: { type: string, maxLength: 100 }
+      description: Case-insensitive substring; bound parameter, LIKE metacharacters are literal.
+    OrganizationID:
+      name: organizationID
+      in: path
+      required: true
+      schema: { type: integer, format: int64, minimum: 1 }
+    InstallationID:
+      name: installationID
+      in: path
+      required: true
+      schema: { type: integer, format: int64, minimum: 1 }
+  responses:
+    Unauthorized:
+      description: Missing or invalid service secret, or no acting user.
+      content: { application/json: { schema: { $ref: "#/components/schemas/ApiError" } } }
+    Forbidden:
+      description: Acting user is not a platform admin.
+      content: { application/json: { schema: { $ref: "#/components/schemas/ApiError" } } }
+    BadRequest:
+      description: >
+        Invalid limit, cursor, search or id. (A status/health/plan filter value outside
+        the real vocabulary is NOT an error: it returns an empty page.)
+      content: { application/json: { schema: { $ref: "#/components/schemas/ApiError" } } }
+    NotFound:
+      description: Unknown id.
+      content: { application/json: { schema: { $ref: "#/components/schemas/ApiError" } } }
+  schemas:
+    ApiError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string, enum: [UNAUTHORIZED, FORBIDDEN, NOT_FOUND, INVALID_REQUEST, INTERNAL_ERROR] }
+            message: { type: string }
+    InstallationStatus:
+      type: string
+      enum: [NOT_STARTED, DISCORD_CONNECTED, NITRADO_CONNECTED, CONFIGURING, READY, DEGRADED, DISCONNECTED, SUSPENDED]
+    InstallationHealth:
+      type: string
+      description: Derived from status (same as the customer API).
+      enum: [HEALTHY, DEGRADED, OFFLINE, SETTING_UP]
+    SubscriptionStatus:
+      type: string
+      enum: [TRIAL, ACTIVE, PAST_DUE, CANCELED, SUSPENDED]
+    UserRef:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        displayName: { type: string }
+        discordId: { type: string }
+    Subscription:
+      type: object
+      nullable: true
+      description: No payment-provider data; billing is not integrated.
+      properties:
+        plan: { type: string }
+        status: { $ref: "#/components/schemas/SubscriptionStatus" }
+        trialEndsAt: { type: string, format: date-time, nullable: true }
+        currentPeriodEnd: { type: string, format: date-time, nullable: true }
+        entitlements: { type: array, items: { type: string } }
+        createdAt: { type: string, format: date-time, nullable: true }
+        updatedAt: { type: string, format: date-time, nullable: true }
+    DiscordInfo:
+      type: object
+      properties:
+        guildId: { type: string }
+        guildName: { type: string }
+        botInstalled: { type: boolean }
+        permissionsVerified: { type: boolean }
+    ServerInfo:
+      type: object
+      nullable: true
+      properties:
+        id: { type: integer, format: int64 }
+        serviceId: { type: string }
+        displayName: { type: string }
+        platform: { type: string }
+        status: { type: string }
+        active: { type: boolean }
+    InstallationSummary:
+      type: object
+      description: Website AdminInstallation (flat names) plus structured discord/server.
+      properties:
+        id: { type: integer, format: int64 }
+        installationId: { type: integer, format: int64 }
+        organizationId: { type: integer, format: int64 }
+        organization: { type: string, description: Organization name. }
+        discordGuild: { type: string, nullable: true }
+        dayzServer: { type: string, nullable: true }
+        platform: { type: string, nullable: true }
+        plan: { type: string }
+        status: { $ref: "#/components/schemas/InstallationStatus" }
+        health: { $ref: "#/components/schemas/InstallationHealth" }
+        currentSetupStep: { type: string, nullable: true }
+        setupCompletedAt: { type: string, format: date-time, nullable: true }
+        lastHealthCheckAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
+        discord: { $ref: "#/components/schemas/DiscordInfo" }
+        server: { $ref: "#/components/schemas/ServerInfo" }
+    Member:
+      type: object
+      properties:
+        id: { type: string }
+        displayName: { type: string }
+        discordId: { type: string }
+        role: { type: string, enum: [OWNER, ADMIN, MEMBER] }
+        joinedAt: { type: string, format: date-time }
+    Organization:
+      type: object
+      description: >
+        Website AdminOrganization. In a list, installations holds only the primary
+        installation; the detail has all of them (primary first) and the members.
+      properties:
+        id: { type: integer, format: int64 }
+        name: { type: string }
+        slug: { type: string }
+        createdAt: { type: string, format: date-time, nullable: true }
+        owner: { type: string, nullable: true, description: Owner display name. }
+        ownerUser: { $ref: "#/components/schemas/UserRef" }
+        memberCount: { type: integer }
+        installationCount: { type: integer }
+        discordGuild: { type: string, nullable: true }
+        dayzServer: { type: string, nullable: true }
+        subscription: { $ref: "#/components/schemas/Subscription" }
+        installations: { type: array, items: { $ref: "#/components/schemas/InstallationSummary" } }
+        members: { type: array, items: { $ref: "#/components/schemas/Member" }, description: Detail only. }
+    SubscriptionRow:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        organization: { type: string }
+        organizationId: { type: integer, format: int64 }
+        organizationName: { type: string }
+        plan: { type: string }
+        status: { $ref: "#/components/schemas/SubscriptionStatus" }
+        trialEndsAt: { type: string, format: date-time, nullable: true }
+        currentPeriodEnd: { type: string, format: date-time, nullable: true }
+        entitlements: { type: array, items: { type: string } }
+        installationCount: { type: integer }
+        createdAt: { type: string, format: date-time, nullable: true }
+        updatedAt: { type: string, format: date-time, nullable: true }
+    Page:
+      type: object
+      properties:
+        nextCursor: { type: string, nullable: true }
+        limit: { type: integer }
+    Overview:
+      type: object
+      properties:
+        totalOrganizations: { type: integer }
+        totalUsers: { type: integer }
+        activeInstallations: { type: integer, description: READY + DEGRADED. }
+        readyInstallations: { type: integer }
+        configuringInstallations: { type: integer }
+        degradedInstallations: { type: integer }
+        trials: { type: integer, description: Subscriptions with status TRIAL. }
+        activeSubscriptions: { type: integer }
+        suspendedSubscriptions: { type: integer }
+        backendStatus: { type: string, enum: [HEALTHY, DEGRADED, UNHEALTHY, UNKNOWN] }
+        organizations: { type: integer }
+        users: { type: integer }
+        installations:
+          type: object
+          properties:
+            total: { type: integer }
+            notStarted: { type: integer }
+            discordConnected: { type: integer }
+            nitradoConnected: { type: integer }
+            configuring: { type: integer }
+            ready: { type: integer }
+            degraded: { type: integer }
+            disconnected: { type: integer }
+            suspended: { type: integer }
+            other: { type: integer }
+        subscriptions:
+          type: object
+          properties:
+            total: { type: integer }
+            trial: { type: integer }
+            active: { type: integer }
+            pastDue: { type: integer }
+            canceled: { type: integer }
+            suspended: { type: integer }
+            other: { type: integer }
+            trialExpired: { type: integer, description: "Derived: TRIAL with trial_ends_at in the past." }
+    InstallationDetail:
+      allOf:
+        - $ref: "#/components/schemas/InstallationSummary"
+        - type: object
+          properties:
+            organizationSlug: { type: string }
+            updatedAt: { type: string, format: date-time }
+            subscription: { $ref: "#/components/schemas/Subscription" }
+            setupProgress:
+              type: object
+              nullable: true
+              properties:
+                currentStep: { type: string }
+                discordCompleted: { type: boolean }
+                nitradoCompleted: { type: boolean }
+                serverSelected: { type: boolean }
+                channelsCompleted: { type: boolean }
+                validationCompleted: { type: boolean }
+                completedAt: { type: string, format: date-time, nullable: true }
+            settings: { $ref: "#/components/schemas/GeneralSettings" }
+            generalSettings: { $ref: "#/components/schemas/GeneralSettings" }
+            channelRoutes:
+              type: array
+              items:
+                type: object
+                properties:
+                  routeKey: { type: string }
+                  channelId: { type: string }
+                  channelName: { type: string, nullable: true, description: "Not stored; Discord-cache name when known, else null." }
+                  managedByChampion: { type: boolean }
+            nitradoConnection:
+              type: object
+              nullable: true
+              description: Status only. The credential is never read.
+              properties:
+                connected: { type: boolean }
+                status: { type: string }
+                lastValidatedAt: { type: string, format: date-time, nullable: true }
+                lastSuccessAt: { type: string, format: date-time, nullable: true }
+                lastFailureAt: { type: string, format: date-time, nullable: true }
+                lastErrorClass: { type: string }
+    GeneralSettings:
+      type: object
+      nullable: true
+      properties:
+        timezone: { type: string }
+        distanceUnit: { type: string }
+        onlineDisplayEnabled: { type: boolean }
+        leaderboardEnabled: { type: boolean }
+    HealthInstallation:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        organizationId: { type: integer, format: int64 }
+        organization: { type: string }
+        status: { $ref: "#/components/schemas/InstallationStatus" }
+        health: { $ref: "#/components/schemas/InstallationHealth" }
+        discordBotInstalled: { type: boolean, nullable: true }
+        permissionsVerified: { type: boolean }
+        serverStatus: { type: string, nullable: true }
+        lastHealthCheckAt: { type: string, format: date-time, nullable: true }
+    Health:
+      type: object
+      properties:
+        backendStatus: { type: string, enum: [HEALTHY, DEGRADED, UNHEALTHY, UNKNOWN] }
+        installations:
+          type: array
+          description: At most 50 installations needing attention (DEGRADED, DISCONNECTED, SUSPENDED).
+          items: { $ref: "#/components/schemas/HealthInstallation" }
+        generatedAt: { type: string, format: date-time }
+        backend:
+          type: object
+          properties:
+            overall: { type: string }
+            uptimeSeconds: { type: integer, format: int64 }
+            components: { type: array, items: { type: object } }
+            workers: { type: array, items: { type: object } }
+            workerTotal: { type: integer }
+        database: { type: object, properties: { ok: { type: boolean } } }
+        discord: { type: object, properties: { configured: { type: boolean }, ready: { type: boolean } } }
+        summary:
+          type: object
+          properties:
+            total: { type: integer }
+            byStatus: { type: object, additionalProperties: { type: integer } }
+            byHealth: { type: object, additionalProperties: { type: integer } }
+            serversByStatus: { type: object, additionalProperties: { type: integer } }
+            botNotInstalled: { type: integer }
+            permissionsUnverified: { type: integer }
+            readyNeverChecked: { type: integer }
+paths:
+  /api/admin/overview:
+    get:
+      summary: Platform-wide counts
+      parameters: [ { $ref: "#/components/parameters/ActingAdmin" } ]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Overview" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/admin/organizations:
+    get:
+      summary: All organizations (paginated)
+      parameters:
+        - $ref: "#/components/parameters/ActingAdmin"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Search"
+        - { name: plan, in: query, schema: { type: string } }
+        - { name: subscriptionStatus, in: query, schema: { $ref: "#/components/schemas/SubscriptionStatus" } }
+        - { name: installationStatus, in: query, schema: { $ref: "#/components/schemas/InstallationStatus" } }
+        - { name: status, in: query, schema: { $ref: "#/components/schemas/InstallationStatus" }, description: "Alias for installationStatus (the website's customers filter); an explicit installationStatus wins." }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Page"
+                  - type: object
+                    properties: { items: { type: array, items: { $ref: "#/components/schemas/Organization" } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/admin/organizations/{organizationID}:
+    get:
+      summary: One organization with members and installations
+      parameters: [ { $ref: "#/components/parameters/ActingAdmin" }, { $ref: "#/components/parameters/OrganizationID" } ]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Organization" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/admin/subscriptions:
+    get:
+      summary: All subscriptions (paginated)
+      parameters:
+        - $ref: "#/components/parameters/ActingAdmin"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Search"
+        - { name: status, in: query, schema: { $ref: "#/components/schemas/SubscriptionStatus" } }
+        - { name: plan, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Page"
+                  - type: object
+                    properties: { items: { type: array, items: { $ref: "#/components/schemas/SubscriptionRow" } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/admin/installations:
+    get:
+      summary: All installations (paginated)
+      parameters:
+        - $ref: "#/components/parameters/ActingAdmin"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Search"
+        - { name: status, in: query, schema: { $ref: "#/components/schemas/InstallationStatus" } }
+        - { name: health, in: query, schema: { $ref: "#/components/schemas/InstallationHealth" } }
+        - { name: organizationId, in: query, schema: { type: integer, format: int64 } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Page"
+                  - type: object
+                    properties: { items: { type: array, items: { $ref: "#/components/schemas/InstallationSummary" } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/admin/installations/{installationID}:
+    get:
+      summary: One installation with settings and channel routes
+      parameters: [ { $ref: "#/components/parameters/ActingAdmin" }, { $ref: "#/components/parameters/InstallationID" } ]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/InstallationDetail" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/admin/health:
+    get:
+      summary: Operational state (stored and in-memory only; no live Nitrado calls)
+      parameters: [ { $ref: "#/components/parameters/ActingAdmin" } ]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Health" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }

@@ -325,3 +325,7 @@ Nitrado credential submission/decryption, server selection, channel
 configuration writes, billing/checkout, and entitlement enforcement are not
 part of this API yet - `installations` intentionally stops at
 `DISCORD_CONNECTED` here. Nitrado setup is the next task.
+
+## Platform-admin (founder) API
+
+Cross-tenant, read-only reads for the website `/admin` pages live under `/api/admin`, **not** `/api/saas`, and require the platform-admin allowlist (`CHAMPION_ADMIN_DISCORD_IDS`) on top of the service secret. Organization roles never grant access. See [`ADMIN_API.md`](ADMIN_API.md) and [`admin-openapi.yaml`](admin-openapi.yaml). The customer routes in this document are unchanged and remain strictly tenant-scoped.
