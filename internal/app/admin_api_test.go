@@ -19,6 +19,7 @@ import (
 
 	"github.com/yourname/dayz-killfeed/internal/adminrepo"
 	"github.com/yourname/dayz-killfeed/internal/config"
+	"github.com/yourname/dayz-killfeed/internal/health"
 	"github.com/yourname/dayz-killfeed/internal/server"
 )
 
@@ -34,7 +35,7 @@ type fakeAdminReader struct {
 	subs  adminrepo.SubscriptionFilter
 	inst  adminrepo.InstallationFilter
 
-	orgs      []adminrepo.OrganizationRow
+	orgs      []adminrepo.Organization
 	orgNext   int64
 	guildName string // injected into installation rows (secret-leak test)
 	err       error
@@ -46,28 +47,28 @@ func (f *fakeAdminReader) Overview(context.Context) (adminrepo.Overview, error) 
 	f.hit()
 	return adminrepo.Overview{Organizations: 3, Users: 5, Installations: adminrepo.InstallationCounts{Total: 4, Ready: 2, Configuring: 1, Disconnected: 1}, Subscriptions: adminrepo.SubscriptionCounts{Total: 3, Trial: 2, Active: 1}}, f.err
 }
-func (f *fakeAdminReader) ListOrganizations(_ context.Context, fl adminrepo.OrganizationFilter) ([]adminrepo.OrganizationRow, int64, error) {
+func (f *fakeAdminReader) ListOrganizations(_ context.Context, fl adminrepo.OrganizationFilter) ([]adminrepo.Organization, int64, error) {
 	f.hit()
 	f.org = fl
 	return f.orgs, f.orgNext, f.err
 }
-func (f *fakeAdminReader) GetOrganization(_ context.Context, id int64) (*adminrepo.OrganizationDetail, error) {
+func (f *fakeAdminReader) GetOrganization(_ context.Context, id int64) (*adminrepo.Organization, error) {
 	f.hit()
 	if id == 404 {
 		return nil, nil
 	}
-	return &adminrepo.OrganizationDetail{Organization: adminrepo.OrganizationSummary{ID: id, Name: "Org"}, Members: []adminrepo.MemberRow{}, Installations: []adminrepo.InstallationRow{}}, f.err
+	return &adminrepo.Organization{ID: id, Name: "Org", Members: []adminrepo.MemberRow{}, Installations: []adminrepo.InstallationSummary{}}, f.err
 }
 func (f *fakeAdminReader) ListSubscriptions(_ context.Context, fl adminrepo.SubscriptionFilter) ([]adminrepo.SubscriptionRow, int64, error) {
 	f.hit()
 	f.subs = fl
 	return nil, 0, f.err
 }
-func (f *fakeAdminReader) ListInstallations(_ context.Context, fl adminrepo.InstallationFilter) ([]adminrepo.InstallationRow, int64, error) {
+func (f *fakeAdminReader) ListInstallations(_ context.Context, fl adminrepo.InstallationFilter) ([]adminrepo.InstallationSummary, int64, error) {
 	f.hit()
 	f.inst = fl
 	if f.guildName != "" {
-		return []adminrepo.InstallationRow{{InstallationID: 1, Discord: adminrepo.DiscordInfo{GuildName: f.guildName}}}, 0, f.err
+		return []adminrepo.InstallationSummary{{ID: 1, InstallationID: 1, Discord: adminrepo.DiscordInfo{GuildName: f.guildName}}}, 0, f.err
 	}
 	return nil, 0, f.err
 }
@@ -78,9 +79,9 @@ func (f *fakeAdminReader) GetInstallation(_ context.Context, id int64) (*adminre
 	}
 	return &adminrepo.InstallationDetail{ChannelRoutes: []adminrepo.ChannelRoute{{RouteKey: "KILLFEED", ChannelID: "c-1"}}}, f.err
 }
-func (f *fakeAdminReader) InstallationHealth(context.Context) (adminrepo.InstallationHealth, error) {
+func (f *fakeAdminReader) InstallationHealth(context.Context) (adminrepo.HealthSummary, []adminrepo.HealthInstallation, error) {
 	f.hit()
-	return adminrepo.InstallationHealth{ByStatus: map[string]int{}, ByHealth: map[string]int{}, ServersByStatus: map[string]int{}, NeedsAttention: []adminrepo.InstallationRow{}}, f.err
+	return adminrepo.HealthSummary{ByStatus: map[string]int{}, ByHealth: map[string]int{}, ServersByStatus: map[string]int{}}, []adminrepo.HealthInstallation{}, f.err
 }
 
 func newAdminTestApp(admins ...string) (*App, *fakeAdminReader) {
@@ -207,7 +208,7 @@ func TestAdminAPIPaginationBounds(t *testing.T) {
 
 func TestAdminAPICursorRoundTripAndListEnvelope(t *testing.T) {
 	a, fake := newAdminTestApp(adminTestAdmin)
-	fake.orgs = []adminrepo.OrganizationRow{{Organization: adminrepo.OrganizationSummary{ID: 9, Name: "Nine"}}}
+	fake.orgs = []adminrepo.Organization{{ID: 9, Name: "Nine"}}
 	fake.orgNext = 9
 	rr := adminGet(a, a.handleAdminListOrganizations, "/api/admin/organizations?limit=1&search=%20Nine%20", adminTestSecret, adminTestAdmin, nil)
 	var body struct {
@@ -247,6 +248,13 @@ func TestAdminAPIFilterValidationAndNormalization(t *testing.T) {
 		fake.org.SubscriptionStatus != "ACTIVE" || fake.org.InstallationStatus != "READY" || fake.org.Plan != "Trial" {
 		t.Fatalf("filters must be normalised and forwarded: %+v (%d)", fake.org, rr.Code)
 	}
+	// The website's customer filter sends `status` for the installation status.
+	if rr := do(a.handleAdminListOrganizations, "/x?status=degraded"); rr.Code != 200 || fake.org.InstallationStatus != "DEGRADED" || fake.org.SubscriptionStatus != "" {
+		t.Fatalf("`status` must mean the installation status on organizations: %+v (%d)", fake.org, rr.Code)
+	}
+	if rr := do(a.handleAdminListOrganizations, "/x?status=degraded&installationStatus=ready"); rr.Code != 200 || fake.org.InstallationStatus != "READY" {
+		t.Fatalf("an explicit installationStatus wins over the alias: %+v", fake.org)
+	}
 	if rr := do(a.handleAdminListSubscriptions, "/x?status=past_due&plan=PRO"); rr.Code != 200 || fake.subs.Status != "PAST_DUE" || fake.subs.Plan != "PRO" {
 		t.Fatalf("subscription filters: %+v (%d)", fake.subs, rr.Code)
 	}
@@ -254,23 +262,33 @@ func TestAdminAPIFilterValidationAndNormalization(t *testing.T) {
 		fake.inst.Status != "DEGRADED" || fake.inst.Health != "OFFLINE" || fake.inst.OrganizationID != 7 {
 		t.Fatalf("installation filters: %+v (%d)", fake.inst, rr.Code)
 	}
-	// Made-up statuses (the vocabulary has no "offline" installation status or
-	// "trialing"/"expired" subscription status) are rejected, not silently ignored.
-	for _, bad := range []struct {
+	// A value outside the real vocabulary (there is no "offline" installation status
+	// or "trialing"/"expired" subscription status) can match nothing: the answer is a
+	// well-formed EMPTY page, and the database is never asked. It is not a 400, so a
+	// typo in the website's free-text filter box cannot break the whole page.
+	for _, empty := range []struct {
 		h    adminHandler
 		path string
 	}{
 		{a.handleAdminListInstallations, "/x?status=offline"},
 		{a.handleAdminListInstallations, "/x?health=fantastic"},
-		{a.handleAdminListInstallations, "/x?organizationId=-3"},
 		{a.handleAdminListSubscriptions, "/x?status=trialing"},
 		{a.handleAdminListSubscriptions, "/x?status=expired"},
 		{a.handleAdminListSubscriptions, "/x?plan=" + "a%27%3Bdrop"},
 		{a.handleAdminListOrganizations, "/x?subscriptionStatus=nope"},
 		{a.handleAdminListOrganizations, "/x?installationStatus=nope"},
+		{a.handleAdminListOrganizations, "/x?status=nope"},
 	} {
-		if rr := do(bad.h, bad.path); rr.Code != http.StatusBadRequest {
-			t.Errorf("%s must be a 400, got %d", bad.path, rr.Code)
+		fake.calls = 0
+		rr := do(empty.h, empty.path)
+		if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"items":[]`) || !strings.Contains(rr.Body.String(), `"nextCursor":null`) || fake.calls != 0 {
+			t.Errorf("%s must be an empty page without a query, got %d %s (calls=%d)", empty.path, rr.Code, rr.Body.String(), fake.calls)
+		}
+	}
+	// A malformed identifier, unlike an unknown filter value, is a client error.
+	for _, bad := range []string{"/x?organizationId=-3", "/x?organizationId=abc"} {
+		if rr := do(a.handleAdminListInstallations, bad); rr.Code != http.StatusBadRequest {
+			t.Errorf("%s must be a 400, got %d", bad, rr.Code)
 		}
 	}
 }
@@ -335,13 +353,35 @@ func TestAdminAPIOverviewAndHealthShapes(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &h); err != nil || rr.Code != 200 {
 		t.Fatalf("health: %d %s", rr.Code, rr.Body.String())
 	}
-	for _, k := range []string{"generatedAt", "backend", "database", "discord", "installations"} {
+	for _, k := range []string{"backendStatus", "installations", "generatedAt", "backend", "database", "discord", "summary"} {
 		if _, ok := h[k]; !ok {
 			t.Errorf("health.%s missing", k)
 		}
 	}
 	if strings.Contains(strings.ToLower(rr.Body.String()), "uptimepercent") {
 		t.Fatal("no invented uptime percentages")
+	}
+}
+
+// The backend status the overview and health report is the runtime registry's own
+// overall state, or UNKNOWN when there is none - never a made-up value.
+func TestAdminBackendStatusComesFromTheRuntimeRegistry(t *testing.T) {
+	a, _ := newAdminTestApp(adminTestAdmin)
+	if got := a.backendStatus(); got != "UNKNOWN" {
+		t.Fatalf("no registry must be UNKNOWN, got %q", got)
+	}
+	a.HealthRegistry = health.NewRegistry()
+	if got := a.backendStatus(); got != "HEALTHY" {
+		t.Fatalf("an empty registry is HEALTHY, got %q", got)
+	}
+	a.HealthRegistry.Set(health.Component{Name: "db", State: health.Unhealthy, Critical: true})
+	rr := adminGet(a, a.handleAdminOverview, "/x", adminTestSecret, adminTestAdmin, nil)
+	if !strings.Contains(rr.Body.String(), `"backendStatus":"UNHEALTHY"`) {
+		t.Fatalf("overview must carry the runtime status: %s", rr.Body.String())
+	}
+	rr = adminGet(a, a.handleAdminHealth, "/x", adminTestSecret, adminTestAdmin, nil)
+	if !strings.Contains(rr.Body.String(), `"backendStatus":"UNHEALTHY"`) || strings.Contains(rr.Body.String(), "message") {
+		t.Fatalf("health must carry the runtime status and no free-text messages: %s", rr.Body.String())
 	}
 }
 
@@ -375,8 +415,8 @@ func TestAdminAPIChannelNameFromCacheOnly(t *testing.T) {
 	}
 	a.adminChannelNames = func(string) string { return "" }
 	rr = adminGet(a, a.handleAdminGetInstallation, "/x", adminTestSecret, adminTestAdmin, map[string]string{"installationID": "1"})
-	if strings.Contains(rr.Body.String(), "channelName") {
-		t.Fatalf("an unknown channel name is omitted, never invented: %s", rr.Body.String())
+	if !strings.Contains(rr.Body.String(), `"channelName":null`) {
+		t.Fatalf("an unknown channel name is null (the website falls back to the id), never invented: %s", rr.Body.String())
 	}
 }
 
@@ -408,8 +448,8 @@ func TestAdminDTOsHaveNoSecretShapedFields(t *testing.T) {
 			walk(f.Type, path+"."+f.Name)
 		}
 	}
-	for _, v := range []any{adminrepo.Overview{}, adminrepo.OrganizationRow{}, adminrepo.OrganizationDetail{}, adminrepo.SubscriptionRow{},
-		adminrepo.InstallationRow{}, adminrepo.InstallationDetail{}, adminrepo.InstallationHealth{}, adminHealthResponse{}} {
+	for _, v := range []any{adminrepo.Overview{}, adminrepo.Organization{}, adminrepo.SubscriptionRow{}, adminrepo.SubscriptionInfo{},
+		adminrepo.InstallationSummary{}, adminrepo.InstallationDetail{}, adminrepo.HealthSummary{}, adminrepo.HealthInstallation{}, adminHealthResponse{}} {
 		walk(reflect.TypeOf(v), reflect.TypeOf(v).Name())
 	}
 }

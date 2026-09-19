@@ -117,19 +117,19 @@ func TestAdminAPIOnlyThePlatformAdminCrossesTenants(t *testing.T) {
 func TestAdminReadsBothTenantsWhileCustomerIsolationHolds(t *testing.T) {
 	w := newAdminWorld(t)
 	page := func(q string) struct {
-		Items []adminrepo.OrganizationRow `json:"items"`
+		Items []adminrepo.Organization `json:"items"`
 	} {
 		rr := w.get(w.a.handleAdminListOrganizations, "/api/admin/organizations"+q, adminFounderID, nil)
 		if rr.Code != 200 {
 			t.Fatalf("%d %s", rr.Code, rr.Body.String())
 		}
 		return decodeBody[struct {
-			Items []adminrepo.OrganizationRow `json:"items"`
+			Items []adminrepo.Organization `json:"items"`
 		}](t, rr)
 	}
 	ids := map[int64]bool{}
 	for _, o := range page("?limit=100").Items {
-		ids[o.Organization.ID] = true
+		ids[o.ID] = true
 	}
 	if !ids[w.a1.OrgID] || !ids[w.b1.OrgID] {
 		t.Fatalf("the platform admin must see both tenants, got %v", ids)
@@ -170,9 +170,9 @@ func TestAdminReadsBothTenantsWhileCustomerIsolationHolds(t *testing.T) {
 func TestAdminDetailEndpointsReturnTheRightTenant(t *testing.T) {
 	w := newAdminWorld(t)
 	rr := w.get(w.a.handleAdminGetOrganization, "/x", adminFounderID, map[string]string{"organizationID": strconv.FormatInt(w.a1.OrgID, 10)})
-	org := decodeBody[adminrepo.OrganizationDetail](t, rr)
-	if org.Organization.ID != w.a1.OrgID || org.Owner.DiscordID != w.a1.OwnerDiscordID || len(org.Members) != 1 || org.Members[0].Role != "OWNER" ||
-		len(org.Installations) != 1 || org.Installations[0].InstallationID != w.a1.InstallationID || org.Installations[0].Discord.GuildID != w.a1.DiscordGuildID {
+	org := decodeBody[adminrepo.Organization](t, rr)
+	if org.ID != w.a1.OrgID || org.OwnerUser == nil || org.OwnerUser.DiscordID != w.a1.OwnerDiscordID || len(org.Members) != 1 || org.Members[0].Role != "OWNER" ||
+		len(org.Installations) != 1 || org.Installations[0].ID != w.a1.InstallationID || org.Installations[0].Discord.GuildID != w.a1.DiscordGuildID {
 		t.Fatalf("organization A detail: %+v", org)
 	}
 	if org.Subscription == nil || org.Subscription.Status == "" {
@@ -180,7 +180,7 @@ func TestAdminDetailEndpointsReturnTheRightTenant(t *testing.T) {
 	}
 	rr = w.get(w.a.handleAdminGetInstallation, "/x", adminFounderID, map[string]string{"installationID": strconv.FormatInt(w.b1.InstallationID, 10)})
 	inst := decodeBody[adminrepo.InstallationDetail](t, rr)
-	if inst.Organization.ID != w.b1.OrgID || inst.Discord.GuildID != w.b1.DiscordGuildID || inst.Installation.Status != "NOT_STARTED" || inst.Installation.Health != "SETTING_UP" {
+	if inst.OrganizationID != w.b1.OrgID || inst.Discord.GuildID != w.b1.DiscordGuildID || inst.Status != "NOT_STARTED" || inst.Health != "SETTING_UP" {
 		t.Fatalf("installation B detail: %+v", inst)
 	}
 	rr = w.get(w.a.handleAdminGetInstallation, "/x", adminFounderID, map[string]string{"installationID": "999999999"})
@@ -258,9 +258,9 @@ func TestAdminAPIPaginationOverRealRows(t *testing.T) {
 	_ = buildInstallationFixture(t, a, verifier)
 
 	type envelope struct {
-		Items      []adminrepo.InstallationRow `json:"items"`
-		NextCursor *string                     `json:"nextCursor"`
-		Limit      int                         `json:"limit"`
+		Items      []adminrepo.InstallationSummary `json:"items"`
+		NextCursor *string                         `json:"nextCursor"`
+		Limit      int                             `json:"limit"`
 	}
 	seen := map[int64]bool{}
 	cursor := ""
@@ -279,10 +279,10 @@ func TestAdminAPIPaginationOverRealRows(t *testing.T) {
 			t.Fatalf("page size must be honoured: %+v", env)
 		}
 		for _, it := range env.Items {
-			if seen[it.InstallationID] {
+			if seen[it.ID] {
 				t.Fatalf("installation %d appeared twice", it.InstallationID)
 			}
-			seen[it.InstallationID] = true
+			seen[it.ID] = true
 		}
 		pages++
 		if env.NextCursor == nil {
@@ -312,4 +312,85 @@ func saasVerifierOf(t *testing.T, w *adminWorld) *fakeDiscordVerifier {
 		t.Fatal("expected the fake Discord verifier")
 	}
 	return v
+}
+
+// The same website-contract check as the unit test, but against REAL rows produced by
+// the real SaaS handlers and PostgreSQL (nullable columns really are null here).
+func TestAdminRealResponsesMatchTheFounderHubWebsiteContract(t *testing.T) {
+	w := newAdminWorld(t)
+	get := func(name string) map[string]any {
+		rr := w.allRoutes()[name](adminFounderID)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", name, rr.Code, rr.Body.String())
+		}
+		return decodeJSON(t, rr.Body.Bytes())
+	}
+	checkShape(t, "overview", get("overview"), shapeOverview)
+
+	org := get("organization")
+	checkShape(t, "organization detail", org, shapeOrganization)
+	checkShape(t, "organization detail.subscription", org["subscription"], shapeSubscription)
+	checkShape(t, "organization detail.members[0]", first(t, org, "members"), shapeMember)
+	checkShape(t, "organization detail.installations[0]", first(t, org, "installations"), shapeInstallation)
+
+	orgs := get("organizations")
+	checkShape(t, "organizations page", orgs, shape{"items": "arr", "nextCursor": "str?"})
+	checkShape(t, "organizations[0]", first(t, orgs, "items"), shapeOrganization)
+
+	subs := get("subscriptions")
+	sub := shape{"organization": "str", "installationCount": "num"}
+	for k, v := range shapeSubscription {
+		sub[k] = v
+	}
+	checkShape(t, "subscriptions[0]", first(t, subs, "items"), sub)
+
+	insts := get("installations")
+	li := shape{"organization": "str"}
+	for k, v := range shapeInstallation {
+		li[k] = v
+	}
+	checkShape(t, "installations[0]", first(t, insts, "items"), li)
+
+	inst := get("installation")
+	di := shape{"organization": "str", "subscription": "obj?", "channelRoutes": "arr", "settings": "obj?"}
+	for k, v := range shapeInstallation {
+		di[k] = v
+	}
+	checkShape(t, "installation detail", inst, di)
+
+	h := get("health")
+	checkShape(t, "health", h, shape{"backendStatus": "str", "installations": "arr"})
+}
+
+// Channel routes shown for an installation are exactly its own, with the ownership
+// visible through the API (a route on tenant B's installation never shows on A's).
+func TestAdminInstallationDetailShowsOnlyItsOwnRoutes(t *testing.T) {
+	w := newAdminWorld(t)
+	ctx := context.Background()
+	for _, r := range []struct {
+		inst    int64
+		key, ch string
+	}{{w.a1.InstallationID, "KILLFEED", "chan-a-kill"}, {w.a1.InstallationID, "BOUNTY", "chan-a-bounty"}, {w.b1.InstallationID, "KILLFEED", "chan-b-kill"}} {
+		if _, err := w.a.DB.Pool.Exec(ctx, `INSERT INTO installation_channel_routes(installation_id, route_key, channel_id, managed_by_champion) VALUES($1,$2,$3,FALSE)`, r.inst, r.key, r.ch); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w.a.adminChannelNames = func(id string) string {
+		if id == "chan-a-kill" {
+			return "killfeed"
+		}
+		return ""
+	}
+	rr := w.allRoutes()["installation"](adminFounderID)
+	d := decodeBody[adminrepo.InstallationDetail](t, rr)
+	got := map[string]string{}
+	for _, r := range d.ChannelRoutes {
+		got[r.RouteKey] = r.ChannelID
+	}
+	if len(got) != 2 || got["KILLFEED"] != "chan-a-kill" || got["BOUNTY"] != "chan-a-bounty" || strings.Contains(rr.Body.String(), "chan-b-kill") {
+		t.Fatalf("installation A must show exactly its own routes: %v (%s)", got, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"channelName":"killfeed"`) || !strings.Contains(rr.Body.String(), `"channelName":null`) {
+		t.Fatalf("a cached name is included; an unknown one is null: %s", rr.Body.String())
+	}
 }

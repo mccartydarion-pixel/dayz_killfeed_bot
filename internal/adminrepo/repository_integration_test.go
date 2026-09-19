@@ -7,10 +7,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/yourname/dayz-killfeed/internal/database"
 )
@@ -154,10 +157,10 @@ func (w *world) scenario() scenario {
 	return s
 }
 
-func orgIDs(rows []OrganizationRow) []int64 {
+func orgIDs(rows []Organization) []int64 {
 	out := make([]int64, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, r.Organization.ID)
+		out = append(out, r.ID)
 	}
 	return out
 }
@@ -174,7 +177,7 @@ func eqIDs(a, b []int64) bool {
 	return true
 }
 
-func (w *world) orgs(f OrganizationFilter) []OrganizationRow {
+func (w *world) orgs(f OrganizationFilter) []Organization {
 	w.t.Helper()
 	f.Limit = 100
 	rows, _, err := New(w.pool).ListOrganizations(w.ctx, f)
@@ -211,6 +214,16 @@ func TestAdminOverviewCountsRealState(t *testing.T) {
 	delta("subscriptions.active", after.Subscriptions.Active-before.Subscriptions.Active, 2)
 	delta("subscriptions.suspended", after.Subscriptions.Suspended-before.Subscriptions.Suspended, 1)
 	delta("subscriptions.trialExpired", after.Subscriptions.TrialExpired-before.Subscriptions.TrialExpired, 0)
+	// The website's flat fields are the same authoritative counts.
+	delta("totalOrganizations", after.TotalOrganizations-before.TotalOrganizations, 5)
+	delta("totalUsers", after.TotalUsers-before.TotalUsers, 7)
+	delta("readyInstallations", after.ReadyInstallations-before.ReadyInstallations, 1)
+	delta("configuringInstallations", after.ConfiguringInstallations-before.ConfiguringInstallations, 1)
+	delta("degradedInstallations", after.DegradedInstallations-before.DegradedInstallations, 1)
+	delta("activeInstallations (READY+DEGRADED)", after.ActiveInstallations-before.ActiveInstallations, 2)
+	delta("trials", after.Trials-before.Trials, 1)
+	delta("activeSubscriptions", after.ActiveSubscriptions-before.ActiveSubscriptions, 2)
+	delta("suspendedSubscriptions", after.SuspendedSubscriptions-before.SuspendedSubscriptions, 1)
 
 	// A TRIAL whose end has passed is derived as trialExpired; nothing is invented otherwise.
 	u, _ := w.user("Old Trial")
@@ -233,39 +246,56 @@ func TestAdminOrganizationListSummaries(t *testing.T) {
 	if want := []int64{s.echo, s.delta, s.charlie, s.bravo, s.alpha}; !eqIDs(orgIDs(rows), want) {
 		t.Fatalf("expected the five tenants newest-first %v, got %v", want, orgIDs(rows))
 	}
-	by := map[int64]OrganizationRow{}
+	by := map[int64]Organization{}
 	for _, r := range rows {
-		by[r.Organization.ID] = r
+		by[r.ID] = r
 	}
 
 	a := by[s.alpha]
-	if a.Owner.UserID != s.alphaOwner || a.Owner.DisplayName != "Alice Owner" || !strings.HasPrefix(a.Owner.DiscordID, w.tag) {
-		t.Errorf("alpha owner: %+v", a.Owner)
+	if a.OwnerUser == nil || a.OwnerUser.UserID != s.alphaOwner || a.OwnerUser.DisplayName != "Alice Owner" || !strings.HasPrefix(a.OwnerUser.DiscordID, w.tag) ||
+		a.Owner == nil || *a.Owner != "Alice Owner" {
+		t.Errorf("alpha owner: %+v / %v", a.OwnerUser, a.Owner)
 	}
-	if a.MemberCount != 3 || a.InstallationCount != 1 {
-		t.Errorf("alpha counts: members=%d installations=%d", a.MemberCount, a.InstallationCount)
+	if a.MemberCount != 3 || a.InstallationCount != 1 || a.Slug == "" || a.CreatedAt == nil {
+		t.Errorf("alpha counts: members=%d installations=%d slug=%q created=%v", a.MemberCount, a.InstallationCount, a.Slug, a.CreatedAt)
 	}
-	if a.Subscription == nil || a.Subscription.Plan != "TRIAL" || a.Subscription.Status != "TRIAL" || a.Subscription.TrialEndsAt == nil || len(a.Subscription.Entitlements) == 0 {
+	if a.Subscription == nil || a.Subscription.Plan != "TRIAL" || a.Subscription.Status != "TRIAL" || a.Subscription.TrialEndsAt == nil || len(a.Subscription.Entitlements) == 0 ||
+		a.Subscription.CreatedAt == nil || a.Subscription.UpdatedAt == nil {
 		t.Errorf("alpha subscription: %+v", a.Subscription)
 	}
-	if p := a.PrimaryInstallation; p == nil || p.ID != s.iAlpha || p.Status != "READY" || p.Health != "HEALTHY" || p.GuildName != "AlphaGuild-"+w.tag || p.DayZServerName != "AlphaServer-"+w.tag || p.Platform != "PLAYSTATION" {
+	// The list carries exactly the primary installation, first and only.
+	if len(a.Installations) != 1 {
+		t.Fatalf("alpha list row must embed its primary installation only: %+v", a.Installations)
+	}
+	p := a.Installations[0]
+	if p.ID != s.iAlpha || p.Status != "READY" || p.Health != "HEALTHY" || deref(p.DiscordGuild) != "AlphaGuild-"+w.tag || deref(p.DayZServer) != "AlphaServer-"+w.tag || deref(p.Platform) != "PLAYSTATION" || p.Discord.GuildID == "" || !p.Discord.BotInstalled {
 		t.Errorf("alpha primary installation: %+v", p)
+	}
+	if deref(a.DiscordGuild) != "AlphaGuild-"+w.tag || deref(a.DayZServer) != "AlphaServer-"+w.tag {
+		t.Errorf("the organization row's flat guild/server come from its primary installation: %v %v", a.DiscordGuild, a.DayZServer)
 	}
 	// Bravo: no READY installation, so the primary is its newest one (CONFIGURING, no server).
 	b := by[s.bravo]
-	if b.InstallationCount != 2 || b.PrimaryInstallation == nil || b.PrimaryInstallation.ID != s.iBravoConfiguring || b.PrimaryInstallation.Health != "SETTING_UP" || b.PrimaryInstallation.DayZServerName != "" {
-		t.Errorf("bravo: count=%d primary=%+v", b.InstallationCount, b.PrimaryInstallation)
+	if b.InstallationCount != 2 || len(b.Installations) != 1 || b.Installations[0].ID != s.iBravoConfiguring || b.Installations[0].Health != "SETTING_UP" || b.Installations[0].DayZServer != nil || b.DayZServer != nil {
+		t.Errorf("bravo: count=%d installations=%+v", b.InstallationCount, b.Installations)
 	}
-	if c := by[s.charlie]; c.InstallationCount != 0 || c.PrimaryInstallation != nil || c.Subscription == nil || c.Subscription.Status != "SUSPENDED" {
+	if c := by[s.charlie]; c.InstallationCount != 0 || len(c.Installations) != 0 || c.Installations == nil || c.Subscription == nil || c.Subscription.Status != "SUSPENDED" || c.DiscordGuild != nil {
 		t.Errorf("charlie: %+v", c)
 	}
 	// No subscription row: reported as absent, not fabricated.
 	if e := by[s.echo]; e.Subscription != nil || e.MemberCount != 1 {
 		t.Errorf("echo: %+v", e)
 	}
-	if d := by[s.delta]; d.PrimaryInstallation == nil || d.PrimaryInstallation.Health != "OFFLINE" {
-		t.Errorf("delta primary: %+v", d.PrimaryInstallation)
+	if d := by[s.delta]; len(d.Installations) != 1 || d.Installations[0].Health != "OFFLINE" {
+		t.Errorf("delta primary: %+v", d.Installations)
 	}
+}
+
+func deref(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
 }
 
 func TestAdminOrganizationSearchIsParameterizedAndScoped(t *testing.T) {
@@ -359,7 +389,7 @@ func TestAdminOrganizationPaginationNeverDuplicatesOrSkips(t *testing.T) {
 		if next == 0 {
 			break
 		}
-		if next != rows[len(rows)-1].Organization.ID || (cursor != 0 && next >= cursor) {
+		if next != rows[len(rows)-1].ID || (cursor != 0 && next >= cursor) {
 			t.Fatalf("cursor must be the last id and strictly decrease: cursor=%d next=%d", cursor, next)
 		}
 		cursor = next
@@ -387,23 +417,32 @@ func TestAdminOrganizationDetail(t *testing.T) {
 	repo := New(w.pool)
 	d, err := repo.GetOrganization(w.ctx, s.alpha)
 	w.must(err)
-	if d == nil || d.Organization.ID != s.alpha || d.Organization.Slug == "" || d.MemberCount != 3 || d.InstallationCount != 1 {
+	if d == nil || d.ID != s.alpha || d.Slug == "" || d.MemberCount != 3 || d.InstallationCount != 1 {
 		t.Fatalf("alpha detail: %+v", d)
 	}
 	if len(d.Members) != 3 || d.Members[0].Role != "OWNER" || d.Members[1].Role != "ADMIN" || d.Members[2].Role != "MEMBER" ||
-		d.Members[0].DisplayName != "Alice Owner" || d.Members[1].DisplayName != "Adam Admin" || d.Members[2].DiscordID == "" {
-		t.Fatalf("members must be OWNER, ADMIN, MEMBER with names and Discord ids: %+v", d.Members)
+		d.Members[0].DisplayName != "Alice Owner" || d.Members[1].DisplayName != "Adam Admin" || d.Members[2].DiscordID == "" ||
+		d.Members[0].ID != strconv.FormatInt(s.alphaOwner, 10) {
+		t.Fatalf("members must be OWNER, ADMIN, MEMBER with names, Discord ids and string ids: %+v", d.Members)
 	}
 	if d.Subscription == nil || d.Subscription.Plan != "TRIAL" || len(d.Subscription.Entitlements) == 0 {
 		t.Fatalf("subscription: %+v", d.Subscription)
 	}
-	if len(d.Installations) != 1 || d.Installations[0].InstallationID != s.iAlpha || d.Installations[0].Organization.ID != s.alpha {
+	if len(d.Installations) != 1 || d.Installations[0].ID != s.iAlpha || d.Installations[0].OrganizationID != s.alpha {
 		t.Fatalf("only alpha's installation may appear: %+v", d.Installations)
 	}
 	bravo, err := repo.GetOrganization(w.ctx, s.bravo)
 	w.must(err)
-	if len(bravo.Installations) != 2 || bravo.Installations[0].InstallationID != s.iBravoConfiguring || bravo.Installations[1].InstallationID != s.iBravoDegraded {
-		t.Fatalf("bravo's two installations, newest first: %+v", bravo.Installations)
+	// All of bravo's installations, the primary (its newest here) first.
+	if len(bravo.Installations) != 2 || bravo.Installations[0].ID != s.iBravoConfiguring || bravo.Installations[1].ID != s.iBravoDegraded {
+		t.Fatalf("bravo's two installations, primary first: %+v", bravo.Installations)
+	}
+	// With a READY installation that is NOT the newest, the primary (READY) still comes first.
+	w.must(w.exec(`UPDATE installations SET status='READY' WHERE id=$1`, s.iBravoDegraded))
+	bravo, err = repo.GetOrganization(w.ctx, s.bravo)
+	w.must(err)
+	if bravo.Installations[0].ID != s.iBravoDegraded || deref(bravo.DayZServer) != "BravoServer-"+w.tag {
+		t.Fatalf("the READY installation must lead the detail: %+v", bravo.Installations)
 	}
 	echo, err := repo.GetOrganization(w.ctx, s.echo)
 	w.must(err)
@@ -436,7 +475,7 @@ func TestAdminSubscriptionsListAndFilter(t *testing.T) {
 		if r.OrganizationID == s.echo {
 			t.Fatal("an organization without a subscription row is not a subscription")
 		}
-		if r.OrganizationID == s.bravo && (r.InstallationCount != 2 || r.Plan != "PRO" || r.Status != "ACTIVE" || len(r.Entitlements) == 0 || r.CreatedAt == "" || r.UpdatedAt == "") {
+		if r.OrganizationID == s.bravo && (r.InstallationCount != 2 || r.Plan != "PRO" || r.Status != "ACTIVE" || len(r.Entitlements) == 0 || r.CreatedAt == nil || r.UpdatedAt == nil || r.Organization != r.OrganizationName) {
 			t.Errorf("bravo subscription: %+v", r)
 		}
 		if r.OrganizationID == s.alpha && (r.TrialEndsAt == nil || r.OrganizationName != "Alpha-"+w.tag) {
@@ -477,7 +516,7 @@ func TestAdminSubscriptionsListAndFilter(t *testing.T) {
 
 // --- installations ---------------------------------------------------------------------------------------------
 
-func (w *world) installations(f InstallationFilter) []InstallationRow {
+func (w *world) installations(f InstallationFilter) []InstallationSummary {
 	w.t.Helper()
 	f.Limit = 100
 	rows, _, err := New(w.pool).ListInstallations(w.ctx, f)
@@ -485,7 +524,7 @@ func (w *world) installations(f InstallationFilter) []InstallationRow {
 	return rows
 }
 
-func instIDs(rows []InstallationRow) []int64 {
+func instIDs(rows []InstallationSummary) []int64 {
 	out := make([]int64, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, r.InstallationID)
@@ -500,22 +539,23 @@ func TestAdminInstallationListSummariesFiltersAndSearch(t *testing.T) {
 	if want := []int64{s.iDelta, s.iBravoConfiguring, s.iBravoDegraded, s.iAlpha}; !eqIDs(instIDs(all), want) {
 		t.Fatalf("expected %v, got %v", want, instIDs(all))
 	}
-	by := map[int64]InstallationRow{}
+	by := map[int64]InstallationSummary{}
 	for _, r := range all {
 		by[r.InstallationID] = r
 	}
 	a := by[s.iAlpha]
-	if a.Organization.ID != s.alpha || a.Organization.Name != "Alpha-"+w.tag || a.Plan != "TRIAL" || a.Status != "READY" || a.Health != "HEALTHY" {
+	if a.ID != a.InstallationID || a.OrganizationID != s.alpha || a.Organization != "Alpha-"+w.tag || a.Plan != "TRIAL" || a.Status != "READY" || a.Health != "HEALTHY" {
 		t.Errorf("alpha row: %+v", a)
 	}
-	if a.Discord.GuildName != "AlphaGuild-"+w.tag || !strings.HasPrefix(a.Discord.GuildID, w.tag) || !a.Discord.BotInstalled || !a.Discord.PermissionsVerified {
+	if a.Discord.GuildName != "AlphaGuild-"+w.tag || !strings.HasPrefix(a.Discord.GuildID, w.tag) || !a.Discord.BotInstalled || !a.Discord.PermissionsVerified || deref(a.DiscordGuild) != "AlphaGuild-"+w.tag {
 		t.Errorf("alpha discord: %+v", a.Discord)
 	}
-	if a.DayZServer == nil || a.DayZServer.DisplayName != "AlphaServer-"+w.tag || a.DayZServer.Platform != "PLAYSTATION" || a.DayZServer.Status != "ACTIVE" || a.DayZServer.ServiceID == "" || a.DayZServer.ID == 0 {
-		t.Errorf("alpha server: %+v", a.DayZServer)
+	if a.Server == nil || a.Server.DisplayName != "AlphaServer-"+w.tag || a.Server.Platform != "PLAYSTATION" || a.Server.Status != "ACTIVE" || a.Server.ServiceID == "" || a.Server.ID == 0 ||
+		deref(a.DayZServer) != "AlphaServer-"+w.tag || deref(a.Platform) != "PLAYSTATION" {
+		t.Errorf("alpha server: %+v", a.Server)
 	}
-	if a.Setup.CurrentStep != "CHANNELS" || a.CreatedAt == "" {
-		t.Errorf("alpha setup: %+v", a.Setup)
+	if deref(a.CurrentSetupStep) != "CHANNELS" || a.CreatedAt == "" {
+		t.Errorf("alpha setup: %v", a.CurrentSetupStep)
 	}
 	if c := by[s.iBravoConfiguring]; c.DayZServer != nil || c.Health != "SETTING_UP" || c.Plan != "PRO" {
 		t.Errorf("a server-less installation reports no server: %+v", c)
@@ -573,14 +613,22 @@ func TestAdminInstallationDetailIsolatesRoutesPerInstallation(t *testing.T) {
 
 	alpha, err := repo.GetInstallation(w.ctx, s.iAlpha)
 	w.must(err)
-	if alpha == nil || alpha.Organization.ID != s.alpha || alpha.Subscription == nil || alpha.Subscription.Plan != "TRIAL" || alpha.Installation.ID != s.iAlpha || alpha.Installation.Health != "HEALTHY" {
+	if alpha == nil || alpha.OrganizationID != s.alpha || alpha.Organization != "Alpha-"+w.tag || alpha.OrganizationSlug == "" || alpha.Subscription == nil || alpha.Subscription.Plan != "TRIAL" || alpha.ID != s.iAlpha || alpha.Health != "HEALTHY" || alpha.UpdatedAt == "" {
 		t.Fatalf("alpha detail: %+v", alpha)
 	}
-	if alpha.Discord.GuildName != "AlphaGuild-"+w.tag || alpha.DayZServer == nil || alpha.DayZServer.DisplayName != "AlphaServer-"+w.tag {
-		t.Errorf("alpha discord/server: %+v %+v", alpha.Discord, alpha.DayZServer)
+	if alpha.Discord.GuildName != "AlphaGuild-"+w.tag || alpha.Server == nil || alpha.Server.DisplayName != "AlphaServer-"+w.tag || deref(alpha.DayZServer) != "AlphaServer-"+w.tag {
+		t.Errorf("alpha discord/server: %+v %+v", alpha.Discord, alpha.Server)
 	}
 	if alpha.SetupProgress == nil || alpha.SetupProgress.CurrentStep != "CHANNELS" || !alpha.SetupProgress.DiscordCompleted || alpha.SetupProgress.NitradoCompleted {
 		t.Errorf("setup progress: %+v", alpha.SetupProgress)
+	}
+	if alpha.Settings == nil || alpha.GeneralSettings == nil || *alpha.Settings != *alpha.GeneralSettings {
+		t.Errorf("settings and generalSettings must carry the same values: %+v %+v", alpha.Settings, alpha.GeneralSettings)
+	}
+	for _, r := range alpha.ChannelRoutes {
+		if r.ChannelName != nil {
+			t.Errorf("the repository never invents a channel name: %+v", r)
+		}
 	}
 	if g := alpha.GeneralSettings; g == nil || g.Timezone != "Europe/London" || g.DistanceUnit != "FEET" || !g.OnlineDisplayEnabled || !g.LeaderboardEnabled {
 		t.Errorf("general settings: %+v", g)
@@ -605,13 +653,13 @@ func TestAdminInstallationDetailIsolatesRoutesPerInstallation(t *testing.T) {
 
 	bravo, err := repo.GetInstallation(w.ctx, s.iBravoDegraded)
 	w.must(err)
-	if len(bravo.ChannelRoutes) != 1 || bravo.ChannelRoutes[0].ChannelID != "c-bravo-kf" || bravo.Organization.ID != s.bravo || bravo.NitradoConnection != nil {
+	if len(bravo.ChannelRoutes) != 1 || bravo.ChannelRoutes[0].ChannelID != "c-bravo-kf" || bravo.OrganizationID != s.bravo || bravo.NitradoConnection != nil {
 		t.Errorf("bravo must see only its own route and no Nitrado link: %+v", bravo)
 	}
 	conf, err := repo.GetInstallation(w.ctx, s.iBravoConfiguring)
 	w.must(err)
-	if conf.DayZServer != nil || conf.ChannelRoutes == nil || len(conf.ChannelRoutes) != 0 {
-		t.Errorf("a server-less installation: server=%v routes=%v", conf.DayZServer, conf.ChannelRoutes)
+	if conf.Server != nil || conf.DayZServer != nil || conf.ChannelRoutes == nil || len(conf.ChannelRoutes) != 0 {
+		t.Errorf("a server-less installation: server=%v routes=%v", conf.Server, conf.ChannelRoutes)
 	}
 	missing, err := repo.GetInstallation(w.ctx, -1)
 	if err != nil || missing != nil {
@@ -624,10 +672,10 @@ func TestAdminInstallationDetailIsolatesRoutesPerInstallation(t *testing.T) {
 func TestAdminInstallationHealthFromStoredState(t *testing.T) {
 	w := newWorld(t)
 	repo := New(w.pool)
-	before, err := repo.InstallationHealth(w.ctx)
+	before, _, err := repo.InstallationHealth(w.ctx)
 	w.must(err)
 	s := w.scenario()
-	after, err := repo.InstallationHealth(w.ctx)
+	after, items, err := repo.InstallationHealth(w.ctx)
 	w.must(err)
 
 	if after.Total-before.Total != 4 || after.ByStatus["READY"]-before.ByStatus["READY"] != 1 || after.ByStatus["DEGRADED"]-before.ByStatus["DEGRADED"] != 1 ||
@@ -644,19 +692,95 @@ func TestAdminInstallationHealthFromStoredState(t *testing.T) {
 	if after.PermissionsUnverified-before.PermissionsUnverified != 3 || after.BotNotInstalled != before.BotNotInstalled {
 		t.Errorf("discord flags: %+v", after)
 	}
-	flagged := map[int64]bool{}
-	for _, r := range after.NeedsAttention {
-		flagged[r.InstallationID] = true
+	flagged := map[int64]HealthInstallation{}
+	for _, r := range items {
+		flagged[r.ID] = r
 	}
-	if len(after.NeedsAttention) > attentionRows {
-		t.Errorf("the attention list is bounded, got %d", len(after.NeedsAttention))
+	if len(items) > attentionRows {
+		t.Errorf("the attention list is bounded, got %d", len(items))
 	}
 	// Never-checked rows sort first and the newest first among them, so the two
 	// problem installations lead the list even on a busy shared database.
-	if flagged[s.iAlpha] || flagged[s.iBravoConfiguring] {
-		t.Error("READY / CONFIGURING installations do not need attention")
+	if _, ok := flagged[s.iAlpha]; ok {
+		t.Error("READY installations do not need attention")
 	}
-	if !flagged[s.iBravoDegraded] || !flagged[s.iDelta] {
-		t.Errorf("DEGRADED and DISCONNECTED installations must be flagged: %v", flagged)
+	if _, ok := flagged[s.iBravoConfiguring]; ok {
+		t.Error("CONFIGURING installations do not need attention")
 	}
+	deg, delta := flagged[s.iBravoDegraded], flagged[s.iDelta]
+	if deg.ID == 0 || delta.ID == 0 {
+		t.Fatalf("DEGRADED and DISCONNECTED installations must be flagged: %v", flagged)
+	}
+	if deg.Organization != "Bravo-"+w.tag || deg.Health != "DEGRADED" || deg.DiscordBotInstalled == nil || !*deg.DiscordBotInstalled || deg.ServerStatus == nil || *deg.ServerStatus != "ACTIVE" {
+		t.Errorf("degraded item: %+v", deg)
+	}
+	if delta.Health != "OFFLINE" || delta.Status != "DISCONNECTED" {
+		t.Errorf("disconnected item: %+v", delta)
+	}
+}
+
+// --- N+1 -------------------------------------------------------------------------------------------
+
+type queryCounter struct{ n atomic.Int64 }
+
+func (c *queryCounter) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
+	c.n.Add(1)
+	return ctx
+}
+func (c *queryCounter) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+// The number of statements a list makes must not grow with the number of rows: a
+// page of 1 and a page of 5 tenants cost the same.
+func TestAdminListsDoNotIssuePerRowQueries(t *testing.T) {
+	w := newWorld(t)
+	w.scenario()
+	cfg, err := pgxpool.ParseConfig(os.Getenv("TEST_DATABASE_URL"))
+	w.must(err)
+	counter := &queryCounter{}
+	cfg.ConnConfig.Tracer = counter
+	pool, err := pgxpool.NewWithConfig(w.ctx, cfg)
+	w.must(err)
+	defer pool.Close()
+	repo := New(pool)
+
+	count := func(name string, fn func()) int64 {
+		before := counter.n.Load()
+		fn()
+		return counter.n.Load() - before
+	}
+	orgs := func(limit int) int64 {
+		return count("orgs", func() {
+			rows, _, err := repo.ListOrganizations(w.ctx, OrganizationFilter{Search: w.tag, Limit: limit})
+			w.must(err)
+			if limit == 100 && len(rows) != 5 {
+				t.Fatalf("expected 5 tenants, got %d", len(rows))
+			}
+		})
+	}
+	few, many := orgs(2), orgs(100) // the newest two include an organization with an installation
+	if few != many || many > 2 {
+		t.Errorf("ListOrganizations must cost the same for 2 and 5 rows and at most 2 statements: %d vs %d", few, many)
+	}
+	if n := count("subs", func() {
+		_, _, err := repo.ListSubscriptions(w.ctx, SubscriptionFilter{Search: w.tag, Limit: 100})
+		w.must(err)
+	}); n != 1 {
+		t.Errorf("ListSubscriptions must be one statement, got %d", n)
+	}
+	if n := count("installs", func() {
+		_, _, err := repo.ListInstallations(w.ctx, InstallationFilter{Search: w.tag, Limit: 100})
+		w.must(err)
+	}); n != 1 {
+		t.Errorf("ListInstallations must be one statement, got %d", n)
+	}
+	// Detail reads are a fixed handful, independent of how many children exist.
+	if n := count("orgdetail", func() { _, err := repo.GetOrganization(w.ctx, w.mustOrgID("Bravo-"+w.tag)); w.must(err) }); n > 6 {
+		t.Errorf("GetOrganization must be a fixed handful of statements, got %d", n)
+	}
+}
+
+func (w *world) mustOrgID(name string) int64 {
+	var id int64
+	w.must(w.pool.QueryRow(w.ctx, `SELECT id FROM organizations WHERE name=$1`, name).Scan(&id))
+	return id
 }

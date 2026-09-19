@@ -30,12 +30,12 @@ import (
 type adminReader interface {
 	Ping(ctx context.Context) error
 	Overview(ctx context.Context) (adminrepo.Overview, error)
-	ListOrganizations(ctx context.Context, f adminrepo.OrganizationFilter) ([]adminrepo.OrganizationRow, int64, error)
-	GetOrganization(ctx context.Context, id int64) (*adminrepo.OrganizationDetail, error)
+	ListOrganizations(ctx context.Context, f adminrepo.OrganizationFilter) ([]adminrepo.Organization, int64, error)
+	GetOrganization(ctx context.Context, id int64) (*adminrepo.Organization, error)
 	ListSubscriptions(ctx context.Context, f adminrepo.SubscriptionFilter) ([]adminrepo.SubscriptionRow, int64, error)
-	ListInstallations(ctx context.Context, f adminrepo.InstallationFilter) ([]adminrepo.InstallationRow, int64, error)
+	ListInstallations(ctx context.Context, f adminrepo.InstallationFilter) ([]adminrepo.InstallationSummary, int64, error)
 	GetInstallation(ctx context.Context, id int64) (*adminrepo.InstallationDetail, error)
-	InstallationHealth(ctx context.Context) (adminrepo.InstallationHealth, error)
+	InstallationHealth(ctx context.Context) (adminrepo.HealthSummary, []adminrepo.HealthInstallation, error)
 }
 
 // adminIdentity is the safe identity of an authorized platform admin.
@@ -239,37 +239,37 @@ func parseAdminListParams(w http.ResponseWriter, r *http.Request) (adminListPara
 	return p, true
 }
 
-// adminEnumParam reads an optional upper-cased filter validated by ok; it writes
-// the 400 itself.
-func adminEnumParam(w http.ResponseWriter, q url.Values, name string, ok func(string) bool) (string, bool) {
+// adminEnumParam reads an optional filter validated against the real vocabulary
+// (case-insensitive). An unknown value is not an error: no row can have it, so the
+// caller answers with an empty page (and never queries) - which keeps a typo in a
+// free-text filter box from breaking the whole page.
+func adminEnumParam(q url.Values, name string, known func(string) bool) (value string, unknown bool) {
 	v := strings.ToUpper(strings.TrimSpace(q.Get(name)))
 	if v == "" {
-		return "", true
-	}
-	if !ok(v) {
-		writeSaaSError(w, codeInvalidRequest, "invalid "+name)
 		return "", false
 	}
-	return v, true
+	if !known(v) {
+		return "", true
+	}
+	return v, false
 }
 
 // adminPlanParam accepts a plan name: short, letters/digits/underscore/hyphen only.
-func adminPlanParam(w http.ResponseWriter, q url.Values) (string, bool) {
+// Anything else cannot match a plan, so it too means "no rows".
+func adminPlanParam(q url.Values) (value string, unknown bool) {
 	v := strings.TrimSpace(q.Get("plan"))
 	if v == "" {
-		return "", true
+		return "", false
 	}
 	if len(v) > 40 {
-		writeSaaSError(w, codeInvalidRequest, "invalid plan")
-		return "", false
+		return "", true
 	}
 	for _, r := range v {
 		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-') {
-			writeSaaSError(w, codeInvalidRequest, "invalid plan")
-			return "", false
+			return "", true
 		}
 	}
-	return v, true
+	return v, false
 }
 
 type adminListResponse[T any] struct {
@@ -301,6 +301,7 @@ func (a *App) handleAdminOverview(w http.ResponseWriter, r *http.Request, _ admi
 		a.adminReadFailed(w, "overview", err)
 		return
 	}
+	out.BackendStatus = a.backendStatus()
 	a.writeAdminJSON(w, http.StatusOK, out)
 }
 
@@ -310,13 +311,17 @@ func (a *App) handleAdminListOrganizations(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	f := adminrepo.OrganizationFilter{Limit: p.Limit, Cursor: p.Cursor, Search: p.Search}
-	if f.SubscriptionStatus, ok = adminEnumParam(w, p.Query, "subscriptionStatus", adminrepo.IsSubscriptionStatus); !ok {
-		return
+	var unknownSub, unknownInst, unknownPlan bool
+	f.SubscriptionStatus, unknownSub = adminEnumParam(p.Query, "subscriptionStatus", adminrepo.IsSubscriptionStatus)
+	// The website's customer filter sends `status` meaning the installation status.
+	instParam := "installationStatus"
+	if p.Query.Get(instParam) == "" {
+		instParam = "status"
 	}
-	if f.InstallationStatus, ok = adminEnumParam(w, p.Query, "installationStatus", adminrepo.IsInstallationStatus); !ok {
-		return
-	}
-	if f.Plan, ok = adminPlanParam(w, p.Query); !ok {
+	f.InstallationStatus, unknownInst = adminEnumParam(p.Query, instParam, adminrepo.IsInstallationStatus)
+	f.Plan, unknownPlan = adminPlanParam(p.Query)
+	if unknownSub || unknownInst || unknownPlan {
+		a.writeAdminJSON(w, http.StatusOK, adminList([]adminrepo.Organization{}, 0, p.Limit))
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
@@ -354,10 +359,11 @@ func (a *App) handleAdminListSubscriptions(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	f := adminrepo.SubscriptionFilter{Limit: p.Limit, Cursor: p.Cursor, Search: p.Search}
-	if f.Status, ok = adminEnumParam(w, p.Query, "status", adminrepo.IsSubscriptionStatus); !ok {
-		return
-	}
-	if f.Plan, ok = adminPlanParam(w, p.Query); !ok {
+	var unknownStatus, unknownPlan bool
+	f.Status, unknownStatus = adminEnumParam(p.Query, "status", adminrepo.IsSubscriptionStatus)
+	f.Plan, unknownPlan = adminPlanParam(p.Query)
+	if unknownStatus || unknownPlan {
+		a.writeAdminJSON(w, http.StatusOK, adminList([]adminrepo.SubscriptionRow{}, 0, p.Limit))
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
@@ -376,12 +382,9 @@ func (a *App) handleAdminListInstallations(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	f := adminrepo.InstallationFilter{Limit: p.Limit, Cursor: p.Cursor, Search: p.Search}
-	if f.Status, ok = adminEnumParam(w, p.Query, "status", adminrepo.IsInstallationStatus); !ok {
-		return
-	}
-	if f.Health, ok = adminEnumParam(w, p.Query, "health", adminrepo.IsHealth); !ok {
-		return
-	}
+	var unknownStatus, unknownHealth bool
+	f.Status, unknownStatus = adminEnumParam(p.Query, "status", adminrepo.IsInstallationStatus)
+	f.Health, unknownHealth = adminEnumParam(p.Query, "health", adminrepo.IsHealth)
 	if raw := strings.TrimSpace(p.Query.Get("organizationId")); raw != "" {
 		id, err := strconv.ParseInt(raw, 10, 64)
 		if err != nil || id <= 0 {
@@ -389,6 +392,10 @@ func (a *App) handleAdminListInstallations(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		f.OrganizationID = id
+	}
+	if unknownStatus || unknownHealth {
+		a.writeAdminJSON(w, http.StatusOK, adminList([]adminrepo.InstallationSummary{}, 0, p.Limit))
+		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
@@ -420,7 +427,8 @@ func (a *App) handleAdminGetInstallation(w http.ResponseWriter, r *http.Request,
 	// already knows the channel (no live Discord call, never per-row lookups).
 	for i := range d.ChannelRoutes {
 		if name := a.adminChannelName(d.ChannelRoutes[i].ChannelID); name != "" {
-			d.ChannelRoutes[i].ChannelName = name
+			n := name
+			d.ChannelRoutes[i].ChannelName = &n
 		}
 	}
 	a.writeAdminJSON(w, http.StatusOK, d)
@@ -472,12 +480,25 @@ type adminBackendHealth struct {
 	WorkerTotal   int              `json:"workerTotal"`
 }
 
+// adminHealthResponse is the website's AdminHealth (backendStatus + the
+// installations needing attention) plus the structured runtime/database/summary.
 type adminHealthResponse struct {
-	GeneratedAt   string                       `json:"generatedAt"`
-	Backend       adminBackendHealth           `json:"backend"`
-	Database      map[string]bool              `json:"database"`
-	Discord       map[string]bool              `json:"discord"`
-	Installations adminrepo.InstallationHealth `json:"installations"`
+	BackendStatus string                         `json:"backendStatus"`
+	Installations []adminrepo.HealthInstallation `json:"installations"`
+	GeneratedAt   string                         `json:"generatedAt"`
+	Backend       adminBackendHealth             `json:"backend"`
+	Database      map[string]bool                `json:"database"`
+	Discord       map[string]bool                `json:"discord"`
+	Summary       adminrepo.HealthSummary        `json:"summary"`
+}
+
+// backendStatus is the runtime health registry's overall state ("UNKNOWN" when the
+// registry is not available). No invented values.
+func (a *App) backendStatus() string {
+	if a.HealthRegistry == nil {
+		return "UNKNOWN"
+	}
+	return string(a.HealthRegistry.Snapshot().Overall)
 }
 
 // handleAdminHealth reports stored/in-memory state only: no live Nitrado call,
@@ -486,12 +507,11 @@ type adminHealthResponse struct {
 func (a *App) handleAdminHealth(w http.ResponseWriter, r *http.Request, _ adminIdentity) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	resp := adminHealthResponse{GeneratedAt: time.Now().UTC().Format(time.RFC3339)}
+	resp := adminHealthResponse{GeneratedAt: time.Now().UTC().Format(time.RFC3339), BackendStatus: a.backendStatus()}
 
-	resp.Backend = adminBackendHealth{Overall: "UNKNOWN", Components: []adminComponent{}, Workers: []adminWorker{}}
+	resp.Backend = adminBackendHealth{Overall: resp.BackendStatus, Components: []adminComponent{}, Workers: []adminWorker{}}
 	if a.HealthRegistry != nil {
 		snap := a.HealthRegistry.Snapshot()
-		resp.Backend.Overall = string(snap.Overall)
 		resp.Backend.UptimeSeconds = int64(a.HealthRegistry.Uptime().Seconds())
 		for _, c := range snap.Components {
 			resp.Backend.Components = append(resp.Backend.Components, adminComponent{
@@ -523,12 +543,12 @@ func (a *App) handleAdminHealth(w http.ResponseWriter, r *http.Request, _ adminI
 		}
 	}
 
-	inst, err := a.adminSaaS.InstallationHealth(ctx)
+	summary, items, err := a.adminSaaS.InstallationHealth(ctx)
 	if err != nil {
 		a.adminReadFailed(w, "installation health", err)
 		return
 	}
-	resp.Installations = inst
+	resp.Summary, resp.Installations = summary, items
 	a.writeAdminJSON(w, http.StatusOK, resp)
 }
 
