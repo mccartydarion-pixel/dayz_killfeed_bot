@@ -115,7 +115,9 @@ WHERE f.game_server_id = $2 AND pl.player_id = ANY($3)`, guildID, serverID, play
 	return out, rows.Err()
 }
 
-// The shared CTE prefix. Parameters: $1 faction id, $2 guild id, $3 server id.
+// The shared CTE prefix. Parameters: $1 installation id, $2 guild id, $3 faction id (0 = every faction of
+// the installation - the leaderboard; a faction id = one faction - the profile). ONE definition serves both,
+// so a leaderboard value can never differ from the profile value.
 //
 //	windows  one row per membership PERIOD with the member's live VERIFIED player (NULL = unlinked)
 //	wp       the distinct linked players (drives index-friendly kill/death lookups)
@@ -126,41 +128,42 @@ WHERE f.game_server_id = $2 AND pl.player_id = ANY($3)`, guildID, serverID, play
 //	bc       claimed bounties earned by a counted kill
 const hubStatsCTE = `
 windows AS (
-  SELECT h.id AS wid, h.user_id, h.joined_at, h.left_at, pl.player_id
+  SELECT h.id AS wid, h.faction_id, f.game_server_id AS server_id, h.user_id, h.joined_at, h.left_at, pl.player_id
   FROM hub_faction_membership_history h
+  JOIN hub_factions f ON f.id = h.faction_id
   JOIN app_users u ON u.id = h.user_id
   LEFT JOIN player_links pl ON pl.guild_id = $2 AND pl.discord_user_id = u.discord_user_id AND pl.status = 'VERIFIED'
-  WHERE h.faction_id = $1
+  WHERE h.installation_id = $1 AND ($3::bigint = 0 OR h.faction_id = $3)
 ),
-wp AS (SELECT DISTINCT player_id FROM windows WHERE player_id IS NOT NULL),
+wp AS (SELECT DISTINCT player_id, server_id FROM windows WHERE player_id IS NOT NULL),
 ka AS (
-  SELECT k.id, k.killer_player_id, k.victim_player_id, COALESCE(k.event_time, k.created_at) AS at, k.headshot, k.longshot, k.distance, k.weapon_display
-  FROM kills k WHERE k.guild_id = $2 AND k.server_id = $3 AND k.killer_player_id IN (SELECT player_id FROM wp)
+  SELECT k.id, k.server_id, k.killer_player_id, k.victim_player_id, COALESCE(k.event_time, k.created_at) AS at, k.headshot, k.longshot, k.distance, k.weapon_display
+  FROM kills k WHERE k.guild_id = $2 AND k.server_id IN (SELECT server_id FROM wp) AND k.killer_player_id IN (SELECT player_id FROM wp)
   UNION
-  SELECT k.id, k.killer_player_id, k.victim_player_id, COALESCE(k.event_time, k.created_at) AS at, k.headshot, k.longshot, k.distance, k.weapon_display
-  FROM kills k WHERE k.guild_id = $2 AND k.server_id = $3 AND k.victim_player_id IN (SELECT player_id FROM wp)
+  SELECT k.id, k.server_id, k.killer_player_id, k.victim_player_id, COALESCE(k.event_time, k.created_at) AS at, k.headshot, k.longshot, k.distance, k.weapon_display
+  FROM kills k WHERE k.guild_id = $2 AND k.server_id IN (SELECT server_id FROM wp) AND k.victim_player_id IN (SELECT player_id FROM wp)
 ),
 fk AS (
-  SELECT ka.id AS kill_id, w.wid, w.user_id, w.player_id, ka.at, ka.headshot, ka.longshot, ka.distance, ka.weapon_display, ka.victim_player_id
+  SELECT ka.id AS kill_id, w.wid, w.faction_id, w.user_id, w.player_id, ka.at, ka.headshot, ka.longshot, ka.distance, ka.weapon_display, ka.victim_player_id
   FROM ka
-  JOIN windows w ON w.player_id = ka.killer_player_id AND ka.at >= w.joined_at AND (w.left_at IS NULL OR ka.at < w.left_at)
+  JOIN windows w ON w.player_id = ka.killer_player_id AND w.server_id = ka.server_id AND ka.at >= w.joined_at AND (w.left_at IS NULL OR ka.at < w.left_at)
   WHERE NOT EXISTS (
     SELECT 1 FROM windows v
-    WHERE v.player_id = ka.victim_player_id AND ka.at >= v.joined_at AND (v.left_at IS NULL OR ka.at < v.left_at))
+    WHERE v.faction_id = w.faction_id AND v.player_id = ka.victim_player_id AND ka.at >= v.joined_at AND (v.left_at IS NULL OR ka.at < v.left_at))
 ),
 dv AS (
-  SELECT d.id AS death_id, w.wid, w.user_id, COALESCE(d.event_time, d.created_at) AS at
+  SELECT d.id AS death_id, w.wid, w.faction_id, w.user_id, COALESCE(d.event_time, d.created_at) AS at
   FROM deaths d
-  JOIN windows w ON w.player_id = d.player_id
+  JOIN windows w ON w.player_id = d.player_id AND w.server_id = d.server_id
    AND COALESCE(d.event_time, d.created_at) >= w.joined_at AND (w.left_at IS NULL OR COALESCE(d.event_time, d.created_at) < w.left_at)
-  WHERE d.guild_id = $2 AND d.server_id = $3 AND d.player_id IN (SELECT player_id FROM wp)
+  WHERE d.guild_id = $2 AND d.server_id IN (SELECT server_id FROM wp) AND d.player_id IN (SELECT player_id FROM wp)
 ),
 vv AS (
-  SELECT ka.id AS kill_id, w.wid, ka.at
-  FROM ka JOIN windows w ON w.player_id = ka.victim_player_id AND ka.at >= w.joined_at AND (w.left_at IS NULL OR ka.at < w.left_at)
+  SELECT ka.id AS kill_id, w.wid, w.faction_id, ka.at
+  FROM ka JOIN windows w ON w.player_id = ka.victim_player_id AND w.server_id = ka.server_id AND ka.at >= w.joined_at AND (w.left_at IS NULL OR ka.at < w.left_at)
 ),
 bc AS (
-  SELECT b.id AS bounty_id, fk.kill_id, fk.wid, fk.user_id, fk.at, b.reward_points
+  SELECT b.id AS bounty_id, fk.kill_id, fk.wid, fk.faction_id, fk.user_id, fk.at, b.reward_points
   FROM bounties b
   JOIN fk ON fk.kill_id = b.claimed_kill_id AND fk.player_id = b.claimed_by_player_id
   WHERE b.guild_id = $2 AND b.status = 'CLAIMED'
@@ -219,7 +222,7 @@ ub AS (SELECT user_id, COUNT(*) AS n, COALESCE(SUM(reward_points),0) AS v FROM b
 us AS (SELECT w.user_id, MAX(sl.len) AS best FROM sl JOIN windows w ON w.wid = sl.wid GROUP BY w.user_id),
 uc AS (SELECT w.user_id, MAX(cur.len) AS cur FROM cur JOIN windows w ON w.wid = cur.wid GROUP BY w.user_id),
 uw AS (SELECT user_id, MAX(joined_at) AS last_joined, MAX(player_id) AS player_id FROM windows GROUP BY user_id),
-everyone AS (SELECT user_id FROM windows UNION SELECT user_id FROM hub_faction_members WHERE faction_id = $1)
+everyone AS (SELECT user_id FROM windows UNION SELECT user_id FROM hub_faction_members WHERE faction_id = $3)
 SELECT u.id, u.discord_user_id, u.discord_username, COALESCE(u.discord_global_name,''), COALESCE(u.avatar,''),
        m.id, m.role_key, (m.id IS NOT NULL) AS active,
        (pl.player_id IS NOT NULL) AS linked, p.display_name,
@@ -228,7 +231,7 @@ SELECT u.id, u.discord_user_id, u.discord_username, COALESCE(u.discord_global_na
        COALESCE(ub.n,0), COALESCE(ub.v,0), COALESCE(us.best,0), COALESCE(uc.cur,0)
 FROM everyone e
 JOIN app_users u ON u.id = e.user_id
-LEFT JOIN hub_faction_members m ON m.faction_id = $1 AND m.user_id = e.user_id
+LEFT JOIN hub_faction_members m ON m.faction_id = $3 AND m.user_id = e.user_id
 LEFT JOIN uw ON uw.user_id = e.user_id
 LEFT JOIN player_links pl ON pl.guild_id = $2 AND pl.discord_user_id = u.discord_user_id AND pl.status = 'VERIFIED'
 LEFT JOIN players p ON p.id = pl.player_id
@@ -239,7 +242,7 @@ LEFT JOIN us ON us.user_id = e.user_id
 LEFT JOIN uc ON uc.user_id = e.user_id
 WHERE m.id IS NOT NULL OR COALESCE(uk.kills,0) + COALESCE(ud.deaths,0) + COALESCE(ub.n,0) > 0
 ORDER BY COALESCE(uk.kills,0) DESC, COALESCE(ud.deaths,0) ASC, m.id ASC NULLS LAST, u.id ASC`,
-		s.FactionID, s.GuildID, s.ServerID, s.CreatedAt)
+		s.InstallationID, s.GuildID, s.FactionID, s.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("hub faction stats: %w", err)
 	}
@@ -343,7 +346,7 @@ func (r *HubStatsRepository) NthEventTime(ctx context.Context, s HubStatsScope, 
 		return nil, fmt.Errorf("unknown metric %q", metric)
 	}
 	var at time.Time
-	err := r.pool.QueryRow(ctx, `WITH `+hubStatsCTE+` `+q, s.FactionID, s.GuildID, s.ServerID, n-1).Scan(&at)
+	err := r.pool.QueryRow(ctx, `WITH `+hubStatsCTE+` `+q, s.InstallationID, s.GuildID, s.FactionID, n-1).Scan(&at)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -415,7 +418,7 @@ hub AS (
          NULL::text AS victim, NULL::text AS weapon, NULL::double precision AS distance, FALSE AS headshot, FALSE AS longshot,
          0::bigint AS reward, 0::bigint AS n, NULL::text AS rtype, NULL::text AS akey
   FROM hub_faction_activity a
-  WHERE a.faction_id = $1 AND ($4::timestamptz IS NULL OR (a.occurred_at, 1, a.id) < ($4, $5::int, $6::bigint))
+  WHERE a.faction_id = $3 AND ($4::timestamptz IS NULL OR (a.occurred_at, 1, a.id) < ($4, $5::int, $6::bigint))
   ORDER BY a.occurred_at DESC, a.id DESC LIMIT $7
 ),
 kev AS (
@@ -444,8 +447,8 @@ rev AS (
          NULL::text AS victim, NULL::text AS weapon, NULL::double precision AS distance, FALSE AS headshot, FALSE AS longshot,
          0::bigint AS reward, 0::bigint AS n, re.record_type AS rtype, NULL::text AS akey
   FROM record_events re
-  JOIN kills rk ON rk.id = re.kill_id AND rk.guild_id = $2 AND rk.server_id = $3
   JOIN windows w ON w.player_id = re.player_id AND re.created_at >= w.joined_at AND (w.left_at IS NULL OR re.created_at < w.left_at)
+  JOIN kills rk ON rk.id = re.kill_id AND rk.guild_id = $2 AND rk.server_id = w.server_id
   WHERE re.guild_id = $2 AND re.player_id IN (SELECT player_id FROM wp)
     AND ($4::timestamptz IS NULL OR (re.created_at, 4, re.id) < ($4, $5::int, $6::bigint))
   ORDER BY re.created_at DESC, re.id DESC LIMIT $7
@@ -455,7 +458,7 @@ uev AS (
          NULL::text AS victim, NULL::text AS weapon, NULL::double precision AS distance, FALSE AS headshot, FALSE AS longshot,
          0::bigint AS reward, 0::bigint AS n, NULL::text AS rtype, u.achievement_key AS akey
   FROM hub_faction_achievement_unlocks u
-  WHERE u.faction_id = $1 AND ($4::timestamptz IS NULL OR (u.unlocked_at, 5, u.id) < ($4, $5::int, $6::bigint))
+  WHERE u.faction_id = $3 AND ($4::timestamptz IS NULL OR (u.unlocked_at, 5, u.id) < ($4, $5::int, $6::bigint))
   ORDER BY u.unlocked_at DESC, u.id DESC LIMIT $7
 ),
 allev AS (
@@ -472,7 +475,7 @@ LEFT JOIN players sp ON sp.id = spl.player_id
 LEFT JOIN app_users au ON au.id = x.actor
 ORDER BY x.at DESC, x.src DESC, x.id DESC
 LIMIT $8`
-	res, err := r.pool.Query(ctx, q, s.FactionID, s.GuildID, s.ServerID, cAt, cSrc, cID, limit+1, limit+1)
+	res, err := r.pool.Query(ctx, q, s.InstallationID, s.GuildID, s.FactionID, cAt, cSrc, cID, limit+1, limit+1)
 	if err != nil {
 		return nil, false, fmt.Errorf("hub faction activity: %w", err)
 	}
@@ -493,4 +496,115 @@ LIMIT $8`
 		rows, more = rows[:limit], true
 	}
 	return rows, more, nil
+}
+
+// --- leaderboard ---------------------------------------------------------------------------------
+
+// HubLeaderboardRow is one faction's public metadata and every leaderboard metric, computed with the
+// SAME attribution CTE as the faction profile (hubStatsCTE with faction filter 0), so a leaderboard
+// value cannot differ from the profile value.
+type HubLeaderboardRow struct {
+	FactionID                                                  int64
+	Name, Tag, Slug                                            string
+	FlagKey, ArmbandKey, PrimaryColor, SecondaryColor          *string
+	Logo                                                       *factionhub.Asset
+	MemberCount                                                int
+	Kills, Deaths, Headshots, Longshots, Bounties, BountyValue int64
+	BestStreak                                                 int
+	Achievements                                               int
+	TrackingSince                                              *time.Time
+}
+
+// HubLeaderboardData is every faction of one installation with its figures.
+type HubLeaderboardData struct {
+	GuildID, ServerID int64 // the installation's guild and current server (cache invalidation scope)
+	Rows              []HubLeaderboardRow
+}
+
+// Leaderboard returns every faction of the installation with all metrics, in ONE grouped statement
+// (no per-faction queries), scoped by organization + installation. The installation must belong to the
+// organization (factionhub.ErrNotFound otherwise). Ordering and ranking are the service's job.
+func (r *HubStatsRepository) Leaderboard(ctx context.Context, organizationID, installationID int64) (*HubLeaderboardData, error) {
+	out := &HubLeaderboardData{Rows: []HubLeaderboardRow{}}
+	var server *int64
+	err := r.pool.QueryRow(ctx, `
+SELECT c.guild_id, i.game_server_id
+FROM installations i JOIN discord_guild_connections c ON c.id = i.discord_guild_connection_id
+WHERE i.id = $1 AND i.organization_id = $2`, installationID, organizationID).Scan(&out.GuildID, &server)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, factionhub.ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("hub leaderboard scope: %w", err)
+	}
+	if server != nil {
+		out.ServerID = *server
+	}
+	rows, err := r.pool.Query(ctx, `WITH `+hubStatsCTE+hubStreakCTE+`,
+fa AS (SELECT faction_id, COUNT(*) AS kills, COUNT(*) FILTER (WHERE headshot) AS hs, COUNT(*) FILTER (WHERE longshot) AS ls FROM fk GROUP BY faction_id),
+da AS (SELECT faction_id, COUNT(*) AS n FROM dv GROUP BY faction_id),
+ba AS (SELECT faction_id, COUNT(*) AS n, COALESCE(SUM(reward_points),0) AS v FROM bc GROUP BY faction_id),
+sa AS (SELECT w.faction_id, MAX(sl.len) AS best FROM sl JOIN windows w ON w.wid = sl.wid GROUP BY w.faction_id),
+ma AS (SELECT faction_id, COUNT(*) AS n FROM hub_faction_members WHERE installation_id = $1 GROUP BY faction_id),
+ua AS (SELECT faction_id, COUNT(*) AS n FROM hub_faction_achievement_unlocks WHERE installation_id = $1 GROUP BY faction_id),
+ta AS (SELECT faction_id, MIN(joined_at) AS t FROM hub_faction_membership_history WHERE installation_id = $1 GROUP BY faction_id)
+SELECT f.id, f.name, f.tag, f.slug, f.flag_key, f.armband_key, f.primary_color, f.secondary_color,
+       la.id, la.public_id::text, la.storage_key, la.content_type, la.size_bytes, la.width, la.height, la.original_filename, la.created_at,
+       COALESCE(ma.n,0), COALESCE(fa.kills,0), COALESCE(da.n,0), COALESCE(fa.hs,0), COALESCE(fa.ls,0),
+       COALESCE(ba.n,0), COALESCE(ba.v,0), COALESCE(sa.best,0), COALESCE(ua.n,0), ta.t
+FROM hub_factions f
+LEFT JOIN hub_faction_assets la ON la.id = f.logo_asset_id
+LEFT JOIN ma ON ma.faction_id = f.id
+LEFT JOIN fa ON fa.faction_id = f.id
+LEFT JOIN da ON da.faction_id = f.id
+LEFT JOIN ba ON ba.faction_id = f.id
+LEFT JOIN sa ON sa.faction_id = f.id
+LEFT JOIN ua ON ua.faction_id = f.id
+LEFT JOIN ta ON ta.faction_id = f.id
+WHERE f.installation_id = $1 AND f.organization_id = $4
+ORDER BY f.id`, installationID, out.GuildID, int64(0), organizationID)
+	if err != nil {
+		return nil, fmt.Errorf("hub leaderboard: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var lr HubLeaderboardRow
+		var la struct {
+			id                                      *int64
+			publicID, storageKey, contentType, name *string
+			size, width, height                     *int
+			created                                 *time.Time
+		}
+		if err := rows.Scan(&lr.FactionID, &lr.Name, &lr.Tag, &lr.Slug, &lr.FlagKey, &lr.ArmbandKey, &lr.PrimaryColor, &lr.SecondaryColor,
+			&la.id, &la.publicID, &la.storageKey, &la.contentType, &la.size, &la.width, &la.height, &la.name, &la.created,
+			&lr.MemberCount, &lr.Kills, &lr.Deaths, &lr.Headshots, &lr.Longshots, &lr.Bounties, &lr.BountyValue, &lr.BestStreak, &lr.Achievements, &lr.TrackingSince); err != nil {
+			return nil, fmt.Errorf("hub leaderboard scan: %w", err)
+		}
+		if la.id != nil {
+			lr.Logo = &factionhub.Asset{ID: *la.id, PublicID: *la.publicID, FactionID: lr.FactionID, StorageKey: *la.storageKey, ContentType: *la.contentType,
+				SizeBytes: *la.size, Width: *la.width, Height: *la.height, OriginalFilename: *la.name, CreatedAt: *la.created}
+		}
+		out.Rows = append(out.Rows, lr)
+	}
+	return out, rows.Err()
+}
+
+// LeaderboardScope returns the installation's guild and current server (the invalidation scope of its
+// leaderboard cache), verifying the installation belongs to the organization.
+func (r *HubStatsRepository) LeaderboardScope(ctx context.Context, organizationID, installationID int64) (guildID, serverID int64, err error) {
+	var server *int64
+	err = r.pool.QueryRow(ctx, `
+SELECT c.guild_id, i.game_server_id
+FROM installations i JOIN discord_guild_connections c ON c.id = i.discord_guild_connection_id
+WHERE i.id = $1 AND i.organization_id = $2`, installationID, organizationID).Scan(&guildID, &server)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, 0, factionhub.ErrNotFound
+	}
+	if err != nil {
+		return 0, 0, fmt.Errorf("hub leaderboard scope: %w", err)
+	}
+	if server != nil {
+		serverID = *server
+	}
+	return guildID, serverID, nil
 }

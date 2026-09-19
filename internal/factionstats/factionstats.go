@@ -112,6 +112,10 @@ type Store interface {
 	InsertUnlock(ctx context.Context, s repository.HubStatsScope, key string, at time.Time, metadata map[string]any) (bool, error)
 	NthEventTime(ctx context.Context, s repository.HubStatsScope, metric string, n int) (*time.Time, error)
 	Activity(ctx context.Context, s repository.HubStatsScope, limit int, cursor *repository.HubActivityCursor) ([]repository.HubActivityRow, bool, error)
+	// LeaderboardScope / Leaderboard serve the faction leaderboards (leaderboard.go): the installation's
+	// guild and server, and every faction of the installation with all metrics in one statement.
+	LeaderboardScope(ctx context.Context, organizationID, installationID int64) (guildID, serverID int64, err error)
+	Leaderboard(ctx context.Context, organizationID, installationID int64) (*repository.HubLeaderboardData, error)
 }
 
 // Options configures a Service.
@@ -130,6 +134,10 @@ type Service struct {
 	cache    map[cacheKey]cacheEntry
 	gens     map[genKey]uint64
 	inflight map[cacheKey]*call
+
+	// Leaderboard cache: one table of all factions per (organization, installation).
+	lbCache    map[lbKey]*leaderboardTable
+	lbInflight map[lbKey]*lbCall
 
 	pendMu  sync.Mutex
 	pending map[genKey]map[int64]struct{} // (guild, server) -> killer players awaiting evaluation
@@ -157,7 +165,7 @@ func NewService(store Store, opt Options) *Service {
 		opt.Now = time.Now
 	}
 	return &Service{store: store, ttl: opt.CacheTTL, now: opt.Now, cache: map[cacheKey]cacheEntry{}, gens: map[genKey]uint64{},
-		inflight: map[cacheKey]*call{}, pending: map[genKey]map[int64]struct{}{}}
+		inflight: map[cacheKey]*call{}, lbCache: map[lbKey]*leaderboardTable{}, lbInflight: map[lbKey]*lbCall{}, pending: map[genKey]map[int64]struct{}{}}
 }
 
 const maxCacheEntries = 2048
@@ -284,6 +292,9 @@ func displayName(global, username string) string {
 func (s *Service) Invalidate(organizationID, installationID, factionID int64) {
 	s.mu.Lock()
 	delete(s.cache, cacheKey{organizationID, installationID, factionID})
+	// Every faction-level change (membership, role, branding, a new faction, an achievement unlock) can
+	// move a leaderboard, so the installation's leaderboard goes with it.
+	delete(s.lbCache, lbKey{organizationID, installationID})
 	s.mu.Unlock()
 }
 

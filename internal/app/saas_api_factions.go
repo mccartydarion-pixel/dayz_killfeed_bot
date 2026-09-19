@@ -609,6 +609,7 @@ func (a *App) handleUpdateFaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	factionAudit("faction_updated", fr, "faction_id", factionID)
+	a.factionStatsChanged(fr, factionID) // name, tag, branding and recruitment appear on the leaderboard
 	profile, err := a.loadFactionProfile(ctx, fr, factionID)
 	if err != nil {
 		factionFailed(w, "load faction", err)

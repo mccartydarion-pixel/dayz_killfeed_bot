@@ -923,6 +923,54 @@ components:
         nextCursor: { type: string, nullable: true }
         limit: { type: integer }
 
+    FactionLeaderboardMetric:
+      type: string
+      enum: [KILLS, DEATHS, KD, HEADSHOTS, LONGSHOTS, BEST_STREAK, BOUNTIES_CLAIMED, BOUNTY_VALUE, ACHIEVEMENTS]
+      description: "The closed set of ranked metrics. DESC (more is better) for every metric except DEATHS, which is ASC (fewest first). There is no overall/hidden score."
+    FactionLeaderboardStats:
+      type: object
+      description: Every metric of one faction, named like the faction profile's summary (the same figures - one shared SQL definition).
+      properties:
+        kills: { type: integer, format: int64 }
+        deaths: { type: integer, format: int64 }
+        kdRatio: { type: number, description: "kills / max(deaths,1), two decimals." }
+        headshots: { type: integer, format: int64 }
+        longshots: { type: integer, format: int64 }
+        bestKillStreak: { type: integer }
+        bountiesClaimed: { type: integer, format: int64 }
+        bountyValueClaimed: { type: integer, format: int64 }
+        achievementsUnlocked: { type: integer }
+    FactionLeaderboardEntry:
+      type: object
+      properties:
+        rank: { type: integer, minimum: 1, description: "Ordinal position on the whole installation leaderboard (ties get consecutive ranks in the deterministic order); unaffected by q and paging." }
+        factionId: { type: integer, format: int64 }
+        name: { type: string }
+        tag: { type: string }
+        slug: { type: string }
+        logo: { allOf: [{ $ref: "#/components/schemas/FactionLogo" }], nullable: true, description: "The uploaded logo exactly as on the profile; null = the Champion default." }
+        flagKey: { type: string, nullable: true }
+        armbandKey: { type: string, nullable: true }
+        primaryColor: { type: string, nullable: true }
+        secondaryColor: { type: string, nullable: true }
+        memberCount: { type: integer }
+        value:
+          type: number
+          description: "The ranked metric. An integer for every metric except KD, which is a decimal with two places."
+        trackingSince: { type: string, format: date-time, nullable: true, description: "Figures cover events from the faction's first recorded membership period on." }
+        hasTrackedActivity: { type: boolean, description: "False when the faction has no counted kill, death or bounty (it is still listed, with zero figures)." }
+        stats: { $ref: "#/components/schemas/FactionLeaderboardStats" }
+    FactionLeaderboardResponse:
+      type: object
+      properties:
+        metric: { $ref: "#/components/schemas/FactionLeaderboardMetric" }
+        direction: { type: string, enum: [DESC, ASC], description: "ASC only for DEATHS." }
+        items: { type: array, items: { $ref: "#/components/schemas/FactionLeaderboardEntry" } }
+        nextCursor: { type: string, nullable: true, description: "Opaque; pass back with the same metric." }
+        limit: { type: integer, description: "The effective page size (default 25, max 100)." }
+        total: { type: integer, description: "Factions matching q (all factions when there is no q)." }
+        updatedAt: { type: string, format: date-time, description: "When the ranking was computed (cached up to 45 seconds)." }
+
   responses:
     Unauthorized:
       description: Missing/invalid service auth, or acting user not synced.
@@ -2178,6 +2226,44 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/FactionAchievementList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # --- Faction Hub Phase 6: faction leaderboards (docs/FACTION_LEADERBOARDS.md). Read-only, any synced user. ---
+  /api/saas/organizations/{organizationID}/installations/{installationID}/factions/leaderboard:
+    get:
+      summary: The installation's factions ranked by one explicit metric (keyset pagination, search). Same figures as the faction profiles; no overall score; cached up to 45 s per installation.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - name: metric
+          in: query
+          required: false
+          schema: { $ref: "#/components/schemas/FactionLeaderboardMetric" }
+          description: The ranked metric (case-insensitive); default KILLS. Any other value is 400 - it is never mapped to a default.
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, default: 25 }
+          description: Page size; the maximum is 100 - larger values are clamped, 0/negative/non-numeric is 400.
+        - name: cursor
+          in: query
+          required: false
+          schema: { type: string }
+          description: The previous page's nextCursor. It is bound to its metric; a cursor from another metric is 400.
+        - name: q
+          in: query
+          required: false
+          schema: { type: string, maxLength: 50 }
+          description: Case-insensitive substring of the faction name or tag. Never changes a faction's rank.
+      responses:
+        "200":
+          description: One page of the ranking. Factions with no tracked activity are listed with zero figures and hasTrackedActivity false.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FactionLeaderboardResponse" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }

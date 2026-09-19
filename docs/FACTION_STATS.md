@@ -234,7 +234,9 @@ Treat `type` as an open set (ignore unknown types) so new event kinds do not bre
 ## 12. Faction ranking readiness
 
 `FactionStatsSummary` is deliberately flat and comparable - `kills`, `kdRatio`, `headshots`, `longshots`, `bountiesClaimed`, `achievementsUnlocked` - so a faction leaderboard
-can rank on any of them per installation without another model. No overall skill score exists or is implied; a leaderboard endpoint is a later phase.
+can rank on any of them per installation without another model. No overall skill score exists or is implied. **Phase 6 delivers that leaderboard**
+(`GET .../factions/leaderboard`, `docs/FACTION_LEADERBOARDS.md`): it uses the very same SQL definition (`hubStatsCTE`, with the faction filter switched off) and the same
+attribution rules as this document, so a leaderboard value always equals the faction's `summary` value; a parity test compares every faction's `stats` on both surfaces.
 
 ## 13. Limits to know
 

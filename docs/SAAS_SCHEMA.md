@@ -407,3 +407,12 @@ Phase 5 of the Faction Hub (`docs/FACTION_STATS.md`). Kills, deaths and bounties
 
 No index was added to `kills`, `deaths` or `bounties`: the faction queries are driven by the faction's linked players through the existing `idx_kills_killer`, `idx_kills_victim`,
 `idx_deaths_player` indexes (measured with a 300,000-kill guild history: 22 ms).
+
+## Faction leaderboards (Phase 6 - no schema change)
+
+Phase 6 (`docs/FACTION_LEADERBOARDS.md`) adds **no table, column, index or migration** (the latest migration remains `0034_faction_stats_history`). The leaderboard is a
+*query result*, not stored data: one grouped statement over `hub_factions`, `hub_faction_membership_history`, `player_links`, `kills`, `deaths`, `bounties` and
+`hub_faction_achievement_unlocks` - the same definition as the per-faction stats, with the faction filter switched off - computed per `(organization, installation)`
+and cached in memory for 45 s. Everything is scoped by `installation_id` (and its guild + game server); ranking and tie-breaking (ending in `hub_factions.id`) happen in
+the service. There is deliberately no materialized leaderboard table: it could only drift from the source rows. Measured with 120 factions and a 300,000-kill history:
+746 ms uncached, 47 ms with 20,000 kills, no new index needed.

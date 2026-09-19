@@ -26,6 +26,10 @@ type fakeStore struct {
 	forPlayers        func(guild, server int64, players []int64) []repository.HubStatsScope
 	lastActivityLimit atomic.Int64
 	inserts           atomic.Int64
+	boards            map[int64]*repository.HubLeaderboardData
+	boardOrg          map[int64]int64
+	boardComputes     atomic.Int64
+	onLeaderboard     func()
 }
 
 func newFakeStore() *fakeStore {
@@ -440,4 +444,44 @@ func TestConcurrentEventsCacheAndEvaluationAreRaceFree(t *testing.T) {
 			t.Fatalf("faction %d ended with %d unlocks", sc.FactionID, n)
 		}
 	}
+}
+
+// LeaderboardScope / Leaderboard: the fake serves a per-installation table registered with setBoard.
+func (f *fakeStore) setBoard(org, inst, guild, server int64, rows []repository.HubLeaderboardRow) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.boards == nil {
+		f.boards = map[int64]*repository.HubLeaderboardData{}
+	}
+	f.boards[inst] = &repository.HubLeaderboardData{GuildID: guild, ServerID: server, Rows: rows}
+	if f.boardOrg == nil {
+		f.boardOrg = map[int64]int64{}
+	}
+	f.boardOrg[inst] = org
+}
+
+func (f *fakeStore) LeaderboardScope(_ context.Context, org, inst int64) (int64, int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	b, ok := f.boards[inst]
+	if !ok || f.boardOrg[inst] != org {
+		return 0, 0, factionhub.ErrNotFound
+	}
+	return b.GuildID, b.ServerID, nil
+}
+
+func (f *fakeStore) Leaderboard(_ context.Context, org, inst int64) (*repository.HubLeaderboardData, error) {
+	f.boardComputes.Add(1)
+	if f.onLeaderboard != nil {
+		f.onLeaderboard()
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	b, ok := f.boards[inst]
+	if !ok || f.boardOrg[inst] != org {
+		return nil, factionhub.ErrNotFound
+	}
+	cp := *b
+	cp.Rows = append([]repository.HubLeaderboardRow(nil), b.Rows...)
+	return &cp, nil
 }
