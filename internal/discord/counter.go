@@ -36,6 +36,12 @@ type VoiceChannelCounter struct {
 	namer     VoiceChannelNamer
 	channelID string
 
+	// editMu serialises the decide-edit-record sequence in flush and
+	// editConfirmed so two renames are never in flight at once. Without it a
+	// timer-driven flush and a caller-driven flush interleave, losing or
+	// reordering renames. It is taken before mu and never while holding it.
+	editMu sync.Mutex
+
 	mu                sync.Mutex
 	lastPublished     int // last count reflected in the channel name
 	pending           int // latest known count awaiting publish
@@ -206,6 +212,9 @@ func (c *VoiceChannelCounter) Publish(count int) {
 
 // flush performs the actual rename for the latest pending count.
 func (c *VoiceChannelCounter) flush() {
+	c.editMu.Lock()
+	defer c.editMu.Unlock()
+
 	c.mu.Lock()
 	if !c.dirty {
 		c.mu.Unlock()
@@ -262,6 +271,8 @@ func (c *VoiceChannelCounter) editConfirmed(count, previous int) error {
 	if c == nil || c.namer == nil || c.ChannelID() == "" {
 		return nil
 	}
+	c.editMu.Lock()
+	defer c.editMu.Unlock()
 	slog.Info("component=voice_counter", "event", "channel_edit_started", "desired", count)
 	_, err := c.namer.ChannelEdit(c.ChannelID(), &discordgo.ChannelEdit{Name: OnlineCounterName(count)})
 	c.mu.Lock()
