@@ -188,18 +188,18 @@ without updating that Go slice, and vice versa):
 | `route_key` | Default channel name | Purpose | Requirement |
 |---|---|---|---|
 | `KILLFEED` | `killfeed` | PvP kill/death/special-kill feed | REQUIRED |
-| `PVE_FEED` | `pvefeed` | Infected/environment/PvE events | OPTIONAL (not implemented yet) |
+| `PVE_FEED` | `pvefeed` | Infected/environment/PvE events | OPTIONAL (implemented for explicit suicides) |
 | `LINK_GAMERTAG` | `link-gamertag` | Player linking / gamertag linking panel | FEATURE_DEPENDENT |
 | `STATS_LEADERBOARDS` | `stats-leaderboards` | Manually viewed general statistics and leaderboards | OPTIONAL |
 | `AUTO_LEADERBOARD` | `auto-leaderboard` | Automatically refreshed leaderboard panel | OPTIONAL |
-| `HITFEED` | `hitfeed` | Hit/damage event feed | OPTIONAL (not implemented yet) |
-| `BOUNTY` | `bounty` | Public bounty board/events | OPTIONAL (not implemented yet) |
-| `BOUNTY_TRACKING` | `bounty-tracking` | Bounty progression/tracking | OPTIONAL (not implemented yet) |
+| `HITFEED` | `hitfeed` | Hit/damage event feed | OPTIONAL (implemented) |
+| `BOUNTY` | `bounty` | Public bounty board/events | OPTIONAL (implemented) |
+| `BOUNTY_TRACKING` | `bounty-tracking` | Bounty progression/tracking | OPTIONAL (implemented) |
 | `HEATMAPS` | `heatmaps` | Heatmap/activity output | OPTIONAL (not implemented yet) |
 | `ECONOMY` | `economy` | Economy/credits information | OPTIONAL (not implemented yet) |
 | `CASINO` | `casino` | Casino commands/results | OPTIONAL (not implemented yet) |
 | `SHOP` | `shop` | Store/shop output | OPTIONAL (not implemented yet) |
-| `CONNECTIONS` | `connections` | Connect/disconnect/player connection events | OPTIONAL (not implemented yet) |
+| `CONNECTIONS` | `connections` | Connect/disconnect/player connection events | OPTIONAL (implemented) |
 | `BUILD_FEED` | `build-feed` | Building/base-related feed | OPTIONAL (not implemented yet) |
 | `ADMIN_ALERTS` | `admin-alerts` | Important moderation/server alerts | OPTIONAL (not implemented yet) |
 | `ADMIN_LOGS` | `admin-logs` | Detailed administrative/diagnostic logging | FEATURE_DEPENDENT |
@@ -305,3 +305,18 @@ guild-level route-driven artifacts (`LINK_GAMERTAG`, `STATS_LEADERBOARDS`,
 `guild_id` referencing `guilds(id)` (`ON DELETE CASCADE`). Keyed by channel so a
 route change, a restart, or several servers sharing a channel can never leave two
 live copies of a panel. See `docs/SAAS_RUNTIME_ROUTING.md`.
+
+## bounties (migrations 0007 + 0029)
+
+Durable bounties (see `docs/BOUNTY_SYSTEM.md`). `guild_id` references `guilds(id)`;
+`target_player_id`, `claimed_by_player_id` reference `players(id)`;
+`claimed_kill_id` references `kills(id)`. `reward_points` is the amount in Champion
+Points. **`server_id`** (migration 0029, nullable, `ON DELETE CASCADE`) scopes a
+bounty to one `game_servers` row; NULL means guild-wide (every row created before
+0029). `status` is `ACTIVE | CLAIMED | EXPIRED | CANCELLED`; `created_by_type` is
+`ADMIN | AUTOMATIC`. Uniqueness: at most one ACTIVE `AUTOMATIC` bounty per
+`(guild_id, target_player_id)` (`uq_active_automatic_bounty`); manual bounties stack.
+Indexes: `(guild_id, server_id, status)`, `target_player_id`, `created_at`,
+`claimed_at`. Awards are recorded in `point_transactions` with
+`reason_type = 'BOUNTY_CLAIM'` and `source_key = 'bounty:<id>'` (unique), which makes
+the payout idempotent.

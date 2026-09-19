@@ -2,6 +2,7 @@ package discord
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 
@@ -41,11 +42,20 @@ type RoutePanels struct {
 	api   RoutePanelAPI
 	store RoutePanelStore
 	mu    sync.Mutex
+
+	// lastHash remembers the content last written per (guild, route key, channel)
+	// so SyncEach can skip an edit that would change nothing. In-memory only: after
+	// a restart the first pass re-edits once, which is harmless.
+	lastHash map[string]string
 }
 
 func NewRoutePanels(api RoutePanelAPI, store RoutePanelStore) *RoutePanels {
-	return &RoutePanels{api: api, store: store}
+	return &RoutePanels{api: api, store: store, lastHash: make(map[string]string)}
 }
+
+// ChannelContent renders the panel for one routed channel. An error skips that
+// channel for this pass (its existing message is left exactly as it is).
+type ChannelContent func(channelID string) (PanelContent, error)
 
 // PanelSyncResult reports what one Sync did.
 type PanelSyncResult struct {
@@ -60,6 +70,18 @@ type PanelSyncResult struct {
 // button panels) and leaves them untouched. A message is recreated only when
 // Discord says it is gone - never on a transient error.
 func (p *RoutePanels) Sync(ctx context.Context, guildRowID int64, routeKey string, desired []string, content PanelContent, update, cleanup bool) (PanelSyncResult, error) {
+	return p.sync(ctx, guildRowID, routeKey, desired, func(string) (PanelContent, error) { return content, nil }, update, cleanup, false)
+}
+
+// SyncEach is Sync for panels whose content differs per channel (the bounty board
+// shows each channel's own servers). It always updates existing messages, but skips
+// an edit whose content is identical to what it last wrote, so a periodic
+// reconcile does not touch Discord unless something changed.
+func (p *RoutePanels) SyncEach(ctx context.Context, guildRowID int64, routeKey string, desired []string, contentFor ChannelContent, cleanup bool) (PanelSyncResult, error) {
+	return p.sync(ctx, guildRowID, routeKey, desired, contentFor, true, cleanup, true)
+}
+
+func (p *RoutePanels) sync(ctx context.Context, guildRowID int64, routeKey string, desired []string, contentFor ChannelContent, update, cleanup, skipUnchanged bool) (PanelSyncResult, error) {
 	var res PanelSyncResult
 	if p == nil || p.api == nil || p.store == nil {
 		return res, nil
@@ -75,17 +97,34 @@ func (p *RoutePanels) Sync(ctx context.Context, guildRowID int64, routeKey strin
 	for _, e := range existing {
 		recorded[e.ChannelID] = e.MessageID
 	}
+	hashKey := func(channelID string) string { return fmt.Sprintf("%d|%s|%s", guildRowID, routeKey, channelID) }
 
 	want := make(map[string]bool, len(desired))
 	for _, channelID := range desired {
 		want[channelID] = true
+		content, contentErr := contentFor(channelID)
+		if contentErr != nil {
+			res.Errors++
+			slog.Warn("component=discord", "event", "route_panel_content_failed", "route_key", routeKey, "guild_id", guildRowID, "channel_id", channelID, "err", contentErr.Error())
+			continue
+		}
+		hash := ""
+		if skipUnchanged {
+			hash = hashEmbed(content.Embed)
+		}
 		messageID, has := recorded[channelID]
 		if has {
 			if update {
+				if skipUnchanged && p.lastHash[hashKey(channelID)] == hash {
+					continue // nothing changed since the last write
+				}
 				_, editErr := p.api.ChannelMessageEditComplex(channelID, messageID, content.Embed, content.Components)
 				switch {
 				case editErr == nil:
 					res.Updated++
+					if skipUnchanged {
+						p.lastHash[hashKey(channelID)] = hash
+					}
 					continue
 				case !isUnknownMessage(editErr):
 					res.Errors++
@@ -121,6 +160,9 @@ func (p *RoutePanels) Sync(ctx context.Context, guildRowID int64, routeKey strin
 			slog.Warn("component=discord", "event", "route_panel_record_failed", "route_key", routeKey, "guild_id", guildRowID, "channel_id", channelID, "err", upErr.Error())
 			continue
 		}
+		if skipUnchanged {
+			p.lastHash[hashKey(channelID)] = hash
+		}
 		res.Created++
 	}
 
@@ -137,6 +179,7 @@ func (p *RoutePanels) Sync(ctx context.Context, guildRowID int64, routeKey strin
 				res.Errors++
 				continue
 			}
+			delete(p.lastHash, hashKey(e.ChannelID))
 			res.Removed++
 		}
 	}

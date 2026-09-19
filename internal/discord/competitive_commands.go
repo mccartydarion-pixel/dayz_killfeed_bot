@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/yourname/dayz-killfeed/internal/bounties"
 	competitiveevents "github.com/yourname/dayz-killfeed/internal/events"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
@@ -166,12 +167,16 @@ func (h *EventCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interact
 
 type BountyCommandHandler struct {
 	bounties *repository.BountyRepository
+	service  *bounties.Service
 	players  *repository.PlayerRepository
 	guilds   GuildStore
 }
 
-func NewBountyCommandHandler(b *repository.BountyRepository, p *repository.PlayerRepository, g GuildStore) *BountyCommandHandler {
-	return &BountyCommandHandler{bounties: b, players: p, guilds: g}
+// NewBountyCommandHandler builds the /bounty handler. Reads go straight to the
+// repository; create/cancel go through the service so they are validated and
+// reported to the bounty lifecycle feed like every other bounty change.
+func NewBountyCommandHandler(b *repository.BountyRepository, svc *bounties.Service, p *repository.PlayerRepository, g GuildStore) *BountyCommandHandler {
+	return &BountyCommandHandler{bounties: b, service: svc, players: p, guilds: g}
 }
 func RegisterBountyCommands(session *discordgo.Session, guildID string) error {
 	applicationID, err := ApplicationID(session)
@@ -183,7 +188,7 @@ func RegisterBountyCommands(session *discordgo.Session, guildID string) error {
 	return err
 }
 func (h *BountyCommandHandler) Handle(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	if h == nil || h.bounties == nil || h.players == nil || h.guilds == nil || i == nil {
+	if h == nil || h.bounties == nil || h.service == nil || h.players == nil || h.guilds == nil || i == nil {
 		respondEphemeral(s, i, "Bounties are unavailable.")
 		return
 	}
@@ -195,7 +200,7 @@ func (h *BountyCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interac
 	sub := i.ApplicationCommandData().Options[0]
 	switch sub.Name {
 	case "list":
-		rows, err := h.bounties.ListActive(context.Background(), gid, 5)
+		rows, err := h.bounties.ListBoardAll(context.Background(), gid, 5)
 		if err != nil {
 			respondEphemeral(s, i, "Could not load bounties.")
 			return
@@ -203,7 +208,7 @@ func (h *BountyCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interac
 		var b strings.Builder
 		b.WriteString("🎯 **CHAMPION BOUNTIES**\n\n")
 		for n, row := range rows {
-			fmt.Fprintf(&b, "%d. Player %d — %d Champion Points\n", n+1, row.TargetPlayerID, row.RewardPoints)
+			fmt.Fprintf(&b, "%d. %s — %s Champion Points%s\n", n+1, sanitizeName(row.TargetName), formatAmount(row.Total), stackSuffix(row.Count))
 		}
 		respondEphemeral(s, i, b.String())
 	case "status":
@@ -213,12 +218,12 @@ func (h *BountyCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interac
 			respondEphemeral(s, i, "Player not found.")
 			return
 		}
-		bounty, err := h.bounties.GetActive(context.Background(), gid, pid)
-		if err != nil || bounty == nil {
+		total, count, err := h.bounties.ActiveTotal(context.Background(), gid, pid)
+		if err != nil || count == 0 {
 			respondEphemeral(s, i, "No active bounty.")
 			return
 		}
-		respondEphemeral(s, i, fmt.Sprintf("🎯 **ACTIVE BOUNTY**\n%s\n🏆 %d Champion Points", name, bounty.RewardPoints))
+		respondEphemeral(s, i, fmt.Sprintf("🎯 **ACTIVE BOUNTY**\n%s\n🏆 %s Champion Points%s", sanitizeName(name), formatAmount(total), stackSuffix(count)))
 	case "create":
 		if !isAdminInteraction(i) {
 			respondEphemeral(s, i, "Administrator or Manage Server permission required.")
@@ -235,7 +240,8 @@ func (h *BountyCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interac
 			respondEphemeral(s, i, "Use positive points and a valid duration.")
 			return
 		}
-		created, err := h.bounties.Create(context.Background(), repository.Bounty{GuildID: gid, TargetPlayerID: pid, RewardPoints: points, CreatedByType: repository.BountyAdmin, StartsAt: ptrTime(time.Now().UTC()), ExpiresAt: ptrTime(time.Now().UTC().Add(duration))}, i.Member.User.ID)
+		// Guild-wide (no server), exactly as the command always behaved.
+		created, err := h.service.Place(context.Background(), bounties.PlaceRequest{GuildID: gid, TargetPlayerID: pid, Amount: points, PlacedBy: i.Member.User.ID, ExpiresAt: ptrTime(time.Now().UTC().Add(duration))})
 		if err != nil {
 			respondEphemeral(s, i, "Could not create bounty: "+err.Error())
 			return
@@ -246,7 +252,7 @@ func (h *BountyCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interac
 			respondEphemeral(s, i, "Administrator or Manage Server permission required.")
 			return
 		}
-		if err := h.bounties.Cancel(context.Background(), gid, optionInt(sub, "id")); err != nil {
+		if _, err := h.service.Cancel(context.Background(), gid, optionInt(sub, "id")); err != nil {
 			respondEphemeral(s, i, "Could not cancel bounty.")
 			return
 		}
@@ -254,6 +260,14 @@ func (h *BountyCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interac
 	}
 }
 func ptrTime(t time.Time) *time.Time { return &t }
+
+// stackSuffix notes how many bounties are stacked on a target ("" for one).
+func stackSuffix(count int64) string {
+	if count > 1 {
+		return fmt.Sprintf(" (%d bounties)", count)
+	}
+	return ""
+}
 func optionString(o *discordgo.ApplicationCommandInteractionDataOption, name string) string {
 	for _, v := range o.Options {
 		if v.Name == name {

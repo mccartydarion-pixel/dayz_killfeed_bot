@@ -55,6 +55,12 @@ type App struct {
 	Events               *repository.EventRepository
 	EventService         *competitiveevents.Service
 	Bounties             *repository.BountyRepository
+	// BountyService is the bounty application service (placement, the atomic claim
+	// for persisted kills, streak bounties, expiry). Its Discord notifier is
+	// optional: bounties are correct without any route or Discord connection.
+	BountyService *bounties.Service
+	// BountyBoard keeps the persistent public board (BOUNTY route). Nil-safe.
+	BountyBoard *discord.BountyBoard
 	Points               *repository.PointsRepository
 	Seasons              *repository.SeasonRepository
 	SeasonService        *seasons.Service
@@ -472,6 +478,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.Announcements = repository.NewAnnouncementRepository(db.Pool)
 			app.AnnouncementService = discord.NewCompletionAnnouncementService(app.Announcements)
 			app.Bounties = repository.NewBountyRepository(db.Pool)
+			app.BountyService = bounties.NewService(app.Bounties, nil)
 			app.Points = repository.NewPointsRepository(db.Pool)
 			app.Seasons = repository.NewSeasonRepository(db.Pool)
 			app.SeasonService = seasons.NewService(app.Seasons)
@@ -851,7 +858,7 @@ func (a *App) Run() error {
 		})
 	}
 	if a.Bounties != nil && a.Players != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
-		bountyHandler := discord.NewBountyCommandHandler(a.Bounties, a.Players, a.Guilds)
+		bountyHandler := discord.NewBountyCommandHandler(a.Bounties, a.BountyService, a.Players, a.Guilds)
 		if err := discord.RegisterBountyCommands(session, a.Config.DiscordGuildID); err != nil {
 			slog.Warn("component=discord", "msg", "failed to register bounty commands", "err", err.Error())
 		}
@@ -1159,6 +1166,17 @@ func (a *App) Run() error {
 			if routingEnabled {
 				routePanels = discord.NewRoutePanels(api, discord.NewRoutePanelStore(a.GuildRoutePanels))
 			}
+			if routingEnabled && a.BountyService != nil {
+				// BOUNTY (public board, one persistent message per routed channel) and
+				// BOUNTY_TRACKING (lifecycle feed), both resolved per (guild, server)
+				// through the shared resolver. They only report state that is already
+				// committed; with no routes they are no-ops and the database is unaffected.
+				bountyTracker := discord.NewBountyTracker(session, a.ChannelRoutes, guildServers)
+				a.BountyBoard = discord.NewBountyBoard(a.ChannelRoutes, guildServers, routePanels, a.Bounties)
+				a.BountyService.SetNotifier(discord.BountyEvents{Tracker: bountyTracker, Board: a.BountyBoard})
+				go bountyTracker.Run(ctx)
+				go a.BountyBoard.Run(ctx)
+			}
 			if a.Stats != nil {
 				legacyLeaderboardChannel, legacyLeaderboardMessage := "", ""
 				if gs, gsErr := setupStore.Get(a.Config.DiscordGuildID); gsErr == nil && gs != nil {
@@ -1197,7 +1215,7 @@ func (a *App) Run() error {
 				setupManager.SetRouteGate(a.RouteSyncer.HasRoute)
 				go a.RouteSyncer.Run(ctx)
 			}
-			store := &persistenceStoreAdapter{players: a.Players, kills: a.Kills, deaths: a.Deaths, seasons: a.Seasons, factions: a.Factions, wars: a.Wars, events: a.Events, bounties: a.Bounties, streaks: a.Streaks, anomalies: a.Anomalies, activity: a.ActivityRepository, servers: a.Servers, stats: a.Stats, analytics: a.AnalyticsRepository, panelDirty: func() {
+			store := &persistenceStoreAdapter{players: a.Players, kills: a.Kills, deaths: a.Deaths, seasons: a.Seasons, factions: a.Factions, wars: a.Wars, events: a.Events, bounties: a.Bounties, bountySvc: a.BountyService, streaks: a.Streaks, anomalies: a.Anomalies, activity: a.ActivityRepository, servers: a.Servers, stats: a.Stats, analytics: a.AnalyticsRepository, panelDirty: func() {
 				if a.LeaderboardScheduler != nil {
 					a.LeaderboardScheduler.MarkDirty()
 				}
@@ -1498,8 +1516,10 @@ func (a *App) runCompetitiveSchedulers(ctx context.Context, guildID int64) {
 				}
 			}
 		}
-		if a.Bounties != nil {
-			if err := a.Bounties.Expire(ctx, now); err != nil {
+		if a.BountyService != nil {
+			// One atomic UPDATE ... RETURNING per sweep (no goroutine per bounty);
+			// each expiry is reported once, after it committed.
+			if _, err := a.BountyService.Sweep(ctx, now); err != nil {
 				slog.Warn("component=bounty", "msg", "bounty expiry failed", "err", err.Error())
 			}
 		}
@@ -1580,6 +1600,7 @@ type persistenceStoreAdapter struct {
 	wars       *repository.PostgresWarRepository
 	events     *repository.EventRepository
 	bounties   *repository.BountyRepository
+	bountySvc  *bounties.Service
 	streaks    *repository.StreakRepository
 	anomalies  *repository.AnomalyRepository
 	activity   *repository.ActivityRepository
@@ -1779,24 +1800,44 @@ func (p *persistenceStoreAdapter) ProcessPersistedKill(ctx context.Context, kill
 		ev.WarBadge = "⚔️ FACTION WAR"
 	}
 
-	if p.bounties != nil && record.VictimPlayerID > 0 && record.KillerPlayerID != record.VictimPlayerID && (record.KillerFactionID == nil || record.VictimFactionID == nil || *record.KillerFactionID != *record.VictimFactionID) {
-		if bounty, bountyErr := p.bounties.GetActiveAt(ctx, record.GuildID, record.VictimPlayerID, at); bountyErr == nil && bounty != nil {
-			if ev != nil {
-				ev.BountyTarget = false
+	// Bounty claim. This runs only for a durably persisted, non-duplicate PvP kill
+	// (ProcessPersistedKill is the persisted-kill hook), never from a raw ADM line.
+	// Suicides, environment and ambiguous deaths are never kills and never reach
+	// here; self-kills and same-faction (team) kills do not claim.
+	if p.bountySvc != nil && record.VictimPlayerID > 0 && record.KillerPlayerID > 0 && record.KillerPlayerID != record.VictimPlayerID && (record.KillerFactionID == nil || record.VictimFactionID == nil || *record.KillerFactionID != *record.VictimFactionID) {
+		in := bounties.KillInput{
+			GuildID: record.GuildID, ServerID: record.ServerID,
+			VictimPlayerID: record.VictimPlayerID, KillerPlayerID: record.KillerPlayerID,
+			KillID: killID, SeasonID: valueOfID(record.SeasonID), At: at,
+			Weapon: record.WeaponDisplay, Distance: record.Distance,
+		}
+		if ev != nil {
+			if ev.Killer != nil {
+				in.HunterName = ev.Killer.Name
 			}
-			claimed, claimErr := p.bounties.ClaimAndAward(ctx, record.GuildID, bounty.ID, record.KillerPlayerID, killID, valueOfID(record.SeasonID), at)
-			if claimErr != nil {
-				slog.Debug("component=bounty", "msg", "bounty claim not completed", "err", claimErr.Error())
-			} else if ev != nil {
-				ev.BountyClaimed = true
-				ev.BountyPoints = claimed.RewardPoints
+			if ev.Victim != nil {
+				in.TargetName = ev.Victim.Name
 			}
 		}
+		// Every eligible active bounty on the victim (this server's plus guild-wide)
+		// is claimed atomically in one transaction; the notification runs after the
+		// commit and cannot undo it.
+		result, claimErr := p.bountySvc.ClaimForKill(ctx, in)
+		if claimErr != nil {
+			slog.Warn("component=bounty", "msg", "bounty claim failed", "err", claimErr.Error())
+		} else if result.Count > 0 && ev != nil {
+			ev.BountyClaimed = true
+			ev.BountyPoints = result.Total
+		}
 	}
-	if p.bounties != nil {
-		p.ensureAutomaticBounty(ctx, record, streak.Current, at)
-		if ev != nil && record.KillerPlayerID > 0 {
-			if bounty, err := p.bounties.GetActiveAt(ctx, record.GuildID, record.KillerPlayerID, at); err == nil && bounty != nil {
+	if p.bountySvc != nil {
+		killerName := ""
+		if ev != nil && ev.Killer != nil {
+			killerName = ev.Killer.Name
+		}
+		p.bountySvc.NoteStreak(ctx, bounties.StreakInput{GuildID: record.GuildID, ServerID: record.ServerID, PlayerID: record.KillerPlayerID, SeasonID: valueOfID(record.SeasonID), Streak: streak.Current, At: at, PlayerName: killerName})
+		if p.bounties != nil && ev != nil && record.KillerPlayerID > 0 {
+			if wanted, wantedErr := p.bounties.HasActiveAt(ctx, record.GuildID, record.ServerID, record.KillerPlayerID, at); wantedErr == nil && wanted {
 				ev.BountyTarget = true
 			}
 		}
@@ -1865,12 +1906,12 @@ func (l *competitivePanelLoader) Load(ctx context.Context) (panels.Snapshot, err
 		}
 		out.EventLines = append(out.EventLines, line)
 	}
-	bounties, err := l.bounties.ListActive(ctx, l.guildID, 5)
+	wanted, err := l.bounties.ListBoardAll(ctx, l.guildID, 5)
 	if err != nil {
 		return out, err
 	}
-	for _, b := range bounties {
-		out.BountyLines = append(out.BountyLines, fmt.Sprintf("Player %d — %d pts", b.TargetPlayerID, b.RewardPoints))
+	for _, b := range wanted {
+		out.BountyLines = append(out.BountyLines, fmt.Sprintf("%s — %d pts", b.TargetName, b.Total))
 	}
 	points, err := l.points.Leaderboard(ctx, l.guildID, true, 5)
 	if err != nil {
@@ -1887,20 +1928,6 @@ func valueOfID(v *int64) int64 {
 		return 0
 	}
 	return *v
-}
-
-func (p *persistenceStoreAdapter) ensureAutomaticBounty(ctx context.Context, record repository.KillRecord, streak int, at time.Time) {
-	reward := bounties.RewardForStreak(streak)
-	if reward == 0 || record.KillerPlayerID == 0 {
-		return
-	}
-	if current, err := p.bounties.GetActive(ctx, record.GuildID, record.KillerPlayerID); err == nil && current != nil {
-		if current.CreatedByType == repository.BountyAutomatic && int64(reward) > current.RewardPoints {
-			_ = p.bounties.Upgrade(ctx, record.GuildID, current.ID, reward)
-		}
-		return
-	}
-	_, _ = p.bounties.Create(ctx, repository.Bounty{GuildID: record.GuildID, SeasonID: valueOfID(record.SeasonID), TargetPlayerID: record.KillerPlayerID, CreatedByType: repository.BountyAutomatic, RewardPoints: int64(reward), Reason: fmt.Sprintf("%d kill streak", streak), StartsAt: &at}, "")
 }
 
 // playerNames returns the sorted display names of currently online players.

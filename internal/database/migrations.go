@@ -965,6 +965,26 @@ CREATE TABLE IF NOT EXISTS guild_route_panels (
 );
 `,
 	},
+	{
+		Name: "0029_bounties_server_scope",
+		SQL: `
+-- Server-scoped bounties (Phase 1). server_id NULL keeps every pre-existing row
+-- guild-wide (claimable on any server of the guild, exactly as before); a set
+-- server_id makes the bounty claimable only by a kill on that server.
+ALTER TABLE bounties ADD COLUMN IF NOT EXISTS server_id BIGINT REFERENCES game_servers(id) ON DELETE CASCADE;
+
+-- Several manual bounties may now be active on one target (stacking). The
+-- streak-driven AUTOMATIC bounty keeps its "at most one active per target"
+-- rule, so the old blanket index is replaced by one scoped to AUTOMATIC.
+DROP INDEX IF EXISTS uq_active_bounty_target;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_active_automatic_bounty ON bounties(guild_id,target_player_id) WHERE status='ACTIVE' AND created_by_type='AUTOMATIC';
+
+CREATE INDEX IF NOT EXISTS idx_bounties_server_status ON bounties(guild_id,server_id,status);
+CREATE INDEX IF NOT EXISTS idx_bounties_target_player ON bounties(target_player_id);
+CREATE INDEX IF NOT EXISTS idx_bounties_created_at ON bounties(created_at);
+CREATE INDEX IF NOT EXISTS idx_bounties_claimed_at ON bounties(claimed_at) WHERE claimed_at IS NOT NULL;
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order, each transactionally. A

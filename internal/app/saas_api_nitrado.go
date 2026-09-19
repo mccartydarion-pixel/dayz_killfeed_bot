@@ -427,6 +427,7 @@ func (a *App) handleSelectDayZServer(w http.ResponseWriter, r *http.Request) {
 	// installation's routes a server's publishers resolve to.
 	a.ChannelRoutes.InvalidateAll()
 	a.RouteSyncer.Trigger() // re-sync routed panels/leaderboard now
+	a.BountyBoard.Trigger()  // re-reconcile the bounty board now
 
 	criticalServerChange := resolvedInstallationID == installationID && loaded.Status == repository.InstallationReady &&
 		loaded.GameServerID != nil && *loaded.GameServerID != server.ID
