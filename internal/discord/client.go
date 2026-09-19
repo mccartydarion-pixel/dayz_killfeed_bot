@@ -63,7 +63,7 @@ func waitForSessionUser(ctx context.Context, session *discordgo.Session, timeout
 	if session == nil {
 		return false
 	}
-	if session.State != nil && session.State.User != nil {
+	if sessionUserReady(session) {
 		return true
 	}
 	deadline := time.Now().Add(timeout)
@@ -74,14 +74,27 @@ func waitForSessionUser(ctx context.Context, session *discordgo.Session, timeout
 		case <-ctx.Done():
 			return false
 		case <-ticker.C:
-			if session.State != nil && session.State.User != nil {
+			if sessionUserReady(session) {
 				return true
 			}
 			if time.Now().After(deadline) {
-				return session.State != nil && session.State.User != nil
+				return sessionUserReady(session)
 			}
 		}
 	}
+}
+
+// sessionUserReady reports whether State.User has been populated. discordgo
+// writes State.Ready (which embeds User) under State's write lock when the
+// READY event is handled on the gateway goroutine, so it must be read under the
+// read lock.
+func sessionUserReady(session *discordgo.Session) bool {
+	if session == nil || session.State == nil {
+		return false
+	}
+	session.State.RLock()
+	defer session.State.RUnlock()
+	return session.State.User != nil
 }
 
 // GuildMembersIntentRequested reports whether the session requests the
