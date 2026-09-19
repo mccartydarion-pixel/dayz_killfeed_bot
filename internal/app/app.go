@@ -15,6 +15,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/admin"
+	"github.com/yourname/dayz-killfeed/internal/adminrepo"
 	"github.com/yourname/dayz-killfeed/internal/analytics"
 	"github.com/yourname/dayz-killfeed/internal/bounties"
 	"github.com/yourname/dayz-killfeed/internal/economy"
@@ -115,6 +116,11 @@ type App struct {
 	// RouteSyncer keeps those guild-level routed artifacts in step with the
 	// installation routes. Nil-safe: without it routes are simply not synced.
 	RouteSyncer *discord.RouteSyncer
+	// adminSaaS is the cross-tenant, read-only platform-admin read model behind
+	// /api/admin (internal/adminrepo); adminChannelNames optionally overrides the
+	// Discord-cache channel name lookup (tests).
+	adminSaaS                 adminReader
+	adminChannelNames         func(channelID string) string
 	saasDiscordVerifier       discordGuildVerifier
 	saasNitradoClientFactory  func(token string) *nitrado.Client
 	saasSyncLimiter           *saasRateLimiter
@@ -507,6 +513,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.SaaSSubscriptions = repository.NewSubscriptionRepository(db.Pool)
 			app.SaaSCredentials = repository.NewCredentialRepository(db.Pool)
 			app.SaaSChannelRoutes = repository.NewChannelRouteRepository(db.Pool)
+			app.adminSaaS = adminrepo.New(db.Pool)
 			app.ChannelRoutes = routing.NewResolver(app.SaaSChannelRoutes, routing.DefaultTTL)
 			app.GuildRoutePanels = repository.NewGuildRoutePanelRepository(db.Pool)
 			seedCtx, seedCancel := context.WithTimeout(ctx, 10*time.Second)
@@ -568,6 +575,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 
 	app.registerRuntimeStatusAPI()
 	app.registerSaaSAPI()
+	app.registerAdminAPI()
 
 	_, cancel := context.WithCancel(ctx)
 	app.cancel = cancel

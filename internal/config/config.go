@@ -40,6 +40,13 @@ type Config struct {
 	// API (see internal/app/runtime_status.go). Empty disables the endpoint.
 	WebsiteAPISecret string
 
+	// AdminDiscordIDs is the platform-admin (founder) allowlist from
+	// CHAMPION_ADMIN_DISCORD_IDS: Discord user ids that may use the read-only
+	// /api/admin surface. It is deliberately independent of organization roles
+	// and Discord guild permissions. Empty = nobody is a platform admin (the
+	// admin API fails closed).
+	AdminDiscordIDs []string
+
 	// Discord bot presence/activity settings (see internal/discord/presence.go).
 	DiscordPresenceEnabled bool
 	// DiscordPresenceRotationSeconds is already clamped to
@@ -67,6 +74,7 @@ func Load() (*Config, error) {
 		CredentialEncryptionKey:   strings.TrimSpace(os.Getenv("CREDENTIAL_ENCRYPTION_KEY")),
 		DiscordGuildMembersIntent: strings.EqualFold(strings.TrimSpace(os.Getenv("DISCORD_GUILD_MEMBERS_INTENT_ENABLED")), "true"),
 		WebsiteAPISecret:          strings.TrimSpace(os.Getenv("WEBSITE_API_SECRET")),
+		AdminDiscordIDs:           ParseAdminDiscordIDs(os.Getenv("CHAMPION_ADMIN_DISCORD_IDS")),
 
 		DiscordPresenceEnabled:         parseBoolWithDefault(os.Getenv("DISCORD_PRESENCE_ENABLED"), true),
 		DiscordPresenceRotationSeconds: parsePresenceRotationSeconds(os.Getenv("DISCORD_PRESENCE_ROTATION_SECONDS")),
@@ -98,6 +106,52 @@ func getEnv(key, fallback string) string {
 // parseBoolWithDefault parses a boolean env var, falling back to def when the
 // value is empty or not a recognized boolean (matches strconv.ParseBool's
 // accepted forms: 1/t/T/TRUE/true/True/0/f/F/FALSE/false/False).
+// ParseAdminDiscordIDs parses a comma-separated allowlist of Discord user ids.
+// Entries are trimmed; blanks, duplicates and anything that is not a plain
+// numeric Discord snowflake are dropped (a typo therefore fails closed - it can
+// never accidentally match a real user).
+func ParseAdminDiscordIDs(raw string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, part := range strings.Split(raw, ",") {
+		id := strings.TrimSpace(part)
+		if id == "" || seen[id] || len(id) < 5 || len(id) > 25 {
+			continue
+		}
+		numeric := true
+		for _, r := range id {
+			if r < '0' || r > '9' {
+				numeric = false
+				break
+			}
+		}
+		if !numeric {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
+}
+
+// IsPlatformAdmin reports whether discordUserID is on the platform-admin
+// allowlist. Nil-safe; an empty id or empty allowlist is never an admin.
+func (c *Config) IsPlatformAdmin(discordUserID string) bool {
+	if c == nil {
+		return false
+	}
+	id := strings.TrimSpace(discordUserID)
+	if id == "" {
+		return false
+	}
+	for _, allowed := range c.AdminDiscordIDs {
+		if allowed == id {
+			return true
+		}
+	}
+	return false
+}
+
 func parseBoolWithDefault(raw string, def bool) bool {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
