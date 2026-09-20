@@ -1342,6 +1342,26 @@ CREATE TABLE IF NOT EXISTS hub_faction_achievement_unlocks (
 CREATE INDEX IF NOT EXISTS idx_hub_unlocks_faction ON hub_faction_achievement_unlocks(faction_id, unlocked_at DESC, id DESC);
 `,
 	},
+	{
+		// Economy web foundation: the ledger can no longer be edited (0030) OR deleted directly.
+		// A correction is a compensating transaction, never a removal. Deletion caused by a
+		// foreign-key cascade (a guild or player being deleted) still works: cascade actions run
+		// inside an internal trigger, so pg_trigger_depth() is > 1 there, while a direct
+		// DELETE statement reaches this trigger at depth 1. No table or column changes.
+		Name: "0035_economy_ledger_no_delete",
+		SQL: `
+CREATE OR REPLACE FUNCTION point_transactions_no_delete() RETURNS trigger AS $fn$
+BEGIN
+    IF pg_trigger_depth() <= 1 THEN
+        RAISE EXCEPTION 'point_transactions is append-only: correct a mistake with a compensating transaction';
+    END IF;
+    RETURN OLD;
+END;
+$fn$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS trg_point_transactions_no_delete ON point_transactions;
+CREATE TRIGGER trg_point_transactions_no_delete BEFORE DELETE ON point_transactions FOR EACH ROW EXECUTE FUNCTION point_transactions_no_delete();
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order, each transactionally. A

@@ -18,6 +18,7 @@ import (
 
 	"github.com/yourname/dayz-killfeed/internal/assetstore"
 	"github.com/yourname/dayz-killfeed/internal/config"
+	"github.com/yourname/dayz-killfeed/internal/economy"
 	"github.com/yourname/dayz-killfeed/internal/factionassets"
 	"github.com/yourname/dayz-killfeed/internal/factionstats"
 	"github.com/yourname/dayz-killfeed/internal/repository"
@@ -69,6 +70,11 @@ func newFactionWorld(t *testing.T) *factionWorld {
 	}
 	a.HTTPServer = srv
 	a.registerFactionHubRoutes()
+	a.EconomyService = economy.NewService(repository.NewEconomyRepository(a.DB.Pool), nil)
+	a.EconomyAccounts = economy.NewAccounts(a.EconomyService, repository.NewEconomyRepository(a.DB.Pool))
+	a.saasEconomyAdjustLimiter = newSaaSRateLimiter(time.Hour, 100000)
+	a.saasEconomyHistoryLimiter = newSaaSRateLimiter(time.Hour, 100000)
+	a.registerEconomyRoutes()
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = srv.ListenAndServe(ctx) }()
 	t.Cleanup(func() {

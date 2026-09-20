@@ -416,3 +416,15 @@ Phase 6 (`docs/FACTION_LEADERBOARDS.md`) adds **no table, column, index or migra
 and cached in memory for 45 s. Everything is scoped by `installation_id` (and its guild + game server); ranking and tie-breaking (ending in `hub_factions.id`) happen in
 the service. There is deliberately no materialized leaderboard table: it could only drift from the source rows. Measured with 120 factions and a 300,000-kill history:
 746 ms uncached, 47 ms with 20,000 kills, no new index needed.
+
+## Economy web foundation (migration 0035)
+
+The Champion Economy web layer (`docs/ECONOMY.md`) adds **no table, column or index**. An economy "account" is the existing `(guild_id, player_id)` pair: `player_points`
+(`balance` BIGINT `CHECK >= 0`, plus earn-only `lifetime_points`/`season_points`) and the append-only ledger `point_transactions` (migration `0030`: signed `amount`, `balance_after`,
+`reason_type` = transaction type, `source_key` = idempotency reference, `description`, `created_by`, `server_id`; `UNIQUE (guild_id, player_id, reason_type, source_key)`;
+`idx_point_transactions_history (guild_id, player_id, id DESC)` serves the keyset history). The website reaches an account through `installations` -> `discord_guild_connections.guild_id`
+(the balance scope) and `installations.game_server_id` (write attribution). Identity is a `VERIFIED` `player_links` row.
+
+Migration `0035_economy_ledger_no_delete` adds one trigger: `point_transactions_no_delete` (`BEFORE DELETE ... FOR EACH ROW`) raises unless it runs inside a foreign-key cascade
+(`pg_trigger_depth() > 1`), so a ledger row can no longer be removed by a direct `DELETE`, while deleting a guild or a player still cascades. Together with the `0030` update guard
+the ledger is immutable; a correction is a compensating transaction.

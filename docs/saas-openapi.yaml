@@ -971,6 +971,97 @@ components:
         total: { type: integer, description: "Factions matching q (all factions when there is no q)." }
         updatedAt: { type: string, format: date-time, description: "When the ranking was computed (cached up to 45 seconds)." }
 
+    EconomyCurrency:
+      type: object
+      properties:
+        code: { type: string, enum: [CHAMPION_POINTS] }
+        name: { type: string, enum: [Champion Points] }
+        symbol: { type: string, example: pts }
+    EconomyAccount:
+      type: object
+      properties:
+        accountId: { type: integer, format: int64, description: "The DayZ player id inside the installation's Discord guild (never a display name)." }
+        gamertag: { type: string }
+        balance: { type: integer, format: int64, minimum: 0, description: Whole Champion Points. }
+        updatedAt: { type: string, format: date-time, nullable: true, description: "Last balance change; null = no economy activity yet." }
+    EconomyBalanceResponse:
+      type: object
+      properties:
+        currency: { $ref: "#/components/schemas/EconomyCurrency" }
+        account: { $ref: "#/components/schemas/EconomyAccount" }
+        installationId: { type: integer, format: int64 }
+        gameServerId: { type: integer, format: int64, nullable: true }
+    EconomyTransaction:
+      type: object
+      properties:
+        id: { type: integer, format: int64, description: "Ledger id; strictly decreasing down the list." }
+        type: { type: string, description: "Open set: BOUNTY_CLAIM, ADMIN_CREDIT, ADMIN_DEBIT, SYSTEM_REWARD, EVENT_FIRST_PLACE, EVENT_SECOND_PLACE, EVENT_THIRD_PLACE." }
+        direction: { type: string, enum: [CREDIT, DEBIT] }
+        amount: { type: integer, format: int64, description: Positive magnitude. }
+        balanceAfter: { type: integer, format: int64 }
+        description: { type: string, description: "Generated from the type; never free text." }
+        referenceType: { type: string, nullable: true, enum: [BOUNTY, EVENT] }
+        createdAt: { type: string, format: date-time }
+    EconomyTransactionList:
+      type: object
+      properties:
+        currency: { $ref: "#/components/schemas/EconomyCurrency" }
+        items: { type: array, description: Newest first., items: { $ref: "#/components/schemas/EconomyTransaction" } }
+        nextCursor: { type: string, nullable: true }
+        limit: { type: integer, description: "Effective page size (default 25, max 100)." }
+    AdminEconomyAccount:
+      allOf:
+        - $ref: "#/components/schemas/EconomyAccount"
+        - type: object
+          properties:
+            linked: { type: boolean, description: Has a VERIFIED Champion identity. }
+            discordUserId: { type: string, nullable: true }
+            displayName: { type: string, nullable: true }
+            avatar: { type: string, nullable: true }
+    AdminEconomyAccountList:
+      type: object
+      properties:
+        currency: { $ref: "#/components/schemas/EconomyCurrency" }
+        items: { type: array, items: { $ref: "#/components/schemas/AdminEconomyAccount" } }
+        limit: { type: integer }
+    AdminEconomyAccountResponse:
+      type: object
+      properties:
+        currency: { $ref: "#/components/schemas/EconomyCurrency" }
+        account: { $ref: "#/components/schemas/AdminEconomyAccount" }
+    AdminEconomyTransaction:
+      allOf:
+        - $ref: "#/components/schemas/EconomyTransaction"
+        - type: object
+          properties:
+            reason: { type: string, nullable: true, description: "The admin's reason - admins only, never shown to players." }
+            actorDiscordUserId: { type: string, nullable: true, description: "Null for system rows." }
+            isSystem: { type: boolean }
+            referenceId: { type: string, nullable: true, description: "e.g. bounty:42 or admin:<idempotencyKey>." }
+            gameServerId: { type: integer, format: int64, nullable: true }
+    AdminEconomyTransactionList:
+      type: object
+      properties:
+        currency: { $ref: "#/components/schemas/EconomyCurrency" }
+        items: { type: array, items: { $ref: "#/components/schemas/AdminEconomyTransaction" } }
+        nextCursor: { type: string, nullable: true }
+        limit: { type: integer }
+    AdjustEconomyRequest:
+      type: object
+      required: [amount, reason]
+      additionalProperties: false
+      properties:
+        amount: { type: integer, format: int64, minimum: 1, maximum: 1000000000, description: Whole number of Champion Points. }
+        reason: { type: string, minLength: 1, maxLength: 200, description: "Required. Stored on the ledger row; shown to admins only." }
+        idempotencyKey: { type: string, minLength: 8, maxLength: 64, pattern: "^[A-Za-z0-9._:-]+$", description: "Optional. A retry with the same key returns the original transaction (duplicate: true); the same key with another amount is 409 DUPLICATE_TRANSACTION." }
+    EconomyAdjustmentResponse:
+      type: object
+      properties:
+        currency: { $ref: "#/components/schemas/EconomyCurrency" }
+        account: { $ref: "#/components/schemas/AdminEconomyAccount" }
+        transaction: { $ref: "#/components/schemas/AdminEconomyTransaction" }
+        duplicate: { type: boolean, description: "True = an idempotent replay: nothing changed." }
+
   responses:
     Unauthorized:
       description: Missing/invalid service auth, or acting user not synced.
@@ -2267,3 +2358,164 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+
+  # --- Champion Economy web foundation (docs/ECONOMY.md). Champion Points, installation-scoped. ---
+  /api/saas/organizations/{organizationID}/installations/{installationID}/economy/me:
+    get:
+      summary: The acting user's own balance, through their VERIFIED DayZ link. There is no way to name another player.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+      responses:
+        "200":
+          description: Currency and the account (balance 0 when there is no activity yet).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EconomyBalanceResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: code PLAYER_IDENTITY_REQUIRED - the user has no verified DayZ link on this installation's guild.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/economy/me/transactions:
+    get:
+      summary: The acting user's own transaction history, newest first (keyset pagination). Descriptions are generated from the type; the admin's reason and actor are never included.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, default: 25 }, description: "Maximum 100 - larger values are clamped; 0/negative/non-numeric is 400." }
+        - { name: cursor, in: query, required: false, schema: { type: string }, description: The previous page's nextCursor. }
+        - { name: type, in: query, required: false, schema: { type: string, enum: [BOUNTY_CLAIM, ADMIN_CREDIT, ADMIN_DEBIT, SYSTEM_REWARD, EVENT_PRIZE] }, description: Optional type filter (EVENT_PRIZE = all event prizes). }
+      responses:
+        "200":
+          description: One page.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EconomyTransactionList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: code PLAYER_IDENTITY_REQUIRED.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "429": { description: Rate limited (120 per minute per acting user). }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/economy/accounts:
+    get:
+      summary: Admin lookup of players of the installation's guild by gamertag or verified Discord name. Organization OWNER/ADMIN only (a faction role grants nothing).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { name: q, in: query, required: true, schema: { type: string, minLength: 2, maxLength: 50 }, description: "Case-insensitive substring; LIKE wildcards are literal." }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, default: 25 }, description: "Maximum 25." }
+      responses:
+        "200":
+          description: Up to 25 accounts, best match first.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminEconomyAccountList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: code ECONOMY_FORBIDDEN - OWNER or ADMIN role required. }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/economy/accounts/{accountID}:
+    get:
+      summary: One account (organization OWNER/ADMIN). accountID is the DayZ player id inside the installation's guild.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { name: accountID, in: path, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        "200":
+          description: The account.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminEconomyAccountResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: code ECONOMY_FORBIDDEN. }
+        "404": { description: NOT_FOUND (installation) or ECONOMY_ACCOUNT_NOT_FOUND (an id outside this installation's guild). }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/economy/accounts/{accountID}/transactions:
+    get:
+      summary: Admin history of one account, newest first - includes the reason, the acting admin and the reference.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { name: accountID, in: path, required: true, schema: { type: integer, format: int64 } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, default: 25 } }
+        - { name: cursor, in: query, required: false, schema: { type: string } }
+        - { name: type, in: query, required: false, schema: { type: string, enum: [BOUNTY_CLAIM, ADMIN_CREDIT, ADMIN_DEBIT, SYSTEM_REWARD, EVENT_PRIZE] } }
+      responses:
+        "200":
+          description: One page.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminEconomyTransactionList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: code ECONOMY_FORBIDDEN. }
+        "404": { description: NOT_FOUND or ECONOMY_ACCOUNT_NOT_FOUND. }
+        "429": { description: Rate limited. }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/economy/accounts/{accountID}/grant:
+    post:
+      summary: Admin credit (ADMIN_CREDIT) - adds spendable balance only, never leaderboard score. Organization OWNER/ADMIN; audited; rate limited (30/min).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { name: accountID, in: path, required: true, schema: { type: integer, format: int64 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdjustEconomyRequest" }
+      responses:
+        "200":
+          description: Applied (duplicate false) or an idempotent replay of the same idempotencyKey (duplicate true).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EconomyAdjustmentResponse" }
+        "400": { description: "INVALID_AMOUNT (not a whole number 1..1,000,000,000) or INVALID_REQUEST (missing/blank reason, bad key, unknown JSON key)." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: code ECONOMY_FORBIDDEN. }
+        "404": { description: NOT_FOUND or ECONOMY_ACCOUNT_NOT_FOUND. }
+        "409": { description: "DUPLICATE_TRANSACTION (idempotencyKey reused with another amount) or CONFLICT (installation suspended / no DayZ server)." }
+        "429": { description: RATE_LIMITED. }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/economy/accounts/{accountID}/debit:
+    post:
+      summary: Admin debit (ADMIN_DEBIT) - removes spendable balance, never below zero. Organization OWNER/ADMIN; audited; rate limited (30/min).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { name: accountID, in: path, required: true, schema: { type: integer, format: int64 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdjustEconomyRequest" }
+      responses:
+        "200":
+          description: Applied or an idempotent replay.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EconomyAdjustmentResponse" }
+        "400": { description: INVALID_AMOUNT or INVALID_REQUEST. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: code ECONOMY_FORBIDDEN. }
+        "404": { description: NOT_FOUND or ECONOMY_ACCOUNT_NOT_FOUND. }
+        "409": { description: "INSUFFICIENT_FUNDS, DUPLICATE_TRANSACTION or CONFLICT." }
+        "429": { description: RATE_LIMITED. }
