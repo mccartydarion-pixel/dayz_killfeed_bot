@@ -1079,6 +1079,29 @@ Audit events (`faction_created`, `faction_updated`, `faction_application_created
 `faction_leadership_transferred`, `faction_member_left`) log ids only - never names, descriptions, application
 messages, file names or image bytes.
 
+## Champion Economy (web foundation)
+
+Installation-scoped views of the existing **Champion Points** economy (currency `{code:"CHAMPION_POINTS", name:"Champion Points", symbol:"pts"}`), all under
+`/api/saas/organizations/{organizationID}/installations/{installationID}/economy`. Full contract, guarantees and DTOs: `docs/ECONOMY.md`. Standard chain (service auth, acting user,
+organization + installation scope; another tenant's ids are `404`).
+
+| Route | Who | Returns |
+|---|---|---|
+| `GET .../economy/me` | synced user with a **verified** DayZ link | `{ currency, account: {accountId, gamertag, balance, updatedAt}, installationId, gameServerId }` |
+| `GET .../economy/me/transactions?limit=&cursor=&type=` | same | `{ currency, items: [{id, type, direction, amount, balanceAfter, description, referenceType, createdAt}], nextCursor, limit }`, newest first (default 25, max 100) |
+| `GET .../economy/accounts?q=&limit=` | org OWNER/ADMIN | `{ currency, items: AdminEconomyAccount[], limit }` - lookup by gamertag or verified Discord name (`q` 2-50 chars, max 25 results) |
+| `GET .../economy/accounts/{accountID}` | org OWNER/ADMIN | `{ currency, account: AdminEconomyAccount }` |
+| `GET .../economy/accounts/{accountID}/transactions?limit=&cursor=&type=` | org OWNER/ADMIN | as `/me/transactions` plus `reason`, `actorDiscordUserId`, `isSystem`, `referenceId`, `gameServerId` |
+| `POST .../economy/accounts/{accountID}/grant` | org OWNER/ADMIN | `{ currency, account, transaction, duplicate }` |
+| `POST .../economy/accounts/{accountID}/debit` | org OWNER/ADMIN | `{ currency, account, transaction, duplicate }` |
+
+`grant`/`debit` body: `{ "amount": 1..1000000000 (whole number), "reason": required, max 200 chars, "idempotencyKey": optional 8-64 chars of A-Za-z0-9._:- }`; unknown keys are `400`. A retry with
+the same key returns the original transaction with `duplicate: true` (HTTP 200); the same key with another amount is `409 DUPLICATE_TRANSACTION`. `accountId` is the DayZ player id inside
+the installation's Discord guild. Players only ever see their own account (`/me` has no player parameter); a faction role or organization MEMBER gets `403 ECONOMY_FORBIDDEN` on admin routes.
+
+New error codes: `INSUFFICIENT_FUNDS` (409), `INVALID_AMOUNT` (400), `PLAYER_IDENTITY_REQUIRED` (409), `ECONOMY_ACCOUNT_NOT_FOUND` (404), `DUPLICATE_TRANSACTION` (409), `ECONOMY_FORBIDDEN` (403).
+Rate limits: admin grant/debit 30 per minute, history 120 per minute (per acting user). Balances are guild-wide (two installations of one Discord guild show the same account).
+
 ## Request/response DTOs
 
 None of these ever include a Nitrado ciphertext/IV/auth tag, a Discord

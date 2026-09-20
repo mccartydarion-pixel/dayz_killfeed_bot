@@ -133,6 +133,8 @@ type Result struct {
 	TransactionID int64
 	Balance       int64
 	Duplicate     bool
+	Amount        int64     // signed: debits are negative (for a replay, the original entry's amount)
+	CreatedAt     time.Time // when the transaction was recorded
 }
 
 var creditTypes = map[string]bool{TypeAdminCredit: true, TypeSystemReward: true}
@@ -219,7 +221,7 @@ func (s *Service) apply(ctx context.Context, req Request, debit bool) (Result, e
 	if err != nil {
 		return Result{}, err
 	}
-	res := Result{TransactionID: entry.ID, Balance: entry.BalanceAfter, Duplicate: entry.Duplicate}
+	res := Result{TransactionID: entry.ID, Balance: entry.BalanceAfter, Duplicate: entry.Duplicate, Amount: entry.Amount, CreatedAt: entry.CreatedAt}
 	if !entry.Duplicate {
 		// Only after the commit; a failing notifier can neither undo nor repeat it.
 		s.notify(Event{Type: req.Type, GuildID: req.GuildID, ServerID: req.ServerID, PlayerName: name, Amount: req.Amount, Credit: !debit, BalanceAfter: entry.BalanceAfter})

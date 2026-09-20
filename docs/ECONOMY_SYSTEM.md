@@ -5,6 +5,8 @@ foundation: one append-only ledger, one materialized spendable balance, atomic
 credit/debit, idempotent payouts, admin adjustments, and an `ECONOMY` lifecycle
 feed. **No casino and no shop exist yet** - nothing can be bought.
 
+> The website-facing layer (installation-scoped balance and history API, admin lookup, grant/debit, reconciliation) is documented in [`docs/ECONOMY.md`](ECONOMY.md). Migration `0035` also blocks direct `DELETE` of ledger rows.
+
 ## What already existed (audited) and what this reuses
 
 Points were already stored in two tables, used by three earn paths. There is no

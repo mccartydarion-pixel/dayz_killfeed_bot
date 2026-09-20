@@ -69,6 +69,9 @@ type App struct {
 	// history, admin adjustments). Its Discord notifier is optional: the economy is
 	// correct without any route or Discord connection.
 	EconomyService *economy.Service
+	// EconomyAccounts is the installation-scoped web API over the economy (player balance and
+	// history, admin lookup and adjustments). It adds no storage; see docs/ECONOMY.md.
+	EconomyAccounts *economy.Accounts
 	// BountyBoard keeps the persistent public board (BOUNTY route). Nil-safe.
 	BountyBoard          *discord.BountyBoard
 	Points               *repository.PointsRepository
@@ -154,6 +157,8 @@ type App struct {
 	FactionHubStats           *factionstats.Service
 	saasFactionLogoLimiter    *saasRateLimiter
 	saasFactionLogoDayLimiter *saasRateLimiter
+	saasEconomyAdjustLimiter  *saasRateLimiter
+	saasEconomyHistoryLimiter *saasRateLimiter
 	persistQueuesMu           sync.Mutex
 	persistQueues             []*killfeed.PersistenceQueue
 	rotatingFeedsMu           sync.Mutex
@@ -518,6 +523,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.Bounties = repository.NewBountyRepository(db.Pool)
 			app.BountyService = bounties.NewService(app.Bounties, nil)
 			app.EconomyService = economy.NewService(repository.NewEconomyRepository(db.Pool), nil)
+			app.EconomyAccounts = economy.NewAccounts(app.EconomyService, repository.NewEconomyRepository(db.Pool))
 			app.Points = repository.NewPointsRepository(db.Pool)
 			app.Seasons = repository.NewSeasonRepository(db.Pool)
 			app.SeasonService = seasons.NewService(app.Seasons)
