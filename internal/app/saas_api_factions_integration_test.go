@@ -23,6 +23,7 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/factionstats"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 	"github.com/yourname/dayz-killfeed/internal/server"
+	"github.com/yourname/dayz-killfeed/internal/shop"
 )
 
 // End-to-end Faction Hub API tests: the real routes on a real HTTP listener (so route
@@ -75,6 +76,10 @@ func newFactionWorld(t *testing.T) *factionWorld {
 	a.saasEconomyAdjustLimiter = newSaaSRateLimiter(time.Hour, 100000)
 	a.saasEconomyHistoryLimiter = newSaaSRateLimiter(time.Hour, 100000)
 	a.registerEconomyRoutes()
+	a.Shop = shop.NewService(repository.NewShopRepository(a.DB.Pool), a.EconomyAccounts, a.EconomyService)
+	a.saasShopPurchaseLimiter = newSaaSRateLimiter(time.Hour, 100000)
+	a.saasShopAdminLimiter = newSaaSRateLimiter(time.Hour, 100000)
+	a.registerShopRoutes()
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = srv.ListenAndServe(ctx) }()
 	t.Cleanup(func() {

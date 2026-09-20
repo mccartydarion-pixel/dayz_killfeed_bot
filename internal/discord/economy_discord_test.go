@@ -63,7 +63,13 @@ func TestEconomyFeedCards(t *testing.T) {
 			"➕ **ADMIN CREDIT**\nPlayerA received 50,000 pts"},
 		{"admin debit (no balance shown)", economy.Event{Type: economy.TypeAdminDebit, GuildID: 7, ServerID: 1, PlayerName: "PlayerA", Amount: 25000, BalanceAfter: 999999},
 			"➖ **ADMIN DEBIT**\nPlayerA lost 25,000 pts"},
-		{"unknown future type", economy.Event{Type: "SHOP_PURCHASE", GuildID: 7, ServerID: 1, PlayerName: "PlayerA", Amount: 5},
+		{"shop purchase", economy.Event{Type: economy.TypeShopPurchase, GuildID: 7, ServerID: 1, PlayerName: "PlayerA", Amount: 750, BalanceAfter: 250, Item: "Care Package"},
+			"🛒 **SHOP PURCHASE**\nPlayerA bought Care Package for 750 pts"},
+		{"shop purchase without an item name", economy.Event{Type: economy.TypeShopPurchase, GuildID: 7, ServerID: 1, PlayerName: "PlayerA", Amount: 750},
+			"🛒 **SHOP PURCHASE**\nPlayerA spent 750 pts"},
+		{"shop refund", economy.Event{Type: economy.TypeShopRefund, GuildID: 7, ServerID: 1, PlayerName: "PlayerA", Amount: 750, Credit: true},
+			"↩️ **SHOP REFUND**\nPlayerA was refunded 750 pts"},
+		{"unknown future type", economy.Event{Type: "CASINO_BET", GuildID: 7, ServerID: 1, PlayerName: "PlayerA", Amount: 5},
 			"💠 **ECONOMY**\nPlayerA lost 5 pts"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -332,7 +338,9 @@ func (s discordEconomyStore) Credit(context.Context, repository.LedgerParams) (r
 func (s discordEconomyStore) Debit(context.Context, repository.LedgerParams) (repository.LedgerEntry, error) {
 	return repository.LedgerEntry{}, nil
 }
-func (s discordEconomyStore) Balance(context.Context, int64, int64) (int64, error) { return s.balance, nil }
+func (s discordEconomyStore) Balance(context.Context, int64, int64) (int64, error) {
+	return s.balance, nil
+}
 func (s discordEconomyStore) History(_ context.Context, _, _ int64, limit int, _ int64) ([]repository.LedgerEntry, int64, error) {
 	return s.entries, 0, nil
 }

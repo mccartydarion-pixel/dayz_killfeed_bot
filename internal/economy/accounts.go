@@ -207,7 +207,7 @@ func ParseTypeFilter(raw string) (repository.TransactionFilter, error) {
 	switch t := strings.ToUpper(strings.TrimSpace(raw)); t {
 	case "":
 		return repository.TransactionFilter{}, nil
-	case TypeBountyClaim, TypeAdminCredit, TypeAdminDebit, TypeSystemReward:
+	case TypeBountyClaim, TypeAdminCredit, TypeAdminDebit, TypeSystemReward, TypeShopPurchase, TypeShopRefund:
 		return repository.TransactionFilter{Types: []string{t}}, nil
 	case FilterEventPrize:
 		return repository.TransactionFilter{TypePrefix: "EVENT_"}, nil
@@ -266,6 +266,8 @@ func referenceType(t string) string {
 	switch {
 	case t == TypeBountyClaim:
 		return "BOUNTY"
+	case t == TypeShopPurchase || t == TypeShopRefund:
+		return "SHOP"
 	case strings.HasPrefix(t, "EVENT_"):
 		return "EVENT"
 	}

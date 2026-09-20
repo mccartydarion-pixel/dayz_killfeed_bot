@@ -1102,6 +1102,34 @@ the installation's Discord guild. Players only ever see their own account (`/me`
 New error codes: `INSUFFICIENT_FUNDS` (409), `INVALID_AMOUNT` (400), `PLAYER_IDENTITY_REQUIRED` (409), `ECONOMY_ACCOUNT_NOT_FOUND` (404), `DUPLICATE_TRANSACTION` (409), `ECONOMY_FORBIDDEN` (403).
 Rate limits: admin grant/debit 30 per minute, history 120 per minute (per acting user). Balances are guild-wide (two installations of one Discord guild show the same account).
 
+## Champion Shop (Phase 1)
+
+Installation-scoped product catalog bought with Champion Points; full contract, transaction semantics and DTOs in `docs/SHOP.md`. Base
+`/api/saas/organizations/{organizationID}/installations/{installationID}/shop`. Standard chain; another tenant's ids are `404`. Player routes need a synced user (purchases and history additionally a **verified** DayZ
+link: `409 PLAYER_IDENTITY_REQUIRED`); admin routes need an organization **OWNER/ADMIN** (`403 SHOP_FORBIDDEN`; faction roles grant nothing).
+
+| Route | Who | Returns |
+|---|---|---|
+| `GET .../shop/categories` | player | `{ currency, items: ShopCategory[] }` (active, with product counts) |
+| `GET .../shop/products?category=&q=&limit=&cursor=` | player | `{ currency, items: ShopProduct[], nextCursor, limit }` - active products, featured first |
+| `GET .../shop/products/{productID}` | player | `{ currency, product: ShopProduct }` (a disabled product is `404 SHOP_PRODUCT_NOT_FOUND`) |
+| `POST .../shop/purchases` | player | body `{ productId, quantity 1..100, idempotencyKey }` -> `201`/`200` `{ currency, purchase, remainingBalance, duplicate }` |
+| `GET .../shop/me/purchases?status=&productId=&limit=&cursor=` | player | `{ currency, items: ShopPurchase[], nextCursor, limit }`, newest first |
+| `GET .../shop/me/purchases/{purchaseID}` | player | `{ currency, purchase }` (another player's is `404 PURCHASE_NOT_FOUND`) |
+| `GET .../shop/admin/categories`, `POST .../shop/categories`, `PUT .../shop/categories/{categoryID}` | admin | manage categories |
+| `GET .../shop/admin/products`, `GET .../shop/admin/products/{productID}` | admin | products incl. inactive and `stockQuantity` |
+| `POST .../shop/products`, `PUT .../shop/products/{productID}` | admin | create / partial update (`categoryId`, `purchaseLimit` accept `null`); no delete (disable with `isActive:false`) |
+| `GET .../shop/admin/purchases?status=&playerId=&productId=&limit=&cursor=`, `GET .../shop/admin/purchases/{purchaseID}` | admin | `AdminShopPurchase` (player, refund reason, actors) |
+| `POST .../shop/purchases/{purchaseID}/fulfill` | admin | `PENDING_FULFILLMENT` -> `FULFILLED` |
+| `POST .../shop/purchases/{purchaseID}/refund` | admin | body `{ reason }` -> compensating `SHOP_REFUND` credit, status `REFUNDED`, once per purchase |
+
+A purchase is one database transaction: product lock, stock, purchase limit, the Champion Points debit through the economy ledger (`SHOP_PURCHASE`, reference `purchase:<id>`), the purchase and its price/name snapshot; any failure
+(including `INSUFFICIENT_FUNDS`) leaves nothing behind. Same `idempotencyKey` returns the original purchase (`duplicate: true`); the same key with different data is `409 DUPLICATE_PURCHASE`. Fulfillment is manual; `deliveryType` `MANUAL` is the only
+accepted value (`DISCORD_ROLE`, `IN_GAME_FUTURE` are reserved). Two installations of one Discord guild share the Champion Points balance (catalog and history stay per installation).
+
+New error codes: `SHOP_PRODUCT_NOT_FOUND` (404), `SHOP_PRODUCT_DISABLED` (409), `SHOP_CATEGORY_NOT_FOUND` (404), `OUT_OF_STOCK` (409), `PURCHASE_LIMIT_REACHED` (409), `INVALID_QUANTITY` (400), `DUPLICATE_PURCHASE` (409), `PURCHASE_NOT_FOUND` (404),
+`INVALID_PURCHASE_STATUS` (409), `SHOP_FORBIDDEN` (403); `INSUFFICIENT_FUNDS` (409) is shared with the economy. Rate limits (per acting user): purchase 10/min, admin mutations (create/update, fulfill, refund) 30/min.
+
 ## Request/response DTOs
 
 None of these ever include a Nitrado ciphertext/IV/auth tag, a Discord

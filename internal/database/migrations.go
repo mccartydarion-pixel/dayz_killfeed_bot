@@ -1362,6 +1362,106 @@ DROP TRIGGER IF EXISTS trg_point_transactions_no_delete ON point_transactions;
 CREATE TRIGGER trg_point_transactions_no_delete BEFORE DELETE ON point_transactions FOR EACH ROW EXECUTE FUNCTION point_transactions_no_delete();
 `,
 	},
+	{
+		// Champion Shop Phase 1 (docs/SHOP.md): an installation-scoped product catalog and purchase
+		// records paid with Champion Points. The Points themselves are NOT stored here: a purchase's
+		// debit is a row of the existing ledger (point_transactions, type SHOP_PURCHASE, source_key
+		// 'purchase:<id>'), written in the same transaction as the purchase, and a refund is a
+		// compensating SHOP_REFUND credit. Everything is scoped by organization + installation
+		// (composite FKs), so a product or purchase can never belong to another tenant.
+		//
+		// Products are never hard-deleted (is_active=false disables them); purchase items snapshot the
+		// product name and price, so editing or disabling a product never rewrites history.
+		Name: "0036_shop_foundation",
+		SQL: `
+CREATE TABLE IF NOT EXISTS shop_categories (
+    id BIGSERIAL PRIMARY KEY,
+    organization_id BIGINT NOT NULL,
+    installation_id BIGINT NOT NULL,
+    name TEXT NOT NULL CHECK (char_length(name) BETWEEN 1 AND 60),
+    slug TEXT NOT NULL CHECK (char_length(slug) BETWEEN 1 AND 60),
+    description TEXT NOT NULL DEFAULT '' CHECK (char_length(description) <= 500),
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    FOREIGN KEY (installation_id, organization_id) REFERENCES installations(id, organization_id) ON DELETE CASCADE,
+    CONSTRAINT uq_shop_categories_installation_slug UNIQUE (installation_id, slug),
+    CONSTRAINT uq_shop_categories_id_installation UNIQUE (id, installation_id)
+);
+
+CREATE TABLE IF NOT EXISTS shop_products (
+    id BIGSERIAL PRIMARY KEY,
+    organization_id BIGINT NOT NULL,
+    installation_id BIGINT NOT NULL,
+    category_id BIGINT,
+    name TEXT NOT NULL CHECK (char_length(name) BETWEEN 1 AND 80),
+    slug TEXT NOT NULL CHECK (char_length(slug) BETWEEN 1 AND 60),
+    description TEXT NOT NULL DEFAULT '' CHECK (char_length(description) <= 1000),
+    price_points BIGINT NOT NULL CHECK (price_points > 0 AND price_points <= 1000000000),
+    product_type TEXT NOT NULL CHECK (product_type IN ('ITEM','LOADOUT','VEHICLE','SERVICE','CUSTOM')),
+    delivery_type TEXT NOT NULL DEFAULT 'MANUAL' CHECK (delivery_type IN ('MANUAL','DISCORD_ROLE','IN_GAME_FUTURE')),
+    image_key TEXT,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    is_featured BOOLEAN NOT NULL DEFAULT FALSE,
+    stock_mode TEXT NOT NULL DEFAULT 'UNLIMITED' CHECK (stock_mode IN ('UNLIMITED','FINITE')),
+    stock_quantity BIGINT,
+    purchase_limit INTEGER CHECK (purchase_limit IS NULL OR purchase_limit BETWEEN 1 AND 1000),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    FOREIGN KEY (installation_id, organization_id) REFERENCES installations(id, organization_id) ON DELETE CASCADE,
+    FOREIGN KEY (category_id, installation_id) REFERENCES shop_categories(id, installation_id),
+    CONSTRAINT uq_shop_products_installation_slug UNIQUE (installation_id, slug),
+    CONSTRAINT uq_shop_products_id_installation UNIQUE (id, installation_id),
+    CONSTRAINT shop_products_stock_consistent CHECK (
+        (stock_mode = 'UNLIMITED' AND stock_quantity IS NULL)
+        OR (stock_mode = 'FINITE' AND stock_quantity IS NOT NULL AND stock_quantity >= 0 AND stock_quantity <= 1000000000))
+);
+CREATE INDEX IF NOT EXISTS idx_shop_products_catalog ON shop_products(installation_id, is_active, is_featured DESC, sort_order, id);
+CREATE INDEX IF NOT EXISTS idx_shop_products_category ON shop_products(installation_id, category_id);
+
+CREATE TABLE IF NOT EXISTS shop_purchases (
+    id BIGSERIAL PRIMARY KEY,
+    organization_id BIGINT NOT NULL,
+    installation_id BIGINT NOT NULL,
+    game_server_id BIGINT REFERENCES game_servers(id) ON DELETE SET NULL,
+    user_id BIGINT REFERENCES app_users(id) ON DELETE SET NULL,
+    player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    status TEXT NOT NULL CHECK (status IN ('PENDING','PAID','PENDING_FULFILLMENT','FULFILLED','CANCELLED','REFUNDED','FAILED')),
+    total_points BIGINT NOT NULL CHECK (total_points > 0),
+    delivery_type TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL CHECK (char_length(idempotency_key) BETWEEN 8 AND 64),
+    paid_at TIMESTAMPTZ,
+    fulfilled_at TIMESTAMPTZ,
+    fulfilled_by_user_id BIGINT REFERENCES app_users(id) ON DELETE SET NULL,
+    cancelled_at TIMESTAMPTZ,
+    refunded_at TIMESTAMPTZ,
+    refunded_by_user_id BIGINT REFERENCES app_users(id) ON DELETE SET NULL,
+    refund_reason TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    FOREIGN KEY (installation_id, organization_id) REFERENCES installations(id, organization_id) ON DELETE CASCADE,
+    CONSTRAINT uq_shop_purchases_id_installation UNIQUE (id, installation_id),
+    CONSTRAINT uq_shop_purchases_idempotency UNIQUE (installation_id, user_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_shop_purchases_installation ON shop_purchases(installation_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_shop_purchases_player ON shop_purchases(installation_id, player_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_shop_purchases_status ON shop_purchases(installation_id, status, id DESC);
+
+CREATE TABLE IF NOT EXISTS shop_purchase_items (
+    id BIGSERIAL PRIMARY KEY,
+    purchase_id BIGINT NOT NULL REFERENCES shop_purchases(id) ON DELETE CASCADE,
+    product_id BIGINT REFERENCES shop_products(id) ON DELETE SET NULL,
+    product_name TEXT NOT NULL,
+    unit_price_points BIGINT NOT NULL CHECK (unit_price_points > 0),
+    quantity INTEGER NOT NULL CHECK (quantity > 0 AND quantity <= 1000),
+    line_total_points BIGINT NOT NULL CHECK (line_total_points = unit_price_points * quantity)
+);
+CREATE INDEX IF NOT EXISTS idx_shop_purchase_items_purchase ON shop_purchase_items(purchase_id);
+CREATE INDEX IF NOT EXISTS idx_shop_purchase_items_product ON shop_purchase_items(product_id);
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order, each transactionally. A

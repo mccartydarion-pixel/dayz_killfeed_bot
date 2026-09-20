@@ -428,3 +428,19 @@ The Champion Economy web layer (`docs/ECONOMY.md`) adds **no table, column or in
 Migration `0035_economy_ledger_no_delete` adds one trigger: `point_transactions_no_delete` (`BEFORE DELETE ... FOR EACH ROW`) raises unless it runs inside a foreign-key cascade
 (`pg_trigger_depth() > 1`), so a ledger row can no longer be removed by a direct `DELETE`, while deleting a guild or a player still cascades. Together with the `0030` update guard
 the ledger is immutable; a correction is a compensating transaction.
+
+## Champion Shop (migration 0036)
+
+Phase 1 of the Shop (`docs/SHOP.md`). Four additive tables; **Champion Points are not stored here** - a purchase's debit and a refund's credit are rows of the existing ledger `point_transactions`
+(types `SHOP_PURCHASE` / `SHOP_REFUND`, `source_key = 'purchase:<id>'`), written in the same transaction as the purchase. Everything is tenant-scoped by composite foreign keys
+`(installation_id, organization_id) -> installations(id, organization_id) ON DELETE CASCADE`.
+
+| Table | Notes |
+|---|---|
+| `shop_categories` | `name` (1-60), `slug`, `description`, `sort_order`, `is_active`. `UNIQUE (installation_id, slug)`, `UNIQUE (id, installation_id)`. Never deleted (only disabled) |
+| `shop_products` | `category_id` (composite FK `(category_id, installation_id)` -> `shop_categories`), `name` (1-80), `slug` (`UNIQUE (installation_id, slug)`), `description` (<= 1000), `price_points BIGINT CHECK 1..1e9`, `product_type` (`ITEM`, `LOADOUT`, `VEHICLE`, `SERVICE`, `CUSTOM`), `delivery_type` (`MANUAL`, reserved `DISCORD_ROLE`, `IN_GAME_FUTURE`), `image_key` (reserved, unused), `sort_order`, `is_active`, `is_featured`, `stock_mode` (`UNLIMITED`/`FINITE`), `stock_quantity` (`CHECK`: NULL when UNLIMITED, `0..1e9` when FINITE), `purchase_limit` (`1..1000` or NULL). Indexes `(installation_id, is_active, is_featured DESC, sort_order, id)`, `(installation_id, category_id)` |
+| `shop_purchases` | `game_server_id` (`ON DELETE SET NULL`), `user_id` (`app_users`, `ON DELETE SET NULL`), `player_id` (`players`, `ON DELETE CASCADE`, like the ledger), `status` (`CHECK IN` PENDING, PAID, PENDING_FULFILLMENT, FULFILLED, CANCELLED, REFUNDED, FAILED), `total_points > 0`, `delivery_type` snapshot, `idempotency_key` (8-64), `paid_at`, `fulfilled_at/_by_user_id`, `cancelled_at`, `refunded_at/_by_user_id`, `refund_reason` (admin-only). **`UNIQUE (installation_id, user_id, idempotency_key)`**. Indexes `(installation_id, id DESC)`, `(installation_id, player_id, id DESC)`, `(installation_id, status, id DESC)` |
+| `shop_purchase_items` | immutable snapshot: `purchase_id` (`ON DELETE CASCADE`), `product_id` (`ON DELETE SET NULL`), `product_name`, `unit_price_points`, `quantity` (1..1000), `line_total_points` (`CHECK = unit_price_points * quantity`). Indexes by purchase and by product |
+
+Products are never hard-deleted, so purchase history always keeps its product link and, in any case, its own name/price snapshot. Read-only reconciliation between purchases and the ledger:
+`ShopRepository.ReconcileShop` (see `docs/SHOP.md` section 8).

@@ -39,6 +39,7 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/security"
 	"github.com/yourname/dayz-killfeed/internal/server"
 	"github.com/yourname/dayz-killfeed/internal/servers"
+	"github.com/yourname/dayz-killfeed/internal/shop"
 )
 
 // App owns the main runtime dependencies.
@@ -72,6 +73,8 @@ type App struct {
 	// EconomyAccounts is the installation-scoped web API over the economy (player balance and
 	// history, admin lookup and adjustments). It adds no storage; see docs/ECONOMY.md.
 	EconomyAccounts *economy.Accounts
+	// Shop is the Champion Shop (catalog, purchases with Champion Points); see docs/SHOP.md.
+	Shop *shop.Service
 	// BountyBoard keeps the persistent public board (BOUNTY route). Nil-safe.
 	BountyBoard          *discord.BountyBoard
 	Points               *repository.PointsRepository
@@ -159,6 +162,8 @@ type App struct {
 	saasFactionLogoDayLimiter *saasRateLimiter
 	saasEconomyAdjustLimiter  *saasRateLimiter
 	saasEconomyHistoryLimiter *saasRateLimiter
+	saasShopPurchaseLimiter   *saasRateLimiter
+	saasShopAdminLimiter      *saasRateLimiter
 	persistQueuesMu           sync.Mutex
 	persistQueues             []*killfeed.PersistenceQueue
 	rotatingFeedsMu           sync.Mutex
@@ -524,6 +529,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.BountyService = bounties.NewService(app.Bounties, nil)
 			app.EconomyService = economy.NewService(repository.NewEconomyRepository(db.Pool), nil)
 			app.EconomyAccounts = economy.NewAccounts(app.EconomyService, repository.NewEconomyRepository(db.Pool))
+			app.Shop = shop.NewService(repository.NewShopRepository(db.Pool), app.EconomyAccounts, app.EconomyService)
 			app.Points = repository.NewPointsRepository(db.Pool)
 			app.Seasons = repository.NewSeasonRepository(db.Pool)
 			app.SeasonService = seasons.NewService(app.Seasons)

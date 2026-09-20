@@ -161,6 +161,8 @@ func TestParseTypeFilter(t *testing.T) {
 		"BOUNTY_CLAIM":   {Types: []string{TypeBountyClaim}},
 		"system_reward":  {Types: []string{TypeSystemReward}},
 		"EVENT_PRIZE":    {TypePrefix: "EVENT_"},
+		"shop_purchase":  {Types: []string{TypeShopPurchase}},
+		"SHOP_REFUND":    {Types: []string{TypeShopRefund}},
 		"ADMIN_DEBIT":    {Types: []string{TypeAdminDebit}},
 	} {
 		got, err := ParseTypeFilter(raw)
@@ -168,7 +170,7 @@ func TestParseTypeFilter(t *testing.T) {
 			t.Errorf("%q: %+v %v", raw, got, err)
 		}
 	}
-	for _, bad := range []string{"CASINO_BET", "SHOP_PURCHASE", "EVENT_FIRST_PLACE", "ADMIN_%", "a;b"} {
+	for _, bad := range []string{"CASINO_BET", "SHOP_PURCHASES", "EVENT_FIRST_PLACE", "ADMIN_%", "a;b"} {
 		if _, err := ParseTypeFilter(bad); !errors.Is(err, ErrInvalidFilter) {
 			t.Errorf("%q must be rejected: %v", bad, err)
 		}
