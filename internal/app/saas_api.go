@@ -374,4 +374,5 @@ func (a *App) registerSaaSAPI() {
 	a.HTTPServer.Handle("PUT /api/saas/organizations/{organizationID}/installations/{installationID}/settings", a.handleSaveInstallationSettings)
 	a.registerFactionHubRoutes()
 	a.registerEconomyRoutes()
+	a.registerShopRoutes()
 }

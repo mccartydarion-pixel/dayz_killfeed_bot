@@ -995,12 +995,12 @@ components:
       type: object
       properties:
         id: { type: integer, format: int64, description: "Ledger id; strictly decreasing down the list." }
-        type: { type: string, description: "Open set: BOUNTY_CLAIM, ADMIN_CREDIT, ADMIN_DEBIT, SYSTEM_REWARD, EVENT_FIRST_PLACE, EVENT_SECOND_PLACE, EVENT_THIRD_PLACE." }
+        type: { type: string, description: "Open set: BOUNTY_CLAIM, ADMIN_CREDIT, ADMIN_DEBIT, SYSTEM_REWARD, SHOP_PURCHASE, SHOP_REFUND, EVENT_FIRST_PLACE, EVENT_SECOND_PLACE, EVENT_THIRD_PLACE." }
         direction: { type: string, enum: [CREDIT, DEBIT] }
         amount: { type: integer, format: int64, description: Positive magnitude. }
         balanceAfter: { type: integer, format: int64 }
         description: { type: string, description: "Generated from the type; never free text." }
-        referenceType: { type: string, nullable: true, enum: [BOUNTY, EVENT] }
+        referenceType: { type: string, nullable: true, enum: [BOUNTY, EVENT, SHOP] }
         createdAt: { type: string, format: date-time }
     EconomyTransactionList:
       type: object
@@ -1061,6 +1061,202 @@ components:
         account: { $ref: "#/components/schemas/AdminEconomyAccount" }
         transaction: { $ref: "#/components/schemas/AdminEconomyTransaction" }
         duplicate: { type: boolean, description: "True = an idempotent replay: nothing changed." }
+
+    ShopCategoryRef:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        name: { type: string }
+        slug: { type: string }
+    ShopCategory:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        name: { type: string }
+        slug: { type: string }
+        description: { type: string }
+        sortOrder: { type: integer }
+        productCount: { type: integer, description: Active products in the category. }
+    AdminShopCategory:
+      allOf:
+        - $ref: "#/components/schemas/ShopCategory"
+        - type: object
+          properties:
+            isActive: { type: boolean }
+            createdAt: { type: string, format: date-time }
+            updatedAt: { type: string, format: date-time }
+    ShopCategoryList:
+      type: object
+      properties:
+        currency: { $ref: "#/components/schemas/EconomyCurrency" }
+        items: { type: array, items: { $ref: "#/components/schemas/ShopCategory" } }
+    AdminShopCategoryList:
+      type: object
+      properties:
+        currency: { $ref: "#/components/schemas/EconomyCurrency" }
+        items: { type: array, items: { $ref: "#/components/schemas/AdminShopCategory" } }
+    ShopCategoryRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 1, maxLength: 60, description: Required on create. }
+        description: { type: string, maxLength: 500 }
+        sortOrder: { type: integer }
+        isActive: { type: boolean, description: "Update only. A disabled category hides its products from players." }
+    ShopProduct:
+      type: object
+      description: The public product. Never carries the exact stock, the active flag or timestamps.
+      properties:
+        id: { type: integer, format: int64 }
+        name: { type: string }
+        slug: { type: string }
+        description: { type: string }
+        pricePoints: { type: integer, format: int64, description: Whole Champion Points. }
+        category: { allOf: [{ $ref: "#/components/schemas/ShopCategoryRef" }], nullable: true }
+        productType: { type: string, enum: [ITEM, LOADOUT, VEHICLE, SERVICE, CUSTOM] }
+        deliveryType: { type: string, description: "Open set. Only MANUAL exists; DISCORD_ROLE and IN_GAME_FUTURE are reserved and rejected." }
+        isFeatured: { type: boolean }
+        stockState: { type: string, enum: [UNLIMITED, IN_STOCK, LOW_STOCK, OUT_OF_STOCK] }
+        purchaseLimit: { type: integer, nullable: true, description: "Units per player." }
+    AdminShopProduct:
+      allOf:
+        - $ref: "#/components/schemas/ShopProduct"
+        - type: object
+          properties:
+            isActive: { type: boolean }
+            stockMode: { type: string, enum: [UNLIMITED, FINITE] }
+            stockQuantity: { type: integer, format: int64, nullable: true }
+            sortOrder: { type: integer }
+            createdAt: { type: string, format: date-time }
+            updatedAt: { type: string, format: date-time }
+    ShopProductList:
+      type: object
+      properties:
+        currency: { $ref: "#/components/schemas/EconomyCurrency" }
+        items: { type: array, items: { $ref: "#/components/schemas/ShopProduct" } }
+        nextCursor: { type: string, nullable: true }
+        limit: { type: integer }
+    AdminShopProductList:
+      type: object
+      properties:
+        currency: { $ref: "#/components/schemas/EconomyCurrency" }
+        items: { type: array, items: { $ref: "#/components/schemas/AdminShopProduct" } }
+        nextCursor: { type: string, nullable: true }
+        limit: { type: integer }
+    CreateShopProductRequest:
+      type: object
+      required: [name, pricePoints, productType]
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 1, maxLength: 80 }
+        description: { type: string, maxLength: 1000 }
+        categoryId: { type: integer, format: int64, nullable: true }
+        pricePoints: { type: integer, format: int64, minimum: 1, maximum: 1000000000 }
+        productType: { type: string, enum: [ITEM, LOADOUT, VEHICLE, SERVICE, CUSTOM] }
+        deliveryType: { type: string, enum: [MANUAL], default: MANUAL }
+        isActive: { type: boolean, default: true }
+        isFeatured: { type: boolean, default: false }
+        sortOrder: { type: integer }
+        stockMode: { type: string, enum: [UNLIMITED, FINITE], default: UNLIMITED }
+        stockQuantity: { type: integer, format: int64, nullable: true, description: "Required (0..1e9) for FINITE, omitted for UNLIMITED." }
+        purchaseLimit: { type: integer, nullable: true, minimum: 1, maximum: 1000 }
+    UpdateShopProductRequest:
+      type: object
+      additionalProperties: false
+      description: "Every field optional (absent = unchanged); categoryId and purchaseLimit accept null to clear. The tenant, slug and productType are not editable."
+      properties:
+        name: { type: string }
+        description: { type: string }
+        categoryId: { type: integer, format: int64, nullable: true }
+        pricePoints: { type: integer, format: int64 }
+        deliveryType: { type: string, enum: [MANUAL] }
+        isActive: { type: boolean }
+        isFeatured: { type: boolean }
+        sortOrder: { type: integer }
+        stockMode: { type: string, enum: [UNLIMITED, FINITE] }
+        stockQuantity: { type: integer, format: int64 }
+        purchaseLimit: { type: integer, nullable: true }
+    AdminShopProductResponse:
+      type: object
+      properties:
+        product: { $ref: "#/components/schemas/AdminShopProduct" }
+    ShopPurchaseRequest:
+      type: object
+      required: [productId, quantity, idempotencyKey]
+      additionalProperties: false
+      properties:
+        productId: { type: integer, format: int64 }
+        quantity: { type: integer, minimum: 1, maximum: 100 }
+        idempotencyKey: { type: string, minLength: 8, maxLength: 64, pattern: "^[A-Za-z0-9._:-]+$", description: "Reuse it to retry safely: the original purchase is returned (duplicate true). The same key with different data is 409 DUPLICATE_PURCHASE." }
+    ShopPurchaseItem:
+      type: object
+      description: Snapshot taken at purchase time; never changes when the product is edited.
+      properties:
+        productId: { type: integer, format: int64, nullable: true }
+        productName: { type: string }
+        unitPricePoints: { type: integer, format: int64 }
+        quantity: { type: integer }
+        lineTotalPoints: { type: integer, format: int64 }
+    ShopPurchase:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        status: { type: string, description: "Open set. Used: PENDING_FULFILLMENT, FULFILLED, REFUNDED. Reserved: PENDING, PAID, CANCELLED, FAILED.", enum: [PENDING, PAID, PENDING_FULFILLMENT, FULFILLED, CANCELLED, REFUNDED, FAILED] }
+        totalPoints: { type: integer, format: int64 }
+        deliveryType: { type: string }
+        items: { type: array, items: { $ref: "#/components/schemas/ShopPurchaseItem" } }
+        createdAt: { type: string, format: date-time }
+        paidAt: { type: string, format: date-time, nullable: true }
+        fulfilledAt: { type: string, format: date-time, nullable: true }
+        refundedAt: { type: string, format: date-time, nullable: true }
+    AdminShopPurchase:
+      allOf:
+        - $ref: "#/components/schemas/ShopPurchase"
+        - type: object
+          properties:
+            player:
+              type: object
+              properties:
+                accountId: { type: integer, format: int64 }
+                gamertag: { type: string }
+            gameServerId: { type: integer, format: int64, nullable: true }
+            refundReason: { type: string, nullable: true, description: Admin only. }
+            fulfilledByDiscordUserId: { type: string, nullable: true }
+            refundedByDiscordUserId: { type: string, nullable: true }
+    ShopPurchaseResponse:
+      type: object
+      properties:
+        currency: { $ref: "#/components/schemas/EconomyCurrency" }
+        purchase: { $ref: "#/components/schemas/ShopPurchase" }
+        remainingBalance: { type: integer, format: int64, description: "The authoritative balance right after the debit (a replay: the current balance)." }
+        duplicate: { type: boolean }
+    AdminShopPurchaseResponse:
+      type: object
+      properties:
+        currency: { $ref: "#/components/schemas/EconomyCurrency" }
+        purchase: { $ref: "#/components/schemas/AdminShopPurchase" }
+        remainingBalance: { type: integer, format: int64 }
+        duplicate: { type: boolean }
+    ShopPurchaseList:
+      type: object
+      properties:
+        currency: { $ref: "#/components/schemas/EconomyCurrency" }
+        items: { type: array, items: { $ref: "#/components/schemas/ShopPurchase" } }
+        nextCursor: { type: string, nullable: true }
+        limit: { type: integer }
+    AdminShopPurchaseList:
+      type: object
+      properties:
+        currency: { $ref: "#/components/schemas/EconomyCurrency" }
+        items: { type: array, items: { $ref: "#/components/schemas/AdminShopPurchase" } }
+        nextCursor: { type: string, nullable: true }
+        limit: { type: integer }
+    ShopRefundRequest:
+      type: object
+      required: [reason]
+      additionalProperties: false
+      properties:
+        reason: { type: string, minLength: 1, maxLength: 200, description: "Required; stored for admins, never shown to the player." }
 
   responses:
     Unauthorized:
@@ -2390,7 +2586,7 @@ paths:
         - { $ref: "#/components/parameters/installationID" }
         - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, default: 25 }, description: "Maximum 100 - larger values are clamped; 0/negative/non-numeric is 400." }
         - { name: cursor, in: query, required: false, schema: { type: string }, description: The previous page's nextCursor. }
-        - { name: type, in: query, required: false, schema: { type: string, enum: [BOUNTY_CLAIM, ADMIN_CREDIT, ADMIN_DEBIT, SYSTEM_REWARD, EVENT_PRIZE] }, description: Optional type filter (EVENT_PRIZE = all event prizes). }
+        - { name: type, in: query, required: false, schema: { type: string, enum: [BOUNTY_CLAIM, ADMIN_CREDIT, ADMIN_DEBIT, SYSTEM_REWARD, SHOP_PURCHASE, SHOP_REFUND, EVENT_PRIZE] }, description: Optional type filter (EVENT_PRIZE = all event prizes). }
       responses:
         "200":
           description: One page.
@@ -2455,7 +2651,7 @@ paths:
         - { name: accountID, in: path, required: true, schema: { type: integer, format: int64 } }
         - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, default: 25 } }
         - { name: cursor, in: query, required: false, schema: { type: string } }
-        - { name: type, in: query, required: false, schema: { type: string, enum: [BOUNTY_CLAIM, ADMIN_CREDIT, ADMIN_DEBIT, SYSTEM_REWARD, EVENT_PRIZE] } }
+        - { name: type, in: query, required: false, schema: { type: string, enum: [BOUNTY_CLAIM, ADMIN_CREDIT, ADMIN_DEBIT, SYSTEM_REWARD, SHOP_PURCHASE, SHOP_REFUND, EVENT_PRIZE] } }
       responses:
         "200":
           description: One page.
@@ -2518,4 +2714,272 @@ paths:
         "403": { description: code ECONOMY_FORBIDDEN. }
         "404": { description: NOT_FOUND or ECONOMY_ACCOUNT_NOT_FOUND. }
         "409": { description: "INSUFFICIENT_FUNDS, DUPLICATE_TRANSACTION or CONFLICT." }
+        "429": { description: RATE_LIMITED. }
+
+  # --- Champion Shop Phase 1 (docs/SHOP.md). Champion Points, installation-scoped. Admin routes: organization OWNER/ADMIN (403 SHOP_FORBIDDEN). ---
+  /api/saas/organizations/{organizationID}/installations/{installationID}/shop/categories:
+    get:
+      summary: Active shop categories with the number of active products in each.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+      responses:
+        "200": { description: Categories., content: { application/json: { schema: { $ref: "#/components/schemas/ShopCategoryList" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      summary: Create a category (organization OWNER/ADMIN). The slug is generated and unique per installation. Rate limited (30/min).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ShopCategoryRequest" } } } }
+      responses:
+        "201": { description: Created., content: { application/json: { schema: { type: object, properties: { category: { $ref: "#/components/schemas/AdminShopCategory" } } } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: code SHOP_FORBIDDEN. }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { description: RATE_LIMITED. }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/shop/admin/categories:
+    get:
+      summary: All categories including disabled ones (organization OWNER/ADMIN).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+      responses:
+        "200": { description: Categories., content: { application/json: { schema: { $ref: "#/components/schemas/AdminShopCategoryList" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: code SHOP_FORBIDDEN. }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/shop/categories/{categoryID}:
+    put:
+      summary: Update or disable a category (organization OWNER/ADMIN). Categories are never deleted.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { name: categoryID, in: path, required: true, schema: { type: integer, format: int64 } }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ShopCategoryRequest" } } } }
+      responses:
+        "200": { description: Updated., content: { application/json: { schema: { type: object, properties: { category: { $ref: "#/components/schemas/AdminShopCategory" } } } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: code SHOP_FORBIDDEN. }
+        "404": { description: NOT_FOUND or SHOP_CATEGORY_NOT_FOUND. }
+        "429": { description: RATE_LIMITED. }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/shop/products:
+    get:
+      summary: The active catalog (featured first, then sortOrder, name, id). Products of disabled categories are hidden. No DayZ link is needed to browse.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { name: category, in: query, required: false, schema: { type: string }, description: Category slug. }
+        - { name: q, in: query, required: false, schema: { type: string, maxLength: 50 }, description: "Case-insensitive substring of name or description; LIKE wildcards are literal." }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, default: 25 }, description: "Maximum 100 - larger values are clamped; 0/negative/non-numeric is 400." }
+        - { name: cursor, in: query, required: false, schema: { type: string }, description: The previous page nextCursor. }
+      responses:
+        "200": { description: One page., content: { application/json: { schema: { $ref: "#/components/schemas/ShopProductList" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      summary: Create a product (organization OWNER/ADMIN). Only deliveryType MANUAL is accepted; unknown keys (imageUrl, installationId) are 400. Rate limited (30/min).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/CreateShopProductRequest" } } } }
+      responses:
+        "201": { description: Created., content: { application/json: { schema: { $ref: "#/components/schemas/AdminShopProductResponse" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: code SHOP_FORBIDDEN. }
+        "404": { description: NOT_FOUND or SHOP_CATEGORY_NOT_FOUND. }
+        "429": { description: RATE_LIMITED. }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/shop/products/{productID}:
+    get:
+      summary: One active product (public fields only). A disabled product is 404 SHOP_PRODUCT_NOT_FOUND.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { name: productID, in: path, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        "200": { description: The product., content: { application/json: { schema: { type: object, properties: { currency: { $ref: "#/components/schemas/EconomyCurrency" }, product: { $ref: "#/components/schemas/ShopProduct" } } } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: NOT_FOUND or SHOP_PRODUCT_NOT_FOUND. }
+    put:
+      summary: Partial update, including price, stock, limit and isActive (organization OWNER/ADMIN). There is no deletion; disable with isActive false. Rate limited (30/min).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { name: productID, in: path, required: true, schema: { type: integer, format: int64 } }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/UpdateShopProductRequest" } } } }
+      responses:
+        "200": { description: Updated., content: { application/json: { schema: { $ref: "#/components/schemas/AdminShopProductResponse" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: code SHOP_FORBIDDEN. }
+        "404": { description: NOT_FOUND, SHOP_PRODUCT_NOT_FOUND or SHOP_CATEGORY_NOT_FOUND. }
+        "429": { description: RATE_LIMITED. }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/shop/admin/products:
+    get:
+      summary: All products including inactive ones, with exact stock (organization OWNER/ADMIN).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { name: category, in: query, required: false, schema: { type: string } }
+        - { name: q, in: query, required: false, schema: { type: string, maxLength: 50 } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, default: 25 }, description: "Maximum 100 - larger values are clamped; 0/negative/non-numeric is 400." }
+        - { name: cursor, in: query, required: false, schema: { type: string }, description: The previous page nextCursor. }
+      responses:
+        "200": { description: One page., content: { application/json: { schema: { $ref: "#/components/schemas/AdminShopProductList" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: code SHOP_FORBIDDEN. }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/shop/admin/products/{productID}:
+    get:
+      summary: One product with admin fields (organization OWNER/ADMIN).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { name: productID, in: path, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        "200": { description: The product., content: { application/json: { schema: { $ref: "#/components/schemas/AdminShopProductResponse" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: code SHOP_FORBIDDEN. }
+        "404": { description: NOT_FOUND or SHOP_PRODUCT_NOT_FOUND. }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/shop/purchases:
+    post:
+      summary: >-
+        Buy one product with Champion Points, atomically: product lock, stock, purchase limit, the debit through the economy ledger (SHOP_PURCHASE, reference purchase:ID),
+        the purchase and its price snapshot in ONE database transaction. Any failure (including INSUFFICIENT_FUNDS) leaves nothing behind. Needs a VERIFIED DayZ link. Rate limited (10/min).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ShopPurchaseRequest" } } } }
+      responses:
+        "201": { description: Purchased (status PENDING_FULFILLMENT)., content: { application/json: { schema: { $ref: "#/components/schemas/ShopPurchaseResponse" } } } }
+        "200": { description: An idempotent replay of the same idempotencyKey - the original purchase, nothing charged (duplicate true)., content: { application/json: { schema: { $ref: "#/components/schemas/ShopPurchaseResponse" } } } }
+        "400": { description: INVALID_QUANTITY or INVALID_REQUEST (bad key/body, unknown JSON key). }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: NOT_FOUND or SHOP_PRODUCT_NOT_FOUND (also another tenant's product). }
+        "409": { description: "INSUFFICIENT_FUNDS, OUT_OF_STOCK, PURCHASE_LIMIT_REACHED, SHOP_PRODUCT_DISABLED, DUPLICATE_PURCHASE (key reused with different data), PLAYER_IDENTITY_REQUIRED or CONFLICT (installation suspended / no DayZ server)." }
+        "429": { description: RATE_LIMITED. }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/shop/me/purchases:
+    get:
+      summary: The acting user's own purchases, newest first (keyset pagination). Needs a VERIFIED DayZ link.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { name: status, in: query, required: false, schema: { type: string, enum: [PENDING, PAID, PENDING_FULFILLMENT, FULFILLED, CANCELLED, REFUNDED, FAILED] } }
+        - { name: productId, in: query, required: false, schema: { type: integer, format: int64 } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, default: 25 }, description: "Maximum 100 - larger values are clamped; 0/negative/non-numeric is 400." }
+        - { name: cursor, in: query, required: false, schema: { type: string }, description: The previous page nextCursor. }
+      responses:
+        "200": { description: One page., content: { application/json: { schema: { $ref: "#/components/schemas/ShopPurchaseList" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: PLAYER_IDENTITY_REQUIRED. }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/shop/me/purchases/{purchaseID}:
+    get:
+      summary: One of the acting user's own purchases. Another player's purchase is 404 PURCHASE_NOT_FOUND.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { name: purchaseID, in: path, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        "200": { description: The purchase., content: { application/json: { schema: { type: object, properties: { currency: { $ref: "#/components/schemas/EconomyCurrency" }, purchase: { $ref: "#/components/schemas/ShopPurchase" } } } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: NOT_FOUND or PURCHASE_NOT_FOUND. }
+        "409": { description: PLAYER_IDENTITY_REQUIRED. }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/shop/admin/purchases:
+    get:
+      summary: Every purchase of the installation, newest first, with the player and admin fields (organization OWNER/ADMIN).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { name: status, in: query, required: false, schema: { type: string, enum: [PENDING, PAID, PENDING_FULFILLMENT, FULFILLED, CANCELLED, REFUNDED, FAILED] } }
+        - { name: playerId, in: query, required: false, schema: { type: integer, format: int64 }, description: The economy accountId. }
+        - { name: productId, in: query, required: false, schema: { type: integer, format: int64 } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, default: 25 }, description: "Maximum 100 - larger values are clamped; 0/negative/non-numeric is 400." }
+        - { name: cursor, in: query, required: false, schema: { type: string }, description: The previous page nextCursor. }
+      responses:
+        "200": { description: One page., content: { application/json: { schema: { $ref: "#/components/schemas/AdminShopPurchaseList" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: code SHOP_FORBIDDEN. }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/shop/admin/purchases/{purchaseID}:
+    get:
+      summary: One purchase with player, refund reason and actors (organization OWNER/ADMIN).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { name: purchaseID, in: path, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        "200": { description: The purchase., content: { application/json: { schema: { type: object, properties: { currency: { $ref: "#/components/schemas/EconomyCurrency" }, purchase: { $ref: "#/components/schemas/AdminShopPurchase" } } } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: code SHOP_FORBIDDEN. }
+        "404": { description: NOT_FOUND or PURCHASE_NOT_FOUND. }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/shop/purchases/{purchaseID}/fulfill:
+    post:
+      summary: Mark a PENDING_FULFILLMENT purchase FULFILLED (organization OWNER/ADMIN); records who and when. Audited (shop_purchase_fulfilled). Rate limited (30/min).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { name: purchaseID, in: path, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        "200": { description: Fulfilled., content: { application/json: { schema: { type: object, properties: { currency: { $ref: "#/components/schemas/EconomyCurrency" }, purchase: { $ref: "#/components/schemas/AdminShopPurchase" } } } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: code SHOP_FORBIDDEN. }
+        "404": { description: NOT_FOUND or PURCHASE_NOT_FOUND. }
+        "409": { description: INVALID_PURCHASE_STATUS (already fulfilled, refunded, ...). }
+        "429": { description: RATE_LIMITED. }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/shop/purchases/{purchaseID}/refund:
+    post:
+      summary: >-
+        Refund a purchase (organization OWNER/ADMIN): a compensating SHOP_REFUND credit (the original debit is never edited), status REFUNDED, finite stock returned only if the
+        purchase was not yet fulfilled. Once per purchase - a second or concurrent refund is 409. Audited (shop_purchase_refunded). Rate limited (30/min).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { name: purchaseID, in: path, required: true, schema: { type: integer, format: int64 } }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ShopRefundRequest" } } } }
+      responses:
+        "200": { description: Refunded; remainingBalance is the player's balance after the credit., content: { application/json: { schema: { $ref: "#/components/schemas/AdminShopPurchaseResponse" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: code SHOP_FORBIDDEN. }
+        "404": { description: NOT_FOUND or PURCHASE_NOT_FOUND. }
+        "409": { description: INVALID_PURCHASE_STATUS. }
         "429": { description: RATE_LIMITED. }

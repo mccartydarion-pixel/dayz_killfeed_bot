@@ -268,6 +268,17 @@ func buildEconomyEmbed(e economy.Event) *discordgo.MessageEmbed {
 		b.WriteString("➖ **ADMIN DEBIT**")
 		fmt.Fprintf(&b, "\n%s lost %s", name, amount)
 		color = presentation.WarningAmber
+	case economy.TypeShopPurchase:
+		b.WriteString("🛒 **SHOP PURCHASE**")
+		if strings.TrimSpace(e.Item) != "" {
+			fmt.Fprintf(&b, "\n%s bought %s for %s", name, bountyName(e.Item), amount)
+		} else {
+			fmt.Fprintf(&b, "\n%s spent %s", name, amount)
+		}
+	case economy.TypeShopRefund:
+		b.WriteString("↩️ **SHOP REFUND**")
+		fmt.Fprintf(&b, "\n%s was refunded %s", name, amount)
+		color = presentation.SuccessGreen
 	default:
 		verb := "received"
 		if !e.Credit {

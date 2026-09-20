@@ -68,6 +68,16 @@ type economyRequest struct {
 // economyContext runs the standard chain (service auth, acting user, path ids) and resolves the
 // installation to its scope. admin additionally requires an OWNER/ADMIN role in the organization.
 func (a *App) economyContext(w http.ResponseWriter, r *http.Request, admin bool) (er economyRequest, ok bool) {
+	code := ""
+	if admin {
+		code = codeEconomyForbidden
+	}
+	return a.scopedContext(w, r, code)
+}
+
+// scopedContext is economyContext with the admin gate's error code chosen by the caller (the shop uses
+// SHOP_FORBIDDEN): adminCode == "" means a player route (no organization role needed).
+func (a *App) scopedContext(w http.ResponseWriter, r *http.Request, adminCode string) (er economyRequest, ok bool) {
 	if !a.requireSaaSServiceAuth(w, r) {
 		return
 	}
@@ -87,7 +97,7 @@ func (a *App) economyContext(w http.ResponseWriter, r *http.Request, admin bool)
 		writeSaaSError(w, codeInternalError, "economy unavailable")
 		return
 	}
-	if admin && !a.economyAdminAllowed(w, r, orgID, user.ID) {
+	if adminCode != "" && !a.economyAdminAllowed(w, r, orgID, user.ID, adminCode) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), economyTimeout)
@@ -102,7 +112,7 @@ func (a *App) economyContext(w http.ResponseWriter, r *http.Request, admin bool)
 
 // economyAdminAllowed is the economy admin gate: an OWNER or ADMIN of the organization. Faction
 // roles and MEMBER grant nothing.
-func (a *App) economyAdminAllowed(w http.ResponseWriter, r *http.Request, orgID, userID int64) bool {
+func (a *App) economyAdminAllowed(w http.ResponseWriter, r *http.Request, orgID, userID int64, code string) bool {
 	if a.SaaSOrganizations == nil {
 		writeSaaSError(w, codeInternalError, "organization directory unavailable")
 		return false
@@ -116,7 +126,7 @@ func (a *App) economyAdminAllowed(w http.ResponseWriter, r *http.Request, orgID,
 		return false
 	}
 	if !member || (role != repository.RoleOwner && role != repository.RoleAdmin) {
-		writeSaaSError(w, codeEconomyForbidden, "OWNER or ADMIN role required")
+		writeSaaSError(w, code, "OWNER or ADMIN role required")
 		return false
 	}
 	return true

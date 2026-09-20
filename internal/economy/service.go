@@ -26,6 +26,10 @@ const (
 	TypeAdminCredit  = repository.TxAdminCredit
 	TypeAdminDebit   = repository.TxAdminDebit
 	TypeSystemReward = repository.TxSystemReward
+	// Shop payments are written by the shop repository through the same ledger path; the
+	// economy service never accepts them from Credit/Debit (only the shop's transaction may).
+	TypeShopPurchase = repository.TxShopPurchase
+	TypeShopRefund   = repository.TxShopRefund
 )
 
 const (
@@ -56,6 +60,7 @@ type Event struct {
 	Amount       int64 // magnitude, always positive
 	Credit       bool  // true = points added, false = points removed
 	BalanceAfter int64
+	Item         string // shop events only: the public product name
 }
 
 // Notifier receives committed transactions. It must not block and cannot fail the
@@ -250,6 +255,7 @@ type HistoryItem struct {
 	Amount       int64 // signed
 	Description  string
 	BalanceAfter int64
+	Item         string // shop events only: the public product name
 	CreatedAt    time.Time
 }
 
@@ -291,6 +297,10 @@ func TypeLabel(t string) string {
 		return "Admin debit"
 	case t == TypeSystemReward:
 		return "Reward"
+	case t == TypeShopPurchase:
+		return "Shop purchase"
+	case t == TypeShopRefund:
+		return "Shop refund"
 	case strings.HasPrefix(t, "EVENT_"):
 		return "Event prize"
 	}
@@ -315,4 +325,14 @@ func sanitizeText(s string, max int) string {
 		b.WriteRune(r)
 	}
 	return clip(b.String(), max)
+}
+
+// Announce hands an already-committed transaction written elsewhere (the shop's purchase and refund,
+// which commit inside their own database transaction) to the notifier. Like every notification it
+// happens only after the commit and can neither fail nor repeat the operation.
+func (s *Service) Announce(e Event) {
+	if s == nil {
+		return
+	}
+	s.notify(e)
 }
