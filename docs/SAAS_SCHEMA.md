@@ -215,20 +215,24 @@ multi-channel permission check - `internal/app/saas_api_setup_completion.go`
 - so several routes sharing one channel are verified exactly once).
 
 ### `subscriptions`
-Billing-ready state only - **no billing provider is integrated yet**.
-Provider fields stay `NULL` until it is.
+**Stripe is now integrated** (`docs/BILLING.md`, migration `0037`) - provider fields are populated once an organization checks out; they stay `NULL` until then.
 
 | Column | Notes |
 |---|---|
 | `id` | BIGSERIAL PK |
 | `organization_id` | FK `organizations(id)`, **UNIQUE**, `ON DELETE CASCADE` - one subscription per organization |
-| `provider`, `provider_customer_id`, `provider_subscription_id` | TEXT, nullable |
+| `provider`, `provider_customer_id`, `provider_subscription_id`, `provider_price_id` | TEXT, nullable |
 | `plan` | TEXT, default `'TRIAL'` |
-| `status` | TEXT, one of `TRIAL` \| `ACTIVE` \| `PAST_DUE` \| `CANCELED` \| `SUSPENDED` (Go constants `repository.Subscription*`) |
-| `trial_ends_at`, `current_period_end` | TIMESTAMPTZ, nullable |
+| `status` | TEXT, one of `TRIAL` \| `ACTIVE` \| `PAST_DUE` \| `CANCELED` \| `SUSPENDED` (Go constants `repository.Subscription*`; Stripe's own status is mapped onto these - `docs/BILLING.md` "Subscription status mapping") |
+| `billing_interval` | TEXT, `MONTHLY` \| `YEARLY`, nullable |
+| `trial_ends_at`, `current_period_start`, `current_period_end` | TIMESTAMPTZ, nullable |
+| `cancel_at_period_end` | BOOLEAN, default `false` |
+| `canceled_at` | TIMESTAMPTZ, nullable |
+| `trial_consumed` | BOOLEAN, default `false` - a Stripe trial is granted at most once per organization |
 | `created_at`, `updated_at` | TIMESTAMPTZ |
 
-Repository: `SubscriptionRepository` (`saas_subscriptions_repository.go`) - `EnsureTrial` (idempotent), `GetForOrganization`.
+Repository: `SubscriptionRepository` (`saas_subscriptions_repository.go`) - `EnsureTrial` (idempotent), `GetForOrganization`, `GetByProviderCustomerID`, `GetByProviderSubscriptionID`,
+`SetProviderCustomer`, `ApplyProviderState` (the one write path Stripe reconciliation uses), `RecordWebhookEventOnce`. See "Champion Billing (migration 0037)" below and `docs/BILLING.md`.
 
 ## Entitlements
 
@@ -444,3 +448,25 @@ Phase 1 of the Shop (`docs/SHOP.md`). Four additive tables; **Champion Points ar
 
 Products are never hard-deleted, so purchase history always keeps its product link and, in any case, its own name/price snapshot. Read-only reconciliation between purchases and the ledger:
 `ShopRepository.ReconcileShop` (see `docs/SHOP.md` section 8).
+
+## Champion Billing (migration 0037)
+
+Phase 1 of billing (`docs/BILLING.md`). No new customer/subscription table - the existing `subscriptions` row (one per organization, `0024_saas_foundation`) gained Stripe fields; `provider`/
+`provider_customer_id`/`provider_subscription_id` already existed and were always `NULL` before this.
+
+| Column added | Notes |
+|---|---|
+| `provider_price_id` | The Stripe Price currently on the subscription |
+| `billing_interval` | `MONTHLY` / `YEARLY` (free-text, same convention as `plan`/`status` - see "Enum/status convention" below) |
+| `current_period_start` | Alongside the existing `current_period_end` |
+| `cancel_at_period_end` | `BOOLEAN NOT NULL DEFAULT FALSE` |
+| `canceled_at` | Nullable |
+| `trial_consumed` | `BOOLEAN NOT NULL DEFAULT FALSE`; set once a Stripe subscription id is ever recorded, never cleared - prevents a repeated Stripe trial grant |
+
+Indexes: `idx_subscriptions_provider_customer` / `idx_subscriptions_provider_subscription` (partial, `WHERE ... IS NOT NULL`) support webhook attribution lookups.
+
+A new table, **`billing_webhook_events`**, is the webhook idempotency log: `provider`, `event_id`, `event_type`, a best-effort nullable `organization_id` (`ON DELETE SET NULL`), `received_at`,
+`CONSTRAINT uq_billing_webhook_events UNIQUE (provider, event_id)`. Webhook processing inserts into this table (`ON CONFLICT DO NOTHING`) before any other write; no row means "already processed".
+
+No other table changes. The plan catalog itself (names, prices, features, Stripe price ids) is **not** stored in PostgreSQL at all - it is configuration (`CHAMPION_BILLING_PLANS_JSON`), loaded
+once at startup by `internal/billing.LoadCatalog`. See `docs/BILLING.md` for the full model, status mapping and security review.
