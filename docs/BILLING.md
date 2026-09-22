@@ -324,28 +324,93 @@ and offer Reactivate.
 
 ## 25. Pricing configuration handoff
 
-**No commercial plan name, price, feature list, limit, trial length or "popular" flag is approved yet** - none existed anywhere in the codebase before this phase, and none was invented here
-(task section 2 / 42: "Do NOT invent production prices"). `internal/billing.LoadCatalog` and the whole plan-catalog/checkout/entitlement pipeline are fully built and tested against a realistic
-sample catalog; production simply needs `CHAMPION_BILLING_PLANS_JSON` populated once those decisions are made. Exact shape (one entry per plan; `monthly`/`yearly` omitted entirely = not sold on
-that interval):
+**Phase 1.2 (2026-09-22): the LOW/MEDIUM/HIGH catalog below is commercially approved and active.** It is the exact, verbatim value of `CHAMPION_BILLING_PLANS_JSON` - `internal/billing.LoadCatalog`
+takes this JSON as-is, nothing is hardcoded into Go (`internal/billing/pricing_catalog_test.go` / `internal/app/saas_api_billing_integration_test.go`'s `TestApprovedPricingCatalog*` tests assert
+against this exact catalog). All three plans currently sell **monthly only** - no annual price has been approved, so `yearly` is omitted for every plan and `POST .../billing/checkout` with
+`"interval":"YEARLY"` returns `400 INVALID_PLAN` for all three (nothing here fabricates a discount). `limits.maxSlots` is plan metadata only in this phase - **no automatic Nitrado slot-count
+enforcement exists yet**; `limits.installations` stays `1` for every plan, matching Phase 1's existing (unchanged) entitlement behavior.
+
+The three Stripe Price ids below are **configured identifiers only** - this catalog does not assert, and Champion's code has no way to assert, that they are test-mode vs. live-mode from their
+format alone. Which Stripe account/mode a checkout actually talks to is determined entirely by which `STRIPE_SECRET_KEY` is configured on the running environment (section 23 "Local development"),
+never by the price id's shape. As of Phase 1.2, Railway is intentionally left on a **test-mode** `STRIPE_SECRET_KEY`/`STRIPE_WEBHOOK_SECRET` - Champion has **not** been switched to live Stripe
+billing.
 
 ```json
 [
   {
-    "key": "PRO",
-    "name": "Pro",
-    "description": "For a growing community.",
-    "features": ["killfeed", "leaderboards", "live_players", "advanced_stats"],
-    "limits": { "installations": 5 },
-    "monthly": { "amountCents": 1999, "currency": "usd", "stripePriceId": "price_..." },
-    "yearly":  { "amountCents": 19990, "currency": "usd", "stripePriceId": "price_..." },
+    "key": "LOW",
+    "name": "Low Tier",
+    "description": "For smaller DayZ communities with up to 32 player slots.",
+    "features": ["Killfeed", "Faction Hub", "Leaderboards", "Champion Points Economy", "Champion Shop", "Embed Designer", "Discord Integration", "Nitrado Integration"],
+    "limits": { "installations": 1, "maxSlots": 32 },
+    "monthly": { "amountCents": 599, "currency": "usd", "stripePriceId": "price_1UIQiD65uHRSytQgoMRICl5h" },
+    "isPublic": true,
+    "sortOrder": 1,
+    "popular": false,
+    "trialDays": 7
+  },
+  {
+    "key": "MEDIUM",
+    "name": "Medium Tier",
+    "description": "For growing DayZ communities with 33 to 64 player slots.",
+    "features": ["Killfeed", "Faction Hub", "Leaderboards", "Champion Points Economy", "Champion Shop", "Embed Designer", "Discord Integration", "Nitrado Integration"],
+    "limits": { "installations": 1, "maxSlots": 64 },
+    "monthly": { "amountCents": 999, "currency": "usd", "stripePriceId": "price_1UIQiD65uHRSytQghSQQOVpG" },
     "isPublic": true,
     "sortOrder": 2,
     "popular": true,
-    "trialDays": 14
+    "trialDays": 7
+  },
+  {
+    "key": "HIGH",
+    "name": "High Tier",
+    "description": "For large DayZ communities with 65 to 128 player slots.",
+    "features": ["Killfeed", "Faction Hub", "Leaderboards", "Champion Points Economy", "Champion Shop", "Embed Designer", "Discord Integration", "Nitrado Integration"],
+    "limits": { "installations": 1, "maxSlots": 128 },
+    "monthly": { "amountCents": 1499, "currency": "usd", "stripePriceId": "price_1UIQiD65uHRSytQgydtA4Pzj" },
+    "isPublic": true,
+    "sortOrder": 3,
+    "popular": false,
+    "trialDays": 7
   }
 ]
 ```
+
+To activate on Railway: set `CHAMPION_BILLING_PLANS_JSON` to the one-line minified form of the JSON above (whitespace doesn't matter to `LoadCatalog`, but the value must be valid JSON on a single
+env var). **Never put `STRIPE_SECRET_KEY` or `STRIPE_WEBHOOK_SECRET` in this file or any other doc** - those stay server-only secrets, set directly in Railway's environment settings.
+
+### Trial interaction: internal 14-day trial vs. the new Stripe 7-day plan trial
+
+Section 15 already documents that these are two independent trial concepts; with real `trialDays: 7` now active on all three plans, here is exactly how they interact **today, unchanged by Phase
+1.2**: every organization gets the internal 14-day trial (`status=TRIAL`, `subscriptions.plan="TRIAL"`) the moment it's created, via `EnsureTrial`, entirely independent of Stripe. The instant that
+organization's first-ever checkout completes and its webhook is processed, `ApplyProviderState` **unconditionally overwrites** `subscriptions.status`, `subscriptions.plan` and
+`subscriptions.trial_ends_at` with whatever Stripe reports (e.g. `status="TRIAL"` again with a **new**, Stripe-driven `trial_ends_at` about 7 days out, since `trial_consumed` was still false at
+checkout time) - it does not add to, extend, or preserve any remaining days of the internal 14-day trial. If checkout happens on day 3 of the internal trial, the other 11 internal-trial days are
+simply discarded and replaced by a fresh 7-day Stripe trial; if the organization instead waits out the full internal trial and only then checks out, the same fresh 7-day Stripe trial still applies
+(the 14 days already elapsed have no bearing on whether Stripe grants one - only `trial_consumed`, i.e. "has this organization ever had a provider_subscription_id before", gates that). A second-ever
+checkout (re-subscribing after a cancellation, or a first attempt abandoned before the webhook landed) has `trial_consumed=true` and therefore `trialDays: 0` - Stripe charges immediately from that
+checkout, with no trialing state at all.
+
+**This is flagged, not changed, per Phase 1.2's explicit instruction not to alter this behavior.** Whether the internal trial should instead be shortened/skipped once a real Stripe trial starts, or
+whether the two should be reconciled some other way, remains an open product decision - the same category as the payment-failure grace period (section 17) and the downgrade-timing decision (item 9
+below).
+
+**Commercial decisions still required before Champion goes fully live:**
+
+1. ~~Approved plan names/keys~~ - **decided (Phase 1.2): `LOW`, `MEDIUM`, `HIGH`.**
+2. ~~Monthly price per plan~~ - **decided (Phase 1.2): $5.99 / $9.99 / $14.99.**
+3. Annual price per plan, if annual billing is offered at all - **still undecided; `yearly` stays omitted for all three plans until a real annual price is approved (never a fabricated discount).**
+4. ~~The feature list and any numeric limits per plan~~ - **decided (Phase 1.2): the 8-feature list and `maxSlots`/`installations` above.** When `internal/entitlements.Resolve` should start
+   actually differing by plan (today it returns the full set for every plan, by pre-existing design) is still undecided.
+5. ~~Trial length per plan~~ - **decided (Phase 1.2): 7 days for all three plans.**
+6. ~~Which plan is "popular"~~ - **decided (Phase 1.2): `MEDIUM`.**
+7. ~~The real Stripe Product/Price ids~~ - **decided (Phase 1.2), test-mode: see the catalog above. Live-mode ids are a separate, later decision - "do not switch Champion to live Stripe billing
+   yet".**
+8. The payment-failure / grace-period policy (section 17): what should actually happen while a subscription is `PAST_DUE` - **still undecided.**
+9. Whether the "downgrade at renewal" behaviour is required for launch, or Phase 1's "both directions apply immediately with proration" (section 13) is acceptable - **still undecided.**
+10. *(New, surfaced by Phase 1.2)* How the internal 14-day organization trial and the new Stripe 7-day plan trial should interact, if at all, beyond "the later one silently overwrites the earlier
+    one" as described above - **still undecided.**
+11. Automatic Nitrado slot-count enforcement from `limits.maxSlots` - **explicitly out of scope for this phase; still undecided whether/when it should exist.**
 
 **Commercial decisions required before this goes live:**
 

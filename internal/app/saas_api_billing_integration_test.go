@@ -36,6 +36,52 @@ const billingTestCatalogJSON = `[
   {"key":"LEGACY","name":"Legacy","monthly":{"amountCents":500,"currency":"usd","stripePriceId":"price_test_legacy_month"},"isPublic":false,"sortOrder":0}
 ]`
 
+// approvedPricingCatalogJSON is the exact, commercially approved LOW/MEDIUM/HIGH catalog (Champion
+// Billing Phase 1.2), byte-identical to internal/billing's own copy (internal/billing/pricing_catalog_test.go)
+// - duplicated here rather than exported because every other catalog fixture in this file is local to
+// it too. Stripe Price ids are test-mode ids (Phase 1.2: "do not switch Champion to live Stripe billing
+// yet") - only the matching STRIPE_SECRET_KEY, never these ids, determines which Stripe account/mode
+// they actually resolve against.
+const approvedPricingCatalogJSON = `[
+  {
+    "key": "LOW", "name": "Low Tier", "description": "For smaller DayZ communities with up to 32 player slots.",
+    "features": ["Killfeed","Faction Hub","Leaderboards","Champion Points Economy","Champion Shop","Embed Designer","Discord Integration","Nitrado Integration"],
+    "limits": {"installations": 1, "maxSlots": 32},
+    "monthly": {"amountCents": 599, "currency": "usd", "stripePriceId": "price_1UIQiD65uHRSytQgoMRICl5h"},
+    "isPublic": true, "sortOrder": 1, "popular": false, "trialDays": 7
+  },
+  {
+    "key": "MEDIUM", "name": "Medium Tier", "description": "For growing DayZ communities with 33 to 64 player slots.",
+    "features": ["Killfeed","Faction Hub","Leaderboards","Champion Points Economy","Champion Shop","Embed Designer","Discord Integration","Nitrado Integration"],
+    "limits": {"installations": 1, "maxSlots": 64},
+    "monthly": {"amountCents": 999, "currency": "usd", "stripePriceId": "price_1UIQiD65uHRSytQghSQQOVpG"},
+    "isPublic": true, "sortOrder": 2, "popular": true, "trialDays": 7
+  },
+  {
+    "key": "HIGH", "name": "High Tier", "description": "For large DayZ communities with 65 to 128 player slots.",
+    "features": ["Killfeed","Faction Hub","Leaderboards","Champion Points Economy","Champion Shop","Embed Designer","Discord Integration","Nitrado Integration"],
+    "limits": {"installations": 1, "maxSlots": 128},
+    "monthly": {"amountCents": 1499, "currency": "usd", "stripePriceId": "price_1UIQiD65uHRSytQgydtA4Pzj"},
+    "isPublic": true, "sortOrder": 3, "popular": false, "trialDays": 7
+  }
+]`
+
+// withApprovedPricingCatalog swaps w.a.Billing to a fresh Service loaded with the real approved
+// catalog (and its own fresh FakeProvider), leaving every other fixture (organizations, users,
+// installations) untouched. Only the tests in this section use it - every other billing test keeps
+// using the synthetic billingTestCatalogJSON the fixture wires by default.
+func (w *factionWorld) withApprovedPricingCatalog(t *testing.T) *billing.FakeProvider {
+	t.Helper()
+	cat, err := billing.LoadCatalog(approvedPricingCatalogJSON)
+	if err != nil {
+		t.Fatalf("approved catalog must parse cleanly: %v", err)
+	}
+	provider := billing.NewFakeProvider()
+	w.a.Billing = billing.NewService(w.a.SaaSSubscriptions, cat, provider, billing.Options{WebhookSecret: "whsec_test"})
+	w.billingProvider = provider
+	return provider
+}
+
 func (w *factionWorld) billingPath(f installationFixture, suffix string) string {
 	return fmt.Sprintf("/api/saas/organizations/%d/billing%s", f.OrgID, suffix)
 }
@@ -473,5 +519,109 @@ func TestBillingAdminVisibilityShowsIntervalAndCancellationNoPaymentDetail(t *te
 	}
 	if found.Plan != "PRO" || found.Status != "ACTIVE" || found.BillingInterval != "MONTHLY" || !found.CancelAtPeriodEnd {
 		t.Fatalf("%+v", found)
+	}
+}
+
+// --- Champion Billing Phase 1.2: the approved LOW/MEDIUM/HIGH pricing catalog ----------------------
+
+// TestApprovedPricingCatalogPublicPlansAPI proves the real catalog's public plans API returns exactly
+// LOW, MEDIUM, HIGH in that order (sortOrder 1/2/3), with the exact approved prices/limits/trial/
+// popular flag, and never leaks a Stripe price id anywhere in the response.
+func TestApprovedPricingCatalogPublicPlansAPI(t *testing.T) {
+	w := newFactionWorld(t)
+	w.withApprovedPricingCatalog(t)
+
+	raw := w.do(http.MethodGet, "/api/saas/billing/plans", w.players[0], nil)
+	w.expect(raw, http.StatusOK, "plans")
+	for _, banned := range []string{"stripePriceId", "stripePriceID", "price_1UIQiD65uHRSytQgoMRICl5h", "price_1UIQiD65uHRSytQghSQQOVpG", "price_1UIQiD65uHRSytQgydtA4Pzj"} {
+		if bytes.Contains(raw.Body, []byte(banned)) {
+			t.Fatalf("public plans API must never leak a Stripe price id, found %q in %s", banned, raw.Body)
+		}
+	}
+
+	page := w.getJSON("/api/saas/billing/plans", w.players[0])
+	items, ok := page["items"].([]any)
+	if !ok || len(items) != 3 {
+		t.Fatalf("expected exactly 3 public plans (LOW/MEDIUM/HIGH), got %v", page)
+	}
+	wantOrder := []struct {
+		key         string
+		amountCents float64
+		maxSlots    float64
+		popular     bool
+	}{
+		{"LOW", 599, 32, false},
+		{"MEDIUM", 999, 64, true},
+		{"HIGH", 1499, 128, false},
+	}
+	for i, want := range wantOrder {
+		m := items[i].(map[string]any)
+		if m["key"] != want.key {
+			t.Fatalf("plan[%d]: want key %s, got %v (full order: %v)", i, want.key, m["key"], items)
+		}
+		if m["popular"] != want.popular {
+			t.Errorf("%s: popular = %v, want %v", want.key, m["popular"], want.popular)
+		}
+		if m["trialDays"].(float64) != 7 {
+			t.Errorf("%s: trialDays = %v, want 7", want.key, m["trialDays"])
+		}
+		if m["yearly"] != nil {
+			t.Errorf("%s: yearly must be null (no annual pricing approved), got %v", want.key, m["yearly"])
+		}
+		monthly := m["monthly"].(map[string]any)
+		if monthly["amountCents"].(float64) != want.amountCents || monthly["currency"] != "usd" {
+			t.Errorf("%s: monthly = %v, want %v cents usd", want.key, monthly, want.amountCents)
+		}
+		limits := m["limits"].(map[string]any)
+		if limits["maxSlots"].(float64) != want.maxSlots {
+			t.Errorf("%s: limits.maxSlots = %v, want %v", want.key, limits["maxSlots"], want.maxSlots)
+		}
+		if limits["installations"].(float64) != 1 {
+			t.Errorf("%s: limits.installations = %v, want 1", want.key, limits["installations"])
+		}
+	}
+}
+
+// TestApprovedPricingCatalogCheckoutResolvesPriceIDsServerSideOnly proves checkout resolves each
+// approved plan's exact Stripe Price id purely from the server-side catalog (never from the request
+// body), that MONTHLY is accepted for all three plans, and that YEARLY - which none of the three
+// plans sell, since no annual pricing has been approved - returns INVALID_PLAN for all three rather
+// than silently falling back to a fabricated annual price.
+func TestApprovedPricingCatalogCheckoutResolvesPriceIDsServerSideOnly(t *testing.T) {
+	w := newFactionWorld(t)
+	provider := w.withApprovedPricingCatalog(t)
+
+	cases := []struct {
+		key     string
+		priceID string
+	}{
+		{"LOW", "price_1UIQiD65uHRSytQgoMRICl5h"},
+		{"MEDIUM", "price_1UIQiD65uHRSytQghSQQOVpG"},
+		{"HIGH", "price_1UIQiD65uHRSytQgydtA4Pzj"},
+	}
+	for _, c := range cases {
+		t.Run(c.key+"/MONTHLY", func(t *testing.T) {
+			w.expect(w.do(http.MethodPost, w.billingPath(w.a1, "/checkout"), w.admin, map[string]any{"planKey": c.key, "interval": "MONTHLY"}), http.StatusOK, "checkout")
+			var lastPriceID string
+			for _, call := range provider.Calls {
+				if call.Method == "CreateCheckoutSession" {
+					lastPriceID = call.Arg.(billing.CheckoutInput).PriceID
+				}
+			}
+			if lastPriceID != c.priceID {
+				t.Fatalf("%s: checkout resolved Stripe price %q, want the approved %q", c.key, lastPriceID, c.priceID)
+			}
+		})
+		t.Run(c.key+"/YEARLY", func(t *testing.T) {
+			r := w.do(http.MethodPost, w.billingPath(w.a1, "/checkout"), w.admin, map[string]any{"planKey": c.key, "interval": "YEARLY"})
+			if r.Status != http.StatusBadRequest || r.errCode(t) != "INVALID_PLAN" {
+				t.Fatalf("%s YEARLY: expected 400 INVALID_PLAN (no annual pricing approved), got %d %s", c.key, r.Status, r.Body)
+			}
+		})
+	}
+	// An unknown plan key is rejected the same way.
+	r := w.do(http.MethodPost, w.billingPath(w.a1, "/checkout"), w.admin, map[string]any{"planKey": "ENTERPRISE", "interval": "MONTHLY"})
+	if r.Status != http.StatusBadRequest || r.errCode(t) != "INVALID_PLAN" {
+		t.Fatalf("unknown plan: expected 400 INVALID_PLAN, got %d %s", r.Status, r.Body)
 	}
 }

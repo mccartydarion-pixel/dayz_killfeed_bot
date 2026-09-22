@@ -1133,8 +1133,9 @@ New error codes: `SHOP_PRODUCT_NOT_FOUND` (404), `SHOP_PRODUCT_DISABLED` (409), 
 ## Champion Billing (Phase 1)
 
 Stripe subscriptions, hosted checkout, the Customer Portal and webhook reconciliation on top of the existing `subscriptions` row (one per organization). Full contract, status mapping, trial
-handling, security review and the exact DTOs in `docs/BILLING.md`. **No plan/price is approved yet** - see `docs/BILLING.md` section 25 for the commercial decisions required; until
-`CHAMPION_BILLING_PLANS_JSON` is configured the plans API returns an empty list and checkout refuses every plan key.
+handling, security review and the exact DTOs in `docs/BILLING.md`. **The LOW/MEDIUM/HIGH catalog is approved (Phase 1.2, test-mode Stripe Price ids)** - see `docs/BILLING.md` section 25 for the
+exact catalog and the commercial decisions still outstanding (annual pricing, payment-failure grace period, downgrade timing). When `CHAMPION_BILLING_PLANS_JSON` is unset on an environment, the
+plans API returns an empty list and checkout refuses every plan key instead of failing to start.
 
 | Route | Who | Notes |
 |---|---|---|
