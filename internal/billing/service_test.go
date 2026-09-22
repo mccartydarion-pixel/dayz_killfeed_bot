@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -252,6 +253,108 @@ func TestCheckoutRejectsUnsafeReturnPath(t *testing.T) {
 	}
 	if _, err := svc.Checkout(context.Background(), req(t), 1, OrgInfo{}, CheckoutRequest{PlanKey: "PRO", Interval: "MONTHLY", ReturnPath: "//evil.example"}); !errors.Is(err, ErrInvalidReturnPath) {
 		t.Fatalf("%v", err)
+	}
+}
+
+// --- Champion Billing: checkout return route fix (stale "/billing" -> "/dashboard/subscription") ---
+
+// TestNewServiceDefaultReturnURLsPointAtDashboardSubscription proves the service's built-in defaults
+// - used whenever a caller sends no returnPath at all - are the current Champion website route, not
+// the retired "/billing" page that caused a production 404 on Stripe Checkout cancellation.
+func TestNewServiceDefaultReturnURLsPointAtDashboardSubscription(t *testing.T) {
+	svc, _, provider := newTestService(t, sampleCatalog)
+	ctx := context.Background()
+	if _, err := svc.Checkout(ctx, req(t), 20, OrgInfo{Name: "Org"}, CheckoutRequest{PlanKey: "PRO", Interval: "MONTHLY"}); err != nil {
+		t.Fatal(err)
+	}
+	var in CheckoutInput
+	for _, c := range provider.Calls {
+		if c.Method == "CreateCheckoutSession" {
+			in = c.Arg.(CheckoutInput)
+		}
+	}
+	if in.SuccessURL != DefaultOrigin+"/dashboard/subscription?checkout=success" {
+		t.Errorf("default success URL = %q", in.SuccessURL)
+	}
+	if in.CancelURL != DefaultOrigin+"/dashboard/subscription?checkout=cancelled" {
+		t.Errorf("default cancel URL = %q", in.CancelURL)
+	}
+	if strings.Contains(in.SuccessURL, "/billing") || strings.Contains(in.CancelURL, "/billing") {
+		t.Fatalf("no route may contain the retired /billing page: success=%q cancel=%q", in.SuccessURL, in.CancelURL)
+	}
+
+	// Portal's default follows the same route.
+	sub, err := activeOrgSubscription(ctx, svc, 20)
+	if err != nil || sub == nil || sub.ProviderCustomerID == "" {
+		t.Fatalf("expected a persisted customer id: %+v %v", sub, err)
+	}
+	res, err := svc.Portal(ctx, req(t), 20, PortalRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var portalReturn string
+	for _, c := range provider.Calls {
+		if c.Method == "CreatePortalSession" {
+			portalReturn = c.Arg.(struct{ CustomerID, ReturnURL string }).ReturnURL
+		}
+	}
+	if portalReturn != DefaultOrigin+"/dashboard/subscription" {
+		t.Errorf("default portal return URL = %q", portalReturn)
+	}
+	if res.URL == "" {
+		t.Fatal("expected a portal URL")
+	}
+}
+
+// activeOrgSubscription is a small helper so the default-portal-URL assertion above can read back the
+// customer id Checkout just persisted, without pulling in the heavier activeOrg helper (which also
+// drives a webhook-style ApplyProviderState this test doesn't need).
+func activeOrgSubscription(ctx context.Context, svc *Service, orgID int64) (*repository.Subscription, error) {
+	return svc.store.GetForOrganization(ctx, orgID)
+}
+
+// TestCheckoutCancelURLDerivedFromCallerReturnPath is the focused regression test for the bug: the
+// website sends one returnPath for the billing page ("/dashboard/subscription?checkout=success"),
+// and the cancel URL must resolve to that same page with "?checkout=cancelled" - never the stale
+// "/billing" default - because a caller-supplied returnPath must influence BOTH success and cancel.
+func TestCheckoutCancelURLDerivedFromCallerReturnPath(t *testing.T) {
+	svc, _, provider := newTestService(t, sampleCatalog)
+	ctx := context.Background()
+	if _, err := svc.Checkout(ctx, req(t), 21, OrgInfo{Name: "Org"}, CheckoutRequest{
+		PlanKey: "PRO", Interval: "MONTHLY", ReturnPath: "/dashboard/subscription?checkout=success",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var in CheckoutInput
+	for _, c := range provider.Calls {
+		if c.Method == "CreateCheckoutSession" {
+			in = c.Arg.(CheckoutInput)
+		}
+	}
+	if in.SuccessURL != DefaultOrigin+"/dashboard/subscription?checkout=success" {
+		t.Errorf("success URL = %q", in.SuccessURL)
+	}
+	if in.CancelURL != DefaultOrigin+"/dashboard/subscription?checkout=cancelled" {
+		t.Errorf("cancel URL = %q, want the same page as success with checkout=cancelled", in.CancelURL)
+	}
+	if strings.Contains(in.CancelURL, "/billing") {
+		t.Fatalf("cancel URL must never fall back to the retired /billing page: %q", in.CancelURL)
+	}
+
+	// A caller returning to a different page entirely still gets a same-page cancel, never /billing.
+	if _, err := svc.Checkout(ctx, req(t), 22, OrgInfo{Name: "Org 2"}, CheckoutRequest{
+		PlanKey: "STARTER", Interval: "MONTHLY", ReturnPath: "/settings/org/9",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	in = CheckoutInput{}
+	for _, c := range provider.Calls {
+		if c.Method == "CreateCheckoutSession" {
+			in = c.Arg.(CheckoutInput)
+		}
+	}
+	if in.CancelURL != DefaultOrigin+"/settings/org/9?checkout=cancelled" {
+		t.Errorf("cancel URL for a non-default returnPath = %q", in.CancelURL)
 	}
 }
 
