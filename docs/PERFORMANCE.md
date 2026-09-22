@@ -35,15 +35,12 @@ slow/misbehaving server cannot block another (see section 8 "cross-server parall
   Parsing itself is already correctly incremental (only the byte range after the last checkpoint
   offset is parsed - `tracker.DrainCompleteLinesWithOffsets`), so the waste is specifically in the
   network transfer, not in CPU/parse time.
-  - **This is the single largest identified lever and was deliberately NOT implemented this phase.**
-    Nitrado's signed download URL behavior under a `Range` request was not verified against the live
-    API in this environment (no Nitrado credentials are available here, and the task explicitly
-    forbids hitting real Nitrado in tests) - a wrong assumption about `Range` support could silently
-    truncate or duplicate ingested bytes, which is a correctness risk this phase's own instructions
-    rule out taking blind. The safe design for a follow-up: request `Range: bytes=<lastOffset>-`,
-    check for a `206 Partial Content` + matching `Content-Range` before trusting the body as a delta,
-    and fall back to the existing full-download path on anything else (a `200 OK`, a missing/mismatched
-    `Content-Range`, or an error) - i.e. correctness-preserving by construction, not by assumption.
+  - **Addressed in Champion Performance Phase 1.5** (`docs/NITRADO_DELTA_READS.md`): a partial-read
+    path using Nitrado's own `file_server/seek` and signed-URL offset/count mechanisms (HTTP `Range`
+    only as a third fallback, never assumed supported) now fetches just the bytes after the last
+    checkpoint offset, gated behind `NITRADO_DELTA_READ_MODE` (default `off` - this phase shipped the
+    capability with the full-download path still authoritative; enabling it is a separate rollout
+    decision). See that document for the full design, correctness guarantees, and rollout plan.
   - Existing checkpoint/rotation/truncation/alt-probe recovery logic (`adm_alt_probe.go`,
     `canonical_source.go`) is untouched.
 - **Duplicate/derived requests audited**: `readRemoteFile` already does two calls to fetch one file's

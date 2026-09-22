@@ -702,21 +702,32 @@ func (c *Client) ReadLog(ctx context.Context, serviceID string, path string) ([]
 // readRemoteFile resolves a file-server path to a signed download URL and reads it.
 // Uses GET /services/:id/gameservers/file_server/download?file=<path>.
 func (c *Client) readRemoteFile(ctx context.Context, serviceID, path string) ([]byte, error) {
-	endpoint := "/services/" + url.PathEscape(serviceID) + "/gameservers/file_server/download?file=" + url.QueryEscape(path)
-
-	resp, err := c.do(ctx, http.MethodGet, endpoint, nil)
+	signedURL, err := c.fetchSignedURL(ctx, "/services/"+url.PathEscape(serviceID)+"/gameservers/file_server/download?file="+url.QueryEscape(path), "file download")
 	if err != nil {
 		return nil, err
+	}
+	return c.readDirectURL(ctx, signedURL)
+}
+
+// fetchSignedURL calls a Nitrado file-server token endpoint (download or seek - both documented as
+// returning the same {"data":{"token":{"url":...}}} envelope, task section 5) and returns the signed
+// URL to fetch next. op labels the operation for error classification only - it is never the raw
+// endpoint or any credential. The returned URL is itself short-lived and pre-signed; callers must
+// never log it (section 28).
+func (c *Client) fetchSignedURL(ctx context.Context, endpoint, op string) (string, error) {
+	resp, err := c.do(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, classifyStatus("file download", resp.StatusCode, KindNotFound)
+		return "", classifyStatus(op, resp.StatusCode, KindNotFound)
 	}
 
 	payload, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("read download token: %w", err)
+		return "", fmt.Errorf("read %s token: %w", op, err)
 	}
 
 	var envelope struct {
@@ -727,13 +738,12 @@ func (c *Client) readRemoteFile(ctx context.Context, serviceID, path string) ([]
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(payload, &envelope); err != nil {
-		return nil, fmt.Errorf("decode download token: %w", err)
+		return "", fmt.Errorf("decode %s token: %w", op, err)
 	}
 	if envelope.Data.Token.URL == "" {
-		return nil, fmt.Errorf("download endpoint returned no URL for %s", path)
+		return "", fmt.Errorf("%s endpoint returned no URL", op)
 	}
-
-	return c.readDirectURL(ctx, envelope.Data.Token.URL)
+	return envelope.Data.Token.URL, nil
 }
 
 // readDirectURL reads the contents of a resolved URL (signed file-server URL).
