@@ -468,5 +468,21 @@ Indexes: `idx_subscriptions_provider_customer` / `idx_subscriptions_provider_sub
 A new table, **`billing_webhook_events`**, is the webhook idempotency log: `provider`, `event_id`, `event_type`, a best-effort nullable `organization_id` (`ON DELETE SET NULL`), `received_at`,
 `CONSTRAINT uq_billing_webhook_events UNIQUE (provider, event_id)`. Webhook processing inserts into this table (`ON CONFLICT DO NOTHING`) before any other write; no row means "already processed".
 
-No other table changes. The plan catalog itself (names, prices, features, Stripe price ids) is **not** stored in PostgreSQL at all - it is configuration (`CHAMPION_BILLING_PLANS_JSON`), loaded
-once at startup by `internal/billing.LoadCatalog`. See `docs/BILLING.md` for the full model, status mapping and security review.
+Another new table (Champion Access Model Phase 2, `0038_billing_transactions`), **`billing_transactions`**, is the normalized payment/invoice history: `organization_id`, `provider`,
+`provider_invoice_id`, `provider_payment_intent_id`, `provider_subscription_id`, `status` (`PAID`/`FAILED` only - `CHECK` constraint), `amount_cents`, `currency`, `period_start`, `period_end`,
+`paid_at`, `failed_at`, `stripe_event_id`, `created_at`/`updated_at`. `CONSTRAINT uq_billing_transactions_event UNIQUE (provider, stripe_event_id)` ties each row 1:1 to the already-deduped
+`billing_webhook_events` row for the same event. Populated only from `invoice.paid`/`invoice.payment_failed` webhook events - see `docs/BILLING.md` section 27 for exactly what's captured and why
+`plan` is not a column. `idx_billing_transactions_org`, `idx_billing_transactions_status`, `idx_billing_transactions_invoice` support the Owner payments list's filters.
+
+The plan catalog itself (names, prices, features, Stripe price ids) is **not** stored in PostgreSQL at all - it is configuration (`CHAMPION_BILLING_PLANS_JSON`), loaded once at startup by
+`internal/billing.LoadCatalog`. See `docs/BILLING.md` for the full model, status mapping and security review.
+
+## Champion Access Model Phase 2: player identity and the `0039_player_api_lookup_index` migration
+
+No new tables - the player-facing API (`docs/PLAYER_API.md`) reads exclusively from tables that
+already existed (`player_links`, `players`, `kills`, `deaths`, `bounties`, `player_server_activity`,
+`hub_faction_members`). One new index, `idx_player_links_discord_user` on
+`player_links(discord_user_id, status)`, supports the one query shape nothing existing served: a
+lookup FROM a Discord user id TO their `player_links` row, before a guild id is known (both existing
+unique constraints on `player_links` start with `guild_id`). See `docs/PLAYER_API.md` section 7 for
+the `EXPLAIN` evidence.

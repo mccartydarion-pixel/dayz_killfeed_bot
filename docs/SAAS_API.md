@@ -1154,6 +1154,19 @@ root-relative `returnPath` is accepted, combined with a server-chosen, allowlist
 New error codes: `INVALID_PLAN` (400), `NO_ACTIVE_SUBSCRIPTION` (409), `NO_BILLING_CUSTOMER` (409), `BILLING_UNAVAILABLE` (503, Stripe not configured on this environment). Rate limit: 20 billing
 actions per minute per acting user (checkout/portal/plan/cancel/reactivate share the budget); every read is unlimited.
 
+## Champion Player API (Access Model Phase 2, Part A/B)
+
+Full contract in `docs/PLAYER_API.md`. A Player is never an organization member (same principle as the economy/shop player routes above) - these two routes take no `organizationID` and check no
+organization role at all; authorization comes entirely from a `VERIFIED` `player_links` row plus observed activity on the specific installation.
+
+| Route | Who | Notes |
+|---|---|---|
+| `GET /api/saas/player/servers` | any synced user | installations the acting user is a proven player on, most-recently-active first; empty list (not an error) if unverified/never observed |
+| `GET /api/saas/player/servers/{installationID}/stats` | any synced user, if associated | kills/deaths/kd/headshots/longshots/playtime/bounties/faction/lastSeenAt, scoped strictly to this installation's own server |
+
+New error codes: `PLAYER_IDENTITY_REQUIRED` (409, reused from the economy's `Me` endpoint - no `VERIFIED` link for this installation's guild). An unknown installation id AND a verified-but-never-
+played-here server both return `404 NOT_FOUND` - deliberately the same code, to avoid letting a caller enumerate which installations of a guild they belong to.
+
 ## Request/response DTOs
 
 None of these ever include a Nitrado ciphertext/IV/auth tag, a Discord

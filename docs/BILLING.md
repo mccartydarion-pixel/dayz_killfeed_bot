@@ -445,3 +445,60 @@ below).
   checkout authorization and validation (unknown/private/unsold plan, unsafe return paths), trial-once through the real webhook endpoint, webhook signature rejection and idempotency against the
   real HTTP endpoint, tenant isolation (webhooks and API calls), the portal, upgrade/downgrade/cancel/reactivate, rate limits, audit log content, and admin visibility.
 * Existing subscription/trial/dashboard/hub tests (`TestHubSummaryNoSecrets`, `TestHubCrossTenantRejected`, etc.) pass unchanged.
+
+## 27. Payment/invoice history (Champion Access Model Phase 2, Part D)
+
+Before this phase, Champion persisted **only current subscription state** (`subscriptions`) - no
+historical record of individual payments or failures existed anywhere, confirmed by an audit of
+`internal/billing/webhook.go` before this table was added: `onInvoice` read an invoice event's
+`customer`/`subscription` fields only, to attribute and reconcile the subscription, and discarded
+everything else (amount, status, invoice id) after that. Owner Hub payment history required real,
+normalized data - not a per-page live Stripe fetch and not fabricated numbers.
+
+**`billing_transactions`** (migration `0038_billing_transactions`) is the new table, populated
+**only** from `invoice.paid` and `invoice.payment_failed` webhook events - the two invoice events
+Champion already subscribes to. One row per processed event:
+
+| Column | Source |
+|---|---|
+| `organization_id` | resolved the same way every other webhook event is (`Service.resolveOrgID`) |
+| `provider_invoice_id` | the invoice event's own `id` |
+| `provider_payment_intent_id`, `provider_subscription_id` | the invoice event's `payment_intent`/`subscription` |
+| `status` | `PAID` for `invoice.paid`, `FAILED` for `invoice.payment_failed` - **never** `OPEN`/`VOID`/`REFUNDED`: Champion does not subscribe to `invoice.voided` or a refund event, so those states are never fabricated (task Part D.17) |
+| `amount_cents` | `amount_paid` (paid) or `amount_due` (failed) - never re-derived from subscription/price state |
+| `currency`, `period_start`, `period_end` | the invoice event's own currency and first line item's period (Stripe invoices carry period per line, not one top-level period - `internal/billing/webhook.go`'s `webhookInvoice.period()`) |
+| `paid_at` / `failed_at` | stamped at processing time, whichever this event type is |
+| `stripe_event_id` | ties the row 1:1 to the already-deduped `billing_webhook_events` row |
+
+**Idempotency**: `RecordBillingTransaction` (`internal/repository/saas_subscriptions_repository.go`)
+does `INSERT ... ON CONFLICT ON CONSTRAINT uq_billing_transactions_event DO NOTHING`, keyed on
+`(provider, stripe_event_id)`. This is a defensive second layer - `HandleWebhook`'s own
+`billing_webhook_events` dedupe already guarantees `onInvoice` runs at most once per Stripe event -
+not the primary correctness mechanism, exactly mirroring how `RecordWebhookEventOnce` itself is
+described elsewhere in this document.
+
+**Owner-facing surface** (platform-admin only, `docs/ADMIN_API.md`):
+
+* `GET /api/admin/billing/plans` - the full catalog (public AND private plans, unlike the customer-
+  facing `GET /api/saas/billing/plans`), still never a Stripe price id (task Part C.13: Champion's
+  own catalog values are enough for an Owner Hub display).
+* `GET /api/admin/billing/payments` - cursor-paginated, filterable by `organizationId` and `status`,
+  newest first. No `plan` filter: a transaction does not record which plan it was for (see below).
+  No date-range filter: cursor pagination by id is already a stable, simple ordering that a date
+  range would only complicate without a demonstrated product need.
+* `GET /api/admin/organizations/{organizationID}` (existing route) now additionally returns
+  `recentPayments` (newest 10) - `current plan`/`subscription status`/`trial ends`/`current period
+  end`/`cancelAtPeriodEnd` were already present via the existing `subscription` block before this
+  phase; only the payment history itself was new.
+
+**`plan` is deliberately not on a payment/transaction row.** The webhook carries a Stripe price id,
+not a Champion plan key, and resolving one would need a second catalog lookup that could itself be
+wrong if the catalog changed since that payment - showing the organization's *current* plan next to
+a historical payment would misrepresent history. Left out rather than guessed, per this phase's own
+instruction not to invent state.
+
+Tests: `internal/billing/service_test.go`'s `TestWebhookInvoicePaidPersistsOneTransaction`,
+`TestWebhookInvoicePaymentFailedPersistsOneTransaction`, `TestWebhookDuplicateInvoiceDeliveryDoesNotDuplicateTransaction`;
+`internal/app/admin_api_billing_integration_test.go` (real routes + real PostgreSQL): plan catalog
+contents, payment list pagination/filters, the organization detail extension, and platform-admin-only
+authorization (a Player, a Client OWNER and a Client ADMIN are all denied).

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -191,4 +192,129 @@ ON CONFLICT ON CONSTRAINT uq_billing_webhook_events DO NOTHING RETURNING id`, pr
 		return false, fmt.Errorf("record webhook event: %w", err)
 	}
 	return true, nil
+}
+
+// Normalized payment statuses (Champion Access Model Phase 2, Part D). Only PAID and FAILED are
+// ever written - see the 0038_billing_transactions migration comment for why OPEN/VOID/REFUNDED
+// are not invented states.
+const (
+	TransactionPaid   = "PAID"
+	TransactionFailed = "FAILED"
+)
+
+// BillingTransaction is one persisted invoice payment/failure, normalized from a Stripe
+// invoice.paid or invoice.payment_failed webhook event - never fabricated, never backfilled.
+type BillingTransaction struct {
+	ID                                                                 int64
+	OrganizationID                                                     int64
+	Provider                                                           string
+	ProviderInvoiceID, ProviderPaymentIntentID, ProviderSubscriptionID string
+	Status                                                             string
+	AmountCents                                                        int64
+	Currency                                                           string
+	PeriodStart, PeriodEnd                                             *time.Time
+	PaidAt, FailedAt                                                   *time.Time
+	StripeEventID                                                      string
+	CreatedAt, UpdatedAt                                               time.Time
+}
+
+// RecordBillingTransaction inserts one normalized payment/failure row, idempotent on
+// (provider, stripe_event_id) - the same guarantee RecordWebhookEventOnce already gives the
+// caller one layer up, applied again here as a defensive backstop rather than relied on alone.
+func (r *SubscriptionRepository) RecordBillingTransaction(ctx context.Context, t BillingTransaction) error {
+	const q = `
+INSERT INTO billing_transactions(organization_id, provider, provider_invoice_id, provider_payment_intent_id, provider_subscription_id,
+  status, amount_cents, currency, period_start, period_end, paid_at, failed_at, stripe_event_id)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+ON CONFLICT ON CONSTRAINT uq_billing_transactions_event DO NOTHING`
+	_, err := r.pool.Exec(ctx, q, t.OrganizationID, t.Provider, t.ProviderInvoiceID, emptyToNil(t.ProviderPaymentIntentID), emptyToNil(t.ProviderSubscriptionID),
+		t.Status, t.AmountCents, t.Currency, t.PeriodStart, t.PeriodEnd, t.PaidAt, t.FailedAt, t.StripeEventID)
+	if err != nil {
+		return fmt.Errorf("record billing transaction: %w", err)
+	}
+	return nil
+}
+
+// BillingTransactionFilter narrows Owner's payment list (Part D.19). Newest first.
+type BillingTransactionFilter struct {
+	Limit          int
+	Cursor         int64 // last transaction id (keyset paging, like adminrepo's cursor)
+	OrganizationID int64 // 0 = every organization
+	Status         string
+}
+
+// ListBillingTransactions pages through billing_transactions, newest first, joined to the owning
+// organization's name for display. next is 0 on the last page.
+func (r *SubscriptionRepository) ListBillingTransactions(ctx context.Context, f BillingTransactionFilter) (rows []BillingTransactionRow, next int64, err error) {
+	limit := f.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	conds := []string{}
+	args := []any{}
+	arg := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	if f.Cursor > 0 {
+		conds = append(conds, "t.id < "+arg(f.Cursor))
+	}
+	if f.OrganizationID > 0 {
+		conds = append(conds, "t.organization_id = "+arg(f.OrganizationID))
+	}
+	if f.Status != "" {
+		conds = append(conds, "t.status = "+arg(f.Status))
+	}
+	where := ""
+	if len(conds) > 0 {
+		where = "WHERE " + strings.Join(conds, " AND ")
+	}
+	q := `
+SELECT t.id, t.organization_id, o.name, t.provider, t.provider_invoice_id, t.provider_subscription_id,
+       t.status, t.amount_cents, t.currency, t.period_start, t.period_end, t.paid_at, t.failed_at, t.created_at
+FROM billing_transactions t JOIN organizations o ON o.id = t.organization_id
+` + where + ` ORDER BY t.id DESC LIMIT ` + arg(limit+1)
+	pgRows, err := r.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list billing transactions: %w", err)
+	}
+	defer pgRows.Close()
+	for pgRows.Next() {
+		var row BillingTransactionRow
+		var subID *string
+		if err := pgRows.Scan(&row.ID, &row.OrganizationID, &row.OrganizationName, &row.Provider, &row.ProviderInvoiceID, &subID,
+			&row.Status, &row.AmountCents, &row.Currency, &row.PeriodStart, &row.PeriodEnd, &row.PaidAt, &row.FailedAt, &row.CreatedAt); err != nil {
+			return nil, 0, err
+		}
+		if subID != nil {
+			row.ProviderSubscriptionID = *subID
+		}
+		rows = append(rows, row)
+	}
+	if err := pgRows.Err(); err != nil {
+		return nil, 0, err
+	}
+	if len(rows) > limit {
+		rows = rows[:limit]
+		next = rows[len(rows)-1].ID
+	}
+	return rows, next, nil
+}
+
+// BillingTransactionRow is one Owner-visible payment/failure entry (Part D.20's safe field list -
+// no Stripe payment-method or card detail, ever).
+type BillingTransactionRow struct {
+	ID                                                  int64
+	OrganizationID                                      int64
+	OrganizationName                                    string
+	Provider, ProviderInvoiceID, ProviderSubscriptionID string
+	Status                                              string
+	AmountCents                                         int64
+	Currency                                            string
+	PeriodStart, PeriodEnd                              *time.Time
+	PaidAt, FailedAt                                    *time.Time
+	CreatedAt                                           time.Time
 }

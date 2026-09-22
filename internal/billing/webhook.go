@@ -99,11 +99,43 @@ type webhookCheckoutSession struct {
 	Metadata          map[string]string `json:"metadata"`
 }
 
-// webhookInvoice is the minimal shape read out of an invoice.* event.
+// webhookInvoice is the minimal shape read out of an invoice.* event. Amount/currency/status/
+// payment_intent are stable, top-level Invoice fields; period_start/period_end come from the
+// first line item's own period (an Invoice has no single top-level period - each line does),
+// mirroring webhookSubscription's own items.data[0] pattern above.
 type webhookInvoice struct {
-	ID           string `json:"id"`
-	Customer     jsonID `json:"customer"`
-	Subscription jsonID `json:"subscription"`
+	ID            string `json:"id"`
+	Customer      jsonID `json:"customer"`
+	Subscription  jsonID `json:"subscription"`
+	Status        string `json:"status"`
+	AmountPaid    int64  `json:"amount_paid"`
+	AmountDue     int64  `json:"amount_due"`
+	Currency      string `json:"currency"`
+	PaymentIntent jsonID `json:"payment_intent"`
+	Lines         struct {
+		Data []struct {
+			Period struct {
+				Start int64 `json:"start"`
+				End   int64 `json:"end"`
+			} `json:"period"`
+		} `json:"data"`
+	} `json:"lines"`
+}
+
+// period returns the invoice's billing period from its first line item, or zero times if the
+// event carried no line items (never fabricated - a missing period stays nil downstream).
+func (inv *webhookInvoice) period() (start, end time.Time) {
+	if len(inv.Lines.Data) == 0 {
+		return time.Time{}, time.Time{}
+	}
+	p := inv.Lines.Data[0].Period
+	if p.Start > 0 {
+		start = time.Unix(p.Start, 0).UTC()
+	}
+	if p.End > 0 {
+		end = time.Unix(p.End, 0).UTC()
+	}
+	return start, end
 }
 
 // ParsedEvent is one webhook event, decoded into exactly the fields Champion's reconciliation

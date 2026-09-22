@@ -3,6 +3,7 @@ package billing
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,14 +18,16 @@ import (
 // fakeStore is an in-memory Store (one row per organization, like the real table's
 // UNIQUE(organization_id)) so Service's logic is exercised without a database.
 type fakeStore struct {
-	mu     sync.Mutex
-	byOrg  map[int64]*repository.Subscription
-	events map[[2]string]bool // (provider, event_id) already recorded
-	nextID int64
+	mu           sync.Mutex
+	byOrg        map[int64]*repository.Subscription
+	events       map[[2]string]bool // (provider, event_id) already recorded
+	nextID       int64
+	transactions []repository.BillingTransaction
+	txSeen       map[[2]string]bool // (provider, stripe_event_id) already recorded, mirrors the real UNIQUE constraint
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{byOrg: map[int64]*repository.Subscription{}, events: map[[2]string]bool{}}
+	return &fakeStore{byOrg: map[int64]*repository.Subscription{}, events: map[[2]string]bool{}, txSeen: map[[2]string]bool{}}
 }
 
 func (f *fakeStore) GetForOrganization(_ context.Context, organizationID int64) (*repository.Subscription, error) {
@@ -121,6 +124,18 @@ func (f *fakeStore) RecordWebhookEventOnce(_ context.Context, provider, eventID,
 	}
 	f.events[k] = true
 	return true, nil
+}
+
+func (f *fakeStore) RecordBillingTransaction(_ context.Context, t repository.BillingTransaction) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := [2]string{t.Provider, t.StripeEventID}
+	if f.txSeen[k] {
+		return nil // mirrors ON CONFLICT ... DO NOTHING on uq_billing_transactions_event
+	}
+	f.txSeen[k] = true
+	f.transactions = append(f.transactions, t)
+	return nil
 }
 
 func newTestService(t *testing.T, catalogJSON string) (*Service, *fakeStore, *FakeProvider) {
@@ -667,6 +682,113 @@ func TestWebhookInvoicePaymentFailedMarksPastDueWithoutDeletingAnything(t *testi
 	}
 	if after.Plan != "PRO" {
 		t.Fatal("a payment failure must not change the plan or delete anything")
+	}
+}
+
+// --- billing_transactions persistence (Champion Access Model Phase 2, Part D) ------------------------
+
+func invoicePayload(eventID, eventType, invoiceID, customerID, subscriptionID string, amountPaid, amountDue int64, currency, paymentIntentID string, periodStart, periodEnd int64) []byte {
+	return []byte(fmt.Sprintf(`{"id":"%s","type":"%s","data":{"object":{
+		"id":"%s","customer":"%s","subscription":"%s","status":"paid",
+		"amount_paid":%d,"amount_due":%d,"currency":"%s","payment_intent":"%s",
+		"lines":{"data":[{"period":{"start":%d,"end":%d}}]}}}}`,
+		eventID, eventType, invoiceID, customerID, subscriptionID, amountPaid, amountDue, currency, paymentIntentID, periodStart, periodEnd))
+}
+
+func TestWebhookInvoicePaidPersistsOneTransaction(t *testing.T) {
+	svc, store, provider := newTestService(t, sampleCatalog)
+	ctx := context.Background()
+	activeOrg(t, ctx, svc, store, provider, 80, "PRO", "price_pro_month")
+	sub, _ := store.GetForOrganization(ctx, 80)
+	provider.Put(SubscriptionState{SubscriptionID: sub.ProviderSubscriptionID, CustomerID: sub.ProviderCustomerID, PriceID: sub.ProviderPriceID, StripeStatus: "active", StripeInterval: "month",
+		CurrentPeriodStart: time.Now(), CurrentPeriodEnd: time.Now().AddDate(0, 1, 0)})
+
+	periodStart, periodEnd := time.Now().Unix(), time.Now().AddDate(0, 1, 0).Unix()
+	payload := invoicePayload("evt_inv_paid_1", "invoice.paid", "in_paid_1", sub.ProviderCustomerID, sub.ProviderSubscriptionID, 1999, 1999, "USD", "pi_1", periodStart, periodEnd)
+	if err := svc.HandleWebhook(ctx, payload, sign(t, "whsec_test", payload)); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(store.transactions) != 1 {
+		t.Fatalf("expected exactly one persisted transaction, got %d: %+v", len(store.transactions), store.transactions)
+	}
+	tx := store.transactions[0]
+	if tx.OrganizationID != 80 || tx.Status != repository.TransactionPaid || tx.AmountCents != 1999 || tx.Currency != "usd" {
+		t.Fatalf("%+v", tx)
+	}
+	if tx.ProviderInvoiceID != "in_paid_1" || tx.ProviderPaymentIntentID != "pi_1" || tx.ProviderSubscriptionID != sub.ProviderSubscriptionID {
+		t.Fatalf("%+v", tx)
+	}
+	if tx.PaidAt == nil || tx.FailedAt != nil {
+		t.Fatalf("expected PaidAt set and FailedAt nil, got %+v", tx)
+	}
+	if tx.PeriodStart == nil || tx.PeriodEnd == nil {
+		t.Fatalf("expected the invoice's line-item period to be captured, got %+v", tx)
+	}
+	if tx.StripeEventID != "evt_inv_paid_1" {
+		t.Fatalf("%+v", tx)
+	}
+}
+
+func TestWebhookInvoicePaymentFailedPersistsOneTransaction(t *testing.T) {
+	svc, store, provider := newTestService(t, sampleCatalog)
+	ctx := context.Background()
+	activeOrg(t, ctx, svc, store, provider, 81, "PRO", "price_pro_month")
+	sub, _ := store.GetForOrganization(ctx, 81)
+	provider.Put(SubscriptionState{SubscriptionID: sub.ProviderSubscriptionID, CustomerID: sub.ProviderCustomerID, PriceID: sub.ProviderPriceID, StripeStatus: "past_due", StripeInterval: "month",
+		CurrentPeriodStart: time.Now(), CurrentPeriodEnd: time.Now().AddDate(0, 1, 0)})
+
+	payload := invoicePayload("evt_inv_failed_1", "invoice.payment_failed", "in_failed_1", sub.ProviderCustomerID, sub.ProviderSubscriptionID, 0, 1999, "usd", "pi_2", 0, 0)
+	if err := svc.HandleWebhook(ctx, payload, sign(t, "whsec_test", payload)); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(store.transactions) != 1 {
+		t.Fatalf("expected exactly one persisted transaction, got %d: %+v", len(store.transactions), store.transactions)
+	}
+	tx := store.transactions[0]
+	if tx.Status != repository.TransactionFailed || tx.AmountCents != 1999 {
+		t.Fatalf("a failed invoice must record amount_due (not amount_paid) with status FAILED: %+v", tx)
+	}
+	if tx.FailedAt == nil || tx.PaidAt != nil {
+		t.Fatalf("expected FailedAt set and PaidAt nil, got %+v", tx)
+	}
+	if tx.PeriodStart != nil || tx.PeriodEnd != nil {
+		t.Fatalf("no line-item period was supplied, expected nil period, got %+v", tx)
+	}
+}
+
+// TestWebhookDuplicateInvoiceDeliveryDoesNotDuplicateTransaction is the section 37 requirement:
+// redelivering the SAME Stripe event must never create a second billing_transactions row - proven
+// at two layers, the outer billing_webhook_events dedupe (which stops onInvoice from running a
+// second time at all) AND the defensive ON CONFLICT on billing_transactions itself.
+func TestWebhookDuplicateInvoiceDeliveryDoesNotDuplicateTransaction(t *testing.T) {
+	svc, store, provider := newTestService(t, sampleCatalog)
+	ctx := context.Background()
+	activeOrg(t, ctx, svc, store, provider, 82, "PRO", "price_pro_month")
+	sub, _ := store.GetForOrganization(ctx, 82)
+	provider.Put(SubscriptionState{SubscriptionID: sub.ProviderSubscriptionID, CustomerID: sub.ProviderCustomerID, PriceID: sub.ProviderPriceID, StripeStatus: "active", StripeInterval: "month",
+		CurrentPeriodStart: time.Now(), CurrentPeriodEnd: time.Now().AddDate(0, 1, 0)})
+
+	payload := invoicePayload("evt_inv_dup", "invoice.paid", "in_dup", sub.ProviderCustomerID, sub.ProviderSubscriptionID, 999, 999, "usd", "pi_3", 0, 0)
+	sig := sign(t, "whsec_test", payload)
+	for i := 0; i < 4; i++ {
+		if err := svc.HandleWebhook(ctx, payload, sig); err != nil {
+			t.Fatalf("delivery %d: %v", i, err)
+		}
+	}
+	if len(store.transactions) != 1 {
+		t.Fatalf("expected exactly one transaction after 4 redeliveries of the same event, got %d", len(store.transactions))
+	}
+
+	// Also exercise the defensive DB-layer dedupe directly (bypassing the outer
+	// billing_webhook_events guard), since that guard alone is not what
+	// uq_billing_transactions_event exists to prove.
+	if err := store.RecordBillingTransaction(ctx, store.transactions[0]); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.transactions) != 1 {
+		t.Fatalf("RecordBillingTransaction must be idempotent on (provider, stripe_event_id), got %d rows", len(store.transactions))
 	}
 }
 

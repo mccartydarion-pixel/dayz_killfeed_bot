@@ -1325,6 +1325,44 @@ components:
         planKey: { type: string }
         interval: { type: string, enum: [MONTHLY, YEARLY] }
 
+    PlayerServerSummary:
+      type: object
+      description: >-
+        One installation the acting user has a legitimate, proven player association with (docs/PLAYER_API.md).
+        organizationId is deliberately never included - a Player is not an organization member.
+      properties:
+        installationId: { type: integer, format: int64 }
+        serverName: { type: string }
+        platform: { type: string }
+        serverStatus: { type: string }
+        discordGuildName: { type: string }
+        lastSeenAt: { type: string, format: date-time, nullable: true }
+        linkedPlayerId: { type: integer, format: int64 }
+    PlayerServersResponse:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/PlayerServerSummary" } }
+        defaultInstallationId: { type: integer, format: int64, nullable: true, description: "Most-recently-active installation; null when items is empty." }
+    PlayerStats:
+      type: object
+      description: >-
+        Scoped strictly to one installation's own DayZ server (docs/PLAYER_API.md "Installation isolation").
+        bestStreak/currentStreak and the classic per-player faction are intentionally not included - both
+        are only tracked guild-wide in the current data model, not per-server.
+      properties:
+        installationId: { type: integer, format: int64 }
+        kills: { type: integer }
+        deaths: { type: integer }
+        kd: { type: number, format: double }
+        headshots: { type: integer }
+        longshots: { type: integer }
+        longestKillMeters: { type: number, format: double }
+        playtimeSeconds: { type: integer, format: int64 }
+        bountiesClaimed: { type: integer }
+        bountyValue: { type: integer, format: int64 }
+        faction: { type: string, nullable: true, description: "Faction Hub faction name on THIS installation, or null." }
+        lastSeenAt: { type: string, format: date-time, nullable: true }
+
   responses:
     Unauthorized:
       description: Missing/invalid service auth, or acting user not synced.
@@ -3060,6 +3098,32 @@ paths:
       responses:
         "200": { description: The catalog (empty items until a plan is approved and configured)., content: { application/json: { schema: { $ref: "#/components/schemas/BillingPlansResponse" } } } }
         "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/saas/player/servers:
+    get:
+      summary: >-
+        Every installation the acting user has a legitimate, proven player association with (docs/PLAYER_API.md).
+        Never organization-scoped - a Player is not an organization member. An unverified/never-observed user
+        gets an empty list (200), not an error.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+      responses:
+        "200": { description: The player's servers., content: { application/json: { schema: { $ref: "#/components/schemas/PlayerServersResponse" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/saas/player/servers/{installationID}/stats:
+    get:
+      summary: >-
+        The acting user's own stats on installationID, resolved server-side through their VERIFIED DayZ link -
+        the browser can never submit a playerId or gamertag as authority.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { name: installationID, in: path, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        "200": { description: The player's stats on this installation., content: { application/json: { schema: { $ref: "#/components/schemas/PlayerStats" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: "Unknown installation, or no proven association (non-enumerating - both cases return 404)." }
+        "409": { description: "PLAYER_IDENTITY_REQUIRED - no VERIFIED DayZ link for this installation's guild." }
 
   /api/saas/organizations/{organizationID}/billing/subscription:
     get:

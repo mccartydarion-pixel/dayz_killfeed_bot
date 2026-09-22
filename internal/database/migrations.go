@@ -1496,6 +1496,54 @@ CREATE TABLE IF NOT EXISTS billing_webhook_events (
 CREATE INDEX IF NOT EXISTS idx_billing_webhook_events_org ON billing_webhook_events(organization_id, received_at DESC);
 `,
 	},
+	{
+		Name: "0038_billing_transactions",
+		SQL: `
+-- Normalized payment/invoice history (Champion Access Model Phase 2, Part D). One row per
+-- processed invoice.paid/invoice.payment_failed webhook event - never fabricated, never backfilled
+-- from anything but the webhook itself. stripe_event_id ties a row 1:1 to the already-deduped
+-- billing_webhook_events row (UNIQUE(provider, event_id) there), so redelivery of the same Stripe
+-- event can never create a second transaction row even without re-checking that table.
+CREATE TABLE IF NOT EXISTS billing_transactions (
+    id BIGSERIAL PRIMARY KEY,
+    organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL,
+    provider_invoice_id TEXT NOT NULL,
+    provider_payment_intent_id TEXT,
+    provider_subscription_id TEXT,
+    -- Only PAID and FAILED are ever written: Champion only subscribes to invoice.paid and
+    -- invoice.payment_failed (docs/BILLING.md "Webhook events"). OPEN/VOID/REFUNDED are not
+    -- fabricated states - they would need Champion to also handle invoice.voided/charge.refunded,
+    -- which it does not yet.
+    status TEXT NOT NULL CHECK (status IN ('PAID','FAILED')),
+    amount_cents BIGINT NOT NULL,
+    currency TEXT NOT NULL,
+    period_start TIMESTAMPTZ,
+    period_end TIMESTAMPTZ,
+    paid_at TIMESTAMPTZ,
+    failed_at TIMESTAMPTZ,
+    stripe_event_id TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_billing_transactions_event UNIQUE (provider, stripe_event_id)
+);
+CREATE INDEX IF NOT EXISTS idx_billing_transactions_org ON billing_transactions(organization_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_billing_transactions_status ON billing_transactions(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_billing_transactions_invoice ON billing_transactions(provider, provider_invoice_id);
+`,
+	},
+	{
+		Name: "0039_player_api_lookup_index",
+		SQL: `
+-- Champion Access Model Phase 2 Part A/B (docs/PLAYER_API.md "Performance"): the player-facing
+-- API resolves FROM a Discord user id TO their player_links row before it knows a guild id, so
+-- neither existing UNIQUE constraint (guild_id, discord_user_id) or (guild_id, player_id) - both
+-- guild_id-first - can be used as an index for that direction. EXPLAIN ANALYZE against this exact
+-- query (SELECT ... FROM player_links WHERE discord_user_id=$1 AND status='VERIFIED') showed a
+-- sequential scan without this index, and an index scan with it.
+CREATE INDEX IF NOT EXISTS idx_player_links_discord_user ON player_links(discord_user_id, status);
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order, each transactionally. A
