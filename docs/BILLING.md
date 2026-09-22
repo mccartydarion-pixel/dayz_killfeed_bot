@@ -106,7 +106,7 @@ did (`EnsureTrial`), so this route never 404s for a fresh organization.
 
 ```
 POST /api/saas/organizations/{organizationID}/billing/checkout
-{ "planKey": "PRO", "interval": "MONTHLY", "returnPath": "/dashboard/org/5/billing?checkout=success" }
+{ "planKey": "PRO", "interval": "MONTHLY", "returnPath": "/dashboard/subscription?checkout=success" }
 ```
 
 **Organization OWNER/ADMIN only** (`requireOrganizationRole` - the same check every other mutating SaaS route uses); a MEMBER or a faction role (even LEADER) gets `403`. Backend flow (all in
@@ -167,7 +167,7 @@ interval.
 ## 11. Safe return URLs
 
 Checkout's `successUrl`/`cancelUrl` and the Portal's `returnUrl` are **never** built from a client-supplied host. The client may send an optional, **root-relative path only**
-(`returnPath: "/dashboard/org/5/billing"` - must start with `/`, never `//...` or contain a backslash, no scheme); the origin is always chosen server-side by `billing.ResolveOrigin`:
+(`returnPath: "/dashboard/subscription"` - must start with `/`, never `//...` or contain a backslash, no scheme); the origin is always chosen server-side by `billing.ResolveOrigin`:
 
 1. the request's `Origin` header, if it exactly matches a configured allowed origin;
 2. else the `Referer`'s scheme+host, if that matches;
@@ -176,11 +176,21 @@ Checkout's `successUrl`/`cancelUrl` and the Portal's `returnUrl` are **never** b
 `CHAMPION_BILLING_ALLOWED_ORIGINS` adds development origins (e.g. `http://localhost:3000`) to that allowlist; the production default is always included even if the variable is unset or doesn't
 mention it. A path that isn't a safe root-relative path is `400 INVALID_REQUEST` (`ErrInvalidReturnPath`).
 
+**Default routes** (used whenever a caller sends no `returnPath` at all): success `/dashboard/subscription?checkout=success`, cancel `/dashboard/subscription?checkout=cancelled`, portal return
+`/dashboard/subscription` - the current Champion website route. Nothing in this backend ever points at `/billing` (a retired page that no longer exists on the website; pointing Checkout's
+`cancel_url` at it caused a production 404 on cancellation).
+
+**Checkout's cancel URL is derived from the caller's `returnPath`, not from an unrelated default.** The website contract sends one `returnPath` for the *success* case
+(`/dashboard/subscription?checkout=success`); `billing.DeriveCancelPath` takes that same validated root-relative path and query, overwrites the `checkout` query parameter to `cancelled` via
+`net/url` (never string substitution), and leaves every other query parameter untouched - so cancelling always lands back on the same billing page the success redirect would have, with
+`checkout=cancelled` instead of `checkout=success`. Only when the caller sends no `returnPath` at all does Checkout fall back to its own configured `cancelPath` default above. The Customer Portal
+is unaffected by this - it has always taken its own single `returnPath` (or its own default) directly, with no success/cancel split.
+
 ## 12. Customer Portal
 
 ```
 POST /api/saas/organizations/{organizationID}/billing/portal
-{ "returnPath": "/dashboard/org/5/billing" }
+{ "returnPath": "/dashboard/subscription" }
 ```
 
 Organization OWNER/ADMIN only. Requires an existing Stripe customer (`409 NO_BILLING_CUSTOMER` if the organization has never checked out). Returns `{ "portalUrl": "..." }`. The customer can change

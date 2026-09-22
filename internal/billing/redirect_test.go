@@ -105,3 +105,31 @@ func TestSafeReturnURLUsesDefaultWhenPathEmpty(t *testing.T) {
 		t.Fatalf("got %q ok=%v", u, ok)
 	}
 }
+
+func TestDeriveCancelPath(t *testing.T) {
+	cases := []struct {
+		name       string
+		returnPath string
+		wantPath   string
+		wantOK     bool
+	}{
+		{"overwrites an existing checkout=success", "/dashboard/subscription?checkout=success", "/dashboard/subscription?checkout=cancelled", true},
+		{"adds checkout to a bare path", "/settings/org/9", "/settings/org/9?checkout=cancelled", true},
+		{"preserves other query params", "/dashboard/subscription?checkout=success&ref=email", "/dashboard/subscription?checkout=cancelled&ref=email", true},
+		{"empty returnPath", "", "", false},
+		{"scheme-relative rejected, same as SafeReturnURL", "//evil.example", "", false},
+		{"absolute URL rejected", "https://evil.example/x", "", false},
+		{"backslash escape rejected", "/\\evil.example", "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := DeriveCancelPath(c.returnPath)
+			if ok != c.wantOK {
+				t.Fatalf("ok = %v, want %v (got %q)", ok, c.wantOK, got)
+			}
+			if ok && got != c.wantPath {
+				t.Fatalf("got %q, want %q", got, c.wantPath)
+			}
+		})
+	}
+}

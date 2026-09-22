@@ -68,13 +68,13 @@ func NewService(store Store, catalog *Catalog, provider Provider, opt Options) *
 	s := &Service{store: store, catalog: catalog, provider: provider, webhookSecret: opt.WebhookSecret, allowedOrigins: origins,
 		successPath: opt.DefaultSuccessPath, cancelPath: opt.DefaultCancelPath, portalPath: opt.DefaultPortalPath}
 	if s.successPath == "" {
-		s.successPath = "/billing?checkout=success"
+		s.successPath = "/dashboard/subscription?checkout=success"
 	}
 	if s.cancelPath == "" {
-		s.cancelPath = "/billing?checkout=cancelled"
+		s.cancelPath = "/dashboard/subscription?checkout=cancelled"
 	}
 	if s.portalPath == "" {
-		s.portalPath = "/billing"
+		s.portalPath = "/dashboard/subscription"
 	}
 	return s
 }
@@ -190,7 +190,16 @@ func (s *Service) Checkout(ctx context.Context, r *http.Request, organizationID 
 	if !ok {
 		return nil, ErrInvalidReturnPath
 	}
-	cancelURL, ok := SafeReturnURL(origin, "", s.cancelPath)
+	// The website contract sends one returnPath (the billing page, with "?checkout=success"); derive
+	// the cancel URL from that same page rather than an unrelated, separately-configured default, so
+	// a caller that returns to e.g. "/dashboard/subscription" also cancels back to
+	// "/dashboard/subscription", never a stale route the caller never mentioned. Falls back to
+	// s.cancelPath when no returnPath was supplied at all.
+	cancelPath := s.cancelPath
+	if derived, ok := DeriveCancelPath(req.ReturnPath); ok {
+		cancelPath = derived
+	}
+	cancelURL, ok := SafeReturnURL(origin, cancelPath, s.cancelPath)
 	if !ok {
 		return nil, ErrInvalidReturnPath
 	}

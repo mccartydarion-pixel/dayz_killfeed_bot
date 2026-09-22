@@ -79,6 +79,23 @@ func normalizeOrigin(o string) string {
 	return u.Scheme + "://" + u.Host
 }
 
+// parseRootRelativePath validates that path is a safe, root-relative client path - it must start
+// with "/", must not be scheme-relative ("//evil.example"), must not contain a backslash escape, and
+// must not parse into anything carrying a scheme or host - and returns its parsed form. Shared by
+// SafeReturnURL (which turns a validated path into an absolute redirect URL) and DeriveCancelPath
+// (which needs the validated path's own components, not yet joined to an origin), so both apply
+// exactly the same rules; neither performs any string-level substitution on unvalidated input.
+func parseRootRelativePath(path string) (*url.URL, bool) {
+	if !strings.HasPrefix(path, "/") || strings.HasPrefix(path, "//") || strings.ContainsAny(path, "\\") {
+		return nil, false
+	}
+	u, err := url.Parse(path)
+	if err != nil || u.IsAbs() || u.Host != "" || u.Scheme != "" {
+		return nil, false
+	}
+	return u, true
+}
+
 // SafeReturnURL builds an absolute URL from a server-chosen origin and a client-supplied path. The
 // path must be root-relative ("/dashboard/..."), must not be scheme-relative ("//evil.example") or
 // contain a scheme/backslash escape, and must not itself carry a fragment that could be used to
@@ -89,12 +106,27 @@ func SafeReturnURL(origin, path, def string) (string, bool) {
 	if path == "" {
 		path = def
 	}
-	if !strings.HasPrefix(path, "/") || strings.HasPrefix(path, "//") || strings.ContainsAny(path, "\\") {
-		return "", false
-	}
-	u, err := url.Parse(path)
-	if err != nil || u.IsAbs() || u.Host != "" || u.Scheme != "" {
+	u, ok := parseRootRelativePath(path)
+	if !ok {
 		return "", false
 	}
 	return strings.TrimRight(origin, "/") + u.String(), true
+}
+
+// DeriveCancelPath returns returnPath's own root-relative path and query, with the query's
+// "checkout" parameter (if any) overwritten to "cancelled" - every other query parameter is
+// preserved. It lets Checkout build a same-page cancel URL from the single returnPath the Champion
+// website contract sends for success, without ever concatenating strings: the path is validated by
+// the same parseRootRelativePath rules as SafeReturnURL, and the query is rewritten via net/url, not
+// substring replacement. ok is false when returnPath is empty or fails that validation, in which case
+// the caller should fall back to its own configured cancel path.
+func DeriveCancelPath(returnPath string) (string, bool) {
+	u, ok := parseRootRelativePath(returnPath)
+	if !ok {
+		return "", false
+	}
+	q := u.Query()
+	q.Set("checkout", "cancelled")
+	u.RawQuery = q.Encode()
+	return u.String(), true
 }
