@@ -77,6 +77,13 @@ func (p *ADMMonitorPublisher) deleteMessage(channelID, messageID string) {
 	}
 }
 
+// HandleDownload posts a standalone admin-log message only for a state change
+// worth interrupting the channel for (a healthy<->failing transition, a
+// rotation, or a checkpoint failure) - never for a routine successful
+// download, which happens roughly once per poll cycle during active
+// gameplay and would otherwise flood the admin-logs channel with a new
+// message every ~10s (the persistent Update() panel already reflects
+// current file/offset/health for anyone who wants that detail on demand).
 func (p *ADMMonitorPublisher) HandleDownload(report killfeed.DownloadReport) {
 	if p == nil || p.editor == nil || p.store == nil {
 		return
@@ -85,18 +92,22 @@ func (p *ADMMonitorPublisher) HandleDownload(report killfeed.DownloadReport) {
 	if channelID == "" {
 		return
 	}
+	routine := report.Result == "success" || report.Result == "success_no_new_events"
 	if report.Result == "failure" {
 		p.downloadFailed = true
-	} else if report.Result == "success" || report.Result == "success_no_new_events" {
-		if p.downloadFailed {
-			report.Result = "recovered"
-			p.downloadFailed = false
-		}
+	} else if routine && p.downloadFailed {
+		report.Result = "recovered"
+		p.downloadFailed = false
 	}
+	notable := report.Result == "recovered" || report.Result == "failure" || report.Result == "checkpoint_failed" || report.Rotation || report.Truncated
+	if !notable {
+		return
+	}
+	// Only a notable event forces the separate Update() status panel to
+	// refresh ahead of its own interval throttle - a routine download must
+	// never bypass that throttle (see above).
 	p.forceRefresh = true
-	if report.Result == "recovered" || report.Result == "failure" || report.Result == "success" || report.Result == "success_no_new_events" || report.Result == "checkpoint_failed" || report.Rotation || report.Truncated {
-		_, _ = p.editor.ChannelMessageSendEmbed(channelID, BuildADMDownloadEmbed(report))
-	}
+	_, _ = p.editor.ChannelMessageSendEmbed(channelID, BuildADMDownloadEmbed(report))
 }
 
 func BuildADMDownloadEmbed(report killfeed.DownloadReport) *discordgo.MessageEmbed {

@@ -4,6 +4,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -140,13 +141,11 @@ func fingerprint(ev *Event) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// joinParts builds one fingerprint's "|"-separated source string. Uses
+// strings.Join rather than repeated += (Champion Performance Phase 1,
+// section 20): the += form reallocates and copies the growing string on
+// every part, which is wasted work on the hot per-event fingerprint path -
+// strings.Join pre-sizes a single allocation instead.
 func joinParts(parts []string) string {
-	out := ""
-	for i, p := range parts {
-		if i > 0 {
-			out += "|"
-		}
-		out += p
-	}
-	return out
+	return strings.Join(parts, "|")
 }

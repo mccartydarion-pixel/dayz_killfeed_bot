@@ -96,7 +96,14 @@ func (e *Engine) probeAlternatives(ctx context.Context, ranked []candidateRank) 
 
 		grew := seen && size > prev.Size && prev.AlignedOffset <= size &&
 			bytes.IndexByte(content[prev.AlignedOffset:], '\n') >= 0
-		slog.Info("component=adm_discovery", "event", "alt_probe",
+		// Debug, not Info (Champion Performance Phase 1, section 32/33): this
+		// is a per-candidate, per-probe-round diagnostic that repeats while the
+		// engine sits in the stale-metadata fallback path - the meaningful
+		// outcome (an actual source switch) is already logged at Info
+		// separately ("component=adm","event","rotation") when grew leads to
+		// finishProbeSwitch; this raw attempt log carries no business meaning
+		// on its own.
+		slog.Debug("component=adm_discovery", "event", "alt_probe",
 			"server_id", e.serverID, "path", lf.Path, "modified_at", lf.Modified.UTC().Format(time.RFC3339),
 			"metadata_size", lf.Size, "size_a", prev.Size, "size_b", size, "baseline_only", !seen, "growth", grew)
 		if !grew {
