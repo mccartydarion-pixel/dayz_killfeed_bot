@@ -21,4 +21,9 @@ type DownloadReport struct {
 	Truncated         bool
 	CheckpointCurrent bool
 	At                time.Time
+	// Mode is "full" for the existing ReadLog path, or a nitrado.Capability string (e.g.
+	// "SEEK_SUPPORTED") when a partial read served this download (Champion Performance Phase 1.5,
+	// task section 29). Always "full" unless NITRADO_DELTA_READ_MODE is set to something other
+	// than "off".
+	Mode string
 }

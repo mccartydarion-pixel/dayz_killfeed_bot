@@ -40,6 +40,15 @@ type StatSource interface {
 	StatFile(ctx context.Context, serviceID, path string) (*nitrado.LogFile, error)
 }
 
+// DeltaSource is an optional capability for partial ADM reads (Champion Performance Phase 1.5,
+// docs/NITRADO_DELTA_READS.md). *nitrado.Client implements it; a fake LogSource in a test that
+// doesn't implement it simply never offers delta reads, and the engine behaves exactly as if
+// NITRADO_DELTA_READ_MODE were "off" - the same optional-capability pattern StatSource already
+// uses above.
+type DeltaSource interface {
+	ReadDelta(ctx context.Context, serviceID, path string, fromOffset, targetSize int64, mode nitrado.DeltaMode) (*nitrado.PartialReadResult, bool)
+}
+
 const (
 	ADMRemoteMetadataPollInterval = 10 * time.Second
 	ADMMonitorRefreshInterval     = 5 * time.Minute
@@ -268,24 +277,24 @@ type Engine struct {
 	players   *PlayerTracker
 	onPlayers func(count int) // optional hook when the online player set changes
 
-	previousFileName          string
-	lastRotationAt            time.Time
-	lastConnectAt             time.Time
-	lastDisconnectAt          time.Time
-	lastPresenceEvent         string
-	lastPersistenceResult     string
-	lastVoicePublishCount     int
-	lastVoicePublishAt        time.Time
-	lastVoicePublishResult    string
-	presenceMu                sync.RWMutex
-	lastDownloadAt            time.Time
-	rotationPending           bool
-	lastStaleProbeAt          time.Time
+	previousFileName       string
+	lastRotationAt         time.Time
+	lastConnectAt          time.Time
+	lastDisconnectAt       time.Time
+	lastPresenceEvent      string
+	lastPersistenceResult  string
+	lastVoicePublishCount  int
+	lastVoicePublishAt     time.Time
+	lastVoicePublishResult string
+	presenceMu             sync.RWMutex
+	lastDownloadAt         time.Time
+	rotationPending        bool
+	lastStaleProbeAt       time.Time
 	// lastAltProbeAt/altProbeHistory/directSizeHint back the direct-read
 	// probing of non-selected candidates (adm_alt_probe.go).
-	lastAltProbeAt  time.Time
-	altProbeHistory map[string]directProbeObservation
-	directSizeHint  directSizeHint
+	lastAltProbeAt            time.Time
+	altProbeHistory           map[string]directProbeObservation
+	directSizeHint            directSizeHint
 	lastStaleProbeFingerprint string
 	newestDiscoveredFile      string
 	newestDiscoveredModified  time.Time
@@ -324,6 +333,15 @@ type Engine struct {
 	serverID         int64
 	checkpointStore  CheckpointStore
 	checkpointLoaded bool
+
+	// deltaMode gates the partial-read path (Champion Performance Phase 1.5). Default
+	// nitrado.DeltaModeOff (see NewEngine) - the full-download path (ReadLog) is completely
+	// unaffected unless an operator explicitly sets NITRADO_DELTA_READ_MODE.
+	deltaMode nitrado.DeltaMode
+	// deltaBytesReceived/fullReadBytesAvoided are cumulative, process-lifetime counters for the
+	// admin performance snapshot (task section 30) - never reset, never used for any decision.
+	deltaBytesReceived   int64
+	fullReadBytesAvoided int64
 }
 
 // StartAtLogTail marks this engine to begin at the end of the log on its first
@@ -389,7 +407,24 @@ func NewEngine(client LogSource, serviceID string, parser Parser) *Engine {
 		dedupe:       NewDeduplicator(90*time.Second, 8192),
 		players:      NewPlayerTracker(),
 		diagnostics:  NewRuntimeDiagnostics(0),
+		deltaMode:    nitrado.ParseDeltaMode(os.Getenv("NITRADO_DELTA_READ_MODE")),
 	}
+}
+
+// DeltaStats is a point-in-time snapshot of this engine's partial-read counters (task section 30),
+// exposed through the internal admin performance view - never a customer-facing surface.
+type DeltaStats struct {
+	Mode                 string
+	BytesReceived        int64
+	FullReadBytesAvoided int64
+}
+
+// DeltaStats returns the engine's cumulative delta-read counters. Safe on a nil Engine.
+func (e *Engine) DeltaStats() DeltaStats {
+	if e == nil {
+		return DeltaStats{Mode: string(nitrado.DeltaModeOff)}
+	}
+	return DeltaStats{Mode: string(e.deltaMode), BytesReceived: e.deltaBytesReceived, FullReadBytesAvoided: e.fullReadBytesAvoided}
 }
 
 func (e *Engine) SetDiagnostics(d *RuntimeDiagnostics) {
@@ -1126,6 +1161,19 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 	}
 	downloadStarted := time.Now()
 
+	// Partial-read attempt (Champion Performance Phase 1.5, docs/NITRADO_DELTA_READS.md). Only
+	// tried when there IS a prior offset to resume from (a cold/first read of a file always goes
+	// through the full, already-proven ReadLog path - task section 22's cold-start protection) and
+	// only for genuine growth (truncation is already handled above, before this point, by resetting
+	// oldOffset to 0). On ANY failure this falls straight through to the unchanged full-read code
+	// below, exactly as if delta mode were off - ReadLog is never modified or bypassed by this.
+	if e.deltaMode != nitrado.DeltaModeOff && oldOffset > 0 && current.Size > oldOffset {
+		if handled := e.tryDeltaPoll(ctx, current, oldOffset, previousFile, rotation, downloadStarted); handled {
+			e.reportPoll()
+			return nil
+		}
+	}
+
 	slog.Info("component=adm", "event", "download_started", "server_id", e.serverID, "file", current.Name, "remote_size", current.Size)
 	if e.diagnostics != nil {
 		e.diagnostics.Update(func(s *RuntimeDiagnosticSnapshot) { s.LastDownloadAttempt = time.Now() })
@@ -1248,6 +1296,89 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 
 	e.reportPoll()
 	return nil
+}
+
+// tryDeltaPoll attempts a partial read for the current poll cycle, processing it through the exact
+// same tracker/parser/checkpoint machinery pollSelected's full-read path uses (task section 4: no
+// Nitrado-specific logic in the parser - this is the killfeed/nitrado boundary, not a parallel
+// implementation of line parsing). handled=false means nothing was consumed or checkpointed and the
+// caller must fall through to the unchanged full-read path below it - a delta failure can never
+// leave the tracker in a half-applied state (task section 13).
+func (e *Engine) tryDeltaPoll(ctx context.Context, current *nitrado.LogFile, oldOffset int64, previousFile string, rotation bool, downloadStarted time.Time) (handled bool) {
+	deltaSource, ok := e.client.(DeltaSource)
+	if !ok {
+		return false
+	}
+	targetSize := current.Size // captured once (task section 19) - a still-growing remote file during this read is not chased within this cycle
+	result, ok := deltaSource.ReadDelta(ctx, e.serviceID, current.Path, oldOffset, targetSize, e.deltaMode)
+	if !ok {
+		return false
+	}
+	downloadDuration := time.Since(downloadStarted)
+	tail := result.Data
+	saved := targetSize - int64(len(tail))
+	if saved < 0 {
+		saved = 0
+	}
+	e.deltaBytesReceived += int64(len(tail))
+	e.fullReadBytesAvoided += saved
+	slog.Debug("component=adm", "event", "partial_read_complete", "server_id", e.serverID, "file", current.Name,
+		"download_mode", result.Method, "requested_offset", oldOffset, "requested_bytes", targetSize-oldOffset,
+		"received_bytes", len(tail), "remote_size", targetSize, "saved_bytes", saved, "duration_ms", downloadDuration.Milliseconds())
+
+	e.tracker.LineBuffer = string(tail)
+	lineChunks := e.tracker.DrainCompleteLinesWithOffsets(oldOffset)
+	eventsParsed := 0
+	newOffset := oldOffset
+	for _, chunk := range lineChunks {
+		parsed, processErr := e.processLine(chunk.Text)
+		if parsed {
+			eventsParsed++
+		}
+		if processErr != nil {
+			e.tracker.LineBuffer = string(tail[newOffset-oldOffset:])
+			e.tracker.UpdateCheckpoint(e.serviceID, current.Path, targetSize, current.Modified, newOffset)
+			checkpointOK := e.saveDurableCheckpoint(ctx, current, newOffset)
+			report := DownloadReport{ServerID: e.serverID, File: current.Name, PreviousFile: previousFile, RemoteSize: targetSize, DownloadedBytes: int64(len(tail)), PreviousOffset: oldOffset, NewOffset: newOffset, NewBytes: newOffset - oldOffset, EventsParsed: eventsParsed, Duration: downloadDuration, Result: "persistence_failed", Rotation: rotation, CheckpointCurrent: checkpointOK, At: time.Now(), Mode: result.Method}
+			e.emitDownloadReport(report)
+			e.rotationPending = false
+			return true
+		}
+		newOffset = chunk.EndOffset
+	}
+	if len(lineChunks) == 0 {
+		newOffset = oldOffset + int64(len(tail)) - int64(len(e.tracker.LineBuffer))
+	}
+	bytesConsumed := newOffset - oldOffset
+
+	e.bytesProcessed += bytesConsumed
+	e.linesDiscovered += int64(len(lineChunks))
+	e.lastLogChange = e.lastPoll
+	e.tracker.UpdateCheckpoint(e.serviceID, current.Path, targetSize, current.Modified, newOffset)
+	checkpointOK := e.saveDurableCheckpoint(ctx, current, newOffset)
+	if e.diagnostics != nil {
+		e.diagnostics.Update(func(s *RuntimeDiagnosticSnapshot) {
+			s.CheckpointOffset = newOffset
+			s.CheckpointRemoteSize = targetSize
+			s.CheckpointLastSaved = time.Now()
+			s.LastIncrementalParse = time.Now()
+			s.CompleteLines = len(lineChunks)
+			s.PartialLineBuffered = len(e.tracker.LineBuffer) > 0
+			s.TrackerCount = e.players.OnlineCount()
+		})
+	}
+	resultStr := "success"
+	if eventsParsed == 0 {
+		resultStr = "success_no_new_events"
+	}
+	if !checkpointOK {
+		resultStr = "checkpoint_failed"
+	}
+	report := DownloadReport{ServerID: e.serverID, File: current.Name, PreviousFile: previousFile, RemoteSize: targetSize, DownloadedBytes: int64(len(tail)), PreviousOffset: oldOffset, NewOffset: newOffset, NewBytes: bytesConsumed, EventsParsed: eventsParsed, Duration: downloadDuration, Result: resultStr, Rotation: rotation, CheckpointCurrent: checkpointOK, At: time.Now(), Mode: result.Method}
+	e.emitDownloadReport(report)
+	e.rotationPending = false
+	slog.Info("component=adm", "event", "download_complete", "server_id", e.serverID, "file", current.Name, "download_mode", result.Method, "remote_size", targetSize, "downloaded_bytes", len(tail), "previous_offset", oldOffset, "new_offset", newOffset, "new_bytes", bytesConsumed, "events_parsed", eventsParsed, "duration_ms", downloadDuration.Milliseconds(), "result", resultStr, "timestamp", report.At.UTC().Format(time.RFC3339))
+	return true
 }
 
 func (e *Engine) saveDurableCheckpoint(ctx context.Context, current *nitrado.LogFile, offset int64) bool {
