@@ -1462,6 +1462,40 @@ CREATE INDEX IF NOT EXISTS idx_shop_purchase_items_purchase ON shop_purchase_ite
 CREATE INDEX IF NOT EXISTS idx_shop_purchase_items_product ON shop_purchase_items(product_id);
 `,
 	},
+	{
+		// Champion Billing Phase 1 (docs/BILLING.md): Stripe fields on the existing subscriptions row
+		// (still one row per organization - no parallel customer/subscription table) plus a webhook
+		// dedupe log. provider/provider_customer_id/provider_subscription_id already existed
+		// (0024_saas_foundation) and stay NULL until an organization actually checks out.
+		Name: "0037_billing_stripe",
+		SQL: `
+ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS provider_price_id TEXT;
+ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS billing_interval TEXT;
+ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS current_period_start TIMESTAMPTZ;
+ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS cancel_at_period_end BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS canceled_at TIMESTAMPTZ;
+-- trial_consumed prevents an organization from getting a fresh Stripe trial on every checkout
+-- (cancel, wait, check out again): once a Stripe subscription has ever been recorded for the
+-- organization, no later checkout is given subscription_data.trial_period_days.
+ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS trial_consumed BOOLEAN NOT NULL DEFAULT FALSE;
+CREATE INDEX IF NOT EXISTS idx_subscriptions_provider_customer ON subscriptions(provider_customer_id) WHERE provider_customer_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_subscriptions_provider_subscription ON subscriptions(provider_subscription_id) WHERE provider_subscription_id IS NOT NULL;
+
+-- One row per processed Stripe event id: webhook handling starts with an INSERT ... ON CONFLICT DO
+-- NOTHING against this table, so a duplicated delivery (Stripe retries on anything but a 2xx) is
+-- detected before any subscription row is touched, race-safe under the UNIQUE constraint.
+CREATE TABLE IF NOT EXISTS billing_webhook_events (
+    id BIGSERIAL PRIMARY KEY,
+    provider TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    organization_id BIGINT REFERENCES organizations(id) ON DELETE SET NULL,
+    received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_billing_webhook_events UNIQUE (provider, event_id)
+);
+CREATE INDEX IF NOT EXISTS idx_billing_webhook_events_org ON billing_webhook_events(organization_id, received_at DESC);
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order, each transactionally. A

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/yourname/dayz-killfeed/internal/assetstore"
+	"github.com/yourname/dayz-killfeed/internal/billing"
 	"github.com/yourname/dayz-killfeed/internal/config"
 	"github.com/yourname/dayz-killfeed/internal/economy"
 	"github.com/yourname/dayz-killfeed/internal/factionassets"
@@ -41,6 +42,12 @@ type factionWorld struct {
 	member string              // MEMBER of org A
 	// Players: synced Champion users who belong to NO organization.
 	players []string
+
+	// billingProvider is the fake Stripe backing a.Billing (docs section 5: no test ever calls the
+	// real Stripe API). Billing tests drive it directly (CompleteCheckout/Put) to simulate what a
+	// webhook would otherwise report.
+	billingProvider *billing.FakeProvider
+	billingCatalog  string // the raw CHAMPION_BILLING_PLANS_JSON newFactionWorld loaded, for reference
 }
 
 func newFactionWorld(t *testing.T) *factionWorld {
@@ -80,6 +87,14 @@ func newFactionWorld(t *testing.T) *factionWorld {
 	a.saasShopPurchaseLimiter = newSaaSRateLimiter(time.Hour, 100000)
 	a.saasShopAdminLimiter = newSaaSRateLimiter(time.Hour, 100000)
 	a.registerShopRoutes()
+	billingCatalog, err := billing.LoadCatalog(billingTestCatalogJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	billingProvider := billing.NewFakeProvider()
+	a.Billing = billing.NewService(a.SaaSSubscriptions, billingCatalog, billingProvider, billing.Options{WebhookSecret: "whsec_test"})
+	a.saasBillingActionLimiter = newSaaSRateLimiter(time.Hour, 100000)
+	a.registerBillingRoutes()
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = srv.ListenAndServe(ctx) }()
 	t.Cleanup(func() {
@@ -89,7 +104,7 @@ func newFactionWorld(t *testing.T) *factionWorld {
 		_ = srv.Shutdown(shutdown)
 	})
 
-	w := &factionWorld{t: t, a: a, base: "http://127.0.0.1:" + port, store: store}
+	w := &factionWorld{t: t, a: a, base: "http://127.0.0.1:" + port, store: store, billingProvider: billingProvider, billingCatalog: billingTestCatalogJSON}
 	w.a1 = buildInstallationFixture(t, a, verifier)
 	w.b1 = buildInstallationFixture(t, a, verifier)
 	for _, f := range []installationFixture{w.a1, w.b1} {

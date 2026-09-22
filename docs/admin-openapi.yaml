@@ -98,12 +98,14 @@ components:
     Subscription:
       type: object
       nullable: true
-      description: No payment-provider data; billing is not integrated.
+      description: Billing state via Stripe (docs/BILLING.md) - no Stripe id or payment detail is ever exposed here.
       properties:
         plan: { type: string }
         status: { $ref: "#/components/schemas/SubscriptionStatus" }
         trialEndsAt: { type: string, format: date-time, nullable: true }
         currentPeriodEnd: { type: string, format: date-time, nullable: true }
+        billingInterval: { type: string, enum: [MONTHLY, YEARLY] }
+        cancelAtPeriodEnd: { type: boolean }
         entitlements: { type: array, items: { type: string } }
         createdAt: { type: string, format: date-time, nullable: true }
         updatedAt: { type: string, format: date-time, nullable: true }
@@ -182,6 +184,8 @@ components:
         status: { $ref: "#/components/schemas/SubscriptionStatus" }
         trialEndsAt: { type: string, format: date-time, nullable: true }
         currentPeriodEnd: { type: string, format: date-time, nullable: true }
+        billingInterval: { type: string, enum: [MONTHLY, YEARLY], description: "Populated once Stripe billing has reconciled a subscription (docs/BILLING.md). No Stripe id, no payment detail." }
+        cancelAtPeriodEnd: { type: boolean }
         entitlements: { type: array, items: { type: string } }
         installationCount: { type: integer }
         createdAt: { type: string, format: date-time, nullable: true }

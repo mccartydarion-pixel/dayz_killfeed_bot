@@ -1130,6 +1130,29 @@ accepted value (`DISCORD_ROLE`, `IN_GAME_FUTURE` are reserved). Two installation
 New error codes: `SHOP_PRODUCT_NOT_FOUND` (404), `SHOP_PRODUCT_DISABLED` (409), `SHOP_CATEGORY_NOT_FOUND` (404), `OUT_OF_STOCK` (409), `PURCHASE_LIMIT_REACHED` (409), `INVALID_QUANTITY` (400), `DUPLICATE_PURCHASE` (409), `PURCHASE_NOT_FOUND` (404),
 `INVALID_PURCHASE_STATUS` (409), `SHOP_FORBIDDEN` (403); `INSUFFICIENT_FUNDS` (409) is shared with the economy. Rate limits (per acting user): purchase 10/min, admin mutations (create/update, fulfill, refund) 30/min.
 
+## Champion Billing (Phase 1)
+
+Stripe subscriptions, hosted checkout, the Customer Portal and webhook reconciliation on top of the existing `subscriptions` row (one per organization). Full contract, status mapping, trial
+handling, security review and the exact DTOs in `docs/BILLING.md`. **No plan/price is approved yet** - see `docs/BILLING.md` section 25 for the commercial decisions required; until
+`CHAMPION_BILLING_PLANS_JSON` is configured the plans API returns an empty list and checkout refuses every plan key.
+
+| Route | Who | Notes |
+|---|---|---|
+| `GET /api/saas/billing/plans` | any synced user | public plan catalog; no organization context, no Stripe price id |
+| `GET .../organizations/{organizationID}/billing/subscription` | any member | plan, status, billing interval, trial/period, `cancelAtPeriodEnd`, entitlements, `canManageBilling` |
+| `POST .../billing/checkout` | OWNER/ADMIN | `{ planKey, interval, returnPath? }` -> `{ checkoutUrl }` |
+| `POST .../billing/portal` | OWNER/ADMIN | `{ returnPath? }` -> `{ portalUrl }`; `409 NO_BILLING_CUSTOMER` before any checkout |
+| `POST .../billing/plan` | OWNER/ADMIN | `{ planKey, interval }` -> the summary; applies immediately with Stripe's default proration (both upgrade and downgrade) |
+| `POST .../billing/cancel` | OWNER/ADMIN | schedules cancellation at period end; the subscription stays active until then |
+| `POST .../billing/reactivate` | OWNER/ADMIN | undoes a scheduled cancellation while still active |
+| `POST /api/saas/billing/webhook` | **Stripe only** | not behind the website's bearer token - authenticates via `Stripe-Signature` (`STRIPE_WEBHOOK_SECRET`); idempotent by Stripe event id |
+
+`planKey`/`interval` are always resolved to a Stripe price **server-side** from the catalog - a client never supplies a price. Checkout/portal return URLs are never a client-supplied host: only a
+root-relative `returnPath` is accepted, combined with a server-chosen, allowlisted origin (`docs/BILLING.md` "Safe return URLs"; production default `https://championshp.vip`).
+
+New error codes: `INVALID_PLAN` (400), `NO_ACTIVE_SUBSCRIPTION` (409), `NO_BILLING_CUSTOMER` (409), `BILLING_UNAVAILABLE` (503, Stripe not configured on this environment). Rate limit: 20 billing
+actions per minute per acting user (checkout/portal/plan/cancel/reactivate share the budget); every read is unlimited.
+
 ## Request/response DTOs
 
 None of these ever include a Nitrado ciphertext/IV/auth tag, a Discord
@@ -1254,6 +1277,9 @@ Example:
 | `overallPass` | boolean |
 
 #### `SubscriptionSummary`
+Used unchanged in the dashboard (`GET .../dashboard`) and hub (`GET .../installations/{id}/hub`) responses. The dedicated billing endpoints below return a richer `SubscriptionSummary` (billing
+interval, cancellation, entitlements, `canManageBilling`) - see `docs/BILLING.md` section 24 for its exact shape.
+
 | field | type |
 |---|---|
 | `plan` | string |
@@ -1504,7 +1530,7 @@ PlayStation server works unmodified for a connected Xbox server.
 | Critical-change revalidation (KILLFEED route, DayZ server) | READY |
 
 Nothing is BLOCKED. Out of scope for this handoff (a later task):
-billing/checkout, entitlement enforcement, a dedicated Step 6
+entitlement enforcement (billing/checkout itself now exists - `docs/BILLING.md`), a dedicated Step 6
 verify-permissions website UI showing per-channel PASS/WARNING/FAIL (`#13`
 itself still only checks one channel per call - `#25`'s finalize check is
 what actually aggregates every unique route channel today, not `#13`), and

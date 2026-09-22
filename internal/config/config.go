@@ -68,6 +68,20 @@ type Config struct {
 	DiscordPresenceRotationSeconds int
 	// DiscordPresenceMode is always "static" or "dynamic".
 	DiscordPresenceMode string
+
+	// Champion Billing (docs/BILLING.md). StripeSecretKey/StripeWebhookSecret are server-only -
+	// never logged, never returned by any API. An empty StripeSecretKey means billing runs
+	// unconfigured (every billing action fails closed with BILLING_UNAVAILABLE) rather than the
+	// service failing to start; a local/dev environment or a CI run needs no Stripe credentials.
+	StripeSecretKey     string
+	StripeWebhookSecret string
+	// BillingPlansJSON is CHAMPION_BILLING_PLANS_JSON: the authoritative plan catalog (see
+	// internal/billing.LoadCatalog). Empty = no plan approved yet ("PRICING DECISION REQUIRED").
+	BillingPlansJSON string
+	// BillingAllowedOrigins is CHAMPION_BILLING_ALLOWED_ORIGINS: extra site origins (beyond
+	// billing.DefaultOrigin) a Checkout/Portal return URL may target, e.g. a local website dev
+	// server. Never includes anything the client asserts about itself.
+	BillingAllowedOrigins string
 }
 
 // Load reads configuration from environment variables and validates required fields.
@@ -95,6 +109,11 @@ func Load() (*Config, error) {
 		DiscordPresenceEnabled:         parseBoolWithDefault(os.Getenv("DISCORD_PRESENCE_ENABLED"), true),
 		DiscordPresenceRotationSeconds: parsePresenceRotationSeconds(os.Getenv("DISCORD_PRESENCE_ROTATION_SECONDS")),
 		DiscordPresenceMode:            parsePresenceMode(os.Getenv("DISCORD_PRESENCE_MODE")),
+
+		StripeSecretKey:       strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY")),
+		StripeWebhookSecret:   strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET")),
+		BillingPlansJSON:      os.Getenv("CHAMPION_BILLING_PLANS_JSON"),
+		BillingAllowedOrigins: os.Getenv("CHAMPION_BILLING_ALLOWED_ORIGINS"),
 	}
 
 	if cfg.HTTPPort == "" {

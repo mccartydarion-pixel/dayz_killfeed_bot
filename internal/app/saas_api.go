@@ -375,4 +375,5 @@ func (a *App) registerSaaSAPI() {
 	a.registerFactionHubRoutes()
 	a.registerEconomyRoutes()
 	a.registerShopRoutes()
+	a.registerBillingRoutes()
 }

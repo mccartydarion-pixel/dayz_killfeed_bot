@@ -110,16 +110,19 @@ type UserRef struct {
 	DiscordID   string `json:"discordId"`
 }
 
-// SubscriptionInfo is the website's AdminSubscription. There is no payment
-// provider data here: billing is not integrated.
+// SubscriptionInfo is the website's AdminSubscription. Billing state comes from Stripe via
+// docs/BILLING.md's reconciliation, but no Stripe id or payment detail is ever exposed here -
+// only what the founder needs to see (docs/BILLING.md "Admin visibility").
 type SubscriptionInfo struct {
-	Plan             string   `json:"plan"`
-	Status           string   `json:"status"`
-	TrialEndsAt      *string  `json:"trialEndsAt"`
-	CurrentPeriodEnd *string  `json:"currentPeriodEnd"`
-	Entitlements     []string `json:"entitlements"`
-	CreatedAt        *string  `json:"createdAt"`
-	UpdatedAt        *string  `json:"updatedAt"`
+	Plan              string   `json:"plan"`
+	Status            string   `json:"status"`
+	TrialEndsAt       *string  `json:"trialEndsAt"`
+	CurrentPeriodEnd  *string  `json:"currentPeriodEnd"`
+	BillingInterval   string   `json:"billingInterval,omitempty"`
+	CancelAtPeriodEnd bool     `json:"cancelAtPeriodEnd"`
+	Entitlements      []string `json:"entitlements"`
+	CreatedAt         *string  `json:"createdAt"`
+	UpdatedAt         *string  `json:"updatedAt"`
 }
 
 // MemberRow is the website's AdminMember (`id` is a string there).
@@ -191,14 +194,19 @@ type Organization struct {
 
 // SubscriptionRow is the website's AdminSubscription & {organization, installationCount}.
 type SubscriptionRow struct {
-	ID                int64    `json:"id"`
-	Organization      string   `json:"organization"`
-	OrganizationID    int64    `json:"organizationId"`
-	OrganizationName  string   `json:"organizationName"`
-	Plan              string   `json:"plan"`
-	Status            string   `json:"status"`
-	TrialEndsAt       *string  `json:"trialEndsAt"`
-	CurrentPeriodEnd  *string  `json:"currentPeriodEnd"`
+	ID               int64   `json:"id"`
+	Organization     string  `json:"organization"`
+	OrganizationID   int64   `json:"organizationId"`
+	OrganizationName string  `json:"organizationName"`
+	Plan             string  `json:"plan"`
+	Status           string  `json:"status"`
+	TrialEndsAt      *string `json:"trialEndsAt"`
+	CurrentPeriodEnd *string `json:"currentPeriodEnd"`
+	// BillingInterval/CancelAtPeriodEnd are populated once billing.Service has reconciled a Stripe
+	// subscription (docs/BILLING.md); "" / false for an organization still on the internal trial.
+	// No Stripe id and no payment detail is ever exposed here (docs/BILLING.md "Admin visibility").
+	BillingInterval   string   `json:"billingInterval,omitempty"`
+	CancelAtPeriodEnd bool     `json:"cancelAtPeriodEnd"`
 	Entitlements      []string `json:"entitlements"`
 	InstallationCount int      `json:"installationCount"`
 	CreatedAt         *string  `json:"createdAt"`
@@ -634,7 +642,7 @@ const orgSelect = `
 SELECT o.id, o.name, o.slug, o.created_at,
        u.id, COALESCE(NULLIF(u.discord_global_name,''), u.discord_username), u.discord_user_id,
        (SELECT COUNT(*) FROM organization_members m WHERE m.organization_id = o.id),
-       s.plan, s.status, s.trial_ends_at, s.current_period_end, s.created_at, s.updated_at,
+       s.plan, s.status, s.trial_ends_at, s.current_period_end, COALESCE(s.billing_interval,''), COALESCE(s.cancel_at_period_end,false), s.created_at, s.updated_at,
        (SELECT COUNT(*) FROM installations ic WHERE ic.organization_id = o.id),
        pi.id
 FROM organizations o
@@ -656,10 +664,12 @@ func scanOrg(row pgx.Row) (orgRec, error) {
 	var created time.Time
 	var owner UserRef
 	var plan, status *string
+	var interval string
+	var cancelAtPeriodEnd bool
 	var trial, period, sCreated, sUpdated *time.Time
 	err := row.Scan(&o.ID, &o.Name, &o.Slug, &created,
 		&owner.UserID, &owner.DisplayName, &owner.DiscordID,
-		&o.MemberCount, &plan, &status, &trial, &period, &sCreated, &sUpdated,
+		&o.MemberCount, &plan, &status, &trial, &period, &interval, &cancelAtPeriodEnd, &sCreated, &sUpdated,
 		&o.InstallationCount, &rec.primaryID)
 	if err != nil {
 		return orgRec{}, err
@@ -669,7 +679,7 @@ func scanOrg(row pgx.Row) (orgRec, error) {
 	o.OwnerUser = &owner
 	if plan != nil && status != nil {
 		o.Subscription = &SubscriptionInfo{Plan: *plan, Status: *status, TrialEndsAt: tsp(trial), CurrentPeriodEnd: tsp(period),
-			Entitlements: entitlementKeys(*plan), CreatedAt: tsp(sCreated), UpdatedAt: tsp(sUpdated)}
+			BillingInterval: interval, CancelAtPeriodEnd: cancelAtPeriodEnd, Entitlements: entitlementKeys(*plan), CreatedAt: tsp(sCreated), UpdatedAt: tsp(sUpdated)}
 	}
 	o.Installations = []InstallationSummary{}
 	return rec, nil
@@ -828,6 +838,7 @@ func (r *Repository) ListSubscriptions(ctx context.Context, f SubscriptionFilter
 	}
 	sql := `
 SELECT s.id, o.id, o.name, s.plan, s.status, s.trial_ends_at, s.current_period_end,
+       COALESCE(s.billing_interval,''), s.cancel_at_period_end,
        (SELECT COUNT(*) FROM installations ic WHERE ic.organization_id = o.id),
        s.created_at, s.updated_at
 FROM subscriptions s JOIN organizations o ON o.id = s.organization_id` + b.whereSQL() + " ORDER BY s.id DESC LIMIT " + b.arg(limit+1)
@@ -841,7 +852,7 @@ FROM subscriptions s JOIN organizations o ON o.id = s.organization_id` + b.where
 		var s SubscriptionRow
 		var trial, period *time.Time
 		var created, updated time.Time
-		if err := rows.Scan(&s.ID, &s.OrganizationID, &s.OrganizationName, &s.Plan, &s.Status, &trial, &period, &s.InstallationCount, &created, &updated); err != nil {
+		if err := rows.Scan(&s.ID, &s.OrganizationID, &s.OrganizationName, &s.Plan, &s.Status, &trial, &period, &s.BillingInterval, &s.CancelAtPeriodEnd, &s.InstallationCount, &created, &updated); err != nil {
 			return nil, 0, err
 		}
 		s.Organization = s.OrganizationName
@@ -876,18 +887,20 @@ func (r *Repository) GetInstallation(ctx context.Context, id int64) (*Installati
 
 	var instUpdated time.Time
 	var plan, status *string
+	var interval string
+	var cancelAtPeriodEnd bool
 	var trial, period, sCreated, sUpdated *time.Time
 	if err := r.pool.QueryRow(ctx, `
-SELECT o.slug, i.updated_at, s.plan, s.status, s.trial_ends_at, s.current_period_end, s.created_at, s.updated_at
+SELECT o.slug, i.updated_at, s.plan, s.status, s.trial_ends_at, s.current_period_end, COALESCE(s.billing_interval,''), COALESCE(s.cancel_at_period_end,false), s.created_at, s.updated_at
 FROM installations i JOIN organizations o ON o.id = i.organization_id
 LEFT JOIN subscriptions s ON s.organization_id = o.id WHERE i.id = $1`, id).
-		Scan(&d.OrganizationSlug, &instUpdated, &plan, &status, &trial, &period, &sCreated, &sUpdated); err != nil {
+		Scan(&d.OrganizationSlug, &instUpdated, &plan, &status, &trial, &period, &interval, &cancelAtPeriodEnd, &sCreated, &sUpdated); err != nil {
 		return nil, fmt.Errorf("installation organization: %w", err)
 	}
 	d.UpdatedAt = ts(instUpdated)
 	if plan != nil && status != nil {
 		d.Subscription = &SubscriptionInfo{Plan: *plan, Status: *status, TrialEndsAt: tsp(trial), CurrentPeriodEnd: tsp(period),
-			Entitlements: entitlementKeys(*plan), CreatedAt: tsp(sCreated), UpdatedAt: tsp(sUpdated)}
+			BillingInterval: interval, CancelAtPeriodEnd: cancelAtPeriodEnd, Entitlements: entitlementKeys(*plan), CreatedAt: tsp(sCreated), UpdatedAt: tsp(sUpdated)}
 	}
 
 	var sp SetupProgress

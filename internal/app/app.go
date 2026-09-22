@@ -17,6 +17,7 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/admin"
 	"github.com/yourname/dayz-killfeed/internal/adminrepo"
 	"github.com/yourname/dayz-killfeed/internal/analytics"
+	"github.com/yourname/dayz-killfeed/internal/billing"
 	"github.com/yourname/dayz-killfeed/internal/bounties"
 	"github.com/yourname/dayz-killfeed/internal/config"
 	"github.com/yourname/dayz-killfeed/internal/database"
@@ -75,6 +76,11 @@ type App struct {
 	EconomyAccounts *economy.Accounts
 	// Shop is the Champion Shop (catalog, purchases with Champion Points); see docs/SHOP.md.
 	Shop *shop.Service
+	// Billing is the Champion Billing service (Stripe checkout, portal, webhooks); see
+	// docs/BILLING.md. Nil-safe: registerBillingRoutes always assigns it, even with no
+	// STRIPE_SECRET_KEY configured (Billing.Configured() is then false and every action fails
+	// closed with BILLING_UNAVAILABLE rather than panicking).
+	Billing *billing.Service
 	// BountyBoard keeps the persistent public board (BOUNTY route). Nil-safe.
 	BountyBoard          *discord.BountyBoard
 	Points               *repository.PointsRepository
@@ -164,6 +170,7 @@ type App struct {
 	saasEconomyHistoryLimiter *saasRateLimiter
 	saasShopPurchaseLimiter   *saasRateLimiter
 	saasShopAdminLimiter      *saasRateLimiter
+	saasBillingActionLimiter  *saasRateLimiter
 	persistQueuesMu           sync.Mutex
 	persistQueues             []*killfeed.PersistenceQueue
 	rotatingFeedsMu           sync.Mutex
@@ -550,6 +557,20 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.SaaSServers = repository.NewSaaSServerRepository(db.Pool)
 			app.SaaSInstallations = repository.NewInstallationRepository(db.Pool)
 			app.SaaSSubscriptions = repository.NewSubscriptionRepository(db.Pool)
+			if billingCatalog, err := billing.LoadCatalog(cfg.BillingPlansJSON); err != nil {
+				// A malformed catalog is a startup-time configuration error (see
+				// billing.LoadCatalog): refusing to start beats silently selling nothing, or the
+				// wrong thing.
+				return nil, fmt.Errorf("load billing plan catalog: %w", err)
+			} else {
+				var provider billing.Provider
+				if cfg.StripeSecretKey != "" {
+					provider = billing.NewStripeProvider(cfg.StripeSecretKey)
+				}
+				app.Billing = billing.NewService(app.SaaSSubscriptions, billingCatalog, provider, billing.Options{
+					AllowedOrigins: billing.ParseAllowedOrigins(cfg.BillingAllowedOrigins), WebhookSecret: cfg.StripeWebhookSecret,
+				})
+			}
 			app.SaaSCredentials = repository.NewCredentialRepository(db.Pool)
 			app.SaaSChannelRoutes = repository.NewChannelRouteRepository(db.Pool)
 			app.adminSaaS = adminrepo.New(db.Pool)

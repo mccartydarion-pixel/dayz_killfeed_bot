@@ -1258,6 +1258,73 @@ components:
       properties:
         reason: { type: string, minLength: 1, maxLength: 200, description: "Required; stored for admins, never shown to the player." }
 
+    BillingPrice:
+      type: object
+      description: No Stripe price id - public-safe pricing only.
+      properties:
+        amountCents: { type: integer, format: int64 }
+        currency: { type: string, example: usd }
+    BillingPlan:
+      type: object
+      properties:
+        key: { type: string }
+        name: { type: string }
+        description: { type: string }
+        features: { type: array, items: { type: string } }
+        limits: { type: object, additionalProperties: { type: integer } }
+        monthly: { allOf: [{ $ref: "#/components/schemas/BillingPrice" }], nullable: true, description: "Null = not sold monthly." }
+        yearly: { allOf: [{ $ref: "#/components/schemas/BillingPrice" }], nullable: true, description: "Null = not sold yearly." }
+        popular: { type: boolean }
+        trialDays: { type: integer }
+        sortOrder: { type: integer }
+    BillingPlansResponse:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/BillingPlan" } }
+    BillingSubscriptionSummary:
+      type: object
+      description: The dedicated billing endpoints' subscription view. Never carries a Stripe id.
+      properties:
+        plan: { type: string }
+        status: { type: string, enum: [TRIAL, ACTIVE, PAST_DUE, CANCELED, SUSPENDED] }
+        billingInterval: { type: string, enum: [MONTHLY, YEARLY], nullable: true }
+        trialEndsAt: { type: string, format: date-time, nullable: true }
+        currentPeriodStart: { type: string, format: date-time, nullable: true }
+        currentPeriodEnd: { type: string, format: date-time, nullable: true }
+        cancelAtPeriodEnd: { type: boolean }
+        entitlements: { type: array, items: { type: string } }
+        hasBillingCustomer: { type: boolean, description: A Portal session can be created. }
+        hasActiveSubscription: { type: boolean, description: Checkout has completed at least once - plan/cancel/reactivate apply. }
+        canManageBilling: { type: boolean, description: The acting user is this organization's OWNER/ADMIN. }
+    CheckoutRequest:
+      type: object
+      required: [planKey, interval]
+      additionalProperties: false
+      properties:
+        planKey: { type: string }
+        interval: { type: string, enum: [MONTHLY, YEARLY] }
+        returnPath: { type: string, description: "Optional, root-relative (must start with /). The origin is always chosen server-side." }
+    CheckoutResponse:
+      type: object
+      properties:
+        checkoutUrl: { type: string, format: uri }
+    PortalRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        returnPath: { type: string }
+    PortalResponse:
+      type: object
+      properties:
+        portalUrl: { type: string, format: uri }
+    ChangePlanRequest:
+      type: object
+      required: [planKey, interval]
+      additionalProperties: false
+      properties:
+        planKey: { type: string }
+        interval: { type: string, enum: [MONTHLY, YEARLY] }
+
   responses:
     Unauthorized:
       description: Missing/invalid service auth, or acting user not synced.
@@ -2983,3 +3050,120 @@ paths:
         "404": { description: NOT_FOUND or PURCHASE_NOT_FOUND. }
         "409": { description: INVALID_PURCHASE_STATUS. }
         "429": { description: RATE_LIMITED. }
+
+  # --- Champion Billing Phase 1 (docs/BILLING.md). Stripe subscriptions; no plan/price approved yet. ---
+  /api/saas/billing/plans:
+    get:
+      summary: The public plan catalog. Any synced user; no organization context; no Stripe price id ever returned.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+      responses:
+        "200": { description: The catalog (empty items until a plan is approved and configured)., content: { application/json: { schema: { $ref: "#/components/schemas/BillingPlansResponse" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/saas/organizations/{organizationID}/billing/subscription:
+    get:
+      summary: This organization's subscription (any member).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+      responses:
+        "200": { description: The subscription., content: { application/json: { schema: { $ref: "#/components/schemas/BillingSubscriptionSummary" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/saas/organizations/{organizationID}/billing/checkout:
+    post:
+      summary: >-
+        Create a Stripe Checkout Session (organization OWNER/ADMIN only). planKey/interval resolve the Stripe price server-side - never trust a submitted price.
+        A Stripe trial is granted at most once per organization. Rate limited (20/min, shared with the other billing actions).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/CheckoutRequest" } } } }
+      responses:
+        "200": { description: The hosted checkout URL., content: { application/json: { schema: { $ref: "#/components/schemas/CheckoutResponse" } } } }
+        "400": { description: "INVALID_PLAN (unknown/private plan or not sold on that interval) or INVALID_REQUEST (unsafe returnPath)." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "Not this organization's OWNER/ADMIN (a faction role grants nothing)." }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { description: RATE_LIMITED. }
+        "503": { description: BILLING_UNAVAILABLE - Stripe is not configured on this environment. }
+
+  /api/saas/organizations/{organizationID}/billing/portal:
+    post:
+      summary: Create a Stripe Customer Portal session (organization OWNER/ADMIN only). Requires an existing Stripe customer. Rate limited (20/min).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/PortalRequest" } } } }
+      responses:
+        "200": { description: The portal URL., content: { application/json: { schema: { $ref: "#/components/schemas/PortalResponse" } } } }
+        "400": { description: INVALID_REQUEST (unsafe returnPath). }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "Not this organization's OWNER/ADMIN." }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: NO_BILLING_CUSTOMER - this organization has not checked out yet. }
+        "429": { description: RATE_LIMITED. }
+        "503": { description: BILLING_UNAVAILABLE. }
+
+  /api/saas/organizations/{organizationID}/billing/plan:
+    post:
+      summary: >-
+        Change the organization's active plan/interval (organization OWNER/ADMIN only). Applies immediately with Stripe's default proration for both an upgrade and a downgrade
+        (docs/BILLING.md "Upgrade, downgrade, cancel, reactivate"). Rate limited (20/min).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ChangePlanRequest" } } } }
+      responses:
+        "200": { description: The updated subscription., content: { application/json: { schema: { $ref: "#/components/schemas/BillingSubscriptionSummary" } } } }
+        "400": { description: INVALID_PLAN. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "Not this organization's OWNER/ADMIN." }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: NO_ACTIVE_SUBSCRIPTION - checkout has never completed for this organization. }
+        "429": { description: RATE_LIMITED. }
+        "503": { description: BILLING_UNAVAILABLE. }
+
+  /api/saas/organizations/{organizationID}/billing/cancel:
+    post:
+      summary: Schedule cancellation at the end of the current billing period (organization OWNER/ADMIN only). The subscription stays fully active until then. Rate limited (20/min).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+      responses:
+        "200": { description: The updated subscription (cancelAtPeriodEnd true)., content: { application/json: { schema: { $ref: "#/components/schemas/BillingSubscriptionSummary" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "Not this organization's OWNER/ADMIN." }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: NO_ACTIVE_SUBSCRIPTION. }
+        "429": { description: RATE_LIMITED. }
+        "503": { description: BILLING_UNAVAILABLE. }
+
+  /api/saas/organizations/{organizationID}/billing/reactivate:
+    post:
+      summary: Undo a scheduled cancellation while the subscription is still active (organization OWNER/ADMIN only). Rate limited (20/min).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+      responses:
+        "200": { description: The updated subscription (cancelAtPeriodEnd false)., content: { application/json: { schema: { $ref: "#/components/schemas/BillingSubscriptionSummary" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "Not this organization's OWNER/ADMIN." }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: NO_ACTIVE_SUBSCRIPTION. }
+        "429": { description: RATE_LIMITED. }
+        "503": { description: BILLING_UNAVAILABLE. }
+
+  /api/saas/billing/webhook:
+    post:
+      summary: >-
+        Stripe webhook endpoint. NOT behind the website's service-auth/acting-user chain - Stripe calls this directly and authenticates via the Stripe-Signature header
+        (STRIPE_WEBHOOK_SECRET). Idempotent by Stripe event id (docs/BILLING.md "Webhook endpoint"). Unrecognized event types are acknowledged and ignored.
+      security: []
+      responses:
+        "200": { description: Processed (or already processed, or an event type this backend ignores). }
+        "400": { description: Invalid or missing Stripe-Signature. }
+        "503": { description: STRIPE_WEBHOOK_SECRET is not configured. }
