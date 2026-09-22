@@ -179,11 +179,16 @@ of the organization's installations (primary first, at most 200).
 ```json
 { "id": 7, "name": "Alpha", "...": "...",
   "members": [ { "id": "3", "displayName": "Alice", "discordId": "111...", "role": "OWNER", "joinedAt": "..." } ],
-  "installations": [ <installation summary>, ... ] }
+  "installations": [ <installation summary>, ... ],
+  "recentPayments": [ { "id": 41, "organizationId": 7, "organizationName": "Alpha", "status": "PAID",
+      "amountCents": 1999, "currency": "usd", "periodStart": "...", "periodEnd": "...", "paidAt": "...",
+      "failedAt": null, "invoiceReference": "in_...", "createdAt": "..." } ] }
 ```
 
 Members are ordered OWNER, ADMIN, then the rest (at most 200); `id` is the user id as
 a string. `404 NOT_FOUND` for an unknown id, `400` for a non-positive/non-numeric one.
+`recentPayments` (Champion Access Model Phase 2) is this organization's newest 10
+`billing_transactions` rows, newest first, `[]` if none - see `docs/BILLING.md` section 27.
 
 ### `GET /api/admin/subscriptions`
 
@@ -196,12 +201,13 @@ Params: `limit`, `cursor`, `search`, `status`, `plan`.
   "createdAt": "...", "updatedAt": "..." } ], "nextCursor": null, "limit": 50 }
 ```
 
-Only stored data. Billing is not integrated: no invoices, prices, cards or renewal
-amounts exist, and the provider columns (`provider`, `provider_customer_id`,
-`provider_subscription_id`) are **never** returned. `entitlements` is the plan's
-resolved feature keys (today every plan resolves to the full set - see
-`internal/entitlements`). `organization` and `organizationName` are the same value
-(the website reads `organization`).
+Only stored data. Stripe billing IS integrated (`docs/BILLING.md`) and `billingInterval`/
+`cancelAtPeriodEnd` are populated once a subscription has reconciled, but invoice/payment
+history is a **separate** surface (`GET /api/admin/billing/payments` below) - the provider
+columns (`provider`, `provider_customer_id`, `provider_subscription_id`) are still **never**
+returned here or anywhere else. `entitlements` is the plan's resolved feature keys (today
+every plan resolves to the full set - see `internal/entitlements`). `organization` and
+`organizationName` are the same value (the website reads `organization`).
 
 ### `GET /api/admin/installations`
 
@@ -250,6 +256,36 @@ plus:
   fetched live, never invented. This is a documented limitation of the data model.
 * `nitradoConnection` is *status only* (the organization's Nitrado link); the credential
   is never read.
+
+### `GET /api/admin/billing/plans` (Champion Access Model Phase 2)
+
+The full plan catalog - public **and** private plans, unlike the customer-facing
+`GET /api/saas/billing/plans` (which filters to `isPublic`). Still never a Stripe price
+id (`docs/BILLING.md` section 25's own values are enough for an Owner Hub display).
+
+```json
+{ "items": [ { "key": "PRO", "name": "Pro", "description": "...", "features": ["killfeed", "..."],
+  "limits": { "installations": 5 }, "monthly": { "amountCents": 1999, "currency": "usd" },
+  "yearly": null, "isPublic": true, "popular": true, "trialDays": 14, "sortOrder": 2 } ],
+  "nextCursor": null, "limit": 3 }
+```
+
+### `GET /api/admin/billing/payments` (Champion Access Model Phase 2)
+
+Params: `limit`, `cursor`, `organizationId`, `status` (`PAID`/`FAILED` only - an unrecognized
+status yields an empty page, not an error, the same convention `status`/`plan` already use on
+`GET /api/admin/subscriptions`). Newest first.
+
+```json
+{ "items": [ { "id": 41, "organizationId": 7, "organizationName": "Alpha", "status": "PAID",
+  "amountCents": 1999, "currency": "usd", "periodStart": "...", "periodEnd": "...",
+  "paidAt": "...", "failedAt": null, "invoiceReference": "in_...", "createdAt": "..." } ],
+  "nextCursor": null, "limit": 50 }
+```
+
+Sourced entirely from `billing_transactions` (`docs/BILLING.md` section 27) - never a live
+Stripe call. No `plan` filter (not captured per-transaction) and no date-range filter (cursor
+pagination is already a stable ordering).
 
 ### `GET /api/admin/health`
 

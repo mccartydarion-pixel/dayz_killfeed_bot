@@ -122,6 +122,10 @@ type App struct {
 	SaaSSubscriptions    *repository.SubscriptionRepository
 	SaaSCredentials      *repository.CredentialRepository
 	SaaSChannelRoutes    *repository.ChannelRouteRepository
+	// SaaSPlayer backs the player-facing API (Champion Access Model Phase 2 Part A/B,
+	// docs/PLAYER_API.md) - which installations a verified DayZ player is legitimately
+	// associated with, and their per-installation stats. Read-only; never touched by ChannelRoutes.
+	SaaSPlayer *repository.PlayerServerRepository
 	// ChannelRoutes is the runtime feature -> Discord channel resolver
 	// (internal/routing), a short-TTL cache over SaaSChannelRoutes. Nil-safe:
 	// with no database, publishers simply use their legacy channel.
@@ -557,6 +561,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.SaaSServers = repository.NewSaaSServerRepository(db.Pool)
 			app.SaaSInstallations = repository.NewInstallationRepository(db.Pool)
 			app.SaaSSubscriptions = repository.NewSubscriptionRepository(db.Pool)
+			app.SaaSPlayer = repository.NewPlayerServerRepository(db.Pool)
 			if billingCatalog, err := billing.LoadCatalog(cfg.BillingPlansJSON); err != nil {
 				// A malformed catalog is a startup-time configuration error (see
 				// billing.LoadCatalog): refusing to start beats silently selling nothing, or the

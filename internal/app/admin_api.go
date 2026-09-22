@@ -24,6 +24,7 @@ import (
 
 	"github.com/yourname/dayz-killfeed/internal/adminrepo"
 	"github.com/yourname/dayz-killfeed/internal/embedrender"
+	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
 // adminReader is the cross-tenant read model (implemented by
@@ -351,7 +352,18 @@ func (a *App) handleAdminGetOrganization(w http.ResponseWriter, r *http.Request,
 		writeSaaSError(w, codeNotFound, "organization not found")
 		return
 	}
-	a.writeAdminJSON(w, http.StatusOK, d)
+	detail := adminOrganizationDetailDTO{Organization: d, RecentPayments: []adminBillingTransactionDTO{}}
+	if a.SaaSSubscriptions != nil {
+		rows, _, err := a.SaaSSubscriptions.ListBillingTransactions(ctx, repository.BillingTransactionFilter{OrganizationID: id, Limit: adminRecentPaymentsLimit})
+		if err != nil {
+			a.adminReadFailed(w, "organization recent payments", err)
+			return
+		}
+		for _, row := range rows {
+			detail.RecentPayments = append(detail.RecentPayments, adminBillingPaymentDTO(row))
+		}
+	}
+	a.writeAdminJSON(w, http.StatusOK, detail)
 }
 
 func (a *App) handleAdminListSubscriptions(w http.ResponseWriter, r *http.Request, _ adminIdentity) {
@@ -633,4 +645,5 @@ func (a *App) registerAdminAPI() {
 	a.HTTPServer.Handle("GET /api/admin/installations", a.adminRoute(a.handleAdminListInstallations))
 	a.HTTPServer.Handle("GET /api/admin/installations/{installationID}", a.adminRoute(a.handleAdminGetInstallation))
 	a.HTTPServer.Handle("GET /api/admin/health", a.adminRoute(a.handleAdminHealth))
+	a.registerAdminBillingRoutes()
 }

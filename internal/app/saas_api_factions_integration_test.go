@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yourname/dayz-killfeed/internal/adminrepo"
 	"github.com/yourname/dayz-killfeed/internal/assetstore"
 	"github.com/yourname/dayz-killfeed/internal/billing"
 	"github.com/yourname/dayz-killfeed/internal/config"
@@ -95,6 +96,14 @@ func newFactionWorld(t *testing.T) *factionWorld {
 	a.Billing = billing.NewService(a.SaaSSubscriptions, billingCatalog, billingProvider, billing.Options{WebhookSecret: "whsec_test"})
 	a.saasBillingActionLimiter = newSaaSRateLimiter(time.Hour, 100000)
 	a.registerBillingRoutes()
+	a.ActivityRepository = repository.NewActivityRepository(a.DB.Pool)
+	a.SaaSPlayer = repository.NewPlayerServerRepository(a.DB.Pool)
+	a.registerPlayerRoutes()
+	// Platform-admin wiring (Champion Access Model Phase 2 Owner routes): additive, harmless to
+	// every other factionWorld-based test unless one explicitly acts as adminFounderID.
+	a.adminSaaS = adminrepo.New(a.DB.Pool)
+	a.Config.AdminDiscordIDs = []string{adminFounderID}
+	a.registerAdminAPI()
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = srv.ListenAndServe(ctx) }()
 	t.Cleanup(func() {

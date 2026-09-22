@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
@@ -131,9 +133,11 @@ func (s *Service) onSubscriptionDeleted(ctx context.Context, e ParsedEvent) erro
 }
 
 // onInvoice reconciles the full subscription on any invoice event that names one (both a successful
-// and a failed payment can change status: paid can end a past_due, failed can start one) and, only
-// for a failure, additionally logs auditEvent. Champion does not suspend or delete anything here
-// (docs/BILLING.md "Payment failure handling" - the grace-period policy is a DECISION REQUIRED).
+// and a failed payment can change status: paid can end a past_due, failed can start one), persists a
+// normalized billing_transactions row (Champion Access Model Phase 2, Part D - never fabricated,
+// built only from what this webhook event itself carries) and, only for a failure, additionally
+// logs auditEvent. Champion does not suspend or delete anything here (docs/BILLING.md "Payment
+// failure handling" - the grace-period policy is a DECISION REQUIRED).
 func (s *Service) onInvoice(ctx context.Context, e ParsedEvent, auditEvent string) error {
 	if e.Invoice == nil || e.Invoice.Subscription == "" {
 		return nil // a one-off invoice with no subscription - not this table's concern
@@ -153,10 +157,45 @@ func (s *Service) onInvoice(ctx context.Context, e ParsedEvent, auditEvent strin
 	if _, err := s.applyState(ctx, orgID, st, ""); err != nil {
 		return fmt.Errorf("apply invoice event: %w", err)
 	}
+	if err := s.recordTransaction(ctx, orgID, e); err != nil {
+		return fmt.Errorf("record billing transaction: %w", err)
+	}
 	if auditEvent != "" {
 		slog.Warn("component=billing", "event", auditEvent, "organization_id", orgID, "stripe_event_id", e.ID)
 	}
 	return nil
+}
+
+// recordTransaction normalizes e.Invoice into one billing_transactions row. Status/amount come
+// straight from the event: paid uses amount_paid, failed uses amount_due (paid is always 0 on a
+// failed invoice) - never a value re-derived or guessed from subscription state.
+func (s *Service) recordTransaction(ctx context.Context, orgID int64, e ParsedEvent) error {
+	inv := e.Invoice
+	status := repository.TransactionPaid
+	amount := inv.AmountPaid
+	var paidAt, failedAt *time.Time
+	now := time.Now().UTC()
+	if e.Type == EventInvoicePaymentFailed {
+		status = repository.TransactionFailed
+		amount = inv.AmountDue
+		failedAt = &now
+	} else {
+		paidAt = &now
+	}
+	periodStart, periodEnd := inv.period()
+	t := repository.BillingTransaction{
+		OrganizationID: orgID, Provider: repository.ProviderStripe, ProviderInvoiceID: inv.ID,
+		ProviderPaymentIntentID: string(inv.PaymentIntent), ProviderSubscriptionID: string(inv.Subscription),
+		Status: status, AmountCents: amount, Currency: strings.ToLower(inv.Currency),
+		PaidAt: paidAt, FailedAt: failedAt, StripeEventID: e.ID,
+	}
+	if !periodStart.IsZero() {
+		t.PeriodStart = &periodStart
+	}
+	if !periodEnd.IsZero() {
+		t.PeriodEnd = &periodEnd
+	}
+	return s.store.RecordBillingTransaction(ctx, t)
 }
 
 // resolveOrgID finds which organization a webhook event belongs to: the metadata Champion itself

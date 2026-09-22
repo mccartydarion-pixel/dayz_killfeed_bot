@@ -173,6 +173,7 @@ components:
         subscription: { $ref: "#/components/schemas/Subscription" }
         installations: { type: array, items: { $ref: "#/components/schemas/InstallationSummary" } }
         members: { type: array, items: { $ref: "#/components/schemas/Member" }, description: Detail only. }
+        recentPayments: { type: array, items: { $ref: "#/components/schemas/BillingPayment" }, description: "Detail only (Champion Access Model Phase 2). Newest first, at most 10." }
     SubscriptionRow:
       type: object
       properties:
@@ -195,6 +196,42 @@ components:
       properties:
         nextCursor: { type: string, nullable: true }
         limit: { type: integer }
+    BillingPlan:
+      type: object
+      description: >
+        The FULL catalog (public AND private plans, unlike the customer-facing GET /api/saas/billing/plans) -
+        still never a Stripe price id (Champion Access Model Phase 2 Part C.13).
+      properties:
+        key: { type: string }
+        name: { type: string }
+        description: { type: string }
+        features: { type: array, items: { type: string } }
+        limits: { type: object, additionalProperties: { type: integer } }
+        monthly: { type: object, nullable: true, properties: { amountCents: { type: integer, format: int64 }, currency: { type: string } } }
+        yearly: { type: object, nullable: true, properties: { amountCents: { type: integer, format: int64 }, currency: { type: string } } }
+        isPublic: { type: boolean }
+        popular: { type: boolean }
+        trialDays: { type: integer }
+        sortOrder: { type: integer }
+    BillingPayment:
+      type: object
+      description: >
+        One normalized invoice.paid/invoice.payment_failed webhook event (Champion Access Model Phase 2
+        Part D). Never a Stripe payment-method, card number or raw webhook payload. "plan" is deliberately
+        not included - not captured per-transaction (see docs/BILLING.md).
+      properties:
+        id: { type: integer, format: int64 }
+        organizationId: { type: integer, format: int64 }
+        organizationName: { type: string }
+        status: { type: string, enum: [PAID, FAILED] }
+        amountCents: { type: integer, format: int64 }
+        currency: { type: string }
+        periodStart: { type: string, format: date-time, nullable: true }
+        periodEnd: { type: string, format: date-time, nullable: true }
+        paidAt: { type: string, format: date-time, nullable: true }
+        failedAt: { type: string, format: date-time, nullable: true }
+        invoiceReference: { type: string, description: "The Stripe invoice id - not secret, not reusable to charge anything." }
+        createdAt: { type: string, format: date-time }
     Overview:
       type: object
       properties:
@@ -388,6 +425,45 @@ paths:
                   - $ref: "#/components/schemas/Page"
                   - type: object
                     properties: { items: { type: array, items: { $ref: "#/components/schemas/SubscriptionRow" } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/admin/billing/plans:
+    get:
+      summary: The full plan catalog, public and private (Champion Access Model Phase 2 Part C)
+      parameters:
+        - $ref: "#/components/parameters/ActingAdmin"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Page"
+                  - type: object
+                    properties: { items: { type: array, items: { $ref: "#/components/schemas/BillingPlan" } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/admin/billing/payments:
+    get:
+      summary: Payment/invoice history across every organization, newest first (Champion Access Model Phase 2 Part D)
+      parameters:
+        - $ref: "#/components/parameters/ActingAdmin"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - { name: organizationId, in: query, schema: { type: integer, format: int64 } }
+        - { name: status, in: query, schema: { type: string, enum: [PAID, FAILED] } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Page"
+                  - type: object
+                    properties: { items: { type: array, items: { $ref: "#/components/schemas/BillingPayment" } } }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
