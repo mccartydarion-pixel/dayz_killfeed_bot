@@ -20,6 +20,7 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/adminrepo"
 	"github.com/yourname/dayz-killfeed/internal/config"
 	"github.com/yourname/dayz-killfeed/internal/health"
+	"github.com/yourname/dayz-killfeed/internal/routing"
 	"github.com/yourname/dayz-killfeed/internal/server"
 )
 
@@ -590,5 +591,48 @@ func TestAdminAPIRoutesAreReadOnlyAndSeparateFromSaaS(t *testing.T) {
 	// The admin surface is not reachable through the tenant prefix.
 	if code := do(http.MethodGet, "/api/saas/admin/overview", authed); code != http.StatusNotFound {
 		t.Errorf("/api/saas must not serve admin data, got %d", code)
+	}
+}
+
+// fakeRouteStore is a minimal routing.RouteStore for performanceSnapshot's
+// route-cache-stats test - it always resolves, so a lookup is guaranteed to
+// populate the resolver's hit/miss counters deterministically.
+type fakeRouteStore struct{}
+
+func (fakeRouteStore) ResolveChannel(context.Context, int64, int64, string) (string, bool, error) {
+	return "chan-1", true, nil
+}
+
+// TestPerformanceSnapshotNilSafe proves the Champion Performance Phase 1
+// admin snapshot never panics when DB/ChannelRoutes are unset (e.g. a
+// partially-initialized App in a test harness, or a route not yet reached
+// during startup) - it must degrade to zero values, never crash the whole
+// /api/admin/health response.
+func TestPerformanceSnapshotNilSafe(t *testing.T) {
+	a := &App{}
+	got := a.performanceSnapshot()
+	want := adminPerformance{}
+	if got != want {
+		t.Fatalf("expected a zero-value snapshot with no DB/ChannelRoutes, got %+v", got)
+	}
+}
+
+// TestPerformanceSnapshotReflectsRouteCacheCounters proves a real resolver's
+// hit/miss counters flow through to the snapshot correctly.
+func TestPerformanceSnapshotReflectsRouteCacheCounters(t *testing.T) {
+	a := &App{ChannelRoutes: routing.NewResolver(fakeRouteStore{}, time.Minute)}
+	ctx := context.Background()
+	if _, _, err := a.ChannelRoutes.Resolve(ctx, 1, 1, routing.RouteKillfeed); err != nil { // miss
+		t.Fatal(err)
+	}
+	if _, _, err := a.ChannelRoutes.Resolve(ctx, 1, 1, routing.RouteKillfeed); err != nil { // hit
+		t.Fatal(err)
+	}
+	got := a.performanceSnapshot()
+	if got.Routing.CacheHits != 1 || got.Routing.CacheMisses != 1 || got.Routing.CacheEntries != 1 {
+		t.Fatalf("got %+v", got.Routing)
+	}
+	if got.Routing.CacheHitRate != 0.5 {
+		t.Fatalf("expected a 50%% hit rate, got %v", got.Routing.CacheHitRate)
 	}
 }

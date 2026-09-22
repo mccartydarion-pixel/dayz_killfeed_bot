@@ -494,11 +494,68 @@ type adminHealthResponse struct {
 	// EmbedRender: custom embed template rollout state and cumulative counters (no
 	// player names, no template contents).
 	EmbedRender adminEmbedRender `json:"embedRender"`
+	// Performance: DB pool/query and route-cache counters (Champion Performance Phase 1).
+	Performance adminPerformance `json:"performance"`
 }
 
 type adminEmbedRender struct {
 	Enabled bool `json:"enabled"`
 	embedrender.Stats
+}
+
+// adminPerformance is the internal-only performance snapshot (Champion
+// Performance Phase 1, section 35 "observability summary") - never exposed
+// on any customer-facing surface, only here behind requirePlatformAdmin. All
+// figures are cumulative, in-process counters (reset on restart), not a
+// time-windowed rate, so two consecutive reads a known interval apart are
+// how an operator derives a rate.
+type adminPerformance struct {
+	Database adminDatabasePerformance `json:"database"`
+	Routing  adminRoutingPerformance  `json:"routing"`
+}
+
+type adminDatabasePerformance struct {
+	PoolTotalConns        int32   `json:"poolTotalConns"`
+	PoolIdleConns         int32   `json:"poolIdleConns"`
+	PoolMaxConns          int32   `json:"poolMaxConns"`
+	PoolAcquiredConns     int32   `json:"poolAcquiredConns"`
+	PoolAcquireCount      int64   `json:"poolAcquireCount"`
+	PoolEmptyAcquireCount int64   `json:"poolEmptyAcquireCount"` // acquires that had to wait for a free connection
+	PoolAcquireDurationMS int64   `json:"poolAcquireDurationMs"` // cumulative time every acquire has spent waiting
+	QueryTotal            int64   `json:"queryTotal"`
+	QuerySlow             int64   `json:"querySlow"` // at/above SLOW_QUERY_THRESHOLD_MS
+	QueryAvgDurationMS    float64 `json:"queryAvgDurationMs"`
+}
+
+type adminRoutingPerformance struct {
+	CacheHits    int64   `json:"cacheHits"`
+	CacheMisses  int64   `json:"cacheMisses"`
+	CacheHitRate float64 `json:"cacheHitRate"`
+	CacheEntries int     `json:"cacheEntries"`
+}
+
+// performanceSnapshot reads the in-process counters this phase added
+// (internal/database's query tracer + pgxpool.Stat(), internal/routing's
+// resolver hit/miss counters) - never a query of its own, so calling it adds
+// no additional database load.
+func (a *App) performanceSnapshot() adminPerformance {
+	var perf adminPerformance
+	if a.DB != nil {
+		if ext, ok := a.DB.ExtendedPoolStats(); ok {
+			perf.Database.PoolTotalConns, perf.Database.PoolIdleConns, perf.Database.PoolMaxConns = ext.TotalConns, ext.IdleConns, ext.MaxConns
+			perf.Database.PoolAcquiredConns = ext.AcquiredConns
+			perf.Database.PoolAcquireCount, perf.Database.PoolEmptyAcquireCount = ext.AcquireCount, ext.EmptyAcquireCount
+			perf.Database.PoolAcquireDurationMS = ext.AcquireDuration.Milliseconds()
+		}
+		qs := a.DB.QueryStats()
+		perf.Database.QueryTotal, perf.Database.QuerySlow, perf.Database.QueryAvgDurationMS = qs.Total, qs.Slow, qs.AvgDurationMS
+	}
+	if a.ChannelRoutes != nil {
+		rs := a.ChannelRoutes.Stats()
+		perf.Routing.CacheHits, perf.Routing.CacheMisses, perf.Routing.CacheEntries = rs.Hits, rs.Misses, rs.Entries
+		perf.Routing.CacheHitRate = rs.HitRate()
+	}
+	return perf
 }
 
 // backendStatus is the runtime health registry's overall state ("UNKNOWN" when the
@@ -559,6 +616,7 @@ func (a *App) handleAdminHealth(w http.ResponseWriter, r *http.Request, _ adminI
 	}
 	resp.Summary, resp.Installations = summary, items
 	resp.EmbedRender = adminEmbedRender{Enabled: a.EmbedRenderer.Enabled(), Stats: a.EmbedRenderer.Stats()}
+	resp.Performance = a.performanceSnapshot()
 	a.writeAdminJSON(w, http.StatusOK, resp)
 }
 

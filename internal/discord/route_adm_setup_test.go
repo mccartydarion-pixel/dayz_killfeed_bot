@@ -209,6 +209,69 @@ func TestADMCrossGuildRouteIgnored(t *testing.T) {
 	}
 }
 
+// --- ADM download admin-log noise (Champion Performance Phase 1, section 30) ----
+
+// A routine successful download (with or without new events) must never post
+// a standalone admin-log message - only a state change (failure, recovery,
+// rotation, checkpoint failure) is worth interrupting the channel for. Before
+// this fix, HandleDownload posted a brand-new message for every "success"/
+// "success_no_new_events" report, which fires roughly once per poll cycle
+// during active gameplay.
+func TestADMRoutineDownloadDoesNotPostAMessage(t *testing.T) {
+	f := newADMFixture(t, "legacy-adm")
+	p := f.publisher(1, "", true)
+	p.HandleDownload(killfeed.DownloadReport{Result: "success"})
+	p.HandleDownload(killfeed.DownloadReport{Result: "success_no_new_events"})
+	p.HandleDownload(killfeed.DownloadReport{Result: "success"})
+	if f.api.sendCount() != 0 {
+		t.Fatalf("routine downloads must not post admin-log messages, sends=%d", f.api.sendCount())
+	}
+}
+
+// A failure, then a recovery, must each still post exactly one message - the
+// state-change signal this function exists to preserve.
+func TestADMFailureAndRecoveryStillPostMessages(t *testing.T) {
+	f := newADMFixture(t, "legacy-adm")
+	p := f.publisher(1, "", true)
+	p.HandleDownload(killfeed.DownloadReport{Result: "success"}) // routine: no message
+	p.HandleDownload(killfeed.DownloadReport{Result: "failure"}) // state change: message
+	p.HandleDownload(killfeed.DownloadReport{Result: "success"}) // recovery: message
+	if f.api.sendCount() != 2 {
+		t.Fatalf("expected exactly one failure message and one recovery message, sends=%d", f.api.sendCount())
+	}
+}
+
+// A routine download must not force the separate Update() status panel to
+// bypass its own refresh-interval throttle - only a notable download should.
+// Before this fix, HandleDownload set forceRefresh unconditionally, so the
+// persistent panel re-edited on essentially every poll instead of at most
+// every killfeed.ADMMonitorRefreshInterval.
+func TestADMRoutineDownloadDoesNotForceStatusPanelRefresh(t *testing.T) {
+	f := newADMFixture(t, "legacy-adm")
+	p := f.publisher(1, "", true)
+	snap := admSnap()
+	p.Update(snap) // first Update always publishes (no lastRefresh yet)
+	firstEdits := len(f.api.edits)
+
+	p.HandleDownload(killfeed.DownloadReport{Result: "success"})
+	// The SAME snapshot (same file, no rotation) arriving immediately after
+	// the first Update is "not important" and must be skipped by the refresh
+	// interval - unless something incorrectly forced a refresh.
+	p.Update(snap)
+	p.Update(snap)
+	if len(f.api.edits) != firstEdits {
+		t.Fatalf("a routine download must not force the status panel to re-edit ahead of its throttle, edits=%v", f.api.edits)
+	}
+
+	// A notable download (failure) DOES force an immediate refresh, even for
+	// an otherwise-unimportant snapshot.
+	p.HandleDownload(killfeed.DownloadReport{Result: "failure"})
+	p.Update(snap)
+	if len(f.api.edits) != firstEdits+1 {
+		t.Fatalf("a notable download must force one immediate status panel refresh, edits=%v", f.api.edits)
+	}
+}
+
 // --- SetupManager gate: never create a legacy panel next to a routed one ----
 
 func TestSetupManagerSkipsLegacyPanelsForRoutedFeatures(t *testing.T) {

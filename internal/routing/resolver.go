@@ -11,6 +11,7 @@ package routing
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -72,13 +73,28 @@ type cacheEntry struct {
 // Resolver is a short-lived read-through cache over a RouteStore. It never
 // caches errors, and both hits and misses expire after the TTL, so there is
 // no permanent stale state. A nil *Resolver resolves nothing.
+//
+// The cache-hit path takes only a read lock (RWMutex, not a plain Mutex): a
+// cache hit is the overwhelmingly common case once a route has been resolved
+// once (every server worker re-resolves its own routes on essentially every
+// event), and a plain Mutex would serialize every concurrent hit across
+// every guild/server/route-key in the process on one exclusive lock even
+// though a hit only ever reads the map. Only a miss (first lookup, or after
+// TTL expiry) takes the write lock, to write the freshly-resolved entry
+// back. Benchmarked (BenchmarkResolverCacheHit*, docs/PERFORMANCE.md): both
+// forms are sub-microsecond and allocation-free on a cache hit, well under
+// the <5ms target - the RWMutex change is about concurrent scalability
+// across many simultaneous callers, not single-call latency.
 type Resolver struct {
 	store RouteStore
 	ttl   time.Duration
 	now   func() time.Time
 
-	mu      sync.Mutex
+	mu      sync.RWMutex
 	entries map[cacheKey]cacheEntry
+
+	hits   atomic.Int64
+	misses atomic.Int64
 }
 
 // NewResolver builds a Resolver; ttl <= 0 uses DefaultTTL.
@@ -102,12 +118,14 @@ func (r *Resolver) Resolve(ctx context.Context, guildRowID, serverID int64, rout
 	key := cacheKey{guildRowID, serverID, routeKey}
 	now := r.now()
 
-	r.mu.Lock()
-	if e, ok := r.entries[key]; ok && now.Before(e.expires) {
-		r.mu.Unlock()
+	r.mu.RLock()
+	e, ok := r.entries[key]
+	r.mu.RUnlock()
+	if ok && now.Before(e.expires) {
+		r.hits.Add(1)
 		return e.channelID, e.found, nil
 	}
-	r.mu.Unlock()
+	r.misses.Add(1)
 
 	channelID, found, err := r.store.ResolveChannel(ctx, guildRowID, serverID, routeKey)
 	if err != nil {
@@ -139,4 +157,34 @@ func (r *Resolver) InvalidateAll() {
 	r.mu.Lock()
 	r.entries = make(map[cacheKey]cacheEntry)
 	r.mu.Unlock()
+}
+
+// Stats is a point-in-time snapshot of resolver cache performance
+// (Champion Performance Phase 1, section 35 "route cache hit rate"). Counts
+// are cumulative since the Resolver was created and never reset.
+type Stats struct {
+	Hits, Misses int64
+	Entries      int
+}
+
+// HitRate returns Hits/(Hits+Misses), or 0 when there have been no lookups
+// yet.
+func (s Stats) HitRate() float64 {
+	total := s.Hits + s.Misses
+	if total == 0 {
+		return 0
+	}
+	return float64(s.Hits) / float64(total)
+}
+
+// Stats returns the resolver's current cache hit/miss counters and entry
+// count, for the internal performance snapshot (docs/PERFORMANCE.md).
+func (r *Resolver) Stats() Stats {
+	if r == nil {
+		return Stats{}
+	}
+	r.mu.RLock()
+	entries := len(r.entries)
+	r.mu.RUnlock()
+	return Stats{Hits: r.hits.Load(), Misses: r.misses.Load(), Entries: entries}
 }

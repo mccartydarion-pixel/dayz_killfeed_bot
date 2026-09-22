@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -20,9 +21,43 @@ const (
 	routeKeyAdminLogs         = "ADMIN_LOGS"
 )
 
-// routeLookupTimeout bounds one resolver call so a slow database can never
-// stall a publisher; a timeout is just another lookup error -> legacy fallback.
-const routeLookupTimeout = 2 * time.Second
+// defaultRouteLookupTimeout bounds one resolver call so a slow database can
+// never stall a publisher; a timeout is just another lookup error -> legacy
+// fallback (route_binding.go's own doc comment). Measured locally
+// (docs/PERFORMANCE.md "Route resolution"): a resolver cache hit never
+// reaches this timeout at all (no I/O on the hit path - see
+// routing.Resolver.Resolve); on a cache MISS, the underlying join query
+// (fully index-covered, EXPLAIN ANALYZE confirmed no sequential scan) runs
+// in ~0.07ms server-side, with p99 ~0.65ms end-to-end over a warm local
+// connection. 500ms leaves roughly 3 orders of magnitude of margin over that
+// measurement for real network latency/jitter on Railway's private network,
+// while cutting the worst-case stall on a live publisher from a full 2s down
+// to 500ms if the database is genuinely unresponsive - the resolver has no
+// slower fallback of its own, so waiting longer only delays the existing
+// legacy-channel fallback, it never yields a better answer.
+const defaultRouteLookupTimeout = 500 * time.Millisecond
+
+// routeLookupTimeout is defaultRouteLookupTimeout, overridable via
+// ROUTE_LOOKUP_TIMEOUT (e.g. "750ms", "1s") for an operator whose network
+// profile needs more margin than the measurement above assumed. Read once at
+// package init, not per call, so a live publisher never pays for env
+// parsing on its hot path.
+var routeLookupTimeout = envRouteLookupTimeout()
+
+func envRouteLookupTimeout() time.Duration {
+	raw := os.Getenv("ROUTE_LOOKUP_TIMEOUT")
+	if raw == "" {
+		return defaultRouteLookupTimeout
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d < 50*time.Millisecond {
+		// Too small a floor would fail every miss instantly and always fall
+		// back to legacy, defeating the resolver; a malformed value falls
+		// back to the measured default rather than an unbounded/zero timeout.
+		return defaultRouteLookupTimeout
+	}
+	return d
+}
 
 // RouteBinding resolves one route key for one server, with the same
 // never-fatal semantics as KillfeedPublisher.RouteChannelID: "" means "use the
