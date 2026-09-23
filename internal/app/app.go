@@ -31,6 +31,7 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/factionassets"
 	"github.com/yourname/dayz-killfeed/internal/factionstats"
 	"github.com/yourname/dayz-killfeed/internal/health"
+	"github.com/yourname/dayz-killfeed/internal/heatmap"
 	"github.com/yourname/dayz-killfeed/internal/killfeed"
 	"github.com/yourname/dayz-killfeed/internal/linking"
 	"github.com/yourname/dayz-killfeed/internal/nitrado"
@@ -145,6 +146,10 @@ type App struct {
 	Zones     *repository.ZoneRepository
 	ZoneCache *killfeed.ZoneCache
 	Intrusion *killfeed.IntrusionEngine
+	// Heatmap backs Champion Phase 5 (docs/HEATMAPS.md): PvP kill/death, player-activity, and
+	// zone-intrusion heatmap queries aggregated from Phase 3/4's persisted data. Independent of
+	// the killfeed pipeline - a pure, cacheable read path, never wired into any worker goroutine.
+	Heatmap *heatmap.Service
 	// ChannelRoutes is the runtime feature -> Discord channel resolver
 	// (internal/routing), a short-TTL cache over SaaSChannelRoutes. Nil-safe:
 	// with no database, publishers simply use their legacy channel.
@@ -644,6 +649,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.Zones = repository.NewZoneRepository(db.Pool)
 			app.ZoneCache = killfeed.NewZoneCache(app.Zones)
 			app.Intrusion = killfeed.NewIntrusionEngine(app.Zones, app.ZoneCache, intrusionRoleChecker{app: app}, intrusionPublisher{app: app})
+			app.Heatmap = heatmap.NewService(repository.NewHeatmapRepository(db.Pool), heatmap.NewCache(heatmapCacheTTL), heatmap.NewMetrics())
 			app.adminSaaS = adminrepo.New(db.Pool)
 			embedRepo := repository.NewEmbedTemplateRepository(db.Pool)
 			app.EmbedTemplates = embedtemplates.NewService(embedRepo)

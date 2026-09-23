@@ -1252,6 +1252,30 @@ last-known-location never auto-closes an intrusion, it is only ever flagged unce
 are explicitly not server bans - they never call the Nitrado banlist API. Every zone/ignore/
 authorized/ban mutation and every acknowledgement writes an `admin_audit_log` row.
 
+### Heatmaps (Phase 5)
+
+Full contract in `docs/HEATMAPS.md`. Aggregate PvP kill/death, player-activity, and zone-intrusion
+heatmap datasets from data Phase 3/4 already persist - no new Nitrado polling, no fabricated
+coordinates, no frontend rendering. New capability `HEATMAP_VIEW` (Moderator).
+
+```
+GET .../admin/heatmap  ?type=PVP_KILLS|PVP_DEATHS|PLAYER_ACTIVITY|ZONE_INTRUSIONS&from=&to=&resolution=&zoneId=
+```
+
+`type` is required; `resolution` is one of `50/100/250/500/1000` (default 250); `from`/`to` are
+RFC3339 (default: last 24h), max 30-day span; `zoneId` is only honored for `ZONE_INTRUSIONS` and is
+tenant-checked against the caller's own installation. Response is always an aggregate grid - never
+a player ID, gamertag, Discord ID, or faction identity:
+
+```json
+{"type":"PVP_KILLS","from":"...","to":"...","resolution":250,"totalEvents":452,
+ "cells":[{"cellX":10,"cellZ":18,"centerX":2625,"centerZ":4625,"count":27,"intensity":0.82}]}
+```
+
+No data is a valid `200` (`{"totalEvents":0,"cells":[]}`), never `404`. A query that would return
+more than 5000 cells is rejected with `400` and an actionable message - the resolution is never
+silently mutated. Results are cached server-side for 45 seconds, keyed by every query dimension.
+
 ## Request/response DTOs
 
 None of these ever include a Nitrado ciphertext/IV/auth tag, a Discord

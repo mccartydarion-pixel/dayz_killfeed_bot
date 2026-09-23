@@ -70,6 +70,7 @@ permission mapping granting a Level at or below their own resolved Level - enfor
 | `ZONE_IGNORE_MANAGE` | Administrator | Phase 4 - ignore-entry CRUD, its own capability separate from `ZONE_MANAGE` |
 | `UAV_MANAGE` | Owner | Phase 4 - required in addition to `ZONE_MANAGE` for any UAV/BASE_RADAR zone |
 | `INTRUSION_ACK` | Moderator | Phase 4 - acknowledge an active intrusion |
+| `HEATMAP_VIEW` | Moderator | Phase 5, `docs/HEATMAPS.md` - aggregate PvP/activity/intrusion heatmap queries |
 
 ## Current Actor Client Admin Permissions (Phase 1 Part 2)
 
@@ -181,6 +182,8 @@ GET    /zones/{zoneID}/active-intruders         ZONE_VIEW
 GET    /intrusions/active                       ZONE_VIEW                ?zoneId=&zoneType=&playerId=&acknowledged=
 GET    /intrusions/history                      ZONE_VIEW                ?zoneId=&playerId=&from=&to=&status=&cursor=&limit=, newest first
 POST   /intrusions/{intrusionID}/acknowledge    INTRUSION_ACK
+
+GET    /heatmap                                 HEATMAP_VIEW              ?type=&from=&to=&resolution=&zoneId=  (Phase 5, docs/HEATMAPS.md)
 ```
 
 Error codes added: `ADMIN_FORBIDDEN` (403, missing capability), `ADMIN_ESCALATION_DENIED` (403,
@@ -204,6 +207,19 @@ same standard `docs/NITRADO_DELTA_READS.md` applied to the seek/offset-count end
 | ban list *duration* | **DEFERRED** | Nitrado's banlist API takes only `identifier`, no duration/expiry - Champion's own `installation_access_entries.expires_at` records the intent, but nothing currently enforces an automatic un-ban when it passes (see Deferred) |
 | base damage / container damage / third-person / raid toggles | **UNSUPPORTED/DEFERRED** | No endpoint for any of these appears anywhere in Nitrado's official SDK; these are almost certainly DayZ `serverDZ.cfg`-style file settings, which would need the same unverified file-write capability as priority |
 | generic `setConfig` (arbitrary allowlisted config writes) | **PARTIALLY DEFERRED** | Implemented for Champion-side settings that already exist in `server_configs`/`installation_channel_routes` (feed toggles, maintenance mode, location visibility) via their own dedicated endpoints above; a general DayZ-server-config-file writer is deferred with config writes generally |
+
+## What changed (Phase 5: PvP / activity / intrusion heatmaps)
+
+Full design record in `docs/HEATMAPS.md`. Summary: new migration `0043_heatmap_indexes` (purely
+additive indexes, no new tables); new `internal/repository/heatmap_repository.go` (SQL-side
+`GROUP BY` grid aggregation for kills/deaths/activity/intrusions - never load-then-aggregate in
+Go); new `internal/heatmap` package (validation, a bounded 45s-TTL cache, intensity calculation,
+metrics); new capability `HEATMAP_VIEW`; new route `GET .../admin/heatmap`. Kills/deaths carry no
+coordinate of their own - every heatmap coordinate is recovered via an exact-timestamp join to
+Phase 3's `player_location_events` (the same `eventTime(ev)` value both tables were already
+written from), never fabricated. Zone intrusion behavior itself is untouched - the intrusion
+heatmap reads `zone_intrusions` as-is. Heatmap UI/map rendering remains deferred to a future
+frontend phase.
 
 ## What changed (Phase 4: zones + UAV / Base Radar)
 

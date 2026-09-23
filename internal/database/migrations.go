@@ -1816,6 +1816,28 @@ CREATE INDEX IF NOT EXISTS idx_zone_intrusions_entered ON zone_intrusions(entere
 CREATE UNIQUE INDEX IF NOT EXISTS uq_zone_intrusions_open ON zone_intrusions(zone_id, player_id) WHERE status <> 'EXITED';
 `,
 	},
+	{
+		Name: "0043_heatmap_indexes",
+		SQL: `
+-- Champion Phase 5 (docs/HEATMAPS.md): heatmap aggregation queries never scan kills/deaths/
+-- player_location_events/zone_intrusions without a covering index - audited against the existing
+-- index set first (task section 17), adding only what's actually missing:
+--   - kills already has idx_kills_server(guild_id,server_id,created_at DESC), but heatmap queries
+--     filter by event_time (the column that matches player_location_events.observed_at exactly -
+--     both are set from the same ev.Timestamp during the same processLine call), not created_at.
+--   - deaths already has idx_deaths_server(guild_id,server_id,event_time DESC) - covers heatmap
+--     death queries as-is, nothing to add.
+--   - player_location_events has (player_id,observed_at) and (server_id,observed_at), but every
+--     heatmap join additionally filters by event_type ('KILL'/'DEATH') or needs it implicitly - a
+--     composite (server_id,event_type,observed_at) index serves both the kill/death coordinate
+--     joins and the player-activity aggregation's own time-range scan.
+--   - zone_intrusions has (installation_id,status) and (entered_at DESC) separately, but heatmap
+--     intrusion queries filter by (installation_id, entered_at range) together.
+CREATE INDEX IF NOT EXISTS idx_kills_server_event_time ON kills(guild_id, server_id, event_time DESC);
+CREATE INDEX IF NOT EXISTS idx_player_location_events_server_type_time ON player_location_events(server_id, event_type, observed_at);
+CREATE INDEX IF NOT EXISTS idx_zone_intrusions_installation_entered ON zone_intrusions(installation_id, entered_at DESC);
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order, each transactionally. A

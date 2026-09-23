@@ -526,3 +526,14 @@ See `docs/ZONES_UAV_RADAR.md` for the full design. Six new tables:
 | `zone_bans` | `zone_id`, `player_id` (both `ON DELETE CASCADE`), `reason`, `active`. `UNIQUE(zone_id, player_id) WHERE active` (a lifted ban can be re-added; history is never deleted). Explicitly not a server ban - never referenced by `installation_access_entries` or the Nitrado banlist API |
 | `zone_presence` | The intrusion engine's own persisted transition-detection state (a deliberate, documented exception to the "no second truth" principle - this is derived STATE, not duplicated location data). `UNIQUE(zone_id, player_id)`, `status CHECK IN` (INSIDE, OUTSIDE), `entered_at`, `last_seen_at`, `last_alert_at` (the cooldown anchor - survives an exit/re-entry cycle for the same pair). Restoring this on a process restart is automatic (it was never in memory to lose) |
 | `zone_intrusions` | Append-mostly history, never deleted on exit. `zone_id`/`installation_id`/`guild_id`/`server_id`/`player_id` (all `ON DELETE CASCADE`), `gamertag`, `status CHECK IN` (ACTIVE, ACKNOWLEDGED, EXITED), `banned`, `entered_at`, `exited_at`, `acknowledged_at`/`acknowledged_by_user_id`, `last_alert_at`, `alert_count`. **`UNIQUE(zone_id, player_id) WHERE status <> 'EXITED'`** enforces "at most one open intrusion per zone+player" and is the engine's own hot lookup. Indexes `(installation_id, status)`, `(zone_id, status)`, `(player_id)`, `(entered_at DESC)` |
+
+## Heatmaps (migration 0043)
+
+See `docs/HEATMAPS.md` for the full design. Purely additive indexes - **no new tables**, since
+heatmaps aggregate `kills`/`deaths`/`player_location_events`/`zone_intrusions` as-is:
+
+| Index | On | Why |
+|---|---|---|
+| `idx_kills_server_event_time` | `kills(guild_id, server_id, event_time DESC)` | heatmap kill queries filter by `event_time` (the column matching `player_location_events.observed_at` exactly), not `created_at` (the existing `idx_kills_server`'s leading column) |
+| `idx_player_location_events_server_type_time` | `player_location_events(server_id, event_type, observed_at)` | every heatmap join/scan filters by `event_type` in addition to `server_id`/`observed_at` |
+| `idx_zone_intrusions_installation_entered` | `zone_intrusions(installation_id, entered_at DESC)` | heatmap intrusion queries filter by `(installation_id, entered_at range)` together, not separately as the existing `(installation_id, status)` and `(entered_at DESC)` indexes do |
