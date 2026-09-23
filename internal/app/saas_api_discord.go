@@ -47,6 +47,9 @@ type discordGuildVerifier interface {
 	// (no channel overwrites) - used to gate category/channel creation
 	// (section 5).
 	GuildPermissions(guildID string) (int64, error)
+	// MemberRoles returns an arbitrary member's role IDs within guildID (Client Admin Control
+	// Plane Phase 1: resolving an acting user's effective Champion permission level).
+	MemberRoles(guildID, userID string) ([]string, error)
 	// CreateGuildCategory creates a new category channel in guildID.
 	CreateGuildCategory(guildID, name string) (*discord.RawGuildChannel, error)
 	// CreateGuildTextChannel creates a new text channel in guildID, nested

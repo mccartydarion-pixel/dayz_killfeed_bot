@@ -486,3 +486,22 @@ already existed (`player_links`, `players`, `kills`, `deaths`, `bounties`, `play
 lookup FROM a Discord user id TO their `player_links` row, before a guild id is known (both existing
 unique constraints on `player_links` start with `guild_id`). See `docs/PLAYER_API.md` section 7 for
 the `EXPLAIN` evidence.
+
+## Client Admin Control Plane Phase 1 (migration 0040)
+
+See `docs/CLIENT_ADMIN.md` for the full design. New tables:
+
+| Table | Notes |
+|---|---|
+| `installation_role_permissions` | `installation_id` (`ON DELETE CASCADE`), `discord_role_id`, `permission_level` (`CHECK IN` OWNER, ADMINISTRATOR, MODERATOR, GATEKEEPER), `created_by_user_id`. `UNIQUE (installation_id, discord_role_id)` - one Level per role per installation |
+| `admin_audit_log` | `organization_id` (`ON DELETE CASCADE`), `installation_id` (nullable, `ON DELETE SET NULL` - an audit row outlives a deleted installation), `actor_user_id`/`actor_discord_id`, `action`, `target`, `reason`, `before_state`/`after_state` (`JSONB`, sanitized snapshots, never secrets), `result`. Indexes `(organization_id, created_at DESC)`, `(installation_id, created_at DESC)`. Rows are never deleted or edited |
+| `player_warnings` | `guild_id` (`ON DELETE CASCADE`), `player_id` (`ON DELETE CASCADE`), `reason`, `issued_by_user_id`, `issued_at`, `cleared` (default false), `cleared_by_user_id`, `cleared_at`. A clear sets the three `cleared*` columns; the row itself is never deleted, preserving the audit trail |
+| `installation_access_entries` | Champion-side whitelist/ban-list metadata (Nitrado's own API takes only a player `identifier`, no reason/notes/expiry): `installation_id`, `list_type` (`CHECK IN` WHITELIST, BANLIST), `identifier`, `reason`, `notes`, `expires_at`, `created_by_user_id`, `removed_at`/`removed_by_user_id` (soft-remove, preserves history). Partial unique index `(installation_id, list_type, identifier) WHERE removed_at IS NULL` allows re-adding an identifier after a prior removal |
+
+Columns added:
+
+| Table.Column | Notes |
+|---|---|
+| `installation_channel_routes.show_location` | `BOOLEAN NOT NULL DEFAULT TRUE` - per-route toggle for whether that feed's embeds include location fields |
+| `server_configs.maintenance_mode` | `BOOLEAN NOT NULL DEFAULT FALSE` - Champion-side flag only, never touches the Nitrado server |
+| `server_configs.autostart_enabled`, `autostart_offline_minutes`, `autostart_cooldown_minutes`, `autostart_last_attempt_at`, `autostart_attempt_count` | Monitor-loop state for a future `SERVER_AUTOSTART` scheduler (`docs/CLIENT_ADMIN.md` "Deferred" - the columns shipped, the monitor loop itself did not) |

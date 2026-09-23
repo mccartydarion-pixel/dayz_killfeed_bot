@@ -259,6 +259,26 @@ func (r *BountyRepository) Cancel(ctx context.Context, guildID, bountyID int64) 
 	return b, err
 }
 
+// ListActiveForTarget returns every active bounty on one target player (Client Admin Control
+// Plane Phase 1's "resetBountyReset": clearing a player's bounty state means cancelling every
+// bounty currently active on them, not deleting the ledger/history of past claimed/expired ones).
+func (r *BountyRepository) ListActiveForTarget(ctx context.Context, guildID, targetPlayerID int64) ([]Bounty, error) {
+	rows, err := r.pool.Query(ctx, `SELECT id FROM bounties WHERE guild_id=$1 AND target_player_id=$2 AND status='ACTIVE'`, guildID, targetPlayerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Bounty
+	for rows.Next() {
+		var b Bounty
+		if err := rows.Scan(&b.ID); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
 // ListActive lists individual active bounties (highest first) with the target's
 // display name. Use ListBoard for the stacked, per-target view.
 func (r *BountyRepository) ListActive(ctx context.Context, guildID int64, limit int) ([]Bounty, error) {

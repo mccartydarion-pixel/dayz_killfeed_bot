@@ -126,6 +126,12 @@ type App struct {
 	// docs/PLAYER_API.md) - which installations a verified DayZ player is legitimately
 	// associated with, and their per-installation stats. Read-only; never touched by ChannelRoutes.
 	SaaSPlayer *repository.PlayerServerRepository
+	// Client Admin Control Plane (Phase 1, docs/CLIENT_ADMIN.md): Discord-role -> Champion
+	// permission-level mapping, the tenant admin audit log, and the shared scope/warnings/
+	// server-name/access-list repository the new admin capability routes use.
+	Permissions *repository.PermissionsRepository
+	AdminAudit  *repository.AuditRepository
+	ClientAdmin *repository.ClientAdminRepository
 	// ChannelRoutes is the runtime feature -> Discord channel resolver
 	// (internal/routing), a short-TTL cache over SaaSChannelRoutes. Nil-safe:
 	// with no database, publishers simply use their legacy channel.
@@ -175,18 +181,34 @@ type App struct {
 	saasShopPurchaseLimiter   *saasRateLimiter
 	saasShopAdminLimiter      *saasRateLimiter
 	saasBillingActionLimiter  *saasRateLimiter
-	persistQueuesMu           sync.Mutex
-	persistQueues             []*killfeed.PersistenceQueue
-	rotatingFeedsMu           sync.Mutex
-	rotatingFeeds             []*discord.RotatingFeed
-	firstConnectMu            sync.Mutex
-	firstConnectServers       map[int64]bool
-	counterOwnerMu            sync.RWMutex
-	publicCounterServerID     int64
-	presenceMu                sync.Mutex
-	presenceTrackers          map[int64]*killfeed.PlayerTracker
-	presenceEngines           map[int64]*killfeed.Engine
-	cancel                    context.CancelFunc
+	// saasAdminActionLimiter throttles the Client Admin Control Plane's higher-risk mutation
+	// routes (restart/stop/whitelist/banlist/permission changes/etc); saasAdminReadLimiter
+	// throttles its read routes (audit log, warnings list, permissions list).
+	saasAdminActionLimiter *saasRateLimiter
+	saasAdminReadLimiter   *saasRateLimiter
+	// saasServerRestartLimiter/saasServerStopLimiter apply the task's own per-capability rate
+	// limits ("restart: 1 per 5 minutes", "stop/start: 1 per minute") - tighter than the general
+	// admin-action limiter above, since these are the highest-blast-radius live actions.
+	saasServerRestartLimiter *saasRateLimiter
+	saasServerStopLimiter    *saasRateLimiter
+	// discordRoleCacheMu/discordRoleCache cache one actor's live Discord guild roles briefly
+	// (discordRoleCacheTTL) so a burst of admin actions from the same person doesn't each cost a
+	// separate Discord REST round trip - mirrors discord.Client.botGuildRoles' own
+	// state-cache-first pattern, but for an arbitrary member rather than the bot itself.
+	discordRoleCacheMu    sync.Mutex
+	discordRoleCache      map[string]discordRoleCacheEntry
+	persistQueuesMu       sync.Mutex
+	persistQueues         []*killfeed.PersistenceQueue
+	rotatingFeedsMu       sync.Mutex
+	rotatingFeeds         []*discord.RotatingFeed
+	firstConnectMu        sync.Mutex
+	firstConnectServers   map[int64]bool
+	counterOwnerMu        sync.RWMutex
+	publicCounterServerID int64
+	presenceMu            sync.Mutex
+	presenceTrackers      map[int64]*killfeed.PlayerTracker
+	presenceEngines       map[int64]*killfeed.Engine
+	cancel                context.CancelFunc
 }
 
 // registerPresenceTracker exposes a running ServerWorker's live PlayerTracker
@@ -578,6 +600,9 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			}
 			app.SaaSCredentials = repository.NewCredentialRepository(db.Pool)
 			app.SaaSChannelRoutes = repository.NewChannelRouteRepository(db.Pool)
+			app.Permissions = repository.NewPermissionsRepository(db.Pool)
+			app.AdminAudit = repository.NewAuditRepository(db.Pool)
+			app.ClientAdmin = repository.NewClientAdminRepository(db.Pool)
 			app.adminSaaS = adminrepo.New(db.Pool)
 			embedRepo := repository.NewEmbedTemplateRepository(db.Pool)
 			app.EmbedTemplates = embedtemplates.NewService(embedRepo)

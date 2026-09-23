@@ -1544,6 +1544,97 @@ CREATE INDEX IF NOT EXISTS idx_billing_transactions_invoice ON billing_transacti
 CREATE INDEX IF NOT EXISTS idx_player_links_discord_user ON player_links(discord_user_id, status);
 `,
 	},
+	{
+		Name: "0040_client_admin_control_plane",
+		SQL: `
+-- Champion Client Admin Control Plane Phase 1 (docs/CLIENT_ADMIN.md): Discord-role -> Champion
+-- tenant-permission-level mapping. This is deliberately separate from organization_members' flat
+-- OWNER/ADMIN/MEMBER role and from Champion's own platform-admin allowlist (admin_api.go) - see
+-- docs/CLIENT_ADMIN.md "Permission model" for how the three relate. permission_level is enforced
+-- at the app layer (internal/permissions) against a fixed, known set; the CHECK constraint is a
+-- second, redundant guard against a bad direct write.
+CREATE TABLE IF NOT EXISTS installation_role_permissions (
+    id BIGSERIAL PRIMARY KEY,
+    installation_id BIGINT NOT NULL REFERENCES installations(id) ON DELETE CASCADE,
+    discord_role_id TEXT NOT NULL,
+    permission_level TEXT NOT NULL CHECK (permission_level IN ('OWNER','ADMINISTRATOR','MODERATOR','GATEKEEPER')),
+    created_by_user_id BIGINT REFERENCES app_users(id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(installation_id, discord_role_id)
+);
+CREATE INDEX IF NOT EXISTS idx_installation_role_permissions_installation ON installation_role_permissions(installation_id);
+
+-- Tenant-level admin audit log (task's "ADMIN AUDIT LOG" section). No persisted audit table
+-- existed anywhere before this migration (confirmed by a full-repo audit ahead of Access Model
+-- Phase 2, PR #60, and reconfirmed here) - every website admin action from this phase on must
+-- write one row here. before_state/after_state are small sanitized JSON snapshots, never secrets.
+CREATE TABLE IF NOT EXISTS admin_audit_log (
+    id BIGSERIAL PRIMARY KEY,
+    organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    installation_id BIGINT REFERENCES installations(id) ON DELETE SET NULL,
+    actor_user_id BIGINT REFERENCES app_users(id),
+    actor_discord_id TEXT,
+    action TEXT NOT NULL,
+    target TEXT,
+    reason TEXT,
+    before_state JSONB,
+    after_state JSONB,
+    result TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_admin_audit_log_org_time ON admin_audit_log(organization_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_admin_audit_log_installation_time ON admin_audit_log(installation_id, created_at DESC);
+
+-- Player warnings (task's "DISCORD MODERATION" / warnings section). A clear preserves the row
+-- (audit trail) rather than deleting it - only cleared/clearedBy/clearedAt are set.
+CREATE TABLE IF NOT EXISTS player_warnings (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    reason TEXT NOT NULL,
+    issued_by_user_id BIGINT REFERENCES app_users(id),
+    issued_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    cleared BOOLEAN NOT NULL DEFAULT FALSE,
+    cleared_by_user_id BIGINT REFERENCES app_users(id),
+    cleared_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_player_warnings_player ON player_warnings(guild_id, player_id, cleared);
+
+-- Per-route location-field visibility (task's "location" capability) and maintenance mode /
+-- autostart monitor state (task's "SERVER OPERATIONS" / "SERVER MAINTENANCE MODE" sections).
+ALTER TABLE installation_channel_routes ADD COLUMN IF NOT EXISTS show_location BOOLEAN NOT NULL DEFAULT TRUE;
+
+ALTER TABLE server_configs ADD COLUMN IF NOT EXISTS maintenance_mode BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE server_configs ADD COLUMN IF NOT EXISTS autostart_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE server_configs ADD COLUMN IF NOT EXISTS autostart_offline_minutes INTEGER NOT NULL DEFAULT 10 CHECK (autostart_offline_minutes > 0);
+ALTER TABLE server_configs ADD COLUMN IF NOT EXISTS autostart_cooldown_minutes INTEGER NOT NULL DEFAULT 30 CHECK (autostart_cooldown_minutes > 0);
+ALTER TABLE server_configs ADD COLUMN IF NOT EXISTS autostart_last_attempt_at TIMESTAMPTZ;
+ALTER TABLE server_configs ADD COLUMN IF NOT EXISTS autostart_attempt_count INTEGER NOT NULL DEFAULT 0;
+
+-- Champion-side whitelist/ban-list records (task's "ACCESS CONTROL"). Nitrado's own whitelist/
+-- banlist API (services/{id}/gameservers/games/{whitelist|banlist}, add/remove by identifier only)
+-- carries no reason/notes/expiry metadata, so this table is the authoritative source for those
+-- fields; the Nitrado call is the enforcement side effect on add/remove. A row is soft-removed
+-- (removed_at set) rather than deleted, preserving history; the partial unique index allows an
+-- identifier to be re-added after a prior removal without colliding with its own history.
+CREATE TABLE IF NOT EXISTS installation_access_entries (
+    id BIGSERIAL PRIMARY KEY,
+    installation_id BIGINT NOT NULL REFERENCES installations(id) ON DELETE CASCADE,
+    list_type TEXT NOT NULL CHECK (list_type IN ('WHITELIST','BANLIST')),
+    identifier TEXT NOT NULL,
+    reason TEXT,
+    notes TEXT,
+    expires_at TIMESTAMPTZ,
+    created_by_user_id BIGINT REFERENCES app_users(id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    removed_at TIMESTAMPTZ,
+    removed_by_user_id BIGINT REFERENCES app_users(id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_installation_access_entries_active ON installation_access_entries(installation_id, list_type, identifier) WHERE removed_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_installation_access_entries_lookup ON installation_access_entries(installation_id, list_type, removed_at);
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order, each transactionally. A
