@@ -263,13 +263,13 @@ func TestBountyEndToEndClaimAfterPersistence(t *testing.T) {
 	}
 	w.tracker.Flush()
 	w.board.SyncOnce(w.ctx)
-	if cards := w.d.cardsIn("track-A"); len(cards) != 1 || !strings.Contains(cards[0], "BOUNTY PLACED") || !strings.Contains(cards[0], "Target: Target") || !strings.Contains(cards[0], "250,000 pts") {
+	if cards := w.d.cardsIn("track-A"); len(cards) != 1 || !strings.Contains(cards[0], "BOUNTY PLACED") || !strings.Contains(cards[0], "**Target**") || !strings.Contains(cards[0], "250,000 pts") {
 		t.Fatalf("expected the placement on server A's tracking feed, got %v", cards)
 	}
 	if len(w.d.cardsIn("track-B")) != 0 {
 		t.Fatal("server B's tracking feed must not see server A's bounty")
 	}
-	if txt := w.d.boardText("board-A"); !strings.Contains(txt, "1. Target — 250,000 pts") {
+	if txt := w.d.boardText("board-A"); !strings.Contains(txt, "🥇 Target • **250,000 pts**") {
 		t.Fatalf("server A's board must list the bounty, got %q", txt)
 	}
 	if txt := w.d.boardText("board-B"); strings.Contains(txt, "Target") {
@@ -312,7 +312,7 @@ func TestBountyEndToEndClaimAfterPersistence(t *testing.T) {
 	w.tracker.Flush()
 	w.board.SyncOnce(w.ctx)
 	cards := w.d.cardsIn("track-A")
-	if len(cards) != 2 || cards[1] != "💰 **BOUNTY CLAIMED**\nHunter: Hunter\nTarget: Target\nValue: 250,000 pts\nWeapon: M4-A1\nDistance: 86m" {
+	if len(cards) != 2 || cards[1] != "👑 **BOUNTY CLAIMED**\n**Hunter** eliminated **Target**\nReward **250,000 pts**\n`M4-A1` • 86m" {
 		t.Fatalf("unexpected claim card: %q", cards)
 	}
 	if !strings.Contains(w.d.boardText("board-A"), "No active bounties") {
@@ -368,7 +368,7 @@ func TestBountyBoardWithoutTrackingRoute(t *testing.T) {
 	must(t, err)
 	w.tracker.Flush()
 	w.board.SyncOnce(w.ctx)
-	if !strings.Contains(w.d.boardText("board-A"), "Target — 700 pts") {
+	if !strings.Contains(w.d.boardText("board-A"), "Target • **700 pts**") {
 		t.Fatalf("the board must work without a tracking route, got %q", w.d.boardText("board-A"))
 	}
 	if len(w.d.cardsIn("track-A")) != 0 || len(w.d.cardsIn("track-B")) != 0 {
@@ -428,7 +428,7 @@ func TestBountyBoardRestartAndRouteChangeAgainstRealStore(t *testing.T) {
 	// Route change in-process (1-hour TTL): the board moves, no leftover copy.
 	w.save(w.fixture.InstallationID, "kf-A", map[string]string{"BOUNTY": "board-A2"})
 	restarted.SyncOnce(w.ctx)
-	if w.d.liveIn("board-A") != 0 || w.d.liveIn("board-A2") != 1 || !strings.Contains(w.d.boardText("board-A2"), "Target — 1,500 pts") {
+	if w.d.liveIn("board-A") != 0 || w.d.liveIn("board-A2") != 1 || !strings.Contains(w.d.boardText("board-A2"), "Target • **1,500 pts**") {
 		t.Fatalf("expected the board moved to board-A2, live A=%d A2=%d", w.d.liveIn("board-A"), w.d.liveIn("board-A2"))
 	}
 	moved, err := w.panelStore.List(w.ctx, w.guildRowID, "BOUNTY")

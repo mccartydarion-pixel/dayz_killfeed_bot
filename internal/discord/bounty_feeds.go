@@ -292,51 +292,59 @@ func (t *BountyTracker) send(channel string, embeds []*discordgo.MessageEmbed) {
 
 // buildBountyEventEmbed renders one lifecycle card from committed state only.
 // Weapon and distance appear on a claim only when the authoritative kill had
-// them; no internal id is ever shown. Amounts are Champion Points.
+// them; no internal id is ever shown. Amounts are Champion Points:
+//
+//	🎯 **BOUNTY PLACED**          👑 **BOUNTY CLAIMED**
+//	**Target**                    **Hunter** eliminated **Target**
+//	Reward **25,000 pts**         Reward **25,000 pts** • 2 bounties
+//	                              `M4-A1` • 86m
 func buildBountyEventEmbed(e bounties.Event) *discordgo.MessageEmbed {
-	target := bountyName(e.Target)
-	value := formatAmount(e.Amount) + " pts"
+	target := bountyBold(e.Target)
+	reward := "Reward **" + formatAmount(e.Amount) + " pts**"
 	var b strings.Builder
 	color := presentation.EventGold
 	switch e.Kind {
 	case bounties.EventPlaced:
-		b.WriteString("🎯 **BOUNTY PLACED**")
-		fmt.Fprintf(&b, "\nTarget: %s\nValue: %s", target, value)
+		fmt.Fprintf(&b, "🎯 **BOUNTY PLACED**\n%s\n%s", target, reward)
 		if e.Automatic {
 			b.WriteString("\nSource: kill streak")
 		}
 	case bounties.EventIncreased:
-		b.WriteString("📈 **BOUNTY INCREASED**")
-		fmt.Fprintf(&b, "\nTarget: %s\nValue: %s", target, value)
+		fmt.Fprintf(&b, "📈 **BOUNTY INCREASED**\n%s\n%s", target, reward)
 		if e.Automatic {
 			b.WriteString("\nSource: kill streak")
 		}
 	case bounties.EventClaimed:
 		color = presentation.SuccessGreen
-		b.WriteString("💰 **BOUNTY CLAIMED**")
-		fmt.Fprintf(&b, "\nHunter: %s\nTarget: %s\nValue: %s", bountyName(e.Hunter), target, value)
+		fmt.Fprintf(&b, "👑 **BOUNTY CLAIMED**\n%s eliminated %s\n%s", bountyBold(e.Hunter), target, reward)
 		if e.Count > 1 {
-			fmt.Fprintf(&b, "\nBounties: %d", e.Count)
+			fmt.Fprintf(&b, " • %d bounties", e.Count)
 		}
+		var how []string
 		if w := strings.TrimSpace(e.Weapon); w != "" {
-			fmt.Fprintf(&b, "\nWeapon: %s", safeTrunc(sanitizeName(w), maxWeaponLen))
+			how = append(how, "`"+strings.ReplaceAll(safeTrunc(sanitizeName(w), maxWeaponLen), "`", "'")+"`")
 		}
 		if e.Distance != nil {
-			fmt.Fprintf(&b, "\nDistance: %.0fm", *e.Distance)
+			how = append(how, fmt.Sprintf("%.0fm", *e.Distance))
+		}
+		if len(how) > 0 {
+			b.WriteString("\n" + strings.Join(how, " • "))
 		}
 	case bounties.EventExpired:
 		color = presentation.WarningAmber
-		b.WriteString("⌛ **BOUNTY EXPIRED**")
-		fmt.Fprintf(&b, "\nTarget: %s\nValue: %s", target, value)
+		fmt.Fprintf(&b, "⌛ **BOUNTY EXPIRED**\n%s\n%s", target, reward)
 	case bounties.EventCancelled:
 		color = presentation.WarningAmber
-		b.WriteString("🚫 **BOUNTY CANCELLED**")
-		fmt.Fprintf(&b, "\nTarget: %s\nValue: %s", target, value)
+		fmt.Fprintf(&b, "🚫 **BOUNTY CANCELLED**\n%s\n%s", target, reward)
 	default:
-		b.WriteString("🎯 **BOUNTY**")
-		fmt.Fprintf(&b, "\nTarget: %s", target)
+		fmt.Fprintf(&b, "🎯 **BOUNTY**\n%s", target)
 	}
 	return &discordgo.MessageEmbed{Description: b.String(), Color: color}
+}
+
+// bountyBold is a bold, markdown-escaped bounty name.
+func bountyBold(s string) string {
+	return "**" + presentation.EscapeMarkdown(bountyName(s)) + "**"
 }
 
 // --- BOUNTY: the public board ---------------------------------------------------------
@@ -369,7 +377,7 @@ type BountyBoard struct {
 const (
 	bountyBoardInterval = 30 * time.Second // also picks up expiries and out-of-process changes
 	bountyBoardLimit    = 10
-	bountyBoardFooter   = "CHAMPION KILLFEED • BOUNTY BOARD"
+	bountyBoardFooter   = "CHAMPION • BOUNTY BOARD"
 )
 
 func NewBountyBoard(resolver RouteResolver, servers GuildServersFunc, panels *RoutePanels, lister BoardLister) *BountyBoard {
@@ -467,7 +475,7 @@ func buildBountyBoardEmbed(entries []repository.BoardEntry) *discordgo.MessageEm
 		b.WriteString("\n_No active bounties._")
 	}
 	for i, e := range entries {
-		fmt.Fprintf(&b, "\n%d. %s — %s pts", i+1, bountyName(e.TargetName), formatAmount(e.Total))
+		b.WriteString("\n" + presentation.RankLine(i+1, e.TargetName, presentation.FormatPoints(e.Total)))
 		if e.Count > 1 {
 			fmt.Fprintf(&b, " (%d bounties)", e.Count)
 		}

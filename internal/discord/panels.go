@@ -144,6 +144,7 @@ func OnlinePlayersEmbed(players []string, online bool) *discordgo.MessageEmbed {
 	embed := presentation.NewChampionEmbed("LIVE PLAYERS", presentation.SuccessGreen)
 	embed.Description = fmt.Sprintf("**STATUS**\n%s\n\n**ONLINE PLAYERS**\n%d\n\n%s", status, len(players), list.String())
 	embed.Footer = presentation.UpdatedFooter(time.Now())
+	presentation.StampEmbed(embed, time.Now())
 	return embed
 }
 
@@ -171,5 +172,6 @@ func ServerStatusPanel(nitradoConnected, admConnected bool, playersOnline int, k
 		presentation.StatusField("ONLINE PLAYERS", fmt.Sprintf("%d", playersOnline), true),
 	}
 	embed.Footer = presentation.UpdatedFooter(time.Now())
+	presentation.StampEmbed(embed, time.Now())
 	return embed
 }

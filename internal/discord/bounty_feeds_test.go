@@ -71,21 +71,21 @@ func TestBountyTrackerCards(t *testing.T) {
 		want string
 	}{
 		{"placed", bounties.Event{Kind: bounties.EventPlaced, GuildID: 7, ServerID: 1, Target: "PlayerA", Amount: 100000},
-			"🎯 **BOUNTY PLACED**\nTarget: PlayerA\nValue: 100,000 pts"},
+			"🎯 **BOUNTY PLACED**\n**PlayerA**\nReward **100,000 pts**"},
 		{"placed by streak", bounties.Event{Kind: bounties.EventPlaced, GuildID: 7, KillServerID: 1, Target: "PlayerA", Amount: 500, Automatic: true},
-			"🎯 **BOUNTY PLACED**\nTarget: PlayerA\nValue: 500 pts\nSource: kill streak"},
+			"🎯 **BOUNTY PLACED**\n**PlayerA**\nReward **500 pts**\nSource: kill streak"},
 		{"increased", bounties.Event{Kind: bounties.EventIncreased, GuildID: 7, ServerID: 1, Target: "PlayerA", Amount: 150000},
-			"📈 **BOUNTY INCREASED**\nTarget: PlayerA\nValue: 150,000 pts"},
+			"📈 **BOUNTY INCREASED**\n**PlayerA**\nReward **150,000 pts**"},
 		{"claimed with weapon and distance", bounties.Event{Kind: bounties.EventClaimed, GuildID: 7, KillServerID: 1, Hunter: "PlayerB", Target: "PlayerA", Amount: 100000, Count: 1, Weapon: "M4-A1", Distance: dist(86.4)},
-			"💰 **BOUNTY CLAIMED**\nHunter: PlayerB\nTarget: PlayerA\nValue: 100,000 pts\nWeapon: M4-A1\nDistance: 86m"},
+			"👑 **BOUNTY CLAIMED**\n**PlayerB** eliminated **PlayerA**\nReward **100,000 pts**\n`M4-A1` • 86m"},
 		{"claimed without weapon or distance", bounties.Event{Kind: bounties.EventClaimed, GuildID: 7, KillServerID: 1, Hunter: "PlayerB", Target: "PlayerA", Amount: 100000, Count: 1},
-			"💰 **BOUNTY CLAIMED**\nHunter: PlayerB\nTarget: PlayerA\nValue: 100,000 pts"},
+			"👑 **BOUNTY CLAIMED**\n**PlayerB** eliminated **PlayerA**\nReward **100,000 pts**"},
 		{"claimed stacked", bounties.Event{Kind: bounties.EventClaimed, GuildID: 7, KillServerID: 1, Hunter: "PlayerB", Target: "PlayerA", Amount: 150000, Count: 2},
-			"💰 **BOUNTY CLAIMED**\nHunter: PlayerB\nTarget: PlayerA\nValue: 150,000 pts\nBounties: 2"},
+			"👑 **BOUNTY CLAIMED**\n**PlayerB** eliminated **PlayerA**\nReward **150,000 pts** • 2 bounties"},
 		{"expired", bounties.Event{Kind: bounties.EventExpired, GuildID: 7, ServerID: 1, Target: "PlayerA", Amount: 100000},
-			"⌛ **BOUNTY EXPIRED**\nTarget: PlayerA\nValue: 100,000 pts"},
+			"⌛ **BOUNTY EXPIRED**\n**PlayerA**\nReward **100,000 pts**"},
 		{"cancelled", bounties.Event{Kind: bounties.EventCancelled, GuildID: 7, ServerID: 1, Target: "PlayerA", Amount: 100000},
-			"🚫 **BOUNTY CANCELLED**\nTarget: PlayerA\nValue: 100,000 pts"},
+			"🚫 **BOUNTY CANCELLED**\n**PlayerA**\nReward **100,000 pts**"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -412,7 +412,7 @@ func TestBountyBoardShowsTopBountiesWithoutInternalIDs(t *testing.T) {
 	f.lister.set(boardRow{1, "PlayerC", 75000}, boardRow{1, "PlayerA", 250000}, boardRow{1, "PlayerB", 125000}, boardRow{1, "PlayerB", 1000})
 	f.sync()
 
-	want := "🎯 **ACTIVE BOUNTIES**\n\n1. PlayerA — 250,000 pts\n2. PlayerB — 126,000 pts (2 bounties)\n3. PlayerC — 75,000 pts"
+	want := "🎯 **ACTIVE BOUNTIES**\n\n🥇 PlayerA • **250,000 pts**\n🥈 PlayerB • **126,000 pts** (2 bounties)\n🥉 PlayerC • **75,000 pts**"
 	if got := f.boardText("board-1"); got != want {
 		t.Fatalf("unexpected board:\n%q\nwant\n%q", got, want)
 	}
