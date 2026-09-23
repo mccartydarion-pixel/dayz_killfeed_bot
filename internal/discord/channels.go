@@ -125,6 +125,30 @@ func (c *Client) botGuildRoles(guildID, botID string) ([]string, error) {
 	return member.Roles, nil
 }
 
+// MemberRoles returns an arbitrary member's role IDs within guildID (Client Admin Control Plane
+// Phase 1: resolving a website actor's effective Champion permission level from their live
+// Discord roles). Same state-cache-first, single-REST-fallback shape as botGuildRoles, just
+// generalized to any userID rather than the bot's own id - a member who has left the guild, or
+// who Discord otherwise can't resolve, is reported as a normal error (never a panic or a silent
+// empty-roles result that could be mistaken for "no permissions" vs. "lookup failed").
+func (c *Client) MemberRoles(guildID, userID string) ([]string, error) {
+	if c == nil || c.session == nil {
+		return nil, fmt.Errorf("discord session not initialized")
+	}
+	if guildID == "" || userID == "" {
+		return nil, fmt.Errorf("guild id and user id are required")
+	}
+	if member, err := c.session.State.Member(guildID, userID); err == nil && member != nil {
+		return member.Roles, nil
+	}
+	member, err := c.session.GuildMember(guildID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("fetch guild member: %w", err)
+	}
+	_ = c.session.State.MemberAdd(member)
+	return member.Roles, nil
+}
+
 // memberChannelPermissions ports discordgo's own permission calculation
 // (restapi.go's unexported memberPermissions, mirrored here field-for-field)
 // so it can be computed from a guild/channel/role list already in hand -

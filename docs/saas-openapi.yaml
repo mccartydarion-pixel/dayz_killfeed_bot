@@ -3231,3 +3231,290 @@ paths:
         "200": { description: Processed (or already processed, or an event type this backend ignores). }
         "400": { description: Invalid or missing Stripe-Signature. }
         "503": { description: STRIPE_WEBHOOK_SECRET is not configured. }
+
+  # --- Client Admin Control Plane Phase 1 (docs/CLIENT_ADMIN.md) -----------------------------
+  # Every route below requires a specific capability (its own minimum permissions.Level), not the
+  # organization OWNER/ADMIN/MEMBER role used elsewhere in this file - see docs/CLIENT_ADMIN.md
+  # "Permission model". Common error responses omitted per-route where identical: 401
+  # Unauthorized, 403 ADMIN_FORBIDDEN (missing capability), 404 installation not found.
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/permissions:
+    get:
+      summary: List this installation's Discord-role -> Champion-Level mappings (PERMISSIONS_VIEW).
+      parameters: [{ $ref: "#/components/parameters/ActingUser" }, { $ref: "#/components/parameters/organizationID" }, { $ref: "#/components/parameters/installationID" }]
+      responses:
+        "200": { description: "{ items: RolePermission[], actorLevel: string }", content: { application/json: { schema: { type: object } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/permissions/{discordRoleID}:
+    put:
+      summary: >-
+        Set (or update) one Discord role's Level (PERMISSIONS_MANAGE). Escalation-safe: the actor can only
+        grant a Level at or below their own resolved Level, checked server-side - never trust the request body.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { name: discordRoleID, in: path, required: true, schema: { type: string } }
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [level], properties: { level: { type: string, enum: [OWNER, ADMINISTRATOR, MODERATOR, GATEKEEPER] } } } } } }
+      responses:
+        "200": { description: The saved mapping., content: { application/json: { schema: { type: object } } } }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "ADMIN_FORBIDDEN or ADMIN_ESCALATION_DENIED (tried to grant above own Level)." }
+        "429": { description: RATE_LIMITED. }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/permissions/{mappingID}:
+    delete:
+      summary: Remove a Discord-role mapping (PERMISSIONS_MANAGE, same escalation ceiling as PUT).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { name: mappingID, in: path, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        "200": { description: "{ deleted: true }" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "ADMIN_FORBIDDEN or ADMIN_ESCALATION_DENIED." }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/audit-log:
+    get:
+      summary: The tenant admin audit log, newest first (PERMISSIONS_VIEW).
+      parameters: [{ $ref: "#/components/parameters/ActingUser" }, { $ref: "#/components/parameters/organizationID" }, { $ref: "#/components/parameters/installationID" }]
+      responses:
+        "200": { description: "{ items: AuditEntry[] }", content: { application/json: { schema: { type: object } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/warnings/{playerID}:
+    get:
+      summary: List a player's warnings, including cleared ones (WARNINGS_VIEW).
+      parameters: [{ $ref: "#/components/parameters/ActingUser" }, { $ref: "#/components/parameters/organizationID" }, { $ref: "#/components/parameters/installationID" }, { name: playerID, in: path, required: true, schema: { type: integer, format: int64 } }]
+      responses:
+        "200": { description: "{ items: Warning[] }" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      summary: Issue a warning (WARNINGS_VIEW).
+      parameters: [{ $ref: "#/components/parameters/ActingUser" }, { $ref: "#/components/parameters/organizationID" }, { $ref: "#/components/parameters/installationID" }, { name: playerID, in: path, required: true, schema: { type: integer, format: int64 } }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [reason], properties: { reason: { type: string } } } } } }
+      responses:
+        "201": { description: The created warning. }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/warnings/{playerID}/{warningID}/clear:
+    post:
+      summary: >-
+        Clear a warning (WARNINGS_CLEAR - a stricter floor than issuing). The row is never deleted: only
+        cleared/clearedByUserId/clearedAt are set, preserving the audit trail.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { name: playerID, in: path, required: true, schema: { type: integer, format: int64 } }
+        - { name: warningID, in: path, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        "200": { description: The cleared warning. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "Warning not found or already cleared." }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/bounties/{playerID}/reset:
+    post:
+      summary: Cancel every active bounty on a target player (BOUNTY_MANAGE). Claimed/expired history is untouched.
+      parameters: [{ $ref: "#/components/parameters/ActingUser" }, { $ref: "#/components/parameters/organizationID" }, { $ref: "#/components/parameters/installationID" }, { name: playerID, in: path, required: true, schema: { type: integer, format: int64 } }]
+      responses:
+        "200": { description: "{ cancelled: integer }" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/factions:
+    get:
+      summary: List every faction of this guild, active and dissolved, with a live member count (FACTION_MODERATE).
+      parameters: [{ $ref: "#/components/parameters/ActingUser" }, { $ref: "#/components/parameters/organizationID" }, { $ref: "#/components/parameters/installationID" }]
+      responses:
+        "200": { description: "{ items: FactionAdmin[] }" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/factions/{factionID}/dissolve:
+    post:
+      summary: Force-dissolve a faction (FACTION_DISSOLVE, HIGH RISK - typed confirmation required). All historical faction data is preserved.
+      parameters: [{ $ref: "#/components/parameters/ActingUser" }, { $ref: "#/components/parameters/organizationID" }, { $ref: "#/components/parameters/installationID" }, { name: factionID, in: path, required: true, schema: { type: integer, format: int64 } }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [confirm], properties: { confirm: { type: string, enum: ["DISSOLVE"] } } } } } }
+      responses:
+        "200": { description: "{ dissolved: true }" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { description: ADMIN_CONFIRMATION_REQUIRED. }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/players/{playerID}/last-online:
+    get:
+      summary: A player's last observed connect/disconnect state on this installation's server (PLAYER_LAST_ONLINE_VIEW), backed by existing presence tracking.
+      parameters: [{ $ref: "#/components/parameters/ActingUser" }, { $ref: "#/components/parameters/organizationID" }, { $ref: "#/components/parameters/installationID" }, { name: playerID, in: path, required: true, schema: { type: integer, format: int64 } }]
+      responses:
+        "200": { description: LastOnline state. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "No observed activity for this player on this server." }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/economy/accounts:
+    get:
+      summary: Search Champion Points balances (ECONOMY_VIEW) - a capability-gated alias of the existing OWNER/ADMIN-only economy account search; same underlying query.
+      parameters: [{ $ref: "#/components/parameters/ActingUser" }, { $ref: "#/components/parameters/organizationID" }, { $ref: "#/components/parameters/installationID" }, { name: q, in: query, schema: { type: string } }]
+      responses:
+        "200": { description: "{ items: EconomyAccountRow[] }" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/server/name:
+    put:
+      summary: Set the server's Champion-facing display name (SERVER_NAME_EDIT). Never renames the underlying Nitrado server.
+      parameters: [{ $ref: "#/components/parameters/ActingUser" }, { $ref: "#/components/parameters/organizationID" }, { $ref: "#/components/parameters/installationID" }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [name], properties: { name: { type: string, minLength: 1, maxLength: 100 } } } } } }
+      responses:
+        "200": { description: "{ name: string }" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/feeds/{routeKey}/location:
+    put:
+      summary: Toggle whether a feed's embeds include location fields (FEED_LOCATION_MANAGE).
+      parameters: [{ $ref: "#/components/parameters/ActingUser" }, { $ref: "#/components/parameters/organizationID" }, { $ref: "#/components/parameters/installationID" }, { name: routeKey, in: path, required: true, schema: { type: string } }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [showLocation], properties: { showLocation: { type: boolean } } } } } }
+      responses:
+        "200": { description: "{ showLocation: boolean }" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: "Unknown route key for this installation." }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/maintenance-mode:
+    put:
+      summary: Toggle maintenance mode (MAINTENANCE_MODE). Champion-side flag only; never touches the Nitrado server.
+      parameters: [{ $ref: "#/components/parameters/ActingUser" }, { $ref: "#/components/parameters/organizationID" }, { $ref: "#/components/parameters/installationID" }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [enabled], properties: { enabled: { type: boolean } } } } } }
+      responses:
+        "200": { description: "{ enabled: boolean }" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/server/restart:
+    post:
+      summary: >-
+        Restart the DayZ server (SERVER_RESTART, MEDIUM RISK - typed confirmation "RESTART" required; rate
+        limited 1/5min). Real Nitrado API call (POST .../gameservers/restart, verified against Nitrado's
+        official SDK - see docs/CLIENT_ADMIN.md).
+      parameters: [{ $ref: "#/components/parameters/ActingUser" }, { $ref: "#/components/parameters/organizationID" }, { $ref: "#/components/parameters/installationID" }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [confirm], properties: { reason: { type: string }, confirm: { type: string, enum: ["RESTART"] } } } } } }
+      responses:
+        "200": { description: "{ restarting: true }" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { description: ADMIN_CONFIRMATION_REQUIRED. }
+        "429": { description: RATE_LIMITED. }
+        "503": { description: NITRADO_UNAVAILABLE. }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/server/stop:
+    post:
+      summary: >-
+        Stop the DayZ server (SERVER_STOP, HIGH RISK - typed confirmation "STOP" required; rate limited
+        1/min). Real Nitrado API call (POST .../gameservers/stop).
+      parameters: [{ $ref: "#/components/parameters/ActingUser" }, { $ref: "#/components/parameters/organizationID" }, { $ref: "#/components/parameters/installationID" }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [confirm], properties: { reason: { type: string }, confirm: { type: string, enum: ["STOP"] } } } } } }
+      responses:
+        "200": { description: "{ stopping: true }" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { description: ADMIN_CONFIRMATION_REQUIRED. }
+        "429": { description: RATE_LIMITED. }
+        "503": { description: NITRADO_UNAVAILABLE. }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/whitelist:
+    get:
+      summary: List active whitelist entries (WHITELIST_MANAGE). Champion-side metadata (reason/notes) - Nitrado's own API carries none.
+      parameters: [{ $ref: "#/components/parameters/ActingUser" }, { $ref: "#/components/parameters/organizationID" }, { $ref: "#/components/parameters/installationID" }]
+      responses:
+        "200": { description: "{ items: AccessEntry[] }" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      summary: Add to the whitelist (WHITELIST_MANAGE). Real Nitrado API call (POST .../games/whitelist); Champion's record is only saved once Nitrado confirms.
+      parameters: [{ $ref: "#/components/parameters/ActingUser" }, { $ref: "#/components/parameters/organizationID" }, { $ref: "#/components/parameters/installationID" }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [identifier], properties: { identifier: { type: string }, reason: { type: string }, notes: { type: string }, expiresAt: { type: string, format: date-time, nullable: true } } } } } }
+      responses:
+        "201": { description: The created entry. }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { description: NITRADO_UNAVAILABLE. }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/whitelist/{identifier}:
+    delete:
+      summary: Remove from the whitelist (WHITELIST_MANAGE). Real Nitrado API call (DELETE .../games/whitelist).
+      parameters: [{ $ref: "#/components/parameters/ActingUser" }, { $ref: "#/components/parameters/organizationID" }, { $ref: "#/components/parameters/installationID" }, { name: identifier, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200": { description: "{ removed: true }" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { description: NITRADO_UNAVAILABLE. }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/banlist:
+    get:
+      summary: List active ban-list entries (BANLIST_MANAGE).
+      parameters: [{ $ref: "#/components/parameters/ActingUser" }, { $ref: "#/components/parameters/organizationID" }, { $ref: "#/components/parameters/installationID" }]
+      responses:
+        "200": { description: "{ items: AccessEntry[] }" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      summary: Add to the ban list (BANLIST_MANAGE). Real Nitrado API call (POST .../games/banlist).
+      parameters: [{ $ref: "#/components/parameters/ActingUser" }, { $ref: "#/components/parameters/organizationID" }, { $ref: "#/components/parameters/installationID" }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [identifier], properties: { identifier: { type: string }, reason: { type: string }, notes: { type: string }, expiresAt: { type: string, format: date-time, nullable: true } } } } } }
+      responses:
+        "201": { description: The created entry. }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { description: NITRADO_UNAVAILABLE. }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/banlist/{identifier}:
+    delete:
+      summary: Remove from the ban list (BANLIST_MANAGE). Real Nitrado API call (DELETE .../games/banlist).
+      parameters: [{ $ref: "#/components/parameters/ActingUser" }, { $ref: "#/components/parameters/organizationID" }, { $ref: "#/components/parameters/installationID" }, { name: identifier, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200": { description: "{ removed: true }" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { description: NITRADO_UNAVAILABLE. }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/stats/player/{playerID}/reset-streak:
+    post:
+      summary: Reset a player's current kill streak to zero (PLAYER_STATS_RESET). Scoped to streak only this phase - see docs/CLIENT_ADMIN.md "Deferred" for kills/deaths/headshots.
+      parameters: [{ $ref: "#/components/parameters/ActingUser" }, { $ref: "#/components/parameters/organizationID" }, { $ref: "#/components/parameters/installationID" }, { name: playerID, in: path, required: true, schema: { type: integer, format: int64 } }]
+      responses:
+        "200": { description: "{ reset: true }" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/stats/reset-season:
+    post:
+      summary: >-
+        End the active season and start a new one (SERVER_STATS_RESET, HIGH RISK - typed confirmation
+        "RESET EVERYONE" required). Resets every season-scoped stat (kills/deaths/streaks/leaderboards)
+        guild-wide while preserving full history - no kill/death record is ever deleted. Serves both the
+        task's "resetEveryoneStat" and "resetServer" - see docs/CLIENT_ADMIN.md.
+      parameters: [{ $ref: "#/components/parameters/ActingUser" }, { $ref: "#/components/parameters/organizationID" }, { $ref: "#/components/parameters/installationID" }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [name, confirm], properties: { name: { type: string }, confirm: { type: string, enum: ["RESET EVERYONE"] } } } } } }
+      responses:
+        "200": { description: "{ seasonId: integer, name: string }" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { description: ADMIN_CONFIRMATION_REQUIRED. }

@@ -46,6 +46,10 @@ type fakeDiscordVerifier struct {
 	// most tests need no extra setup - only the explicit "missing
 	// permission" test cases opt out.
 	permissions map[string]int64
+	// memberRoles backs MemberRoles: guildID -> discordUserID -> role IDs. A user absent from
+	// this map resolves to an empty role list (never an error), matching "this person is in the
+	// guild but holds no mapped role" rather than "lookup failed".
+	memberRoles map[string]map[string][]string
 }
 
 type fakeGuildChannel struct {
@@ -113,6 +117,12 @@ func (f *fakeDiscordVerifier) GuildPermissions(guildID string) (int64, error) {
 		return perms, nil
 	}
 	return discordgo.PermissionAll, nil
+}
+
+// MemberRoles returns the configured role list for (guildID, userID), or an empty (non-nil) list
+// if unconfigured.
+func (f *fakeDiscordVerifier) MemberRoles(guildID, userID string) ([]string, error) {
+	return f.memberRoles[guildID][userID], nil
 }
 
 // CreateGuildCategory and CreateGuildTextChannel append to the fake's

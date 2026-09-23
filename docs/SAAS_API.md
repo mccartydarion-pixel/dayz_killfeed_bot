@@ -1167,6 +1167,26 @@ organization role at all; authorization comes entirely from a `VERIFIED` `player
 New error codes: `PLAYER_IDENTITY_REQUIRED` (409, reused from the economy's `Me` endpoint - no `VERIFIED` link for this installation's guild). An unknown installation id AND a verified-but-never-
 played-here server both return `404 NOT_FOUND` - deliberately the same code, to avoid letting a caller enumerate which installations of a guild they belong to.
 
+## Client Admin Control Plane (Phase 1)
+
+Full contract in `docs/CLIENT_ADMIN.md`. A capability-based tenant administration system: Clients
+map their own Discord roles to one of four Levels (OWNER/ADMINISTRATOR/MODERATOR/GATEKEEPER), and
+every route below is gated by a specific capability's minimum Level rather than the organization
+OWNER/ADMIN/MEMBER role used elsewhere in this document (the organization owner is always
+bootstrapped to Level OWNER; every other Level requires an explicit role mapping).
+
+All routes are under `/api/saas/organizations/{organizationID}/installations/{installationID}/admin`:
+permission mapping CRUD, the audit log, warnings, bounty reset, faction admin, last-online,
+an economy-balance-search alias, server name/feed-location/maintenance-mode, server
+restart/stop (real Nitrado endpoints, typed-confirmation-gated), whitelist/banlist management
+(real Nitrado endpoints, Champion-side metadata), and stat reset (streak per-player,
+season-based guild-wide). See `docs/CLIENT_ADMIN.md` for the full route table, the DayZ/Nitrado
+capability audit (what's a real Nitrado API call vs. deferred), and the explicit list of deferred
+capabilities (priority list, gameplay toggles, zones/UAV/heatmap, auto payments) with reasoning.
+
+New error codes: `ADMIN_FORBIDDEN` (403), `ADMIN_ESCALATION_DENIED` (403),
+`ADMIN_CONFIRMATION_REQUIRED` (409), `ADMIN_DISCORD_UNAVAILABLE` (503).
+
 ## Request/response DTOs
 
 None of these ever include a Nitrado ciphertext/IV/auth tag, a Discord
