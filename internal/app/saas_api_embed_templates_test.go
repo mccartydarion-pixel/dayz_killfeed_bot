@@ -15,6 +15,9 @@ import (
 func TestEmbedTemplateRoutesMatchTheChannelRouteBlueprint(t *testing.T) {
 	var blueprint, templ []string
 	for k := range championRouteKeys {
+		if k == "ONLINE_COUNTER" {
+			continue // a voice-channel counter, never a message: no template
+		}
 		blueprint = append(blueprint, k)
 	}
 	templ = embedtemplates.RouteKeys()

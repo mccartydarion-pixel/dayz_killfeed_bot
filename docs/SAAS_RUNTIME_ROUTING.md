@@ -113,10 +113,13 @@ installation is still `CONFIGURING`.
 | `BUILD_FEED` | `BuildFeedPublisher` (`discord/build_feed.go`) - single cards, or one summary for a burst | none - no fallback | ADM `BUILD_ACTION` (placed / built / dismantled), after dedupe; only present when the server enables `adminLogPlacement` / `adminLogBuildActions` | **IMPLEMENTED / RUNTIME ROUTED** (source depends on server config) |
 | `ADMIN_ALERTS` | `AdminAlertPublisher` (`discord/admin_alerts.go`) - alert on entering a condition, resolution on leaving it | none - no fallback | per-server ADM snapshots and download reports; zone intrusion engine | **IMPLEMENTED / RUNTIME ROUTED** |
 | `ADMIN_LOGS` | `ADMMonitorPublisher` (`discord/adm_monitor.go`) | legacy `GuildSetup.ADMMonitorChannelID` | ADM snapshot/download callbacks | **MIGRATED TO RUNTIME ROUTES** (route -> legacy) |
+| `SERVER_STATUS` | `ServerStatusBoard` (`discord/server_status_board.go`) - one persistent message per routed channel; `LiveCompletionPublisher` season/war/event results | legacy `GuildSetup.ServerStatusChannelID` (completion announcements only) | per-server ADM snapshots | **IMPLEMENTED / RUNTIME ROUTED** |
+| `ONLINE_COUNTER` | `VoiceChannelCounter` (`discord/counter.go`) - binds to the routed voice channel | legacy `GuildSetup.OnlinePlayersChannelID` | the public counter server's presence tracker | **IMPLEMENTED / RUNTIME ROUTED** |
 
-Also outside the route vocabulary: `DeathfeedPublisher` (`GuildSetup.DeathChannelID`,
-non-PvP deaths/suicides - a suicide it would have posted is claimed by `PVE_FEED` when that route exists) and the server-status panel
-(`GuildSetup.ServerStatusChannelID`) have no route key today.
+`DeathfeedPublisher` (non-PvP deaths) has no route key of its own: Channel
+System V2 sends it to the `KILLFEED` route (the combat feed), with
+`GuildSetup.DeathChannelID` only as the fallback for guilds without routes. A
+suicide is still claimed by `PVE_FEED` when that route exists.
 
 Migrating another publisher is: give it the same `(guildRowID, serverID)`,
 call `routing.Resolver.Resolve` with its `Route*` key (or wrap that in

@@ -29,7 +29,7 @@ var websiteRoutes = []websiteRoute{
 	{"HITFEED", []string{"killer", "victim", "weapon", "distance"}, "#C98B3D", "Hit confirmed", "{{killer}} hit {{victim}} with {{weapon}}.", [][3]string{{"distance", "Distance", "{{distance}}"}}, true},
 	{"BOUNTY", []string{"victim", "server_name", "timestamp"}, "#B84C4C", "Bounty posted", "A new bounty is active for {{victim}}.", [][3]string{{"target", "Target", "{{victim}}"}}, false},
 	{"BOUNTY_TRACKING", []string{"killer", "victim", "server_name"}, "#9E4B4B", "Bounty update", "{{killer}} is tracking {{victim}}.", [][3]string{{"hunter", "Hunter", "{{killer}}"}, {"target", "Target", "{{victim}}"}}, true},
-	{"ECONOMY", []string{"player", "amount", "balance", "server_name"}, "#4C9A72", "Economy transaction", "{{player}} received {{amount}} credits.", [][3]string{{"amount", "Amount", "{{amount}}"}, {"balance", "Balance", "{{balance}}"}}, true},
+	{"ECONOMY", []string{"player", "amount", "balance", "server_name"}, "#4C9A72", "Economy transaction", "{{player}} received {{amount}} pts.", [][3]string{{"amount", "Amount", "{{amount}}"}, {"balance", "Balance", "{{balance}}"}}, true},
 	{"SHOP", []string{"player", "item", "amount", "balance"}, "#4C7FA0", "Shop purchase", "{{player}} purchased {{item}}.", [][3]string{{"item", "Item", "{{item}}"}, {"amount", "Cost", "{{amount}}"}, {"balance", "Balance", "{{balance}}"}}, false},
 	{"CONNECTIONS", []string{"player", "event", "server_name", "timestamp"}, "#4C87A0", "Player connection", "{{player}} {{event}} the server.", [][3]string{{"server", "Server", "{{server_name}}"}}, false},
 	{"BUILD_FEED", []string{"player", "structure", "server_name"}, "#8A6F4A", "Build event", "{{player}} placed {{structure}}.", [][3]string{{"structure", "Structure", "{{structure}}"}}, false},

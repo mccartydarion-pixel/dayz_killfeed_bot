@@ -115,19 +115,20 @@ func (p *DeathfeedPublisher) PublishDeath(ev *killfeed.Event) error {
 	if ev == nil || (ev.Type != killfeed.EventPlayerDeath && ev.Type != killfeed.EventSuicideAction) {
 		return nil
 	}
-	channelID := p.channelID()
-	if channelID == "" {
-		return fmt.Errorf("death feed channel not configured")
-	}
-
 	embed := BuildDeathEmbed(ev)
 
-	// The rotating feed batches embeds and posts them on its own cycle; see
-	// RotatingFeed. Without one configured, fall back to an immediate send.
+	// The rotating feed batches embeds and posts them on its own cycle and
+	// resolves its channel itself (the combat-feed route first, the legacy
+	// death channel as fallback); see RotatingFeed. Without one configured,
+	// fall back to an immediate send to the legacy channel.
 	if p.feed != nil {
 		p.feed.Enqueue(embed)
 		slog.Debug("component=discord", "msg", "death feed queued", "type", string(ev.Type))
 		return nil
+	}
+	channelID := p.channelID()
+	if channelID == "" {
+		return fmt.Errorf("death feed channel not configured")
 	}
 
 	send := &discordgo.MessageSend{

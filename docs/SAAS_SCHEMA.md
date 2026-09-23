@@ -158,6 +158,25 @@ multiple DayZ servers - wiring the bot runtime to read from here instead of
 
 Repository methods: `InstallationRepository.GetSettings`/`UpdateSettings`.
 
+### `installation_retired_channels` (migration 0046)
+
+Champion-owned Discord channels/categories that setup or repair stopped
+routing to - the only channels the explicit, confirmed cleanup endpoint may
+delete.
+
+| column | notes |
+|---|---|
+| `installation_id` | FK `installations(id)`, `ON DELETE CASCADE` |
+| `channel_id` | TEXT, `UNIQUE(installation_id, channel_id)` |
+| `kind` | `CHANNEL` \| `CATEGORY` |
+| `source` | `ROUTE` (a Champion-managed route or the pre-V2 Champion category) \| `LEGACY_SETUP` (created by the legacy `/setup`) |
+| `former_routes` | TEXT[] - the routes that used it |
+| `legacy_field` | the legacy `GuildSetup` field to clear on cleanup (`LEGACY_SETUP` only) |
+| `recorded_at` | TIMESTAMPTZ |
+
+Rows for channels gone from Discord, or used by a route again, are forgotten
+on the next read.
+
 ### `installation_channel_routes`
 The scalable feature -> Discord channel routing table (migration 0027),
 superseding `installation_settings`' four-field model for anything beyond
@@ -201,6 +220,8 @@ Discord channel (Channel System V2):
 | `ECONOMY` | `💰・economy` | Champion Points transactions |
 | `SHOP` | `💰・economy` | Shop purchases/refunds (published on `ECONOMY`) |
 | `ADMIN_LOGS` | `🛡️・admin-logs` | ADM health / diagnostics |
+| `SERVER_STATUS` | `📡・server-status` | Persistent server status + completion announcements |
+| `ONLINE_COUNTER` | `🟢・Online Players: N` (voice) | Online-players voice counter |
 | `ADMIN_ALERTS` | `🛡️・admin-logs` | Operational alerts |
 | `BUILD_FEED` | `🛡️・admin-logs` | Build/placement actions (when the server logs them) |
 

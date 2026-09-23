@@ -2,33 +2,14 @@ package discord
 
 import (
 	"fmt"
-	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
 
-// Champion structure names. Emoji is included for display; Discord normalizes
-// channel names, so we always store and reference the returned IDs.
-const (
-	CategoryName        = "🏆 CHAMPION KILLFEED"
-	ChannelWelcome      = "👋・welcome"
-	ChannelServerStatus = "📢・server-status"
-	ChannelKillfeed     = "💀・killfeed"
-	ChannelLeaderboards = "📊・leaderboards"
-	ChannelPlayerStats  = "📈・player-stats"
-	ChannelLinkUsername = "🔗・link-username"
-	ChannelADMMonitor   = "🔒・adm-monitor"
-	ChannelDeathFeed    = "☠️・death-feed"
-
-	// ChannelOnlinePlayersPrefix is the voice-counter prefix; the live count is
-	// appended as the channel name (e.g. "🟢・Online Players: 0").
-	ChannelOnlinePlayersPrefix = "🟢・Online Players"
-)
-
-// onlineVoiceChannelName returns the initial voice counter channel name.
-func onlineVoiceChannelName() string { return OnlineCounterName(0) }
+// ChannelOnlinePlayersPrefix is the voice-counter prefix; the live count is
+// appended as the channel name (e.g. "🟢・Online Players: 0").
+const ChannelOnlinePlayersPrefix = "🟢・Online Players"
 
 // GuildAPI is the subset of Discord guild operations the setup manager needs.
 // *discordgo.Session satisfies it in production; tests use fakes.
@@ -52,7 +33,10 @@ type SetupReport struct {
 	Failed          map[string]string
 }
 
-// SetupManager creates and maintains the Champion Discord structure for a guild.
+// SetupManager maintains the legacy per-guild panels (GuildSetup) for guilds
+// that still run on the legacy channels. It never creates a channel: every
+// Champion channel is created by the one Channel System V2 layout engine
+// (internal/app saas_channel_layout.go), which Discord /setup also uses.
 type SetupManager struct {
 	api   GuildAPI
 	store SetupStore
@@ -81,98 +65,40 @@ func NewSetupManager(api GuildAPI, store SetupStore, botID string) *SetupManager
 	return &SetupManager{api: api, store: store, botID: botID}
 }
 
-// EnsureConfigured creates the Champion structure for a guild if absent, or
-// repairs any missing pieces if partially configured. It is idempotent.
-func (m *SetupManager) EnsureConfigured(guildID string) (*GuildSetup, *SetupReport, error) {
+// RestoreLegacyPanels re-posts a missing legacy panel (leaderboard, player
+// stats, link) into its existing legacy channel, for a guild whose feature is
+// not routed. A guild with no legacy setup, or a legacy channel that no longer
+// exists, is left alone - nothing is ever created. Idempotent.
+func (m *SetupManager) RestoreLegacyPanels(guildID string) (*GuildSetup, *SetupReport, error) {
 	report := &SetupReport{Failed: map[string]string{}}
-
 	existing, err := m.store.Get(guildID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read setup store: %w", err)
 	}
-	slog.Debug("component=setup", "stage", "loaded_setup", "guild_id", guildID)
-
-	setup := &GuildSetup{GuildID: guildID, WelcomeEnabled: true}
-	if existing != nil {
-		*setup = *existing
+	if existing == nil {
+		return nil, report, nil
 	}
+	setup := &GuildSetup{}
+	*setup = *existing
 
-	slog.Debug("component=setup", "stage", "discord_validation", "guild_id", guildID)
 	channels, err := m.api.GuildChannels(guildID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("list guild channels: %w", err)
 	}
-
-	// Category
-	if setup.CategoryID == "" || !channelExists(channels, setup.CategoryID) {
-		cat, err := m.createCategory(guildID, channels)
-		if err != nil {
-			report.Failed["category"] = err.Error()
-			return setup, report, fmt.Errorf("create category: %w", err)
+	// A deleted legacy channel is dropped rather than recreated.
+	for _, field := range []*string{&setup.LeaderboardsChannelID, &setup.PlayerStatsChannelID, &setup.LinkPanelChannelID} {
+		if *field != "" && !channelExists(channels, *field) {
+			*field = ""
 		}
-		setup.CategoryID = cat.ID
-		report.CategoryCreated = true
-	} else {
-		report.Existing = append(report.Existing, "category")
 	}
-
-	// Re-read channels after category creation so children attach correctly.
-	channels, _ = m.api.GuildChannels(guildID)
-
-	// Channels inside the category. The online-players counter is a VOICE channel
-	// whose name shows the live count; the rest are bot-output TEXT channels.
-	type channelSpec struct {
-		name    string
-		voice   bool
-		private bool
-		assign  func(id string)
-		current func() string
-		label   string
+	if setup.LeaderboardsChannelID == "" {
+		setup.LeaderboardMessageID = ""
 	}
-	specs := []channelSpec{
-		{ChannelWelcome, false, false, func(id string) { setup.WelcomeChannelID = id }, func() string { return setup.WelcomeChannelID }, "welcome"},
-		{ChannelServerStatus, false, false, func(id string) { setup.ServerStatusChannelID = id }, func() string { return setup.ServerStatusChannelID }, "server-status"},
-		{ChannelKillfeed, false, false, func(id string) { setup.KillfeedChannelID = id }, func() string { return setup.KillfeedChannelID }, "killfeed"},
-		{onlineVoiceChannelName(), true, false, func(id string) { setup.OnlinePlayersChannelID = id }, func() string { return setup.OnlinePlayersChannelID }, "online-players"},
-		{ChannelLeaderboards, false, false, func(id string) { setup.LeaderboardsChannelID = id }, func() string { return setup.LeaderboardsChannelID }, "leaderboards"},
-		{ChannelPlayerStats, false, false, func(id string) { setup.PlayerStatsChannelID = id }, func() string { return setup.PlayerStatsChannelID }, "player-stats"},
-		{ChannelLinkUsername, false, false, func(id string) { setup.LinkPanelChannelID = id }, func() string { return setup.LinkPanelChannelID }, "link-username"},
-		{ChannelADMMonitor, false, true, func(id string) { setup.ADMMonitorChannelID = id }, func() string { return setup.ADMMonitorChannelID }, "adm-monitor"},
-		{ChannelDeathFeed, false, false, func(id string) { setup.DeathChannelID = id }, func() string { return setup.DeathChannelID }, "death-feed"},
+	if setup.PlayerStatsChannelID == "" {
+		setup.PlayerStatsInfoMessageID = ""
 	}
-	for _, spec := range specs {
-		currentID := spec.current()
-		existing := findChannel(channels, currentID)
-
-		// Legacy migration: an existing TEXT online-players channel must become VOICE.
-		if spec.label == "online-players" && existing != nil && existing.Type != discordgo.ChannelTypeGuildVoice {
-			// Create the voice counter and repoint the stored ID. The old text channel
-			// is left in place (no automatic deletion) and reported for manual cleanup.
-			ch, err := m.createChannel(guildID, setup.CategoryID, spec.name, true, false)
-			if err != nil {
-				report.Failed[spec.label] = err.Error()
-				continue
-			}
-			setup.OnlinePlayersChannelID = ch.ID
-			report.Repaired = append(report.Repaired, "online-players(migrated-to-voice)")
-			continue
-		}
-
-		if existing != nil {
-			report.Existing = append(report.Existing, spec.label)
-			continue
-		}
-		ch, err := m.createChannel(guildID, setup.CategoryID, spec.name, spec.voice, spec.private)
-		if err != nil {
-			report.Failed[spec.label] = err.Error()
-			continue
-		}
-		spec.assign(ch.ID)
-		if currentID == "" {
-			report.Created = append(report.Created, spec.label)
-		} else {
-			report.Repaired = append(report.Repaired, spec.label)
-		}
+	if setup.LinkPanelChannelID == "" {
+		setup.LinkPanelMessageID = ""
 	}
 
 	// Create each persistent panel exactly once. Stored IDs are reused on restart;
@@ -246,110 +172,6 @@ func findChannel(channels []*discordgo.Channel, id string) *discordgo.Channel {
 	return nil
 }
 
-func (m *SetupManager) createCategory(guildID string, channels []*discordgo.Channel) (*discordgo.Channel, error) {
-	// Reuse an existing category with the Champion name rather than duplicating.
-	for _, ch := range channels {
-		if ch.Type == discordgo.ChannelTypeGuildCategory && ch.Name == CategoryName {
-			return ch, nil
-		}
-	}
-	cat, err := m.api.GuildChannelCreateComplex(guildID, discordgo.GuildChannelCreateData{
-		Name: CategoryName,
-		Type: discordgo.ChannelTypeGuildCategory,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return cat, nil
-}
-
-func (m *SetupManager) createChannel(guildID, parentID, name string, voice, private bool) (*discordgo.Channel, error) {
-	data := discordgo.GuildChannelCreateData{
-		Name:     name,
-		ParentID: parentID,
-	}
-	switch {
-	case voice:
-		data.Type = discordgo.ChannelTypeGuildVoice
-		data.PermissionOverwrites = m.voiceCounterOverwrites(guildID)
-	case private:
-		data.Type = discordgo.ChannelTypeGuildText
-		data.PermissionOverwrites = m.privateChannelOverwrites(guildID)
-	default:
-		data.Type = discordgo.ChannelTypeGuildText
-		data.PermissionOverwrites = m.channelPermissionOverwrites(guildID)
-	}
-	return m.api.GuildChannelCreateComplex(guildID, data)
-}
-
-// privateChannelOverwrites hides an admin-only channel from @everyone. Members
-// with Administrator or Manage Server retain access under Discord's own
-// permission model; no separate admin-role configuration is required.
-func (m *SetupManager) privateChannelOverwrites(guildID string) []*discordgo.PermissionOverwrite {
-	overwrites := []*discordgo.PermissionOverwrite{
-		{
-			ID:   guildID, // @everyone role ID == guild ID
-			Type: discordgo.PermissionOverwriteTypeRole,
-			Deny: discordgo.PermissionViewChannel,
-		},
-	}
-	if m.botID != "" {
-		overwrites = append(overwrites, &discordgo.PermissionOverwrite{
-			ID:   m.botID,
-			Type: discordgo.PermissionOverwriteTypeMember,
-			Allow: discordgo.PermissionViewChannel | discordgo.PermissionSendMessages |
-				discordgo.PermissionEmbedLinks | discordgo.PermissionReadMessageHistory |
-				discordgo.PermissionManageMessages,
-		})
-	}
-	return overwrites
-}
-
-// voiceCounterOverwrites makes the online counter display-only: everyone can see
-// it but nobody can connect or speak; the bot can view and rename (Manage Channels).
-func (m *SetupManager) voiceCounterOverwrites(guildID string) []*discordgo.PermissionOverwrite {
-	overwrites := []*discordgo.PermissionOverwrite{
-		{
-			ID:    guildID, // @everyone role ID == guild ID
-			Type:  discordgo.PermissionOverwriteTypeRole,
-			Allow: discordgo.PermissionViewChannel,
-			Deny:  discordgo.PermissionVoiceConnect | discordgo.PermissionVoiceSpeak,
-		},
-	}
-	if m.botID != "" {
-		overwrites = append(overwrites, &discordgo.PermissionOverwrite{
-			ID:    m.botID,
-			Type:  discordgo.PermissionOverwriteTypeMember,
-			Allow: discordgo.PermissionViewChannel | discordgo.PermissionManageChannels,
-		})
-	}
-	return overwrites
-}
-
-// channelPermissionOverwrites makes these bot-output channels: @everyone (whose
-// role ID equals the guild ID) can read but not send; the bot retains full
-// send/embed/manage access; administrators are unaffected.
-func (m *SetupManager) channelPermissionOverwrites(guildID string) []*discordgo.PermissionOverwrite {
-	overwrites := []*discordgo.PermissionOverwrite{
-		{
-			ID:    guildID, // @everyone role ID == guild ID
-			Type:  discordgo.PermissionOverwriteTypeRole,
-			Allow: discordgo.PermissionViewChannel | discordgo.PermissionReadMessageHistory,
-			Deny:  discordgo.PermissionSendMessages,
-		},
-	}
-	if m.botID != "" {
-		overwrites = append(overwrites, &discordgo.PermissionOverwrite{
-			ID:   m.botID,
-			Type: discordgo.PermissionOverwriteTypeMember,
-			Allow: discordgo.PermissionViewChannel | discordgo.PermissionSendMessages |
-				discordgo.PermissionEmbedLinks | discordgo.PermissionReadMessageHistory |
-				discordgo.PermissionManageMessages,
-		})
-	}
-	return overwrites
-}
-
 // IsConfigured reports whether a guild already has a stored, complete setup.
 func (m *SetupManager) IsConfigured(guildID string) bool {
 	setup, err := m.store.Get(guildID)
@@ -357,10 +179,4 @@ func (m *SetupManager) IsConfigured(guildID string) bool {
 		return false
 	}
 	return setup.CategoryID != "" && setup.WelcomeChannelID != "" && setup.KillfeedChannelID != "" && setup.OnlinePlayersChannelID != ""
-}
-
-// ChannelNameSafe returns a Discord-safe channel name (lowercase, no spaces).
-// Discord normalizes emoji/unicode; we keep the display form but store IDs.
-func ChannelNameSafe(name string) string {
-	return strings.ToLower(strings.ReplaceAll(name, " ", "-"))
 }

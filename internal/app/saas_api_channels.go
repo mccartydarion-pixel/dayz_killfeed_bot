@@ -339,6 +339,7 @@ func (a *App) completeChannelsStep(ctx context.Context, organizationID, installa
 	a.RouteSyncer.Trigger()  // re-sync routed panels/leaderboard now
 	a.BountyBoard.Trigger()  // re-reconcile the bounty board now
 	a.HeatmapBoard.Trigger() // re-place the heatmap summary now
+	a.ServerStatusBoard.Trigger()
 	if err := a.advanceSetupProgress(ctx, organizationID, installationID, false, func(p *repository.InstallationSetupProgress) {
 		p.ChannelsCompleted = true
 		p.CurrentStep = "VALIDATION"

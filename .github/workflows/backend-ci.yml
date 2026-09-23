@@ -1,0 +1,57 @@
+name: backend-ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      # A throwaway database that exists only for this job - never production.
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: champion
+          POSTGRES_PASSWORD: champion
+          POSTGRES_DB: champion_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U champion -d champion_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: |
+          go vet ./...
+          go vet -tags integration ./...
+
+      - name: Unit tests
+        run: go test ./...
+
+      - name: Race tests (publishers and ADM pipeline)
+        run: go test -race ./internal/discord ./internal/killfeed ./internal/app
+
+      - name: Integration tests (disposable PostgreSQL)
+        env:
+          TEST_DATABASE_URL: postgres://champion:champion@localhost:5432/champion_test?sslmode=disable
+          ALLOW_INTEGRATION_DB_TESTS: "true"
+          REQUIRE_INTEGRATION_DB: "1"
+        # -p 1: every package migrates and writes the same database.
+        run: go test -tags integration -p 1 -count=1 ./...

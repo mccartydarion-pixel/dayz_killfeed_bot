@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/killfeed"
 )
 
@@ -275,26 +276,27 @@ func TestADMRoutineDownloadDoesNotForceStatusPanelRefresh(t *testing.T) {
 // --- SetupManager gate: never create a legacy panel next to a routed one ----
 
 func TestSetupManagerSkipsLegacyPanelsForRoutedFeatures(t *testing.T) {
-	newManager := func() (*SetupManager, *InMemorySetupStore) {
+	newManager := func() *SetupManager {
+		api := newFakeGuildAPI()
+		api.channels = []*discordgo.Channel{{ID: "lb"}, {ID: "stats"}, {ID: "link"}}
 		store := NewInMemorySetupStore()
-		return NewSetupManager(newFakeGuildAPI(), store, "bot"), store
+		_ = store.Save(GuildSetup{GuildID: "g1", LeaderboardsChannelID: "lb", PlayerStatsChannelID: "stats", LinkPanelChannelID: "link"})
+		return NewSetupManager(api, store, "bot")
 	}
 
-	// No gate: all three legacy panels are created, as before.
-	m, store := newManager()
-	setup, _, err := m.EnsureConfigured("g1")
+	// No gate: all three legacy panels are restored.
+	setup, _, err := newManager().RestoreLegacyPanels("g1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if setup.LinkPanelMessageID == "" || setup.PlayerStatsInfoMessageID == "" || setup.LeaderboardMessageID == "" {
 		t.Fatalf("expected legacy panels without a gate: %+v", setup)
 	}
-	_ = store
 
 	// Link and stats routed: those legacy panels are not created; leaderboard is.
-	m, _ = newManager()
+	m := newManager()
 	m.SetRouteGate(func(key string) bool { return key == routeKeyLinkGamertag || key == routeKeyStatsLeaderboards })
-	setup, _, err = m.EnsureConfigured("g1")
+	setup, _, err = m.RestoreLegacyPanels("g1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,9 +308,9 @@ func TestSetupManagerSkipsLegacyPanelsForRoutedFeatures(t *testing.T) {
 	}
 
 	// AUTO_LEADERBOARD routed: no legacy leaderboard message.
-	m, _ = newManager()
+	m = newManager()
 	m.SetRouteGate(func(key string) bool { return key == routeKeyAutoLeaderboard })
-	setup, _, _ = m.EnsureConfigured("g1")
+	setup, _, _ = m.RestoreLegacyPanels("g1")
 	if setup.LeaderboardMessageID != "" || setup.LinkPanelMessageID == "" {
 		t.Fatalf("expected only the leaderboard gated: %+v", setup)
 	}
