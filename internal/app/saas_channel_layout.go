@@ -87,6 +87,9 @@ type championDestination struct {
 	// Starter is posted once when a feed channel has no Champion content.
 	// Panel destinations have none: their panel is their content.
 	Starter *starterCard
+	// Voice marks the online-players counter: a display-only voice channel
+	// whose name is its content (ChannelName is its initial name).
+	Voice bool
 }
 
 // championDestinations is Champion's default Discord layout.
@@ -115,6 +118,10 @@ var championDestinations = []championDestination{
 		Routes: []string{"HEATMAPS"}, Anchors: []string{"HEATMAPS"},
 	},
 	{
+		Key: "SERVER_STATUS", Label: "Server Status", Category: categoryHub, ChannelName: "📡・server-status",
+		Routes: []string{"SERVER_STATUS"}, Anchors: []string{"SERVER_STATUS"},
+	},
+	{
 		Key: "LEADERBOARDS", Label: "Leaderboards", Category: categoryHub, ChannelName: "📊・leaderboards",
 		Routes: []string{"AUTO_LEADERBOARD", "STATS_LEADERBOARDS"}, Anchors: []string{"AUTO_LEADERBOARD", "STATS_LEADERBOARDS"},
 	},
@@ -126,6 +133,10 @@ var championDestinations = []championDestination{
 		Key: "ECONOMY", Label: "Economy", Category: categoryHub, ChannelName: "💰・economy",
 		Routes: []string{"ECONOMY", "SHOP"}, Anchors: []string{"ECONOMY", "SHOP"},
 		Starter: &starterCard{"💰 CHAMPION ECONOMY", "Champion Points and shop activity will appear here."},
+	},
+	{
+		Key: "ONLINE_COUNTER", Label: "Players Online", Category: categoryHub, ChannelName: discord.OnlineCounterName(0),
+		Routes: []string{"ONLINE_COUNTER"}, Anchors: []string{"ONLINE_COUNTER"}, Voice: true,
 	},
 	{
 		Key: "ADMIN_LOGS", Label: "Admin Logs", Category: categoryStaff, ChannelName: "🛡️・admin-logs",
@@ -152,6 +163,8 @@ var routeProducerAudit = map[string]routeProducer{
 	"BOUNTY_TRACKING":    {HealthActive, "BountyTracker lifecycle feed"},
 	"CONNECTIONS":        {HealthActive, "ConnectionsPublisher (per server worker)"},
 	"HEATMAPS":           {HealthActive, "HeatmapBoard PvP heatmap summary (Phase 5 aggregates)"},
+	"SERVER_STATUS":      {HealthActive, "ServerStatusBoard persistent server status (per-server ADM state)"},
+	"ONLINE_COUNTER":     {HealthActive, "VoiceChannelCounter online-player count"},
 	"AUTO_LEADERBOARD":   {HealthActive, "LeaderboardScheduler persistent leaderboard"},
 	"STATS_LEADERBOARDS": {HealthActive, "RouteSyncer player stats panel"},
 	"LINK_GAMERTAG":      {HealthActive, "RouteSyncer link panel"},
@@ -197,7 +210,7 @@ func (a *App) channelRouteProducers() map[string]routeProducer {
 	}
 	if a.ChannelRoutes == nil {
 		broken("runtime routing is not enabled", "KILLFEED", "PVE_FEED", "HITFEED", "BOUNTY", "BOUNTY_TRACKING", "CONNECTIONS",
-			"HEATMAPS", "AUTO_LEADERBOARD", "STATS_LEADERBOARDS", "LINK_GAMERTAG", "ECONOMY", "SHOP", "ADMIN_LOGS")
+			"HEATMAPS", "SERVER_STATUS", "ONLINE_COUNTER", "AUTO_LEADERBOARD", "STATS_LEADERBOARDS", "LINK_GAMERTAG", "ECONOMY", "SHOP", "ADMIN_LOGS")
 	}
 	if a.BountyBoard == nil {
 		broken("bounty board is not running", "BOUNTY", "BOUNTY_TRACKING")
@@ -207,6 +220,12 @@ func (a *App) channelRouteProducers() map[string]routeProducer {
 	}
 	if a.AdminAlerts == nil {
 		broken("admin alert publisher is not running", "ADMIN_ALERTS")
+	}
+	if a.ServerStatusBoard == nil {
+		broken("server status publisher is not running", "SERVER_STATUS")
+	}
+	if a.onlineCounter == nil {
+		broken("online-player counter is not running", "ONLINE_COUNTER")
 	}
 	if a.ChannelRoutes != nil && a.buildActionsSeen.Load() > 0 {
 		out["BUILD_FEED"] = routeProducer{HealthActive, "BuildFeedPublisher: ADM build/placement actions"}
@@ -301,6 +320,9 @@ type ChannelDestinationReport struct {
 	StarterSent bool                `json:"starterSent"`
 	Routes      []RouteHealthReport `json:"routes"`
 	Checks      *DestinationChecks  `json:"checks,omitempty"`
+	// Voice marks the online-players voice counter (no messages; its name is
+	// its content).
+	Voice bool `json:"voice,omitempty"`
 }
 
 // RetirableChannel is a Champion-managed channel or category no route
@@ -308,8 +330,12 @@ type ChannelDestinationReport struct {
 type RetirableChannel struct {
 	ChannelID    string   `json:"channelId"`
 	ChannelName  string   `json:"channelName,omitempty"`
-	Kind         string   `json:"kind"` // CHANNEL | CATEGORY
+	Kind         string   `json:"kind"`   // CHANNEL | CATEGORY
+	Source       string   `json:"source"` // ROUTE | LEGACY_SETUP - how Champion ownership is proven
 	FormerRoutes []string `json:"formerRoutes,omitempty"`
+	// ManagedByChampion is always true: only Champion-owned channels are
+	// ever listed. Customer channels never appear here.
+	ManagedByChampion bool `json:"managedByChampion"`
 }
 
 // --- applying the layout ---------------------------------------------------------
@@ -321,6 +347,7 @@ type channelLayoutDiscord interface {
 	CreateGuildCategory(guildID, name string) (*discord.RawGuildChannel, error)
 	CreatePrivateGuildCategory(guildID, name string) (*discord.RawGuildChannel, error)
 	CreateGuildTextChannel(guildID, name, parentCategoryID string) (*discord.RawGuildChannel, error)
+	CreateGuildVoiceCounter(guildID, name, parentCategoryID string) (*discord.RawGuildChannel, error)
 	Verify(guildID, channelID string) discord.Verification
 	SendChannelEmbed(channelID string, embed *discordgo.MessageEmbed) error
 	ChannelHasBotMessage(channelID string) (bool, error)
@@ -338,9 +365,27 @@ type channelLayoutInput struct {
 	GuildID                        string
 	Existing                       []repository.ChannelRoute
 	Producers                      map[string]routeProducer
+	// Preserve keeps every customer-owned route exactly as it is (repair and
+	// Discord /setup). Without it (one-click setup, which only runs over
+	// Champion-managed routing or with force=true) every route is mapped to
+	// Champion's channel.
+	Preserve bool
 	// SyncPanels posts/restores persistent panels for the just-written
 	// routes before verification. Optional.
 	SyncPanels func(ctx context.Context)
+}
+
+// LayoutSummary condenses one setup/repair run for the website and /setup.
+type LayoutSummary struct {
+	Created        []string `json:"created"`        // channel names created
+	Reused         []string `json:"reused"`         // channel names reused
+	Remapped       []string `json:"remapped"`       // route keys moved to another channel
+	PanelsRepaired []string `json:"panelsRepaired"` // destinations whose panel was (re)posted
+	StartersSent   []string `json:"startersSent"`   // destinations that got their one starter card
+	Preserved      []string `json:"preserved"`      // customer-owned route keys left untouched
+	Broken         []string `json:"broken"`         // destination keys
+	Blocked        []string `json:"blocked"`        // destination keys skipped (no producer yet)
+	Retirable      int      `json:"retirable"`
 }
 
 type channelLayoutResult struct {
@@ -348,6 +393,7 @@ type channelLayoutResult struct {
 	Routes       map[string]ChannelRouteInfo
 	Destinations []ChannelDestinationReport
 	Retirable    []RetirableChannel
+	Summary      LayoutSummary
 }
 
 // errKillfeedUnavailable: the combat feed cannot be created, so there is
@@ -355,11 +401,12 @@ type channelLayoutResult struct {
 var errKillfeedUnavailable = fmt.Errorf("killfeed producer unavailable")
 
 // applyChannelLayout creates or reuses every ACTIVE destination, maps its
-// routes, unmaps routes of skipped destinations, posts starter cards where a
-// channel would otherwise be blank, and verifies each channel. Reuse is
-// ID-first (a persisted route channel already carrying the V2 name), then
-// by name under the category; a channel is created only when neither exists,
-// so repeat runs never duplicate. Nothing is ever deleted in Discord.
+// routes, unmaps Champion routes of skipped destinations, posts one starter
+// card where a feed channel would otherwise be blank, and verifies each
+// channel. Reuse is ID-first (a persisted route channel already carrying the
+// V2 name), then by name under the category; a channel is created only when
+// neither exists, so repeat runs never duplicate. Nothing is ever deleted in
+// Discord.
 func applyChannelLayout(ctx context.Context, d channelLayoutDiscord, w channelRouteWriter, in channelLayoutInput) (*channelLayoutResult, error) {
 	plans := planChannelLayout(in.Producers)
 	for _, p := range plans {
@@ -380,6 +427,10 @@ func applyChannelLayout(ctx context.Context, d channelLayoutDiscord, w channelRo
 	for _, r := range in.Existing {
 		existing[r.RouteKey] = r
 	}
+	customer := func(key string) (repository.ChannelRoute, bool) {
+		r, ok := existing[key]
+		return r, ok && in.Preserve && !r.ManagedByChampion
+	}
 
 	// 1. ID-first reuse: a persisted route channel that already is this
 	//    destination's V2 channel. Its parent hints the category.
@@ -395,7 +446,7 @@ func applyChannelLayout(ctx context.Context, d channelLayoutDiscord, w channelRo
 				continue
 			}
 			ch, ok := byID[r.ChannelID]
-			if ok && ch.Type == discordgo.ChannelTypeGuildText && strings.EqualFold(ch.Name, p.Destination.ChannelName) {
+			if ok && p.Destination.matches(ch) {
 				reused[p.Destination.Key] = ch
 				if parent, ok := byID[ch.ParentID]; ok && parent.Type == discordgo.ChannelTypeGuildCategory && categoryHint[p.Destination.Category] == "" {
 					categoryHint[p.Destination.Category] = parent.ID
@@ -405,10 +456,22 @@ func applyChannelLayout(ctx context.Context, d channelLayoutDiscord, w channelRo
 		}
 	}
 
-	// 2. Categories, only those an ACTIVE destination needs.
+	// A destination whose every route is customer-owned (and preserved)
+	// needs no Champion channel at all.
+	allCustomer := func(dest championDestination) bool {
+		for _, key := range dest.Routes {
+			if _, ok := customer(key); !ok {
+				return false
+			}
+		}
+		return true
+	}
+
+	// 2. Categories, only those an ACTIVE destination with a Champion channel
+	//    needs.
 	needed := map[string]bool{}
 	for _, p := range plans {
-		if p.Health == HealthActive {
+		if p.Health == HealthActive && !allCustomer(p.Destination) {
 			needed[p.Destination.Category] = true
 		}
 	}
@@ -426,10 +489,12 @@ func applyChannelLayout(ctx context.Context, d channelLayoutDiscord, w channelRo
 
 	// 3. Channels, then routes.
 	result := &channelLayoutResult{Categories: categories, Routes: map[string]ChannelRouteInfo{}}
+	sum := &result.Summary
 	finalChannel := map[string]bool{}
+	customerChannel := map[string]bool{} // destination keys served by a customer channel
 	for _, p := range plans {
 		dest := p.Destination
-		report := ChannelDestinationReport{Key: dest.Key, Label: dest.Label, Category: dest.Category, ChannelName: dest.ChannelName, Health: p.Health, Detail: p.Detail, Routes: p.Routes}
+		report := ChannelDestinationReport{Key: dest.Key, Label: dest.Label, Category: dest.Category, ChannelName: dest.ChannelName, Health: p.Health, Detail: p.Detail, Routes: p.Routes, Voice: dest.Voice}
 		if p.Health != HealthActive {
 			// No producer: no channel, and no Champion route left pointing
 			// at a channel nothing will ever post to. A customer's own route
@@ -441,22 +506,62 @@ func applyChannelLayout(ctx context.Context, d channelLayoutDiscord, w channelRo
 					}
 				}
 			}
+			if p.Health == HealthBlocked || p.Health == HealthDisabled || p.Health == HealthNotRequired {
+				sum.Blocked = append(sum.Blocked, dest.Key)
+			} else {
+				sum.Broken = append(sum.Broken, dest.Key)
+			}
 			result.Destinations = append(result.Destinations, report)
 			continue
 		}
-		ch, created, err := resolveLayoutChannel(d, in.GuildID, channels, categories[dest.Category].ID, dest.ChannelName, reused[dest.Key])
-		if err != nil {
-			return nil, fmt.Errorf("channel %s: %w", dest.Key, err)
+
+		var ch discord.RawGuildChannel
+		if allCustomer(dest) {
+			// Served entirely by the customer's own channel: verified, never
+			// written to.
+			r, _ := customer(dest.Routes[0])
+			ch = byID[r.ChannelID]
+			if ch.ID == "" {
+				ch.ID = r.ChannelID
+			}
+			customerChannel[dest.Key] = true
+			report.Detail = "customer-owned channel preserved"
+		} else {
+			var created bool
+			ch, created, err = resolveLayoutChannel(d, in.GuildID, channels, categories[dest.Category].ID, dest, reused[dest.Key])
+			if err != nil {
+				return nil, fmt.Errorf("channel %s: %w", dest.Key, err)
+			}
+			report.Created = created
+			if created {
+				sum.Created = append(sum.Created, ch.Name)
+				channels = append(channels, ch)
+				byID[ch.ID] = ch
+			} else {
+				sum.Reused = append(sum.Reused, ch.Name)
+			}
+			finalChannel[ch.ID] = true
 		}
-		report.ChannelID, report.ChannelName, report.Created = ch.ID, ch.Name, created
-		finalChannel[ch.ID] = true
+		report.ChannelID = ch.ID
+		if ch.Name != "" {
+			report.ChannelName = ch.Name
+		}
 		for _, key := range dest.Routes {
+			if r, ok := customer(key); ok {
+				sum.Preserved = append(sum.Preserved, key)
+				result.Routes[key] = ChannelRouteInfo{ChannelID: r.ChannelID, ChannelName: byID[r.ChannelID].Name, ManagedByChampion: false}
+				finalChannel[r.ChannelID] = true
+				continue
+			}
+			if prev, ok := existing[key]; ok && prev.ChannelID != ch.ID {
+				sum.Remapped = append(sum.Remapped, key)
+			}
 			if err := w.UpsertRoute(ctx, in.OrganizationID, in.InstallationID, key, ch.ID, true); err != nil {
 				return nil, fmt.Errorf("map route %s: %w", key, err)
 			}
 			result.Routes[key] = ChannelRouteInfo{ChannelID: ch.ID, ChannelName: ch.Name, ManagedByChampion: true}
 		}
-		report.Checks = &DestinationChecks{ChannelExists: true, RouteMapped: true, ProducerConnected: true}
+		report.Checks = &DestinationChecks{ChannelExists: byID[ch.ID].ID != "", RouteMapped: true, ProducerConnected: true}
 		result.Destinations = append(result.Destinations, report)
 	}
 	// Stored routes outside the vocabulary (a removed route such as CASINO)
@@ -469,44 +574,75 @@ func applyChannelLayout(ctx context.Context, d channelLayoutDiscord, w channelRo
 		}
 	}
 
-	// 4. Persistent panels first, so verification sees them.
+	// 4. Persistent panels first, so verification sees them. Which panel
+	//    channels had no Champion content before is remembered, to report
+	//    what the sync repaired.
+	panelWasBlank := map[string]bool{}
+	for _, rep := range result.Destinations {
+		dest := destinationByKey(rep.Key)
+		if rep.Checks != nil && dest.Starter == nil && !dest.Voice && !customerChannel[rep.Key] {
+			if has, err := d.ChannelHasBotMessage(rep.ChannelID); err == nil && !has {
+				panelWasBlank[rep.Key] = true
+			}
+		}
+	}
 	if in.SyncPanels != nil {
 		in.SyncPanels(ctx)
 	}
 
-	// 5. Verify, posting one starter card where a feed channel is blank.
+	// 5. Verify, posting one starter card where a Champion feed channel is
+	//    blank. Customer channels are only read.
 	for i := range result.Destinations {
 		rep := &result.Destinations[i]
 		if rep.Checks == nil {
 			continue
 		}
 		dest := destinationByKey(rep.Key)
-		v := d.Verify(in.GuildID, rep.ChannelID)
-		rep.Checks.BotCanSend = v.ChannelFound && len(v.Missing) == 0
-		has, err := d.ChannelHasBotMessage(rep.ChannelID)
-		if err != nil {
-			slog.Warn("component=saas_api", "msg", "read channel content failed", "destination", rep.Key, "err", err.Error())
-		}
-		if err == nil && !has && dest.Starter != nil && rep.Checks.BotCanSend {
-			if serr := d.SendChannelEmbed(rep.ChannelID, starterEmbed(*dest.Starter)); serr != nil {
-				slog.Warn("component=saas_api", "msg", "starter card failed", "destination", rep.Key, "err", serr.Error())
-			} else {
-				has, rep.StarterSent = true, true
+		if dest.Voice {
+			// A counter's content is its name, kept by the counter itself;
+			// the bot only needs the channel to exist.
+			rep.Checks.BotCanSend, rep.Checks.VisibleContent = rep.Checks.ChannelExists, rep.Checks.ChannelExists
+		} else {
+			v := d.Verify(in.GuildID, rep.ChannelID)
+			rep.Checks.BotCanSend = v.ChannelFound && len(v.Missing) == 0
+			has, err := d.ChannelHasBotMessage(rep.ChannelID)
+			if err != nil {
+				slog.Warn("component=saas_api", "msg", "read channel content failed", "destination", rep.Key, "err", err.Error())
+			}
+			if err == nil && !has && dest.Starter != nil && rep.Checks.BotCanSend && !customerChannel[rep.Key] {
+				if serr := d.SendChannelEmbed(rep.ChannelID, starterEmbed(*dest.Starter)); serr != nil {
+					slog.Warn("component=saas_api", "msg", "starter card failed", "destination", rep.Key, "err", serr.Error())
+				} else {
+					has, rep.StarterSent = true, true
+					sum.StartersSent = append(sum.StartersSent, rep.Key)
+				}
+			}
+			rep.Checks.VisibleContent = has
+			if has && panelWasBlank[rep.Key] {
+				sum.PanelsRepaired = append(sum.PanelsRepaired, rep.Key)
 			}
 		}
-		rep.Checks.VisibleContent = has
 		if !rep.Checks.passed() {
 			rep.Health = HealthBroken
 			rep.Detail = brokenDetail(*rep.Checks, dest.Starter == nil)
+			sum.Broken = append(sum.Broken, rep.Key)
 		}
 	}
 
 	// 6. Champion-managed channels no route references any more. Reported,
 	//    never deleted.
+	result.Retirable = retirableRouteChannels(in.Existing, finalChannel, byID)
+	sum.Retirable = len(result.Retirable)
+	return result, nil
+}
+
+// retirableRouteChannels lists channels that Champion-managed routes used to
+// point at and nothing points at now.
+func retirableRouteChannels(existing []repository.ChannelRoute, final map[string]bool, byID map[string]discord.RawGuildChannel) []RetirableChannel {
 	former := map[string][]string{}
 	var order []string
-	for _, r := range in.Existing {
-		if !r.ManagedByChampion || finalChannel[r.ChannelID] {
+	for _, r := range existing {
+		if !r.ManagedByChampion || final[r.ChannelID] {
 			continue
 		}
 		if _, seen := former[r.ChannelID]; !seen {
@@ -514,14 +650,76 @@ func applyChannelLayout(ctx context.Context, d channelLayoutDiscord, w channelRo
 		}
 		former[r.ChannelID] = append(former[r.ChannelID], r.RouteKey)
 	}
+	var out []RetirableChannel
 	for _, id := range order {
 		ch, ok := byID[id]
 		if !ok {
 			continue // already gone from Discord
 		}
-		result.Retirable = append(result.Retirable, RetirableChannel{ChannelID: id, ChannelName: ch.Name, Kind: "CHANNEL", FormerRoutes: former[id]})
+		out = append(out, RetirableChannel{ChannelID: id, ChannelName: ch.Name, Kind: "CHANNEL", Source: "ROUTE", FormerRoutes: former[id]})
 	}
-	return result, nil
+	return out
+}
+
+// inspectChannelLayout reports the current layout without changing
+// anything: each destination's plan, the channel its routes point at, and
+// the same checks setup runs (read-only - no starter cards, no panel sync).
+func inspectChannelLayout(d channelLayoutDiscord, guildID string, existingRoutes []repository.ChannelRoute, producers map[string]routeProducer) ([]ChannelDestinationReport, error) {
+	channels, err := d.ListAllGuildChannels(guildID)
+	if err != nil {
+		return nil, fmt.Errorf("list guild channels: %w", err)
+	}
+	byID := make(map[string]discord.RawGuildChannel, len(channels))
+	for _, ch := range channels {
+		byID[ch.ID] = ch
+	}
+	existing := make(map[string]repository.ChannelRoute, len(existingRoutes))
+	for _, r := range existingRoutes {
+		existing[r.RouteKey] = r
+	}
+	var out []ChannelDestinationReport
+	for _, p := range planChannelLayout(producers) {
+		dest := p.Destination
+		rep := ChannelDestinationReport{Key: dest.Key, Label: dest.Label, Category: dest.Category, ChannelName: dest.ChannelName, Health: p.Health, Detail: p.Detail, Routes: p.Routes, Voice: dest.Voice}
+		var route repository.ChannelRoute
+		for _, key := range dest.Routes {
+			if r, ok := existing[key]; ok {
+				route = r
+				break
+			}
+		}
+		if route.ChannelID == "" {
+			if p.Health == HealthActive {
+				rep.Health, rep.Detail = HealthBroken, "not set up yet - run Repair Champion Discord Layout"
+			}
+			out = append(out, rep)
+			continue
+		}
+		rep.ChannelID = route.ChannelID
+		ch, exists := byID[route.ChannelID]
+		if exists {
+			rep.ChannelName = ch.Name
+		}
+		rep.Checks = &DestinationChecks{ChannelExists: exists, RouteMapped: true, ProducerConnected: p.Health == HealthActive}
+		if exists && dest.Voice {
+			rep.Checks.BotCanSend, rep.Checks.VisibleContent = true, true
+		} else if exists {
+			v := d.Verify(guildID, route.ChannelID)
+			rep.Checks.BotCanSend = v.ChannelFound && len(v.Missing) == 0
+			has, err := d.ChannelHasBotMessage(route.ChannelID)
+			rep.Checks.VisibleContent = err == nil && has
+		}
+		if p.Health == HealthActive && !rep.Checks.passed() {
+			rep.Health = HealthBroken
+			if !exists {
+				rep.Detail = "the Discord channel no longer exists - run Repair Champion Discord Layout"
+			} else {
+				rep.Detail = brokenDetail(*rep.Checks, dest.Starter == nil)
+			}
+		}
+		out = append(out, rep)
+	}
+	return out, nil
 }
 
 func destinationByKey(key string) championDestination {
@@ -535,8 +733,10 @@ func destinationByKey(key string) championDestination {
 
 func brokenDetail(c DestinationChecks, panel bool) string {
 	switch {
+	case !c.ChannelExists:
+		return "the Discord channel no longer exists"
 	case !c.BotCanSend:
-		return "Champion cannot send messages in this channel"
+		return "Champion cannot view, send or embed in this channel"
 	case !c.VisibleContent && panel:
 		return "the persistent panel did not appear in this channel"
 	case !c.VisibleContent:
@@ -573,23 +773,39 @@ func resolveLayoutCategory(d channelLayoutDiscord, guildID string, channels []di
 	return *created, nil
 }
 
-// resolveLayoutChannel: the ID-reused channel, then a same-named text
-// channel under the category, then create. Name recovery never adopts a
-// same-named channel elsewhere in the guild.
-func resolveLayoutChannel(d channelLayoutDiscord, guildID string, channels []discord.RawGuildChannel, categoryID, name string, reused discord.RawGuildChannel) (discord.RawGuildChannel, bool, error) {
+// resolveLayoutChannel: the ID-reused channel, then a matching channel under
+// the category, then create. Name recovery never adopts a same-named channel
+// elsewhere in the guild.
+func resolveLayoutChannel(d channelLayoutDiscord, guildID string, channels []discord.RawGuildChannel, categoryID string, dest championDestination, reused discord.RawGuildChannel) (discord.RawGuildChannel, bool, error) {
 	if reused.ID != "" {
 		return reused, false, nil
 	}
 	for _, ch := range channels {
-		if ch.Type == discordgo.ChannelTypeGuildText && ch.ParentID == categoryID && strings.EqualFold(ch.Name, name) {
+		if ch.ParentID == categoryID && dest.matches(ch) {
 			return ch, false, nil
 		}
 	}
-	created, err := d.CreateGuildTextChannel(guildID, name, categoryID)
+	var created *discord.RawGuildChannel
+	var err error
+	if dest.Voice {
+		created, err = d.CreateGuildVoiceCounter(guildID, dest.ChannelName, categoryID)
+	} else {
+		created, err = d.CreateGuildTextChannel(guildID, dest.ChannelName, categoryID)
+	}
 	if err != nil {
 		return discord.RawGuildChannel{}, false, err
 	}
 	return *created, true, nil
+}
+
+// matches reports whether ch is this destination's channel: a text channel
+// with its exact name, or - for the voice counter, whose name changes with
+// the count - a voice channel with the counter prefix.
+func (d championDestination) matches(ch discord.RawGuildChannel) bool {
+	if d.Voice {
+		return ch.Type == discordgo.ChannelTypeGuildVoice && strings.HasPrefix(ch.Name, discord.ChannelOnlinePlayersPrefix)
+	}
+	return ch.Type == discordgo.ChannelTypeGuildText && strings.EqualFold(ch.Name, d.ChannelName)
 }
 
 // starterEmbed renders a starter card: compact, neutral, no giant welcome.

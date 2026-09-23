@@ -48,6 +48,34 @@ type LiveCompletionPublisher struct {
 	factions       completionFactions
 	guilds         *repository.GuildRepository
 	discordGuildID string
+	// routes/servers resolve the SERVER_STATUS route, where completion
+	// announcements live in Channel System V2. Optional.
+	routes  RouteResolver
+	servers GuildServersFunc
+}
+
+// SetRouting sends announcements to the guild's SERVER_STATUS route first;
+// the legacy GuildSetup channels remain the fallback.
+func (p *LiveCompletionPublisher) SetRouting(routes RouteResolver, servers GuildServersFunc) {
+	if p != nil {
+		p.routes, p.servers = routes, servers
+	}
+}
+
+func (p *LiveCompletionPublisher) routedChannel(ctx context.Context) string {
+	if p.routes == nil || p.servers == nil {
+		return ""
+	}
+	guildRowID, serverIDs, err := p.servers(ctx)
+	if err != nil {
+		return ""
+	}
+	for _, serverID := range serverIDs {
+		if ch, found, err := p.routes.Resolve(ctx, guildRowID, serverID, routeKeyServerStatus); err == nil && found && ch != "" {
+			return ch
+		}
+	}
+	return ""
 }
 
 func NewLiveCompletionPublisher(claims *CompletionAnnouncementService, api *SessionAPI, setup SetupStore, seasons *repository.SeasonRepository, wars *repository.PostgresWarRepository, events *repository.EventRepository, players *repository.PlayerRepository, factions *repository.FactionRepository, guilds *repository.GuildRepository, guildID string) *LiveCompletionPublisher {
@@ -87,7 +115,10 @@ func (p *LiveCompletionPublisher) send(ctx context.Context, embed *discordgo.Mes
 	if p.api == nil {
 		return fmt.Errorf("discord API unavailable")
 	}
-	channel := p.channel()
+	channel := p.routedChannel(ctx)
+	if channel == "" {
+		channel = p.channel()
+	}
 	if channel == "" {
 		return fmt.Errorf("announcement channel unavailable")
 	}

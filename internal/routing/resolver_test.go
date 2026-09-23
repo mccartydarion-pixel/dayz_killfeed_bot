@@ -23,8 +23,8 @@ func (f *fakeStore) ResolveChannel(ctx context.Context, guildRowID, serverID int
 }
 
 func TestRouteConstantsMatchSaaSVocabulary(t *testing.T) {
-	want := []string{"KILLFEED", "PVE_FEED", "LINK_GAMERTAG", "STATS_LEADERBOARDS", "AUTO_LEADERBOARD", "HITFEED", "BOUNTY", "BOUNTY_TRACKING", "HEATMAPS", "ECONOMY", "SHOP", "CONNECTIONS", "BUILD_FEED", "ADMIN_ALERTS", "ADMIN_LOGS"}
-	got := []string{RouteKillfeed, RoutePveFeed, RouteLinkGamertag, RouteStatsLeaderboards, RouteAutoLeaderboard, RouteHitfeed, RouteBounty, RouteBountyTracking, RouteHeatmaps, RouteEconomy, RouteShop, RouteConnections, RouteBuildFeed, RouteAdminAlerts, RouteAdminLogs}
+	want := []string{"KILLFEED", "PVE_FEED", "LINK_GAMERTAG", "STATS_LEADERBOARDS", "AUTO_LEADERBOARD", "HITFEED", "BOUNTY", "BOUNTY_TRACKING", "HEATMAPS", "ECONOMY", "SHOP", "CONNECTIONS", "BUILD_FEED", "ADMIN_ALERTS", "ADMIN_LOGS", "SERVER_STATUS", "ONLINE_COUNTER"}
+	got := []string{RouteKillfeed, RoutePveFeed, RouteLinkGamertag, RouteStatsLeaderboards, RouteAutoLeaderboard, RouteHitfeed, RouteBounty, RouteBountyTracking, RouteHeatmaps, RouteEconomy, RouteShop, RouteConnections, RouteBuildFeed, RouteAdminAlerts, RouteAdminLogs, RouteServerStatus, RouteOnlineCounter}
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("route constant %d = %q, want %q", i, got[i], want[i])

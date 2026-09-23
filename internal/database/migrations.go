@@ -1852,6 +1852,26 @@ DELETE FROM installation_embed_templates WHERE route_key = 'CASINO';
 		Name: "0045_player_location_events_adm_axis_fix",
 		SQL:  admLocationAxisFixSQL,
 	},
+	{
+		Name: "0046_installation_retired_channels",
+		SQL: `
+-- Champion Channel System V2: Champion-managed Discord channels/categories that setup or repair
+-- stopped routing to. Recorded so a later, explicit, customer-confirmed cleanup can prove a
+-- channel is Champion-owned without ever deciding by name. source is ROUTE (a managed route used
+-- to point at it) or LEGACY_SETUP (created by the legacy /setup command).
+CREATE TABLE IF NOT EXISTS installation_retired_channels (
+    id BIGSERIAL PRIMARY KEY,
+    installation_id BIGINT NOT NULL REFERENCES installations(id) ON DELETE CASCADE,
+    channel_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('CHANNEL', 'CATEGORY')),
+    source TEXT NOT NULL CHECK (source IN ('ROUTE', 'LEGACY_SETUP')),
+    former_routes TEXT[] NOT NULL DEFAULT '{}',
+    legacy_field TEXT NOT NULL DEFAULT '',
+    recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(installation_id, channel_id)
+);
+`,
+	},
 }
 
 // admLocationAxisFixSQL repairs player_location_events rows written before the ADM axis fix.

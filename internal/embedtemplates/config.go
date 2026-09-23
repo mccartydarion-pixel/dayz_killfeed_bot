@@ -124,6 +124,7 @@ var routeVariables = map[string][]string{
 	"LINK_GAMERTAG":      {"server_name", "timestamp"},
 	"STATS_LEADERBOARDS": {"server_name", "timestamp"},
 	"AUTO_LEADERBOARD":   {"server_name", "timestamp"},
+	"SERVER_STATUS":      {"server_name", "timestamp"},
 }
 
 // RouteKeys returns every route a template may be stored for.

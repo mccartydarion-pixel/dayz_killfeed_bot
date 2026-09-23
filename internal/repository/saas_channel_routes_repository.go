@@ -94,6 +94,35 @@ WHERE i.id = cr.installation_id AND i.organization_id=$1 AND cr.installation_id=
 	return nil
 }
 
+// InstallationRef identifies one installation.
+type InstallationRef struct{ OrganizationID, InstallationID int64 }
+
+// ListInstallationsForGuild returns every installation connected to the
+// Discord guild with row id guildRowID (Discord /setup applies the channel
+// layout to each of them).
+func (r *ChannelRouteRepository) ListInstallationsForGuild(ctx context.Context, guildRowID int64) ([]InstallationRef, error) {
+	const q = `
+SELECT i.organization_id, i.id
+FROM installations i
+JOIN discord_guild_connections c ON c.id = i.discord_guild_connection_id
+WHERE c.guild_id = $1 AND c.organization_id = i.organization_id
+ORDER BY i.id`
+	rows, err := r.pool.Query(ctx, q, guildRowID)
+	if err != nil {
+		return nil, fmt.Errorf("list installations for guild: %w", err)
+	}
+	defer rows.Close()
+	var out []InstallationRef
+	for rows.Next() {
+		var ref InstallationRef
+		if err := rows.Scan(&ref.OrganizationID, &ref.InstallationID); err != nil {
+			return nil, fmt.Errorf("scan installation ref: %w", err)
+		}
+		out = append(out, ref)
+	}
+	return out, rows.Err()
+}
+
 // ListDistinctChannelIDs returns every unique Discord channel ID referenced
 // by any configured route for installationID (section 18 - Step 6
 // permission-verification readiness: several route keys sharing one channel

@@ -178,4 +178,3 @@ func TestAcknowledgeIntrusionRequiresCapabilityAndAudits(t *testing.T) {
 		t.Fatal("expected an INTRUSION_ACKNOWLEDGE audit entry")
 	}
 }
-

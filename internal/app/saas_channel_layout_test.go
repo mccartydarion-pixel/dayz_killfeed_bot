@@ -23,6 +23,7 @@ type layoutGuildFake struct {
 	seq         int
 	createCalls int
 	listErr     error
+	failCreate  string // a text channel name whose creation fails
 }
 
 func newLayoutGuildFake(seed ...discord.RawGuildChannel) *layoutGuildFake {
@@ -51,7 +52,13 @@ func (f *layoutGuildFake) CreatePrivateGuildCategory(_, name string) (*discord.R
 	return ch, nil
 }
 func (f *layoutGuildFake) CreateGuildTextChannel(_, name, parent string) (*discord.RawGuildChannel, error) {
+	if f.failCreate == name {
+		return nil, errors.New("discord: missing access")
+	}
 	return f.create(name, discordgo.ChannelTypeGuildText, parent), nil
+}
+func (f *layoutGuildFake) CreateGuildVoiceCounter(_, name, parent string) (*discord.RawGuildChannel, error) {
+	return f.create(name, discordgo.ChannelTypeGuildVoice, parent), nil
 }
 func (f *layoutGuildFake) Verify(_, channelID string) discord.Verification {
 	for _, ch := range f.channels {
@@ -118,7 +125,7 @@ func auditProducers() map[string]routeProducer {
 // panelsPosted simulates the panel owners posting into every panel channel.
 func panelsPosted(g *layoutGuildFake, w *layoutRoutesFake) func(context.Context) {
 	return func(context.Context) {
-		for _, key := range []string{"BOUNTY", "HEATMAPS", "AUTO_LEADERBOARD", "STATS_LEADERBOARDS", "LINK_GAMERTAG"} {
+		for _, key := range []string{"BOUNTY", "HEATMAPS", "SERVER_STATUS", "AUTO_LEADERBOARD", "STATS_LEADERBOARDS", "LINK_GAMERTAG"} {
 			if ch := w.routes[key]; ch != "" {
 				g.botMessages[ch] = 1
 			}
@@ -174,6 +181,7 @@ func TestRouteVocabularyHasNoCasinoAndEveryRouteOneDestination(t *testing.T) {
 		"KILLFEED": "COMBAT_FEED", "PVE_FEED": "COMBAT_FEED", "HITFEED": "HITFEED", "BOUNTY": "BOUNTIES", "BOUNTY_TRACKING": "BOUNTIES",
 		"CONNECTIONS": "CONNECTIONS", "HEATMAPS": "HEATMAPS", "AUTO_LEADERBOARD": "LEADERBOARDS", "STATS_LEADERBOARDS": "LEADERBOARDS",
 		"LINK_GAMERTAG": "PLAYER_LINK", "ECONOMY": "ECONOMY", "SHOP": "ECONOMY", "ADMIN_LOGS": "ADMIN_LOGS", "ADMIN_ALERTS": "ADMIN_LOGS", "BUILD_FEED": "ADMIN_LOGS",
+		"SERVER_STATUS": "SERVER_STATUS", "ONLINE_COUNTER": "ONLINE_COUNTER",
 	}
 	for route, dest := range want {
 		if seen[route] != dest {
@@ -188,7 +196,7 @@ func TestPlanChannelLayoutSkipsDestinationsWithoutProducers(t *testing.T) {
 	for _, p := range plans {
 		health[p.Destination.Key] = p.Health
 	}
-	for _, key := range []string{"COMBAT_FEED", "HITFEED", "BOUNTIES", "CONNECTIONS", "HEATMAPS", "LEADERBOARDS", "PLAYER_LINK", "ECONOMY", "ADMIN_LOGS"} {
+	for _, key := range []string{"COMBAT_FEED", "HITFEED", "BOUNTIES", "CONNECTIONS", "HEATMAPS", "SERVER_STATUS", "LEADERBOARDS", "PLAYER_LINK", "ECONOMY", "ONLINE_COUNTER", "ADMIN_LOGS"} {
 		if health[key] != HealthActive {
 			t.Fatalf("%s want ACTIVE, got %s", key, health[key])
 		}

@@ -173,7 +173,7 @@ func TestSeasonCompletionResolvesHolderNames(t *testing.T) {
 	assertNoPlaceholders(t, text)
 	for field, want := range map[string]string{
 		"👑 TOP PLAYER":   "WilliamAle--10",
-		"⚔️ TOP FACTION":  `\[WOLF\] Wolfpack`,
+		"⚔️ TOP FACTION": `\[WOLF\] Wolfpack`,
 		"🎯 LONGEST KILL": `Semillita-azul-\_`,
 		"🔥 BEST STREAK":  "zTonii99",
 	} {

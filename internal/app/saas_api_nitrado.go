@@ -429,6 +429,7 @@ func (a *App) handleSelectDayZServer(w http.ResponseWriter, r *http.Request) {
 	a.RouteSyncer.Trigger()  // re-sync routed panels/leaderboard now
 	a.BountyBoard.Trigger()  // re-reconcile the bounty board now
 	a.HeatmapBoard.Trigger() // re-place the heatmap summary now
+	a.ServerStatusBoard.Trigger()
 
 	criticalServerChange := resolvedInstallationID == installationID && loaded.Status == repository.InstallationReady &&
 		loaded.GameServerID != nil && *loaded.GameServerID != server.ID

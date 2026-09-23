@@ -2,9 +2,11 @@ package discord
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/repository"
@@ -29,9 +31,9 @@ func RegisterSetupCommand(session *discordgo.Session, guildID string) error {
 		Description:              "Configure Champion Killfeed for this server",
 		DefaultMemberPermissions: &defaultMemberPerms,
 		Options: []*discordgo.ApplicationCommandOption{
-			{Name: "run", Description: "Create the Champion Killfeed structure", Type: discordgo.ApplicationCommandOptionSubCommand},
+			{Name: "run", Description: "Set up Champion's Discord channels", Type: discordgo.ApplicationCommandOptionSubCommand},
 			{Name: "status", Description: "Show Champion Killfeed configuration status", Type: discordgo.ApplicationCommandOptionSubCommand},
-			{Name: "repair", Description: "Recreate any missing Champion Killfeed resources", Type: discordgo.ApplicationCommandOptionSubCommand},
+			{Name: "repair", Description: "Repair Champion's Discord channel layout", Type: discordgo.ApplicationCommandOptionSubCommand},
 			{Name: "reset", Description: "Remove Champion Killfeed configuration (requires confirmation)", Type: discordgo.ApplicationCommandOptionSubCommand},
 			{Name: "verified-role", Description: "Set the role auto-assigned when a /link request is verified", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "role_id", Description: "Discord role ID", Type: discordgo.ApplicationCommandOptionString, Required: true}}},
 		},
@@ -40,11 +42,44 @@ func RegisterSetupCommand(session *discordgo.Session, guildID string) error {
 	return err
 }
 
+// SetupLayoutResult summarizes one /setup run of the Channel System V2
+// layout engine across the guild's installations.
+type SetupLayoutResult struct {
+	Installations int
+	Created       []string
+	Reused        []string
+	Remapped      []string
+	Preserved     []string
+	Broken        []string
+	Blocked       []string
+	Retirable     int
+}
+
+var (
+	// ErrNoInstallation: the guild has no Champion installation, so there is
+	// no channel layout to apply.
+	ErrNoInstallation = errors.New("no Champion installation for this Discord server")
+	// ErrMissingManageChannels: the bot cannot create channels here.
+	ErrMissingManageChannels = errors.New("missing Manage Channels permission")
+)
+
+// SetupLayoutFunc applies the V2 channel layout for a Discord guild - the
+// same engine the website's one-click setup and repair use.
+type SetupLayoutFunc func(ctx context.Context, discordGuildID string) (SetupLayoutResult, error)
+
 // SetupHandler processes /setup interactions with admin enforcement.
 type SetupHandler struct {
 	manager     *SetupManager
 	guilds      GuildStore
 	welcomeRepo *repository.WelcomeRepository
+	layout      SetupLayoutFunc
+}
+
+// SetLayout attaches the V2 layout engine. Without it /setup creates nothing.
+func (h *SetupHandler) SetLayout(fn SetupLayoutFunc) {
+	if h != nil {
+		h.layout = fn
+	}
 }
 
 // NewSetupHandler creates a handler bound to a setup manager.
@@ -143,51 +178,52 @@ func (h *SetupHandler) handleSetup(s *discordgo.Session, i *discordgo.Interactio
 	}
 	slog.Info("component=setup", "action", action, "stage", "deferred", "guild_id", i.GuildID)
 
-	setup, report, err := h.manager.EnsureConfigured(i.GuildID)
-	if err != nil && report == nil {
-		slog.Error("component=setup", "action", action, "stage", "failed", "error_class", "setup_manager_error")
-		h.editEphemeral(s, i, "❌ Setup failed: "+err.Error())
+	if h.layout == nil {
+		h.editEphemeral(s, i, "❌ Channel setup is unavailable right now. Try again later or use Setup on the Champion website.")
 		return
 	}
-	if setup == nil {
-		slog.Error("component=setup", "action", action, "stage", "failed", "error_class", "setup_manager_nil_result")
-		h.editEphemeral(s, i, "❌ Setup failed.")
-		return
-	}
-	h.syncWelcomeChannel(i.GuildID, setup.WelcomeChannelID)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	result, err := h.layout(ctx, i.GuildID)
+	h.editEphemeral(s, i, FormatSetupLayoutResult(result, err, repair))
+	slog.Info("component=setup", "action", action, "stage", "completed", "guild_id", i.GuildID, "installations", result.Installations,
+		"created", len(result.Created), "broken", len(result.Broken), "error", err != nil)
+}
 
+// FormatSetupLayoutResult renders the /setup reply.
+func FormatSetupLayoutResult(r SetupLayoutResult, err error, repair bool) string {
+	switch {
+	case errors.Is(err, ErrNoInstallation):
+		return "ℹ️ This Discord server is not connected to Champion yet.\nConnect it in **Setup** on the Champion website, then run `/setup` again."
+	case errors.Is(err, ErrMissingManageChannels):
+		return "❌ Champion needs the **Manage Channels** permission to set up its channels. Grant it and run `/setup repair`."
+	case err != nil:
+		return "❌ Setup failed. Try `/setup repair` again in a moment."
+	}
 	var b strings.Builder
 	if repair {
-		b.WriteString("🔧 **Champion Killfeed Repair**\n\n")
+		b.WriteString("🔧 **Champion Discord Layout Repaired**\n\n")
 	} else {
-		b.WriteString("🏆 **Champion Killfeed Setup Complete**\n\n")
+		b.WriteString("🏆 **Champion Discord Layout Ready**\n\n")
 	}
-	if h.manager.IsConfigured(i.GuildID) && len(report.Created) == 0 && len(report.Repaired) == 0 {
-		b.WriteString("Champion Killfeed is already configured.\n\n")
+	line := func(label string, items []string) {
+		if len(items) > 0 {
+			fmt.Fprintf(&b, "**%s:** %s\n", label, strings.Join(items, ", "))
+		}
 	}
-	fmt.Fprintf(&b, "Category: `%s`\n", CategoryName)
-	writeLine(&b, "Welcome", setup.WelcomeChannelID)
-	writeLine(&b, "Server Status", setup.ServerStatusChannelID)
-	writeLine(&b, "Killfeed", setup.KillfeedChannelID)
-	writeLine(&b, "Online Players", setup.OnlinePlayersChannelID)
-	writeLine(&b, "Leaderboards", setup.LeaderboardsChannelID)
-	writeLine(&b, "Player Stats", setup.PlayerStatsChannelID)
-	writeLine(&b, "Link Username", setup.LinkPanelChannelID)
-	writeLine(&b, "ADM Monitor", setup.ADMMonitorChannelID)
-	writeLine(&b, "Death Feed", setup.DeathChannelID)
-	for name, reason := range report.Failed {
-		fmt.Fprintf(&b, "❌ %s: %s\n", name, reason)
+	line("Created", r.Created)
+	line("Reused", r.Reused)
+	line("Remapped", r.Remapped)
+	line("Preserved (your channels)", r.Preserved)
+	line("Needs attention", r.Broken)
+	line("Not available yet", r.Blocked)
+	if len(r.Created) == 0 && len(r.Remapped) == 0 && len(r.Broken) == 0 {
+		b.WriteString("Everything was already in place.\n")
 	}
-	if len(report.Failed) > 0 {
-		b.WriteString("\nFix permissions and run `/setup repair`.")
-		slog.Warn("component=setup", "action", action, "stage", "completed", "error_class", "partial_failure", "failed_count", len(report.Failed))
-	} else {
-		b.WriteString("\nChampion Killfeed is ready.")
-		slog.Info("component=setup", "action", action, "stage", "completed")
+	if r.Retirable > 0 {
+		fmt.Fprintf(&b, "\n%d old Champion channel(s) are no longer used. Review and remove them in **Setup → Discord Channels** on the website.\n", r.Retirable)
 	}
-
-	h.editEphemeral(s, i, b.String())
-	slog.Info("component=discord", "msg", "setup complete", "guild_id", i.GuildID, "created", len(report.Created), "repaired", len(report.Repaired), "failed", len(report.Failed))
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // editEphemeral edits a previously deferred ephemeral interaction response.
@@ -197,6 +233,7 @@ func (h *SetupHandler) editEphemeral(s *discordgo.Session, i *discordgo.Interact
 	}
 }
 
+// syncWelcomeChannel is kept for the welcome system's own configuration.
 func (h *SetupHandler) syncWelcomeChannel(discordGuildID, channelID string) {
 	if h == nil || h.guilds == nil || h.welcomeRepo == nil || channelID == "" {
 		return

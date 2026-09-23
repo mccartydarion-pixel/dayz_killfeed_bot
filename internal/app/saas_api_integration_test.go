@@ -55,6 +55,8 @@ type fakeDiscordVerifier struct {
 	botPosts map[string]int
 	// privateCategories records categories created hidden from @everyone.
 	privateCategories map[string]bool
+	// deletedChannels records confirmed cleanup deletions.
+	deletedChannels []string
 }
 
 type fakeGuildChannel struct {
@@ -165,6 +167,25 @@ func (f *fakeDiscordVerifier) ChannelHasBotMessage(channelID string) (bool, erro
 	return f.botPosts[channelID] > 0, nil
 }
 
+func (f *fakeDiscordVerifier) CreateGuildVoiceCounter(guildID, name, parentCategoryID string) (*discord.RawGuildChannel, error) {
+	return f.createFakeChannel(guildID, name, discordgo.ChannelTypeGuildVoice, parentCategoryID)
+}
+
+// DeleteGuildChannel removes the channel from every fake guild and records it.
+func (f *fakeDiscordVerifier) DeleteGuildChannel(channelID string) error {
+	for guild, chans := range f.channels {
+		kept := chans[:0]
+		for _, ch := range chans {
+			if ch.ID != channelID {
+				kept = append(kept, ch)
+			}
+		}
+		f.channels[guild] = kept
+	}
+	f.deletedChannels = append(f.deletedChannels, channelID)
+	return nil
+}
+
 func (f *fakeDiscordVerifier) createFakeChannel(guildID, name string, ctype discordgo.ChannelType, parentID string) (*discord.RawGuildChannel, error) {
 	if f.channels == nil {
 		f.channels = map[string][]fakeGuildChannel{}
@@ -211,6 +232,7 @@ func saasIntegrationApp(t *testing.T) (*App, *fakeDiscordVerifier) {
 		SaaSSubscriptions:    repository.NewSubscriptionRepository(db.Pool),
 		SaaSCredentials:      repository.NewCredentialRepository(db.Pool),
 		SaaSChannelRoutes:    repository.NewChannelRouteRepository(db.Pool),
+		SaaSRetiredChannels:  repository.NewRetiredChannelRepository(db.Pool),
 		saasDiscordVerifier:  verifier,
 		// No Discord runtime runs here: auto-setup sees the audited producers.
 		channelProducersOverride: auditProducers,
@@ -1390,12 +1412,13 @@ func autoSetupChannels(t *testing.T, a *App, orgID, installationID int64, acting
 var championAllRouteKeys = []string{
 	"KILLFEED", "PVE_FEED", "LINK_GAMERTAG", "STATS_LEADERBOARDS", "AUTO_LEADERBOARD",
 	"HITFEED", "BOUNTY", "BOUNTY_TRACKING", "HEATMAPS", "ECONOMY", "SHOP",
-	"CONNECTIONS", "BUILD_FEED", "ADMIN_ALERTS", "ADMIN_LOGS",
+	"CONNECTIONS", "BUILD_FEED", "ADMIN_ALERTS", "ADMIN_LOGS", "SERVER_STATUS", "ONLINE_COUNTER",
 }
 
 // championActiveDestinationCount is how many channels auto-setup creates
-// with the audited producers (every destination).
-const championActiveDestinationCount = 9
+// with the audited producers (every destination: ten text channels and the
+// online-players voice counter).
+const championActiveDestinationCount = 11
 
 func listChannelRoutes(t *testing.T, a *App, orgID, installationID int64, actingDiscordID string) *httptest.ResponseRecorder {
 	t.Helper()
@@ -1495,7 +1518,7 @@ func TestAutoSetupChannelsIsIdempotent(t *testing.T) {
 
 	total := 0
 	for _, ch := range verifier.channels[fixture.DiscordGuildID] {
-		if ch.Type == discordgo.ChannelTypeGuildText {
+		if ch.Type == discordgo.ChannelTypeGuildText || ch.Type == discordgo.ChannelTypeGuildVoice {
 			total++
 		}
 	}
@@ -2379,5 +2402,89 @@ func TestCriticalDayZServerChangeInvalidatesValidation(t *testing.T) {
 	progress, err := a.SaaSInstallations.GetSetupProgress(context.Background(), fixture.OrgID, fixture.InstallationID)
 	if err != nil || progress == nil || progress.ValidationCompleted {
 		t.Fatalf("expected validationCompleted=false, got %+v err=%v", progress, err)
+	}
+}
+
+// --- Channel System V2 finalization: repair and confirmed cleanup ---------
+
+func repairChannelLayout(t *testing.T, a *App, orgID, installationID int64, actingDiscordID string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := withPathValues(withActingUser(saasRequest(http.MethodPost, "/x", nil), actingDiscordID),
+		map[string]string{"organizationID": strconv.FormatInt(orgID, 10), "installationID": strconv.FormatInt(installationID, 10)})
+	rr := httptest.NewRecorder()
+	a.handleRepairChannelLayout(rr, req)
+	return rr
+}
+
+// TestRepairChannelLayoutPreservesCustomerRoute: repair runs over customer
+// routing (unlike one-click setup) and leaves the customer's route untouched.
+func TestRepairChannelLayoutPreservesCustomerRoute(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixture := buildInstallationFixture(t, a, verifier)
+	seedGuildChannels(verifier, fixture.DiscordGuildID, fakeGuildChannel{ID: "my-killfeed", Name: "my-killfeed", Type: discordgo.ChannelTypeGuildText})
+	if rr := saveChannelRoutes(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID, map[string]string{"KILLFEED": "my-killfeed"}); rr.Code != http.StatusOK {
+		t.Fatalf("save: %d %s", rr.Code, rr.Body.String())
+	}
+	rr := repairChannelLayout(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("repair: %d %s", rr.Code, rr.Body.String())
+	}
+	resp := decodeBody[AutoSetupChannelsResponse](t, rr)
+	if !resp.Configured || resp.Routes["KILLFEED"].ChannelID != "my-killfeed" || resp.Routes["KILLFEED"].ManagedByChampion {
+		t.Fatalf("the customer's killfeed must be preserved, got %+v", resp.Routes["KILLFEED"])
+	}
+	if resp.Summary == nil || len(resp.Summary.Preserved) != 1 {
+		t.Fatalf("summary must report the preserved route, got %+v", resp.Summary)
+	}
+	// A second repair changes nothing.
+	again := decodeBody[AutoSetupChannelsResponse](t, repairChannelLayout(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID))
+	if len(again.Summary.Created) != 0 || len(again.Summary.Remapped) != 0 {
+		t.Fatalf("second repair must be a no-op, got %+v", again.Summary)
+	}
+}
+
+// TestCleanupDeletesOnlyRecordedRetiredChannels: a V1 layout moved to V2
+// records its old Champion channels; cleanup deletes only those, and refuses
+// a customer channel even when asked.
+func TestCleanupDeletesOnlyRecordedRetiredChannels(t *testing.T) {
+	a, verifier := saasIntegrationApp(t)
+	fixture := buildInstallationFixture(t, a, verifier)
+	seedGuildChannels(verifier, fixture.DiscordGuildID,
+		fakeGuildChannel{ID: "old-casino", Name: "casino", Type: discordgo.ChannelTypeGuildText},
+		fakeGuildChannel{ID: "customer-general", Name: "general", Type: discordgo.ChannelTypeGuildText},
+	)
+	ctx := context.Background()
+	if err := a.SaaSChannelRoutes.UpsertRoute(ctx, fixture.OrgID, fixture.InstallationID, "HEATMAPS", "old-casino", true); err != nil {
+		t.Fatal(err)
+	}
+	setup := decodeBody[AutoSetupChannelsResponse](t, autoSetupChannels(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID, false))
+	found := false
+	for _, r := range setup.Retirable {
+		if r.ChannelID == "old-casino" && r.ManagedByChampion {
+			found = true
+		}
+		if r.ChannelID == "customer-general" {
+			t.Fatal("a customer channel is never retirable")
+		}
+	}
+	if !found {
+		t.Fatalf("the old Champion channel must be retirable, got %+v", setup.Retirable)
+	}
+
+	req := withPathValues(withActingUser(saasRequest(http.MethodPost, "/x", cleanupRetiredChannelsRequest{ChannelIDs: []string{"old-casino", "customer-general"}}), fixture.OwnerDiscordID),
+		map[string]string{"organizationID": strconv.FormatInt(fixture.OrgID, 10), "installationID": strconv.FormatInt(fixture.InstallationID, 10)})
+	rr := httptest.NewRecorder()
+	a.handleCleanupRetiredChannels(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("cleanup: %d %s", rr.Code, rr.Body.String())
+	}
+	resp := decodeBody[CleanupRetiredChannelsResponse](t, rr)
+	if len(resp.Deleted) != 1 || resp.Deleted[0].ChannelID != "old-casino" {
+		t.Fatalf("only the recorded Champion channel may be deleted, got %+v", resp)
+	}
+	for _, id := range verifier.deletedChannels {
+		if id == "customer-general" {
+			t.Fatal("the customer channel was deleted")
+		}
 	}
 }

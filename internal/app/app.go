@@ -93,6 +93,16 @@ type App struct {
 	// route): ADM stale, repeated Nitrado download failures, zone/UAV/base
 	// radar intrusions. Nil-safe.
 	AdminAlerts *discord.AdminAlertPublisher
+	// ServerStatusBoard keeps the persistent server-status message
+	// (SERVER_STATUS route). Nil-safe.
+	ServerStatusBoard *discord.ServerStatusBoard
+	// onlineCounter is the online-players voice counter; its channel comes
+	// from the ONLINE_COUNTER route when one exists (legacy GuildSetup
+	// otherwise).
+	onlineCounter *discord.VoiceChannelCounter
+	// guildServers lists the configured guild's row id and active servers
+	// (set once routing starts).
+	guildServers func(ctx context.Context) (int64, []int64, error)
 	// buildActionsSeen counts ADM build/placement actions parsed by any server
 	// worker - the proof that some server's ADM carries BUILD_FEED lines.
 	buildActionsSeen     atomic.Int64
@@ -135,6 +145,9 @@ type App struct {
 	SaaSSubscriptions    *repository.SubscriptionRepository
 	SaaSCredentials      *repository.CredentialRepository
 	SaaSChannelRoutes    *repository.ChannelRouteRepository
+	// SaaSRetiredChannels records Champion-owned channels no route uses any
+	// more (Channel System V2 cleanup). Nil-safe at every call site.
+	SaaSRetiredChannels *repository.RetiredChannelRepository
 	// SaaSPlayer backs the player-facing API (Champion Access Model Phase 2 Part A/B,
 	// docs/PLAYER_API.md) - which installations a verified DayZ player is legitimately
 	// associated with, and their per-installation stats. Read-only; never touched by ChannelRoutes.
@@ -655,6 +668,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			}
 			app.SaaSCredentials = repository.NewCredentialRepository(db.Pool)
 			app.SaaSChannelRoutes = repository.NewChannelRouteRepository(db.Pool)
+			app.SaaSRetiredChannels = repository.NewRetiredChannelRepository(db.Pool)
 			app.Permissions = repository.NewPermissionsRepository(db.Pool)
 			app.AdminAudit = repository.NewAuditRepository(db.Pool)
 			app.ClientAdmin = repository.NewClientAdminRepository(db.Pool)
@@ -1025,6 +1039,9 @@ func (a *App) Run() error {
 		a.LinkService.SetNotifier(verifiedRole)
 	}
 	setupHandler := discord.NewSetupHandler(setupManager, a.Guilds, a.WelcomeRepository)
+	// /setup runs the same Channel System V2 layout engine as the website's
+	// one-click setup and repair - there is one channel blueprint.
+	setupHandler.SetLayout(a.DiscordSetupLayout)
 	welcomeHandler := discord.NewPersistentWelcomeHandler(setupStore, a.WelcomeRepository, a.Guilds)
 	if a.WelcomeRepository != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
 		welcomeCommands := discord.NewWelcomeCommandHandler(a.WelcomeRepository, a.Guilds, setupStore)
@@ -1249,6 +1266,7 @@ func (a *App) Run() error {
 	// debounced count changes. Shared across servers (one voice channel per guild
 	// today; per-server counters are a known gap, see Section 1 report). ---
 	onlineCounter := discord.NewVoiceChannelCounter(api, "")
+	a.onlineCounter = onlineCounter
 	onlineCounter.OnPublish(func(count int, result string) { a.recordPublicVoicePublish(count, result) })
 	if cfg := setupStore; cfg != nil {
 		if gs, err := cfg.Get(a.Config.DiscordGuildID); err == nil && gs != nil && gs.OnlinePlayersChannelID != "" {
@@ -1457,6 +1475,17 @@ func (a *App) Run() error {
 				go a.BountyBoard.Run(ctx)
 			}
 			if routingEnabled {
+				a.guildServers = guildServers
+				// Completion announcements follow the SERVER_STATUS route.
+				a.CompletionPublisher.SetRouting(a.ChannelRoutes, guildServers)
+				// SERVER_STATUS: one persistent status message per routed
+				// channel, from what the server workers observe.
+				a.ServerStatusBoard = discord.NewServerStatusBoard(a.ChannelRoutes, guildServers, routePanels)
+				a.ServerStatusBoard.SetServerNames(a.serverNameFunc())
+				go a.ServerStatusBoard.Run(ctx)
+				a.syncOnlineCounterRoute(ctx)
+			}
+			if routingEnabled {
 				// ADMIN_ALERTS: operational conditions reported by the server
 				// workers and the zone engine; with no route nothing is sent.
 				a.AdminAlerts = discord.NewAdminAlertPublisher(session, a.ChannelRoutes)
@@ -1506,7 +1535,7 @@ func (a *App) Run() error {
 					a.RouteSyncer.SetLeaderboard(a.LeaderboardScheduler)
 				}
 				a.RouteSyncer.SetLegacyRestore(func() {
-					if _, _, ensureErr := setupManager.EnsureConfigured(a.Config.DiscordGuildID); ensureErr != nil {
+					if _, _, ensureErr := setupManager.RestoreLegacyPanels(a.Config.DiscordGuildID); ensureErr != nil {
 						slog.Warn("component=discord", "event", "legacy_panel_restore_failed", "err", ensureErr.Error())
 					}
 				})
@@ -1644,6 +1673,10 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 			onDownload = append(onDownload, monitor.HandleDownload)
 		}
 	}
+	if a.ServerStatusBoard != nil {
+		board, serverID := a.ServerStatusBoard, row.ID
+		onSnapshot = append(onSnapshot, func(s killfeed.AdmSnapshot) { board.Observe(serverID, s) })
+	}
 	if a.AdminAlerts != nil {
 		alerts, guildRowID, serverID := a.AdminAlerts, row.GuildID, row.ID
 		onSnapshot = append(onSnapshot, func(s killfeed.AdmSnapshot) { alerts.ObserveSnapshot(guildRowID, serverID, s) })
@@ -1758,6 +1791,10 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 	publisher.SetFeed(killFeed)
 	a.addRotatingFeed(killFeed)
 	deathFeed := discord.NewRotatingFeed(a.Discord.Session(), setupStore, a.Config.DiscordGuildID, func(s *discord.GuildSetup) string { return s.DeathChannelID }, rotatingFeedInterval, rotatingFeedBatchSize)
+	// Channel System V2: deaths share the combat feed. With a KILLFEED route
+	// the death feed posts there; the legacy death channel is only the
+	// fallback for guilds without routes.
+	deathFeed.SetRouteChannelResolver(publisher.RouteChannelID)
 	deathPublisher.SetFeed(deathFeed)
 	a.addRotatingFeed(deathFeed)
 	go func() {

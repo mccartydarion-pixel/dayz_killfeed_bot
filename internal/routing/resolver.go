@@ -38,6 +38,10 @@ const (
 	RouteBuildFeed         = "BUILD_FEED"
 	RouteAdminAlerts       = "ADMIN_ALERTS"
 	RouteAdminLogs         = "ADMIN_LOGS"
+	RouteServerStatus      = "SERVER_STATUS"
+	// RouteOnlineCounter points at the online-players voice counter channel
+	// (a voice channel whose name is the count; never a message route).
+	RouteOnlineCounter = "ONLINE_COUNTER"
 )
 
 // RouteStore is the persistence lookup the Resolver caches in front of -

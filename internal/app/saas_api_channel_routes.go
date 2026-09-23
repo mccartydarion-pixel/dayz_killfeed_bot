@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -73,8 +72,10 @@ type AutoSetupChannelsResponse struct {
 	// including destinations that were skipped (BLOCKED/BROKEN/DISABLED).
 	Destinations []ChannelDestinationReport `json:"destinations,omitempty"`
 	// Retirable lists Champion-managed channels/categories no route uses any
-	// more. Champion never deletes them.
+	// more. Champion never deletes them on its own (see .../channels/cleanup).
 	Retirable []RetirableChannel `json:"retirable,omitempty"`
+	// Summary condenses what this run did.
+	Summary *LayoutSummary `json:"summary,omitempty"`
 }
 
 type autoSetupChannelsRequest struct {
@@ -372,7 +373,7 @@ func (a *App) handleAutoSetupChannels(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
 	defer cancel()
 
-	loaded, discordGuildID, errCode, errMsg := a.loadInstallationGuildSnowflake(ctx, organizationID, installationID)
+	_, discordGuildID, errCode, errMsg := a.loadInstallationGuildSnowflake(ctx, organizationID, installationID)
 	if errCode != "" {
 		writeSaaSError(w, errCode, errMsg)
 		return
@@ -408,97 +409,12 @@ func (a *App) handleAutoSetupChannels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Section 5: verify Champion can actually create channels here before
-	// attempting anything.
-	perms, err := a.saasDiscordVerifier.GuildPermissions(discordGuildID)
-	if err != nil {
-		slog.Warn("component=saas_api", "msg", "get guild permissions failed", "err", err.Error())
-		writeSaaSError(w, codeDiscordUnavailable, "could not verify Discord permissions")
-		return
-	}
-	if perms&discordgo.PermissionManageChannels == 0 {
-		writeSaaSJSON(w, http.StatusOK, AutoSetupChannelsResponse{Configured: false, Reason: "MISSING_MANAGE_CHANNELS"})
-		return
-	}
-
-	layout, err := applyChannelLayout(ctx, a.saasDiscordVerifier, a.SaaSChannelRoutes, channelLayoutInput{
-		OrganizationID: organizationID,
-		InstallationID: installationID,
-		GuildID:        discordGuildID,
-		Existing:       existingRoutes,
-		Producers:      a.channelRouteProducers(),
-		SyncPanels:     a.syncRoutedPanelsNow,
-	})
-	if err == errKillfeedUnavailable {
-		writeSaaSJSON(w, http.StatusOK, AutoSetupChannelsResponse{Configured: false, Reason: "KILLFEED_UNAVAILABLE"})
-		return
-	}
-	if err != nil {
+	resp, err := a.runChannelLayout(ctx, organizationID, installationID, discordGuildID, false)
+	if err != nil && resp.Reason == "" {
 		slog.Warn("component=saas_api", "msg", "apply channel layout failed", "err", err.Error())
 		writeSaaSError(w, codeDiscordUnavailable, "could not set up Champion's Discord channels")
 		return
 	}
-	routes := layout.Routes
-
-	resp := AutoSetupChannelsResponse{Configured: true, Routes: routes, Destinations: layout.Destinations, Retirable: layout.Retirable}
-	isLayoutCategory := map[string]bool{}
-	for _, cat := range championCategories {
-		ch, ok := layout.Categories[cat.Key]
-		if !ok {
-			continue
-		}
-		isLayoutCategory[ch.ID] = true
-		summary := ChannelCategorySummary{ID: ch.ID, Name: ch.Name, Key: cat.Key}
-		resp.Categories = append(resp.Categories, summary)
-		if cat.Key == categoryLive {
-			resp.Category = &summary
-		}
-	}
-	// A pre-V2 single category Champion created is reported, never deleted.
-	if old := settings.ChampionCategoryID; old != "" && !isLayoutCategory[old] {
-		resp.Retirable = append(resp.Retirable, RetirableChannel{ChannelID: old, Kind: "CATEGORY"})
-	}
-
-	// Mirror the three routes with a direct legacy equivalent back onto
-	// installation_settings (section 5 - "keep old fields operational until
-	// all runtime consumers have migrated"): a caller still using
-	// GET .../channels must keep seeing accurate data after an auto-setup
-	// run, not stale/empty legacy columns.
-	updatedSettings := *settings
-	updatedSettings.KillfeedChannelID = routes["KILLFEED"].ChannelID
-	updatedSettings.LeaderboardChannelID = routes["STATS_LEADERBOARDS"].ChannelID
-	updatedSettings.AdminLogChannelID = routes["ADMIN_LOGS"].ChannelID
-	updatedSettings.ChannelSetupSource = "AUTO"
-	if resp.Category != nil {
-		updatedSettings.ChampionCategoryID = resp.Category.ID
-	}
-	if err := a.SaaSInstallations.UpdateSettings(ctx, organizationID, installationID, updatedSettings); err != nil {
-		slog.Warn("component=saas_api", "msg", "update channel settings failed", "err", err.Error())
-		writeSaaSError(w, codeInternalError, "could not save channel settings")
-		return
-	}
-
-	persistedKillfeed := ""
-	for _, rt := range existingRoutes {
-		if rt.RouteKey == "KILLFEED" {
-			persistedKillfeed = rt.ChannelID
-		}
-	}
-	// Setup-completion task, section 13: force=true restoring defaults over
-	// customer-owned routing on an already-READY installation is exactly the
-	// "critical config change" case - never silently keeps READY against a
-	// channel that was never actually verified.
-	criticalChange := loaded.Status == repository.InstallationReady && persistedKillfeed != "" && persistedKillfeed != routes["KILLFEED"].ChannelID
-	a.completeChannelsStep(ctx, organizationID, installationID, loaded.Status, criticalChange)
-
-	broken := 0
-	for _, d := range layout.Destinations {
-		if d.Health == HealthBroken {
-			broken++
-		}
-	}
-	slog.Info("component=saas_api", "event", "saas_channels_auto_setup", "installation_id", installationID, "category_count", len(resp.Categories), "route_count", len(routes), "broken_destinations", broken, "retirable", len(resp.Retirable))
-
 	writeSaaSJSON(w, http.StatusOK, resp)
 }
 
@@ -511,4 +427,48 @@ func (a *App) syncRoutedPanelsNow(ctx context.Context) {
 	a.RouteSyncer.SyncOnce(ctx)
 	a.BountyBoard.SyncOnce(ctx)
 	a.HeatmapBoard.SyncOnce(ctx)
+	a.ServerStatusBoard.SyncOnce(ctx)
+	a.syncOnlineCounterRoute(ctx)
+}
+
+// syncOnlineCounterRoute binds the online-players counter to the
+// ONLINE_COUNTER route of the configured guild, when one exists. Without a
+// route the legacy GuildSetup channel (bound at startup) stays in place.
+func (a *App) syncOnlineCounterRoute(ctx context.Context) {
+	if a.onlineCounter == nil || a.ChannelRoutes == nil || a.guildServers == nil {
+		return
+	}
+	guildRowID, serverIDs, err := a.guildServers(ctx)
+	if err != nil {
+		return
+	}
+	a.counterOwnerMu.RLock()
+	preferred := a.publicCounterServerID
+	a.counterOwnerMu.RUnlock()
+	order := serverIDs
+	if preferred != 0 {
+		order = append([]int64{preferred}, serverIDs...)
+	}
+	for _, serverID := range order {
+		channelID, found, err := a.ChannelRoutes.Resolve(ctx, guildRowID, serverID, "ONLINE_COUNTER")
+		if err != nil || !found || channelID == "" {
+			continue
+		}
+		if a.onlineCounter.ChannelID() != channelID {
+			a.onlineCounter.SetChannelID(channelID)
+			// A fresh channel starts at 0; reconcile it to the public
+			// server's tracked count now instead of waiting for a join.
+			if preferred != 0 {
+				a.presenceMu.Lock()
+				tracker := a.presenceTrackers[preferred]
+				a.presenceMu.Unlock()
+				if tracker != nil {
+					if err := a.onlineCounter.Reconcile(tracker.OnlineCount()); err != nil {
+						slog.Warn("component=voice_counter", "event", "route_reconcile_failed", "err", err.Error())
+					}
+				}
+			}
+		}
+		return
+	}
 }

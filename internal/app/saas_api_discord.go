@@ -63,6 +63,12 @@ type discordGuildVerifier interface {
 	// ChannelHasBotMessage reports whether the bot has visible content in
 	// channelID (post-setup verification).
 	ChannelHasBotMessage(channelID string) (bool, error)
+	// CreateGuildVoiceCounter creates the display-only online-players voice
+	// channel.
+	CreateGuildVoiceCounter(guildID, name, parentCategoryID string) (*discord.RawGuildChannel, error)
+	// DeleteGuildChannel deletes a proven Champion-owned retired channel
+	// (explicit, confirmed cleanup only).
+	DeleteGuildChannel(channelID string) error
 }
 
 // --- eligible guilds (section 9) ----------------------------------------

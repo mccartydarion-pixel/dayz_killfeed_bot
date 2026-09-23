@@ -89,75 +89,57 @@ func (e errString) Error() string { return string(e) }
 
 var errNotFound = errString("not found")
 
-func TestSetupCreatesStructureOnce(t *testing.T) {
+// The legacy setup manager never creates a channel: Channel System V2's one
+// layout engine owns channel creation (Discord /setup included).
+func TestLegacySetupNeverCreatesChannels(t *testing.T) {
 	api := newFakeGuildAPI()
 	store := NewInMemorySetupStore()
 	m := NewSetupManager(api, store, "bot-1")
 
-	setup, report, err := m.EnsureConfigured("g1")
-	if err != nil {
-		t.Fatalf("setup failed: %v", err)
-	}
-	if setup.CategoryID == "" || setup.KillfeedChannelID == "" || setup.OnlinePlayersChannelID == "" {
-		t.Fatalf("expected category and channel IDs stored, got %+v", setup)
-	}
-	if !report.CategoryCreated {
-		t.Fatal("expected category to be created on first run")
+	setup, _, err := m.RestoreLegacyPanels("g1")
+	if err != nil || setup != nil || len(api.channels) != 0 {
+		t.Fatalf("a guild with no legacy setup gets nothing: setup=%+v channels=%d err=%v", setup, len(api.channels), err)
 	}
 
-	// Second run: idempotent, nothing new created.
-	channelsBefore := len(api.channels)
-	setup2, report2, err := m.EnsureConfigured("g1")
+	api.channels = []*discordgo.Channel{{ID: "lb", Type: discordgo.ChannelTypeGuildText}}
+	_ = store.Save(GuildSetup{GuildID: "g1", LeaderboardsChannelID: "lb", PlayerStatsChannelID: "deleted-stats", LinkPanelChannelID: "deleted-link"})
+	setup, _, err = m.RestoreLegacyPanels("g1")
 	if err != nil {
-		t.Fatalf("second setup failed: %v", err)
+		t.Fatal(err)
 	}
-	if len(api.channels) != channelsBefore {
-		t.Fatalf("expected no new channels on duplicate setup, had %d now %d", channelsBefore, len(api.channels))
+	if len(api.channels) != 1 {
+		t.Fatalf("restore must never create channels, have %d", len(api.channels))
 	}
-	if setup2.CategoryID != setup.CategoryID {
-		t.Fatal("expected same category ID on duplicate setup")
+	if setup.LeaderboardMessageID == "" {
+		t.Fatal("the leaderboard panel is restored in its existing legacy channel")
 	}
-	if len(report2.Created) != 0 {
-		t.Fatalf("expected 0 created on duplicate, got %v", report2.Created)
+	if setup.PlayerStatsChannelID != "" || setup.LinkPanelChannelID != "" || setup.PlayerStatsInfoMessageID != "" {
+		t.Fatalf("a deleted legacy channel is dropped, never recreated: %+v", setup)
+	}
+	again, _, _ := m.RestoreLegacyPanels("g1")
+	if again.LeaderboardMessageID != setup.LeaderboardMessageID {
+		t.Fatal("restore is idempotent")
 	}
 }
 
-func TestSetupRepairsOnlyMissingChannel(t *testing.T) {
-	api := newFakeGuildAPI()
-	store := NewInMemorySetupStore()
-	m := NewSetupManager(api, store, "bot-1")
-
-	setup, _, err := m.EnsureConfigured("g1")
-	if err != nil {
-		t.Fatalf("setup failed: %v", err)
+func TestFormatSetupLayoutResult(t *testing.T) {
+	if got := FormatSetupLayoutResult(SetupLayoutResult{}, ErrNoInstallation, false); !strings.Contains(got, "not connected to Champion") {
+		t.Fatalf("no installation: %s", got)
 	}
-
-	// Simulate the killfeed channel being manually deleted.
-	killfeedID := setup.KillfeedChannelID
-	filtered := api.channels[:0]
-	for _, ch := range api.channels {
-		if ch.ID != killfeedID {
-			filtered = append(filtered, ch)
+	if got := FormatSetupLayoutResult(SetupLayoutResult{}, ErrMissingManageChannels, true); !strings.Contains(got, "Manage Channels") {
+		t.Fatalf("missing permission: %s", got)
+	}
+	got := FormatSetupLayoutResult(SetupLayoutResult{Installations: 1, Created: []string{"🔫・combat-feed"}, Preserved: []string{"KILLFEED"}, Blocked: []string{"HEATMAPS"}, Retirable: 2}, nil, false)
+	for _, want := range []string{"Layout Ready", "Created:** 🔫・combat-feed", "Preserved (your channels):** KILLFEED", "Not available yet:** HEATMAPS", "2 old Champion channel(s)"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in:\n%s", want, got)
 		}
 	}
-	api.channels = filtered
-
-	setup2, report, err := m.EnsureConfigured("g1")
-	if err != nil {
-		t.Fatalf("repair failed: %v", err)
+	if strings.Contains(got, "death-feed") || strings.Contains(got, "adm-monitor") {
+		t.Fatal("no legacy channel names in the V2 reply")
 	}
-	if setup2.KillfeedChannelID == killfeedID {
-		t.Fatal("expected a new killfeed channel ID after repair")
-	}
-	if setup2.KillfeedChannelID == "" {
-		t.Fatal("expected killfeed channel to be recreated")
-	}
-	if len(report.Repaired) == 0 {
-		t.Fatal("expected repair to report a recreated resource")
-	}
-	// Category and other channels should NOT be recreated.
-	if report.CategoryCreated {
-		t.Fatal("category must not be recreated during repair")
+	if idle := FormatSetupLayoutResult(SetupLayoutResult{Installations: 1, Reused: []string{"a"}}, nil, true); !strings.Contains(idle, "already in place") {
+		t.Fatalf("an idempotent rerun says so: %s", idle)
 	}
 }
 

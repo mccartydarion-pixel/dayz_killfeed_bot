@@ -329,7 +329,7 @@ func fitTotal(e *discordgo.MessageEmbed) {
 
 // supportedRoutes are the routes whose runtime publishers render custom templates.
 // Everything else either has no publisher yet (SHOP, BUILD_FEED, ADMIN_ALERTS), is a
-// persistent panel/board rather than a single-event card (BOUNTY, HEATMAPS,
+// persistent panel/board rather than a single-event card (BOUNTY, HEATMAPS, SERVER_STATUS,
 // LINK_GAMERTAG, STATS_LEADERBOARDS, AUTO_LEADERBOARD) or is a live diagnostic monitor
 // (ADMIN_LOGS): see docs/EMBED_RUNTIME.md. A saved template for such a route is stored
 // but never rendered.

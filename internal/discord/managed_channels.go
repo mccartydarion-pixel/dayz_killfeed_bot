@@ -198,3 +198,43 @@ func (c *Client) ChannelHasBotMessage(channelID string) (bool, error) {
 	}
 	return false, nil
 }
+
+// CreateGuildVoiceCounter creates the display-only online-players voice
+// channel: everyone can see it, nobody can connect or speak, and the bot can
+// view and rename it (the same overwrites the legacy counter used).
+func (c *Client) CreateGuildVoiceCounter(guildID, name, parentCategoryID string) (*RawGuildChannel, error) {
+	if c == nil || c.session == nil {
+		return nil, fmt.Errorf("discord session not initialized")
+	}
+	overwrites := []*discordgo.PermissionOverwrite{{
+		ID: guildID, Type: discordgo.PermissionOverwriteTypeRole,
+		Allow: discordgo.PermissionViewChannel,
+		Deny:  discordgo.PermissionVoiceConnect | discordgo.PermissionVoiceSpeak,
+	}}
+	if botID := c.BotID(); botID != "" {
+		overwrites = append(overwrites, &discordgo.PermissionOverwrite{
+			ID: botID, Type: discordgo.PermissionOverwriteTypeMember,
+			Allow: discordgo.PermissionViewChannel | discordgo.PermissionManageChannels,
+		})
+	}
+	ch, err := c.session.GuildChannelCreateComplex(guildID, discordgo.GuildChannelCreateData{
+		Name: name, Type: discordgo.ChannelTypeGuildVoice, ParentID: parentCategoryID, PermissionOverwrites: overwrites,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create voice counter: %w", err)
+	}
+	return &RawGuildChannel{ID: ch.ID, Name: ch.Name, Type: ch.Type, ParentID: ch.ParentID}, nil
+}
+
+// DeleteGuildChannel deletes one channel or category. Only the explicit,
+// customer-confirmed retired-channel cleanup calls it, and only for channels
+// Champion has proven it owns.
+func (c *Client) DeleteGuildChannel(channelID string) error {
+	if c == nil || c.session == nil {
+		return fmt.Errorf("discord session not initialized")
+	}
+	if _, err := c.session.ChannelDelete(channelID); err != nil {
+		return fmt.Errorf("delete channel: %w", err)
+	}
+	return nil
+}
