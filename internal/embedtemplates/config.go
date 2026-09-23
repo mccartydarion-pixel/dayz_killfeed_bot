@@ -108,24 +108,18 @@ type Stored struct {
 // `killer` = the hunter and `victim` = the target.
 // Routes without an event vocabulary (panels, reserved routes) only get the
 // generic pair. A test keeps the key set identical to the channel-route blueprint.
-var routeVariables = map[string][]string{
-	"KILLFEED":           {"killer", "victim", "weapon", "distance", "ammo", "streak", "special_kill", "bounty_amount", "server_name", "timestamp"},
-	"PVE_FEED":           {"victim", "cause", "server_name", "timestamp"},
-	"HITFEED":            {"killer", "attacker", "victim", "weapon", "ammo", "distance", "hit_zone", "damage", "hits", "server_name"},
-	"BOUNTY":             {"victim", "server_name", "timestamp"},
-	"BOUNTY_TRACKING":    {"killer", "victim", "target", "hunter", "amount", "total", "count", "weapon", "distance", "status", "server_name"},
-	"ECONOMY":            {"player", "amount", "balance", "transaction_type", "server_name"},
-	"SHOP":               {"player", "item", "amount", "balance"},
-	"CONNECTIONS":        {"player", "event", "event_type", "session", "server_name", "timestamp"},
-	"BUILD_FEED":         {"player", "structure", "server_name"},
-	"ADMIN_ALERTS":       {"event", "player", "server_name", "timestamp"},
-	"ADMIN_LOGS":         {"event", "player", "server_name", "timestamp"},
-	"HEATMAPS":           {"server_name", "timestamp"},
-	"LINK_GAMERTAG":      {"server_name", "timestamp"},
-	"STATS_LEADERBOARDS": {"server_name", "timestamp"},
-	"AUTO_LEADERBOARD":   {"server_name", "timestamp"},
-	"SERVER_STATUS":      {"server_name", "timestamp"},
-}
+// Derived from routeVariableDefinitions (variables.go), the single source of truth.
+var routeVariables = func() map[string][]string {
+	out := make(map[string][]string, len(routeVariableDefinitions))
+	for route, defs := range routeVariableDefinitions {
+		names := make([]string, 0, len(defs))
+		for _, d := range defs {
+			names = append(names, d.Name)
+		}
+		out[route] = names
+	}
+	return out
+}()
 
 // RouteKeys returns every route a template may be stored for.
 func RouteKeys() []string {

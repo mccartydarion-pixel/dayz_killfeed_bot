@@ -212,3 +212,52 @@ func TestEmbedDesignerHasNoGameplaySideEffects(t *testing.T) {
 		}
 	}
 }
+
+// V2.1: the API serves the backend-owned variable metadata beside the old name
+// lists, and preview/test still persist nothing.
+func TestEmbedDesignerVariableMetadataAndNoPersistence(t *testing.T) {
+	w := newEmbedWorld(t)
+	w.routeKillfeed(w.a1, "chan-a1-combat")
+	w.a.embedTestLimiter = nil
+
+	var one struct {
+		Variables           []string `json:"variables"`
+		VariableDefinitions []struct {
+			Name, Label, Category, Example, Availability, Format string
+			Optional                                             bool
+		} `json:"variableDefinitions"`
+	}
+	rr := w.get(w.a1.OrgID, w.a1.InstallationID, "KILLFEED", w.member)
+	if err := json.Unmarshal(rr.Body.Bytes(), &one); err != nil || len(one.VariableDefinitions) != len(one.Variables) || len(one.Variables) == 0 {
+		t.Fatalf("GET must carry both variables and variableDefinitions: %s", rr.Body.String())
+	}
+	found := false
+	for _, d := range one.VariableDefinitions {
+		if d.Name == "killer_kd" {
+			found = d.Label == "Killer K/D" && d.Category == "Killer Stats" && d.Example == "9.00" && d.Optional && d.Format == "decimal"
+		}
+	}
+	if !found {
+		t.Fatalf("killer_kd metadata missing or wrong: %+v", one.VariableDefinitions)
+	}
+	var list struct {
+		Variables           map[string][]string          `json:"variables"`
+		VariableDefinitions map[string][]json.RawMessage `json:"variableDefinitions"`
+	}
+	rr = w.list(w.a1.OrgID, w.a1.InstallationID, w.member)
+	if err := json.Unmarshal(rr.Body.Bytes(), &list); err != nil || len(list.VariableDefinitions["HITFEED"]) != len(list.Variables["HITFEED"]) {
+		t.Fatalf("list must carry per-route metadata: %s", rr.Body.String())
+	}
+
+	body := map[string]any{"template": goodTemplate(`{{killer}}\neliminated {{victim}}`), "variables": map[string]string{"killer": "A", "victim": "B", "killer_kd": "9.00"}}
+	if rr := w.preview(w.a1.OrgID, w.a1.InstallationID, "KILLFEED", w.a1.OwnerDiscordID, body); rr.Code != http.StatusOK {
+		t.Fatalf("preview: %d %s", rr.Code, rr.Body.String())
+	}
+	if rr := w.test(w.a1.OrgID, w.a1.InstallationID, "KILLFEED", w.a1.OwnerDiscordID, body); rr.Code != http.StatusOK {
+		t.Fatalf("test: %d %s", rr.Code, rr.Body.String())
+	}
+	var n int
+	if err := w.a.DB.Pool.QueryRow(context.Background(), `SELECT COUNT(*) FROM installation_embed_templates WHERE installation_id=$1`, w.a1.InstallationID).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("drafts must never be saved: %d %v", n, err)
+	}
+}

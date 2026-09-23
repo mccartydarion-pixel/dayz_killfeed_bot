@@ -78,24 +78,91 @@ func killfeedVars(ev *killfeed.Event, serverName string) map[string]string {
 	} else {
 		m["victim"] = "Unknown"
 	}
+	melee := isMelee(ev)
 	setIf(m, "weapon", ev.Weapon)
+	if ev.Weapon != "" || melee {
+		setIf(m, "weapon_category", presentation.WeaponCategory(ev.Weapon, melee))
+	}
 	if ev.Distance != nil {
 		m["distance"] = fmt.Sprintf("%.1fm", math.Round(*ev.Distance*10)/10)
 	}
+	setIf(m, "range", presentation.RangeClass(ev.Distance, melee))
 	setIf(m, "ammo", ev.Ammo)
-	if ev.KillerStreak != nil && *ev.KillerStreak > 0 {
-		m["streak"] = strconv.Itoa(*ev.KillerStreak)
+	// Hit data: only when the event itself carries it (the same fields the default
+	// card's headshot classification reads) - never inferred.
+	setIf(m, "hit_zone", ev.HitZone)
+	if ev.Damage != nil {
+		m["damage"] = formatDamage(*ev.Damage)
 	}
-	// Both come from the same authoritative kill classification the default card uses
-	// (BuildPresentation / the persisted bounty claim); absent for an ordinary kill.
-	if p := BuildPresentation(ev); p.Story != presentation.StoryStandard && strings.TrimSpace(p.Hero) != "" {
+	if isHeadshot(ev) {
+		m["headshot"] = "HEADSHOT"
+	}
+
+	// Stats and streaks were attached to the event after durable persistence
+	// (ProcessPersistedKill) - read here, never re-queried.
+	if s := ev.KillerStats; s != nil {
+		m["killer_kills"], m["killer_deaths"], m["killer_kd"] = presentation.FormatThousands(s.Kills), presentation.FormatThousands(s.Deaths), presentation.FormatKD(s.KD())
+	}
+	if s := ev.VictimStats; s != nil {
+		m["victim_kills"], m["victim_deaths"], m["victim_kd"] = presentation.FormatThousands(s.Kills), presentation.FormatThousands(s.Deaths), presentation.FormatKD(s.KD())
+	}
+	if ev.KillerStreak != nil && *ev.KillerStreak > 0 {
+		streak := strconv.Itoa(*ev.KillerStreak)
+		m["streak"], m["killer_streak"] = streak, streak
+	}
+	if ev.StreakEnded && ev.EndedStreakCount != nil && *ev.EndedStreakCount > 0 {
+		m["ended_streak"] = strconv.Itoa(*ev.EndedStreakCount)
+	}
+	if ev.KillingSpree {
+		m["killing_spree"] = "KILLING SPREE"
+	}
+	if ev.StreakEnded {
+		m["streak_ended"] = "STREAK ENDED"
+	}
+	if h := ev.Encounters; h != nil {
+		m["h2h_killer_wins"], m["h2h_victim_wins"] = strconv.FormatInt(h.KillerWins, 10), strconv.FormatInt(h.VictimWins, 10)
+		m["h2h_score"] = fmt.Sprintf("%d–%d", h.KillerWins, h.VictimWins)
+	}
+
+	// Story values come from the same classification the default card uses.
+	p := BuildPresentation(ev)
+	if p.Story != presentation.StoryStandard && strings.TrimSpace(p.Hero) != "" {
 		m["special_kill"] = p.Hero
 	}
+	setIf(m, "kill_type", p.Title)
+	if strings.TrimSpace(p.Title) != "" {
+		m["story_title"] = strings.TrimSpace(p.Icon + " " + p.Title)
+	}
+
 	if ev.BountyClaimed && ev.BountyPoints > 0 {
 		m["bounty_amount"] = formatAmount(ev.BountyPoints)
 	}
+	if ev.BountyTarget {
+		m["bounty_target"] = "MOST WANTED"
+	}
+	if ev.BountyClaimed {
+		m["bounty_claimed"] = "BOUNTY CLAIMED"
+	}
+	setIf(m, "season_name", ev.SeasonName)
+	setIf(m, "war_badge", ev.WarBadge)
+	var badges []string
+	for _, b := range ev.ActiveEventBadges {
+		if b = strings.TrimSpace(b); b != "" {
+			badges = append(badges, b)
+		}
+	}
+	setIf(m, "event_badges", strings.Join(badges, " • "))
 	setIf(m, "server_name", serverName)
 	return m
+}
+
+// formatDamage shows one decimal, or a whole number when the damage is whole.
+func formatDamage(d float64) string {
+	r := math.Round(d*10) / 10
+	if r == math.Trunc(r) {
+		return strconv.FormatFloat(r, 'f', 0, 64)
+	}
+	return strconv.FormatFloat(r, 'f', 1, 64)
 }
 
 // hitfeedVars: one aggregated encounter. Damage is only reported when EVERY hit

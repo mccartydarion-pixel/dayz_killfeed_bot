@@ -15,6 +15,7 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/embedrender"
 	"github.com/yourname/dayz-killfeed/internal/embedtemplates"
 	"github.com/yourname/dayz-killfeed/internal/killfeed"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 )
 
 // stubCustomizer stands in for the renderer: it records what a publisher passes and
@@ -99,7 +100,12 @@ func TestKillCardUsesTheCustomCardAndProvenVariables(t *testing.T) {
 	if c.guild != 7 || c.server != 1 || c.route != "KILLFEED" {
 		t.Fatalf("the installation is resolved from this worker's (guild, server): %+v", c)
 	}
-	want := map[string]string{"killer": "Alice", "victim": "Bob", "weapon": "M4-A1", "distance": "86.4m", "ammo": "Bullet_556x45", "streak": "3", "server_name": "Northstar"}
+	ev := killEvent()
+	story := BuildPresentation(ev)
+	want := map[string]string{"killer": "Alice", "victim": "Bob", "weapon": "M4-A1", "distance": "86.4m", "ammo": "Bullet_556x45", "streak": "3", "server_name": "Northstar",
+		// V2.1: derived from the same event through the default card's own helpers.
+		"killer_streak": "3", "weapon_category": presentation.WeaponCategory("M4-A1", false), "range": presentation.RangeClass(ev.Distance, false),
+		"kill_type": story.Title, "story_title": story.Icon + " " + story.Title}
 	for k, v := range want {
 		if c.vars[k] != v {
 			t.Errorf("%s = %q, want %q", k, c.vars[k], v)

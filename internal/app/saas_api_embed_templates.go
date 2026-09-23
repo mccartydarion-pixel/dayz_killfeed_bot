@@ -47,13 +47,17 @@ func (a *App) runtimeRenderingFor(routeKey string) string {
 // the Champion default; Template is then null (defaults are never copied into the
 // database or fabricated by the backend).
 type EmbedTemplateResponse struct {
-	RouteKey         string                 `json:"routeKey"`
-	Customized       bool                   `json:"customized"`
-	Template         *embedtemplates.Config `json:"template"`
-	Variables        []string               `json:"variables"`
-	CreatedAt        *string                `json:"createdAt"`
-	UpdatedAt        *string                `json:"updatedAt"`
-	RuntimeRendering string                 `json:"runtimeRendering"`
+	RouteKey   string                 `json:"routeKey"`
+	Customized bool                   `json:"customized"`
+	Template   *embedtemplates.Config `json:"template"`
+	Variables  []string               `json:"variables"`
+	// VariableDefinitions is the backend-owned metadata for every approved variable
+	// (label, description, category, example, availability, format), additive to
+	// the older name list.
+	VariableDefinitions []embedtemplates.VariableDefinition `json:"variableDefinitions"`
+	CreatedAt           *string                             `json:"createdAt"`
+	UpdatedAt           *string                             `json:"updatedAt"`
+	RuntimeRendering    string                              `json:"runtimeRendering"`
 }
 
 // EmbedTemplateListResponse lists only the customized routes, plus the approved
@@ -63,7 +67,9 @@ type EmbedTemplateListResponse struct {
 	Templates        []EmbedTemplateResponse `json:"templates"`
 	CustomizedRoutes []string                `json:"customizedRoutes"`
 	Variables        map[string][]string     `json:"variables"`
-	Limits           embedTemplateLimits     `json:"limits"`
+	// VariableDefinitions: per route, the metadata for each approved variable.
+	VariableDefinitions map[string][]embedtemplates.VariableDefinition `json:"variableDefinitions"`
+	Limits              embedTemplateLimits                            `json:"limits"`
 	// RuntimeRoutes are the routes whose publishers render templates (independent of
 	// the rollout flag); RuntimeRendering is the deployment-wide flag state.
 	RuntimeRoutes    []string `json:"runtimeRoutes"`
@@ -88,7 +94,7 @@ func embedLimits() embedTemplateLimits {
 }
 
 func (a *App) embedResponse(routeKey string, s *embedtemplates.Stored) EmbedTemplateResponse {
-	out := EmbedTemplateResponse{RouteKey: routeKey, Variables: embedtemplates.Variables(routeKey), RuntimeRendering: a.runtimeRenderingFor(routeKey)}
+	out := EmbedTemplateResponse{RouteKey: routeKey, Variables: embedtemplates.Variables(routeKey), VariableDefinitions: embedtemplates.VariableDefinitions(routeKey), RuntimeRendering: a.runtimeRenderingFor(routeKey)}
 	if s != nil {
 		cfg := s.Config
 		cfg.RouteKey = routeKey
@@ -176,7 +182,7 @@ func (a *App) handleListEmbedTemplates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := EmbedTemplateListResponse{InstallationID: instID, Templates: []EmbedTemplateResponse{}, CustomizedRoutes: []string{},
-		Variables: embedtemplates.AllVariables(), Limits: embedLimits(), RuntimeRoutes: embedrender.SupportedRoutes(), RuntimeRendering: runtimeRenderingOff}
+		Variables: embedtemplates.AllVariables(), VariableDefinitions: embedtemplates.AllVariableDefinitions(), Limits: embedLimits(), RuntimeRoutes: embedrender.SupportedRoutes(), RuntimeRendering: runtimeRenderingOff}
 	if a.EmbedRenderer.Enabled() {
 		resp.RuntimeRendering = runtimeRenderingEnabled
 	}

@@ -432,6 +432,20 @@ components:
       type: string
       description: A fixed channel-route key (never an arbitrary string).
       enum: [KILLFEED, PVE_FEED, LINK_GAMERTAG, STATS_LEADERBOARDS, AUTO_LEADERBOARD, HITFEED, BOUNTY, BOUNTY_TRACKING, HEATMAPS, ECONOMY, SHOP, CONNECTIONS, BUILD_FEED, ADMIN_ALERTS, ADMIN_LOGS]
+    VariableDefinition:
+      type: object
+      description: Backend-owned metadata for one approved template variable (Embed Designer V2.1).
+      properties:
+        name: { type: string }
+        label: { type: string }
+        description: { type: string }
+        category: { type: string, enum: [Players, Combat, Killer Stats, Victim Stats, Head To Head, Streaks, Event Story, Bounty, Competitive, Economy, Activity, Server] }
+        example: { type: string }
+        optional: { type: boolean }
+        availability: { type: string }
+        format: { type: string, enum: [text, integer, decimal, distance, label, points, timestamp] }
+        source: { type: string }
+
     EmbedDraftRequest:
       type: object
       additionalProperties: false
@@ -544,6 +558,7 @@ components:
         customized: { type: boolean }
         template: { nullable: true, allOf: [ { $ref: "#/components/schemas/EmbedTemplate" } ] }
         variables: { type: array, items: { type: string }, description: Approved placeholders for this route. }
+        variableDefinitions: { type: array, items: { $ref: "#/components/schemas/VariableDefinition" }, description: Metadata for each approved variable (V2.1). }
         createdAt: { type: string, format: date-time, nullable: true }
         updatedAt: { type: string, format: date-time, nullable: true }
         runtimeRendering: { type: string, enum: [ENABLED, NOT_ENABLED], description: "ENABLED only when CHAMPION_CUSTOM_EMBEDS_ENABLED is on and the route has a runtime publisher that renders templates." }
@@ -554,6 +569,7 @@ components:
         templates: { type: array, items: { $ref: "#/components/schemas/EmbedTemplateResponse" } }
         customizedRoutes: { type: array, items: { $ref: "#/components/schemas/EmbedRouteKey" } }
         variables: { type: object, additionalProperties: { type: array, items: { type: string } } }
+        variableDefinitions: { type: object, additionalProperties: { type: array, items: { $ref: "#/components/schemas/VariableDefinition" } } }
         runtimeRoutes: { type: array, items: { $ref: "#/components/schemas/EmbedRouteKey" }, description: Routes whose publishers render templates (independent of the flag). }
         limits:
           type: object

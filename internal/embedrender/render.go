@@ -110,13 +110,56 @@ func truncate(s string, max int) string {
 	return cut + ellipsis
 }
 
+// ExpandNewlines turns the template's newline syntax into real line breaks. It runs
+// on TEMPLATE text only, before any variable is substituted, so a value can never be
+// read as syntax (a player named `Bad\nPlayer` stays that name). Rules, left to
+// right: `\\n` (backslash, backslash, n) -> the two literal characters `\n`;
+// `\n` -> a line break; CRLF and a lone CR -> a line break; any other backslash is
+// kept as written. Real newlines typed in a textarea already are line breaks.
+func ExpandNewlines(s string) string {
+	if !strings.ContainsAny(s, "\\\r") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '\\' && i+2 < len(s) && s[i+1] == '\\' && s[i+2] == 'n':
+			b.WriteString(`\n`)
+			i += 2
+		case c == '\\' && i+1 < len(s) && s[i+1] == 'n':
+			b.WriteByte('\n')
+			i++
+		case c == '\r':
+			b.WriteByte('\n')
+			if i+1 < len(s) && s[i+1] == '\n' {
+				i++
+			}
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
+// singleLine folds line breaks into spaces for sections Discord shows on one line
+// (title, author name, field name), so they stay consistent however the template
+// was typed.
+func singleLine(s string) string {
+	if !strings.Contains(s, "\n") {
+		return s
+	}
+	return strings.Join(strings.Fields(strings.ReplaceAll(s, "\n", " ")), " ")
+}
+
 // substitute replaces every {{name}} in one pass (values are never re-scanned, so a
 // value containing "{{x}}" stays literal text). It reports whether any referenced
 // variable was absent, and an error for a variable outside the route's approved set.
 func substitute(tmpl string, vars map[string]string, approved map[string]bool) (string, bool, error) {
 	missing := false
 	var badVar string
-	out := tokenRe.ReplaceAllStringFunc(tmpl, func(tok string) string {
+	out := tokenRe.ReplaceAllStringFunc(ExpandNewlines(tmpl), func(tok string) string {
 		name := tokenRe.FindStringSubmatch(tok)[1]
 		if !approved[name] {
 			badVar = name
@@ -191,7 +234,7 @@ func Render(cfg embedtemplates.Config, routeKey string, vars map[string]string, 
 		if err != nil {
 			return nil, err
 		}
-		emb.Title = truncate(s, MaxTitle)
+		emb.Title = truncate(singleLine(s), MaxTitle)
 	}
 	if cfg.Description.Enabled {
 		s, _, err := substitute(cfg.Description.Template, vars, approved)
@@ -218,7 +261,7 @@ func Render(cfg embedtemplates.Config, routeKey string, vars map[string]string, 
 		if m1 || m2 || name == "" || val == "" {
 			continue // optional data absent: omit the field entirely
 		}
-		emb.Fields = append(emb.Fields, &discordgo.MessageEmbedField{Name: truncate(name, MaxFieldName), Value: truncate(val, MaxFieldValue), Inline: f.Inline})
+		emb.Fields = append(emb.Fields, &discordgo.MessageEmbedField{Name: truncate(singleLine(name), MaxFieldName), Value: truncate(val, MaxFieldValue), Inline: f.Inline})
 	}
 
 	if cfg.Author.Enabled {
@@ -227,7 +270,7 @@ func Render(cfg embedtemplates.Config, routeKey string, vars map[string]string, 
 			return nil, err
 		}
 		if name != "" {
-			emb.Author = &discordgo.MessageEmbedAuthor{Name: truncate(name, MaxAuthorName), IconURL: validURL(cfg.Author.IconURL)}
+			emb.Author = &discordgo.MessageEmbedAuthor{Name: truncate(singleLine(name), MaxAuthorName), IconURL: validURL(cfg.Author.IconURL)}
 		}
 	}
 	if cfg.Footer.Enabled {
