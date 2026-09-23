@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
-	"github.com/yourname/dayz-killfeed/internal/discord"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -24,125 +23,8 @@ import (
 // GET/PUT .../channel-routes surface and upgrades POST .../channels/auto-setup
 // to configure the complete blueprint instead of just four channels.
 
-// --- route blueprint (sections 1-4/10/17) -----------------------------------
-
-// RouteRequirement classifies how essential a route is to Champion's
-// current runtime behavior - audited against the actual bot code (section
-// 17), never assumed from the blueprint alone.
-type RouteRequirement string
-
-const (
-	// RouteRequired: Champion cannot function as configured without it.
-	RouteRequired RouteRequirement = "REQUIRED"
-	// RouteOptional: no runtime publisher currently posts here (the
-	// blueprint still reserves the channel for when one is built), or the
-	// feature is implemented but genuinely non-essential.
-	RouteOptional RouteRequirement = "OPTIONAL"
-	// RouteFeatureDependent: fully implemented, but only matters for guilds
-	// that actually use that specific feature.
-	RouteFeatureDependent RouteRequirement = "FEATURE_DEPENDENT"
-)
-
-// championRouteDefault is one entry in Champion's default channel blueprint.
-type championRouteDefault struct {
-	Key         string
-	ChannelName string
-	Requirement RouteRequirement
-}
-
-// championManagedCategoryName is Champion's recommended default category
-// (section 1/8). All sixteen default channels are created under it; the API
-// deliberately keeps category resolution (ensureManagedCategory) separate
-// from channel resolution so a later product change to split channels
-// across multiple categories doesn't require a schema change (section 8).
-const championManagedCategoryName = "CHAMPION KILLFEED"
-
-// championRouteBlueprint is Champion's full sixteen-route default channel
-// structure (sections 1-4). Every entry's requirement/runtime-status comment
-// reflects an actual codebase audit (section 17) - never invented:
-//
-//   - ALREADY_IMPLEMENTED entries name the exact GuildSetup field/publisher
-//     that already posts to a channel serving this purpose today.
-//   - NOT_IMPLEMENTED_YET entries have no runtime publisher at all; the
-//     blueprint still creates/reserves the channel (section 3 asks for all
-//     sixteen), but nothing posts there until that feature is built.
-var championRouteBlueprint = []championRouteDefault{
-	// ALREADY_IMPLEMENTED: internal/discord/killfeed.go KillfeedPublisher.
-	// PublishKill (GuildSetup.KillfeedChannelID). PvP kill/death/special-kill
-	// feed - the bot cannot function as a killfeed bot without this.
-	{"KILLFEED", "killfeed", RouteRequired},
-	// IMPLEMENTED / RUNTIME ROUTED (narrowly): internal/discord/pvefeed.go
-	// PveFeedPublisher carries provably non-PvP deaths - today only explicit
-	// suicides, because the ADM parser cannot yet tell infected/animal/
-	// environment causes apart (see docs/SAAS_RUNTIME_ROUTING.md). No legacy
-	// channel and no KILLFEED fallback.
-	{"PVE_FEED", "pvefeed", RouteOptional},
-	// ALREADY_IMPLEMENTED: internal/discord/public_panels.go
-	// PublicPanelHandler.handleLink (GuildSetup.LinkPanelChannelID). Matters
-	// only for guilds that use Discord<->game identity linking.
-	{"LINK_GAMERTAG", "link-gamertag", RouteFeatureDependent},
-	// ALREADY_IMPLEMENTED: internal/discord/public_panels.go handleMyStats/
-	// handleSearch (GuildSetup.PlayerStatsChannelID) - an on-demand "My
-	// Stats / Search Player" lookup panel, distinct from the auto-refreshing
-	// leaderboard below.
-	{"STATS_LEADERBOARDS", "stats-leaderboards", RouteOptional},
-	// ALREADY_IMPLEMENTED: internal/discord/leaderboard_scheduler.go
-	// LeaderboardScheduler (GuildSetup.LeaderboardsChannelID) - edits one
-	// persistent ranked-leaderboard message on a fixed refresh cycle.
-	{"AUTO_LEADERBOARD", "auto-leaderboard", RouteOptional},
-	// IMPLEMENTED / RUNTIME ROUTED: internal/discord/hitfeed.go
-	// HitfeedPublisher publishes aggregated, rate-capped PLAYER_HIT cards to
-	// this route. There is no legacy channel and no KILLFEED fallback: with no
-	// route configured hits are simply not published.
-	{"HITFEED", "hitfeed", RouteOptional},
-	// IMPLEMENTED / RUNTIME ROUTED: internal/discord/bounty_feeds.go BountyBoard
-	// keeps one persistent public board message per routed channel (see
-	// docs/BOUNTY_SYSTEM.md). No fallback.
-	{"BOUNTY", "bounty", RouteOptional},
-	// IMPLEMENTED / RUNTIME ROUTED: internal/discord/bounty_feeds.go BountyTracker
-	// publishes the bounty lifecycle (placed/increased/claimed/expired/
-	// cancelled). Separate from the board and from the live-panels "MOST
-	// WANTED" section. No fallback.
-	{"BOUNTY_TRACKING", "bounty-tracking", RouteOptional},
-	// NOT_IMPLEMENTED_YET: no heatmap code anywhere in the repo.
-	{"HEATMAPS", "heatmaps", RouteOptional},
-	// NOT_IMPLEMENTED_YET: no in-game economy/credits system exists
-	// (internal/entitlements is a subscription-tier feature-flag map, not
-	// an in-game economy).
-	{"ECONOMY", "economy", RouteOptional},
-	// NOT_IMPLEMENTED_YET: no casino code anywhere in the repo.
-	{"CASINO", "casino", RouteOptional},
-	// NOT_IMPLEMENTED_YET: no shop/store code anywhere in the repo.
-	{"SHOP", "shop", RouteOptional},
-	// IMPLEMENTED / RUNTIME ROUTED: internal/discord/connections.go
-	// ConnectionsPublisher publishes bounded, batched connect/disconnect
-	// notices to this route. No legacy channel and no fallback: with no route
-	// nothing is published. The unrelated voice counter
-	// (GuildSetup.OnlinePlayersChannelID) is untouched.
-	{"CONNECTIONS", "connections", RouteOptional},
-	// NOT_IMPLEMENTED_YET: no building/base-related event type or
-	// publisher exists.
-	{"BUILD_FEED", "build-feed", RouteOptional},
-	// NOT_IMPLEMENTED_YET: no separate moderation-alert publisher exists,
-	// distinct from the diagnostic ADM monitor below.
-	{"ADMIN_ALERTS", "admin-alerts", RouteOptional},
-	// ALREADY_IMPLEMENTED: internal/discord/adm_monitor.go
-	// ADMMonitorPublisher (GuildSetup.ADMMonitorChannelID) - ADM download
-	// health/diagnostic embeds. Matters only for guilds relying on ADM
-	// health monitoring, not every installation.
-	{"ADMIN_LOGS", "admin-logs", RouteFeatureDependent},
-}
-
-// championRouteKeys is the fixed set of valid route_key values - never an
-// arbitrary client-supplied string (mirrors setupSteps' validation pattern
-// in saas_api_installations.go).
-var championRouteKeys = func() map[string]bool {
-	out := make(map[string]bool, len(championRouteBlueprint))
-	for _, r := range championRouteBlueprint {
-		out[r.Key] = true
-	}
-	return out
-}()
+// The route vocabulary and the default Discord layout live in
+// saas_channel_layout.go (Champion Channel System V2).
 
 // --- DTOs (section 6) -------------------------------------------------------
 
@@ -171,6 +53,7 @@ type ChannelRoutesResponse struct {
 type ChannelCategorySummary struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
+	Key  string `json:"key,omitempty"` // LIVE | HUB | STAFF
 }
 
 // AutoSetupChannelsResponse is POST .../channels/auto-setup's response
@@ -180,10 +63,18 @@ type ChannelCategorySummary struct {
 // failure to retry blindly, they're states the UI renders directly ("grant
 // Manage Channels" / "you already customized this").
 type AutoSetupChannelsResponse struct {
-	Configured bool                        `json:"configured"`
-	Reason     string                      `json:"reason,omitempty"`
+	Configured bool   `json:"configured"`
+	Reason     string `json:"reason,omitempty"`
+	// Category is the LIVE category, kept for callers that read one category.
 	Category   *ChannelCategorySummary     `json:"category,omitempty"`
+	Categories []ChannelCategorySummary    `json:"categories,omitempty"`
 	Routes     map[string]ChannelRouteInfo `json:"routes,omitempty"`
+	// Destinations is the per-channel setup and verification report,
+	// including destinations that were skipped (BLOCKED/BROKEN/DISABLED).
+	Destinations []ChannelDestinationReport `json:"destinations,omitempty"`
+	// Retirable lists Champion-managed channels/categories no route uses any
+	// more. Champion never deletes them.
+	Retirable []RetirableChannel `json:"retirable,omitempty"`
 }
 
 type autoSetupChannelsRequest struct {
@@ -196,7 +87,7 @@ type autoSetupChannelsRequest struct {
 
 type saveChannelRoutesRequest struct {
 	// Routes is a partial merge keyed by route_key (section 9 - never
-	// requires all sixteen): a present key with a non-empty channel ID
+	// requires every route): a present key with a non-empty channel ID
 	// upserts that route; a present key with an empty string explicitly
 	// disables/removes it; an absent key is left untouched.
 	Routes map[string]string `json:"routes"`
@@ -437,10 +328,11 @@ func (a *App) handleSaveChannelRoutes(w http.ResponseWriter, r *http.Request) {
 // handleAutoSetupChannels is POST
 // .../installations/{installationID}/channels/auto-setup (section 2/7). Only
 // OWNER/ADMIN may run it. Resolves the installation's exact Discord guild,
-// verifies the bot is installed and holds Manage Channels, then
-// creates-or-reuses the Champion default category and all sixteen default
-// channels - entirely ID-driven once they exist (section 4), so repeat
-// calls are idempotent (section 3) and never produce "-1"/"-2" duplicates.
+// verifies the bot is installed and holds Manage Channels, then applies
+// Champion's V2 layout (saas_channel_layout.go): only destinations with a
+// working producer get a channel, every created channel is verified, and
+// repeat calls reuse channels by ID/name so they never produce "-1"/"-2"
+// duplicates.
 func (a *App) handleAutoSetupChannels(w http.ResponseWriter, r *http.Request) {
 	if !a.requireSaaSServiceAuth(w, r) {
 		return
@@ -476,7 +368,8 @@ func (a *App) handleAutoSetupChannels(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&req)
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	// Panel sync and per-channel verification run inside this request.
+	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
 	defer cancel()
 
 	loaded, discordGuildID, errCode, errMsg := a.loadInstallationGuildSnowflake(ctx, organizationID, installationID)
@@ -528,39 +421,42 @@ func (a *App) handleAutoSetupChannels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	allChannels, err := a.saasDiscordVerifier.ListAllGuildChannels(discordGuildID)
-	if err != nil {
-		slog.Warn("component=saas_api", "msg", "list all guild channels failed", "err", err.Error())
-		writeSaaSError(w, codeDiscordUnavailable, "could not load Discord channels")
+	layout, err := applyChannelLayout(ctx, a.saasDiscordVerifier, a.SaaSChannelRoutes, channelLayoutInput{
+		OrganizationID: organizationID,
+		InstallationID: installationID,
+		GuildID:        discordGuildID,
+		Existing:       existingRoutes,
+		Producers:      a.channelRouteProducers(),
+		SyncPanels:     a.syncRoutedPanelsNow,
+	})
+	if err == errKillfeedUnavailable {
+		writeSaaSJSON(w, http.StatusOK, AutoSetupChannelsResponse{Configured: false, Reason: "KILLFEED_UNAVAILABLE"})
 		return
 	}
-
-	category, err := a.ensureManagedCategory(discordGuildID, allChannels, settings.ChampionCategoryID)
 	if err != nil {
-		slog.Warn("component=saas_api", "msg", "ensure managed category failed", "err", err.Error())
-		writeSaaSError(w, codeDiscordUnavailable, "could not set up Champion's channel category")
+		slog.Warn("component=saas_api", "msg", "apply channel layout failed", "err", err.Error())
+		writeSaaSError(w, codeDiscordUnavailable, "could not set up Champion's Discord channels")
 		return
 	}
+	routes := layout.Routes
 
-	persisted := make(map[string]string, len(existingRoutes))
-	for _, rt := range existingRoutes {
-		persisted[rt.RouteKey] = rt.ChannelID
+	resp := AutoSetupChannelsResponse{Configured: true, Routes: routes, Destinations: layout.Destinations, Retirable: layout.Retirable}
+	isLayoutCategory := map[string]bool{}
+	for _, cat := range championCategories {
+		ch, ok := layout.Categories[cat.Key]
+		if !ok {
+			continue
+		}
+		isLayoutCategory[ch.ID] = true
+		summary := ChannelCategorySummary{ID: ch.ID, Name: ch.Name, Key: cat.Key}
+		resp.Categories = append(resp.Categories, summary)
+		if cat.Key == categoryLive {
+			resp.Category = &summary
+		}
 	}
-
-	routes := make(map[string]ChannelRouteInfo, len(championRouteBlueprint))
-	for _, spec := range championRouteBlueprint {
-		ch, err := a.ensureManagedChannel(discordGuildID, allChannels, category.ID, spec.ChannelName, persisted[spec.Key])
-		if err != nil {
-			slog.Warn("component=saas_api", "msg", "ensure managed channel failed", "err", err.Error(), "route", spec.Key)
-			writeSaaSError(w, codeDiscordUnavailable, "could not set up Champion's Discord channels")
-			return
-		}
-		if err := a.SaaSChannelRoutes.UpsertRoute(ctx, organizationID, installationID, spec.Key, ch.ID, true); err != nil {
-			slog.Warn("component=saas_api", "msg", "upsert channel route failed", "err", err.Error(), "route", spec.Key)
-			writeSaaSError(w, codeInternalError, "could not save channel routes")
-			return
-		}
-		routes[spec.Key] = ChannelRouteInfo{ChannelID: ch.ID, ChannelName: ch.Name, ManagedByChampion: true}
+	// A pre-V2 single category Champion created is reported, never deleted.
+	if old := settings.ChampionCategoryID; old != "" && !isLayoutCategory[old] {
+		resp.Retirable = append(resp.Retirable, RetirableChannel{ChannelID: old, Kind: "CATEGORY"})
 	}
 
 	// Mirror the three routes with a direct legacy equivalent back onto
@@ -573,77 +469,45 @@ func (a *App) handleAutoSetupChannels(w http.ResponseWriter, r *http.Request) {
 	updatedSettings.LeaderboardChannelID = routes["STATS_LEADERBOARDS"].ChannelID
 	updatedSettings.AdminLogChannelID = routes["ADMIN_LOGS"].ChannelID
 	updatedSettings.ChannelSetupSource = "AUTO"
-	updatedSettings.ChampionCategoryID = category.ID
+	if resp.Category != nil {
+		updatedSettings.ChampionCategoryID = resp.Category.ID
+	}
 	if err := a.SaaSInstallations.UpdateSettings(ctx, organizationID, installationID, updatedSettings); err != nil {
 		slog.Warn("component=saas_api", "msg", "update channel settings failed", "err", err.Error())
 		writeSaaSError(w, codeInternalError, "could not save channel settings")
 		return
 	}
 
+	persistedKillfeed := ""
+	for _, rt := range existingRoutes {
+		if rt.RouteKey == "KILLFEED" {
+			persistedKillfeed = rt.ChannelID
+		}
+	}
 	// Setup-completion task, section 13: force=true restoring defaults over
 	// customer-owned routing on an already-READY installation is exactly the
 	// "critical config change" case - never silently keeps READY against a
 	// channel that was never actually verified.
-	criticalChange := loaded.Status == repository.InstallationReady && persisted["KILLFEED"] != "" && persisted["KILLFEED"] != routes["KILLFEED"].ChannelID
+	criticalChange := loaded.Status == repository.InstallationReady && persistedKillfeed != "" && persistedKillfeed != routes["KILLFEED"].ChannelID
 	a.completeChannelsStep(ctx, organizationID, installationID, loaded.Status, criticalChange)
 
-	slog.Info("component=saas_api", "event", "saas_channels_auto_setup", "installation_id", installationID, "category_id", category.ID, "route_count", len(routes))
+	broken := 0
+	for _, d := range layout.Destinations {
+		if d.Health == HealthBroken {
+			broken++
+		}
+	}
+	slog.Info("component=saas_api", "event", "saas_channels_auto_setup", "installation_id", installationID, "category_count", len(resp.Categories), "route_count", len(routes), "broken_destinations", broken, "retirable", len(resp.Retirable))
 
-	writeSaaSJSON(w, http.StatusOK, AutoSetupChannelsResponse{
-		Configured: true,
-		Category:   &ChannelCategorySummary{ID: category.ID, Name: category.Name},
-		Routes:     routes,
-	})
+	writeSaaSJSON(w, http.StatusOK, resp)
 }
 
-// ensureManagedCategory resolves Champion's managed category, preferring the
-// persisted ID (authoritative - section 4), falling back to a name-based
-// scan for recovery, and creating it only if neither is found (sections 2-4).
-func (a *App) ensureManagedCategory(guildID string, channels []discord.RawGuildChannel, persistedCategoryID string) (discord.RawGuildChannel, error) {
-	if persistedCategoryID != "" {
-		for _, ch := range channels {
-			if ch.ID == persistedCategoryID && ch.Type == discordgo.ChannelTypeGuildCategory {
-				return ch, nil
-			}
-		}
-		// Persisted ID no longer resolves (e.g. deleted in Discord) - fall
-		// through to name-based recovery below.
-	}
-	for _, ch := range channels {
-		if ch.Type == discordgo.ChannelTypeGuildCategory && strings.EqualFold(strings.TrimSpace(ch.Name), championManagedCategoryName) {
-			return ch, nil
-		}
-	}
-	created, err := a.saasDiscordVerifier.CreateGuildCategory(guildID, championManagedCategoryName)
-	if err != nil {
-		return discord.RawGuildChannel{}, err
-	}
-	return *created, nil
-}
-
-// ensureManagedChannel resolves one default channel under categoryID, same
-// ID-first-then-name-then-create precedence as ensureManagedCategory
-// (sections 2-4). Reusing an existing channel never requires it to already
-// sit under categoryID for the persisted-ID path (a customer may have moved
-// it in Discord - the ID is still authoritative), but the name-based
-// recovery scan does check the category, so recovery cannot accidentally
-// adopt an unrelated same-named channel elsewhere in the guild.
-func (a *App) ensureManagedChannel(guildID string, channels []discord.RawGuildChannel, categoryID, name, persistedChannelID string) (discord.RawGuildChannel, error) {
-	if persistedChannelID != "" {
-		for _, ch := range channels {
-			if ch.ID == persistedChannelID && ch.Type == discordgo.ChannelTypeGuildText {
-				return ch, nil
-			}
-		}
-	}
-	for _, ch := range channels {
-		if ch.Type == discordgo.ChannelTypeGuildText && ch.ParentID == categoryID && strings.EqualFold(ch.Name, name) {
-			return ch, nil
-		}
-	}
-	created, err := a.saasDiscordVerifier.CreateGuildTextChannel(guildID, name, categoryID)
-	if err != nil {
-		return discord.RawGuildChannel{}, err
-	}
-	return *created, nil
+// syncRoutedPanelsNow posts or restores the persistent panels for freshly
+// written routes before auto-setup verifies them. Both syncs share
+// RoutePanels' lock with their background loops, so this can never post a
+// second copy of a panel.
+func (a *App) syncRoutedPanelsNow(ctx context.Context) {
+	a.ChannelRoutes.InvalidateAll()
+	a.RouteSyncer.SyncOnce(ctx)
+	a.BountyBoard.SyncOnce(ctx)
 }

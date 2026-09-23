@@ -29,7 +29,6 @@ Performed against the code BEFORE any integration; a route key alone never count
 | `AUTO_LEADERBOARD` | yes | yes (`LeaderboardScheduler`) | **persistent ranked-rows message** edited on a schedule | **no - INCOMPATIBLE** (rows cannot be expressed by the single-event model) | Champion leaderboard |
 | `ADMIN_ALERTS` | yes | **no** (not implemented) | - | no | n/a |
 | `BUILD_FEED` | yes | **no** (not implemented) | - | no | n/a |
-| `CASINO` | yes | **no** (not implemented) | - | no | n/a |
 | `SHOP` | yes | **no** (not implemented) | - | no | n/a |
 | `HEATMAPS` | yes | **no** (not implemented) | - | no | n/a |
 

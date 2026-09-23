@@ -1,9 +1,9 @@
 // Package economy is the Champion Points economy service: credit, debit, balance
 // lookup, transaction history and admin adjustments, on top of the single
 // point_transactions ledger / player_points balance store. Balances are
-// guild-wide (see repository/economy_repository.go). Phase 1 has no shop or
-// casino; their transaction types are reserved in docs/ECONOMY_SYSTEM.md but
-// deliberately not accepted here yet.
+// guild-wide (see repository/economy_repository.go). Shop purchases and
+// refunds are written by the shop's own transaction (see Announce), never
+// through Credit/Debit.
 package economy
 
 import (

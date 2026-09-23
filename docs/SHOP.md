@@ -1,7 +1,7 @@
 # Champion Shop - product catalog, purchases and refunds (Phase 1)
 
 An installation-scoped product catalog that players buy with **Champion Points**, plus admin management, manual fulfillment and refunds. The website is the Shop UI; the Go backend is
-authoritative for prices, stock, purchase limits, the Points debit, idempotency and audit. **No Discord Shop UI, no casino, no transfers, no cart, no automatic delivery** exist in this phase.
+authoritative for prices, stock, purchase limits, the Points debit, idempotency and audit. **No Discord Shop UI, no transfers, no cart, no automatic delivery** exist in this phase.
 
 ## 1. Audit result
 
@@ -192,4 +192,4 @@ UI notes: show `stockState` (never an exact count) and disable Buy for `OUT_OF_S
 
 ## 12. Not built
 
-Cart / multi-item orders, unpaid checkout sessions (payment is immediate), automatic delivery (role or in-game), Discord Shop UI or SHOP embeds, product images, coupons/discounts, player-to-player transfers, casino.
+Cart / multi-item orders, unpaid checkout sessions (payment is immediate), automatic delivery (role or in-game), Discord Shop UI or SHOP embeds, product images, coupons/discounts, player-to-player transfers.

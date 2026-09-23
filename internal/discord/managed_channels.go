@@ -131,3 +131,70 @@ func (c *Client) CreateGuildTextChannel(guildID, name, parentCategoryID string) 
 	}
 	return &RawGuildChannel{ID: ch.ID, Name: ch.Name, Type: ch.Type, ParentID: ch.ParentID}, nil
 }
+
+// CreatePrivateGuildCategory creates a category hidden from @everyone and
+// visible to the bot itself - the staff category (admin logs). Text channels
+// created under it without their own overwrites inherit this privacy.
+func (c *Client) CreatePrivateGuildCategory(guildID, name string) (*RawGuildChannel, error) {
+	if c == nil || c.session == nil {
+		return nil, fmt.Errorf("discord session not initialized")
+	}
+	overwrites := []*discordgo.PermissionOverwrite{
+		{ID: guildID, Type: discordgo.PermissionOverwriteTypeRole, Deny: discordgo.PermissionViewChannel},
+	}
+	if botID := c.BotID(); botID != "" {
+		overwrites = append(overwrites, &discordgo.PermissionOverwrite{
+			ID:    botID,
+			Type:  discordgo.PermissionOverwriteTypeMember,
+			Allow: discordgo.PermissionViewChannel | discordgo.PermissionSendMessages | discordgo.PermissionEmbedLinks | discordgo.PermissionReadMessageHistory,
+		})
+	}
+	ch, err := c.session.GuildChannelCreateComplex(guildID, discordgo.GuildChannelCreateData{
+		Name:                 name,
+		Type:                 discordgo.ChannelTypeGuildCategory,
+		PermissionOverwrites: overwrites,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create private guild category: %w", err)
+	}
+	return &RawGuildChannel{ID: ch.ID, Name: ch.Name, Type: ch.Type, ParentID: ch.ParentID}, nil
+}
+
+// SendChannelEmbed posts one embed to channelID - used for a managed
+// channel's single starter card.
+func (c *Client) SendChannelEmbed(channelID string, embed *discordgo.MessageEmbed) error {
+	if c == nil || c.session == nil {
+		return fmt.Errorf("discord session not initialized")
+	}
+	if _, err := c.session.ChannelMessageSendEmbed(channelID, embed); err != nil {
+		return fmt.Errorf("send channel embed: %w", err)
+	}
+	return nil
+}
+
+// botMessageScanLimit bounds how many recent messages ChannelHasBotMessage
+// reads: enough to find a panel or starter card in a quiet channel without
+// paging through a busy feed.
+const botMessageScanLimit = 50
+
+// ChannelHasBotMessage reports whether any of channelID's most recent
+// messages was posted by the bot - the "visible Champion content" check.
+func (c *Client) ChannelHasBotMessage(channelID string) (bool, error) {
+	if c == nil || c.session == nil {
+		return false, fmt.Errorf("discord session not initialized")
+	}
+	botID := c.BotID()
+	if botID == "" {
+		return false, fmt.Errorf("bot identity unavailable")
+	}
+	msgs, err := c.session.ChannelMessages(channelID, botMessageScanLimit, "", "", "")
+	if err != nil {
+		return false, fmt.Errorf("read channel messages: %w", err)
+	}
+	for _, m := range msgs {
+		if m != nil && m.Author != nil && m.Author.ID == botID {
+			return true, nil
+		}
+	}
+	return false, nil
+}

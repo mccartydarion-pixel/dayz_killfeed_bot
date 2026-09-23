@@ -1838,6 +1838,16 @@ CREATE INDEX IF NOT EXISTS idx_player_location_events_server_type_time ON player
 CREATE INDEX IF NOT EXISTS idx_zone_intrusions_installation_entered ON zone_intrusions(installation_id, entered_at DESC);
 `,
 	},
+	{
+		Name: "0044_remove_casino_route",
+		SQL: `
+-- Champion Channel System V2: CASINO no longer exists as a feature or route key. Stored
+-- routes and embed templates for it are removed; the Discord channels themselves are never
+-- touched (auto-setup reports them as retirable instead).
+DELETE FROM installation_channel_routes WHERE route_key = 'CASINO';
+DELETE FROM installation_embed_templates WHERE route_key = 'CASINO';
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order, each transactionally. A

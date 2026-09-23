@@ -115,7 +115,6 @@ var routeVariables = map[string][]string{
 	"BOUNTY":             {"victim", "server_name", "timestamp"},
 	"BOUNTY_TRACKING":    {"killer", "victim", "target", "hunter", "amount", "total", "count", "weapon", "distance", "status", "server_name"},
 	"ECONOMY":            {"player", "amount", "balance", "transaction_type", "server_name"},
-	"CASINO":             {"player", "amount", "result"},
 	"SHOP":               {"player", "item", "amount", "balance"},
 	"CONNECTIONS":        {"player", "event", "event_type", "session", "server_name", "timestamp"},
 	"BUILD_FEED":         {"player", "structure", "server_name"},

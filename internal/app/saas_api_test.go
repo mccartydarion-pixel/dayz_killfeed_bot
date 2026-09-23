@@ -445,23 +445,3 @@ func TestHasCustomChannelConfiguration(t *testing.T) {
 		})
 	}
 }
-
-func TestEnsureManagedCategoryPrefersPersistedIDThenName(t *testing.T) {
-	a := &App{}
-	channels := []discord.RawGuildChannel{
-		{ID: "cat-old", Name: "CHAMPION KILLFEED", Type: discordgo.ChannelTypeGuildCategory},
-		{ID: "cat-new", Name: "champion killfeed", Type: discordgo.ChannelTypeGuildCategory},
-	}
-
-	// Persisted ID wins even though a differently-cased name match also exists.
-	got, err := a.ensureManagedCategory("guild-1", channels, "cat-old")
-	if err != nil || got.ID != "cat-old" {
-		t.Fatalf("expected the persisted category ID to win, got %+v err=%v", got, err)
-	}
-
-	// No persisted ID (or a stale one) falls back to the case-insensitive name match.
-	got, err = a.ensureManagedCategory("guild-1", channels, "does-not-exist")
-	if err != nil || got.ID != "cat-old" {
-		t.Fatalf("expected the first name match to be reused, got %+v err=%v", got, err)
-	}
-}

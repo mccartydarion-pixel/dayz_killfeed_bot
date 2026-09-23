@@ -50,6 +50,11 @@ type fakeDiscordVerifier struct {
 	// this map resolves to an empty role list (never an error), matching "this person is in the
 	// guild but holds no mapped role" rather than "lookup failed".
 	memberRoles map[string]map[string][]string
+	// botPosts counts bot messages per channel: starter cards sent through
+	// SendChannelEmbed, plus panels a test marks as posted.
+	botPosts map[string]int
+	// privateCategories records categories created hidden from @everyone.
+	privateCategories map[string]bool
 }
 
 type fakeGuildChannel struct {
@@ -136,6 +141,30 @@ func (f *fakeDiscordVerifier) CreateGuildTextChannel(guildID, name, parentCatego
 	return f.createFakeChannel(guildID, name, discordgo.ChannelTypeGuildText, parentCategoryID)
 }
 
+func (f *fakeDiscordVerifier) CreatePrivateGuildCategory(guildID, name string) (*discord.RawGuildChannel, error) {
+	ch, err := f.createFakeChannel(guildID, name, discordgo.ChannelTypeGuildCategory, "")
+	if err == nil {
+		if f.privateCategories == nil {
+			f.privateCategories = map[string]bool{}
+		}
+		f.privateCategories[ch.ID] = true
+	}
+	return ch, err
+}
+
+// SendChannelEmbed records a bot message in channelID.
+func (f *fakeDiscordVerifier) SendChannelEmbed(channelID string, _ *discordgo.MessageEmbed) error {
+	if f.botPosts == nil {
+		f.botPosts = map[string]int{}
+	}
+	f.botPosts[channelID]++
+	return nil
+}
+
+func (f *fakeDiscordVerifier) ChannelHasBotMessage(channelID string) (bool, error) {
+	return f.botPosts[channelID] > 0, nil
+}
+
 func (f *fakeDiscordVerifier) createFakeChannel(guildID, name string, ctype discordgo.ChannelType, parentID string) (*discord.RawGuildChannel, error) {
 	if f.channels == nil {
 		f.channels = map[string][]fakeGuildChannel{}
@@ -183,6 +212,8 @@ func saasIntegrationApp(t *testing.T) (*App, *fakeDiscordVerifier) {
 		SaaSCredentials:      repository.NewCredentialRepository(db.Pool),
 		SaaSChannelRoutes:    repository.NewChannelRouteRepository(db.Pool),
 		saasDiscordVerifier:  verifier,
+		// No Discord runtime runs here: auto-setup sees the audited producers.
+		channelProducersOverride: auditProducers,
 	}
 	cipher, err := security.NewAESGCM("01234567890123456789012345678901", 1)
 	if err != nil {
@@ -1354,14 +1385,18 @@ func autoSetupChannels(t *testing.T, a *App, orgID, installationID int64, acting
 	return rr
 }
 
-// championAllRouteKeys is every stable route key in the blueprint, used by
-// tests that need to assert completeness without hand-maintaining a second
-// copy of the list.
+// championAllRouteKeys is every route auto-setup maps with the audited
+// producers: the whole vocabulary except HEATMAPS, which has no Discord
+// publisher yet.
 var championAllRouteKeys = []string{
 	"KILLFEED", "PVE_FEED", "LINK_GAMERTAG", "STATS_LEADERBOARDS", "AUTO_LEADERBOARD",
-	"HITFEED", "BOUNTY", "BOUNTY_TRACKING", "HEATMAPS", "ECONOMY", "CASINO", "SHOP",
+	"HITFEED", "BOUNTY", "BOUNTY_TRACKING", "ECONOMY", "SHOP",
 	"CONNECTIONS", "BUILD_FEED", "ADMIN_ALERTS", "ADMIN_LOGS",
 }
+
+// championActiveDestinationCount is how many channels auto-setup creates
+// with the audited producers (every destination but heatmaps).
+const championActiveDestinationCount = 8
 
 func listChannelRoutes(t *testing.T, a *App, orgID, installationID int64, actingDiscordID string) *httptest.ResponseRecorder {
 	t.Helper()
@@ -1381,10 +1416,10 @@ func saveChannelRoutes(t *testing.T, a *App, orgID, installationID int64, acting
 	return rr
 }
 
-// TestAutoSetupChannelsCreatesCompleteBlueprint is case A/section 21 "all 16
-// default route keys": a single call creates the Champion category and all
-// sixteen default channels, every route populated, KILLFEED marked
-// managed=true.
+// TestAutoSetupChannelsCreatesCompleteBlueprint: one call creates the V2
+// categories and one channel per destination with a working producer, maps
+// every route of those destinations (routes sharing a destination share its
+// channel), marks them managed, and reports each destination.
 func TestAutoSetupChannelsCreatesCompleteBlueprint(t *testing.T) {
 	a, verifier := saasIntegrationApp(t)
 	fixture := buildInstallationFixture(t, a, verifier)
@@ -1398,11 +1433,14 @@ func TestAutoSetupChannelsCreatesCompleteBlueprint(t *testing.T) {
 	if !resp.Configured {
 		t.Fatalf("expected configured=true, got %+v", resp)
 	}
-	if resp.Category == nil || resp.Category.Name != championManagedCategoryName {
-		t.Fatalf("expected the Champion default category, got %+v", resp.Category)
+	if resp.Category == nil || resp.Category.Name != championCategories[0].Name || len(resp.Categories) != len(championCategories) {
+		t.Fatalf("expected the LIVE category plus all V2 categories, got %+v / %+v", resp.Category, resp.Categories)
 	}
 	if len(resp.Routes) != len(championAllRouteKeys) {
 		t.Fatalf("expected all %d default routes, got %d: %+v", len(championAllRouteKeys), len(resp.Routes), resp.Routes)
+	}
+	if _, ok := resp.Routes["HEATMAPS"]; ok {
+		t.Fatal("HEATMAPS has no Discord publisher yet and must not be mapped")
 	}
 	ids := map[string]bool{}
 	for _, key := range championAllRouteKeys {
@@ -1415,13 +1453,20 @@ func TestAutoSetupChannelsCreatesCompleteBlueprint(t *testing.T) {
 		}
 		ids[info.ChannelID] = true
 	}
-	if len(ids) != len(championAllRouteKeys) {
-		t.Fatalf("expected %d distinct channels, got %d", len(championAllRouteKeys), len(ids))
+	if len(ids) != championActiveDestinationCount {
+		t.Fatalf("expected %d distinct channels, got %d", championActiveDestinationCount, len(ids))
+	}
+	categoryIDs := map[string]bool{}
+	for _, c := range resp.Categories {
+		categoryIDs[c.ID] = true
 	}
 	for _, ch := range verifier.channels[fixture.DiscordGuildID] {
-		if ch.Type == discordgo.ChannelTypeGuildText && ids[ch.ID] && ch.ParentID != resp.Category.ID {
-			t.Fatalf("expected channel %q to sit under the Champion category, got parent %q", ch.ID, ch.ParentID)
+		if ch.Type == discordgo.ChannelTypeGuildText && ids[ch.ID] && !categoryIDs[ch.ParentID] {
+			t.Fatalf("expected channel %q to sit under a Champion category, got parent %q", ch.ID, ch.ParentID)
 		}
+	}
+	if len(resp.Destinations) != len(championDestinations) {
+		t.Fatalf("expected a report for every destination, got %+v", resp.Destinations)
 	}
 
 	progress, err := a.SaaSInstallations.GetSetupProgress(context.Background(), fixture.OrgID, fixture.InstallationID)
@@ -1458,8 +1503,8 @@ func TestAutoSetupChannelsIsIdempotent(t *testing.T) {
 			total++
 		}
 	}
-	if total != len(championAllRouteKeys) {
-		t.Fatalf("expected exactly %d text channels after two auto-setup calls, got %d", len(championAllRouteKeys), total)
+	if total != championActiveDestinationCount {
+		t.Fatalf("expected exactly %d text channels after two auto-setup calls, got %d", championActiveDestinationCount, total)
 	}
 }
 
@@ -1471,9 +1516,9 @@ func TestAutoSetupChannelsIsIdempotent(t *testing.T) {
 func TestAutoSetupChannelsReusesExistingChampionChannelsByName(t *testing.T) {
 	a, verifier := saasIntegrationApp(t)
 	fixture := buildInstallationFixture(t, a, verifier)
-	seedGuildChannels(verifier, fixture.DiscordGuildID, fakeGuildChannel{ID: "existing-category", Name: "champion killfeed", Type: discordgo.ChannelTypeGuildCategory})
+	seedGuildChannels(verifier, fixture.DiscordGuildID, fakeGuildChannel{ID: "existing-category", Name: "🏆 champion • live", Type: discordgo.ChannelTypeGuildCategory})
 	seedGuildChannels(verifier, fixture.DiscordGuildID,
-		fakeGuildChannel{ID: "existing-killfeed", Name: "killfeed", Type: discordgo.ChannelTypeGuildText, ParentID: "existing-category"},
+		fakeGuildChannel{ID: "existing-killfeed", Name: "🔫・combat-feed", Type: discordgo.ChannelTypeGuildText, ParentID: "existing-category"},
 	)
 
 	rr := autoSetupChannels(t, a, fixture.OrgID, fixture.InstallationID, fixture.OwnerDiscordID, false)
@@ -1490,7 +1535,7 @@ func TestAutoSetupChannelsReusesExistingChampionChannelsByName(t *testing.T) {
 
 	killfeedCount := 0
 	for _, ch := range verifier.channels[fixture.DiscordGuildID] {
-		if ch.Name == "killfeed" {
+		if ch.Name == "🔫・combat-feed" {
 			killfeedCount++
 		}
 	}

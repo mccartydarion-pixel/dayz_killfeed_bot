@@ -94,7 +94,7 @@ contents.
 Not gated on installation `status`: a configured route is honoured even while an
 installation is still `CONFIGURING`.
 
-## All sixteen routes
+## All routes
 
 | Route key | Existing publisher | Legacy field / source | Event source | Status |
 |---|---|---|---|---|
@@ -108,8 +108,7 @@ installation is still `CONFIGURING`.
 | `BOUNTY_TRACKING` | `BountyTracker` (`discord/bounty_feeds.go`) - placed / increased / claimed / expired / cancelled cards | none - no fallback (the "MOST WANTED" section of the live panels is unrelated) | `bounties.Service` events, published only after the change committed | **IMPLEMENTED / RUNTIME ROUTED** |
 | `HEATMAPS` | none | - | - | Not implemented |
 | `ECONOMY` | `EconomyFeed` (`discord/economy_feed.go`) - bounty reward / admin credit / admin debit cards | none - no fallback (never `KILLFEED`; the economy works fully without the route) | `economy.Service` and the bounty claim, published only after the transaction committed | **IMPLEMENTED / RUNTIME ROUTED** |
-| `CASINO` | none | - | - | Not implemented |
-| `SHOP` | none | - | - | Not implemented |
+| `SHOP` | `EconomyFeed` - shop purchase/refund cards are published on the `ECONOMY` route; the `SHOP` key maps to the same economy channel | - | shop transaction, after commit | **IMPLEMENTED** (via `ECONOMY`) |
 | `CONNECTIONS` | `ConnectionsPublisher` (`discord/connections.go`) | none - no legacy text channel, no KILLFEED/voice-counter fallback (the `OnlinePlayersChannelID` voice counter is a separate, untouched feature) | ADM `is connected` / `has been disconnected`, after dedupe + durable persistence + a real presence state change | **IMPLEMENTED / RUNTIME ROUTED** |
 | `BUILD_FEED` | none | - | no building event type | Not implemented |
 | `ADMIN_ALERTS` | none | - | - | Not implemented |
@@ -225,10 +224,9 @@ server_id=<game_servers.id> reason=no_route|lookup_error` - internal ids only.
 
 ### Not covered
 
-Routes for `HEATMAPS`,
-`ECONOMY`, `CASINO`, `SHOP`, `BUILD_FEED` and `ADMIN_ALERTS` are
-**not built**: they have no publisher (or no text feed), and this migration
-deliberately adds none. The runtime is still a single configured Discord guild
+Routes for `HEATMAPS` (Discord), `BUILD_FEED` and `ADMIN_ALERTS` are
+**not built**: they have no publisher, and this migration deliberately adds
+none. `CASINO` was removed entirely (migration 0044). The runtime is still a single configured Discord guild
 (`DISCORD_GUILD_ID`) with its own set of servers; multi-guild workers are out of
 scope. Migration `0027` back-filled `STATS_LEADERBOARDS` and `ADMIN_LOGS` routes
 from installation settings, so those existing routes now take effect at runtime.
