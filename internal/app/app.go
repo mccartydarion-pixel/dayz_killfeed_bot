@@ -200,6 +200,9 @@ type App struct {
 	serverNamesOnce     sync.Once
 	adminChannelNames   func(channelID string) string
 	saasDiscordVerifier discordGuildVerifier
+	// embedTestLimiter bounds Embed Designer test sends (per actor and per
+	// installation). Nil allows everything (tests that do not exercise it).
+	embedTestLimiter *embedTestLimiter
 	// channelProducersOverride replaces channelRouteProducers' runtime audit
 	// in tests. Nil in production.
 	channelProducersOverride  func() map[string]routeProducer

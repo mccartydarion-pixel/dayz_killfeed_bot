@@ -74,6 +74,16 @@ var httpStatusForCode = map[string]int{
 	codePayloadTooLarge:         http.StatusRequestEntityTooLarge,
 	codeUnsupportedMediaType:    http.StatusUnsupportedMediaType,
 	codeLeadershipTransfer:      http.StatusConflict,
+	// Embed Designer V2 (saas_api_embed_designer.go).
+	codeEmbedTemplateInvalid:       http.StatusBadRequest,
+	codeEmbedTemplateNotRenderable: http.StatusUnprocessableEntity,
+	codeEmbedCustomNotSupported:    http.StatusUnprocessableEntity,
+	codeEmbedRouteNotConfigured:    http.StatusConflict,
+	codeEmbedChannelUnavailable:    http.StatusConflict,
+	codeEmbedSendForbidden:         http.StatusConflict,
+	codeEmbedLinksRequired:         http.StatusConflict,
+	codeEmbedRateLimited:           http.StatusTooManyRequests,
+	codeEmbedSendFailed:            http.StatusBadGateway,
 }
 
 // writeSaaSJSON writes a successful JSON response.
@@ -298,6 +308,9 @@ func (a *App) registerSaaSAPI() {
 	if a.saasSyncLimiter == nil {
 		a.saasSyncLimiter = newSaaSRateLimiter(time.Minute, 10)
 	}
+	if a.embedTestLimiter == nil {
+		a.embedTestLimiter = newEmbedTestLimiter()
+	}
 	if a.saasOrgCreateLimiter == nil {
 		a.saasOrgCreateLimiter = newSaaSRateLimiter(time.Hour, 5)
 	}
@@ -373,6 +386,8 @@ func (a *App) registerSaaSAPI() {
 	a.HTTPServer.Handle("GET /api/saas/organizations/{organizationID}/installations/{installationID}/embed-templates/{routeKey}", a.handleGetEmbedTemplate)
 	a.HTTPServer.Handle("PUT /api/saas/organizations/{organizationID}/installations/{installationID}/embed-templates/{routeKey}", a.handlePutEmbedTemplate)
 	a.HTTPServer.Handle("DELETE /api/saas/organizations/{organizationID}/installations/{installationID}/embed-templates/{routeKey}", a.handleDeleteEmbedTemplate)
+	a.HTTPServer.Handle("POST /api/saas/organizations/{organizationID}/installations/{installationID}/embed-templates/{routeKey}/preview", a.handlePreviewEmbedTemplate)
+	a.HTTPServer.Handle("POST /api/saas/organizations/{organizationID}/installations/{installationID}/embed-templates/{routeKey}/test", a.handleTestEmbedTemplate)
 	a.HTTPServer.Handle("GET /api/saas/organizations/{organizationID}/installations/{installationID}/settings", a.handleGetInstallationSettings)
 	a.HTTPServer.Handle("PUT /api/saas/organizations/{organizationID}/installations/{installationID}/settings", a.handleSaveInstallationSettings)
 	a.registerFactionHubRoutes()

@@ -432,6 +432,68 @@ components:
       type: string
       description: A fixed channel-route key (never an arbitrary string).
       enum: [KILLFEED, PVE_FEED, LINK_GAMERTAG, STATS_LEADERBOARDS, AUTO_LEADERBOARD, HITFEED, BOUNTY, BOUNTY_TRACKING, HEATMAPS, ECONOMY, SHOP, CONNECTIONS, BUILD_FEED, ADMIN_ALERTS, ADMIN_LOGS]
+    EmbedDraftRequest:
+      type: object
+      additionalProperties: false
+      required: [template]
+      properties:
+        template: { $ref: "#/components/schemas/EmbedTemplate" }
+        variables:
+          type: object
+          description: Sample values, only the route's approved variables (max 32, 512 chars each). Treated like live player data.
+          additionalProperties: { type: string }
+
+    EmbedDTO:
+      type: object
+      properties:
+        title: { type: string }
+        description: { type: string }
+        color: { type: integer }
+        author: { type: object, nullable: true, properties: { name: { type: string }, iconUrl: { type: string } } }
+        thumbnail: { type: object, nullable: true, properties: { url: { type: string } } }
+        image: { type: object, nullable: true, properties: { url: { type: string } } }
+        footer: { type: object, nullable: true, properties: { text: { type: string }, iconUrl: { type: string } } }
+        timestamp: { type: string }
+        fields:
+          type: array
+          items: { type: object, properties: { name: { type: string }, value: { type: string }, inline: { type: boolean } } }
+
+    EmbedDestination:
+      type: object
+      properties:
+        configured: { type: boolean }
+        channelId: { type: string }
+        channelName: { type: string }
+        reachable: { type: boolean }
+        canView: { type: boolean }
+        canSend: { type: boolean }
+        canEmbed: { type: boolean }
+        canReadHistory: { type: boolean }
+        missing: { type: array, items: { type: string } }
+
+    EmbedPreviewResponse:
+      type: object
+      properties:
+        routeKey: { type: string }
+        runtimeRendering: { type: string, enum: [ENABLED, NOT_ENABLED] }
+        customRenderingSupported: { type: boolean }
+        renderable: { type: boolean }
+        reason: { type: string, enum: [CUSTOM_TEMPLATE_DISABLED, TEMPLATE_PRODUCED_NO_CONTENT], nullable: true }
+        embed: { allOf: [{ $ref: "#/components/schemas/EmbedDTO" }], nullable: true }
+        metrics: { type: object, properties: { fieldCount: { type: integer }, totalText: { type: integer } } }
+        warnings: { type: array, items: { type: string } }
+        destination: { allOf: [{ $ref: "#/components/schemas/EmbedDestination" }], nullable: true }
+
+    EmbedTestResponse:
+      type: object
+      properties:
+        sent: { type: boolean }
+        routeKey: { type: string }
+        runtimeRendering: { type: string, enum: [ENABLED, NOT_ENABLED] }
+        channel: { type: object, properties: { id: { type: string }, name: { type: string } } }
+        messageId: { type: string }
+        sentAt: { type: string, format: date-time }
+
     EmbedTemplate:
       type: object
       description: >
@@ -2153,6 +2215,82 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/embed-templates/{routeKey}/preview:
+    post:
+      summary: Render an UNSAVED draft with the production renderer (any member). Saves and sends nothing.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { $ref: "#/components/parameters/embedRouteKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EmbedDraftRequest" }
+      responses:
+        "200":
+          description: The rendered draft (renderable=false with a reason when nothing would post).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EmbedPreviewResponse" }
+        "400":
+          description: EMBED_TEMPLATE_INVALID - invalid draft, unapproved variable or unknown body key.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/embed-templates/{routeKey}/test:
+    post:
+      summary: Send an UNSAVED draft as a labelled test message to the route's own routed channel (OWNER/ADMIN). Mentions disabled; no gameplay effects.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { $ref: "#/components/parameters/embedRouteKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EmbedDraftRequest" }
+      responses:
+        "200":
+          description: Sent.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EmbedTestResponse" }
+        "400":
+          description: EMBED_TEMPLATE_INVALID.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: EMBED_ROUTE_NOT_CONFIGURED, EMBED_TEST_CHANNEL_UNAVAILABLE, EMBED_TEST_SEND_FORBIDDEN or EMBED_TEST_EMBED_LINKS_REQUIRED.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "422":
+          description: EMBED_TEMPLATE_NOT_RENDERABLE or EMBED_CUSTOM_RENDERING_NOT_SUPPORTED.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "429":
+          description: EMBED_TEST_RATE_LIMITED (1 per 3 s per actor, 10 per minute per installation).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "502":
+          description: EMBED_TEST_SEND_FAILED - Discord rejected the message.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
 
   /api/saas/organizations/{organizationID}/installations/{installationID}/embed-templates/{routeKey}:
     get:
