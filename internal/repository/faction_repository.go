@@ -134,3 +134,31 @@ func (r *FactionRepository) Disband(ctx context.Context, guildID, factionID int6
 	}
 	return tx.Commit(ctx)
 }
+
+// GetFactionsByID loads factions (active or not) by row ID in one query.
+// IDs with no faction row are absent from the map; zero IDs are skipped.
+func (r *FactionRepository) GetFactionsByID(ctx context.Context, guildID int64, ids []int64) (map[int64]Faction, error) {
+	out := make(map[int64]Faction, len(ids))
+	want := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if id != 0 {
+			want = append(want, id)
+		}
+	}
+	if len(want) == 0 {
+		return out, nil
+	}
+	rows, err := r.pool.Query(ctx, `SELECT id,guild_id,name,tag,owner_player_id,COALESCE(discord_role_id,''),active FROM factions WHERE guild_id=$1 AND id=ANY($2)`, guildID, want)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var f Faction
+		if err := rows.Scan(&f.ID, &f.GuildID, &f.Name, &f.Tag, &f.OwnerPlayerID, &f.DiscordRoleID, &f.Active); err != nil {
+			return nil, err
+		}
+		out[f.ID] = f
+	}
+	return out, rows.Err()
+}
