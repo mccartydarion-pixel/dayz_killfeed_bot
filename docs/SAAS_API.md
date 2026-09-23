@@ -681,15 +681,27 @@ legacy four-field surface) still work exactly as before.
 | | `💀・bounties` | `BOUNTY`, `BOUNTY_TRACKING` |
 | | `🟢・connections` | `CONNECTIONS` |
 | | `🗺️・heatmaps` | `HEATMAPS` (PvP heatmap summary) |
-| `🏆 CHAMPION • HUB` | `📊・leaderboards` | `AUTO_LEADERBOARD`, `STATS_LEADERBOARDS` |
+| `🏆 CHAMPION • HUB` | `📡・server-status` | `SERVER_STATUS` (+ season/war/event results) |
+| | `📊・leaderboards` | `AUTO_LEADERBOARD`, `STATS_LEADERBOARDS` |
 | | `🔗・player-link` | `LINK_GAMERTAG` |
 | | `💰・economy` | `ECONOMY`, `SHOP` |
+| | `🟢・Online Players: N` (voice) | `ONLINE_COUNTER` |
 | `🔒 CHAMPION • STAFF` (private) | `🛡️・admin-logs` | `ADMIN_LOGS`, `ADMIN_ALERTS`, `BUILD_FEED` |
 
 There is no separate `casino`, `shop`, `build-feed`, `admin-alerts`,
 `bounty-tracking`, `stats-leaderboards`, `auto-leaderboard`, `death-feed` or
 `pvefeed` channel. `CASINO` does not exist (migration 0044 removed stored
-`CASINO` routes and templates).
+`CASINO` routes and templates). The legacy death feed shares the combat feed:
+with a `KILLFEED` route the death feed posts there, and the legacy death
+channel is only the fallback for guilds without routes.
+
+**One setup engine.** One-click setup (`#21`), Repair (`#34`) and the Discord
+`/setup run|repair` command all run the same planner
+(`championDestinations`). `/setup` applies it, with repair semantics, to
+every installation connected to the guild; a guild with no installation is
+told to connect on the website. The legacy `SetupManager` never creates a
+channel any more - it only re-posts a missing legacy panel inside a legacy
+channel that still exists, for guilds whose feature is not routed.
 
 ### Route producers
 
@@ -707,6 +719,8 @@ instantiated in the process (routing disabled, service absent) is reported
 | `BOUNTY_TRACKING` | `BountyTracker` lifecycle feed | ACTIVE |
 | `CONNECTIONS` | `ConnectionsPublisher` - bounded, batched | ACTIVE |
 | `HEATMAPS` | `HeatmapBoard` persistent PvP summary from the Phase 5 aggregates (`docs/HEATMAPS.md`) | ACTIVE |
+| `SERVER_STATUS` | `ServerStatusBoard` - one persistent message per routed channel, edited in place: Champion's ADM link (CONNECTED / LOCATING LOG / DEGRADED / WAITING FOR FIRST POLL), ADM log freshness and the tracked online count. No uptime, latency or game-server power state (not measured) | ACTIVE |
+| `ONLINE_COUNTER` | `VoiceChannelCounter` - a display-only voice channel renamed to the online count; created/reused by setup (recognized by its name prefix, never duplicated) | ACTIVE |
 | `AUTO_LEADERBOARD` | `LeaderboardScheduler` persistent leaderboard | ACTIVE |
 | `STATS_LEADERBOARDS` | `RouteSyncer` "My Stats / Search Player" panel | ACTIVE |
 | `LINK_GAMERTAG` | `RouteSyncer` link panel | ACTIVE |
@@ -717,7 +731,7 @@ instantiated in the process (routing disabled, service absent) is reported
 | `BUILD_FEED` | `BuildFeedPublisher` - ADM placement/build lines (`docs/ADMIN_LOGS.md`) | ACTIVE once a build line has been parsed in this process; otherwise BLOCKED - `SOURCE_BLOCKED` (the server must enable `adminLogPlacement` / `adminLogBuildActions`) |
 
 The runtime panel owners (`RouteSyncer`, `BountyBoard`, `HeatmapBoard`,
-`LeaderboardScheduler`, `EconomyFeed`) serve the bot's configured guild. An
+`ServerStatusBoard`, `LeaderboardScheduler`, `EconomyFeed`, the voice counter) serve the bot's configured guild. An
 installation in any other guild will see its panel channels reported
 `BROKEN` (no visible panel) by auto-setup's verification, never silently
 passed.
@@ -734,6 +748,54 @@ only when `leaderboard_channel_id` is unset - audited, not guessed:
 same on-demand "general statistics" panel `STATS_LEADERBOARDS` describes,
 not a connections/join-leave log. `CONNECTIONS` has no legacy source at all
 for exactly that reason.
+
+### 33. `GET .../installations/{installationID}/channels/layout`
+Read-only Channel System V2 status (any member): every destination with its
+plan, the channel its routes point at, and the same checks setup runs
+(channel exists, route mapped, producer connected, bot can view/send/embed,
+visible Champion content). Nothing is created or posted.
+
+```json
+{ "routes": { "...": "..." }, "destinations": [ "...ChannelDestinationReport..." ], "retirable": [ "...RetirableChannel..." ] }
+```
+
+A destination that should exist but has no route is `BROKEN` with
+`"not set up yet - run Repair Champion Discord Layout"`; a routed channel
+deleted in Discord is `BROKEN` with `"the Discord channel no longer exists"`.
+
+### 34. `POST .../installations/{installationID}/channels/repair`
+**Repair Champion Discord Layout** (OWNER/ADMIN). The same engine as `#21`,
+but it runs over customer routing and **preserves** every customer-owned
+route untouched; a destination served entirely by a customer channel gets
+no Champion channel. Same response as `#21`, including `summary`:
+
+```json
+{ "created": ["📡・server-status"], "reused": ["🔫・combat-feed"], "remapped": [], "panelsRepaired": ["LEADERBOARDS"],
+  "startersSent": [], "preserved": ["KILLFEED"], "broken": [], "blocked": [], "retirable": 3 }
+```
+
+A second run changes nothing (no creates, remaps, starter cards or panels).
+
+### 35. `POST .../installations/{installationID}/channels/cleanup`
+**Clean Up Retired Champion Channels** (OWNER/ADMIN). Request
+`{ "channelIds": ["..."] }` - the channels the customer confirmed from the
+`retirable` list. Deletes a channel only when **all** hold:
+
+- it is recorded in `installation_retired_channels` for this installation
+  (setup/repair recorded it: a Champion-managed route used to point at it,
+  it is the pre-V2 Champion category, or the legacy `/setup` created it and
+  a V2 route replaced it) - never decided by name;
+- no route of any installation references it;
+- it still exists with the recorded kind;
+- a category is empty (channels are deleted before categories).
+
+Everything else is returned in `skipped` with a reason (`NOT_RETIRABLE`,
+`REFERENCED`, `NOT_EMPTY`, `GONE`, `DISCORD_ERROR`). Deleting a legacy
+`/setup` channel also clears its legacy `GuildSetup` pointer.
+
+```json
+{ "deleted": [{ "channelId": "77", "channelName": "casino", "kind": "CHANNEL", "source": "ROUTE", "managedByChampion": true }], "skipped": [{ "channelId": "88", "reason": "NOT_RETIRABLE" }] }
+```
 
 ### 22. `POST .../installations/{installationID}/discord/channels`
 Optional, explicit "create a new channel" action for Customize mode -

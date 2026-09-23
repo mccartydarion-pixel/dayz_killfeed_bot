@@ -412,7 +412,7 @@ components:
         [
           KILLFEED, PVE_FEED, LINK_GAMERTAG, STATS_LEADERBOARDS, AUTO_LEADERBOARD,
           HITFEED, BOUNTY, BOUNTY_TRACKING, HEATMAPS, ECONOMY, SHOP,
-          CONNECTIONS, BUILD_FEED, ADMIN_ALERTS, ADMIN_LOGS,
+          CONNECTIONS, BUILD_FEED, ADMIN_ALERTS, ADMIN_LOGS, SERVER_STATUS, ONLINE_COUNTER,
         ]
       description: Stable backend feature identifier - never a display name. Several routes share one Discord channel; see docs/SAAS_API.md's "Channel routing" section for the layout and each route's producer.
 
@@ -567,8 +567,11 @@ components:
         retirable:
           type: array
           nullable: true
-          description: Champion-managed channels/categories no route uses any more. Champion never deletes them.
+          description: Champion-managed channels/categories no route uses any more. Only the explicit, confirmed cleanup endpoint deletes them.
           items: { $ref: "#/components/schemas/RetirableChannel" }
+        summary:
+          allOf: [{ $ref: "#/components/schemas/LayoutSummary" }]
+          nullable: true
 
     ChannelHealth:
       type: string
@@ -577,7 +580,8 @@ components:
     ChannelDestinationReport:
       type: object
       properties:
-        key: { type: string, description: "COMBAT_FEED, HITFEED, BOUNTIES, CONNECTIONS, HEATMAPS, LEADERBOARDS, PLAYER_LINK, ECONOMY or ADMIN_LOGS." }
+        key: { type: string, description: "COMBAT_FEED, HITFEED, BOUNTIES, CONNECTIONS, HEATMAPS, SERVER_STATUS, LEADERBOARDS, PLAYER_LINK, ECONOMY, ONLINE_COUNTER or ADMIN_LOGS." }
+        voice: { type: boolean, description: "The online-players voice counter (no messages; its name is its content)." }
         label: { type: string }
         category: { type: string, enum: [LIVE, HUB, STAFF] }
         channelId: { type: string, nullable: true, description: Absent when the destination was skipped. }
@@ -610,7 +614,43 @@ components:
         channelId: { type: string }
         channelName: { type: string, nullable: true }
         kind: { type: string, enum: [CHANNEL, CATEGORY] }
+        source: { type: string, enum: [ROUTE, LEGACY_SETUP] }
         formerRoutes: { type: array, nullable: true, items: { type: string } }
+        managedByChampion: { type: boolean, description: Always true - customer channels are never listed. }
+
+    LayoutSummary:
+      type: object
+      properties:
+        created: { type: array, nullable: true, items: { type: string } }
+        reused: { type: array, nullable: true, items: { type: string } }
+        remapped: { type: array, nullable: true, items: { type: string } }
+        panelsRepaired: { type: array, nullable: true, items: { type: string } }
+        startersSent: { type: array, nullable: true, items: { type: string } }
+        preserved: { type: array, nullable: true, items: { type: string } }
+        broken: { type: array, nullable: true, items: { type: string } }
+        blocked: { type: array, nullable: true, items: { type: string } }
+        retirable: { type: integer }
+
+    ChannelLayoutStatusResponse:
+      type: object
+      properties:
+        routes:
+          type: object
+          additionalProperties: { $ref: "#/components/schemas/ChannelRouteInfo" }
+        destinations: { type: array, items: { $ref: "#/components/schemas/ChannelDestinationReport" } }
+        retirable: { type: array, items: { $ref: "#/components/schemas/RetirableChannel" } }
+
+    CleanupRetiredChannelsResponse:
+      type: object
+      properties:
+        deleted: { type: array, items: { $ref: "#/components/schemas/RetirableChannel" } }
+        skipped:
+          type: array
+          items:
+            type: object
+            properties:
+              channelId: { type: string }
+              reason: { type: string, enum: [NOT_RETIRABLE, REFERENCED, NOT_EMPTY, DISCORD_ERROR, GONE] }
 
     CreateDiscordChannelRequest:
       type: object
@@ -1984,6 +2024,67 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ApiError" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/channels/layout:
+    get:
+      summary: Read-only Channel System V2 status - destinations, checks and retirable channels. Nothing is changed.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+      responses:
+        "200":
+          description: Current layout status.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChannelLayoutStatusResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/channels/repair:
+    post:
+      summary: Repair Champion Discord Layout (OWNER/ADMIN) - the one-click engine, preserving every customer-owned route. Idempotent.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+      responses:
+        "200":
+          description: Same shape as auto-setup, including summary.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AutoSetupChannelsResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/channels/cleanup:
+    post:
+      summary: Clean Up Retired Champion Channels (OWNER/ADMIN) - deletes only confirmed, recorded, unreferenced Champion-owned channels.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [channelIds]
+              properties:
+                channelIds: { type: array, items: { type: string } }
+      responses:
+        "200":
+          description: What was deleted and what was kept, with reasons.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CleanupRetiredChannelsResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   /api/saas/organizations/{organizationID}/installations/{installationID}/channel-routes:
     get:
