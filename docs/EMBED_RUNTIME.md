@@ -30,7 +30,7 @@ Performed against the code BEFORE any integration; a route key alone never count
 | `ADMIN_ALERTS` | yes | **no** (not implemented) | - | no | n/a |
 | `BUILD_FEED` | yes | **no** (not implemented) | - | no | n/a |
 | `SHOP` | yes | **no** (not implemented) | - | no | n/a |
-| `HEATMAPS` | yes | **no** (not implemented) | - | no | n/a |
+| `HEATMAPS` | yes | yes (`HeatmapBoard`) | **persistent aggregate summary** (edited in place on an interval) | **no - INCOMPATIBLE** (a multi-zone aggregate, not a single-event card) | Champion PvP heatmap summary |
 
 Only the six routes marked **yes** are ever rendered; a template saved for any other route is
 stored but never used, and the API reports that route's `runtimeRendering` as `NOT_ENABLED`

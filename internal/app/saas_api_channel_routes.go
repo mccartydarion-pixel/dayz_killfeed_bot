@@ -510,4 +510,5 @@ func (a *App) syncRoutedPanelsNow(ctx context.Context) {
 	a.ChannelRoutes.InvalidateAll()
 	a.RouteSyncer.SyncOnce(ctx)
 	a.BountyBoard.SyncOnce(ctx)
+	a.HeatmapBoard.SyncOnce(ctx)
 }

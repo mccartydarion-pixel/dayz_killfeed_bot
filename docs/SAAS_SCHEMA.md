@@ -194,7 +194,7 @@ Discord channel (Channel System V2):
 | `BOUNTY` | `💀・bounties` | Public bounty board |
 | `BOUNTY_TRACKING` | `💀・bounties` | Bounty lifecycle feed |
 | `CONNECTIONS` | `🟢・connections` | Connect/disconnect events |
-| `HEATMAPS` | `🗺️・heatmaps` | Heatmap summaries (no Discord publisher yet) |
+| `HEATMAPS` | `🗺️・heatmaps` | PvP heatmap summary |
 | `AUTO_LEADERBOARD` | `📊・leaderboards` | Automatically refreshed leaderboard panel |
 | `STATS_LEADERBOARDS` | `📊・leaderboards` | "My Stats / Search Player" panel |
 | `LINK_GAMERTAG` | `🔗・player-link` | Gamertag linking panel |

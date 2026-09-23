@@ -53,6 +53,7 @@ Discord bot presence (all optional - these are the defaults if unset):
 - `DISCORD_PRESENCE_ENABLED` - set to `false` to disable the bot's Discord activity/status entirely.
 - `DISCORD_PRESENCE_ROTATION_SECONDS` - how often the presence rotates in dynamic mode. Clamped to 30-300 seconds; missing or invalid values fall back to 45.
 - `DISCORD_PRESENCE_MODE` - `static` or `dynamic`.
+- `HEATMAP_DISCORD_INTERVAL_MINUTES` - how often the Discord PvP heatmap summary refreshes. Clamped to 5-1440 minutes; missing or invalid values fall back to 30.
   - `static`: always shows **Competing in Competitive DayZ**.
   - `dynamic`: rotates through Competing in Competitive DayZ, live player/server counts (only when a server is actually connected - never a fabricated 0), Playing Champions® Killfeed, Watching Live PvP Activity, and Competing in DayZ Leaderboards. The bot's Discord status (online/idle/dnd) also reflects overall application health, debounced so a brief blip never flaps it.
 

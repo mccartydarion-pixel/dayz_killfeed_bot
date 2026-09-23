@@ -1386,17 +1386,16 @@ func autoSetupChannels(t *testing.T, a *App, orgID, installationID int64, acting
 }
 
 // championAllRouteKeys is every route auto-setup maps with the audited
-// producers: the whole vocabulary except HEATMAPS, which has no Discord
-// publisher yet.
+// producers - the whole vocabulary.
 var championAllRouteKeys = []string{
 	"KILLFEED", "PVE_FEED", "LINK_GAMERTAG", "STATS_LEADERBOARDS", "AUTO_LEADERBOARD",
-	"HITFEED", "BOUNTY", "BOUNTY_TRACKING", "ECONOMY", "SHOP",
+	"HITFEED", "BOUNTY", "BOUNTY_TRACKING", "HEATMAPS", "ECONOMY", "SHOP",
 	"CONNECTIONS", "BUILD_FEED", "ADMIN_ALERTS", "ADMIN_LOGS",
 }
 
 // championActiveDestinationCount is how many channels auto-setup creates
-// with the audited producers (every destination but heatmaps).
-const championActiveDestinationCount = 8
+// with the audited producers (every destination).
+const championActiveDestinationCount = 9
 
 func listChannelRoutes(t *testing.T, a *App, orgID, installationID int64, actingDiscordID string) *httptest.ResponseRecorder {
 	t.Helper()
@@ -1438,9 +1437,6 @@ func TestAutoSetupChannelsCreatesCompleteBlueprint(t *testing.T) {
 	}
 	if len(resp.Routes) != len(championAllRouteKeys) {
 		t.Fatalf("expected all %d default routes, got %d: %+v", len(championAllRouteKeys), len(resp.Routes), resp.Routes)
-	}
-	if _, ok := resp.Routes["HEATMAPS"]; ok {
-		t.Fatal("HEATMAPS has no Discord publisher yet and must not be mapped")
 	}
 	ids := map[string]bool{}
 	for _, key := range championAllRouteKeys {

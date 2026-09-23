@@ -84,7 +84,10 @@ type App struct {
 	// closed with BILLING_UNAVAILABLE rather than panicking).
 	Billing *billing.Service
 	// BountyBoard keeps the persistent public board (BOUNTY route). Nil-safe.
-	BountyBoard          *discord.BountyBoard
+	BountyBoard *discord.BountyBoard
+	// HeatmapBoard keeps the persistent PvP heatmap summary (HEATMAPS route),
+	// read from the Phase 5 Heatmap service. Nil-safe.
+	HeatmapBoard         *discord.HeatmapBoard
 	Points               *repository.PointsRepository
 	Seasons              *repository.SeasonRepository
 	SeasonService        *seasons.Service
@@ -1444,6 +1447,18 @@ func (a *App) Run() error {
 				a.BountyService.SetNotifier(discord.BountyEvents{Tracker: bountyTracker, Board: a.BountyBoard})
 				go bountyTracker.Run(ctx)
 				go a.BountyBoard.Run(ctx)
+			}
+			if routingEnabled && a.Heatmap != nil {
+				// HEATMAPS: one persistent PvP summary per routed channel, read
+				// from the Phase 5 aggregates (never Nitrado) on a configurable
+				// interval; with no route it is a no-op.
+				interval := time.Duration(config.DefaultHeatmapDiscordIntervalMinutes) * time.Minute
+				if a.Config != nil {
+					interval = time.Duration(a.Config.HeatmapDiscordIntervalMinutes) * time.Minute
+				}
+				a.HeatmapBoard = discord.NewHeatmapBoard(a.ChannelRoutes, guildServers, routePanels, a.Heatmap, interval)
+				a.HeatmapBoard.SetServerNames(a.serverNameFunc())
+				go a.HeatmapBoard.Run(ctx)
 			}
 			if a.Stats != nil {
 				legacyLeaderboardChannel, legacyLeaderboardMessage := "", ""
