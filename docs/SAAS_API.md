@@ -543,9 +543,10 @@ Response `200` on success ([`AutoSetupChannelsResponse`](#autosetupchannelsrespo
       "checks": { "channelExists": true, "routeMapped": true, "producerConnected": true, "botCanSend": true, "visibleContent": true }
     },
     {
-      "key": "HEATMAPS", "label": "Heatmaps", "category": "LIVE", "channelName": "🗺️・heatmaps",
-      "health": "BLOCKED", "detail": "no Discord heatmap publisher yet; website heatmaps are unaffected",
-      "created": false, "starterSent": false, "routes": [ { "routeKey": "HEATMAPS", "health": "BLOCKED" } ]
+      "key": "BOUNTIES", "label": "Bounties", "category": "LIVE", "channelName": "💀・bounties",
+      "health": "BROKEN", "detail": "bounty board is not running",
+      "created": false, "starterSent": false,
+      "routes": [ { "routeKey": "BOUNTY", "health": "BROKEN", "detail": "bounty board is not running" }, { "routeKey": "BOUNTY_TRACKING", "health": "BROKEN", "detail": "bounty board is not running" } ]
     }
   ],
   "retirable": [
@@ -679,7 +680,7 @@ legacy four-field surface) still work exactly as before.
 | | `🎯・hitfeed` | `HITFEED` |
 | | `💀・bounties` | `BOUNTY`, `BOUNTY_TRACKING` |
 | | `🟢・connections` | `CONNECTIONS` |
-| | `🗺️・heatmaps` | `HEATMAPS` |
+| | `🗺️・heatmaps` | `HEATMAPS` (PvP heatmap summary) |
 | `🏆 CHAMPION • HUB` | `📊・leaderboards` | `AUTO_LEADERBOARD`, `STATS_LEADERBOARDS` |
 | | `🔗・player-link` | `LINK_GAMERTAG` |
 | | `💰・economy` | `ECONOMY`, `SHOP` |
@@ -705,7 +706,7 @@ instantiated in the process (routing disabled, service absent) is reported
 | `BOUNTY` | `BountyBoard` persistent board (`docs/BOUNTY_SYSTEM.md`) | ACTIVE |
 | `BOUNTY_TRACKING` | `BountyTracker` lifecycle feed | ACTIVE |
 | `CONNECTIONS` | `ConnectionsPublisher` - bounded, batched | ACTIVE |
-| `HEATMAPS` | none yet (website heatmaps exist, `docs/HEATMAPS.md`) | BLOCKED - no channel is created |
+| `HEATMAPS` | `HeatmapBoard` persistent PvP summary from the Phase 5 aggregates (`docs/HEATMAPS.md`) | ACTIVE |
 | `AUTO_LEADERBOARD` | `LeaderboardScheduler` persistent leaderboard | ACTIVE |
 | `STATS_LEADERBOARDS` | `RouteSyncer` "My Stats / Search Player" panel | ACTIVE |
 | `LINK_GAMERTAG` | `RouteSyncer` link panel | ACTIVE |
@@ -715,7 +716,7 @@ instantiated in the process (routing disabled, service absent) is reported
 | `ADMIN_ALERTS` | none yet | BLOCKED - `NOT_YET_PRODUCING_EVENTS` (mapped to admin-logs) |
 | `BUILD_FEED` | none yet | BLOCKED - `SOURCE_BLOCKED` (mapped to admin-logs) |
 
-The runtime panel owners (`RouteSyncer`, `BountyBoard`,
+The runtime panel owners (`RouteSyncer`, `BountyBoard`, `HeatmapBoard`,
 `LeaderboardScheduler`, `EconomyFeed`) serve the bot's configured guild. An
 installation in any other guild will see its panel channels reported
 `BROKEN` (no visible panel) by auto-setup's verification, never silently
@@ -1728,7 +1729,7 @@ entitlement enforcement (billing/checkout itself now exists - `docs/BILLING.md`)
 verify-permissions website UI showing per-channel PASS/WARNING/FAIL (`#13`
 itself still only checks one channel per call - `#25`'s finalize check is
 what actually aggregates every unique route channel today, not `#13`), and
-the routes marked BLOCKED in the channel routing table above (Discord
-heatmaps, admin alerts, build feed) - one-click setup creates no channel for
+the routes marked BLOCKED in the channel routing table above (admin
+alerts, build feed) - one-click setup creates no channel for
 a destination without a working producer. DayZ PC and non-console Nitrado services are intentionally
 unsupported, not missing - see the platform contract note above.

@@ -117,7 +117,7 @@ func auditProducers() map[string]routeProducer {
 // panelsPosted simulates the panel owners posting into every panel channel.
 func panelsPosted(g *layoutGuildFake, w *layoutRoutesFake) func(context.Context) {
 	return func(context.Context) {
-		for _, key := range []string{"BOUNTY", "AUTO_LEADERBOARD", "STATS_LEADERBOARDS", "LINK_GAMERTAG"} {
+		for _, key := range []string{"BOUNTY", "HEATMAPS", "AUTO_LEADERBOARD", "STATS_LEADERBOARDS", "LINK_GAMERTAG"} {
 			if ch := w.routes[key]; ch != "" {
 				g.botMessages[ch] = 1
 			}
@@ -187,10 +187,7 @@ func TestPlanChannelLayoutSkipsDestinationsWithoutProducers(t *testing.T) {
 	for _, p := range plans {
 		health[p.Destination.Key] = p.Health
 	}
-	if health["HEATMAPS"] != HealthBlocked {
-		t.Fatalf("heatmaps has no Discord publisher yet, want BLOCKED, got %s", health["HEATMAPS"])
-	}
-	for _, key := range []string{"COMBAT_FEED", "HITFEED", "BOUNTIES", "CONNECTIONS", "LEADERBOARDS", "PLAYER_LINK", "ECONOMY", "ADMIN_LOGS"} {
+	for _, key := range []string{"COMBAT_FEED", "HITFEED", "BOUNTIES", "CONNECTIONS", "HEATMAPS", "LEADERBOARDS", "PLAYER_LINK", "ECONOMY", "ADMIN_LOGS"} {
 		if health[key] != HealthActive {
 			t.Fatalf("%s want ACTIVE, got %s", key, health[key])
 		}
@@ -220,8 +217,8 @@ func TestApplyChannelLayoutFreshGuild(t *testing.T) {
 			t.Fatalf("category %q private=%v, want %v", cat.Name, g.private[ch.ID], cat.Private)
 		}
 	}
-	// No channel without a working producer, and none of the retired names.
-	for _, name := range []string{"🗺️・heatmaps", "casino", "shop", "build-feed", "admin-alerts", "bounty-tracking", "stats-leaderboards", "auto-leaderboard", "death-feed", "pvefeed"} {
+	// None of the retired names.
+	for _, name := range []string{"casino", "shop", "build-feed", "admin-alerts", "bounty-tracking", "stats-leaderboards", "auto-leaderboard", "death-feed", "pvefeed"} {
 		if _, n := g.byName(name); n != 0 {
 			t.Fatalf("channel %q must not be created", name)
 		}
@@ -244,8 +241,10 @@ func TestApplyChannelLayoutFreshGuild(t *testing.T) {
 	if w.routes["KILLFEED"] != combat.ID || w.routes["PVE_FEED"] != combat.ID {
 		t.Fatal("KILLFEED and PVE_FEED must share combat-feed")
 	}
-	if _, ok := w.routes["HEATMAPS"]; ok {
-		t.Fatal("HEATMAPS must stay unmapped until its publisher exists")
+	heat, _ := g.byName("🗺️・heatmaps")
+	live, _ := g.byName("🏆 CHAMPION • LIVE")
+	if w.routes["HEATMAPS"] != heat.ID || heat.ParentID != live.ID {
+		t.Fatal("HEATMAPS must route to the heatmaps channel under LIVE")
 	}
 
 	// Every created channel shows Champion content: starter for feeds, the
@@ -310,8 +309,9 @@ func TestApplyChannelLayoutMigratesV1WithoutDeleting(t *testing.T) {
 	if _, ok := w.routes["CASINO"]; ok {
 		t.Fatal("the CASINO route must be removed")
 	}
-	if _, ok := w.routes["HEATMAPS"]; ok {
-		t.Fatal("HEATMAPS must be unmapped while it has no publisher")
+	heat, _ := g.byName("🗺️・heatmaps")
+	if w.routes["HEATMAPS"] != heat.ID {
+		t.Fatal("HEATMAPS must move to the V2 heatmaps channel")
 	}
 	combat, _ := g.byName("🔫・combat-feed")
 	if w.routes["KILLFEED"] != combat.ID {
@@ -403,13 +403,13 @@ func TestApplyChannelLayoutNameRecoveryStaysInCategory(t *testing.T) {
 
 func TestChannelRouteProducersDowngradeMissingRuntime(t *testing.T) {
 	got := (&App{}).channelRouteProducers()
-	for _, key := range []string{"KILLFEED", "BOUNTY", "AUTO_LEADERBOARD", "LINK_GAMERTAG", "ECONOMY", "SHOP"} {
+	for _, key := range []string{"KILLFEED", "BOUNTY", "HEATMAPS", "AUTO_LEADERBOARD", "LINK_GAMERTAG", "ECONOMY", "SHOP"} {
 		if got[key].Health != HealthBroken {
 			t.Fatalf("%s must be BROKEN when its runtime is absent, got %+v", key, got[key])
 		}
 	}
-	if got["HEATMAPS"].Health != HealthBlocked || got["BUILD_FEED"].Detail != detailSourceBlocked {
-		t.Fatalf("blocked routes keep their audit state, got %+v %+v", got["HEATMAPS"], got["BUILD_FEED"])
+	if got["BUILD_FEED"].Health != HealthBlocked || got["BUILD_FEED"].Detail != detailSourceBlocked {
+		t.Fatalf("blocked routes keep their audit state, got %+v", got["BUILD_FEED"])
 	}
 }
 
@@ -418,7 +418,9 @@ func TestApplyChannelLayoutKeepsCustomerRouteOfSkippedDestination(t *testing.T) 
 	w := &layoutRoutesFake{routes: map[string]string{}}
 	existing := []repository.ChannelRoute{{RouteKey: "HEATMAPS", ChannelID: "mine", ManagedByChampion: false}}
 	w.routes["HEATMAPS"] = "mine"
-	res, err := applyChannelLayout(context.Background(), g, w, channelLayoutInput{GuildID: "g", Existing: existing, Producers: auditProducers(), SyncPanels: panelsPosted(g, w)})
+	producers := auditProducers()
+	producers["HEATMAPS"] = routeProducer{HealthBroken, "heatmap publisher is not running"}
+	res, err := applyChannelLayout(context.Background(), g, w, channelLayoutInput{GuildID: "g", Existing: existing, Producers: producers, SyncPanels: panelsPosted(g, w)})
 	if err != nil {
 		t.Fatal(err)
 	}

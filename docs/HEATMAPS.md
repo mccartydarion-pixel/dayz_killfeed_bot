@@ -237,6 +237,31 @@ are already in the DayZ map's own coordinate space, so a map-overlay renderer on
 point or heat-blob per cell, scaled by `intensity`. No map image is embedded in the backend (task
 section 48) - this endpoint returns coordinate data only.
 
+## Discord heatmap summary (Channel System V2)
+
+The website stays the full interactive heatmap. Discord gets a compact **PvP heatmap summary**
+on the `HEATMAPS` route (`🗺️・heatmaps`), published by `HeatmapBoard`
+(`internal/discord/heatmap_board.go`):
+
+- **Source:** `Service.Query` with `PVP_KILLS`, the last 24 hours at 250 m - the same persisted
+  Phase 5 aggregates the API serves (and its cache). It never polls Nitrado and never reads raw
+  events. Zero activity is shown as zero; hot zones are never invented.
+- **Content:** Window, Type, Resolution, total Activity, and the top three hot zones (cell centre
+  X/Z and kill count), footer `CHAMPION • LIVE SERVER INTELLIGENCE`. Several servers routed to one
+  channel each get their own Activity/Hot Zones fields.
+- **No spam:** one persistent message per routed channel, recorded through `RoutePanels`, edited in
+  place. A restart edits the same message; a route change moves it without leaving a copy.
+- **Schedule:** refreshed every `HEATMAP_DISCORD_INTERVAL_MINUTES` (default 30, clamped to
+  5-1440), immediately when routes change (auto-setup or a route save), and on startup. Route
+  changes made outside the process are noticed within 30 s; the aggregate query itself only runs
+  on the interval.
+- **Customization:** `HEATMAPS` stays a valid Embed Designer route, but custom templates are not
+  rendered for it (`runtimeRendering` stays `NOT_ENABLED`): the summary is a multi-row aggregate
+  panel, not a single-event card. The Champion default presentation is always used.
+- **Not included yet:** `PVP_DEATHS`, `PLAYER_ACTIVITY` and `ZONE_INTRUSIONS` summaries. Intrusion
+  aggregates are keyed by installation, which the runtime publishers (keyed by server) do not
+  resolve today.
+
 ## What was NOT touched
 
 OAuth, billing, Stripe, shop, the existing Economy ledger, the Nitrado delta reader, zone intrusion
@@ -252,5 +277,6 @@ in `internal/heatmap`, `internal/repository/heatmap_repository.go`, and
 - **PvP/activity zone filtering** (`zoneId` for non-`ZONE_INTRUSIONS` types) - explicitly optional
   per the task, deferred to avoid delaying the core four-type implementation.
 - **Website heatmap UI / map overlay rendering** - explicitly out of scope for this backend phase.
+- **Discord summaries for deaths, activity and intrusions** - see "Discord heatmap summary".
 - **`heatmap_*` metrics in `GET /api/admin/health`** - the counters exist (`Service.Metrics`) but
   are not yet wired into the admin health snapshot, matching Phase 3/4's own precedent.
