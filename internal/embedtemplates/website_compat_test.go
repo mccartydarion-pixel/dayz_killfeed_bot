@@ -7,10 +7,11 @@ import (
 )
 
 // The Champion website's Phase 1 designer (lib/saas/embedTypes.ts) ships a default
-// template and an approved-variable list for each of its 12 routes. Every one of those
+// template and an approved-variable list for each of its routes. Every one of those
 // defaults must be accepted unchanged by the backend, and every variable the website
 // offers must be approved here - otherwise a customer could not save what the designer
-// shows them. (Copied from the website's `definitions`; update together.)
+// shows them. (Copied from the website's `definitions`; update together. CASINO was
+// removed from Champion entirely, so the website must drop it too.)
 type websiteRoute struct {
 	key       string
 	variables []string
@@ -29,7 +30,6 @@ var websiteRoutes = []websiteRoute{
 	{"BOUNTY", []string{"victim", "server_name", "timestamp"}, "#B84C4C", "Bounty posted", "A new bounty is active for {{victim}}.", [][3]string{{"target", "Target", "{{victim}}"}}, false},
 	{"BOUNTY_TRACKING", []string{"killer", "victim", "server_name"}, "#9E4B4B", "Bounty update", "{{killer}} is tracking {{victim}}.", [][3]string{{"hunter", "Hunter", "{{killer}}"}, {"target", "Target", "{{victim}}"}}, true},
 	{"ECONOMY", []string{"player", "amount", "balance", "server_name"}, "#4C9A72", "Economy transaction", "{{player}} received {{amount}} credits.", [][3]string{{"amount", "Amount", "{{amount}}"}, {"balance", "Balance", "{{balance}}"}}, true},
-	{"CASINO", []string{"player", "amount", "result"}, "#A04C91", "Casino result", "{{player}} received a {{result}} for {{amount}} credits.", [][3]string{{"result", "Result", "{{result}}"}}, true},
 	{"SHOP", []string{"player", "item", "amount", "balance"}, "#4C7FA0", "Shop purchase", "{{player}} purchased {{item}}.", [][3]string{{"item", "Item", "{{item}}"}, {"amount", "Cost", "{{amount}}"}, {"balance", "Balance", "{{balance}}"}}, false},
 	{"CONNECTIONS", []string{"player", "event", "server_name", "timestamp"}, "#4C87A0", "Player connection", "{{player}} {{event}} the server.", [][3]string{{"server", "Server", "{{server_name}}"}}, false},
 	{"BUILD_FEED", []string{"player", "structure", "server_name"}, "#8A6F4A", "Build event", "{{player}} placed {{structure}}.", [][3]string{{"structure", "Structure", "{{structure}}"}}, false},
@@ -54,8 +54,8 @@ func websiteJSON(r websiteRoute) []byte {
 }
 
 func TestEveryWebsiteDefaultTemplateIsAcceptedUnchanged(t *testing.T) {
-	if len(websiteRoutes) != 12 {
-		t.Fatalf("the website offers 12 routes, table has %d", len(websiteRoutes))
+	if len(websiteRoutes) != 11 {
+		t.Fatalf("the website offers 11 routes, table has %d", len(websiteRoutes))
 	}
 	for _, r := range websiteRoutes {
 		var cfg Config

@@ -1,6 +1,6 @@
 # Champion Economy - web API, accounts and admin controls (Phase 1: web foundation)
 
-The website is the primary economy experience (balances, history, later Shop and Casino); Discord only launches into it and shows optional notifications. **The Go backend
+The website is the primary economy experience (balances, history, Shop); Discord only launches into it and shows optional notifications. **The Go backend
 remains the single authority** for balances, transactions, security, tenant isolation, idempotency and audit.
 
 This document covers the **web layer** added on top of the economy that already exists. The ledger itself - tables, atomic credit/debit, idempotency, bounty payouts, the
@@ -18,7 +18,7 @@ This document covers the **web layer** added on top of the economy that already 
 | Event prizes | `EVENT_FIRST/SECOND/THIRD_PLACE`, `event:<id>:<place>` through the ledger | Not changed |
 | Admin adjustments | `/economy credit|debit` (Discord admins) via `economy.Service.AdminCredit/AdminDebit` | Reused by the web admin endpoints |
 | ECONOMY publisher | `discord.EconomyFeed` (routing model, post-commit, no fallback), custom-embed variables `player, amount, balance, transaction_type, server_name` | Reused - **no second publisher**; web adjustments raise the same event |
-| Shop / casino / transfers | none (placeholders only in docs) | none built here |
+| Transfers | none | none built here |
 
 Nothing in the audit required a new currency, balance table or ledger table, so **no `economy_accounts` / `economy_transactions` tables were created.** Creating them would have
 produced two balances for the same points.
@@ -76,7 +76,7 @@ Immutable and append-only (see `ECONOMY_SYSTEM.md`): `id`, `guild_id`, `player_i
 | `SHOP_PURCHASE` | DEBIT | a Shop purchase, written by the shop's own transaction (`docs/SHOP.md`); reference `purchase:<id>` |
 | `SHOP_REFUND` | CREDIT | the compensating credit of a refunded Shop purchase; reference `purchase:<id>` |
 
-`SHOP_PURCHASE` and `SHOP_REFUND` are live (Shop Phase 1) but are written only by the shop's own transaction - `Credit`/`Debit` still refuse them. `CASINO_BET`, `CASINO_WIN`, `TRANSFER_IN/OUT` and `SYSTEM_ADJUSTMENT` are **reserved names only**: the service does not accept them yet. The historical
+`SHOP_PURCHASE` and `SHOP_REFUND` are live (Shop Phase 1) but are written only by the shop's own transaction - `Credit`/`Debit` still refuse them. `TRANSFER_IN/OUT` and `SYSTEM_ADJUSTMENT` are **reserved names only**: the service does not accept them yet. The historical
 names are not renamed to the ones a greenfield design would choose (`ADMIN_GRANT`, `BOUNTY_REWARD`), because they are part of every existing row's uniqueness key.
 
 **Direction** is explicit in the API (`CREDIT` / `DEBIT`) and stored as the sign of `amount` (one convention). The API always reports a **positive magnitude** plus `direction`.
@@ -161,14 +161,14 @@ It never changes anything and a normal read never "fixes" a drift. A repair is a
   (`player`, `amount`, `balance`, `transaction_type`, `server_name`); nothing was added.
 * **Transfers, daily rewards**: intentionally not built (fraud/abuse surface without product rules).
 
-## 8. Shop (built in Shop Phase 1) and Casino readiness
+## 8. Shop (built in Shop Phase 1)
 
 The Shop (`docs/SHOP.md`) uses exactly this write primitive: `ShopRepository.Purchase` debits through the same `applyLedger` path **inside the purchase's own transaction** (type `SHOP_PURCHASE`, reference
 `purchase:<id>`), and a refund is a compensating `SHOP_REFUND` credit. Because balances are guild-wide, two installations of one Discord guild spend the same Points. The original design note follows.
 
 The write primitive a purchase needs already exists and is what admin debits use: `EconomyRepository.DebitTx(ctx, tx, params)` debits **inside the caller's transaction** with a reference. A Shop
 order can therefore create its order row and debit the account atomically (`type SHOP_PURCHASE`, reference `order:<id>`, exactly once by the unique key; a refund is a credit with
-`refund:<order id>`). A Casino bet is a debit with `bet:<id>` and a win a credit with `win:<id>` - one idempotent reference each. Both only need their type added to the service's allowed set.
+`refund:<order id>`).
 
 ## 9. Security review
 
@@ -260,7 +260,7 @@ UI notes: show the `PLAYER_IDENTITY_REQUIRED` state as "Link your DayZ account" 
 
 ## 12. Limits / not built
 
-* No Casino, player transfers, daily rewards or automatic kill rewards; no website in this repository. (The Shop exists: `docs/SHOP.md`.)
+* No player transfers, daily rewards or automatic kill rewards; no website in this repository. (The Shop exists: `docs/SHOP.md`.)
 * Balances are guild-wide (see 3); a per-server currency is a future, deliberate migration.
 * No repair tool for a reconciliation finding (detect only).
 * A dropped `ECONOMY` Discord card is not retried; the ledger is the source of truth.

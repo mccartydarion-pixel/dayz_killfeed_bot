@@ -29,7 +29,7 @@ func TestEmbedTemplateRoutesMatchTheChannelRouteBlueprint(t *testing.T) {
 		}
 	}
 	// Every route the website's designer offers (lib/saas/embedTypes.ts) is accepted.
-	for _, k := range []string{"KILLFEED", "PVE_FEED", "HITFEED", "BOUNTY", "BOUNTY_TRACKING", "CONNECTIONS", "ECONOMY", "CASINO", "SHOP", "BUILD_FEED", "ADMIN_ALERTS", "ADMIN_LOGS"} {
+	for _, k := range []string{"KILLFEED", "PVE_FEED", "HITFEED", "BOUNTY", "BOUNTY_TRACKING", "CONNECTIONS", "ECONOMY", "SHOP", "BUILD_FEED", "ADMIN_ALERTS", "ADMIN_LOGS"} {
 		if !embedtemplates.ValidRoute(k) {
 			t.Errorf("%s must be a valid template route", k)
 		}
@@ -51,7 +51,7 @@ func TestRuntimeRenderingStatusReflectsFlagAndRouteSupport(t *testing.T) {
 		}
 	}
 	// Persistent boards, diagnostic monitors and routes without a publisher stay NOT_ENABLED even with the flag on.
-	for _, route := range []string{"BOUNTY", "ADMIN_LOGS", "ADMIN_ALERTS", "BUILD_FEED", "CASINO", "SHOP", "HEATMAPS", "LINK_GAMERTAG", "STATS_LEADERBOARDS", "AUTO_LEADERBOARD"} {
+	for _, route := range []string{"BOUNTY", "ADMIN_LOGS", "ADMIN_ALERTS", "BUILD_FEED", "SHOP", "HEATMAPS", "LINK_GAMERTAG", "STATS_LEADERBOARDS", "AUTO_LEADERBOARD"} {
 		if on.runtimeRenderingFor(route) != "NOT_ENABLED" {
 			t.Errorf("%s has no runtime template rendering and must say so", route)
 		}

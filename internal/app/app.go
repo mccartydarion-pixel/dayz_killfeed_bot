@@ -171,11 +171,14 @@ type App struct {
 	// Phase 4). It exists whenever the database does, but publishers are only wired to
 	// it when CHAMPION_CUSTOM_EMBEDS_ENABLED is true; it is also the cache the template
 	// save/reset handlers invalidate.
-	EmbedRenderer             *embedrender.Renderer
-	serverNames               *serverNameCache
-	serverNamesOnce           sync.Once
-	adminChannelNames         func(channelID string) string
-	saasDiscordVerifier       discordGuildVerifier
+	EmbedRenderer       *embedrender.Renderer
+	serverNames         *serverNameCache
+	serverNamesOnce     sync.Once
+	adminChannelNames   func(channelID string) string
+	saasDiscordVerifier discordGuildVerifier
+	// channelProducersOverride replaces channelRouteProducers' runtime audit
+	// in tests. Nil in production.
+	channelProducersOverride  func() map[string]routeProducer
 	saasNitradoClientFactory  func(token string) *nitrado.Client
 	saasSyncLimiter           *saasRateLimiter
 	saasOrgCreateLimiter      *saasRateLimiter

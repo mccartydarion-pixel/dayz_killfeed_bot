@@ -207,7 +207,7 @@ Balance: 340,000 pts
 
 ## Known limitations / not built
 
-* No purchases: no shop, casino or transfers between players.
+* No purchases: no shop or transfers between players.
 * Bounty amounts themselves are still 32-bit (`bounties.reward_points`); the ledger
   and balance are 64-bit.
 * Balances are guild-wide; there is no per-server balance.

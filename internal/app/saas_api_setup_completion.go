@@ -120,7 +120,7 @@ func (a *App) handleFinalizeSetup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// "channel configuration exists" / "KILLFEED route exists" - the new
-	// 16-route model (section 3). Only KILLFEED is globally required; no
+	// route model (section 3). Only KILLFEED is globally required; no
 	// other route is required merely because it exists in the default
 	// blueprint (section 3's explicit instruction).
 	routes, err := a.SaaSChannelRoutes.ListForInstallation(ctx, organizationID, installationID)
