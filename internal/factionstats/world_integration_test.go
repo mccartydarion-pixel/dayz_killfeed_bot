@@ -35,6 +35,7 @@ type world struct {
 	suffix              int64
 	n                   int
 	base                time.Time // "30 days ago": timeline anchor
+	userIDs             []int64   // every app_users row created, so cleanup can delete by id instead of LIKE
 }
 
 func newWorld(t *testing.T) *world {
@@ -80,8 +81,12 @@ func newWorld(t *testing.T) *world {
 		for _, org := range []int64{w.org1, w.org2} {
 			_, _ = db.Pool.Exec(ctx, `DELETE FROM organizations WHERE id=$1`, org)
 		}
-		_, _ = db.Pool.Exec(ctx, `DELETE FROM guilds WHERE discord_guild_id LIKE $1`, fmt.Sprintf("st-%d-%%", w.suffix))
-		_, _ = db.Pool.Exec(ctx, `DELETE FROM app_users WHERE discord_user_id LIKE $1`, fmt.Sprintf("st-%d-%%", w.suffix))
+		// By id, not `discord_guild_id LIKE 'st-<suffix>-%'`: under a non-C collation LIKE
+		// can't use the plain unique-constraint btree index, so it seq-scans the whole
+		// table (shared with internal/repository's hubWorld) on every cleanup - on a
+		// long-lived, never-truncated dev DB that scan alone can dominate the test.
+		_, _ = db.Pool.Exec(ctx, `DELETE FROM guilds WHERE id = ANY($1)`, []int64{w.guild1, w.guild2})
+		_, _ = db.Pool.Exec(ctx, `DELETE FROM app_users WHERE id = ANY($1)`, w.userIDs)
 	})
 	return w
 }
@@ -111,8 +116,10 @@ func (w *world) server(guild int64, tag string) int64 {
 // user creates a website user (no DayZ identity).
 func (w *world) user() int64 {
 	n := w.next()
-	return w.one(`INSERT INTO app_users(discord_user_id, discord_username, discord_global_name) VALUES($1,$2,$3) RETURNING id`,
+	id := w.one(`INSERT INTO app_users(discord_user_id, discord_username, discord_global_name) VALUES($1,$2,$3) RETURNING id`,
 		fmt.Sprintf("st-%d-u%d", w.suffix, n), fmt.Sprintf("user%d", n), fmt.Sprintf("User %d", n))
+	w.userIDs = append(w.userIDs, id)
+	return id
 }
 
 func (w *world) discordID(user int64) string {

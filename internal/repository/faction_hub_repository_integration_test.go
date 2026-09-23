@@ -31,6 +31,8 @@ type hubWorld struct {
 	instSuspended       int64 // org 1, suspended
 	suffix              int64
 	nextUser            int
+	guildIDs            []int64 // every guilds row created, so cleanup can delete by id instead of LIKE
+	userIDs             []int64 // every app_users row created, so cleanup can delete by id instead of LIKE
 }
 
 func newHubWorld(t *testing.T) *hubWorld {
@@ -77,8 +79,12 @@ func newHubWorld(t *testing.T) *hubWorld {
 		for _, org := range []int64{w.org1, w.org2} {
 			_, _ = db.Pool.Exec(ctx, `DELETE FROM organizations WHERE id=$1`, org)
 		}
-		_, _ = db.Pool.Exec(ctx, `DELETE FROM guilds WHERE discord_guild_id LIKE $1`, fmt.Sprintf("hub-%d-%%", w.suffix))
-		_, _ = db.Pool.Exec(ctx, `DELETE FROM app_users WHERE discord_user_id LIKE $1`, fmt.Sprintf("hub-%d-%%", w.suffix))
+		// By id, not LIKE: see the identical comment in factionstats/world_integration_test.go
+		// - under a non-C collation, LIKE can't use the plain unique-constraint btree index
+		// on these tables, which this package's own hubWorld and factionstats's world both
+		// grow over every local test run ever taken against this throwaway DB.
+		_, _ = db.Pool.Exec(ctx, `DELETE FROM guilds WHERE id = ANY($1)`, w.guildIDs)
+		_, _ = db.Pool.Exec(ctx, `DELETE FROM app_users WHERE id = ANY($1)`, w.userIDs)
 	})
 	return w
 }
@@ -94,8 +100,10 @@ func (w *hubWorld) one(sql string, args ...any) int64 {
 
 func (w *hubWorld) newUser() int64 {
 	w.nextUser++
-	return w.one(`INSERT INTO app_users(discord_user_id, discord_username, discord_global_name) VALUES($1,$2,$3) RETURNING id`,
+	id := w.one(`INSERT INTO app_users(discord_user_id, discord_username, discord_global_name) VALUES($1,$2,$3) RETURNING id`,
 		fmt.Sprintf("hub-%d-u%d", w.suffix, w.nextUser), fmt.Sprintf("user%d", w.nextUser), fmt.Sprintf("User %d", w.nextUser))
+	w.userIDs = append(w.userIDs, id)
+	return id
 }
 
 func (w *hubWorld) newUsers(n int) []int64 {
@@ -111,7 +119,9 @@ func (w *hubWorld) newOrg(owner int64, tag string) int64 {
 }
 
 func (w *hubWorld) newGuild(tag string) int64 {
-	return w.one(`INSERT INTO guilds(discord_guild_id) VALUES($1) RETURNING id`, fmt.Sprintf("hub-%d-%s", w.suffix, tag))
+	id := w.one(`INSERT INTO guilds(discord_guild_id) VALUES($1) RETURNING id`, fmt.Sprintf("hub-%d-%s", w.suffix, tag))
+	w.guildIDs = append(w.guildIDs, id)
+	return id
 }
 
 func (w *hubWorld) newConnection(org, guild int64) int64 {
