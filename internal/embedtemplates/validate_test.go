@@ -336,12 +336,14 @@ func regexpName(s string) bool {
 	if s == "" {
 		return false
 	}
-	for _, r := range s {
-		if !(r >= 'a' && r <= 'z' || r == '_') {
+	// Lowercase snake case: a letter first, then letters, digits or underscores
+	// (the {{name}} grammar accepts digits, e.g. h2h_score).
+	for i, r := range s {
+		if !(r >= 'a' && r <= 'z' || r == '_' || i > 0 && r >= '0' && r <= '9') {
 			return false
 		}
 	}
-	return true
+	return s[0] >= 'a' && s[0] <= 'z'
 }
 
 // --- service with a fake store ---------------------------------------------------------------

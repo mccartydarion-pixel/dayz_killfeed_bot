@@ -42,6 +42,10 @@ The website's preview and test send (`docs/EMBED_DESIGNER_V2.md`) render with
 `embedrender.RenderEvent` - the exact sanitize-and-render function `Customize` below uses - so a
 preview is what an event would post. They never change the cache or any publisher.
 
+Template text may contain line breaks - real ones or the `\n` syntax (`\\n` is a literal) -
+expanded by the renderer before substitution; see `docs/EMBED_DESIGNER_V2.md` "Newlines". The full
+per-route variable tables (source, example, availability) are in the same document.
+
 ## Architecture
 
 ```

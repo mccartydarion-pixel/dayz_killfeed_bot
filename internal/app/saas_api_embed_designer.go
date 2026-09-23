@@ -48,7 +48,7 @@ const (
 )
 
 const (
-	maxDraftVariables     = 32
+	maxDraftVariables     = 64  // above the largest route vocabulary (KILLFEED), still bounded
 	maxDraftVariableValue = 512 // raw; the renderer then caps each value at embedrender.MaxValue
 )
 

@@ -1040,6 +1040,11 @@ OWNER/ADMIN. Resets that one route to the Champion default by deleting only that
 installation+route row. **Idempotent**: `200` with the not-customized state (as in #30)
 whether or not a custom template existed.
 
+**Variable metadata (V2.1).** `#29`/`#30` also return `variableDefinitions` (per route / per
+variable: `name`, `label`, `description`, `category`, `example`, `optional`, `availability`,
+`format`, `source`) beside the unchanged `variables` name lists. Template text supports line
+breaks (`\n`, real newlines; `\\n` is literal). Full tables: `docs/EMBED_DESIGNER_V2.md`.
+
 ### 36. `POST .../installations/{installationID}/embed-templates/{routeKey}/preview`
 
 Embed Designer V2 (`docs/EMBED_DESIGNER_V2.md`). Any member. Renders an **unsaved** draft

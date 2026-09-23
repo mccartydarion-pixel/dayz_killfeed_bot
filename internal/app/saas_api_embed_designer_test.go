@@ -398,3 +398,56 @@ type fakeTemplateStore struct{ cfg *embedtemplates.Config }
 func (f fakeTemplateStore) ResolveTemplate(context.Context, int64, int64, string) (int64, *embedtemplates.Config, error) {
 	return 2, f.cfg, nil
 }
+
+// V2.1: preview, test send and live rendering stay identical with newlines and the
+// new stats variables.
+func TestNewlineParityAcrossPreviewTestAndLive(t *testing.T) {
+	cfg := designerTemplate()
+	cfg.Description.Template = `{{killer}} eliminated {{victim}}\nWeapon: {{weapon}}\nliteral`
+	cfg.Fields = []embedtemplates.Field{{Key: "k", Label: "KILLER STATS", Enabled: true, Order: 0,
+		Template: `Kills: {{killer_kills}}\nDeaths: {{killer_deaths}}\nK/D: {{killer_kd}}\nStreak: {{killer_streak}}`}}
+	vars := designerVars()
+	vars["killer_kills"], vars["killer_deaths"], vars["killer_kd"], vars["killer_streak"] = "9", "0", "9.00", "1"
+	req := draft(cfg, vars)
+
+	preview, previewEmb, derr := renderEmbedDraft("KILLFEED", req, runtimeRenderingEnabled, designerAt)
+	if derr != nil || !preview.Renderable {
+		t.Fatalf("preview: %+v %v", preview, derr)
+	}
+	if preview.Embed.Fields[0].Value != "Kills: 9\nDeaths: 0\nK/D: 9.00\nStreak: 1" || preview.Embed.Description != "ChampionPlayer eliminated RivalPlayer\nWeapon: M4-A1\nliteral" {
+		t.Fatalf("preview must show the expanded newlines: %q / %q", preview.Embed.Fields[0].Value, preview.Embed.Description)
+	}
+
+	d := designerGuild()
+	if _, derr := sendEmbedTest(context.Background(), &designerRoutesFake{routes: map[string]string{"KILLFEED": "combat"}}, d, 1, 2, "g", "KILLFEED", req, runtimeRenderingEnabled, designerAt); derr != nil {
+		t.Fatal(derr)
+	}
+	if !reflect.DeepEqual(d.sent[0].msg.Embeds[0], previewEmb) {
+		t.Fatalf("test send differs from preview:\n%+v\n%+v", d.sent[0].msg.Embeds[0], previewEmb)
+	}
+
+	valid, _ := embedtemplates.Validate(cfg, "KILLFEED")
+	live := embedrender.New(embedrender.Options{Enabled: true, Source: fakeTemplateStore{cfg: &valid}}).
+		Customize(context.Background(), 1, 1, "KILLFEED", vars, designerAt, &discordgo.MessageEmbed{Title: "default"})
+	if !reflect.DeepEqual(live, previewEmb) {
+		t.Fatalf("live render differs from preview:\n%+v\n%+v", live, previewEmb)
+	}
+}
+
+// The backend's own example values make a complete, renderable sample card.
+func TestMetadataExamplesPreviewCleanly(t *testing.T) {
+	vars := map[string]string{}
+	for _, d := range embedtemplates.VariableDefinitions("KILLFEED") {
+		vars[d.Name] = d.Example
+	}
+	cfg := designerTemplate()
+	cfg.Fields = append(cfg.Fields, embedtemplates.Field{Key: "s", Label: "KILLER STATS", Enabled: true, Order: 5, Template: `Kills: {{killer_kills}}\nDeaths: {{killer_deaths}}\nK/D: {{killer_kd}}`})
+	resp, _, derr := renderEmbedDraft("KILLFEED", draft(cfg, vars), runtimeRenderingEnabled, designerAt)
+	if derr != nil || !resp.Renderable {
+		t.Fatalf("examples must be valid sample values: %+v %v", resp, derr)
+	}
+	last := resp.Embed.Fields[len(resp.Embed.Fields)-1]
+	if last.Value != "Kills: 9\nDeaths: 0\nK/D: 9.00" {
+		t.Fatalf("sample stats: %q", last.Value)
+	}
+}
