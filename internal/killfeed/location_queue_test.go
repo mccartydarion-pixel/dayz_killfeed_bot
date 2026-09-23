@@ -226,8 +226,50 @@ func TestLocationQueueYIsAlwaysPopulatedWhenPositionPresent(t *testing.T) {
 		}
 	}
 	records := store.allRecords()
-	if len(records) != 1 || records[0].Y == nil || *records[0].Y != 20 {
-		t.Fatalf("expected Y=20 to be populated, got %+v", records)
+	// Position{10,20,30} is ADM "pos=<10, 20, 30>": altitude is the third value.
+	if len(records) != 1 || records[0].Y == nil || *records[0].Y != 30 {
+		t.Fatalf("expected Y (altitude) = 30 to be populated, got %+v", records)
+	}
+}
+
+// TestLocationQueuePersistsADMAxesAsMapXZ pins the ADM axis order end to end: a real ADM line is
+// "pos=<east, north, altitude>" (DayZ's PluginAdminLog prints engine [0],[2],[1]), so the persisted
+// row must carry x=east, z=north, y=altitude - never altitude in z.
+func TestLocationQueuePersistsADMAxesAsMapXZ(t *testing.T) {
+	store := newFakeLocationStore()
+	q := NewLocationQueue(store, 1, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go q.Run(ctx)
+	defer q.Close()
+
+	ev, err := NewADMParser().ParseLine(`16:25:41 | Player "NoxiKillNewB" (id=n002 pos=<7504.7, 1334.4, 0.9>) is connected`)
+	if err != nil || ev == nil {
+		t.Fatalf("parse: ev=%v err=%v", ev, err)
+	}
+	q.EnqueueEvent(ev)
+	deadline := time.After(2 * time.Second)
+	for store.batchCount() == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("expected a flush")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	records := store.allRecords()
+	if len(records) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(records))
+	}
+	r := records[0]
+	if r.X != 7504.7 || r.Z != 1334.4 || r.Y == nil || *r.Y != 0.9 {
+		t.Fatalf("expected x=7504.7 z=1334.4 y=0.9, got x=%v z=%v y=%v", r.X, r.Z, r.Y)
+	}
+}
+
+func TestPositionMapAccessorsFollowADMOrder(t *testing.T) {
+	p := Position{X: 7434.4, Y: 1401.4, Z: 5.7}
+	if p.MapX() != 7434.4 || p.MapZ() != 1401.4 || p.Altitude() != 5.7 {
+		t.Fatalf("got MapX=%v MapZ=%v Altitude=%v", p.MapX(), p.MapZ(), p.Altitude())
 	}
 }
 
@@ -257,4 +299,30 @@ func TestLocationQueueNilSafe(t *testing.T) {
 		t.Fatalf("expected zero-value health from a nil queue, got %+v", h)
 	}
 	q.Close() // must not panic or hang
+}
+
+// TestLocationQueueZoneIntrusionUsesADMHorizontalAxes feeds a real ADM line through the queue into
+// the intrusion engine: a zone centred on the player's east/north coordinates must trigger. Under
+// the old mapping (z = ADM altitude) the player sat ~1330m south of the zone and never tripped it.
+func TestLocationQueueZoneIntrusionUsesADMHorizontalAxes(t *testing.T) {
+	store := newFakeLocationStore()
+	q := NewLocationQueue(store, 1, 5)
+	istore := newFakeIntrusionStore()
+	cache := NewZoneCache(&fakeZoneSource{zones: []repository.Zone{testZone(1, 5, repository.ZoneTypeRestricted, 7500, 1330, 50, 300, "chan-1")}})
+	pub := &fakePublisher{}
+	q.SetIntrusionEngine(NewIntrusionEngine(istore, cache, nil, pub))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go q.Run(ctx)
+
+	ev, err := NewADMParser().ParseLine(`16:25:41 | Player "NoxiKillNewB" (id=n002 pos=<7504.7, 1334.4, 0.9>) is connected`)
+	if err != nil || ev == nil {
+		t.Fatalf("parse: ev=%v err=%v", ev, err)
+	}
+	q.EnqueueEvent(ev)
+	q.Close()
+
+	if len(istore.created) != 1 || pub.count() != 1 {
+		t.Fatalf("expected the zone at (7500,1330) r=50 to register 1 intrusion + 1 alert, got created=%d published=%d", len(istore.created), pub.count())
+	}
 }
