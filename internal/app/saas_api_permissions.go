@@ -284,6 +284,7 @@ func (a *App) registerClientAdminRoutes() {
 	h("GET "+base+"/audit-log", a.handleListAuditLog)
 
 	a.registerClientAdminCapabilityRoutes(base)
+	a.registerPlayerIntelligenceRoutes(base)
 }
 
 // clientAdminMeResponse is the current actor's resolved Champion bot permission Level and exact

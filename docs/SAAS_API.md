@@ -1198,6 +1198,25 @@ hand-maintained list. See `docs/CLIENT_ADMIN.md` "Current Actor Client Admin Per
 New error codes: `ADMIN_FORBIDDEN` (403), `ADMIN_ESCALATION_DENIED` (403),
 `ADMIN_CONFIRMATION_REQUIRED` (409), `ADMIN_DISCORD_UNAVAILABLE` (503).
 
+### Player Intelligence (Phase 3)
+
+Full contract in `docs/PLAYER_INTELLIGENCE.md`. The authoritative player directory and persisted
+ADM location-event history - **not** built on the economy account search. New capabilities
+`PLAYER_DIRECTORY_VIEW` (Moderator), `PLAYER_LAST_LOCATION_VIEW`/`PLAYER_LOCATION_VIEW`
+(Administrator - location access is privileged, one level above the plain directory).
+
+```
+GET .../admin/players                          ?q=&online=&linked=&cursor=&limit=
+GET .../admin/players/online                   currently-connected players + latest known location each
+GET .../admin/players/{playerID}/locations/latest
+GET .../admin/players/{playerID}/locations     ?from=&to=&eventType=&cursor=&limit=, newest first
+```
+
+Every returned location carries `observedAt`/`ageSeconds`/`freshness` (`LIVE_RECENT`≤60s /
+`RECENT`≤5min / `STALE`>5min) - ADM has no continuous GPS, so "live" is never claimed unless the
+age genuinely qualifies. Viewing a player's location history or online-player locations writes an
+`admin_audit_log` row (location access is privileged, task's own instruction).
+
 ## Request/response DTOs
 
 None of these ever include a Nitrado ciphertext/IV/auth tag, a Discord

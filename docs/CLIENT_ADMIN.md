@@ -62,6 +62,9 @@ permission mapping granting a Level at or below their own resolved Level - enfor
 | `PLAYER_LAST_ONLINE_VIEW` | Moderator | |
 | `FEED_LOCATION_MANAGE` | Moderator | per-route `show_location` toggle |
 | `MAINTENANCE_MODE` | Administrator | Champion-side flag only |
+| `PLAYER_DIRECTORY_VIEW` | Moderator | Phase 3, `docs/PLAYER_INTELLIGENCE.md` - the authoritative player directory |
+| `PLAYER_LAST_LOCATION_VIEW` | Administrator | Phase 3 - a player's current location; online-players-with-location |
+| `PLAYER_LOCATION_VIEW` | Administrator | Phase 3 - full location history |
 
 ## Current Actor Client Admin Permissions (Phase 1 Part 2)
 
@@ -149,6 +152,11 @@ DELETE /banlist/{identifier}                   BANLIST_MANAGE
 
 POST   /stats/player/{playerID}/reset-streak   PLAYER_STATS_RESET
 POST   /stats/reset-season                     SERVER_STATS_RESET   body: {"name":"Season 2","confirm":"RESET EVERYONE"}
+
+GET    /players                                PLAYER_DIRECTORY_VIEW     ?q=&online=&linked=&cursor=&limit=  (Phase 3, docs/PLAYER_INTELLIGENCE.md)
+GET    /players/online                         PLAYER_LAST_LOCATION_VIEW  currently-connected players + latest known location each
+GET    /players/{playerID}/locations/latest    PLAYER_LAST_LOCATION_VIEW  404 if never observed
+GET    /players/{playerID}/locations           PLAYER_LOCATION_VIEW      ?from=&to=&eventType=&cursor=&limit=, newest first
 ```
 
 Error codes added: `ADMIN_FORBIDDEN` (403, missing capability), `ADMIN_ESCALATION_DENIED` (403,
@@ -172,6 +180,19 @@ same standard `docs/NITRADO_DELTA_READS.md` applied to the seek/offset-count end
 | ban list *duration* | **DEFERRED** | Nitrado's banlist API takes only `identifier`, no duration/expiry - Champion's own `installation_access_entries.expires_at` records the intent, but nothing currently enforces an automatic un-ban when it passes (see Deferred) |
 | base damage / container damage / third-person / raid toggles | **UNSUPPORTED/DEFERRED** | No endpoint for any of these appears anywhere in Nitrado's official SDK; these are almost certainly DayZ `serverDZ.cfg`-style file settings, which would need the same unverified file-write capability as priority |
 | generic `setConfig` (arbitrary allowlisted config writes) | **PARTIALLY DEFERRED** | Implemented for Champion-side settings that already exist in `server_configs`/`installation_channel_routes` (feed toggles, maintenance mode, location visibility) via their own dedicated endpoints above; a general DayZ-server-config-file writer is deferred with config writes generally |
+
+## What changed (Phase 3: player intelligence / location history foundation)
+
+Full design record in `docs/PLAYER_INTELLIGENCE.md`. Summary: new migration
+`0041_player_location_events`; new `internal/killfeed/location_queue.go` (a fully separate,
+non-blocking, batched persistence pipeline for ADM `pos=<...>` data, wired into
+`Engine.processLine` as an additive call - `PersistenceQueue` untouched); new
+`internal/repository/location_repository.go` (player directory + location history/latest/
+retention queries); new capabilities `PLAYER_DIRECTORY_VIEW`/`PLAYER_LAST_LOCATION_VIEW`/
+`PLAYER_LOCATION_VIEW`; new routes `GET .../admin/players`, `.../players/online`,
+`.../players/{playerID}/locations`, `.../players/{playerID}/locations/latest`; a new hourly
+retention job (`CHAMPION_LOCATION_RETENTION_DAYS`, default 30). Zones/UAV/heatmap remain deferred
+(task's own explicit instruction) - this phase is the data foundation only.
 
 ## What changed (Phase 1 Part 2: permission introspection)
 
@@ -237,18 +258,14 @@ and deferred the rest rather than ship unverified or fabricated plumbing:
   `discord_role_id`, `amount_points`, `frequency_days`, `next_run_at`, idempotent via a
   `run_key` unique per scheduled run) is specified precisely enough to implement directly as a
   fast follow.
-- **Zones, zone-ignore, zone-ban, Base Radar/UAV, heatmap, `lastLocations`, `playerLocations`** -
-  all depend on a location-history data pipeline that does not exist today: ADM parsing already
-  extracts a `Position` per event (`internal/killfeed/event.go`'s `PlayerRef.Position`) but it is
-  discarded immediately after use, never persisted. Wiring persistence into
-  `internal/killfeed.Engine.processLine` - the single most safety-critical, extensively
-  regression-tested hot path in this codebase (see `docs/PERFORMANCE.md` and
-  `docs/NITRADO_DELTA_READS.md`, both of which went to considerable lengths specifically to avoid
-  touching it) - was judged too large a risk to take on as a side effect of an already very large
-  phase. The correct design (event-driven position capture on connect/kill/death/hit, never
-  fabricated continuous polling - DayZ's ADM does not log idle positions, so true "live" GPS
-  tracking is not obtainable from ADM alone at normal poll cadence) is recorded here for a focused
-  follow-up phase.
+- **~~Location-history data pipeline~~ - built in Phase 3** (`docs/PLAYER_INTELLIGENCE.md`):
+  `player_location_events` now persists real ADM positions, off the hot path via a dedicated
+  `LocationQueue`, with a full player directory (`PLAYER_DIRECTORY_VIEW`) and location APIs
+  (`PLAYER_LAST_LOCATION_VIEW`/`PLAYER_LOCATION_VIEW`). **Zones, zone-ignore, zone-ban, Base
+  Radar/UAV, and heatmap aggregation are still deferred** - Phase 3's own task instructions were
+  explicit that it is foundation-only ("Do NOT build zones, UAV, or heatmaps yet"). With real
+  location data now available, a follow-up phase can build a zone-membership check against
+  `player_location_events` without first needing to solve "where does location data come from."
 - **Discord kick/ban/timeout/bulk message clear** - discordgo has direct, well-documented support
   for all four; deferred purely to keep this phase's already-large surface bounded, not because of
   any capability gap.
