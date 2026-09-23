@@ -110,8 +110,8 @@ installation is still `CONFIGURING`.
 | `ECONOMY` | `EconomyFeed` (`discord/economy_feed.go`) - bounty reward / admin credit / admin debit cards | none - no fallback (never `KILLFEED`; the economy works fully without the route) | `economy.Service` and the bounty claim, published only after the transaction committed | **IMPLEMENTED / RUNTIME ROUTED** |
 | `SHOP` | `EconomyFeed` - shop purchase/refund cards are published on the `ECONOMY` route; the `SHOP` key maps to the same economy channel | - | shop transaction, after commit | **IMPLEMENTED** (via `ECONOMY`) |
 | `CONNECTIONS` | `ConnectionsPublisher` (`discord/connections.go`) | none - no legacy text channel, no KILLFEED/voice-counter fallback (the `OnlinePlayersChannelID` voice counter is a separate, untouched feature) | ADM `is connected` / `has been disconnected`, after dedupe + durable persistence + a real presence state change | **IMPLEMENTED / RUNTIME ROUTED** |
-| `BUILD_FEED` | none | - | no building event type | Not implemented |
-| `ADMIN_ALERTS` | none | - | - | Not implemented |
+| `BUILD_FEED` | `BuildFeedPublisher` (`discord/build_feed.go`) - single cards, or one summary for a burst | none - no fallback | ADM `BUILD_ACTION` (placed / built / dismantled), after dedupe; only present when the server enables `adminLogPlacement` / `adminLogBuildActions` | **IMPLEMENTED / RUNTIME ROUTED** (source depends on server config) |
+| `ADMIN_ALERTS` | `AdminAlertPublisher` (`discord/admin_alerts.go`) - alert on entering a condition, resolution on leaving it | none - no fallback | per-server ADM snapshots and download reports; zone intrusion engine | **IMPLEMENTED / RUNTIME ROUTED** |
 | `ADMIN_LOGS` | `ADMMonitorPublisher` (`discord/adm_monitor.go`) | legacy `GuildSetup.ADMMonitorChannelID` | ADM snapshot/download callbacks | **MIGRATED TO RUNTIME ROUTES** (route -> legacy) |
 
 Also outside the route vocabulary: `DeathfeedPublisher` (`GuildSetup.DeathChannelID`,
@@ -224,9 +224,8 @@ server_id=<game_servers.id> reason=no_route|lookup_error` - internal ids only.
 
 ### Not covered
 
-Routes for `BUILD_FEED` and `ADMIN_ALERTS` are
-**not built**: they have no publisher, and this migration deliberately adds
-none. `CASINO` was removed entirely (migration 0044). The runtime is still a single configured Discord guild
+Every route key now has a publisher. `CASINO` was removed entirely
+(migration 0044). The runtime is still a single configured Discord guild
 (`DISCORD_GUILD_ID`) with its own set of servers; multi-guild workers are out of
 scope. Migration `0027` back-filled `STATS_LEADERBOARDS` and `ADMIN_LOGS` routes
 from installation settings, so those existing routes now take effect at runtime.

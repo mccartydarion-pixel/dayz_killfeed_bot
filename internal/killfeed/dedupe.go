@@ -137,6 +137,11 @@ func fingerprint(ev *Event) string {
 		}
 		parts = append(parts, zone, dmg)
 	}
+	if ev.Build != nil {
+		// Two different parts built by one player in the same second are two
+		// actions; a replayed line still matches.
+		parts = append(parts, ev.Build.Action, ev.Build.Object, ev.Build.Target, ev.Build.Tool)
+	}
 	sum := sha1.Sum([]byte(joinParts(parts)))
 	return hex.EncodeToString(sum[:])
 }

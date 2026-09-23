@@ -16,7 +16,20 @@ const (
 	EventPlayerUnconscious EventType = "PLAYER_UNCONSCIOUS"
 	EventPlayerConscious   EventType = "PLAYER_CONSCIOUS"
 	EventPlayerRespawn     EventType = "PLAYER_RESPAWN"
+	// EventBuildAction is a base-building/placement line, written to the ADM
+	// only when the server enables adminLogPlacement / adminLogBuildActions.
+	EventBuildAction EventType = "BUILD_ACTION"
 )
+
+// BuildAction is what a build/placement ADM line says - only the parts the
+// line actually contains. Object is always set; Target and Tool only for
+// built/dismantled lines that name them.
+type BuildAction struct {
+	Action string // "Placed", "Built" or "Dismantled"
+	Object string // the placed item or the built/dismantled part
+	Target string // the structure a part was built on / dismantled from
+	Tool   string
+}
 
 // DeathCause is a non-player cause of death that the ADM parser PROVED from the
 // log line itself. The empty value means "not proven" and is the default: a
@@ -88,6 +101,9 @@ type Event struct {
 	// Cause is the non-player cause of a death/suicide when the parser proved
 	// one (see DeathCause); empty otherwise. Never inferred.
 	Cause DeathCause
+
+	// Build is set only on EventBuildAction.
+	Build *BuildAction
 
 	Raw string
 	// Competitive context is populated only after durable persistence and is

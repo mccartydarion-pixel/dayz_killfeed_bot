@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -87,7 +88,14 @@ type App struct {
 	BountyBoard *discord.BountyBoard
 	// HeatmapBoard keeps the persistent PvP heatmap summary (HEATMAPS route),
 	// read from the Phase 5 Heatmap service. Nil-safe.
-	HeatmapBoard         *discord.HeatmapBoard
+	HeatmapBoard *discord.HeatmapBoard
+	// AdminAlerts is the shared operational alert publisher (ADMIN_ALERTS
+	// route): ADM stale, repeated Nitrado download failures, zone/UAV/base
+	// radar intrusions. Nil-safe.
+	AdminAlerts *discord.AdminAlertPublisher
+	// buildActionsSeen counts ADM build/placement actions parsed by any server
+	// worker - the proof that some server's ADM carries BUILD_FEED lines.
+	buildActionsSeen     atomic.Int64
 	Points               *repository.PointsRepository
 	Seasons              *repository.SeasonRepository
 	SeasonService        *seasons.Service
@@ -1448,6 +1456,13 @@ func (a *App) Run() error {
 				go bountyTracker.Run(ctx)
 				go a.BountyBoard.Run(ctx)
 			}
+			if routingEnabled {
+				// ADMIN_ALERTS: operational conditions reported by the server
+				// workers and the zone engine; with no route nothing is sent.
+				a.AdminAlerts = discord.NewAdminAlertPublisher(session, a.ChannelRoutes)
+				a.AdminAlerts.SetServerNames(a.serverNameFunc())
+				go a.AdminAlerts.Run(ctx)
+			}
 			if routingEnabled && a.Heatmap != nil {
 				// HEATMAPS: one persistent PvP summary per routed channel, read
 				// from the Phase 5 aggregates (never Nitrado) on a configurable
@@ -1609,6 +1624,10 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 	if a.consumeFirstConnect(row.ID) {
 		engine.StartAtLogTail()
 	}
+	// ADM snapshot/download callbacks are single setters on the engine, so
+	// every consumer is collected here and fanned out once below.
+	var onSnapshot []func(killfeed.AdmSnapshot)
+	var onDownload []func(killfeed.DownloadReport)
 	if a.Discord != nil && a.Servers != nil {
 		if config, configErr := a.Servers.EnsureConfig(workerCtx, row.ID); configErr == nil {
 			monitor := discord.NewADMMonitorPublisher(discord.NewSessionAPI(a.Discord.Session()), setupStore, a.Config.DiscordGuildID, row.ID, config.ADMMonitorMessageID, func(messageID string) {
@@ -1621,9 +1640,46 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 				// GuildSetup.ADMMonitorChannelID is only the fallback.
 				monitor.SetRouting(a.ChannelRoutes, row.GuildID)
 			}
-			engine.OnAdmSnapshot(monitor.Update)
-			engine.OnDownload(monitor.HandleDownload)
+			onSnapshot = append(onSnapshot, monitor.Update)
+			onDownload = append(onDownload, monitor.HandleDownload)
 		}
+	}
+	if a.AdminAlerts != nil {
+		alerts, guildRowID, serverID := a.AdminAlerts, row.GuildID, row.ID
+		onSnapshot = append(onSnapshot, func(s killfeed.AdmSnapshot) { alerts.ObserveSnapshot(guildRowID, serverID, s) })
+		onDownload = append(onDownload, func(r killfeed.DownloadReport) { alerts.ObserveDownload(guildRowID, r) })
+	}
+	if len(onSnapshot) > 0 {
+		engine.OnAdmSnapshot(func(s killfeed.AdmSnapshot) {
+			for _, f := range onSnapshot {
+				f(s)
+			}
+		})
+	}
+	if len(onDownload) > 0 {
+		engine.OnDownload(func(r killfeed.DownloadReport) {
+			for _, f := range onDownload {
+				f(r)
+			}
+		})
+	}
+
+	if a.ChannelRoutes != nil && a.Discord != nil && a.Discord.Session() != nil {
+		// BUILD_FEED: ADM build/placement actions, present only when the server
+		// enables adminLogPlacement / adminLogBuildActions. Bounded queue + one
+		// goroutine; no route means nothing is sent.
+		buildFeed := discord.NewBuildFeedPublisher(a.Discord.Session(), a.ChannelRoutes, row.GuildID, row.ID)
+		buildFeed.SetServerName(a.serverNameFunc())
+		buildFeed.OnSeen(func() { a.buildActionsSeen.Add(1) })
+		engine.SetBuildPublisher(buildFeed)
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("component=servers", "msg", "build feed panic recovered", "server_id", row.ID, "panic", fmt.Sprint(r))
+				}
+			}()
+			buildFeed.Run(workerCtx)
+		}()
 	}
 
 	publisher := discord.NewKillfeedPublisher(a.Discord, a.Config.KillfeedChannelID)

@@ -10,6 +10,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/discord"
 	"github.com/yourname/dayz-killfeed/internal/repository"
+	"github.com/yourname/dayz-killfeed/internal/routing"
 )
 
 // layoutGuildFake is an in-memory Discord guild for applyChannelLayout.
@@ -193,12 +194,13 @@ func TestPlanChannelLayoutSkipsDestinationsWithoutProducers(t *testing.T) {
 		}
 	}
 
-	// ADMIN_ALERTS/BUILD_FEED never justify admin-logs on their own.
+	// A source-blocked BUILD_FEED never justifies admin-logs on its own.
 	producers := auditProducers()
 	producers["ADMIN_LOGS"] = routeProducer{HealthBroken, "down"}
+	producers["ADMIN_ALERTS"] = routeProducer{HealthBroken, "down"}
 	for _, p := range planChannelLayout(producers) {
 		if p.Destination.Key == "ADMIN_LOGS" && p.Health != HealthBroken {
-			t.Fatalf("admin-logs with only blocked sources must not be ACTIVE, got %s", p.Health)
+			t.Fatalf("admin-logs with only a blocked source must not be ACTIVE, got %s", p.Health)
 		}
 	}
 }
@@ -266,8 +268,12 @@ func TestApplyChannelLayoutFreshGuild(t *testing.T) {
 	for _, r := range admin.Routes {
 		details[r.RouteKey] = r.Detail
 	}
-	if details["ADMIN_ALERTS"] != detailNotYetProducing || details["BUILD_FEED"] != detailSourceBlocked {
-		t.Fatalf("admin-logs route details wrong: %+v", admin.Routes)
+	health := map[string]ChannelHealth{}
+	for _, r := range admin.Routes {
+		health[r.RouteKey] = r.Health
+	}
+	if health["ADMIN_ALERTS"] != HealthActive || health["BUILD_FEED"] != HealthBlocked || !strings.HasPrefix(details["BUILD_FEED"], detailSourceBlocked) {
+		t.Fatalf("admin-logs route states wrong: %+v", admin.Routes)
 	}
 }
 
@@ -403,13 +409,24 @@ func TestApplyChannelLayoutNameRecoveryStaysInCategory(t *testing.T) {
 
 func TestChannelRouteProducersDowngradeMissingRuntime(t *testing.T) {
 	got := (&App{}).channelRouteProducers()
-	for _, key := range []string{"KILLFEED", "BOUNTY", "HEATMAPS", "AUTO_LEADERBOARD", "LINK_GAMERTAG", "ECONOMY", "SHOP"} {
+	for _, key := range []string{"KILLFEED", "BOUNTY", "HEATMAPS", "AUTO_LEADERBOARD", "LINK_GAMERTAG", "ECONOMY", "SHOP", "ADMIN_ALERTS"} {
 		if got[key].Health != HealthBroken {
 			t.Fatalf("%s must be BROKEN when its runtime is absent, got %+v", key, got[key])
 		}
 	}
-	if got["BUILD_FEED"].Health != HealthBlocked || got["BUILD_FEED"].Detail != detailSourceBlocked {
-		t.Fatalf("blocked routes keep their audit state, got %+v", got["BUILD_FEED"])
+	if got["BUILD_FEED"].Health != HealthBlocked || !strings.HasPrefix(got["BUILD_FEED"].Detail, detailSourceBlocked) {
+		t.Fatalf("BUILD_FEED stays SOURCE_BLOCKED until a build line is parsed, got %+v", got["BUILD_FEED"])
+	}
+
+	// A parsed build line proves the source - but only with routing running.
+	a := &App{}
+	a.buildActionsSeen.Add(1)
+	if got := a.channelRouteProducers()["BUILD_FEED"]; got.Health != HealthBlocked {
+		t.Fatalf("without routing BUILD_FEED cannot be ACTIVE, got %+v", got)
+	}
+	a.ChannelRoutes = routing.NewResolver(nil, 0)
+	if got := a.channelRouteProducers()["BUILD_FEED"]; got.Health != HealthActive {
+		t.Fatalf("a parsed build line makes BUILD_FEED ACTIVE, got %+v", got)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"log/slog"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/yourname/dayz-killfeed/internal/discord"
 	"github.com/yourname/dayz-killfeed/internal/killfeed"
 )
 
@@ -45,6 +46,11 @@ func (p intrusionPublisher) PublishIntrusionEvent(ev killfeed.IntrusionEvent) {
 	slog.Info("component=zone_intrusion", "event", string(ev.Kind), "zone_id", ev.Zone.ID, "zone_name", ev.Zone.Name,
 		"zone_type", ev.Zone.ZoneType, "installation_id", ev.Zone.InstallationID, "player_id", ev.PlayerID,
 		"gamertag", ev.Gamertag, "intrusion_id", ev.IntrusionID, "suppressed", ev.Suppressed)
+	// Staff copy on the installation's ADMIN_ALERTS route (skipped when that is
+	// the zone's own alert channel, so nothing is posted twice).
+	if alert, ok := discord.IntrusionAdminAlert(ev); ok {
+		p.app.AdminAlerts.Publish(alert)
+	}
 	if ev.Suppressed || ev.Zone.AlertChannelID == nil || *ev.Zone.AlertChannelID == "" {
 		return
 	}
