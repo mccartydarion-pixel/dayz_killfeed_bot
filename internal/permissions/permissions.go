@@ -85,6 +85,13 @@ const (
 	CapPlayerLastOnline   Capability = "PLAYER_LAST_ONLINE_VIEW"
 	CapFeedLocationManage Capability = "FEED_LOCATION_MANAGE"
 	CapMaintenanceMode    Capability = "MAINTENANCE_MODE"
+	// Champion Phase 3 (docs/PLAYER_INTELLIGENCE.md): the authoritative player directory and
+	// location-history foundation. Location access is privileged (task section 10) - both
+	// location-viewing capabilities sit at Administrator, one level above the plain directory
+	// listing/last-online view.
+	CapPlayerDirectoryView    Capability = "PLAYER_DIRECTORY_VIEW"
+	CapPlayerLastLocationView Capability = "PLAYER_LAST_LOCATION_VIEW"
+	CapPlayerLocationView     Capability = "PLAYER_LOCATION_VIEW"
 )
 
 // requiredLevel is the default minimum Level each capability needs (task's "DEFAULT ROLE
@@ -92,25 +99,28 @@ const (
 // this phase - only the Discord-role -> Level mapping is (task: "Client should be allowed to
 // customize the mapping later" refers to that mapping, not this table).
 var requiredLevel = map[Capability]Level{
-	CapPermissionsView:    LevelModerator,
-	CapPermissionsManage:  LevelModerator, // escalation ceiling enforced separately by CanGrant
-	CapEconomyView:        LevelModerator,
-	CapWarningsView:       LevelModerator,
-	CapWarningsClear:      LevelAdministrator,
-	CapFactionModerate:    LevelModerator,
-	CapFactionDissolve:    LevelAdministrator,
-	CapBountyManage:       LevelModerator,
-	CapPlayerStatsReset:   LevelAdministrator,
-	CapServerStatsReset:   LevelOwner,
-	CapServerRestart:      LevelModerator,
-	CapServerStop:         LevelAdministrator,
-	CapServerAutostart:    LevelAdministrator,
-	CapServerNameEdit:     LevelAdministrator,
-	CapWhitelistManage:    LevelGatekeeper,
-	CapBanlistManage:      LevelModerator,
-	CapPlayerLastOnline:   LevelModerator,
-	CapFeedLocationManage: LevelModerator,
-	CapMaintenanceMode:    LevelAdministrator,
+	CapPermissionsView:        LevelModerator,
+	CapPermissionsManage:      LevelModerator, // escalation ceiling enforced separately by CanGrant
+	CapEconomyView:            LevelModerator,
+	CapWarningsView:           LevelModerator,
+	CapWarningsClear:          LevelAdministrator,
+	CapFactionModerate:        LevelModerator,
+	CapFactionDissolve:        LevelAdministrator,
+	CapBountyManage:           LevelModerator,
+	CapPlayerStatsReset:       LevelAdministrator,
+	CapServerStatsReset:       LevelOwner,
+	CapServerRestart:          LevelModerator,
+	CapServerStop:             LevelAdministrator,
+	CapServerAutostart:        LevelAdministrator,
+	CapServerNameEdit:         LevelAdministrator,
+	CapWhitelistManage:        LevelGatekeeper,
+	CapBanlistManage:          LevelModerator,
+	CapPlayerLastOnline:       LevelModerator,
+	CapFeedLocationManage:     LevelModerator,
+	CapMaintenanceMode:        LevelAdministrator,
+	CapPlayerDirectoryView:    LevelModerator,
+	CapPlayerLastLocationView: LevelAdministrator,
+	CapPlayerLocationView:     LevelAdministrator,
 }
 
 // Allows reports whether actorLevel satisfies capability's required minimum Level. An unknown

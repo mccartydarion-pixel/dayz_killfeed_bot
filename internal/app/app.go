@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -132,6 +133,9 @@ type App struct {
 	Permissions *repository.PermissionsRepository
 	AdminAudit  *repository.AuditRepository
 	ClientAdmin *repository.ClientAdminRepository
+	// Locations backs Champion Phase 3 (docs/PLAYER_INTELLIGENCE.md): the authoritative player
+	// directory and persisted ADM location-event history.
+	Locations *repository.LocationRepository
 	// ChannelRoutes is the runtime feature -> Discord channel resolver
 	// (internal/routing), a short-TTL cache over SaaSChannelRoutes. Nil-safe:
 	// with no database, publishers simply use their legacy channel.
@@ -195,10 +199,14 @@ type App struct {
 	// (discordRoleCacheTTL) so a burst of admin actions from the same person doesn't each cost a
 	// separate Discord REST round trip - mirrors discord.Client.botGuildRoles' own
 	// state-cache-first pattern, but for an arbitrary member rather than the bot itself.
-	discordRoleCacheMu    sync.Mutex
-	discordRoleCache      map[string]discordRoleCacheEntry
-	persistQueuesMu       sync.Mutex
-	persistQueues         []*killfeed.PersistenceQueue
+	discordRoleCacheMu sync.Mutex
+	discordRoleCache   map[string]discordRoleCacheEntry
+	persistQueuesMu    sync.Mutex
+	persistQueues      []*killfeed.PersistenceQueue
+	// locationQueuesMu/locationQueues mirror persistQueues exactly, for the Phase 3 location-
+	// history pipeline (docs/PLAYER_INTELLIGENCE.md) - one LocationQueue per running server worker.
+	locationQueuesMu      sync.Mutex
+	locationQueues        []*killfeed.LocationQueue
 	rotatingFeedsMu       sync.Mutex
 	rotatingFeeds         []*discord.RotatingFeed
 	firstConnectMu        sync.Mutex
@@ -468,6 +476,25 @@ func (a *App) allPersistQueues() []*killfeed.PersistenceQueue {
 	return out
 }
 
+// addLocationQueue/allLocationQueues mirror addPersistQueue/allPersistQueues exactly, for the
+// Phase 3 location-history pipeline's per-server queues (used by the admin performance snapshot).
+func (a *App) addLocationQueue(lq *killfeed.LocationQueue) {
+	if a == nil || lq == nil {
+		return
+	}
+	a.locationQueuesMu.Lock()
+	a.locationQueues = append(a.locationQueues, lq)
+	a.locationQueuesMu.Unlock()
+}
+
+func (a *App) allLocationQueues() []*killfeed.LocationQueue {
+	a.locationQueuesMu.Lock()
+	defer a.locationQueuesMu.Unlock()
+	out := make([]*killfeed.LocationQueue, len(a.locationQueues))
+	copy(out, a.locationQueues)
+	return out
+}
+
 func (a *App) addRotatingFeed(f *discord.RotatingFeed) {
 	a.rotatingFeedsMu.Lock()
 	a.rotatingFeeds = append(a.rotatingFeeds, f)
@@ -603,6 +630,8 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.Permissions = repository.NewPermissionsRepository(db.Pool)
 			app.AdminAudit = repository.NewAuditRepository(db.Pool)
 			app.ClientAdmin = repository.NewClientAdminRepository(db.Pool)
+			app.Locations = repository.NewLocationRepository(db.Pool)
+			go app.runLocationRetention(ctx)
 			app.adminSaaS = adminrepo.New(db.Pool)
 			embedRepo := repository.NewEmbedTemplateRepository(db.Pool)
 			app.EmbedTemplates = embedtemplates.NewService(embedRepo)
@@ -765,6 +794,71 @@ func bindOnlineCounter(store discord.SetupStore, guildID string, counter *discor
 	setup, err := store.Get(guildID)
 	if err == nil && setup != nil && setup.OnlinePlayersChannelID != "" {
 		counter.SetChannelID(setup.OnlinePlayersChannelID)
+	}
+}
+
+// defaultLocationRetentionDays is used when CHAMPION_LOCATION_RETENTION_DAYS is unset or invalid
+// (task section 9's own suggested default).
+const defaultLocationRetentionDays = 30
+
+// locationRetentionDays parses CHAMPION_LOCATION_RETENTION_DAYS, failing closed to the default on
+// anything unparsable or non-positive - a misconfigured value must never disable retention
+// entirely (e.g. accidentally reading as 0, which would delete everything every sweep).
+func locationRetentionDays() int {
+	raw := strings.TrimSpace(os.Getenv("CHAMPION_LOCATION_RETENTION_DAYS"))
+	if raw == "" {
+		return defaultLocationRetentionDays
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil || v <= 0 {
+		return defaultLocationRetentionDays
+	}
+	return v
+}
+
+// locationRetentionSweepInterval bounds how often the retention job runs - a data-volume cleanup
+// job, not a latency-sensitive one, so a slow cadence (matching this codebase's other periodic-
+// but-not-urgent jobs, e.g. runCompetitiveSchedulers' 45s tick) is appropriate; here even coarser
+// since retention only needs to keep up with a day-scale growth rate, not a poll-scale one.
+const locationRetentionSweepInterval = time.Hour
+
+// runLocationRetention periodically deletes player_location_events older than the configured
+// retention window (task section 9), in bounded batches so one sweep never holds a long-running
+// lock. Never touches kills/deaths (task: "Do not delete kill/death history") - LocationRepository
+// only ever targets player_location_events.
+func (a *App) runLocationRetention(ctx context.Context) {
+	if a.Locations == nil {
+		return
+	}
+	days := locationRetentionDays()
+	sweep := func() {
+		cutoff := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
+		var total int64
+		for {
+			n, err := a.Locations.DeleteOlderThan(ctx, cutoff, 0)
+			if err != nil {
+				slog.Warn("component=location", "event", "retention_sweep_failed", "err", err.Error())
+				return
+			}
+			total += n
+			if n == 0 {
+				break
+			}
+		}
+		if total > 0 {
+			slog.Info("component=location", "event", "retention_deleted", "count", total, "retention_days", days)
+		}
+	}
+	sweep()
+	ticker := time.NewTicker(locationRetentionSweepInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			sweep()
+		case <-ctx.Done():
+			return
+		}
 	}
 }
 
@@ -1368,7 +1462,7 @@ func (a *App) Run() error {
 				setupManager.SetRouteGate(a.RouteSyncer.HasRoute)
 				go a.RouteSyncer.Run(ctx)
 			}
-			store := &persistenceStoreAdapter{players: a.Players, kills: a.Kills, deaths: a.Deaths, seasons: a.Seasons, factions: a.Factions, wars: a.Wars, events: a.Events, bounties: a.Bounties, bountySvc: a.BountyService, streaks: a.Streaks, anomalies: a.Anomalies, activity: a.ActivityRepository, servers: a.Servers, stats: a.Stats, analytics: a.AnalyticsRepository, factionStats: a.FactionHubStats, panelDirty: func() {
+			store := &persistenceStoreAdapter{players: a.Players, kills: a.Kills, deaths: a.Deaths, seasons: a.Seasons, factions: a.Factions, wars: a.Wars, events: a.Events, bounties: a.Bounties, bountySvc: a.BountyService, streaks: a.Streaks, anomalies: a.Anomalies, activity: a.ActivityRepository, servers: a.Servers, stats: a.Stats, analytics: a.AnalyticsRepository, factionStats: a.FactionHubStats, locations: a.Locations, panelDirty: func() {
 				if a.LeaderboardScheduler != nil {
 					a.LeaderboardScheduler.MarkDirty()
 				}
@@ -1600,6 +1694,13 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 	engine.SetPersistence(pq)
 	a.addPersistQueue(pq)
 
+	// Phase 3 (docs/PLAYER_INTELLIGENCE.md): the location-history pipeline, fully separate from
+	// pq above - see internal/killfeed/location_queue.go's package doc for why it must never
+	// share pq's blocking EnqueueAndWait semantics.
+	lq := killfeed.NewLocationQueue(store, row.GuildID, row.ID)
+	engine.SetLocationQueue(lq)
+	a.addLocationQueue(lq)
+
 	engine.OnPlayersChanged(func(count int) {
 		if !a.ownsPublicCounter(row.ID) {
 			return
@@ -1636,10 +1737,23 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 		pq.Run(workerCtx)
 	}()
 
+	locationQueueDone := make(chan struct{})
+	go func() {
+		defer close(locationQueueDone)
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("component=servers", "msg", "location queue panic recovered", "server_id", row.ID, "panic", fmt.Sprint(r))
+			}
+		}()
+		lq.Run(workerCtx)
+	}()
+
 	slog.Info("component=servers", "msg", "server worker running", "server_id", row.ID, "display_name", row.DisplayName)
 	err := engine.Start(workerCtx)
 	pq.Close()
 	<-queueDone
+	lq.Close()
+	<-locationQueueDone
 	if err != nil && a.Workers != nil {
 		a.Workers.Error(workerName, err)
 	}
@@ -1749,21 +1863,25 @@ func (a *App) shutdown() {
 // persistenceStoreAdapter adapts the repositories to the killfeed.PersistenceStore
 // interface used by the persistence queue worker.
 type persistenceStoreAdapter struct {
-	players    *repository.PlayerRepository
-	kills      *repository.KillRepository
-	deaths     *repository.DeathRepository
-	seasons    *repository.SeasonRepository
-	factions   *repository.FactionRepository
-	wars       *repository.PostgresWarRepository
-	events     *repository.EventRepository
-	bounties   *repository.BountyRepository
-	bountySvc  *bounties.Service
-	streaks    *repository.StreakRepository
-	anomalies  *repository.AnomalyRepository
-	activity   *repository.ActivityRepository
-	servers    *repository.ServerRepository
-	stats      *repository.StatsRepository
-	analytics  *repository.AnalyticsRepository
+	players   *repository.PlayerRepository
+	kills     *repository.KillRepository
+	deaths    *repository.DeathRepository
+	seasons   *repository.SeasonRepository
+	factions  *repository.FactionRepository
+	wars      *repository.PostgresWarRepository
+	events    *repository.EventRepository
+	bounties  *repository.BountyRepository
+	bountySvc *bounties.Service
+	streaks   *repository.StreakRepository
+	anomalies *repository.AnomalyRepository
+	activity  *repository.ActivityRepository
+	servers   *repository.ServerRepository
+	stats     *repository.StatsRepository
+	analytics *repository.AnalyticsRepository
+	// locations backs killfeed.LocationStore (Phase 3, docs/PLAYER_INTELLIGENCE.md) - nil-safe
+	// (InsertLocationEvents/UpsertPlayer below no-op if unset, matching this adapter's existing
+	// defensive-nil style for every other optional dependency).
+	locations  *repository.LocationRepository
 	panelDirty func()
 	// factionStats is told about every persisted kill and death (nil-safe): it invalidates cached
 	// faction figures and queues the killer for achievement evaluation. It never blocks the kill path.
@@ -1807,6 +1925,16 @@ func (p *persistenceStoreAdapter) CheckpointConnected(ctx context.Context, guild
 
 func (p *persistenceStoreAdapter) UpsertPlayer(ctx context.Context, guildID int64, dayzID, displayName string, seenAt time.Time) (int64, error) {
 	return p.players.UpsertPlayer(ctx, guildID, dayzID, displayName, seenAt)
+}
+
+// InsertLocationEvents satisfies killfeed.LocationStore (Phase 3, docs/PLAYER_INTELLIGENCE.md).
+// A nil locations repository (Phase 3 not wired up) reports success with nothing written, rather
+// than erroring the location queue's batch on every flush.
+func (p *persistenceStoreAdapter) InsertLocationEvents(ctx context.Context, events []repository.LocationEventInput) (int, error) {
+	if p.locations == nil {
+		return 0, nil
+	}
+	return p.locations.InsertLocationEvents(ctx, events)
 }
 
 func (p *persistenceStoreAdapter) InsertKill(ctx context.Context, k repository.KillRecord) error {

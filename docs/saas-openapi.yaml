@@ -3536,3 +3536,75 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409": { description: ADMIN_CONFIRMATION_REQUIRED. }
+
+  # --- Player Intelligence / Location History (Phase 3, docs/PLAYER_INTELLIGENCE.md) ----------
+  # Not built on the economy account search - a dedicated player-directory/location-history query
+  # surface. Location access is privileged: both location capabilities sit at Administrator, one
+  # level above the plain directory listing.
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/players:
+    get:
+      summary: >-
+        The authoritative player directory (PLAYER_DIRECTORY_VIEW) - real observed data only, never
+        fabricated when unavailable. Never built on the economy account search.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { name: q, in: query, schema: { type: string } }
+        - { name: online, in: query, schema: { type: boolean } }
+        - { name: linked, in: query, schema: { type: boolean } }
+        - { name: cursor, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer } }
+      responses:
+        "200": { description: "{ items: PlayerDirectoryEntry[], nextCursor: string|null }", content: { application/json: { schema: { type: object } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/players/online:
+    get:
+      summary: >-
+        Currently-connected players plus each one's latest known location (PLAYER_LAST_LOCATION_VIEW -
+        gated above the plain directory floor since the response includes location data). Never marks a
+        disconnected player online. Writes an admin_audit_log entry (ONLINE_PLAYER_LOCATIONS_VIEWED) -
+        location access is privileged.
+      parameters: [{ $ref: "#/components/parameters/ActingUser" }, { $ref: "#/components/parameters/organizationID" }, { $ref: "#/components/parameters/installationID" }]
+      responses:
+        "200": { description: "{ items: PlayerDirectoryEntry[] }", content: { application/json: { schema: { type: object } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/players/{playerID}/locations/latest:
+    get:
+      summary: >-
+        A single player's most recent observed location (PLAYER_LAST_LOCATION_VIEW), always derived at
+        query time from player_location_events - never a second, potentially-stale "current location"
+        column. Every location carries observedAt/ageSeconds/freshness (LIVE_RECENT<=60s / RECENT<=5min /
+        STALE>5min) - ADM has no continuous GPS, so "live" is never implied unless it genuinely qualifies.
+      parameters: [{ $ref: "#/components/parameters/ActingUser" }, { $ref: "#/components/parameters/organizationID" }, { $ref: "#/components/parameters/installationID" }, { name: playerID, in: path, required: true, schema: { type: integer, format: int64 } }]
+      responses:
+        "200": { description: "{ x, z, y, eventType, observedAt, ageSeconds, freshness }", content: { application/json: { schema: { type: object } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: No observed location for this player on this server. }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/players/{playerID}/locations:
+    get:
+      summary: >-
+        A player's location history, newest first (PLAYER_LOCATION_VIEW). Writes an admin_audit_log
+        entry (PLAYER_LOCATION_HISTORY_VIEWED) - location access is privileged, never exposed through
+        the public Player Hub.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { name: playerID, in: path, required: true, schema: { type: integer, format: int64 } }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: eventType, in: query, schema: { type: string, enum: [CONNECT, DISCONNECT, HIT, KILL, DEATH, RESPAWN, UNCONSCIOUS, OTHER_ADM] } }
+        - { name: cursor, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer } }
+      responses:
+        "200": { description: "{ items: LocationEvent[], nextCursor: string|null }", content: { application/json: { schema: { type: object } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }

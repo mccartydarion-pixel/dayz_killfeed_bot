@@ -1635,6 +1635,49 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_installation_access_entries_active ON insta
 CREATE INDEX IF NOT EXISTS idx_installation_access_entries_lookup ON installation_access_entries(installation_id, list_type, removed_at);
 `,
 	},
+	{
+		Name: "0041_player_location_events",
+		SQL: `
+-- Champion Phase 3 (docs/PLAYER_INTELLIGENCE.md): persisted ADM position history. ADM parsing
+-- already extracts Position{X,Y,Z} on any event whose metadata block includes "pos=<...>"
+-- (internal/killfeed/parser.go's posRe) but it was previously discarded immediately after use
+-- (only ever read transiently for kill-distance/embed rendering) - this table is the first
+-- durable store for it. guild_id/server_id (not organization_id/installation_id) match every
+-- other bot-native, guild-scoped table in this schema (kills, deaths, player_warnings,
+-- player_server_activity); the SaaS API resolves organization/installation -> guild/server the
+-- same way every other Client Admin route already does (ClientAdminRepository.Scope), so no
+-- second identity needs to be stored per row.
+--
+-- "Current location" is deliberately NOT a second table: it is derived at query time (SELECT ...
+-- ORDER BY observed_at DESC LIMIT 1, served by this table's own leading index), so there is only
+-- ever one truth for a player's location - never a second, potentially-stale copy to reconcile.
+--
+-- UNIQUE(player_id, server_id, event_type, observed_at) is the durable backstop against a
+-- duplicate ADM replay creating a duplicate location row (task section 14's "no duplicate
+-- location events after ADM replay") - the same pattern kills/deaths already use
+-- (UNIQUE(guild_id, event_fingerprint)), at ADM's own timestamp resolution (whole seconds); the
+-- writer inserts with ON CONFLICT DO NOTHING.
+CREATE TABLE IF NOT EXISTS player_location_events (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    server_id BIGINT NOT NULL REFERENCES game_servers(id) ON DELETE CASCADE,
+    player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    gamertag TEXT NOT NULL,
+    x DOUBLE PRECISION NOT NULL,
+    z DOUBLE PRECISION NOT NULL,
+    y DOUBLE PRECISION,
+    event_type TEXT NOT NULL CHECK (event_type IN ('CONNECT','DISCONNECT','HIT','KILL','DEATH','RESPAWN','UNCONSCIOUS','OTHER_ADM')),
+    observed_at TIMESTAMPTZ NOT NULL,
+    source TEXT NOT NULL DEFAULT 'ADM',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_player_location_events_dedupe UNIQUE (player_id, server_id, event_type, observed_at)
+);
+CREATE INDEX IF NOT EXISTS idx_player_location_events_player_time ON player_location_events(player_id, observed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_player_location_events_server_time ON player_location_events(server_id, observed_at DESC);
+-- Backs the retention cleanup job's DELETE ... WHERE created_at < cutoff.
+CREATE INDEX IF NOT EXISTS idx_player_location_events_retention ON player_location_events(created_at);
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order, each transactionally. A

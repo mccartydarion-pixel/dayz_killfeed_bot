@@ -273,6 +273,10 @@ type Engine struct {
 	pvePublisher   PveDeathPublisher
 	metrics        Metrics
 	persistence    *PersistenceQueue
+	// locationQueue is the optional Phase 3 location-history pipeline (docs/PLAYER_INTELLIGENCE.md)
+	// - nil-safe throughout (EnqueueEvent is a no-op on a nil queue), so an engine that never had
+	// one attached behaves exactly as before this feature existed.
+	locationQueue *LocationQueue
 
 	players   *PlayerTracker
 	onPlayers func(count int) // optional hook when the online player set changes
@@ -569,6 +573,25 @@ func (e *Engine) claimByPveFeed(ev *Event) (claimed bool) {
 		}
 	}()
 	return e.pvePublisher.PublishPveDeath(PveDeathNotice{Cause: cause, Name: ev.Player.Name})
+}
+
+// SetLocationQueue attaches the optional Phase 3 location-history pipeline
+// (docs/PLAYER_INTELLIGENCE.md). Unset by default - an engine with no location queue attached
+// simply never enqueues location candidates, at zero cost to the existing hot path.
+func (e *Engine) SetLocationQueue(q *LocationQueue) {
+	if e == nil {
+		return
+	}
+	e.locationQueue = q
+}
+
+// LocationQueueHealth returns the attached location queue's observability snapshot, or a zero
+// value if none is attached.
+func (e *Engine) LocationQueueHealth() LocationQueueHealth {
+	if e == nil {
+		return LocationQueueHealth{}
+	}
+	return e.locationQueue.Health()
 }
 
 // SetPersistence attaches the durable persistence queue and wires Discord
@@ -1624,6 +1647,13 @@ func (e *Engine) processLine(line string) (bool, error) {
 		}
 	}
 	e.dedupe.Remember(ev)
+	// Location candidates (Phase 3, docs/PLAYER_INTELLIGENCE.md): only a non-duplicate event
+	// reaches here, matching the hit-publish guard immediately below - a replayed line never
+	// produces a duplicate location candidate from this call site (the DB-level UNIQUE
+	// constraint is still the authoritative backstop, per task section 14, but this avoids
+	// manufacturing the duplicate in the first place). EnqueueEvent is non-blocking and a no-op
+	// on a nil queue, so this never affects the hot path whether or not Phase 3 is wired up.
+	e.locationQueue.EnqueueEvent(ev)
 	if ev.Type == EventPlayerHit {
 		// Hits are not persisted. Only a non-duplicate hit reaches here, so a
 		// replayed line (retry after a later persistence failure, rotation

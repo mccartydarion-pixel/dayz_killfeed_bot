@@ -505,3 +505,11 @@ Columns added:
 | `installation_channel_routes.show_location` | `BOOLEAN NOT NULL DEFAULT TRUE` - per-route toggle for whether that feed's embeds include location fields |
 | `server_configs.maintenance_mode` | `BOOLEAN NOT NULL DEFAULT FALSE` - Champion-side flag only, never touches the Nitrado server |
 | `server_configs.autostart_enabled`, `autostart_offline_minutes`, `autostart_cooldown_minutes`, `autostart_last_attempt_at`, `autostart_attempt_count` | Monitor-loop state for a future `SERVER_AUTOSTART` scheduler (`docs/CLIENT_ADMIN.md` "Deferred" - the columns shipped, the monitor loop itself did not) |
+
+## Player Intelligence / Location History (migration 0041)
+
+See `docs/PLAYER_INTELLIGENCE.md` for the full design. New table:
+
+| Table | Notes |
+|---|---|
+| `player_location_events` | `guild_id`/`server_id` (not `organization_id`/`installation_id` - matches every other bot-native guild-scoped table; the SaaS API resolves org/installation -> guild/server the same way every other Client Admin route does), `player_id` (`ON DELETE CASCADE`), `gamertag`, `x`/`z` (`DOUBLE PRECISION NOT NULL`), `y` (nullable), `event_type` (`CHECK IN` CONNECT, DISCONNECT, HIT, KILL, DEATH, RESPAWN, UNCONSCIOUS, OTHER_ADM), `observed_at`, `source` (default `'ADM'`), `created_at`. **`UNIQUE (player_id, server_id, event_type, observed_at)`** is the durable dedupe backstop against a duplicate ADM replay, inserted with `ON CONFLICT DO NOTHING` - the same pattern `kills`/`deaths` already use for their own fingerprint uniqueness. Indexes `(player_id, observed_at DESC)`, `(server_id, observed_at DESC)`, `(created_at)` (backs the retention sweep's `DELETE ... WHERE created_at < cutoff`). No separate "current location" table - always derived at query time (`ORDER BY observed_at DESC LIMIT 1`), per the task's own "do not store a second conflicting truth unless necessary" |
