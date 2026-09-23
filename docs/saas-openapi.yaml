@@ -3852,3 +3852,47 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { description: No ACTIVE intrusion found with that id. }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/heatmap:
+    get:
+      summary: >-
+        Aggregate PvP kill/death, player-activity, or zone-intrusion heatmap grid (HEATMAP_VIEW).
+        Never returns a player id, gamertag, Discord id, or faction identity - the response is
+        always an aggregate grid. No data is a valid 200 with empty cells, never a 404.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { name: type, in: query, required: true, schema: { type: string, enum: [PVP_KILLS, PVP_DEATHS, PLAYER_ACTIVITY, ZONE_INTRUSIONS] } }
+        - { name: from, in: query, schema: { type: string, format: date-time }, description: "Default: 24h before to." }
+        - { name: to, in: query, schema: { type: string, format: date-time }, description: "Default: now." }
+        - { name: resolution, in: query, schema: { type: integer, enum: [50, 100, 250, 500, 1000] }, description: "Default: 250." }
+        - { name: zoneId, in: query, schema: { type: integer, format: int64 }, description: "Only honored for type=ZONE_INTRUSIONS; must belong to this installation." }
+      responses:
+        "200":
+          description: Aggregated heatmap grid.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  type: { type: string }
+                  from: { type: string, format: date-time }
+                  to: { type: string, format: date-time }
+                  resolution: { type: integer }
+                  totalEvents: { type: integer, format: int64 }
+                  cells:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        cellX: { type: integer, format: int64 }
+                        cellZ: { type: integer, format: int64 }
+                        centerX: { type: number }
+                        centerZ: { type: number }
+                        count: { type: integer, format: int64 }
+                        intensity: { type: number }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: zoneId does not belong to this installation. }

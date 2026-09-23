@@ -101,6 +101,10 @@ const (
 	CapZoneIgnoreManage Capability = "ZONE_IGNORE_MANAGE"
 	CapUAVManage        Capability = "UAV_MANAGE"
 	CapIntrusionAck     Capability = "INTRUSION_ACK"
+	// CapHeatmapView is Champion Phase 5 (docs/HEATMAPS.md): aggregate PvP/activity/intrusion
+	// heatmap queries. Aggregate-only, no player identity in the response, so it sits at the same
+	// floor as the other "view aggregate operational data" capabilities.
+	CapHeatmapView Capability = "HEATMAP_VIEW"
 )
 
 // requiredLevel is the default minimum Level each capability needs (task's "DEFAULT ROLE
@@ -135,6 +139,7 @@ var requiredLevel = map[Capability]Level{
 	CapZoneIgnoreManage:       LevelAdministrator,
 	CapUAVManage:              LevelOwner,
 	CapIntrusionAck:           LevelModerator,
+	CapHeatmapView:            LevelModerator,
 }
 
 // Allows reports whether actorLevel satisfies capability's required minimum Level. An unknown
