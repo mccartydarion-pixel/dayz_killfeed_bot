@@ -7,8 +7,17 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/factions"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
+
+// rivalryStatsStore is the rivalry command's view of the faction stats
+// repository, so tests can substitute fakes.
+type rivalryStatsStore interface {
+	GetRivalry(ctx context.Context, guildID, factionA, factionB int64) (*repository.RivalryStats, error)
+	GetRivalryLongestKill(ctx context.Context, guildID, factionA, factionB int64) (int64, float64, error)
+	GetRivalryTopKiller(ctx context.Context, guildID, factionA, factionB int64) (int64, int64, error)
+}
 
 type WarCommandHandler struct {
 	wars                *repository.PostgresWarRepository
@@ -18,10 +27,20 @@ type WarCommandHandler struct {
 	links               *repository.LinkRepository
 	factionStats        *repository.FactionStatsRepository
 	factionPresentation *repository.FactionPresentationRepository
+	rivalryStats        rivalryStatsStore
+	players             completionPlayerNames
 }
 
-func NewWarCommandHandler(wars *repository.PostgresWarRepository, guilds GuildStore, seasons *repository.SeasonRepository, factionRepo *repository.FactionRepository, links *repository.LinkRepository, factionStats *repository.FactionStatsRepository, factionPresentation *repository.FactionPresentationRepository) *WarCommandHandler {
-	return &WarCommandHandler{wars: wars, guilds: guilds, seasons: seasons, factions: factionRepo, links: links, factionStats: factionStats, factionPresentation: factionPresentation}
+func NewWarCommandHandler(wars *repository.PostgresWarRepository, guilds GuildStore, seasons *repository.SeasonRepository, factionRepo *repository.FactionRepository, links *repository.LinkRepository, factionStats *repository.FactionStatsRepository, factionPresentation *repository.FactionPresentationRepository, players *repository.PlayerRepository) *WarCommandHandler {
+	h := &WarCommandHandler{wars: wars, guilds: guilds, seasons: seasons, factions: factionRepo, links: links, factionStats: factionStats, factionPresentation: factionPresentation}
+	// Assign only non-nil repositories so the interface nil checks hold.
+	if factionStats != nil {
+		h.rivalryStats = factionStats
+	}
+	if players != nil {
+		h.players = players
+	}
+	return h
 }
 func RegisterWarCommands(session *discordgo.Session, guildID string) error {
 	applicationID, err := ApplicationID(session)
@@ -222,7 +241,7 @@ func (h *WarCommandHandler) authorized(ctx context.Context, i *discordgo.Interac
 }
 
 func (h *WarCommandHandler) handleRivalry(s *discordgo.Session, i *discordgo.InteractionCreate, ctx context.Context, guildID int64, group *discordgo.ApplicationCommandInteractionDataOption) {
-	if h.factions == nil || h.factionStats == nil {
+	if h.factions == nil || h.rivalryStats == nil {
 		respondEphemeral(s, i, "Faction statistics are unavailable.")
 		return
 	}
@@ -236,18 +255,58 @@ func (h *WarCommandHandler) handleRivalry(s *discordgo.Session, i *discordgo.Int
 		respondEphemeral(s, i, "Opponent faction not found.")
 		return
 	}
-	r, err := h.factionStats.GetRivalry(ctx, guildID, a.ID, b.ID)
+	text, err := h.rivalryText(ctx, guildID, *a, *b)
 	if err != nil {
 		respondEphemeral(s, i, "Could not load rivalry.")
 		return
 	}
-	player, distance, _ := h.factionStats.GetRivalryLongestKill(ctx, guildID, a.ID, b.ID)
-	top, count, _ := h.factionStats.GetRivalryTopKiller(ctx, guildID, a.ID, b.ID)
+	respondEphemeral(s, i, text)
+}
+
+// rivalryText loads the rivalry stats and resolves the record holders to
+// their display names. A holder that cannot be resolved is passed as "" and
+// its line is omitted.
+func (h *WarCommandHandler) rivalryText(ctx context.Context, guildID int64, a, b repository.Faction) (string, error) {
+	r, err := h.rivalryStats.GetRivalry(ctx, guildID, a.ID, b.ID)
+	if err != nil {
+		return "", err
+	}
+	longID, distance, err := h.rivalryStats.GetRivalryLongestKill(ctx, guildID, a.ID, b.ID)
+	if err != nil {
+		longID = 0
+	}
+	topID, count, err := h.rivalryStats.GetRivalryTopKiller(ctx, guildID, a.ID, b.ID)
+	if err != nil {
+		topID = 0
+	}
+	names := map[int64]string{}
+	if h.players != nil && (longID != 0 || topID != 0) {
+		// A failed lookup only drops the name lines; the rivalry still renders.
+		if resolved, err := h.players.DisplayNamesByID(ctx, guildID, []int64{longID, topID}); err == nil {
+			names = resolved
+		}
+	}
 	diff := r.AKills - r.BKills
 	if a.ID > b.ID {
 		diff = -diff
 	}
-	respondEphemeral(s, i, fmt.Sprintf("🔥 **CHAMPION RIVALRY**\n\n[%s] %s vs [%s] %s\n\n⚔️ Lifetime Kill Exchange\n%s — %d\n%s — %d\n\n📊 Total Encounters\n%d\n🏆 Wars\n%d\n📈 Differential\n%s %+d\n🎯 Longest Rivalry Kill\nPlayer %d — %.1fm\n🔥 Most Active Killer\nPlayer %d — %d rivalry kills", a.Tag, a.Name, b.Tag, b.Name, a.Tag, r.AKills, b.Tag, r.BKills, r.TotalKills, r.WarCount, a.Tag, diff, player, distance, top, count))
+	// ID 0 means no holder; never render a name for it.
+	delete(names, 0)
+	return BuildRivalryText(a, b, *r, diff, names[longID], distance, names[topID], count), nil
+}
+
+// BuildRivalryText formats the rivalry response. It is pure formatting: the
+// caller resolves names, and an empty holder name omits that line.
+func BuildRivalryText(a, b repository.Faction, r repository.RivalryStats, diff int64, longestName string, longest float64, topName string, topKills int64) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "🔥 **CHAMPION RIVALRY**\n\n[%s] %s vs [%s] %s\n\n⚔️ Lifetime Kill Exchange\n%s — %d\n%s — %d\n\n📊 Total Encounters\n%d\n🏆 Wars\n%d\n📈 Differential\n%s %+d", a.Tag, a.Name, b.Tag, b.Name, a.Tag, r.AKills, b.Tag, r.BKills, r.TotalKills, r.WarCount, a.Tag, diff)
+	if longestName != "" {
+		fmt.Fprintf(&sb, "\n🎯 Longest Rivalry Kill\n%s — %s",presentation.SafeName(longestName, presentation.MaxRankNameRunes), presentation.FormatDistance(longest))
+	}
+	if topName != "" {
+		fmt.Fprintf(&sb, "\n🔥 Most Active Killer\n%s — %d rivalry kills",presentation.SafeName(topName, presentation.MaxRankNameRunes), topKills)
+	}
+	return sb.String()
 }
 
 func (h *WarCommandHandler) handleLeaderboard(s *discordgo.Session, i *discordgo.InteractionCreate, ctx context.Context, guildID int64, group *discordgo.ApplicationCommandInteractionDataOption) {
