@@ -78,7 +78,72 @@ func (p *ADMParser) ParseLine(line string) (*Event, error) {
 	if ev, ok := parseRespawn(line); ok {
 		return ev, nil
 	}
+	if ev, ok := parseBuildAction(line); ok {
+		return ev, nil
+	}
 	return nil, nil
+}
+
+// buildTailRe matches what follows the player's metadata block on a build
+// line (adminLogBuildActions): "built <part> on <target> with <tool>" or
+// "dismantled <part> from <target> with <tool>"; the target and tool are
+// optional.
+var buildTailRe = regexp.MustCompile(`(?i)^(built|dismantled)\s+(.+?)(?:\s+(?:on|from)\s+(.+?))?(?:\s+with\s+(.+?))?$`)
+
+// placedTailRe matches a placement line (adminLogPlacement): "placed <item>".
+var placedTailRe = regexp.MustCompile(`(?i)^placed\s+(.+?)$`)
+
+// classSuffixRe strips a trailing engine class name ("Sea Chest<SeaChest>").
+var classSuffixRe = regexp.MustCompile(`\s*<[^<>]*>$`)
+
+const maxBuildTextRunes = 64
+
+// parseBuildAction matches: Player "<name>" (id=... pos=<...>) placed <item>
+// and Player "<name>" (id=...) built|dismantled <part> on|from <target> with <tool>.
+// The verb must directly follow the player's metadata block, so no other
+// line kind (kills, hits, chat) can be mistaken for a build action.
+func parseBuildAction(line string) (*Event, bool) {
+	head := playerHeadRe.FindStringIndex(line)
+	if head == nil {
+		return nil, false
+	}
+	rest := line[head[1]:]
+	open := strings.Index(rest, "(")
+	if open < 0 || strings.TrimSpace(rest[:open]) != "" {
+		return nil, false
+	}
+	closeIdx := strings.Index(rest[open:], ")")
+	if closeIdx < 0 {
+		return nil, false
+	}
+	tail := strings.TrimSpace(rest[open+closeIdx+1:])
+	build := &BuildAction{}
+	if m := placedTailRe.FindStringSubmatch(tail); m != nil {
+		build.Action, build.Object = "Placed", cleanBuildText(m[1])
+	} else if m := buildTailRe.FindStringSubmatch(tail); m != nil {
+		build.Action = map[string]string{"built": "Built", "dismantled": "Dismantled"}[strings.ToLower(m[1])]
+		build.Object, build.Target, build.Tool = cleanBuildText(m[2]), cleanBuildText(m[3]), cleanBuildText(m[4])
+	} else {
+		return nil, false
+	}
+	if build.Object == "" {
+		return nil, false
+	}
+	player, ok := parsePlayer(line)
+	if !ok {
+		return nil, false
+	}
+	return &Event{Type: EventBuildAction, TimeOfDay: parseTimeOfDay(line), Player: player, Build: build, Raw: line}, true
+}
+
+// cleanBuildText trims an item name, drops its engine class suffix and
+// bounds its length. Discord escaping happens at render time.
+func cleanBuildText(s string) string {
+	s = strings.TrimSpace(classSuffixRe.ReplaceAllString(strings.TrimSpace(s), ""))
+	if r := []rune(s); len(r) > maxBuildTextRunes {
+		s = string(r[:maxBuildTextRunes])
+	}
+	return s
 }
 
 // parseTimeOfDay extracts the HH:MM:SS clock token.

@@ -201,8 +201,8 @@ Discord channel (Channel System V2):
 | `ECONOMY` | `💰・economy` | Champion Points transactions |
 | `SHOP` | `💰・economy` | Shop purchases/refunds (published on `ECONOMY`) |
 | `ADMIN_LOGS` | `🛡️・admin-logs` | ADM health / diagnostics |
-| `ADMIN_ALERTS` | `🛡️・admin-logs` | Operational alerts (no publisher yet) |
-| `BUILD_FEED` | `🛡️・admin-logs` | Build/base events (no source yet) |
+| `ADMIN_ALERTS` | `🛡️・admin-logs` | Operational alerts |
+| `BUILD_FEED` | `🛡️・admin-logs` | Build/placement actions (when the server logs them) |
 
 `CASINO` no longer exists; migration 0044 deleted its stored routes and
 embed templates.

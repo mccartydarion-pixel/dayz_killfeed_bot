@@ -130,7 +130,7 @@ var championDestinations = []championDestination{
 	{
 		Key: "ADMIN_LOGS", Label: "Admin Logs", Category: categoryStaff, ChannelName: "🛡️・admin-logs",
 		Routes: []string{"ADMIN_LOGS", "ADMIN_ALERTS", "BUILD_FEED"}, Anchors: []string{"ADMIN_LOGS", "ADMIN_ALERTS", "BUILD_FEED"},
-		Starter: &starterCard{"🛡️ ADMIN LOGS", "Champion staff diagnostics will appear here.\n\n**Includes**\n• ADM log health"},
+		Starter: &starterCard{"🛡️ ADMIN LOGS", "Champion staff operations will appear here.\n\n**Includes**\n• ADM log health\n• Operational alerts\n• Build activity, when the server logs it"},
 	},
 }
 
@@ -158,8 +158,11 @@ var routeProducerAudit = map[string]routeProducer{
 	"ECONOMY":            {HealthActive, "EconomyFeed"},
 	"SHOP":               {HealthActive, "shop purchases/refunds, published by EconomyFeed on the ECONOMY route"},
 	"ADMIN_LOGS":         {HealthActive, "ADMMonitorPublisher ADM health (per server worker)"},
-	"ADMIN_ALERTS":       {HealthBlocked, detailNotYetProducing},
-	"BUILD_FEED":         {HealthBlocked, detailSourceBlocked},
+	"ADMIN_ALERTS":       {HealthActive, "AdminAlertPublisher: ADM stale, Nitrado download failures, zone/UAV/base radar intrusions"},
+	// BUILD_FEED's publisher runs per server, but its source only exists when
+	// the server logs build actions; channelRouteProducers reports it ACTIVE
+	// once one has actually been parsed.
+	"BUILD_FEED": {HealthBlocked, detailSourceBlocked + ": no build/placement line parsed yet - enable adminLogPlacement / adminLogBuildActions in the server config"},
 }
 
 // championRouteKeys is the fixed set of valid route_key values - never an
@@ -201,6 +204,12 @@ func (a *App) channelRouteProducers() map[string]routeProducer {
 	}
 	if a.HeatmapBoard == nil {
 		broken("heatmap publisher is not running", "HEATMAPS")
+	}
+	if a.AdminAlerts == nil {
+		broken("admin alert publisher is not running", "ADMIN_ALERTS")
+	}
+	if a.ChannelRoutes != nil && a.buildActionsSeen.Load() > 0 {
+		out["BUILD_FEED"] = routeProducer{HealthActive, "BuildFeedPublisher: ADM build/placement actions"}
 	}
 	if a.LeaderboardScheduler == nil {
 		broken("leaderboard scheduler is not running", "AUTO_LEADERBOARD")

@@ -269,6 +269,7 @@ type Engine struct {
 	publisher      KillPublisher
 	deathPublisher DeathPublisher
 	hitPublisher   HitPublisher
+	buildPublisher BuildPublisher
 	connPublisher  ConnectionPublisher
 	pvePublisher   PveDeathPublisher
 	metrics        Metrics
@@ -521,6 +522,33 @@ func (e *Engine) publishHit(ev *Event) {
 		}
 	}()
 	e.hitPublisher.PublishHit(ev)
+}
+
+// BuildPublisher consumes parsed build/placement actions (BUILD_FEED).
+type BuildPublisher interface {
+	PublishBuild(ev *Event)
+}
+
+// SetBuildPublisher attaches the consumer for build actions. Optional: with
+// none attached build lines are parsed and dropped.
+func (e *Engine) SetBuildPublisher(p BuildPublisher) {
+	if e == nil {
+		return
+	}
+	e.buildPublisher = p
+}
+
+// publishBuild is fire-and-forget and panic-safe, like publishHit.
+func (e *Engine) publishBuild(ev *Event) {
+	if e.buildPublisher == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("component=killfeed", "msg", "build publisher panic recovered", "server_id", e.serverID, "panic", fmt.Sprint(r))
+		}
+	}()
+	e.buildPublisher.PublishBuild(ev)
 }
 
 // SetConnectionPublisher attaches the consumer for connect/disconnect state
@@ -1659,6 +1687,10 @@ func (e *Engine) processLine(line string) (bool, error) {
 		// replayed line (retry after a later persistence failure, rotation
 		// overlap) is never fed to the HITFEED twice.
 		e.publishHit(ev)
+	}
+	if ev.Type == EventBuildAction {
+		// Not persisted; only a non-duplicate line reaches here.
+		e.publishBuild(ev)
 	}
 	if e.players != nil {
 		switch ev.Type {

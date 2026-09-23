@@ -496,8 +496,8 @@ Behavior:
    that already carries the V2 name first, then a name scan **scoped to its
    category** (recovery never adopts a same-named channel elsewhere), then
    create. Every route of the destination is mapped to it
-   (`managedByChampion=true`), including routes that do not produce yet
-   (`ADMIN_ALERTS`, `BUILD_FEED`) so they are ready.
+   (`managedByChampion=true`), including a route whose source is not proven
+   yet (`BUILD_FEED` before any build line was parsed) so it is ready.
 7. Posts/restores persistent panels immediately (the same serialized sync
    the runtime uses, so it never posts a second copy), then verifies every
    created channel: exists, route mapped, producer connected, bot can send,
@@ -537,8 +537,8 @@ Response `200` on success ([`AutoSetupChannelsResponse`](#autosetupchannelsrespo
       "health": "ACTIVE", "created": true, "starterSent": true,
       "routes": [
         { "routeKey": "ADMIN_LOGS", "health": "ACTIVE", "detail": "ADMMonitorPublisher ADM health (per server worker)" },
-        { "routeKey": "ADMIN_ALERTS", "health": "BLOCKED", "detail": "NOT_YET_PRODUCING_EVENTS" },
-        { "routeKey": "BUILD_FEED", "health": "BLOCKED", "detail": "SOURCE_BLOCKED" }
+        { "routeKey": "ADMIN_ALERTS", "health": "ACTIVE", "detail": "AdminAlertPublisher: ADM stale, Nitrado download failures, zone/UAV/base radar intrusions" },
+        { "routeKey": "BUILD_FEED", "health": "BLOCKED", "detail": "SOURCE_BLOCKED: no build/placement line parsed yet - enable adminLogPlacement / adminLogBuildActions in the server config" }
       ],
       "checks": { "channelExists": true, "routeMapped": true, "producerConnected": true, "botCanSend": true, "visibleContent": true }
     },
@@ -713,8 +713,8 @@ instantiated in the process (routing disabled, service absent) is reported
 | `ECONOMY` | `EconomyFeed` | ACTIVE |
 | `SHOP` | shop purchase/refund events, published by `EconomyFeed` on the `ECONOMY` route | ACTIVE |
 | `ADMIN_LOGS` | `ADMMonitorPublisher` ADM health | ACTIVE |
-| `ADMIN_ALERTS` | none yet | BLOCKED - `NOT_YET_PRODUCING_EVENTS` (mapped to admin-logs) |
-| `BUILD_FEED` | none yet | BLOCKED - `SOURCE_BLOCKED` (mapped to admin-logs) |
+| `ADMIN_ALERTS` | `AdminAlertPublisher` - ADM stale, repeated Nitrado download failures, zone/UAV/base radar intrusions (`docs/ADMIN_LOGS.md`) | ACTIVE |
+| `BUILD_FEED` | `BuildFeedPublisher` - ADM placement/build lines (`docs/ADMIN_LOGS.md`) | ACTIVE once a build line has been parsed in this process; otherwise BLOCKED - `SOURCE_BLOCKED` (the server must enable `adminLogPlacement` / `adminLogBuildActions`) |
 
 The runtime panel owners (`RouteSyncer`, `BountyBoard`, `HeatmapBoard`,
 `LeaderboardScheduler`, `EconomyFeed`) serve the bot's configured guild. An
@@ -1729,7 +1729,7 @@ entitlement enforcement (billing/checkout itself now exists - `docs/BILLING.md`)
 verify-permissions website UI showing per-channel PASS/WARNING/FAIL (`#13`
 itself still only checks one channel per call - `#25`'s finalize check is
 what actually aggregates every unique route channel today, not `#13`), and
-the routes marked BLOCKED in the channel routing table above (admin
-alerts, build feed) - one-click setup creates no channel for
+the routes marked BLOCKED in the channel routing table above (the build
+feed until the server logs build actions) - one-click setup creates no channel for
 a destination without a working producer. DayZ PC and non-console Nitrado services are intentionally
 unsupported, not missing - see the platform contract note above.
