@@ -204,8 +204,19 @@ never skipped. (Before V2 the hash ignored fields and dereferenced a nil footer.
 Hitfeed, PvE, connections and economy cards were already compact
 description-only cards and are unchanged. Bounty lifecycle cards drop the generic
 `Value:` label (`Reward **25,000 pts**`, `**Hunter** eliminated **Target**`); the
-bounty board uses the shared rank rows. The season-complete card is four inline
-record fields and omits holder names it does not know.
+bounty board uses the shared rank rows.
+
+Completion cards (`competitive_embeds.go`) are built from names the publisher
+(`live_completion_publishers.go`) has already resolved through the repositories;
+the builders do no lookups. Anything unresolved is omitted, never shown as a
+placeholder or an internal ID:
+
+- Season complete: four inline record fields; a holder line only when known.
+- Faction war complete: `**[TAG] A** vs **[TAG] B**` plus the winner (or 🤝 DRAW
+  when the stored scores tie), one inline score field per side, then 🔥 TOP KILLER /
+  🎯 LONGEST KILL only when the war has kills. Season in the footer when set.
+- Event complete: one `🏆 FINAL STANDINGS` field of `RankLine` rows (🥇🥈🥉);
+  a row whose player cannot be resolved is dropped, ranks stay positional.
 
 ## Name safety
 

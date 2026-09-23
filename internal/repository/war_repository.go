@@ -162,13 +162,13 @@ func (r *PostgresWarRepository) GetWarScore(ctx context.Context, guildID, warID 
 }
 func (r *PostgresWarRepository) GetWarTopKiller(ctx context.Context, guildID, warID int64) (int64, int64, error) {
 	var player, count int64
-	err := r.pool.QueryRow(ctx, `SELECT killer_player_id,COUNT(*) FROM kills WHERE guild_id=$1 AND war_id=$2 GROUP BY killer_player_id ORDER BY COUNT(*) DESC,killer_player_id LIMIT 1`, guildID, warID).Scan(&player, &count)
+	err := r.pool.QueryRow(ctx, `SELECT killer_player_id,COUNT(*) FROM kills WHERE guild_id=$1 AND war_id=$2 AND killer_player_id IS NOT NULL GROUP BY killer_player_id ORDER BY COUNT(*) DESC,killer_player_id LIMIT 1`, guildID, warID).Scan(&player, &count)
 	return player, count, err
 }
 func (r *PostgresWarRepository) GetWarLongestKill(ctx context.Context, guildID, warID int64) (int64, float64, error) {
 	var player int64
 	var distance float64
-	err := r.pool.QueryRow(ctx, `SELECT killer_player_id,distance FROM kills WHERE guild_id=$1 AND war_id=$2 AND distance IS NOT NULL ORDER BY distance DESC,id LIMIT 1`, guildID, warID).Scan(&player, &distance)
+	err := r.pool.QueryRow(ctx, `SELECT killer_player_id,distance FROM kills WHERE guild_id=$1 AND war_id=$2 AND killer_player_id IS NOT NULL AND distance IS NOT NULL ORDER BY distance DESC,id LIMIT 1`, guildID, warID).Scan(&player, &distance)
 	return player, distance, err
 }
 

@@ -1071,7 +1071,7 @@ func (a *App) Run() error {
 		})
 	}
 	if a.AnnouncementService != nil && a.Config.DiscordGuildID != "" {
-		a.CompletionPublisher = discord.NewLiveCompletionPublisher(a.AnnouncementService, api, setupStore, a.Seasons, a.Wars, a.Events, a.Guilds, a.Config.DiscordGuildID)
+		a.CompletionPublisher = discord.NewLiveCompletionPublisher(a.AnnouncementService, api, setupStore, a.Seasons, a.Wars, a.Events, a.Players, a.Factions, a.Guilds, a.Config.DiscordGuildID)
 	}
 	if a.SeasonService != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
 		seasonHandler := discord.NewSeasonCommandHandler(a.SeasonService, a.Guilds)

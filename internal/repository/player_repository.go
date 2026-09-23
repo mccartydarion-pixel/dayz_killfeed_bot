@@ -71,3 +71,32 @@ func (p PlayerProfile) KD() float64 {
 	}
 	return float64(p.Kills) / float64(p.Deaths)
 }
+
+// DisplayNamesByID resolves player row IDs to display names in one query.
+// IDs with no player row are absent from the map; zero IDs are skipped.
+func (r *PlayerRepository) DisplayNamesByID(ctx context.Context, guildID int64, ids []int64) (map[int64]string, error) {
+	out := make(map[int64]string, len(ids))
+	want := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if id != 0 {
+			want = append(want, id)
+		}
+	}
+	if len(want) == 0 {
+		return out, nil
+	}
+	rows, err := r.pool.Query(ctx, `SELECT id,display_name FROM players WHERE guild_id=$1 AND id=ANY($2)`, guildID, want)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return nil, err
+		}
+		out[id] = name
+	}
+	return out, rows.Err()
+}
