@@ -88,29 +88,33 @@ func (a *App) memberRolesCached(guildID, discordUserID string) ([]string, error)
 // current live Discord roles in that installation's guild. If several mapped roles disagree, the
 // HIGHEST mapped Level wins (a Client who is both "Moderator" and "Admin" role-wise gets
 // Administrator, not the lower one).
-func (a *App) actorLevel(ctx context.Context, scope repository.AdminScope, user *repository.AppUser) (permissions.Level, error) {
+// actorLevel also returns the live Discord role IDs it resolved (empty/nil when the organization-
+// owner bootstrap short-circuited before any Discord lookup was needed) - Part 2 of Client Admin
+// Control Plane Phase 1 (docs/CLIENT_ADMIN.md "Current Actor Client Admin Permissions") surfaces
+// these to the website "only if already readily available", which this is.
+func (a *App) actorLevel(ctx context.Context, scope repository.AdminScope, user *repository.AppUser) (level permissions.Level, discordRoleIDs []string, err error) {
 	if a.SaaSOrganizations != nil {
 		org, err := a.SaaSOrganizations.GetByID(ctx, scope.OrganizationID)
 		if err != nil {
-			return permissions.LevelNone, err
+			return permissions.LevelNone, nil, err
 		}
 		if org != nil && org.OwnerUserID == user.ID {
-			return permissions.LevelOwner, nil
+			return permissions.LevelOwner, nil, nil
 		}
 	}
 	if a.Permissions == nil {
-		return permissions.LevelNone, nil
+		return permissions.LevelNone, nil, nil
 	}
 	roles, err := a.memberRolesCached(scope.DiscordGuildID, user.DiscordUserID)
 	if err != nil {
-		return permissions.LevelNone, err
+		return permissions.LevelNone, nil, err
 	}
 	if len(roles) == 0 {
-		return permissions.LevelNone, nil
+		return permissions.LevelNone, roles, nil
 	}
 	levelNames, err := a.Permissions.LevelsForRoles(ctx, scope.InstallationID, roles)
 	if err != nil {
-		return permissions.LevelNone, err
+		return permissions.LevelNone, roles, err
 	}
 	best := permissions.LevelNone
 	for _, name := range levelNames {
@@ -118,21 +122,26 @@ func (a *App) actorLevel(ctx context.Context, scope repository.AdminScope, user 
 			best = l
 		}
 	}
-	return best, nil
+	return best, roles, nil
 }
 
 // adminActor bundles the outcome of the standard admin-route preamble: service auth, acting
-// user, path ids, scope resolution, and the actor's resolved Level - so every capability handler
-// in saas_api_client_admin.go starts from the same known-good state.
+// user, path ids, scope resolution, and the actor's resolved Level (+ the Discord roles that
+// resolution used) - so every capability handler in saas_api_client_admin.go starts from the
+// same known-good state.
 type adminActor struct {
-	user  *repository.AppUser
-	scope repository.AdminScope
-	level permissions.Level
+	user           *repository.AppUser
+	scope          repository.AdminScope
+	level          permissions.Level
+	discordRoleIDs []string
 }
 
-// requireCapability runs the full admin-route preamble and enforces capability. On failure it has
-// already written the appropriate error response; the caller just returns.
-func (a *App) requireCapability(w http.ResponseWriter, r *http.Request, capability permissions.Capability) (ac adminActor, ok bool) {
+// resolveAdminActor runs the standard preamble (service auth, acting user, path ids, scope
+// resolution, Level resolution) shared by requireCapability and handleClientAdminMe - everything
+// except the final capability gate itself, which differs between "must have this one capability"
+// and "report whatever Level/capabilities the actor has, even none". On failure it has already
+// written the appropriate error response.
+func (a *App) resolveAdminActor(w http.ResponseWriter, r *http.Request) (ac adminActor, ok bool) {
 	if !a.requireSaaSServiceAuth(w, r) {
 		return
 	}
@@ -164,17 +173,27 @@ func (a *App) requireCapability(w http.ResponseWriter, r *http.Request, capabili
 		writeSaaSError(w, codeInternalError, "could not resolve installation")
 		return
 	}
-	level, err := a.actorLevel(ctx, scope, user)
+	level, roles, err := a.actorLevel(ctx, scope, user)
 	if err != nil {
 		slog.Warn("component=saas_api", "msg", "actor level resolution failed", "err", err.Error())
 		writeSaaSError(w, codeAdminDiscordUnavailable, "could not verify Discord roles")
 		return
 	}
-	if !permissions.Allows(level, capability) {
-		writeSaaSError(w, codeAdminForbidden, "missing required permission: "+string(capability))
-		return
+	return adminActor{user: user, scope: scope, level: level, discordRoleIDs: roles}, true
+}
+
+// requireCapability is resolveAdminActor plus the capability gate every mutation/read route in
+// saas_api_client_admin.go needs - a missing capability writes ADMIN_FORBIDDEN and returns ok=false.
+func (a *App) requireCapability(w http.ResponseWriter, r *http.Request, capability permissions.Capability) (ac adminActor, ok bool) {
+	ac, ok = a.resolveAdminActor(w, r)
+	if !ok {
+		return adminActor{}, false
 	}
-	return adminActor{user: user, scope: scope, level: level}, true
+	if !permissions.Allows(ac.level, capability) {
+		writeSaaSError(w, codeAdminForbidden, "missing required permission: "+string(capability))
+		return adminActor{}, false
+	}
+	return ac, true
 }
 
 // recordAudit writes one admin_audit_log row, best-effort (task: the action has already
@@ -258,12 +277,50 @@ func (a *App) registerClientAdminRoutes() {
 	}
 	const base = "/api/saas/organizations/{organizationID}/installations/{installationID}/admin"
 	h := a.HTTPServer.Handle
+	h("GET "+base+"/me", a.handleClientAdminMe)
 	h("GET "+base+"/permissions", a.handleListPermissions)
 	h("PUT "+base+"/permissions/{discordRoleID}", a.handleSetPermission)
 	h("DELETE "+base+"/permissions/{mappingID}", a.handleDeletePermission)
 	h("GET "+base+"/audit-log", a.handleListAuditLog)
 
 	a.registerClientAdminCapabilityRoutes(base)
+}
+
+// clientAdminMeResponse is the current actor's resolved Champion bot permission Level and exact
+// capability set for the selected installation (Client Admin Control Plane Phase 1 Part 2,
+// docs/CLIENT_ADMIN.md "Current Actor Client Admin Permissions"). These are Champion BOT
+// permission levels driving the website's Client Server Admin UI - NOT Champion Platform Owner
+// roles and NOT organization billing roles (organization_members' OWNER/ADMIN/MEMBER), which
+// remain entirely separate and are never reported here.
+type clientAdminMeResponse struct {
+	Level          string                   `json:"level"`
+	Capabilities   []permissions.Capability `json:"capabilities"`
+	DiscordRoleIDs []string                 `json:"discordRoleIds,omitempty"`
+}
+
+// handleClientAdminMe is GET .../admin/me. Unlike every other route in this file it requires no
+// specific capability - its entire job is to REPORT whatever Level (possibly none) the acting
+// user resolves to, so the website can decide what to show. An actor with no mapped Level still
+// gets a normal, informative 403 ADMIN_FORBIDDEN (never a fabricated "safe" 200 with an empty
+// Level - task section 3 leaves the choice open, but the website's own error-handling section
+// (Part 2 section 21) expects exactly this response for "no permission").
+func (a *App) handleClientAdminMe(w http.ResponseWriter, r *http.Request) {
+	ac, ok := a.resolveAdminActor(w, r)
+	if !ok {
+		return
+	}
+	if !enforceRateLimit(w, a.saasAdminReadLimiter, rateLimitKey(r)) {
+		return
+	}
+	if ac.level == permissions.LevelNone {
+		writeSaaSError(w, codeAdminForbidden, "no Champion bot permission level is mapped for this user on this installation")
+		return
+	}
+	writeSaaSJSON(w, http.StatusOK, clientAdminMeResponse{
+		Level:          ac.level.String(),
+		Capabilities:   permissions.CapabilitiesForLevel(ac.level),
+		DiscordRoleIDs: ac.discordRoleIDs,
+	})
 }
 
 // handleListPermissions is GET .../admin/permissions (PERMISSIONS_VIEW).

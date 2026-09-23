@@ -1176,13 +1176,24 @@ OWNER/ADMIN/MEMBER role used elsewhere in this document (the organization owner 
 bootstrapped to Level OWNER; every other Level requires an explicit role mapping).
 
 All routes are under `/api/saas/organizations/{organizationID}/installations/{installationID}/admin`:
-permission mapping CRUD, the audit log, warnings, bounty reset, faction admin, last-online,
-an economy-balance-search alias, server name/feed-location/maintenance-mode, server
-restart/stop (real Nitrado endpoints, typed-confirmation-gated), whitelist/banlist management
-(real Nitrado endpoints, Champion-side metadata), and stat reset (streak per-player,
-season-based guild-wide). See `docs/CLIENT_ADMIN.md` for the full route table, the DayZ/Nitrado
-capability audit (what's a real Nitrado API call vs. deferred), and the explicit list of deferred
-capabilities (priority list, gameplay toggles, zones/UAV/heatmap, auto payments) with reasoning.
+**`GET /me`** (current-actor permission introspection, see below), permission mapping CRUD, the
+audit log, warnings, bounty reset, faction admin, last-online, an economy-balance-search alias,
+server name/feed-location/maintenance-mode, server restart/stop (real Nitrado endpoints,
+typed-confirmation-gated), whitelist/banlist management (real Nitrado endpoints, Champion-side
+metadata), and stat reset (streak per-player, season-based guild-wide). See `docs/CLIENT_ADMIN.md`
+for the full route table, the DayZ/Nitrado capability audit (what's a real Nitrado API call vs.
+deferred), and the explicit list of deferred capabilities (priority list, gameplay toggles,
+zones/UAV/heatmap, auto payments) with reasoning.
+
+**`GET /me`** reports the acting user's own resolved Level and exact capability set for the
+selected installation - the mechanism the website's Client Server Admin UI uses to decide which
+controls to render, instead of inferring visibility from the organization OWNER/ADMIN/MEMBER role
+or any website-side session flag. Unlike every other route here, it requires no specific
+capability - an actor with no mapped Level still gets a normal `403 ADMIN_FORBIDDEN`, not a
+fabricated 200. Response: `{"level":"MODERATOR","capabilities":["...",...],"discordRoleIds":["..."]}`.
+`capabilities` is derived from the same fixed Level table every other route's authorization check
+reads (`permissions.CapabilitiesForLevel`), sorted for stable output - never a second
+hand-maintained list. See `docs/CLIENT_ADMIN.md` "Current Actor Client Admin Permissions".
 
 New error codes: `ADMIN_FORBIDDEN` (403), `ADMIN_ESCALATION_DENIED` (403),
 `ADMIN_CONFIRMATION_REQUIRED` (409), `ADMIN_DISCORD_UNAVAILABLE` (503).
