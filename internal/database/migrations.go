@@ -1848,7 +1848,28 @@ DELETE FROM installation_channel_routes WHERE route_key = 'CASINO';
 DELETE FROM installation_embed_templates WHERE route_key = 'CASINO';
 `,
 	},
+	{
+		Name: "0045_player_location_events_adm_axis_fix",
+		SQL:  admLocationAxisFixSQL,
+	},
 }
+
+// admLocationAxisFixSQL repairs player_location_events rows written before the ADM axis fix.
+// DayZ's ADM prints "pos=<x, z, y>" (PluginAdminLog.GetPlayerPrefix builds it from engine
+// [0],[2],[1]: east, north, altitude), but the Phase 3 writer stored the second value as y and
+// the third as z - so z held altitude and y held the real north coordinate. Heatmaps, zone
+// distance and location history all key on x/z, so every pre-fix ADM row is swapped back.
+// Postgres evaluates every SET expression against the row's old values, so "z = y, y = z" is a
+// true swap. Rows with a NULL y cannot be repaired (the north coordinate was never stored) and
+// the writer never produced any, so they are left alone rather than guessed at. The
+// (player_id, server_id, event_type, observed_at) dedupe key does not include coordinates, so
+// the swap can never collide. Runs exactly once via schema_migrations; rows written afterwards
+// already use the corrected mapping (killfeed.Position.MapX/MapZ/Altitude).
+const admLocationAxisFixSQL = `
+UPDATE player_location_events
+   SET z = y, y = z
+ WHERE source = 'ADM' AND y IS NOT NULL;
+`
 
 // Migrate applies all pending migrations in order, each transactionally. A
 // failure stops startup (returns an error) rather than running a partial schema.

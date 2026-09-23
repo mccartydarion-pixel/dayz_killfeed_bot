@@ -71,6 +71,16 @@ four `Aggregate*` methods are the only place raw rows are ever touched, and they
 than `MaxCells+1` rows (see "Result size protection" below) - `internal/heatmap`'s service layer
 does the cheap, already-bounded center/intensity math in Go.
 
+### Axis note (migration `0045_player_location_events_adm_axis_fix`)
+
+Every aggregation above groups on `player_location_events.x`/`z`, which are the horizontal map
+axes (east, north); `y` is altitude and is never used for a heatmap. ADM prints positions as
+`pos=<x, z, altitude>`, and before the fix the Phase 3 writer stored altitude in `z`, collapsing
+every heatmap onto a strip along the southern map edge (`z` = a few hundred metres of altitude). Migration `0045` swaps `y`/`z` on all existing
+`source='ADM'` rows, so heatmaps over historical windows are correct after it runs - no cache
+invalidation is needed beyond the normal TTL. See `docs/PLAYER_INTELLIGENCE.md` ("Coordinate
+axes") for the source of the ADM order.
+
 ## Player activity sampling policy (task section 11)
 
 ADM can emit many closely-spaced position pings for one player. Counting each one would show ADM's

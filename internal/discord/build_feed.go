@@ -81,8 +81,8 @@ func (p *BuildFeedPublisher) PublishBuild(ev *killfeed.Event) {
 	}
 	item := buildItem{Player: ev.Player.Name, Action: *ev.Build}
 	if pos := ev.Player.Position; pos != nil {
-		// ADM pos=<x, y, altitude>: the first two values are the map plane.
-		item.HasPos, item.MapX, item.MapZ = true, pos.X, pos.Y
+		// ADM pos=<x, z, altitude> - see killfeed.Position.
+		item.HasPos, item.MapX, item.MapZ = true, pos.MapX(), pos.MapZ()
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()

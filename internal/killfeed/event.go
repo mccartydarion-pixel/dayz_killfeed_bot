@@ -52,12 +52,29 @@ const (
 	DeathCauseEnvironment DeathCause = "ENVIRONMENT"
 )
 
-// Position is a 3D coordinate from the ADM log. Z can be negative.
+// Position is a 3D coordinate from the ADM log, stored in the order ADM prints it: X, Y, Z are
+// the first, second and third values of "pos=<a, b, c>". Z can be negative.
+//
+// ADM does NOT print the engine vector in engine order. DayZ's PluginAdminLog.GetPlayerPrefix
+// (scripts/4_world/plugins/pluginbase/pluginadminlog.c) builds the string from
+// { m_Position[0], m_Position[2], m_Position[1] } - engine x (east), engine z (north), engine y
+// (altitude). So the second ADM value is the map's north coordinate and the third is altitude.
+// Anything keyed on map coordinates (location history, heatmaps, zone distance) must use
+// MapX/MapZ/Altitude rather than reading the fields directly.
 type Position struct {
 	X float64
 	Y float64
 	Z float64
 }
+
+// MapX is the horizontal east/west map coordinate (engine x, first ADM value).
+func (p Position) MapX() float64 { return p.X }
+
+// MapZ is the horizontal north/south map coordinate (engine z, second ADM value).
+func (p Position) MapZ() float64 { return p.Y }
+
+// Altitude is the height above sea level (engine y, third ADM value).
+func (p Position) Altitude() float64 { return p.Z }
 
 // PlayerRef is normalized player information. ID is the stable ADM identity and
 // is never shown in Discord. Position is optional.

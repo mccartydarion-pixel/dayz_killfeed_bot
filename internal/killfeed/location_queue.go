@@ -258,10 +258,13 @@ func (q *LocationQueue) persist(ctx context.Context, batch []locationCandidate) 
 		if playerID == 0 {
 			continue
 		}
-		y := c.player.Position.Y
+		// ADM prints <x, z, altitude> (see Position), so map x/z/y come from the accessors, never
+		// the raw fields - the heatmaps and zone distance checks all key on x/z.
+		pos := *c.player.Position
+		y := pos.Altitude()
 		records = append(records, repository.LocationEventInput{
 			GuildID: q.guildID, ServerID: q.serverID, PlayerID: playerID, Gamertag: c.player.Name,
-			X: c.player.Position.X, Z: c.player.Position.Z, Y: &y,
+			X: pos.MapX(), Z: pos.MapZ(), Y: &y,
 			EventType: c.eventType, ObservedAt: c.observedAt, Source: "ADM",
 		})
 	}
