@@ -36,6 +36,12 @@ Only the six routes marked **yes** are ever rendered; a template saved for any o
 stored but never used, and the API reports that route's `runtimeRendering` as `NOT_ENABLED`
 (`ENABLED` only when the flag is on **and** the route is one of the six).
 
+## Embed Designer preview and test send
+
+The website's preview and test send (`docs/EMBED_DESIGNER_V2.md`) render with
+`embedrender.RenderEvent` - the exact sanitize-and-render function `Customize` below uses - so a
+preview is what an event would post. They never change the cache or any publisher.
+
 ## Architecture
 
 ```
@@ -45,8 +51,9 @@ publisher (unchanged routing, aggregation, rate limits, persistence order)
    ▼
 embedrender.Renderer.Customize(guild, server, route, vars, at, default)
    │  cache (installation, route) -> template          [30s TTL, invalidated on save/reset]
-   │  sanitize + filter variables to the route's approved set
-   │  pure Render(template, vars)  -> discordgo.MessageEmbed
+   │  RenderEvent: sanitize + filter variables to the route's approved set,
+   │  then pure Render(template, vars) -> discordgo.MessageEmbed
+   │  (the Embed Designer preview/test call the same RenderEvent)
    ▼
 custom embed   OR   the SAME default embed (never mutated)
 ```

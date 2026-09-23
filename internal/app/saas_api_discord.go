@@ -69,6 +69,9 @@ type discordGuildVerifier interface {
 	// DeleteGuildChannel deletes a proven Champion-owned retired channel
 	// (explicit, confirmed cleanup only).
 	DeleteGuildChannel(channelID string) error
+	// SendMessage posts one message (Embed Designer test sends only; the
+	// destination is always resolved server-side from the installation's route).
+	SendMessage(channelID string, msg *discordgo.MessageSend) (string, error)
 }
 
 // --- eligible guilds (section 9) ----------------------------------------

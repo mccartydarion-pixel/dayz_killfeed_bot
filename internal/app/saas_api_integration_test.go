@@ -57,6 +57,13 @@ type fakeDiscordVerifier struct {
 	privateCategories map[string]bool
 	// deletedChannels records confirmed cleanup deletions.
 	deletedChannels []string
+	// sentMessages records Embed Designer test sends (never a real Discord call).
+	sentMessages []fakeSentMessage
+}
+
+type fakeSentMessage struct {
+	channelID string
+	msg       *discordgo.MessageSend
 }
 
 type fakeGuildChannel struct {
@@ -169,6 +176,12 @@ func (f *fakeDiscordVerifier) ChannelHasBotMessage(channelID string) (bool, erro
 
 func (f *fakeDiscordVerifier) CreateGuildVoiceCounter(guildID, name, parentCategoryID string) (*discord.RawGuildChannel, error) {
 	return f.createFakeChannel(guildID, name, discordgo.ChannelTypeGuildVoice, parentCategoryID)
+}
+
+// SendMessage records the message and returns a fake message ID.
+func (f *fakeDiscordVerifier) SendMessage(channelID string, msg *discordgo.MessageSend) (string, error) {
+	f.sentMessages = append(f.sentMessages, fakeSentMessage{channelID: channelID, msg: msg})
+	return fmt.Sprintf("fake-message-%d", len(f.sentMessages)), nil
 }
 
 // DeleteGuildChannel removes the channel from every fake guild and records it.

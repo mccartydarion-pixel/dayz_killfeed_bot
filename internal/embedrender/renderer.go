@@ -220,7 +220,7 @@ func (r *Renderer) Customize(ctx context.Context, guildRowID, serverID int64, ro
 		r.count(routeKey, 2)
 		return def
 	}
-	emb, err := Render(*e.cfg, routeKey, approvedOnly(routeKey, vars), at)
+	emb, err := RenderEvent(*e.cfg, routeKey, vars, at)
 	if err != nil {
 		if err == ErrNotRenderable {
 			// A disabled template means "use the default"; an empty render is a fallback.
@@ -239,6 +239,15 @@ func (r *Renderer) Customize(ctx context.Context, guildRowID, serverID int64, ro
 	}
 	r.count(routeKey, 0)
 	return emb
+}
+
+// RenderEvent is THE production render path: it keeps only the route's approved
+// variables, sanitizes every value (SanitizeValue - no mentions, control, bidi or
+// zero-width characters, escaped markdown, capped length) and calls Render. Live
+// publishing (Customize), the Embed Designer preview and its test send all call this
+// one function, so a preview can never differ from what an event would post.
+func RenderEvent(cfg embedtemplates.Config, routeKey string, vars map[string]string, at time.Time) (*discordgo.MessageEmbed, error) {
+	return Render(cfg, routeKey, approvedOnly(routeKey, vars), at)
 }
 
 // approvedOnly keeps only the variables the route approves and sanitizes each value,

@@ -1040,6 +1040,30 @@ OWNER/ADMIN. Resets that one route to the Champion default by deleting only that
 installation+route row. **Idempotent**: `200` with the not-customized state (as in #30)
 whether or not a custom template existed.
 
+### 36. `POST .../installations/{installationID}/embed-templates/{routeKey}/preview`
+
+Embed Designer V2 (`docs/EMBED_DESIGNER_V2.md`). Any member. Renders an **unsaved** draft
+`{ "template": EmbedTemplate, "variables": { name: sample } }` with the production renderer
+(`embedrender.RenderEvent`, the same function live events use) and returns the rendered embed DTO,
+`metrics` (`fieldCount`, `totalText`), `warnings`, `renderable` (+ `reason`:
+`CUSTOM_TEMPLATE_DISABLED` \| `TEMPLATE_PRODUCED_NO_CONTENT`), `runtimeRendering`,
+`customRenderingSupported` and the route's `destination` preflight. Saves nothing, sends nothing.
+Unknown body keys (`channelId` ...) are rejected with `EMBED_TEMPLATE_INVALID`.
+
+### 37. `POST .../installations/{installationID}/embed-templates/{routeKey}/test`
+
+OWNER/ADMIN. Renders the same **unsaved** draft and sends it, with a "design preview - not a live
+server event" notice and mentions disabled, to the channel the installation's own route resolves
+to (never a channel from the request). Only `embedrender.SupportedRoutes()`; allowed while the
+rollout flag is off (the response says `runtimeRendering: NOT_ENABLED`). Rate limited to one send
+per 3 s per actor and 10 per minute per installation. Returns `{ sent, routeKey, runtimeRendering,
+channel: {id, name}, messageId, sentAt }`. Error codes: `EMBED_TEMPLATE_INVALID` (400),
+`EMBED_TEMPLATE_NOT_RENDERABLE` / `EMBED_CUSTOM_RENDERING_NOT_SUPPORTED` (422),
+`EMBED_ROUTE_NOT_CONFIGURED` / `EMBED_TEST_CHANNEL_UNAVAILABLE` / `EMBED_TEST_SEND_FORBIDDEN` /
+`EMBED_TEST_EMBED_LINKS_REQUIRED` (409), `EMBED_TEST_RATE_LIMITED` (429), `EMBED_TEST_SEND_FAILED`
+(502). Writes a safe `embed_test_sent` audit row (ids, route, channel, message - never template
+text or sample values). No gameplay effects of any kind.
+
 ### Template model (`EmbedTemplate`)
 
 ```json
