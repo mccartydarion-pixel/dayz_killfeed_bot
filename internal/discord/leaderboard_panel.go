@@ -98,64 +98,63 @@ type LeaderboardSnapshot struct {
 	Points         []repository.LeaderboardEntry
 }
 
+// Section caps for the stored-string blocks of the season board.
+const (
+	leaderboardPointsLimit  = 5
+	leaderboardEventsLimit  = 5
+	leaderboardWantedLimit  = 5
+	leaderboardKillsDefault = 10
+	leaderboardOtherDefault = 5
+)
+
+// BuildLeaderboardEmbed renders the persistent season board as a scoreboard:
+// ONE field per category (never one field per player), podium medals, and
+// category-formatted values through the shared presentation rank formatter.
+//
+//	author  CHAMPIONS® KILLFEED
+//	title   🏆 SEASON LEADERBOARD
+//	desc    Competitive Rankings
+//	fields  ⚔️ TOP KILLERS (10) · 🎯 LONGEST KILLS (5) · 📈 BEST K/D (5)
+//	        🏆 CHAMPION POINTS · 🔥 LIVE EVENTS · 🎯 MOST WANTED   (when present)
+//	footer  CHAMPION • AUTO-REFRESH
+//
+// No separate "kill leader" spotlight: it would only repeat the 🥇 row
+// directly beneath it. Rendering only: the snapshot was already queried
+// (eligibility filters such as MinKillsForKD live in the queries and are
+// untouched here).
 func BuildLeaderboardEmbed(s LeaderboardSnapshot, cfg LeaderboardConfig) *discordgo.MessageEmbed {
-	embed := presentation.NewChampionEmbed("SEASON LEADERBOARD", presentation.ChampionGold)
-	embed.Description = "Competitive rankings"
+	embed := presentation.NewFeedEmbed("🏆 SEASON LEADERBOARD", presentation.ChampionGold)
 	embed.Footer = presentation.AutoRefreshFooter()
-	appendRankFields(embed, "⚔️ TOP KILLERS", s.TopKills)
-	appendRankFields(embed, "🎯 LONGEST KILL", s.TopLongest)
-	appendRankFields(embed, "🔥 BEST K/D", s.TopKD)
-	if len(s.LiveEvents) > 0 {
-		for idx, line := range s.LiveEvents {
-			embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: fmt.Sprintf("🔥 LIVE EVENT #%d", idx+1), Value: safePanelText(line), Inline: false})
-		}
+
+	desc := "Competitive Rankings"
+	presentation.AppendFields(embed,
+		presentation.RankingField(presentation.RankKills, rankedEntries(s.TopKills), limitOr(cfg.TopKillsLimit, leaderboardKillsDefault)),
+		presentation.RankingField(presentation.RankLongest, rankedEntries(s.TopLongest), limitOr(cfg.TopLongestLimit, leaderboardOtherDefault)),
+		presentation.RankingField(presentation.RankKD, rankedEntries(s.TopKD), limitOr(cfg.TopKDLimit, leaderboardOtherDefault)),
+		presentation.RankingField(presentation.RankPoints, rankedEntries(s.Points), leaderboardPointsLimit),
+		presentation.MetricField("🔥 LIVE EVENTS", presentation.BulletBlock(s.LiveEvents, leaderboardEventsLimit), false),
+		presentation.MetricField("🎯 MOST WANTED", presentation.BulletBlock(s.ActiveBounties, leaderboardWantedLimit), false),
+	)
+	if len(embed.Fields) == 0 {
+		desc += "\n\n" + presentation.EmptyRanking
 	}
-	if len(s.ActiveBounties) > 0 {
-		for idx, line := range s.ActiveBounties {
-			embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: fmt.Sprintf("🎯 MOST WANTED #%d", idx+1), Value: safePanelText(line), Inline: false})
-		}
-	}
-	if len(s.Points) > 0 {
-		appendRankFields(embed, "🏆 CHAMPION POINTS", s.Points)
-	}
-	return embed
+	embed.Description = desc
+	return presentation.FitEmbed(embed)
 }
 
-func appendRankFields(embed *discordgo.MessageEmbed, heading string, entries []repository.LeaderboardEntry) {
-	if len(entries) == 0 {
-		return
+func rankedEntries(entries []repository.LeaderboardEntry) []presentation.RankedEntry {
+	out := make([]presentation.RankedEntry, 0, len(entries))
+	for i, e := range entries {
+		out = append(out, presentation.RankedEntry{Rank: i + 1, Name: e.DisplayName, Value: e.Value})
 	}
-	for i, entry := range entries {
-		medal := fmt.Sprintf("#%d", i+1)
-		if i == 0 {
-			medal = "#1"
-		}
-		if i == 1 {
-			medal = "#2"
-		}
-		if i == 2 {
-			medal = "#3"
-		}
-		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: heading + " • " + medal + " " + safePanelText(entry.DisplayName), Value: "**Value**  " + safePanelText(entry.Value), Inline: false})
-	}
+	return out
 }
 
-func appendEntries(b *strings.Builder, entries []repository.LeaderboardEntry) {
-	for i, entry := range entries {
-		medal := ""
-		switch i {
-		case 0:
-			medal = "🥇 "
-		case 1:
-			medal = "🥈 "
-		case 2:
-			medal = "🥉 "
-		}
-		fmt.Fprintf(b, "%s%d. %s — %s\n", medal, i+1, safePanelText(entry.DisplayName), entry.Value)
+func limitOr(n, def int) int {
+	if n > 0 {
+		return n
 	}
-	if len(entries) == 0 {
-		b.WriteString("_No data yet._\n")
-	}
+	return def
 }
 
 func safePanelText(s string) string {
@@ -167,10 +166,53 @@ func safePanelText(s string) string {
 	return s
 }
 
+// hashEmbed fingerprints everything a viewer sees on a persistent panel, so an
+// unchanged panel is never re-edited and a real change is never skipped:
+// title, description, color, author, footer, every field (name, value,
+// inline) and image/thumbnail URLs. The embed timestamp is deliberately
+// excluded - it is volatile (refresh time) and would force an edit on every
+// cycle. Fields are length-prefixed so content cannot shift between parts.
 func hashEmbed(e *discordgo.MessageEmbed) string {
-	v := e.Title + "\x00" + e.Description + "\x00" + fmt.Sprint(e.Color) + "\x00" + e.Footer.Text
-	s := sha256.Sum256([]byte(v))
-	return hex.EncodeToString(s[:])
+	h := sha256.New()
+	put := func(v string) { fmt.Fprintf(h, "%d:%s|", len(v), v) }
+	if e == nil {
+		put("nil")
+		return hex.EncodeToString(h.Sum(nil))
+	}
+	put(e.Title)
+	put(e.Description)
+	put(e.URL)
+	put(fmt.Sprint(e.Color))
+	if e.Author != nil {
+		put("author")
+		put(e.Author.Name)
+		put(e.Author.IconURL)
+		put(e.Author.URL)
+	}
+	if e.Footer != nil {
+		put("footer")
+		put(e.Footer.Text)
+		put(e.Footer.IconURL)
+	}
+	if e.Thumbnail != nil {
+		put("thumb")
+		put(e.Thumbnail.URL)
+	}
+	if e.Image != nil {
+		put("image")
+		put(e.Image.URL)
+	}
+	put(fmt.Sprint(len(e.Fields)))
+	for _, f := range e.Fields {
+		if f == nil {
+			put("nilfield")
+			continue
+		}
+		put(f.Name)
+		put(f.Value)
+		put(fmt.Sprint(f.Inline))
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // PlayerStatsInfoEmbed is the persistent instruction panel for #player-stats.

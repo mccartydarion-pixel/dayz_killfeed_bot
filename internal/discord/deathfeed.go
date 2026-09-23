@@ -7,70 +7,70 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/killfeed"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 )
 
 // BuildDeathEmbed renders one embed for a PLAYER_DEATH or SUICIDE_ACTION event.
 // Unlike a PLAYER_KILL there is no killer to credit, so this only ever reports
-// facts about the deceased player - never a fabricated cause.
+// facts about the deceased player - never a fabricated cause:
+//
+//	author  CHAMPIONS® KILLFEED
+//	title   ☠️ PLAYER DEATH  |  💀 SUICIDE
+//	desc    **Player**
+//	fields  CAUSE | WEAPON | FINAL HIT      inline, each only when proven
+//	        PLAYER STATS                    **1 K** • **50 D** • **0.02 K/D**
+//	footer  EVERY KILL TELLS A STORY
 func BuildDeathEmbed(ev *killfeed.Event) *discordgo.MessageEmbed {
 	if ev == nil {
 		return nil
 	}
 
-	player := "Unknown"
-	if ev.Player != nil && ev.Player.Name != "" {
-		player = sanitizeName(ev.Player.Name)
-	}
-
 	title := "☠️ PLAYER DEATH"
-	color := ColorNeutralGraphite
-	if ev.Type == killfeed.EventSuicideAction {
+	color := presentation.NeutralGraphite
+	suicide := ev.Type == killfeed.EventSuicideAction
+	if suicide {
 		title = "💀 SUICIDE"
-		color = ColorWarningOrange
+		color = presentation.WarningAmber
 	}
 
-	details := make([]string, 0, 3)
-	if ev.Weapon != "" {
-		details = append(details, "**Cause**  "+safeTrunc(ev.Weapon, maxWeaponLen))
+	embed := presentation.NewFeedEmbed(title, color)
+	embed.Description = "**" + cardName(ev.Player) + "**"
+	embed.Footer.Text = safeTrunc(presentation.SeasonFooterText(ev.SeasonName), maxFooterLen)
+
+	// A proven non-player cause (infected/animal/environment) is the cause. A
+	// suicide's weapon is the item used, so it is labelled as such; on any
+	// other death a weapon string is the cause the log reported.
+	if cause := deathCauseLabel(ev.Cause); cause != "" {
+		presentation.AppendFields(embed, presentation.MetricField("CAUSE", cause, true))
+	} else if w := strings.TrimSpace(ev.Weapon); w != "" && !suicide {
+		presentation.AppendFields(embed, presentation.MetricField("CAUSE", presentation.EscapeMarkdown(presentation.CleanName(w, maxWeaponLen)), true))
+	}
+	if w := strings.TrimSpace(ev.Weapon); w != "" && suicide {
+		presentation.AppendFields(embed, presentation.MetricField("WEAPON", "`"+strings.ReplaceAll(safeTrunc(w, maxWeaponLen), "`", "'")+"`", true))
 	}
 	if ev.HitZone != "" {
-		details = append(details, "**Hit Zone**  "+safeTrunc(strings.ToUpper(ev.HitZone), 40))
-	}
-
-	fields := []*discordgo.MessageEmbedField{}
-	if len(details) > 0 {
-		fields = append(fields, sectionDividerField())
-		fields = append(fields, &discordgo.MessageEmbedField{Name: "DEATH DETAILS", Value: safeTrunc(strings.Join(details, "\n"), 1000), Inline: false})
+		presentation.AppendFields(embed, presentation.MetricField("FINAL HIT", presentation.EscapeMarkdown(presentation.TitleCase(presentation.CleanName(ev.HitZone, 40))), true))
 	}
 	if ev.PlayerStats != nil {
-		value := fmt.Sprintf("Kills: %d\nDeaths: %d\nK/D: %.2f", ev.PlayerStats.Kills, ev.PlayerStats.Deaths, ev.PlayerStats.KD())
-		fields = append(fields, sectionDividerField())
-		fields = append(fields, &discordgo.MessageEmbedField{Name: "PLAYER STATS", Value: value, Inline: false})
+		presentation.AppendFields(embed, presentation.MetricField("PLAYER STATS", presentation.CompactStats(ev.PlayerStats.Kills, ev.PlayerStats.Deaths, ev.PlayerStats.KD()), false))
 	}
-
-	embed := &discordgo.MessageEmbed{
-		Title:       title,
-		Description: player,
-		Color:       color,
-		Fields:      fields,
-		Author: &discordgo.MessageEmbedAuthor{
-			Name: "CHAMPION KILLFEED",
-		},
-		Footer: &discordgo.MessageEmbedFooter{
-			Text: safeTrunc(presentationFooter(ev), maxFooterLen),
-		},
-	}
-	if !ev.Timestamp.IsZero() {
-		embed.Timestamp = ev.Timestamp.UTC().Format("2006-01-02T15:04:05.000Z")
-	}
-	return embed
+	presentation.StampEmbed(embed, ev.Timestamp)
+	return presentation.FitEmbed(embed)
 }
 
-func presentationFooter(ev *killfeed.Event) string {
-	if ev != nil && ev.SeasonName != "" {
-		return fmt.Sprintf("🏆 CHAMPION • %s\nEVERY KILL TELLS A STORY", sanitizeName(ev.SeasonName))
+// deathCauseLabel names a parser-proven non-player cause. Suicide is already
+// the card's title, so it has no separate cause field.
+func deathCauseLabel(c killfeed.DeathCause) string {
+	switch c {
+	case killfeed.DeathCauseInfected:
+		return "Infected"
+	case killfeed.DeathCauseAnimal:
+		return "Animal"
+	case killfeed.DeathCauseEnvironment:
+		return "Environment"
+	default:
+		return ""
 	}
-	return "CHAMPION KILLFEED • EVERY KILL TELLS A STORY"
 }
 
 // DeathfeedPublisher sends PLAYER_DEATH/SUICIDE_ACTION events to the configured

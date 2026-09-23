@@ -17,51 +17,54 @@ func BuildStoryHeader(story StoryType) StoryHeader {
 	return header
 }
 
+// buildStoryHeader maps a story to its visual header. Titles carry the event
+// only - the brand lives in the card's author line. Hero strings are stable:
+// they feed the {{special_kill}} custom-template variable. Subtitles are
+// short, competitive, and never state a fact the data does not prove.
 func buildStoryHeader(story StoryType) StoryHeader {
-	const brand = "CHAMPION • "
 	switch story {
 	case StoryMelee:
-		return StoryHeader{Title: brand + "CLOSE QUARTERS", Accent: FactionGold, Hero: "CLOSE QUARTERS", Icon: "🥊"}
+		return StoryHeader{Title: "CLOSE QUARTERS", Accent: FactionGold, Subtitle: "Close-quarters finish", Hero: "CLOSE QUARTERS", Icon: "🥊"}
 	case StoryHeadshot:
-		return StoryHeader{Title: brand + "HEADSHOT", Accent: CombatRed, Subtitle: "PRECISION ELIMINATION", Hero: "HEADSHOT CONFIRMED", Icon: "🎯"}
+		return StoryHeader{Title: "HEADSHOT", Accent: CombatRed, Subtitle: "Precision finish", Hero: "HEADSHOT CONFIRMED", Icon: "🎯"}
 	case StoryLongRange:
-		return StoryHeader{Title: brand + "LONG RANGE ELIMINATION", Accent: InfoSteel, Hero: "LONG RANGE SHOT", Icon: "🎯"}
+		return StoryHeader{Title: "LONGSHOT", Accent: Steel, Subtitle: "Long-range elimination", Hero: "LONG RANGE SHOT", Icon: "🎯"}
 	case StoryExtremeRange:
-		return StoryHeader{Title: brand + "EXTREME RANGE", Accent: EventGold, Hero: "EXTREME RANGE ELIMINATION", Icon: "🏆"}
+		return StoryHeader{Title: "EXTREME RANGE", Accent: EventGold, Subtitle: "Extreme-range elimination", Hero: "EXTREME RANGE ELIMINATION", Icon: "👑"}
 	case StoryPersonalRecord:
-		return StoryHeader{Title: brand + "NEW PERSONAL RECORD", Accent: ChampionGold, Hero: "PERSONAL RECORD BROKEN", Icon: "📈"}
+		return StoryHeader{Title: "NEW PERSONAL RECORD", Accent: ChampionGold, Hero: "PERSONAL RECORD BROKEN", Icon: "📈"}
 	case StoryServerRecord:
-		return StoryHeader{Title: brand + "NEW SERVER RECORD", Accent: EventGold, Hero: "NEW SERVER RECORD", Icon: "👑"}
+		return StoryHeader{Title: "NEW SERVER RECORD", Accent: EventGold, Hero: "NEW SERVER RECORD", Icon: "👑"}
 	case StoryStreakMilestone:
-		return StoryHeader{Title: brand + "KILL STREAK", Accent: CombatRed, Hero: "STREAK MILESTONE", Icon: "🔥"}
+		return StoryHeader{Title: "KILLING SPREE", Accent: CombatRed, Subtitle: "Streak extended", Hero: "STREAK MILESTONE", Icon: "🔥"}
 	case StoryStreakEnded:
-		return StoryHeader{Title: brand + "STREAK ENDED", Accent: CombatRed, Hero: "STREAK ENDED", Icon: "☠️"}
+		return StoryHeader{Title: "STREAK ENDED", Accent: CombatRed, Subtitle: "Streak broken", Hero: "STREAK ENDED", Icon: "💀"}
 	case StoryRevenge:
-		return StoryHeader{Title: brand + "REVENGE", Accent: CombatRed, Hero: "REVENGE SECURED", Icon: "⚔️"}
+		return StoryHeader{Title: "REVENGE", Accent: CombatRed, Hero: "REVENGE SECURED", Icon: "⚔️"}
 	case StoryNemesis:
-		return StoryHeader{Title: brand + "NEMESIS ELIMINATED", Accent: CombatRed, Hero: "NEMESIS DOWN", Icon: "⚔️"}
+		return StoryHeader{Title: "NEMESIS ELIMINATED", Accent: CombatRed, Hero: "NEMESIS DOWN", Icon: "⚔️"}
 	case StoryBountyClaimed:
-		return StoryHeader{Title: brand + "BOUNTY CLAIMED", Accent: EventGold, Hero: "BOUNTY CLAIMED", Icon: "🎯"}
+		return StoryHeader{Title: "BOUNTY CLAIMED", Accent: EventGold, Subtitle: "Bounty secured", Hero: "BOUNTY CLAIMED", Icon: "💰"}
 	case StoryWarKill:
-		return StoryHeader{Title: brand + "WAR KILL", Accent: CombatRed, Hero: "FACTION WAR", Icon: "⚔️"}
+		return StoryHeader{Title: "WAR KILL", Accent: CombatRed, Subtitle: "Faction war", Hero: "FACTION WAR", Icon: "⚔️"}
 	case StoryWarLeadChange:
-		return StoryHeader{Title: brand + "WAR LEAD CHANGE", Accent: EventGold, Hero: "WAR LEAD CHANGE", Icon: "⚔️"}
+		return StoryHeader{Title: "WAR LEAD CHANGE", Accent: EventGold, Hero: "WAR LEAD CHANGE", Icon: "⚔️"}
 	case StoryWarTie:
-		return StoryHeader{Title: brand + "WAR TIED", Accent: CombatRed, Hero: "ALL SQUARE", Icon: "⚔️"}
+		return StoryHeader{Title: "WAR TIED", Accent: CombatRed, Hero: "ALL SQUARE", Icon: "⚔️"}
 	case StoryFirstBlood:
-		return StoryHeader{Title: brand + "FIRST BLOOD", Accent: CombatRed, Hero: "FIRST BLOOD", Icon: "🩸"}
+		return StoryHeader{Title: "FIRST BLOOD", Accent: CombatRed, Hero: "FIRST BLOOD", Icon: "🩸"}
 	case StoryEventKill:
-		return StoryHeader{Title: brand + "EVENT KILL", Accent: EventGold, Hero: "COMPETITIVE EVENT", Icon: "🏆"}
+		return StoryHeader{Title: "EVENT KILL", Accent: EventGold, Subtitle: "Competitive event", Hero: "COMPETITIVE EVENT", Icon: "🏆"}
 	case StoryEventLeadChange:
-		return StoryHeader{Title: brand + "EVENT LEAD CHANGE", Accent: EventGold, Hero: "NEW EVENT LEADER", Icon: "🏆"}
+		return StoryHeader{Title: "EVENT LEAD CHANGE", Accent: EventGold, Hero: "NEW EVENT LEADER", Icon: "🏆"}
 	case StoryRankPromotion:
-		return StoryHeader{Title: brand + "RANK PROMOTION", Accent: ChampionGold, Hero: "PROMOTED", Icon: "🎖️"}
+		return StoryHeader{Title: "RANK PROMOTION", Accent: ChampionGold, Hero: "PROMOTED", Icon: "🎖️"}
 	case StoryLeaderboardTakeover:
-		return StoryHeader{Title: brand + "NEW #1", Accent: EventGold, Hero: "LEADERBOARD TAKEOVER", Icon: "👑"}
+		return StoryHeader{Title: "NEW #1", Accent: EventGold, Hero: "LEADERBOARD TAKEOVER", Icon: "👑"}
 	case StoryRapidKill:
-		return StoryHeader{Title: brand + "MULTI-KILL", Accent: CombatRed, Hero: "MULTI-KILL", Icon: "💀"}
+		return StoryHeader{Title: "MULTI-KILL", Accent: CombatRed, Hero: "MULTI-KILL", Icon: "💀"}
 	default:
-		return StoryHeader{Title: brand + "PLAYER ELIMINATED", Accent: NeutralGraphite, Hero: "COMBAT REPORT", Icon: "💀"}
+		return StoryHeader{Title: "PLAYER ELIMINATED", Accent: ChampionGold, Hero: "COMBAT REPORT", Icon: "☠️"}
 	}
 }
 

@@ -166,7 +166,7 @@ func (h *AdminCommandHandler) handleVerifyLink(s *discordgo.Session, i *discordg
 }
 
 func buildADMSourceScanEmbed(values map[string]any, err error) *discordgo.MessageEmbed {
-	embed := presentation.NewChampionEmbed("CHAMPION • LIVE ADM SOURCE SCAN", presentation.InfoSteel)
+	embed := presentation.NewChampionEmbed("LIVE ADM SOURCE SCAN", presentation.InfoSteel)
 	if err != nil {
 		embed.Fields = append(embed.Fields, presentation.StatusField("ERROR", err.Error(), false))
 		return embed

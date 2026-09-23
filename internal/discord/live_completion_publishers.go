@@ -61,7 +61,9 @@ func (p *LiveCompletionPublisher) PublishPendingSeasonCompletion(ctx context.Con
 		if result == nil {
 			return fmt.Errorf("season result not found")
 		}
-		embed := BuildSeasonCompletionEmbed(season.Name, "Player", result.TopPlayerKills, "Faction", result.TopFactionKills, "Player", result.LongestKillValue, "Player", result.BestStreakValue)
+		// Holder names are not resolved here; the card omits them rather than
+		// printing a placeholder name.
+		embed := BuildSeasonCompletionEmbed(season.Name, "", result.TopPlayerKills, "", result.TopFactionKills, "", result.LongestKillValue, "", result.BestStreakValue)
 		return p.send(ctx, embed)
 	})
 	return err

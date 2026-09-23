@@ -112,15 +112,15 @@ func (p *ADMMonitorPublisher) HandleDownload(report killfeed.DownloadReport) {
 
 func BuildADMDownloadEmbed(report killfeed.DownloadReport) *discordgo.MessageEmbed {
 	color := presentation.SuccessGreen
-	title := "📥 CHAMPION • ADM DOWNLOADED"
+	title := "📥 ADM DOWNLOADED"
 	status := "SUCCESS"
 	if report.Result == "failure" {
 		color = presentation.ErrorRed
-		title = "🚨 CHAMPION • ADM DOWNLOAD FAILED"
+		title = "🚨 ADM DOWNLOAD FAILED"
 		status = "DOWNLOAD FAILED\nRetry scheduled"
 	} else if report.Result == "recovered" {
 		color = presentation.SuccessGreen
-		title = "✅ CHAMPION • ADM DOWNLOAD RECOVERED"
+		title = "✅ ADM DOWNLOAD RECOVERED"
 		status = "HEALTHY\nProcessing resumed"
 	} else if report.Result == "success_no_new_events" {
 		status = "WAITING FOR COMPLETE ADM LINE"
@@ -129,9 +129,9 @@ func BuildADMDownloadEmbed(report killfeed.DownloadReport) *discordgo.MessageEmb
 		status = "CHECKPOINT FAILED\nRetry scheduled"
 	}
 	if report.Rotation {
-		title = "🔄 CHAMPION • ADM ROTATION"
+		title = "🔄 ADM ROTATION"
 	}
-	embed := &discordgo.MessageEmbed{Title: title, Color: color, Footer: &discordgo.MessageEmbedFooter{Text: "CHAMPION KILLFEED • ADM MONITOR"}}
+	embed := &discordgo.MessageEmbed{Author: presentation.ChampionAuthor(), Title: title, Color: color, Footer: &discordgo.MessageEmbedFooter{Text: "CHAMPION • ADM MONITOR"}}
 	add := func(name, value string) {
 		embed.Fields = append(embed.Fields, presentation.StatusField(name, value, true))
 	}
@@ -285,7 +285,7 @@ func BuildADMMonitorEmbed(snapshot killfeed.AdmSnapshot, now time.Time) *discord
 	if !snapshot.LastRotationAt.IsZero() {
 		add("LAST ROTATION", fmt.Sprintf("<t:%d:R>", snapshot.LastRotationAt.Unix()))
 	}
-	embed.Footer = &discordgo.MessageEmbedFooter{Text: "CHAMPION KILLFEED • ADM MONITOR • Auto-refreshes every 5 minutes"}
+	embed.Footer = &discordgo.MessageEmbedFooter{Text: "CHAMPION • ADM MONITOR • AUTO-REFRESH EVERY 5 MIN"}
 	return embed
 }
 

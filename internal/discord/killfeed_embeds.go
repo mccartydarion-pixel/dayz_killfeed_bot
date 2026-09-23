@@ -2,7 +2,6 @@ package discord
 
 import (
 	"fmt"
-	"math"
 	"strings"
 
 	"github.com/bwmarrin/discordgo"
@@ -32,7 +31,7 @@ const (
 	ColorInfoBlue        = presentation.InfoSteel
 	ColorWarningOrange   = presentation.WarningAmber
 	ColorHeadshotRed     = presentation.CombatRed
-	ColorLongRange       = presentation.InfoSteel
+	ColorLongRange       = presentation.Steel
 	ColorExtremeRange    = presentation.EventGold
 	ColorCloseRange      = presentation.CombatRed
 	ColorNeutralGraphite = presentation.NeutralGraphite
@@ -48,7 +47,8 @@ const (
 
 const longRangeMin = presentation.LongshotDistanceMeters // 100–199.9m
 
-// Badge strings (derived only from confirmed data).
+// Badge strings (derived only from confirmed data). Badges are SECONDARY: the
+// primary story is the card's title and is never repeated as a badge.
 const (
 	badgeHeadshot      = "🎯 Headshot"
 	badgeCloseQuarters = "🔥 Close Range"
@@ -58,6 +58,9 @@ const (
 	badgeKillingSpree  = "🔥 Killing Spree"
 	badgeStreakEnded   = "💀 Streak Ended"
 )
+
+// maxVisibleBadges caps the secondary badge row; more would be an emoji wall.
+const maxVisibleBadges = 3
 
 // KillPresentation is the style decision, computed before rendering. Keeping it
 // separate makes the model extensible for future badges (streaks, revenge, etc.).
@@ -87,16 +90,22 @@ func distanceOf(ev *killfeed.Event) float64 {
 	return -1
 }
 
+func isMelee(ev *killfeed.Event) bool {
+	w := strings.ToLower(ev.Weapon)
+	return strings.Contains(w, "fist") || strings.Contains(w, "melee")
+}
+
 // BuildPresentation delegates story priority to the shared presentation
-// engine, then adds the Discord-specific style mapping and header.
+// engine, then adds the Discord-specific style mapping and header. Title is
+// the icon-prefixed event ("🎯 HEADSHOT") with no brand prefix.
 func BuildPresentation(ev *killfeed.Event) KillPresentation {
 	if ev == nil {
 		header := presentation.BuildStoryHeader(presentation.StoryStandard)
-		return KillPresentation{Style: KillEmbedStandard, Story: presentation.StoryStandard, Title: header.Title, Hero: header.Hero, Icon: header.Icon, AccentColor: header.Accent, Footer: presentation.ChampionSlogan}
+		return KillPresentation{Style: KillEmbedStandard, Story: presentation.StoryStandard, Title: header.Title, Subtitle: header.Subtitle, Hero: header.Hero, Icon: header.Icon, AccentColor: header.Accent, Footer: presentation.ChampionSlogan}
 	}
 	d := distanceOf(ev)
 	headshot := isHeadshot(ev)
-	melee := strings.Contains(strings.ToLower(ev.Weapon), "fist") || strings.Contains(strings.ToLower(ev.Weapon), "melee")
+	melee := isMelee(ev)
 
 	// KILLING_SPREE/STREAK_ENDED are read from the persisted classification
 	// (ev.KillingSpree/ev.StreakEnded, copied from the durable KillRecord) -
@@ -119,44 +128,8 @@ func BuildPresentation(ev *killfeed.Event) KillPresentation {
 		StreakEndedThreshold: streakEndedThreshold,
 	})
 	header := presentation.BuildStoryHeader(story)
+	badges := secondaryBadges(ev, story, d, headshot)
 
-	badges := []string{}
-	if headshot {
-		badges = append(badges, badgeHeadshot)
-	}
-	if ev != nil {
-		if ev.BountyTarget {
-			badges = append(badges, badgeMostWanted)
-		}
-		for _, badge := range ev.ActiveEventBadges {
-			if len(badges) >= 3 {
-				break
-			}
-			badges = append(badges, badge)
-		}
-		if ev.WarBadge != "" && len(badges) < 3 {
-			badges = append(badges, ev.WarBadge)
-		}
-	}
-	if d >= extremeRangeMin && story != presentation.StoryExtremeRange {
-		badges = append(badges, badgeExtremeRange)
-	} else if headshot && story != presentation.StoryHeadshot {
-		badges = append(badges, badgeHeadshot)
-	} else if d >= longRangeMin && story != presentation.StoryLongRange {
-		badges = append(badges, badgeLongShot)
-	}
-	if headshot && d >= 0 && d <= closeRangeMax && story == presentation.StoryHeadshot {
-		badges = append(badges, badgeCloseQuarters)
-	}
-	if ev.KillingSpree && story != presentation.StoryStreakMilestone {
-		badges = append(badges, badgeKillingSpree)
-	}
-	if ev.StreakEnded && story != presentation.StoryStreakEnded {
-		badges = append(badges, badgeStreakEnded)
-	}
-	if len(badges) > 5 {
-		badges = badges[:5]
-	}
 	style := KillEmbedStandard
 	switch story {
 	case presentation.StoryBountyClaimed:
@@ -173,23 +146,62 @@ func BuildPresentation(ev *killfeed.Event) KillPresentation {
 	return KillPresentation{Style: style, Story: story, Badges: badges, Title: header.Title, Subtitle: header.Subtitle, Hero: header.Hero, Icon: header.Icon, AccentColor: header.Accent, Footer: presentation.ChampionSlogan}
 }
 
-// Discord embed limits we guard against.
+// secondaryBadges lists confirmed secondary distinctions in priority order,
+// excluding whatever the primary story already says. Presentation only: the
+// story itself was selected by the shared engine.
+func secondaryBadges(ev *killfeed.Event, story presentation.StoryType, d float64, headshot bool) []string {
+	var badges []string
+	add := func(b string) {
+		for _, have := range badges {
+			if have == b {
+				return
+			}
+		}
+		badges = append(badges, b)
+	}
+	if ev.BountyTarget && story != presentation.StoryBountyClaimed {
+		add(badgeMostWanted)
+	}
+	if headshot && story != presentation.StoryHeadshot {
+		add(badgeHeadshot)
+	}
+	switch {
+	case d >= extremeRangeMin && story != presentation.StoryExtremeRange:
+		add(badgeExtremeRange)
+	case d >= longRangeMin && d < extremeRangeMin && story != presentation.StoryLongRange:
+		add(badgeLongShot)
+	}
+	if headshot && d >= 0 && d <= closeRangeMax && story == presentation.StoryHeadshot {
+		add(badgeCloseQuarters)
+	}
+	if ev.KillingSpree && story != presentation.StoryStreakMilestone {
+		add(badgeKillingSpree)
+	}
+	if ev.StreakEnded && story != presentation.StoryStreakEnded {
+		add(badgeStreakEnded)
+	}
+	for _, badge := range ev.ActiveEventBadges {
+		if strings.TrimSpace(badge) != "" {
+			add(badge)
+		}
+	}
+	if ev.WarBadge != "" && story != presentation.StoryWarKill {
+		add(ev.WarBadge)
+	}
+	if len(badges) > maxVisibleBadges {
+		badges = badges[:maxVisibleBadges]
+	}
+	return badges
+}
+
+// Name/weapon caps used by the feed cards (runes). Discord's own limits are
+// enforced by presentation.FitEmbed on every finished card.
 const (
 	maxNameLen   = 80
 	maxWeaponLen = 80
 	maxDescLen   = 1800
 	maxFooterLen = 200
 )
-
-// sectionDivider visually separates the description/weapon block, KILL
-// DETAILS, and the stats sections, matching the flat card layout.
-const sectionDivider = "────────────────────"
-
-// sectionDividerField is a full-width spacer field. Discord requires a
-// non-empty field name, so a zero-width space is used - it renders as blank.
-func sectionDividerField() *discordgo.MessageEmbedField {
-	return &discordgo.MessageEmbedField{Name: "​", Value: sectionDivider, Inline: false}
-}
 
 type LocationMode string
 
@@ -204,32 +216,21 @@ type KillEmbedOptions struct {
 }
 
 // safeTrunc truncates a string to n runes without splitting multibyte runes.
-func safeTrunc(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	return string(r[:n-1]) + "…"
-}
+func safeTrunc(s string, n int) string { return presentation.Truncate(s, n) }
 
-// sanitizeName neutralizes mention/markdown abuse while keeping the name readable.
-// Removes @ and # so names can't ping users/roles, and trims control chars.
-func sanitizeName(s string) string {
-	s = strings.TrimSpace(s)
-	s = strings.ReplaceAll(s, "@", "") // block @everyone/@here/user pings
-	s = strings.ReplaceAll(s, "#", "") // block channel mentions
-	var b strings.Builder
-	for _, r := range s {
-		if r < 0x20 && r != ' ' { // strip control characters
-			continue
-		}
-		b.WriteRune(r)
+// sanitizeName neutralizes mention abuse while keeping the name readable:
+// @ and # are removed so names can't ping users/roles/channels, and control
+// and zero-width/bidi characters are dropped. Plain text (no markdown
+// escaping); cardName is the form used inside markdown-formatted cards.
+func sanitizeName(s string) string { return presentation.CleanName(s, maxNameLen) }
+
+// cardName is a player name ready for a markdown card body: cleaned, capped
+// and markdown-escaped so "Semillita-azul-_" renders literally.
+func cardName(p *killfeed.PlayerRef) string {
+	if p == nil || strings.TrimSpace(p.Name) == "" {
+		return "Unknown"
 	}
-	out := strings.TrimSpace(b.String())
-	if out == "" {
-		out = "Unknown"
-	}
-	return safeTrunc(out, maxNameLen)
+	return presentation.SafeName(p.Name, presentation.MaxCardNameRunes)
 }
 
 // BuildKillEmbed renders one embed for an authoritative kill. Style is chosen by
@@ -238,141 +239,180 @@ func BuildKillEmbed(ev *killfeed.Event) *discordgo.MessageEmbed {
 	return BuildKillEmbedWithOptions(ev, KillEmbedOptions{LocationMode: LocationOff})
 }
 
+// BuildKillEmbedWithOptions renders the Champion V2 kill card:
+//
+//	author  CHAMPIONS® KILLFEED
+//	title   <icon> <STORY>              ☠️ PLAYER ELIMINATED, 🎯 HEADSHOT, ...
+//	desc    **Killer** → **Victim**
+//	        <story line>                special stories only
+//	        <weapon flavor>
+//	        `WEAPON` • distance • range
+//	        <up to 3 secondary badges>
+//	fields  [hero metric]               DISTANCE / STREAK / REWARD (special only)
+//	        KILLER | VICTIM | H2H       inline, each only when data exists
+//	        FINAL HIT | LOCATION        inline, each only when data exists
+//	footer  EVERY KILL TELLS A STORY    season-prefixed when known
+//
+// What happened (title), who (matchup), how (weapon block), why it is notable
+// (story line, badges, hero), then the stats. Nothing absent is shown.
 func BuildKillEmbedWithOptions(ev *killfeed.Event, options KillEmbedOptions) *discordgo.MessageEmbed {
 	if ev == nil {
 		return nil
 	}
 	p := BuildPresentation(ev)
+	melee := isMelee(ev)
+	killer, victim := cardName(ev.Killer), cardName(ev.Victim)
+	hero := heroField(ev, p.Story)
 
-	killer := "Unknown"
-	if ev.Killer != nil && ev.Killer.Name != "" {
-		killer = sanitizeName(ev.Killer.Name)
-	}
-	victim := "Unknown"
-	if ev.Victim != nil && ev.Victim.Name != "" {
-		victim = sanitizeName(ev.Victim.Name)
-	}
-
-	melee := strings.Contains(strings.ToLower(ev.Weapon), "fist") || strings.Contains(strings.ToLower(ev.Weapon), "melee")
-	// The description is intentionally the stable top half of every kill card.
 	var desc strings.Builder
-	fmt.Fprintf(&desc, "%s  ➜  %s", killer, victim)
-	if p.Hero != "" && p.Story != presentation.StoryStandard {
-		fmt.Fprintf(&desc, "\n\n%s **%s**", p.Icon, p.Hero)
-		if p.Subtitle != "" {
-			fmt.Fprintf(&desc, "\n%s", p.Subtitle)
-		}
+	fmt.Fprintf(&desc, "**%s** → **%s**", killer, victim)
+	if line := storyLine(ev, p); line != "" {
+		desc.WriteString("\n" + line)
 	}
-	if ev.Weapon != "" {
-		weaponLine := safeTrunc(ev.Weapon, maxWeaponLen)
-		if category := presentation.WeaponCategory(ev.Weapon, melee); category != "" {
-			weaponLine = category + " • " + weaponLine
-		}
-		if story := presentation.WeaponStory(ev.Weapon, melee); story != "" {
-			icon := presentation.WeaponStoryIcon(ev.Weapon, melee)
-			fmt.Fprintf(&desc, "\n\n%s %s\n%s", icon, story, weaponLine)
-		} else {
-			fmt.Fprintf(&desc, "\n\n%s", weaponLine)
-		}
+	if block := weaponBlock(ev, melee, hero != nil && hero.Name == "DISTANCE"); block != "" {
+		desc.WriteString("\n\n" + block)
 	}
 	if len(p.Badges) > 0 {
-		fmt.Fprintf(&desc, "\n\n%s", strings.Join(p.Badges, "  "))
+		desc.WriteString("\n\n" + strings.Join(p.Badges, " • "))
 	}
 
-	fields := []*discordgo.MessageEmbedField{}
-	if p.Story != presentation.StoryStandard && p.Hero != "" {
-		if hero := heroMetric(ev, p.Story); hero != "" {
-			fields = append(fields, &discordgo.MessageEmbedField{Name: p.Hero, Value: hero, Inline: false})
+	embed := presentation.NewFeedEmbed(p.Title, p.AccentColor)
+	embed.Description = safeTrunc(desc.String(), maxDescLen)
+	embed.Footer.Text = safeTrunc(presentation.SeasonFooterText(ev.SeasonName), maxFooterLen)
+	presentation.AppendFields(embed, hero)
+	presentation.AppendFields(embed, combatStatFields(ev, p.Story, killer, victim)...)
+	// A head hit is already the title or a badge; FINAL HIT would repeat it.
+	if ev.HitZone != "" && !isHeadshot(ev) {
+		value := presentation.EscapeMarkdown(presentation.TitleCase(presentation.CleanName(ev.HitZone, 40)))
+		if ev.Damage != nil {
+			value += fmt.Sprintf(" • %.1f dmg", *ev.Damage)
 		}
-	}
-	details := make([]string, 0, 6)
-	if ev.Distance != nil {
-		details = append(details, fmt.Sprintf("**Distance**  %.1fm", math.Round(*ev.Distance*10)/10))
-	}
-	if rangeClass := presentation.RangeClass(ev.Distance, melee); rangeClass != "" {
-		details = append(details, "**Range**  "+rangeClass)
-	}
-	if ev.HitZone != "" {
-		details = append(details, "**Final Hit**  "+safeTrunc(strings.ToUpper(ev.HitZone), 40))
-	}
-	if ev.Damage != nil {
-		details = append(details, fmt.Sprintf("**Damage**  %.1f", *ev.Damage))
-	}
-	if ev.Ammo != "" {
-		details = append(details, "**Ammo**  "+safeTrunc(ev.Ammo, maxWeaponLen))
+		presentation.AppendFields(embed, presentation.MetricField("FINAL HIT", value, true))
 	}
 	if options.LocationMode == LocationCoordinates && ev.Killer != nil && ev.Killer.Position != nil {
 		pos := ev.Killer.Position
-		details = append(details, fmt.Sprintf("**Location**  %.1f • %.1f • %.1f", pos.X, pos.Y, pos.Z))
+		presentation.AppendFields(embed, presentation.MetricField("LOCATION", fmt.Sprintf("%.1f • %.1f • %.1f", pos.X, pos.Y, pos.Z), true))
 	}
-	if len(details) > 0 {
-		fields = append(fields, sectionDividerField())
-		fields = append(fields, &discordgo.MessageEmbedField{Name: "KILL DETAILS", Value: safeTrunc(strings.Join(details, "\n"), 1000), Inline: false})
-	}
-
-	statFields := buildCombatStatFields(ev)
-	if len(statFields) > 0 {
-		fields = append(fields, sectionDividerField())
-		fields = append(fields, statFields...)
-	}
-
-	footer := p.Footer
-	if ev.SeasonName != "" {
-		footer = fmt.Sprintf("🏆 CHAMPION • %s\nEVERY KILL TELLS A STORY", sanitizeName(ev.SeasonName))
-	}
-	embed := &discordgo.MessageEmbed{
-		Title:       p.Title,
-		Description: safeTrunc(desc.String(), maxDescLen),
-		Color:       p.AccentColor,
-		Fields:      fields,
-		Author: &discordgo.MessageEmbedAuthor{
-			Name: "CHAMPION KILLFEED",
-		},
-		Footer: &discordgo.MessageEmbedFooter{
-			Text: safeTrunc(footer, maxFooterLen),
-		},
-	}
-
-	// Only set the embed timestamp when a valid absolute event time exists.
-	if !ev.Timestamp.IsZero() {
-		embed.Timestamp = ev.Timestamp.UTC().Format("2006-01-02T15:04:05.000Z")
-	}
-	return embed
+	presentation.StampEmbed(embed, ev.Timestamp)
+	return presentation.FitEmbed(embed)
 }
 
-func heroMetric(ev *killfeed.Event, story presentation.StoryType) string {
-	if ev == nil || ev.Distance == nil {
+// storyLine is the one-line context under the matchup for special stories.
+// The matchup line already names both players (the victim owned the ended
+// streak), so a streak-ended card states the persisted count only when it
+// exists; otherwise it falls back to the generic subtitle.
+func storyLine(ev *killfeed.Event, p KillPresentation) string {
+	if p.Story == presentation.StoryStandard {
 		return ""
 	}
-	distance := fmt.Sprintf("%.1fm", math.Round(*ev.Distance*10)/10)
+	if p.Story == presentation.StoryStreakEnded && ev.EndedStreakCount != nil && *ev.EndedStreakCount > 0 {
+		return fmt.Sprintf("Ended a **%d-kill streak**", *ev.EndedStreakCount)
+	}
+	if p.Subtitle == "" {
+		return ""
+	}
+	return "_" + p.Subtitle + "_"
+}
+
+// weaponBlock is the "how": the weapon's flavor headline (when the shared
+// classifier knows the weapon) over a compact `WEAPON` • distance • range
+// strip. Distance is left out when the hero field already shows it.
+func weaponBlock(ev *killfeed.Event, melee, distanceIsHero bool) string {
+	var parts []string
+	if ev.Weapon != "" {
+		parts = append(parts, "`"+strings.ReplaceAll(safeTrunc(ev.Weapon, maxWeaponLen), "`", "'")+"`")
+	}
+	if ev.Distance != nil && !distanceIsHero {
+		parts = append(parts, presentation.FormatDistance(*ev.Distance))
+	}
+	if rc := presentation.RangeClass(ev.Distance, melee); rc != "" {
+		parts = append(parts, presentation.TitleCase(rc))
+	}
+	strip := strings.Join(parts, " • ")
+	story := ""
+	if ev.Weapon != "" {
+		story = presentation.WeaponStory(ev.Weapon, melee)
+	}
+	if story == "" {
+		return strip
+	}
+	head := "**" + story + "**"
+	if icon := presentation.WeaponStoryIcon(ev.Weapon, melee); icon != "" {
+		head = icon + " " + head
+	}
+	return head + "\n" + strip
+}
+
+// heroField is the single stand-out metric of a special story: the distance of
+// a longshot, the streak of a spree, the reward of a claimed bounty.
+func heroField(ev *killfeed.Event, story presentation.StoryType) *discordgo.MessageEmbedField {
 	switch story {
 	case presentation.StoryLongRange, presentation.StoryExtremeRange:
-		return distance
+		if ev.Distance != nil {
+			return presentation.MetricField("DISTANCE", "**"+presentation.FormatDistance(*ev.Distance)+"**", false)
+		}
+	case presentation.StoryStreakMilestone:
+		if ev.KillerStreak != nil && *ev.KillerStreak > 0 {
+			return presentation.MetricField("STREAK", fmt.Sprintf("**%d**", *ev.KillerStreak), false)
+		}
+	case presentation.StoryBountyClaimed:
+		if ev.BountyPoints > 0 {
+			return presentation.MetricField("REWARD", "**"+presentation.FormatPoints(ev.BountyPoints)+"**", false)
+		}
+	}
+	return nil
+}
+
+// combatStatFields renders KILLER / VICTIM / H2H side by side (inline), each
+// only when its source data is present - a guild without the stats/analytics
+// repositories wired still gets a working card, just without these fields.
+// On mobile they stack, and each still reads on its own.
+func combatStatFields(ev *killfeed.Event, story presentation.StoryType, killer, victim string) []*discordgo.MessageEmbedField {
+	var fields []*discordgo.MessageEmbedField
+	if ev.KillerStats != nil {
+		value := presentation.CompactStats(ev.KillerStats.Kills, ev.KillerStats.Deaths, ev.KillerStats.KD())
+		// The spree card already shows the streak as its hero metric.
+		if ev.KillerStreak != nil && *ev.KillerStreak > 0 && story != presentation.StoryStreakMilestone {
+			value += fmt.Sprintf("\n🔥 Streak **%d**", *ev.KillerStreak)
+		}
+		fields = append(fields, &discordgo.MessageEmbedField{Name: "KILLER", Value: value, Inline: true})
+	}
+	if ev.VictimStats != nil {
+		value := presentation.CompactStats(ev.VictimStats.Kills, ev.VictimStats.Deaths, ev.VictimStats.KD())
+		fields = append(fields, &discordgo.MessageEmbedField{Name: "VICTIM", Value: value, Inline: true})
+	}
+	if ev.Encounters != nil {
+		fields = append(fields, &discordgo.MessageEmbedField{Name: "H2H", Value: h2hValue(ev.Encounters, killer, victim), Inline: true})
+	}
+	return fields
+}
+
+// h2hValue: "**4–0**" plus who leads, names capped so the inline column holds.
+func h2hValue(h *killfeed.HeadToHead, killer, victim string) string {
+	score := fmt.Sprintf("**%d–%d**", h.KillerWins, h.VictimWins)
+	switch {
+	case h.KillerWins > h.VictimWins:
+		return score + "\n" + shortName(killer) + " leads"
+	case h.VictimWins > h.KillerWins:
+		return score + "\n" + shortName(victim) + " leads"
+	case h.KillerWins > 0:
+		return score + "\nAll square"
 	default:
-		return ""
+		return score
 	}
 }
 
-// buildCombatStatFields renders KILLER STATS / VICTIM STATS / HEAD-TO-HEAD,
-// each only when its source data is present - a guild without the
-// stats/analytics repositories wired still gets a working embed, just
-// without these sections.
-func buildCombatStatFields(ev *killfeed.Event) []*discordgo.MessageEmbedField {
-	var fields []*discordgo.MessageEmbedField
-	if ev.KillerStats != nil {
-		value := fmt.Sprintf("Kills: %d\nDeaths: %d\nK/D: %.2f", ev.KillerStats.Kills, ev.KillerStats.Deaths, ev.KillerStats.KD())
-		if ev.KillerStreak != nil {
-			value += fmt.Sprintf("\nStreak: %d", *ev.KillerStreak)
-		}
-		fields = append(fields, &discordgo.MessageEmbedField{Name: "KILLER STATS", Value: value, Inline: false})
+// shortName caps an already-escaped card name for narrow inline columns
+// without leaving a dangling escape backslash.
+func shortName(escaped string) string {
+	const max = 20
+	r := []rune(escaped)
+	if len(r) <= max {
+		return escaped
 	}
-	if ev.VictimStats != nil {
-		value := fmt.Sprintf("Kills: %d\nDeaths: %d\nK/D: %.2f", ev.VictimStats.Kills, ev.VictimStats.Deaths, ev.VictimStats.KD())
-		fields = append(fields, &discordgo.MessageEmbedField{Name: "VICTIM STATS", Value: value, Inline: false})
+	r = r[:max-1]
+	if r[len(r)-1] == '\\' {
+		r = r[:len(r)-1]
 	}
-	if ev.Encounters != nil {
-		value := fmt.Sprintf("%d - %d", ev.Encounters.KillerWins, ev.Encounters.VictimWins)
-		fields = append(fields, &discordgo.MessageEmbedField{Name: "HEAD-TO-HEAD", Value: value, Inline: false})
-	}
-	return fields
+	return string(r) + "…"
 }
