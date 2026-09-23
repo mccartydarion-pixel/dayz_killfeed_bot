@@ -13,7 +13,7 @@ import (
 // ChannelRoute is one (installation, feature route) -> Discord channel
 // mapping. route_key is the stable internal feature identifier (KILLFEED,
 // STATS_LEADERBOARDS, ...) - never a display name (see
-// internal/app/saas_api_channel_routes.go's championRouteBlueprint for the
+// internal/app/saas_channel_layout.go's championDestinations for the
 // full set). ManagedByChampion is true only for a channel Champion itself
 // created or reused via one-click auto-setup; false for a channel the
 // customer explicitly pointed a route at via a manual save - this is the

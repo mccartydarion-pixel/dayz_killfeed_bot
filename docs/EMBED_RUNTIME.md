@@ -27,11 +27,10 @@ Performed against the code BEFORE any integration; a route key alone never count
 | `LINK_GAMERTAG` | yes | yes (`RouteSyncer` panel) | **persistent interactive panel** (buttons, modals) | **no - INCOMPATIBLE** (panel, not an event card) | Champion panel |
 | `STATS_LEADERBOARDS` | yes | yes (`RouteSyncer` panel) | **persistent interactive panel** (stable message id, ephemeral replies) | **no - INCOMPATIBLE** | Champion panel |
 | `AUTO_LEADERBOARD` | yes | yes (`LeaderboardScheduler`) | **persistent ranked-rows message** edited on a schedule | **no - INCOMPATIBLE** (rows cannot be expressed by the single-event model) | Champion leaderboard |
-| `ADMIN_ALERTS` | yes | **no** (not implemented) | - | no | n/a |
-| `BUILD_FEED` | yes | **no** (not implemented) | - | no | n/a |
-| `CASINO` | yes | **no** (not implemented) | - | no | n/a |
+| `ADMIN_ALERTS` | yes | yes (`AdminAlertPublisher`) | one embed per alert / resolution | **no - NOT YET ENABLED** (severity colors and the alert/resolution pairing are fixed; templates stay stored) | Champion admin alert |
+| `BUILD_FEED` | yes | yes (`BuildFeedPublisher`) | up to 5 cards per message, or one burst summary | **no - NOT YET ENABLED** (the summary card is not a single-event card) | Champion build activity |
 | `SHOP` | yes | **no** (not implemented) | - | no | n/a |
-| `HEATMAPS` | yes | **no** (not implemented) | - | no | n/a |
+| `HEATMAPS` | yes | yes (`HeatmapBoard`) | **persistent aggregate summary** (edited in place on an interval) | **no - INCOMPATIBLE** (a multi-zone aggregate, not a single-event card) | Champion PvP heatmap summary |
 
 Only the six routes marked **yes** are ever rendered; a template saved for any other route is
 stored but never used, and the API reports that route's `runtimeRendering` as `NOT_ENABLED`

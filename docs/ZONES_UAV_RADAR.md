@@ -217,6 +217,13 @@ fallback channel and none is ever invented. When set, `internal/app/intrusion_pu
 other Champion publisher already uses (`internal/discord/panels.go`'s `MessageEditor`) - no new
 Discord-sending mechanism was built.
 
+**Staff copy (Channel System V2):** independently of the zone's own channel, every
+non-suppressed `ZONE_INTRUSION`, `UAV_INTRUSION`, `BASE_RADAR_INTRUSION` and
+`ZONE_BAN_VIOLATION` is also sent as an admin alert on the installation's `ADMIN_ALERTS` route
+(`docs/ADMIN_LOGS.md`), when one is configured. That route is a channel the customer (or
+one-click setup) chose for staff alerts, not an invented fallback; if it resolves to the zone's
+own alert channel the copy is skipped, so nothing is posted twice. `ZONE_EXIT` is not an alert.
+
 ## Operational event output
 
 Every transition the engine decides is noteworthy - `ZONE_INTRUSION`, `ZONE_EXIT`,

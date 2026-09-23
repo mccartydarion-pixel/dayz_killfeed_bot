@@ -90,7 +90,7 @@ Two design decisions worth stating explicitly:
   exactly the same pattern `kills`/`deaths` already use (`UNIQUE(guild_id, event_fingerprint)`),
   at ADM's own timestamp resolution (whole seconds).
 
-### Coordinate axes (ADM `pos=<...>` order; migration `0044_player_location_events_adm_axis_fix`)
+### Coordinate axes (ADM `pos=<...>` order; migration `0045_player_location_events_adm_axis_fix`)
 
 `x`/`z` are the two **horizontal** map coordinates (east/west, north/south) and `y` is
 **altitude** - the same axes DayZ's engine uses, and the ones heatmaps, zone distance checks and
@@ -103,7 +103,7 @@ those accessors.
 
 The original Phase 3 writer stored the second ADM value as `y` and the third as `z`, so every
 pre-fix `source='ADM'` row had altitude in `z` and the real north coordinate in `y`. Migration
-`0044_player_location_events_adm_axis_fix` swaps `y`/`z` on those rows once (rows with a `NULL`
+`0045_player_location_events_adm_axis_fix` swaps `y`/`z` on those rows once (rows with a `NULL`
 `y` can't be repaired and were never written). Zone intrusions evaluated **before** the fix were
 computed against altitude instead of north and are not re-derived - intrusion history from that
 window should be treated as unreliable.

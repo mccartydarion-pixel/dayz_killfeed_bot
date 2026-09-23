@@ -173,7 +173,7 @@ above are neither dropped nor stop being read - see
 |---|---|
 | `id` | BIGSERIAL PK |
 | `installation_id` | FK `installations(id)`, `ON DELETE CASCADE` |
-| `route_key` | TEXT - one of the sixteen stable keys below, never a display name |
+| `route_key` | TEXT - one of the stable keys below, never a display name |
 | `channel_id` | TEXT - a Discord channel snowflake |
 | `managed_by_champion` | BOOLEAN, default `FALSE` - `TRUE` only for a channel Champion itself created/reused via one-click auto-setup; `FALSE` once a customer explicitly points a route at a channel via a manual save. Any future "reset Champion channels" feature must only ever delete a channel where this is `TRUE`. |
 | `created_at`, `updated_at` | TIMESTAMPTZ |
@@ -181,28 +181,31 @@ above are neither dropped nor stop being read - see
 
 Index: `installation_id`.
 
-**Stable route keys** (`internal/app/saas_api_channel_routes.go`'s
-`championRouteBlueprint` - the single source of truth; never edit this list
-without updating that Go slice, and vice versa):
+**Stable route keys** (`internal/app/saas_channel_layout.go`'s
+`championDestinations` - the single source of truth; never edit this list
+without updating that Go slice, and vice versa). Several routes share one
+Discord channel (Channel System V2):
 
-| `route_key` | Default channel name | Purpose | Requirement |
-|---|---|---|---|
-| `KILLFEED` | `killfeed` | PvP kill/death/special-kill feed | REQUIRED |
-| `PVE_FEED` | `pvefeed` | Infected/environment/PvE events | OPTIONAL (implemented for explicit suicides) |
-| `LINK_GAMERTAG` | `link-gamertag` | Player linking / gamertag linking panel | FEATURE_DEPENDENT |
-| `STATS_LEADERBOARDS` | `stats-leaderboards` | Manually viewed general statistics and leaderboards | OPTIONAL |
-| `AUTO_LEADERBOARD` | `auto-leaderboard` | Automatically refreshed leaderboard panel | OPTIONAL |
-| `HITFEED` | `hitfeed` | Hit/damage event feed | OPTIONAL (implemented) |
-| `BOUNTY` | `bounty` | Public bounty board/events | OPTIONAL (implemented) |
-| `BOUNTY_TRACKING` | `bounty-tracking` | Bounty progression/tracking | OPTIONAL (implemented) |
-| `HEATMAPS` | `heatmaps` | Heatmap/activity output | OPTIONAL (not implemented yet) |
-| `ECONOMY` | `economy` | Economy/credits information | OPTIONAL (not implemented yet) |
-| `CASINO` | `casino` | Casino commands/results | OPTIONAL (not implemented yet) |
-| `SHOP` | `shop` | Store/shop output | OPTIONAL (not implemented yet) |
-| `CONNECTIONS` | `connections` | Connect/disconnect/player connection events | OPTIONAL (implemented) |
-| `BUILD_FEED` | `build-feed` | Building/base-related feed | OPTIONAL (not implemented yet) |
-| `ADMIN_ALERTS` | `admin-alerts` | Important moderation/server alerts | OPTIONAL (not implemented yet) |
-| `ADMIN_LOGS` | `admin-logs` | Detailed administrative/diagnostic logging | FEATURE_DEPENDENT |
+| `route_key` | Default channel (V2) | Purpose |
+|---|---|---|
+| `KILLFEED` | `🔫・combat-feed` | PvP kill/death/special-kill feed (REQUIRED) |
+| `PVE_FEED` | `🔫・combat-feed` | Infected/environment/PvE events |
+| `HITFEED` | `🎯・hitfeed` | Hit/damage event feed |
+| `BOUNTY` | `💀・bounties` | Public bounty board |
+| `BOUNTY_TRACKING` | `💀・bounties` | Bounty lifecycle feed |
+| `CONNECTIONS` | `🟢・connections` | Connect/disconnect events |
+| `HEATMAPS` | `🗺️・heatmaps` | PvP heatmap summary |
+| `AUTO_LEADERBOARD` | `📊・leaderboards` | Automatically refreshed leaderboard panel |
+| `STATS_LEADERBOARDS` | `📊・leaderboards` | "My Stats / Search Player" panel |
+| `LINK_GAMERTAG` | `🔗・player-link` | Gamertag linking panel |
+| `ECONOMY` | `💰・economy` | Champion Points transactions |
+| `SHOP` | `💰・economy` | Shop purchases/refunds (published on `ECONOMY`) |
+| `ADMIN_LOGS` | `🛡️・admin-logs` | ADM health / diagnostics |
+| `ADMIN_ALERTS` | `🛡️・admin-logs` | Operational alerts |
+| `BUILD_FEED` | `🛡️・admin-logs` | Build/placement actions (when the server logs them) |
+
+`CASINO` no longer exists; migration 0044 deleted its stored routes and
+embed templates.
 
 See `docs/SAAS_API.md`'s "Channel routing" section for the full runtime
 publisher audit behind each requirement level, and the exact backward-

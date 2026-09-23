@@ -401,16 +401,20 @@ components:
       properties:
         id: { type: string, description: Discord category channel snowflake. }
         name: { type: string }
+        key:
+          type: string
+          enum: [LIVE, HUB, STAFF]
+          description: Which Channel System V2 category this is (auto-setup responses only).
 
     ChannelRouteKey:
       type: string
       enum:
         [
           KILLFEED, PVE_FEED, LINK_GAMERTAG, STATS_LEADERBOARDS, AUTO_LEADERBOARD,
-          HITFEED, BOUNTY, BOUNTY_TRACKING, HEATMAPS, ECONOMY, CASINO, SHOP,
+          HITFEED, BOUNTY, BOUNTY_TRACKING, HEATMAPS, ECONOMY, SHOP,
           CONNECTIONS, BUILD_FEED, ADMIN_ALERTS, ADMIN_LOGS,
         ]
-      description: Stable backend feature identifier - never a display name. See docs/SAAS_API.md's "Channel routing" section for each route's purpose and requirement level.
+      description: Stable backend feature identifier - never a display name. Several routes share one Discord channel; see docs/SAAS_API.md's "Channel routing" section for the layout and each route's producer.
 
     ChannelRouteInfo:
       type: object
@@ -427,7 +431,7 @@ components:
     EmbedRouteKey:
       type: string
       description: A fixed channel-route key (never an arbitrary string).
-      enum: [KILLFEED, PVE_FEED, LINK_GAMERTAG, STATS_LEADERBOARDS, AUTO_LEADERBOARD, HITFEED, BOUNTY, BOUNTY_TRACKING, HEATMAPS, ECONOMY, CASINO, SHOP, CONNECTIONS, BUILD_FEED, ADMIN_ALERTS, ADMIN_LOGS]
+      enum: [KILLFEED, PVE_FEED, LINK_GAMERTAG, STATS_LEADERBOARDS, AUTO_LEADERBOARD, HITFEED, BOUNTY, BOUNTY_TRACKING, HEATMAPS, ECONOMY, SHOP, CONNECTIONS, BUILD_FEED, ADMIN_ALERTS, ADMIN_LOGS]
     EmbedTemplate:
       type: object
       description: >
@@ -513,7 +517,7 @@ components:
       type: object
       required: [routes]
       description: >
-        A partial merge keyed by route_key - never requires all sixteen. A
+        A partial merge keyed by route_key - never requires every route. A
         key with a non-empty channel ID upserts that route
         (managedByChampion becomes false). A key with an empty string
         explicitly disables/removes that route. An absent key is left
@@ -535,22 +539,78 @@ components:
       description: >
         configured=false with a reason is a safe, expected outcome the
         website must branch on directly - never the {"error":...} envelope,
-        since neither MISSING_MANAGE_CHANNELS nor CUSTOM_CONFIGURATION_EXISTS
-        is a failure to retry blindly.
+        since none of MISSING_MANAGE_CHANNELS, CUSTOM_CONFIGURATION_EXISTS or
+        KILLFEED_UNAVAILABLE is a failure to retry blindly.
       properties:
         configured: { type: boolean }
         reason:
           type: string
-          enum: [MISSING_MANAGE_CHANNELS, CUSTOM_CONFIGURATION_EXISTS]
+          enum: [MISSING_MANAGE_CHANNELS, CUSTOM_CONFIGURATION_EXISTS, KILLFEED_UNAVAILABLE]
           nullable: true
         category:
           allOf: [{ $ref: "#/components/schemas/ChannelCategorySummary" }]
           nullable: true
+          description: The LIVE category.
+        categories:
+          type: array
+          nullable: true
+          items: { $ref: "#/components/schemas/ChannelCategorySummary" }
         routes:
           type: object
           nullable: true
-          description: All sixteen routes, present only when configured=true.
+          description: Every mapped route, present only when configured=true. Routes of destinations skipped for lack of a working producer are absent.
           additionalProperties: { $ref: "#/components/schemas/ChannelRouteInfo" }
+        destinations:
+          type: array
+          nullable: true
+          items: { $ref: "#/components/schemas/ChannelDestinationReport" }
+        retirable:
+          type: array
+          nullable: true
+          description: Champion-managed channels/categories no route uses any more. Champion never deletes them.
+          items: { $ref: "#/components/schemas/RetirableChannel" }
+
+    ChannelHealth:
+      type: string
+      enum: [ACTIVE, DISABLED, NOT_REQUIRED, BLOCKED, BROKEN]
+
+    ChannelDestinationReport:
+      type: object
+      properties:
+        key: { type: string, description: "COMBAT_FEED, HITFEED, BOUNTIES, CONNECTIONS, HEATMAPS, LEADERBOARDS, PLAYER_LINK, ECONOMY or ADMIN_LOGS." }
+        label: { type: string }
+        category: { type: string, enum: [LIVE, HUB, STAFF] }
+        channelId: { type: string, nullable: true, description: Absent when the destination was skipped. }
+        channelName: { type: string }
+        health: { $ref: "#/components/schemas/ChannelHealth" }
+        detail: { type: string, nullable: true }
+        created: { type: boolean }
+        starterSent: { type: boolean, description: One starter card was posted because the channel had no Champion content. }
+        routes:
+          type: array
+          items:
+            type: object
+            properties:
+              routeKey: { $ref: "#/components/schemas/ChannelRouteKey" }
+              health: { $ref: "#/components/schemas/ChannelHealth" }
+              detail: { type: string, nullable: true, description: "e.g. NOT_YET_PRODUCING_EVENTS, SOURCE_BLOCKED" }
+        checks:
+          type: object
+          nullable: true
+          properties:
+            channelExists: { type: boolean }
+            routeMapped: { type: boolean }
+            producerConnected: { type: boolean }
+            botCanSend: { type: boolean }
+            visibleContent: { type: boolean }
+
+    RetirableChannel:
+      type: object
+      properties:
+        channelId: { type: string }
+        channelName: { type: string, nullable: true }
+        kind: { type: string, enum: [CHANNEL, CATEGORY] }
+        formerRoutes: { type: array, nullable: true, items: { type: string } }
 
     CreateDiscordChannelRequest:
       type: object
@@ -1894,7 +1954,7 @@ paths:
 
   /api/saas/organizations/{organizationID}/installations/{installationID}/channels/auto-setup:
     post:
-      summary: One-click creation/reuse of Champion's complete 16-route default channel blueprint (OWNER/ADMIN). Idempotent.
+      summary: One-click Channel System V2 setup - creates/reuses a channel only for destinations with a working producer, then verifies each (OWNER/ADMIN). Idempotent.
       parameters:
         - { $ref: "#/components/parameters/ActingUser" }
         - { $ref: "#/components/parameters/organizationID" }
@@ -1907,9 +1967,10 @@ paths:
       responses:
         "200":
           description: >
-            configured=true with the resolved category and all sixteen
-            routes on success; configured=false with a safe reason
-            (MISSING_MANAGE_CHANNELS or CUSTOM_CONFIGURATION_EXISTS) when
+            configured=true with the categories, mapped routes and a
+            per-destination report on success; configured=false with a safe
+            reason (MISSING_MANAGE_CHANNELS, CUSTOM_CONFIGURATION_EXISTS or
+            KILLFEED_UNAVAILABLE) when
             auto-setup could not or should not proceed - both are expected
             outcomes, not errors.
           content:
@@ -1941,7 +2002,7 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
     put:
-      summary: Save a manual routing selection (Customize mode, OWNER/ADMIN). Partial merge keyed by route_key - never requires all sixteen.
+      summary: Save a manual routing selection (Customize mode, OWNER/ADMIN). Partial merge keyed by route_key - never requires every route.
       parameters:
         - { $ref: "#/components/parameters/ActingUser" }
         - { $ref: "#/components/parameters/organizationID" }

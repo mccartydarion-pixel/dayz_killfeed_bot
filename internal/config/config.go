@@ -19,6 +19,13 @@ const (
 	MaxPresenceRotationSeconds     = 300
 )
 
+// Discord heatmap summary refresh bounds (internal/discord/heatmap_board.go).
+const (
+	DefaultHeatmapDiscordIntervalMinutes = 30
+	MinHeatmapDiscordIntervalMinutes     = 5
+	MaxHeatmapDiscordIntervalMinutes     = 1440
+)
+
 // Config contains the runtime configuration for the application.
 type Config struct {
 	AppEnv   string
@@ -69,6 +76,11 @@ type Config struct {
 	// DiscordPresenceMode is always "static" or "dynamic".
 	DiscordPresenceMode string
 
+	// HeatmapDiscordIntervalMinutes is how often the Discord heatmap summary
+	// is refreshed (HEATMAP_DISCORD_INTERVAL_MINUTES), already clamped to
+	// [MinHeatmapDiscordIntervalMinutes, MaxHeatmapDiscordIntervalMinutes].
+	HeatmapDiscordIntervalMinutes int
+
 	// Champion Billing (docs/BILLING.md). StripeSecretKey/StripeWebhookSecret are server-only -
 	// never logged, never returned by any API. An empty StripeSecretKey means billing runs
 	// unconfigured (every billing action fails closed with BILLING_UNAVAILABLE) rather than the
@@ -109,6 +121,8 @@ func Load() (*Config, error) {
 		DiscordPresenceEnabled:         parseBoolWithDefault(os.Getenv("DISCORD_PRESENCE_ENABLED"), true),
 		DiscordPresenceRotationSeconds: parsePresenceRotationSeconds(os.Getenv("DISCORD_PRESENCE_ROTATION_SECONDS")),
 		DiscordPresenceMode:            parsePresenceMode(os.Getenv("DISCORD_PRESENCE_MODE")),
+
+		HeatmapDiscordIntervalMinutes: parseHeatmapDiscordIntervalMinutes(os.Getenv("HEATMAP_DISCORD_INTERVAL_MINUTES")),
 
 		StripeSecretKey:       strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY")),
 		StripeWebhookSecret:   strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET")),
@@ -218,6 +232,23 @@ func parsePresenceRotationSeconds(raw string) int {
 	}
 	if v > MaxPresenceRotationSeconds {
 		return MaxPresenceRotationSeconds
+	}
+	return v
+}
+
+// parseHeatmapDiscordIntervalMinutes parses HEATMAP_DISCORD_INTERVAL_MINUTES,
+// falling back to the default when missing or invalid and clamping to the
+// bounds so a misconfiguration can never refresh faster than the floor.
+func parseHeatmapDiscordIntervalMinutes(raw string) int {
+	v, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil {
+		return DefaultHeatmapDiscordIntervalMinutes
+	}
+	if v < MinHeatmapDiscordIntervalMinutes {
+		return MinHeatmapDiscordIntervalMinutes
+	}
+	if v > MaxHeatmapDiscordIntervalMinutes {
+		return MaxHeatmapDiscordIntervalMinutes
 	}
 	return v
 }

@@ -12,7 +12,7 @@ import (
 )
 
 // TestADMLocationAxisFixSwapsOnlyADMRows seeds pre-fix rows (z = ADM altitude, y = ADM north) and
-// re-applies the 0044 SQL: ADM rows must come back as x=east, z=north, y=altitude, and rows from
+// re-applies the 0045 SQL: ADM rows must come back as x=east, z=north, y=altitude, and rows from
 // any other source must be untouched.
 func TestADMLocationAxisFixSwapsOnlyADMRows(t *testing.T) {
 	url := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))

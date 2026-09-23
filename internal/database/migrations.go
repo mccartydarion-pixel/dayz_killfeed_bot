@@ -1839,7 +1839,17 @@ CREATE INDEX IF NOT EXISTS idx_zone_intrusions_installation_entered ON zone_intr
 `,
 	},
 	{
-		Name: "0044_player_location_events_adm_axis_fix",
+		Name: "0044_remove_casino_route",
+		SQL: `
+-- Champion Channel System V2: CASINO no longer exists as a feature or route key. Stored
+-- routes and embed templates for it are removed; the Discord channels themselves are never
+-- touched (auto-setup reports them as retirable instead).
+DELETE FROM installation_channel_routes WHERE route_key = 'CASINO';
+DELETE FROM installation_embed_templates WHERE route_key = 'CASINO';
+`,
+	},
+	{
+		Name: "0045_player_location_events_adm_axis_fix",
 		SQL:  admLocationAxisFixSQL,
 	},
 }

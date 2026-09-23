@@ -55,6 +55,14 @@ type discordGuildVerifier interface {
 	// CreateGuildTextChannel creates a new text channel in guildID, nested
 	// under parentCategoryID when non-empty.
 	CreateGuildTextChannel(guildID, name, parentCategoryID string) (*discord.RawGuildChannel, error)
+	// CreatePrivateGuildCategory creates a category hidden from @everyone
+	// (Champion's staff category).
+	CreatePrivateGuildCategory(guildID, name string) (*discord.RawGuildChannel, error)
+	// SendChannelEmbed posts a managed channel's single starter card.
+	SendChannelEmbed(channelID string, embed *discordgo.MessageEmbed) error
+	// ChannelHasBotMessage reports whether the bot has visible content in
+	// channelID (post-setup verification).
+	ChannelHasBotMessage(channelID string) (bool, error)
 }
 
 // --- eligible guilds (section 9) ----------------------------------------

@@ -12,9 +12,9 @@ func TestADMLocationAxisFixMigrationRegistered(t *testing.T) {
 	for i, m := range migrations {
 		idx[m.Name] = i
 	}
-	fix, ok := idx["0044_player_location_events_adm_axis_fix"]
+	fix, ok := idx["0045_player_location_events_adm_axis_fix"]
 	if !ok {
-		t.Fatal("expected 0044_player_location_events_adm_axis_fix to be registered")
+		t.Fatal("expected 0045_player_location_events_adm_axis_fix to be registered")
 	}
 	if base, ok := idx["0041_player_location_events"]; !ok || fix <= base {
 		t.Fatalf("axis fix (index %d) must run after 0041_player_location_events (index %d)", fix, base)

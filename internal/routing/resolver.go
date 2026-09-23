@@ -16,7 +16,7 @@ import (
 )
 
 // Stable route keys - identical to the SaaS API's route_key vocabulary
-// (internal/app/saas_api_channel_routes.go's championRouteBlueprint). Runtime
+// (internal/app/saas_channel_layout.go's championDestinations). Runtime
 // publishers migrated onto the resolver so far: KILLFEED, LINK_GAMERTAG,
 // STATS_LEADERBOARDS, AUTO_LEADERBOARD, ADMIN_LOGS, HITFEED, CONNECTIONS,
 // PVE_FEED, BOUNTY and BOUNTY_TRACKING (see
@@ -33,7 +33,6 @@ const (
 	RouteBountyTracking    = "BOUNTY_TRACKING"
 	RouteHeatmaps          = "HEATMAPS"
 	RouteEconomy           = "ECONOMY"
-	RouteCasino            = "CASINO"
 	RouteShop              = "SHOP"
 	RouteConnections       = "CONNECTIONS"
 	RouteBuildFeed         = "BUILD_FEED"

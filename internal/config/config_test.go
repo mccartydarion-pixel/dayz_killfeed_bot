@@ -136,3 +136,12 @@ func TestLoadParsesPresenceEnvironment(t *testing.T) {
 		t.Fatalf("expected mode static, got %q", cfg.DiscordPresenceMode)
 	}
 }
+
+func TestParseHeatmapDiscordIntervalMinutes(t *testing.T) {
+	cases := map[string]int{"": DefaultHeatmapDiscordIntervalMinutes, "abc": DefaultHeatmapDiscordIntervalMinutes, "1": MinHeatmapDiscordIntervalMinutes, "45": 45, "99999": MaxHeatmapDiscordIntervalMinutes}
+	for in, want := range cases {
+		if got := parseHeatmapDiscordIntervalMinutes(in); got != want {
+			t.Errorf("parseHeatmapDiscordIntervalMinutes(%q) = %d, want %d", in, got, want)
+		}
+	}
+}
