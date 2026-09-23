@@ -1678,6 +1678,144 @@ CREATE INDEX IF NOT EXISTS idx_player_location_events_server_time ON player_loca
 CREATE INDEX IF NOT EXISTS idx_player_location_events_retention ON player_location_events(created_at);
 `,
 	},
+	{
+		Name: "0042_zones_uav_base_radar",
+		SQL: `
+-- Champion Phase 4 (docs/ZONES_UAV_RADAR.md): installation-scoped geographic zones plus a stateful
+-- intrusion engine consuming Phase 3's player_location_events. installation_zones carries both
+-- installation_id (tenant-CRUD identity, matching every other Client Admin table) AND guild_id/
+-- server_id, resolved once at creation time from ClientAdminRepository.Scope and denormalized here
+-- so the intrusion engine - which lives in internal/killfeed and only ever knows guild_id/server_id,
+-- never organization_id/installation_id - can list a server's active zones without joining through
+-- installations on every location event (the per-server zone cache still avoids even this lookup
+-- on the hot path; see internal/killfeed/zone_cache.go).
+--
+-- zone_type's UAV/BASE_RADAR values share this exact same table and the exact same intrusion
+-- engine as every other zone type (task: "do NOT duplicate intrusion logic") - they only change
+-- alert presentation and (internal/permissions) which capability is required to manage them.
+CREATE TABLE IF NOT EXISTS installation_zones (
+    id BIGSERIAL PRIMARY KEY,
+    installation_id BIGINT NOT NULL REFERENCES installations(id) ON DELETE CASCADE,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    server_id BIGINT NOT NULL REFERENCES game_servers(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    zone_type TEXT NOT NULL CHECK (zone_type IN ('SAFEZONE','PVP','RESTRICTED','EVENT','UAV','BASE_RADAR','CUSTOM')),
+    center_x DOUBLE PRECISION NOT NULL,
+    center_z DOUBLE PRECISION NOT NULL,
+    radius DOUBLE PRECISION NOT NULL CHECK (radius > 0),
+    -- alert_channel_id is the ONLY Discord destination the intrusion engine ever sends to (task
+    -- section 17: "never invent a fallback channel"). NULL means alerting is silently disabled for
+    -- this zone - intrusions/presence/audit are still tracked, nothing is ever posted to Discord.
+    alert_channel_id TEXT,
+    cooldown_seconds INTEGER NOT NULL DEFAULT 300 CHECK (cooldown_seconds >= 0),
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    created_by_user_id BIGINT REFERENCES app_users(id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_installation_zones_installation ON installation_zones(installation_id);
+-- Backs the zone cache's refresh query (the hot lookup: "every enabled zone on this server").
+CREATE INDEX IF NOT EXISTS idx_installation_zones_server_enabled ON installation_zones(server_id, enabled);
+
+-- Entities fully excluded from intrusion detection for a zone (no presence tracking, no intrusion,
+-- no alert - e.g. server admins patrolling a restricted zone). Applies to every zone type.
+CREATE TABLE IF NOT EXISTS zone_ignore_entries (
+    id BIGSERIAL PRIMARY KEY,
+    zone_id BIGINT NOT NULL REFERENCES installation_zones(id) ON DELETE CASCADE,
+    entry_type TEXT NOT NULL CHECK (entry_type IN ('PLAYER','FACTION','DISCORD_ROLE')),
+    entry_value TEXT NOT NULL,
+    created_by_user_id BIGINT REFERENCES app_users(id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(zone_id, entry_type, entry_value)
+);
+CREATE INDEX IF NOT EXISTS idx_zone_ignore_entries_zone ON zone_ignore_entries(zone_id);
+
+-- Entities authorized to be inside a zone without triggering an ALERT (presence/intrusion history
+-- is still recorded - only Discord alerting is suppressed). Only meaningful for UAV/BASE_RADAR
+-- zones (task: "authorized entities never trigger intrusion alerts for UAV/Base Radar") - the
+-- intrusion engine ignores this list entirely for every other zone type.
+CREATE TABLE IF NOT EXISTS zone_authorized_entries (
+    id BIGSERIAL PRIMARY KEY,
+    zone_id BIGINT NOT NULL REFERENCES installation_zones(id) ON DELETE CASCADE,
+    entry_type TEXT NOT NULL CHECK (entry_type IN ('PLAYER','FACTION')),
+    entry_value TEXT NOT NULL,
+    created_by_user_id BIGINT REFERENCES app_users(id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(zone_id, entry_type, entry_value)
+);
+CREATE INDEX IF NOT EXISTS idx_zone_authorized_entries_zone ON zone_authorized_entries(zone_id);
+
+-- Zone bans are explicitly NOT server bans (task: "never auto-adds to the DayZ banlist") - a
+-- banned player entering a zone is tracked and flagged (zone_intrusions.banned, a ZONE_BAN_VIOLATION
+-- operational event) exactly like any other intrusion, purely for admin awareness/history.
+CREATE TABLE IF NOT EXISTS zone_bans (
+    id BIGSERIAL PRIMARY KEY,
+    zone_id BIGINT NOT NULL REFERENCES installation_zones(id) ON DELETE CASCADE,
+    player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    reason TEXT,
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_by_user_id BIGINT REFERENCES app_users(id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    lifted_at TIMESTAMPTZ,
+    lifted_by_user_id BIGINT REFERENCES app_users(id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_zone_bans_active ON zone_bans(zone_id, player_id) WHERE active;
+CREATE INDEX IF NOT EXISTS idx_zone_bans_zone ON zone_bans(zone_id);
+CREATE INDEX IF NOT EXISTS idx_zone_bans_player ON zone_bans(player_id);
+
+-- zone_presence is a deliberate exception to the "no second truth" principle Phase 3 established
+-- for location data: this is not duplicated location data, it is the intrusion engine's own
+-- persisted STATE MACHINE result (task section 19/24: "persist current presence state...use this
+-- for efficient transition detection" and "restore presence from persisted state on restart, never
+-- generate fake entry alerts for players already inside"). last_alert_at is the cooldown anchor -
+-- it survives an exit/re-entry cycle for the SAME zone+player pair so a boundary-jitter flap can
+-- never bypass the cooldown by technically closing and reopening an intrusion.
+CREATE TABLE IF NOT EXISTS zone_presence (
+    id BIGSERIAL PRIMARY KEY,
+    zone_id BIGINT NOT NULL REFERENCES installation_zones(id) ON DELETE CASCADE,
+    player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    status TEXT NOT NULL CHECK (status IN ('INSIDE','OUTSIDE')),
+    entered_at TIMESTAMPTZ,
+    last_seen_at TIMESTAMPTZ NOT NULL,
+    last_location_event_id BIGINT,
+    last_alert_at TIMESTAMPTZ,
+    UNIQUE(zone_id, player_id)
+);
+CREATE INDEX IF NOT EXISTS idx_zone_presence_zone_status ON zone_presence(zone_id, status);
+CREATE INDEX IF NOT EXISTS idx_zone_presence_player ON zone_presence(player_id);
+
+-- zone_intrusions is the durable, append-mostly history: a row is created on every OUTSIDE->INSIDE
+-- transition and NEVER deleted on exit (task section 8), only updated (exited_at/status). status is
+-- a 3-stage lifecycle: ACTIVE (ongoing, unacknowledged) -> ACKNOWLEDGED (ongoing, an admin has seen
+-- it - task section 16) -> EXITED (set whenever the player leaves, from either ACTIVE or
+-- ACKNOWLEDGED; acknowledged_at/acknowledged_by are preserved as history either way). The partial
+-- unique index enforces "at most one OPEN (non-EXITED) intrusion per zone+player", which is also
+-- the intrusion engine's own hot lookup for "is this player already tracked as inside this zone".
+CREATE TABLE IF NOT EXISTS zone_intrusions (
+    id BIGSERIAL PRIMARY KEY,
+    zone_id BIGINT NOT NULL REFERENCES installation_zones(id) ON DELETE CASCADE,
+    installation_id BIGINT NOT NULL REFERENCES installations(id) ON DELETE CASCADE,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    server_id BIGINT NOT NULL REFERENCES game_servers(id) ON DELETE CASCADE,
+    player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    gamertag TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('ACTIVE','EXITED','ACKNOWLEDGED')),
+    banned BOOLEAN NOT NULL DEFAULT FALSE,
+    entered_at TIMESTAMPTZ NOT NULL,
+    exited_at TIMESTAMPTZ,
+    acknowledged_at TIMESTAMPTZ,
+    acknowledged_by_user_id BIGINT REFERENCES app_users(id),
+    last_alert_at TIMESTAMPTZ,
+    alert_count INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_zone_intrusions_installation_status ON zone_intrusions(installation_id, status);
+CREATE INDEX IF NOT EXISTS idx_zone_intrusions_zone_status ON zone_intrusions(zone_id, status);
+CREATE INDEX IF NOT EXISTS idx_zone_intrusions_player ON zone_intrusions(player_id);
+CREATE INDEX IF NOT EXISTS idx_zone_intrusions_entered ON zone_intrusions(entered_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_zone_intrusions_open ON zone_intrusions(zone_id, player_id) WHERE status <> 'EXITED';
+`,
+	},
 }
 
 // Migrate applies all pending migrations in order, each transactionally. A

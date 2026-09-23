@@ -3608,3 +3608,247 @@ paths:
         "200": { description: "{ items: LocationEvent[], nextCursor: string|null }", content: { application/json: { schema: { type: object } } } }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/zones:
+    get:
+      summary: List every zone for this installation (ZONE_VIEW).
+      parameters: [{ $ref: "#/components/parameters/ActingUser" }, { $ref: "#/components/parameters/organizationID" }, { $ref: "#/components/parameters/installationID" }]
+      responses:
+        "200": { description: "{ items: Zone[] }", content: { application/json: { schema: { type: object } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      summary: >-
+        Create a zone (ZONE_MANAGE; UAV/BASE_RADAR zoneType additionally requires UAV_MANAGE). radius
+        must be > 0; zoneType is immutable after creation.
+      parameters: [{ $ref: "#/components/parameters/ActingUser" }, { $ref: "#/components/parameters/organizationID" }, { $ref: "#/components/parameters/installationID" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                zoneType: { type: string, enum: [SAFEZONE, PVP, RESTRICTED, EVENT, UAV, BASE_RADAR, CUSTOM] }
+                centerX: { type: number }
+                centerZ: { type: number }
+                radius: { type: number }
+                alertChannelId: { type: string, nullable: true }
+                cooldownSeconds: { type: integer }
+      responses:
+        "201": { description: Zone, content: { application/json: { schema: { type: object } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/zones/{zoneID}:
+    parameters: [{ $ref: "#/components/parameters/ActingUser" }, { $ref: "#/components/parameters/organizationID" }, { $ref: "#/components/parameters/installationID" }, { name: zoneID, in: path, required: true, schema: { type: integer, format: int64 } }]
+    get:
+      summary: Get one zone (ZONE_VIEW).
+      responses:
+        "200": { description: Zone, content: { application/json: { schema: { type: object } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Zone not found. }
+    put:
+      summary: >-
+        Partially update a zone (ZONE_MANAGE; additionally requires UAV_MANAGE if the zone's type is
+        already UAV/BASE_RADAR). zoneType is never accepted here.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                centerX: { type: number }
+                centerZ: { type: number }
+                radius: { type: number }
+                alertChannelId: { type: string, nullable: true }
+                cooldownSeconds: { type: integer }
+                enabled: { type: boolean }
+      responses:
+        "200": { description: Zone, content: { application/json: { schema: { type: object } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Zone not found. }
+    delete:
+      summary: >-
+        Delete a zone, cascading its ignore/authorized/ban/presence/intrusion rows (ZONE_MANAGE;
+        additionally requires UAV_MANAGE if the zone's type is UAV/BASE_RADAR).
+      responses:
+        "200": { description: "{ deleted: true }", content: { application/json: { schema: { type: object } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Zone not found. }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/zones/{zoneID}/ignore:
+    parameters: [{ $ref: "#/components/parameters/ActingUser" }, { $ref: "#/components/parameters/organizationID" }, { $ref: "#/components/parameters/installationID" }, { name: zoneID, in: path, required: true, schema: { type: integer, format: int64 } }]
+    get:
+      summary: List a zone's ignore-list entries (ZONE_VIEW).
+      responses:
+        "200": { description: "{ items: ZoneEntry[] }", content: { application/json: { schema: { type: object } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      summary: >-
+        Add an ignore-list entry (ZONE_IGNORE_MANAGE, its own capability separate from ZONE_MANAGE). A
+        matching entity is never tracked by the intrusion engine at all - no presence, no intrusion, no
+        alert.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                entryType: { type: string, enum: [PLAYER, FACTION, DISCORD_ROLE] }
+                entryValue: { type: string }
+      responses:
+        "201": { description: ZoneEntry, content: { application/json: { schema: { type: object } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Zone not found. }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/zones/ignore/{entryID}:
+    delete:
+      summary: Remove an ignore-list entry (ZONE_IGNORE_MANAGE).
+      parameters: [{ $ref: "#/components/parameters/ActingUser" }, { $ref: "#/components/parameters/organizationID" }, { $ref: "#/components/parameters/installationID" }, { name: entryID, in: path, required: true, schema: { type: integer, format: int64 } }]
+      responses:
+        "200": { description: "{ deleted: true }", content: { application/json: { schema: { type: object } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Entry not found. }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/zones/{zoneID}/authorized:
+    parameters: [{ $ref: "#/components/parameters/ActingUser" }, { $ref: "#/components/parameters/organizationID" }, { $ref: "#/components/parameters/installationID" }, { name: zoneID, in: path, required: true, schema: { type: integer, format: int64 } }]
+    get:
+      summary: List a zone's authorized-entity entries (ZONE_VIEW).
+      responses:
+        "200": { description: "{ items: ZoneEntry[] }", content: { application/json: { schema: { type: object } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      summary: >-
+        Add an authorized entity (ZONE_MANAGE). Meaningful only for UAV/BASE_RADAR zones - suppresses
+        the alert only, an authorized entry's entry is still tracked/visible in history.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                entryType: { type: string, enum: [PLAYER, FACTION] }
+                entryValue: { type: string }
+      responses:
+        "201": { description: ZoneEntry, content: { application/json: { schema: { type: object } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Zone not found. }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/zones/authorized/{entryID}:
+    delete:
+      summary: Remove an authorized entity (ZONE_MANAGE).
+      parameters: [{ $ref: "#/components/parameters/ActingUser" }, { $ref: "#/components/parameters/organizationID" }, { $ref: "#/components/parameters/installationID" }, { name: entryID, in: path, required: true, schema: { type: integer, format: int64 } }]
+      responses:
+        "200": { description: "{ deleted: true }", content: { application/json: { schema: { type: object } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Entry not found. }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/zones/{zoneID}/bans:
+    parameters: [{ $ref: "#/components/parameters/ActingUser" }, { $ref: "#/components/parameters/organizationID" }, { $ref: "#/components/parameters/installationID" }, { name: zoneID, in: path, required: true, schema: { type: integer, format: int64 } }]
+    get:
+      summary: List a zone's bans, active and historical (ZONE_VIEW).
+      responses:
+        "200": { description: "{ items: ZoneBan[] }", content: { application/json: { schema: { type: object } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      summary: >-
+        Ban a player from a zone (ZONE_MANAGE). Explicitly NOT a server ban - never calls the Nitrado
+        banlist API; only flags a future entry (banned=true, a ZONE_BAN_VIOLATION event).
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                playerId: { type: integer, format: int64 }
+                reason: { type: string }
+      responses:
+        "201": { description: ZoneBan, content: { application/json: { schema: { type: object } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Zone not found. }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/zones/bans/{banID}:
+    delete:
+      summary: Lift an active zone ban (ZONE_MANAGE). History is preserved, never deleted.
+      parameters: [{ $ref: "#/components/parameters/ActingUser" }, { $ref: "#/components/parameters/organizationID" }, { $ref: "#/components/parameters/installationID" }, { name: banID, in: path, required: true, schema: { type: integer, format: int64 } }]
+      responses:
+        "200": { description: "{ lifted: true }", content: { application/json: { schema: { type: object } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: No active ban found. }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/zones/{zoneID}/active-intruders:
+    get:
+      summary: >-
+        Every player currently persisted as inside this zone (ZONE_VIEW). Each entry carries
+        presenceStatus (PRESENT_RECENT or PRESENCE_UNCERTAIN, computed at read time from freshness -
+        never a fabricated exit).
+      parameters: [{ $ref: "#/components/parameters/ActingUser" }, { $ref: "#/components/parameters/organizationID" }, { $ref: "#/components/parameters/installationID" }, { name: zoneID, in: path, required: true, schema: { type: integer, format: int64 } }]
+      responses:
+        "200": { description: "{ items: ActiveIntruder[] }", content: { application/json: { schema: { type: object } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Zone not found. }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/intrusions/active:
+    get:
+      summary: Installation-wide open (ACTIVE or ACKNOWLEDGED) intrusions across every zone (ZONE_VIEW).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { name: zoneId, in: query, schema: { type: integer, format: int64 } }
+        - { name: zoneType, in: query, schema: { type: string, enum: [SAFEZONE, PVP, RESTRICTED, EVENT, UAV, BASE_RADAR, CUSTOM] } }
+        - { name: playerId, in: query, schema: { type: integer, format: int64 } }
+        - { name: acknowledged, in: query, schema: { type: boolean } }
+      responses:
+        "200": { description: "{ items: ZoneIntrusion[] }", content: { application/json: { schema: { type: object } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/intrusions/history:
+    get:
+      summary: Intrusion history, newest first, never deleted on exit (ZONE_VIEW).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { name: zoneId, in: query, schema: { type: integer, format: int64 } }
+        - { name: playerId, in: query, schema: { type: integer, format: int64 } }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: status, in: query, schema: { type: string, enum: [ACTIVE, ACKNOWLEDGED, EXITED] } }
+        - { name: cursor, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer } }
+      responses:
+        "200": { description: "{ items: ZoneIntrusion[], nextCursor: string|null }", content: { application/json: { schema: { type: object } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/intrusions/{intrusionID}/acknowledge:
+    post:
+      summary: Acknowledge an ACTIVE intrusion (INTRUSION_ACK). Writes an admin_audit_log entry.
+      parameters: [{ $ref: "#/components/parameters/ActingUser" }, { $ref: "#/components/parameters/organizationID" }, { $ref: "#/components/parameters/installationID" }, { name: intrusionID, in: path, required: true, schema: { type: integer, format: int64 } }]
+      responses:
+        "200": { description: ZoneIntrusion, content: { application/json: { schema: { type: object } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: No ACTIVE intrusion found with that id. }
