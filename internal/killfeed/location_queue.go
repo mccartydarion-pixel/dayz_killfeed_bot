@@ -98,6 +98,13 @@ type LocationQueue struct {
 	store    LocationStore
 	guildID  int64
 	serverID int64
+	// intrusion is the optional Phase 4 zone/UAV/Base Radar engine (docs/ZONES_UAV_RADAR.md) - nil-
+	// safe throughout (Evaluate is a no-op on a nil engine), so a queue that never had one attached
+	// behaves exactly as before this feature existed. Runs synchronously, right after this batch's
+	// events were durably persisted, on the exact same consumer goroutine - still fully off the ADM
+	// parser's hot path (that separation is LocationQueue's own reason to exist), just an additional
+	// step of the same already-async pipeline.
+	intrusion *IntrusionEngine
 
 	queue  chan locationCandidate
 	closed chan struct{}
@@ -122,6 +129,16 @@ func NewLocationQueue(store LocationStore, guildID, serverID int64) *LocationQue
 		closed:   make(chan struct{}),
 		done:     make(chan struct{}),
 	}
+}
+
+// SetIntrusionEngine attaches the Phase 4 zone/UAV/Base Radar intrusion engine. Must be called
+// before Run starts consuming (matches NewLocationQueue's other one-shot setup fields) - safe to
+// leave unset entirely, in which case persist() never evaluates zones.
+func (q *LocationQueue) SetIntrusionEngine(engine *IntrusionEngine) {
+	if q == nil {
+		return
+	}
+	q.intrusion = engine
 }
 
 // ServerID returns the game_servers row this queue is scoped to (0 if unset).
@@ -263,6 +280,28 @@ func (q *LocationQueue) persist(ctx context.Context, batch []locationCandidate) 
 	}
 	q.persisted += int64(inserted)
 	q.mu.Unlock()
+
+	// Phase 4 zone/UAV/Base Radar intrusion evaluation (docs/ZONES_UAV_RADAR.md) - only after this
+	// batch is confirmed durable, still on this same off-hot-path goroutine. A panic here must never
+	// take down the location worker, exactly like every other fire-and-forget consumer in this
+	// package (HitPublisher, ConnectionPublisher).
+	if q.intrusion != nil {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Warn("component=location", "msg", "intrusion engine panic recovered", "panic", r)
+				}
+			}()
+			locs := make([]locationRecord, 0, len(records))
+			for _, rec := range records {
+				locs = append(locs, locationRecord{
+					GuildID: rec.GuildID, ServerID: rec.ServerID, PlayerID: rec.PlayerID, Gamertag: rec.Gamertag,
+					X: rec.X, Z: rec.Z, ObservedAt: rec.ObservedAt,
+				})
+			}
+			q.intrusion.Evaluate(ctx, q.serverID, locs)
+		}()
+	}
 }
 
 // LocationQueueHealth is a point-in-time snapshot for observability (task section 12).

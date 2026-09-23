@@ -136,6 +136,15 @@ type App struct {
 	// Locations backs Champion Phase 3 (docs/PLAYER_INTELLIGENCE.md): the authoritative player
 	// directory and persisted ADM location-event history.
 	Locations *repository.LocationRepository
+	// Zones/ZoneCache/Intrusion back Champion Phase 4 (docs/ZONES_UAV_RADAR.md): installation-scoped
+	// geographic zones and the stateful UAV/Base Radar intrusion engine consuming Phase 3's location
+	// events. ZoneCache is a single, process-wide, per-server cache (Invalidate is called by every
+	// zone CRUD mutation in saas_api_zones.go); Intrusion is a single, process-wide engine instance -
+	// every server's LocationQueue shares both, since neither carries per-server state of its own
+	// (the cache keys internally by server id; the engine is stateless besides its metrics counters).
+	Zones     *repository.ZoneRepository
+	ZoneCache *killfeed.ZoneCache
+	Intrusion *killfeed.IntrusionEngine
 	// ChannelRoutes is the runtime feature -> Discord channel resolver
 	// (internal/routing), a short-TTL cache over SaaSChannelRoutes. Nil-safe:
 	// with no database, publishers simply use their legacy channel.
@@ -632,6 +641,9 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.ClientAdmin = repository.NewClientAdminRepository(db.Pool)
 			app.Locations = repository.NewLocationRepository(db.Pool)
 			go app.runLocationRetention(ctx)
+			app.Zones = repository.NewZoneRepository(db.Pool)
+			app.ZoneCache = killfeed.NewZoneCache(app.Zones)
+			app.Intrusion = killfeed.NewIntrusionEngine(app.Zones, app.ZoneCache, intrusionRoleChecker{app: app}, intrusionPublisher{app: app})
 			app.adminSaaS = adminrepo.New(db.Pool)
 			embedRepo := repository.NewEmbedTemplateRepository(db.Pool)
 			app.EmbedTemplates = embedtemplates.NewService(embedRepo)
@@ -1462,7 +1474,7 @@ func (a *App) Run() error {
 				setupManager.SetRouteGate(a.RouteSyncer.HasRoute)
 				go a.RouteSyncer.Run(ctx)
 			}
-			store := &persistenceStoreAdapter{players: a.Players, kills: a.Kills, deaths: a.Deaths, seasons: a.Seasons, factions: a.Factions, wars: a.Wars, events: a.Events, bounties: a.Bounties, bountySvc: a.BountyService, streaks: a.Streaks, anomalies: a.Anomalies, activity: a.ActivityRepository, servers: a.Servers, stats: a.Stats, analytics: a.AnalyticsRepository, factionStats: a.FactionHubStats, locations: a.Locations, panelDirty: func() {
+			store := &persistenceStoreAdapter{players: a.Players, kills: a.Kills, deaths: a.Deaths, seasons: a.Seasons, factions: a.Factions, wars: a.Wars, events: a.Events, bounties: a.Bounties, bountySvc: a.BountyService, streaks: a.Streaks, anomalies: a.Anomalies, activity: a.ActivityRepository, servers: a.Servers, stats: a.Stats, analytics: a.AnalyticsRepository, factionStats: a.FactionHubStats, locations: a.Locations, zones: a.Zones, panelDirty: func() {
 				if a.LeaderboardScheduler != nil {
 					a.LeaderboardScheduler.MarkDirty()
 				}
@@ -1698,6 +1710,7 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 	// pq above - see internal/killfeed/location_queue.go's package doc for why it must never
 	// share pq's blocking EnqueueAndWait semantics.
 	lq := killfeed.NewLocationQueue(store, row.GuildID, row.ID)
+	lq.SetIntrusionEngine(a.Intrusion)
 	engine.SetLocationQueue(lq)
 	a.addLocationQueue(lq)
 
@@ -1881,7 +1894,10 @@ type persistenceStoreAdapter struct {
 	// locations backs killfeed.LocationStore (Phase 3, docs/PLAYER_INTELLIGENCE.md) - nil-safe
 	// (InsertLocationEvents/UpsertPlayer below no-op if unset, matching this adapter's existing
 	// defensive-nil style for every other optional dependency).
-	locations  *repository.LocationRepository
+	locations *repository.LocationRepository
+	// zones backs killfeed.IntrusionStore/killfeed.ZoneSource (Phase 4, docs/ZONES_UAV_RADAR.md) -
+	// nil-safe throughout, matching locations above.
+	zones      *repository.ZoneRepository
 	panelDirty func()
 	// factionStats is told about every persisted kill and death (nil-safe): it invalidates cached
 	// faction figures and queues the killer for achievement evaluation. It never blocks the kill path.
@@ -1935,6 +1951,102 @@ func (p *persistenceStoreAdapter) InsertLocationEvents(ctx context.Context, even
 		return 0, nil
 	}
 	return p.locations.InsertLocationEvents(ctx, events)
+}
+
+// --- killfeed.ZoneSource / killfeed.IntrusionStore (Phase 4, docs/ZONES_UAV_RADAR.md) ----------
+// Every method here is a thin, nil-safe delegate to p.zones - a nil zones repository (Phase 4 not
+// wired up, or a test harness that never configured it) reports "no zones"/"not ignored"/"not
+// authorized"/"not banned" rather than erroring the intrusion engine on every evaluation.
+
+func (p *persistenceStoreAdapter) ActiveZonesForServer(ctx context.Context, serverID int64) ([]repository.Zone, error) {
+	if p.zones == nil {
+		return nil, nil
+	}
+	return p.zones.ActiveZonesForServer(ctx, serverID)
+}
+
+func (p *persistenceStoreAdapter) IsIgnored(ctx context.Context, zoneID, playerID int64, factionID *int64) (bool, error) {
+	if p.zones == nil {
+		return false, nil
+	}
+	return p.zones.IsIgnored(ctx, zoneID, playerID, factionID)
+}
+
+func (p *persistenceStoreAdapter) DiscordRoleIgnoreEntries(ctx context.Context, zoneID int64) ([]string, error) {
+	if p.zones == nil {
+		return nil, nil
+	}
+	return p.zones.DiscordRoleIgnoreEntries(ctx, zoneID)
+}
+
+func (p *persistenceStoreAdapter) IsAuthorized(ctx context.Context, zoneID, playerID int64, factionID *int64) (bool, error) {
+	if p.zones == nil {
+		return false, nil
+	}
+	return p.zones.IsAuthorized(ctx, zoneID, playerID, factionID)
+}
+
+func (p *persistenceStoreAdapter) PlayerDiscordUserID(ctx context.Context, guildID, playerID int64) (*string, error) {
+	if p.zones == nil {
+		return nil, nil
+	}
+	return p.zones.PlayerDiscordUserID(ctx, guildID, playerID)
+}
+
+func (p *persistenceStoreAdapter) PlayerFactionID(ctx context.Context, guildID, playerID int64) (*int64, error) {
+	if p.zones == nil {
+		return nil, nil
+	}
+	return p.zones.PlayerFactionID(ctx, guildID, playerID)
+}
+
+func (p *persistenceStoreAdapter) DiscordGuildID(ctx context.Context, guildID int64) (string, error) {
+	if p.zones == nil {
+		return "", nil
+	}
+	return p.zones.DiscordGuildID(ctx, guildID)
+}
+
+func (p *persistenceStoreAdapter) ActiveZoneBan(ctx context.Context, zoneID, playerID int64) (*repository.ZoneBan, error) {
+	if p.zones == nil {
+		return nil, nil
+	}
+	return p.zones.ActiveZoneBan(ctx, zoneID, playerID)
+}
+
+func (p *persistenceStoreAdapter) GetPresence(ctx context.Context, zoneID, playerID int64) (*repository.ZonePresence, error) {
+	if p.zones == nil {
+		return nil, nil
+	}
+	return p.zones.GetPresence(ctx, zoneID, playerID)
+}
+
+func (p *persistenceStoreAdapter) UpsertPresence(ctx context.Context, zoneID, playerID int64, status string, enteredAt *time.Time, lastSeenAt time.Time, lastLocationEventID int64, lastAlertAt *time.Time) error {
+	if p.zones == nil {
+		return nil
+	}
+	return p.zones.UpsertPresence(ctx, zoneID, playerID, status, enteredAt, lastSeenAt, lastLocationEventID, lastAlertAt)
+}
+
+func (p *persistenceStoreAdapter) GetOpenIntrusion(ctx context.Context, zoneID, playerID int64) (*repository.ZoneIntrusion, error) {
+	if p.zones == nil {
+		return nil, nil
+	}
+	return p.zones.GetOpenIntrusion(ctx, zoneID, playerID)
+}
+
+func (p *persistenceStoreAdapter) CreateIntrusion(ctx context.Context, zoneID, installationID, guildID, serverID, playerID int64, gamertag string, banned bool, enteredAt time.Time, alerted bool) (*repository.ZoneIntrusion, error) {
+	if p.zones == nil {
+		return nil, errors.New("zone repository unavailable")
+	}
+	return p.zones.CreateIntrusion(ctx, zoneID, installationID, guildID, serverID, playerID, gamertag, banned, enteredAt, alerted)
+}
+
+func (p *persistenceStoreAdapter) MarkExited(ctx context.Context, intrusionID int64, exitedAt time.Time) error {
+	if p.zones == nil {
+		return nil
+	}
+	return p.zones.MarkExited(ctx, intrusionID, exitedAt)
 }
 
 func (p *persistenceStoreAdapter) InsertKill(ctx context.Context, k repository.KillRecord) error {

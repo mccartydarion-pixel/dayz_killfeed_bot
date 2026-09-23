@@ -1217,6 +1217,41 @@ Every returned location carries `observedAt`/`ageSeconds`/`freshness` (`LIVE_REC
 age genuinely qualifies. Viewing a player's location history or online-player locations writes an
 `admin_audit_log` row (location access is privileged, task's own instruction).
 
+### Zones + UAV / Base Radar (Phase 4)
+
+Full contract in `docs/ZONES_UAV_RADAR.md`. Installation-scoped geographic zones plus a stateful
+intrusion engine consuming Phase 3's location events - one shared engine for every zone type,
+including UAV/Base Radar (no duplicated logic). New capabilities `ZONE_VIEW` (Moderator),
+`ZONE_MANAGE`/`ZONE_IGNORE_MANAGE` (Administrator), `UAV_MANAGE` (Owner - required **in addition
+to** `ZONE_MANAGE` for any UAV/BASE_RADAR zone), `INTRUSION_ACK` (Moderator).
+
+```
+GET    .../admin/zones                                                          ZONE_VIEW
+POST   .../admin/zones                                                          ZONE_MANAGE (+UAV_MANAGE for UAV/BASE_RADAR)
+GET    .../admin/zones/{zoneID}                                                 ZONE_VIEW
+PUT    .../admin/zones/{zoneID}                                                 ZONE_MANAGE (+UAV_MANAGE if already UAV/BASE_RADAR)
+DELETE .../admin/zones/{zoneID}                                                 ZONE_MANAGE (+UAV_MANAGE if already UAV/BASE_RADAR)
+GET    .../admin/zones/{zoneID}/ignore                                          ZONE_VIEW
+POST   .../admin/zones/{zoneID}/ignore          {"entryType":"PLAYER|FACTION|DISCORD_ROLE","entryValue":"..."}  ZONE_IGNORE_MANAGE
+DELETE .../admin/zones/ignore/{entryID}                                         ZONE_IGNORE_MANAGE
+GET    .../admin/zones/{zoneID}/authorized                                      ZONE_VIEW
+POST   .../admin/zones/{zoneID}/authorized      {"entryType":"PLAYER|FACTION","entryValue":"..."}               ZONE_MANAGE
+DELETE .../admin/zones/authorized/{entryID}                                     ZONE_MANAGE
+GET    .../admin/zones/{zoneID}/bans                                            ZONE_VIEW
+POST   .../admin/zones/{zoneID}/bans            {"playerId":123,"reason":"..."}                                 ZONE_MANAGE
+DELETE .../admin/zones/bans/{banID}                                             ZONE_MANAGE (lifts the ban)
+GET    .../admin/zones/{zoneID}/active-intruders                                ZONE_VIEW
+GET    .../admin/intrusions/active              ?zoneId=&zoneType=&playerId=&acknowledged=                     ZONE_VIEW
+GET    .../admin/intrusions/history              ?zoneId=&playerId=&from=&to=&status=&cursor=&limit=            ZONE_VIEW
+POST   .../admin/intrusions/{intrusionID}/acknowledge                           INTRUSION_ACK
+```
+
+Every active-intruder/active-intrusion response carries a `presenceStatus` (`PRESENT_RECENT` or
+`PRESENCE_UNCERTAIN`, computed at read time from the same freshness thresholds above) - a stale
+last-known-location never auto-closes an intrusion, it is only ever flagged uncertain. Zone bans
+are explicitly not server bans - they never call the Nitrado banlist API. Every zone/ignore/
+authorized/ban mutation and every acknowledgement writes an `admin_audit_log` row.
+
 ## Request/response DTOs
 
 None of these ever include a Nitrado ciphertext/IV/auth tag, a Discord

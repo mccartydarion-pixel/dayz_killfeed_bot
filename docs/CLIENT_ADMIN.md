@@ -65,6 +65,11 @@ permission mapping granting a Level at or below their own resolved Level - enfor
 | `PLAYER_DIRECTORY_VIEW` | Moderator | Phase 3, `docs/PLAYER_INTELLIGENCE.md` - the authoritative player directory |
 | `PLAYER_LAST_LOCATION_VIEW` | Administrator | Phase 3 - a player's current location; online-players-with-location |
 | `PLAYER_LOCATION_VIEW` | Administrator | Phase 3 - full location history |
+| `ZONE_VIEW` | Moderator | Phase 4, `docs/ZONES_UAV_RADAR.md` - list/read zones, ignore/authorized/ban lists, intruders/intrusions |
+| `ZONE_MANAGE` | Administrator | Phase 4 - zone CRUD (+ `UAV_MANAGE` for UAV/BASE_RADAR), authorized-entry CRUD, ban CRUD |
+| `ZONE_IGNORE_MANAGE` | Administrator | Phase 4 - ignore-entry CRUD, its own capability separate from `ZONE_MANAGE` |
+| `UAV_MANAGE` | Owner | Phase 4 - required in addition to `ZONE_MANAGE` for any UAV/BASE_RADAR zone |
+| `INTRUSION_ACK` | Moderator | Phase 4 - acknowledge an active intrusion |
 
 ## Current Actor Client Admin Permissions (Phase 1 Part 2)
 
@@ -157,6 +162,25 @@ GET    /players                                PLAYER_DIRECTORY_VIEW     ?q=&onl
 GET    /players/online                         PLAYER_LAST_LOCATION_VIEW  currently-connected players + latest known location each
 GET    /players/{playerID}/locations/latest    PLAYER_LAST_LOCATION_VIEW  404 if never observed
 GET    /players/{playerID}/locations           PLAYER_LOCATION_VIEW      ?from=&to=&eventType=&cursor=&limit=, newest first
+
+GET    /zones                                  ZONE_VIEW                 (Phase 4, docs/ZONES_UAV_RADAR.md)
+POST   /zones                                  ZONE_MANAGE (+UAV_MANAGE for UAV/BASE_RADAR)
+GET    /zones/{zoneID}                          ZONE_VIEW
+PUT    /zones/{zoneID}                          ZONE_MANAGE (+UAV_MANAGE if the zone's type is UAV/BASE_RADAR)
+DELETE /zones/{zoneID}                          ZONE_MANAGE (+UAV_MANAGE if the zone's type is UAV/BASE_RADAR)
+GET    /zones/{zoneID}/ignore                   ZONE_VIEW
+POST   /zones/{zoneID}/ignore                   ZONE_IGNORE_MANAGE       body: {"entryType":"PLAYER|FACTION|DISCORD_ROLE","entryValue":"..."}
+DELETE /zones/ignore/{entryID}                  ZONE_IGNORE_MANAGE
+GET    /zones/{zoneID}/authorized               ZONE_VIEW
+POST   /zones/{zoneID}/authorized               ZONE_MANAGE              body: {"entryType":"PLAYER|FACTION","entryValue":"..."}
+DELETE /zones/authorized/{entryID}              ZONE_MANAGE
+GET    /zones/{zoneID}/bans                     ZONE_VIEW
+POST   /zones/{zoneID}/bans                     ZONE_MANAGE              body: {"playerId":123,"reason":"..."}
+DELETE /zones/bans/{banID}                      ZONE_MANAGE              (lifts the ban)
+GET    /zones/{zoneID}/active-intruders         ZONE_VIEW
+GET    /intrusions/active                       ZONE_VIEW                ?zoneId=&zoneType=&playerId=&acknowledged=
+GET    /intrusions/history                      ZONE_VIEW                ?zoneId=&playerId=&from=&to=&status=&cursor=&limit=, newest first
+POST   /intrusions/{intrusionID}/acknowledge    INTRUSION_ACK
 ```
 
 Error codes added: `ADMIN_FORBIDDEN` (403, missing capability), `ADMIN_ESCALATION_DENIED` (403,
@@ -180,6 +204,23 @@ same standard `docs/NITRADO_DELTA_READS.md` applied to the seek/offset-count end
 | ban list *duration* | **DEFERRED** | Nitrado's banlist API takes only `identifier`, no duration/expiry - Champion's own `installation_access_entries.expires_at` records the intent, but nothing currently enforces an automatic un-ban when it passes (see Deferred) |
 | base damage / container damage / third-person / raid toggles | **UNSUPPORTED/DEFERRED** | No endpoint for any of these appears anywhere in Nitrado's official SDK; these are almost certainly DayZ `serverDZ.cfg`-style file settings, which would need the same unverified file-write capability as priority |
 | generic `setConfig` (arbitrary allowlisted config writes) | **PARTIALLY DEFERRED** | Implemented for Champion-side settings that already exist in `server_configs`/`installation_channel_routes` (feed toggles, maintenance mode, location visibility) via their own dedicated endpoints above; a general DayZ-server-config-file writer is deferred with config writes generally |
+
+## What changed (Phase 4: zones + UAV / Base Radar)
+
+Full design record in `docs/ZONES_UAV_RADAR.md`. Summary: new migration
+`0042_zones_uav_base_radar` (`installation_zones`, `zone_ignore_entries`,
+`zone_authorized_entries`, `zone_bans`, `zone_presence`, `zone_intrusions`); new
+`internal/repository/zone_repository.go`; new `internal/killfeed/zone_cache.go` (bounded,
+invalidated-on-CRUD, TTL-fallback per-server zone cache) and
+`internal/killfeed/intrusion_engine.go` (the OUTSIDE/INSIDE state machine, sharing one engine for
+every zone type including UAV/Base Radar - no duplicated intrusion logic), wired into
+`LocationQueue.persist` as one additive, panic-recovered call - `Engine.processLine` is completely
+untouched by this phase, exactly like Phase 3. New capabilities `ZONE_VIEW`/`ZONE_MANAGE`/
+`ZONE_IGNORE_MANAGE`/`UAV_MANAGE`/`INTRUSION_ACK`; 18 new routes (zone CRUD, ignore/authorized/ban
+list CRUD, active-intruders, installation-wide active-intrusions, intrusion history, acknowledge).
+Zone bans never touch the Nitrado banlist. Discord alerting only ever targets a zone's own
+`alert_channel_id` - never a fallback channel. Heatmaps, Auto Payments, the priority queue, and
+Auto Start remain deferred.
 
 ## What changed (Phase 3: player intelligence / location history foundation)
 
@@ -261,11 +302,11 @@ and deferred the rest rather than ship unverified or fabricated plumbing:
 - **~~Location-history data pipeline~~ - built in Phase 3** (`docs/PLAYER_INTELLIGENCE.md`):
   `player_location_events` now persists real ADM positions, off the hot path via a dedicated
   `LocationQueue`, with a full player directory (`PLAYER_DIRECTORY_VIEW`) and location APIs
-  (`PLAYER_LAST_LOCATION_VIEW`/`PLAYER_LOCATION_VIEW`). **Zones, zone-ignore, zone-ban, Base
-  Radar/UAV, and heatmap aggregation are still deferred** - Phase 3's own task instructions were
-  explicit that it is foundation-only ("Do NOT build zones, UAV, or heatmaps yet"). With real
-  location data now available, a follow-up phase can build a zone-membership check against
-  `player_location_events` without first needing to solve "where does location data come from."
+  (`PLAYER_LAST_LOCATION_VIEW`/`PLAYER_LOCATION_VIEW`).
+- **~~Zones, zone-ignore, zone-ban, Base Radar/UAV~~ - built in Phase 4** (`docs/ZONES_UAV_RADAR.md`):
+  a stateful intrusion engine consuming `player_location_events`, sharing one engine for every zone
+  type (no duplicated UAV/Base Radar logic). **Heatmap aggregation is still deferred** - it was not
+  part of Phase 4's scope either.
 - **Discord kick/ban/timeout/bulk message clear** - discordgo has direct, well-documented support
   for all four; deferred purely to keep this phase's already-large surface bounded, not because of
   any capability gap.

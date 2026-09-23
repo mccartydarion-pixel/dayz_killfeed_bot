@@ -92,6 +92,15 @@ const (
 	CapPlayerDirectoryView    Capability = "PLAYER_DIRECTORY_VIEW"
 	CapPlayerLastLocationView Capability = "PLAYER_LAST_LOCATION_VIEW"
 	CapPlayerLocationView     Capability = "PLAYER_LOCATION_VIEW"
+	// Champion Phase 4 (docs/ZONES_UAV_RADAR.md): zones plus the UAV/Base Radar intrusion engine.
+	// UAV_MANAGE is deliberately its own, higher-than-ZONE_MANAGE capability: creating/editing a
+	// zone whose type is UAV or BASE_RADAR requires it IN ADDITION to ZONE_MANAGE (an Administrator
+	// can manage ordinary zones but not UAV/Base Radar ones without also holding Owner).
+	CapZoneView         Capability = "ZONE_VIEW"
+	CapZoneManage       Capability = "ZONE_MANAGE"
+	CapZoneIgnoreManage Capability = "ZONE_IGNORE_MANAGE"
+	CapUAVManage        Capability = "UAV_MANAGE"
+	CapIntrusionAck     Capability = "INTRUSION_ACK"
 )
 
 // requiredLevel is the default minimum Level each capability needs (task's "DEFAULT ROLE
@@ -121,6 +130,11 @@ var requiredLevel = map[Capability]Level{
 	CapPlayerDirectoryView:    LevelModerator,
 	CapPlayerLastLocationView: LevelAdministrator,
 	CapPlayerLocationView:     LevelAdministrator,
+	CapZoneView:               LevelModerator,
+	CapZoneManage:             LevelAdministrator,
+	CapZoneIgnoreManage:       LevelAdministrator,
+	CapUAVManage:              LevelOwner,
+	CapIntrusionAck:           LevelModerator,
 }
 
 // Allows reports whether actorLevel satisfies capability's required minimum Level. An unknown
