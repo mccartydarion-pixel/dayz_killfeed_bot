@@ -1131,7 +1131,7 @@ func (a *App) Run() error {
 		})
 	}
 	if a.Wars != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
-		warHandler := discord.NewWarCommandHandler(a.Wars, a.Guilds, a.Seasons, a.Factions, a.Links, a.FactionStats, a.FactionPresentation)
+		warHandler := discord.NewWarCommandHandler(a.Wars, a.Guilds, a.Seasons, a.Factions, a.Links, a.FactionStats, a.FactionPresentation, a.Players)
 		if err := discord.RegisterWarCommands(session, a.Config.DiscordGuildID); err != nil {
 			slog.Warn("component=discord", "msg", "failed to register faction war commands", "err", err.Error())
 		}
