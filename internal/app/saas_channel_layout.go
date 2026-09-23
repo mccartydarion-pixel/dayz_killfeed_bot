@@ -113,7 +113,6 @@ var championDestinations = []championDestination{
 	{
 		Key: "HEATMAPS", Label: "Heatmaps", Category: categoryLive, ChannelName: "🗺️・heatmaps",
 		Routes: []string{"HEATMAPS"}, Anchors: []string{"HEATMAPS"},
-		Starter: &starterCard{"🗺️ HEATMAPS", "Champion heatmap summaries will appear here."},
 	},
 	{
 		Key: "LEADERBOARDS", Label: "Leaderboards", Category: categoryHub, ChannelName: "📊・leaderboards",
@@ -152,7 +151,7 @@ var routeProducerAudit = map[string]routeProducer{
 	"BOUNTY":             {HealthActive, "BountyBoard persistent board"},
 	"BOUNTY_TRACKING":    {HealthActive, "BountyTracker lifecycle feed"},
 	"CONNECTIONS":        {HealthActive, "ConnectionsPublisher (per server worker)"},
-	"HEATMAPS":           {HealthBlocked, "no Discord heatmap publisher yet; website heatmaps are unaffected"},
+	"HEATMAPS":           {HealthActive, "HeatmapBoard PvP heatmap summary (Phase 5 aggregates)"},
 	"AUTO_LEADERBOARD":   {HealthActive, "LeaderboardScheduler persistent leaderboard"},
 	"STATS_LEADERBOARDS": {HealthActive, "RouteSyncer player stats panel"},
 	"LINK_GAMERTAG":      {HealthActive, "RouteSyncer link panel"},
@@ -195,10 +194,13 @@ func (a *App) channelRouteProducers() map[string]routeProducer {
 	}
 	if a.ChannelRoutes == nil {
 		broken("runtime routing is not enabled", "KILLFEED", "PVE_FEED", "HITFEED", "BOUNTY", "BOUNTY_TRACKING", "CONNECTIONS",
-			"AUTO_LEADERBOARD", "STATS_LEADERBOARDS", "LINK_GAMERTAG", "ECONOMY", "SHOP", "ADMIN_LOGS")
+			"HEATMAPS", "AUTO_LEADERBOARD", "STATS_LEADERBOARDS", "LINK_GAMERTAG", "ECONOMY", "SHOP", "ADMIN_LOGS")
 	}
 	if a.BountyBoard == nil {
 		broken("bounty board is not running", "BOUNTY", "BOUNTY_TRACKING")
+	}
+	if a.HeatmapBoard == nil {
+		broken("heatmap publisher is not running", "HEATMAPS")
 	}
 	if a.LeaderboardScheduler == nil {
 		broken("leaderboard scheduler is not running", "AUTO_LEADERBOARD")
