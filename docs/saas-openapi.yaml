@@ -3238,6 +3238,24 @@ paths:
   # "Permission model". Common error responses omitted per-route where identical: 401
   # Unauthorized, 403 ADMIN_FORBIDDEN (missing capability), 404 installation not found.
 
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/me:
+    get:
+      summary: >-
+        The acting user's own resolved Champion BOT permission Level and exact capability set for this
+        installation (Client Admin Control Plane Phase 1 Part 2, docs/CLIENT_ADMIN.md). NOT a Champion
+        Platform Owner role and NOT an organization billing role - the website's Client Server Admin UI
+        uses this single call to decide which controls to render. Requires no specific capability -
+        an actor with no mapped Level still gets 403 ADMIN_FORBIDDEN, never a fabricated 200.
+        capabilities is derived from the same fixed Level table every other route's own authorization
+        check reads (permissions.CapabilitiesForLevel), sorted for stable, diff-friendly output.
+      parameters: [{ $ref: "#/components/parameters/ActingUser" }, { $ref: "#/components/parameters/organizationID" }, { $ref: "#/components/parameters/installationID" }]
+      responses:
+        "200": { description: "{ level: string, capabilities: string[], discordRoleIds?: string[] }", content: { application/json: { schema: { type: object } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: ADMIN_FORBIDDEN - no Champion bot permission Level is mapped for this user on this installation. }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { description: "ADMIN_DISCORD_UNAVAILABLE - could not verify live Discord roles; never falls back to elevated or silently downgraded access." }
+
   /api/saas/organizations/{organizationID}/installations/{installationID}/admin/permissions:
     get:
       summary: List this installation's Discord-role -> Champion-Level mappings (PERMISSIONS_VIEW).

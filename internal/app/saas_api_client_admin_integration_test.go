@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/yourname/dayz-killfeed/internal/nitrado"
+	"github.com/yourname/dayz-killfeed/internal/permissions"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -245,6 +246,141 @@ func TestClearWarningPreservesRowNeverDeletes(t *testing.T) {
 	items, _ := list["items"].([]any)
 	if len(items) != 1 {
 		t.Fatalf("clearing a warning must never delete it - expected 1 row, got %d", len(items))
+	}
+}
+
+// --- current-actor permission introspection (Client Admin Control Plane Phase 1 Part 2,
+// docs/CLIENT_ADMIN.md "Current Actor Client Admin Permissions") -----------------------------------
+
+// mapRole maps discordUserID's roleID to level in w's installation, as the organization owner.
+func (w *clientAdminWorld) mapRole(discordUserID, roleID, level string) {
+	w.t.Helper()
+	if w.verifier.memberRoles == nil {
+		w.verifier.memberRoles = map[string]map[string][]string{}
+	}
+	if w.verifier.memberRoles[w.f.DiscordGuildID] == nil {
+		w.verifier.memberRoles[w.f.DiscordGuildID] = map[string][]string{}
+	}
+	w.verifier.memberRoles[w.f.DiscordGuildID][discordUserID] = append(w.verifier.memberRoles[w.f.DiscordGuildID][discordUserID], roleID)
+	rr := w.call(w.a.handleSetPermission, http.MethodPut, w.path("/permissions/"+roleID), w.f.OwnerDiscordID, setPermissionRequest{Level: level}, map[string]string{"discordRoleID": roleID})
+	if rr.Code != http.StatusOK {
+		w.t.Fatalf("owner mapping role %s to %s failed: %d %s", roleID, level, rr.Code, rr.Body.String())
+	}
+}
+
+func TestClientAdminMeOwnerBootstrapFullCapabilitySet(t *testing.T) {
+	w := newClientAdminWorld(t)
+	rr := w.call(w.a.handleClientAdminMe, http.MethodGet, w.path("/me"), w.f.OwnerDiscordID, nil, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for the organization owner, got %d: %s", rr.Code, rr.Body.String())
+	}
+	body := decodeBody[clientAdminMeResponse](t, rr)
+	if body.Level != "OWNER" {
+		t.Fatalf("expected level OWNER, got %q", body.Level)
+	}
+	want := permissions.CapabilitiesForLevel(permissions.LevelOwner)
+	if len(body.Capabilities) != len(want) {
+		t.Fatalf("expected the full OWNER capability set (%d), got %d: %v", len(want), len(body.Capabilities), body.Capabilities)
+	}
+	for i := range want {
+		if body.Capabilities[i] != want[i] {
+			t.Fatalf("capability set/order mismatch at %d: got %s, want %s", i, body.Capabilities[i], want[i])
+		}
+	}
+}
+
+func TestClientAdminMeResolvesEachMappedLevel(t *testing.T) {
+	for _, level := range []string{"ADMINISTRATOR", "MODERATOR", "GATEKEEPER"} {
+		t.Run(level, func(t *testing.T) {
+			w := newClientAdminWorld(t)
+			user := syncUser(t, w.a, fmt.Sprintf("ca-me-%s-%d", level, time.Now().UnixNano()), "Actor")
+			w.mapRole(user.DiscordUserID, "role-"+level, level)
+
+			rr := w.call(w.a.handleClientAdminMe, http.MethodGet, w.path("/me"), user.DiscordUserID, nil, nil)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+			}
+			body := decodeBody[clientAdminMeResponse](t, rr)
+			if body.Level != level {
+				t.Fatalf("expected level %s, got %q", level, body.Level)
+			}
+			l, _ := permissions.ParseLevel(level)
+			want := permissions.CapabilitiesForLevel(l)
+			if len(body.Capabilities) != len(want) {
+				t.Fatalf("%s: expected %d capabilities, got %d: %v", level, len(want), len(body.Capabilities), body.Capabilities)
+			}
+			for i := range want {
+				if body.Capabilities[i] != want[i] {
+					t.Fatalf("%s: capability mismatch at %d: got %s, want %s", level, i, body.Capabilities[i], want[i])
+				}
+			}
+			foundRole := false
+			for _, r := range body.DiscordRoleIDs {
+				if r == "role-"+level {
+					foundRole = true
+				}
+			}
+			if !foundRole {
+				t.Fatalf("expected discordRoleIds to include the mapped role, got %v", body.DiscordRoleIDs)
+			}
+		})
+	}
+}
+
+func TestClientAdminMeHighestMappedRoleWins(t *testing.T) {
+	w := newClientAdminWorld(t)
+	user := syncUser(t, w.a, fmt.Sprintf("ca-me-multi-%d", time.Now().UnixNano()), "Actor")
+	w.mapRole(user.DiscordUserID, "role-gatekeeper-x", "GATEKEEPER")
+	w.mapRole(user.DiscordUserID, "role-admin-x", "ADMINISTRATOR")
+	w.mapRole(user.DiscordUserID, "role-moderator-x", "MODERATOR")
+
+	rr := w.call(w.a.handleClientAdminMe, http.MethodGet, w.path("/me"), user.DiscordUserID, nil, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	body := decodeBody[clientAdminMeResponse](t, rr)
+	if body.Level != "ADMINISTRATOR" {
+		t.Fatalf("expected the highest mapped level (ADMINISTRATOR) to win, got %q", body.Level)
+	}
+}
+
+func TestClientAdminMeNoMappedRoleIsForbidden(t *testing.T) {
+	w := newClientAdminWorld(t)
+	stranger := syncUser(t, w.a, fmt.Sprintf("ca-me-stranger-%d", time.Now().UnixNano()), "Stranger")
+	rr := w.call(w.a.handleClientAdminMe, http.MethodGet, w.path("/me"), stranger.DiscordUserID, nil, nil)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 ADMIN_FORBIDDEN for an actor with no mapped level, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestClientAdminMeDifferentOrganizationIsForbidden(t *testing.T) {
+	w1 := newClientAdminWorld(t)
+	w2 := newClientAdminWorld(t)
+	// w2's owner has no role/ownership in w1's organization/installation at all.
+	rr := w1.call(w1.a.handleClientAdminMe, http.MethodGet, w1.path("/me"), w2.f.OwnerDiscordID, nil, nil)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for an actor from an unrelated organization, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestClientAdminMeDiscordUnavailableFailsClosed(t *testing.T) {
+	w := newClientAdminWorld(t)
+	user := syncUser(t, w.a, fmt.Sprintf("ca-me-noDiscord-%d", time.Now().UnixNano()), "Actor")
+	// Not the org owner, so resolution must fall through to a live Discord role lookup - which
+	// fails closed to ADMIN_DISCORD_UNAVAILABLE when the verifier is unavailable, never silently
+	// elevating or downgrading.
+	saved := w.a.saasDiscordVerifier
+	w.a.saasDiscordVerifier = nil
+	defer func() { w.a.saasDiscordVerifier = saved }()
+
+	rr := w.call(w.a.handleClientAdminMe, http.MethodGet, w.path("/me"), user.DiscordUserID, nil, nil)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 ADMIN_DISCORD_UNAVAILABLE, got %d: %s", rr.Code, rr.Body.String())
+	}
+	body := decodeBody[map[string]any](t, rr)
+	errObj, _ := body["error"].(map[string]any)
+	if errObj["code"] != "ADMIN_DISCORD_UNAVAILABLE" {
+		t.Fatalf("expected error code ADMIN_DISCORD_UNAVAILABLE, got %v", errObj["code"])
 	}
 }
 

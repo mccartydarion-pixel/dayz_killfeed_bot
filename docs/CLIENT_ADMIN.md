@@ -63,13 +63,58 @@ permission mapping granting a Level at or below their own resolved Level - enfor
 | `FEED_LOCATION_MANAGE` | Moderator | per-route `show_location` toggle |
 | `MAINTENANCE_MODE` | Administrator | Champion-side flag only |
 
+## Current Actor Client Admin Permissions (Phase 1 Part 2)
+
+`GET /api/saas/organizations/{organizationID}/installations/{installationID}/admin/me` reports the
+acting user's own resolved Level and exact capability set for the selected installation - the
+website's Client Server Admin UI uses this single call to decide which controls to show, rather
+than inferring visibility from the organization OWNER/ADMIN/MEMBER role, a website session flag,
+or Champion's own platform-owner status. **These are Champion BOT permission levels
+(`internal/permissions`) - not Champion Platform Owner roles and not organization billing roles.**
+The three stay entirely separate; `/admin/me` reports only the first.
+
+Unlike every other route in this document, `/me` requires no specific capability - it is the one
+route whose entire job is to report whatever Level (possibly none) the actor resolves to, reusing
+exactly the same `actorLevel` resolution `requireCapability` already uses for every other route
+(organization-owner bootstrap, then the highest Level among the actor's live, cached Discord role
+mappings). An actor with no mapped Level gets the same `403 ADMIN_FORBIDDEN` any other route would
+give them, not a fabricated "safe" 200.
+
+```
+GET /api/saas/organizations/{organizationID}/installations/{installationID}/admin/me
+
+200 (has a Level):
+{
+  "level": "MODERATOR",
+  "capabilities": ["BANLIST_MANAGE","BOUNTY_MANAGE","ECONOMY_VIEW","FEED_LOCATION_MANAGE",
+                    "PERMISSIONS_MANAGE","PERMISSIONS_VIEW","PLAYER_LAST_ONLINE_VIEW",
+                    "SERVER_RESTART","WARNINGS_VIEW","WHITELIST_MANAGE"],
+  "discordRoleIds": ["123456789012345678"]
+}
+
+403 ADMIN_FORBIDDEN (no mapped Level):
+{"error":{"code":"ADMIN_FORBIDDEN","message":"no Champion bot permission level is mapped for this user on this installation"}}
+
+503 ADMIN_DISCORD_UNAVAILABLE (couldn't verify live Discord roles - never falls back to elevated
+or silently downgraded access):
+{"error":{"code":"ADMIN_DISCORD_UNAVAILABLE","message":"could not verify Discord roles"}}
+```
+
+`capabilities` is never a second hand-maintained list - it is `permissions.CapabilitiesForLevel`
+applied to the resolved Level, i.e. exactly the same `requiredLevel` table every other route's
+`permissions.Allows` check reads, sorted alphabetically for a stable, diff-friendly response (two
+calls with the same Level always return byte-identical `capabilities`). `discordRoleIds` is the
+live role list Discord returned during resolution - omitted (not fabricated as empty) when the
+organization-owner bootstrap resolved the Level without a Discord lookup at all.
+
 ## Routes
 
 All under `/api/saas/organizations/{organizationID}/installations/{installationID}/admin`, same
 auth chain as every other SaaS route (`Authorization: Bearer <secret>` +
-`X-Champion-Acting-User`), then `requireCapability`.
+`X-Champion-Acting-User`), then `requireCapability` (`/me` above is the one exception).
 
 ```
+GET    /me                                    (no capability - reports the actor's own Level/capabilities)
 GET    /permissions                          PERMISSIONS_VIEW
 PUT    /permissions/{discordRoleID}           PERMISSIONS_MANAGE   body: {"level":"MODERATOR"}
 DELETE /permissions/{mappingID}                PERMISSIONS_MANAGE
@@ -128,7 +173,18 @@ same standard `docs/NITRADO_DELTA_READS.md` applied to the seek/offset-count end
 | base damage / container damage / third-person / raid toggles | **UNSUPPORTED/DEFERRED** | No endpoint for any of these appears anywhere in Nitrado's official SDK; these are almost certainly DayZ `serverDZ.cfg`-style file settings, which would need the same unverified file-write capability as priority |
 | generic `setConfig` (arbitrary allowlisted config writes) | **PARTIALLY DEFERRED** | Implemented for Champion-side settings that already exist in `server_configs`/`installation_channel_routes` (feed toggles, maintenance mode, location visibility) via their own dedicated endpoints above; a general DayZ-server-config-file writer is deferred with config writes generally |
 
-## What changed
+## What changed (Phase 1 Part 2: permission introspection)
+
+- **New route** `GET .../admin/me` (`handleClientAdminMe`) and **new helper**
+  `permissions.CapabilitiesForLevel(level)` - derives the capability list from the single
+  `requiredLevel` table rather than a second hand-maintained list, sorted for stable output.
+- **Refactor, no behavior change**: `actorLevel` now also returns the resolved Discord role IDs;
+  the shared preamble (service auth, acting user, path ids, scope, Level resolution) was extracted
+  into `resolveAdminActor`, and `requireCapability` is now that preamble plus its capability gate -
+  every existing route's behavior is identical, just built on the shared helper instead of
+  duplicating it.
+
+## What changed (Phase 1)
 
 - **New migration** `0040_client_admin_control_plane`: `installation_role_permissions`,
   `admin_audit_log`, `player_warnings`, `installation_access_entries`,

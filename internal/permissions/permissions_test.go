@@ -84,3 +84,52 @@ func TestRequiredLevelReportsUnknownKeys(t *testing.T) {
 		t.Fatal("an unrecognized capability should report ok=false")
 	}
 }
+
+func TestCapabilitiesForLevelMatchesAllowsExactly(t *testing.T) {
+	// The derived list must agree with Allows for every level, both directions: every capability
+	// it returns must satisfy Allows, and every capability Allows grants must appear in the list.
+	for _, level := range []Level{LevelNone, LevelGatekeeper, LevelModerator, LevelAdministrator, LevelOwner} {
+		got := CapabilitiesForLevel(level)
+		seen := make(map[Capability]bool, len(got))
+		for _, c := range got {
+			seen[c] = true
+			if !Allows(level, c) {
+				t.Fatalf("CapabilitiesForLevel(%v) included %s, but Allows(%v, %s) is false", level, c, level, c)
+			}
+		}
+		for c := range requiredLevel {
+			if Allows(level, c) && !seen[c] {
+				t.Fatalf("Allows(%v, %s) is true but CapabilitiesForLevel(%v) omitted it", level, c, level)
+			}
+		}
+	}
+}
+
+func TestCapabilitiesForLevelIsStableSortedAndNeverNil(t *testing.T) {
+	got := CapabilitiesForLevel(LevelOwner)
+	if got == nil {
+		t.Fatal("expected a non-nil slice even when empty")
+	}
+	for i := 1; i < len(got); i++ {
+		if got[i-1] >= got[i] {
+			t.Fatalf("expected strictly ascending sorted output, got %v before %v", got[i-1], got[i])
+		}
+	}
+	// Two independent calls must produce byte-identical output (stable, not map-iteration-order-dependent).
+	again := CapabilitiesForLevel(LevelOwner)
+	if len(got) != len(again) {
+		t.Fatal("expected identical output across calls")
+	}
+	for i := range got {
+		if got[i] != again[i] {
+			t.Fatalf("unstable ordering at index %d: %v vs %v", i, got[i], again[i])
+		}
+	}
+}
+
+func TestCapabilitiesForLevelNoneIsEmpty(t *testing.T) {
+	got := CapabilitiesForLevel(LevelNone)
+	if len(got) != 0 {
+		t.Fatalf("expected zero capabilities for LevelNone, got %v", got)
+	}
+}

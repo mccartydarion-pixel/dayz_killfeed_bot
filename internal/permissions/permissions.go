@@ -16,7 +16,10 @@
 //     role mapping - organization ADMIN/MEMBER roles grant nothing here on their own.
 package permissions
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 // Level is a Champion tenant-administration permission level. Levels are ordered: a higher Level
 // numerically is a strict superset of every capability a lower Level has (Allows below implements
@@ -134,4 +137,22 @@ func RequiredLevel(capability Capability) (Level, bool) {
 // own claimed level from the frontend.
 func CanGrant(actorLevel, targetLevel Level) bool {
 	return actorLevel != LevelNone && targetLevel != LevelNone && targetLevel <= actorLevel
+}
+
+// CapabilitiesForLevel returns every capability actorLevel satisfies (task's "CAPABILITY LIST":
+// derived from the single fixed requiredLevel table, never a second hand-maintained list), sorted
+// alphabetically for a stable, diff-friendly wire response. LevelNone always returns an empty,
+// non-nil slice.
+func CapabilitiesForLevel(level Level) []Capability {
+	out := make([]Capability, 0, len(requiredLevel))
+	if level == LevelNone {
+		return out
+	}
+	for capability, need := range requiredLevel {
+		if level >= need {
+			out = append(out, capability)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
 }
