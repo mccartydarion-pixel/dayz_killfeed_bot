@@ -13,8 +13,11 @@ import (
 // ADMSessionStore records which ADM file is the server's current boot session. The file identity
 // (canonicalADMID) is the server-session epoch: current-session queries only trust observations from
 // it. *repository.LocationRepository implements it.
+//
+// RecordADMSession reports whether the database ACCEPTED the file as the current session: it refuses
+// a boot older than the recorded one (Live Sync phase 2.1), and the engine must not claim otherwise.
 type ADMSessionStore interface {
-	SetCurrentADMSession(ctx context.Context, guildID, serverID int64, admFile string, localStart *time.Time) error
+	RecordADMSession(ctx context.Context, guildID, serverID int64, admFile string, localStart *time.Time) (accepted bool, err error)
 }
 
 // PlayerListStats are the player-list counters exposed for diagnostics.
@@ -166,10 +169,17 @@ func (e *Engine) noteADMSession(path string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := e.sessionStore.SetCurrentADMSession(ctx, e.guildID, e.serverID, file, start); err != nil {
+	accepted, err := e.sessionStore.RecordADMSession(ctx, e.guildID, e.serverID, file, start)
+	if err != nil {
 		slog.Warn("component=livesync", "event", "adm_session_record_failed", "server_id", e.serverID, "err", err.Error())
 		return
 	}
 	e.sessionFile = file
+	if !accepted {
+		// The database kept a newer boot: this file is NOT the current session, and the log must
+		// not say it is. Only the canonical file identity is logged.
+		slog.Warn("component=livesync", "event", "session_rejected", "server_id", e.serverID, "file", file, "reason", "older_than_recorded_session")
+		return
+	}
 	slog.Info("component=livesync", "event", "adm_session_current", "server_id", e.serverID, "file", file)
 }

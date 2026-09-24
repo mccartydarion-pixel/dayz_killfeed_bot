@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yourname/dayz-killfeed/internal/health"
+	"github.com/yourname/dayz-killfeed/internal/killfeed"
 	"github.com/yourname/dayz-killfeed/internal/livesync"
 	"github.com/yourname/dayz-killfeed/internal/nitrado"
 	"github.com/yourname/dayz-killfeed/internal/repository"
@@ -109,6 +111,29 @@ type liveSyncServerDTO struct {
 	Session    *liveSyncSessionDTO              `json:"admSession,omitempty"`
 	Stored     []repository.LiveSyncFamilyStats `json:"storedLast6h"`
 	ADMLatency *repository.ADMLatencyStats      `json:"admLatencyLast6h,omitempty"`
+	// Phase 2.1: boot authority, ADM source health, and a check that no stored record keeps RPT
+	// command-line evidence.
+	BootAuthority            *bootAuthorityDTO `json:"bootAuthority,omitempty"`
+	ADMSource                string            `json:"admSource,omitempty"`
+	CommandLineHeaderRecords *int64            `json:"commandLineHeaderRecords,omitempty"`
+}
+
+type bootAuthorityDTO struct {
+	AcceptedBoot         string `json:"acceptedBoot,omitempty"`
+	AcceptedFile         string `json:"acceptedFile,omitempty"`
+	AcceptedAt           string `json:"acceptedAt,omitempty"`
+	LastNewBootSeenAt    string `json:"lastNewBootSeenAt,omitempty"`
+	LastNewBootFile      string `json:"lastNewBootFile,omitempty"`
+	RejectedOlder        int64  `json:"rejectedOlder"`
+	UnverifiedCandidates int64  `json:"unverifiedCandidates"`
+	LastRejectedFile     string `json:"lastRejectedFile,omitempty"`
+}
+
+func fmtTime(t time.Time, layout string) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.Format(layout)
 }
 
 type liveSyncSessionDTO struct {
@@ -152,9 +177,55 @@ func (a *App) handleAdminLiveSync(w http.ResponseWriter, r *http.Request, _ admi
 			if lat, err := a.LiveSync.ADMLatency(ctx, guildID, snap.ServerID, since); err == nil {
 				dto.ADMLatency = &lat
 			}
+			if n, err := a.LiveSync.CommandLineHeaderRecords(ctx, guildID, snap.ServerID); err == nil {
+				dto.CommandLineHeaderRecords = &n
+			}
+		}
+		a.presenceMu.Lock()
+		eng := a.presenceEngines[snap.ServerID]
+		a.presenceMu.Unlock()
+		if eng != nil {
+			b := eng.BootAuthority()
+			dto.BootAuthority = &bootAuthorityDTO{AcceptedBoot: fmtTime(b.AcceptedBoot, "2006-01-02T15:04:05"), AcceptedFile: b.AcceptedFile,
+				AcceptedAt: fmtTime(b.AcceptedAt, time.RFC3339), LastNewBootSeenAt: fmtTime(b.LastNewBootSeenAt, time.RFC3339),
+				LastNewBootFile: b.LastNewBootFile, RejectedOlder: b.RejectedOlder, UnverifiedCandidates: b.UnverifiedCandidates, LastRejectedFile: b.LastRejectedFile}
+			dto.ADMSource = admSourceComponent(snap.ServerID, eng.SourceHealth(), time.Now()).Message
 		}
 		out = append(out, dto)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ServerID < out[j].ServerID })
 	writeSaaSJSON(w, http.StatusOK, map[string]any{"generatedAt": time.Now().UTC().Format(time.RFC3339), "enabled": liveSyncWatchersEnabled(), "servers": out})
+}
+
+// admSourceComponents classifies every running ADM engine's source health (Live Sync phase 2.1):
+// HEALTHY and QUIET are healthy (a quiet server is not a failure), SOURCE_LAGGING and
+// TRANSPORT_ERROR are degraded, WORKER_STALLED is unhealthy. The state name leads the message.
+func (a *App) admSourceComponents(now time.Time) []health.Component {
+	a.presenceMu.Lock()
+	engines := make(map[int64]*killfeed.Engine, len(a.presenceEngines))
+	for id, e := range a.presenceEngines {
+		engines[id] = e
+	}
+	a.presenceMu.Unlock()
+	out := make([]health.Component, 0, len(engines))
+	for id, e := range engines {
+		if e == nil {
+			continue
+		}
+		out = append(out, admSourceComponent(id, e.SourceHealth(), now))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+func admSourceComponent(serverID int64, h killfeed.ADMSourceHealth, now time.Time) health.Component {
+	state, reason := killfeed.ClassifyADMSourceHealth(h, now)
+	st := health.Healthy
+	switch state {
+	case killfeed.ADMSourceLagging, killfeed.ADMTransportError:
+		st = health.Degraded
+	case killfeed.ADMWorkerStalled:
+		st = health.Unhealthy
+	}
+	return health.Component{Name: fmt.Sprintf("adm_source_%d", serverID), State: st, Message: state + ": " + reason}
 }
