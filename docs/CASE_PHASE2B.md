@@ -18,7 +18,7 @@ Explicit CONNECT, DISCONNECT, RESPAWN, DEATH and SUICIDE boundaries are retained
 
 Migration 0048 adds the scoped immutable evidence table and indexes without altering existing killfeed tables. No historical hit backfill is claimed and retention is not silently applied.
 
-CASE_EVIDENCE_ENABLED=true attaches the collector when a server worker starts; absent/false keeps it off. Restart worker after toggling. A disabled collector does not imply zero hits.
+Both CASE_EVIDENCE_ENABLED=true and CASE_EVIDENCE_SERVER_IDS=<comma-separated internal game_servers IDs> are required to attach collection. An empty or malformed allowlist fails closed. Server IDs are from the scoped game_servers table, not Nitrado's provider service ID. Restart the server worker after changing these environment variables. A disabled collector does not imply zero hits.
 
 GET .../admin/anti-cheat/evidence requires PLAYER_LOCATION_VIEW (Administrator) because detailed coordinates are sensitive. Supports playerId, before, limit 1–100, and returns source pseudonym/offset, clock, ingestion time, names, internal IDs, nullable combat fields and positions. Every query scopes both guild and server and reads are audited. Overview hit totals use ingestion time.
 
