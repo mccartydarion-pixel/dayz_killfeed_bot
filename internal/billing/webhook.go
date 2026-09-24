@@ -181,7 +181,7 @@ func ParseEvent(e stripe.Event) (ParsedEvent, error) {
 // GetSubscription/normalizeSubscription would produce, so webhook handling and explicit
 // reconciliation share one downstream code path (Service.applySubscriptionState).
 func (s *webhookSubscription) state() *SubscriptionState {
-	out := &SubscriptionState{SubscriptionID: s.ID, CustomerID: string(s.Customer), StripeStatus: s.Status, CancelAtPeriodEnd: s.CancelAtPeriodEnd}
+	out := &SubscriptionState{SubscriptionID: s.ID, CustomerID: string(s.Customer), StripeStatus: s.Status, CancelAtPeriodEnd: s.CancelAtPeriodEnd, Metadata: s.Metadata}
 	if len(s.Items.Data) > 0 {
 		item := s.Items.Data[0]
 		out.CurrentPeriodStart = time.Unix(item.CurrentPeriodStart, 0).UTC()
