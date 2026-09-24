@@ -549,15 +549,56 @@ func (a *App) DiscordSetupLayout(ctx context.Context, discordGuildID string) (di
 			return out, err
 		}
 		out.Installations++
-		if s := resp.Summary; s != nil {
-			out.Created = append(out.Created, s.Created...)
-			out.Reused = append(out.Reused, s.Reused...)
-			out.Remapped = append(out.Remapped, s.Remapped...)
-			out.Preserved = append(out.Preserved, s.Preserved...)
-			out.Broken = append(out.Broken, s.Broken...)
-			out.Blocked = append(out.Blocked, s.Blocked...)
-			out.Retirable += s.Retirable
-		}
+		addLayoutToSetupResult(&out, resp)
 	}
 	return out, nil
+}
+
+// addLayoutToSetupResult folds one installation's layout run into the /setup report. Several
+// installations of one guild resolve to the same Discord channels, so everything is keyed by
+// channel ID (discord.SetupLayoutResult deduplicates): a channel is reported once per run, with the
+// most significant outcome any installation had for it.
+func addLayoutToSetupResult(out *discord.SetupLayoutResult, resp AutoSetupChannelsResponse) {
+	remapped := map[string]bool{}
+	if resp.Summary != nil {
+		for _, key := range resp.Summary.Remapped {
+			remapped[key] = true
+		}
+	}
+	for _, rep := range resp.Destinations {
+		label := rep.Label
+		if label == "" {
+			label = rep.Key
+		}
+		switch {
+		case rep.Checks == nil && (rep.Health == HealthBlocked || rep.Health == HealthDisabled || rep.Health == HealthNotRequired):
+			out.AddBlockedSystem(label)
+			continue
+		case rep.ChannelID == "":
+			out.AddFailedSystem(label)
+			continue
+		}
+		outcome := discord.SetupChannelReused
+		if rep.Created {
+			outcome = discord.SetupChannelCreated
+		} else {
+			for _, key := range destinationByKey(rep.Key).Routes {
+				if remapped[key] {
+					outcome = discord.SetupChannelUpdated
+					break
+				}
+			}
+		}
+		if rep.Health == HealthBroken || rep.Checks == nil || !rep.Checks.passed() {
+			outcome = discord.SetupChannelFailed
+		} else {
+			out.AddVerifiedSystem(label)
+		}
+		out.AddChannel(discord.SetupChannel{ID: rep.ChannelID, Name: rep.ChannelName, System: label, Outcome: outcome})
+	}
+	for _, rc := range resp.Retirable {
+		if rc.Kind != "CATEGORY" {
+			out.AddLegacy(rc.ChannelID)
+		}
+	}
 }

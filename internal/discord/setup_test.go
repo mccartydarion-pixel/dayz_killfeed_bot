@@ -122,24 +122,74 @@ func TestLegacySetupNeverCreatesChannels(t *testing.T) {
 	}
 }
 
-func TestFormatSetupLayoutResult(t *testing.T) {
-	if got := FormatSetupLayoutResult(SetupLayoutResult{}, ErrNoInstallation, false); !strings.Contains(got, "not connected to Champion") {
+func TestSetupErrorMessages(t *testing.T) {
+	if got := setupErrorMessage(ErrNoInstallation); !strings.Contains(got, "not connected to Champion") {
 		t.Fatalf("no installation: %s", got)
 	}
-	if got := FormatSetupLayoutResult(SetupLayoutResult{}, ErrMissingManageChannels, true); !strings.Contains(got, "Manage Channels") {
+	if got := setupErrorMessage(ErrMissingManageChannels); !strings.Contains(got, "Manage Channels") {
 		t.Fatalf("missing permission: %s", got)
 	}
-	got := FormatSetupLayoutResult(SetupLayoutResult{Installations: 1, Created: []string{"🔫・combat-feed"}, Preserved: []string{"KILLFEED"}, Blocked: []string{"HEATMAPS"}, Retirable: 2}, nil, false)
-	for _, want := range []string{"Layout Ready", "Created:** 🔫・combat-feed", "Preserved (your channels):** KILLFEED", "Not available yet:** HEATMAPS", "2 old Champion channel(s)"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("missing %q in:\n%s", want, got)
+}
+
+func TestSetupLayoutEmbedSections(t *testing.T) {
+	var r SetupLayoutResult
+	systems := []string{"Combat Feed", "Hitfeed", "Bounties", "Connections", "Heatmaps", "Server Status", "Leaderboards", "Player Link", "Economy", "Players Online", "Admin Logs"}
+	for i, sys := range systems {
+		r.AddChannel(SetupChannel{ID: fmt.Sprintf("c%d", i), Name: "x", System: sys, Outcome: SetupChannelReused})
+		r.AddVerifiedSystem(sys)
+	}
+	r.AddChannel(SetupChannel{ID: "c99", System: "Economy", Outcome: SetupChannelReused}) // SHOP shares economy's system
+	r.AddLegacy("old")
+	r.AddBlockedSystem("Build Feed")
+	e := SetupLayoutEmbed(r, true)
+	if e.Title != "🔧 CHAMPIONS® DISCORD REPAIR" || e.Description != "**Status:** Repair Complete" || e.Author == nil || e.Footer == nil {
+		t.Fatalf("header: %+v", e)
+	}
+	fields := map[string]string{}
+	var order []string
+	for _, f := range e.Fields {
+		fields[f.Name] = f.Value
+		order = append(order, f.Name)
+	}
+	if fields["Channel Summary"] != "• Created: 0\n• Reused: 12\n• Updated: 0\n• Failed: 0" {
+		t.Fatalf("summary: %q", fields["Channel Summary"])
+	}
+	if strings.Count(fields["Systems Verified"], "•") != len(systems) {
+		t.Fatalf("each system once: %q", fields["Systems Verified"])
+	}
+	if !strings.Contains(fields["Legacy Channels"], "1 unused Champion channel detected.") || fields["Result"] != "All required systems are configured." {
+		t.Fatalf("legacy/result: %+v", fields)
+	}
+	want := []string{"Channel Summary", "Systems Verified", "Not Available Yet", "Legacy Channels", "Result"}
+	if strings.Join(order, "|") != strings.Join(want, "|") {
+		t.Fatalf("section order: %v", order)
+	}
+	if setup := SetupLayoutEmbed(r, false); setup.Title != "🏆 CHAMPIONS® DISCORD SETUP" || setup.Description != "**Status:** Setup Complete" {
+		t.Fatalf("setup variant: %+v", setup)
+	}
+}
+
+func TestSetupLayoutEmbedStaysWithinDiscordLimits(t *testing.T) {
+	var r SetupLayoutResult
+	for i := 0; i < 400; i++ {
+		sys := fmt.Sprintf("System number %03d with a deliberately long descriptive label", i)
+		r.AddChannel(SetupChannel{ID: fmt.Sprintf("c%d", i), System: sys, Outcome: SetupChannelFailed})
+		r.AddVerifiedSystem(sys + " ok")
+		r.AddBlockedSystem(sys + " blocked")
+	}
+	e := SetupLayoutEmbed(r, true)
+	total := len(e.Title) + len(e.Description) + len(e.Footer.Text)
+	for _, f := range e.Fields {
+		if len(f.Value) > embedFieldValueLimit || len(f.Name) > 256 {
+			t.Fatalf("field %q is %d chars", f.Name, len(f.Value))
 		}
+		total += len(f.Name) + len(f.Value)
 	}
-	if strings.Contains(got, "death-feed") || strings.Contains(got, "adm-monitor") {
-		t.Fatal("no legacy channel names in the V2 reply")
+	if total > embedTotalLimit || len(e.Fields) > 25 {
+		t.Fatalf("embed too large: %d chars, %d fields", total, len(e.Fields))
 	}
-	if idle := FormatSetupLayoutResult(SetupLayoutResult{Installations: 1, Reused: []string{"a"}}, nil, true); !strings.Contains(idle, "already in place") {
-		t.Fatalf("an idempotent rerun says so: %s", idle)
+	if !strings.Contains(e.Fields[1].Value, "…and ") {
+		t.Fatal("an oversized list is summarized, never cut mid-line")
 	}
 }
 
