@@ -445,6 +445,9 @@ func TestNewerBootFallbackToReadableMountAlias(t *testing.T) {
  header:=quietADM("2026-09-24","09:17:09")
  f.put(mainPath,header,now.Add(time.Hour))
  f.put(backupPath,header,now.Add(time.Hour))
+ // A boot scan visits previously discovered directories; the alternate
+ // mount must actually have been discovered before it may be consulted.
+ e.rememberADMDirs([]nitrado.LogFile{{Path:backupPath,Directory:ftpCfg}})
  f.readFail[mainPath]=2
  // The newer boot is still authoritative if the noftp representation is
  // listed but temporarily cannot be read. A verified ftproot alias is safe.
