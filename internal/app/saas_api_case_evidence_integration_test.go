@@ -86,6 +86,7 @@ func TestCASEEvidenceAPIRequiresLocationCapabilityAndDoesNotFabricateVerdicts(t 
 		stranger.DiscordUserID,nil,nil)
 	if denied.Code!=http.StatusForbidden {t.Fatalf("unprivileged read got %d: %s",denied.Code,denied.Body.String())}
 	t.Setenv("CASE_EVIDENCE_ENABLED","true")
+	t.Setenv("CASE_EVIDENCE_SERVER_IDS",fmt.Sprintf("%d",w.serverID))
 	overview:=w.call(w.a.handleAntiCheatOverview,http.MethodGet,w.path("/anti-cheat/overview"),
 		w.f.OwnerDiscordID,nil,nil)
 	if overview.Code!=http.StatusOK {t.Fatalf("overview failed %d: %s",overview.Code,overview.Body.String())}
