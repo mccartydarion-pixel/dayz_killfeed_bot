@@ -2,7 +2,6 @@ package billing
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -19,7 +18,13 @@ func (s *Service) classifyCaseEvent(ctx context.Context, e ParsedEvent) (bool,er
 	switch e.Type {
 	case EventCheckoutCompleted:
 		if e.Session==nil{return false,nil}
-		return caseTagged(e.Session.Metadata),nil
+		if caseTagged(e.Session.Metadata) {return true,nil}
+		// If Checkout metadata is missing, inspect its actual Stripe subscription
+		// before allowing the base handler to touch subscriptions.plan.
+		if e.Session.Subscription=="" || s.provider==nil{return false,nil}
+		st,err:=s.provider.GetSubscription(ctx,string(e.Session.Subscription))
+		if err!=nil{return false,err}
+		return caseTagged(st.Metadata) || s.caseTierForPrice(st.PriceID)!="",nil
 	case EventSubscriptionCreated,EventSubscriptionUpdated,EventSubscriptionDeleted:
 		if e.Sub==nil{return false,nil}
 		if caseTagged(e.Sub.Metadata) {return true,nil}
@@ -172,4 +177,3 @@ func (s *Service) ClassifyCaseEventForTest(ctx context.Context,e ParsedEvent)(bo
 	return s.classifyCaseEvent(ctx,e)
 }
 
-var _ = errors.Is
