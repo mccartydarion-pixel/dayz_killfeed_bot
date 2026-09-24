@@ -152,7 +152,7 @@ components:
       type: object
       properties:
         plan: { type: string }
-        status: { type: string, enum: [TRIAL, ACTIVE, PAST_DUE, CANCELED, SUSPENDED] }
+        status: { type: string, enum: [TRIAL, ACTIVE, PAST_DUE, CANCELED, SUSPENDED, INACTIVE] }
         trialEndsAt: { type: string, format: date-time, nullable: true }
         currentPeriodEnd: { type: string, format: date-time, nullable: true }
 
@@ -1453,7 +1453,7 @@ components:
         monthly: { allOf: [{ $ref: "#/components/schemas/BillingPrice" }], nullable: true, description: "Null = not sold monthly." }
         yearly: { allOf: [{ $ref: "#/components/schemas/BillingPrice" }], nullable: true, description: "Null = not sold yearly." }
         popular: { type: boolean }
-        trialDays: { type: integer }
+        trialDays: { type: integer, description: "Stripe trial days - always 0 since Customer Onboarding V2 (the only trial is the no-card 14-day trial)." }
         sortOrder: { type: integer }
     BillingPlansResponse:
       type: object
@@ -1464,7 +1464,7 @@ components:
       description: The dedicated billing endpoints' subscription view. Never carries a Stripe id.
       properties:
         plan: { type: string }
-        status: { type: string, enum: [TRIAL, ACTIVE, PAST_DUE, CANCELED, SUSPENDED] }
+        status: { type: string, enum: [TRIAL, ACTIVE, PAST_DUE, CANCELED, SUSPENDED, INACTIVE] }
         billingInterval: { type: string, enum: [MONTHLY, YEARLY], nullable: true }
         trialEndsAt: { type: string, format: date-time, nullable: true }
         currentPeriodStart: { type: string, format: date-time, nullable: true }
@@ -1474,6 +1474,30 @@ components:
         hasBillingCustomer: { type: boolean, description: A Portal session can be created. }
         hasActiveSubscription: { type: boolean, description: Checkout has completed at least once - plan/cancel/reactivate apply. }
         canManageBilling: { type: boolean, description: The acting user is this organization's OWNER/ADMIN. }
+        intendedPlan: { type: string, nullable: true, description: "Plan picked before paying (Onboarding V2). A preference only - never grants anything." }
+        trialStatus: { type: string, enum: [NOT_STARTED, ACTIVE, EXPIRED, NOT_ELIGIBLE, CONVERTED] }
+        trialDaysRemaining: { type: integer, description: Whole days left (rounded up); 0 unless trialStatus is ACTIVE. }
+        billingRequired: { type: boolean, description: True when a paid plan must be activated to set up a (new) service. }
+    TrialState:
+      type: object
+      description: Customer Onboarding V2 trial state (docs/BILLING.md section 28). Never carries a Stripe id.
+      properties:
+        trialStatus: { type: string, enum: [NOT_STARTED, ACTIVE, EXPIRED, NOT_ELIGIBLE, CONVERTED] }
+        subscriptionStatus: { type: string, nullable: true, enum: [TRIAL, ACTIVE, PAST_DUE, CANCELED, SUSPENDED, INACTIVE] }
+        selectedPlan: { type: string, nullable: true, description: The intended plan while not paying; the paid plan once CONVERTED. }
+        trialStartedAt: { type: string, format: date-time, nullable: true }
+        trialEndsAt: { type: string, format: date-time, nullable: true }
+        daysRemaining: { type: integer }
+        billingRequired: { type: boolean }
+        paymentMethodRequired: { type: boolean, description: Always false - starting the trial never needs a payment method. }
+        started: { type: boolean, description: This request started the trial. }
+        installationLimit: { type: integer }
+        installationCount: { type: integer }
+    StartTrialRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        planKey: { type: string, description: "Optional public plan key (LOW/MEDIUM/HIGH) recorded as the intended plan - not a purchase." }
     CheckoutRequest:
       type: object
       required: [planKey, interval]
@@ -1687,8 +1711,13 @@ paths:
         "400": { $ref: "#/components/responses/InvalidRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "402":
+          description: "BILLING_REQUIRED - no running trial or paid plan (trial expired, account already used its trial, subscription ended). Existing data is kept."
+          content: { application/json: { schema: { $ref: "#/components/schemas/ApiError" } } }
         "404": { $ref: "#/components/responses/NotFound" }
-        "409": { $ref: "#/components/responses/Conflict" }
+        "409":
+          description: "CONFLICT - this guild connection already has an unconfigured installation; or INSTALLATION_LIMIT_REACHED - the plan's installation capacity is used (trial: 1). Nothing existing is modified."
+          content: { application/json: { schema: { $ref: "#/components/schemas/ApiError" } } }
 
   /api/saas/organizations/{organizationID}/installations/{installationID}:
     get:
@@ -3453,11 +3482,41 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/saas/organizations/{organizationID}/trial:
+    get:
+      summary: The organization's no-card trial state (any member). Read-only - never starts a trial.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+      responses:
+        "200": { description: The trial state., content: { application/json: { schema: { $ref: "#/components/schemas/TrialState" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/saas/organizations/{organizationID}/trial/start:
+    post:
+      summary: >-
+        Start the acting user's one no-card 14-day trial on this organization (OWNER/ADMIN), or return the persisted state unchanged. Idempotent; never restarts or
+        extends a trial, never overwrites a paid subscription, never contacts Stripe. planKey is recorded as the intended plan.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StartTrialRequest" }
+      responses:
+        "200": { description: The persisted trial state., content: { application/json: { schema: { $ref: "#/components/schemas/TrialState" } } } }
+        "400": { description: INVALID_PLAN (unknown or private plan) or INVALID_REQUEST., content: { application/json: { schema: { $ref: "#/components/schemas/ApiError" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
   /api/saas/organizations/{organizationID}/billing/checkout:
     post:
       summary: >-
         Create a Stripe Checkout Session (organization OWNER/ADMIN only). planKey/interval resolve the Stripe price server-side - never trust a submitted price.
-        A Stripe trial is granted at most once per organization. Rate limited (20/min, shared with the other billing actions).
+        Never requests a Stripe trial (trial days are always 0 - Onboarding V2). Rate limited (20/min, shared with the other billing actions).
       parameters:
         - { $ref: "#/components/parameters/ActingUser" }
         - { $ref: "#/components/parameters/organizationID" }

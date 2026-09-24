@@ -99,8 +99,9 @@ GET /api/saas/organizations/{organizationID}/billing/subscription
 
 Any organization member (read-only). Returns `SubscriptionSummaryDTO` (section 14) - plan, status, billing interval, trial/period dates, `cancelAtPeriodEnd`, the resolved `entitlements` (from
 `internal/entitlements.Resolve`, unchanged), whether a Stripe customer/subscription exists yet, and `canManageBilling` (true only for the acting user's OWNER/ADMIN role - the website uses this to
-show or hide the "Manage billing" button without a second permissions call). A first read for a brand-new organization creates the internal TRIAL row exactly as the existing dashboard/hub already
-did (`EnsureTrial`), so this route never 404s for a fresh organization.
+show or hide the "Manage billing" button without a second permissions call). Onboarding V2 adds `intendedPlan`, `trialStatus`, `trialDaysRemaining` and `billingRequired` (section 28).
+Reading never grants a trial: an organization with no subscription row reads as `plan: "NONE"`, `status: "INACTIVE"`, `trialStatus: "NOT_STARTED"`, `billingRequired: true`, and nothing is
+written. The route never 404s for a fresh organization.
 
 ## 8. Checkout
 
@@ -116,7 +117,8 @@ POST /api/saas/organizations/{organizationID}/billing/checkout
 2. `EnsureCustomer` - reuse the organization's existing Stripe customer id if one is already stored, otherwise create one (`Name` = the organization's name) and persist it immediately
    (`SetProviderCustomer`), so a retried checkout call never creates a second Stripe customer;
 3. resolve a safe, absolute success/cancel URL (section 11);
-4. decide the trial (section 10);
+4. no trial: `trialDays` is always 0 (section 28) - the customer's one trial is the no-card trial, which needs no Stripe object. An organization without a subscription row
+   gets an `INACTIVE` row first (never a `TRIAL` one), for the Stripe ids to land on;
 5. create a Stripe Checkout Session (`mode=subscription`, `client_reference_id` = the organization id, `subscription_data.metadata` carries `champion_organization_id`/`champion_plan_key`/
    `champion_billing_interval` so the *subscription* object itself - not just the Checkout Session - can be attributed by a later webhook even without a customer-id lookup);
 6. return `{ "checkoutUrl": "https://checkout.stripe.com/..." }`.
@@ -226,11 +228,10 @@ actually differ per plan tier, **no billing call site changes** - this was true 
 
 ## 15. Trials and trial-abuse prevention
 
-The **internal** 14-day trial (`EnsureTrial`, unchanged) is what every organization has from the moment it's created, independent of Stripe. A **Stripe** trial (`subscription_data.trial_period_days`
-on the Checkout Session, taken from the chosen plan's `trialDays`) is granted **at most once per organization**, gated by `trial_consumed`: the first time a `provider_subscription_id` is ever
-recorded for an organization (via a webhook, not the checkout call itself - see section 9), `trial_consumed` is set and never cleared. A later checkout (the customer canceled and is
-re-subscribing, or abandoned the first attempt and tries again) is `trialDays: 0` regardless of the plan's configured trial length - Stripe charges immediately.
-`TestBillingCheckoutTrialGrantedOnceOnly` / `TestCheckoutGrantsTrialOnceThenNeverAgain` cover this both at the HTTP and service level.
+**Superseded by Customer Onboarding V2 (section 28).** There is exactly one trial: the no-card 14-day trial, one per Discord account (`trial_grants`), started with no payment method and no
+Stripe object. Checkout never requests a Stripe trial (`trialDays: 0` always), so `trial_consumed` no longer gates anything; it is still set the first time a `provider_subscription_id` is
+recorded. Creating more organizations never mints more trials. `TestCheckoutNeverRequestsAStripeTrial` / `TestBillingCheckoutNeverGrantsAStripeTrial` and the tests in
+`internal/billing/trial_test.go` / `internal/app/saas_api_trial_integration_test.go` cover this.
 
 ## 16. Trial conversion / data retention
 
@@ -304,7 +305,7 @@ interface BillingPlan {
 interface BillingPlansResponse { items: BillingPlan[] }        // GET /api/saas/billing/plans
 
 interface SubscriptionSummary {                                 // GET .../billing/subscription
-  plan: string; status: "TRIAL" | "ACTIVE" | "PAST_DUE" | "CANCELED" | "SUSPENDED";
+  plan: string; status: "TRIAL" | "ACTIVE" | "PAST_DUE" | "CANCELED" | "SUSPENDED" | "INACTIVE";
   billingInterval: "MONTHLY" | "YEARLY" | null;
   trialEndsAt: string | null; currentPeriodStart: string | null; currentPeriodEnd: string | null;   // RFC 3339
   cancelAtPeriodEnd: boolean;
@@ -312,6 +313,10 @@ interface SubscriptionSummary {                                 // GET .../billi
   hasBillingCustomer: boolean;         // a Portal session can be created
   hasActiveSubscription: boolean;      // checkout has completed at least once - plan/cancel/reactivate apply
   canManageBilling: boolean;           // the acting user is this organization's OWNER/ADMIN
+  intendedPlan: string | null;         // Onboarding V2: plan picked before paying (a preference only)
+  trialStatus: "NOT_STARTED" | "ACTIVE" | "EXPIRED" | "NOT_ELIGIBLE" | "CONVERTED";
+  trialDaysRemaining: number;          // 0 unless trialStatus is ACTIVE
+  billingRequired: boolean;            // true = activate a paid plan to set up a (new) service
 }
 
 interface CheckoutRequest { planKey: string; interval: "MONTHLY" | "YEARLY"; returnPath?: string }   // POST .../billing/checkout
@@ -389,21 +394,15 @@ billing.
 To activate on Railway: set `CHAMPION_BILLING_PLANS_JSON` to the one-line minified form of the JSON above (whitespace doesn't matter to `LoadCatalog`, but the value must be valid JSON on a single
 env var). **Never put `STRIPE_SECRET_KEY` or `STRIPE_WEBHOOK_SECRET` in this file or any other doc** - those stay server-only secrets, set directly in Railway's environment settings.
 
-### Trial interaction: internal 14-day trial vs. the new Stripe 7-day plan trial
+### Trial interaction (superseded by Onboarding V2)
 
-Section 15 already documents that these are two independent trial concepts; with real `trialDays: 7` now active on all three plans, here is exactly how they interact **today, unchanged by Phase
-1.2**: every organization gets the internal 14-day trial (`status=TRIAL`, `subscriptions.plan="TRIAL"`) the moment it's created, via `EnsureTrial`, entirely independent of Stripe. The instant that
-organization's first-ever checkout completes and its webhook is processed, `ApplyProviderState` **unconditionally overwrites** `subscriptions.status`, `subscriptions.plan` and
-`subscriptions.trial_ends_at` with whatever Stripe reports (e.g. `status="TRIAL"` again with a **new**, Stripe-driven `trial_ends_at` about 7 days out, since `trial_consumed` was still false at
-checkout time) - it does not add to, extend, or preserve any remaining days of the internal 14-day trial. If checkout happens on day 3 of the internal trial, the other 11 internal-trial days are
-simply discarded and replaced by a fresh 7-day Stripe trial; if the organization instead waits out the full internal trial and only then checks out, the same fresh 7-day Stripe trial still applies
-(the 14 days already elapsed have no bearing on whether Stripe grants one - only `trial_consumed`, i.e. "has this organization ever had a provider_subscription_id before", gates that). A second-ever
-checkout (re-subscribing after a cancellation, or a first attempt abandoned before the webhook landed) has `trial_consumed=true` and therefore `trialDays: 0` - Stripe charges immediately from that
-checkout, with no trialing state at all.
-
-**This is flagged, not changed, per Phase 1.2's explicit instruction not to alter this behavior.** Whether the internal trial should instead be shortened/skipped once a real Stripe trial starts, or
-whether the two should be reconciled some other way, remains an open product decision - the same category as the payment-failure grace period (section 17) and the downgrade-timing decision (item 9
-below).
+Phase 1.2 flagged that the internal 14-day trial and a per-plan Stripe trial (`trialDays: 7`) stacked: a checkout
+replaced whatever was left of the internal trial with a fresh Stripe trial. **Customer Onboarding V2 resolves this
+(section 28): there is one trial, the no-card 14-day trial, and every checkout is billed immediately (Stripe trial days
+are always 0, whatever `trialDays` the catalog JSON carries).** `LoadCatalog` still accepts and validates `trialDays`
+(so the existing Railway value keeps parsing) but never uses it; the plans API reports `trialDays: 0`. Removing the
+field from `CHAMPION_BILLING_PLANS_JSON` is optional and changes nothing. Prices are unchanged: LOW $5.99, MEDIUM $9.99,
+HIGH $14.99 per month.
 
 **Commercial decisions still required before Champion goes fully live:**
 
@@ -444,6 +443,9 @@ below).
 * `internal/app/saas_api_billing_integration_test.go` (real routes + real PostgreSQL, `FakeProvider` wired into the real `App`): plans, subscription summary (incl. `canManageBilling` by role),
   checkout authorization and validation (unknown/private/unsold plan, unsafe return paths), trial-once through the real webhook endpoint, webhook signature rejection and idempotency against the
   real HTTP endpoint, tenant isolation (webhooks and API calls), the portal, upgrade/downgrade/cancel/reactivate, rate limits, audit log content, and admin visibility.
+* `internal/billing/trial_test.go` and `internal/app/saas_api_trial_integration_test.go` (Onboarding V2, section 28): no-card trial start, idempotency, no clock restart,
+  one trial per account across organizations (including under concurrency), expired trial, paid rows never overwritten, the installation limit (including under concurrency),
+  `BILLING_REQUIRED`, and the 0047 backfill.
 * Existing subscription/trial/dashboard/hub tests (`TestHubSummaryNoSecrets`, `TestHubCrossTenantRejected`, etc.) pass unchanged.
 
 ## 27. Payment/invoice history (Champion Access Model Phase 2, Part D)
@@ -502,3 +504,69 @@ Tests: `internal/billing/service_test.go`'s `TestWebhookInvoicePaidPersistsOneTr
 `internal/app/admin_api_billing_integration_test.go` (real routes + real PostgreSQL): plan catalog
 contents, payment list pagination/filters, the organization detail extension, and platform-admin-only
 authorization (a Player, a Client OWNER and a Client ADMIN are all denied).
+
+## 28. No-card trial (Champion Customer Onboarding V2)
+
+Flow: **Start Free Trial -> 14 days -> configure the first service -> activate a paid subscription when ready.**
+
+**Trial policy**
+
+* One 14-day trial per Discord account (the acting user), with no payment method: no Stripe Checkout, customer, subscription or invoice is created to start it.
+* `trial_grants(user_id PRIMARY KEY, organization_id UNIQUE)` (migration 0047) is the database-enforced record. A user's second organization never gets a trial, and an organization is never
+  trialed twice, even under concurrent requests (the grant's uniqueness decides the race inside the same transaction that writes the subscription row).
+* An existing trial keeps its clock; an expired trial is never restarted or extended; a row with a Stripe subscription is never overwritten.
+* The 0047 backfill records every owner whose organization already had a trial, so every existing trial is preserved exactly as it is and those owners' next organization gets none.
+* `EnsureTrial` remains the repository foundation; `SubscriptionRepository.StartTrial` is its policy-checked, per-account form.
+
+**Where a trial starts.** Organization creation starts the creator's trial when they have not used it (unchanged for existing website clients). A creator who already used theirs gets an
+`INACTIVE` row (`plan: "NONE"`): billing required. `POST .../trial/start` is idempotent: it starts the trial when still eligible, otherwise it returns the persisted state unchanged.
+
+**Plan selection without checkout.** `planKey` (LOW/MEDIUM/HIGH, validated against the public catalog) is stored in `subscriptions.intended_plan`, never in `subscriptions.plan`. The intended
+plan grants nothing: `plan` stays `TRIAL` until a Stripe webhook sets the paid plan.
+
+**Conversion.** Only an explicit `POST .../billing/checkout`. The plan and price are resolved from the server catalog, Stripe trial days are 0, and the webhook applies the resulting state.
+Converting during the trial bills immediately, and the trial ends when the webhook applies `ACTIVE`.
+
+**Expiry.** When `trial_ends_at` passes without a paid subscription, `trialStatus` is `EXPIRED` and `billingRequired` is true. Setting up a new service returns `402 BILLING_REQUIRED`.
+Nothing is deleted, nothing is charged, and no checkout is created automatically. Existing installations, their configuration and all community data are kept.
+
+**Installation capacity** (`POST .../installations`, the "initial setup / new service" operation):
+
+| Subscription | Services allowed |
+|---|---|
+| running trial | 1 (`billing.TrialInstallations`) |
+| paid (Stripe subscription, ACTIVE / PAST_DUE / Stripe-trialing legacy) | the plan's `limits.installations` in the catalog (1 when unset; the approved LOW/MEDIUM/HIGH catalog sets 1) |
+| expired trial, INACTIVE, CANCELED, SUSPENDED | none: `402 BILLING_REQUIRED` |
+
+At capacity: `409 INSTALLATION_LIMIT_REACHED`, with a message telling the customer to reconfigure the existing service or upgrade. The count and insert run in one transaction under a row lock
+on the organization, so concurrent requests cannot exceed the limit. Retrying initial setup for a guild that already has an unconfigured installation still returns `409 CONFLICT`.
+Nothing existing is modified or replaced. Reconfiguring a service stays on the existing installation's routes (server selection, channels), and those are not capacity-gated.
+
+**API**
+
+```
+GET  /api/saas/organizations/{organizationID}/trial          any member; read-only
+POST /api/saas/organizations/{organizationID}/trial/start    OWNER/ADMIN; body { "planKey"?: "LOW" | "MEDIUM" | "HIGH" }
+```
+
+```ts
+interface TrialState {
+  trialStatus: "NOT_STARTED" | "ACTIVE" | "EXPIRED" | "NOT_ELIGIBLE" | "CONVERTED";
+  subscriptionStatus: string | null;   // subscriptions.status
+  selectedPlan: string | null;         // intended plan while not paying; the paid plan once CONVERTED
+  trialStartedAt: string | null;       // RFC 3339
+  trialEndsAt: string | null;
+  daysRemaining: number;               // whole days, rounded up; 0 unless ACTIVE
+  billingRequired: boolean;
+  paymentMethodRequired: false;        // starting the trial never needs one
+  started: boolean;                    // this request started the trial
+  installationLimit: number;
+  installationCount: number;
+}
+```
+
+Errors: `INVALID_PLAN` (400, unknown or private plan), `FORBIDDEN` (403, not OWNER/ADMIN for `start`, not a member for `GET`), `BILLING_REQUIRED` (402) and
+`INSTALLATION_LIMIT_REACHED` (409) from installation creation.
+
+**Not enforced here.** Live runtime publishing (killfeed, feeds) for an existing installation is **not** suspended when a trial expires. `internal/entitlements.Resolve` still returns the
+full feature set for every plan, by that package's existing design. Expiry blocks new services and reports `billingRequired`; gating live publishing is a separate, explicit product change.

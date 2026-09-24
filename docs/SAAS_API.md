@@ -173,7 +173,10 @@ Response `200` (`[`[`OrganizationSummary`](#organizationsummary)`]`):
 
 ### 3. `POST /api/saas/organizations`
 Creates the organization and the caller's OWNER membership atomically. Also
-creates a 14-day TRIAL subscription.
+starts the caller's one no-card 14-day trial if they have not used it yet;
+a caller who already used theirs gets an `INACTIVE` subscription (billing
+required) - creating more organizations never grants more trials
+(`docs/BILLING.md` section 28).
 
 Request:
 ```json
@@ -198,7 +201,16 @@ Request:
 ```
 Response `201`: [`InstallationSummary`](#installationsummary). `404` if the
 guild connection isn't this organization's; `409 CONFLICT` if that
-connection already has an installation.
+connection already has an unconfigured installation.
+
+This is the "initial setup / new service" operation, gated by the
+subscription (Onboarding V2, `docs/BILLING.md` section 28):
+`402 BILLING_REQUIRED` when there is no running trial or paid plan (trial
+expired, account already used its trial, subscription canceled/suspended);
+`409 INSTALLATION_LIMIT_REACHED` when the organization already has as many
+installations as its plan allows (the trial allows 1). It never modifies or
+replaces an existing installation - reconfigure one through its own routes
+(`#16`, `#20`, `#21`).
 
 ### 7. `GET /api/saas/organizations/{organizationID}/installations/{installationID}`
 Response `200`: [`InstallationSummary`](#installationsummary).
@@ -1314,6 +1326,37 @@ root-relative `returnPath` is accepted, combined with a server-chosen, allowlist
 New error codes: `INVALID_PLAN` (400), `NO_ACTIVE_SUBSCRIPTION` (409), `NO_BILLING_CUSTOMER` (409), `BILLING_UNAVAILABLE` (503, Stripe not configured on this environment). Rate limit: 20 billing
 actions per minute per acting user (checkout/portal/plan/cancel/reactivate share the budget); every read is unlimited.
 
+### Trial (Customer Onboarding V2)
+
+Start Free Trial -> 14 days -> configure the first service -> activate a paid plan when ready. One no-card trial per Discord account; no Stripe object is created to start it, and checkout
+never adds a Stripe trial (`trialDays` is always 0). Full policy: `docs/BILLING.md` section 28.
+
+| Route | Who | Notes |
+|---|---|---|
+| `GET .../organizations/{organizationID}/trial` | any member | read-only [`TrialState`](#trialstate); never starts a trial |
+| `POST .../organizations/{organizationID}/trial/start` | OWNER/ADMIN | `{ planKey? }` (LOW/MEDIUM/HIGH, validated against the public catalog) -> `200` [`TrialState`](#trialstate). Idempotent: starts the trial if the account and organization are still eligible, otherwise returns the persisted state unchanged. It never restarts or extends a trial and never overwrites a paid subscription. `planKey` is stored as the intended plan; it is not a purchase. |
+
+`GET .../billing/subscription` also returns `intendedPlan`, `trialStatus`, `trialDaysRemaining` and `billingRequired`; `status` may be `INACTIVE` (no trial, no paid plan).
+
+#### TrialState
+```json
+{
+  "trialStatus": "ACTIVE",
+  "subscriptionStatus": "TRIAL",
+  "selectedPlan": "MEDIUM",
+  "trialStartedAt": "2026-09-23T12:00:00Z",
+  "trialEndsAt": "2026-10-07T12:00:00Z",
+  "daysRemaining": 14,
+  "billingRequired": false,
+  "paymentMethodRequired": false,
+  "started": true,
+  "installationLimit": 1,
+  "installationCount": 0
+}
+```
+`trialStatus`: `NOT_STARTED` (no subscription row yet), `ACTIVE`, `EXPIRED` (billing required, data kept), `NOT_ELIGIBLE` (this account already used its trial; billing required),
+`CONVERTED` (a Stripe subscription exists; `selectedPlan` is then the paid plan). `billingRequired` is also true for a canceled or suspended subscription.
+
 ## Champion Player API (Access Model Phase 2, Part A/B)
 
 Full contract in `docs/PLAYER_API.md`. A Player is never an organization member (same principle as the economy/shop player routes above) - these two routes take no `organizationID` and check no
@@ -1717,6 +1760,8 @@ Every non-2xx response:
 | `INSTALLATION_NOT_VERIFIED` | 422 | Action requires Discord to be verified first, or (`#25`) a setup prerequisite isn't met yet - the message names which one |
 | `NITRADO_UNAVAILABLE` | 503 | Nitrado rejected the token, or is unreachable |
 | `PAYLOAD_TOO_LARGE` | 413 | Request body over the endpoint's bound (embed templates: 64 KiB) |
+| `BILLING_REQUIRED` | 402 | A new service needs a running trial or a paid plan (trial expired, trial already used, subscription ended) - `docs/BILLING.md` section 28 |
+| `INSTALLATION_LIMIT_REACHED` | 409 | The organization is at its plan's installation capacity (trial: 1) - reconfigure the existing service or upgrade |
 | `INTERNAL_ERROR` | 500 | Unexpected server-side failure |
 | `RATE_LIMITED` (not in the code list above, still `{"error":{"code","message"}}`-shaped) | 429 | See rate limits below |
 

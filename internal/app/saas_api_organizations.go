@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yourname/dayz-killfeed/internal/billing"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -112,13 +113,14 @@ func (a *App) handleCreateOrganization(w http.ResponseWriter, r *http.Request) {
 		writeSaaSError(w, codeInternalError, "could not create organization")
 		return
 	}
-	// Every organization starts on a 14-day trial - GetForOrganization never
-	// has to special-case "no subscription yet" for a freshly created org.
-	if _, err := a.SaaSSubscriptions.EnsureTrial(ctx, org.ID, time.Now().Add(14*24*time.Hour)); err != nil {
-		slog.Warn("component=saas_api", "msg", "ensure trial subscription failed", "err", err.Error())
+	// Onboarding V2: the creator's one no-card 14-day trial starts here if they
+	// have not used it yet (docs/BILLING.md "No-card trial"); a creator who
+	// already had a trial gets an INACTIVE row - billing required, never a
+	// second trial - so creating more organizations never mints more trials.
+	if _, err := billing.StartTrial(ctx, a.SaaSSubscriptions, a.billingCatalog(), org.ID, user.ID, "", time.Now()); err != nil {
+		slog.Warn("component=saas_api", "msg", "start trial subscription failed", "err", err.Error())
 		// Non-fatal to the caller: the organization itself was created
-		// successfully. A missing subscription row is self-healing (the
-		// dashboard/GetForOrganization call can retry EnsureTrial).
+		// successfully, and POST .../trial/start retries the same grant.
 	}
 
 	writeSaaSJSON(w, http.StatusCreated, toOrganizationSummary(*org, repository.RoleOwner))

@@ -55,7 +55,7 @@ func TestLoadCatalogParsesAndSorts(t *testing.T) {
 		}
 	}
 	pro, ok := c.Get("pro") // case-insensitive
-	if !ok || pro.Name != "Pro" || pro.TrialDays != 14 || !pro.Popular || pro.Limits["installations"] != 3 {
+	if !ok || pro.Name != "Pro" || pro.TrialDays != 0 || !pro.Popular || pro.Limits["installations"] != 3 {
 		t.Fatalf("pro: %+v ok=%v", pro, ok)
 	}
 	if m := pro.Price("monthly"); m == nil || m.AmountCents != 1999 || m.Currency != "usd" || m.StripePriceID != "price_pro_month" {

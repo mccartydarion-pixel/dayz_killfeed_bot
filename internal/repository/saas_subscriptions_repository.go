@@ -22,7 +22,14 @@ const (
 	SubscriptionPastDue   = "PAST_DUE"
 	SubscriptionCanceled  = "CANCELED"
 	SubscriptionSuspended = "SUSPENDED"
+	// SubscriptionInactive is an organization that has neither a trial nor a paid subscription
+	// (its creator had already used their one free trial): billing is required before service.
+	SubscriptionInactive = "INACTIVE"
 )
+
+// PlanNone is the plan of an INACTIVE row. The trial row's plan is "TRIAL"; paid plans come
+// only from Stripe webhooks.
+const PlanNone = "NONE"
 
 // Billing intervals (docs/BILLING.md). YEARLY is designed for but not necessarily priced yet - see
 // the plan catalog.
@@ -49,16 +56,19 @@ type Subscription struct {
 	CancelAtPeriodEnd                                    bool
 	CanceledAt                                           *time.Time
 	TrialConsumed                                        bool
-	CreatedAt, UpdatedAt                                 time.Time
+	// IntendedPlan is the plan key picked while trialing (Onboarding V2). It is a preference only:
+	// it never grants anything and is never copied into Plan - Stripe webhooks set Plan.
+	IntendedPlan         string
+	CreatedAt, UpdatedAt time.Time
 }
 
 const subscriptionCols = `id, organization_id, COALESCE(provider,''), COALESCE(provider_customer_id,''), COALESCE(provider_subscription_id,''), COALESCE(provider_price_id,''),
-plan, status, COALESCE(billing_interval,''), trial_ends_at, current_period_start, current_period_end, cancel_at_period_end, canceled_at, trial_consumed, created_at, updated_at`
+plan, status, COALESCE(billing_interval,''), trial_ends_at, current_period_start, current_period_end, cancel_at_period_end, canceled_at, trial_consumed, COALESCE(intended_plan,''), created_at, updated_at`
 
 func scanSubscription(row pgx.Row) (Subscription, error) {
 	var s Subscription
 	err := row.Scan(&s.ID, &s.OrganizationID, &s.Provider, &s.ProviderCustomerID, &s.ProviderSubscriptionID, &s.ProviderPriceID,
-		&s.Plan, &s.Status, &s.BillingInterval, &s.TrialEndsAt, &s.CurrentPeriodStart, &s.CurrentPeriodEnd, &s.CancelAtPeriodEnd, &s.CanceledAt, &s.TrialConsumed, &s.CreatedAt, &s.UpdatedAt)
+		&s.Plan, &s.Status, &s.BillingInterval, &s.TrialEndsAt, &s.CurrentPeriodStart, &s.CurrentPeriodEnd, &s.CancelAtPeriodEnd, &s.CanceledAt, &s.TrialConsumed, &s.IntendedPlan, &s.CreatedAt, &s.UpdatedAt)
 	return s, err
 }
 

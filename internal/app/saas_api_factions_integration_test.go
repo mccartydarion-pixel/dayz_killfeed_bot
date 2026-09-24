@@ -96,6 +96,7 @@ func newFactionWorld(t *testing.T) *factionWorld {
 	a.Billing = billing.NewService(a.SaaSSubscriptions, billingCatalog, billingProvider, billing.Options{WebhookSecret: "whsec_test"})
 	a.saasBillingActionLimiter = newSaaSRateLimiter(time.Hour, 100000)
 	a.registerBillingRoutes()
+	a.registerTrialRoutes()
 	a.ActivityRepository = repository.NewActivityRepository(a.DB.Pool)
 	a.SaaSPlayer = repository.NewPlayerServerRepository(a.DB.Pool)
 	a.registerPlayerRoutes()

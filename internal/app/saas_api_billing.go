@@ -176,6 +176,11 @@ type SubscriptionSummaryDTO struct {
 	HasBillingCustomer    bool     `json:"hasBillingCustomer"`
 	HasActiveSubscription bool     `json:"hasActiveSubscription"`
 	CanManageBilling      bool     `json:"canManageBilling"` // the acting user is OWNER/ADMIN
+	// Onboarding V2 (docs/BILLING.md "No-card trial").
+	IntendedPlan       *string `json:"intendedPlan"`
+	TrialStatus        string  `json:"trialStatus"`
+	TrialDaysRemaining int     `json:"trialDaysRemaining"`
+	BillingRequired    bool    `json:"billingRequired"`
 }
 
 func subscriptionSummaryDTO(sum *billing.Summary, canManage bool) SubscriptionSummaryDTO {
@@ -184,6 +189,7 @@ func subscriptionSummaryDTO(sum *billing.Summary, canManage bool) SubscriptionSu
 		TrialEndsAt: nullableTimeStr(sum.TrialEndsAt), CurrentPeriodStart: nullableTimeStr(sum.CurrentPeriodStart), CurrentPeriodEnd: nullableTimeStr(sum.CurrentPeriodEnd),
 		CancelAtPeriodEnd: sum.CancelAtPeriodEnd, Entitlements: sum.Entitlements, HasBillingCustomer: sum.HasBillingCustomer,
 		HasActiveSubscription: sum.HasActiveSubscription, CanManageBilling: canManage,
+		IntendedPlan: optStr(sum.IntendedPlan), TrialStatus: sum.TrialStatus, TrialDaysRemaining: sum.TrialDaysRemaining, BillingRequired: sum.BillingRequired,
 	}
 }
 

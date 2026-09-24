@@ -34,7 +34,10 @@ type Plan struct {
 	IsPublic    bool           `json:"isPublic"`
 	SortOrder   int            `json:"sortOrder"`
 	Popular     bool           `json:"popular"`
-	TrialDays   int            `json:"trialDays"`
+	// TrialDays is the Stripe Checkout trial length. Always 0 since Onboarding V2: the only
+	// trial is the one no-card 14-day trial (TrialDays const in trial.go), and a paid activation
+	// never carries a second Stripe trial. Kept for API compatibility.
+	TrialDays int `json:"trialDays"`
 }
 
 // Price returns the plan's price for interval ("MONTHLY"/"YEARLY"), or nil if that interval isn't
@@ -164,14 +167,16 @@ func LoadCatalog(raw string) (*Catalog, error) {
 			return nil, fmt.Errorf("CHAMPION_BILLING_PLANS_JSON[%d]: duplicate plan key %q", i, key)
 		}
 		p := Plan{Key: key, Name: strings.TrimSpace(e.Name), Description: strings.TrimSpace(e.Description),
-			Features: append([]string{}, e.Features...), Limits: e.Limits, SortOrder: e.SortOrder, Popular: e.Popular, TrialDays: e.TrialDays, IsPublic: true}
+			Features: append([]string{}, e.Features...), Limits: e.Limits, SortOrder: e.SortOrder, Popular: e.Popular, IsPublic: true}
 		if e.IsPublic != nil {
 			p.IsPublic = *e.IsPublic
 		}
 		if p.Name == "" {
 			p.Name = key
 		}
-		if p.TrialDays < 0 {
+		// A configured trialDays is still validated (a typo should fail loudly) but never used:
+		// Stripe trial days are always 0 (docs/BILLING.md "No-card trial").
+		if e.TrialDays < 0 {
 			return nil, fmt.Errorf("CHAMPION_BILLING_PLANS_JSON[%d] %s: trialDays must not be negative", i, key)
 		}
 		var err error
