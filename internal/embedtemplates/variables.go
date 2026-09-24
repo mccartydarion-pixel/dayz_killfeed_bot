@@ -51,6 +51,9 @@ func v(name, label, cat, desc, example, format, source, availability string, opt
 const (
 	statsAvail  = "Present when Champion loaded the player's combat record for this kill."
 	hitDataNote = "Only present when the kill event carries hit data. Standard ADM kill lines do not include a hit zone or damage, so this is usually absent."
+	// finalHitNote: the kill line itself has no hit data; Champion attaches the lethal hit only when
+	// the ADM hit line immediately before the kill agrees on every point (killfeed/final_hit.go).
+	finalHitNote = "Present when Champion reliably matched the lethal hit: the ADM hit line immediately before the kill, marked (DEAD), with the same boot file, players, second, weapon and distance. Otherwise absent - a line or field using it is omitted."
 )
 
 // routeVariableDefinitions is the single source of truth for every route's approved
@@ -65,8 +68,8 @@ var routeVariableDefinitions = map[string][]VariableDefinition{
 		v("ammo", "Ammo", CatCombat, "The ammunition type.", "5.56x45", "text", "Event.Ammo", "Present when the kill line names the ammunition.", true),
 		v("distance", "Distance", CatCombat, "Kill distance in meters.", "11.7m", "distance", "Event.Distance", "Present when the kill line has a distance.", true),
 		v("range", "Range", CatCombat, "Champion's range class for the kill.", "CLOSE QUARTERS", "label", "presentation.RangeClass(Event.Distance)", "Present when the distance is known or the kill was melee.", true),
-		v("hit_zone", "Hit Zone", CatCombat, "The body part hit.", "Torso", "text", "Event.HitZone", hitDataNote, true),
-		v("damage", "Damage", CatCombat, "Damage of the confirmed hit.", "98.4", "decimal", "Event.Damage", hitDataNote, true),
+		v("hit_zone", "Hit Zone", CatCombat, "The body part of the lethal hit.", "Torso", "text", "correlated lethal hit (Event.FinalHit)", finalHitNote, true),
+		v("damage", "Damage", CatCombat, "Damage of the lethal hit (that one hit, not a total).", "28.7", "decimal", "correlated lethal hit (Event.FinalHit)", finalHitNote, true),
 		v("killer_kills", "Killer Kills", CatKillerStats, "The killer's all-time kills after this kill.", "9", "integer", "Event.KillerStats.Kills", statsAvail, true),
 		v("killer_deaths", "Killer Deaths", CatKillerStats, "The killer's all-time deaths.", "0", "integer", "Event.KillerStats.Deaths", statsAvail, true),
 		v("killer_kd", "Killer K/D", CatKillerStats, "The killer's all-time K/D after the confirmed kill.", "9.00", "decimal", "Event.KillerStats.KD()", statsAvail, true),

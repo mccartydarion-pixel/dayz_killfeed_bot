@@ -118,8 +118,33 @@ it (HITFEED strips the `Bullet_` prefix like the default card).
 ## Optional data
 
 * A **field** whose label or value references an absent variable is **omitted entirely**.
-* An absent variable in the **title, description, footer or author** renders as nothing and the
-  gap is closed; if the whole section ends up empty it is omitted. (Put optional values in fields.)
+* A **line of the description or footer** that references an absent variable is **omitted
+  entirely**: `Hit: {{hit_zone}} | Damage: {{damage}}` disappears when the event has no hit data
+  instead of rendering empty labels, while every other line is kept. Blank spacer lines are kept.
+* An absent variable in the **title or author** renders as nothing and the gap is closed; if the
+  whole section ends up empty it is omitted.
+* Preview, test send and live rendering use the same `Render`; the preview additionally reports
+  `omittedLines`, `omittedFields` and `absentVariables` (`RenderEventWithReport`).
+
+### Hit data on kills (`hit_zone`, `damage`)
+
+A DayZ ADM kill line carries no hit zone or damage. DayZ writes the lethal hit on the line
+immediately before it (every Champions kill observed on 2026-09-24):
+
+```
+09:33:17 | Player "V" (DEAD) (id=…)[HP: 0] hit by Player "K" (id=…) into Head(0) for 22.0527 damage (Bullet_556x45) with M4-A1 from 74.9605 meters
+09:33:17 | Player "V" (DEAD) (id=…) killed by Player "K" (id=…) with M4-A1 from 74.9605 meters
+```
+
+`killfeed.Engine` attaches that hit to the kill (`Event.FinalHit`) only when every piece of
+evidence agrees: the hit is lethal (`(DEAD)`); it is the line immediately preceding the kill in
+the same canonical ADM file (the same boot); the victim and killer ids match; the second matches;
+and the weapon and distance match. Anything else - an earlier non-lethal hit, another line in
+between, a different player, second, weapon or distance, another boot's file, a hit already used,
+or a hit before the resume point - leaves the kill without hit data, and lines or fields using
+`hit_zone`/`damage` are omitted. `damage` is that lethal hit's damage, never a total.
+`Event.FinalHit` is presentation only: `Event.HitZone`/`Damage` (headshot statistics, the default
+card, the durable kill fingerprint) are unchanged, and the Hitfeed is untouched.
 * A template that renders to nothing at all is not sent - the default is used (counted as a fallback).
 
 ## Rendered Discord limits and truncation
@@ -176,6 +201,28 @@ without a customizer). PVE_FEED keeps its ownership/claim logic (an unproven cau
 custom template or not) and its "N earlier deaths were not shown" note. Kill persistence, dedupe,
 replay and bounty-claim ordering happen before the embed is built and are not involved. The rotating
 killfeed batching, per-server queues and Discord failure handling are unchanged.
+
+## Activation (per installation and route)
+
+Each installation chooses, per route, **Champion Default** or **Custom Embed**
+(`installation_embed_activation`, migration 0053; no row = Champion Default). A custom template is
+rendered only when all four hold:
+
+1. the operator rollout switch `CHAMPION_CUSTOM_EMBEDS_ENABLED` is on;
+2. the route supports runtime rendering (`embedrender.SupportedRoutes()`);
+3. the installation selected Custom Embed for the route;
+4. the saved template is valid and enabled.
+
+`ResolveTemplate` returns a template only for a Custom Embed selection, so the renderer keeps the
+default card otherwise. Saving a template never changes the selection; resetting (DELETE) also
+returns the route to Champion Default. Activation of an unsupported route (422) or without a saved,
+valid, enabled template (409) is refused with the reason; selecting Custom Embed while the rollout
+switch is off is allowed and reported as `runtime: BLOCKED, blockedReason: GLOBAL_DISABLED`. Every
+template response carries `activation`: `mode`, `templateSaved`, `templateEnabled`, `templateValid`,
+`routeSupported`, `globalEnabled`, `runtime` (`ACTIVE` / `DEFAULT` / `BLOCKED`), `blockedReason`,
+`canActivate` and `activationUnavailable`. Migration 0053 carries over the previous intent - a
+saved, enabled template on a runtime route was meant to render once the switch was on - as an
+explicit Custom Embed selection.
 
 ## Rollout
 

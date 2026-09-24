@@ -130,6 +130,13 @@ WHERE i.id = t.installation_id AND i.organization_id = $1 AND t.installation_id 
 	if err != nil {
 		return false, fmt.Errorf("delete embed template: %w", err)
 	}
+	// Reset returns the route to the Champion default: a CUSTOM selection without a template
+	// would be meaningless.
+	if _, err := r.pool.Exec(ctx, `
+DELETE FROM installation_embed_activation a USING installations i
+WHERE i.id = a.installation_id AND i.organization_id = $1 AND a.installation_id = $2 AND a.route_key = $3`, organizationID, installationID, routeKey); err != nil {
+		return false, fmt.Errorf("reset embed activation: %w", err)
+	}
 	return tag.RowsAffected() > 0, nil
 }
 
@@ -139,14 +146,17 @@ WHERE i.id = t.installation_id AND i.organization_id = $1 AND t.installation_id 
 // (same tenant-consistency conditions, lowest id first), so a route's channel and its
 // template always belong to the same installation - never resolved by guild alone.
 // It returns the installation id even when there is no template (cfg == nil), and
-// installationID 0 when the server has no installation.
+// installationID 0 when the server has no installation. A template is returned ONLY when the
+// installation selected Custom Embed for the route (installation_embed_activation, migration
+// 0053); with Champion Default selected the runtime keeps the default card.
 func (r *EmbedTemplateRepository) ResolveTemplate(ctx context.Context, guildRowID, serverID int64, routeKey string) (int64, *embedtemplates.Config, error) {
 	const q = `
 SELECT i.id, t.config_json
 FROM installations i
 JOIN discord_guild_connections c ON c.id = i.discord_guild_connection_id
 JOIN game_servers gs ON gs.id = i.game_server_id
-LEFT JOIN installation_embed_templates t ON t.installation_id = i.id AND t.route_key = $3
+LEFT JOIN installation_embed_activation a ON a.installation_id = i.id AND a.route_key = $3 AND a.mode = 'CUSTOM'
+LEFT JOIN installation_embed_templates t ON t.installation_id = i.id AND t.route_key = $3 AND a.installation_id IS NOT NULL
 WHERE c.guild_id = $1
   AND i.game_server_id = $2
   AND gs.guild_id = c.guild_id
@@ -174,4 +184,53 @@ LIMIT 1`
 	}
 	cfg.RouteKey = routeKey
 	return instID, &cfg, nil
+}
+
+// Embed activation modes (migration 0053).
+const (
+	EmbedModeDefault = "DEFAULT"
+	EmbedModeCustom  = "CUSTOM"
+)
+
+// ListActivations returns the installation's selected mode per route (absent = DEFAULT).
+func (r *EmbedTemplateRepository) ListActivations(ctx context.Context, organizationID, installationID int64) (map[string]string, error) {
+	rows, err := r.pool.Query(ctx, `
+SELECT a.route_key, a.mode FROM installation_embed_activation a
+JOIN installations i ON i.id = a.installation_id
+WHERE i.organization_id = $1 AND a.installation_id = $2`, organizationID, installationID)
+	if err != nil {
+		return nil, fmt.Errorf("list embed activations: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var k, m string
+		if err := rows.Scan(&k, &m); err != nil {
+			return nil, err
+		}
+		out[k] = m
+	}
+	return out, rows.Err()
+}
+
+// SetActivation records the installation's selected mode for one route. The row is written only
+// when the installation belongs to the organization (embedtemplates.ErrInstallationNotFound
+// otherwise). Selecting DEFAULT deletes the row (absent = DEFAULT), so it is idempotent.
+func (r *EmbedTemplateRepository) SetActivation(ctx context.Context, organizationID, installationID int64, routeKey, mode string, userID int64) error {
+	var exists bool
+	if err := r.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM installations WHERE id=$2 AND organization_id=$1)`, organizationID, installationID).Scan(&exists); err != nil {
+		return fmt.Errorf("check installation: %w", err)
+	}
+	if !exists {
+		return embedtemplates.ErrInstallationNotFound
+	}
+	if mode != EmbedModeCustom {
+		_, err := r.pool.Exec(ctx, `DELETE FROM installation_embed_activation WHERE installation_id=$1 AND route_key=$2`, installationID, routeKey)
+		return err
+	}
+	_, err := r.pool.Exec(ctx, `
+INSERT INTO installation_embed_activation (installation_id, route_key, mode, updated_by_user_id, updated_at) VALUES ($1,$2,'CUSTOM',NULLIF($3,0),NOW())
+ON CONFLICT (installation_id, route_key) DO UPDATE SET mode='CUSTOM', updated_by_user_id=EXCLUDED.updated_by_user_id, updated_at=NOW()`,
+		installationID, routeKey, userID)
+	return err
 }

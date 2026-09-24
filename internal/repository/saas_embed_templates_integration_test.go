@@ -390,6 +390,9 @@ func TestEmbedTemplateResolveTemplateByGuildAndServer(t *testing.T) {
 	if _, err := w.repo.Upsert(w.ctx, org, inst2, sampleConfig("KILLFEED", "second-server")); err != nil {
 		t.Fatal(err)
 	}
+	// Runtime activation (migration 0053): the saved template is used only once Custom Embed is
+	// selected for the route.
+	w.must(w.repo.SetActivation(w.ctx, org, inst2, "KILLFEED", EmbedModeCustom, 0))
 	gotInst, cfg, err := w.repo.ResolveTemplate(w.ctx, guildRow, server2, "KILLFEED")
 	w.must(err)
 	if gotInst != inst2 || cfg == nil || cfg.Title.Template != "second-server" || cfg.RouteKey != "KILLFEED" {

@@ -1067,6 +1067,17 @@ Embed Designer V2 (`docs/EMBED_DESIGNER_V2.md`). Any member. Renders an **unsave
 `customRenderingSupported` and the route's `destination` preflight. Saves nothing, sends nothing.
 Unknown body keys (`channelId` ...) are rejected with `EMBED_TEMPLATE_INVALID`.
 
+### 36b. `PUT .../installations/{installationID}/embed-templates/{routeKey}/activation`
+
+OWNER/ADMIN. Body `{ "mode": "CUSTOM" | "DEFAULT" }`: selects the installation's saved Custom Embed
+or the Champion Default for one route (docs/EMBED_RUNTIME.md "Activation"). Never changes the saved
+template. `CUSTOM` is refused with `EMBED_CUSTOM_RENDERING_NOT_SUPPORTED` (422) for a route without a
+runtime publisher and with `CONFLICT` (409) when there is no saved, valid, enabled template. Returns
+the route's `activation` status (`mode`, `templateSaved`, `templateEnabled`, `templateValid`,
+`routeSupported`, `globalEnabled`, `runtime` ACTIVE|DEFAULT|BLOCKED, `blockedReason`, `canActivate`,
+`activationUnavailable`). Every template GET/PUT/DELETE response carries the same `activation`
+object, and the list response carries `activations` for every route.
+
 ### 37. `POST .../installations/{installationID}/embed-templates/{routeKey}/test`
 
 OWNER/ADMIN. Renders the same **unsaved** draft and sends it, with a "design preview - not a live

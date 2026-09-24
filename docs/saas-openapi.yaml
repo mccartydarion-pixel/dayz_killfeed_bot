@@ -2363,6 +2363,25 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/saas/organizations/{organizationID}/installations/{installationID}/embed-templates/{routeKey}/activation:
+    put:
+      summary: Select Champion Default or the saved Custom Embed for one route of this installation (OWNER/ADMIN). Never changes the saved template.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { name: routeKey, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [mode], properties: { mode: { type: string, enum: [DEFAULT, CUSTOM] } } }
+      responses:
+        "200": { description: "The route's activation status { mode, templateSaved, templateEnabled, templateValid, routeSupported, globalEnabled, runtime (ACTIVE|DEFAULT|BLOCKED), blockedReason, canActivate, activationUnavailable }", content: { application/json: { schema: { type: object } } } }
+        "400": { description: "mode is not DEFAULT or CUSTOM" }
+        "409": { description: "CUSTOM without a saved, valid, enabled template" }
+        "422": { description: "CUSTOM for a route without runtime rendering (EMBED_CUSTOM_RENDERING_NOT_SUPPORTED)" }
+
   /api/saas/organizations/{organizationID}/installations/{installationID}/embed-templates/{routeKey}/test:
     post:
       summary: Send an UNSAVED draft as a labelled test message to the route's own routed channel (OWNER/ADMIN). Mentions disabled; no gameplay effects.
