@@ -5,9 +5,13 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/yourname/dayz-killfeed/internal/permissions"
+	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
 // C.A.S.E. Phase 2 / Observation API.
@@ -67,11 +71,12 @@ type caseObservationResponse struct {
 	Watchlist        []any                 `json:"watchlist"`
 	DetectorsEnabled bool                  `json:"detectorsEnabled"`
 	Enforcement      string                `json:"enforcement"`
+	EvidenceConfigured bool `json:"evidenceConfigured"`
 }
 
 func newCaseObservationResponse(serverID int64, now time.Time) caseObservationResponse {
 	return caseObservationResponse{
-		Version: "2.0-observation",
+		Version: "2.1-observation",
 		Mode: "OBSERVATION_ONLY",
 		Status: "AWAITING_EVENTS",
 		GeneratedAt: now.UTC().Format(time.RFC3339),
@@ -109,6 +114,7 @@ func caseISO(t *time.Time) *string {
 
 func (a *App) registerAntiCheatRoutes(base string) {
 	a.HTTPServer.Handle("GET "+base+"/anti-cheat/overview", a.handleAntiCheatOverview)
+	a.HTTPServer.Handle("GET "+base+"/anti-cheat/evidence", a.handleAntiCheatEvidence)
 }
 
 // handleAntiCheatOverview does not read other servers under the same Discord
@@ -157,6 +163,25 @@ func (a *App) handleAntiCheatOverview(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("component=case", "event", "telemetry_read_failed", "err", err.Error())
 		writeSaaSError(w, codeInternalError, "could not load C.A.S.E. telemetry")
 		return
+	}
+	// Hit count uses *ingestion* time, not a guessed UTC time from ADM's
+	// date-less wall clock. A disabled collector cannot claim zero hits.
+	configured := strings.EqualFold(strings.TrimSpace(os.Getenv("CASE_EVIDENCE_ENABLED")), "true")
+	out.EvidenceConfigured = configured
+	hitCount, countErr := repository.NewCaseEvidenceRepository(a.DB.Pool).
+		CaseHitCount(ctx, ac.scope.GuildID, *ac.scope.ServerID, from, now)
+	if countErr != nil {
+		slog.Warn("component=case", "event", "hit_count_read_failed", "err", countErr.Error())
+		writeSaaSError(w, codeInternalError, "could not load C.A.S.E. evidence coverage")
+		return
+	}
+	if configured || hitCount > 0 {
+		out.Telemetry.HitEvents24h = &hitCount
+	}
+	if configured {
+		out.Telemetry.Coverage.Hits = "PERSISTED_SOURCE_LINES_WHEN_ENABLED"
+	} else {
+		out.Telemetry.Coverage.Hits = "COLLECTOR_DISABLED_OR_HISTORICAL"
 	}
 	out.Telemetry.LastKillAt = caseISO(lastKill)
 	out.Telemetry.LastLocationSampleAt = caseISO(lastLocation)
@@ -216,4 +241,62 @@ func (a *App) handleAntiCheatOverview(w http.ResponseWriter, r *http.Request) {
 	}
 	a.recordAudit(ctx, ac, "CASE_TELEMETRY_VIEWED", "", "", "success", nil, map[string]int{"events": len(out.RecentEvents)})
 	writeSaaSJSON(w, http.StatusOK, out)
+}
+
+
+type caseEvidencePage struct {
+	Mode string `json:"mode"`
+	ServerID int64 `json:"serverId"`
+	TimeBasis string `json:"timeBasis"`
+	Items []repository.CaseEvidenceRow `json:"items"`
+	NextCursor *string `json:"nextCursor"`
+	DetectorsEnabled bool `json:"detectorsEnabled"`
+	Enforcement string `json:"enforcement"`
+}
+
+// Case evidence contains player identities and observed positions, so the
+// ADMINISTRATOR-level location capability is required, not mere directory view.
+func (a *App) handleAntiCheatEvidence(w http.ResponseWriter, r *http.Request) {
+	ac,ok:=a.requireCapability(w,r,permissions.CapPlayerLocationView)
+	if !ok {return}
+	if ac.scope.ServerID==nil {writeSaaSError(w,codeInvalidRequest,"no DayZ server selected");return}
+	if a.DB==nil || a.DB.Pool==nil {writeSaaSError(w,codeInternalError,"C.A.S.E. evidence unavailable");return}
+	if !enforceRateLimit(w,a.saasAdminReadLimiter,rateLimitKey(r)){return}
+	q:=r.URL.Query()
+	var playerID,before *int64
+	if raw:=q.Get("playerId");raw!="" {
+		v,err:=strconv.ParseInt(raw,10,64)
+		if err!=nil || v<=0 {writeSaaSError(w,codeInvalidRequest,"invalid playerId");return}
+		playerID=&v
+	}
+	if raw:=q.Get("before");raw!="" {
+		v,err:=strconv.ParseInt(raw,10,64)
+		if err!=nil || v<=0 {writeSaaSError(w,codeInvalidRequest,"invalid cursor");return}
+		before=&v
+	}
+	limit:=50
+	if raw:=q.Get("limit");raw!="" {
+		v,err:=strconv.Atoi(raw)
+		if err!=nil || v<1 || v>100 {writeSaaSError(w,codeInvalidRequest,"limit must be 1-100");return}
+		limit=v
+	}
+	ctx,cancel:=context.WithTimeout(r.Context(),adminTimeout)
+	defer cancel()
+	items,err:=repository.NewCaseEvidenceRepository(a.DB.Pool).
+		ListCaseEvidence(ctx,ac.scope.GuildID,*ac.scope.ServerID,playerID,before,limit)
+	if err!=nil {
+		slog.Warn("component=case","event","evidence_read_failed","err",err.Error())
+		writeSaaSError(w,codeInternalError,"could not load C.A.S.E. evidence")
+		return
+	}
+	out:=caseEvidencePage{Mode:"OBSERVATION_ONLY",ServerID:*ac.scope.ServerID,
+		TimeBasis:"ADM_CLOCK_ONLY_WITH_INGESTION_ORDER",Items:items,
+		DetectorsEnabled:false,Enforcement:"DISABLED"}
+	if len(items)==limit {
+		cursor:=strconv.FormatInt(items[len(items)-1].ID,10)
+		out.NextCursor=&cursor
+	}
+	a.recordAudit(ctx,ac,"CASE_EVIDENCE_VIEWED","", "", "success",nil,
+		map[string]any{"count":len(items),"filtered":playerID!=nil})
+	writeSaaSJSON(w,http.StatusOK,out)
 }
