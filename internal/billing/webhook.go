@@ -107,6 +107,7 @@ type webhookInvoice struct {
 	ID            string `json:"id"`
 	Customer      jsonID `json:"customer"`
 	Subscription  jsonID `json:"subscription"`
+	Parent struct { SubscriptionDetails struct { Subscription jsonID `json:"subscription"` } `json:"subscription_details"` } `json:"parent"`
 	Status        string `json:"status"`
 	AmountPaid    int64  `json:"amount_paid"`
 	AmountDue     int64  `json:"amount_due"`
@@ -172,6 +173,7 @@ func ParseEvent(e stripe.Event) (ParsedEvent, error) {
 		if err := json.Unmarshal(e.Data.Raw, &inv); err != nil {
 			return out, fmt.Errorf("parse %s: %w", out.Type, err)
 		}
+		if inv.Subscription == "" { inv.Subscription = inv.Parent.SubscriptionDetails.Subscription }
 		out.Invoice = &inv
 	}
 	return out, nil
