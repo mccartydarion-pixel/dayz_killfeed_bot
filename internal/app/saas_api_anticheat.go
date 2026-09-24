@@ -147,9 +147,9 @@ func (a *App) handleAntiCheatOverview(w http.ResponseWriter, r *http.Request) {
 			(SELECT COUNT(*) FROM kills
 			 WHERE guild_id=$1 AND server_id=$2 AND event_time >= $3 AND event_time <= $4),
 			(SELECT COUNT(*) FROM player_location_events
-			 WHERE guild_id=$1 AND server_id=$2 AND observed_at >= $3 AND observed_at <= $4),
+			 WHERE guild_id=$1 AND server_id=$2 AND source='ADM' AND observed_at >= $3 AND observed_at <= $4),
 			(SELECT MAX(event_time) FROM kills WHERE guild_id=$1 AND server_id=$2),
-			(SELECT MAX(observed_at) FROM player_location_events WHERE guild_id=$1 AND server_id=$2)
+			(SELECT MAX(observed_at) FROM player_location_events WHERE guild_id=$1 AND server_id=$2 AND source='ADM')
 	`, ac.scope.GuildID, *ac.scope.ServerID, from, now).
 		Scan(&out.Telemetry.KillEvents24h, &out.Telemetry.LocationSamples24h,
 			&lastKill, &lastLocation)
