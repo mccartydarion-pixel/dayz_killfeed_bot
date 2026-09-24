@@ -8,6 +8,7 @@ import (
  "net/http"
  "time"
 
+ "github.com/jackc/pgx/v5"
  "github.com/yourname/dayz-killfeed/internal/killfeed"
  "github.com/yourname/dayz-killfeed/internal/permissions"
 )
@@ -118,27 +119,25 @@ func (a *App) handleAntiCheatIntegrity(w http.ResponseWriter,r *http.Request) {
  defer cancel()
  var sourceID *string
  err:=a.DB.Pool.QueryRow(ctx,`
-  SELECT (SELECT COUNT(*) FROM case_evidence_events
-          WHERE guild_id=$1 AND server_id=$2 AND ingested_at >= $3 AND ingested_at <= $4),
-         (SELECT MAX(ingested_at) FROM case_evidence_events
-          WHERE guild_id=$1 AND server_id=$2)
+  SELECT COUNT(*) FROM case_evidence_events
+  WHERE guild_id=$1 AND server_id=$2 AND ingested_at >= $3 AND ingested_at <= $4
  `,ac.scope.GuildID,serverID,now.Add(-24*time.Hour),now).
- Scan(&out.EvidenceLines24h,&out.LatestEvidenceIngestedAt)
+ Scan(&out.EvidenceLines24h)
  if err!=nil {
   slog.Warn("component=case","event","source_integrity_count_failed","err",err.Error())
   writeSaaSError(w,codeInternalError,"could not read C.A.S.E. source integrity");return
  }
- if out.LatestEvidenceIngestedAt!=nil {
-  err=a.DB.Pool.QueryRow(ctx,`
-   SELECT source_id,source_end_offset FROM case_evidence_events
-   WHERE guild_id=$1 AND server_id=$2 ORDER BY id DESC LIMIT 1
-  `,ac.scope.GuildID,serverID).Scan(&sourceID,&out.LatestEvidenceOffset)
-  if err!=nil {
-   slog.Warn("component=case","event","source_integrity_latest_failed","err",err.Error())
-   writeSaaSError(w,codeInternalError,"could not read latest C.A.S.E. source");return
-  }
-  if sourceID!=nil{out.LatestEvidenceSourceRef=caseSourceRef(*sourceID)}
+ // A single row supplies ingestion time, source and offset so they never
+ // appear as though they came from different evidence records.
+ err=a.DB.Pool.QueryRow(ctx,`
+  SELECT source_id,source_end_offset,ingested_at FROM case_evidence_events
+  WHERE guild_id=$1 AND server_id=$2 ORDER BY id DESC LIMIT 1
+ `,ac.scope.GuildID,serverID).Scan(&sourceID,&out.LatestEvidenceOffset,&out.LatestEvidenceIngestedAt)
+ if err!=nil && err!=pgx.ErrNoRows {
+  slog.Warn("component=case","event","source_integrity_latest_failed","err",err.Error())
+  writeSaaSError(w,codeInternalError,"could not read latest C.A.S.E. source");return
  }
+ if sourceID!=nil{out.LatestEvidenceSourceRef=caseSourceRef(*sourceID)}
  a.recordAudit(ctx,ac,"CASE_SOURCE_INTEGRITY_VIEWED","","","success",nil,
   map[string]any{"workerAvailable":available,"sourceState":out.SourceState})
  writeSaaSJSON(w,http.StatusOK,out)
