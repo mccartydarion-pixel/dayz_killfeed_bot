@@ -20,6 +20,7 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/adminrepo"
 	"github.com/yourname/dayz-killfeed/internal/analytics"
 	"github.com/yourname/dayz-killfeed/internal/billing"
+	"github.com/yourname/dayz-killfeed/internal/casebilling"
 	"github.com/yourname/dayz-killfeed/internal/bounties"
 	"github.com/yourname/dayz-killfeed/internal/config"
 	"github.com/yourname/dayz-killfeed/internal/database"
@@ -677,6 +678,19 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 				app.Billing = billing.NewService(app.SaaSSubscriptions, billingCatalog, provider, billing.Options{
 					AllowedOrigins: billing.ParseAllowedOrigins(cfg.BillingAllowedOrigins), WebhookSecret: cfg.StripeWebhookSecret,
 				})
+				// Store and route C.A.S.E. independently of the one-row base
+				// subscription. The checkout flag defaults false in every environment.
+				if err := app.Billing.ConfigureCaseAddons(repository.NewCaseAddonSubscriptionRepository(db.Pool), billing.CaseOptions{
+					Enabled: cfg.CaseBillingEnabled,
+					VerifiedThrough: casebilling.Tier(cfg.CaseVerifiedThrough),
+					PriceIDs: map[casebilling.Tier]string{
+						casebilling.Watch: cfg.CaseWatchPriceID,
+						casebilling.Pro: cfg.CaseProPriceID,
+						casebilling.Command: cfg.CaseCommandPriceID,
+					},
+				}); err != nil {
+					return nil, fmt.Errorf("configure case add-on billing: %w", err)
+				}
 			}
 			app.SaaSCredentials = repository.NewCredentialRepository(db.Pool)
 			app.SaaSChannelRoutes = repository.NewChannelRouteRepository(db.Pool)
