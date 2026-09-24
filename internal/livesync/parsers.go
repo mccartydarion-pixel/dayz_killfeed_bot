@@ -84,7 +84,7 @@ func (c *localClock) at(h, m, s int, nanos int) *time.Time {
 var (
 	rptCurrentTimeRe = regexp.MustCompile(`^Current time:\s+(\d{4})/(\d{2})/(\d{2}) (\d{2}):(\d{2}):(\d{2})`)
 	rptVersionRe     = regexp.MustCompile(`^Version (\d+\.\d+\.\d+)`)
-	rptClockRe       = regexp.MustCompile(`^\s*(\d{1,2}):(\d{2}):(\d{2})\.(\d{3})\s+(.*)$`)
+	rptClockRe       = regexp.MustCompile(`^\s*(\d{1,2}):(\d{2}):(\d{2})\.(\d{3})(?:\s+(.*))?$`)
 	terminationRe    = regexp.MustCompile(`\[Server\] :: termination in: (\d+)`)
 	missingModelRe   = regexp.MustCompile(`^Warning Message: Cannot open object (.+)$`)
 	playerRemovedRe  = regexp.MustCompile(`Server: Player info removed - name (.+?), id \S+`)
@@ -93,7 +93,29 @@ var (
 	spawnerFileRe    = regexp.MustCompile(`File "\$mission:([^"]+)" does not exist`)
 	stackFrameRe     = regexp.MustCompile(`^(scripts/[^\s:]+:\d+) Function (\S+)`)
 	functionRe       = regexp.MustCompile(`^Function: '([^']+)'`)
+	modelPathRe      = regexp.MustCompile(`(dz\\[^\s:()']+\.p3d)`)
+	spawnerNameRe    = regexp.MustCompile(`^Primary Spawner: "([^"]+)"`)
 )
+
+// isModelWarning matches the engine's model/geometry load warnings (real Champions RPT lines).
+func isModelWarning(msg string) bool {
+	switch {
+	case strings.HasPrefix(msg, "Warning: No components in "),
+		strings.HasPrefix(msg, "PerfWarning: Way too much components"),
+		strings.HasPrefix(msg, `Convex "`) && strings.Contains(msg, "selection faces are less then"),
+		strings.HasPrefix(msg, "ENTITY") && strings.Contains(msg, "(W): Unknown object class"),
+		strings.HasPrefix(msg, "ENTITY") && strings.Contains(msg, "is missing geometry components"):
+		return true
+	}
+	return false
+}
+
+// isEngineStartup matches start-up chatter: package loading, config inheritance, stats manager.
+func isEngineStartup(msg string) bool {
+	return (strings.HasPrefix(msg, "ENGINE") && strings.Contains(msg, "FileSystem: Adding package")) ||
+		strings.HasPrefix(msg, "Updating base class ") ||
+		msg == "Initializing stats manager." || msg == "Stats config disabled."
+}
 
 // ParseRPT parses the complete lines of an RPT slice starting at byte base. clockStart seeds the
 // time-of-day clock when the slice does not contain the header (a delta read); pass nil otherwise.
@@ -158,6 +180,9 @@ func ParseRPT(content []byte, base int64, clockStart *time.Time) (ParseResult, i
 		ms, _ := strconv.Atoi(m[4])
 		at := clock.at(h, mi, s, ms*int(time.Millisecond))
 		msg := strings.TrimSpace(m[5])
+		if msg == "" {
+			continue // a bare time-of-day line carries no observation
+		}
 		r := Record{Offset: l.end, SourceLocalTime: at, Evidence: Redact(text)}
 		if at == nil {
 			r.Status = StatusPartial // time of day without a known date
@@ -185,6 +210,15 @@ func ParseRPT(content []byte, base int64, clockStart *time.Time) (ParseResult, i
 			r.Category = CategoryResourceLeak
 		case strings.HasPrefix(msg, "[A2S]"):
 			r.Category = CategoryQuery
+		case isModelWarning(msg):
+			r.Category = CategoryModelWarning
+			if mm := modelPathRe.FindStringSubmatch(msg); mm != nil {
+				r.Payload = map[string]string{"model": mm[1]}
+			}
+		case isEngineStartup(msg):
+			r.Category = CategoryEngineStartup
+		case spawnerNameRe.MatchString(msg):
+			r.Category, r.Payload = CategorySpawnerConfig, map[string]string{"spawner": spawnerNameRe.FindStringSubmatch(msg)[1]}
 		default:
 			r.Category, r.Status = CategoryUnknown, StatusUnknown
 		}
@@ -306,6 +340,8 @@ var (
 	restartRFCRe  = regexp.MustCompile(`^([A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} [-+]\d{4}) (.*)$`)
 	restartISORe  = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) (.*)$`)
 	restartReqRe  = regexp.MustCompile(`^Server restart requested \(([^)]+)\)$`)
+	stopReqRe     = regexp.MustCompile(`^Server stop requested \(([^)]+)\)$`)
+	automatedRe   = regexp.MustCompile(`^Automated server restart in progress`)
 	preStartRe    = regexp.MustCompile(`^\[[^\]]+\] \[([A-Za-z]+)\] (.+)$`)
 	hostRebootRe  = regexp.MustCompile(`rebooting windows host system\.?$`)
 	clientAdminRe = regexp.MustCompile(`^Website Client Admin request$`)
@@ -348,6 +384,11 @@ func ParseRestartLog(content []byte, base int64) (ParseResult, int64) {
 		case restartReqRe.MatchString(msg):
 			r.Category = CategoryRestartRequested
 			r.Payload["requestedVia"] = restartReqRe.FindStringSubmatch(msg)[1]
+		case stopReqRe.MatchString(msg):
+			r.Category = CategoryStopRequested
+			r.Payload["requestedVia"] = stopReqRe.FindStringSubmatch(msg)[1]
+		case automatedRe.MatchString(msg):
+			r.Category = CategoryAutomatedRestart
 		case hostRebootRe.MatchString(msg):
 			r.Category = CategoryHostReboot
 		case clientAdminRe.MatchString(msg):

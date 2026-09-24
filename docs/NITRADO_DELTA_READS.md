@@ -45,6 +45,12 @@ task's research into Nitrado's own file-server client):
    fetching it. If the server ignores these parameters and returns the whole file (more bytes than
    requested), this is explicitly rejected as unsupported rather than risk feeding a wrongly-offset
    buffer into the parser.
+   **Live finding (2026-09-24, Champions, read-only):** Nitrado ignores `offset`/`count` and returns
+   the whole file with a plain `200` and no `Content-Range`, so a file SMALLER than the requested
+   count used to pass the size check and be treated as starting at the offset. OFFSET_QUERY is now
+   trusted only when a `Content-Range` states the requested offset - on Nitrado today it is therefore
+   unsupported. `cmd/nitrado-delta-probe` previously probed a 124-byte ADM from byte 0 (a false
+   SUPPORTED); it now always probes the file's second half. Keep `NITRADO_DELTA_READ_MODE` unset.
 3. **RANGE** (third fallback only - never the starting point, per explicit instruction): a standard
    `Range: bytes=<offset>-<offset+length-1>` request against the normal download signed URL.
    - `206 Partial Content` is accepted **only** if `Content-Range` parses and its `start` matches the

@@ -42,6 +42,13 @@ JOIN player_location_events ple
   AND ple.event_type = 'KILL' AND ple.observed_at = k.event_time
 ```
 
+**Correction (Champion Live Sync phase 2, docs/CHAMPION_LIVE_SYNC.md finding A8):** in production
+`Event.Timestamp` is never set (ADM lines carry no date), so `event_time` is NULL and this join never
+matched. Kills and deaths now store the ADM line's `source_file`/`source_offset`, and the join is on
+`(server, source_file, source_offset, player)` - the location row written from the same line - with
+time filtered on `COALESCE(event_time, created_at)`. The paragraph below describes the original
+design; the legacy join is kept only for rows that actually have `event_time`.
+
 is an **exact identity match**, never an approximation, and Phase 3's own
 `UNIQUE(player_id, server_id, event_type, observed_at)` guarantees it matches at most one row. A
 kill or death whose event carried no position (the ADM line had no `pos=<...>`, or the location

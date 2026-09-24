@@ -325,12 +325,24 @@ func (c *Client) tryOffsetQuery(ctx context.Context, serviceID, path string, off
 		return nil, err
 	}
 	extra := url.Values{"offset": {strconv.FormatInt(offset, 10)}, "count": {strconv.FormatInt(length, 10)}}
-	data, status, err := fetchBytes(ctx, c.httpClient, appendQuery(signedURL, extra), nil)
+	data, status, header, err := fetchBytesWithHeaders(ctx, c.httpClient, appendQuery(signedURL, extra), nil)
 	if err != nil {
 		return nil, err
 	}
-	if status != http.StatusOK {
+	if status != http.StatusOK && status != http.StatusPartialContent {
 		return nil, fmt.Errorf("%w: offset/count signed URL returned status=%d", errUnsupported, status)
+	}
+	// Champion Live Sync phase 2 finding (2026-09-24, Champions service, read-only): Nitrado's
+	// signed download URL IGNORES offset/count and returns the whole file with a 200 and no
+	// Content-Range. A small file then fits under `length` and was previously accepted as if it
+	// started at `offset` - silently misaligned bytes. A plain 200 body carries no proof of where it
+	// starts, so the response is trusted only when a Content-Range states the requested offset.
+	start, _, total, ok := parseContentRange(header.Get("Content-Range"))
+	if !ok || start != offset {
+		return nil, fmt.Errorf("%w: offset/count response has no Content-Range proving it starts at offset %d", errUnsupported, offset)
+	}
+	if total > 0 && offset+int64(len(data)) > total {
+		return nil, fmt.Errorf("%w: offset/count response extends past the stated total size", errUnsupported)
 	}
 	// If the server ignored offset/count entirely (a real risk task section 8 warns about for
 	// Range, and just as real here), it would return the WHOLE file, i.e. far more than `length`

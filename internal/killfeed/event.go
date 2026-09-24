@@ -128,6 +128,14 @@ type Event struct {
 	// AdminLogStart is the server-local "YYYY-MM-DD HH:MM:SS" of an "AdminLog started" header.
 	AdminLogStart string
 
+	// Source identity of the ADM line (Live Sync phase 2): the canonical ADM file, the byte offset
+	// at the end of the line and its server-local time. Set by the engine for lines read from a
+	// real file; empty in tests and legacy callers. Kills and deaths persist it so heatmaps can join
+	// the location row written from the same line.
+	SourceFile      string
+	SourceOffset    int64
+	SourceLocalTime *time.Time
+
 	Raw string
 	// Competitive context is populated only after durable persistence and is
 	// rendered into the same kill embed; it never creates another message.

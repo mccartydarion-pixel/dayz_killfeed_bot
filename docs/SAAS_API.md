@@ -1440,6 +1440,12 @@ unknown) with `currentLocationStatus` and a separate `lastKnownLocation`; every 
 `sessionScope` (`CURRENT_SESSION`/`HISTORICAL`) and `sourceLocalTime` (DayZ server-local time, no zone);
 `eventType` may be `PLAYER_LIST` (five-minute ADM player-list observations).
 
+**Live Sync phase 2.** Every location also carries `occurredAt` (DayZ's own time in UTC - present only
+when the server's UTC offset is known from restart.log) and `timeBasis` (`SOURCE` | `INGESTION`);
+`ageSeconds`/`freshness` are measured from `occurredAt` when present, so a line ingested late is never
+presented as fresh. `currentLocation` also becomes unknown as soon as written evidence (RPT shutdown
+completed, restart.log pre-start check, a newer boot's file) has ended the boot session.
+
 Every returned location carries `observedAt`/`ageSeconds`/`freshness` (`LIVE_RECENT`≤60s /
 `RECENT`≤5min / `STALE`>5min) - ADM has no continuous GPS, so "live" is never claimed unless the
 age genuinely qualifies. Viewing a player's location history or online-player locations writes an

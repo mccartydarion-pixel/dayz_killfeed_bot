@@ -460,6 +460,36 @@ func (c *Client) ListLogsInDir(ctx context.Context, serviceID, dir string) ([]Lo
 	return found, nil
 }
 
+// ListDir lists every regular file (any extension) in one directory Nitrado returns, without
+// recursion or filtering. Champion Live Sync uses it to find the RPT, script, crash and restart
+// logs next to the ADM; nothing here guesses a filename - only listed entries are returned.
+// Entries are sorted by name, newest filename stamp last for DayZ's stamped names.
+func (c *Client) ListDir(ctx context.Context, serviceID, dir string) ([]LogFile, error) {
+	if serviceID == "" {
+		return nil, fmt.Errorf("service ID is required")
+	}
+	entries, err := c.listFileServerDir(ctx, serviceID, dir)
+	if err != nil {
+		return nil, err
+	}
+	found := make([]LogFile, 0, len(entries))
+	for _, e := range entries {
+		if e.Type != "file" || e.Name == "" {
+			continue
+		}
+		path := e.Path
+		if path == "" {
+			path = joinRemotePath(dir, e.Name)
+		}
+		found = append(found, LogFile{
+			Name: e.Name, Path: path, Directory: dir, Size: e.Size, Modified: unixToTime(e.ModifiedAt),
+			Type: inferLogType(e.Name, path, "file_server"), Source: "file_server",
+		})
+	}
+	sort.Slice(found, func(i, j int) bool { return found[i].Name < found[j].Name })
+	return found, nil
+}
+
 // decodeDiagnostics describes how the file_server/list JSON was interpreted.
 type decodeDiagnostics struct {
 	decodeSuccess bool

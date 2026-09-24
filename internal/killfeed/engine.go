@@ -1621,6 +1621,11 @@ func (e *Engine) processLineAt(line, sourcePath string, endOffset int64) (bool, 
 	if e.handleObservationLine(ev, sourcePath, endOffset) {
 		return true, nil
 	}
+	// The line's physical source travels with the event, so kills/deaths and the location rows
+	// written from this same line share one identity (heatmap join, Live Sync phase 2).
+	if src := e.locationSource(ev, sourcePath, endOffset, ""); src.File != "" {
+		ev.SourceFile, ev.SourceOffset, ev.SourceLocalTime = src.File, src.Offset, src.LocalTime
+	}
 	if ev.Type == EventPlayerDisconnect {
 		slog.Info("component=presence", "event", "disconnect_parsed", "matched", true)
 	}
