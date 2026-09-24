@@ -180,6 +180,8 @@ Existing Shop codes are unchanged (`INVALID_PURCHASE_STATUS` for fulfilling a re
 
 ## 11. Nitrado investigation (what exists today)
 
+**Phase 2B research** (official Nitrado upload flow, the DayZ object-spawner mechanism, the non-executing plan/dry-run prototype, duplicate prevention and the test-server experiment) is in `docs/SHOP_DELIVERY_PHASE2B.md`.
+
 What `internal/nitrado` actually implements for connected console DayZ services:
 
 | Capability | Status | Endpoint |
