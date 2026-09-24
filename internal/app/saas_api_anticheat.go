@@ -5,9 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"os"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/yourname/dayz-killfeed/internal/permissions"
@@ -166,7 +164,7 @@ func (a *App) handleAntiCheatOverview(w http.ResponseWriter, r *http.Request) {
 	}
 	// Hit count uses *ingestion* time, not a guessed UTC time from ADM's
 	// date-less wall clock. A disabled collector cannot claim zero hits.
-	configured := strings.EqualFold(strings.TrimSpace(os.Getenv("CASE_EVIDENCE_ENABLED")), "true")
+	configured := caseEvidenceEnabledForServer(*ac.scope.ServerID)
 	out.EvidenceConfigured = configured
 	hitCount, countErr := repository.NewCaseEvidenceRepository(a.DB.Pool).
 		CaseHitCount(ctx, ac.scope.GuildID, *ac.scope.ServerID, from, now)
