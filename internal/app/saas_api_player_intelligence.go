@@ -41,6 +41,12 @@ type locationDTO struct {
 	// does not state one) and whether this is a current-session observation.
 	SourceLocalTime *string `json:"sourceLocalTime,omitempty"`
 	SessionScope    string  `json:"sessionScope"` // CURRENT_SESSION | HISTORICAL
+	// Live Sync phase 2: when DayZ says the observation happened (UTC), present only when the
+	// server's UTC offset is known from restart.log. ageSeconds/freshness are measured from it when
+	// present (timeBasis SOURCE), so a line ingested late is never presented as fresh; otherwise
+	// from Champion's ingestion time (timeBasis INGESTION).
+	OccurredAt *string `json:"occurredAt,omitempty"`
+	TimeBasis  string  `json:"timeBasis"` // SOURCE | INGESTION
 }
 
 // toLocationDTO computes age/freshness at read time (task section 5: every exposed location must
@@ -50,7 +56,12 @@ func toLocationDTO(e *repository.LocationEvent) *locationDTO {
 	if e == nil {
 		return nil
 	}
-	age := time.Since(e.ObservedAt)
+	basis, at := "INGESTION", e.ObservedAt
+	if e.SourceUTC != nil && !e.SourceUTC.After(e.ObservedAt.Add(time.Minute)) {
+		// A source time more than a minute after ingestion would be a clock error, not evidence.
+		basis, at = "SOURCE", *e.SourceUTC
+	}
+	age := time.Since(at)
 	if age < 0 {
 		age = 0
 	}
@@ -60,6 +71,11 @@ func toLocationDTO(e *repository.LocationEvent) *locationDTO {
 		AgeSeconds:   int64(age.Seconds()),
 		Freshness:    repository.ClassifyFreshness(age),
 		SessionScope: "HISTORICAL",
+		TimeBasis:    basis,
+	}
+	if basis == "SOURCE" {
+		v := at.UTC().Format(time.RFC3339)
+		dto.OccurredAt = &v
 	}
 	if e.SourceLocalTime != nil {
 		v := e.SourceLocalTime.Format("2006-01-02T15:04:05")

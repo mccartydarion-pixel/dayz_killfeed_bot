@@ -388,6 +388,9 @@ func (q *PersistenceQueue) persistOne(ctx context.Context, ev *Event) error {
 			Longshot:          isLongshotEvent(ev),
 			KillStyle:         "",
 			EventTime:         eventTimePtr(ev),
+			SourceFile:        ev.SourceFile,
+			SourceOffset:      ev.SourceOffset,
+			SourceLocalTime:   ev.SourceLocalTime,
 			KillingSpree:      killingSpree,
 			KillerStreakAfter: killerStreakAfter,
 			StreakEnded:       streakEnded,
@@ -444,6 +447,10 @@ func (q *PersistenceQueue) persistOne(ctx context.Context, ev *Event) error {
 			SeasonID:    seasonID,
 			DeathType:   deathType,
 			EventTime:   eventTimePtr(ev),
+			// Same physical source as the DEATH location row from this line (heatmap join).
+			SourceFile:      ev.SourceFile,
+			SourceOffset:    ev.SourceOffset,
+			SourceLocalTime: ev.SourceLocalTime,
 		}
 		if err := q.store.InsertDeath(ctx, rec); err != nil {
 			if !errors.Is(err, repository.ErrDuplicate) {

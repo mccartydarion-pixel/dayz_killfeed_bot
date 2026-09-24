@@ -48,7 +48,13 @@ const (
 	CategoryPreStartCheck      = "PRE_START_CHECK"
 	CategoryClientAdminRequest = "CLIENT_ADMIN_REQUEST"
 	CategoryLogHeader          = "LOG_HEADER"
-	CategoryUnknown            = "UNKNOWN"
+	// Phase 2 (categories for the bulk of real Champions RPT/restart.log lines, 2026-09-24).
+	CategoryModelWarning     = "MODEL_GEOMETRY_WARNING" // "Warning: No components in", convex/perf/door/object-class warnings
+	CategoryEngineStartup    = "ENGINE_STARTUP"         // FileSystem package loading, config base-class updates, stats manager
+	CategorySpawnerConfig    = "SPAWNER_CONFIG"         // "Primary Spawner: ..." infected spawner configuration
+	CategoryStopRequested    = "STOP_REQUESTED"         // restart.log "Server stop requested (Webinterface)"
+	CategoryAutomatedRestart = "AUTOMATED_RESTART"      // restart.log "Automated server restart in progress..."
+	CategoryUnknown          = "UNKNOWN"
 )
 
 // Validation status of an envelope.
@@ -59,7 +65,7 @@ const (
 )
 
 // ParserVersion is recorded on every envelope so reprocessing can tell parser generations apart.
-const ParserVersion = "cls-1.0"
+const ParserVersion = "cls-1.1"
 
 // Scope is the tenant scope of an event. Envelopes from different scopes are never merged.
 type Scope struct {

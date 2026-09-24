@@ -83,6 +83,7 @@ func TestReadLogFromSeekUnavailableEndpointFallsThroughInAuto(t *testing.T) {
 			if r.URL.Query().Get("offset") != "5" || r.URL.Query().Get("count") == "" {
 				t.Errorf("expected offset/count query params, got %q", r.URL.RawQuery)
 			}
+			w.Header().Set("Content-Range", "bytes 5-13/14")
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("new-bytes"))
 		default:
@@ -132,6 +133,33 @@ func TestReadLogFromOffsetQueryRejectsFullFileResponse(t *testing.T) {
 	_, err := client.tryOffsetQuery(context.Background(), "svc3", "/profile/x.ADM", 100, 1024)
 	if err == nil {
 		t.Fatal("expected an error when the server ignores offset/count and returns the whole file")
+	}
+}
+
+// TestReadLogFromOffsetQueryRejectsIgnoredOffsetOnSmallFile reproduces the real Nitrado behavior
+// observed on 2026-09-24: the signed URL ignores offset/count and returns the WHOLE file with a
+// plain 200. A file smaller than the requested count used to be accepted as if it started at the
+// requested offset; it must be rejected.
+func TestReadLogFromOffsetQueryRejectsIgnoredOffsetOnSmallFile(t *testing.T) {
+	resetCapabilityCache(t)
+	const whole = "---------------------------------------------\nLog started at 24.09. 05:51:45\n"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "file_server/download"):
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"data":{"token":{"url":"http://%s/signed"}}}`, r.Host)
+		case r.URL.Path == "/signed":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(whole))
+		}
+	}))
+	defer srv.Close()
+	client := NewClient(srv.URL, "token", srv.Client())
+	if _, err := client.tryOffsetQuery(context.Background(), "svc-small", "/cfg/script.log", 40, 1024); err == nil {
+		t.Fatal("a plain 200 body with no Content-Range must never be trusted to start at the requested offset")
+	}
+	if _, ok := client.ReadLogFrom(context.Background(), "svc-small", "/cfg/script.log", 40, DeltaModeOffsetQuery); ok {
+		t.Fatal("ReadLogFrom must fall back to a full read")
 	}
 }
 

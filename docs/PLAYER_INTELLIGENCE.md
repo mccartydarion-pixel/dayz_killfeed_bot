@@ -169,6 +169,10 @@ or after their latest connect in it; otherwise it is absent and `currentLocation
 previous-session position is never current - it is exposed as `lastKnownLocation`. ADM player-list
 entries are stored as `PLAYER_LIST` location events every five minutes.
 
+**Phase 2 (docs/CHAMPION_LIVE_SYNC.md sections 4 and 7.4).** A boot session proven over by RPT/restart.log
+evidence is never current. Locations carry `occurredAt` and `timeBasis`; age and freshness use DayZ's
+own time when it is known, never only the ingestion time.
+
 ## Location and online APIs (task sections 6-8)
 
 ```

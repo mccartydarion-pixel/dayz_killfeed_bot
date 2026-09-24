@@ -150,37 +150,96 @@ type LocationEvent struct {
 	// SourceFile/SourceLocalTime are empty for rows written before Live Sync phase 1.
 	SourceFile      string
 	SourceLocalTime *time.Time
+	// SourceUTC is SourceLocalTime converted with the server's UTC offset - set only when that
+	// offset was learned from a restart.log line that states it (live_sync_server_clock). It is when
+	// DayZ says the observation happened; ObservedAt is when Champion ingested it.
+	SourceUTC *time.Time
 	// CurrentSession is set by CurrentLocation: this row is from the server's current ADM session
 	// and the player's current connection.
 	CurrentSession bool
 }
 
-const locationEventCols = "e.id,e.player_id,e.x,e.z,e.y,e.event_type,e.observed_at,COALESCE(e.source_file,''),e.source_local_time"
+const locationEventCols = "e.id,e.player_id,e.x,e.z,e.y,e.event_type,e.observed_at,COALESCE(e.source_file,''),e.source_local_time," +
+	"(e.source_local_time - make_interval(mins => (SELECT c.utc_offset_minutes FROM live_sync_server_clock c WHERE c.server_id = e.server_id))) AT TIME ZONE 'UTC'"
 
 func scanLocationEvent(row pgx.Row) (LocationEvent, error) {
 	var e LocationEvent
-	err := row.Scan(&e.ID, &e.PlayerID, &e.X, &e.Z, &e.Y, &e.EventType, &e.ObservedAt, &e.SourceFile, &e.SourceLocalTime)
+	err := row.Scan(&e.ID, &e.PlayerID, &e.X, &e.Z, &e.Y, &e.EventType, &e.ObservedAt, &e.SourceFile, &e.SourceLocalTime, &e.SourceUTC)
 	return e, err
 }
 
 // SetCurrentADMSession records the ADM file the ingestion engine currently reads as the server's
 // current boot session (killfeed.ADMSessionStore). The file identity is the server-session epoch.
+//
+// Live Sync phase 2: the session only moves forward. A file whose boot stamp is older than the
+// recorded one (a lagging mount alias re-selected after a restart) never replaces it, and
+// re-recording the same file keeps an end the live sync watcher already proved (ended_at), so a
+// finished boot can never become CURRENT again. A genuinely new file starts a fresh, open session.
 func (r *LocationRepository) SetCurrentADMSession(ctx context.Context, guildID, serverID int64, admFile string, localStart *time.Time) error {
 	_, err := r.pool.Exec(ctx, `
-INSERT INTO server_adm_sessions(server_id, guild_id, adm_file, session_local_start, selected_at) VALUES($1,$2,$3,$4,NOW())
-ON CONFLICT (server_id) DO UPDATE SET guild_id=EXCLUDED.guild_id, adm_file=EXCLUDED.adm_file, session_local_start=EXCLUDED.session_local_start, selected_at=NOW()`,
+INSERT INTO server_adm_sessions(server_id, guild_id, adm_file, session_local_start, selected_at) VALUES($1,$2,$3,$4::timestamp,NOW())
+ON CONFLICT (server_id) DO UPDATE SET guild_id=EXCLUDED.guild_id, adm_file=EXCLUDED.adm_file, session_local_start=EXCLUDED.session_local_start, selected_at=NOW(),
+    ended_at       = CASE WHEN server_adm_sessions.adm_file = EXCLUDED.adm_file THEN server_adm_sessions.ended_at END,
+    ended_reason   = CASE WHEN server_adm_sessions.adm_file = EXCLUDED.adm_file THEN server_adm_sessions.ended_reason END,
+    ended_evidence = CASE WHEN server_adm_sessions.adm_file = EXCLUDED.adm_file THEN server_adm_sessions.ended_evidence END
+WHERE server_adm_sessions.adm_file = EXCLUDED.adm_file
+   OR server_adm_sessions.session_local_start IS NULL OR EXCLUDED.session_local_start IS NULL
+   OR EXCLUDED.session_local_start >= server_adm_sessions.session_local_start`,
 		serverID, guildID, admFile, localStart)
 	return err
+}
+
+// EndADMSessionBefore ends the server's current boot session when DayZ-written evidence proves a
+// later boot or a completed shutdown at server-local time bootLocal: the session ends only if it
+// started before bootLocal and is still open. ended=false means nothing changed (already ended,
+// no session, or the session is the later boot itself). reason/evidence are short, sanitized
+// labels (never a raw log line).
+func (r *LocationRepository) EndADMSessionBefore(ctx context.Context, guildID, serverID int64, bootLocal time.Time, reason, evidence string) (bool, error) {
+	tag, err := r.pool.Exec(ctx, `
+UPDATE server_adm_sessions SET ended_at=NOW(), ended_reason=$4, ended_evidence=$5
+WHERE server_id=$2 AND guild_id=$1 AND ended_at IS NULL
+  AND session_local_start IS NOT NULL AND session_local_start < $3::timestamp`,
+		guildID, serverID, bootLocal, reason, evidence)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// ADMSession is the server's recorded boot session.
+type ADMSession struct {
+	ADMFile       string
+	LocalStart    *time.Time
+	SelectedAt    time.Time
+	EndedAt       *time.Time
+	EndedReason   string
+	EndedEvidence string
+}
+
+// CurrentADMSession returns the recorded boot session, or nil when none was recorded.
+func (r *LocationRepository) CurrentADMSession(ctx context.Context, guildID, serverID int64) (*ADMSession, error) {
+	var s ADMSession
+	err := r.pool.QueryRow(ctx, `SELECT adm_file, session_local_start, selected_at, ended_at, COALESCE(ended_reason,''), COALESCE(ended_evidence,'')
+FROM server_adm_sessions WHERE guild_id=$1 AND server_id=$2`, guildID, serverID).
+		Scan(&s.ADMFile, &s.LocalStart, &s.SelectedAt, &s.EndedAt, &s.EndedReason, &s.EndedEvidence)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &s, nil
 }
 
 // CurrentLocation returns the player's position in the CURRENT session, or nil = UNKNOWN. A row
 // qualifies only if (1) the player is currently connected, (2) it comes from the server's current
 // ADM file (the boot session) and (3) it is at or after the player's latest connect in that file
 // (the player session). Ordering is by byte offset within the one file, so no timezone is needed.
-// A previous-session position is never returned as current (docs/CHAMPION_LIVE_SYNC.md).
+// A previous-session position is never returned as current (docs/CHAMPION_LIVE_SYNC.md), and
+// neither is any position from a session DayZ evidence has proven ended (ended_at, phase 2).
 func (r *LocationRepository) CurrentLocation(ctx context.Context, guildID, serverID, playerID int64) (*LocationEvent, error) {
 	e, err := scanLocationEvent(r.pool.QueryRow(ctx, `
-WITH s AS (SELECT adm_file FROM server_adm_sessions WHERE server_id=$2 AND guild_id=$1),
+WITH s AS (SELECT adm_file FROM server_adm_sessions WHERE server_id=$2 AND guild_id=$1 AND ended_at IS NULL),
      online AS (SELECT COALESCE(bool_or(currently_connected), false) AS yes FROM player_server_activity WHERE guild_id=$1 AND server_id=$2 AND player_id=$3),
      lastc AS (SELECT MAX(c.source_offset) AS o FROM player_location_events c JOIN s ON c.source_file = s.adm_file
                WHERE c.server_id=$2 AND c.player_id=$3 AND c.event_type='CONNECT')

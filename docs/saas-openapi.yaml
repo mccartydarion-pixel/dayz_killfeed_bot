@@ -4126,7 +4126,7 @@ paths:
         STALE>5min) - ADM has no continuous GPS, so "live" is never implied unless it genuinely qualifies.
       parameters: [{ $ref: "#/components/parameters/ActingUser" }, { $ref: "#/components/parameters/organizationID" }, { $ref: "#/components/parameters/installationID" }, { name: playerID, in: path, required: true, schema: { type: integer, format: int64 } }]
       responses:
-        "200": { description: "{ x, z, y, eventType, observedAt, ageSeconds, freshness, sessionScope (CURRENT_SESSION|HISTORICAL), sourceLocalTime } - the last known location, which may be historical", content: { application/json: { schema: { type: object } } } }
+        "200": { description: "{ x, z, y, eventType, observedAt, ageSeconds, freshness, sessionScope (CURRENT_SESSION|HISTORICAL), sourceLocalTime, occurredAt (UTC, when the server offset is known), timeBasis (SOURCE|INGESTION) } - the last known location, which may be historical", content: { application/json: { schema: { type: object } } } }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { description: No observed location for this player on this server. }
@@ -4151,7 +4151,7 @@ paths:
                   location:
                     type: object
                     nullable: true
-                    description: "{ x, z, y, eventType, observedAt, ageSeconds, freshness, sessionScope, sourceLocalTime }"
+                    description: "{ x, z, y, eventType, observedAt, ageSeconds, freshness, sessionScope, sourceLocalTime, occurredAt, timeBasis }"
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
 

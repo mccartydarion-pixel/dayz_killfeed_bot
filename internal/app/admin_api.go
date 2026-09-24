@@ -645,5 +645,6 @@ func (a *App) registerAdminAPI() {
 	a.HTTPServer.Handle("GET /api/admin/installations", a.adminRoute(a.handleAdminListInstallations))
 	a.HTTPServer.Handle("GET /api/admin/installations/{installationID}", a.adminRoute(a.handleAdminGetInstallation))
 	a.HTTPServer.Handle("GET /api/admin/health", a.adminRoute(a.handleAdminHealth))
+	a.HTTPServer.Handle("GET /api/admin/live-sync", a.adminRoute(a.handleAdminLiveSync))
 	a.registerAdminBillingRoutes()
 }

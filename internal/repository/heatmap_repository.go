@@ -13,14 +13,18 @@ import (
 // the task's explicit "database GROUP BY grid cell, not load-then-aggregate-in-memory" instruction.
 //
 // Coordinate association: kills/deaths carry no coordinate columns of their own. Every coordinate
-// used here is recovered via an exact join to player_location_events on the same identity Phase 3
-// already established (player_id, server_id, event_type, observed_at) - event_time on kills/deaths
-// and observed_at on player_location_events are set from the exact same ev.Timestamp during the
-// same processLine call (internal/killfeed/persistence.go's eventTimePtr, internal/killfeed/
-// location_queue.go's EnqueueEvent both call eventTime(ev)), so the join is an exact identity
-// match, never an approximation - and Phase 3's own UNIQUE(player_id,server_id,event_type,
-// observed_at) guarantees it can match at most one row. A kill/death with no matching location row
-// (the event carried no position) is silently excluded, never fabricated.
+// is recovered via an exact join to the player_location_events row written from the SAME ADM line:
+// since Live Sync phase 2 (migration 0051) kills and deaths store the line's physical source
+// (canonical ADM file + end-of-line byte offset), exactly as the location row does, so the join is
+// (server, source_file, source_offset, player). The pre-phase-2 join on observed_at = event_time
+// never matched anything - event_time is NULL because ADM lines carry no date (docs/
+// CHAMPION_LIVE_SYNC.md finding A8) - and is kept only for any legacy row that has both. A kill or
+// death with no matching location row (the line carried no position) is excluded, never fabricated.
+//
+// Time window: event_time when present, else the row's persistence time (created_at) - the same
+// COALESCE(event_time, created_at) rule the faction statistics already use. The two identities are
+// separate UNION ALL branches so each keeps an index-friendly join (the source branch matches
+// uq_player_location_events_source exactly; the legacy branch is the original plan).
 type HeatmapRepository struct{ pool *pgxpool.Pool }
 
 func NewHeatmapRepository(pool *pgxpool.Pool) *HeatmapRepository {
@@ -58,12 +62,26 @@ func aggregateRows(rows interface {
 // full result as "too many cells, reject."
 func (r *HeatmapRepository) AggregateKills(ctx context.Context, guildID, serverID int64, from, to time.Time, resolution int, limit int) ([]HeatmapCell, error) {
 	rows, err := r.pool.Query(ctx, `
-SELECT FLOOR(ple.x / $5)::BIGINT, FLOOR(ple.z / $5)::BIGINT, COUNT(*)
-FROM kills k
-JOIN player_location_events ple
-  ON ple.guild_id = k.guild_id AND ple.server_id = k.server_id AND ple.player_id = k.killer_player_id
-  AND ple.event_type = 'KILL' AND ple.observed_at = k.event_time
-WHERE k.guild_id = $1 AND k.server_id = $2 AND k.event_time >= $3 AND k.event_time < $4
+SELECT FLOOR(m.x / $5)::BIGINT, FLOOR(m.z / $5)::BIGINT, COUNT(*)
+FROM (
+  -- Sourced rows (Live Sync phase 2): the location row written from the same ADM line.
+  SELECT ple.x, ple.z
+  FROM kills k
+  JOIN player_location_events ple
+    ON ple.server_id = k.server_id AND ple.source_file = k.source_file AND ple.source_offset = k.source_offset
+    AND ple.player_id = k.killer_player_id AND ple.event_type = 'KILL' AND ple.guild_id = k.guild_id
+  WHERE k.guild_id = $1 AND k.server_id = $2 AND k.source_file IS NOT NULL
+    AND COALESCE(k.event_time, k.created_at) >= $3 AND COALESCE(k.event_time, k.created_at) < $4
+  UNION ALL
+  -- Legacy rows: the original exact-timestamp identity (only rows that actually have event_time).
+  SELECT ple.x, ple.z
+  FROM kills k
+  JOIN player_location_events ple
+    ON ple.guild_id = k.guild_id AND ple.server_id = k.server_id AND ple.player_id = k.killer_player_id
+    AND ple.event_type = 'KILL' AND ple.observed_at = k.event_time
+  WHERE k.guild_id = $1 AND k.server_id = $2 AND k.source_file IS NULL
+    AND k.event_time >= $3 AND k.event_time < $4
+) m
 GROUP BY 1, 2
 LIMIT $6`, guildID, serverID, from, to, resolution, limit)
 	if err != nil {
@@ -78,12 +96,26 @@ LIMIT $6`, guildID, serverID, from, to, resolution, limit)
 // have a corresponding deaths row) can never be miscounted as a death.
 func (r *HeatmapRepository) AggregateDeaths(ctx context.Context, guildID, serverID int64, from, to time.Time, resolution int, limit int) ([]HeatmapCell, error) {
 	rows, err := r.pool.Query(ctx, `
-SELECT FLOOR(ple.x / $5)::BIGINT, FLOOR(ple.z / $5)::BIGINT, COUNT(*)
-FROM deaths d
-JOIN player_location_events ple
-  ON ple.guild_id = d.guild_id AND ple.server_id = d.server_id AND ple.player_id = d.player_id
-  AND ple.event_type = 'DEATH' AND ple.observed_at = d.event_time
-WHERE d.guild_id = $1 AND d.server_id = $2 AND d.event_time >= $3 AND d.event_time < $4
+SELECT FLOOR(m.x / $5)::BIGINT, FLOOR(m.z / $5)::BIGINT, COUNT(*)
+FROM (
+  -- Sourced rows (Live Sync phase 2): the location row written from the same ADM line.
+  SELECT ple.x, ple.z
+  FROM deaths d
+  JOIN player_location_events ple
+    ON ple.server_id = d.server_id AND ple.source_file = d.source_file AND ple.source_offset = d.source_offset
+    AND ple.player_id = d.player_id AND ple.event_type = 'DEATH' AND ple.guild_id = d.guild_id
+  WHERE d.guild_id = $1 AND d.server_id = $2 AND d.source_file IS NOT NULL
+    AND COALESCE(d.event_time, d.created_at) >= $3 AND COALESCE(d.event_time, d.created_at) < $4
+  UNION ALL
+  -- Legacy rows: the original exact-timestamp identity (only rows that actually have event_time).
+  SELECT ple.x, ple.z
+  FROM deaths d
+  JOIN player_location_events ple
+    ON ple.guild_id = d.guild_id AND ple.server_id = d.server_id AND ple.player_id = d.player_id
+    AND ple.event_type = 'DEATH' AND ple.observed_at = d.event_time
+  WHERE d.guild_id = $1 AND d.server_id = $2 AND d.source_file IS NULL
+    AND d.event_time >= $3 AND d.event_time < $4
+) m
 GROUP BY 1, 2
 LIMIT $6`, guildID, serverID, from, to, resolution, limit)
 	if err != nil {

@@ -287,6 +287,16 @@ Sourced entirely from `billing_transactions` (`docs/BILLING.md` section 27) - ne
 Stripe call. No `plan` filter (not captured per-transaction) and no date-range filter (cursor
 pagination is already a stable ordering).
 
+### `GET /api/admin/live-sync`
+
+Champion Live Sync phase 2 (docs/CHAMPION_LIVE_SYNC.md section 7.5). For every running server worker:
+per-family watcher freshness (`FRESH` / `LAGGING` / `FAILING` / `NO_SOURCE`), canonical source file,
+checkpoint, read vs listed size, last read / growth / failure, safe error class, record counts
+(live / backfill / unknown), rotations and a measured latency summary; the learned UTC offset;
+session-end evidence; the recorded ADM session; stored-record statistics and ADM latency for the
+last 6 hours. In-memory and stored state only - no live Nitrado call, no token, signed URL,
+physical path or raw log line.
+
 ### `GET /api/admin/health`
 
 Stored and in-memory state only: no live Nitrado call, no per-row Discord call, no

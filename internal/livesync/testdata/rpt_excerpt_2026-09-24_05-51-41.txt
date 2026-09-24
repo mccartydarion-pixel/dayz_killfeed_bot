@@ -1,0 +1,11 @@
+ 5:51:41.934 Initializing stats manager.
+ 5:51:41.934 Stats config disabled.
+ 5:51:43.621 Updating base class All->AllVehicles, by DZ\data\config.bin/CfgVehicles/Man/
+ 5:51:45.152 ENGINE       : FileSystem: Adding package 'C:\SERVICES\<service>_local\dayzps\addons\worlds_mainmenuscenexbox.pbo' to RV filesystem
+ 5:51:52.183 Convex "component01" selection faces are less then 4 in dz\gear\camping\largetent.p3d:geometry
+ 5:51:53.501 Warning: No components in dz\structures\roads\parts\asf1_25.p3d:geometry
+ 5:51:53.725 PerfWarning: Way too much components (560) in dz\structures\industrial\power\power_station.p3d:geometryFire
+ 5:51:53.747    ENTITY    (W): Door 'DoorsTwin1' is missing geometry components for selection 'DoorsTwin1', check model+config
+ 5:52:13.479
+ 5:52:15.900   Primary Spawner: "Infected", active: yes, repeat: 1
+ 5:52:16.351 ENTITY    (W): Unknown object class 'pond' (dz\water\ponds\pond_50x50.p3d)

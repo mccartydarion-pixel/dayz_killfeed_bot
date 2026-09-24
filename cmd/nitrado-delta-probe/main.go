@@ -112,8 +112,11 @@ func probeSegment(size, requested int64) (offset, length int64) {
 		return 0, 0
 	}
 	length = requested
-	if length > size {
-		length = size
+	// Never probe from byte 0: a server that ignores the offset returns the file from the start,
+	// which is byte-identical to an offset-0 segment and would be a false "SUPPORTED" (observed on a
+	// 124-byte Champions ADM, 2026-09-24). The segment is at most the file's second half.
+	if length > size/2 {
+		length = size / 2
 	}
 	offset = size / 2
 	if offset+length > size {

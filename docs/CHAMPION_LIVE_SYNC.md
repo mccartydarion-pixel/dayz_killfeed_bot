@@ -2,7 +2,7 @@
 
 Champion's goal: detect changed Nitrado log content promptly, process every supported observation, persist it once, and notify the systems that depend on it. It must never claim an in-game change that DayZ has not written evidence of.
 
-This document records the audit of the existing pipeline, the **phase 1** changes delivered in this branch, and the remaining phases. **Implemented** and **not yet implemented** are marked explicitly throughout.
+This document records the audit of the existing pipeline, the **phase 1** changes (ADM player lists, session-scoped current location, parsers), the **phase 2** changes (continuous per-source watchers, durable checkpoints and records, session end on evidence, source-time freshness, the heatmap source join), and the remaining phase 3. **Implemented** and **not yet implemented** are marked explicitly throughout.
 
 ## 1. Audit: the existing lifecycle (before C.L.S.)
 
@@ -30,11 +30,12 @@ Defects found in the audit:
 | A1 | ADM player-list blocks (`##### PlayerList log`, bare `Player "x" (id=… pos=<…>)`, `#####`) matched no sub-parser | Every five-minute position observation was dropped; presence never used them | **Fixed** |
 | A2 | `Event.Timestamp` is never set outside tests, so `observed_at` is Champion's ingestion time | The location dedupe key (player, server, type, observed_at) never matched a replay. Backlog lines looked "fresh" | **Fixed for new rows**: each row carries its physical source, and dedupe is by source |
 | A3 | "Current location" was `LatestLocation` across all history | An old-session position could be presented as current | **Fixed** (section 4) |
-| A4 | Only ADM is ingested. RPT, `script_*.log`, `crash_*.log` and `restart.log` are never read | Startup/shutdown, script errors and restart causes are invisible | **Parsers + fixtures delivered; live ingestion not yet** |
-| A5 | One selected ADM stands for the whole server's log state | A slow or failing source cannot be isolated | Not yet (phase 2) |
+| A4 | Only ADM is ingested. RPT, `script_*.log`, `crash_*.log` and `restart.log` are never read | Startup/shutdown, script errors and restart causes are invisible | Phase 1: parsers. **Phase 2: ingested continuously** (section 7) |
+| A5 | One selected ADM stands for the whole server's log state | A slow or failing source cannot be isolated | **Fixed (phase 2)**: one independent watcher per family, own timeouts and backoff |
 | A6 | No change notification: website data is polled request/response | The website cannot learn about committed changes | Not yet (phase 3) |
-| A8 | `kills.event_time` / `deaths.event_time` come from `Event.Timestamp` (never set, see A2), so they are NULL; the kill/death heatmaps join `player_location_events` on `observed_at = event_time` | Kill/death heatmaps can never match a row | **Not fixed here**: needs source identity on kills/deaths (phase 2) |
-| A7 | The stale-source loop (`selected_stale` → same file re-selected) is bounded to one rediscovery per `staleProbeInterval`, with a direct-read probe first | Behaviour is correct but coarse; source-level freshness is not exposed per family | Documented; per-source freshness is phase 2 |
+| A8 | `kills.event_time` / `deaths.event_time` come from `Event.Timestamp` (never set, see A2), so they are NULL; the kill/death heatmaps join `player_location_events` on `observed_at = event_time` | Kill/death heatmaps can never match a row | **Fixed (phase 2)**: kills/deaths store the line's source file + offset; the heatmap joins on it (section 7.6) |
+| A7 | The stale-source loop (`selected_stale` → same file re-selected) is bounded to one rediscovery per `staleProbeInterval`, with a direct-read probe first | Behaviour is correct but coarse; source-level freshness is not exposed per family | ADM loop unchanged; **per-family freshness exposed (phase 2)** |
+| A9 | Nitrado's signed download URL **ignores `offset`/`count`** and returns the whole file with a plain 200 (verified read-only on Champions, 2026-09-24). `tryOffsetQuery` accepted any response no larger than the request, and `cmd/nitrado-delta-probe` probed from byte 0 on a 124-byte file | With `NITRADO_DELTA_READ_MODE=offset_query/auto`, a small file would be parsed as if it started at the checkpoint (misaligned lines). Production runs with the mode unset (`off`), so nothing was affected | **Fixed (phase 2)**: offset/count responses are trusted only with a `Content-Range` stating the offset; the probe never tests from byte 0 |
 
 ## 2. Source inventory (Champions, service 19806451, read-only, 2026-09-24)
 
@@ -43,14 +44,17 @@ These are actual files exposed by the connected PlayStation service. No filename
 | Family | Real name pattern | Canonical path | Count | Boot identity | Parser | Live ingestion |
 |---|---|---|---|---|---|---|
 | ADM | `DayZServer_PS4_x64_YYYY-MM-DD_HH-MM-SS.ADM` | `dayzps/config/…` (noftp + ftproot alias) | 65 | filename + `AdminLog started on …` header | `killfeed.ADMParser` (+ player lists, phase 1) | **yes** (existing engine) |
-| RPT | `DayZServer_PS4_x64_YYYY-MM-DD_HH-MM-SS.RPT` | `dayzps/config/…` | 66 | `Current time:` + `Version` header | `livesync.ParseRPT` | no (phase 2) |
-| Script log | `script_YYYY-MM-DD_HH-MM-SS.log` | `dayzps/config/…` | 66 | `Log … started at DD.MM. HH:MM:SS` | `livesync.ParseScriptLog` | no (phase 2) |
-| Crash log | `crash_YYYY-MM-DD_HH-MM-SS.log` | `dayzps/config/…` | 2 | `Log … started at` + `USMI264, DD.MM YYYY HH:MM:SS` | `livesync.ParseScriptLog` | no (phase 2) |
-| Restart log | `restart.log` | `ftproot/restart.log` → `restart.log` | 1 (157 KB) | pre-start check lines | `livesync.ParseRestartLog` | no (phase 2) |
+| RPT | `DayZServer_PS4_x64_YYYY-MM-DD_HH-MM-SS.RPT` | `dayzps/config/…` | 66 | `Current time:` + `Version` header | `livesync.ParseRPT` | **yes (phase 2)**, newest boot's file |
+| Script log | `script_YYYY-MM-DD_HH-MM-SS.log` | `dayzps/config/…` | 66 | `Log … started at DD.MM. HH:MM:SS` | `livesync.ParseScriptLog` | **yes (phase 2)**, newest boot's file |
+| Crash log | `crash_YYYY-MM-DD_HH-MM-SS.log` | `dayzps/config/…` | 2 | `Log … started at` + `USMI264, DD.MM YYYY HH:MM:SS` | `livesync.ParseScriptLog` | **yes (phase 2)**, newest file |
+| Restart log | `restart.log` | `ftproot/restart.log` → `restart.log` | 1 (157 KB) | pre-start check lines | `livesync.ParseRestartLog` | **yes (phase 2)** |
+| Nitrado server log | `server.log` (ftproot `dayzps/config` only, 5.2 MB) | – | 1 | – | none (format not yet sampled) | no: not a DayZ log family; listed only |
 | Ban list / whitelist | `ban.txt`, `whitelist.txt` | `dayzps/…` | 1 each | – | classified only | no |
 | Nitrado tasks | `GET /services/:id/tasks` (API record, not a file) | – | 0 tasks | – | – | no |
 
-**Per-source tracking fields.** Size, modified time and readable byte count are available from the file-server listing and download. Per-source checkpoints, last successful read and rotation history exist today **only for ADM** (the durable ADM checkpoint). The phase 2 watcher adds them for every family.
+**Per-source tracking fields.** Size, modified time and readable byte count are available from the file-server listing and download. Since phase 2 every family has a durable checkpoint, last read/growth time, record counts and rotation history (`live_sync_sources`, section 7).
+
+**Mounts lag independently.** On 2026-09-24 10:24 UTC the `noftp` listing already showed the 05:51:41 boot's files while the `ftproot/dayzps/config` listing did not list them at all. The watchers merge both mounts per canonical file and take the larger size.
 
 **Real format notes (from the fixtures in `internal/livesync/testdata`, sanitized):**
 * **RPT** lines are ` H:MM:SS.mmm message`. Exception blocks (`Reason:` and stack frames) have **no clock prefix**. The shutdown sequence is `[Server] :: termination in: N` … `ENGINE : Destroying game` … `--- Termination successfully completed ---`.
@@ -114,6 +118,16 @@ Otherwise the result is **UNKNOWN**. A new boot therefore makes every player UNK
 
 A filename timestamp only anchors when nothing better exists, and such a boot is marked `Confirmed = false`. Restart requests attach as the boot's cause when they come at most 5 minutes before it. One restart is counted once, however many sources report it. In phase 1 the correlator is a tested library; the engine's session identity is the selected ADM file.
 
+**Phase 2: a session ends on written evidence, before the new ADM is even visible.** `server_adm_sessions` gains `ended_at`, `ended_reason` and `ended_evidence` (source id + offset, never a raw line). The live sync watchers end the recorded session when DayZ or Nitrado has written proof that it is over:
+
+| Evidence | Source | Ends sessions that started before |
+|---|---|---|
+| `--- Termination successfully completed ---` | RPT | the line's server-local time |
+| `[DayZTypesLimiter]` pre-start check, host reboot | restart.log | the line's server-local time (stated offset) |
+| a newer boot's RPT / script / crash file is listed | file name stamp | the stamp minus 2 minutes (files of one boot are stamped seconds apart) |
+
+A restart **request** ends nothing (the server keeps running through its countdown). An ended session is never `CURRENT`: `CurrentLocation` returns `UNKNOWN` immediately, even while the ADM engine is still on the old file. The engine re-recording the same file keeps the end; a file whose boot stamp is older than the recorded session (a lagging mount alias) never replaces it; a genuinely new ADM opens a new session.
+
 ## 5. Canonical event envelope (phase 1, type delivered)
 
 `livesync.Envelope` contains:
@@ -127,7 +141,9 @@ A filename timestamp only anchors when nothing better exists, and such a boot is
 * `Evidence`: a redacted excerpt of at most 240 characters, with ids, IPs and the service account removed;
 * `Status`: `PARSED`, `PARTIAL` or `UNKNOWN`.
 
-**Unknown is never a success:** unrecognized lines are preserved as `UNKNOWN` records with a redacted excerpt. Persisting envelopes, and publishing them through an outbox, is phase 3.
+**Unknown is never a success:** unrecognized lines are preserved as `UNKNOWN` records with a redacted excerpt.
+
+**Phase 2: envelopes from RPT, script, crash and restart.log are persisted** as `live_sync_records` (section 7.3), parser `cls-1.1`. Publishing them through an outbox and a change stream is phase 3.
 
 ## 6. Parser coverage matrix
 
@@ -145,25 +161,72 @@ A filename timestamp only anchors when nothing better exists, and such a boot is
 | Network player removed | – | ✅ gamertag (id redacted) | – | – | – |
 | Restart requested / host reboot / client admin | – | – | – | – | ✅ |
 | Localization, A2S queries, resource leaks | – | ✅ counted (noise) | – | – | – |
+| Model/geometry warnings, engine start-up, spawner config | – | ✅ phase 2 (`MODEL_GEOMETRY_WARNING`, `ENGINE_STARTUP`, `SPAWNER_CONFIG`) | – | – | – |
+| Stop requested / automated restart | – | – | – | – | ✅ phase 2 (`STOP_REQUESTED`, `AUTOMATED_RESTART`) |
 | Persistence errors, fatal crash (non-VM) | – | ⚠️ no real sample yet → UNKNOWN | – | ⚠️ | – |
 | Anything else | UNKNOWN | UNKNOWN | UNKNOWN | UNKNOWN | UNKNOWN |
 
-## 7. Checkpoints, rotation and stale sources
+## 7. Continuous multi-source ingestion (phase 2, implemented)
 
-**Implemented (existing engine, unchanged):**
-* durable ADM checkpoint (file, offset, pending partial line);
-* no checkpoint advance past a failed durable persistence;
-* truncation and rotation handling;
-* ftproot/noftp alias checkpoint reuse;
-* delta reads with full-read fallback;
-* the direct-read stale probe before rediscovery;
-* at most one full rediscovery per `staleProbeInterval` while stuck.
+### 7.1 Shape
 
-**Phase 1 addition.** Replay safety for location observations moved from the in-memory 90 s deduplicator and an ingestion-time key to the physical source identity. Replaying the same bytes (same file and offset) is an exact database no-op, while two distinct stationary observations are both kept.
+```
+                      ┌──────────── killfeed.Engine (ADM) ── unchanged, own goroutine ──────────────┐
+Nitrado file server ──┤                                                                              │
+ (one HTTP client,    └──────────── livesync.Supervisor (one per server worker) ─────────────────────┤
+  no shared lock)          ├─ dir lister: lists the ADM dirs + ftproot root every 20 s → snapshots   │
+                           ├─ RPT watcher      ─┐ each: own goroutine, own 60 s per-call timeout,    │
+                           ├─ restart.log      ─┤ own failure backoff (probe × 2ⁿ, ≤ 10 min),       │
+                           ├─ script log       ─┤ own durable checkpoint                             │
+                           └─ crash log        ─┘                                                    │
+                                   │ read → parse complete lines after checkpoint → ONE transaction: │
+                                   ▼ INSERT live_sync_records … ON CONFLICT DO NOTHING + checkpoint  │
+                           session evidence ─► server_adm_sessions.ended_at ◄── ADM engine selection ┘
+```
 
-**The livesync parsers** return the consumed byte count and never consume a trailing partial line. A delta read seeded with the boot time produces the same records and absolute offsets as one full read (tested).
+* **Directories are discovered, never guessed.** The ADM files Nitrado lists give the log directories (both mounts); the `ftproot` root is listed because the ADM path shows the `/<root>/{noftp,ftproot}/` layout, and `restart.log` is read only when that listing returns it.
+* **One current file per family**: the newest filename boot stamp across both mounts (`restart.log` is a single file). The same logical file on both mounts is one source; the copy with the larger listed size wins.
+* **Independence.** Nobody waits on the lister: families read its last snapshot. A family keeps probing its durable current file directly even when listings fail. Tested: a hung RPT download does not delay restart.log (`TestStalledFamilyDoesNotBlockOtherFamilies`) or the real ADM engine sharing the same remote (`TestStalledRPTWatcherCannotBlockADM`).
+* **Kill switch:** `LIVE_SYNC_WATCHERS=off` disables the watchers; the ADM engine is unaffected either way.
 
-**Not yet (phase 2):** per-source checkpoints and watchers for RPT, script, crash and restart logs, each with independent failure counts, backoff, request budgets and priority. The priority order is: active ADM, current-session data, critical RPT errors, boot records, then historical diagnostics.
+### 7.2 Stale listings and reads
+
+A family reads when **either** the listing shows its file larger than the last read **or** its direct-read probe interval has passed (RPT and restart.log 30 s, script 60 s, crash 120 s). The probe finds new bytes even when Nitrado's listing size and modified time are stale (`TestWatcherFindsNewBytesDespiteStaleListing`), and the health view reports `listingBehindBytes` when a direct read found more than the listing shows.
+
+Reads are **full downloads** parsed from the checkpoint: Nitrado ignores offset/count (finding A9), so no partial read is trusted. Real costs measured read-only on 2026-09-24: RPT 414–416 KB in 1.2–2.8 s, restart.log 157 KB in 1.3 s, script/crash logs < 2 KB in 0.7 s. Parsing a full 420 KB RPT takes ≈ 40 ms (`BenchmarkParseRPTRealSize`); steady-state reads parse only the bytes after the checkpoint.
+
+**Request budget per server** (steady state): 3 listings / 20 s, plus per family one token + one download per probe interval ≈ 0.35 Nitrado requests/s on top of the ADM engine.
+
+### 7.3 Durable checkpoints and records
+
+* `live_sync_sources` (one row per family + canonical file): `checkpoint_offset` (end of the last complete, committed line), `backfill_until`, `read_size`, `active`, last read / growth time, record count.
+* `live_sync_records`: every complete line, recognized **or `UNKNOWN`**, with `source_file` (canonical), `source_offset` (end of line), category, status, `delivery`, boot id, `source_local_time`, `source_utc` (only when stated), `visible_after`, `detected_at`, `persisted_at` (commit clock), bounded redacted `evidence`, JSON payload and parser version. `event_id` is deterministic, `UNIQUE (server_id, event_id)`.
+* **Records and the checkpoint commit in one transaction.** A failed commit leaves both unchanged and the same bytes are read again; the deterministic id makes the retry a no-op (`TestCommitFailureRetriesWithoutLossOrDuplicates`, `TestLiveSyncCommitIsTransactionalAndIdempotent`).
+* A trailing partial line is never consumed; a bare time-of-day line carries no observation and is not stored; a file smaller than its checkpoint (truncated or replaced) restarts from byte 0.
+* **Rotation:** when a newer boot's file is listed, the old file gets one final drain read (retried on its own schedule if it fails) and is retired (`active = false`); the new file is attached from byte 0.
+* **Resume:** a restarted Champion loads `live_sync_sources` and continues from each checkpoint (`TestResumeFromDurableCheckpoint`).
+* **Retention:** high-volume categories (`UNKNOWN`, model/engine/localization/config/CE/query noise, headers) 3 days; everything else 30 days. A live RPT is ≈ 4,100 lines per boot, 87% of them start-up noise (measured on the 05:51:41 boot).
+
+### 7.4 LIVE versus BACKFILL (never "new" just because it was read late)
+
+A record is `BACKFILL` when its bytes existed before Champion first listed the file, or when its event time is known and more than 10 minutes older than the read. Otherwise it is `LIVE`. The event time is the source's own UTC (restart.log states its offset), or its server-local time converted with the UTC offset **learned from restart.log** (`live_sync_server_clock`); with neither, only the byte-position rule applies.
+
+The same principle now applies to locations: every `locationDTO` carries `occurredAt` (DayZ's time in UTC, present only when the offset is known) and `timeBasis` (`SOURCE` / `INGESTION`). `ageSeconds` and `freshness` are measured from `occurredAt` when present, so a player-list line ingested an hour late is `STALE`, not `LIVE_RECENT`.
+
+### 7.5 Freshness and diagnostics per family
+
+`GET /api/admin/live-sync` (platform admin) returns, per running server:
+* per family: `state` (`FRESH` = last successful read within 2× its probe interval; `LAGGING`; `FAILING` = three consecutive failures; `NO_SOURCE`), current canonical file, checkpoint, read and listed size, `listingBehindBytes`, last read / growth / failure time, safe error class, counts (reads, records, live, backfill, unknown, rotations) and a latency summary;
+* the directory lister's last successful listing and error;
+* the learned UTC offset and the recent session-end evidence;
+* the recorded ADM session (file, start, `endedAt`, reason, evidence);
+* stored-record statistics for the last 6 hours per family, and ADM latency from stored location rows.
+
+`component=livesync` logs `source_attached`, `source_read`, `source_rotated`, `source_truncated`, `source_read_failed`, `adm_session_ended`, `server_clock_learned` and, every 5 minutes, one `source_health` line per family. No token, signed URL, physical path or raw line is logged or returned.
+
+### 7.6 Kill/death heatmaps (finding A8)
+
+Kills and deaths now store the ADM line's physical source (`source_file`, `source_offset`, `source_local_time`), exactly as the location rows written from the same line. The heatmap joins on `(server, source_file, source_offset, player)`, and filters time on `COALESCE(event_time, created_at)`. `event_time` stays NULL, because ADM lines carry no date. Legacy rows keep the old `observed_at = event_time` join. Kills and deaths recorded before this change remain unmatchable (they have no source identity), so kill and death heatmaps fill from new events onward.
 
 ## 8. API contract changes (phase 1)
 
@@ -173,6 +236,9 @@ A filename timestamp only anchors when nothing better exists, and such a boot is
 | `GET …/admin/players/{id}/locations/current` | **new**: `{ "status": "CURRENT" \| "UNKNOWN", "location": locationDTO \| null }` (`PLAYER_LAST_LOCATION_VIEW`) |
 | `GET …/admin/players/{id}/locations/latest` | unchanged meaning (last known); now marks `sessionScope` |
 | every `locationDTO` | new `sessionScope` (`CURRENT_SESSION` / `HISTORICAL`) and `sourceLocalTime` (server-local, no zone); `eventType` may be `PLAYER_LIST` |
+| every `locationDTO` (phase 2) | new `occurredAt` (DayZ time in UTC, only when the server offset is known from restart.log) and `timeBasis` (`SOURCE` / `INGESTION`); `ageSeconds`/`freshness` are measured from `occurredAt` when present |
+| `…/locations/current` and directory `currentLocation` (phase 2) | also `UNKNOWN` once written evidence has ended the boot session (section 4) |
+| `GET /api/admin/live-sync` (phase 2) | **new**, platform admin only: per-family freshness and diagnostics (section 7.5) |
 
 **Not yet (phase 3):**
 * the installation-scoped change stream or revision API;
@@ -183,32 +249,41 @@ Until then, the website polls the endpoints above.
 
 ## 9. Latency
 
-The engine was not rebuilt, so ADM detection latency is unchanged: metadata is polled every 10 s (`NITRADO_POLL_INTERVAL`), a direct probe runs after 2 min without metadata change, and rediscovery is bounded.
+Latency is **measured, never assumed**, separately for each stage:
 
-**Player-list observations** are available within one poll of Nitrado exposing the bytes. That is a gain from "never" to about one poll cycle plus the location batch interval (≤ 500 ms). **No sub-second claim is made:** Nitrado has no push mechanism, and its listing metadata was observed lagging the file by 25+ minutes (`probeStaleSource` exists for exactly that).
+| Stage | Definition | Where measured |
+|---|---|---|
+| DayZ event time | the time written in the line; UTC via restart.log's stated offset | `source_utc`, or `source_local_time` − learned offset |
+| Nitrado visibility | somewhere in `(visible_after, detected_at]`: the previous read did not contain the bytes, this one did | `live_sync_records.visible_after` → `visibleWindow*` |
+| Champion detection | the read that returned the bytes completed | `detected_at` (records), `observed_at` (ADM location rows) |
+| Database persistence | the transaction that stored them committed | `persisted_at` (commit clock), `created_at` (location rows) |
+
+Event → detection therefore **includes** Nitrado's own delay in exposing the bytes; the visibility window bounds how much of it the probe interval adds. The ADM engine is unchanged (metadata poll `NITRADO_POLL_INTERVAL`, 2 s on production, plus its stale-source probe). Its latency is measured from stored player-list and event rows once the offset is known.
+
+**No sub-second claim is made:** Nitrado has no push mechanism, reads are full downloads, and its listing metadata has been observed lagging the file by 25+ minutes. The production numbers are reported per deployment from `GET /api/admin/live-sync`.
 
 ## 10. Recovery and diagnostics
 
 **Crash or restart of the Champion process:**
 * the ADM checkpoint resumes from the last durable offset;
-* location rows replay as source-identity no-ops;
-* the current session is re-recorded on the next selection.
+* every live sync source resumes from its durable checkpoint;
+* location rows and live sync records replay as source-identity no-ops;
+* the current session is re-recorded on the next selection, and an end that evidence already proved is kept.
 
 **Diagnostics:**
+* `GET /api/admin/live-sync` (section 7.5);
 * `Engine.PlayerListStats()` reports snapshots (complete/incomplete), entries, the last snapshot's id and player count, and presence added/removed;
-* `component=livesync` logs `player_list_snapshot`, `adm_session_current` and `adm_session_header`;
+* `component=livesync` logs `player_list_snapshot`, `adm_session_current`, `adm_session_header` and the watcher events in section 7.5;
 * `component=presence` logs `player_list_reconciled`.
 
 ## 11. Remaining unsupported and pending work
 
-1. **Phase 2 — source watchers.** Per-source watchers for RPT, script, crash and restart logs, with:
-   * durable per-source checkpoints and per-source freshness health;
-   * request budgets and priority scheduling;
-   * RPT and restart evidence feeding `CorrelateBoots`;
-   * DB presence (`player_server_activity`) reconciled from complete snapshots.
-2. **Phase 3 — persistence and fanout:**
-   * envelope persistence with a transactional outbox;
+1. **Phase 3 — fanout and change stream:**
+   * a transactional outbox for committed records and location observations;
    * fanout to consumers without double credit or Discord replay;
-   * an installation-scoped change stream with a conditional-polling fallback.
-3. **Samples still needed:** persistence errors and non-VM fatal crashes (no real sample yet; they parse as UNKNOWN until one exists).
-4. **Automatic Shop spawning remains disabled** (docs/SHOP_DELIVERY_PHASE2B.md).
+   * an installation-scoped change stream with a conditional-polling fallback;
+   * wiring `CorrelateBoots` into a persisted boot table fed by the stored records.
+2. **Still open from phase 2's list:** DB presence (`player_server_activity`) reconciled from complete ADM snapshots; per-installation request budgets across many servers.
+3. **Samples still needed:** persistence errors and non-VM fatal crashes (no real sample yet; they parse as UNKNOWN until one exists). `server.log` (ftproot only) is listed but its format has not been sampled, so it is not ingested.
+4. **Kills and deaths recorded before phase 2** have no source identity and cannot appear on kill/death heatmaps.
+5. **Automatic Shop spawning remains disabled** (docs/SHOP_DELIVERY_PHASE2B.md).

@@ -38,6 +38,10 @@ type KillRecord struct {
 	Longshot        bool
 	KillStyle       string
 	EventTime       *time.Time
+	// Physical ADM source of the kill line (Live Sync phase 2); empty for legacy callers.
+	SourceFile      string
+	SourceOffset    int64
+	SourceLocalTime *time.Time
 
 	// Streak event context, classified once at kill-persistence time from the
 	// killer/victim streak snapshots taken immediately before combat stats are
@@ -63,15 +67,16 @@ func (r *KillRepository) InsertKillReturning(ctx context.Context, k KillRecord) 
 	const q = `
 	INSERT INTO kills (guild_id, server_id, session_id, event_fingerprint, killer_player_id, victim_player_id,
 	killer_faction_id, victim_faction_id, season_id, war_id, weapon_raw, weapon_display, distance, headshot, longshot, kill_style, event_time,
-	killing_spree, killer_streak_after, streak_ended, ended_streak_count)
-	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+	killing_spree, killer_streak_after, streak_ended, ended_streak_count, source_file, source_offset, source_local_time)
+	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
 	RETURNING id`
 
 	var id int64
 	err := r.pool.QueryRow(ctx, q, k.GuildID, nilIfZero(k.ServerID), k.SessionID, k.Fingerprint,
 		nilIfZero(k.KillerPlayerID), nilIfZero(k.VictimPlayerID), k.KillerFactionID, k.VictimFactionID, k.SeasonID, k.WarID,
 		k.WeaponRaw, k.WeaponDisplay, k.Distance, k.Headshot, k.Longshot, k.KillStyle, k.EventTime,
-		k.KillingSpree, k.KillerStreakAfter, k.StreakEnded, k.EndedStreakCount).Scan(&id)
+		k.KillingSpree, k.KillerStreakAfter, k.StreakEnded, k.EndedStreakCount,
+		nilIfEmpty(k.SourceFile), sourceOffsetArg(k.SourceFile, k.SourceOffset), k.SourceLocalTime).Scan(&id)
 	if isUniqueViolation(err) {
 		return 0, ErrDuplicate
 	}
@@ -79,6 +84,22 @@ func (r *KillRepository) InsertKillReturning(ctx context.Context, k KillRecord) 
 		return 0, fmt.Errorf("insert kill: %w", err)
 	}
 	return id, nil
+}
+
+// nilIfEmpty stores "" as NULL.
+func nilIfEmpty(v string) any {
+	if v == "" {
+		return nil
+	}
+	return v
+}
+
+// sourceOffsetArg is the offset when a source file is set, NULL otherwise (the pair is all or nothing).
+func sourceOffsetArg(file string, offset int64) any {
+	if file == "" {
+		return nil
+	}
+	return offset
 }
 
 func nilIfZero(v int64) any {

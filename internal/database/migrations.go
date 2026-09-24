@@ -2043,6 +2043,84 @@ CREATE TABLE IF NOT EXISTS server_adm_sessions (
 );
 `,
 	},
+	{
+		Name: "0051_live_sync_sources_and_records",
+		SQL: `
+-- Champion Live Sync phase 2 (docs/CHAMPION_LIVE_SYNC.md). Additive.
+-- 1. One durable checkpoint per watched non-ADM source file (RPT, script, crash, restart.log). The
+--    checkpoint is the end of the last complete line whose records are committed; it advances in the
+--    same transaction as those records.
+CREATE TABLE IF NOT EXISTS live_sync_sources (
+    server_id BIGINT NOT NULL REFERENCES game_servers(id) ON DELETE CASCADE,
+    guild_id BIGINT NOT NULL,
+    family TEXT NOT NULL,
+    source_file TEXT NOT NULL,
+    remote_path TEXT NOT NULL,
+    file_local_start TIMESTAMP,
+    checkpoint_offset BIGINT NOT NULL DEFAULT 0 CHECK (checkpoint_offset >= 0),
+    -- bytes that existed when the source was first attached; records at or before it are BACKFILL
+    backfill_until BIGINT NOT NULL DEFAULT 0,
+    read_size BIGINT NOT NULL DEFAULT 0,
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    attached_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_read_at TIMESTAMPTZ,
+    last_growth_at TIMESTAMPTZ,
+    records BIGINT NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (server_id, family, source_file)
+);
+-- 2. Every complete record read from those sources, recognized or UNKNOWN (sanitized), with its
+--    physical identity. event_id is deterministic (scope + source + offset + category), so a replay
+--    is a no-op. delivery separates bytes observed live from history read late.
+CREATE TABLE IF NOT EXISTS live_sync_records (
+    id BIGSERIAL PRIMARY KEY,
+    server_id BIGINT NOT NULL REFERENCES game_servers(id) ON DELETE CASCADE,
+    guild_id BIGINT NOT NULL,
+    event_id TEXT NOT NULL,
+    family TEXT NOT NULL,
+    source_file TEXT NOT NULL,
+    source_offset BIGINT NOT NULL CHECK (source_offset > 0),
+    category TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('PARSED','PARTIAL','UNKNOWN')),
+    delivery TEXT NOT NULL CHECK (delivery IN ('LIVE','BACKFILL')),
+    boot_id TEXT NOT NULL DEFAULT '',
+    source_local_time TIMESTAMP,
+    source_utc TIMESTAMPTZ,
+    visible_after TIMESTAMPTZ,
+    detected_at TIMESTAMPTZ NOT NULL,
+    persisted_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    evidence TEXT NOT NULL DEFAULT '' CHECK (length(evidence) <= 1024),
+    parser TEXT NOT NULL,
+    UNIQUE (server_id, event_id)
+);
+CREATE INDEX IF NOT EXISTS idx_live_sync_records_recent ON live_sync_records(server_id, family, id DESC);
+CREATE INDEX IF NOT EXISTS idx_live_sync_records_category ON live_sync_records(server_id, category, id DESC);
+-- 3. A boot session ends on DayZ-written evidence (RPT shutdown completed, a restart.log restart or
+--    pre-start line, a newer boot's file). An ended session is never CURRENT.
+ALTER TABLE server_adm_sessions ADD COLUMN IF NOT EXISTS ended_at TIMESTAMPTZ;
+ALTER TABLE server_adm_sessions ADD COLUMN IF NOT EXISTS ended_reason TEXT;
+ALTER TABLE server_adm_sessions ADD COLUMN IF NOT EXISTS ended_evidence TEXT;
+-- 4. The server's UTC offset, learned only from a restart.log line that states it.
+CREATE TABLE IF NOT EXISTS live_sync_server_clock (
+    server_id BIGINT PRIMARY KEY REFERENCES game_servers(id) ON DELETE CASCADE,
+    guild_id BIGINT NOT NULL,
+    utc_offset_minutes INT NOT NULL CHECK (utc_offset_minutes BETWEEN -840 AND 840),
+    learned_from TEXT NOT NULL,
+    learned_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+-- 5. Kills and deaths carry the ADM line's physical source, so heatmaps join them to the location
+--    row written from the same line (the old join on event_time never matched: event_time is NULL).
+ALTER TABLE kills ADD COLUMN IF NOT EXISTS source_file TEXT;
+ALTER TABLE kills ADD COLUMN IF NOT EXISTS source_offset BIGINT;
+ALTER TABLE kills ADD COLUMN IF NOT EXISTS source_local_time TIMESTAMP;
+ALTER TABLE deaths ADD COLUMN IF NOT EXISTS source_file TEXT;
+ALTER TABLE deaths ADD COLUMN IF NOT EXISTS source_offset BIGINT;
+ALTER TABLE deaths ADD COLUMN IF NOT EXISTS source_local_time TIMESTAMP;
+CREATE INDEX IF NOT EXISTS idx_kills_source ON kills(server_id, source_file, source_offset) WHERE source_file IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_deaths_source ON deaths(server_id, source_file, source_offset) WHERE source_file IS NOT NULL;
+`,
+	},
 }
 
 // ShopDeliveryBackfillSQL gives every purchase that has no delivery record a MANUAL_PICKUP one,

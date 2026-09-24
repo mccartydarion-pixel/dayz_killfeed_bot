@@ -35,6 +35,7 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/heatmap"
 	"github.com/yourname/dayz-killfeed/internal/killfeed"
 	"github.com/yourname/dayz-killfeed/internal/linking"
+	"github.com/yourname/dayz-killfeed/internal/livesync"
 	"github.com/yourname/dayz-killfeed/internal/nitrado"
 	"github.com/yourname/dayz-killfeed/internal/operations"
 	"github.com/yourname/dayz-killfeed/internal/repository"
@@ -161,6 +162,12 @@ type App struct {
 	// Locations backs Champion Phase 3 (docs/PLAYER_INTELLIGENCE.md): the authoritative player
 	// directory and persisted ADM location-event history.
 	Locations *repository.LocationRepository
+	// LiveSync backs Champion Live Sync phase 2 (docs/CHAMPION_LIVE_SYNC.md): per-source
+	// checkpoints and records of the RPT/script/crash/restart logs. liveSyncSupervisors holds each
+	// running server's watcher supervisor for diagnostics.
+	LiveSync            *repository.LiveSyncRepository
+	liveSyncMu          sync.Mutex
+	liveSyncSupervisors map[int64]*livesync.Supervisor
 	// Zones/ZoneCache/Intrusion back Champion Phase 4 (docs/ZONES_UAV_RADAR.md): installation-scoped
 	// geographic zones and the stateful UAV/Base Radar intrusion engine consuming Phase 3's location
 	// events. ZoneCache is a single, process-wide, per-server cache (Invalidate is called by every
@@ -677,6 +684,8 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.ClientAdmin = repository.NewClientAdminRepository(db.Pool)
 			app.Locations = repository.NewLocationRepository(db.Pool)
 			go app.runLocationRetention(ctx)
+			app.LiveSync = repository.NewLiveSyncRepository(db.Pool)
+			go app.runLiveSyncRetention(ctx)
 			app.Zones = repository.NewZoneRepository(db.Pool)
 			app.ZoneCache = killfeed.NewZoneCache(app.Zones)
 			app.Intrusion = killfeed.NewIntrusionEngine(app.Zones, app.ZoneCache, intrusionRoleChecker{app: app}, intrusionPublisher{app: app})
@@ -1894,8 +1903,14 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 		lq.Run(workerCtx)
 	}()
 
+	// Live Sync phase 2: the non-ADM log watchers run beside the engine, never inside it.
+	liveSyncCtx, stopLiveSync := context.WithCancel(workerCtx)
+	liveSyncDone := a.startLiveSync(liveSyncCtx, row, client)
+
 	slog.Info("component=servers", "msg", "server worker running", "server_id", row.ID, "display_name", row.DisplayName)
 	err := engine.Start(workerCtx)
+	stopLiveSync()
+	<-liveSyncDone
 	pq.Close()
 	<-queueDone
 	lq.Close()
