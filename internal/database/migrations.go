@@ -1872,7 +1872,36 @@ CREATE TABLE IF NOT EXISTS installation_retired_channels (
 );
 `,
 	},
+	{
+		Name: "0047_no_card_trial_grants",
+		SQL: `
+-- Champion Customer Onboarding V2: one no-card 14-day trial per Discord account.
+-- trial_grants records the one trial a user has started (user_id is the key, so a second
+-- organization never grants a second trial) and the organization it went to (UNIQUE, so one
+-- organization is never trialed twice). intended_plan is the plan the customer picked during the
+-- trial - it is never used as the paid plan; Stripe webhooks alone set subscriptions.plan.
+ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS intended_plan TEXT;
+CREATE TABLE IF NOT EXISTS trial_grants (
+    user_id BIGINT PRIMARY KEY REFERENCES app_users(id) ON DELETE CASCADE,
+    organization_id BIGINT NOT NULL UNIQUE REFERENCES organizations(id) ON DELETE CASCADE,
+    granted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+` + TrialGrantBackfillSQL,
+	},
 }
+
+// TrialGrantBackfillSQL records, for every owner whose organization already had a trial before
+// 0047 (every organization received one at creation), that their one trial is used - so existing
+// trials are preserved as they are and those owners' next organizations get none. Idempotent.
+const TrialGrantBackfillSQL = `
+INSERT INTO trial_grants(user_id, organization_id, granted_at)
+SELECT DISTINCT ON (m.user_id) m.user_id, s.organization_id, s.created_at
+FROM subscriptions s
+JOIN organization_members m ON m.organization_id = s.organization_id AND m.role = 'OWNER'
+WHERE s.trial_ends_at IS NOT NULL OR s.trial_consumed
+ORDER BY m.user_id, s.created_at, s.organization_id
+ON CONFLICT DO NOTHING;
+`
 
 // admLocationAxisFixSQL repairs player_location_events rows written before the ADM axis fix.
 // DayZ's ADM prints "pos=<x, z, y>" (PluginAdminLog.GetPlayerPrefix builds it from engine

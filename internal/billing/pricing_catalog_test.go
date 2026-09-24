@@ -34,7 +34,7 @@ const approvedPricingCatalogJSON = `[
     "isPublic": true,
     "sortOrder": 1,
     "popular": false,
-    "trialDays": 7
+    "trialDays": 0
   },
   {
     "key": "MEDIUM",
@@ -62,7 +62,7 @@ const approvedPricingCatalogJSON = `[
     "isPublic": true,
     "sortOrder": 2,
     "popular": true,
-    "trialDays": 7
+    "trialDays": 0
   },
   {
     "key": "HIGH",
@@ -90,7 +90,7 @@ const approvedPricingCatalogJSON = `[
     "isPublic": true,
     "sortOrder": 3,
     "popular": false,
-    "trialDays": 7
+    "trialDays": 0
   }
 ]`
 
@@ -157,8 +157,8 @@ func TestApprovedPricingCatalogValues(t *testing.T) {
 			if p.Price("YEARLY") != nil {
 				t.Errorf("%s: Price(YEARLY) must be nil", c.key)
 			}
-			if p.TrialDays != 7 {
-				t.Errorf("%s: trialDays = %d, want 7", c.key, p.TrialDays)
+			if p.TrialDays != 0 {
+				t.Errorf("%s: trialDays = %d, want 0 (no Stripe trial - Onboarding V2)", c.key, p.TrialDays)
 			}
 			if p.Limits["maxSlots"] != c.maxSlots {
 				t.Errorf("%s: limits.maxSlots = %d, want %d", c.key, p.Limits["maxSlots"], c.maxSlots)

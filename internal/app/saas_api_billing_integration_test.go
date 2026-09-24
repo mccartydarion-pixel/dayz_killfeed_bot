@@ -48,21 +48,21 @@ const approvedPricingCatalogJSON = `[
     "features": ["Killfeed","Faction Hub","Leaderboards","Champion Points Economy","Champion Shop","Embed Designer","Discord Integration","Nitrado Integration"],
     "limits": {"installations": 1, "maxSlots": 32},
     "monthly": {"amountCents": 599, "currency": "usd", "stripePriceId": "price_1UIQiD65uHRSytQgoMRICl5h"},
-    "isPublic": true, "sortOrder": 1, "popular": false, "trialDays": 7
+    "isPublic": true, "sortOrder": 1, "popular": false, "trialDays": 0
   },
   {
     "key": "MEDIUM", "name": "Medium Tier", "description": "For growing DayZ communities with 33 to 64 player slots.",
     "features": ["Killfeed","Faction Hub","Leaderboards","Champion Points Economy","Champion Shop","Embed Designer","Discord Integration","Nitrado Integration"],
     "limits": {"installations": 1, "maxSlots": 64},
     "monthly": {"amountCents": 999, "currency": "usd", "stripePriceId": "price_1UIQiD65uHRSytQghSQQOVpG"},
-    "isPublic": true, "sortOrder": 2, "popular": true, "trialDays": 7
+    "isPublic": true, "sortOrder": 2, "popular": true, "trialDays": 0
   },
   {
     "key": "HIGH", "name": "High Tier", "description": "For large DayZ communities with 65 to 128 player slots.",
     "features": ["Killfeed","Faction Hub","Leaderboards","Champion Points Economy","Champion Shop","Embed Designer","Discord Integration","Nitrado Integration"],
     "limits": {"installations": 1, "maxSlots": 128},
     "monthly": {"amountCents": 1499, "currency": "usd", "stripePriceId": "price_1UIQiD65uHRSytQgydtA4Pzj"},
-    "isPublic": true, "sortOrder": 3, "popular": false, "trialDays": 7
+    "isPublic": true, "sortOrder": 3, "popular": false, "trialDays": 0
   }
 ]`
 
@@ -166,7 +166,8 @@ func TestBillingPlansEndpoint(t *testing.T) {
 			pro = it.(map[string]any)
 		}
 	}
-	if pro["popular"] != true || pro["trialDays"].(float64) != 14 {
+	// The catalog JSON still says 14: Stripe trial days are always 0 (Onboarding V2).
+	if pro["popular"] != true || pro["trialDays"].(float64) != 0 {
 		t.Fatalf("pro: %v", pro)
 	}
 	monthly := pro["monthly"].(map[string]any)
@@ -183,6 +184,9 @@ func TestBillingSubscriptionSummaryDefaultsAndEntitlements(t *testing.T) {
 	sum := w.getJSON(w.billingPath(w.a1, "/subscription"), w.admin)
 	if sum["plan"] != "TRIAL" || sum["status"] != "TRIAL" || sum["cancelAtPeriodEnd"] != false || sum["hasBillingCustomer"] != false || sum["hasActiveSubscription"] != false {
 		t.Fatalf("%v", sum)
+	}
+	if sum["trialStatus"] != "ACTIVE" || sum["billingRequired"] != false || sum["trialDaysRemaining"].(float64) != 14 || sum["intendedPlan"] != nil {
+		t.Fatalf("onboarding fields: %v", sum)
 	}
 	if sum["canManageBilling"] != true {
 		t.Fatal("an org ADMIN must be able to manage billing")
@@ -249,33 +253,39 @@ func TestBillingCheckoutAuthorizationAndValidation(t *testing.T) {
 	w.expect(w.do(http.MethodPost, w.billingPath(w.a1, "/checkout"), w.a1.OwnerDiscordID, body), http.StatusOK, "owner checkout")
 }
 
-func TestBillingCheckoutTrialGrantedOnceOnly(t *testing.T) {
+func TestBillingCheckoutNeverGrantsAStripeTrial(t *testing.T) {
 	w := newFactionWorld(t)
-	body := map[string]any{"planKey": "PRO", "interval": "MONTHLY"}
+	ctx := context.Background()
+	before, _ := w.a.SaaSSubscriptions.GetForOrganization(ctx, w.a1.OrgID)
+	body := map[string]any{"planKey": "PRO", "interval": "MONTHLY"} // PRO's catalog JSON says trialDays 14
 	w.expect(w.do(http.MethodPost, w.billingPath(w.a1, "/checkout"), w.admin, body), http.StatusOK, "first checkout")
-	sub, _ := w.a.SaaSSubscriptions.GetForOrganization(context.Background(), w.a1.OrgID)
-	state := w.billingProvider.CompleteCheckout(sub.ProviderCustomerID, "price_test_pro_month", 14)
-	if state.StripeStatus != "trialing" {
-		t.Fatalf("expected a trial on first checkout: %+v", state)
-	}
-	// Reconcile it into Champion via the real webhook endpoint.
-	payload := checkoutCompletedPayload(uniqID("evt_trial"), w.a1.OrgID, state.SubscriptionID, state.CustomerID)
-	w.expect(w.postWebhook(payload, signStripePayload(t, "whsec_test", payload)), http.StatusOK, "webhook")
-
-	sum := w.getJSON(w.billingPath(w.a1, "/subscription"), w.admin)
-	if sum["status"] != "TRIAL" || sum["hasActiveSubscription"] != true {
-		t.Fatalf("%v", sum)
-	}
-	// A second checkout call must not ask Stripe for another trial.
-	w.expect(w.do(http.MethodPost, w.billingPath(w.a1, "/checkout"), w.admin, body), http.StatusOK, "second checkout")
-	var lastTrialDays float64 = -1
+	w.expect(w.do(http.MethodPost, w.billingPath(w.a1, "/checkout"), w.admin, body), http.StatusOK, "retried checkout")
+	n := 0
 	for _, c := range w.billingProvider.Calls {
 		if c.Method == "CreateCheckoutSession" {
-			lastTrialDays = float64(c.Arg.(billing.CheckoutInput).TrialDays)
+			n++
+			if d := c.Arg.(billing.CheckoutInput).TrialDays; d != 0 {
+				t.Fatalf("checkout asked Stripe for a %d-day trial", d)
+			}
 		}
 	}
-	if lastTrialDays != 0 {
-		t.Fatalf("trial abuse: second checkout asked for a %v-day trial", lastTrialDays)
+	if n != 2 {
+		t.Fatalf("checkout sessions: %d", n)
+	}
+	// Creating a session changes nothing about the running no-card trial; the webhook applies state.
+	mid, _ := w.a.SaaSSubscriptions.GetForOrganization(ctx, w.a1.OrgID)
+	if mid.Status != repository.SubscriptionTrial || mid.ProviderSubscriptionID != "" || !mid.TrialEndsAt.Equal(*before.TrialEndsAt) {
+		t.Fatalf("checkout must not touch the trial: %+v", mid)
+	}
+	state := w.billingProvider.CompleteCheckout(mid.ProviderCustomerID, "price_test_pro_month", 0)
+	if state.StripeStatus != "active" {
+		t.Fatalf("a zero-day checkout converts straight to active: %+v", state)
+	}
+	payload := checkoutCompletedPayload(uniqID("evt_convert"), w.a1.OrgID, state.SubscriptionID, state.CustomerID)
+	w.expect(w.postWebhook(payload, signStripePayload(t, "whsec_test", payload)), http.StatusOK, "webhook")
+	sum := w.getJSON(w.billingPath(w.a1, "/subscription"), w.admin)
+	if sum["status"] != "ACTIVE" || sum["plan"] != "PRO" || sum["hasActiveSubscription"] != true || sum["trialStatus"] != "CONVERTED" || sum["billingRequired"] != false {
+		t.Fatalf("%v", sum)
 	}
 }
 
@@ -562,8 +572,8 @@ func TestApprovedPricingCatalogPublicPlansAPI(t *testing.T) {
 		if m["popular"] != want.popular {
 			t.Errorf("%s: popular = %v, want %v", want.key, m["popular"], want.popular)
 		}
-		if m["trialDays"].(float64) != 7 {
-			t.Errorf("%s: trialDays = %v, want 7", want.key, m["trialDays"])
+		if m["trialDays"].(float64) != 0 {
+			t.Errorf("%s: trialDays = %v, want 0 (no Stripe trial - Onboarding V2)", want.key, m["trialDays"])
 		}
 		if m["yearly"] != nil {
 			t.Errorf("%s: yearly must be null (no annual pricing approved), got %v", want.key, m["yearly"])

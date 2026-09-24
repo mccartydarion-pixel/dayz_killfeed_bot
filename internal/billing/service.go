@@ -27,6 +27,7 @@ var (
 type Store interface {
 	GetForOrganization(ctx context.Context, organizationID int64) (*repository.Subscription, error)
 	EnsureTrial(ctx context.Context, organizationID int64, trialEndsAt time.Time) (*repository.Subscription, error)
+	EnsureInactive(ctx context.Context, organizationID int64) (*repository.Subscription, error)
 	SetProviderCustomer(ctx context.Context, organizationID int64, provider, customerID string) error
 	ApplyProviderState(ctx context.Context, organizationID int64, s repository.ProviderState) (*repository.Subscription, error)
 	GetByProviderCustomerID(ctx context.Context, provider, customerID string) (*repository.Subscription, error)
@@ -106,31 +107,38 @@ type Summary struct {
 	Entitlements          []string
 	HasBillingCustomer    bool // a Portal session can be created
 	HasActiveSubscription bool // checkout has completed at least once (change/cancel/reactivate apply)
+	// Onboarding V2 (docs/BILLING.md "No-card trial").
+	IntendedPlan       string
+	TrialStatus        string
+	TrialDaysRemaining int
+	BillingRequired    bool
 }
 
-// Summary loads organizationID's subscription and folds in its entitlements. It creates the
-// TRIAL row on first read (mirrors the existing EnsureTrial-on-dashboard-read behaviour) so a
-// freshly created organization never 404s here.
+// Summary loads organizationID's subscription and folds in its entitlements and onboarding state.
+// Reading never grants a trial (Onboarding V2: a trial is started only by organization creation
+// or the trial start endpoint, once per account); an organization with no row yet reads as
+// INACTIVE / billing required without anything being written.
 func (s *Service) Summary(ctx context.Context, organizationID int64) (*Summary, error) {
 	sub, err := s.store.GetForOrganization(ctx, organizationID)
 	if err != nil {
 		return nil, err
 	}
 	if sub == nil {
-		sub, err = s.store.EnsureTrial(ctx, organizationID, time.Now().AddDate(0, 0, 14))
-		if err != nil {
-			return nil, err
-		}
+		st := StateOf(nil, time.Now())
+		return &Summary{Plan: repository.PlanNone, Status: repository.SubscriptionInactive, Entitlements: entitlementStrings(repository.PlanNone),
+			TrialStatus: st.TrialStatus, BillingRequired: st.BillingRequired}, nil
 	}
 	return summaryOf(sub), nil
 }
 
 func summaryOf(sub *repository.Subscription) *Summary {
+	st := StateOf(sub, time.Now())
 	return &Summary{
 		Plan: sub.Plan, Status: sub.Status, BillingInterval: sub.BillingInterval,
 		TrialEndsAt: sub.TrialEndsAt, CurrentPeriodStart: sub.CurrentPeriodStart, CurrentPeriodEnd: sub.CurrentPeriodEnd,
 		CancelAtPeriodEnd: sub.CancelAtPeriodEnd, Entitlements: entitlementStrings(sub.Plan),
 		HasBillingCustomer: sub.ProviderCustomerID != "", HasActiveSubscription: sub.ProviderSubscriptionID != "",
+		IntendedPlan: sub.IntendedPlan, TrialStatus: st.TrialStatus, TrialDaysRemaining: st.DaysRemaining, BillingRequired: st.BillingRequired,
 	}
 }
 
@@ -173,7 +181,9 @@ func (s *Service) Checkout(ctx context.Context, r *http.Request, organizationID 
 		return nil, err
 	}
 	if sub == nil {
-		if sub, err = s.store.EnsureTrial(ctx, organizationID, time.Now().AddDate(0, 0, 14)); err != nil {
+		// Paying never grants a trial: an organization without a row gets an INACTIVE one for
+		// the provider ids to land on.
+		if sub, err = s.store.EnsureInactive(ctx, organizationID); err != nil {
 			return nil, err
 		}
 	}
@@ -204,14 +214,10 @@ func (s *Service) Checkout(ctx context.Context, r *http.Request, organizationID 
 	if !ok {
 		return nil, ErrInvalidReturnPath
 	}
-	// Trial abuse prevention (docs/BILLING.md "Trials"): a Stripe trial is granted at most once per
-	// organization, gated by trial_consumed (set the first time a Stripe subscription id is ever
-	// recorded) - not by the still-open internal TRIAL row, which an organization can otherwise sit
-	// in indefinitely without ever having checked out.
-	trialDays := 0
-	if !sub.TrialConsumed {
-		trialDays = plan.TrialDays
-	}
+	// No Stripe trial, ever (docs/BILLING.md "No-card trial"): the customer's one trial is the
+	// no-card 14-day trial that needs no Stripe object. Activating a paid plan - during that
+	// trial or after it - is billed immediately, whatever trialDays the catalog JSON carries.
+	const trialDays = 0
 	cs, err := s.provider.CreateCheckoutSession(ctx, CheckoutInput{
 		CustomerID: customerID, PriceID: price.StripePriceID, OrganizationID: organizationID, PlanKey: plan.Key, BillingInterval: strings.ToUpper(req.Interval),
 		SuccessURL: successURL, CancelURL: cancelURL, TrialDays: trialDays,

@@ -20,6 +20,12 @@ type createInstallationRequest struct {
 // every setup-shaped mutation, not just the setup-progress PATCH). The
 // referenced guild connection must belong to the same organization -
 // GetScoped enforces that by construction.
+//
+// Onboarding V2: this is the "initial setup / new service" operation, gated by
+// the subscription - BILLING_REQUIRED when there is no running trial or paid
+// plan, INSTALLATION_LIMIT_REACHED at the plan's capacity (the trial allows
+// one). It never modifies or replaces an existing installation; reconfiguring
+// one is the server-selection / channel routes on that installation.
 func (a *App) handleCreateInstallation(w http.ResponseWriter, r *http.Request) {
 	if !a.requireSaaSServiceAuth(w, r) {
 		return
@@ -60,10 +66,18 @@ func (a *App) handleCreateInstallation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	inst, err := a.SaaSInstallations.Create(ctx, organizationID, conn.ID, nil)
+	limit, ok := a.installationCapacity(ctx, w, organizationID)
+	if !ok {
+		return
+	}
+	inst, err := a.SaaSInstallations.CreateWithinLimit(ctx, organizationID, conn.ID, limit)
 	if err != nil {
 		if err == repository.ErrDuplicate {
 			writeSaaSError(w, codeConflict, "an installation already exists for this guild connection")
+			return
+		}
+		if err == repository.ErrInstallationLimitReached {
+			writeSaaSError(w, codeInstallationLimitReached, installationLimitMessage(limit))
 			return
 		}
 		slog.Warn("component=saas_api", "msg", "create installation failed", "err", err.Error())

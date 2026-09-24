@@ -48,7 +48,7 @@ var (
 	}
 	SubscriptionStatuses = []string{
 		repository.SubscriptionTrial, repository.SubscriptionActive, repository.SubscriptionPastDue,
-		repository.SubscriptionCanceled, repository.SubscriptionSuspended,
+		repository.SubscriptionCanceled, repository.SubscriptionSuspended, repository.SubscriptionInactive,
 	}
 	HealthValues = []string{"HEALTHY", "DEGRADED", "OFFLINE", "SETTING_UP"}
 )

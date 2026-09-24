@@ -101,13 +101,74 @@ func (r *InstallationRepository) Create(ctx context.Context, organizationID, dis
 		return nil, fmt.Errorf("begin create installation: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	out, err := createInstallationTx(ctx, tx, organizationID, discordGuildConnectionID, gameServerID)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit create installation: %w", err)
+	}
+	return out, nil
+}
 
+// ErrInstallationLimitReached is returned by CreateWithinLimit when the organization already has
+// as many installations as its plan allows (Onboarding V2: the trial allows one).
+var ErrInstallationLimitReached = errors.New("installation limit reached")
+
+// CreateWithinLimit is Create with the organization's installation capacity enforced in the same
+// transaction: the organization row is locked, the existing installations are counted, and the
+// insert happens only below limit - so two concurrent "new service" requests can never both slip
+// past a limit of one. An existing installation for the same guild connection that is still
+// unconfigured (no game server) is reported as ErrDuplicate rather than the limit, so a retried
+// initial-setup request reads as "already exists", never as a paywall. Nothing existing is ever
+// modified or replaced.
+func (r *InstallationRepository) CreateWithinLimit(ctx context.Context, organizationID, discordGuildConnectionID int64, limit int) (*Installation, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin create installation: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT id FROM organizations WHERE id=$1 FOR UPDATE`, organizationID); err != nil {
+		return nil, fmt.Errorf("lock organization: %w", err)
+	}
+	var count, sameConnectionUnconfigured int
+	err = tx.QueryRow(ctx, `SELECT COUNT(*), COUNT(*) FILTER (WHERE discord_guild_connection_id=$2 AND game_server_id IS NULL) FROM installations WHERE organization_id=$1`,
+		organizationID, discordGuildConnectionID).Scan(&count, &sameConnectionUnconfigured)
+	if err != nil {
+		return nil, fmt.Errorf("count installations: %w", err)
+	}
+	if count >= limit {
+		if sameConnectionUnconfigured > 0 {
+			return nil, ErrDuplicate
+		}
+		return nil, ErrInstallationLimitReached
+	}
+	out, err := createInstallationTx(ctx, tx, organizationID, discordGuildConnectionID, nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit create installation: %w", err)
+	}
+	return out, nil
+}
+
+// CountByOrganization returns how many installations organizationID has.
+func (r *InstallationRepository) CountByOrganization(ctx context.Context, organizationID int64) (int, error) {
+	var n int
+	if err := r.pool.QueryRow(ctx, `SELECT COUNT(*) FROM installations WHERE organization_id=$1`, organizationID).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count installations: %w", err)
+	}
+	return n, nil
+}
+
+func createInstallationTx(ctx context.Context, tx pgx.Tx, organizationID, discordGuildConnectionID int64, gameServerID *int64) (*Installation, error) {
 	var out Installation
 	const q = `
 INSERT INTO installations(organization_id, discord_guild_connection_id, game_server_id, status)
 VALUES($1,$2,$3,$4)
 RETURNING id, organization_id, discord_guild_connection_id, game_server_id, status, COALESCE(plan,''), created_at, updated_at, setup_completed_at, last_health_check_at`
-	err = tx.QueryRow(ctx, q, organizationID, discordGuildConnectionID, gameServerID, InstallationNotStarted).
+	err := tx.QueryRow(ctx, q, organizationID, discordGuildConnectionID, gameServerID, InstallationNotStarted).
 		Scan(&out.ID, &out.OrganizationID, &out.DiscordGuildConnectionID, &out.GameServerID, &out.Status, &out.Plan, &out.CreatedAt, &out.UpdatedAt, &out.SetupCompletedAt, &out.LastHealthCheckAt)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -115,16 +176,11 @@ RETURNING id, organization_id, discord_guild_connection_id, game_server_id, stat
 		}
 		return nil, fmt.Errorf("create installation: %w", err)
 	}
-
 	if _, err := tx.Exec(ctx, `INSERT INTO installation_setup_progress(installation_id) VALUES($1)`, out.ID); err != nil {
 		return nil, fmt.Errorf("create installation setup progress: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO installation_settings(installation_id) VALUES($1)`, out.ID); err != nil {
 		return nil, fmt.Errorf("create installation settings: %w", err)
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("commit create installation: %w", err)
 	}
 	return &out, nil
 }

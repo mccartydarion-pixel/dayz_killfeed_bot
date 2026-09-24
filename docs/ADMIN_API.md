@@ -266,7 +266,7 @@ id (`docs/BILLING.md` section 25's own values are enough for an Owner Hub displa
 ```json
 { "items": [ { "key": "PRO", "name": "Pro", "description": "...", "features": ["killfeed", "..."],
   "limits": { "installations": 5 }, "monthly": { "amountCents": 1999, "currency": "usd" },
-  "yearly": null, "isPublic": true, "popular": true, "trialDays": 14, "sortOrder": 2 } ],
+  "yearly": null, "isPublic": true, "popular": true, "trialDays": 0, "sortOrder": 2 } ],
   "nextCursor": null, "limit": 3 }
 ```
 

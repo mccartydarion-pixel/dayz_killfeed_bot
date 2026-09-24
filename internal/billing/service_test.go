@@ -24,10 +24,64 @@ type fakeStore struct {
 	nextID       int64
 	transactions []repository.BillingTransaction
 	txSeen       map[[2]string]bool // (provider, stripe_event_id) already recorded, mirrors the real UNIQUE constraint
+	grantsByUser map[int64]int64    // trial_grants: user -> organization
+	grantedOrgs  map[int64]bool
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{byOrg: map[int64]*repository.Subscription{}, events: map[[2]string]bool{}, txSeen: map[[2]string]bool{}}
+	return &fakeStore{byOrg: map[int64]*repository.Subscription{}, events: map[[2]string]bool{}, txSeen: map[[2]string]bool{},
+		grantsByUser: map[int64]int64{}, grantedOrgs: map[int64]bool{}}
+}
+
+func (f *fakeStore) EnsureInactive(_ context.Context, organizationID int64) (*repository.Subscription, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.ensureInactiveLocked(organizationID), nil
+}
+
+func (f *fakeStore) ensureInactiveLocked(organizationID int64) *repository.Subscription {
+	if s, ok := f.byOrg[organizationID]; ok {
+		cp := *s
+		return &cp
+	}
+	f.nextID++
+	s := &repository.Subscription{ID: f.nextID, OrganizationID: organizationID, Plan: repository.PlanNone, Status: repository.SubscriptionInactive, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	f.byOrg[organizationID] = s
+	cp := *s
+	return &cp
+}
+
+// StartTrial mirrors repository.SubscriptionRepository.StartTrial's rules in memory.
+func (f *fakeStore) StartTrial(_ context.Context, organizationID, userID int64, trialEndsAt time.Time) (*repository.Subscription, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if s, ok := f.byOrg[organizationID]; ok && !(s.Status == repository.SubscriptionInactive && s.TrialEndsAt == nil && !s.TrialConsumed && s.ProviderSubscriptionID == "") {
+		cp := *s
+		return &cp, false, nil
+	}
+	if _, used := f.grantsByUser[userID]; used || f.grantedOrgs[organizationID] {
+		return f.ensureInactiveLocked(organizationID), false, nil
+	}
+	f.grantsByUser[userID], f.grantedOrgs[organizationID] = organizationID, true
+	f.ensureInactiveLocked(organizationID)
+	row := f.byOrg[organizationID]
+	row.Plan, row.Status, row.TrialEndsAt = repository.SubscriptionTrial, repository.SubscriptionTrial, &trialEndsAt
+	cp := *row
+	return &cp, true, nil
+}
+
+func (f *fakeStore) SetIntendedPlan(_ context.Context, organizationID int64, planKey string) (*repository.Subscription, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s, ok := f.byOrg[organizationID]
+	if !ok {
+		return nil, nil
+	}
+	if s.ProviderSubscriptionID == "" {
+		s.IntendedPlan = planKey
+	}
+	cp := *s
+	return &cp, nil
 }
 
 func (f *fakeStore) GetForOrganization(_ context.Context, organizationID int64) (*repository.Subscription, error) {
@@ -155,17 +209,29 @@ func req(t *testing.T) *http.Request {
 	return httptest.NewRequest(http.MethodPost, "/billing/checkout", nil)
 }
 
-func TestSummaryCreatesTrialOnFirstRead(t *testing.T) {
-	svc, _, _ := newTestService(t, "")
+func TestSummaryNeverGrantsATrialOnRead(t *testing.T) {
+	svc, store, _ := newTestService(t, "")
 	sum, err := svc.Summary(context.Background(), 42)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sum.Status != repository.SubscriptionTrial || sum.Plan != repository.SubscriptionTrial || sum.HasBillingCustomer || sum.HasActiveSubscription {
+	if sum.Status != repository.SubscriptionInactive || sum.Plan != repository.PlanNone || !sum.BillingRequired || sum.TrialStatus != TrialNotStarted || sum.HasBillingCustomer || sum.HasActiveSubscription {
 		t.Fatalf("%+v", sum)
 	}
-	if len(sum.Entitlements) == 0 {
-		t.Fatal("expected entitlements to resolve for the TRIAL plan")
+	if sub, _ := store.GetForOrganization(context.Background(), 42); sub != nil {
+		t.Fatalf("a read must not write a subscription row: %+v", sub)
+	}
+}
+
+func TestSummaryReportsARunningTrial(t *testing.T) {
+	svc, store, _ := newTestService(t, "")
+	store.EnsureTrial(context.Background(), 43, time.Now().Add(3*24*time.Hour+time.Hour))
+	sum, err := svc.Summary(context.Background(), 43)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.Status != repository.SubscriptionTrial || sum.TrialStatus != TrialActive || sum.BillingRequired || sum.TrialDaysRemaining != 4 || len(sum.Entitlements) == 0 {
+		t.Fatalf("%+v", sum)
 	}
 }
 
@@ -203,33 +269,40 @@ func TestCheckoutNotConfiguredWithoutProvider(t *testing.T) {
 	}
 }
 
-func TestCheckoutGrantsTrialOnceThenNeverAgain(t *testing.T) {
+func TestCheckoutNeverRequestsAStripeTrial(t *testing.T) {
+	// sampleCatalog's PRO still says "trialDays": 14 - the catalog value is ignored.
 	svc, store, provider := newTestService(t, sampleCatalog)
 	ctx := context.Background()
-	if _, err := svc.Checkout(ctx, req(t), 7, OrgInfo{Name: "Org 7"}, CheckoutRequest{PlanKey: "PRO", Interval: "MONTHLY"}); err != nil {
-		t.Fatal(err)
-	}
-	// the checkout session itself doesn't create a subscription until "paid" - simulate that via the fake.
-	sub, _ := store.GetForOrganization(ctx, 7)
-	state := provider.CompleteCheckout(sub.ProviderCustomerID, "price_pro_month", 14)
-	if state.StripeStatus != "trialing" {
-		t.Fatalf("expected the first checkout to carry a trial: %+v", state)
-	}
-	if _, err := store.ApplyProviderState(ctx, 7, repository.ProviderState{Provider: repository.ProviderStripe, ProviderCustomerID: state.CustomerID, ProviderSubscriptionID: state.SubscriptionID, ProviderPriceID: state.PriceID, Plan: "PRO", Status: MapStatus(state.StripeStatus)}); err != nil {
-		t.Fatal(err)
-	}
-	// A second checkout call (e.g. the buyer abandoned and starts over) must not ask for a trial again.
-	if _, err := svc.Checkout(ctx, req(t), 7, OrgInfo{Name: "Org 7"}, CheckoutRequest{PlanKey: "PRO", Interval: "MONTHLY"}); err != nil {
-		t.Fatal(err)
-	}
-	var lastTrialDays = -1
-	for _, c := range provider.Calls {
-		if c.Method == "CreateCheckoutSession" {
-			lastTrialDays = c.Arg.(CheckoutInput).TrialDays
+	trialEnd := time.Now().AddDate(0, 0, 10)
+	store.EnsureTrial(ctx, 7, trialEnd) // converting during the no-card trial
+	for i := 0; i < 2; i++ {
+		if _, err := svc.Checkout(ctx, req(t), 7, OrgInfo{Name: "Org 7"}, CheckoutRequest{PlanKey: "PRO", Interval: "MONTHLY"}); err != nil {
+			t.Fatal(err)
 		}
 	}
-	if lastTrialDays != 0 {
-		t.Fatalf("trial abuse: the second checkout still asked Stripe for a %d-day trial", lastTrialDays)
+	// An organization with no row (its owner already used the trial) - paying still never trials.
+	if _, err := svc.Checkout(ctx, req(t), 8, OrgInfo{Name: "Org 8"}, CheckoutRequest{PlanKey: "PRO", Interval: "MONTHLY"}); err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, c := range provider.Calls {
+		if c.Method == "CreateCheckoutSession" {
+			n++
+			if d := c.Arg.(CheckoutInput).TrialDays; d != 0 {
+				t.Fatalf("checkout asked Stripe for a %d-day trial", d)
+			}
+		}
+	}
+	if n != 3 {
+		t.Fatalf("checkout sessions: %d", n)
+	}
+	sub, _ := store.GetForOrganization(ctx, 7)
+	if sub.Status != repository.SubscriptionTrial || sub.TrialEndsAt == nil || !sub.TrialEndsAt.Equal(trialEnd) {
+		t.Fatalf("creating a checkout session must not touch the running trial: %+v", sub)
+	}
+	sub8, _ := store.GetForOrganization(ctx, 8)
+	if sub8 == nil || sub8.Status != repository.SubscriptionInactive || sub8.TrialEndsAt != nil {
+		t.Fatalf("checkout must not grant a trial to an organization without one: %+v", sub8)
 	}
 }
 

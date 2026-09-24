@@ -1006,17 +1006,16 @@ func TestSelectDayZServerRejectsPCAndCrossTenant(t *testing.T) {
 // createSecondInstallation creates another installation under the same
 // Discord guild connection as fixture - exactly how the live duplicate
 // installations that caused this bug arose (a customer restarting the
-// wizard for a guild that already has an installation).
+// wizard for a guild that already has an installation). The API no longer
+// allows this (Onboarding V2's installation limit), so the legacy duplicate
+// is written straight through the repository, as it exists in production.
 func createSecondInstallation(t *testing.T, a *App, fixture installationFixture) int64 {
 	t.Helper()
-	req := withPathValues(withActingUser(saasRequest(http.MethodPost, "/x", createInstallationRequest{DiscordGuildConnectionID: fixture.ConnectionID}), fixture.OwnerDiscordID),
-		map[string]string{"organizationID": strconv.FormatInt(fixture.OrgID, 10)})
-	rr := httptest.NewRecorder()
-	a.handleCreateInstallation(rr, req)
-	if rr.Code != http.StatusCreated {
-		t.Fatalf("create second installation: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	inst, err := a.SaaSInstallations.Create(context.Background(), fixture.OrgID, fixture.ConnectionID, nil)
+	if err != nil {
+		t.Fatalf("create legacy duplicate installation: %v", err)
 	}
-	return decodeBody[InstallationSummary](t, rr).ID
+	return inst.ID
 }
 
 func selectDayZServer(t *testing.T, a *App, orgID, installationID, serviceID int64, ownerDiscordID string) *httptest.ResponseRecorder {
