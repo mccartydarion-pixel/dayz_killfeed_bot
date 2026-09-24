@@ -2,7 +2,7 @@ package app
 
 import (
 	"context"
-		"fmt"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
