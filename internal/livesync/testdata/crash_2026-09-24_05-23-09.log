@@ -1,0 +1,20 @@
+---------------------------------------------
+Log C:\SERVICES\ni00000000_2_local\dayzps\config\crash_2026-09-24_05-23-09.log started at 24.09. 05:23:39
+
+
+
+------------------------------------
+USMI264, 24.09 2026 05:23:39
+Virtual Machine Exception
+
+Reason: [::SpawnObjects] :: [ERROR] :: File "$mission:custom/The_Losst_City.json" does not exist, check the provided path
+
+Function: 'SpawnObjects'
+Stack trace:
+scripts/3_Game/objectspawner.c:28 Function SpawnObjects
+scripts/3_Game/objectspawner.c:75 Function OnGameplayDataHandlerLoad
+scripts/3_Game/dayzgame.c:1157 Function GlobalsInit
+scripts/3_Game/dayzgame.c:3054 Function OnUpdate
+
+Runtime mode
+CLI params: ip 203.0.113.10 port 15200 config serverDZ_Private.cfg limitFPS 100 profiles C:\SERVICES\ni00000000_2_local\dayzps/config dologs  VMErrorMode log_only adminlog  freezecheck

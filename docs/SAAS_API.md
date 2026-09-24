@@ -1431,8 +1431,14 @@ ADM location-event history - **not** built on the economy account search. New ca
 GET .../admin/players                          ?q=&online=&linked=&cursor=&limit=
 GET .../admin/players/online                   currently-connected players + latest known location each
 GET .../admin/players/{playerID}/locations/latest
+GET .../admin/players/{playerID}/locations/current   { status: CURRENT | UNKNOWN, location } (Live Sync phase 1)
 GET .../admin/players/{playerID}/locations     ?from=&to=&eventType=&cursor=&limit=, newest first
 ```
+
+**Live Sync phase 1 (docs/CHAMPION_LIVE_SYNC.md).** Directory `currentLocation` is session-scoped (absent =
+unknown) with `currentLocationStatus` and a separate `lastKnownLocation`; every location carries
+`sessionScope` (`CURRENT_SESSION`/`HISTORICAL`) and `sourceLocalTime` (DayZ server-local time, no zone);
+`eventType` may be `PLAYER_LIST` (five-minute ADM player-list observations).
 
 Every returned location carries `observedAt`/`ageSeconds`/`freshness` (`LIVE_RECENT`≤60s /
 `RECENT`≤5min / `STALE`>5min) - ADM has no continuous GPS, so "live" is never claimed unless the

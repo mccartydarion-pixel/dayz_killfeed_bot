@@ -46,6 +46,17 @@ func (p *ADMParser) ParseLine(line string) (*Event, error) {
 		return nil, nil
 	}
 
+	// Player-list blocks and the file header are structured observations, never feed events.
+	if ev, ok := parsePlayerListHeader(line); ok {
+		return ev, nil
+	}
+	if ev, ok := parsePlayerListFooter(line); ok {
+		return ev, nil
+	}
+	if ev, ok := parseAdminLogStarted(line); ok {
+		return ev, nil
+	}
+
 	// Order matters: explicit kill is authoritative and must be checked before
 	// generic death and before hit (a hit line never becomes a kill here).
 	if ev, ok := parseExplicitKill(line); ok {
@@ -79,6 +90,9 @@ func (p *ADMParser) ParseLine(line string) (*Event, error) {
 		return ev, nil
 	}
 	if ev, ok := parseBuildAction(line); ok {
+		return ev, nil
+	}
+	if ev, ok := parsePlayerListEntry(line); ok {
 		return ev, nil
 	}
 	return nil, nil

@@ -280,6 +280,13 @@ type Engine struct {
 	locationQueue *LocationQueue
 	// Optional opt-in C.A.S.E. evidence sink, source-addressed and durable.
 	evidenceStore EvidenceStore
+	// Live Sync phase 1 (engine_observations.go): player-list snapshots, per-file server-local
+	// clocks and the current ADM boot session.
+	playerLists     playerListAssembler
+	admClocks       map[string]*admClock
+	sessionStore    ADMSessionStore
+	sessionFile     string
+	playerListStats PlayerListStats
 
 	players   *PlayerTracker
 	onPlayers func(count int) // optional hook when the online player set changes
@@ -1114,6 +1121,7 @@ func (e *Engine) selectLog(lf nitrado.LogFile) {
 		e.sink.SetLogSource(candidate.Name, candidate.Path, candidate.Size, candidate.Modified)
 		e.sink.SetDiscovery(string(StatePolling), 0, 0)
 	}
+	e.noteADMSession(candidate.Path)
 	e.lastRescan = time.Now()
 }
 
@@ -1610,6 +1618,9 @@ func (e *Engine) processLineAt(line, sourcePath string, endOffset int64) (bool, 
 		})
 		e.diagnostics.Event("parser " + string(ev.Type))
 	}
+	if e.handleObservationLine(ev, sourcePath, endOffset) {
+		return true, nil
+	}
 	if ev.Type == EventPlayerDisconnect {
 		slog.Info("component=presence", "event", "disconnect_parsed", "matched", true)
 	}
@@ -1699,7 +1710,7 @@ func (e *Engine) processLineAt(line, sourcePath string, endOffset int64) (bool, 
 	// constraint is still the authoritative backstop, per task section 14, but this avoids
 	// manufacturing the duplicate in the first place). EnqueueEvent is non-blocking and a no-op
 	// on a nil queue, so this never affects the hot path whether or not Phase 3 is wired up.
-	e.locationQueue.EnqueueEvent(ev)
+	e.locationQueue.EnqueueEventAt(ev, e.locationSource(ev, sourcePath, endOffset, ""))
 	if ev.Type == EventPlayerHit {
 		// Hits are not persisted. Only a non-duplicate hit reaches here, so a
 		// replayed line (retry after a later persistence failure, rotation

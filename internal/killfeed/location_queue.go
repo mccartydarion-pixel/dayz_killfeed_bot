@@ -47,7 +47,20 @@ const (
 	LocationEventRespawn     = "RESPAWN"
 	LocationEventUnconscious = "UNCONSCIOUS"
 	LocationEventOther       = "OTHER_ADM"
+	// LocationEventPlayerList is a routine five-minute ADM player-list observation
+	// (docs/CHAMPION_LIVE_SYNC.md). Every one is preserved.
+	LocationEventPlayerList = "PLAYER_LIST"
 )
+
+// LocationSource is the physical origin of a location observation: the canonical ADM file name,
+// the byte offset at the end of the line, and the line's server-local time (no timezone - see
+// admClock). An empty File means "unknown source" (legacy path, tests).
+type LocationSource struct {
+	File      string
+	Offset    int64
+	LocalTime *time.Time
+	Snapshot  string // player-list snapshot identity, when the observation came from one
+}
 
 // locationEventTypeFor maps an Engine EventType to the location_event_type vocabulary above.
 func locationEventTypeFor(t EventType) string {
@@ -75,6 +88,7 @@ type locationCandidate struct {
 	player     *PlayerRef
 	eventType  string
 	observedAt time.Time
+	source     LocationSource
 }
 
 // maxLocationQueue bounds in-flight location candidates so memory stays flat (task section 4:
@@ -152,7 +166,12 @@ func (q *LocationQueue) ServerID() int64 {
 // EnqueueEvent submits every PlayerRef on ev that carries a non-nil Position as a separate
 // location-event candidate (a kill can carry both a killer and a victim position - each becomes
 // its own row). Never blocks the caller: on a full queue the candidate is dropped and counted.
-func (q *LocationQueue) EnqueueEvent(ev *Event) {
+func (q *LocationQueue) EnqueueEvent(ev *Event) { q.EnqueueEventAt(ev, LocationSource{}) }
+
+// EnqueueEventAt is EnqueueEvent with the observation's physical source, which makes a replayed
+// line deduplicate exactly (same file + offset) and lets current-session queries order
+// observations within one ADM file.
+func (q *LocationQueue) EnqueueEventAt(ev *Event, src LocationSource) {
 	if q == nil || ev == nil {
 		return
 	}
@@ -162,8 +181,17 @@ func (q *LocationQueue) EnqueueEvent(ev *Event) {
 		if ref == nil || ref.Position == nil || ref.ID == "" {
 			continue
 		}
-		q.enqueue(locationCandidate{player: ref, eventType: eventType, observedAt: at})
+		q.enqueue(locationCandidate{player: ref, eventType: eventType, observedAt: at, source: src})
 	}
+}
+
+// EnqueueObservation submits one player's position observation of an explicit type (the
+// player-list path). Non-blocking, like EnqueueEvent.
+func (q *LocationQueue) EnqueueObservation(ref *PlayerRef, eventType string, observedAt time.Time, src LocationSource) {
+	if q == nil || ref == nil || ref.Position == nil || ref.ID == "" {
+		return
+	}
+	q.enqueue(locationCandidate{player: ref, eventType: eventType, observedAt: observedAt.UTC(), source: src})
 }
 
 func (q *LocationQueue) enqueue(c locationCandidate) {
@@ -266,6 +294,7 @@ func (q *LocationQueue) persist(ctx context.Context, batch []locationCandidate) 
 			GuildID: q.guildID, ServerID: q.serverID, PlayerID: playerID, Gamertag: c.player.Name,
 			X: pos.MapX(), Z: pos.MapZ(), Y: &y,
 			EventType: c.eventType, ObservedAt: c.observedAt, Source: "ADM",
+			SourceFile: c.source.File, SourceOffset: c.source.Offset, SourceLocalTime: c.source.LocalTime, SnapshotRef: c.source.Snapshot,
 		})
 	}
 	if len(records) == 0 {

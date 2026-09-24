@@ -1,0 +1,21 @@
+---------------------------------------------
+Log C:\SERVICES\ni00000000_2_local\dayzps\config\script_2026-09-24_05-23-09.log started at 24.09. 05:23:09
+
+SCRIPT       : Module: GameLib; loaded 13x files; 13x classes; used 7/2097 kB (0%) of static memory; defines: "DAYZ_1_29,SERVER_FOR_PS4,SERVER_FOR_CONSOLE,SERVER,PLATFORM_WINDOWS,RELEASE,NO_GUI,NO_GUI_INGAME,sakhal,DayZ"
+SCRIPT       : Registered 305 temporary action enum(s), UAN==305
+SCRIPT       : Module: Game; loaded 416x files; 1379x classes; used 3702/33554 kB (11%) of static memory
+SCRIPT       : ... Backlit Effects Enabled
+SCRIPT       : Module: World; loaded 2123x files; 5604x classes; used 8598/33554 kB (25%) of static memory
+ SCRIPT       : Module: Mission; loaded 209x files; 442x classes; used 2997/33554 kB (8%) of static memory
+ SCRIPT       : Module: $CurrentDir:mpmissions\dayzOffline.chernarusplus\init.c; loaded 1x files; 1x classes; used 4/1048 kB (0%) of static memory
+SCRIPT    (E): Virtual Machine Exception
+
+Reason: [::SpawnObjects] :: [ERROR] :: File "$mission:custom/The_Losst_City.json" does not exist, check the provided path
+
+Function: 'SpawnObjects'
+Stack trace:
+scripts/3_Game/objectspawner.c:28 Function SpawnObjects
+scripts/3_Game/objectspawner.c:75 Function OnGameplayDataHandlerLoad
+scripts/3_Game/dayzgame.c:1157 Function GlobalsInit
+scripts/3_Game/dayzgame.c:3054 Function OnUpdate
+

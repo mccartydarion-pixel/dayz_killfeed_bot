@@ -1834,13 +1834,17 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 		slog.Info("component=case", "event", "evidence_collector_enabled", "server_id", row.ID)
 	}
 
-
 	// Phase 3 (docs/PLAYER_INTELLIGENCE.md): the location-history pipeline, fully separate from
 	// pq above - see internal/killfeed/location_queue.go's package doc for why it must never
 	// share pq's blocking EnqueueAndWait semantics.
 	lq := killfeed.NewLocationQueue(store, row.GuildID, row.ID)
 	lq.SetIntrusionEngine(a.Intrusion)
 	engine.SetLocationQueue(lq)
+	// Live Sync phase 1: the selected ADM file is recorded as the server's current boot session,
+	// which current-session location queries trust (docs/CHAMPION_LIVE_SYNC.md).
+	if a.Locations != nil {
+		engine.SetADMSessionStore(a.Locations)
+	}
 	a.addLocationQueue(lq)
 
 	engine.OnPlayersChanged(func(count int) {

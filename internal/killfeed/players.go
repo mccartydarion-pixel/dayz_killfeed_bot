@@ -135,3 +135,38 @@ func (t *PlayerTracker) Reset() {
 	defer t.mu.Unlock()
 	t.players = make(map[string]OnlinePlayer)
 }
+
+// ReconcileSnapshot applies a COMPLETE ADM player-list snapshot: every listed player is online and
+// every tracked player not listed is not. Callers must pass only complete snapshots - an incomplete
+// or missing snapshot is never evidence that a player left. A player added here has no known
+// connect time (ConnectedAt stays zero, so no session length is claimed). Returns how many players
+// were added and removed; neither produces a connection notice.
+func (t *PlayerTracker) ReconcileSnapshot(listed []*PlayerRef) (added, removed int) {
+	if t == nil {
+		return 0, 0
+	}
+	keep := make(map[string]*PlayerRef, len(listed))
+	for _, p := range listed {
+		if k := playerKey(p); k != "" {
+			keep[k] = p
+		}
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for k := range t.players {
+		if _, ok := keep[k]; !ok {
+			delete(t.players, k)
+			removed++
+		}
+	}
+	for k, p := range keep {
+		if prev, ok := t.players[k]; ok {
+			prev.Name = p.Name
+			t.players[k] = prev
+			continue
+		}
+		t.players[k] = OnlinePlayer{ID: p.ID, Name: p.Name}
+		added++
+	}
+	return added, removed
+}

@@ -1997,6 +1997,52 @@ CREATE INDEX IF NOT EXISTS idx_shop_deliveries_installation ON shop_deliveries(i
 CREATE INDEX IF NOT EXISTS idx_shop_deliveries_player ON shop_deliveries(installation_id, player_id, id DESC);
 ` + ShopDeliveryBackfillSQL,
 	},
+	{
+		Name: "0050_live_sync_player_list_and_sessions",
+		SQL: `
+-- Champion Live Sync phase 1 (docs/CHAMPION_LIVE_SYNC.md). Additive.
+-- 1. Every ADM location observation carries its physical source: the canonical ADM file, the byte
+--    offset at the end of the line, its server-local time (DayZ writes zone-less local time, so it is
+--    stored without a zone) and, for player lists, the snapshot identity.
+ALTER TABLE player_location_events ADD COLUMN IF NOT EXISTS source_file TEXT;
+ALTER TABLE player_location_events ADD COLUMN IF NOT EXISTS source_offset BIGINT;
+ALTER TABLE player_location_events ADD COLUMN IF NOT EXISTS source_local_time TIMESTAMP;
+ALTER TABLE player_location_events ADD COLUMN IF NOT EXISTS snapshot_ref TEXT;
+-- 2. PLAYER_LIST: the routine five-minute ADM player-list observation.
+DO $$
+DECLARE c TEXT;
+BEGIN
+    FOR c IN SELECT conname FROM pg_constraint
+             WHERE conrelid = 'player_location_events'::regclass AND contype = 'c'
+               AND pg_get_constraintdef(oid) LIKE '%event_type%'
+    LOOP
+        EXECUTE format('ALTER TABLE player_location_events DROP CONSTRAINT %I', c);
+    END LOOP;
+END $$;
+ALTER TABLE player_location_events ADD CONSTRAINT player_location_events_event_type_check
+    CHECK (event_type IN ('CONNECT','DISCONNECT','HIT','KILL','DEATH','RESPAWN','UNCONSCIOUS','OTHER_ADM','PLAYER_LIST'));
+ALTER TABLE player_location_events ADD CONSTRAINT player_location_events_source_complete
+    CHECK ((source_file IS NULL AND source_offset IS NULL) OR (source_file IS NOT NULL AND source_offset IS NOT NULL AND source_offset >= 0));
+-- 3. Dedupe: a sourced row is unique by its physical source (an exact replay guard that also keeps
+--    every five-minute observation of a stationary player); legacy unsourced rows keep the old key,
+--    which previously deduplicated on Champion's ingestion time.
+ALTER TABLE player_location_events DROP CONSTRAINT IF EXISTS uq_player_location_events_dedupe;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_player_location_events_legacy
+    ON player_location_events(player_id, server_id, event_type, observed_at) WHERE source_file IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_player_location_events_source
+    ON player_location_events(server_id, source_file, source_offset, player_id, event_type) WHERE source_file IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_player_location_events_session
+    ON player_location_events(server_id, player_id, source_file, source_offset DESC) WHERE source_file IS NOT NULL;
+-- 4. The server's current boot session = the ADM file the ingestion engine currently reads.
+CREATE TABLE IF NOT EXISTS server_adm_sessions (
+    server_id BIGINT PRIMARY KEY REFERENCES game_servers(id) ON DELETE CASCADE,
+    guild_id BIGINT NOT NULL,
+    adm_file TEXT NOT NULL,
+    session_local_start TIMESTAMP,
+    selected_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+`,
+	},
 }
 
 // ShopDeliveryBackfillSQL gives every purchase that has no delivery record a MANUAL_PICKUP one,
