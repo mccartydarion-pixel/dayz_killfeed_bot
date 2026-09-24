@@ -278,6 +278,8 @@ type Engine struct {
 	// - nil-safe throughout (EnqueueEvent is a no-op on a nil queue), so an engine that never had
 	// one attached behaves exactly as before this feature existed.
 	locationQueue *LocationQueue
+	// Optional opt-in C.A.S.E. evidence sink, source-addressed and durable.
+	evidenceStore EvidenceStore
 
 	players   *PlayerTracker
 	onPlayers func(count int) // optional hook when the online player set changes
@@ -1273,7 +1275,7 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 	eventsParsed := 0
 	newOffset := oldOffset
 	for _, chunk := range lineChunks {
-		parsed, processErr := e.processLine(chunk.Text)
+		parsed, processErr := e.processLineAt(chunk.Text, current.Path, chunk.EndOffset)
 		if parsed {
 			eventsParsed++
 		}
@@ -1382,7 +1384,7 @@ func (e *Engine) tryDeltaPoll(ctx context.Context, current *nitrado.LogFile, old
 	eventsParsed := 0
 	newOffset := oldOffset
 	for _, chunk := range lineChunks {
-		parsed, processErr := e.processLine(chunk.Text)
+		parsed, processErr := e.processLineAt(chunk.Text, current.Path, chunk.EndOffset)
 		if parsed {
 			eventsParsed++
 		}
@@ -1529,7 +1531,7 @@ func (e *Engine) processProbeTail(ctx context.Context, current *nitrado.LogFile,
 	safeOffset := startOffset
 	eventsParsed := 0
 	for _, chunk := range lineChunks {
-		parsed, processErr := e.processLine(chunk.Text)
+		parsed, processErr := e.processLineAt(chunk.Text, current.Path, chunk.EndOffset)
 		if parsed {
 			eventsParsed++
 		}
@@ -1581,6 +1583,12 @@ func (e *Engine) processLines(lines []string) int {
 }
 
 func (e *Engine) processLine(line string) (bool, error) {
+	return e.processLineAt(line, "", -1)
+}
+
+// processLineAt is the real file-backed path. Only complete line chunks with
+// an authoritative end offset may be persisted as C.A.S.E. evidence.
+func (e *Engine) processLineAt(line, sourcePath string, endOffset int64) (bool, error) {
 	e.metrics.ADMLinesProcessed++
 	ev, err := e.parser.ParseLine(line)
 	if err != nil {
@@ -1616,6 +1624,16 @@ func (e *Engine) processLine(line string) (bool, error) {
 		e.metrics.ConnectsParsed++
 	case EventPlayerDisconnect:
 		e.metrics.DisconnectsParsed++
+	}
+	// Evidence is addressed by physical ADM line, not semantic event fingerprint.
+	// Record before the legacy hitfeed deduplicator so equal-looking hits at
+	// separate offsets remain independent evidence observations.
+	if e.evidenceStore != nil && sourcePath != "" {
+		if err := e.observeEvidence(ev, sourcePath, endOffset); err != nil {
+			slog.Warn("component=case", "event", "evidence_write_failed",
+				"server_id", e.serverID, "event_type", string(ev.Type), "err", err.Error())
+			return true, err
+		}
 	}
 	if e.dedupe == nil {
 		e.dedupe = NewDeduplicator(90*time.Second, 8192)
@@ -1903,7 +1921,7 @@ func (e *Engine) drainRotationTail(ctx context.Context) {
 	safeOffset := readOffset
 	parsed := 0
 	for _, chunk := range chunks {
-		ok, processErr := e.processLine(chunk.Text)
+		ok, processErr := e.processLineAt(chunk.Text, old.Path, chunk.EndOffset)
 		if processErr != nil {
 			slog.Warn("component=adm", "event", "rotation_tail_incomplete", "server_id", e.serverID, "file", old.Name, "error_class", safeDownloadErrorClass(processErr))
 			break
