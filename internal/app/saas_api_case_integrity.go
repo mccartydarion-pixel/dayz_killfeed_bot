@@ -40,6 +40,9 @@ type caseSourceIntegrity struct {
  LatestEvidenceSourceRef *string `json:"latestEvidenceSourceRef"`
  LatestEvidenceOffset *int64 `json:"latestEvidenceOffset"`
  EvidenceLines24h int64 `json:"evidenceLines24h"`
+ NewerBootVerificationReason string `json:"newerBootVerificationReason"`
+ NewerBootVerificationAt *time.Time `json:"newerBootVerificationAt"`
+ NewerBootCandidateRef *string `json:"newerBootCandidateRef"`
  CollectorConfigured bool `json:"collectorConfigured"`
  Coverage string `json:"coverage"`
  ElapsedTimeTrusted bool `json:"elapsedTimeTrusted"`
@@ -114,6 +117,12 @@ func (a *App) handleAntiCheatIntegrity(w http.ResponseWriter,r *http.Request) {
   if diag:=engine.Diagnostics();diag!=nil {pipeline=diag.Snapshot()}
  }
  out:=caseSourceSnapshot(serverID,now,source,pipeline,available)
+ if available {
+  boot:=engine.BootAuthority()
+  out.NewerBootVerificationReason=boot.LastCandidateReason
+  out.NewerBootVerificationAt=caseOptionalTime(boot.LastCandidateCheckAt)
+  out.NewerBootCandidateRef=caseSourceRef(boot.LastCandidateFile)
+ }
  out.CollectorConfigured=caseEvidenceEnabledForServer(serverID)
  ctx,cancel:=context.WithTimeout(r.Context(),adminTimeout)
  defer cancel()
