@@ -1825,6 +1825,15 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 	}
 	engine.SetPersistence(pq)
 	a.addPersistQueue(pq)
+	// C.A.S.E. Phase 2B is opt-in until source-addressed evidence and replay
+	// verification are proven in production. It writes no detector verdicts.
+	// Attach before engine.Start; all hit/lifecycle events use the SAME ADM
+	// poller and the SAME durable checkpoint as the existing killfeed.
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("CASE_EVIDENCE_ENABLED")), "true") && a.DB != nil && a.DB.Pool != nil {
+		engine.SetEvidenceStore(repository.NewCaseEvidenceRepository(a.DB.Pool))
+		slog.Info("component=case", "event", "evidence_collector_enabled", "server_id", row.ID)
+	}
+
 
 	// Phase 3 (docs/PLAYER_INTELLIGENCE.md): the location-history pipeline, fully separate from
 	// pq above - see internal/killfeed/location_queue.go's package doc for why it must never
