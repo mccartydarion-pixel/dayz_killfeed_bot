@@ -27,15 +27,15 @@ type CaseAddonSubscription struct {
 }
 
 // AccessInput requires the caller to supply the independently loaded base
-// subscription status, rollout flag and maximum independently verified tier.
-func (s CaseAddonSubscription) AccessInput(baseStatus string, enabled bool, verifiedThrough casebilling.Tier) casebilling.AccessInput {
+// subscription status, authenticated organization/installation scope, rollout flag and\n// maximum independently verified tier.
+func (s CaseAddonSubscription) AccessInput(organizationID, installationID int64, baseStatus string, enabled bool, verifiedThrough casebilling.Tier) casebilling.AccessInput {
 	selectedID := int64(0)
 	if s.SelectedGameServerID != nil {
 		selectedID = *s.SelectedGameServerID
 	}
 	return casebilling.AccessInput{
 		BillingEnabled: enabled, VerifiedThrough: verifiedThrough,
-		OrganizationID: s.OrganizationID, InstallationID: s.InstallationID,
+		OrganizationID: organizationID, InstallationID: installationID,
 		SelectedGameServerID: selectedID, BaseStatus: baseStatus,
 		AddonOrganizationID: s.OrganizationID, AddonInstallationID: s.InstallationID,
 		BoundGameServerID: s.GameServerID, Tier: casebilling.Tier(s.Tier),
