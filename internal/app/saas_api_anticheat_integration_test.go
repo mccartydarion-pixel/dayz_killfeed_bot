@@ -32,7 +32,7 @@ func TestCaseObservationRealRecordsScopedAndPermissionChecked(t *testing.T) {
 	seedCaseKill(t, w, w.serverID, killerID, victimID, nil, fmt.Sprintf("case-no-source-time-%d", now.UnixNano()))
 	if _, err := w.a.DB.Pool.Exec(context.Background(), `
 INSERT INTO player_location_events(guild_id,server_id,player_id,gamertag,x,z,y,event_type,observed_at)
-VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, w.guildID, w.serverID, killerID, "CaseAlpha", 100.0, 200.0, 5.0, "HIT", now); err != nil {
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, w.guildID, w.serverID, killerID, "CaseAlpha", 100.0, 200.0, 5.0, "HIT", now); err != nil {
 		t.Fatal(err)
 	}
 
