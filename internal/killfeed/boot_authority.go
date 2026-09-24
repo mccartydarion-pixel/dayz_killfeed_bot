@@ -55,6 +55,9 @@ type BootAuthorityStats struct {
 	RejectedOlder        int64 // older-boot candidates filtered out or refused
 	UnverifiedCandidates int64 // newer-stamped candidates whose header did not confirm the stamp (yet)
 	LastRejectedFile     string
+	LastCandidateFile string // canonical newer boot being verified
+	LastCandidateReason string // reason a newer candidate could not be verified; empty on acceptance
+	LastCandidateCheckAt time.Time
 }
 
 // BootAuthority returns a snapshot of the boot-authority counters.
@@ -141,7 +144,15 @@ func (e *Engine) newestVerifiedBoot(ctx context.Context, logs []nitrado.LogFile)
 		}
 		cands = append(cands, stamped{lf, st})
 	}
-	sort.SliceStable(cands, func(i, j int) bool { return cands[i].at.After(cands[j].at) })
+	sort.SliceStable(cands, func(i, j int) bool {
+		if cands[i].at.Equal(cands[j].at) {
+			// When both mount aliases are listed, try the primary noftp
+			// representation first but retain ftproot as a bounded read
+			// fallback if noftp lists successfully yet cannot be read.
+			return isNoftpAlias(cands[i].lf.Path) && !isNoftpAlias(cands[j].lf.Path)
+		}
+		return cands[i].at.After(cands[j].at)
+	})
 	if len(cands) > 0 && e.lastNewBootFile != canonicalADMID(cands[0].lf.Path) {
 		// The newest listed boot, recorded once when first seen (diagnostics and SOURCE_LAGGING).
 		e.lastNewBootFile = canonicalADMID(cands[0].lf.Path)
@@ -152,10 +163,20 @@ func (e *Engine) newestVerifiedBoot(ctx context.Context, logs []nitrado.LogFile)
 	}
 	for _, c := range cands {
 		if ok, reason := e.verifyBootHeader(ctx, c.lf, c.at); ok {
+			e.updateBootStats(func(s *BootAuthorityStats) {
+				s.LastCandidateFile = canonicalADMID(c.lf.Path)
+				s.LastCandidateReason = ""
+				s.LastCandidateCheckAt = time.Now()
+			})
 			lf := c.lf
 			return &lf
 		} else {
-			e.updateBootStats(func(s *BootAuthorityStats) { s.UnverifiedCandidates++ })
+			e.updateBootStats(func(s *BootAuthorityStats) {
+				s.UnverifiedCandidates++
+				s.LastCandidateFile = canonicalADMID(c.lf.Path)
+				s.LastCandidateReason = reason
+				s.LastCandidateCheckAt = time.Now()
+			})
 			slog.Info("component=adm_discovery", "event", "boot_candidate_unverified", "server_id", e.serverID,
 				"file", canonicalADMID(c.lf.Path), "reason", reason)
 		}
@@ -226,7 +247,10 @@ func (e *Engine) scanForNewerBoot(ctx context.Context) bool {
 	if len(logs) == 0 {
 		return false
 	}
-	logs = e.deduplicateCandidates(logs)
+	// Keep aliases for boot-header verification. Collapsing them before
+	// reading the header would discard the secondary mount when the
+	// preferred noftp representation is listed but temporarily unreadable.
+	// The returned selection is still one canonical boot.
 	best := e.newestVerifiedBoot(ctx, logs)
 	if best == nil {
 		return false
