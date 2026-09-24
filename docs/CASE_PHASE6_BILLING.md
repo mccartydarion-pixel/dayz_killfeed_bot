@@ -55,3 +55,22 @@ Provide `case.watch`, `case.pro`, `case.command` as server-scoped capabilities; 
 7. Release only after production telemetry capability verification, approved public copy, explicit operator check of Stripe live products/prices/webhook destination and feature flag.
 
 Regression invariant: all existing LOW/MEDIUM/HIGH subscriptions, no-card base trials, plan changes, webhooks, invoices, auth, and base entitlements behave exactly as before when the C.A.S.E. flag is off.
+
+## Phase 6.2 implementation status (draft / disabled)
+
+Added migration 0055 for a single pending checkout reservation and transactionally
+recorded C.A.S.E. webhook delivery. The Go API exposes read-only catalog/status
+and owner/admin checkout; `CHAMPION_CASE_BILLING_ENABLED` is false by default.
+Both the Checkout Session and Stripe subscription receive server-authored
+product-kind, organization, installation, game-server, add-on and tier metadata.
+Distinct add-on subscriptions use the existing Stripe customer. Webhook dispatch
+classifies C.A.S.E. **before** base subscription reconciliation, with a separate
+transactional deduplication ledger. Configured Stripe Price IDs must match
+approved recurring amounts and explicitly tagged Stripe Products. An unknown
+price or mismatched ownership fails closed.
+
+Unresolved release gates: reconcile canceled/expired or abandoned Checkout
+Sessions safely; prove invoice payment before granting paid premium processing;
+design trial eligibility and subscription changes; verify current capability
+coverage and QA all Stripe test-mode lifecycle scenarios. No production
+deployment or live Stripe catalog mutation is part of this draft.
