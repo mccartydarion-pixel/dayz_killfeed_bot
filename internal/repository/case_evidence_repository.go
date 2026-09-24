@@ -143,9 +143,9 @@ type CaseEvidenceRow struct {
 }
 
 // ListCaseEvidence requires an authorized guild AND server from AdminScope.
-// The optional player ID selects only observations on this scoped server.
+// Optional player and exact evidence IDs select only records on this scoped server.
 // Latest-first ID order reflects ingestion order, not an invented UTC ADM time.
-func (r *CaseEvidenceRepository) ListCaseEvidence(ctx context.Context, guildID, serverID int64, playerID, beforeID *int64, limit int) ([]CaseEvidenceRow,error) {
+func (r *CaseEvidenceRepository) ListCaseEvidence(ctx context.Context, guildID, serverID int64, playerID, beforeID, evidenceID *int64, limit int) ([]CaseEvidenceRow,error) {
 	if limit < 1 || limit > 100 { limit=50 }
 	rows,err:=r.pool.Query(ctx, `
 	  SELECT id,event_type,ingested_at,adm_clock,
@@ -158,8 +158,9 @@ func (r *CaseEvidenceRepository) ListCaseEvidence(ctx context.Context, guildID, 
 	  WHERE guild_id=$1 AND server_id=$2
 	    AND ($3::BIGINT IS NULL OR subject_player_id=$3 OR actor_player_id=$3 OR target_player_id=$3)
 	    AND ($4::BIGINT IS NULL OR id<$4)
-	  ORDER BY id DESC LIMIT $5
-	`,guildID,serverID,playerID,beforeID,limit)
+	    AND ($5::BIGINT IS NULL OR id=$5)
+	  ORDER BY id DESC LIMIT $6
+	`,guildID,serverID,playerID,beforeID,evidenceID,limit)
 	if err!=nil {return nil,err}
 	defer rows.Close()
 	out:=make([]CaseEvidenceRow,0)

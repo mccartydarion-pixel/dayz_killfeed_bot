@@ -87,6 +87,7 @@ type Reconstruction struct {
 	NoCrossSourceStitch bool `json:"noCrossSourceStitch"`
 	NoDurationInference bool `json:"noDurationInference"`
 	Sources []SourceWindow `json:"sources"`
+	Quality QualityReport `json:"quality"`
 	DetectorsEnabled bool `json:"detectorsEnabled"`
 	Enforcement string `json:"enforcement"`
 }
@@ -252,5 +253,6 @@ func Reconstruct(playerID int64, events []Event, limit int, truncated bool) Reco
 		if current!=nil {closeWindow("UNOBSERVED_END",current.EndOffset)}
 		result.Sources=append(result.Sources,source)
 	}
+	result.Quality=AssessQuality(result)
 	return result
 }

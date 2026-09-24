@@ -38,7 +38,7 @@ func TestCASEEvidenceDurableReplayAndTenantIsolation(t *testing.T) {
 	changed:=event
 	changed.LineSHA256=fmt.Sprintf("%064x",5678)
 	if err:=repo.RecordCaseEvidence(ctx,changed);err==nil {t.Fatal("same source address with different content MUST fail")}
-	items,err:=repo.ListCaseEvidence(ctx,w.guildID,w.serverID,nil,nil,50)
+	items,err:=repo.ListCaseEvidence(ctx,w.guildID,w.serverID,nil,nil,nil,50)
 	if err!=nil {t.Fatal(err)}
 	if len(items)!=2 || items[0].SourceEndOffset!=300 || items[1].SourceEndOffset!=100 {
 		t.Fatalf("replays or separate identical hits were collapsed: %+v",items)
@@ -50,7 +50,7 @@ func TestCASEEvidenceDurableReplayAndTenantIsolation(t *testing.T) {
 		t.Fatal("API must expose a pseudonym, not Nitrado source path")
 	}
 	before:=items[0].ID
-	paged,err:=repo.ListCaseEvidence(ctx,w.guildID,w.serverID,nil,&before,1)
+	paged,err:=repo.ListCaseEvidence(ctx,w.guildID,w.serverID,nil,&before,nil,1)
 	if err!=nil || len(paged)!=1 || paged[0].ID!=items[1].ID {
 		t.Fatalf("cursor paging wrong: %+v / %v",paged,err)
 	}
@@ -64,7 +64,7 @@ VALUES($1,'nitrado',$2,'dayz','PLAYSTATION','ACTIVE',$3) RETURNING id`,
 	if err:=repo.RecordCaseEvidence(ctx,other);err!=nil {t.Fatal(err)}
 	count,err:=repo.CaseHitCount(ctx,w.guildID,w.serverID,time.Now().Add(-time.Hour),time.Now().Add(time.Hour))
 	if err!=nil || count!=2 {t.Fatalf("count must exclude other server: %d / %v",count,err)}
-	otherList,err:=repo.ListCaseEvidence(ctx,w.guildID,otherID,nil,nil,50)
+	otherList,err:=repo.ListCaseEvidence(ctx,w.guildID,otherID,nil,nil,nil,50)
 	if err!=nil || len(otherList)!=1 {t.Fatalf("other server data wrong: %+v / %v",otherList,err)}
 }
 
