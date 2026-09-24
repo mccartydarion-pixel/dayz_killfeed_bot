@@ -116,21 +116,35 @@ type CaseEvidenceRow struct {
 	// SourceRef is a digest, not a raw Nitrado path or private identifier.
 	SourceRef string `json:"sourceRef"`
 	SourceEndOffset int64 `json:"sourceEndOffset"`
-	SubjectPlayerID, ActorPlayerID, TargetPlayerID *int64 `json:"-"`
-	SubjectName, ActorName, TargetName string `json:"subjectName,omitempty"`
-	Weapon, Ammo, HitZone string `json:"weapon,omitempty"`
+	SubjectPlayerID *int64 `json:"subjectPlayerId,omitempty"`
+	ActorPlayerID *int64 `json:"actorPlayerId,omitempty"`
+	TargetPlayerID *int64 `json:"targetPlayerId,omitempty"`
+	SubjectName string `json:"subjectName,omitempty"`
+	ActorName string `json:"actorName,omitempty"`
+	TargetName string `json:"targetName,omitempty"`
+	Weapon string `json:"weapon,omitempty"`
+	Ammo string `json:"ammo,omitempty"`
+	HitZone string `json:"hitZone,omitempty"`
 	HitZoneID string `json:"hitZoneId,omitempty"`
-	Damage, HP, DistanceMeters *float64 `json:"damage,omitempty"`
+	Damage *float64 `json:"damage,omitempty"`
+	HP *float64 `json:"hp,omitempty"`
+	DistanceMeters *float64 `json:"distanceMeters,omitempty"`
 	BoundaryKind string `json:"boundaryKind,omitempty"`
-	SubjectX,SubjectZ,SubjectAltitude *float64 `json:"subjectX,omitempty"`
-	ActorX,ActorZ,ActorAltitude *float64 `json:"actorX,omitempty"`
-	TargetX,TargetZ,TargetAltitude *float64 `json:"targetX,omitempty"`
+	SubjectX *float64 `json:"subjectX,omitempty"`
+	SubjectZ *float64 `json:"subjectZ,omitempty"`
+	SubjectAltitude *float64 `json:"subjectAltitude,omitempty"`
+	ActorX *float64 `json:"actorX,omitempty"`
+	ActorZ *float64 `json:"actorZ,omitempty"`
+	ActorAltitude *float64 `json:"actorAltitude,omitempty"`
+	TargetX *float64 `json:"targetX,omitempty"`
+	TargetZ *float64 `json:"targetZ,omitempty"`
+	TargetAltitude *float64 `json:"targetAltitude,omitempty"`
 }
 
 // ListCaseEvidence requires an authorized guild AND server from AdminScope.
 // The optional player ID selects only observations on this scoped server.
 // Latest-first ID order reflects ingestion order, not an invented UTC ADM time.
-func (r *CaseEvidenceRepository) ListCaseEvidence(ctx context.Context, guildID, serverID int64, playerID *int64, limit int) ([]CaseEvidenceRow,error) {
+func (r *CaseEvidenceRepository) ListCaseEvidence(ctx context.Context, guildID, serverID int64, playerID, beforeID *int64, limit int) ([]CaseEvidenceRow,error) {
 	if limit < 1 || limit > 100 { limit=50 }
 	rows,err:=r.pool.Query(ctx, `
 	  SELECT id,event_type,ingested_at,adm_clock,
@@ -142,7 +156,8 @@ func (r *CaseEvidenceRepository) ListCaseEvidence(ctx context.Context, guildID, 
 	  FROM case_evidence_events
 	  WHERE guild_id=$1 AND server_id=$2
 	    AND ($3::BIGINT IS NULL OR subject_player_id=$3 OR actor_player_id=$3 OR target_player_id=$3)
-	  ORDER BY id DESC LIMIT $4
+	    AND ($4::BIGINT IS NULL OR id<$4)
+	  ORDER BY id DESC LIMIT $5
 	`,guildID,serverID,playerID,limit)
 	if err!=nil {return nil,err}
 	defer rows.Close()
