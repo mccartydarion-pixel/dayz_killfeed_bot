@@ -1888,6 +1888,56 @@ CREATE TABLE IF NOT EXISTS trial_grants (
 );
 ` + TrialGrantBackfillSQL,
 	},
+	{
+		Name: "0048_case_evidence_observation",
+		SQL: `
+-- C.A.S.E. Phase 2B: immutable, source-addressed ADM evidence.
+-- No client input, no scoring, no bans, no speculative event timestamp.
+CREATE TABLE IF NOT EXISTS case_evidence_events (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    server_id BIGINT NOT NULL REFERENCES game_servers(id) ON DELETE CASCADE,
+    source_id TEXT NOT NULL,
+    source_end_offset BIGINT NOT NULL CHECK (source_end_offset >= 0),
+    line_sha256 CHAR(64) NOT NULL,
+    event_type TEXT NOT NULL,
+    adm_clock TEXT NOT NULL DEFAULT '',
+    ingested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    subject_player_id BIGINT REFERENCES players(id) ON DELETE SET NULL,
+    actor_player_id BIGINT REFERENCES players(id) ON DELETE SET NULL,
+    target_player_id BIGINT REFERENCES players(id) ON DELETE SET NULL,
+    subject_name TEXT NOT NULL DEFAULT '',
+    actor_name TEXT NOT NULL DEFAULT '',
+    target_name TEXT NOT NULL DEFAULT '',
+    actor_x DOUBLE PRECISION,
+    actor_z DOUBLE PRECISION,
+    actor_altitude DOUBLE PRECISION,
+    target_x DOUBLE PRECISION,
+    target_z DOUBLE PRECISION,
+    target_altitude DOUBLE PRECISION,
+    subject_x DOUBLE PRECISION,
+    subject_z DOUBLE PRECISION,
+    subject_altitude DOUBLE PRECISION,
+    weapon TEXT NOT NULL DEFAULT '',
+    ammo TEXT NOT NULL DEFAULT '',
+    hit_zone TEXT NOT NULL DEFAULT '',
+    hit_zone_id TEXT NOT NULL DEFAULT '',
+    damage DOUBLE PRECISION,
+    hp DOUBLE PRECISION,
+    distance_meters DOUBLE PRECISION,
+    boundary_kind TEXT NOT NULL DEFAULT '' CHECK (
+        boundary_kind IN ('','CONNECT','DISCONNECT','RESPAWN','DEATH','SUICIDE')
+    ),
+    CONSTRAINT uq_case_evidence_source UNIQUE (guild_id, server_id, source_id, source_end_offset)
+);
+CREATE INDEX IF NOT EXISTS idx_case_evidence_server_id ON case_evidence_events(guild_id,server_id,id DESC);
+CREATE INDEX IF NOT EXISTS idx_case_evidence_actor_id ON case_evidence_events(guild_id,server_id,actor_player_id,id DESC) WHERE actor_player_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_case_evidence_target_id ON case_evidence_events(guild_id,server_id,target_player_id,id DESC) WHERE target_player_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_case_evidence_subject_id ON case_evidence_events(guild_id,server_id,subject_player_id,id DESC) WHERE subject_player_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_case_evidence_hit_time ON case_evidence_events(guild_id,server_id,ingested_at DESC) WHERE event_type='PLAYER_HIT';
+`,
+	},
+
 }
 
 // TrialGrantBackfillSQL records, for every owner whose organization already had a trial before
