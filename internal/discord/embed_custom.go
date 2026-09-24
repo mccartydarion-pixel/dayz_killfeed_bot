@@ -88,11 +88,18 @@ func killfeedVars(ev *killfeed.Event, serverName string) map[string]string {
 	}
 	setIf(m, "range", presentation.RangeClass(ev.Distance, melee))
 	setIf(m, "ammo", ev.Ammo)
-	// Hit data: only when the event itself carries it (the same fields the default
-	// card's headshot classification reads) - never inferred.
+	// Hit data: only when the event itself carries it, or when the lethal hit was reliably
+	// correlated with this kill (killfeed.FinalHit: the ADM line immediately before the kill, same
+	// boot file, same players, second, weapon and distance) - never inferred or approximated.
 	setIf(m, "hit_zone", ev.HitZone)
 	if ev.Damage != nil {
 		m["damage"] = formatDamage(*ev.Damage)
+	}
+	if fh := ev.FinalHit; fh != nil && ev.HitZone == "" && ev.Damage == nil {
+		setIf(m, "hit_zone", fh.Zone)
+		if fh.Damage != nil {
+			m["damage"] = formatDamage(*fh.Damage)
+		}
 	}
 	if isHeadshot(ev) {
 		m["headshot"] = "HEADSHOT"

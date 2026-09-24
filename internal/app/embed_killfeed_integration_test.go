@@ -98,6 +98,9 @@ func (w *runtimeWorld) putKill(inst int64, style string) {
 	if rr := w.admin.put(w.fixture.OrgID, inst, "KILLFEED", w.fixture.OwnerDiscordID, killTemplateBody(style)); rr.Code != http.StatusOK {
 		w.t.Fatalf("save KILLFEED template: %d %s", rr.Code, rr.Body.String())
 	}
+	if rr := w.admin.activate(w.fixture.OrgID, inst, "KILLFEED", w.fixture.OwnerDiscordID, "CUSTOM"); rr.Code != http.StatusOK {
+		w.t.Fatalf("activate KILLFEED template: %d %s", rr.Code, rr.Body.String())
+	}
 }
 
 func isDefaultKillCard(card *discordgo.MessageEmbed, ev *killfeed.Event) bool {
@@ -294,7 +297,7 @@ func TestBountyClaimBehaviorUnchangedByCustomTemplates(t *testing.T) {
 	tmpl := map[string]any{"enabled": true, "color": "#9e4b4b",
 		"title":       map[string]any{"enabled": true, "template": "TRACK {{status}} {{target}}"},
 		"description": map[string]any{"enabled": true, "template": "{{amount}} by {{hunter}}"}}
-	if rr := w.admin.put(w.fixture.OrgID, w.fixture.InstallationID, "BOUNTY_TRACKING", w.fixture.OwnerDiscordID, tmpl); rr.Code != http.StatusOK {
+	if rr := w.admin.put(w.fixture.OrgID, w.fixture.InstallationID, "BOUNTY_TRACKING", w.fixture.OwnerDiscordID, tmpl); rr.Code != http.StatusOK || w.admin.activate(w.fixture.OrgID, w.fixture.InstallationID, "BOUNTY_TRACKING", w.fixture.OwnerDiscordID, "CUSTOM").Code != http.StatusOK {
 		t.Fatalf("save: %d %s", rr.Code, rr.Body.String())
 	}
 	q, cap := w.server(w.serverA, w.renderer)

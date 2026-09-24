@@ -157,9 +157,15 @@ func singleLine(s string) string {
 // value containing "{{x}}" stays literal text). It reports whether any referenced
 // variable was absent, and an error for a variable outside the route's approved set.
 func substitute(tmpl string, vars map[string]string, approved map[string]bool) (string, bool, error) {
+	return substituteExpanded(ExpandNewlines(tmpl), vars, approved, nil)
+}
+
+// substituteExpanded is substitute on text whose newline syntax is already expanded (so it is
+// never expanded twice). absent, when non-nil, collects the names of referenced absent variables.
+func substituteExpanded(text string, vars map[string]string, approved map[string]bool, absent map[string]bool) (string, bool, error) {
 	missing := false
 	var badVar string
-	out := tokenRe.ReplaceAllStringFunc(ExpandNewlines(tmpl), func(tok string) string {
+	out := tokenRe.ReplaceAllStringFunc(text, func(tok string) string {
 		name := tokenRe.FindStringSubmatch(tok)[1]
 		if !approved[name] {
 			badVar = name
@@ -168,6 +174,9 @@ func substitute(tmpl string, vars map[string]string, approved map[string]bool) (
 		v := vars[name]
 		if v == "" {
 			missing = true
+			if absent != nil {
+				absent[name] = true
+			}
 			return ""
 		}
 		return v
@@ -179,6 +188,55 @@ func substitute(tmpl string, vars map[string]string, approved map[string]bool) (
 		out = spaces.ReplaceAllString(out, " ")
 	}
 	return strings.TrimSpace(out), missing, nil
+}
+
+// substituteLines renders a multi-line section (description, footer) line by line. A line that
+// references an absent variable is omitted ENTIRELY - "Hit: {{hit_zone}} | Damage: {{damage}}"
+// without hit data disappears instead of rendering empty labels - exactly as a field referencing
+// an absent variable is omitted. Lines without placeholders, and blank spacer lines, are kept.
+// It returns the rendered text and how many lines were omitted.
+func substituteLines(tmpl string, vars map[string]string, approved map[string]bool, rep *RenderReport) (string, error) {
+	lines := strings.Split(ExpandNewlines(tmpl), "\n")
+	kept := make([]string, 0, len(lines))
+	for _, line := range lines {
+		absent := map[string]bool{}
+		out, missing, err := substituteExpanded(line, vars, approved, absent)
+		if err != nil {
+			return "", err
+		}
+		if missing {
+			if rep != nil {
+				rep.OmittedLines++
+				for name := range absent {
+					rep.noteAbsent(name)
+				}
+			}
+			continue
+		}
+		kept = append(kept, strings.TrimRight(out, " \t"))
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n")), nil
+}
+
+// RenderReport describes what a render left out, for the Embed Designer preview: lines omitted
+// because a variable they reference is absent, fields omitted for the same reason, and the names
+// of the absent variables. Live publishing ignores it; the embed is identical either way.
+type RenderReport struct {
+	OmittedLines     int
+	OmittedFields    int
+	AbsentVariables  []string
+	absentVariableIx map[string]bool
+}
+
+func (r *RenderReport) noteAbsent(name string) {
+	if r.absentVariableIx == nil {
+		r.absentVariableIx = map[string]bool{}
+	}
+	if !r.absentVariableIx[name] {
+		r.absentVariableIx[name] = true
+		r.AbsentVariables = append(r.AbsentVariables, name)
+		sort.Strings(r.AbsentVariables)
+	}
 }
 
 func validURL(raw string) string {
@@ -210,6 +268,17 @@ func validURL(raw string) string {
 //     combined text is trimmed to MaxTotal deterministically;
 //   - URLs are re-checked (http/https only); a bad one drops that element.
 func Render(cfg embedtemplates.Config, routeKey string, vars map[string]string, at time.Time) (*discordgo.MessageEmbed, error) {
+	return render(cfg, routeKey, vars, at, nil)
+}
+
+// RenderWithReport is Render plus a report of what was omitted (the preview's warnings).
+func RenderWithReport(cfg embedtemplates.Config, routeKey string, vars map[string]string, at time.Time) (*discordgo.MessageEmbed, RenderReport, error) {
+	var rep RenderReport
+	emb, err := render(cfg, routeKey, vars, at, &rep)
+	return emb, rep, err
+}
+
+func render(cfg embedtemplates.Config, routeKey string, vars map[string]string, at time.Time, rep *RenderReport) (*discordgo.MessageEmbed, error) {
 	if !cfg.Enabled {
 		return nil, ErrNotRenderable
 	}
@@ -237,7 +306,7 @@ func Render(cfg embedtemplates.Config, routeKey string, vars map[string]string, 
 		emb.Title = truncate(singleLine(s), MaxTitle)
 	}
 	if cfg.Description.Enabled {
-		s, _, err := substitute(cfg.Description.Template, vars, approved)
+		s, err := substituteLines(cfg.Description.Template, vars, approved, rep)
 		if err != nil {
 			return nil, err
 		}
@@ -250,15 +319,22 @@ func Render(cfg embedtemplates.Config, routeKey string, vars map[string]string, 
 		if !f.Enabled || len(emb.Fields) >= MaxFields {
 			continue
 		}
-		name, m1, err := substitute(f.Label, vars, approved)
+		absent := map[string]bool{}
+		name, m1, err := substituteExpanded(ExpandNewlines(f.Label), vars, approved, absent)
 		if err != nil {
 			return nil, err
 		}
-		val, m2, err := substitute(f.Template, vars, approved)
+		val, m2, err := substituteExpanded(ExpandNewlines(f.Template), vars, approved, absent)
 		if err != nil {
 			return nil, err
 		}
 		if m1 || m2 || name == "" || val == "" {
+			if rep != nil {
+				rep.OmittedFields++
+				for n := range absent {
+					rep.noteAbsent(n)
+				}
+			}
 			continue // optional data absent: omit the field entirely
 		}
 		emb.Fields = append(emb.Fields, &discordgo.MessageEmbedField{Name: truncate(singleLine(name), MaxFieldName), Value: truncate(val, MaxFieldValue), Inline: f.Inline})
@@ -274,7 +350,7 @@ func Render(cfg embedtemplates.Config, routeKey string, vars map[string]string, 
 		}
 	}
 	if cfg.Footer.Enabled {
-		text, _, err := substitute(cfg.Footer.Text, vars, approved)
+		text, err := substituteLines(cfg.Footer.Text, vars, approved, rep)
 		if err != nil {
 			return nil, err
 		}

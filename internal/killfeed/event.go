@@ -135,6 +135,9 @@ type Event struct {
 	SourceFile      string
 	SourceOffset    int64
 	SourceLocalTime *time.Time
+	// FinalHit is the lethal hit reliably correlated with a kill (final_hit.go); nil when the
+	// evidence does not agree. Presentation only: never used for statistics or fingerprints.
+	FinalHit *FinalHit
 
 	Raw string
 	// Competitive context is populated only after durable persistence and is

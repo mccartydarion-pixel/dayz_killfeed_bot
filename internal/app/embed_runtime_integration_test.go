@@ -64,6 +64,7 @@ func newRuntimeWorld(t *testing.T, ttl time.Duration) *runtimeWorld {
 	repo := repository.NewEmbedTemplateRepository(ew.a.DB.Pool)
 	r := embedrender.New(embedrender.Options{Source: repo, Enabled: true, TTL: ttl})
 	ew.a.EmbedTemplates = embedtemplates.NewService(repo)
+	ew.a.EmbedActivations = repo
 	ew.a.EmbedRenderer = r
 	rich := &richSender{cards: map[string][]string{}}
 	feed := discord.NewEconomyFeed(rich, ew.a.ChannelRoutes, ew.servers) // the real feed, delivering to the recording sender
@@ -91,6 +92,10 @@ func (w *runtimeWorld) putEco(inst int64, title string) {
 	w.t.Helper()
 	if rr := w.admin.put(w.fixture.OrgID, inst, "ECONOMY", w.fixture.OwnerDiscordID, ecoTemplate(title)); rr.Code != http.StatusOK {
 		w.t.Fatalf("save template: %d %s", rr.Code, rr.Body.String())
+	}
+	// Saving never makes a template live on its own: the installation selects Custom Embed.
+	if rr := w.admin.activate(w.fixture.OrgID, inst, "ECONOMY", w.fixture.OwnerDiscordID, "CUSTOM"); rr.Code != http.StatusOK {
+		w.t.Fatalf("activate template: %d %s", rr.Code, rr.Body.String())
 	}
 }
 
@@ -230,6 +235,9 @@ func TestEmbedRuntimeTTLPicksUpOutOfProcessChanges(t *testing.T) {
 	if _, err := repository.NewEmbedTemplateRepository(w.a.DB.Pool).Upsert(context.Background(), w.fixture.OrgID, w.fixture.InstallationID, cfg); err != nil {
 		t.Fatal(err)
 	}
+	if err := repository.NewEmbedTemplateRepository(w.a.DB.Pool).SetActivation(context.Background(), w.fixture.OrgID, w.fixture.InstallationID, "ECONOMY", repository.EmbedModeCustom, 0); err != nil {
+		t.Fatal(err)
+	}
 	time.Sleep(250 * time.Millisecond) // past the TTL, and no Invalidate call
 	if _, err := w.adminCredit(w.hunter, 2, ""); err != nil {
 		t.Fatal(err)
@@ -285,6 +293,11 @@ func TestEmbedRuntimeMalformedStoredTemplateFallsBack(t *testing.T) {
 		 ON CONFLICT (installation_id, route_key) DO UPDATE SET config_json = EXCLUDED.config_json`, w.fixture.InstallationID); err != nil {
 		t.Fatal(err)
 	}
+	// Custom Embed is selected, so the renderer reads (and must reject) the malformed template.
+	if _, err := w.a.DB.Pool.Exec(context.Background(),
+		`INSERT INTO installation_embed_activation(installation_id, route_key, mode) VALUES($1,'ECONOMY','CUSTOM') ON CONFLICT DO NOTHING`, w.fixture.InstallationID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := w.adminCredit(w.hunter, 8, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -312,7 +325,7 @@ func TestEmbedRuntimeBountyTrackingLifecycle(t *testing.T) {
 			{"key": "weapon", "label": "Weapon", "enabled": true, "template": "{{weapon}}", "inline": true, "order": 1},
 		},
 	}
-	if rr := w.admin.put(w.fixture.OrgID, w.fixture.InstallationID, "BOUNTY_TRACKING", w.fixture.OwnerDiscordID, tmpl); rr.Code != http.StatusOK {
+	if rr := w.admin.put(w.fixture.OrgID, w.fixture.InstallationID, "BOUNTY_TRACKING", w.fixture.OwnerDiscordID, tmpl); rr.Code != http.StatusOK || w.admin.activate(w.fixture.OrgID, w.fixture.InstallationID, "BOUNTY_TRACKING", w.fixture.OwnerDiscordID, "CUSTOM").Code != http.StatusOK {
 		t.Fatalf("save: %d %s", rr.Code, rr.Body.String())
 	}
 	w.save(w.fixture.InstallationID, "kf-A", map[string]string{"BOUNTY_TRACKING": "track-A"})

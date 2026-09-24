@@ -198,6 +198,8 @@ type App struct {
 	// EmbedTemplates persists custom embed templates (storage + API only; no
 	// publisher reads them - runtime rendering is not enabled).
 	EmbedTemplates *embedtemplates.Service
+	// EmbedActivations stores each installation's per-route Default/Custom selection.
+	EmbedActivations embedActivationStore
 	// EmbedRenderer renders saved custom templates at publish time (Embed Designer
 	// Phase 4). It exists whenever the database does, but publishers are only wired to
 	// it when CHAMPION_CUSTOM_EMBEDS_ENABLED is true; it is also the cache the template
@@ -693,6 +695,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.adminSaaS = adminrepo.New(db.Pool)
 			embedRepo := repository.NewEmbedTemplateRepository(db.Pool)
 			app.EmbedTemplates = embedtemplates.NewService(embedRepo)
+			app.EmbedActivations = embedRepo
 			app.FactionHub = repository.NewFactionHubRepository(db.Pool)
 			app.FactionAssets = factionassets.NewService(repository.NewPostgresAssetStore(db.Pool), app.FactionHub)
 			app.FactionHubStats = factionstats.NewService(repository.NewHubStatsRepository(db.Pool), factionstats.Options{})

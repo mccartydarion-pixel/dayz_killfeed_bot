@@ -386,6 +386,7 @@ func (a *App) registerSaaSAPI() {
 	a.HTTPServer.Handle("GET /api/saas/organizations/{organizationID}/installations/{installationID}/embed-templates/{routeKey}", a.handleGetEmbedTemplate)
 	a.HTTPServer.Handle("PUT /api/saas/organizations/{organizationID}/installations/{installationID}/embed-templates/{routeKey}", a.handlePutEmbedTemplate)
 	a.HTTPServer.Handle("DELETE /api/saas/organizations/{organizationID}/installations/{installationID}/embed-templates/{routeKey}", a.handleDeleteEmbedTemplate)
+	a.HTTPServer.Handle("PUT /api/saas/organizations/{organizationID}/installations/{installationID}/embed-templates/{routeKey}/activation", a.handlePutEmbedActivation)
 	a.HTTPServer.Handle("POST /api/saas/organizations/{organizationID}/installations/{installationID}/embed-templates/{routeKey}/preview", a.handlePreviewEmbedTemplate)
 	a.HTTPServer.Handle("POST /api/saas/organizations/{organizationID}/installations/{installationID}/embed-templates/{routeKey}/test", a.handleTestEmbedTemplate)
 	a.HTTPServer.Handle("GET /api/saas/organizations/{organizationID}/installations/{installationID}/settings", a.handleGetInstallationSettings)

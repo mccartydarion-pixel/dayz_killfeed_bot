@@ -2125,6 +2125,33 @@ CREATE INDEX IF NOT EXISTS idx_deaths_source ON deaths(server_id, source_file, s
 		Name: "0052_live_sync_rpt_command_line_cleanup",
 		SQL:  LiveSyncCommandLineCleanupSQL,
 	},
+	{
+		Name: "0053_installation_embed_activation",
+		SQL: `
+-- Embed Designer runtime activation (docs/EMBED_RUNTIME.md "Activation"). Additive.
+-- One row per installation and route: which presentation the installation SELECTED for that route.
+-- DEFAULT (or no row) = the Champion default card; CUSTOM = the installation's saved template. A
+-- custom template renders only when (1) the operator rollout switch CHAMPION_CUSTOM_EMBEDS_ENABLED
+-- is on, (2) the route supports runtime rendering, (3) this row says CUSTOM and (4) the saved
+-- template is valid and enabled. Scoped by installation: one installation never affects another.
+CREATE TABLE IF NOT EXISTS installation_embed_activation (
+    installation_id BIGINT NOT NULL REFERENCES installations(id) ON DELETE CASCADE,
+    route_key TEXT NOT NULL,
+    mode TEXT NOT NULL CHECK (mode IN ('DEFAULT', 'CUSTOM')),
+    updated_by_user_id BIGINT,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (installation_id, route_key)
+);
+-- Before this migration a saved, enabled template was meant to render whenever the rollout switch
+-- was on. That intent is carried over as an explicit CUSTOM selection, for the runtime routes only;
+-- every other route starts at DEFAULT. Templates themselves are untouched.
+INSERT INTO installation_embed_activation (installation_id, route_key, mode)
+SELECT installation_id, route_key, 'CUSTOM' FROM installation_embed_templates
+WHERE route_key IN ('KILLFEED','HITFEED','PVE_FEED','BOUNTY_TRACKING','CONNECTIONS','ECONOMY')
+  AND COALESCE((config_json->>'enabled')::boolean, false)
+ON CONFLICT (installation_id, route_key) DO NOTHING;
+`,
+	},
 }
 
 // LiveSyncCommandLineCleanupSQL (migration 0052, Champion Live Sync phase 2.1, docs/

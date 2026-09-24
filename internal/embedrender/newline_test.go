@@ -71,8 +71,10 @@ func TestNewlineWithMissingOptionalValue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The description keeps its other lines; the stats field is omitted entirely.
-	if e.Description != "Weapon: M4-A1\nDistance: 11.7m\n\nStreak:" {
+	// The description keeps its other lines; the line whose variable is absent ("Streak:
+	// {{streak}}") is omitted entirely instead of leaving an empty label; the stats field is
+	// omitted entirely.
+	if e.Description != "Weapon: M4-A1\nDistance: 11.7m" {
 		t.Fatalf("description: %q", e.Description)
 	}
 	for _, f := range e.Fields {

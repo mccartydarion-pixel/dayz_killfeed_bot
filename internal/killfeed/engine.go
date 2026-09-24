@@ -296,6 +296,10 @@ type Engine struct {
 	lastBootScan    time.Time
 	lastNewBootFile string
 	bootStats       BootAuthorityStats
+	// Final-hit correlation (final_hit.go): the previous processed line and the last lethal hit.
+	lastLineFile string
+	lastLineEnd  int64
+	lastLethal   *lethalHit
 	// onPollCycle is told the outcome of every completed poll cycle (worker liveness).
 	onPollCycle        func(PollOutcome)
 	transportStreak    int
@@ -1675,6 +1679,11 @@ func (e *Engine) processLine(line string) (bool, error) {
 // an authoritative end offset may be persisted as C.A.S.E. evidence.
 func (e *Engine) processLineAt(line, sourcePath string, endOffset int64) (bool, error) {
 	e.metrics.ADMLinesProcessed++
+	lineFile := ""
+	if sourcePath != "" {
+		lineFile = canonicalADMID(sourcePath)
+	}
+	prevFile, prevEnd := e.noteLine(lineFile, endOffset)
 	ev, err := e.parser.ParseLine(line)
 	if err != nil {
 		e.metrics.EventsIgnored++
@@ -1703,6 +1712,7 @@ func (e *Engine) processLineAt(line, sourcePath string, endOffset int64) (bool, 
 	if src := e.locationSource(ev, sourcePath, endOffset, ""); src.File != "" {
 		ev.SourceFile, ev.SourceOffset, ev.SourceLocalTime = src.File, src.Offset, src.LocalTime
 	}
+	e.correlateFinalHit(ev, lineFile, endOffset, prevFile, prevEnd)
 	if ev.Type == EventPlayerDisconnect {
 		slog.Info("component=presence", "event", "disconnect_parsed", "matched", true)
 	}

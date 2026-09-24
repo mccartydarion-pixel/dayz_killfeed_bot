@@ -250,6 +250,13 @@ func RenderEvent(cfg embedtemplates.Config, routeKey string, vars map[string]str
 	return Render(cfg, routeKey, approvedOnly(routeKey, vars), at)
 }
 
+// RenderEventWithReport is RenderEvent plus what the render omitted (lines and fields whose
+// variables are absent, and those variables' names) - the Embed Designer preview's warnings. The
+// embed is exactly RenderEvent's.
+func RenderEventWithReport(cfg embedtemplates.Config, routeKey string, vars map[string]string, at time.Time) (*discordgo.MessageEmbed, RenderReport, error) {
+	return RenderWithReport(cfg, routeKey, approvedOnly(routeKey, vars), at)
+}
+
 // approvedOnly keeps only the variables the route approves and sanitizes each value,
 // so a publisher can neither pass an extra variable nor an unsanitized one.
 func approvedOnly(routeKey string, vars map[string]string) map[string]string {

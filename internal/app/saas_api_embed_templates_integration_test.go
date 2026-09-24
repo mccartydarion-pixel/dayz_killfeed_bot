@@ -32,6 +32,7 @@ func newEmbedWorld(t *testing.T) *embedWorld {
 	t.Helper()
 	a, verifier := saasIntegrationApp(t)
 	a.EmbedTemplates = embedtemplates.NewService(repository.NewEmbedTemplateRepository(a.DB.Pool))
+	a.EmbedActivations = repository.NewEmbedTemplateRepository(a.DB.Pool)
 	w := &embedWorld{t: t, a: a}
 	w.a1 = buildInstallationFixture(t, a, verifier)
 	w.b1 = buildInstallationFixture(t, a, verifier)
@@ -101,6 +102,12 @@ func (w *embedWorld) list(org, inst int64, actor string) *httptest.ResponseRecor
 }
 func (w *embedWorld) del(org, inst int64, route, actor string) *httptest.ResponseRecorder {
 	return w.call(w.a.handleDeleteEmbedTemplate, http.MethodDelete, org, inst, route, actor, nil)
+}
+
+// activate selects Champion Default ("DEFAULT") or the saved Custom Embed ("CUSTOM") for a route
+// through the real activation endpoint.
+func (w *embedWorld) activate(org, inst int64, route, actor, mode string) *httptest.ResponseRecorder {
+	return w.call(w.a.handlePutEmbedActivation, http.MethodPut, org, inst, route, actor, map[string]string{"mode": mode})
 }
 
 // --- authorization ---------------------------------------------------------------------------------

@@ -94,8 +94,9 @@ func TestMissingOptionalDataOmitsTheFieldEntirely(t *testing.T) {
 	if got := mustRender(t, killTemplate(), v); len(got.Fields) != 2 {
 		t.Fatalf("an empty value is absent: %+v", got.Fields)
 	}
-	// In running text the gap is closed instead of leaving a hole.
-	if e.Description != "A M4-A1 kill from away." {
+	// In running text the line that references the absent value is omitted entirely - never a
+	// broken sentence such as "A M4-A1 kill from away." (the template's only line here).
+	if e.Description != "" {
 		t.Fatalf("description gap: %q", e.Description)
 	}
 	// A field whose LABEL references the absent value is omitted too.

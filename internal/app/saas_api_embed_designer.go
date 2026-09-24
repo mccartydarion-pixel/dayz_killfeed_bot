@@ -129,6 +129,11 @@ type EmbedPreviewResponse struct {
 	Metrics                  EmbedMetrics      `json:"metrics"`
 	Warnings                 []string          `json:"warnings"`
 	Destination              *EmbedDestination `json:"destination,omitempty"`
+	// Conditional content (the same rules live events follow): lines and fields omitted because
+	// a variable they reference is absent from the sample, and those variables' names.
+	OmittedLines    int      `json:"omittedLines"`
+	OmittedFields   int      `json:"omittedFields"`
+	AbsentVariables []string `json:"absentVariables"`
 }
 
 // EmbedTestResponse is POST .../embed-templates/{routeKey}/test.
@@ -223,7 +228,8 @@ func renderEmbedDraft(routeKey string, req EmbedDraftRequest, runtimeRendering s
 		resp.Warnings = append(resp.Warnings, "Custom embeds are not enabled on this deployment yet (runtimeRendering NOT_ENABLED): live events still use the Champion default.")
 	}
 
-	emb, err := embedrender.RenderEvent(cfg, routeKey, req.Variables, at)
+	emb, report, err := embedrender.RenderEventWithReport(cfg, routeKey, req.Variables, at)
+	resp.OmittedLines, resp.OmittedFields, resp.AbsentVariables = report.OmittedLines, report.OmittedFields, append([]string{}, report.AbsentVariables...)
 	if err != nil {
 		resp.Reason = reasonNoContent
 		if !cfg.Enabled {
@@ -234,14 +240,11 @@ func renderEmbedDraft(routeKey string, req EmbedDraftRequest, runtimeRendering s
 	resp.Renderable = true
 	resp.Embed = embedToDTO(emb)
 	resp.Metrics = EmbedMetrics{FieldCount: len(emb.Fields), TotalText: embedrender.TotalText(emb)}
-	enabled := 0
-	for _, f := range cfg.Fields {
-		if f.Enabled {
-			enabled++
-		}
+	if report.OmittedFields > 0 {
+		resp.Warnings = append(resp.Warnings, fmt.Sprintf("%d field(s) are hidden because their values are missing - live events omit them the same way.", report.OmittedFields))
 	}
-	if omitted := enabled - len(emb.Fields); omitted > 0 {
-		resp.Warnings = append(resp.Warnings, fmt.Sprintf("%d field(s) are hidden because their values are missing - live events omit them the same way.", omitted))
+	if report.OmittedLines > 0 {
+		resp.Warnings = append(resp.Warnings, fmt.Sprintf("%d line(s) are hidden because a variable they use is unavailable (%s) - live events omit them the same way.", report.OmittedLines, strings.Join(report.AbsentVariables, ", ")))
 	}
 	return resp, emb, nil
 }
