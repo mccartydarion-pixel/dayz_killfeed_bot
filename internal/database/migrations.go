@@ -2152,6 +2152,68 @@ WHERE route_key IN ('KILLFEED','HITFEED','PVE_FEED','BOUNTY_TRACKING','CONNECTIO
 ON CONFLICT (installation_id, route_key) DO NOTHING;
 `,
 	},
+	{
+		Name: "0054_case_addon_subscriptions",
+		SQL: `
+-- Phase 6.1: C.A.S.E. is an ADDITIVE per-server purchase, never a new base plan.
+-- An installation may be repointed to a different game server; the purchased
+-- game_server_id remains bound, and runtime access checks require equality.
+-- RESTRICT deletion of bound installation/server: paid Stripe subscriptions
+-- must be cancelled/reconciled before removing their local binding.
+CREATE TABLE IF NOT EXISTS case_addon_subscriptions (
+    id BIGSERIAL PRIMARY KEY,
+    organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE RESTRICT,
+    installation_id BIGINT NOT NULL,
+    game_server_id BIGINT NOT NULL REFERENCES game_servers(id) ON DELETE RESTRICT,
+    tier TEXT NOT NULL CHECK (tier IN ('CASE_WATCH','CASE_PRO','CASE_COMMAND')),
+    status TEXT NOT NULL DEFAULT 'PENDING'
+        CHECK (status IN ('PENDING','TRIAL','ACTIVE','PAST_DUE','CANCELED','SUSPENDED')),
+    provider TEXT CHECK (provider IS NULL OR provider = 'stripe'),
+    provider_customer_id TEXT,
+    provider_subscription_id TEXT,
+    provider_price_id TEXT,
+    current_period_start TIMESTAMPTZ,
+    current_period_end TIMESTAMPTZ,
+    trial_started_at TIMESTAMPTZ,
+    trial_ends_at TIMESTAMPTZ,
+    cancel_at_period_end BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT case_addon_installation_scope
+        FOREIGN KEY (installation_id, organization_id)
+        REFERENCES installations(id, organization_id) ON DELETE RESTRICT,
+    CONSTRAINT uq_case_addon_org_installation UNIQUE (organization_id, installation_id),
+    CONSTRAINT uq_case_addon_org_server UNIQUE (organization_id, game_server_id),
+    CONSTRAINT case_addon_period_order CHECK (
+        current_period_start IS NULL OR current_period_end IS NULL OR
+        current_period_start < current_period_end
+    ),
+    CONSTRAINT case_addon_trial_order CHECK (
+        trial_started_at IS NULL OR trial_ends_at IS NULL OR
+        trial_started_at < trial_ends_at
+    ),
+    CONSTRAINT case_addon_subscription_id_nonempty CHECK (
+        provider_subscription_id IS NULL OR LENGTH(BTRIM(provider_subscription_id)) > 0
+    ),
+    CONSTRAINT case_addon_active_provider CHECK (
+        status NOT IN ('ACTIVE','TRIAL') OR (
+            COALESCE(provider,'') = 'stripe' AND
+            NULLIF(BTRIM(COALESCE(provider_subscription_id,'')),'') IS NOT NULL AND
+            NULLIF(BTRIM(COALESCE(provider_price_id,'')),'') IS NOT NULL AND
+            current_period_end IS NOT NULL
+        )
+    )
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_case_addon_provider_subscription
+    ON case_addon_subscriptions(provider, provider_subscription_id)
+    WHERE provider_subscription_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_case_addon_org_status
+    ON case_addon_subscriptions(organization_id, status, installation_id);
+-- No backfill and no write/API route in this milestone. All packages start
+-- with zero rows; only the later verified add-on webhook may grant access.
+`,
+	},
+
 }
 
 // LiveSyncCommandLineCleanupSQL (migration 0052, Champion Live Sync phase 2.1, docs/
