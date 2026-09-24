@@ -23,6 +23,7 @@ func (a *App) registerPlayerIntelligenceRoutes(base string) {
 	h("GET "+base+"/players", a.handlePlayerDirectory)
 	h("GET "+base+"/players/online", a.handleOnlinePlayers)
 	h("GET "+base+"/players/{playerID}/locations/latest", a.handleLatestLocation)
+	h("GET "+base+"/players/{playerID}/locations/current", a.handleCurrentLocation)
 	h("GET "+base+"/players/{playerID}/locations", a.handleLocationHistory)
 }
 
@@ -36,6 +37,10 @@ type locationDTO struct {
 	ObservedAt string   `json:"observedAt"`
 	AgeSeconds int64    `json:"ageSeconds"`
 	Freshness  string   `json:"freshness"`
+	// Live Sync phase 1: the DayZ server-local time written in the ADM line (no timezone - DayZ
+	// does not state one) and whether this is a current-session observation.
+	SourceLocalTime *string `json:"sourceLocalTime,omitempty"`
+	SessionScope    string  `json:"sessionScope"` // CURRENT_SESSION | HISTORICAL
 }
 
 // toLocationDTO computes age/freshness at read time (task section 5: every exposed location must
@@ -49,12 +54,21 @@ func toLocationDTO(e *repository.LocationEvent) *locationDTO {
 	if age < 0 {
 		age = 0
 	}
-	return &locationDTO{
+	dto := &locationDTO{
 		X: e.X, Z: e.Z, Y: e.Y, EventType: e.EventType,
-		ObservedAt: e.ObservedAt.UTC().Format(time.RFC3339),
-		AgeSeconds: int64(age.Seconds()),
-		Freshness:  repository.ClassifyFreshness(age),
+		ObservedAt:   e.ObservedAt.UTC().Format(time.RFC3339),
+		AgeSeconds:   int64(age.Seconds()),
+		Freshness:    repository.ClassifyFreshness(age),
+		SessionScope: "HISTORICAL",
 	}
+	if e.SourceLocalTime != nil {
+		v := e.SourceLocalTime.Format("2006-01-02T15:04:05")
+		dto.SourceLocalTime = &v
+	}
+	if e.CurrentSession {
+		dto.SessionScope = "CURRENT_SESSION"
+	}
+	return dto
 }
 
 // --- player directory (task sections 1-2) -----------------------------------------------------
@@ -77,6 +91,10 @@ type playerDirectoryEntryDTO struct {
 	WarningCount            int64        `json:"warningCount"`
 	CurrentLocation         *locationDTO `json:"currentLocation,omitempty"`
 	LocationFreshness       *string      `json:"locationFreshness,omitempty"`
+	// CurrentLocationStatus is CURRENT when currentLocation is a current-session observation and
+	// UNKNOWN otherwise; lastKnownLocation is the newest observation ever (possibly historical).
+	CurrentLocationStatus string       `json:"currentLocationStatus"`
+	LastKnownLocation     *locationDTO `json:"lastKnownLocation,omitempty"`
 }
 
 func toPlayerDirectoryEntryDTO(e repository.PlayerDirectoryEntry) playerDirectoryEntryDTO {
@@ -87,10 +105,13 @@ func toPlayerDirectoryEntryDTO(e repository.PlayerDirectoryEntry) playerDirector
 		CurrentSessionStartedAt: nullableTimeStr(e.CurrentSessionStartedAt),
 		Kills:                   e.Kills, Deaths: e.Deaths, FactionID: e.FactionID, FactionName: e.FactionName, WarningCount: e.WarningCount,
 	}
+	dto.CurrentLocationStatus = "UNKNOWN"
 	if loc := toLocationDTO(e.CurrentLocation); loc != nil {
 		dto.CurrentLocation = loc
 		dto.LocationFreshness = &loc.Freshness
+		dto.CurrentLocationStatus = "CURRENT"
 	}
+	dto.LastKnownLocation = toLocationDTO(e.LastKnownLocation)
 	return dto
 }
 
@@ -295,4 +316,42 @@ func (a *App) handleLocationHistory(w http.ResponseWriter, r *http.Request) {
 	// Privacy/audit (task section 10): viewing a player's location history is privileged read access.
 	a.recordAudit(ctx, ac, "PLAYER_LOCATION_HISTORY_VIEWED", playerTarget(playerID), "", "success", nil, map[string]int{"count": len(out)})
 	writeSaaSJSON(w, http.StatusOK, map[string]any{"items": out, "nextCursor": nextCursor})
+}
+
+// handleCurrentLocation is GET .../admin/players/{playerID}/locations/current
+// (PLAYER_LAST_LOCATION_VIEW): the player's position in the current server session and current
+// connection, or status UNKNOWN - never a previous-session position (docs/CHAMPION_LIVE_SYNC.md).
+func (a *App) handleCurrentLocation(w http.ResponseWriter, r *http.Request) {
+	ac, ok := a.requireCapability(w, r, permissions.CapPlayerLastLocationView)
+	if !ok {
+		return
+	}
+	playerID, good := pathInt64(w, r, "playerID")
+	if !good {
+		return
+	}
+	if ac.scope.ServerID == nil {
+		writeSaaSError(w, codeInvalidRequest, "no DayZ server selected for this installation")
+		return
+	}
+	if a.Locations == nil {
+		writeSaaSError(w, codeInternalError, "location history unavailable")
+		return
+	}
+	if !enforceRateLimit(w, a.saasAdminReadLimiter, rateLimitKey(r)) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), adminTimeout)
+	defer cancel()
+	loc, err := a.Locations.CurrentLocation(ctx, ac.scope.GuildID, *ac.scope.ServerID, playerID)
+	if err != nil {
+		slog.Warn("component=saas_api", "msg", "current location query failed", "err", err.Error())
+		writeSaaSError(w, codeInternalError, "could not resolve current location")
+		return
+	}
+	status := "UNKNOWN"
+	if loc != nil {
+		status = "CURRENT"
+	}
+	writeSaaSJSON(w, http.StatusOK, map[string]any{"status": status, "location": toLocationDTO(loc)})
 }

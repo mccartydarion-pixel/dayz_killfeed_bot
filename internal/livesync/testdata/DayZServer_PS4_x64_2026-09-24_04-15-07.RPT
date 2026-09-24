@@ -1,0 +1,32 @@
+=====================================================================
+== C:\SERVICES\ni00000000_2_local\dayzps\DayZServer_PS4_x64.exe
+== "C:\SERVICES\ni00000000_2_local\dayzps\DayZServer_PS4_x64.exe" -ip=203.0.113.10 -port=15200 -config=serverDZ_Private.cfg -limitFPS=100 -dologs -VMErrorMode "log_only" -adminlog -freezecheck
+=====================================================================
+Exe timestamp: 2026/08/11 11:19:04
+Current time:  2026/09/24 04:15:07
+Version 1.29.163709
+=====================================================================
+
+ 4:15:07.561 String "STR_server_shutdown" listed twice in "Global"
+ 4:15:07.592 Localization not present: STR_DATE_FORMAT_SHORT
+ 4:15:14.539 String "STR_DN_UNKNOWN" not found (not in localization table)
+ 4:15:30.991 Warning Message: Cannot open object bmp.p3d
+ 4:15:32.636 Warning Message: Cannot open object dz\structures\roads\sidewalks\taxiway_6.p3d
+ 4:15:38.879 Warning Message: Animation source Visibility not found in bin\config.bin/CfgVehicles/ClaymoreMine/
+Reason: [::SpawnObjects] :: [ERROR] :: File "$mission:custom/The_Losst_City.json" does not exist, check the provided path
+scripts/3_Game/objectspawner.c:28 Function SpawnObjects
+scripts/3_Game/objectspawner.c:75 Function OnGameplayDataHandlerLoad
+ 5:20:09.533  NETWORK      : Server: Player info removed - name Ceiyxe, id 000000001 (total 1 identities, 1 players)
+ 5:20:09.536  NETWORK      : server: Player dpid=<redacted> removed from index=1
+ 5:20:09.536  NETWORK      : Server: Identity removed - name Ceiyxe, id 000000001 (total 0 identities, 1 players)
+ 5:20:24.116 [CE][VehicleRespawner] (PRIContaminatedArea) :: Initial random enabled for "StaticContaminatedArea" - Chosen nominal: 3
+ 5:20:54.643 [A2S] received data
+ 5:21:14.888 [Server] :: termination in: 5
+ 5:21:15.889 [Server] :: termination in: 4
+ 5:21:18.917 [Server] :: termination in: 1
+ 5:21:20.713 ENGINE       : Destroying game
+ 5:21:20.713  SCRIPT       : ~DayZGame()
+ 5:21:22.916 RESOURCES (E): ==== Resource leaks ====
+ 5:21:22.916 RESOURCES (E): dz/anims/workspaces/player/player_main/player_main.asi   7
+ 5:21:24.103  --- Termination successfully completed --- 
+ 5:21:24.200 Something new and unrecognized

@@ -156,15 +156,24 @@ pointer fields marshal as `null`/omitted, never a guessed default):
   "factionId": 9,
   "factionName": "The Wolves",
   "warningCount": 0,
-  "currentLocation": { "x": 4102.5, "z": 8811.2, "y": 12.1, "eventType": "HIT", "observedAt": "2026-09-23T04:11:55Z", "ageSeconds": 5, "freshness": "LIVE_RECENT" },
-  "locationFreshness": "LIVE_RECENT"
+  "currentLocation": { "x": 4102.5, "z": 8811.2, "y": 12.1, "eventType": "HIT", "observedAt": "2026-09-23T04:11:55Z", "ageSeconds": 5, "freshness": "LIVE_RECENT", "sessionScope": "CURRENT_SESSION", "sourceLocalTime": "2026-09-23T00:11:55" },
+  "locationFreshness": "LIVE_RECENT",
+  "currentLocationStatus": "CURRENT",
+  "lastKnownLocation": { "...": "same shape; may be HISTORICAL" }
 }
 ```
+
+**Current-session semantics (Champion Live Sync phase 1, docs/CHAMPION_LIVE_SYNC.md section 4).**
+`currentLocation` is present only for a connected player observed in the server's current ADM file at
+or after their latest connect in it; otherwise it is absent and `currentLocationStatus` is `UNKNOWN`. A
+previous-session position is never current - it is exposed as `lastKnownLocation`. ADM player-list
+entries are stored as `PLAYER_LIST` location events every five minutes.
 
 ## Location and online APIs (task sections 6-8)
 
 ```
-GET .../admin/players/{playerID}/locations/latest   PLAYER_LAST_LOCATION_VIEW  -> a single locationDTO, 404 if never observed
+GET .../admin/players/{playerID}/locations/latest   PLAYER_LAST_LOCATION_VIEW  -> a single locationDTO (last known, may be HISTORICAL), 404 if never observed
+GET .../admin/players/{playerID}/locations/current  PLAYER_LAST_LOCATION_VIEW  -> { status: CURRENT | UNKNOWN, location: locationDTO | null }
 GET .../admin/players/{playerID}/locations           PLAYER_LOCATION_VIEW       -> newest-first, filters: from/to (RFC3339), eventType, cursor, limit
 GET .../admin/players/online                         PLAYER_LAST_LOCATION_VIEW  -> currently-connected players + latest known location each
 ```

@@ -1,0 +1,7 @@
+---------------------------------------------
+Log C:\SERVICES\ni00000000_2_local\dayzps\config\script_2026-09-24_01-47-18.log started at 24.09. 01:47:19
+
+SCRIPT       : Module: GameLib; loaded 13x files; 13x classes; used 7/2097 kB (0%) of static memory
+SCRIPT       : Registered 305 temporary action enum(s), UAN==305
+ SCRIPT       : Module: $CurrentDir:mpmissions\dayzOffline.chernarusplus\init.c; loaded 1x files; 1x classes; used 4/1048 kB (0%) of static memory
+ SCRIPT       : ~DayZGame()

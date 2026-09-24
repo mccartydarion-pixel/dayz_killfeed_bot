@@ -162,6 +162,7 @@ POST   /stats/reset-season                     SERVER_STATS_RESET   body: {"name
 GET    /players                                PLAYER_DIRECTORY_VIEW     ?q=&online=&linked=&cursor=&limit=  (Phase 3, docs/PLAYER_INTELLIGENCE.md)
 GET    /players/online                         PLAYER_LAST_LOCATION_VIEW  currently-connected players + latest known location each
 GET    /players/{playerID}/locations/latest    PLAYER_LAST_LOCATION_VIEW  404 if never observed
+GET    /players/{playerID}/locations/current   PLAYER_LAST_LOCATION_VIEW  { status: CURRENT | UNKNOWN, location } (docs/CHAMPION_LIVE_SYNC.md)
 GET    /players/{playerID}/locations           PLAYER_LOCATION_VIEW      ?from=&to=&eventType=&cursor=&limit=, newest first
 
 GET    /zones                                  ZONE_VIEW                 (Phase 4, docs/ZONES_UAV_RADAR.md)

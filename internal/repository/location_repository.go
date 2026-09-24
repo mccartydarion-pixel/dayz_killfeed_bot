@@ -41,19 +41,36 @@ func (r *LocationRepository) InsertLocationEvents(ctx context.Context, events []
 	if len(events) == 0 {
 		return 0, nil
 	}
-	const colsPerRow = 9
-	query := `INSERT INTO player_location_events(guild_id,server_id,player_id,gamertag,x,z,y,event_type,observed_at) VALUES `
+	const colsPerRow = 13
+	query := `INSERT INTO player_location_events(guild_id,server_id,player_id,gamertag,x,z,y,event_type,observed_at,source_file,source_offset,source_local_time,snapshot_ref) VALUES `
 	args := make([]any, 0, len(events)*colsPerRow)
 	for i, e := range events {
 		if i > 0 {
 			query += ","
 		}
 		base := i * colsPerRow
-		query += "(" + placeholder(base+1) + "," + placeholder(base+2) + "," + placeholder(base+3) + "," + placeholder(base+4) + "," +
-			placeholder(base+5) + "," + placeholder(base+6) + "," + placeholder(base+7) + "," + placeholder(base+8) + "," + placeholder(base+9) + ")"
-		args = append(args, e.GuildID, e.ServerID, e.PlayerID, e.Gamertag, e.X, e.Z, e.Y, e.EventType, e.ObservedAt)
+		query += "("
+		for c := 1; c <= colsPerRow; c++ {
+			if c > 1 {
+				query += ","
+			}
+			query += placeholder(base + c)
+		}
+		query += ")"
+		var file, snap any
+		var offset any
+		if e.SourceFile != "" {
+			file, offset = e.SourceFile, e.SourceOffset
+		}
+		if e.SnapshotRef != "" {
+			snap = e.SnapshotRef
+		}
+		args = append(args, e.GuildID, e.ServerID, e.PlayerID, e.Gamertag, e.X, e.Z, e.Y, e.EventType, e.ObservedAt, file, offset, e.SourceLocalTime, snap)
 	}
-	query += ` ON CONFLICT (player_id, server_id, event_type, observed_at) DO NOTHING RETURNING id`
+	// Two partial unique indexes (migration 0050) deduplicate: a sourced row by its physical source
+	// (server, file, offset, player, type) - an exact replay guard - and a legacy unsourced row by
+	// the original (player, server, type, observed_at) key.
+	query += ` ON CONFLICT DO NOTHING RETURNING id`
 	rows, err := r.pool.Query(ctx, query, args...)
 	if err != nil {
 		return 0, err
@@ -82,6 +99,13 @@ type LocationEventInput struct {
 	EventType  string
 	ObservedAt time.Time
 	Source     string
+	// Physical source (docs/CHAMPION_LIVE_SYNC.md): canonical ADM file name, byte offset at the end
+	// of the line, the line's server-local time (zone-less) and the player-list snapshot identity.
+	// SourceFile "" = unknown source (legacy rows; deduplicated by the old key).
+	SourceFile      string
+	SourceOffset    int64
+	SourceLocalTime *time.Time
+	SnapshotRef     string
 }
 
 // --- location freshness (task section 5) ---------------------------------------------------------
@@ -123,14 +147,55 @@ type LocationEvent struct {
 	Y          *float64
 	EventType  string
 	ObservedAt time.Time
+	// SourceFile/SourceLocalTime are empty for rows written before Live Sync phase 1.
+	SourceFile      string
+	SourceLocalTime *time.Time
+	// CurrentSession is set by CurrentLocation: this row is from the server's current ADM session
+	// and the player's current connection.
+	CurrentSession bool
 }
 
-const locationEventCols = "id,player_id,x,z,y,event_type,observed_at"
+const locationEventCols = "e.id,e.player_id,e.x,e.z,e.y,e.event_type,e.observed_at,COALESCE(e.source_file,''),e.source_local_time"
 
 func scanLocationEvent(row pgx.Row) (LocationEvent, error) {
 	var e LocationEvent
-	err := row.Scan(&e.ID, &e.PlayerID, &e.X, &e.Z, &e.Y, &e.EventType, &e.ObservedAt)
+	err := row.Scan(&e.ID, &e.PlayerID, &e.X, &e.Z, &e.Y, &e.EventType, &e.ObservedAt, &e.SourceFile, &e.SourceLocalTime)
 	return e, err
+}
+
+// SetCurrentADMSession records the ADM file the ingestion engine currently reads as the server's
+// current boot session (killfeed.ADMSessionStore). The file identity is the server-session epoch.
+func (r *LocationRepository) SetCurrentADMSession(ctx context.Context, guildID, serverID int64, admFile string, localStart *time.Time) error {
+	_, err := r.pool.Exec(ctx, `
+INSERT INTO server_adm_sessions(server_id, guild_id, adm_file, session_local_start, selected_at) VALUES($1,$2,$3,$4,NOW())
+ON CONFLICT (server_id) DO UPDATE SET guild_id=EXCLUDED.guild_id, adm_file=EXCLUDED.adm_file, session_local_start=EXCLUDED.session_local_start, selected_at=NOW()`,
+		serverID, guildID, admFile, localStart)
+	return err
+}
+
+// CurrentLocation returns the player's position in the CURRENT session, or nil = UNKNOWN. A row
+// qualifies only if (1) the player is currently connected, (2) it comes from the server's current
+// ADM file (the boot session) and (3) it is at or after the player's latest connect in that file
+// (the player session). Ordering is by byte offset within the one file, so no timezone is needed.
+// A previous-session position is never returned as current (docs/CHAMPION_LIVE_SYNC.md).
+func (r *LocationRepository) CurrentLocation(ctx context.Context, guildID, serverID, playerID int64) (*LocationEvent, error) {
+	e, err := scanLocationEvent(r.pool.QueryRow(ctx, `
+WITH s AS (SELECT adm_file FROM server_adm_sessions WHERE server_id=$2 AND guild_id=$1),
+     online AS (SELECT COALESCE(bool_or(currently_connected), false) AS yes FROM player_server_activity WHERE guild_id=$1 AND server_id=$2 AND player_id=$3),
+     lastc AS (SELECT MAX(c.source_offset) AS o FROM player_location_events c JOIN s ON c.source_file = s.adm_file
+               WHERE c.server_id=$2 AND c.player_id=$3 AND c.event_type='CONNECT')
+SELECT `+locationEventCols+` FROM player_location_events e JOIN s ON e.source_file = s.adm_file CROSS JOIN online
+WHERE e.guild_id=$1 AND e.server_id=$2 AND e.player_id=$3 AND online.yes
+  AND e.source_offset >= COALESCE((SELECT o FROM lastc), 0)
+ORDER BY e.source_offset DESC, e.id DESC LIMIT 1`, guildID, serverID, playerID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	e.CurrentSession = true
+	return &e, nil
 }
 
 // LatestLocation returns a player's single most recent location event, or nil if none exists.
@@ -139,7 +204,7 @@ func scanLocationEvent(row pgx.Row) (LocationEvent, error) {
 // time, never a separately-maintained column.
 func (r *LocationRepository) LatestLocation(ctx context.Context, guildID, serverID, playerID int64) (*LocationEvent, error) {
 	e, err := scanLocationEvent(r.pool.QueryRow(ctx, `
-SELECT `+locationEventCols+` FROM player_location_events
+SELECT `+locationEventCols+` FROM player_location_events e
 WHERE guild_id=$1 AND server_id=$2 AND player_id=$3
 ORDER BY observed_at DESC, id DESC LIMIT 1`, guildID, serverID, playerID))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -165,7 +230,7 @@ func (r *LocationRepository) LocationHistory(ctx context.Context, guildID, serve
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	query := `SELECT ` + locationEventCols + ` FROM player_location_events WHERE guild_id=$1 AND server_id=$2 AND player_id=$3`
+	query := `SELECT ` + locationEventCols + ` FROM player_location_events e WHERE guild_id=$1 AND server_id=$2 AND player_id=$3`
 	args := []any{guildID, serverID, playerID}
 	if f.From != nil {
 		args = append(args, *f.From)
@@ -242,7 +307,10 @@ type PlayerDirectoryEntry struct {
 	FactionID               *int64
 	FactionName             *string
 	WarningCount            int64
-	CurrentLocation         *LocationEvent
+	// CurrentLocation is session-scoped (CurrentLocation); nil = UNKNOWN. LastKnownLocation is the
+	// newest observation ever, which may be from an earlier session.
+	CurrentLocation   *LocationEvent
+	LastKnownLocation *LocationEvent
 }
 
 // PlayerDirectoryFilter narrows the directory listing (task section 1).
@@ -337,9 +405,11 @@ WHERE p.guild_id=$1`
 	// includes it, but it's a per-player derived lookup, not something worth an expensive
 	// LATERAL join on every directory page for players a caller may not even scroll to).
 	for i := range out {
-		loc, err := r.LatestLocation(ctx, guildID, serverID, out[i].PlayerID)
-		if err == nil {
+		if loc, err := r.CurrentLocation(ctx, guildID, serverID, out[i].PlayerID); err == nil {
 			out[i].CurrentLocation = loc
+		}
+		if loc, err := r.LatestLocation(ctx, guildID, serverID, out[i].PlayerID); err == nil {
+			out[i].LastKnownLocation = loc
 		}
 	}
 	return out, nil

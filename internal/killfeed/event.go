@@ -122,6 +122,12 @@ type Event struct {
 	// Build is set only on EventBuildAction.
 	Build *BuildAction
 
+	// PlayerListCount is the declared player count of a player-list header ("PlayerList log: N
+	// players"); set only on EventPlayerListHeader.
+	PlayerListCount *int
+	// AdminLogStart is the server-local "YYYY-MM-DD HH:MM:SS" of an "AdminLog started" header.
+	AdminLogStart string
+
 	Raw string
 	// Competitive context is populated only after durable persistence and is
 	// rendered into the same kill embed; it never creates another message.
