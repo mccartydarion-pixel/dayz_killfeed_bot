@@ -105,28 +105,28 @@ func TestValidateProduct(t *testing.T) {
 	seven := int64(7)
 	one := 1
 	good := func() error {
-		return ValidateProduct("Crate", "desc", 100, TypeItem, DeliveryManual, StockUnlimited, nil, nil, 0)
+		return ValidateProduct("Crate", "desc", 100, TypeItem, DeliveryManual, PolicyManualPickup, StockUnlimited, nil, nil, 0)
 	}
 	if err := good(); err != nil {
 		t.Fatal(err)
 	}
 	cases := map[string]error{
-		"empty name":      ValidateProduct("", "", 100, TypeItem, DeliveryManual, StockUnlimited, nil, nil, 0),
-		"long name":       ValidateProduct(strings.Repeat("n", 81), "", 100, TypeItem, DeliveryManual, StockUnlimited, nil, nil, 0),
-		"long desc":       ValidateProduct("n", strings.Repeat("d", 1001), 100, TypeItem, DeliveryManual, StockUnlimited, nil, nil, 0),
-		"zero price":      ValidateProduct("n", "", 0, TypeItem, DeliveryManual, StockUnlimited, nil, nil, 0),
-		"negative price":  ValidateProduct("n", "", -1, TypeItem, DeliveryManual, StockUnlimited, nil, nil, 0),
-		"absurd price":    ValidateProduct("n", "", MaxPricePoints+1, TypeItem, DeliveryManual, StockUnlimited, nil, nil, 0),
-		"unknown type":    ValidateProduct("n", "", 5, "GUN", DeliveryManual, StockUnlimited, nil, nil, 0),
-		"discord role":    ValidateProduct("n", "", 5, TypeItem, DeliveryDiscordRole, StockUnlimited, nil, nil, 0),
-		"in game":         ValidateProduct("n", "", 5, TypeItem, DeliveryInGameFuture, StockUnlimited, nil, nil, 0),
-		"finite no qty":   ValidateProduct("n", "", 5, TypeItem, DeliveryManual, StockFinite, nil, nil, 0),
-		"finite negative": ValidateProduct("n", "", 5, TypeItem, DeliveryManual, StockFinite, ptr(-1), nil, 0),
-		"unlimited + qty": ValidateProduct("n", "", 5, TypeItem, DeliveryManual, StockUnlimited, &seven, nil, 0),
-		"unknown stock":   ValidateProduct("n", "", 5, TypeItem, DeliveryManual, "SOMETIMES", nil, nil, 0),
-		"limit 0":         ValidateProduct("n", "", 5, TypeItem, DeliveryManual, StockUnlimited, nil, ptrInt(0), 0),
-		"limit huge":      ValidateProduct("n", "", 5, TypeItem, DeliveryManual, StockUnlimited, nil, ptrInt(1001), 0),
-		"sort range":      ValidateProduct("n", "", 5, TypeItem, DeliveryManual, StockUnlimited, nil, nil, 10001),
+		"empty name":      ValidateProduct("", "", 100, TypeItem, DeliveryManual, PolicyManualPickup, StockUnlimited, nil, nil, 0),
+		"long name":       ValidateProduct(strings.Repeat("n", 81), "", 100, TypeItem, DeliveryManual, PolicyManualPickup, StockUnlimited, nil, nil, 0),
+		"long desc":       ValidateProduct("n", strings.Repeat("d", 1001), 100, TypeItem, DeliveryManual, PolicyManualPickup, StockUnlimited, nil, nil, 0),
+		"zero price":      ValidateProduct("n", "", 0, TypeItem, DeliveryManual, PolicyManualPickup, StockUnlimited, nil, nil, 0),
+		"negative price":  ValidateProduct("n", "", -1, TypeItem, DeliveryManual, PolicyManualPickup, StockUnlimited, nil, nil, 0),
+		"absurd price":    ValidateProduct("n", "", MaxPricePoints+1, TypeItem, DeliveryManual, PolicyManualPickup, StockUnlimited, nil, nil, 0),
+		"unknown type":    ValidateProduct("n", "", 5, "GUN", DeliveryManual, PolicyManualPickup, StockUnlimited, nil, nil, 0),
+		"discord role":    ValidateProduct("n", "", 5, TypeItem, DeliveryDiscordRole, PolicyManualPickup, StockUnlimited, nil, nil, 0),
+		"in game":         ValidateProduct("n", "", 5, TypeItem, DeliveryInGameFuture, PolicyManualPickup, StockUnlimited, nil, nil, 0),
+		"finite no qty":   ValidateProduct("n", "", 5, TypeItem, DeliveryManual, PolicyManualPickup, StockFinite, nil, nil, 0),
+		"finite negative": ValidateProduct("n", "", 5, TypeItem, DeliveryManual, PolicyManualPickup, StockFinite, ptr(-1), nil, 0),
+		"unlimited + qty": ValidateProduct("n", "", 5, TypeItem, DeliveryManual, PolicyManualPickup, StockUnlimited, &seven, nil, 0),
+		"unknown stock":   ValidateProduct("n", "", 5, TypeItem, DeliveryManual, PolicyManualPickup, "SOMETIMES", nil, nil, 0),
+		"limit 0":         ValidateProduct("n", "", 5, TypeItem, DeliveryManual, PolicyManualPickup, StockUnlimited, nil, ptrInt(0), 0),
+		"limit huge":      ValidateProduct("n", "", 5, TypeItem, DeliveryManual, PolicyManualPickup, StockUnlimited, nil, ptrInt(1001), 0),
+		"sort range":      ValidateProduct("n", "", 5, TypeItem, DeliveryManual, PolicyManualPickup, StockUnlimited, nil, nil, 10001),
 	}
 	for name, err := range cases {
 		var ve *ValidationError
@@ -134,7 +134,7 @@ func TestValidateProduct(t *testing.T) {
 			t.Errorf("%s must be rejected: %v", name, err)
 		}
 	}
-	if err := ValidateProduct("n", "", 5, TypeService, DeliveryManual, StockFinite, ptr(0), &one, 5); err != nil {
+	if err := ValidateProduct("n", "", 5, TypeService, DeliveryManual, PolicyManualPickup, StockFinite, ptr(0), &one, 5); err != nil {
 		t.Fatalf("zero stock is a valid FINITE state (sold out): %v", err)
 	}
 }

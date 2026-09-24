@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"regexp"
 	"strings"
 	"unicode/utf8"
@@ -50,6 +51,10 @@ const (
 
 	StockUnlimited = "UNLIMITED"
 	StockFinite    = "FINITE"
+
+	// Delivery policies (docs/SHOP_DELIVERY.md): both are fulfilled by staff (delivery type MANUAL).
+	PolicyManualPickup     = repository.DeliveryPolicyManualPickup
+	PolicyManualCoordinate = repository.DeliveryPolicyManualCoordinate
 )
 
 var productTypes = map[string]bool{TypeItem: true, TypeLoadout: true, TypeVehicle: true, TypeService: true, TypeCustom: true}
@@ -98,6 +103,8 @@ var (
 	ErrInvalidStatus   = errors.New("unknown status")
 	ErrInvalidCursor   = errors.New("invalid cursor")
 	ErrInvalidQuery    = errors.New("search text is too long")
+	// ErrInvalidCoordinates: a delivery object without both x and z, or with a non-finite value.
+	ErrInvalidCoordinates = errors.New("delivery needs both x and z as finite numbers")
 )
 
 // ValidationError is one or more field problems of a product/category input (HTTP 400).
@@ -128,6 +135,10 @@ type Store interface {
 	GetProduct(ctx context.Context, org, inst, id int64, includeInactive bool) (*repository.ShopProduct, error)
 	CreateProduct(ctx context.Context, org, inst int64, in repository.ShopProductInput) (*repository.ShopProduct, error)
 	UpdateProduct(ctx context.Context, org, inst, id int64, p repository.ShopProductPatch, validate func(repository.ShopProduct) error) (*repository.ShopProduct, bool, error)
+	ListDeliveries(ctx context.Context, org, inst int64, q repository.DeliveryQuery) ([]repository.ShopDelivery, int64, error)
+	GetDelivery(ctx context.Context, org, inst, id, playerID int64) (*repository.ShopDelivery, error)
+	GetDeliverySettings(ctx context.Context, org, inst int64) (repository.ShopDeliverySettings, error)
+	SetDeliveryMap(ctx context.Context, org, inst int64, mapKey string, actorUserID int64) (repository.ShopDeliverySettings, error)
 	Purchase(ctx context.Context, p repository.PurchaseParams) (*repository.PurchaseResult, error)
 	GetPurchase(ctx context.Context, org, inst, id, playerID int64) (*repository.ShopPurchase, error)
 	ListPurchases(ctx context.Context, org, inst int64, q repository.PurchaseQuery) ([]repository.ShopPurchase, int64, error)
@@ -189,22 +200,23 @@ var idemKey = regexp.MustCompile(`^[A-Za-z0-9._:-]{8,64}$`)
 
 // ProductCreate is a new product.
 type ProductCreate struct {
-	Name          string
-	Description   string
-	CategoryID    *int64
-	PricePoints   int64
-	ProductType   string
-	DeliveryType  string // default MANUAL
-	IsActive      *bool  // default true
-	IsFeatured    bool
-	SortOrder     int
-	StockMode     string // default UNLIMITED
-	StockQuantity *int64
-	PurchaseLimit *int
+	Name           string
+	Description    string
+	CategoryID     *int64
+	PricePoints    int64
+	ProductType    string
+	DeliveryType   string // default MANUAL
+	DeliveryPolicy string // default MANUAL_PICKUP
+	IsActive       *bool  // default true
+	IsFeatured     bool
+	SortOrder      int
+	StockMode      string // default UNLIMITED
+	StockQuantity  *int64
+	PurchaseLimit  *int
 }
 
 // ValidateProduct checks a complete product state (used for create and for the merged result of an update).
-func ValidateProduct(name, description string, price int64, ptype, delivery, stockMode string, stock *int64, limit *int, sortOrder int) error {
+func ValidateProduct(name, description string, price int64, ptype, delivery, policy, stockMode string, stock *int64, limit *int, sortOrder int) error {
 	v := &ValidationError{}
 	if n := runes(name); n < 1 || n > MaxNameLen {
 		v.add("name", "name must be 1-80 characters")
@@ -224,6 +236,11 @@ func ValidateProduct(name, description string, price int64, ptype, delivery, sto
 		v.add("deliveryType", delivery+" is reserved and not implemented yet; only MANUAL fulfillment exists")
 	default:
 		v.add("deliveryType", "deliveryType must be MANUAL")
+	}
+	switch policy {
+	case PolicyManualPickup, PolicyManualCoordinate:
+	default:
+		v.add("deliveryPolicy", "deliveryPolicy must be MANUAL_PICKUP or MANUAL_COORDINATE")
 	}
 	switch stockMode {
 	case StockUnlimited:
@@ -367,6 +384,10 @@ func (s *Service) CreateProduct(ctx context.Context, scope repository.EconomySco
 	if delivery == "" {
 		delivery = DeliveryManual
 	}
+	policy := strings.ToUpper(strings.TrimSpace(in.DeliveryPolicy))
+	if policy == "" {
+		policy = PolicyManualPickup
+	}
 	if stockMode == "" {
 		stockMode = StockUnlimited
 	}
@@ -374,11 +395,11 @@ func (s *Service) CreateProduct(ctx context.Context, scope repository.EconomySco
 		active = *in.IsActive
 	}
 	ptype := strings.ToUpper(strings.TrimSpace(in.ProductType))
-	if err := ValidateProduct(name, desc, in.PricePoints, ptype, strings.ToUpper(delivery), strings.ToUpper(stockMode), in.StockQuantity, in.PurchaseLimit, in.SortOrder); err != nil {
+	if err := ValidateProduct(name, desc, in.PricePoints, ptype, strings.ToUpper(delivery), policy, strings.ToUpper(stockMode), in.StockQuantity, in.PurchaseLimit, in.SortOrder); err != nil {
 		return nil, err
 	}
 	return s.store.CreateProduct(ctx, scope.OrganizationID, scope.InstallationID, repository.ShopProductInput{
-		CategoryID: in.CategoryID, Name: name, Description: desc, PricePoints: in.PricePoints, ProductType: ptype, DeliveryType: strings.ToUpper(delivery),
+		CategoryID: in.CategoryID, Name: name, Description: desc, PricePoints: in.PricePoints, ProductType: ptype, DeliveryType: strings.ToUpper(delivery), DeliveryPolicy: policy,
 		SortOrder: in.SortOrder, IsActive: active, IsFeatured: in.IsFeatured, StockMode: strings.ToUpper(stockMode), StockQuantity: in.StockQuantity, PurchaseLimit: in.PurchaseLimit})
 }
 
@@ -401,17 +422,18 @@ func (o *Optional[T]) UnmarshalJSON(b []byte) error {
 // ProductUpdate is a partial update; an absent field is unchanged. The tenant, the slug and the
 // product type are not editable.
 type ProductUpdate struct {
-	Name          *string
-	Description   *string
-	CategoryID    Optional[int64]
-	PricePoints   *int64
-	DeliveryType  *string
-	IsActive      *bool
-	IsFeatured    *bool
-	SortOrder     *int
-	StockMode     *string
-	StockQuantity *int64
-	PurchaseLimit Optional[int]
+	Name           *string
+	Description    *string
+	CategoryID     Optional[int64]
+	PricePoints    *int64
+	DeliveryType   *string
+	DeliveryPolicy *string // changes future purchases only; existing orders keep their snapshot
+	IsActive       *bool
+	IsFeatured     *bool
+	SortOrder      *int
+	StockMode      *string
+	StockQuantity  *int64
+	PurchaseLimit  Optional[int]
 }
 
 // UpdateProduct applies a partial update under the product's row lock. wasActive lets the caller audit
@@ -434,6 +456,10 @@ func (s *Service) UpdateProduct(ctx context.Context, scope repository.EconomySco
 		m := strings.ToUpper(strings.TrimSpace(*in.StockMode))
 		p.StockMode = &m
 	}
+	if in.DeliveryPolicy != nil {
+		d := strings.ToUpper(strings.TrimSpace(*in.DeliveryPolicy))
+		p.DeliveryPolicy = &d
+	}
 	switch {
 	case in.CategoryID.Set && in.CategoryID.Null:
 		p.ClearCategory = true
@@ -449,7 +475,7 @@ func (s *Service) UpdateProduct(ctx context.Context, scope repository.EconomySco
 		p.PurchaseLimit = &v
 	}
 	validate := func(m repository.ShopProduct) error {
-		return ValidateProduct(m.Name, m.Description, m.PricePoints, m.ProductType, m.DeliveryType, m.StockMode, m.StockQuantity, m.PurchaseLimit, m.SortOrder)
+		return ValidateProduct(m.Name, m.Description, m.PricePoints, m.ProductType, m.DeliveryType, m.DeliveryPolicy, m.StockMode, m.StockQuantity, m.PurchaseLimit, m.SortOrder)
 	}
 	return s.store.UpdateProduct(ctx, scope.OrganizationID, scope.InstallationID, id, p, validate)
 }
@@ -461,7 +487,25 @@ type PurchaseRequest struct {
 	ProductID      int64
 	Quantity       int
 	IdempotencyKey string
+	Delivery       *DeliveryInput // nil = no delivery object in the request
 }
+
+// DeliveryInput is the request's delivery object: X/Z map coordinates (no altitude).
+type DeliveryInput struct{ X, Z *float64 }
+
+// coordinates validates the shape of a delivery object; whether the product needs one and whether
+// the position is on the map is decided under the product lock (repository.ShopRepository.Purchase).
+func (d *DeliveryInput) coordinates() (*repository.DeliveryCoordinates, error) {
+	if d == nil {
+		return nil, nil
+	}
+	if d.X == nil || d.Z == nil || !finite(*d.X) || !finite(*d.Z) {
+		return nil, ErrInvalidCoordinates
+	}
+	return &repository.DeliveryCoordinates{X: *d.X, Z: *d.Z}, nil
+}
+
+func finite(f float64) bool { return !math.IsNaN(f) && !math.IsInf(f, 0) }
 
 // Purchase buys a product with Champion Points for the acting user, through their VERIFIED DayZ link.
 // It is one database transaction (see repository.ShopRepository.Purchase). A committed purchase is
@@ -482,13 +526,17 @@ func (s *Service) Purchase(ctx context.Context, scope repository.EconomyScope, u
 	if scope.ServerID == 0 {
 		return nil, economy.ErrNoServer
 	}
+	coords, err := req.Delivery.coordinates()
+	if err != nil {
+		return nil, err
+	}
 	acct, err := s.identity.Me(ctx, scope, discordUserID)
 	if err != nil {
 		return nil, err
 	}
 	res, err := s.store.Purchase(ctx, repository.PurchaseParams{OrganizationID: scope.OrganizationID, InstallationID: scope.InstallationID,
 		GuildID: scope.GuildID, ServerID: scope.ServerID, UserID: userID, PlayerID: acct.AccountID, ActorDiscordID: discordUserID,
-		ProductID: req.ProductID, Quantity: req.Quantity, IdempotencyKey: strings.TrimSpace(req.IdempotencyKey)})
+		ProductID: req.ProductID, Quantity: req.Quantity, IdempotencyKey: strings.TrimSpace(req.IdempotencyKey), Delivery: coords})
 	if err != nil {
 		return nil, err
 	}

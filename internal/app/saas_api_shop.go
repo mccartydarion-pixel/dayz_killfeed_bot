@@ -77,6 +77,7 @@ func (a *App) registerShopRoutes() {
 	h("GET "+base+"/admin/purchases/{purchaseID}", a.handleShopAdminPurchase)
 	h("POST "+base+"/purchases/{purchaseID}/fulfill", a.handleShopFulfill)
 	h("POST "+base+"/purchases/{purchaseID}/refund", a.handleShopRefund)
+	a.registerShopDeliveryRoutes(base)
 }
 
 func (a *App) shopContext(w http.ResponseWriter, r *http.Request, admin bool) (economyRequest, bool) {
@@ -144,7 +145,9 @@ func shopFailed(w http.ResponseWriter, what string, err error) {
 	case errors.Is(err, shop.ErrInvalidQuery):
 		writeSaaSError(w, codeInvalidRequest, "q must be at most 50 characters")
 	default:
-		economyFailed(w, what, err)
+		if !shopDeliveryFailed(w, err) {
+			economyFailed(w, what, err)
+		}
 	}
 }
 
@@ -173,17 +176,18 @@ type adminShopCategoryDTO struct {
 }
 
 type shopProductDTO struct {
-	ID            int64               `json:"id"`
-	Name          string              `json:"name"`
-	Slug          string              `json:"slug"`
-	Description   string              `json:"description"`
-	PricePoints   int64               `json:"pricePoints"`
-	Category      *shopCategoryRefDTO `json:"category"`
-	ProductType   string              `json:"productType"`
-	DeliveryType  string              `json:"deliveryType"`
-	IsFeatured    bool                `json:"isFeatured"`
-	StockState    string              `json:"stockState"`
-	PurchaseLimit *int                `json:"purchaseLimit"`
+	ID             int64               `json:"id"`
+	Name           string              `json:"name"`
+	Slug           string              `json:"slug"`
+	Description    string              `json:"description"`
+	PricePoints    int64               `json:"pricePoints"`
+	Category       *shopCategoryRefDTO `json:"category"`
+	ProductType    string              `json:"productType"`
+	DeliveryType   string              `json:"deliveryType"`
+	DeliveryPolicy string              `json:"deliveryPolicy"`
+	IsFeatured     bool                `json:"isFeatured"`
+	StockState     string              `json:"stockState"`
+	PurchaseLimit  *int                `json:"purchaseLimit"`
 }
 
 type adminShopProductDTO struct {
@@ -214,6 +218,7 @@ type shopPurchaseDTO struct {
 	PaidAt       *string               `json:"paidAt"`
 	FulfilledAt  *string               `json:"fulfilledAt"`
 	RefundedAt   *string               `json:"refundedAt"`
+	Delivery     *shopDeliveryDTO      `json:"delivery"`
 }
 
 type adminShopPurchaseDTO struct {
@@ -223,6 +228,8 @@ type adminShopPurchaseDTO struct {
 	RefundReason             *string          `json:"refundReason"`
 	FulfilledByDiscordUserID *string          `json:"fulfilledByDiscordUserId"`
 	RefundedByDiscordUserID  *string          `json:"refundedByDiscordUserId"`
+	// Delivery shadows the player-safe shopPurchaseDTO.Delivery with the admin view.
+	Delivery *adminShopDeliveryDTO `json:"delivery"`
 }
 
 type economyPlayerDTO struct {
@@ -254,7 +261,7 @@ func adminCategoryDTO(c repository.ShopCategory) adminShopCategoryDTO {
 
 func productDTO(p repository.ShopProduct) shopProductDTO {
 	d := shopProductDTO{ID: p.ID, Name: p.Name, Slug: p.Slug, Description: p.Description, PricePoints: p.PricePoints, ProductType: p.ProductType,
-		DeliveryType: p.DeliveryType, IsFeatured: p.IsFeatured, StockState: shop.StockState(p), PurchaseLimit: p.PurchaseLimit}
+		DeliveryType: p.DeliveryType, DeliveryPolicy: p.DeliveryPolicy, IsFeatured: p.IsFeatured, StockState: shop.StockState(p), PurchaseLimit: p.PurchaseLimit}
 	if p.CategoryID != nil {
 		d.Category = &shopCategoryRefDTO{ID: *p.CategoryID, Name: p.CategoryName, Slug: p.CategorySlug}
 	}
@@ -272,12 +279,21 @@ func purchaseDTO(p repository.ShopPurchase) shopPurchaseDTO {
 	for _, it := range p.Items {
 		d.Items = append(d.Items, shopPurchaseItemDTO{ProductID: it.ProductID, ProductName: it.ProductName, UnitPricePoints: it.UnitPricePoints, Quantity: it.Quantity, LineTotalPoints: it.LineTotalPoints})
 	}
+	if p.Delivery != nil {
+		dd := deliveryDTO(*p.Delivery)
+		d.Delivery = &dd
+	}
 	return d
 }
 
 func adminPurchaseDTO(p repository.ShopPurchase) adminShopPurchaseDTO {
-	return adminShopPurchaseDTO{shopPurchaseDTO: purchaseDTO(p), Player: economyPlayerDTO{AccountID: p.PlayerID, Gamertag: p.PlayerName}, GameServerID: p.GameServerID,
+	out := adminShopPurchaseDTO{shopPurchaseDTO: purchaseDTO(p), Player: economyPlayerDTO{AccountID: p.PlayerID, Gamertag: p.PlayerName}, GameServerID: p.GameServerID,
 		RefundReason: optStr(p.RefundReason), FulfilledByDiscordUserID: optStr(p.FulfilledByDiscordID), RefundedByDiscordUserID: optStr(p.RefundedByDiscordID)}
+	if p.Delivery != nil {
+		dd := adminDeliveryDTO(*p.Delivery)
+		out.Delivery = &dd
+	}
+	return out
 }
 
 // --- query helpers ----------------------------------------------------------------------------------
@@ -405,9 +421,16 @@ func (a *App) handleShopAdminProduct(w http.ResponseWriter, r *http.Request) {
 // --- purchase (player) ------------------------------------------------------------------------------
 
 type shopPurchaseBody struct {
-	ProductID      json.Number `json:"productId"`
-	Quantity       json.Number `json:"quantity"`
-	IdempotencyKey string      `json:"idempotencyKey"`
+	ProductID      json.Number       `json:"productId"`
+	Quantity       json.Number       `json:"quantity"`
+	IdempotencyKey string            `json:"idempotencyKey"`
+	Delivery       *shopDeliveryBody `json:"delivery"`
+}
+
+// shopDeliveryBody is the purchase's delivery object: X/Z map coordinates. There is no y.
+type shopDeliveryBody struct {
+	X *float64 `json:"x"`
+	Z *float64 `json:"z"`
 }
 
 // handleShopPurchase is POST .../shop/purchases: buy one product with Champion Points, atomically.
@@ -433,12 +456,17 @@ func (a *App) handleShopPurchase(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), economyTimeout)
 	defer cancel()
-	res, err := a.Shop.Purchase(ctx, er.scope, er.user.ID, er.user.DiscordUserID, shop.PurchaseRequest{ProductID: productID, Quantity: qty, IdempotencyKey: body.IdempotencyKey})
+	req := shop.PurchaseRequest{ProductID: productID, Quantity: qty, IdempotencyKey: body.IdempotencyKey}
+	if body.Delivery != nil {
+		req.Delivery = &shop.DeliveryInput{X: body.Delivery.X, Z: body.Delivery.Z}
+	}
+	res, err := a.Shop.Purchase(ctx, er.scope, er.user.ID, er.user.DiscordUserID, req)
 	if err != nil {
 		shopFailed(w, "shop purchase", err)
 		return
 	}
-	shopAudit("shop_purchase_created", er, "purchase_id", res.Purchase.ID, "product_id", productID, "quantity", qty, "total_points", res.Purchase.TotalPoints, "duplicate", res.Duplicate)
+	shopAudit("shop_purchase_created", er, "purchase_id", res.Purchase.ID, "product_id", productID, "quantity", qty, "total_points", res.Purchase.TotalPoints, "duplicate", res.Duplicate,
+		"delivery_policy", deliveryPolicyOf(res.Purchase))
 	status := http.StatusCreated
 	if res.Duplicate {
 		status = http.StatusOK
@@ -637,18 +665,19 @@ func (a *App) handleShopUpdateCategory(w http.ResponseWriter, r *http.Request) {
 // --- admin: products --------------------------------------------------------------------------------
 
 type shopProductCreateBody struct {
-	Name          string `json:"name"`
-	Description   string `json:"description"`
-	CategoryID    *int64 `json:"categoryId"`
-	PricePoints   int64  `json:"pricePoints"`
-	ProductType   string `json:"productType"`
-	DeliveryType  string `json:"deliveryType"`
-	IsActive      *bool  `json:"isActive"`
-	IsFeatured    bool   `json:"isFeatured"`
-	SortOrder     int    `json:"sortOrder"`
-	StockMode     string `json:"stockMode"`
-	StockQuantity *int64 `json:"stockQuantity"`
-	PurchaseLimit *int   `json:"purchaseLimit"`
+	Name           string `json:"name"`
+	Description    string `json:"description"`
+	CategoryID     *int64 `json:"categoryId"`
+	PricePoints    int64  `json:"pricePoints"`
+	ProductType    string `json:"productType"`
+	DeliveryType   string `json:"deliveryType"`
+	DeliveryPolicy string `json:"deliveryPolicy"`
+	IsActive       *bool  `json:"isActive"`
+	IsFeatured     bool   `json:"isFeatured"`
+	SortOrder      int    `json:"sortOrder"`
+	StockMode      string `json:"stockMode"`
+	StockQuantity  *int64 `json:"stockQuantity"`
+	PurchaseLimit  *int   `json:"purchaseLimit"`
 }
 
 func (a *App) handleShopCreateProduct(w http.ResponseWriter, r *http.Request) {
@@ -663,7 +692,7 @@ func (a *App) handleShopCreateProduct(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), economyTimeout)
 	defer cancel()
 	p, err := a.Shop.CreateProduct(ctx, er.scope, shop.ProductCreate{Name: b.Name, Description: b.Description, CategoryID: b.CategoryID, PricePoints: b.PricePoints,
-		ProductType: b.ProductType, DeliveryType: b.DeliveryType, IsActive: b.IsActive, IsFeatured: b.IsFeatured, SortOrder: b.SortOrder,
+		ProductType: b.ProductType, DeliveryType: b.DeliveryType, DeliveryPolicy: b.DeliveryPolicy, IsActive: b.IsActive, IsFeatured: b.IsFeatured, SortOrder: b.SortOrder,
 		StockMode: b.StockMode, StockQuantity: b.StockQuantity, PurchaseLimit: b.PurchaseLimit})
 	if err != nil {
 		shopFailed(w, "create shop product", err)
@@ -676,17 +705,18 @@ func (a *App) handleShopCreateProduct(w http.ResponseWriter, r *http.Request) {
 }
 
 type shopProductUpdateBody struct {
-	Name          *string              `json:"name"`
-	Description   *string              `json:"description"`
-	CategoryID    shop.Optional[int64] `json:"categoryId"`
-	PricePoints   *int64               `json:"pricePoints"`
-	DeliveryType  *string              `json:"deliveryType"`
-	IsActive      *bool                `json:"isActive"`
-	IsFeatured    *bool                `json:"isFeatured"`
-	SortOrder     *int                 `json:"sortOrder"`
-	StockMode     *string              `json:"stockMode"`
-	StockQuantity *int64               `json:"stockQuantity"`
-	PurchaseLimit shop.Optional[int]   `json:"purchaseLimit"`
+	Name           *string              `json:"name"`
+	Description    *string              `json:"description"`
+	CategoryID     shop.Optional[int64] `json:"categoryId"`
+	PricePoints    *int64               `json:"pricePoints"`
+	DeliveryType   *string              `json:"deliveryType"`
+	DeliveryPolicy *string              `json:"deliveryPolicy"`
+	IsActive       *bool                `json:"isActive"`
+	IsFeatured     *bool                `json:"isFeatured"`
+	SortOrder      *int                 `json:"sortOrder"`
+	StockMode      *string              `json:"stockMode"`
+	StockQuantity  *int64               `json:"stockQuantity"`
+	PurchaseLimit  shop.Optional[int]   `json:"purchaseLimit"`
 }
 
 // handleShopUpdateProduct is PUT .../shop/products/{productID}: every field is optional (absent = unchanged;
@@ -708,7 +738,7 @@ func (a *App) handleShopUpdateProduct(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), economyTimeout)
 	defer cancel()
 	p, wasActive, err := a.Shop.UpdateProduct(ctx, er.scope, id, shop.ProductUpdate{Name: b.Name, Description: b.Description, CategoryID: b.CategoryID, PricePoints: b.PricePoints,
-		DeliveryType: b.DeliveryType, IsActive: b.IsActive, IsFeatured: b.IsFeatured, SortOrder: b.SortOrder, StockMode: b.StockMode, StockQuantity: b.StockQuantity, PurchaseLimit: b.PurchaseLimit})
+		DeliveryType: b.DeliveryType, DeliveryPolicy: b.DeliveryPolicy, IsActive: b.IsActive, IsFeatured: b.IsFeatured, SortOrder: b.SortOrder, StockMode: b.StockMode, StockQuantity: b.StockQuantity, PurchaseLimit: b.PurchaseLimit})
 	if err != nil {
 		shopFailed(w, "update shop product", err)
 		return
@@ -717,7 +747,7 @@ func (a *App) handleShopUpdateProduct(w http.ResponseWriter, r *http.Request) {
 	if wasActive && !p.IsActive {
 		event = "shop_product_disabled"
 	}
-	shopAudit(event, er, "product_id", p.ID, "price_points", p.PricePoints, "is_active", p.IsActive)
+	shopAudit(event, er, "product_id", p.ID, "price_points", p.PricePoints, "is_active", p.IsActive, "delivery_policy", p.DeliveryPolicy)
 	writeSaaSJSON(w, http.StatusOK, struct {
 		Product adminShopProductDTO `json:"product"`
 	}{adminProductDTO(*p)})

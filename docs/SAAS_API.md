@@ -1302,6 +1302,25 @@ accepted value (`DISCORD_ROLE`, `IN_GAME_FUTURE` are reserved). Two installation
 New error codes: `SHOP_PRODUCT_NOT_FOUND` (404), `SHOP_PRODUCT_DISABLED` (409), `SHOP_CATEGORY_NOT_FOUND` (404), `OUT_OF_STOCK` (409), `PURCHASE_LIMIT_REACHED` (409), `INVALID_QUANTITY` (400), `DUPLICATE_PURCHASE` (409), `PURCHASE_NOT_FOUND` (404),
 `INVALID_PURCHASE_STATUS` (409), `SHOP_FORBIDDEN` (403); `INSUFFICIENT_FUNDS` (409) is shared with the economy. Rate limits (per acting user): purchase 10/min, admin mutations (create/update, fulfill, refund) 30/min.
 
+### Shop Delivery Engine 2.0 (Phase 2A)
+
+Every purchase has one persistent delivery record; full contract in `docs/SHOP_DELIVERY.md`. Products have `deliveryPolicy` `MANUAL_PICKUP` (default) or `MANUAL_COORDINATE`
+(the purchase body then needs `delivery: { x, z }`, validated against the installation's admin-configured map: `chernarusplus` 0..15360 or `enoch` 0..12800). The purchase, the
+Points debit, the stock change, the item snapshot and the delivery commit together or not at all; the delivery coordinates are part of the idempotency identity. Delivery is by
+staff only: the existing fulfill/refund routes move the delivery to `FULFILLED` / `CANCELLED` atomically (a delivered order keeps its fulfillment when refunded). No automatic
+spawning, no Nitrado file write, no restart.
+
+| Route | Who | Returns |
+|---|---|---|
+| `GET .../shop/delivery-settings` | player | `{ settings: { map, coordinateDeliveryAvailable, automaticDelivery: false } }` |
+| `GET .../shop/admin/delivery-settings`, `PUT .../shop/delivery-settings` | admin | `{ settings }` with `mapKey`, `supportedMaps`; PUT body `{ mapKey: "chernarusplus" \| "enoch" \| null }` |
+| `GET .../shop/admin/deliveries?status=&policy=&playerId=&limit=&cursor=` | admin | `{ currency, items: AdminShopDelivery[], nextCursor, limit }` |
+| `GET .../shop/admin/deliveries/{deliveryID}` | admin | `{ delivery: AdminShopDelivery }` |
+| `GET .../shop/me/deliveries/{deliveryID}` | player | `{ delivery: ShopDelivery }` - own deliveries only |
+
+Purchases (player and admin views) and products gain `delivery` / `deliveryPolicy`. New error codes: `DELIVERY_COORDINATES_REQUIRED`, `DELIVERY_COORDINATES_INVALID`,
+`DELIVERY_COORDINATES_OUT_OF_BOUNDS`, `DELIVERY_COORDINATES_NOT_ACCEPTED`, `UNSUPPORTED_MAP` (400), `DELIVERY_MAP_UNRESOLVED` (409), `DELIVERY_NOT_FOUND` (404).
+
 ## Champion Billing (Phase 1)
 
 Stripe subscriptions, hosted checkout, the Customer Portal and webhook reconciliation on top of the existing `subscriptions` row (one per organization). Full contract, status mapping, trial
