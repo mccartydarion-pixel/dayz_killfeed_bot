@@ -553,11 +553,16 @@ func applyChannelLayout(ctx context.Context, d channelLayoutDiscord, w channelRo
 				finalChannel[r.ChannelID] = true
 				continue
 			}
-			if prev, ok := existing[key]; ok && prev.ChannelID != ch.ID {
+			prev, had := existing[key]
+			if had && prev.ChannelID != ch.ID {
 				sum.Remapped = append(sum.Remapped, key)
 			}
-			if err := w.UpsertRoute(ctx, in.OrganizationID, in.InstallationID, key, ch.ID, true); err != nil {
-				return nil, fmt.Errorf("map route %s: %w", key, err)
+			// Idempotent repair: a route already mapped to this channel as Champion-managed is left
+			// untouched - no write, no updated_at churn.
+			if !had || prev.ChannelID != ch.ID || !prev.ManagedByChampion {
+				if err := w.UpsertRoute(ctx, in.OrganizationID, in.InstallationID, key, ch.ID, true); err != nil {
+					return nil, fmt.Errorf("map route %s: %w", key, err)
+				}
 			}
 			result.Routes[key] = ChannelRouteInfo{ChannelID: ch.ID, ChannelName: ch.Name, ManagedByChampion: true}
 		}

@@ -92,12 +92,14 @@ func (f *layoutGuildFake) byName(name string) (discord.RawGuildChannel, int) {
 type layoutRoutesFake struct {
 	routes  map[string]string
 	deleted []string
+	upserts int
 }
 
 func (w *layoutRoutesFake) UpsertRoute(_ context.Context, _, _ int64, key, channelID string, managed bool) error {
 	if !managed {
 		return errors.New("auto-setup routes must be managed")
 	}
+	w.upserts++
 	w.routes[key] = channelID
 	return nil
 }

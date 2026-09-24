@@ -42,19 +42,6 @@ func RegisterSetupCommand(session *discordgo.Session, guildID string) error {
 	return err
 }
 
-// SetupLayoutResult summarizes one /setup run of the Channel System V2
-// layout engine across the guild's installations.
-type SetupLayoutResult struct {
-	Installations int
-	Created       []string
-	Reused        []string
-	Remapped      []string
-	Preserved     []string
-	Broken        []string
-	Blocked       []string
-	Retirable     int
-}
-
 var (
 	// ErrNoInstallation: the guild has no Champion installation, so there is
 	// no channel layout to apply.
@@ -184,46 +171,26 @@ func (h *SetupHandler) handleSetup(s *discordgo.Session, i *discordgo.Interactio
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
+	// The whole layout (every installation) completes before anything is rendered: the reply is
+	// built once, from the final, channel-ID-deduplicated result.
 	result, err := h.layout(ctx, i.GuildID)
-	h.editEphemeral(s, i, FormatSetupLayoutResult(result, err, repair))
+	if err != nil {
+		h.editEphemeral(s, i, setupErrorMessage(err))
+	} else {
+		h.editEphemeralEmbed(s, i, SetupLayoutEmbed(result, repair))
+	}
 	slog.Info("component=setup", "action", action, "stage", "completed", "guild_id", i.GuildID, "installations", result.Installations,
-		"created", len(result.Created), "broken", len(result.Broken), "error", err != nil)
+		"channels", len(result.Channels()), "created", result.Count(SetupChannelCreated), "reused", result.Count(SetupChannelReused),
+		"updated", result.Count(SetupChannelUpdated), "failed", len(result.FailedSystems()), "legacy", result.LegacyChannels(), "error", err != nil)
 }
 
-// FormatSetupLayoutResult renders the /setup reply.
-func FormatSetupLayoutResult(r SetupLayoutResult, err error, repair bool) string {
-	switch {
-	case errors.Is(err, ErrNoInstallation):
-		return "ℹ️ This Discord server is not connected to Champion yet.\nConnect it in **Setup** on the Champion website, then run `/setup` again."
-	case errors.Is(err, ErrMissingManageChannels):
-		return "❌ Champion needs the **Manage Channels** permission to set up its channels. Grant it and run `/setup repair`."
-	case err != nil:
-		return "❌ Setup failed. Try `/setup repair` again in a moment."
+// editEphemeralEmbed replaces a deferred ephemeral response with one embed.
+func (h *SetupHandler) editEphemeralEmbed(s *discordgo.Session, i *discordgo.InteractionCreate, embed *discordgo.MessageEmbed) {
+	empty := ""
+	embeds := []*discordgo.MessageEmbed{embed}
+	if _, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &empty, Embeds: &embeds}); err != nil {
+		slog.Warn("component=setup", "msg", "response edit failed", "err", err.Error())
 	}
-	var b strings.Builder
-	if repair {
-		b.WriteString("🔧 **Champion Discord Layout Repaired**\n\n")
-	} else {
-		b.WriteString("🏆 **Champion Discord Layout Ready**\n\n")
-	}
-	line := func(label string, items []string) {
-		if len(items) > 0 {
-			fmt.Fprintf(&b, "**%s:** %s\n", label, strings.Join(items, ", "))
-		}
-	}
-	line("Created", r.Created)
-	line("Reused", r.Reused)
-	line("Remapped", r.Remapped)
-	line("Preserved (your channels)", r.Preserved)
-	line("Needs attention", r.Broken)
-	line("Not available yet", r.Blocked)
-	if len(r.Created) == 0 && len(r.Remapped) == 0 && len(r.Broken) == 0 {
-		b.WriteString("Everything was already in place.\n")
-	}
-	if r.Retirable > 0 {
-		fmt.Fprintf(&b, "\n%d old Champion channel(s) are no longer used. Review and remove them in **Setup → Discord Channels** on the website.\n", r.Retirable)
-	}
-	return strings.TrimRight(b.String(), "\n")
 }
 
 // editEphemeral edits a previously deferred ephemeral interaction response.
