@@ -262,7 +262,7 @@ func (a *App) handleAntiCheatEvidence(w http.ResponseWriter, r *http.Request) {
 	if a.DB==nil || a.DB.Pool==nil {writeSaaSError(w,codeInternalError,"C.A.S.E. evidence unavailable");return}
 	if !enforceRateLimit(w,a.saasAdminReadLimiter,rateLimitKey(r)){return}
 	q:=r.URL.Query()
-	var playerID,before *int64
+	var playerID,before,evidenceID *int64
 	if raw:=q.Get("playerId");raw!="" {
 		v,err:=strconv.ParseInt(raw,10,64)
 		if err!=nil || v<=0 {writeSaaSError(w,codeInvalidRequest,"invalid playerId");return}
@@ -273,6 +273,12 @@ func (a *App) handleAntiCheatEvidence(w http.ResponseWriter, r *http.Request) {
 		if err!=nil || v<=0 {writeSaaSError(w,codeInvalidRequest,"invalid cursor");return}
 		before=&v
 	}
+	if raw:=q.Get("evidenceId");raw!="" {
+		v,err:=strconv.ParseInt(raw,10,64)
+		if err!=nil || v<=0 {writeSaaSError(w,codeInvalidRequest,"invalid evidenceId");return}
+		if before!=nil {writeSaaSError(w,codeInvalidRequest,"evidenceId and before cannot be combined");return}
+		evidenceID=&v
+	}
 	limit:=50
 	if raw:=q.Get("limit");raw!="" {
 		v,err:=strconv.Atoi(raw)
@@ -282,7 +288,7 @@ func (a *App) handleAntiCheatEvidence(w http.ResponseWriter, r *http.Request) {
 	ctx,cancel:=context.WithTimeout(r.Context(),adminTimeout)
 	defer cancel()
 	items,err:=repository.NewCaseEvidenceRepository(a.DB.Pool).
-		ListCaseEvidence(ctx,ac.scope.GuildID,*ac.scope.ServerID,playerID,before,limit)
+		ListCaseEvidence(ctx,ac.scope.GuildID,*ac.scope.ServerID,playerID,before,evidenceID,limit)
 	if err!=nil {
 		slog.Warn("component=case","event","evidence_read_failed","err",err.Error())
 		writeSaaSError(w,codeInternalError,"could not load C.A.S.E. evidence")
@@ -291,11 +297,11 @@ func (a *App) handleAntiCheatEvidence(w http.ResponseWriter, r *http.Request) {
 	out:=caseEvidencePage{Mode:"OBSERVATION_ONLY",ServerID:*ac.scope.ServerID,
 		TimeBasis:"ADM_CLOCK_ONLY_WITH_INGESTION_ORDER",Items:items,
 		DetectorsEnabled:false,Enforcement:"DISABLED"}
-	if len(items)==limit {
+	if evidenceID==nil && len(items)==limit {
 		cursor:=strconv.FormatInt(items[len(items)-1].ID,10)
 		out.NextCursor=&cursor
 	}
 	a.recordAudit(ctx,ac,"CASE_EVIDENCE_VIEWED","", "", "success",nil,
-		map[string]any{"count":len(items),"filtered":playerID!=nil})
+		map[string]any{"count":len(items),"filtered":playerID!=nil,"exactRecord":evidenceID!=nil})
 	writeSaaSJSON(w,http.StatusOK,out)
 }
