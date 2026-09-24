@@ -25,24 +25,23 @@ func (s *Service) HandleWebhook(ctx context.Context, payload []byte, sigHeader s
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidSignature, err)
 	}
-	// Dedupe BEFORE any processing: the (provider, event_id) UNIQUE constraint makes this race-safe
-	// even if Stripe redelivers the same event to two concurrent requests. organization_id is filled
-	// in below on a best-effort basis for the admin-visible log; it is never required for the dedupe
-	// itself.
+	// Classify signed events BEFORE the legacy base-subscription dedupe and
+	// reconciler: a C.A.S.E. subscription must never replace LOW/MEDIUM/HIGH.
+	parsed, err := ParseEvent(event)
+	if err != nil {
+		slog.Warn("component=billing", "event", "billing_webhook_parse_failed", "stripe_event_id", event.ID, "type", string(event.Type), "err", err.Error())
+		return nil
+	}
+	isCase, err := s.classifyCaseEvent(ctx,parsed)
+	if err != nil {return fmt.Errorf("classify Stripe subscription kind: %w",err)}
+	if isCase {return s.applyCaseEvent(ctx,parsed)}
+	// Base billing continues through its existing idempotency and event logic.
 	inserted, err := s.store.RecordWebhookEventOnce(ctx, repository.ProviderStripe, event.ID, string(event.Type), nil)
 	if err != nil {
 		return fmt.Errorf("record webhook event: %w", err)
 	}
 	if !inserted {
 		slog.Info("component=billing", "event", "billing_webhook_duplicate", "stripe_event_id", event.ID, "type", string(event.Type))
-		return nil
-	}
-	parsed, err := ParseEvent(event)
-	if err != nil {
-		// The signature was valid but the payload for a type we do parse didn't match its expected
-		// shape - log and acknowledge (200) rather than let Stripe retry a payload that will never
-		// parse differently.
-		slog.Warn("component=billing", "event", "billing_webhook_parse_failed", "stripe_event_id", event.ID, "type", string(event.Type), "err", err.Error())
 		return nil
 	}
 	switch parsed.Type {
