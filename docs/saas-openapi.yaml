@@ -1293,6 +1293,7 @@ components:
         category: { allOf: [{ $ref: "#/components/schemas/ShopCategoryRef" }], nullable: true }
         productType: { type: string, enum: [ITEM, LOADOUT, VEHICLE, SERVICE, CUSTOM] }
         deliveryType: { type: string, description: "Open set. Only MANUAL exists; DISCORD_ROLE and IN_GAME_FUTURE are reserved and rejected." }
+        deliveryPolicy: { type: string, enum: [MANUAL_PICKUP, MANUAL_COORDINATE], description: "docs/SHOP_DELIVERY.md. MANUAL_COORDINATE purchases require delivery {x, z}." }
         isFeatured: { type: boolean }
         stockState: { type: string, enum: [UNLIMITED, IN_STOCK, LOW_STOCK, OUT_OF_STOCK] }
         purchaseLimit: { type: integer, nullable: true, description: "Units per player." }
@@ -1332,6 +1333,7 @@ components:
         pricePoints: { type: integer, format: int64, minimum: 1, maximum: 1000000000 }
         productType: { type: string, enum: [ITEM, LOADOUT, VEHICLE, SERVICE, CUSTOM] }
         deliveryType: { type: string, enum: [MANUAL], default: MANUAL }
+        deliveryPolicy: { type: string, enum: [MANUAL_PICKUP, MANUAL_COORDINATE], default: MANUAL_PICKUP }
         isActive: { type: boolean, default: true }
         isFeatured: { type: boolean, default: false }
         sortOrder: { type: integer }
@@ -1348,6 +1350,7 @@ components:
         categoryId: { type: integer, format: int64, nullable: true }
         pricePoints: { type: integer, format: int64 }
         deliveryType: { type: string, enum: [MANUAL] }
+        deliveryPolicy: { type: string, enum: [MANUAL_PICKUP, MANUAL_COORDINATE], description: Changes future purchases only; existing orders keep their snapshot. }
         isActive: { type: boolean }
         isFeatured: { type: boolean }
         sortOrder: { type: integer }
@@ -1365,7 +1368,76 @@ components:
       properties:
         productId: { type: integer, format: int64 }
         quantity: { type: integer, minimum: 1, maximum: 100 }
-        idempotencyKey: { type: string, minLength: 8, maxLength: 64, pattern: "^[A-Za-z0-9._:-]+$", description: "Reuse it to retry safely: the original purchase is returned (duplicate true). The same key with different data is 409 DUPLICATE_PURCHASE." }
+        idempotencyKey: { type: string, minLength: 8, maxLength: 64, pattern: "^[A-Za-z0-9._:-]+$", description: "Reuse it to retry safely: the original purchase is returned (duplicate true). The same key with different data (product, quantity or delivery coordinates) is 409 DUPLICATE_PURCHASE." }
+        delivery:
+          type: object
+          nullable: true
+          additionalProperties: false
+          required: [x, z]
+          description: "Required for MANUAL_COORDINATE products, refused for MANUAL_PICKUP. Ground position on the installation's configured map; there is no y."
+          properties:
+            x: { type: number, format: double }
+            z: { type: number, format: double }
+    ShopDeliveryMap:
+      type: object
+      properties:
+        key: { type: string, enum: [chernarusplus, enoch] }
+        name: { type: string }
+        minX: { type: number }
+        maxX: { type: number }
+        minZ: { type: number }
+        maxZ: { type: number }
+    ShopDelivery:
+      type: object
+      description: Player-safe delivery record (docs/SHOP_DELIVERY.md).
+      properties:
+        id: { type: integer, format: int64 }
+        purchaseId: { type: integer, format: int64 }
+        deliveryType: { type: string, enum: [MANUAL] }
+        policy: { type: string, enum: [MANUAL_PICKUP, MANUAL_COORDINATE] }
+        status: { type: string, enum: [MANUAL_READY, FULFILLED, CANCELLED], description: "Open set; automatic-delivery states are reserved for Phase 2B." }
+        map: { allOf: [{ $ref: "#/components/schemas/ShopDeliveryMap" }], nullable: true }
+        coordinates:
+          type: object
+          nullable: true
+          properties:
+            x: { type: number, format: double }
+            z: { type: number, format: double }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        fulfilledAt: { type: string, format: date-time, nullable: true }
+        cancelledAt: { type: string, format: date-time, nullable: true }
+    AdminShopDelivery:
+      allOf:
+        - $ref: "#/components/schemas/ShopDelivery"
+        - type: object
+          properties:
+            player:
+              type: object
+              properties:
+                accountId: { type: integer, format: int64 }
+                gamertag: { type: string }
+            gameServerId: { type: integer, format: int64, nullable: true }
+            purchaseStatus: { type: string, description: Queue/detail reads only. }
+            items: { type: array, items: { $ref: "#/components/schemas/ShopPurchaseItem" }, description: "Queue/detail reads only: product snapshot and quantity." }
+            fulfilledByDiscordUserId: { type: string, nullable: true }
+            cancelledByDiscordUserId: { type: string, nullable: true }
+            cancelReason: { type: string, nullable: true, enum: [REFUNDED, PURCHASE_CANCELLED, PURCHASE_FAILED] }
+    ShopDeliverySettings:
+      type: object
+      properties:
+        map: { allOf: [{ $ref: "#/components/schemas/ShopDeliveryMap" }], nullable: true }
+        coordinateDeliveryAvailable: { type: boolean }
+        automaticDelivery: { type: boolean, enum: [false] }
+    AdminShopDeliverySettings:
+      allOf:
+        - $ref: "#/components/schemas/ShopDeliverySettings"
+        - type: object
+          properties:
+            mapKey: { type: string, nullable: true }
+            supportedMaps: { type: array, items: { $ref: "#/components/schemas/ShopDeliveryMap" } }
+            updatedAt: { type: string, format: date-time, nullable: true }
+            updatedByDiscordUserId: { type: string, nullable: true }
     ShopPurchaseItem:
       type: object
       description: Snapshot taken at purchase time; never changes when the product is edited.
@@ -1387,6 +1459,7 @@ components:
         paidAt: { type: string, format: date-time, nullable: true }
         fulfilledAt: { type: string, format: date-time, nullable: true }
         refundedAt: { type: string, format: date-time, nullable: true }
+        delivery: { allOf: [{ $ref: "#/components/schemas/ShopDelivery" }], nullable: true, description: "Null only for a purchase written during a rolling deploy and not yet healed." }
     AdminShopPurchase:
       allOf:
         - $ref: "#/components/schemas/ShopPurchase"
@@ -1401,6 +1474,7 @@ components:
             refundReason: { type: string, nullable: true, description: Admin only. }
             fulfilledByDiscordUserId: { type: string, nullable: true }
             refundedByDiscordUserId: { type: string, nullable: true }
+            delivery: { allOf: [{ $ref: "#/components/schemas/AdminShopDelivery" }], nullable: true }
     ShopPurchaseResponse:
       type: object
       properties:
@@ -3433,6 +3507,100 @@ paths:
         "404": { description: NOT_FOUND or PURCHASE_NOT_FOUND. }
         "409": { description: INVALID_PURCHASE_STATUS. }
         "429": { description: RATE_LIMITED. }
+
+  # --- Champion Shop Delivery Engine 2.0 (docs/SHOP_DELIVERY.md). Staff delivery only; nothing contacts a game server. ---
+  /api/saas/organizations/{organizationID}/installations/{installationID}/shop/delivery-settings:
+    get:
+      summary: The installation's delivery map and bounds (any synced user) - for coordinate input.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+      responses:
+        "200": { description: Settings., content: { application/json: { schema: { type: object, properties: { settings: { $ref: "#/components/schemas/ShopDeliverySettings" } } } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    put:
+      summary: Set or clear the installation's map (organization OWNER/ADMIN). Only maps with verified bounds. Existing orders keep their snapshot. Rate limited (30/min).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false, properties: { mapKey: { type: string, nullable: true, enum: [chernarusplus, enoch, "", null] } } }
+      responses:
+        "200": { description: Updated., content: { application/json: { schema: { type: object, properties: { settings: { $ref: "#/components/schemas/AdminShopDeliverySettings" } } } } } }
+        "400": { description: UNSUPPORTED_MAP or INVALID_REQUEST. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: code SHOP_FORBIDDEN. }
+        "429": { description: RATE_LIMITED. }
+  /api/saas/organizations/{organizationID}/installations/{installationID}/shop/admin/delivery-settings:
+    get:
+      summary: Delivery settings with the supported maps and who changed them (organization OWNER/ADMIN).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+      responses:
+        "200": { description: Settings., content: { application/json: { schema: { type: object, properties: { settings: { $ref: "#/components/schemas/AdminShopDeliverySettings" } } } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: code SHOP_FORBIDDEN. }
+  /api/saas/organizations/{organizationID}/installations/{installationID}/shop/admin/deliveries:
+    get:
+      summary: The delivery queue (organization OWNER/ADMIN), newest first. Fulfill/refund through the purchase routes.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { name: status, in: query, schema: { type: string, enum: [MANUAL_READY, FULFILLED, CANCELLED] } }
+        - { name: policy, in: query, schema: { type: string, enum: [MANUAL_PICKUP, MANUAL_COORDINATE] } }
+        - { name: playerId, in: query, schema: { type: integer, format: int64 }, description: The economy accountId. }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, default: 25, maximum: 100 } }
+        - { name: cursor, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: One page.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  currency: { $ref: "#/components/schemas/EconomyCurrency" }
+                  items: { type: array, items: { $ref: "#/components/schemas/AdminShopDelivery" } }
+                  nextCursor: { type: string, nullable: true }
+                  limit: { type: integer }
+        "400": { description: INVALID_REQUEST (bad status, policy, playerId, limit or cursor). }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: code SHOP_FORBIDDEN. }
+  /api/saas/organizations/{organizationID}/installations/{installationID}/shop/admin/deliveries/{deliveryID}:
+    get:
+      summary: One delivery of the installation (organization OWNER/ADMIN).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { name: deliveryID, in: path, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        "200": { description: The delivery., content: { application/json: { schema: { type: object, properties: { delivery: { $ref: "#/components/schemas/AdminShopDelivery" } } } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: code SHOP_FORBIDDEN. }
+        "404": { description: DELIVERY_NOT_FOUND. }
+  /api/saas/organizations/{organizationID}/installations/{installationID}/shop/me/deliveries/{deliveryID}:
+    get:
+      summary: One of the acting player's own deliveries (VERIFIED DayZ link). Anyone else's is 404.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { name: deliveryID, in: path, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        "200": { description: The delivery., content: { application/json: { schema: { type: object, properties: { delivery: { $ref: "#/components/schemas/ShopDelivery" } } } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: DELIVERY_NOT_FOUND. }
+        "409": { description: PLAYER_IDENTITY_REQUIRED. }
 
   # --- Champion Billing Phase 1 (docs/BILLING.md). Stripe subscriptions; no plan/price approved yet. ---
   /api/saas/billing/plans:

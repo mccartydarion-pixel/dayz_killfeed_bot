@@ -473,6 +473,14 @@ Phase 1 of the Shop (`docs/SHOP.md`). Four additive tables; **Champion Points ar
 Products are never hard-deleted, so purchase history always keeps its product link and, in any case, its own name/price snapshot. Read-only reconciliation between purchases and the ledger:
 `ShopRepository.ReconcileShop` (see `docs/SHOP.md` section 8).
 
+## Champion Shop Delivery Engine 2.0 (migration 0049)
+
+Additive (`docs/SHOP_DELIVERY.md` section 4): `shop_products.delivery_policy` (`MANUAL_PICKUP` default / `MANUAL_COORDINATE`); `shop_delivery_settings` (one row per installation:
+`map_key`, composite FK `(installation_id, organization_id)`); `shop_deliveries` (one row per purchase, `UNIQUE (purchase_id)`, composite FKs to `installations` and
+`(purchase_id, installation_id)` -> `shop_purchases`; policy/map/`coord_x`/`coord_z` snapshot with a CHECK tying coordinates to the policy and rejecting NaN/Infinity; status `CHECK IN
+('MANUAL_READY','FULFILLED','CANCELLED')`; fulfilled/cancelled time, actor and reason; indexes `(installation_id, status, id DESC)`, `(installation_id, id DESC)`,
+`(installation_id, player_id, id DESC)`). Historical purchases are backfilled as `MANUAL_PICKUP` from their own state without changing it. No Nitrado credential is stored.
+
 ## Champion Billing (migration 0037)
 
 Phase 1 of billing (`docs/BILLING.md`). No new customer/subscription table - the existing `subscriptions` row (one per organization, `0024_saas_foundation`) gained Stripe fields; `provider`/

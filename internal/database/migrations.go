@@ -1937,8 +1937,97 @@ CREATE INDEX IF NOT EXISTS idx_case_evidence_subject_id ON case_evidence_events(
 CREATE INDEX IF NOT EXISTS idx_case_evidence_hit_time ON case_evidence_events(guild_id,server_id,ingested_at DESC) WHERE event_type='PLAYER_HIT';
 `,
 	},
+	{
+		Name: "0049_shop_delivery_engine",
+		SQL: `
+-- Champion Shop Delivery Engine 2.0 (docs/SHOP_DELIVERY.md). Additive: a delivery policy on
+-- products, a per-installation delivery map setting, and one shop_deliveries row per purchase.
+-- Every delivery is still fulfilled by staff (delivery_type MANUAL); nothing here spawns items,
+-- writes server files or restarts servers. No Nitrado credential is ever stored here.
+ALTER TABLE shop_products ADD COLUMN IF NOT EXISTS delivery_policy TEXT NOT NULL DEFAULT 'MANUAL_PICKUP';
+DO $$ BEGIN
+    ALTER TABLE shop_products ADD CONSTRAINT shop_products_delivery_policy_check CHECK (delivery_policy IN ('MANUAL_PICKUP','MANUAL_COORDINATE'));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
+CREATE TABLE IF NOT EXISTS shop_delivery_settings (
+    installation_id BIGINT PRIMARY KEY,
+    organization_id BIGINT NOT NULL,
+    map_key TEXT CHECK (map_key IS NULL OR char_length(map_key) BETWEEN 1 AND 40),
+    updated_by_user_id BIGINT REFERENCES app_users(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    FOREIGN KEY (installation_id, organization_id) REFERENCES installations(id, organization_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS shop_deliveries (
+    id BIGSERIAL PRIMARY KEY,
+    purchase_id BIGINT NOT NULL,
+    organization_id BIGINT NOT NULL,
+    installation_id BIGINT NOT NULL,
+    game_server_id BIGINT REFERENCES game_servers(id) ON DELETE SET NULL,
+    player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    delivery_type TEXT NOT NULL DEFAULT 'MANUAL' CHECK (delivery_type = 'MANUAL'),
+    delivery_policy TEXT NOT NULL CHECK (delivery_policy IN ('MANUAL_PICKUP','MANUAL_COORDINATE')),
+    map_key TEXT,
+    coord_x DOUBLE PRECISION,
+    coord_z DOUBLE PRECISION,
+    -- Only the Phase 2A states are allowed; the reserved automatic-delivery states need a later migration.
+    status TEXT NOT NULL CHECK (status IN ('MANUAL_READY','FULFILLED','CANCELLED')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    fulfilled_at TIMESTAMPTZ,
+    fulfilled_by_user_id BIGINT REFERENCES app_users(id) ON DELETE SET NULL,
+    cancelled_at TIMESTAMPTZ,
+    cancelled_by_user_id BIGINT REFERENCES app_users(id) ON DELETE SET NULL,
+    cancel_reason TEXT CHECK (cancel_reason IS NULL OR cancel_reason IN ('REFUNDED','PURCHASE_CANCELLED','PURCHASE_FAILED')),
+    FOREIGN KEY (installation_id, organization_id) REFERENCES installations(id, organization_id) ON DELETE CASCADE,
+    FOREIGN KEY (purchase_id, installation_id) REFERENCES shop_purchases(id, installation_id) ON DELETE CASCADE,
+    CONSTRAINT uq_shop_deliveries_purchase UNIQUE (purchase_id),
+    -- A coordinate delivery carries a map and a finite ground position (NaN and +-Infinity fail the
+    -- range comparison); a pickup carries none. There is no y/altitude column on purpose.
+    CONSTRAINT shop_deliveries_coordinates CHECK (
+        (delivery_policy = 'MANUAL_PICKUP' AND map_key IS NULL AND coord_x IS NULL AND coord_z IS NULL)
+        OR (delivery_policy = 'MANUAL_COORDINATE' AND map_key IS NOT NULL
+            AND coord_x >= 0 AND coord_x <= 100000 AND coord_z >= 0 AND coord_z <= 100000)),
+    CONSTRAINT shop_deliveries_fulfilled CHECK (status <> 'FULFILLED' OR fulfilled_at IS NOT NULL),
+    CONSTRAINT shop_deliveries_cancelled CHECK (status <> 'CANCELLED' OR (cancelled_at IS NOT NULL AND cancel_reason IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS idx_shop_deliveries_queue ON shop_deliveries(installation_id, status, id DESC);
+CREATE INDEX IF NOT EXISTS idx_shop_deliveries_installation ON shop_deliveries(installation_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_shop_deliveries_player ON shop_deliveries(installation_id, player_id, id DESC);
+` + ShopDeliveryBackfillSQL,
+	},
 }
+
+// ShopDeliveryBackfillSQL gives every purchase that has no delivery record a MANUAL_PICKUP one,
+// derived from - never changing - the purchase's own fulfillment/refund state: an open purchase is
+// MANUAL_READY; a fulfilled purchase (including one refunded after it was handed over) keeps its
+// historical fulfillment; a purchase refunded, cancelled or failed before fulfillment is
+// CANCELLED. Idempotent (ON CONFLICT on the one-delivery-per-purchase key).
+const ShopDeliveryBackfillSQL = shopDeliveryBackfillInsert + ` ON CONFLICT (purchase_id) DO NOTHING;
+`
+
+// ShopDeliveryHealSQL is the same derivation for one purchase ($1): the repository runs it inside
+// fulfill/refund/read paths so a purchase written by an older instance during a rolling deploy
+// (after this migration ran) still gets its delivery record. A no-op when the record exists.
+const ShopDeliveryHealSQL = shopDeliveryBackfillInsert + ` AND sp.id = $1 ON CONFLICT (purchase_id) DO NOTHING`
+
+const shopDeliveryBackfillInsert = `
+INSERT INTO shop_deliveries(purchase_id, organization_id, installation_id, game_server_id, player_id, delivery_policy, status,
+    created_at, updated_at, fulfilled_at, fulfilled_by_user_id, cancelled_at, cancelled_by_user_id, cancel_reason)
+SELECT sp.id, sp.organization_id, sp.installation_id, sp.game_server_id, sp.player_id, 'MANUAL_PICKUP',
+    CASE WHEN sp.fulfilled_at IS NOT NULL THEN 'FULFILLED'
+         WHEN sp.status IN ('REFUNDED','CANCELLED','FAILED') THEN 'CANCELLED'
+         ELSE 'MANUAL_READY' END,
+    sp.created_at, NOW(), sp.fulfilled_at, sp.fulfilled_by_user_id,
+    CASE WHEN sp.fulfilled_at IS NULL AND sp.status IN ('REFUNDED','CANCELLED','FAILED') THEN COALESCE(sp.refunded_at, sp.cancelled_at, sp.updated_at) END,
+    CASE WHEN sp.fulfilled_at IS NULL AND sp.status = 'REFUNDED' THEN sp.refunded_by_user_id END,
+    CASE WHEN sp.fulfilled_at IS NOT NULL THEN NULL
+         WHEN sp.status = 'REFUNDED' THEN 'REFUNDED'
+         WHEN sp.status = 'CANCELLED' THEN 'PURCHASE_CANCELLED'
+         WHEN sp.status = 'FAILED' THEN 'PURCHASE_FAILED' END
+FROM shop_purchases sp
+WHERE NOT EXISTS (SELECT 1 FROM shop_deliveries d WHERE d.purchase_id = sp.id)`
 
 // TrialGrantBackfillSQL records, for every owner whose organization already had a trial before
 // 0047 (every organization received one at creation), that their one trial is used - so existing

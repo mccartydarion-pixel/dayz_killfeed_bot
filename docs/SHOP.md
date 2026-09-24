@@ -44,6 +44,8 @@ Indexes: catalog `(installation_id, is_active, is_featured DESC, sort_order, id)
 * **Types** `ITEM`, `LOADOUT`, `VEHICLE`, `SERVICE`, `CUSTOM` are labels of what an admin will hand over.
 * **Delivery is separate from payment.** Only **`MANUAL`** exists: a purchase is paid immediately and waits for an admin to fulfill it. `DISCORD_ROLE` and `IN_GAME_FUTURE` are reserved names that the API
   rejects (`400`, "reserved and not implemented yet") - nothing here grants roles or spawns items, and it does not pretend to.
+* **Delivery policy and delivery records (Delivery Engine 2.0, `docs/SHOP_DELIVERY.md`).** Each product is `MANUAL_PICKUP` (default) or `MANUAL_COORDINATE` (the buyer sends X/Z map
+  coordinates); every purchase gets one persistent delivery record in the purchase transaction, and fulfill/refund move it atomically.
 * **Stock**: `UNLIMITED`, or `FINITE` with a required `stockQuantity`. Players see only `stockState` (`UNLIMITED`, `IN_STOCK`, `LOW_STOCK` for 1-5, `OUT_OF_STOCK`); the exact quantity is admin-only.
 * **Purchase limit** (optional, per player and product): counts **units** in purchases with status `PENDING_FULFILLMENT`, `PAID` or `FULFILLED`. A **refunded, cancelled or failed purchase does not count**,
   so a refund gives the limit back.
@@ -192,4 +194,5 @@ UI notes: show `stockState` (never an exact count) and disable Buy for `OUT_OF_S
 
 ## 12. Not built
 
-Cart / multi-item orders, unpaid checkout sessions (payment is immediate), automatic delivery (role or in-game), Discord Shop UI or SHOP embeds, product images, coupons/discounts, player-to-player transfers.
+Cart / multi-item orders, unpaid checkout sessions (payment is immediate), automatic delivery (role or in-game - Delivery Engine 2.0 is staff delivery only, see `docs/SHOP_DELIVERY.md`),
+Discord Shop UI or SHOP embeds, product images, coupons/discounts, player-to-player transfers.

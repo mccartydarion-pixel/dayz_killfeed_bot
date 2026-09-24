@@ -24,8 +24,9 @@ import (
 //
 //	purchase:  idempotency pre-check -> product row FOR UPDATE -> idempotency re-check -> new purchase row
 //	           -> player_points row (debit) -> stock update -> item snapshot
-//	refund:    purchase row FOR UPDATE -> product row (restock) -> player_points row (credit)
-//	fulfill:   purchase row only
+//	refund:    purchase row FOR UPDATE -> delivery row (cancel if undelivered) -> product row (restock)
+//	           -> player_points row (credit)
+//	fulfill:   purchase row FOR UPDATE -> its delivery row
 //	admin ops: player_points row only
 //
 // so every path takes product/purchase locks before the balance lock, never the reverse.
@@ -89,6 +90,7 @@ type ShopProduct struct {
 	Name, Slug, Description            string
 	PricePoints                        int64
 	ProductType, DeliveryType          string
+	DeliveryPolicy                     string // MANUAL_PICKUP or MANUAL_COORDINATE (docs/SHOP_DELIVERY.md)
 	SortOrder                          int
 	IsActive, IsFeatured               bool
 	StockMode                          string
@@ -122,6 +124,9 @@ type ShopPurchase struct {
 	RefundReason                       string
 	CreatedAt, UpdatedAt               time.Time
 	Items                              []ShopPurchaseItem
+	// Delivery is the purchase's delivery record (nil only for a purchase written by an older
+	// instance during a rolling deploy and not yet healed - see ShopDeliveryHealSQL).
+	Delivery *ShopDelivery
 }
 
 // --- helpers ----------------------------------------------------------------------------------------
@@ -252,7 +257,7 @@ RETURNING `+categoryCols, org, inst, id, p.Name, p.Description, p.SortOrder, p.I
 // --- products ---------------------------------------------------------------------------------------
 
 const productCols = `p.id, p.organization_id, p.installation_id, p.category_id, COALESCE(c.name,''), COALESCE(c.slug,''),
-p.name, p.slug, p.description, p.price_points, p.product_type, p.delivery_type, p.sort_order, p.is_active, p.is_featured,
+p.name, p.slug, p.description, p.price_points, p.product_type, p.delivery_type, p.delivery_policy, p.sort_order, p.is_active, p.is_featured,
 p.stock_mode, p.stock_quantity, p.purchase_limit, p.created_at, p.updated_at`
 
 const productFrom = ` FROM shop_products p LEFT JOIN shop_categories c ON c.id = p.category_id AND c.installation_id = p.installation_id`
@@ -260,7 +265,7 @@ const productFrom = ` FROM shop_products p LEFT JOIN shop_categories c ON c.id =
 func scanProduct(row pgx.Row) (ShopProduct, error) {
 	var p ShopProduct
 	err := row.Scan(&p.ID, &p.OrganizationID, &p.InstallationID, &p.CategoryID, &p.CategoryName, &p.CategorySlug,
-		&p.Name, &p.Slug, &p.Description, &p.PricePoints, &p.ProductType, &p.DeliveryType, &p.SortOrder, &p.IsActive, &p.IsFeatured,
+		&p.Name, &p.Slug, &p.Description, &p.PricePoints, &p.ProductType, &p.DeliveryType, &p.DeliveryPolicy, &p.SortOrder, &p.IsActive, &p.IsFeatured,
 		&p.StockMode, &p.StockQuantity, &p.PurchaseLimit, &p.CreatedAt, &p.UpdatedAt)
 	return p, err
 }
@@ -368,6 +373,7 @@ type ShopProductInput struct {
 	Name, Description         string
 	PricePoints               int64
 	ProductType, DeliveryType string
+	DeliveryPolicy            string
 	SortOrder                 int
 	IsActive, IsFeatured      bool
 	StockMode                 string
@@ -380,11 +386,15 @@ func (r *ShopRepository) CreateProduct(ctx context.Context, org, inst int64, in 
 	for n := 1; n <= 60; n++ {
 		slug := slugCandidate(base, n)
 		var id int64
+		policy := in.DeliveryPolicy
+		if policy == "" {
+			policy = DeliveryPolicyManualPickup
+		}
 		err := r.pool.QueryRow(ctx, `INSERT INTO shop_products(organization_id, installation_id, category_id, name, slug, description, price_points, product_type, delivery_type,
-  sort_order, is_active, is_featured, stock_mode, stock_quantity, purchase_limit)
-SELECT $1::bigint, i.id, $3::bigint, $4::text, $5::text, $6::text, $7::bigint, $8::text, $9::text, $10::int, $11::bool, $12::bool, $13::text, $14::bigint, $15::int FROM installations i WHERE i.id = $2 AND i.organization_id = $1
+  sort_order, is_active, is_featured, stock_mode, stock_quantity, purchase_limit, delivery_policy)
+SELECT $1::bigint, i.id, $3::bigint, $4::text, $5::text, $6::text, $7::bigint, $8::text, $9::text, $10::int, $11::bool, $12::bool, $13::text, $14::bigint, $15::int, $16::text FROM installations i WHERE i.id = $2 AND i.organization_id = $1
 RETURNING id`, org, inst, in.CategoryID, in.Name, slug, in.Description, in.PricePoints, in.ProductType, in.DeliveryType,
-			in.SortOrder, in.IsActive, in.IsFeatured, in.StockMode, in.StockQuantity, in.PurchaseLimit).Scan(&id)
+			in.SortOrder, in.IsActive, in.IsFeatured, in.StockMode, in.StockQuantity, in.PurchaseLimit, policy).Scan(&id)
 		switch {
 		case err == nil:
 			return r.GetProduct(ctx, org, inst, id, true)
@@ -415,6 +425,7 @@ type ShopProductPatch struct {
 	ClearCategory        bool
 	PricePoints          *int64
 	DeliveryType         *string
+	DeliveryPolicy       *string
 	SortOrder            *int
 	IsActive, IsFeatured *bool
 	StockMode            *string
@@ -452,6 +463,9 @@ WHERE p.id = $3 AND p.organization_id = $1 AND p.installation_id = $2 FOR UPDATE
 	}
 	if p.DeliveryType != nil {
 		m.DeliveryType = *p.DeliveryType
+	}
+	if p.DeliveryPolicy != nil {
+		m.DeliveryPolicy = *p.DeliveryPolicy
 	}
 	if p.SortOrder != nil {
 		m.SortOrder = *p.SortOrder
@@ -491,9 +505,9 @@ WHERE p.id = $3 AND p.organization_id = $1 AND p.installation_id = $2 FOR UPDATE
 		}
 	}
 	if _, err := tx.Exec(ctx, `UPDATE shop_products SET category_id=$4, name=$5, description=$6, price_points=$7, delivery_type=$8, sort_order=$9,
-  is_active=$10, is_featured=$11, stock_mode=$12, stock_quantity=$13, purchase_limit=$14, updated_at=NOW()
+  is_active=$10, is_featured=$11, stock_mode=$12, stock_quantity=$13, purchase_limit=$14, delivery_policy=$15, updated_at=NOW()
 WHERE id=$3 AND organization_id=$1 AND installation_id=$2`, org, inst, id, m.CategoryID, m.Name, m.Description, m.PricePoints, m.DeliveryType, m.SortOrder,
-		m.IsActive, m.IsFeatured, m.StockMode, m.StockQuantity, m.PurchaseLimit); err != nil {
+		m.IsActive, m.IsFeatured, m.StockMode, m.StockQuantity, m.PurchaseLimit, m.DeliveryPolicy); err != nil {
 		if isForeignKeyViolation(err) {
 			return nil, false, ErrShopCategoryNotFound
 		}
@@ -518,7 +532,14 @@ type PurchaseParams struct {
 	ProductID                      int64
 	Quantity                       int
 	IdempotencyKey                 string
+	// Delivery is the player's X/Z delivery position (nil = none given). Required for a
+	// MANUAL_COORDINATE product and refused for a MANUAL_PICKUP one; validated against the
+	// installation's configured map under the product lock.
+	Delivery *DeliveryCoordinates
 }
+
+// DeliveryCoordinates is a ground position on the installation's map (no altitude).
+type DeliveryCoordinates struct{ X, Z float64 }
 
 // PurchaseResult is the committed purchase. BalanceAfter is the authoritative balance right after
 // the debit (for a replay: the account's current balance).
@@ -601,6 +622,9 @@ func getPurchase(ctx context.Context, q shopQuerier, org, inst, id, playerID int
 	if err := loadItems(ctx, q, list); err != nil {
 		return nil, err
 	}
+	if err := loadDeliveries(ctx, q, list); err != nil {
+		return nil, err
+	}
 	return &list[0], nil
 }
 
@@ -622,7 +646,19 @@ func sameRequest(sp *ShopPurchase, p PurchaseParams) bool {
 		return false
 	}
 	it := sp.Items[0]
-	return it.ProductID != nil && *it.ProductID == p.ProductID && it.Quantity == p.Quantity
+	if it.ProductID == nil || *it.ProductID != p.ProductID || it.Quantity != p.Quantity {
+		return false
+	}
+	// The delivery instructions are part of the request: a replay must carry exactly the stored
+	// coordinates (or none, for a pickup), so a reused key can never re-point a delivery.
+	var storedX, storedZ *float64
+	if sp.Delivery != nil {
+		storedX, storedZ = sp.Delivery.X, sp.Delivery.Z
+	}
+	if p.Delivery == nil {
+		return storedX == nil && storedZ == nil
+	}
+	return storedX != nil && storedZ != nil && *storedX == p.Delivery.X && *storedZ == p.Delivery.Z
 }
 
 // Purchase buys Quantity of one product for the player, atomically (see the file comment). Errors:
@@ -713,6 +749,11 @@ WHERE sp.installation_id = $1 AND sp.player_id = $2 AND pi.product_id = $3 AND s
 	if !ok || total > MaxLedgerAmount {
 		return nil, ErrInvalidLedgerAmount
 	}
+	// Delivery instructions, against the locked product's policy and the installation's map.
+	mapKey, err := purchaseDeliveryMap(ctx, tx, p, prod.DeliveryPolicy)
+	if err != nil {
+		return nil, err
+	}
 
 	// 4. The purchase row (paid in this very transaction, waiting for manual fulfillment).
 	var server any
@@ -745,6 +786,11 @@ ON CONFLICT ON CONSTRAINT uq_shop_purchases_idempotency DO NOTHING RETURNING id`
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO shop_purchase_items(purchase_id, product_id, product_name, unit_price_points, quantity, line_total_points) VALUES($1,$2,$3,$4,$5,$6)`,
 		purchaseID, p.ProductID, prod.Name, prod.PricePoints, p.Quantity, total); err != nil {
+		return nil, err
+	}
+	// 7. The delivery record, with the policy/map/coordinates snapshotted: editing the product or the
+	//    map later never rewrites this order's instructions. A failure here rolls back everything.
+	if err := insertDelivery(ctx, tx, p, purchaseID, prod.DeliveryPolicy, mapKey); err != nil {
 		return nil, err
 	}
 	purchase, err := getPurchase(ctx, tx, p.OrganizationID, p.InstallationID, purchaseID, 0, false)
@@ -818,23 +864,50 @@ ORDER BY sp.id DESC LIMIT $7`, org, inst, q.PlayerID, q.Status, q.ProductID, q.B
 	if err := loadItems(ctx, r.pool, items); err != nil {
 		return nil, 0, err
 	}
+	if err := loadDeliveries(ctx, r.pool, items); err != nil {
+		return nil, 0, err
+	}
 	return items, next, nil
 }
 
-// Fulfill marks a PENDING_FULFILLMENT purchase FULFILLED and records the admin. Any other status is
-// ErrShopInvalidStatus (also for a concurrent second fulfill).
+// Fulfill marks a PENDING_FULFILLMENT purchase FULFILLED together with its MANUAL_READY delivery,
+// in one transaction under the purchase row lock, and records the admin. Any other status is
+// ErrShopInvalidStatus (also for a concurrent second fulfill, and for a purchase whose delivery was
+// cancelled). Saving coordinates never fulfills anything: only this call does.
 func (r *ShopRepository) Fulfill(ctx context.Context, org, inst, id, actorUserID int64) (*ShopPurchase, error) {
-	tag, err := r.pool.Exec(ctx, `UPDATE shop_purchases SET status='FULFILLED', fulfilled_at=NOW(), fulfilled_by_user_id=$4, updated_at=NOW()
-WHERE id=$3 AND organization_id=$1 AND installation_id=$2 AND status='PENDING_FULFILLMENT'`, org, inst, id, actorUserID)
+	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
-	p, err := r.GetPurchase(ctx, org, inst, id, 0)
+	defer tx.Rollback(ctx)
+	cur, err := getPurchase(ctx, tx, org, inst, id, 0, true)
+	if err != nil {
+		return nil, err
+	}
+	if cur.Status != ShopStatusPendingFulfillment {
+		return nil, ErrShopInvalidStatus
+	}
+	if err := healDelivery(ctx, tx, id); err != nil {
+		return nil, err
+	}
+	tag, err := tx.Exec(ctx, `UPDATE shop_deliveries SET status='FULFILLED', fulfilled_at=NOW(), fulfilled_by_user_id=$4, updated_at=NOW()
+WHERE purchase_id=$3 AND organization_id=$1 AND installation_id=$2 AND status='MANUAL_READY'`, org, inst, id, actorUserID)
 	if err != nil {
 		return nil, err
 	}
 	if tag.RowsAffected() == 0 {
 		return nil, ErrShopInvalidStatus
+	}
+	if _, err := tx.Exec(ctx, `UPDATE shop_purchases SET status='FULFILLED', fulfilled_at=NOW(), fulfilled_by_user_id=$4, updated_at=NOW()
+WHERE id=$3 AND organization_id=$1 AND installation_id=$2 AND status='PENDING_FULFILLMENT'`, org, inst, id, actorUserID); err != nil {
+		return nil, err
+	}
+	p, err := getPurchase(ctx, tx, org, inst, id, 0, false)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
 	}
 	return p, nil
 }
@@ -876,6 +949,18 @@ func (r *ShopRepository) Refund(ctx context.Context, p RefundParams) (*RefundRes
 	case ShopStatusPendingFulfillment, ShopStatusPaid, ShopStatusFulfilled:
 	default:
 		return nil, ErrShopInvalidStatus
+	}
+	// The delivery: an undelivered order's delivery is cancelled in this same transaction, so a
+	// refunded order can never be fulfilled afterwards; a delivered order keeps its historical
+	// fulfillment record untouched.
+	if err := healDelivery(ctx, tx, purchase.ID); err != nil {
+		return nil, err
+	}
+	if purchase.Status != ShopStatusFulfilled {
+		if _, err := tx.Exec(ctx, `UPDATE shop_deliveries SET status='CANCELLED', cancelled_at=NOW(), cancelled_by_user_id=$4, cancel_reason='REFUNDED', updated_at=NOW()
+WHERE purchase_id=$3 AND organization_id=$1 AND installation_id=$2 AND status='MANUAL_READY'`, p.OrganizationID, p.InstallationID, purchase.ID, p.ActorUserID); err != nil {
+			return nil, err
+		}
 	}
 	itemName := ""
 	for _, it := range purchase.Items {
@@ -921,6 +1006,8 @@ const (
 	ShopMismatchUnexpectedRefund = "UNEXPECTED_REFUND" // a SHOP_REFUND credit exists for a purchase that is not REFUNDED
 	ShopMismatchOrphanDebit      = "ORPHAN_DEBIT"      // a SHOP_PURCHASE ledger row without a purchase
 	ShopMismatchItemTotal        = "ITEM_TOTAL"        // the item snapshots do not add up to the purchase total
+	ShopMismatchMissingDelivery  = "MISSING_DELIVERY"  // a purchase without its delivery record
+	ShopMismatchDeliveryState    = "DELIVERY_STATE"    // the delivery status disagrees with the purchase status
 )
 
 type ShopMismatch struct {
@@ -963,6 +1050,19 @@ SELECT kind, purchase_id, detail FROM (
   SELECT 'ITEM_TOTAL', sp.id, 'items sum to ' || COALESCE(s.total,0) || ' but the purchase total is ' || sp.total_points
   FROM shop_purchases sp LEFT JOIN (SELECT purchase_id, SUM(line_total_points) AS total FROM shop_purchase_items GROUP BY purchase_id) s ON s.purchase_id = sp.id
   WHERE sp.organization_id=$1 AND sp.installation_id=$2 AND COALESCE(s.total,0) <> sp.total_points
+  UNION ALL
+  SELECT 'MISSING_DELIVERY', sp.id, 'no delivery record'
+  FROM shop_purchases sp
+  WHERE sp.organization_id=$1 AND sp.installation_id=$2 AND NOT EXISTS (SELECT 1 FROM shop_deliveries d WHERE d.purchase_id = sp.id)
+  UNION ALL
+  SELECT 'DELIVERY_STATE', sp.id, 'purchase ' || sp.status || ' but delivery ' || d.status
+  FROM shop_purchases sp JOIN shop_deliveries d ON d.purchase_id = sp.id
+  WHERE sp.organization_id=$1 AND sp.installation_id=$2 AND NOT (
+       (sp.status IN ('PENDING_FULFILLMENT','PAID') AND d.status = 'MANUAL_READY')
+    OR (sp.status = 'FULFILLED' AND d.status = 'FULFILLED')
+    OR (sp.status = 'REFUNDED' AND sp.fulfilled_at IS NOT NULL AND d.status = 'FULFILLED')
+    OR (sp.status IN ('REFUNDED','CANCELLED','FAILED') AND sp.fulfilled_at IS NULL AND d.status = 'CANCELLED')
+    OR (sp.status = 'PENDING'))
 ) x ORDER BY purchase_id, kind LIMIT $4`, org, inst, guildID, limit)
 	if err != nil {
 		return nil, err
