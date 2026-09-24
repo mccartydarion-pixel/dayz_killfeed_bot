@@ -73,6 +73,7 @@ type PortalSession struct {
 // SubscriptionState is Stripe's subscription state, normalized to exactly what Champion persists -
 // never the raw Stripe object.
 type SubscriptionState struct {
+	Metadata map[string]string // server-authored product kind and C.A.S.E. binding, never client supplied
 	SubscriptionID     string
 	CustomerID         string
 	PriceID            string
