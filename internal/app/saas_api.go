@@ -397,4 +397,5 @@ func (a *App) registerSaaSAPI() {
 	a.registerTrialRoutes()
 	a.registerPlayerRoutes()
 	a.registerClientAdminRoutes()
+	a.registerAntiCheatRoutes("/api/saas/organizations/{organizationID}/installations/{installationID}/admin")
 }
