@@ -9,8 +9,10 @@ import (
 // installation, the stored base subscription and the stored add-on row.
 // Never accept organization/server/status/provider values from a browser.
 type AccessInput struct {
-	BillingEnabled       bool
-	CapabilitiesVerified bool
+	BillingEnabled bool
+	// VerifiedThrough is the highest tier whose real features passed live QA.
+	// The zero value grants nothing; Command cannot be enabled by a Watch/Pro rollout.
+	VerifiedThrough Tier
 
 	OrganizationID      int64
 	InstallationID      int64
@@ -36,7 +38,7 @@ type AccessInput struct {
 // PAST_DUE currently has no grace entitlement; a future explicit policy can
 // change that without touching the base subscription.
 func Resolve(in AccessInput, now time.Time) []Capability {
-	if !in.BillingEnabled || !in.CapabilitiesVerified || strings.TrimSpace(in.BaseStatus) != "ACTIVE" {
+	if !in.BillingEnabled || strings.TrimSpace(in.BaseStatus) != "ACTIVE" {
 		return nil
 	}
 	if in.OrganizationID <= 0 || in.InstallationID <= 0 || in.SelectedGameServerID <= 0 ||
@@ -61,7 +63,12 @@ func Resolve(in AccessInput, now time.Time) []Capability {
 	default:
 		return nil
 	}
-	return tierCapabilities(in.Tier)
+	granted := tierCapabilities(in.Tier)
+	verified := tierCapabilities(in.VerifiedThrough)
+	if len(granted) == 0 || len(verified) < len(granted) {
+		return nil
+	}
+	return granted
 }
 
 // Has never relies on the website's visibility or its own plan labels.
