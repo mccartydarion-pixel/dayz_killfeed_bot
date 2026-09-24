@@ -884,6 +884,9 @@ func (e *Engine) discoverOnce(ctx context.Context) error {
 	// selection all operate on logical sources from this point on, so a pure
 	// mount-representation change can never look like a rotation.
 	e.rememberADMDirs(logs)
+	// Retain physical aliases for boot-header verification. The normal
+	// candidate-ranking and checkpoint pipeline still sees logical files.
+	bootAliases := append([]nitrado.LogFile(nil), logs...)
 	logs = e.deduplicateCandidates(logs)
 	// Boot authority (boot_authority.go): an older boot than the accepted one is never a candidate.
 	// When a listing gap leaves nothing admissible, the accepted boot is retained as is.
@@ -903,7 +906,7 @@ func (e *Engine) discoverOnce(ctx context.Context) error {
 	}
 	// A verified newer boot (or, at startup, the newest verified boot) is selected directly: a quiet
 	// boot's header never grows, so activity ranking alone would demote it.
-	if nb := e.newestVerifiedBoot(ctx, logs); nb != nil {
+	if nb := e.newestVerifiedBoot(ctx, e.admissibleCandidates(bootAliases)); nb != nil {
 		e.recordCandidates(logs)
 		e.updateCandidateHistory(logs, time.Now())
 		e.discoverFails = 0
