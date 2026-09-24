@@ -54,6 +54,7 @@ func (a *App) registerBillingRoutes() {
 	h("POST "+base+"/plan", a.handleBillingChangePlan)
 	h("POST "+base+"/cancel", a.handleBillingCancel)
 	h("POST "+base+"/reactivate", a.handleBillingReactivate)
+	a.registerCaseBillingRoutes()
 	// Not behind requireSaaSServiceAuth: Stripe calls this directly and authenticates with its own
 	// HMAC signature (billing.VerifyWebhookEvent), never the website's bearer token.
 	h("POST /api/saas/billing/webhook", a.handleStripeWebhook)
