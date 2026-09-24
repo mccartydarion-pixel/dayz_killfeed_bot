@@ -2214,6 +2214,36 @@ CREATE INDEX IF NOT EXISTS idx_case_addon_org_status
 `,
 	},
 
+	{
+		Name: "0055_case_checkout_reconciliation",
+		SQL: `
+-- Phase 6.2: retain a single per-server pending checkout and its Stripe
+-- idempotency identity; do not create a new subscription when a retry races.
+ALTER TABLE case_addon_subscriptions
+    ADD COLUMN IF NOT EXISTS checkout_session_id TEXT;
+ALTER TABLE case_addon_subscriptions
+    ADD COLUMN IF NOT EXISTS checkout_url TEXT;
+ALTER TABLE case_addon_subscriptions
+    ADD COLUMN IF NOT EXISTS checkout_reserved_at TIMESTAMPTZ;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_case_checkout_session
+    ON case_addon_subscriptions(checkout_session_id)
+    WHERE checkout_session_id IS NOT NULL;
+-- Checkout and subscription webhooks are recorded only in the same
+-- transaction that successfully applies the event. An error rolls both back,
+-- so Stripe retries can never be silently ignored.
+CREATE TABLE IF NOT EXISTS case_addon_webhook_events (
+    provider TEXT NOT NULL CHECK (provider = 'stripe'),
+    event_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    addon_id BIGINT NOT NULL REFERENCES case_addon_subscriptions(id) ON DELETE RESTRICT,
+    received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (provider,event_id)
+);
+CREATE INDEX IF NOT EXISTS idx_case_addon_webhook_addon
+    ON case_addon_webhook_events(addon_id, received_at DESC);
+`,
+	},
+
 }
 
 // LiveSyncCommandLineCleanupSQL (migration 0052, Champion Live Sync phase 2.1, docs/
