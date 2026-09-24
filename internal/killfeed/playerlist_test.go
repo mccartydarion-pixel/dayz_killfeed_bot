@@ -228,12 +228,13 @@ func TestPresenceUsesOnlyCompleteSnapshots(t *testing.T) {
 type recordingSessionStore struct {
 	files  []string
 	starts []*time.Time
+	reject bool // simulate the database refusing an older boot
 }
 
-func (r *recordingSessionStore) SetCurrentADMSession(_ context.Context, _, _ int64, file string, start *time.Time) error {
+func (r *recordingSessionStore) RecordADMSession(_ context.Context, _, _ int64, file string, start *time.Time) (bool, error) {
 	r.files = append(r.files, file)
 	r.starts = append(r.starts, start)
-	return nil
+	return !r.reject, nil
 }
 
 func TestADMSessionRecordedOncePerLogicalFile(t *testing.T) {

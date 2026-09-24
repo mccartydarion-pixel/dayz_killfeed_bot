@@ -153,6 +153,12 @@ func ParseRPT(content []byte, base int64, clockStart *time.Time) (ParseResult, i
 			res.add(Record{Offset: l.end, Category: CategoryLogHeader, Payload: map[string]string{"version": m[1]}, Evidence: Redact(text)})
 			continue
 		}
+		if strings.HasPrefix(text, "==") && strings.Trim(text, "=") != "" {
+			// The executable path / command line (service directory, -ip, -port, -config, -profiles
+			// ...). Kept only as a header record with NO evidence: no part of it is stored.
+			res.add(Record{Offset: l.end, Category: CategoryLogHeader, Payload: map[string]string{"redacted": "command_line"}})
+			continue
+		}
 		if strings.HasPrefix(text, "==") || strings.HasPrefix(text, "Exe timestamp:") {
 			res.add(Record{Offset: l.end, Category: CategoryLogHeader, Evidence: Redact(text)})
 			continue

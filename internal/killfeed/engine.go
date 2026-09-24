@@ -287,6 +287,20 @@ type Engine struct {
 	sessionStore    ADMSessionStore
 	sessionFile     string
 	playerListStats PlayerListStats
+	// Live Sync phase 2.1 (boot_authority.go): the accepted current boot and the directories the
+	// boot scan lists. acceptedBoot only ever moves forward.
+	acceptedBoot    time.Time
+	acceptedFile    *nitrado.LogFile
+	admDirs         map[string]bool
+	verifiedBoots   map[string]bool
+	lastBootScan    time.Time
+	lastNewBootFile string
+	bootStats       BootAuthorityStats
+	// onPollCycle is told the outcome of every completed poll cycle (worker liveness).
+	onPollCycle        func(PollOutcome)
+	transportStreak    int
+	lastTransportClass string
+	sourceHealth       ADMSourceHealth
 
 	players   *PlayerTracker
 	onPlayers func(count int) // optional hook when the online player set changes
@@ -800,10 +814,12 @@ func (e *Engine) Start(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-timer.C:
-			if err := e.PollOnce(ctx); err != nil {
+			err := e.PollOnce(ctx)
+			if err != nil {
 				slog.Warn("component=killfeed", "msg", "poll failed", "err", err.Error())
 				e.apiFailures++
 			}
+			e.firePollCycle(err)
 			timer.Reset(e.nextInterval())
 		}
 	}
@@ -837,6 +853,7 @@ func (e *Engine) PollOnce(ctx context.Context) error {
 func (e *Engine) discoverOnce(ctx context.Context) error {
 	logs, err := e.client.ListLogs(ctx, e.serviceID)
 	if err != nil {
+		e.noteTransportFailure(safeDownloadErrorClass(err))
 		var reqErr *nitrado.RequestError
 		if !errors.As(err, &reqErr) && strings.Contains(err.Error(), "no log files discovered") {
 			e.discoverFails++
@@ -852,6 +869,7 @@ func (e *Engine) discoverOnce(ctx context.Context) error {
 		return err
 	}
 	e.noSourceLogged = false
+	e.noteTransportSuccess()
 	if len(logs) == 0 {
 		e.discoverFails++
 		e.reportPoll()
@@ -861,7 +879,43 @@ func (e *Engine) discoverOnce(ctx context.Context) error {
 	// candidate before anything else sees the list - ranking, history, and
 	// selection all operate on logical sources from this point on, so a pure
 	// mount-representation change can never look like a rotation.
+	e.rememberADMDirs(logs)
 	logs = e.deduplicateCandidates(logs)
+	// Boot authority (boot_authority.go): an older boot than the accepted one is never a candidate.
+	// When a listing gap leaves nothing admissible, the accepted boot is retained as is.
+	logs = e.admissibleCandidates(logs)
+	if len(logs) == 0 {
+		if e.acceptedFile != nil {
+			e.selectionReason = "accepted_boot_retained_listing_gap"
+			slog.Info("component=adm_discovery", "event", "accepted_boot_retained", "server_id", e.serverID,
+				"file", canonicalADMID(e.acceptedFile.Path), "reason", "no_admissible_candidate_listed")
+			e.selectLog(*e.acceptedFile)
+			e.reportPoll()
+			return nil
+		}
+		e.discoverFails++
+		e.reportPoll()
+		return nil
+	}
+	// A verified newer boot (or, at startup, the newest verified boot) is selected directly: a quiet
+	// boot's header never grows, so activity ranking alone would demote it.
+	if nb := e.newestVerifiedBoot(ctx, logs); nb != nil {
+		e.recordCandidates(logs)
+		e.updateCandidateHistory(logs, time.Now())
+		e.discoverFails = 0
+		previousPath := ""
+		if e.selected != nil {
+			previousPath = e.selected.Path
+			e.drainRotationTail(ctx)
+		}
+		e.selectionReason = "newer_boot_verified"
+		slog.Info("component=adm_discovery", "event", "selection_decision",
+			"selected_path", nb.Path, "previous_path", previousPath, "selection_reason", e.selectionReason,
+			"source_switched", previousPath != "" && canonicalADMID(previousPath) != canonicalADMID(nb.Path))
+		e.selectLog(*nb)
+		e.reportPoll()
+		return nil
+	}
 	e.recordCandidates(logs)
 	if e.diagnostics != nil {
 		e.diagnostics.Update(func(s *RuntimeDiagnosticSnapshot) {
@@ -939,8 +993,7 @@ func (e *Engine) discoverOnce(ctx context.Context) error {
 		"selected_path", candidate.Path, "previous_path", previousPath, "selection_reason", e.selectionReason,
 		"source_switched", logicalChanged, "physical_path_changed", previousPath != "" && previousPath != candidate.Path,
 		"logical_source_changed", logicalChanged, "candidate_state", string(best.State))
-	e.selectLog(candidate)
-	if probed != nil {
+	if e.selectLog(candidate) && probed != nil {
 		e.finishProbeSwitch(ctx, probed)
 	}
 	e.reportPoll()
@@ -988,8 +1041,20 @@ func selectBestCandidate(logs []nitrado.LogFile) nitrado.LogFile {
 	return logs[0]
 }
 
-// selectLog locks in the active gameplay log and switches to polling only it.
-func (e *Engine) selectLog(lf nitrado.LogFile) {
+// selectLog locks in the active gameplay log and switches to polling only it. It refuses (returns
+// false, keeping the current selection) a file whose boot is older than the accepted boot: an old
+// ADM is never selected, so it is never read from byte zero into the live publishers.
+func (e *Engine) selectLog(lf nitrado.LogFile) bool {
+	if e.isOlderBoot(lf.Path) {
+		file := canonicalADMID(lf.Path)
+		e.updateBootStats(func(s *BootAuthorityStats) { s.RejectedOlder++; s.LastRejectedFile = file })
+		slog.Warn("component=adm_discovery", "event", "older_boot_refused", "server_id", e.serverID, "file", file,
+			"accepted_boot", e.acceptedBoot.Format("2006-01-02T15:04:05"))
+		if e.selected != nil {
+			e.state = StatePolling
+		}
+		return false
+	}
 	previousName := ""
 	previousPath := ""
 	if e.selected != nil {
@@ -1121,8 +1186,10 @@ func (e *Engine) selectLog(lf nitrado.LogFile) {
 		e.sink.SetLogSource(candidate.Name, candidate.Path, candidate.Size, candidate.Modified)
 		e.sink.SetDiscovery(string(StatePolling), 0, 0)
 	}
+	e.acceptBoot(candidate)
 	e.noteADMSession(candidate.Path)
 	e.lastRescan = time.Now()
+	return true
 }
 
 // pollSelected checks only the selected log for changes and reads new bytes.
@@ -1137,6 +1204,15 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 	}
 
 	e.lastPoll = time.Now()
+	// Boot authority: a verified newer boot is found on its own cadence, BEFORE the stale-source
+	// branch below, so a quiet boot never waits for staleGiveUpAfter (boot_authority.go).
+	if time.Since(e.lastBootScan) >= rescanInterval {
+		e.lastBootScan = time.Now()
+		if e.scanForNewerBoot(ctx) {
+			e.reportPoll()
+			return nil
+		}
+	}
 	if !e.lastLogChange.IsZero() && time.Since(e.lastLogChange) > staleGiveUpAfter {
 		// Directory-listing metadata can lag behind the file Nitrado is actually
 		// writing (see internal/killfeed/adm_source_scan.go). Force a direct read
@@ -1187,6 +1263,7 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 		return e.handleSelectedFailure(ctx, err)
 	}
 	e.consecFailures = 0
+	e.noteTransportSuccess()
 
 	changed := e.tracker.ShouldReadAgain(current.Path, current.Size, current.Modified)
 	if e.diagnostics != nil {
@@ -1803,6 +1880,7 @@ func (e *Engine) currentMeta(ctx context.Context) (*nitrado.LogFile, error) {
 // re-enters discovery only after the file is confirmed repeatedly unreachable.
 func (e *Engine) handleSelectedFailure(ctx context.Context, err error) error {
 	e.consecFailures++
+	e.noteTransportFailure(safeDownloadErrorClass(err))
 
 	var reqErr *nitrado.RequestError
 	isNotFound := errors.As(err, &reqErr) && reqErr.Kind == nitrado.KindNotFound
@@ -1859,6 +1937,9 @@ func (e *Engine) checkForNewerLog(ctx context.Context) {
 	}
 	// Collapse mount aliases before ranking - same reasoning as discoverOnce.
 	logs = e.deduplicateCandidates(logs)
+	if logs = e.admissibleCandidates(logs); len(logs) == 0 {
+		return
+	}
 
 	now := time.Now()
 	ranked := e.rankCandidates(logs, now)

@@ -228,6 +228,45 @@ The same principle now applies to locations: every `locationDTO` carries `occurr
 
 Kills and deaths now store the ADM line's physical source (`source_file`, `source_offset`, `source_local_time`), exactly as the location rows written from the same line. The heatmap joins on `(server, source_file, source_offset, player)`, and filters time on `COALESCE(event_time, created_at)`. `event_time` stays NULL, because ADM lines carry no date. Legacy rows keep the old `observed_at = event_time` join. Kills and deaths recorded before this change remain unmatchable (they have no source identity), so kill and death heatmaps fill from new events onward.
 
+### 7.7 ADM source authority (phase 2.1)
+
+**Production findings (2026-09-24, Phase 2 acceptance).**
+* A quiet boot's ADM is 124 bytes of header that never grows. Once the previous boot's ADM had been unchanged for `staleGiveUpAfter` (8 min), every poll took the stale branch and returned **before** the 10 s newer-file rescan. The new boot was found only by the 60 s full rediscovery, whose activity model ranks a never-growing file `STALE` after its first pass. It was accepted 10 min 43 s after the boot, and about 3 min after Nitrado first listed it.
+* A `noftp` listing gap made discovery fall back to `ftproot` and select a **three-day-old** ADM (`newest_remote_modified`) for 33 s. It read that file from byte 0 through the live pipeline: header only that time, but a historical file with unrecorded kills would have been republished.
+
+**Boot authority** (`internal/killfeed/boot_authority.go`). DayZ names each ADM after the boot's server-local start and writes the same time in its first line (`AdminLog started on … at …`). When the two agree (within 2 min), that stamp is the boot's identity, and it outranks listing activity:
+
+| Rule | Mechanism |
+|---|---|
+| A verified **newer** boot is selected promptly, even quiet | a boot scan every `rescanInterval` (10 s) lists the directories discovery saw ADMs in (both mounts), verifies the newest newer stamp by reading its header, drains the old file's remaining complete lines and switches. It runs **before** the stale-source branch. Discovery applies the same rule (at startup it picks the newest verified boot) |
+| An **older** boot is never selected | candidates older than the accepted boot are removed before any ranking or probing, and `selectLog` refuses one outright (`older_boot_refused`) |
+| A listing gap keeps the accepted boot | when nothing admissible is listed, discovery re-selects the accepted boot (`accepted_boot_retained`) at its own checkpoint |
+| No historical replay | an older file is never selected, so it is never read, checkpointed, or sent through a publisher |
+| Aliases stay one source | `noftp`/`ftproot` copies of the accepted boot are the same boot, never "older" |
+
+A newer-stamped file whose header contradicts its name, or cannot be read yet, is not promoted (`boot_candidate_unverified`); it is re-checked on the next scan.
+
+**Session logging.** `adm_session_current` is logged only when the database accepts the session (`RecordADMSession` reports it). A refused older boot logs `session_rejected` with only the canonical file and reason.
+
+**Worker and source health.**
+* The worker heartbeat advances on every completed poll cycle; a quiet ADM is a working worker.
+* The `nitrado` health component now reads the state snapshot's real key (`nitrado_connected`). It had read a non-existent `nitrado_authenticated`, which left Nitrado, the overall status and the bot's Discord presence permanently DEGRADED.
+* A per-server `adm_source_<id>` component classifies the ADM source:
+
+| State | Meaning | Health |
+|---|---|---|
+| `HEALTHY` | polls work and the ADM changed within 3 min | healthy |
+| `QUIET` | polls work; the current boot's ADM has not changed | healthy |
+| `SOURCE_LAGGING` | a newer boot has been listed > 30 s without being accepted, or players are online and the ADM has not advanced for 5 min | degraded |
+| `TRANSPORT_ERROR` | 3+ consecutive Nitrado list/read failures | degraded |
+| `WORKER_STALLED` | no poll cycle completed for 2 min | unhealthy |
+
+`GET /api/admin/live-sync` adds `bootAuthority` (accepted boot and file, when accepted, the last newer boot listed and when, older candidates rejected, unverified candidates), `admSource` and `commandLineHeaderRecords`.
+
+### 7.8 RPT command-line redaction (phase 2.1)
+
+Parser `cls-1.2` stores the RPT's executable-path and command-line header lines (`== …`) as `LOG_HEADER` records with **no evidence** (`payload.redacted = command_line`). Parser `cls-1.1` had kept the game port and config file name, with the IP and service name already removed: one record per RPT. Migration `0052` deletes exactly those records: family RPT, category `LOG_HEADER`, parser `cls-1.1`, an `==` line containing `-port=`. Nothing else is touched. `commandLineHeaderRecords` in the diagnostics confirms none remain.
+
 ## 8. API contract changes (phase 1)
 
 | Endpoint | Change |
@@ -283,7 +322,8 @@ Event → detection therefore **includes** Nitrado's own delay in exposing the b
    * fanout to consumers without double credit or Discord replay;
    * an installation-scoped change stream with a conditional-polling fallback;
    * wiring `CorrelateBoots` into a persisted boot table fed by the stored records.
-2. **Still open from phase 2's list:** DB presence (`player_server_activity`) reconciled from complete ADM snapshots; per-installation request budgets across many servers.
-3. **Samples still needed:** persistence errors and non-VM fatal crashes (no real sample yet; they parse as UNKNOWN until one exists). `server.log` (ftproot only) is listed but its format has not been sampled, so it is not ingested.
-4. **Kills and deaths recorded before phase 2** have no source identity and cannot appear on kill/death heatmaps.
-5. **Automatic Shop spawning remains disabled** (docs/SHOP_DELIVERY_PHASE2B.md).
+2. **Phase 2.1 (section 7.7):** ADM boot authority, health and the RPT command-line redaction are implemented. Nitrado's own listing delay for new files (≈ 7½ min observed) is outside Champion's control.
+3. **Still open from phase 2's list:** DB presence (`player_server_activity`) reconciled from complete ADM snapshots; per-installation request budgets across many servers.
+4. **Samples still needed:** persistence errors and non-VM fatal crashes (no real sample yet; they parse as UNKNOWN until one exists). `server.log` (ftproot only) is listed but its format has not been sampled, so it is not ingested.
+5. **Kills and deaths recorded before phase 2** have no source identity and cannot appear on kill/death heatmaps.
+6. **Automatic Shop spawning remains disabled** (docs/SHOP_DELIVERY_PHASE2B.md).

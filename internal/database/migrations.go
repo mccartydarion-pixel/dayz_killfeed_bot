@@ -2121,7 +2121,22 @@ CREATE INDEX IF NOT EXISTS idx_kills_source ON kills(server_id, source_file, sou
 CREATE INDEX IF NOT EXISTS idx_deaths_source ON deaths(server_id, source_file, source_offset) WHERE source_file IS NOT NULL;
 `,
 	},
+	{
+		Name: "0052_live_sync_rpt_command_line_cleanup",
+		SQL:  LiveSyncCommandLineCleanupSQL,
+	},
 }
+
+// LiveSyncCommandLineCleanupSQL (migration 0052, Champion Live Sync phase 2.1, docs/
+// CHAMPION_LIVE_SYNC.md section 7.8): parser cls-1.1 stored each RPT's command-line header with its IP
+// and service name redacted but its game port and config file name kept - one record per RPT. Parser
+// cls-1.2 stores no evidence for that line. This removes exactly those records (RPT, LOG_HEADER,
+// parser cls-1.1, an "==" line carrying "-port=") and nothing else.
+const LiveSyncCommandLineCleanupSQL = `
+DELETE FROM live_sync_records
+WHERE family = 'RPT' AND category = 'LOG_HEADER' AND parser = 'cls-1.1'
+  AND evidence LIKE '==%' AND evidence LIKE '%-port=%';
+`
 
 // ShopDeliveryBackfillSQL gives every purchase that has no delivery record a MANUAL_PICKUP one,
 // derived from - never changing - the purchase's own fulfillment/refund state: an open purchase is

@@ -176,7 +176,14 @@ func scanLocationEvent(row pgx.Row) (LocationEvent, error) {
 // re-recording the same file keeps an end the live sync watcher already proved (ended_at), so a
 // finished boot can never become CURRENT again. A genuinely new file starts a fresh, open session.
 func (r *LocationRepository) SetCurrentADMSession(ctx context.Context, guildID, serverID int64, admFile string, localStart *time.Time) error {
-	_, err := r.pool.Exec(ctx, `
+	_, err := r.RecordADMSession(ctx, guildID, serverID, admFile, localStart)
+	return err
+}
+
+// RecordADMSession is SetCurrentADMSession reporting whether the row was written: false means the
+// database kept a newer recorded boot (killfeed.ADMSessionStore).
+func (r *LocationRepository) RecordADMSession(ctx context.Context, guildID, serverID int64, admFile string, localStart *time.Time) (bool, error) {
+	tag, err := r.pool.Exec(ctx, `
 INSERT INTO server_adm_sessions(server_id, guild_id, adm_file, session_local_start, selected_at) VALUES($1,$2,$3,$4::timestamp,NOW())
 ON CONFLICT (server_id) DO UPDATE SET guild_id=EXCLUDED.guild_id, adm_file=EXCLUDED.adm_file, session_local_start=EXCLUDED.session_local_start, selected_at=NOW(),
     ended_at       = CASE WHEN server_adm_sessions.adm_file = EXCLUDED.adm_file THEN server_adm_sessions.ended_at END,
@@ -186,7 +193,10 @@ WHERE server_adm_sessions.adm_file = EXCLUDED.adm_file
    OR server_adm_sessions.session_local_start IS NULL OR EXCLUDED.session_local_start IS NULL
    OR EXCLUDED.session_local_start >= server_adm_sessions.session_local_start`,
 		serverID, guildID, admFile, localStart)
-	return err
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 // EndADMSessionBefore ends the server's current boot session when DayZ-written evidence proves a

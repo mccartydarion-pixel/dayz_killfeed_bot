@@ -65,7 +65,7 @@ const (
 )
 
 // ParserVersion is recorded on every envelope so reprocessing can tell parser generations apart.
-const ParserVersion = "cls-1.1"
+const ParserVersion = "cls-1.2"
 
 // Scope is the tenant scope of an event. Envelopes from different scopes are never merged.
 type Scope struct {

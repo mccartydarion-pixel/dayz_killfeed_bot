@@ -269,3 +269,14 @@ DELETE FROM live_sync_records WHERE id IN (
 	}
 	return tag.RowsAffected(), nil
 }
+
+// CommandLineHeaderRecords counts stored RPT header records that still carry command-line evidence
+// (diagnostics: must be 0 once migration 0052 has run and parser cls-1.2 is live).
+func (r *LiveSyncRepository) CommandLineHeaderRecords(ctx context.Context, guildID, serverID int64) (int64, error) {
+	var n int64
+	err := r.pool.QueryRow(ctx, `
+SELECT COUNT(*) FROM live_sync_records
+WHERE guild_id=$1 AND server_id=$2 AND family='RPT' AND category='LOG_HEADER'
+  AND (evidence LIKE '%-port=%' OR evidence LIKE '%-config=%' OR evidence LIKE '%-profiles=%' OR evidence LIKE '%.exe%')`, guildID, serverID).Scan(&n)
+	return n, err
+}

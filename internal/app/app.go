@@ -920,6 +920,26 @@ func (a *App) runLocationRetention(ctx context.Context) {
 	}
 }
 
+// stateHealthComponents maps the runtime state snapshot (server.State.Snapshot) to its health
+// components. Keys must match the snapshot contract: Nitrado authentication is "nitrado_connected"
+// - the snapshot never had a "nitrado_authenticated" key, which left the Nitrado component
+// permanently DEGRADED (and the bot's Discord status idle) until Live Sync phase 2.1.
+func stateHealthComponents(snap map[string]any) []health.Component {
+	flag := func(key string) bool { v, _ := snap[key].(bool); return v }
+	pick := func(ok bool, bad health.State) health.State {
+		if ok {
+			return health.Healthy
+		}
+		return bad
+	}
+	return []health.Component{
+		{Name: "database", State: pick(flag("database_connected"), health.Unhealthy), Critical: true},
+		{Name: "discord", State: pick(flag("discord_connected"), health.Degraded)},
+		{Name: "nitrado", State: pick(flag("nitrado_connected"), health.Degraded)},
+		{Name: "adm_pipeline", State: pick(flag("log_source_found"), health.Unhealthy), Critical: true},
+	}
+}
+
 func (a *App) refreshHealth(ctx context.Context) {
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
@@ -928,11 +948,12 @@ func (a *App) refreshHealth(ctx context.Context) {
 			return
 		}
 		snap := a.State.Snapshot()
-		critical := func(key string) bool { v, _ := snap[key].(bool); return v }
-		a.HealthRegistry.Set(health.Component{Name: "database", State: map[bool]health.State{true: health.Healthy, false: health.Unhealthy}[critical("database_connected")], Critical: true})
-		a.HealthRegistry.Set(health.Component{Name: "discord", State: map[bool]health.State{true: health.Healthy, false: health.Degraded}[critical("discord_connected")]})
-		a.HealthRegistry.Set(health.Component{Name: "nitrado", State: map[bool]health.State{true: health.Healthy, false: health.Degraded}[critical("nitrado_authenticated")]})
-		a.HealthRegistry.Set(health.Component{Name: "adm_pipeline", State: map[bool]health.State{true: health.Healthy, false: health.Unhealthy}[critical("log_source_found")], Critical: true})
+		for _, c := range stateHealthComponents(snap) {
+			a.HealthRegistry.Set(c)
+		}
+		for _, c := range a.admSourceComponents(time.Now()) {
+			a.HealthRegistry.Set(c)
+		}
 		if a.ADMHealth != nil {
 			var poll, change time.Time
 			if v, ok := snap["last_poll"].(string); ok {
@@ -1876,6 +1897,10 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 	if a.Workers != nil {
 		a.Workers.Register(workerName)
 		a.Workers.Heartbeat(workerName)
+		// Live Sync phase 2.1: the heartbeat advances on every completed poll cycle - a quiet ADM is a
+		// working worker. Nitrado failures are reported by the adm_source component, not by faking a
+		// dead worker; a worker whose cycles stop still goes stale (WORKER_STALLED).
+		engine.OnPollCycle(func(killfeed.PollOutcome) { a.Workers.Heartbeat(workerName) })
 	}
 
 	queueDone := make(chan struct{})
