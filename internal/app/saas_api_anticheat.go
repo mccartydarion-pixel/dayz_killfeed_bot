@@ -183,7 +183,7 @@ func (a *App) handleAntiCheatOverview(w http.ResponseWriter, r *http.Request) {
 	}
 	out.Telemetry.LastKillAt = caseISO(lastKill)
 	out.Telemetry.LastLocationSampleAt = caseISO(lastLocation)
-	if out.Telemetry.KillEvents24h > 0 || out.Telemetry.LocationSamples24h > 0 {
+	if out.Telemetry.KillEvents24h > 0 || out.Telemetry.LocationSamples24h > 0 || hitCount > 0 {
 		out.Status = "COLLECTING"
 	}
 
