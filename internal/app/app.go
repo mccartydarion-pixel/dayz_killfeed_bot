@@ -1829,7 +1829,7 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 	// verification are proven in production. It writes no detector verdicts.
 	// Attach before engine.Start; all hit/lifecycle events use the SAME ADM
 	// poller and the SAME durable checkpoint as the existing killfeed.
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("CASE_EVIDENCE_ENABLED")), "true") && a.DB != nil && a.DB.Pool != nil {
+	if caseEvidenceEnabledForServer(row.ID) && a.DB != nil && a.DB.Pool != nil && a.Checkpoints != nil {
 		engine.SetEvidenceStore(repository.NewCaseEvidenceRepository(a.DB.Pool))
 		slog.Info("component=case", "event", "evidence_collector_enabled", "server_id", row.ID)
 	}
