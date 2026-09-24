@@ -116,6 +116,7 @@ type CaseEvidenceRow struct {
 	// SourceRef is a digest, not a raw Nitrado path or private identifier.
 	SourceRef string `json:"sourceRef"`
 	SourceEndOffset int64 `json:"sourceEndOffset"`
+	LineSHA256 string `json:"lineSha256"`
 	SubjectPlayerID *int64 `json:"subjectPlayerId,omitempty"`
 	ActorPlayerID *int64 `json:"actorPlayerId,omitempty"`
 	TargetPlayerID *int64 `json:"targetPlayerId,omitempty"`
@@ -148,7 +149,7 @@ func (r *CaseEvidenceRepository) ListCaseEvidence(ctx context.Context, guildID, 
 	if limit < 1 || limit > 100 { limit=50 }
 	rows,err:=r.pool.Query(ctx, `
 	  SELECT id,event_type,ingested_at,adm_clock,
-	         encode(sha256(convert_to(source_id,'UTF8')),'hex') AS source_ref,source_end_offset,
+	         encode(sha256(convert_to(source_id,'UTF8')),'hex') AS source_ref,source_end_offset,line_sha256,
 	         subject_player_id,actor_player_id,target_player_id,
 	         subject_name,actor_name,target_name,weapon,ammo,hit_zone,hit_zone_id,
 	         damage,hp,distance_meters,boundary_kind,
@@ -164,7 +165,7 @@ func (r *CaseEvidenceRepository) ListCaseEvidence(ctx context.Context, guildID, 
 	out:=make([]CaseEvidenceRow,0)
 	for rows.Next(){
 	  var e CaseEvidenceRow
-	  if err=rows.Scan(&e.ID,&e.Type,&e.IngestedAt,&e.ADMClock,&e.SourceRef,&e.SourceEndOffset,
+	  if err=rows.Scan(&e.ID,&e.Type,&e.IngestedAt,&e.ADMClock,&e.SourceRef,&e.SourceEndOffset,&e.LineSHA256,
 	    &e.SubjectPlayerID,&e.ActorPlayerID,&e.TargetPlayerID,
 	    &e.SubjectName,&e.ActorName,&e.TargetName,&e.Weapon,&e.Ammo,&e.HitZone,&e.HitZoneID,
 	    &e.Damage,&e.HP,&e.DistanceMeters,&e.BoundaryKind,
