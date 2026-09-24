@@ -158,7 +158,7 @@ func (r *CaseEvidenceRepository) ListCaseEvidence(ctx context.Context, guildID, 
 	    AND ($3::BIGINT IS NULL OR subject_player_id=$3 OR actor_player_id=$3 OR target_player_id=$3)
 	    AND ($4::BIGINT IS NULL OR id<$4)
 	  ORDER BY id DESC LIMIT $5
-	`,guildID,serverID,playerID,limit)
+	`,guildID,serverID,playerID,beforeID,limit)
 	if err!=nil {return nil,err}
 	defer rows.Close()
 	out:=make([]CaseEvidenceRow,0)
