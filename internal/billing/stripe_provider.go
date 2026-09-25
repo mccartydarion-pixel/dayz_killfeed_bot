@@ -157,6 +157,10 @@ func normalizeSubscription(s *stripe.Subscription) *SubscriptionState {
 			}
 		}
 	}
+	if s.TrialStart > 0 {
+		t := time.Unix(s.TrialStart, 0).UTC()
+		out.TrialStart = &t
+	}
 	if s.TrialEnd > 0 {
 		t := time.Unix(s.TrialEnd, 0).UTC()
 		out.TrialEnd = &t
