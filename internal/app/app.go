@@ -682,6 +682,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 				// subscription. The checkout flag defaults false in every environment.
 				if err := app.Billing.ConfigureCaseAddons(repository.NewCaseAddonSubscriptionRepository(db.Pool), billing.CaseOptions{
 					Enabled: cfg.CaseBillingEnabled,
+					AccessEnabled: cfg.CaseAccessEnabled,
 					VerifiedThrough: casebilling.Tier(cfg.CaseVerifiedThrough),
 					PriceIDs: map[casebilling.Tier]string{
 						casebilling.Watch: cfg.CaseWatchPriceID,
