@@ -76,20 +76,20 @@ func validateCaseStaffChannel(guild *discordgo.Guild, channel, parent *discordgo
 // cross-guild destinations, public @everyone channels and broad role allows.
 func (c *Client) VerifyCaseStaffChannel(ctx context.Context,guildID,channelID string) error {
 	if c==nil || c.session==nil || guildID=="" || channelID=="" || ctx.Err()!=nil {
-		return ErrCaseStaffChannelUnsafe
+		return caseStaffUnsafe("Discord client, guild, channel or request context unavailable")
 	}
 	channel,err:=c.session.Channel(channelID)
-	if err!=nil{return fmt.Errorf("%w: channel lookup: %v",ErrCaseStaffChannelUnsafe,err)}
-	if channel==nil || channel.GuildID!=guildID{return ErrCaseStaffChannelUnsafe}
+	if err!=nil{return caseStaffUnsafe("Discord channel lookup failed; confirm bot membership and View Channel access")}
+	if channel==nil || channel.GuildID!=guildID{return caseStaffUnsafe("channel is missing or does not belong to the expected guild")}
 	guild,err:=c.session.Guild(guildID)
-	if err!=nil{return fmt.Errorf("%w: guild lookup: %v",ErrCaseStaffChannelUnsafe,err)}
+	if err!=nil{return caseStaffUnsafe("Discord guild lookup failed; confirm the QA bot was installed in this guild")}
 	// A private parent is not sufficient: the child must itself explicitly
 	// deny @everyone view, preventing unsynced category permissions.
 	var parent *discordgo.Channel
 	botID:=c.BotID()
-	if botID=="" {return ErrCaseStaffChannelUnsafe}
+	if botID=="" {return caseStaffUnsafe("QA bot identity is unavailable")}
 	member,err:=c.session.GuildMember(guildID,"@me")
-	if err!=nil{return fmt.Errorf("%w: bot membership: %v",ErrCaseStaffChannelUnsafe,err)}
-	if member==nil{return ErrCaseStaffChannelUnsafe}
+	if err!=nil{return caseStaffUnsafe("Discord could not read QA bot guild membership; confirm installation and permissions")}
+	if member==nil{return caseStaffUnsafe("QA bot is not a guild member")}
 	return validateCaseStaffChannel(guild,channel,parent,botID,member.Roles)
 }
