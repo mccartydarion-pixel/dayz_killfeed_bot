@@ -106,9 +106,17 @@ server-scope and test-mode key/price verification. The website must read
 - [ ] Trial eligibility, upgrades/downgrades, disputes and canceled Checkout
       lifecycle implemented and signed off.
 - [ ] Full Stripe sandbox checkout + webhook replay evidence captured.
-- [ ] Premium enforcement at every relevant API and background worker;
-      cross-replica durable digest dedupe, delivery receipt/retry and
-      configured staff-channel privacy verification still required.
+- [ ] Verify the implemented durable outbox and private staff-channel gate
+      against real Discord + multiple staging replicas. PostgreSQL admission,
+      claim fencing, returned-message receipts, original-actor reauthorization
+      and pre-send retry/UNKNOWN logic have disposable-DB tests. An ambiguous
+      network send must never be automatically repeated.
+- [ ] Review actual Discord staff roles and the manually selected channel;
+      permission checks cannot infer all organizational role assignments.
+- [ ] Write and exercise operator reconciliation for UNKNOWN / a lost receipt,
+      including confirming whether Discord actually holds the message.
+- [ ] Premium enforcement at every newly introduced paid API/worker and
+      proof that free observational features remain available.
 - [ ] Operator approves the exact production prices, webhook destination,
       rollout tier, flag and deployment; only then enable live checkout.
 
