@@ -23,14 +23,14 @@ type CaseDigestOutbox struct{ pool *pgxpool.Pool }
 func NewCaseDigestOutbox(pool *pgxpool.Pool) *CaseDigestOutbox { return &CaseDigestOutbox{pool:pool} }
 
 type CaseDigestInput struct {
-	OrganizationID, InstallationID, GuildID, GameServerID int64
+	OrganizationID, InstallationID, GuildID, GameServerID, RequesterUserID int64
 	WindowStart, WindowEnd time.Time
 	SourceLines, HitLines, KillLines int64
 	CollectorEnabled bool
 }
 
 type CaseDigestDelivery struct {
-	ID, OrganizationID, InstallationID, GuildID, GameServerID int64
+	ID, OrganizationID, InstallationID, GuildID, GameServerID, RequesterUserID int64
 	WindowStart, WindowEnd time.Time
 	SourceLines, HitLines, KillLines int64
 	CollectorEnabled bool
@@ -53,7 +53,7 @@ type CaseDigestReceipt struct {
 // lock; browser identifiers and a cached route are never authoritative.
 func (r *CaseDigestOutbox) Enqueue(ctx context.Context, in CaseDigestInput) (int64,error) {
 	if r==nil || r.pool==nil || in.OrganizationID<=0 || in.InstallationID<=0 ||
-		in.GuildID<=0 || in.GameServerID<=0 || !in.WindowEnd.After(in.WindowStart) ||
+		in.GuildID<=0 || in.GameServerID<=0 || in.RequesterUserID<=0 || !in.WindowEnd.After(in.WindowStart) ||
 		in.SourceLines<0 || in.HitLines<0 || in.KillLines<0 {
 		return 0,ErrCaseDigestScope
 	}
@@ -86,10 +86,10 @@ func (r *CaseDigestOutbox) Enqueue(ctx context.Context, in CaseDigestInput) (int
 	err=tx.QueryRow(ctx,`
 		INSERT INTO case_watch_digest_outbox
 		(organization_id,installation_id,guild_id,game_server_id,window_start,window_end,
-		 source_lines,hit_lines,kill_lines,collector_enabled)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id
+		 source_lines,hit_lines,kill_lines,collector_enabled,requested_by_user_id)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id
 	`,in.OrganizationID,in.InstallationID,in.GuildID,in.GameServerID,
-		in.WindowStart,in.WindowEnd,in.SourceLines,in.HitLines,in.KillLines,in.CollectorEnabled).Scan(&id)
+		in.WindowStart,in.WindowEnd,in.SourceLines,in.HitLines,in.KillLines,in.CollectorEnabled,in.RequesterUserID).Scan(&id)
 	if err!=nil{return 0,fmt.Errorf("insert case digest: %w",err)}
 	if err=tx.Commit(ctx);err!=nil{return 0,fmt.Errorf("commit case digest: %w",err)}
 	return id,nil
@@ -116,10 +116,10 @@ func (r *CaseDigestOutbox) ClaimNext(ctx context.Context) (*CaseDigestDelivery,e
 		FROM candidate c WHERE d.id=c.id
 		RETURNING d.id,d.organization_id,d.installation_id,d.guild_id,d.game_server_id,
 		          d.window_start,d.window_end,d.source_lines,d.hit_lines,d.kill_lines,
-		          d.collector_enabled,d.claim_version,d.attempts
+		          d.collector_enabled,d.claim_version,d.attempts,d.requested_by_user_id
 	`).Scan(&d.ID,&d.OrganizationID,&d.InstallationID,&d.GuildID,&d.GameServerID,
 		&d.WindowStart,&d.WindowEnd,&d.SourceLines,&d.HitLines,&d.KillLines,
-		&d.CollectorEnabled,&d.ClaimVersion,&d.Attempts)
+		&d.CollectorEnabled,&d.ClaimVersion,&d.Attempts,&d.RequesterUserID)
 	if errors.Is(err,pgx.ErrNoRows){return nil,nil}
 	if err!=nil{return nil,fmt.Errorf("claim case digest: %w",err)}
 	return &d,nil
