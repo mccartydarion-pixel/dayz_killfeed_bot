@@ -60,6 +60,9 @@ var (
 	ErrShopAttemptStale          = errors.New("the delivery attempt is no longer in the expected state")
 	ErrShopAttemptRejected       = errors.New("the delivery attempt change is not allowed")
 	ErrShopAttemptEvidence       = errors.New("the delivery attempt evidence is missing or inconsistent")
+	// ErrShopReviewEvidenceRequired: a FAILED_REVIEW is resolved only with a recorded in-game
+	// observation by a named observer (migration 0055).
+	ErrShopReviewEvidenceRequired = errors.New("a review is resolved only with a recorded in-game observation")
 )
 
 // mapAttemptErr turns the ledger's SQLSTATEs into typed errors; anything else is returned as is.
@@ -79,6 +82,8 @@ func mapAttemptErr(err error) error {
 		return ErrShopAttemptSequence
 	case "SA422":
 		return fmt.Errorf("%w: %s", ErrShopAttemptRejected, pgErr.Message)
+	case "SA424":
+		return ErrShopReviewEvidenceRequired
 	case "23514":
 		if strings.HasPrefix(pgErr.ConstraintName, "shop_delivery_attempts") {
 			return fmt.Errorf("%w (%s)", ErrShopAttemptEvidence, pgErr.ConstraintName)

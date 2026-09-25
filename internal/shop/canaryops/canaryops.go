@@ -44,6 +44,9 @@ var (
 	ErrAmbiguousBoot       = errors.New("the new boot did not start after the verified staging: record FAILED_REVIEW instead")
 	ErrNotPhysicalProof    = errors.New("only an in-game observation can prove a physical fact; server logs are informational")
 	ErrUseFulfill          = errors.New("FULFILLED is reached only through FulfillAttempt")
+	// ErrArtifactHashMismatch: the read-back is not the exact file the attempt stages (or the empty
+	// file). Nothing is recorded: restore the expected file, read it back again, then record.
+	ErrArtifactHashMismatch = errors.New("the read-back file hash is not the attempt's expected artifact")
 )
 
 func invalid(format string, a ...any) error {
@@ -344,6 +347,14 @@ var evidenceSource = map[string]string{
 	repository.EvidencePickupConfirmed:   repository.SourceInGameObservation,
 	repository.EvidenceNoAdditionalSpawn: repository.SourceInGameObservation,
 	repository.EvidenceSpawnerLog:        repository.SourceRPTLog,
+	repository.EvidenceReviewObservation: repository.SourceInGameObservation,
+}
+
+// expectedArtifacts are the SHA-256 of the Champion file with only this attempt staged, and of the
+// empty file, rebuilt from the ledger row's immutable plan facts.
+func expectedArtifacts(a repository.ShopAttempt) (staged, empty string) {
+	s, e := nitradodelivery.SingleAttemptFiles(a.AttemptID, a.ClassName, a.Quantity, [3]float64{a.PosX, a.PosY, a.PosZ})
+	return nitradodelivery.SHA256(s), nitradodelivery.SHA256(e)
 }
 
 // RecordEvidence appends one observation. The source must be the one that can prove the kind: a
@@ -364,6 +375,25 @@ func (s *Service) RecordEvidence(ctx context.Context, org, inst int64, a Actor, 
 	}
 	if req.ObservedAt.IsZero() || req.ObservedAt.Sub(s.now()) > time.Minute {
 		return AttemptView{}, invalid("observedAt is required and cannot be in the future")
+	}
+	if want == repository.SourceInGameObservation && strings.TrimSpace(req.ObservedBy) == "" {
+		return AttemptView{}, invalid("an in-game observation must name its observer")
+	}
+	// A file read-back must be exactly the attempt's artifact: the staged file with only this attempt,
+	// or the empty file after the unstage.
+	if req.Kind == repository.EvidenceStagedFileHash || req.Kind == repository.EvidenceUnstagedFileHash {
+		att, err := s.ledger.Get(ctx, org, inst, attemptID)
+		if err != nil {
+			return AttemptView{}, err
+		}
+		staged, empty := expectedArtifacts(att)
+		got := strings.ToLower(strings.TrimSpace(req.SHA256))
+		switch {
+		case req.Kind == repository.EvidenceStagedFileHash && (got != staged || strings.ToLower(strings.TrimSpace(req.PreviousSHA256)) != empty):
+			return AttemptView{}, fmt.Errorf("%w: staged read-back %s, expected %s (previous must be the empty file %s)", ErrArtifactHashMismatch, got, staged, empty)
+		case req.Kind == repository.EvidenceUnstagedFileHash && got != empty:
+			return AttemptView{}, fmt.Errorf("%w: unstaged read-back %s, expected the empty file %s", ErrArtifactHashMismatch, got, empty)
+		}
 	}
 	if _, err := s.ledger.RecordEvidence(ctx, org, inst, attemptID, a.DiscordID, repository.ShopAttemptEvidenceInput{
 		Kind: req.Kind, Source: req.Source, SHA256: strings.ToLower(req.SHA256), PreviousSHA256: strings.ToLower(req.PreviousSHA256), BootFile: req.BootFile,
@@ -442,6 +472,25 @@ func (s *Service) ResolveReview(ctx context.Context, org, inst int64, a Actor, a
 	}
 	switch outcome {
 	case OutcomeNotSpawned, OutcomeSpawned:
+		// A resolution needs a recorded in-game observation by a named observer (the database
+		// enforces the same rule): what was found at the drop point / on the player.
+		evs, err := s.ledger.ListEvidence(ctx, org, inst, attemptID)
+		if err != nil {
+			return AttemptView{}, err
+		}
+		proven := false
+		for _, e := range evs {
+			if e.Source != repository.SourceInGameObservation || e.ObservedBy == nil {
+				continue
+			}
+			if e.Kind == repository.EvidenceReviewObservation ||
+				(outcome == OutcomeSpawned && (e.Kind == repository.EvidenceItemObserved || e.Kind == repository.EvidencePickupConfirmed)) {
+				proven = true
+			}
+		}
+		if !proven {
+			return AttemptView{}, fmt.Errorf("%w: %s", ErrMissingEvidence, repository.EvidenceReviewObservation)
+		}
 		if _, err := s.ledger.ResolveReview(ctx, org, inst, attemptID, outcome, a.DiscordID, note); err != nil {
 			return AttemptView{}, err
 		}

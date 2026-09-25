@@ -13,7 +13,8 @@ package database
 //     awaiting the restart, a second boot only after the verified unstage, ...), serialized against
 //     concurrent transitions by a share lock on the attempt row.
 //
-// Custom SQLSTATE: SA423 evidence not acceptable for the attempt's current state.
+// Custom SQLSTATEs: SA423 evidence not acceptable for the attempt's current state; SA424 a review
+// resolution without a recorded in-game observation.
 const ShopAttemptEvidenceSQL = `
 CREATE UNIQUE INDEX IF NOT EXISTS uq_shop_delivery_attempts_id_tenant ON shop_delivery_attempts(id, organization_id, installation_id);
 
@@ -23,7 +24,7 @@ CREATE TABLE IF NOT EXISTS shop_delivery_attempt_evidence (
     organization_id BIGINT NOT NULL,
     installation_id BIGINT NOT NULL,
     kind TEXT NOT NULL CHECK (kind IN ('STAGED_FILE_HASH','STAGING_BOOT','NEW_BOOT','SPAWNER_LOG','ITEM_OBSERVED','PICKUP_CONFIRMED',
-        'UNSTAGED_FILE_HASH','SECOND_BOOT','NO_ADDITIONAL_SPAWN','REVIEW_UNCERTAIN')),
+        'UNSTAGED_FILE_HASH','SECOND_BOOT','NO_ADDITIONAL_SPAWN','REVIEW_UNCERTAIN','REVIEW_OBSERVATION')),
     source TEXT NOT NULL CHECK (source IN ('NITRADO_READBACK','BOOT_AUTHORITY','IN_GAME_OBSERVATION','RPT_LOG','OPERATOR_ASSESSMENT')),
     recorded_by TEXT NOT NULL CHECK (recorded_by <> '' AND length(recorded_by) <= 100),
     sha256 TEXT CHECK (sha256 IS NULL OR sha256 ~ '^[0-9a-f]{64}$'),
@@ -40,7 +41,7 @@ CREATE TABLE IF NOT EXISTS shop_delivery_attempt_evidence (
     CONSTRAINT shop_attempt_evidence_source CHECK (
         (kind IN ('STAGED_FILE_HASH','UNSTAGED_FILE_HASH') AND source = 'NITRADO_READBACK')
         OR (kind IN ('STAGING_BOOT','NEW_BOOT','SECOND_BOOT') AND source = 'BOOT_AUTHORITY')
-        OR (kind IN ('ITEM_OBSERVED','PICKUP_CONFIRMED','NO_ADDITIONAL_SPAWN') AND source = 'IN_GAME_OBSERVATION')
+        OR (kind IN ('ITEM_OBSERVED','PICKUP_CONFIRMED','NO_ADDITIONAL_SPAWN','REVIEW_OBSERVATION') AND source = 'IN_GAME_OBSERVATION')
         OR (kind = 'SPAWNER_LOG' AND source = 'RPT_LOG')
         OR (kind = 'REVIEW_UNCERTAIN' AND source = 'OPERATOR_ASSESSMENT')),
     -- What each kind must carry.
@@ -50,11 +51,12 @@ CREATE TABLE IF NOT EXISTS shop_delivery_attempt_evidence (
         OR (kind = 'STAGING_BOOT' AND boot_file IS NOT NULL)
         OR (kind IN ('NEW_BOOT','SECOND_BOOT') AND boot_file IS NOT NULL AND boot_started_at IS NOT NULL AND boot_started_at <= observed_at)
         OR (kind IN ('ITEM_OBSERVED','PICKUP_CONFIRMED','NO_ADDITIONAL_SPAWN') AND observed_by IS NOT NULL)
+        OR (kind = 'REVIEW_OBSERVATION' AND observed_by IS NOT NULL AND detail <> '')
         OR (kind IN ('SPAWNER_LOG','REVIEW_UNCERTAIN') AND detail <> ''))
 );
--- One record per proof kind (write-once); log notes and uncertain assessments may repeat.
+-- One record per proof kind (write-once); log notes, review observations and uncertain assessments may repeat.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_shop_attempt_evidence_kind ON shop_delivery_attempt_evidence(attempt_row_id, kind)
-    WHERE kind NOT IN ('SPAWNER_LOG','REVIEW_UNCERTAIN');
+    WHERE kind NOT IN ('SPAWNER_LOG','REVIEW_UNCERTAIN','REVIEW_OBSERVATION');
 CREATE INDEX IF NOT EXISTS idx_shop_attempt_evidence_attempt ON shop_delivery_attempt_evidence(attempt_row_id, id);
 
 CREATE OR REPLACE FUNCTION shop_attempt_evidence_guard() RETURNS trigger LANGUAGE plpgsql AS $fn$
@@ -76,7 +78,7 @@ BEGIN
         OR (NEW.kind IN ('SPAWNER_LOG','ITEM_OBSERVED','PICKUP_CONFIRMED') AND st IN ('AWAITING_RESTART','RESTART_OBSERVED','UNSTAGE_REQUIRED','VERIFICATION_REQUIRED'))
         OR (NEW.kind = 'UNSTAGED_FILE_HASH' AND st IN ('FILE_STAGED','AWAITING_RESTART','UNSTAGE_REQUIRED'))
         OR (NEW.kind IN ('SECOND_BOOT','NO_ADDITIONAL_SPAWN') AND st = 'VERIFICATION_REQUIRED')
-        OR (NEW.kind = 'REVIEW_UNCERTAIN' AND st = 'FAILED_REVIEW' AND resolved IS NULL)) THEN
+        OR (NEW.kind IN ('REVIEW_UNCERTAIN','REVIEW_OBSERVATION') AND st = 'FAILED_REVIEW' AND resolved IS NULL)) THEN
         RAISE EXCEPTION 'evidence % is not acceptable while the attempt is %', NEW.kind, st USING ERRCODE = 'SA423';
     END IF;
     RETURN NEW;
@@ -85,4 +87,22 @@ $fn$;
 DROP TRIGGER IF EXISTS trg_shop_attempt_evidence_guard ON shop_delivery_attempt_evidence;
 CREATE TRIGGER trg_shop_attempt_evidence_guard BEFORE INSERT OR UPDATE ON shop_delivery_attempt_evidence
     FOR EACH ROW EXECUTE FUNCTION shop_attempt_evidence_guard();
+
+-- A FAILED_REVIEW is resolved only with a recorded in-game observation by a named observer: a
+-- REVIEW_OBSERVATION, or for SPAWNED an earlier ITEM_OBSERVED / PICKUP_CONFIRMED. (UNCERTAIN is not a
+-- resolution and needs none.) This holds for every writer, not only the operator service.
+CREATE OR REPLACE FUNCTION shop_attempt_resolution_evidence() RETURNS trigger LANGUAGE plpgsql AS $fn$
+BEGIN
+    IF OLD.review_resolution IS NULL AND NEW.review_resolution IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM shop_delivery_attempt_evidence e
+         WHERE e.attempt_row_id = NEW.id AND e.source = 'IN_GAME_OBSERVATION' AND e.observed_by IS NOT NULL
+           AND (e.kind = 'REVIEW_OBSERVATION' OR (NEW.review_resolution = 'SPAWNED' AND e.kind IN ('ITEM_OBSERVED','PICKUP_CONFIRMED')))) THEN
+        RAISE EXCEPTION 'a review is resolved only with a recorded in-game observation' USING ERRCODE = 'SA424';
+    END IF;
+    RETURN NEW;
+END
+$fn$;
+DROP TRIGGER IF EXISTS trg_shop_attempt_resolution_evidence ON shop_delivery_attempts;
+CREATE TRIGGER trg_shop_attempt_resolution_evidence BEFORE UPDATE OF review_resolution ON shop_delivery_attempts
+    FOR EACH ROW EXECUTE FUNCTION shop_attempt_resolution_evidence();
 `

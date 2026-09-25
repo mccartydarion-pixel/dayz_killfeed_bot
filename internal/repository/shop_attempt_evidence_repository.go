@@ -24,6 +24,7 @@ const (
 	EvidenceSecondBoot        = "SECOND_BOOT"         // a boot after the verified unstage
 	EvidenceNoAdditionalSpawn = "NO_ADDITIONAL_SPAWN" // in game after the second boot: no new item
 	EvidenceReviewUncertain   = "REVIEW_UNCERTAIN"    // a human assessed a FAILED_REVIEW and could not decide
+	EvidenceReviewObservation = "REVIEW_OBSERVATION"  // in game, for a FAILED_REVIEW: what a named observer found
 )
 
 // Evidence sources.

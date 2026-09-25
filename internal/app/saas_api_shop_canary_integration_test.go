@@ -13,6 +13,7 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/economy"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 	"github.com/yourname/dayz-killfeed/internal/shop/canaryops"
+	"github.com/yourname/dayz-killfeed/internal/shop/nitradodelivery"
 )
 
 // The canary operator API over the real routes and PostgreSQL: OWNER/ADMIN only, installation-scoped,
@@ -103,11 +104,16 @@ func TestShopCanaryOperatorAPI(t *testing.T) {
 	at := time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
 	code(ev(map[string]any{"kind": "ITEM_OBSERVED", "source": "RPT_LOG", "observedBy": "x", "observedAt": at}), http.StatusBadRequest, "INVALID_REQUEST", "RPT as proof")
 	code(ev(map[string]any{"kind": "ITEM_OBSERVED", "source": "IN_GAME_OBSERVATION", "observedBy": "x", "observedAt": at}), http.StatusConflict, "EVIDENCE_NOT_ACCEPTED", "item before staging")
-	w.expect(ev(map[string]any{"kind": "STAGED_FILE_HASH", "source": "NITRADO_READBACK", "sha256": strings.Repeat("5", 64), "previousSha256": strings.Repeat("e", 64), "observedAt": at}), http.StatusCreated, "staged hash")
-	code(ev(map[string]any{"kind": "STAGED_FILE_HASH", "source": "NITRADO_READBACK", "sha256": strings.Repeat("6", 64), "previousSha256": strings.Repeat("e", 64), "observedAt": at}), http.StatusConflict, "EVIDENCE_ALREADY_RECORDED", "write-once")
+	pos := att["position"].([]any)
+	stagedFile, emptyFile := nitradodelivery.SingleAttemptFiles(id, att["className"].(string), int(att["quantity"].(float64)),
+		[3]float64{pos[0].(float64), pos[1].(float64), pos[2].(float64)})
+	stagedSHA, emptySHA := nitradodelivery.SHA256(stagedFile), nitradodelivery.SHA256(emptyFile)
+	code(ev(map[string]any{"kind": "STAGED_FILE_HASH", "source": "NITRADO_READBACK", "sha256": strings.Repeat("5", 64), "previousSha256": emptySHA, "observedAt": at}), http.StatusConflict, "ARTIFACT_HASH_MISMATCH", "wrong artifact")
+	w.expect(ev(map[string]any{"kind": "STAGED_FILE_HASH", "source": "NITRADO_READBACK", "sha256": stagedSHA, "previousSha256": emptySHA, "observedAt": at}), http.StatusCreated, "staged hash")
+	code(ev(map[string]any{"kind": "STAGED_FILE_HASH", "source": "NITRADO_READBACK", "sha256": stagedSHA, "previousSha256": emptySHA, "observedAt": at}), http.StatusConflict, "EVIDENCE_ALREADY_RECORDED", "write-once")
 	w.expect(ev(map[string]any{"kind": "STAGING_BOOT", "source": "BOOT_AUTHORITY", "bootFile": session, "observedAt": at}), http.StatusCreated, "staging boot")
 	staged := w.expect(adv("FILE_PREPARED", "FILE_STAGED", ""), http.StatusOK, "stage").JSON(t)
-	if a := staged["attempt"].(map[string]any); a["stagedSha256"] != strings.Repeat("5", 64) || a["stagedBootFile"] != session || a["refundBlocked"] != true {
+	if a := staged["attempt"].(map[string]any); a["stagedSha256"] != stagedSHA || a["stagedBootFile"] != session || a["refundBlocked"] != true {
 		t.Fatalf("%v", a)
 	}
 	w.expect(adv("FILE_STAGED", "AWAITING_RESTART", ""), http.StatusOK, "await")
@@ -119,6 +125,8 @@ func TestShopCanaryOperatorAPI(t *testing.T) {
 		t.Fatalf("%v", a)
 	}
 	code(w.do(http.MethodPost, w.shopPath(w.a1, fmt.Sprintf("/purchases/%d/fulfill", purchase)), w.admin, nil), http.StatusConflict, "DELIVERY_ATTEMPT_ACTIVE", "manual fulfil while uncertain")
+	code(w.do(http.MethodPost, path(w.a1, "/"+id+"/review"), w.admin, map[string]any{"outcome": "NOT_SPAWNED", "note": "checked in game"}), http.StatusConflict, "EVIDENCE_REQUIRED", "resolution without observation")
+	w.expect(ev(map[string]any{"kind": "REVIEW_OBSERVATION", "source": "IN_GAME_OBSERVATION", "observedBy": "admin-in-game", "observedAt": at, "detail": "drop point empty"}), http.StatusCreated, "review observation")
 	w.expect(w.do(http.MethodPost, path(w.a1, "/"+id+"/review"), w.admin, map[string]any{"outcome": "NOT_SPAWNED", "note": "checked in game"}), http.StatusOK, "not spawned")
 	w.expect(w.do(http.MethodPost, w.shopPath(w.a1, fmt.Sprintf("/purchases/%d/refund", purchase)), w.admin, map[string]any{"reason": "canary aborted"}), http.StatusOK, "refund after NOT_SPAWNED")
 	// The full history is readable and every entry names its actor.

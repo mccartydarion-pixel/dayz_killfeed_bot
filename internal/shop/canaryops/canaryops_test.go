@@ -3,15 +3,20 @@ package canaryops
 import (
 	"context"
 	"errors"
+	"go/ast"
+	"go/build"
 	"go/parser"
 	"go/token"
+	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/yourname/dayz-killfeed/internal/config"
 	"github.com/yourname/dayz-killfeed/internal/economy"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
@@ -349,7 +354,21 @@ func TestEvidenceRulesAndAdvance(t *testing.T) {
 		t.Fatalf("missing: %v", err)
 	}
 	stagedAt := now.Add(-time.Minute)
-	if err := rec(EvidenceRequest{Kind: repository.EvidenceStagedFileHash, Source: repository.SourceNitradoReadback, SHA256: sha("5"), PreviousSHA256: sha("e"), ObservedAt: stagedAt}); err != nil {
+	stagedSHA, emptySHA := expectedArtifacts(v.Attempt)
+	// A read-back that is not exactly the attempt's artifact is refused and nothing is recorded.
+	for name, r := range map[string]EvidenceRequest{
+		"wrong staged file":  {Kind: repository.EvidenceStagedFileHash, Source: repository.SourceNitradoReadback, SHA256: sha("5"), PreviousSHA256: emptySHA, ObservedAt: stagedAt},
+		"wrong previous":     {Kind: repository.EvidenceStagedFileHash, Source: repository.SourceNitradoReadback, SHA256: stagedSHA, PreviousSHA256: sha("e"), ObservedAt: stagedAt},
+		"unstaged not empty": {Kind: repository.EvidenceUnstagedFileHash, Source: repository.SourceNitradoReadback, SHA256: stagedSHA, ObservedAt: stagedAt},
+	} {
+		if err := rec(r); !errors.Is(err, ErrArtifactHashMismatch) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if len(l.evidence[id]) != 0 {
+		t.Fatal("a mismatching read-back was recorded")
+	}
+	if err := rec(EvidenceRequest{Kind: repository.EvidenceStagedFileHash, Source: repository.SourceNitradoReadback, SHA256: stagedSHA, PreviousSHA256: emptySHA, ObservedAt: stagedAt}); err != nil {
 		t.Fatal(err)
 	}
 	if err := rec(EvidenceRequest{Kind: repository.EvidenceStagingBoot, Source: repository.SourceBootAuthority, BootFile: session, ObservedAt: stagedAt}); err != nil {
@@ -358,7 +377,7 @@ func TestEvidenceRulesAndAdvance(t *testing.T) {
 	if err := adv(repository.AttemptFilePrepared, repository.AttemptFileStaged, ""); err != nil {
 		t.Fatal(err)
 	}
-	if ev := l.lastEv; *ev.StagedSHA256 != sha("5") || *ev.BeforeSHA256 != sha("e") || !ev.StagedAt.Equal(stagedAt) || *ev.StagedBootFile != session {
+	if ev := l.lastEv; *ev.StagedSHA256 != stagedSHA || *ev.BeforeSHA256 != emptySHA || !ev.StagedAt.Equal(stagedAt) || *ev.StagedBootFile != session {
 		t.Fatalf("staged evidence not carried: %+v", ev)
 	}
 	if err := adv(repository.AttemptFileStaged, repository.AttemptAwaitingRestart, ""); err != nil {
@@ -401,6 +420,19 @@ func TestReviewOutcomesNeverCreateAttempts(t *testing.T) {
 		if _, err := s.ResolveReview(ctx, 1, 11, owner, "champion:d42:a1", bad.outcome, bad.note); !errors.Is(err, ErrInvalid) {
 			t.Errorf("%v: %v", bad, err)
 		}
+	}
+	// A resolution needs a recorded in-game observation by a named observer.
+	if _, err := s.ResolveReview(ctx, 1, 11, admin, "champion:d42:a1", OutcomeNotSpawned, "verified in game: nothing there"); !errors.Is(err, ErrMissingEvidence) || l.resolved != "" {
+		t.Fatalf("resolution without observation: %v", err)
+	}
+	if _, err := s.RecordEvidence(ctx, 1, 11, admin, "champion:d42:a1", EvidenceRequest{Kind: repository.EvidenceReviewObservation, Source: repository.SourceInGameObservation, ObservedAt: now, Detail: "drop point empty"}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("anonymous observation: %v", err)
+	}
+	if _, err := s.RecordEvidence(ctx, 1, 11, admin, "champion:d42:a1", EvidenceRequest{Kind: repository.EvidenceReviewObservation, Source: repository.SourceRPTLog, ObservedBy: "x", ObservedAt: now, Detail: "log"}); !errors.Is(err, ErrNotPhysicalProof) {
+		t.Fatalf("log as review observation: %v", err)
+	}
+	if _, err := s.RecordEvidence(ctx, 1, 11, admin, "champion:d42:a1", EvidenceRequest{Kind: repository.EvidenceReviewObservation, Source: repository.SourceInGameObservation, ObservedBy: "owner-in-game", ObservedAt: now, Detail: "drop point empty, player has no bandage"}); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := s.ResolveReview(ctx, 1, 11, admin, "champion:d42:a1", OutcomeNotSpawned, "verified in game: nothing there"); err != nil || l.resolved != OutcomeNotSpawned {
 		t.Fatal(err)
@@ -458,6 +490,115 @@ func TestPackageCannotExecute(t *testing.T) {
 					t.Errorf("%s imports %s", fn, p)
 				}
 			}
+		}
+	}
+}
+
+// The lock needs BOTH the exact switch and an explicit allowlist, read from the environment the way
+// production loads it; unrelated installations stay locked.
+func TestExecutionLockFromEnvironment(t *testing.T) {
+	for name, c := range map[string]struct {
+		mode, ids string
+		open      []int64
+	}{
+		"unset":                   {"", "", nil},
+		"allowlist only":          {"", "11", nil},
+		"switch only":             {"enabled", "", nil},
+		"generic true":            {"true", "11", nil},
+		"uppercase":               {"ENABLED", "11", nil},
+		"typo":                    {"enable", "11", nil},
+		"malformed ids":           {"enabled", "11abc; x", nil},
+		"negative and zero":       {"enabled", "-11,0", nil},
+		"semicolon list":          {"enabled", "11;12", nil},
+		"exact":                   {"enabled", "11", []int64{11}},
+		"list with spaces":        {"enabled", " 11 , 13 ", []int64{11, 13}},
+		"one good among bad ones": {"enabled", "x,11,,-2", []int64{11}},
+	} {
+		t.Setenv("CHAMPION_SHOP_CANARY_EXECUTION", c.mode)
+		t.Setenv("CHAMPION_SHOP_CANARY_INSTALLATION_IDS", c.ids)
+		cfg := config.ParseShopCanaryExecution(os.Getenv("CHAMPION_SHOP_CANARY_EXECUTION"), os.Getenv("CHAMPION_SHOP_CANARY_INSTALLATION_IDS"))
+		g := NewGate(cfg.Enabled, cfg.InstallationIDs)
+		want := map[int64]bool{}
+		for _, id := range c.open {
+			want[id] = true
+		}
+		for _, inst := range []int64{11, 12, 13, 1, 0, -11} {
+			if g.Allows(inst) != want[inst] {
+				t.Errorf("%s: installation %d open=%v", name, inst, g.Allows(inst))
+			}
+		}
+	}
+}
+
+// No operator entry point can upload a file or restart a server. The service, the plan package it
+// uses, and the HTTP handlers import only an explicit allowlist (no Nitrado client, no HTTP client, no
+// process API), so none of them can obtain a client; the handler file calls nothing named like an
+// upload, restart, stop or file-server action. (The repository package links the Nitrado types through
+// Live Sync, but a type is not a client: nothing on the canary path constructs or receives one.)
+func TestOperatorCannotUploadOrRestart(t *testing.T) {
+	const module = "github.com/yourname/dayz-killfeed/internal/"
+	allowed := map[string]map[string]bool{
+		"internal/shop/canaryops": {"context": true, "errors": true, "fmt": true, "strings": true, "time": true,
+			module + "economy": true, module + "repository": true, module + "shop/nitradodelivery": true},
+		"internal/shop/nitradodelivery": {"bytes": true, "context": true, "crypto/sha256": true, "encoding/hex": true, "encoding/json": true, "errors": true, "fmt": true,
+			"math": true, "regexp": true, "sort": true, "strconv": true, "strings": true, "sync": true, module + "dayzmap": true, module + "repository": true,
+			module + "shop": true}, // the Shop service types used by the disabled prototype adapter (no client)
+	}
+	for dir, allow := range allowed {
+		pkg, err := build.Default.ImportDir(filepath.Join("..", "..", "..", dir), 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, im := range pkg.Imports {
+			if !allow[im] {
+				t.Errorf("%s imports %s (not on the canary allowlist)", dir, im)
+			}
+		}
+	}
+	src := filepath.Join("..", "..", "app", "saas_api_shop_canary.go")
+	f, err := parser.ParseFile(token.NewFileSet(), src, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, im := range f.Imports {
+		p, _ := strconv.Unquote(im.Path.Value)
+		switch p {
+		case "context", "errors", "net/http", "strconv", "time", module + "repository", module + "shop/canaryops":
+		default:
+			t.Errorf("the canary handlers import %s", p)
+		}
+	}
+	calls := 0
+	ast.Inspect(f, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+			calls++
+			name := strings.ToLower(sel.Sel.Name)
+			for _, bad := range []string{"upload", "restart", "stop", "filebrowser", "fileserver", "nitrado", "gameserver"} {
+				if strings.Contains(name, bad) {
+					t.Errorf("the canary handlers call %s", sel.Sel.Name)
+				}
+			}
+		}
+		return true
+	})
+	if calls < 20 {
+		t.Fatalf("the call scan saw only %d calls", calls)
+	}
+}
+
+// The operator service exposes exactly the recording operations: nothing that stages, uploads,
+// restarts or retries.
+func TestServiceHasNoExecutionOperations(t *testing.T) {
+	want := map[string]bool{"AdvanceAttempt": true, "CreateAttempt": true, "FulfillAttempt": true, "GetAttempt": true, "ListAttempts": true,
+		"RecordEvidence": true, "ResolveReview": true, "SetClock": true}
+	typ := reflect.TypeOf(&Service{})
+	for i := 0; i < typ.NumMethod(); i++ {
+		if name := typ.Method(i).Name; !want[name] {
+			t.Errorf("unexpected operator operation %s", name)
 		}
 	}
 }

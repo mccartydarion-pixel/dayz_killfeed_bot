@@ -29,6 +29,7 @@ const (
 	codeEvidenceNotAccepted   = "EVIDENCE_NOT_ACCEPTED"
 	codeEvidenceAlreadyExists = "EVIDENCE_ALREADY_RECORDED"
 	codeAmbiguousBoot         = "AMBIGUOUS_BOOT"
+	codeArtifactHashMismatch  = "ARTIFACT_HASH_MISMATCH"
 )
 
 func init() {
@@ -43,6 +44,7 @@ func init() {
 	httpStatusForCode[codeEvidenceNotAccepted] = http.StatusConflict
 	httpStatusForCode[codeEvidenceAlreadyExists] = http.StatusConflict
 	httpStatusForCode[codeAmbiguousBoot] = http.StatusConflict
+	httpStatusForCode[codeArtifactHashMismatch] = http.StatusConflict
 }
 
 func (a *App) registerShopCanaryRoutes(base string) {
@@ -67,8 +69,10 @@ func canaryFailed(w http.ResponseWriter, err error) {
 		writeSaaSError(w, codeCanaryLocked, "canary execution is locked for this installation")
 	case errors.Is(err, canaryops.ErrSuspended):
 		writeSaaSError(w, codeCanaryLocked, "the installation is suspended")
-	case errors.Is(err, canaryops.ErrMissingEvidence):
+	case errors.Is(err, canaryops.ErrMissingEvidence), errors.Is(err, repository.ErrShopReviewEvidenceRequired):
 		writeSaaSError(w, codeEvidenceRequired, err.Error())
+	case errors.Is(err, canaryops.ErrArtifactHashMismatch):
+		writeSaaSError(w, codeArtifactHashMismatch, err.Error())
 	case errors.Is(err, canaryops.ErrAmbiguousBoot):
 		writeSaaSError(w, codeAmbiguousBoot, err.Error())
 	case errors.Is(err, canaryops.ErrInvalid), errors.Is(err, canaryops.ErrNotPhysicalProof), errors.Is(err, canaryops.ErrUseFulfill):

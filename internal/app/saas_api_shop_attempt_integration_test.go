@@ -60,6 +60,13 @@ func TestShopRefundAndFulfilRespectDeliveryAttempts(t *testing.T) {
 		}
 	}
 	s := func(v string) *string { return &v }
+	observe := func(id string) {
+		t.Helper()
+		if _, err := attempts.RecordEvidence(ctx, w.a1.OrgID, w.a1.InstallationID, id, w.admin, repository.ShopAttemptEvidenceInput{Kind: repository.EvidenceReviewObservation,
+			Source: repository.SourceInGameObservation, ObservedBy: "admin-in-game", ObservedAt: time.Now(), Detail: "checked in game"}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	now := time.Now().UTC()
 	staged := repository.ShopAttemptEvidence{BeforeSHA256: s(strings.Repeat("e", 64)), StagedSHA256: s(strings.Repeat("5", 64)), StagedAt: &now, StagedBootFile: s("boot-1.ADM")}
 
@@ -86,6 +93,7 @@ func TestShopRefundAndFulfilRespectDeliveryAttempts(t *testing.T) {
 	move(a2, repository.AttemptFileStaged, repository.AttemptFailedReview, repository.ShopAttemptEvidence{FailureReason: s("second boot before a verified unstage")})
 	blocked(refund(b2.purchase), "refund of an unresolved review")
 	blocked(fulfill(b2.purchase), "manual fulfil of an unresolved review")
+	observe(a2)
 	if _, err := attempts.ResolveReview(ctx, w.a1.OrgID, w.a1.InstallationID, a2, repository.ReviewNotSpawned, w.admin, "verified in game"); err != nil {
 		t.Fatal(err)
 	}
@@ -97,6 +105,7 @@ func TestShopRefundAndFulfilRespectDeliveryAttempts(t *testing.T) {
 	move(a3, repository.AttemptPlanCreated, repository.AttemptFilePrepared, repository.ShopAttemptEvidence{})
 	move(a3, repository.AttemptFilePrepared, repository.AttemptFileStaged, staged)
 	move(a3, repository.AttemptFileStaged, repository.AttemptFailedReview, repository.ShopAttemptEvidence{FailureReason: s("unknown")})
+	observe(a3)
 	if _, err := attempts.ResolveReview(ctx, w.a1.OrgID, w.a1.InstallationID, a3, repository.ReviewSpawned, w.admin, "player has it"); err != nil {
 		t.Fatal(err)
 	}

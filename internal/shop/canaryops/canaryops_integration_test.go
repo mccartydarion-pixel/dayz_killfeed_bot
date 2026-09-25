@@ -154,9 +154,10 @@ func hex(c string) string { return strings.Repeat(c, 64) }
 func (w *world) stage(s *Service, tn tenant, id string, at time.Time) {
 	w.t.Helper()
 	a := tn.admin
-	_, err := s.AdvanceAttempt(w.ctx, tn.org, tn.inst, a, id, repository.AttemptPlanCreated, repository.AttemptFilePrepared, "")
+	v, err := s.AdvanceAttempt(w.ctx, tn.org, tn.inst, a, id, repository.AttemptPlanCreated, repository.AttemptFilePrepared, "")
 	must(w.t, err)
-	_, err = s.RecordEvidence(w.ctx, tn.org, tn.inst, a, id, EvidenceRequest{Kind: repository.EvidenceStagedFileHash, Source: repository.SourceNitradoReadback, SHA256: hex("5"), PreviousSHA256: hex("e"), ObservedAt: at})
+	staged, empty := expectedArtifacts(v.Attempt)
+	_, err = s.RecordEvidence(w.ctx, tn.org, tn.inst, a, id, EvidenceRequest{Kind: repository.EvidenceStagedFileHash, Source: repository.SourceNitradoReadback, SHA256: staged, PreviousSHA256: empty, ObservedAt: at})
 	must(w.t, err)
 	_, err = s.RecordEvidence(w.ctx, tn.org, tn.inst, a, id, EvidenceRequest{Kind: repository.EvidenceStagingBoot, Source: repository.SourceBootAuthority, BootFile: tn.session, ObservedAt: at})
 	must(w.t, err)
@@ -212,7 +213,8 @@ func TestCanaryOperatorFullRun(t *testing.T) {
 	must(t, rec(EvidenceRequest{Kind: repository.EvidenceItemObserved, Source: repository.SourceInGameObservation, ObservedBy: "owner-in-game", ObservedAt: now.Add(-15 * time.Minute)}))
 	must(t, rec(EvidenceRequest{Kind: repository.EvidencePickupConfirmed, Source: repository.SourceInGameObservation, ObservedBy: "OwnerCharacter", ObservedAt: now.Add(-14 * time.Minute)}))
 	wantIs(t, "evidence is write-once", rec(EvidenceRequest{Kind: repository.EvidenceItemObserved, Source: repository.SourceInGameObservation, ObservedBy: "someone", ObservedAt: now.Add(-13 * time.Minute)}), repository.ErrShopAttemptEvidenceExists)
-	must(t, rec(EvidenceRequest{Kind: repository.EvidenceUnstagedFileHash, Source: repository.SourceNitradoReadback, SHA256: hex("e"), ObservedAt: now.Add(-9 * time.Minute)}))
+	_, emptySHA := expectedArtifacts(v.Attempt)
+	must(t, rec(EvidenceRequest{Kind: repository.EvidenceUnstagedFileHash, Source: repository.SourceNitradoReadback, SHA256: emptySHA, ObservedAt: now.Add(-9 * time.Minute)}))
 	must(t, adv(repository.AttemptUnstageRequired, repository.AttemptVerificationRequired))
 	// Fulfilment needs the second boot and the in-game no-respawn check; a clean RPT is not enough.
 	_, err = s.FulfillAttempt(w.ctx, tn.org, tn.inst, tn.owner, id, "")
@@ -312,18 +314,19 @@ func TestCanaryConcurrency(t *testing.T) {
 	if ok.Load() != 1 || stale.Load() != 15 {
 		t.Fatalf("concurrent advance: %d ok %d stale", ok.Load(), stale.Load())
 	}
+	stagedSHA, emptySHA := expectedArtifacts(v.Attempt)
 	var recorded, dup atomic.Int64
 	for i := 0; i < 16; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
 			_, err := s.RecordEvidence(w.ctx, w.a.org, w.a.inst, w.a.admin, id, EvidenceRequest{Kind: repository.EvidenceStagedFileHash, Source: repository.SourceNitradoReadback,
-				SHA256: hex(fmt.Sprint(i % 10)), PreviousSHA256: hex("e"), ObservedAt: time.Now().Add(-time.Minute)})
+				SHA256: stagedSHA, PreviousSHA256: emptySHA, ObservedAt: time.Now().Add(-time.Minute)})
 			switch {
 			case err == nil:
 				recorded.Add(1)
-			case errors.Is(err, repository.ErrShopAttemptEvidenceExists), errors.Is(err, repository.ErrShopAttemptEvidence):
-				dup.Add(1) // duplicate kind, or the one worker that drew sha "eee..." (= previous)
+			case errors.Is(err, repository.ErrShopAttemptEvidenceExists):
+				dup.Add(1)
 			default:
 				t.Errorf("evidence: %v", err)
 			}
@@ -366,6 +369,11 @@ func TestCanaryReviewResolutionAndRecovery(t *testing.T) {
 	}
 	// Then NOT_SPAWNED: the refund becomes possible; still no new attempt, ever.
 	_, err = s.ResolveReview(w.ctx, tn.org, tn.inst, tn.owner, id1, OutcomeNotSpawned, "checked in game: nothing at the drop point, player has no bandage")
+	wantIs(t, "resolution without an in-game observation", err, ErrMissingEvidence)
+	_, err = s.RecordEvidence(w.ctx, tn.org, tn.inst, tn.admin, id1, EvidenceRequest{Kind: repository.EvidenceReviewObservation, Source: repository.SourceInGameObservation,
+		ObservedBy: "owner-in-game", ObservedAt: time.Now(), Detail: "nothing at the drop point, player has no bandage"})
+	must(t, err)
+	_, err = s.ResolveReview(w.ctx, tn.org, tn.inst, tn.owner, id1, OutcomeNotSpawned, "checked in game: nothing at the drop point, player has no bandage")
 	must(t, err)
 	_, err = s.ResolveReview(w.ctx, tn.org, tn.inst, tn.owner, id1, OutcomeUncertain, "late note")
 	wantIs(t, "assessment after resolution", err, repository.ErrShopAttemptEvidenceState)
@@ -377,6 +385,9 @@ func TestCanaryReviewResolutionAndRecovery(t *testing.T) {
 
 	// SPAWNED: never refunded automatically; the manual fulfilment records it.
 	p2, id2 := review(OutcomeSpawned)
+	_, err = s.RecordEvidence(w.ctx, tn.org, tn.inst, tn.admin, id2, EvidenceRequest{Kind: repository.EvidenceReviewObservation, Source: repository.SourceInGameObservation,
+		ObservedBy: "owner-in-game", ObservedAt: time.Now(), Detail: "bandage in the inventory of the buyer"})
+	must(t, err)
 	_, err = s.ResolveReview(w.ctx, tn.org, tn.inst, tn.owner, id2, OutcomeSpawned, "player confirmed the bandage in inventory")
 	must(t, err)
 	wantIs(t, "refund after SPAWNED", w.refund(tn, p2), repository.ErrShopDeliveryAttemptActive)
@@ -405,4 +416,172 @@ func TestCanaryReviewResolutionAndRecovery(t *testing.T) {
 	_, err = s.AdvanceAttempt(w.ctx, tn.org, tn.inst, tn.owner, v3.Attempt.AttemptID, repository.AttemptFilePrepared, repository.AttemptAbandoned, "read-back: the file was never written")
 	must(t, err)
 	must(t, w.refund(tn, p3))
+}
+
+// Phase 2C.5 failure and recovery simulation. An uncertain outcome never retries and never creates
+// another attempt (the service has no staging or upload operation at all).
+func TestCanaryFailureAndRecoverySimulation(t *testing.T) {
+	w := newWorld(t)
+	s := w.service()
+	tn := w.a
+	get := func(id string) repository.ShopAttempt {
+		t.Helper()
+		v, err := s.GetAttempt(w.ctx, tn.org, tn.inst, tn.owner, id)
+		must(t, err)
+		return v.Attempt
+	}
+
+	// Invalid artifact hash: nothing is recorded, the attempt stays FILE_PREPARED, refund stays blocked.
+	p1, d1 := w.canaryDelivery(tn)
+	v1, err := w.create(s, tn, d1)
+	must(t, err)
+	id1 := v1.Attempt.AttemptID
+	_, err = s.AdvanceAttempt(w.ctx, tn.org, tn.inst, tn.owner, id1, repository.AttemptPlanCreated, repository.AttemptFilePrepared, "")
+	must(t, err)
+	_, empty := expectedArtifacts(v1.Attempt)
+	_, err = s.RecordEvidence(w.ctx, tn.org, tn.inst, tn.admin, id1, EvidenceRequest{Kind: repository.EvidenceStagedFileHash, Source: repository.SourceNitradoReadback,
+		SHA256: hex("a"), PreviousSHA256: empty, ObservedAt: time.Now().Add(-time.Minute)})
+	wantIs(t, "tampered staged file", err, ErrArtifactHashMismatch)
+	if v, _ := s.GetAttempt(w.ctx, tn.org, tn.inst, tn.owner, id1); len(v.Evidence) != 0 || v.Attempt.State != repository.AttemptFilePrepared {
+		t.Fatalf("a mismatching read-back changed the attempt: %+v", v)
+	}
+	wantIs(t, "refund after a bad read-back", w.refund(tn, p1), repository.ErrShopDeliveryAttemptActive)
+
+	// Restart before staging was verified: the new boot is ambiguous, so FAILED_REVIEW, never a retry.
+	p2, d2 := w.canaryDelivery(tn)
+	v2, err := w.create(s, tn, d2)
+	must(t, err)
+	id2 := v2.Attempt.AttemptID
+	stagedAt := time.Now().Add(-10 * time.Minute)
+	w.stage(s, tn, id2, stagedAt)
+	early := stagedAt.Add(-time.Minute)
+	_, err = s.RecordEvidence(w.ctx, tn.org, tn.inst, tn.admin, id2, EvidenceRequest{Kind: repository.EvidenceNewBoot, Source: repository.SourceBootAuthority,
+		BootFile: "dayzps/config/early.ADM", BootStartedAt: &early, ObservedAt: time.Now().Add(-time.Minute)})
+	must(t, err)
+	_, err = s.AdvanceAttempt(w.ctx, tn.org, tn.inst, tn.owner, id2, repository.AttemptAwaitingRestart, repository.AttemptRestartObserved, "")
+	wantIs(t, "restart before staging", err, ErrAmbiguousBoot)
+	_, err = s.AdvanceAttempt(w.ctx, tn.org, tn.inst, tn.owner, id2, repository.AttemptAwaitingRestart, repository.AttemptFailedReview, "a boot started before the verified staging")
+	must(t, err)
+	wantIs(t, "refund while uncertain", w.refund(tn, p2), repository.ErrShopDeliveryAttemptActive)
+	_, err = w.create(s, tn, d2)
+	wantIs(t, "no automatic retry", err, repository.ErrShopAttemptConflict)
+
+	// Operator disconnection: a cancelled request changes nothing; the retry applies exactly once.
+	_, d3 := w.canaryDelivery(tn)
+	v3, err := w.create(s, tn, d3)
+	must(t, err)
+	id3 := v3.Attempt.AttemptID
+	gone, cancel := context.WithCancel(w.ctx)
+	cancel()
+	if _, err := s.AdvanceAttempt(gone, tn.org, tn.inst, tn.owner, id3, repository.AttemptPlanCreated, repository.AttemptFilePrepared, ""); err == nil {
+		t.Fatal("a disconnected request succeeded")
+	}
+	if st := get(id3).State; st != repository.AttemptPlanCreated {
+		t.Fatalf("a disconnected request changed the attempt: %s", st)
+	}
+	_, err = s.AdvanceAttempt(w.ctx, tn.org, tn.inst, tn.owner, id3, repository.AttemptPlanCreated, repository.AttemptFilePrepared, "")
+	must(t, err)
+	_, err = s.AdvanceAttempt(w.ctx, tn.org, tn.inst, tn.owner, id3, repository.AttemptPlanCreated, repository.AttemptFilePrepared, "")
+	wantIs(t, "replayed request", err, repository.ErrShopAttemptStale)
+	evs, err := repository.NewShopAttemptRepository(w.pool).Events(w.ctx, tn.org, tn.inst, id3)
+	must(t, err)
+	if len(evs) != 2 {
+		t.Fatalf("the transition was applied %d times", len(evs)-1)
+	}
+
+	// Missing physical confirmation: a clean log, the unstage, a second boot and a no-respawn check
+	// are not enough without the in-game sighting and pickup.
+	p4, d4 := w.canaryDelivery(tn)
+	v4, err := w.create(s, tn, d4)
+	must(t, err)
+	id4 := v4.Attempt.AttemptID
+	now := time.Now()
+	w.stage(s, tn, id4, now.Add(-40*time.Minute))
+	rec := func(r EvidenceRequest) {
+		t.Helper()
+		_, err := s.RecordEvidence(w.ctx, tn.org, tn.inst, tn.admin, id4, r)
+		must(t, err)
+	}
+	adv := func(from, to string) {
+		t.Helper()
+		_, err := s.AdvanceAttempt(w.ctx, tn.org, tn.inst, tn.owner, id4, from, to, "")
+		must(t, err)
+	}
+	b1 := now.Add(-35 * time.Minute)
+	rec(EvidenceRequest{Kind: repository.EvidenceSpawnerLog, Source: repository.SourceRPTLog, ObservedAt: now.Add(-34 * time.Minute), Detail: "no spawner error"})
+	rec(EvidenceRequest{Kind: repository.EvidenceNewBoot, Source: repository.SourceBootAuthority, BootFile: "dayzps/config/b1.ADM", BootStartedAt: &b1, ObservedAt: now.Add(-30 * time.Minute)})
+	adv(repository.AttemptAwaitingRestart, repository.AttemptRestartObserved)
+	adv(repository.AttemptRestartObserved, repository.AttemptUnstageRequired)
+	_, empty4 := expectedArtifacts(v4.Attempt)
+	rec(EvidenceRequest{Kind: repository.EvidenceUnstagedFileHash, Source: repository.SourceNitradoReadback, SHA256: empty4, ObservedAt: now.Add(-25 * time.Minute)})
+	adv(repository.AttemptUnstageRequired, repository.AttemptVerificationRequired)
+	b2 := now.Add(-10 * time.Minute)
+	rec(EvidenceRequest{Kind: repository.EvidenceSecondBoot, Source: repository.SourceBootAuthority, BootFile: "dayzps/config/b2.ADM", BootStartedAt: &b2, ObservedAt: now.Add(-9 * time.Minute)})
+	rec(EvidenceRequest{Kind: repository.EvidenceNoAdditionalSpawn, Source: repository.SourceInGameObservation, ObservedBy: "owner-in-game", ObservedAt: now.Add(-5 * time.Minute)})
+	_, err = s.FulfillAttempt(w.ctx, tn.org, tn.inst, tn.owner, id4, "")
+	wantIs(t, "no physical confirmation", err, ErrMissingEvidence)
+	if st := get(id4).State; st != repository.AttemptVerificationRequired {
+		t.Fatalf("state %s", st)
+	}
+	// Such an attempt can only be closed by review; the order stays blocked until a human decides.
+	_, err = s.AdvanceAttempt(w.ctx, tn.org, tn.inst, tn.owner, id4, repository.AttemptVerificationRequired, repository.AttemptFailedReview, "the item was never observed in game")
+	must(t, err)
+	wantIs(t, "refund of the unconfirmed order", w.refund(tn, p4), repository.ErrShopDeliveryAttemptActive)
+
+	// Refund versus fulfilment through the service: the fulfilment always completes; the refund is
+	// either refused or a refund of the already delivered order.
+	for i := 0; i < 6; i++ {
+		p, d := w.canaryDelivery(tn)
+		v, err := w.create(s, tn, d)
+		must(t, err)
+		id := v.Attempt.AttemptID
+		base := time.Now()
+		w.stage(s, tn, id, base.Add(-40*time.Minute))
+		r := func(e EvidenceRequest) {
+			t.Helper()
+			_, err := s.RecordEvidence(w.ctx, tn.org, tn.inst, tn.admin, id, e)
+			must(t, err)
+		}
+		a := func(from, to string) {
+			t.Helper()
+			_, err := s.AdvanceAttempt(w.ctx, tn.org, tn.inst, tn.owner, id, from, to, "")
+			must(t, err)
+		}
+		nb := base.Add(-35 * time.Minute)
+		r(EvidenceRequest{Kind: repository.EvidenceNewBoot, Source: repository.SourceBootAuthority, BootFile: "dayzps/config/n.ADM", BootStartedAt: &nb, ObservedAt: base.Add(-30 * time.Minute)})
+		a(repository.AttemptAwaitingRestart, repository.AttemptRestartObserved)
+		a(repository.AttemptRestartObserved, repository.AttemptUnstageRequired)
+		r(EvidenceRequest{Kind: repository.EvidenceItemObserved, Source: repository.SourceInGameObservation, ObservedBy: "owner-in-game", ObservedAt: base.Add(-29 * time.Minute)})
+		r(EvidenceRequest{Kind: repository.EvidencePickupConfirmed, Source: repository.SourceInGameObservation, ObservedBy: "Canary", ObservedAt: base.Add(-28 * time.Minute)})
+		_, e := expectedArtifacts(v.Attempt)
+		r(EvidenceRequest{Kind: repository.EvidenceUnstagedFileHash, Source: repository.SourceNitradoReadback, SHA256: e, ObservedAt: base.Add(-25 * time.Minute)})
+		a(repository.AttemptUnstageRequired, repository.AttemptVerificationRequired)
+		sb := base.Add(-10 * time.Minute)
+		r(EvidenceRequest{Kind: repository.EvidenceSecondBoot, Source: repository.SourceBootAuthority, BootFile: "dayzps/config/s.ADM", BootStartedAt: &sb, ObservedAt: base.Add(-9 * time.Minute)})
+		r(EvidenceRequest{Kind: repository.EvidenceNoAdditionalSpawn, Source: repository.SourceInGameObservation, ObservedBy: "owner-in-game", ObservedAt: base.Add(-5 * time.Minute)})
+		var wg sync.WaitGroup
+		var refundErr, fulErr error
+		wg.Add(2)
+		go func() { defer wg.Done(); refundErr = w.refund(tn, p) }()
+		go func() { defer wg.Done(); _, fulErr = s.FulfillAttempt(w.ctx, tn.org, tn.inst, tn.owner, id, "") }()
+		wg.Wait()
+		must(t, fulErr)
+		var ps, ds string
+		must(t, w.pool.QueryRow(w.ctx, `SELECT sp.status, sd.status FROM shop_purchases sp JOIN shop_deliveries sd ON sd.purchase_id=sp.id WHERE sp.id=$1`, p).Scan(&ps, &ds))
+		switch {
+		case ds != "FULFILLED":
+			t.Fatalf("delivery %s after the fulfilment", ds)
+		case errors.Is(refundErr, repository.ErrShopDeliveryAttemptActive) && ps == "FULFILLED":
+		case refundErr == nil && ps == "REFUNDED":
+		default:
+			t.Fatalf("inconsistent race: refund %v purchase %s", refundErr, ps)
+		}
+	}
+
+	// No uncertain or failed attempt produced a second attempt for its delivery.
+	var worst int64
+	must(t, w.pool.QueryRow(w.ctx, `SELECT COALESCE(MAX(n),0) FROM (SELECT COUNT(*) n FROM shop_delivery_attempts WHERE installation_id=$1 GROUP BY delivery_id) x`, tn.inst).Scan(&worst))
+	if worst != 1 {
+		t.Fatalf("a delivery has %d attempts", worst)
+	}
 }
