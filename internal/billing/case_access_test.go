@@ -120,3 +120,19 @@ func TestCaseRuntimeAccessRequiresConfirmedFounderTrialAndFailsClosedOnStoreErro
 		t.Fatalf("missing store must fail closed: %v %v",got,err)
 	}
 }
+
+func TestCaseSalesRequiresIndependentAccessRollout(t *testing.T) {
+	s:=NewService(newFakeStore(),nil,NewFakeProvider(),Options{})
+	store:=&caseTestStore{}
+	err:=s.ConfigureCaseAddons(store,CaseOptions{
+		Enabled:true,AccessEnabled:false,VerifiedThrough:casebilling.Pro,
+		PriceIDs:map[casebilling.Tier]string{casebilling.Watch:"price_watch"},
+	})
+	if err==nil{t.Fatal("misconfigured sales cannot be enabled without premium access")}
+	if err:=s.ConfigureCaseAddons(store,CaseOptions{
+		Enabled:false,AccessEnabled:true,VerifiedThrough:casebilling.Pro,
+	});err!=nil{t.Fatalf("sales must be independently disableable: %v",err)}
+	for _,plan:=range s.CasePlans(){
+		if plan.Purchasable{t.Fatalf("disabled sales offers %s",plan.Tier)}
+	}
+}
