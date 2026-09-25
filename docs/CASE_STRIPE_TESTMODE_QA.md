@@ -82,6 +82,51 @@ server-scope and test-mode key/price verification. The website must read
   a compare-and-swap on pending row and a new idempotency attempt. No Stripe
   write is performed by the recovery endpoint.
 
+## Isolated Railway staging (prepared, not deployed)
+
+A separate, private Railway project **champions-case-staging** now exists.
+Its empty service **case-billing-qa** has no GitHub source, no database and
+no runtime deployment. Railway named this new project's default environment
+`production` automatically; it is NOT the live Champions project's
+production environment. Its service has only these nonsecret variables:
+`APP_ENV=staging`, the two candidate test Price IDs above, blank Command
+Price ID, `CHAMPION_CASE_BILLING_ENABLED=false`, and
+`CHAMPION_CASE_ACCESS_ENABLED=false`. The variables were set without
+triggering a deployment. Do not copy the existing Champions production
+environment or its Stripe, Discord, Nitrado or database secrets into it.
+
+### Read-only sandbox object verification
+
+Pull the draft branch locally and run the following from the backend repo
+using an independent **test/sandbox** API key. The verifier makes exactly
+two Stripe Price GET requests with expanded Products. It checks the real
+Price and Product `livemode=false`, IDs, active flags, fixed USD monthly
+amounts and exact metadata. It performs no Checkout or other Stripe write.
+
+```powershell
+git pull --ff-only origin feat/case-billing-phase6-foundation
+$secure = Read-Host "Enter STRIPE SANDBOX secret or restricted test key" -AsSecureString
+$ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+try {
+    $env:CASE_STRIPE_TEST_SECRET_KEY = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr)
+} finally {
+    [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr)
+}
+try {
+    go run ./cmd/case-stripe-preflight
+} finally {
+    Remove-Item Env:\CASE_STRIPE_TEST_SECRET_KEY -ErrorAction SilentlyContinue
+}
+```
+
+Only `sk_test_` / `rk_test_` keys are accepted; never substitute the
+live `STRIPE_SECRET_KEY`. Record only the PASS/failure lines, not the key.
+After both objects pass the real API check, next configure an isolated
+disposable staging DB, test customer, test-mode webhook and staging service
+source. Then exercise no-sale/read-only behavior before separately approving
+test checkout. Do not deploy the current draft or enable a sales flag merely
+because these prices validate.
+
 ## Required test-mode scenarios (not yet executed against Stripe)
 
 1. Validate catalog product and price metadata/amounts/currency/monthly cycle;
