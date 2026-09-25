@@ -81,6 +81,7 @@ type SubscriptionState struct {
 	StripeInterval     string // "month"/"year"; map with MapInterval before storing
 	CurrentPeriodStart time.Time
 	CurrentPeriodEnd   time.Time
+	TrialStart         *time.Time
 	TrialEnd           *time.Time
 	CancelAtPeriodEnd  bool
 	CanceledAt         *time.Time
