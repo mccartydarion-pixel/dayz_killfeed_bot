@@ -86,6 +86,9 @@ func TestCASEWatchOutboxRevocationAndPrivacyFailBeforeDiscord(t *testing.T){
 				WHERE organization_id=$1 AND installation_id=$2`,
 				w.f.OrgID,w.f.InstallationID);err!=nil{t.Fatal(err)}
 		}},
+		{"requester role revoked",func(_ *testing.T,w *clientAdminWorld){
+			w.a.caseWatchRequesterCheck=func(context.Context,repository.AdminScope,int64)(bool,error){return false,nil}
+		}},
 		{"public staff destination",func(_ *testing.T,w *clientAdminWorld){
 			w.a.caseWatchPrivacyCheck=func(context.Context,string,string)error{return errors.New("everyone can view")}
 		}},
