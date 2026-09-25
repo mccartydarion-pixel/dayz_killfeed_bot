@@ -148,7 +148,7 @@ Arbitrary map coordinates without an altitude source are **not deliverable autom
 
 Because **every staged entry spawns again on every server start**, safety depends on removing it right after the first start. A durable attempt ledger stops a crash or retry from staging twice.
 
-States: `PLAN_CREATED` → `FILE_PREPARED` → `FILE_STAGED` → `AWAITING_RESTART` → `RESTART_OBSERVED` → `VERIFICATION_REQUIRED` → `FULFILLED`. The terminal side states are:
+States: `PLAN_CREATED` → `FILE_PREPARED` → `FILE_STAGED` → `AWAITING_RESTART` → `RESTART_OBSERVED` → `UNSTAGE_REQUIRED` → `VERIFICATION_REQUIRED` → `FULFILLED` (`UNSTAGE_REQUIRED` added in Phase 2C.2, docs/SHOP_DELIVERY_PHASE2C2.md). The terminal side states are:
 * `ABANDONED`: never written;
 * `UNSTAGED`: written, then proven removed before any start;
 * `FAILED_REVIEW`: an uncertain outcome that a human resolves.
