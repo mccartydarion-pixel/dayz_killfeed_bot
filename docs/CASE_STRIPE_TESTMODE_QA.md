@@ -5,8 +5,9 @@ or activate purchasing. It deliberately does not contain any Stripe secret.
 
 ## Account and environment isolation (hard gate)
 
-The connected Champions Stripe account currently exposes one **live-mode**
-context. Do not create trial products, customers, subscriptions, or transactions
+The Stripe ChatGPT plugin connection is currently unavailable after the
+sandbox OAuth callback failure. The earlier connection exposed only a
+**live-mode** context, not a usable sandbox. Do not create trial products, customers, subscriptions, or transactions
 there to simulate the test suite. A second, explicitly **test-mode or sandbox**
 Stripe context must be exposed before any Stripe mutations below. Record the
 context/mode after connecting; never infer test mode from product names.
@@ -14,7 +15,8 @@ context/mode after connecting; never infer test mode from product names.
 Use a disposable Railway deployment/database and a separate Stripe test
 customer. Never copy a live customer ID into a test Checkout. Use separate
 test-mode STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET and CASE_*_PRICE_ID values.
-Keep production `CHAMPION_CASE_BILLING_ENABLED=false`.
+Keep production `CHAMPION_CASE_BILLING_ENABLED=false` and
+`CHAMPION_CASE_ACCESS_ENABLED=false`.
 
 Test Products and recurring Prices, only after a test context is available:
 - C.A.S.E. Watch: USD 499 cents per month; Product metadata
@@ -81,8 +83,18 @@ server-scope and test-mode key/price verification. The website must read
     cancellation, missing webhook, and reconciliation recovery. **Not signed
     off.**
 12. Premium API/Go worker/Discord access must use the same server-scoped
-    resolver. Existing free observational data and evidence must remain intact.
-    No automatic bans, guaranteed device detection, or unverified detectors.
+    resolver. Exercise queued Watch summary followed by payment failure,
+    selected server change, role revocation, missing/changed staff route and
+    database error **before dequeue**; no paid message may send. The explicit
+    action must reject clients without access, throttle a server, and not
+    claim delivery merely because a queue accepted the message. Check
+    collector-disabled/historical counts do not imply absence of events.
+13. Pro export: each page must reauthorize, preserve exact org/install/server,
+    obey the 250-row backend bound and 100-row website page limit, keep raw
+    Nitrado paths out, and quote/neutralize spreadsheet formulas in CSV.
+14. Existing free observations, evidence, sessions and ADM worker must remain
+    intact when C.A.S.E. expires or is absent. No automatic bans, guaranteed
+    device detection or unverified detectors.
 
 ## Release checklist
 
@@ -94,7 +106,9 @@ server-scope and test-mode key/price verification. The website must read
 - [ ] Trial eligibility, upgrades/downgrades, disputes and canceled Checkout
       lifecycle implemented and signed off.
 - [ ] Full Stripe sandbox checkout + webhook replay evidence captured.
-- [ ] Premium enforcement at every relevant API and background worker.
+- [ ] Premium enforcement at every relevant API and background worker;
+      cross-replica durable digest dedupe, delivery receipt/retry and
+      configured staff-channel privacy verification still required.
 - [ ] Operator approves the exact production prices, webhook destination,
       rollout tier, flag and deployment; only then enable live checkout.
 
