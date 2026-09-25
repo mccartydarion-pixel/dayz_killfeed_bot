@@ -1,0 +1,90 @@
+package discord
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/bwmarrin/discordgo"
+)
+
+var ErrCaseStaffChannelUnsafe = errors.New("C.A.S.E. staff destination is not verified private")
+
+// validateCaseStaffChannel is a conservative privacy gate, not a claim that
+// every human granted a staff role has been audited. It refuses public
+// @everyone visibility and any role-specific view grant unless that role
+// has elevated guild-management permissions. A bot member allow is safe.
+func validateCaseStaffChannel(guild *discordgo.Guild, channel, parent *discordgo.Channel,
+	botID string, botRoles []string) error {
+	if guild==nil || channel==nil || guild.ID=="" || channel.GuildID!=guild.ID ||
+		channel.Type!=discordgo.ChannelTypeGuildText || botID=="" {
+		return ErrCaseStaffChannelUnsafe
+	}
+	overwrites:=channel.PermissionOverwrites
+	// A private category only supplies the effective permissions when the
+	// child has no overrides; an explicit public child must never inherit a
+	// presumed private label based on the category name alone.
+	if len(overwrites)==0 && parent!=nil && parent.GuildID==guild.ID &&
+		parent.ID==channel.ParentID && parent.Type==discordgo.ChannelTypeGuildCategory {
+		overwrites=parent.PermissionOverwrites
+	}
+	roles:=map[string]int64{}
+	for _,role:=range guild.Roles {if role!=nil {roles[role.ID]=role.Permissions}}
+	if roles[guild.ID]&discordgo.PermissionAdministrator!=0{return ErrCaseStaffChannelUnsafe}
+	everyoneDenied:=false
+	for _,ow:=range overwrites {
+		if ow==nil {continue}
+		if ow.Type==discordgo.PermissionOverwriteTypeRole && ow.ID==guild.ID {
+			if ow.Allow&discordgo.PermissionViewChannel!=0 {return ErrCaseStaffChannelUnsafe}
+			if ow.Deny&discordgo.PermissionViewChannel!=0 {everyoneDenied=true}
+			continue
+		}
+		if ow.Type==discordgo.PermissionOverwriteTypeRole &&
+			ow.Allow&discordgo.PermissionViewChannel!=0 {
+			perms,found:=roles[ow.ID]
+			if !found || perms&(discordgo.PermissionAdministrator|discordgo.PermissionManageGuild)==0 {
+				return ErrCaseStaffChannelUnsafe
+			}
+		}
+		if ow.Type==discordgo.PermissionOverwriteTypeMember &&
+			ow.Allow&discordgo.PermissionViewChannel!=0 && ow.ID!=botID &&
+			ow.ID!=guild.OwnerID {
+			return ErrCaseStaffChannelUnsafe
+		}
+	}
+	if !everyoneDenied {return ErrCaseStaffChannelUnsafe}
+	effective:=*channel
+	effective.PermissionOverwrites=overwrites
+	botPerms:=memberChannelPermissions(guild,&effective,botID,botRoles)
+	if botPerms&discordgo.PermissionViewChannel==0 ||
+		botPerms&discordgo.PermissionSendMessages==0 ||
+		botPerms&discordgo.PermissionEmbedLinks==0 {
+		return ErrCaseStaffChannelUnsafe
+	}
+	return nil
+}
+
+// VerifyCaseStaffChannel fetches current Discord permissions rather than
+// trusting a potentially stale route cache or a channel name. It rejects
+// cross-guild destinations, public @everyone channels and broad role allows.
+func (c *Client) VerifyCaseStaffChannel(ctx context.Context,guildID,channelID string) error {
+	if c==nil || c.session==nil || guildID=="" || channelID=="" || ctx.Err()!=nil {
+		return ErrCaseStaffChannelUnsafe
+	}
+	channel,err:=c.session.Channel(channelID)
+	if err!=nil{return fmt.Errorf("%w: channel lookup: %v",ErrCaseStaffChannelUnsafe,err)}
+	if channel==nil || channel.GuildID!=guildID{return ErrCaseStaffChannelUnsafe}
+	guild,err:=c.session.Guild(guildID)
+	if err!=nil{return fmt.Errorf("%w: guild lookup: %v",ErrCaseStaffChannelUnsafe,err)}
+	var parent *discordgo.Channel
+	if channel.ParentID!="" && len(channel.PermissionOverwrites)==0 {
+		parent,err=c.session.Channel(channel.ParentID)
+		if err!=nil{return fmt.Errorf("%w: category lookup: %v",ErrCaseStaffChannelUnsafe,err)}
+	}
+	botID:=c.BotID()
+	if botID=="" {return ErrCaseStaffChannelUnsafe}
+	member,err:=c.session.GuildMember(guildID,"@me")
+	if err!=nil{return fmt.Errorf("%w: bot membership: %v",ErrCaseStaffChannelUnsafe,err)}
+	if member==nil{return ErrCaseStaffChannelUnsafe}
+	return validateCaseStaffChannel(guild,channel,parent,botID,member.Roles)
+}
