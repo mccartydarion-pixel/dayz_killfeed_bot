@@ -2152,6 +2152,12 @@ WHERE route_key IN ('KILLFEED','HITFEED','PVE_FEED','BOUNTY_TRACKING','CONNECTIO
 ON CONFLICT (installation_id, route_key) DO NOTHING;
 `,
 	},
+	{
+		// Champion Shop Phase 2C.3 durable delivery-attempt ledger (docs/SHOP_DELIVERY_PHASE2C3.md).
+		// Additive; inert until something creates an attempt (automatic delivery stays disabled).
+		Name: "0054_shop_delivery_attempts",
+		SQL:  ShopDeliveryAttemptsSQL,
+	},
 }
 
 // LiveSyncCommandLineCleanupSQL (migration 0052, Champion Live Sync phase 2.1, docs/
