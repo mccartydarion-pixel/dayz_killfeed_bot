@@ -242,6 +242,9 @@ type App struct {
 	saasShopAdminLimiter      *saasRateLimiter
 	saasBillingActionLimiter  *saasRateLimiter
 	caseWatchDigestLimiter *saasRateLimiter
+	// Test seams; nil in production. Both callbacks fail closed by default.
+	caseWatchPrivacyCheck func(context.Context,string,string) error
+	caseWatchSender func(context.Context,string,*discordgo.MessageEmbed) (string,error)
 	// saasAdminActionLimiter throttles the Client Admin Control Plane's higher-risk mutation
 	// routes (restart/stop/whitelist/banlist/permission changes/etc); saasAdminReadLimiter
 	// throttles its read routes (audit log, warnings list, permissions list).
