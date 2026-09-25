@@ -202,3 +202,49 @@ authorization to market or sell Watch/Pro.
 Both checkout and premium access still default OFF. These are draft
 capabilities, not authorization to merge, activate, advertise as released,
 or use live Stripe. Complete the sandbox and QA checklist before launch.
+
+## Phase 6.8 — durable Watch delivery and private staff route (draft)
+
+This section **supersedes the in-memory Watch queue and process-only cooldown**
+described in Phase 6.7. Ordinary free ADMIN_ALERTS messages still use their
+existing queue. Paid Watch requests use only the dedicated database outbox;
+the original in-memory publisher has no paid authorizer in the application.
+
+- Migrations 0059–0060 add PostgreSQL outbox and requesting actor. New
+  requests are locked and admitted under the installation row with a
+  rolling one-hour server cooldown. Exact org/installation/guild/server
+  identity is validated by the DB; competing replicas cannot insert two
+  staff digests by bypassing a local limiter.
+- The dedicated worker, started only if premium access is enabled, uses
+  SKIP LOCKED + a claim version and a two-minute pre-send lease. Only
+  READY and expired CLAIMED messages retry, up to three pre-send attempts.
+  The worker rechecks original requester permission (fresh Discord REST for
+  nonowners), current paid access, exact server binding and direct DB route.
+- The channel check fetches current Discord guild/channel/category data,
+  rejects public @everyone viewing and broad role/member view allows, and
+  requires the bot's View/Send/Embed permissions. This is a conservative
+  gate, **not** a complete audit of every operator role: Discord admins
+  can bypass permission overwrites, and roles still require human review.
+  A route change is checked again atomically when entering SENDING.
+- SENDING is persisted BEFORE the Discord network call. Discord's returned
+  message ID and channel form the SENT receipt. A timeout, lost acknowledgement
+  or crash after starting a send becomes UNKNOWN, which is **never blindly
+  resent**; an operator must reconcile against the Discord channel. Thus the
+  worker provides at-most-once automatic sends, not exactly-once external
+  delivery. A pre-send revocation/privacy failure is BLOCKED, while transient
+  pre-send lookup failures can retry with backoff. Orphaned SENDING rows are
+  exposed as UNKNOWN by the sweep.
+- A scoped staff receipt endpoint reports READY/CLAIMED/SENDING/SENT/UNKNOWN/
+  BLOCKED, and the website offers an explicit receipt check. 202 means
+  persisted, not delivered. The receipt is hidden after server repointing.
+  The source-observation collector and free alert routes are unaffected.
+- Disposable PostgreSQL tests cover duplicate admission across replicas,
+  two-stage lease/claim fencing, simulated Discord acknowledgement loss,
+  payment/role/privacy/route revocation, receipt isolation and recovery
+  without replaying an uncertain external message.
+
+Pending release gates: end-to-end Discord networking, operator role/channel
+privacy review, reconciliation runbook for UNKNOWN, Stripe sandbox lifecycle,
+founder trial checkout eligibility, plan changes and dispute/refund handling.
+Both `CHAMPION_CASE_BILLING_ENABLED` and `CHAMPION_CASE_ACCESS_ENABLED`
+remain false in production. This is a draft, not approval to merge or deploy.
