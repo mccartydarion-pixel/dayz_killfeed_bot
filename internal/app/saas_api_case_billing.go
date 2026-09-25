@@ -64,6 +64,7 @@ type caseServerDTO struct {
 	CurrentPeriodEnd *string `json:"currentPeriodEnd"`
 	PaidThrough *string `json:"paidThrough"`
 	TrialEndsAt *string `json:"trialEndsAt"`
+	FounderTrialGranted bool `json:"founderTrialGranted"`
 	CancelAtPeriodEnd bool `json:"cancelAtPeriodEnd"`
 	BoundToSelectedServer bool `json:"boundToSelectedServer"`
 	CanRetryCheckout bool `json:"canRetryCheckout"`
@@ -80,7 +81,8 @@ func (a *App) handleCaseBillingServers(w http.ResponseWriter,r *http.Request){
 		items=append(items,caseServerDTO{
 			InstallationID:sub.InstallationID,GameServerID:sub.GameServerID,
 			Tier:sub.Tier,Status:sub.Status,CurrentPeriodEnd:nullableTimeStr(sub.CurrentPeriodEnd),
-			TrialEndsAt:nullableTimeStr(sub.TrialEndsAt),PaidThrough:nullableTimeStr(sub.PaidThrough),CancelAtPeriodEnd:sub.CancelAtPeriodEnd,
+			TrialEndsAt:nullableTimeStr(sub.TrialEndsAt),FounderTrialGranted:sub.FounderTrialGranted,
+			PaidThrough:nullableTimeStr(sub.PaidThrough),CancelAtPeriodEnd:sub.CancelAtPeriodEnd,
 			BoundToSelectedServer:matches,
 			CanRetryCheckout:sub.Status=="PENDING" && sub.ProviderSubscriptionID=="" && sub.CheckoutSessionID=="",
 		})
