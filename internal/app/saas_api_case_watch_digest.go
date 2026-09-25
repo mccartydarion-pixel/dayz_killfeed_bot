@@ -64,7 +64,7 @@ func (a *App) handleAntiCheatWatchDigest(w http.ResponseWriter,r *http.Request){
 	if !enforceRateLimit(w,a.caseWatchDigestLimiter,key){return}
 	id,err:=a.CaseDigestOutbox.Enqueue(ctx,repository.CaseDigestInput{
 		OrganizationID:ac.scope.OrganizationID,InstallationID:ac.scope.InstallationID,
-		GuildID:ac.scope.GuildID,GameServerID:serverID,
+		GuildID:ac.scope.GuildID,GameServerID:serverID,RequesterUserID:ac.user.ID,
 		WindowStart:from,WindowEnd:now,
 		SourceLines:total,HitLines:hits,KillLines:kills,
 		CollectorEnabled:caseEvidenceEnabledForServer(serverID),
