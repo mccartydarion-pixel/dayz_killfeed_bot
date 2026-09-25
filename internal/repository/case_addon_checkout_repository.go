@@ -31,6 +31,7 @@ type CaseWebhookState struct {
 	CheckoutSessionID string
 	CurrentPeriodStart, CurrentPeriodEnd, TrialStart, TrialEnd, PaidThrough *time.Time
 	FounderTrialOffer bool
+	FailedPeriodEnd *time.Time
 	CancelAtPeriodEnd bool
 }
 
@@ -114,11 +115,13 @@ func (r *CaseAddonSubscriptionRepository) ApplyCaseWebhook(ctx context.Context, 
 	if err!=nil{return fmt.Errorf("begin case webhook: %w",err)}
 	defer tx.Rollback(ctx)
 	var orgID,installationID,serverID int64
-	var tier,customer,priorSub,sessionID string
+	var tier,customer,priorSub,sessionID,priorStatus string
+	var priorPaidThrough *time.Time
 	err=tx.QueryRow(ctx,`SELECT organization_id,installation_id,game_server_id,tier,
-COALESCE(provider_customer_id,''),COALESCE(provider_subscription_id,''),COALESCE(checkout_session_id,'')
+COALESCE(provider_customer_id,''),COALESCE(provider_subscription_id,''),COALESCE(checkout_session_id,''),
+status,paid_through
 FROM case_addon_subscriptions WHERE id=$1 FOR UPDATE`,in.AddonID).
-Scan(&orgID,&installationID,&serverID,&tier,&customer,&priorSub,&sessionID)
+Scan(&orgID,&installationID,&serverID,&tier,&customer,&priorSub,&sessionID,&priorStatus,&priorPaidThrough)
 	if errors.Is(err,pgx.ErrNoRows){return ErrCaseWebhookMismatch}
 	if err!=nil{return fmt.Errorf("lock case addon: %w",err)}
 	if orgID!=in.OrganizationID || installationID!=in.InstallationID ||
@@ -168,6 +171,15 @@ Scan(&orgID,&installationID,&serverID,&tier,&customer,&priorSub,&sessionID)
 			SET trial_started_at=$2,trial_ends_at=$3 WHERE id=$1`,
 			in.AddonID,in.TrialStart,in.TrialEnd)
 		if err!=nil{return fmt.Errorf("persist founder trial period: %w",err)}
+	}
+	// A delayed failed invoice for an already-paid billing period is stale.
+	// Record its event for deduplication but never revoke newer confirmed
+	// coverage or downgrade a currently ACTIVE subscription.
+	if in.EventType=="invoice.payment_failed" && in.Status=="PAST_DUE" &&
+		in.FailedPeriodEnd!=nil && priorPaidThrough!=nil &&
+		!in.FailedPeriodEnd.After(*priorPaidThrough) &&
+		priorStatus=="ACTIVE" {
+		in.Status=priorStatus
 	}
 	var marker int64
 	err=tx.QueryRow(ctx,`INSERT INTO case_addon_webhook_events(provider,event_id,event_type,addon_id)
