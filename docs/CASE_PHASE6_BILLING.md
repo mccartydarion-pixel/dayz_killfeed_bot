@@ -122,3 +122,44 @@ founder eligibility and checkout disclosure, proration
 preview and upgrade/downgrade, disputes/refunds, and real feature-level
 entitlement enforcement across Go APIs/workers. No production deployment or
 live billing activation is authorized by this draft.
+
+## Phase 6.6 — server-enforced premium access (draft)
+
+- Sales `CHAMPION_CASE_BILLING_ENABLED` and access
+  `CHAMPION_CASE_ACCESS_ENABLED` are **separate**, default-off flags.
+  Starting sales while access is off is a startup error. Sales may be turned
+  off without revoking an existing paid subscription's separately enabled
+  access. Both remain false in production.
+- The shared Go `billing.Service.CaseAccess/CaseAllows` resolver reloads
+  authoritative base and add-on database rows for each request/job. A premium
+  capability requires an unexpired ACTIVE paid Stripe base subscription
+  (with real customer, subscription and price IDs), a C.A.S.E. subscription
+  with the **same Stripe customer**, the exact selected installation and
+  bound game server, verified invoice-paid coverage or immutable founder
+  trial grant, plus the independently verified rollout tier. Missing database
+  access fails closed; no website, Discord role or return URL can grant access.
+- `GET .../admin/anti-cheat/entitlements` is a staff-authorized **read-only
+  presentation snapshot**; it is not proof for downstream authorization.
+  `GET .../admin/anti-cheat/premium/evidence-export` requires both
+  `CapPlayerLocationView` and server-side `case.pro`, runs bounded
+  100-row repository reads (max 250 rows/request), and preserves source
+  provenance with scoped `guild_id` and `server_id` on each query. This
+  export never estimates movement, detects devices, labels a cheater or bans.
+  Existing observation/evidence/session/source-integrity endpoints remain
+  unchanged and accessible under their existing staff permissions.
+- `App.caseWorkerAllowed` invokes the same resolver. **No premium background
+  worker or Discord premium publisher is enabled yet**. When introduced,
+  each paid operation must call this gate before processing/publishing and
+  fail closed on a store error. The current allowlisted observational evidence
+  collector remains independent of a paid entitlement to preserve existing
+  opt-in evidence, including on subscription expiry. Historical evidence
+  is never deleted when paid access ends.
+- Website shows only server-reported premium entitlement status, displays
+  unavailability instead of guessing when the read fails, and does not
+  substitute demo evidence for a premium API error.
+
+Unresolved: full new premium worker/Discord feature integration, live
+capability verification, test-mode Stripe checkout/webhook QA, founder
+trial Checkout eligibility, plan change/refund/dispute flows and operator
+approval before production rollout. The gated export is a draft API, not
+authorization to market or sell Watch/Pro.
