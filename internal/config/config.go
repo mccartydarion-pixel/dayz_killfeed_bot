@@ -96,6 +96,7 @@ type Config struct {
 	BillingAllowedOrigins string
 	// C.A.S.E. is a distinct, default-disabled server-scoped add-on.
 	CaseBillingEnabled bool
+	CaseAccessEnabled bool
 	CaseVerifiedThrough string
 	CaseWatchPriceID string
 	CaseProPriceID string
@@ -135,6 +136,7 @@ func Load() (*Config, error) {
 		BillingPlansJSON:      os.Getenv("CHAMPION_BILLING_PLANS_JSON"),
 		BillingAllowedOrigins: os.Getenv("CHAMPION_BILLING_ALLOWED_ORIGINS"),
 		CaseBillingEnabled: parseBoolWithDefault(os.Getenv("CHAMPION_CASE_BILLING_ENABLED"), false),
+		CaseAccessEnabled: parseBoolWithDefault(os.Getenv("CHAMPION_CASE_ACCESS_ENABLED"), false),
 		CaseVerifiedThrough: strings.TrimSpace(os.Getenv("CHAMPION_CASE_VERIFIED_THROUGH")),
 		CaseWatchPriceID: strings.TrimSpace(os.Getenv("CHAMPION_CASE_WATCH_PRICE_ID")),
 		CaseProPriceID: strings.TrimSpace(os.Getenv("CHAMPION_CASE_PRO_PRICE_ID")),
