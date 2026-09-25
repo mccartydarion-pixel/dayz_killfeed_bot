@@ -19,6 +19,7 @@ var (
 
 type CaseCheckoutReservation struct {
 	ID int64
+	Attempt int64
 	OrganizationID, InstallationID, GameServerID int64
 	Tier, ProviderCustomerID, SessionID, CheckoutURL string
 }
@@ -57,12 +58,12 @@ ON CONFLICT DO NOTHING RETURNING id`
 	}
 	const get = `SELECT id,organization_id,installation_id,game_server_id,tier,
 COALESCE(provider_customer_id,''),COALESCE(checkout_session_id,''),COALESCE(checkout_url,''),
-status,COALESCE(provider_subscription_id,'')
+status,COALESCE(provider_subscription_id,''),checkout_attempt
 FROM case_addon_subscriptions WHERE organization_id=$1 AND installation_id=$2`
 	var row CaseCheckoutReservation
 	var status,subscriptionID string
 	err = r.pool.QueryRow(ctx,get,organizationID,installationID).Scan(&row.ID,&row.OrganizationID,&row.InstallationID,&row.GameServerID,
-		&row.Tier,&row.ProviderCustomerID,&row.SessionID,&row.CheckoutURL,&status,&subscriptionID)
+		&row.Tier,&row.ProviderCustomerID,&row.SessionID,&row.CheckoutURL,&status,&subscriptionID,&row.Attempt)
 	if errors.Is(err,pgx.ErrNoRows) {return nil,ErrCaseCheckoutConflict}
 	if err!=nil {return nil,fmt.Errorf("load case checkout reservation: %w",err)}
 	if row.GameServerID!=gameServerID || row.Tier!=tier || row.ProviderCustomerID!=customerID || status!="PENDING" || subscriptionID!="" {
@@ -202,6 +203,44 @@ SET cancel_at_period_end=$4,updated_at=NOW()
 WHERE organization_id=$1 AND installation_id=$2 AND provider_subscription_id=$3
 AND provider='stripe' AND status IN ('ACTIVE','TRIAL')`,orgID,installationID,subID,cancel)
 	if err!=nil{return fmt.Errorf("save case cancellation: %w",err)}
+	if tag.RowsAffected()!=1{return ErrCaseCheckoutConflict}
+	return nil
+}
+
+// GetPendingCaseCheckout returns only a reserved server's CURRENT pending
+// session. It does not create any subscription or refresh a pending purchase.
+func (r *CaseAddonSubscriptionRepository) GetPendingCaseCheckout(ctx context.Context, orgID, installationID int64) (*CaseCheckoutReservation,error) {
+	if orgID<=0 || installationID<=0 {return nil,ErrCaseCheckoutConflict}
+	const q=`SELECT c.id,c.organization_id,c.installation_id,c.game_server_id,c.tier,
+	COALESCE(c.provider_customer_id,''),COALESCE(c.checkout_session_id,''),
+	COALESCE(c.checkout_url,''),c.checkout_attempt
+	FROM case_addon_subscriptions c
+	JOIN installations i ON i.id=c.installation_id AND i.organization_id=c.organization_id
+	WHERE c.organization_id=$1 AND c.installation_id=$2 AND c.status='PENDING'
+	AND c.provider='stripe' AND c.provider_subscription_id IS NULL`
+	var row CaseCheckoutReservation
+	err:=r.pool.QueryRow(ctx,q,orgID,installationID).Scan(&row.ID,&row.OrganizationID,
+		&row.InstallationID,&row.GameServerID,&row.Tier,&row.ProviderCustomerID,
+		&row.SessionID,&row.CheckoutURL,&row.Attempt)
+	if errors.Is(err,pgx.ErrNoRows){return nil,ErrCaseCheckoutConflict}
+	if err!=nil{return nil,fmt.Errorf("read pending case checkout: %w",err)}
+	if row.SessionID=="" || row.ProviderCustomerID=="" || row.Attempt<=0 {return nil,ErrCaseCheckoutConflict}
+	return &row,nil
+}
+
+// ResetExpiredCaseCheckout requires the EXACT session and attempt observed
+// before Stripe confirmed it expired. A completed webhook wins the race: it
+// sets provider_subscription_id and this compare-and-swap then fails.
+func (r *CaseAddonSubscriptionRepository) ResetExpiredCaseCheckout(ctx context.Context, orgID, installationID, addonID, attempt int64, sessionID string) error {
+	if orgID<=0 || installationID<=0 || addonID<=0 || attempt<=0 || sessionID=="" {return ErrCaseCheckoutConflict}
+	tag,err:=r.pool.Exec(ctx,`UPDATE case_addon_subscriptions
+	SET checkout_session_id=NULL,checkout_url=NULL,checkout_attempt=checkout_attempt+1,
+	checkout_reserved_at=NOW(),updated_at=NOW()
+	WHERE id=$1 AND organization_id=$2 AND installation_id=$3
+	AND checkout_attempt=$4 AND checkout_session_id=$5
+	AND status='PENDING' AND provider='stripe' AND provider_subscription_id IS NULL`,
+	addonID,orgID,installationID,attempt,sessionID)
+	if err!=nil{return fmt.Errorf("reset expired case checkout: %w",err)}
 	if tag.RowsAffected()!=1{return ErrCaseCheckoutConflict}
 	return nil
 }
