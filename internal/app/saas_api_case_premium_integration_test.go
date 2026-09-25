@@ -45,6 +45,7 @@ func seedCasePremiumAccess(t *testing.T,w *clientAdminWorld) (*repository.CaseAd
 	service:=billing.NewService(w.a.SaaSSubscriptions,nil,nil,billing.Options{})
 	if err=service.ConfigureCaseAddons(repo,billing.CaseOptions{
 		Enabled:false,AccessEnabled:true,VerifiedThrough:casebilling.Pro,
+		PriceIDs:map[casebilling.Tier]string{casebilling.Watch:"price_case_watch",casebilling.Pro:"price_case_pro"},
 	});err!=nil{t.Fatal(err)}
 	w.a.Billing=service
 	return repo,end
