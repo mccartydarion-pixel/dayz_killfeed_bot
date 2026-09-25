@@ -35,6 +35,70 @@ scope and staff route, original requester revocation, private-channel
 refusal, lease fencing and receipt reconciliation after an ambiguous send.
 None sends a message to real Discord.
 
+## Phase 6.10 — one-shot QA Discord transport probe
+
+A dedicated `cmd/case-discord-qa` program is available on the draft branch.
+It is **not part of the server startup**, is read-only by default, and never
+uses Stripe, Nitrado, live evidence, the C.A.S.E. database or live player
+records. Its synthetic message has a **different title/reference** from a
+real paid digest and cannot be used to reconcile one.
+
+Before running it, prepare a genuinely separate Discord QA guild, QA bot
+application and a private text channel. Obtain the public Discord snowflake
+IDs for the QA guild, QA channel, QA bot user, **actual production guild**,
+and **actual production bot**. The QA and production identities must differ.
+Store the QA token only in a secret manager or local environment variable
+`CASE_DISCORD_QA_BOT_TOKEN`; never paste it into this chat, a PR, logs or
+a command-line argument. Do not use the live Champions bot token. The bot
+requires View Channel, Send Messages, Embed Links and Read Message History,
+and the channel must explicitly deny @everyone viewing on the target
+channel. Manually review management-role membership as well.
+
+First run a **read-only preflight** from the backend repository using the
+QA token stored in the environment:
+
+```sh
+go run ./cmd/case-discord-qa -mode preflight -guild "$QA_GUILD_ID" -channel "$QA_CHANNEL_ID" -bot "$QA_BOT_ID"
+```
+
+This fetches bot identity, current guild/channel permissions and destination
+privacy. It does not send a message. To send one **synthetic** message, an
+operator must supply the production denylist IDs plus two explicit approvals:
+
+```sh
+export CASE_DISCORD_QA_ALLOW_SEND=YES_ONE_SYNTHETIC_QA_MESSAGE
+go run ./cmd/case-discord-qa -mode send-once \
+  -guild "$QA_GUILD_ID" -channel "$QA_CHANNEL_ID" -bot "$QA_BOT_ID" \
+  -production-guild "$PRODUCTION_GUILD_ID" -production-bot "$PRODUCTION_BOT_ID" \
+  -confirm SEND_ONE_SYNTHETIC_QA_MESSAGE
+```
+
+The command creates a fresh `CHAMPION-CASE-QA-...` reference, sends **once**,
+reads back the exact message, checks its bot author/channel/reference, and
+prints nonsecret IDs. The explicit production denylist is based on
+operator-supplied real IDs: verify them, do not use placeholders. If the API
+result is uncertain, **do not rerun send-once** to retry that reference.
+
+For the intentionally lost-ack exercise, add `-simulate-lost-ack` to the
+explicit send command. It intentionally discards a successfully returned
+message ID *after exactly one send*, then prints only the QA reference.
+That tests human recovery, not an actual network timeout and not the
+database worker. Find the existing message in the QA channel and verify it
+read-only with:
+
+```sh
+go run ./cmd/case-discord-qa -mode verify-existing \
+  -guild "$QA_GUILD_ID" -channel "$QA_CHANNEL_ID" -bot "$QA_BOT_ID" \
+  -message "$EXISTING_MESSAGE_ID" -reference "$EXISTING_QA_REFERENCE"
+```
+
+The earlier disposable-PostgreSQL worker tests separately cover the
+actual `SENDING -> UNKNOWN` and no-resend behavior. A combined end-to-end
+test of the actual staging app/outbox requires its own disposable database,
+QA installation, independent paid test entitlement and deliberate
+operator approval; running this synthetic probe alone does **not** close
+the full C.A.S.E. launch gate.
+
 ## Future operator-approved staging guild test
 
 1. Use a separate QA Discord guild and channel. Explicitly deny @everyone
