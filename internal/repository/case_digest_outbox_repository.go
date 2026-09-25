@@ -233,3 +233,25 @@ func (r *CaseDigestOutbox) GetScoped(ctx context.Context,orgID,installationID,id
 	if err!=nil{return nil,err}
 	return &d,nil
 }
+
+// ReconcileUnknownWithVerifiedDiscordMessage is a receipt-only update after
+// the caller has fetched the exact original channel/message via Discord and
+// verified bot authorship + the embedded delivery reference. It never sends,
+// never requeues and never grants a premium entitlement.
+func (r *CaseDigestOutbox) ReconcileUnknownWithVerifiedDiscordMessage(ctx context.Context,
+ orgID,installationID,serverID,id int64,channelID,messageID string) (bool,error){
+ if r==nil||r.pool==nil{return false,errors.New("case digest outbox unavailable")}
+ if orgID<=0||installationID<=0||serverID<=0||id<=0||channelID==""||messageID==""{
+  return false,ErrCaseDigestScope
+ }
+ tag,err:=r.pool.Exec(ctx,`
+  UPDATE case_watch_digest_outbox SET status='SENT',discord_message_id=$6,
+   sent_at=NOW(),updated_at=NOW(),reason_code='MANUALLY_VERIFIED_DISCORD_MESSAGE'
+  WHERE id=$1 AND organization_id=$2 AND installation_id=$3 AND game_server_id=$4
+    AND status='UNKNOWN' AND discord_channel_id=$5 AND discord_message_id IS NULL
+    AND EXISTS (SELECT 1 FROM installations i
+                WHERE i.id=$3 AND i.organization_id=$2 AND i.game_server_id=$4)
+ `,id,orgID,installationID,serverID,channelID,messageID)
+ if err!=nil{return false,err}
+ return tag.RowsAffected()==1,nil
+}
