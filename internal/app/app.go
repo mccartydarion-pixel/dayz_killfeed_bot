@@ -86,6 +86,8 @@ type App struct {
 	// STRIPE_SECRET_KEY configured (Billing.Configured() is then false and every action fails
 	// closed with BILLING_UNAVAILABLE rather than panicking).
 	Billing *billing.Service
+	// CaseDigestOutbox owns paid Watch staff messages across app replicas.
+	CaseDigestOutbox *repository.CaseDigestOutbox
 	// BountyBoard keeps the persistent public board (BOUNTY route). Nil-safe.
 	BountyBoard *discord.BountyBoard
 	// HeatmapBoard keeps the persistent PvP heatmap summary (HEATMAPS route),
@@ -665,6 +667,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.SaaSServers = repository.NewSaaSServerRepository(db.Pool)
 			app.SaaSInstallations = repository.NewInstallationRepository(db.Pool)
 			app.SaaSSubscriptions = repository.NewSubscriptionRepository(db.Pool)
+			app.CaseDigestOutbox = repository.NewCaseDigestOutbox(db.Pool)
 			app.SaaSPlayer = repository.NewPlayerServerRepository(db.Pool)
 			if billingCatalog, err := billing.LoadCatalog(cfg.BillingPlansJSON); err != nil {
 				// A malformed catalog is a startup-time configuration error (see
@@ -1541,12 +1544,13 @@ func (a *App) Run() error {
 				// ADMIN_ALERTS: operational conditions reported by the server
 				// workers and the zone engine; with no route nothing is sent.
 				a.AdminAlerts = discord.NewAdminAlertPublisher(session, a.ChannelRoutes)
-				a.AdminAlerts.SetCaseWatchAuthorizer(func(checkCtx context.Context, scope discord.CaseWatchScope)(bool,error){
-					return a.caseWorkerAllowed(checkCtx,scope.OrganizationID,scope.InstallationID,
-						scope.GameServerID,casebilling.CapWatch)
-				})
+				// Paid Watch messages use the durable outbox exclusively. The
+				// legacy in-memory queue has NO premium authorizer in production.
 				a.AdminAlerts.SetServerNames(a.serverNameFunc())
 				go a.AdminAlerts.Run(ctx)
+				if a.CaseDigestOutbox != nil && a.Config.CaseAccessEnabled {
+					go a.runCaseDigestWorker(ctx)
+				}
 			}
 			if routingEnabled && a.Heatmap != nil {
 				// HEATMAPS: one persistent PvP summary per routed channel, read
