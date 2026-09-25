@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"strings"
 	"testing"
 	"time"
 
@@ -119,5 +118,4 @@ func TestCASEPremiumExportBoundedAndNoCrossServerEvidence(t *testing.T){
 	if rr.Code!=http.StatusOK{t.Fatalf("entitlement status: %d",rr.Code)}
 	caps:=decodeBody[map[string]any](t,rr)["capabilities"].([]any)
 	if len(caps)!=0{t.Fatalf("repointed server gained capabilities: %v",caps)}
-	_ = strings.TrimSpace // placeholder to avoid future accidental import churn
 }
