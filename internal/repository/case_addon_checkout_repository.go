@@ -14,6 +14,7 @@ import (
 var (
 	ErrCaseCheckoutConflict = errors.New("C.A.S.E. checkout already exists or server is not eligible")
 	ErrCaseWebhookMismatch = errors.New("C.A.S.E. webhook identity does not match pending subscription")
+	ErrCaseTrialAlreadyUsed = errors.New("C.A.S.E. founder trial was already granted to this server")
 )
 
 type CaseCheckoutReservation struct {
@@ -27,7 +28,8 @@ type CaseWebhookState struct {
 	AddonID, OrganizationID, InstallationID, GameServerID int64
 	Tier, CustomerID, SubscriptionID, PriceID, Status string
 	CheckoutSessionID string
-	CurrentPeriodStart, CurrentPeriodEnd, TrialEnd, PaidThrough *time.Time
+	CurrentPeriodStart, CurrentPeriodEnd, TrialStart, TrialEnd, PaidThrough *time.Time
+	FounderTrialOffer bool
 	CancelAtPeriodEnd bool
 }
 
@@ -128,8 +130,44 @@ Scan(&orgID,&installationID,&serverID,&tier,&customer,&priorSub,&sessionID)
 		(in.Status=="TRIAL" && in.TrialEnd==nil)) {
 		return ErrCaseWebhookMismatch
 	}
+	if in.FounderTrialOffer {
+		if in.Status!="TRIAL" || in.Tier!="CASE_PRO" ||
+			in.TrialStart==nil || in.TrialEnd==nil ||
+			!in.TrialEnd.After(*in.TrialStart) ||
+			in.TrialEnd.Sub(*in.TrialStart)>7*24*time.Hour {
+			return ErrCaseWebhookMismatch
+		}
+	}
 	if in.Status!="ACTIVE" && in.Status!="TRIAL" && in.Status!="PAST_DUE" &&
 		in.Status!="CANCELED" && in.Status!="SUSPENDED" {return ErrCaseWebhookMismatch}
+	if in.FounderTrialOffer {
+		// The one-time grant and event state live in the same transaction.
+		// A second subscription for the same organization/server cannot
+		// receive another founder trial, even after cancellation/reinstall.
+		var grantedID int64
+		err=tx.QueryRow(ctx,`INSERT INTO case_addon_trial_grants(
+			organization_id,game_server_id,installation_id,addon_id,
+			provider_subscription_id,tier,trial_started_at,trial_ends_at)
+			VALUES($1,$2,$3,$4,$5,'CASE_PRO',$6,$7)
+			ON CONFLICT DO NOTHING RETURNING addon_id`,
+			in.OrganizationID,in.GameServerID,in.InstallationID,in.AddonID,
+			in.SubscriptionID,in.TrialStart,in.TrialEnd).Scan(&grantedID)
+		if errors.Is(err,pgx.ErrNoRows) {
+			err=tx.QueryRow(ctx,`SELECT addon_id FROM case_addon_trial_grants
+				WHERE organization_id=$1 AND game_server_id=$2
+				AND installation_id=$3 AND addon_id=$4
+				AND provider_subscription_id=$5 AND trial_started_at=$6 AND trial_ends_at=$7`,
+				in.OrganizationID,in.GameServerID,in.InstallationID,in.AddonID,
+				in.SubscriptionID,in.TrialStart,in.TrialEnd).Scan(&grantedID)
+			if errors.Is(err,pgx.ErrNoRows) {return ErrCaseTrialAlreadyUsed}
+		}
+		if err!=nil{return fmt.Errorf("grant founder trial: %w",err)}
+		if grantedID!=in.AddonID{return ErrCaseTrialAlreadyUsed}
+		_,err=tx.Exec(ctx,`UPDATE case_addon_subscriptions
+			SET trial_started_at=$2,trial_ends_at=$3 WHERE id=$1`,
+			in.AddonID,in.TrialStart,in.TrialEnd)
+		if err!=nil{return fmt.Errorf("persist founder trial period: %w",err)}
+	}
 	var marker int64
 	err=tx.QueryRow(ctx,`INSERT INTO case_addon_webhook_events(provider,event_id,event_type,addon_id)
 VALUES('stripe',$1,$2,$3) ON CONFLICT DO NOTHING RETURNING addon_id`,
