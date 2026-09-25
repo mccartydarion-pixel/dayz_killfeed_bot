@@ -15,7 +15,7 @@ func TestCaseAddonAccessInputUsesIndependentTenantScope(t *testing.T) {
 		OrganizationID: 100, InstallationID: 200, GameServerID: 300,
 		Tier: string(casebilling.Pro), Status: "ACTIVE", Provider: "stripe",
 		ProviderSubscriptionID: "sub_123", ProviderPriceID: "price_123",
-		CurrentPeriodEnd: &end, SelectedGameServerID: &selected,
+		CurrentPeriodEnd: &end, PaidThrough: &end, SelectedGameServerID: &selected,
 	}
 	input := record.AccessInput(100, 200, "ACTIVE", true, casebilling.Pro)
 	if !casebilling.Has(input, casebilling.CapPro, now) {
