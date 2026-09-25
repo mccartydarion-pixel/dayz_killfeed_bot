@@ -42,8 +42,10 @@ func (s *Service) CaseAccess(ctx context.Context, organizationID, installationID
 		addon.SelectedGameServerID == nil || *addon.SelectedGameServerID != gameServerID {
 		return empty, nil
 	}
-	return casebilling.Resolve(addon.AccessInput(organizationID, installationID,
-		base.Status, s.caseAccessEnabled, s.caseVerifiedThrough), now), nil
+	caps := casebilling.Resolve(addon.AccessInput(organizationID, installationID,
+		base.Status, s.caseAccessEnabled, s.caseVerifiedThrough), now)
+	if len(caps) == 0 { return empty, nil }
+	return caps, nil
 }
 
 // CaseAllows is the shared fail-closed paid capability check for HTTP handlers,
