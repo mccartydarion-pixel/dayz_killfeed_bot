@@ -165,16 +165,11 @@ func run(cfg probeConfig) error {
 	if bot.ID!=cfg.botID {return errors.New("authenticated bot ID does not match the explicitly expected QA bot ID")}
 	if session.State==nil{session.State=discordgo.NewState()}
 	session.State.User=bot
-	if err:=client.VerifyCaseStaffChannel(ctx,cfg.guildID,cfg.channelID);err!=nil{
-		// The verifier returns sanitized policy/lookup reasons only. Never
-		// print raw API bodies or the QA token in diagnostics.
-		return fmt.Errorf("QA channel preflight failed (no message sent): %w",err)
-	}
-	if cfg.useExistingGuild {
-		target,err:=session.Channel(cfg.channelID)
-		if err!=nil || target==nil || target.Name!="case-qa" {
-			return errors.New("existing-guild target must be a private text channel named exactly case-qa; no message sent")
-		}
+	// Synthetic QA checks only the bot's transport permissions and the exact
+	// QA channel. Staff-member privacy review remains a separate, unchanged
+	// requirement for real Watch digests.
+	if err:=client.VerifyCaseSyntheticQAChannel(ctx,cfg.guildID,cfg.channelID);err!=nil{
+		return fmt.Errorf("synthetic QA channel preflight failed (no message sent): %w",err)
 	}
 	fmt.Printf("QA preflight passed: guild=%s channel=%s bot=%s; probe is limited to this channel.\n",
 		cfg.guildID,cfg.channelID,cfg.botID)
