@@ -95,3 +95,32 @@ func (c *Client) VerifyCaseStaffChannel(ctx context.Context,guildID,channelID st
 	if member==nil{return caseStaffUnsafe("QA bot is not a guild member")}
 	return validateCaseStaffChannel(guild,channel,parent,botID,member.Roles)
 }
+
+// VerifyCaseSyntheticQAChannel is exclusively for cmd/case-discord-qa's
+// synthetic, zero-player-data transport probe. Unlike the production staff
+// verifier, it does not audit individual human channel grants. In particular,
+// an operator's direct View Channel grant is not a reason to block a test.
+// Never use this method to authorize a real Watch digest or evidence delivery.
+func (c *Client) VerifyCaseSyntheticQAChannel(ctx context.Context, guildID, channelID string) error {
+	if c==nil || c.session==nil || guildID=="" || channelID=="" || ctx.Err()!=nil {
+		return caseStaffUnsafe("QA client or destination unavailable")
+	}
+	channel,err:=c.session.Channel(channelID)
+	if err!=nil{return caseStaffUnsafe("QA bot cannot fetch the target channel; check View Channel permission")}
+	if channel==nil || channel.GuildID!=guildID ||
+		channel.Type!=discordgo.ChannelTypeGuildText || channel.Name!="case-qa" {
+		return caseStaffUnsafe("synthetic probe requires the exact case-qa text channel in the declared guild")
+	}
+	guild,err:=c.session.Guild(guildID)
+	if err!=nil || guild==nil{return caseStaffUnsafe("QA bot cannot fetch the declared guild")}
+	botID:=c.BotID()
+	if botID==""{return caseStaffUnsafe("QA bot identity unavailable")}
+	member,err:=c.session.GuildMember(guildID,botID)
+	if err!=nil || member==nil{return caseStaffUnsafe("QA bot guild membership could not be verified")}
+	botPerms:=memberChannelPermissions(guild,channel,botID,member.Roles)
+	if botPerms&discordgo.PermissionViewChannel==0{return caseStaffUnsafe("QA bot lacks View Channel")}
+	if botPerms&discordgo.PermissionSendMessages==0{return caseStaffUnsafe("QA bot lacks Send Messages")}
+	if botPerms&discordgo.PermissionEmbedLinks==0{return caseStaffUnsafe("QA bot lacks Embed Links")}
+	if botPerms&discordgo.PermissionReadMessageHistory==0{return caseStaffUnsafe("QA bot lacks Read Message History")}
+	return nil
+}
