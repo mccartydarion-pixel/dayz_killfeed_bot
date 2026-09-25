@@ -166,7 +166,9 @@ func run(cfg probeConfig) error {
 	if session.State==nil{session.State=discordgo.NewState()}
 	session.State.User=bot
 	if err:=client.VerifyCaseStaffChannel(ctx,cfg.guildID,cfg.channelID);err!=nil{
-		return errors.New("QA channel privacy or bot View/Send/Embed permission check failed; no message sent")
+		// The verifier returns sanitized policy/lookup reasons only. Never
+		// print raw API bodies or the QA token in diagnostics.
+		return fmt.Errorf("QA channel preflight failed (no message sent): %w",err)
 	}
 	if cfg.useExistingGuild {
 		target,err:=session.Channel(cfg.channelID)
