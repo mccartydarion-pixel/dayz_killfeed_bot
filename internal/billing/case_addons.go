@@ -52,7 +52,8 @@ type CaseCheckoutInput struct {
 }
 
 type CaseOptions struct {
-	Enabled bool
+	Enabled bool // sales flag, independent of access for existing paid subscribers
+	AccessEnabled bool // explicit premium access rollout; defaults false
 	VerifiedThrough casebilling.Tier
 	PriceIDs map[casebilling.Tier]string
 }
@@ -82,15 +83,18 @@ func (s *Service) ConfigureCaseAddons(store CaseStore, opts CaseOptions) error {
 	if opts.VerifiedThrough != "" {
 		if _, ok := casebilling.Lookup(string(opts.VerifiedThrough)); !ok { return fmt.Errorf("unknown verified case tier") }
 	}
-	if opts.Enabled {
+	if opts.Enabled || opts.AccessEnabled {
 		if opts.VerifiedThrough == "" { return fmt.Errorf("case release must name independently verified tier") }
-		if s.provider == nil { return ErrProviderNotConfigured }
-		if _, ok := s.provider.(CaseProvider); !ok { return fmt.Errorf("case provider not supported") }
-		if ids[casebilling.Watch] == "" { return fmt.Errorf("case Watch Stripe price must be configured") }
+		if opts.Enabled {
+			if s.provider == nil { return ErrProviderNotConfigured }
+			if _, ok := s.provider.(CaseProvider); !ok { return fmt.Errorf("case provider not supported") }
+			if ids[casebilling.Watch] == "" { return fmt.Errorf("case Watch Stripe price must be configured") }
+		}
 	}
 	s.caseStore = store
 	s.casePrices = ids
 	s.caseEnabled = opts.Enabled
+	s.caseAccessEnabled = opts.AccessEnabled
 	s.caseVerifiedThrough = opts.VerifiedThrough
 	return nil
 }
