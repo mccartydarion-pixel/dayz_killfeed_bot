@@ -84,6 +84,9 @@ func (a *App) processOneCaseDigest(ctx context.Context)(bool,error){
 	}
 	if scope.GuildID!=d.GuildID || scope.ServerID==nil || *scope.ServerID!=d.GameServerID ||
 		scope.DiscordGuildID==""{return block("SCOPE_CHANGED")}
+	requesterAllowed,requesterErr:=a.caseWatchRequesterAllowed(ctx,scope,d.RequesterUserID)
+	if requesterErr!=nil{return retry("REQUESTER_LOOKUP_FAILED")}
+	if !requesterAllowed{return block("REQUESTER_ACCESS_REVOKED")}
 	allowed,err:=a.caseWorkerAllowed(ctx,d.OrganizationID,d.InstallationID,d.GameServerID,casebilling.CapWatch)
 	if err!=nil{return retry("BILLING_LOOKUP_FAILED")}
 	if !allowed{return block("PREMIUM_ACCESS_REVOKED")}
@@ -94,7 +97,11 @@ func (a *App) processOneCaseDigest(ctx context.Context)(bool,error){
 	if err:=a.caseWatchPrivateDestination(ctx,scope.DiscordGuildID,channel);err!=nil{
 		return block("STAFF_CHANNEL_NOT_PRIVATE")
 	}
-	// Recheck payment after potentially slow Discord privacy lookups.
+	// Recheck both the original actor and payment after potentially slow
+	// Discord privacy lookups, immediately before entering SENDING.
+	requesterAllowed,requesterErr=a.caseWatchRequesterAllowed(ctx,scope,d.RequesterUserID)
+	if requesterErr!=nil{return retry("REQUESTER_LOOKUP_FAILED")}
+	if !requesterAllowed{return block("REQUESTER_ACCESS_REVOKED")}
 	allowed,err=a.caseWorkerAllowed(ctx,d.OrganizationID,d.InstallationID,d.GameServerID,casebilling.CapWatch)
 	if err!=nil{return retry("BILLING_LOOKUP_FAILED")}
 	if !allowed{return block("PREMIUM_ACCESS_REVOKED")}
