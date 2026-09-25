@@ -29,6 +29,8 @@ type CaseStore interface {
 	GetByCaseSubscriptionID(ctx context.Context, subscriptionID string) (*repository.CaseAddonSubscription, error)
 	ApplyCaseWebhook(ctx context.Context, in repository.CaseWebhookState) error
 	ListByOrganization(ctx context.Context, organizationID int64) ([]repository.CaseAddonSubscription, error)
+	GetScoped(ctx context.Context, organizationID, installationID int64) (*repository.CaseAddonSubscription, error)
+	SaveCaseCancelFlag(ctx context.Context, organizationID, installationID int64, subscriptionID string, cancel bool) error
 }
 
 // CaseProvider is a separately extended Stripe boundary; the normal base
@@ -171,4 +173,47 @@ func CaseMetadata(in CaseCheckoutInput) map[string]string {
 		"champion_game_server_id":strconv.FormatInt(in.GameServerID,10),
 		"champion_case_tier":string(in.Tier),
 	}
+}
+
+var ErrCaseNotManaged = errors.New("C.A.S.E. subscription not found or cannot be managed")
+
+// CaseSetCancellation changes ONLY the add-on subscription for the selected
+// installation. Cancellation is available even with purchasing disabled:
+// turning off sales must never lock customers into recurring charges.
+func (s *Service) CaseSetCancellation(ctx context.Context, organizationID, installationID int64, cancel bool) (*repository.CaseAddonSubscription,error) {
+	if s.caseStore==nil || s.provider==nil { return nil,ErrProviderNotConfigured }
+	if organizationID<=0 || installationID<=0 { return nil,ErrCaseNotManaged }
+	row,err:=s.caseStore.GetScoped(ctx,organizationID,installationID)
+	if err!=nil{return nil,err}
+	if row==nil || row.Provider!="stripe" || row.ProviderSubscriptionID=="" ||
+		row.ProviderCustomerID=="" || row.ProviderPriceID=="" {return nil,ErrCaseNotManaged}
+	if row.Status!="ACTIVE" && row.Status!="TRIAL" { return nil,ErrCaseNotManaged }
+	current,err:=s.provider.GetSubscription(ctx,row.ProviderSubscriptionID)
+	if err!=nil{return nil,err}
+	if current.SubscriptionID!=row.ProviderSubscriptionID || current.CustomerID!=row.ProviderCustomerID ||
+		current.PriceID!=row.ProviderPriceID ||
+		current.Metadata["champion_product_kind"]!=caseProductKind ||
+		current.Metadata["champion_case_addon_id"]!=strconv.FormatInt(row.ID,10) ||
+		current.Metadata["champion_organization_id"]!=strconv.FormatInt(organizationID,10) ||
+		current.Metadata["champion_installation_id"]!=strconv.FormatInt(installationID,10) ||
+		current.Metadata["champion_game_server_id"]!=strconv.FormatInt(row.GameServerID,10) ||
+		current.Metadata["champion_case_tier"]!=row.Tier {
+		return nil,repository.ErrCaseWebhookMismatch
+	}
+	if current.StripeStatus!="active" && current.StripeStatus!="trialing" {return nil,ErrCaseNotManaged}
+	if current.CancelAtPeriodEnd!=cancel {
+		current,err=s.provider.SetCancelAtPeriodEnd(ctx,row.ProviderSubscriptionID,cancel)
+		if err!=nil{return nil,fmt.Errorf("update case Stripe cancellation: %w",err)}
+		if current==nil || current.SubscriptionID!=row.ProviderSubscriptionID ||
+			current.CustomerID!=row.ProviderCustomerID ||
+			current.PriceID!=row.ProviderPriceID ||
+			current.CancelAtPeriodEnd!=cancel {
+			return nil,repository.ErrCaseWebhookMismatch
+		}
+	}
+	if err:=s.caseStore.SaveCaseCancelFlag(ctx,organizationID,installationID,row.ProviderSubscriptionID,current.CancelAtPeriodEnd);err!=nil {
+		return nil,fmt.Errorf("persist case cancellation: %w",err)
+	}
+	row.CancelAtPeriodEnd=current.CancelAtPeriodEnd
+	return row,nil
 }
