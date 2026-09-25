@@ -20,14 +20,12 @@ func validateCaseStaffChannel(guild *discordgo.Guild, channel, parent *discordgo
 		channel.Type!=discordgo.ChannelTypeGuildText || botID=="" {
 		return ErrCaseStaffChannelUnsafe
 	}
+	// Require explicit target-channel overrides. Category naming or an
+	// inherited-looking parent is not enough to prove the child's effective
+	// @everyone permissions when Discord settings are unsynchronized.
+	_ = parent
 	overwrites:=channel.PermissionOverwrites
-	// A private category only supplies the effective permissions when the
-	// child has no overrides; an explicit public child must never inherit a
-	// presumed private label based on the category name alone.
-	if len(overwrites)==0 && parent!=nil && parent.GuildID==guild.ID &&
-		parent.ID==channel.ParentID && parent.Type==discordgo.ChannelTypeGuildCategory {
-		overwrites=parent.PermissionOverwrites
-	}
+	if len(overwrites)==0{return ErrCaseStaffChannelUnsafe}
 	roles:=map[string]int64{}
 	for _,role:=range guild.Roles {if role!=nil {roles[role.ID]=role.Permissions}}
 	if roles[guild.ID]&discordgo.PermissionAdministrator!=0{return ErrCaseStaffChannelUnsafe}
@@ -80,11 +78,9 @@ func (c *Client) VerifyCaseStaffChannel(ctx context.Context,guildID,channelID st
 	if channel==nil || channel.GuildID!=guildID{return ErrCaseStaffChannelUnsafe}
 	guild,err:=c.session.Guild(guildID)
 	if err!=nil{return fmt.Errorf("%w: guild lookup: %v",ErrCaseStaffChannelUnsafe,err)}
+	// A private parent is not sufficient: the child must itself explicitly
+	// deny @everyone view, preventing unsynced category permissions.
 	var parent *discordgo.Channel
-	if channel.ParentID!="" && len(channel.PermissionOverwrites)==0 {
-		parent,err=c.session.Channel(channel.ParentID)
-		if err!=nil{return fmt.Errorf("%w: category lookup: %v",ErrCaseStaffChannelUnsafe,err)}
-	}
 	botID:=c.BotID()
 	if botID=="" {return ErrCaseStaffChannelUnsafe}
 	member,err:=c.session.GuildMember(guildID,"@me")
