@@ -83,6 +83,7 @@ func (s *Service) ConfigureCaseAddons(store CaseStore, opts CaseOptions) error {
 	if opts.VerifiedThrough != "" {
 		if _, ok := casebilling.Lookup(string(opts.VerifiedThrough)); !ok { return fmt.Errorf("unknown verified case tier") }
 	}
+	if opts.Enabled && !opts.AccessEnabled { return fmt.Errorf("case sales cannot be enabled while premium access is disabled") }
 	if opts.Enabled || opts.AccessEnabled {
 		if opts.VerifiedThrough == "" { return fmt.Errorf("case release must name independently verified tier") }
 		if opts.Enabled {
