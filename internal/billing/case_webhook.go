@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/yourname/dayz-killfeed/internal/casebilling"
 	"github.com/yourname/dayz-killfeed/internal/repository"
@@ -157,12 +158,20 @@ func (s *Service) applyCaseEvent(ctx context.Context,e ParsedEvent) error {
 	if e.Type==EventInvoicePaymentFailed && status!=repository.SubscriptionCanceled {
 		status=repository.SubscriptionPastDue
 	}
+	var paidThrough *time.Time
+	if e.Type==EventInvoicePaid {
+		// Only Stripe's signed invoice.paid with a real subscription line
+		// proves paid coverage. Checkout/ACTIVE alone never does.
+		_,end:=e.Invoice.period()
+		if end.IsZero() {return repository.ErrCaseWebhookMismatch}
+		paidThrough=&end
+	}
 	err=s.caseStore.ApplyCaseWebhook(ctx,repository.CaseWebhookState{
 		EventID:e.ID,EventType:e.Type,AddonID:addonID,OrganizationID:orgID,InstallationID:installationID,
 		GameServerID:serverID,Tier:string(tier),CustomerID:st.CustomerID,
 		SubscriptionID:subID,PriceID:st.PriceID,Status:status,
 		CheckoutSessionID:sessionID,CurrentPeriodStart:zeroToNil(st.CurrentPeriodStart),
-		CurrentPeriodEnd:zeroToNil(st.CurrentPeriodEnd),TrialEnd:st.TrialEnd,
+		CurrentPeriodEnd:zeroToNil(st.CurrentPeriodEnd),TrialEnd:st.TrialEnd, PaidThrough:paidThrough,
 		CancelAtPeriodEnd:st.CancelAtPeriodEnd,
 	})
 	if err!=nil{return fmt.Errorf("apply isolated case webhook: %w",err)}
