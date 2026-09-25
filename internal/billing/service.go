@@ -52,6 +52,7 @@ type Service struct {
 	caseStore CaseStore
 	casePrices map[casebilling.Tier]string
 	caseEnabled bool
+	caseAccessEnabled bool
 	caseVerifiedThrough casebilling.Tier
 }
 
