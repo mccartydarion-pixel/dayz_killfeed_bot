@@ -26,6 +26,9 @@ func seedCasePremiumAccess(t *testing.T,w *clientAdminWorld) (*repository.CaseAd
 	current_period_end=$4 WHERE organization_id=$1`,
 	w.f.OrgID,fmt.Sprintf("cus-case-%d",w.f.OrgID),fmt.Sprintf("sub-base-%d",w.f.OrgID),end)
 	if err!=nil{t.Fatal(err)}
+	// The client-admin fixture is a newly created installation; checkout
+	// reservations only accept fully bound READY/CONFIGURING installations.
+	if _,err:=w.a.DB.Pool.Exec(ctx,`UPDATE installations SET status='READY' WHERE id=$1`,w.f.InstallationID);err!=nil{t.Fatal(err)}
 	repo:=repository.NewCaseAddonSubscriptionRepository(w.a.DB.Pool)
 	customer:=fmt.Sprintf("cus-case-%d",w.f.OrgID)
 	res,err:=repo.ReserveCaseCheckout(ctx,w.f.OrgID,w.f.InstallationID,w.serverID,"CASE_PRO",customer)
