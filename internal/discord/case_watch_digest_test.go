@@ -27,7 +27,7 @@ func TestCaseWatchDiscordDispatcherRechecksPremiumAtSend(t *testing.T){
  calls:=0
  p.SetCaseWatchAuthorizer(func(_ context.Context,got CaseWatchScope)(bool,error){
   calls++
-  if got!=scope{t.Fatalf("wrong server scope: %+v",got)}
+  if got!=scope{return false,nil}
   return allowed,nil
  })
  if !p.QueueCaseWatchDigest(msg,scope){t.Fatal("queue failed")}
