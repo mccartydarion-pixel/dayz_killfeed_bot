@@ -165,13 +165,20 @@ func (s *Service) applyCaseEvent(ctx context.Context,e ParsedEvent) error {
 	if e.Type==EventInvoicePaymentFailed && status!=repository.SubscriptionCanceled {
 		status=repository.SubscriptionPastDue
 	}
-	var paidThrough *time.Time
+	var paidThrough,failedPeriodEnd *time.Time
 	if e.Type==EventInvoicePaid {
-		// Only Stripe's signed invoice.paid with a real subscription line
-		// proves paid coverage. Checkout/ACTIVE alone never does.
-		_,end:=e.Invoice.period()
+		// Only a signed paid invoice with a matching C.A.S.E. price AND
+		// subscription item proves paid premium coverage.
+		if e.Invoice.Status!="paid" {return repository.ErrCaseWebhookMismatch}
+		_,end:=e.Invoice.casePeriod(st.PriceID,subID)
 		if end.IsZero() {return repository.ErrCaseWebhookMismatch}
 		paidThrough=&end
+	}
+	if e.Type==EventInvoicePaymentFailed {
+		// Keep the failed invoice's own period to distinguish a stale,
+		// out-of-order failure from a new unpaid billing cycle.
+		_,end:=e.Invoice.casePeriod(st.PriceID,subID)
+		if !end.IsZero() {failedPeriodEnd=&end}
 	}
 	err=s.caseStore.ApplyCaseWebhook(ctx,repository.CaseWebhookState{
 		EventID:e.ID,EventType:e.Type,AddonID:addonID,OrganizationID:orgID,InstallationID:installationID,
@@ -179,7 +186,7 @@ func (s *Service) applyCaseEvent(ctx context.Context,e ParsedEvent) error {
 		SubscriptionID:subID,PriceID:st.PriceID,Status:status,
 		CheckoutSessionID:sessionID,CurrentPeriodStart:zeroToNil(st.CurrentPeriodStart),
 		CurrentPeriodEnd:zeroToNil(st.CurrentPeriodEnd),TrialStart:st.TrialStart,TrialEnd:st.TrialEnd, PaidThrough:paidThrough,
-		FounderTrialOffer:founderOffer,
+		FounderTrialOffer:founderOffer, FailedPeriodEnd:failedPeriodEnd,
 		CancelAtPeriodEnd:st.CancelAtPeriodEnd,
 	})
 	if err!=nil{return fmt.Errorf("apply isolated case webhook: %w",err)}
