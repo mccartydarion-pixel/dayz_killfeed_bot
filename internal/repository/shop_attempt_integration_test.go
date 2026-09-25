@@ -411,7 +411,8 @@ func TestShopAttemptRecovery(t *testing.T) {
 	wantIs(t, "second attempt while one is open", err, ErrShopAttemptConflict)
 	// Reconcile read the file: the upload landed -> FILE_STAGED with the read-back evidence. There is
 	// no way back to FILE_PREPARED (never re-stage).
-	w.advance(crash, AttemptFileStaged)
+	_, err = w.step(crash, AttemptFilePrepared, AttemptFileStaged)
+	must(t, err)
 	_, err = w.step(crash, AttemptFileStaged, AttemptFilePrepared)
 	wantIs(t, "back to FILE_PREPARED", err, ErrShopAttemptRejected)
 
