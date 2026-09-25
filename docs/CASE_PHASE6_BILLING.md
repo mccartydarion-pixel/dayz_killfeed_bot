@@ -148,10 +148,12 @@ live billing activation is authorized by this draft.
   export never estimates movement, detects devices, labels a cheater or bans.
   Existing observation/evidence/session/source-integrity endpoints remain
   unchanged and accessible under their existing staff permissions.
-- `App.caseWorkerAllowed` invokes the same resolver. **No premium background
-  worker or Discord premium publisher is enabled yet**. When introduced,
-  each paid operation must call this gate before processing/publishing and
-  fail closed on a store error. The current allowlisted observational evidence
+- `App.caseWorkerAllowed` invokes the same resolver. A paid Watch staff
+  message is submitted to the existing bounded Discord ADMIN_ALERTS worker
+  only after an explicit authorized request. The worker rechecks the same
+  paid capability **after route resolution and immediately before send**;
+  canceled/repointed/expired/missing access never uses stale queued state.
+  No automatic premium processing or scheduled publisher has been enabled. The current allowlisted observational evidence
   collector remains independent of a paid entitlement to preserve existing
   opt-in evidence, including on subscription expiry. Historical evidence
   is never deleted when paid access ends.
@@ -164,3 +166,39 @@ capability verification, test-mode Stripe checkout/webhook QA, founder
 trial Checkout eligibility, plan change/refund/dispute flows and operator
 approval before production rollout. The gated export is a draft API, not
 authorization to market or sell Watch/Pro.
+
+## Phase 6.7 — first gated Watch delivery and Pro export UI (draft)
+
+- `POST .../admin/anti-cheat/premium/watch-digest` requires location-view
+  staff permission, server-scoped `case.watch`, available PostgreSQL, an
+  explicit ADMIN_ALERTS route and a manual request. It counts already
+  persisted ADM evidence lines, hits and kills in a 24-hour **ingestion**
+  window, without player identities, guessing shot counts or a second Nitrado
+  poll. `202 queued` does **not** claim Discord delivery.
+- The pre-existing, bounded AdminAlertPublisher queue now contains a
+  C.A.S.E.-specific paid envelope. It rejects mismatched/blank identifiers,
+  a generic free alert carrying a paid scope, an unscoped digest, missing
+  authorizer and unpaid/errored/repointed access at dispatch. Free ADM/zone
+  operational alerts continue unchanged. The embed is informational,
+  labeled observation-only, and contains no cheat verdict or auto-action.
+- HTTP also checks the ADMIN_ALERTS route before enqueueing. A process-local
+  per-server 1/hour cooldown provides initial flood protection. **Cross-
+  replica durable deduplication, delivery acknowledgement/retry and
+  verification that manually selected staff routes are appropriately private
+  are outstanding release gates**. The selected admin channel may be
+  customer-configured; the website explicitly reminds operators to restrict
+  its visibility before sending.
+- The website provides an explicit Watch button only when the server's
+  read-only entitlement snapshot reports `case.watch`, while the actual
+  server action/queue worker independently enforce access again.
+- Pro now has a server-side-authorized, bounded evidence page in the live
+  workspace and a CSV download of **that page only** (100 rows requested;
+  backend hard cap 250). It includes hashed source reference, original ADM
+  clock, ingestion timestamp and byte offset without raw Nitrado source
+  paths. CSV quotes cells and neutralizes formula prefixes in player-
+  controlled strings. Paging always makes a fresh authorized backend read.
+  No demo evidence is used as a fallback.
+
+Both checkout and premium access still default OFF. These are draft
+capabilities, not authorization to merge, activate, advertise as released,
+or use live Stripe. Complete the sandbox and QA checklist before launch.
