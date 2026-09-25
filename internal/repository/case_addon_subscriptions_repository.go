@@ -19,7 +19,7 @@ type CaseAddonSubscription struct {
 	Provider, ProviderCustomerID                      string
 	ProviderSubscriptionID, ProviderPriceID           string
 	CurrentPeriodStart, CurrentPeriodEnd              *time.Time
-	TrialStartedAt, TrialEndsAt                       *time.Time
+	TrialStartedAt, TrialEndsAt, PaidThrough          *time.Time
 	CancelAtPeriodEnd                                 bool
 	CreatedAt, UpdatedAt                              time.Time
 	// A changed/removed installation server must not transfer paid access.
@@ -41,7 +41,7 @@ func (s CaseAddonSubscription) AccessInput(organizationID, installationID int64,
 		BoundGameServerID: s.GameServerID, Tier: casebilling.Tier(s.Tier),
 		Status: s.Status, Provider: s.Provider, ProviderSubscriptionID: s.ProviderSubscriptionID,
 		ProviderPriceID: s.ProviderPriceID, CurrentPeriodEnd: s.CurrentPeriodEnd,
-		TrialEndsAt: s.TrialEndsAt,
+		TrialEndsAt: s.TrialEndsAt, PaidThrough: s.PaidThrough,
 	}
 }
 
@@ -49,7 +49,7 @@ const caseAddonColumns = `c.id, c.organization_id, c.installation_id, c.game_ser
 	c.tier, c.status, COALESCE(c.provider,''), COALESCE(c.provider_customer_id,''),
 	COALESCE(c.provider_subscription_id,''), COALESCE(c.provider_price_id,''),
 	c.current_period_start, c.current_period_end, c.trial_started_at, c.trial_ends_at,
-	c.cancel_at_period_end, c.created_at, c.updated_at, i.game_server_id`
+	c.cancel_at_period_end, c.created_at, c.updated_at, i.game_server_id, c.paid_through`
 
 func scanCaseAddon(row pgx.Row) (CaseAddonSubscription, error) {
 	var s CaseAddonSubscription
@@ -57,7 +57,7 @@ func scanCaseAddon(row pgx.Row) (CaseAddonSubscription, error) {
 		&s.Tier, &s.Status, &s.Provider, &s.ProviderCustomerID,
 		&s.ProviderSubscriptionID, &s.ProviderPriceID,
 		&s.CurrentPeriodStart, &s.CurrentPeriodEnd, &s.TrialStartedAt, &s.TrialEndsAt,
-		&s.CancelAtPeriodEnd, &s.CreatedAt, &s.UpdatedAt, &s.SelectedGameServerID)
+		&s.CancelAtPeriodEnd, &s.CreatedAt, &s.UpdatedAt, &s.SelectedGameServerID, &s.PaidThrough)
 	return s, err
 }
 
