@@ -54,9 +54,10 @@ channel.
 Store the QA token only in a secret manager or local environment variable
 `CASE_DISCORD_QA_BOT_TOKEN`; never paste it into this chat, a PR, logs or
 a command-line argument. Do not use the live Champions bot token. The bot
-requires View Channel, Send Messages, Embed Links and Read Message History,
-and the channel must explicitly deny @everyone viewing on the target
-channel. Manually review management-role membership as well.
+requires View Channel, Send Messages, Embed Links and Read Message History.
+Keep the QA channel private where practical, but the synthetic transport
+probe does not audit which human operators can access it. The stricter
+staff-delivery gate must still pass before any real Watch payload is sent.
 
 First run a **read-only preflight** from the backend repository using the
 QA token stored in the environment:
@@ -131,9 +132,15 @@ go run ./cmd/case-discord-qa -mode send-once \
   -confirm SEND_ONE_SYNTHETIC_QA_MESSAGE
 ```
 
-The probe also verifies that Discord currently names the target channel
-exactly `case-qa` and that the channel meets private staff permissions;
-unknown/unsuitable channels fail closed. The denylist depends on
+The probe verifies that Discord currently names the target text channel
+exactly `case-qa` and that the separate QA bot can View, Send, Embed and
+Read Message History. Because the probe contains zero player records, the
+synthetic-only preflight does **not** audit or restrict individual human
+member overrides. Actual Watch/evidence delivery retains the independent,
+strict `VerifyCaseStaffChannel` privacy gate (including the human grants
+and explicit @everyone deny). Operators should keep #case-qa private by
+normal Discord configuration, but this temporary transport check is not
+a staff-access certification. The denylist depends on
 operator-supplied IDs and cannot independently prove it is complete, so
 review your routes manually before approving a send. Do not add your live
 bot token or production channel as a workaround.
