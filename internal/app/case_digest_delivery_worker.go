@@ -126,7 +126,11 @@ func (a *App) processOneCaseDigest(ctx context.Context)(bool,error){
 	}
 	name:=""
 	if a.serverNameFunc()!=nil {name=a.serverNameFunc()(d.GameServerID)}
-	messageID,sendErr:=a.sendCaseWatchMessage(ctx,channel,discord.BuildCaseWatchDigestEmbed(alert,name))
+	embed:=discord.BuildCaseWatchDigestEmbed(alert,name)
+	embed.Fields=append(embed.Fields,&discordgo.MessageEmbedField{
+		Name:"Delivery reference",Value:discord.CaseWatchDeliveryReference(d.ID),
+	})
+	messageID,sendErr:=a.sendCaseWatchMessage(ctx,channel,embed)
 	if sendErr!=nil || messageID==""{
 		// A timeout or Discord error is NOT proof no message was sent.
 		if saveErr:=finish(func(c context.Context)error{return store.MarkUnknown(c,*d,"DISCORD_ACK_UNCONFIRMED")});saveErr!=nil{
