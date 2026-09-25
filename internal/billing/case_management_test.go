@@ -76,7 +76,10 @@ func TestCASEActiveRequiresSignedInvoicePaidCoverage(t *testing.T) {
 	// Current Stripe Invoice uses parent.subscription_details.subscription.
 	raw := []byte(`{"id":"in_paid","status":"paid","customer":"cus_case",
 	"parent":{"subscription_details":{"subscription":"sub_case"}},
-	"lines":{"data":[{"period":{"start":` + formatUnix(now) + `,"end":` + formatUnix(end) + `}}]}}`)
+	"lines":{"data":[
+	{"parent":{"type":"invoice_item_details"},"pricing":{"price_details":{"price":"price_other"}},"period":{"start":` + formatUnix(now) + `,"end":` + formatUnix(end.Add(365*24*time.Hour)) + `}},
+	{"parent":{"type":"subscription_item_details","subscription_item_details":{"subscription":"sub_case"}},"pricing":{"price_details":{"price":"price_pro"}},"period":{"start":` + formatUnix(now) + `,"end":` + formatUnix(end) + `}}
+	]}}`)
 	var invoice webhookInvoice
 	if err := json.Unmarshal(raw, &invoice); err != nil { t.Fatal(err) }
 	if invoice.Subscription == "" { invoice.Subscription = invoice.Parent.SubscriptionDetails.Subscription }
@@ -87,6 +90,13 @@ func TestCASEActiveRequiresSignedInvoicePaidCoverage(t *testing.T) {
 	}
 	if got := []string{store.applied[0].Status, store.applied[1].Status}; !reflect.DeepEqual(got, []string{"ACTIVE", "ACTIVE"}) {
 		t.Fatalf("expected active statuses but separate payment proof: %v", got)
+	}
+	// Paid invoice from another product cannot activate this server's access.
+	foreign:=invoice
+	foreign.Lines.Data=foreign.Lines.Data[:1]
+	foreignEvent:=ParsedEvent{ID:"evt_foreign_invoice",Type:EventInvoicePaid,Invoice:&foreign}
+	if err:=s.applyCaseEvent(context.Background(),foreignEvent);!errors.Is(err,repository.ErrCaseWebhookMismatch) {
+		t.Fatalf("unrelated invoice line activated case: %v",err)
 	}
 	invoice.Lines.Data = nil
 	paid.ID = "evt_no_period"
