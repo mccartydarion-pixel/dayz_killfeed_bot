@@ -246,6 +246,7 @@ type App struct {
 	caseWatchPrivacyCheck func(context.Context,string,string) error
 	caseWatchRequesterCheck func(context.Context,repository.AdminScope,int64)(bool,error)
 	caseWatchSender func(context.Context,string,*discordgo.MessageEmbed) (string,error)
+	caseWatchMessageLookup func(context.Context,string,string)(*discordgo.Message,string,error)
 	// saasAdminActionLimiter throttles the Client Admin Control Plane's higher-risk mutation
 	// routes (restart/stop/whitelist/banlist/permission changes/etc); saasAdminReadLimiter
 	// throttles its read routes (audit log, warnings list, permissions list).
