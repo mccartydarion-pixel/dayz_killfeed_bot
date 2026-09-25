@@ -78,7 +78,7 @@ func newCaseTestBilling(t *testing.T)(*Service,*FakeProvider,*caseTestStore){
  }}
  s:=NewService(nil,catalog,provider,Options{WebhookSecret:"whsec_unit_case"})
  if err:=s.ConfigureCaseAddons(store,CaseOptions{
- Enabled:true,VerifiedThrough:casebilling.Pro,
+ Enabled:true,AccessEnabled:true,VerifiedThrough:casebilling.Pro,
  PriceIDs:map[casebilling.Tier]string{casebilling.Watch:"price_watch",casebilling.Pro:"price_pro"},
  });err!=nil{t.Fatal(err)}
  return s,provider,store
