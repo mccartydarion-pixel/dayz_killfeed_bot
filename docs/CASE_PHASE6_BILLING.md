@@ -88,3 +88,34 @@ one-time founder trial eligibility ledger and previewed upgrades/downgrades;
 confirm actual C.A.S.E. feature availability; implement refund/payment dispute
 handling and full Stripe lifecycle QA. No production deployment or live Stripe
 catalog mutation is part of this draft.
+
+## Phase 6.4 release-gate hardening (draft / no sales)
+
+- Fixes the scoped subscription listing to read its `paid_through` column;
+  the per-server subscription page must not fail once add-on rows exist.
+- Adds an immutable one-time `case_addon_trial_grants` ledger keyed by
+  organization and game server, with a DB-enforced maximum seven-day Pro grant.
+  Trial entitlements now require this exact persisted grant. A generic Stripe
+  `trialing` status cannot activate C.A.S.E. Pro. The trial checkout offer
+  remains disabled until sandbox payment/eligibility verification.
+- Adds monotonically increasing `checkout_attempt` and
+  `POST .../billing/case/checkout/recover` for an OWNER/ADMIN. This route
+  only reads the exact Stripe Checkout Session and clears the pending local
+  reservation if Stripe says **expired**, has **no subscription**, and its
+  customer and all server-bound metadata match. It creates no payment.
+  A new purchase uses a new Stripe idempotency key. Late events from the
+  expired session cannot bind to the new attempt.
+- Requires `invoice.paid` to contain a paid matching-price **subscription
+  line** with the exact subscription ID. Another invoice item cannot extend
+  C.A.S.E. coverage. A stale failed invoice cannot revoke a subsequently
+  confirmed paid period; a failure for a genuinely newer period still fails
+  closed. Existing LOW/MEDIUM/HIGH invoice logic remains unchanged.
+- Sandbox setup and the full payment/release matrix are documented in
+  `docs/CASE_STRIPE_TESTMODE_QA.md`. The connected Stripe context is
+  live-mode only. No Stripe test-mode transactions or live changes were made.
+
+Remaining: test-mode Stripe products/prices and webhook simulations, pending
+session UX, explicit founder eligibility and checkout disclosure, proration
+preview and upgrade/downgrade, disputes/refunds, and real feature-level
+entitlement enforcement across Go APIs/workers. No production deployment or
+live billing activation is authorized by this draft.
