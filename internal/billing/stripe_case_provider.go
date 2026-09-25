@@ -45,11 +45,25 @@ func (p *StripeProvider) CreateCaseCheckoutSession(ctx context.Context, in CaseC
 		SubscriptionData:&stripe.CheckoutSessionSubscriptionDataParams{Metadata:meta},
 	}
 	for k,v:=range meta {params.AddMetadata(k,v)}
-	params.SetIdempotencyKey(fmt.Sprintf("champion-case-checkout-%d",in.AddonID))
+	if in.Attempt<=0{return nil,fmt.Errorf("invalid case checkout attempt")}
+	params.SetIdempotencyKey(fmt.Sprintf("champion-case-checkout-%d-%d",in.AddonID,in.Attempt))
 	session,err:=checkoutsession.New(params)
 	if err!=nil{return nil,fmt.Errorf("create case checkout: %w",err)}
 	if session.ID=="" || session.URL=="" {return nil,fmt.Errorf("case checkout returned no hosted session")}
 	return &CheckoutSession{ID:session.ID,URL:session.URL},nil
+}
+
+// Read-only status check; no local reset can occur on an OPEN or COMPLETE
+// Checkout Session, or one that already created a subscription.
+func (p *StripeProvider) GetCaseCheckoutSession(ctx context.Context, id string) (*CaseCheckoutSessionState,error) {
+	if id=="" {return nil,ErrCaseCheckoutNotExpired}
+	s,err:=checkoutsession.Get(id,&stripe.CheckoutSessionParams{Params:*withCtx(ctx)})
+	if err!=nil{return nil,fmt.Errorf("retrieve case checkout: %w",err)}
+	if s==nil{return nil,ErrCaseCheckoutNotExpired}
+	out:=&CaseCheckoutSessionState{ID:s.ID,Status:string(s.Status),Metadata:s.Metadata}
+	if s.Customer!=nil{out.CustomerID=s.Customer.ID}
+	if s.Subscription!=nil{out.SubscriptionID=s.Subscription.ID}
+	return out,nil
 }
 
 var _ CaseProvider = (*StripeProvider)(nil)
