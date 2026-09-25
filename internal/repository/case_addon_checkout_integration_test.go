@@ -159,7 +159,7 @@ func TestCASECheckoutAndWebhookTransaction(t *testing.T){
  }
  listed,err:=repo.ListByOrganization(ctx,org)
  if err!=nil || len(listed)!=1 || listed[0].ID!=reservation.ID ||
- listed[0].PaidThrough==nil || !listed[0].PaidThrough.Equal(end.Truncate(time.Microsecond)) {
+ listed[0].PaidThrough==nil || !listed[0].PaidThrough.Equal(newerEnd.Truncate(time.Microsecond)) {
   t.Fatalf("scoped add-on listing lost paid coverage: %+v %v",listed,err)
  }
  if err:=repo.SaveCaseCancelFlag(ctx,other,installation,in.SubscriptionID,true);!errors.Is(err,repository.ErrCaseCheckoutConflict){
