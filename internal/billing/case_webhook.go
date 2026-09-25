@@ -151,6 +151,10 @@ func (s *Service) applyCaseEvent(ctx context.Context,e ParsedEvent) error {
 	tier:=casebilling.Tier(meta["champion_case_tier"])
 	if _,ok:=casebilling.Lookup(string(tier)); !ok ||
 		s.caseTierForPrice(st.PriceID)!=tier {return repository.ErrCaseWebhookMismatch}
+	founderOffer:=meta["champion_case_trial_offer"]=="founder_pro_7d"
+	if meta["champion_case_trial_offer"]!="" && !founderOffer {
+		return repository.ErrCaseWebhookMismatch
+	}
 	status:=MapStatus(st.StripeStatus)
 	if e.Type==EventSubscriptionDeleted {status=repository.SubscriptionCanceled}
 	// We deliberately fail closed on a failed invoice even if a payment
@@ -171,7 +175,8 @@ func (s *Service) applyCaseEvent(ctx context.Context,e ParsedEvent) error {
 		GameServerID:serverID,Tier:string(tier),CustomerID:st.CustomerID,
 		SubscriptionID:subID,PriceID:st.PriceID,Status:status,
 		CheckoutSessionID:sessionID,CurrentPeriodStart:zeroToNil(st.CurrentPeriodStart),
-		CurrentPeriodEnd:zeroToNil(st.CurrentPeriodEnd),TrialEnd:st.TrialEnd, PaidThrough:paidThrough,
+		CurrentPeriodEnd:zeroToNil(st.CurrentPeriodEnd),TrialStart:st.TrialStart,TrialEnd:st.TrialEnd, PaidThrough:paidThrough,
+		FounderTrialOffer:founderOffer,
 		CancelAtPeriodEnd:st.CancelAtPeriodEnd,
 	})
 	if err!=nil{return fmt.Errorf("apply isolated case webhook: %w",err)}
