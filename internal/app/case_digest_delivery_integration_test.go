@@ -24,6 +24,11 @@ func setupCaseDigestWorld(t *testing.T) (*clientAdminWorld,*repository.CaseDiges
 	seedCasePremiumAccess(t,w)
 	store:=repository.NewCaseDigestOutbox(w.a.DB.Pool)
 	w.a.CaseDigestOutbox=store
+	t.Cleanup(func(){_,err:=w.a.DB.Pool.Exec(context.Background(),"DELETE FROM case_watch_digest_outbox WHERE organization_id=$1",w.f.OrgID);if err!=nil{t.Errorf("cleanup case digest: %v",err)}})
+	w.a.caseWatchRequesterCheck=func(_ context.Context,scope repository.AdminScope,userID int64)(bool,error){
+		return scope.InstallationID==w.f.InstallationID &&
+			userID==mustAppUserID(t,w.a,w.f.OwnerDiscordID),nil
+	}
 	w.a.caseWatchDigestLimiter=newSaaSRateLimiter(time.Hour,1)
 	err:=w.a.SaaSChannelRoutes.UpsertRoute(context.Background(),w.f.OrgID,w.f.InstallationID,
 		routing.RouteAdminAlerts,"private-staff-channel",false)
@@ -36,6 +41,7 @@ func setupCaseDigestWorld(t *testing.T) (*clientAdminWorld,*repository.CaseDiges
 	return w,store,repository.CaseDigestInput{
 		OrganizationID:w.f.OrgID,InstallationID:w.f.InstallationID,
 		GuildID:w.guildID,GameServerID:w.serverID,
+		RequesterUserID:mustAppUserID(t,w.a,w.f.OwnerDiscordID),
 		WindowStart:now.Add(-24*time.Hour),WindowEnd:now,
 		SourceLines:11,HitLines:5,KillLines:3,CollectorEnabled:true,
 	}
