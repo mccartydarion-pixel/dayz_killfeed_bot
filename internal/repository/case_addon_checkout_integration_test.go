@@ -100,7 +100,7 @@ func TestCASECheckoutAndWebhookTransaction(t *testing.T){
  paid.PaidThrough=&end
  if err:=repo.ApplyCaseWebhook(ctx,paid);err!=nil{t.Fatal(err)}
  paidRow,err:=repo.GetScoped(ctx,org,installation)
- if err!=nil || paidRow==nil || paidRow.PaidThrough==nil || !paidRow.PaidThrough.Equal(end){
+ if err!=nil || paidRow==nil || paidRow.PaidThrough==nil || !paidRow.PaidThrough.Equal(end.Truncate(time.Microsecond)){
   t.Fatalf("confirmed paid coverage not persisted: %+v %v",paidRow,err)
  }
  if err:=repo.SaveCaseCancelFlag(ctx,other,installation,in.SubscriptionID,true);!errors.Is(err,repository.ErrCaseCheckoutConflict){
