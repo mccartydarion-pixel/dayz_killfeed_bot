@@ -30,6 +30,7 @@ type AccessInput struct {
 	CurrentPeriodEnd     *time.Time
 	PaidThrough          *time.Time // verified invoice.paid, never inferred from ACTIVE status
 	TrialEndsAt          *time.Time
+	FounderTrialGranted bool // exact stored, one-time server grant; Stripe trialing alone is insufficient
 }
 
 // Resolve fails closed. It returns *only* capabilities for the same organization,
@@ -60,7 +61,7 @@ func Resolve(in AccessInput, now time.Time) []Capability {
 		// with delayed payment methods. Require confirmed paid coverage.
 		if in.PaidThrough == nil || !in.PaidThrough.After(now) { return nil }
 	case "TRIAL":
-		if in.TrialEndsAt == nil || !in.TrialEndsAt.After(now) {
+		if !in.FounderTrialGranted || in.TrialEndsAt == nil || !in.TrialEndsAt.After(now) {
 			return nil
 		}
 	default:
