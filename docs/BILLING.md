@@ -143,9 +143,15 @@ processing**; if no row comes back, the event was already handled and the handle
 under concurrent redelivery (Stripe retries aggressively on anything but a clean `2xx`) - proven under `-race` with 20 concurrent deliveries of the same event
 (`TestConcurrentWebhookDeliveryIsRaceFree`).
 
-**Organization attribution** (`Service.resolveOrgID`), in order: (1) the event's own `champion_organization_id` metadata (cheapest - no query), (2) a lookup by Stripe customer id
-(`idx_subscriptions_provider_customer`), (3) a lookup by Stripe subscription id (`idx_subscriptions_provider_subscription`). An event that resolves to no organization is logged
-(`billing_webhook_unattributed`) and acknowledged - it changes nothing and never guesses.
+**Organization attribution** (`Service.resolveOrgID`) requires a binding Champion itself authored: (1) the `champion_organization_id` metadata Champion sets server-side on its
+Checkout Session's subscription (for invoices, the copy Stripe places on `parent.subscription_details.metadata`), or (2) the Stripe subscription id already stored on that
+organization's row (`idx_subscriptions_provider_subscription`). **A Stripe customer id alone never attributes an event** (changed in Phase 6.19.1): a subscription created outside
+Champion - for example from the Stripe Dashboard - on an organization's customer would otherwise overwrite that organization's base subscription. The customer id is a consistency
+check only: when the organization has a saved customer that differs from the event's, the event is refused (`reason=customer_mismatch`), and metadata that conflicts with the stored
+subscription is refused too. `checkout.session.completed` additionally requires `client_reference_id`; its `champion_organization_id` metadata (when present) must name the same
+organization and its customer must match the saved one. An event that resolves to no organization is logged (`billing_webhook_unattributed`, with a `reason`) and acknowledged -
+it changes nothing and never guesses. A session created outside Champion (no `client_reference_id`, empty metadata) is never bound to an organization, even if it was paid: pay
+the Champion-created session instead, and cancel the foreign subscription in Stripe.
 
 **A closed browser tab / an abandoned checkout never corrupts anything** (task section 20): Champion's subscription state changes *only* when a webhook (or an explicit `Reconcile`, section 18)
 applies it. `Checkout` itself never writes `plan`/`status`.

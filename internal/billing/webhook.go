@@ -110,7 +110,8 @@ type webhookInvoice struct {
 	ID            string `json:"id"`
 	Customer      jsonID `json:"customer"`
 	Subscription  jsonID `json:"subscription"`
-	Parent struct { SubscriptionDetails struct { Subscription jsonID `json:"subscription"` } `json:"subscription_details"` } `json:"parent"`
+	// Stripe copies the subscription's metadata (Champion's champion_organization_id) onto the invoice.
+	Parent struct { SubscriptionDetails struct { Subscription jsonID `json:"subscription"`; Metadata map[string]string `json:"metadata"` } `json:"subscription_details"` } `json:"parent"`
 	Status        string `json:"status"`
 	AmountPaid    int64  `json:"amount_paid"`
 	AmountDue     int64  `json:"amount_due"`
