@@ -114,8 +114,11 @@ catalog mutation is part of this draft.
   `docs/CASE_STRIPE_TESTMODE_QA.md`. The connected Stripe context is
   live-mode only. No Stripe test-mode transactions or live changes were made.
 
-Remaining: test-mode Stripe products/prices and webhook simulations, pending
-session UX, explicit founder eligibility and checkout disclosure, proration
+The website draft now includes an OWNER/ADMIN expired-session check and
+same-tier retry only after the backend reports a safe pending reset.
+
+Remaining: test-mode Stripe products/prices and webhook simulations, explicit
+founder eligibility and checkout disclosure, proration
 preview and upgrade/downgrade, disputes/refunds, and real feature-level
 entitlement enforcement across Go APIs/workers. No production deployment or
 live billing activation is authorized by this draft.
