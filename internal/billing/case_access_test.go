@@ -39,7 +39,7 @@ func TestCaseRuntimeAccessIsServerScopedPaidAndIndependentOfCheckoutFlag(t *test
 	}
 	empty:=[]casebilling.Capability{}
 	check(t,10,20,30,empty)
-	if err:=s.ConfigureCaseAddons(caseStore,CaseOptions{AccessEnabled:true,VerifiedThrough:casebilling.Pro});err!=nil{t.Fatal(err)}
+	if err:=s.ConfigureCaseAddons(caseStore,CaseOptions{AccessEnabled:true,VerifiedThrough:casebilling.Pro,PriceIDs:map[casebilling.Tier]string{casebilling.Watch:"price_watch",casebilling.Pro:"price_pro"}});err!=nil{t.Fatal(err)}
 	want:=[]casebilling.Capability{casebilling.CapWatch,casebilling.CapPro}
 	check(t,10,20,30,want) // checkout remains disabled
 	check(t,10,20,31,empty)
@@ -104,7 +104,7 @@ func TestCaseRuntimeAccessRequiresConfirmedFounderTrialAndFailsClosedOnStoreErro
 	}
 	cs:=&caseTestStore{row:row}
 	s:=NewService(store,nil,nil,Options{})
-	if err:=s.ConfigureCaseAddons(cs,CaseOptions{AccessEnabled:true,VerifiedThrough:casebilling.Pro});err!=nil{t.Fatal(err)}
+	if err:=s.ConfigureCaseAddons(cs,CaseOptions{AccessEnabled:true,VerifiedThrough:casebilling.Pro,PriceIDs:map[casebilling.Tier]string{casebilling.Watch:"price_watch",casebilling.Pro:"price_pro"}});err!=nil{t.Fatal(err)}
 	got,err:=s.CaseAccess(context.Background(),1,2,3,now)
 	if err!=nil || len(got)!=0{t.Fatalf("unverified trial granted access: %v %v",got,err)}
 	row.FounderTrialGranted=true
