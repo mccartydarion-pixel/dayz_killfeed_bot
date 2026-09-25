@@ -88,7 +88,9 @@ func (c *Client) VerifyCaseStaffChannel(ctx context.Context,guildID,channelID st
 	var parent *discordgo.Channel
 	botID:=c.BotID()
 	if botID=="" {return caseStaffUnsafe("QA bot identity is unavailable")}
-	member,err:=c.session.GuildMember(guildID,"@me")
+	// GET /guilds/{guild.id}/members/{user.id} requires the actual bot
+	// user snowflake. @me is supported by other Discord routes, not this GET.
+	member,err:=c.session.GuildMember(guildID,botID)
 	if err!=nil{return caseStaffUnsafe("Discord could not read QA bot guild membership; confirm installation and permissions")}
 	if member==nil{return caseStaffUnsafe("QA bot is not a guild member")}
 	return validateCaseStaffChannel(guild,channel,parent,botID,member.Roles)
