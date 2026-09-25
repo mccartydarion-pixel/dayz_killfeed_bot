@@ -43,9 +43,10 @@ SELECT 'sequence|' || schemaname || '.' || sequencename || '|' || COALESCE(last_
 FROM pg_sequences WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
 ORDER BY 1;
 
--- Per table: exact row count and a content hash over every row's text form in byte order.
+-- Per table: exact row count and a content hash over every row's full text form in byte order.
+-- ROW(alias.*) always means the whole row, even when a column shares the alias name.
 SELECT format(
-    'SELECT %L || ''|'' || COUNT(*) || ''|'' || COALESCE(md5(string_agg(t::text, E''\n'' ORDER BY t::text COLLATE "C")), ''empty'') FROM %I.%I t',
+    'SELECT %L || ''|'' || COUNT(*) || ''|'' || COALESCE(md5(string_agg(ROW(inventory_row.*)::text, E''\n'' ORDER BY ROW(inventory_row.*)::text COLLATE "C")), ''empty'') FROM %I.%I inventory_row',
     'table|' || n.nspname || '.' || c.relname, n.nspname, c.relname)
 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE c.relkind IN ('r', 'p') AND NOT c.relispartition
