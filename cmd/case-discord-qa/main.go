@@ -1,5 +1,6 @@
 // Command case-discord-qa performs a strictly opt-in one-shot Discord delivery
-// probe using a separate QA bot and private QA guild. It is NEVER started by
+// probe using a separate QA bot and either a private QA guild or a dedicated
+// #case-qa channel in an existing guild. It is NEVER started by
 // cmd/server or any production worker. No Stripe, Nitrado or player data.
 package main
 
@@ -26,6 +27,8 @@ const (
 	modeVerify = "verify-existing"
 	sendConfirmation = "SEND_ONE_SYNTHETIC_QA_MESSAGE"
 	sendEnvironment = "YES_ONE_SYNTHETIC_QA_MESSAGE"
+	existingGuildConfirmation = "USE_EXISTING_GUILD_PRIVATE_CASE_QA"
+	existingGuildEnvironment = "YES_EXISTING_GUILD_PRIVATE_CASE_QA"
 	qaTitle = "C.A.S.E. QA • SYNTHETIC DELIVERY PROBE"
 	qaDescription = "QA-only synthetic Discord transport check. No DayZ player data, evidence, billing, cheat finding, detector or enforcement."
 )
@@ -35,8 +38,9 @@ var referencePattern = regexp.MustCompile(`^CHAMPION-CASE-QA-[A-F0-9]{24}$`)
 
 type probeConfig struct {
 	mode, guildID, channelID, botID string
-	productionGuildID, productionBotID string
-	confirm, messageID, reference string
+	productionGuildID, productionBotID, productionChannels string
+	confirm, existingGuildConfirm, messageID, reference string
+	useExistingGuild bool
 	lostAckSimulation bool
 }
 
@@ -47,6 +51,9 @@ func (c probeConfig) validate() error {
 	if !snowflake.MatchString(c.guildID) || !snowflake.MatchString(c.channelID) || !snowflake.MatchString(c.botID) {
 		return errors.New("QA guild, channel and expected QA bot must be valid Discord snowflake IDs")
 	}
+	if c.useExistingGuild && (!snowflake.MatchString(c.productionGuildID) || c.guildID!=c.productionGuildID) {
+		return errors.New("existing-guild mode requires the exact production guild ID")
+	}
 	if c.lostAckSimulation && c.mode!=modeSend {
 		return errors.New("lost-ack simulation requires send-once mode")
 	}
@@ -54,8 +61,28 @@ func (c probeConfig) validate() error {
 		if !snowflake.MatchString(c.productionGuildID) || !snowflake.MatchString(c.productionBotID) {
 			return errors.New("production guild and bot IDs must be supplied as independent denylist guards")
 		}
-		if c.guildID==c.productionGuildID || c.botID==c.productionBotID {
-			return errors.New("refusing to send: QA guild/bot matches a production identity")
+		if c.botID==c.productionBotID {
+			return errors.New("refusing to send: QA bot matches the production bot")
+		}
+		if c.useExistingGuild {
+			if c.guildID!=c.productionGuildID {
+				return errors.New("existing-guild mode requires the exact declared production guild")
+			}
+			if c.existingGuildConfirm!=existingGuildConfirmation ||
+				os.Getenv("CASE_DISCORD_QA_EXISTING_GUILD")!=existingGuildEnvironment {
+				return errors.New("existing-guild mode requires separate explicit CLI and environment approval")
+			}
+			channels:=strings.Split(c.productionChannels,",")
+			if len(channels)==0 || strings.TrimSpace(c.productionChannels)=="" {
+				return errors.New("existing-guild mode requires a production channel denylist")
+			}
+			for _,id:=range channels {
+				id=strings.TrimSpace(id)
+				if !snowflake.MatchString(id) {return errors.New("production channel denylist contains an invalid Discord ID")}
+				if id==c.channelID {return errors.New("refusing to send: QA target is a live production channel")}
+			}
+		} else if c.guildID==c.productionGuildID {
+			return errors.New("production guild requires explicit existing-guild mode")
 		}
 		if c.confirm!=sendConfirmation || os.Getenv("CASE_DISCORD_QA_ALLOW_SEND")!=sendEnvironment {
 			return errors.New("send blocked: explicit CLI confirmation and environment authorization are both required")
@@ -103,11 +130,14 @@ func matchesQAProbe(msg *discordgo.Message,botID,channelID,reference string) boo
 func main() {
 	cfg:=probeConfig{}
 	flag.StringVar(&cfg.mode,"mode",modePreflight,"preflight (no send), send-once, verify-existing")
-	flag.StringVar(&cfg.guildID,"guild","","separate QA Discord guild ID")
+	flag.StringVar(&cfg.guildID,"guild","","QA Discord guild ID, including existing Champions guild in guarded mode")
 	flag.StringVar(&cfg.channelID,"channel","","private QA text channel ID")
 	flag.StringVar(&cfg.botID,"bot","","expected QA bot user ID")
-	flag.StringVar(&cfg.productionGuildID,"production-guild","","live guild ID to deny (mandatory for send)")
+	flag.StringVar(&cfg.productionGuildID,"production-guild","","live guild ID (mandatory for send)")
 	flag.StringVar(&cfg.productionBotID,"production-bot","","live bot user ID to deny (mandatory for send)")
+	flag.StringVar(&cfg.productionChannels,"production-channels","","comma-separated live output channel IDs, mandatory when using an existing guild")
+	flag.BoolVar(&cfg.useExistingGuild,"use-existing-guild",false,"allow isolated private #case-qa inside the existing guild; never the production bot")
+	flag.StringVar(&cfg.existingGuildConfirm,"existing-guild-confirm","","separate confirmation when targeting an existing guild")
 	flag.StringVar(&cfg.confirm,"confirm","","exact send confirmation")
 	flag.StringVar(&cfg.messageID,"message","","Discord message ID for read-only verification")
 	flag.StringVar(&cfg.reference,"reference","","QA reference for read-only verification")
@@ -138,7 +168,13 @@ func run(cfg probeConfig) error {
 	if err:=client.VerifyCaseStaffChannel(ctx,cfg.guildID,cfg.channelID);err!=nil{
 		return errors.New("QA channel privacy or bot View/Send/Embed permission check failed; no message sent")
 	}
-	fmt.Printf("QA preflight passed: guild=%s channel=%s bot=%s; live guild/bot are not configured by this probe.\n",
+	if cfg.useExistingGuild {
+		target,err:=session.Channel(cfg.channelID)
+		if err!=nil || target==nil || target.Name!="case-qa" {
+			return errors.New("existing-guild target must be a private text channel named exactly case-qa; no message sent")
+		}
+	}
+	fmt.Printf("QA preflight passed: guild=%s channel=%s bot=%s; probe is limited to this channel.\n",
 		cfg.guildID,cfg.channelID,cfg.botID)
 	if cfg.mode==modePreflight {fmt.Println("READ-ONLY: no message was sent.");return nil}
 	if cfg.mode==modeVerify {
