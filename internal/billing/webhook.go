@@ -50,6 +50,7 @@ type webhookSubscription struct {
 	Status            string            `json:"status"`
 	CancelAtPeriodEnd bool              `json:"cancel_at_period_end"`
 	CanceledAt        int64             `json:"canceled_at"`
+	TrialStart        int64             `json:"trial_start"`
 	TrialEnd          int64             `json:"trial_end"`
 	Customer          jsonID            `json:"customer"`
 	Metadata          map[string]string `json:"metadata"`
@@ -107,6 +108,7 @@ type webhookInvoice struct {
 	ID            string `json:"id"`
 	Customer      jsonID `json:"customer"`
 	Subscription  jsonID `json:"subscription"`
+	Parent struct { SubscriptionDetails struct { Subscription jsonID `json:"subscription"` } `json:"subscription_details"` } `json:"parent"`
 	Status        string `json:"status"`
 	AmountPaid    int64  `json:"amount_paid"`
 	AmountDue     int64  `json:"amount_due"`
@@ -114,6 +116,14 @@ type webhookInvoice struct {
 	PaymentIntent jsonID `json:"payment_intent"`
 	Lines         struct {
 		Data []struct {
+			Price jsonID `json:"price"` // legacy Stripe invoice line
+			Pricing struct {
+				PriceDetails struct { Price jsonID `json:"price"` } `json:"price_details"`
+			} `json:"pricing"`
+			Parent struct {
+				Type string `json:"type"`
+				SubscriptionItemDetails struct { Subscription jsonID `json:"subscription"` } `json:"subscription_item_details"`
+			} `json:"parent"`
 			Period struct {
 				Start int64 `json:"start"`
 				End   int64 `json:"end"`
@@ -136,6 +146,26 @@ func (inv *webhookInvoice) period() (start, end time.Time) {
 		end = time.Unix(p.End, 0).UTC()
 	}
 	return start, end
+}
+
+// casePeriod verifies paid coverage against the exact C.A.S.E. subscription
+// line and Stripe price, rather than the first invoice line (which may be
+// a proration, tax, manual invoice item, or a different product).
+func (inv *webhookInvoice) casePeriod(priceID, subscriptionID string) (start,end time.Time) {
+	if inv==nil || priceID=="" || subscriptionID=="" {return time.Time{},time.Time{}}
+	for _,line:=range inv.Lines.Data {
+		linePrice:=string(line.Pricing.PriceDetails.Price)
+		if linePrice=="" {linePrice=string(line.Price)}
+		if linePrice!=priceID || line.Parent.Type!="subscription_item_details" ||
+			string(line.Parent.SubscriptionItemDetails.Subscription)!=subscriptionID ||
+			line.Period.Start<=0 || line.Period.End<=line.Period.Start {continue}
+		e:=time.Unix(line.Period.End,0).UTC()
+		if e.After(end) {
+			start=time.Unix(line.Period.Start,0).UTC()
+			end=e
+		}
+	}
+	return start,end
 }
 
 // ParsedEvent is one webhook event, decoded into exactly the fields Champion's reconciliation
@@ -172,6 +202,7 @@ func ParseEvent(e stripe.Event) (ParsedEvent, error) {
 		if err := json.Unmarshal(e.Data.Raw, &inv); err != nil {
 			return out, fmt.Errorf("parse %s: %w", out.Type, err)
 		}
+		if inv.Subscription == "" { inv.Subscription = inv.Parent.SubscriptionDetails.Subscription }
 		out.Invoice = &inv
 	}
 	return out, nil
@@ -181,13 +212,17 @@ func ParseEvent(e stripe.Event) (ParsedEvent, error) {
 // GetSubscription/normalizeSubscription would produce, so webhook handling and explicit
 // reconciliation share one downstream code path (Service.applySubscriptionState).
 func (s *webhookSubscription) state() *SubscriptionState {
-	out := &SubscriptionState{SubscriptionID: s.ID, CustomerID: string(s.Customer), StripeStatus: s.Status, CancelAtPeriodEnd: s.CancelAtPeriodEnd}
+	out := &SubscriptionState{SubscriptionID: s.ID, CustomerID: string(s.Customer), StripeStatus: s.Status, CancelAtPeriodEnd: s.CancelAtPeriodEnd, Metadata: s.Metadata}
 	if len(s.Items.Data) > 0 {
 		item := s.Items.Data[0]
 		out.CurrentPeriodStart = time.Unix(item.CurrentPeriodStart, 0).UTC()
 		out.CurrentPeriodEnd = time.Unix(item.CurrentPeriodEnd, 0).UTC()
 		out.PriceID = item.Price.ID
 		out.StripeInterval = item.Price.Recurring.Interval
+	}
+	if s.TrialStart > 0 {
+		t := time.Unix(s.TrialStart, 0).UTC()
+		out.TrialStart = &t
 	}
 	if s.TrialEnd > 0 {
 		t := time.Unix(s.TrialEnd, 0).UTC()

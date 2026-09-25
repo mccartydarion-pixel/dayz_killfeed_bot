@@ -15,6 +15,7 @@ import (
 type FakeProvider struct {
 	mu   sync.Mutex
 	subs map[string]*SubscriptionState
+	caseSessions map[string]*CaseCheckoutSessionState
 	// Calls records every method invocation for tests that want to assert on call shape
 	// (e.g. "checkout was created with the trial days we expected").
 	Calls []FakeCall
@@ -25,7 +26,7 @@ type FakeCall struct {
 	Arg    any
 }
 
-func NewFakeProvider() *FakeProvider { return &FakeProvider{subs: map[string]*SubscriptionState{}} }
+func NewFakeProvider() *FakeProvider { return &FakeProvider{subs: map[string]*SubscriptionState{},caseSessions: map[string]*CaseCheckoutSessionState{}} }
 
 // fakeIDSeq is process-global (not per-FakeProvider): a real Stripe id is globally unique, and an
 // integration test's FakeProvider shares its database with every other test in the same run (no

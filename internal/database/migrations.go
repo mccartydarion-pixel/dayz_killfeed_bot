@@ -2164,6 +2164,206 @@ ON CONFLICT (installation_id, route_key) DO NOTHING;
 		Name: "0055_shop_delivery_attempt_evidence",
 		SQL:  ShopAttemptEvidenceSQL,
 	},
+	{
+		Name: "0056_case_addon_subscriptions",
+		SQL: `
+-- Phase 6.1: C.A.S.E. is an ADDITIVE per-server purchase, never a new base plan.
+-- An installation may be repointed to a different game server; the purchased
+-- game_server_id remains bound, and runtime access checks require equality.
+-- RESTRICT deletion of bound installation/server: paid Stripe subscriptions
+-- must be cancelled/reconciled before removing their local binding.
+CREATE TABLE IF NOT EXISTS case_addon_subscriptions (
+    id BIGSERIAL PRIMARY KEY,
+    organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE RESTRICT,
+    installation_id BIGINT NOT NULL,
+    game_server_id BIGINT NOT NULL REFERENCES game_servers(id) ON DELETE RESTRICT,
+    tier TEXT NOT NULL CHECK (tier IN ('CASE_WATCH','CASE_PRO','CASE_COMMAND')),
+    status TEXT NOT NULL DEFAULT 'PENDING'
+        CHECK (status IN ('PENDING','TRIAL','ACTIVE','PAST_DUE','CANCELED','SUSPENDED')),
+    provider TEXT CHECK (provider IS NULL OR provider = 'stripe'),
+    provider_customer_id TEXT,
+    provider_subscription_id TEXT,
+    provider_price_id TEXT,
+    current_period_start TIMESTAMPTZ,
+    current_period_end TIMESTAMPTZ,
+    trial_started_at TIMESTAMPTZ,
+    trial_ends_at TIMESTAMPTZ,
+    cancel_at_period_end BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT case_addon_installation_scope
+        FOREIGN KEY (installation_id, organization_id)
+        REFERENCES installations(id, organization_id) ON DELETE RESTRICT,
+    CONSTRAINT uq_case_addon_org_installation UNIQUE (organization_id, installation_id),
+    CONSTRAINT uq_case_addon_org_server UNIQUE (organization_id, game_server_id),
+    CONSTRAINT case_addon_period_order CHECK (
+        current_period_start IS NULL OR current_period_end IS NULL OR
+        current_period_start < current_period_end
+    ),
+    CONSTRAINT case_addon_trial_order CHECK (
+        trial_started_at IS NULL OR trial_ends_at IS NULL OR
+        trial_started_at < trial_ends_at
+    ),
+    CONSTRAINT case_addon_subscription_id_nonempty CHECK (
+        provider_subscription_id IS NULL OR LENGTH(BTRIM(provider_subscription_id)) > 0
+    ),
+    CONSTRAINT case_addon_active_provider CHECK (
+        status NOT IN ('ACTIVE','TRIAL') OR (
+            COALESCE(provider,'') = 'stripe' AND
+            NULLIF(BTRIM(COALESCE(provider_subscription_id,'')),'') IS NOT NULL AND
+            NULLIF(BTRIM(COALESCE(provider_price_id,'')),'') IS NOT NULL AND
+            current_period_end IS NOT NULL
+        )
+    )
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_case_addon_provider_subscription
+    ON case_addon_subscriptions(provider, provider_subscription_id)
+    WHERE provider_subscription_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_case_addon_org_status
+    ON case_addon_subscriptions(organization_id, status, installation_id);
+-- No backfill and no write/API route in this milestone. All packages start
+-- with zero rows; only the later verified add-on webhook may grant access.
+`,
+	},
+
+	{
+		Name: "0057_case_checkout_reconciliation",
+		SQL: `
+-- Phase 6.2: retain a single per-server pending checkout and its Stripe
+-- idempotency identity; do not create a new subscription when a retry races.
+ALTER TABLE case_addon_subscriptions
+    ADD COLUMN IF NOT EXISTS checkout_session_id TEXT;
+ALTER TABLE case_addon_subscriptions
+    ADD COLUMN IF NOT EXISTS checkout_url TEXT;
+ALTER TABLE case_addon_subscriptions
+    ADD COLUMN IF NOT EXISTS checkout_reserved_at TIMESTAMPTZ;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_case_checkout_session
+    ON case_addon_subscriptions(checkout_session_id)
+    WHERE checkout_session_id IS NOT NULL;
+-- Checkout and subscription webhooks are recorded only in the same
+-- transaction that successfully applies the event. An error rolls both back,
+-- so Stripe retries can never be silently ignored.
+CREATE TABLE IF NOT EXISTS case_addon_webhook_events (
+    provider TEXT NOT NULL CHECK (provider = 'stripe'),
+    event_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    addon_id BIGINT NOT NULL REFERENCES case_addon_subscriptions(id) ON DELETE RESTRICT,
+    received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (provider,event_id)
+);
+CREATE INDEX IF NOT EXISTS idx_case_addon_webhook_addon
+    ON case_addon_webhook_events(addon_id, received_at DESC);
+`,
+	},
+
+	{
+		Name: "0058_case_payment_confirmation",
+		SQL: `
+-- A Stripe subscription can appear ACTIVE before asynchronous payment
+-- succeeds. Preserve an independent invoice-paid proof for paid access.
+-- C.A.S.E. ACTIVE access is withheld until a signed invoice.paid webhook.
+ALTER TABLE case_addon_subscriptions
+    ADD COLUMN IF NOT EXISTS paid_through TIMESTAMPTZ;
+`,
+	},
+	{
+		Name: "0059_case_founder_trial_ledger",
+		SQL: `
+-- Additive, immutable one-time founder trial identity. No grants/backfill.
+-- Future code must write a grant only after verifying an eligible existing
+-- base customer and a real Stripe Pro trial on this exact bound game server.
+CREATE TABLE IF NOT EXISTS case_addon_trial_grants (
+    organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE RESTRICT,
+    game_server_id BIGINT NOT NULL REFERENCES game_servers(id) ON DELETE RESTRICT,
+    installation_id BIGINT NOT NULL,
+    addon_id BIGINT NOT NULL REFERENCES case_addon_subscriptions(id) ON DELETE RESTRICT,
+    provider_subscription_id TEXT NOT NULL CHECK (LENGTH(BTRIM(provider_subscription_id)) > 0),
+    tier TEXT NOT NULL DEFAULT 'CASE_PRO' CHECK (tier = 'CASE_PRO'),
+    trial_started_at TIMESTAMPTZ NOT NULL,
+    trial_ends_at TIMESTAMPTZ NOT NULL,
+    granted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT case_founder_trial_scope FOREIGN KEY (installation_id, organization_id)
+        REFERENCES installations(id, organization_id) ON DELETE RESTRICT,
+    CONSTRAINT case_founder_trial_duration CHECK (
+        trial_ends_at > trial_started_at AND
+        trial_ends_at <= trial_started_at + INTERVAL '7 days'
+    ),
+    PRIMARY KEY (organization_id, game_server_id),
+    CONSTRAINT uq_case_founder_trial_subscription UNIQUE (provider_subscription_id),
+    CONSTRAINT uq_case_founder_trial_addon UNIQUE (addon_id)
+);
+-- The unique (organization_id, game_server_id) key survives a change of
+-- installation or cancellation. A new trial for the same server is impossible.
+`,
+	},
+
+	{
+		Name: "0060_case_checkout_attempt",
+		SQL: `
+-- Recovery after a Stripe-confirmed expired Checkout Session must never
+-- reuse the old Stripe idempotency identity.
+ALTER TABLE case_addon_subscriptions
+    ADD COLUMN IF NOT EXISTS checkout_attempt BIGINT NOT NULL DEFAULT 1
+        CHECK (checkout_attempt > 0);
+`,
+	},
+	{
+		Name: "0061_case_watch_digest_outbox",
+		SQL: `
+-- Durable per-server paid staff digest. A pre-send claim can expire and be
+-- retried safely, but a SENDING row must NEVER be automatically resent:
+-- a crash or network error may occur after Discord accepted a message.
+CREATE TABLE IF NOT EXISTS case_watch_digest_outbox (
+    id BIGSERIAL PRIMARY KEY,
+    organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE RESTRICT,
+    installation_id BIGINT NOT NULL,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE RESTRICT,
+    game_server_id BIGINT NOT NULL REFERENCES game_servers(id) ON DELETE RESTRICT,
+    requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    window_start TIMESTAMPTZ NOT NULL,
+    window_end TIMESTAMPTZ NOT NULL,
+    source_lines BIGINT NOT NULL CHECK (source_lines >= 0),
+    hit_lines BIGINT NOT NULL CHECK (hit_lines >= 0),
+    kill_lines BIGINT NOT NULL CHECK (kill_lines >= 0),
+    collector_enabled BOOLEAN NOT NULL,
+    status TEXT NOT NULL DEFAULT 'READY'
+        CHECK (status IN ('READY','CLAIMED','SENDING','SENT','UNKNOWN','BLOCKED')),
+    attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts BETWEEN 0 AND 3),
+    claim_version INTEGER NOT NULL DEFAULT 0 CHECK (claim_version >= 0),
+    claim_expires_at TIMESTAMPTZ,
+    next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    discord_channel_id TEXT,
+    discord_message_id TEXT,
+    reason_code TEXT,
+    sent_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT case_digest_installation_scope FOREIGN KEY (installation_id,organization_id)
+        REFERENCES installations(id,organization_id) ON DELETE RESTRICT,
+    CONSTRAINT case_digest_window CHECK (window_start < window_end),
+    CONSTRAINT case_digest_sent_receipt CHECK (
+        status <> 'SENT' OR
+        (NULLIF(BTRIM(COALESCE(discord_message_id,'')),'') IS NOT NULL
+         AND NULLIF(BTRIM(COALESCE(discord_channel_id,'')),'') IS NOT NULL
+         AND sent_at IS NOT NULL)
+    )
+);
+CREATE INDEX IF NOT EXISTS idx_case_digest_claim
+    ON case_watch_digest_outbox(status,next_attempt_at,id)
+    WHERE status IN ('READY','CLAIMED');
+CREATE INDEX IF NOT EXISTS idx_case_digest_scope
+    ON case_watch_digest_outbox(organization_id,installation_id,game_server_id,requested_at DESC);
+`,
+	},
+	{
+		Name: "0062_case_watch_requester",
+		SQL: `
+-- Old rows from pre-release 0059 have NULL and are blocked by the worker.
+-- New paid messages must retain the authenticated requester, so a role
+-- revocation before delivery can be checked against fresh Discord roles.
+ALTER TABLE case_watch_digest_outbox
+    ADD COLUMN IF NOT EXISTS requested_by_user_id BIGINT REFERENCES app_users(id) ON DELETE RESTRICT;
+`,
+	},
 }
 
 // LiveSyncCommandLineCleanupSQL (migration 0052, Champion Live Sync phase 2.1, docs/

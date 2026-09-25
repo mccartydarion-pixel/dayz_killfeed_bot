@@ -111,10 +111,16 @@ func caseISO(t *time.Time) *string {
 }
 
 func (a *App) registerAntiCheatRoutes(base string) {
+	if a.caseWatchDigestLimiter == nil { a.caseWatchDigestLimiter = newSaaSRateLimiter(time.Hour, 1) }
+	a.HTTPServer.Handle("POST "+base+"/anti-cheat/premium/watch-digest", a.handleAntiCheatWatchDigest)
+	a.HTTPServer.Handle("GET "+base+"/anti-cheat/premium/watch-digest/{deliveryID}", a.handleAntiCheatWatchDigestReceipt)
+	a.HTTPServer.Handle("POST "+base+"/anti-cheat/premium/watch-digest/{deliveryID}/reconcile", a.handleAntiCheatWatchDigestReconcile)
 	a.HTTPServer.Handle("GET "+base+"/anti-cheat/overview", a.handleAntiCheatOverview)
 	a.HTTPServer.Handle("GET "+base+"/anti-cheat/evidence", a.handleAntiCheatEvidence)
 	a.HTTPServer.Handle("GET "+base+"/anti-cheat/sessions", a.handleAntiCheatSessions)
 	a.HTTPServer.Handle("GET "+base+"/anti-cheat/integrity", a.handleAntiCheatIntegrity)
+	a.HTTPServer.Handle("GET "+base+"/anti-cheat/entitlements", a.handleAntiCheatEntitlements)
+	a.HTTPServer.Handle("GET "+base+"/anti-cheat/premium/evidence-export", a.handleAntiCheatPremiumExport)
 }
 
 // handleAntiCheatOverview does not read other servers under the same Discord

@@ -100,6 +100,13 @@ type Config struct {
 	// billing.DefaultOrigin) a Checkout/Portal return URL may target, e.g. a local website dev
 	// server. Never includes anything the client asserts about itself.
 	BillingAllowedOrigins string
+	// C.A.S.E. is a distinct, default-disabled server-scoped add-on.
+	CaseBillingEnabled bool
+	CaseAccessEnabled bool
+	CaseVerifiedThrough string
+	CaseWatchPriceID string
+	CaseProPriceID string
+	CaseCommandPriceID string
 }
 
 // Load reads configuration from environment variables and validates required fields.
@@ -135,6 +142,12 @@ func Load() (*Config, error) {
 		StripeWebhookSecret:   strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET")),
 		BillingPlansJSON:      os.Getenv("CHAMPION_BILLING_PLANS_JSON"),
 		BillingAllowedOrigins: os.Getenv("CHAMPION_BILLING_ALLOWED_ORIGINS"),
+		CaseBillingEnabled: parseBoolWithDefault(os.Getenv("CHAMPION_CASE_BILLING_ENABLED"), false),
+		CaseAccessEnabled: parseBoolWithDefault(os.Getenv("CHAMPION_CASE_ACCESS_ENABLED"), false),
+		CaseVerifiedThrough: strings.TrimSpace(os.Getenv("CHAMPION_CASE_VERIFIED_THROUGH")),
+		CaseWatchPriceID: strings.TrimSpace(os.Getenv("CHAMPION_CASE_WATCH_PRICE_ID")),
+		CaseProPriceID: strings.TrimSpace(os.Getenv("CHAMPION_CASE_PRO_PRICE_ID")),
+		CaseCommandPriceID: strings.TrimSpace(os.Getenv("CHAMPION_CASE_COMMAND_PRICE_ID")),
 	}
 
 	if cfg.HTTPPort == "" {
