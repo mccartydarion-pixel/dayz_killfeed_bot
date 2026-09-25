@@ -46,6 +46,10 @@ func validateCaseStaffChannel(guild *discordgo.Guild, channel, parent *discordgo
 				return ErrCaseStaffChannelUnsafe
 			}
 		}
+		if ow.Type==discordgo.PermissionOverwriteTypeMember && ow.ID==botID &&
+			ow.Deny&(discordgo.PermissionViewChannel|discordgo.PermissionSendMessages|discordgo.PermissionEmbedLinks)!=0 {
+			return ErrCaseStaffChannelUnsafe
+		}
 		if ow.Type==discordgo.PermissionOverwriteTypeMember &&
 			ow.Allow&discordgo.PermissionViewChannel!=0 && ow.ID!=botID &&
 			ow.ID!=guild.OwnerID {
