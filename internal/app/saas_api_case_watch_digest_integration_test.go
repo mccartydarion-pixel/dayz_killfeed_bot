@@ -16,6 +16,8 @@ import (
 
 func TestCASEWatchDigestIsPaidScopedOptInAndRequiresStaffRoute(t *testing.T){
  w:=newClientAdminWorld(t)
+ // Direct handler tests bypass registerSaaSAPI, which normally builds this limiter.
+ w.a.caseWatchDigestLimiter=newSaaSRateLimiter(time.Hour,1)
  routePath:=w.path("/anti-cheat/premium/watch-digest")
  // None of the old observation/evidence routes requires a paid add-on.
  read:=w.call(w.a.handleAntiCheatOverview,http.MethodGet,w.path("/anti-cheat/overview"),w.f.OwnerDiscordID,nil,nil)
