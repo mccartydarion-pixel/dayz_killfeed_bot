@@ -87,3 +87,41 @@ func TestQAMessageRecognitionDoesNotConfuseLiveWatchOrHumanText(t *testing.T){
   t.Log("QA token is present in environment, but this test never reads or uses it")
  }
 }
+
+func TestQADiscordExistingChampionsGuildRequiresSeparateBotPrivateChannelAndDoubleApproval(t *testing.T) {
+ t.Setenv("CASE_DISCORD_QA_ALLOW_SEND",sendEnvironment)
+ t.Setenv("CASE_DISCORD_QA_EXISTING_GUILD","")
+ c:=baseProbeConfig()
+ c.mode=modeSend
+ c.guildID=c.productionGuildID
+ c.useExistingGuild=true
+ c.confirm=sendConfirmation
+ c.productionChannels="623456789012345678,723456789012345678"
+ if err:=c.validate();err==nil{t.Fatal("existing guild without extra consent accepted")}
+ c.existingGuildConfirm=existingGuildConfirmation
+ if err:=c.validate();err==nil{t.Fatal("CLI-only existing guild approval accepted")}
+ t.Setenv("CASE_DISCORD_QA_EXISTING_GUILD",existingGuildEnvironment)
+ if err:=c.validate();err!=nil{t.Fatalf("separate bot, private-channel configuration rejected: %v",err)}
+ c.channelID="623456789012345678"
+ if err:=c.validate();err==nil{t.Fatal("production channel accepted as QA target")}
+ c.channelID="223456789012345678"
+ c.productionChannels=""
+ if err:=c.validate();err==nil{t.Fatal("missing production channel denylist accepted")}
+ c.productionChannels="623456789012345678,invalid"
+ if err:=c.validate();err==nil{t.Fatal("invalid production channel denylist accepted")}
+ c.productionChannels="623456789012345678"
+ c.botID=c.productionBotID
+ if err:=c.validate();err==nil{t.Fatal("production bot accepted inside existing guild")}
+ c.botID="323456789012345678"
+ c.guildID="123456789012345678"
+ if err:=c.validate();err==nil{t.Fatal("existing guild mode accepted wrong guild")}
+}
+
+func TestQADiscordExistingGuildReadOnlyPreflightNeedsNoSendConsent(t *testing.T) {
+ t.Setenv("CASE_DISCORD_QA_ALLOW_SEND","")
+ t.Setenv("CASE_DISCORD_QA_EXISTING_GUILD","")
+ c:=baseProbeConfig()
+ c.useExistingGuild=true
+ c.guildID=c.productionGuildID
+ if err:=c.validate();err!=nil{t.Fatalf("read-only existing guild check blocked: %v",err)}
+}
