@@ -20,46 +20,66 @@ It exists to protect the database before Shop migrations 0054 and 0055 (PRs #97,
 | Storage | See section 2. The plaintext dump never leaves the job. |
 | Logs | The repository is **public**, so logs print no data: only versions, PASS/FAIL, object counts, sizes and SHA-256 values. Connection strings are GitHub secrets and are masked. |
 
-## 2. Storage destination
+## 2. Storage destination (private bucket, mandatory)
 
-| Option | When | Properties |
+The production job **requires** a private S3-compatible bucket, such as Cloudflare R2, Backblaze B2 or AWS S3, and fails without one.
+
+* The encrypted archive and its manifest are stored at `champion-db/<archive>.tar.gpg` and `champion-db/<archive>.manifest.txt`.
+* **Nothing is uploaded to GitHub**: the repository is public, so no GitHub artifact is used.
+* The job then **downloads the archive back from the bucket**, checks its SHA-256, decrypts it, and restores *that retrieved copy* into a second disposable PostgreSQL 18, comparing the full inventory.
+
+A backup counts only when retrieval from the destination and the complete restore both pass. A Railway container's filesystem is never a destination: it is ephemeral and on the same platform as production.
+
+After each run, also keep an owner copy outside the bucket (for example, download it from the bucket console).
+
+## 3. Configuration
+
+**Already configured (2026-09-25).** GitHub environment `production-backup`:
+
+* required reviewer: the owner (`mccartydarion-pixel`);
+* **administrators cannot bypass**;
+* deployments allowed only from `ops/production-backup`.
+
+**The owner provides** all of the following in that environment (never in the repository; never pasted into chat):
+
+| Kind | Name | Value |
 |---|---|---|
-| **Private S3-compatible bucket** (Cloudflare R2, Backblaze B2, AWS S3, …) | Used automatically when `BACKUP_S3_*` secrets exist | Private, durable, retention set by the bucket. The GitHub artifact is **then skipped**. **Recommended.** |
-| Encrypted GitHub Actions artifact | Fallback when no bucket is configured | Stored by GitHub outside Railway, **90 days**. On a public repository any signed-in GitHub user can download the file, but it is AES-256 ciphertext, protected only by the passphrase. Copy it to owner-controlled storage and delete the artifact afterwards. |
-| Owner copy | Always, after each run | `gh run download <run-id> -n <archive> -D <folder>`. Keep it in the owner's own storage, next to the manifest. |
+| secret | `PROD_DATABASE_URL` | the Railway `Postgres` service's `DATABASE_PUBLIC_URL` |
+| secret | `BACKUP_ENCRYPTION_PASSPHRASE` | ≥ 32 random characters, generated in and kept in the owner's password manager |
+| variable | `BACKUP_PASSPHRASE_SHA256` | SHA-256 of that passphrase, computed from the password-manager copy (proves the owner retained it; the hash does not reveal it) |
+| secret | `BACKUP_S3_ENDPOINT` | e.g. `https://<account-id>.r2.cloudflarestorage.com` |
+| secret | `BACKUP_S3_BUCKET` | the private bucket's name |
+| secret | `BACKUP_S3_ACCESS_KEY_ID` / `BACKUP_S3_SECRET_ACCESS_KEY` | a key limited to that one bucket (read, write, list) |
+| variable (optional) | `BACKUP_S3_REGION` | `auto` (R2, the default), the B2 region such as `us-west-004`, or the AWS region |
 
-A Railway container's filesystem is **not** a backup destination: it is ephemeral and lives on the same platform as production.
+**Commands** (run by the owner in Git Bash; values are never displayed):
 
-## 3. What the owner must provide (once)
+```
+railway variables -s Postgres --kv | grep '^DATABASE_PUBLIC_URL=' | cut -d= -f2- | gh secret set PROD_DATABASE_URL --env production-backup
+gh secret set BACKUP_ENCRYPTION_PASSPHRASE --env production-backup      # paste from the password manager
+read -rs P && printf '%s' "$P" | sha256sum | cut -d' ' -f1 | gh variable set BACKUP_PASSPHRASE_SHA256 --env production-backup; unset P
+gh secret set BACKUP_S3_ENDPOINT --env production-backup
+gh secret set BACKUP_S3_BUCKET --env production-backup
+gh secret set BACKUP_S3_ACCESS_KEY_ID --env production-backup
+gh secret set BACKUP_S3_SECRET_ACCESS_KEY --env production-backup
+```
 
-1. **A GitHub environment** (Settings → Environments → New environment): name `production-backup`.
-   * Required reviewers: the owner.
-   * Deployment branches: **Selected branches → `ops/production-backup`**.
+For the fingerprint command, paste the passphrase from the password manager at the silent prompt.
 
-   Create it **before** adding the secrets, and add the secrets to this environment, not to the repository.
-2. **Environment secrets**:
-   * `PROD_DATABASE_URL`: the Railway `Postgres` service's `DATABASE_PUBLIC_URL`. From a machine with the Railway CLI linked to the project, without displaying it:
-
-     ```
-     railway variables -s Postgres --kv | grep '^DATABASE_PUBLIC_URL=' | cut -d= -f2- | gh secret set PROD_DATABASE_URL --env production-backup
-     ```
-   * `BACKUP_ENCRYPTION_PASSPHRASE`: at least 32 random characters. Generate it in your password manager and store it there. **Without it the backup cannot be opened; nobody can recover it.** Then run `gh secret set BACKUP_ENCRYPTION_PASSPHRASE --env production-backup` and paste it at the prompt.
-3. **Optional, recommended**: a private bucket, with `BACKUP_S3_ENDPOINT`, `BACKUP_S3_BUCKET`, `BACKUP_S3_ACCESS_KEY_ID` and `BACKUP_S3_SECRET_ACCESS_KEY` as environment secrets. Use a key limited to writing and listing that one bucket.
-
-   For Cloudflare R2 the endpoint is `https://<account-id>.r2.cloudflarestorage.com`; Backblaze B2 gives an S3 endpoint per region.
-4. **Optional hardening** (a separate production change, needs approval): a dedicated backup role instead of the owner connection, for example `CREATE ROLE champion_backup LOGIN PASSWORD … ; GRANT pg_read_all_data TO champion_backup;`. `PROD_DATABASE_URL` would then use that role.
+**Optional hardening** (a separate production change): use a dedicated role, for example `champion_backup` with `pg_read_all_data`, in `PROD_DATABASE_URL`, instead of the superuser connection.
 
 ## 4. Running a backup
 
 1. The owner gives explicit approval to export production.
-2. An empty commit is pushed to `ops/production-backup` with `[backup:production]` in the message.
+2. An **empty** commit is pushed to `ops/production-backup` with `[backup:production]` in the message. A marked commit that changes files is refused, so an ordinary code change can never start an export.
 3. GitHub shows the job **waiting for approval** of `production-backup`. The owner approves in the Actions UI.
 4. The job:
    1. dumps;
    2. verifies by restore;
    3. encrypts, decrypts to check, and fingerprints;
-   4. stores the archive;
-   5. prints the **manifest**: archive name, UTC time, run URL, commit, server and `pg_dump` versions, dump and encrypted sizes and SHA-256 values, and the verification summary.
+   4. stores the archive in the private bucket;
+   5. downloads it back, checks it, and restores the downloaded copy into a second disposable PostgreSQL 18;
+   6. prints the **manifest**: archive name, UTC time, run URL, commit, server and `pg_dump` versions, dump and encrypted sizes and SHA-256 values, and the verification summary.
 5. The owner copies the archive and manifest to their own storage.
 
 A run fails, and stores nothing, if any step fails:
@@ -75,7 +95,8 @@ A run fails, and stores nothing, if any step fails:
 |---|---|
 | Archive | `champion-db-<UTC>-run<id>` |
 | Run | GitHub Actions run URL |
-| Destination | bucket path, or artifact name and expiry |
+| Destination | `s3://<bucket>/champion-db/<archive>.tar.gpg` |
+| Retrieval check | downloaded from the bucket, SHA-256 matched, decrypted, restored: PASS |
 | Server / pg_dump | 18.6 / 18.6 |
 | Dump bytes / SHA-256 | from the manifest |
 | Encrypted bytes / SHA-256 | from the manifest |
@@ -87,7 +108,7 @@ A run fails, and stores nothing, if any step fails:
 
 Recovery **never runs automatically**. Restoring production is a separate, explicit owner decision.
 
-1. **Get the archive.** Download it from the bucket or with `gh run download <run-id> -n <archive>`. Check `sha256sum <archive>.tar.gpg` against `encrypted_sha256` in the manifest.
+1. **Get the archive.** Download `champion-db/<archive>.tar.gpg` and its manifest from the private bucket (or use the owner copy). Check `sha256sum <archive>.tar.gpg` against `encrypted_sha256` in the manifest.
 2. **Decrypt.** `gpg` ships with Git for Windows:
 
    ```
