@@ -65,8 +65,13 @@ jobs:
           aws s3 mb "s3://$S3_BUCKET" --endpoint-url "$S3_ENDPOINT"
           aws s3api head-bucket --bucket "$S3_BUCKET" --endpoint-url "$S3_ENDPOINT"
           echo "local S3-compatible store ready"
-      - name: Connectivity check script (bucket write/read/cleanup and read-only database)
-        run: bash ops/backup/connectivity.sh
+      - name: Connectivity check script (encrypted probe write/read/decrypt/cleanup and read-only database)
+        run: |
+          probe_pass="$(openssl rand -base64 48)"
+          echo "::add-mask::$probe_pass"
+          BACKUP_PASS="$probe_pass" bash ops/backup/connectivity.sh
+          if BACKUP_PASS= bash ops/backup/connectivity.sh 2>/dev/null; then echo "probe upload without a passphrase accepted"; exit 1; fi
+          echo "connectivity refuses to upload without encryption: OK"
       - name: Build a production-shaped source (all registered migrations + sample rows)
         env:
           TEST_DATABASE_URL: postgres://champion:selftest@127.0.0.1:5433/source_db?sslmode=disable
@@ -139,10 +144,11 @@ jobs:
           BACKUP_PASS: ${{ secrets.BACKUP_ENCRYPTION_PASSPHRASE }}
           BACKUP_PASSPHRASE_SHA256: ${{ vars.BACKUP_PASSPHRASE_SHA256 }}
         run: bash ops/backup/check_passphrase.sh
-      - name: Bucket and database connectivity (no export)
+      - name: Encrypted bucket probe and database connectivity (no export)
         env:
           SRC_URL: ${{ secrets.PROD_DATABASE_URL }}
           PGSSLMODE: require
+          BACKUP_PASS: ${{ secrets.BACKUP_ENCRYPTION_PASSPHRASE }}
         run: |
           [ -n "$SRC_URL" ] || { echo "PROD_DATABASE_URL is not configured"; exit 1; }
           bash ops/backup/connectivity.sh
