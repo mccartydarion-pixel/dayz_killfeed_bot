@@ -43,10 +43,14 @@ uses Stripe, Nitrado, live evidence, the C.A.S.E. database or live player
 records. Its synthetic message has a **different title/reference** from a
 real paid digest and cannot be used to reconcile one.
 
-Before running it, prepare a genuinely separate Discord QA guild, QA bot
-application and a private text channel. Obtain the public Discord snowflake
+Before running it, prepare a separate Discord QA guild **or a dedicated
+private #case-qa channel within the existing Champions guild**, plus a
+separate QA bot application. Existing-guild mode requires additional guards. Obtain the public Discord snowflake
 IDs for the QA guild, QA channel, QA bot user, **actual production guild**,
-and **actual production bot**. The QA and production identities must differ.
+and **actual production bot**. The QA bot and production bot must differ. In existing-guild mode, the
+guild IDs intentionally match, but the target must be an explicitly private
+channel named exactly #case-qa, distinct from every declared live output
+channel.
 Store the QA token only in a secret manager or local environment variable
 `CASE_DISCORD_QA_BOT_TOKEN`; never paste it into this chat, a PR, logs or
 a command-line argument. Do not use the live Champions bot token. The bot
@@ -91,6 +95,48 @@ go run ./cmd/case-discord-qa -mode verify-existing \
   -guild "$QA_GUILD_ID" -channel "$QA_CHANNEL_ID" -bot "$QA_BOT_ID" \
   -message "$EXISTING_MESSAGE_ID" -reference "$EXISTING_QA_REFERENCE"
 ```
+
+### Using your existing Champions Discord server
+
+The synthetic probe can be run in your existing Champions **Discord guild**,
+but only in a newly created #case-qa private text channel. This does not
+change any live killfeed/ADMIN_ALERTS route, bot settings, Nitrado server or
+production billing. Add the separate QA bot to the guild and explicitly
+restrict #case-qa's View Channel permission for @everyone, then grant it
+only to reviewed staff and the QA bot. Keep real player data out of the
+synthetic probe. The production bot is not used.
+
+Read-only preflight with the existing guild:
+
+```sh
+go run ./cmd/case-discord-qa -mode preflight \
+  -guild "$PRODUCTION_GUILD_ID" -production-guild "$PRODUCTION_GUILD_ID" \
+  -channel "$QA_CHANNEL_ID" -bot "$QA_BOT_ID" -use-existing-guild
+```
+
+An actual single synthetic send requires *all* of the original approvals
+plus a separate existing-guild consent and a denylist containing **every
+known live output channel ID**. The QA channel ID must not appear in that
+denylist:
+
+```sh
+export CASE_DISCORD_QA_ALLOW_SEND=YES_ONE_SYNTHETIC_QA_MESSAGE
+export CASE_DISCORD_QA_EXISTING_GUILD=YES_EXISTING_GUILD_PRIVATE_CASE_QA
+go run ./cmd/case-discord-qa -mode send-once \
+  -guild "$PRODUCTION_GUILD_ID" -production-guild "$PRODUCTION_GUILD_ID" \
+  -channel "$QA_CHANNEL_ID" -bot "$QA_BOT_ID" \
+  -production-bot "$PRODUCTION_BOT_ID" \
+  -production-channels "$PRODUCTION_CHANNEL_IDS_COMMA_SEPARATED" \
+  -use-existing-guild -existing-guild-confirm USE_EXISTING_GUILD_PRIVATE_CASE_QA \
+  -confirm SEND_ONE_SYNTHETIC_QA_MESSAGE
+```
+
+The probe also verifies that Discord currently names the target channel
+exactly `case-qa` and that the channel meets private staff permissions;
+unknown/unsuitable channels fail closed. The denylist depends on
+operator-supplied IDs and cannot independently prove it is complete, so
+review your routes manually before approving a send. Do not add your live
+bot token or production channel as a workaround.
 
 The earlier disposable-PostgreSQL worker tests separately cover the
 actual `SENDING -> UNKNOWN` and no-resend behavior. A combined end-to-end
