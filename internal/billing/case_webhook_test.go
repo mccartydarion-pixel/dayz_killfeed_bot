@@ -42,6 +42,15 @@ func (f *caseTestStore) ApplyCaseWebhook(_ context.Context,in repository.CaseWeb
  return repository.ErrCaseWebhookMismatch}
  f.applied=append(f.applied,in);return nil
 }
+func (f *caseTestStore) GetScoped(_ context.Context,org,installation int64)(*repository.CaseAddonSubscription,error){
+ if f.row!=nil && f.row.OrganizationID==org && f.row.InstallationID==installation {return f.row,nil}
+ return nil,nil
+}
+func (f *caseTestStore) SaveCaseCancelFlag(_ context.Context,org,installation int64,sub string,cancel bool)error{
+ if f.row==nil || f.row.OrganizationID!=org || f.row.InstallationID!=installation ||
+ f.row.ProviderSubscriptionID!=sub {return repository.ErrCaseCheckoutConflict}
+ f.row.CancelAtPeriodEnd=cancel;return nil
+}
 func (f *caseTestStore) ListByOrganization(_ context.Context,_ int64)([]repository.CaseAddonSubscription,error){
  return []repository.CaseAddonSubscription{},nil
 }
