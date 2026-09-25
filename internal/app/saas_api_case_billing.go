@@ -66,6 +66,7 @@ type caseServerDTO struct {
 	TrialEndsAt *string `json:"trialEndsAt"`
 	CancelAtPeriodEnd bool `json:"cancelAtPeriodEnd"`
 	BoundToSelectedServer bool `json:"boundToSelectedServer"`
+	CanRetryCheckout bool `json:"canRetryCheckout"`
 }
 
 func (a *App) handleCaseBillingServers(w http.ResponseWriter,r *http.Request){
@@ -81,6 +82,7 @@ func (a *App) handleCaseBillingServers(w http.ResponseWriter,r *http.Request){
 			Tier:sub.Tier,Status:sub.Status,CurrentPeriodEnd:nullableTimeStr(sub.CurrentPeriodEnd),
 			TrialEndsAt:nullableTimeStr(sub.TrialEndsAt),PaidThrough:nullableTimeStr(sub.PaidThrough),CancelAtPeriodEnd:sub.CancelAtPeriodEnd,
 			BoundToSelectedServer:matches,
+			CanRetryCheckout:sub.Status=="PENDING" && sub.ProviderSubscriptionID=="" && sub.CheckoutSessionID=="",
 		})
 	}
 	writeSaaSJSON(w,http.StatusOK,map[string]any{"items":items,
