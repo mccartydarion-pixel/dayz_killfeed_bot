@@ -248,3 +248,35 @@ privacy review, reconciliation runbook for UNKNOWN, Stripe sandbox lifecycle,
 founder trial checkout eligibility, plan changes and dispute/refund handling.
 Both `CHAMPION_CASE_BILLING_ENABLED` and `CHAMPION_CASE_ACCESS_ENABLED`
 remain false in production. This is a draft, not approval to merge or deploy.
+
+## Phase 6.9 — exact Discord message reconciliation (draft)
+
+The Phase 6.8 UNKNOWN state is a deliberate no-replay boundary. Every
+dedicated paid Watch digest now includes a visible immutable
+`CHAMPION-CASE-WATCH-<deliveryId>` reference field. This is a public
+correlation string, not a credential, payment receipt or authorization token.
+
+The new owner-only
+`POST .../admin/anti-cheat/premium/watch-digest/{deliveryID}/reconcile`
+accepts only an exact Discord message snowflake. It reads the recorded
+original channel and UNKNOWN receipt from the authenticated organization and
+installation, fetches the exact message from Discord, and requires the
+current bot identity, saved channel, Watch observation title and precise
+delivery reference. Only then does a scoped database compare-and-swap
+transition UNKNOWN to SENT, retain the externally verified message ID and
+audit the action. The route cannot requeue, send, create a paid entitlement
+or rewrite an already SENT/BLOCKED receipt. A changed selected server cannot
+reconcile a former server's receipt.
+
+The website exposes this form only when the server's own admin-me level is
+OWNER and the receipt reports UNKNOWN. All responses continue to come from
+the backend. Local tests exercise discordgo send/read JSON via an isolated
+`httptest` HTTP server; they never call real Discord. PostgreSQL integration
+tests cover forged authors, channel/reference mismatch, tenant isolation,
+double reconciliation and no resend after verification. See
+`docs/CASE_DISCORD_DELIVERY_RECONCILIATION.md` for an operator runbook.
+
+**Not a launch sign-off:** a real dedicated QA guild, manually reviewed
+channel/roles, bot credential in staging (not pasted into chat), and a
+controlled lost-ack test are still required. Neither production paid access
+nor checkout is enabled or deployed.
