@@ -39,6 +39,8 @@ func (s *Service) CaseAccess(ctx context.Context, organizationID, installationID
 		return empty, err
 	}
 	if addon == nil || addon.ProviderCustomerID != base.ProviderCustomerID ||
+		s.casePrices[casebilling.Tier(addon.Tier)] == "" ||
+		addon.ProviderPriceID != s.casePrices[casebilling.Tier(addon.Tier)] ||
 		addon.SelectedGameServerID == nil || *addon.SelectedGameServerID != gameServerID {
 		return empty, nil
 	}
