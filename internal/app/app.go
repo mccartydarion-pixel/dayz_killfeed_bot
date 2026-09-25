@@ -1540,6 +1540,10 @@ func (a *App) Run() error {
 				// ADMIN_ALERTS: operational conditions reported by the server
 				// workers and the zone engine; with no route nothing is sent.
 				a.AdminAlerts = discord.NewAdminAlertPublisher(session, a.ChannelRoutes)
+				a.AdminAlerts.SetCaseWatchAuthorizer(func(checkCtx context.Context, scope discord.CaseWatchScope)(bool,error){
+					return a.caseWorkerAllowed(checkCtx,scope.OrganizationID,scope.InstallationID,
+						scope.GameServerID,casebilling.CapWatch)
+				})
 				a.AdminAlerts.SetServerNames(a.serverNameFunc())
 				go a.AdminAlerts.Run(ctx)
 			}
