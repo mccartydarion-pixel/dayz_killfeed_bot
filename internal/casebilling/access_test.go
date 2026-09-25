@@ -109,7 +109,7 @@ func TestCommandRequiresExplicitCommandVerification(t *testing.T) {
 		OrganizationID: 1, InstallationID: 2, SelectedGameServerID: 3, BaseStatus: "ACTIVE",
 		AddonOrganizationID: 1, AddonInstallationID: 2, BoundGameServerID: 3,
 		Tier: Command, Status: "ACTIVE", Provider: "stripe", ProviderSubscriptionID: "sub_id",
-		ProviderPriceID: "price_id", CurrentPeriodEnd: &end,
+		ProviderPriceID: "price_id", CurrentPeriodEnd: &end, PaidThrough: &end,
 	}
 	if got := Resolve(in, now); len(got) != 0 {
 		t.Fatalf("unverified Command granted: %v", got)
