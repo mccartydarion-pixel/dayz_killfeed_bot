@@ -111,6 +111,8 @@ func caseISO(t *time.Time) *string {
 }
 
 func (a *App) registerAntiCheatRoutes(base string) {
+	if a.caseWatchDigestLimiter == nil { a.caseWatchDigestLimiter = newSaaSRateLimiter(time.Hour, 1) }
+	a.HTTPServer.Handle("POST "+base+"/anti-cheat/premium/watch-digest", a.handleAntiCheatWatchDigest)
 	a.HTTPServer.Handle("GET "+base+"/anti-cheat/overview", a.handleAntiCheatOverview)
 	a.HTTPServer.Handle("GET "+base+"/anti-cheat/evidence", a.handleAntiCheatEvidence)
 	a.HTTPServer.Handle("GET "+base+"/anti-cheat/sessions", a.handleAntiCheatSessions)
