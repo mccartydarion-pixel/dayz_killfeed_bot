@@ -177,7 +177,7 @@ Scan(&orgID,&installationID,&serverID,&tier,&customer,&priorSub,&sessionID,&prio
 	// coverage or downgrade a currently ACTIVE subscription.
 	if in.EventType=="invoice.payment_failed" && in.Status=="PAST_DUE" &&
 		in.FailedPeriodEnd!=nil && priorPaidThrough!=nil &&
-		!in.FailedPeriodEnd.After(*priorPaidThrough) &&
+		!in.FailedPeriodEnd.Truncate(time.Microsecond).After(*priorPaidThrough) &&
 		priorStatus=="ACTIVE" {
 		in.Status=priorStatus
 	}
