@@ -57,6 +57,10 @@ func TestCASEPremiumAPIRequiresExactServerAndConfirmedPayment(t *testing.T){
 	rr=w.call(w.a.handleAntiCheatPremiumExport,http.MethodGet,path,w.f.OwnerDiscordID,nil,nil)
 	if rr.Code!=http.StatusServiceUnavailable{t.Fatalf("missing billing service: %d %s",rr.Code,rr.Body.String())}
 	_,end:=seedCasePremiumAccess(t,w)
+	workerOK,workerErr:=w.a.caseWorkerAllowed(context.Background(),w.f.OrgID,w.f.InstallationID,w.serverID,casebilling.CapPro)
+	if workerErr!=nil || !workerOK{t.Fatalf("worker gate denied paid server: %v %v",workerOK,workerErr)}
+	workerOK,workerErr=w.a.caseWorkerAllowed(context.Background(),w.f.OrgID,w.f.InstallationID,w.serverID+1,casebilling.CapPro)
+	if workerErr!=nil || workerOK{t.Fatalf("worker inherited another server\u0027s purchase: %v %v",workerOK,workerErr)}
 	rr=w.call(w.a.handleAntiCheatPremiumExport,http.MethodGet,path,w.f.OwnerDiscordID,nil,nil)
 	if rr.Code!=http.StatusOK{t.Fatalf("paid Pro denied: %d %s",rr.Code,rr.Body.String())}
 	view:=decodeBody[map[string]any](t,rr)
@@ -73,6 +77,8 @@ func TestCASEPremiumAPIRequiresExactServerAndConfirmedPayment(t *testing.T){
 	if err!=nil{t.Fatal(err)}
 	rr=w.call(w.a.handleAntiCheatPremiumExport,http.MethodGet,path,w.f.OwnerDiscordID,nil,nil)
 	if rr.Code!=http.StatusForbidden{t.Fatalf("payment failure bypassed: %d %s",rr.Code,rr.Body.String())}
+	workerOK,workerErr=w.a.caseWorkerAllowed(context.Background(),w.f.OrgID,w.f.InstallationID,w.serverID,casebilling.CapPro)
+	if workerErr!=nil || workerOK{t.Fatalf("worker retained premium after failed payment: %v %v",workerOK,workerErr)}
 	// A canceled add-on cannot be reactivated by website/Discord state.
 	_,err=w.a.DB.Pool.Exec(context.Background(),`UPDATE case_addon_subscriptions
 	SET status='ACTIVE',paid_through=$3 WHERE organization_id=$1 AND installation_id=$2`,
