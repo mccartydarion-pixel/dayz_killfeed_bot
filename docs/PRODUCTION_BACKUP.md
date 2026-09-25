@@ -52,7 +52,19 @@ After each run, also keep an owner copy outside the bucket (for example, downloa
 | secret | `BACKUP_S3_ACCESS_KEY_ID` / `BACKUP_S3_SECRET_ACCESS_KEY` | a key limited to that one bucket (read, write, list) |
 | variable (optional) | `BACKUP_S3_REGION` | `auto` (R2, the default), the B2 region such as `us-west-004`, or the AWS region |
 
-**Commands** (run by the owner in Git Bash; values are never displayed):
+**One command instead of the list below:** run `bash ops/backup/setup-secrets.sh` from the repository folder in Git Bash.
+
+* It asks for the R2 account ID, bucket name, access key ID, secret access key and the passphrase (twice) at silent prompts.
+* It stores them straight into the environment and records the passphrase fingerprint.
+* It copies the database URL from Railway without displaying it, and lists only the configured names.
+
+Then an empty `[backup:connectivity]` commit, approved in GitHub, proves the configuration **without exporting anything**:
+
+* the bucket accepts a write, returns the same bytes, and allows the probe's removal;
+* the database accepts a read-only TLS connection;
+* the passphrase matches its fingerprint.
+
+**Equivalent individual commands** (run by the owner in Git Bash; values are never displayed):
 
 ```
 railway variables -s Postgres --kv | grep '^DATABASE_PUBLIC_URL=' | cut -d= -f2- | gh secret set PROD_DATABASE_URL --env production-backup
