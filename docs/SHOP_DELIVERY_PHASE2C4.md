@@ -106,12 +106,15 @@ The lock is a **canary-specific gate**, separate from every other setting:
 | Second boot | `SECOND_BOOT` (file and start time) | `BOOT_AUTHORITY` | `VERIFICATION_REQUIRED` | `second_boot_file/started_at` |
 | No additional item spawned | `NO_ADDITIONAL_SPAWN` (who checked) | **`IN_GAME_OBSERVATION` only** | `VERIFICATION_REQUIRED` | `no_respawn_checked_at` |
 | Server log note | `SPAWNER_LOG` | `RPT_LOG` | after staging | nothing: informational only |
+| Review observation | `REVIEW_OBSERVATION` (who, what was found) | **`IN_GAME_OBSERVATION` only** | `FAILED_REVIEW`, unresolved (repeatable) | enables `NOT_SPAWNED` / `SPAWNED` |
 
 **An absence of RPT errors is never physical proof:**
 
 * The table's source CHECK refuses an RPT source for any physical kind, even from direct SQL (tested).
 * The service refuses it with `ErrNotPhysicalProof`.
 * `FulfillAttempt` never reads `SPAWNER_LOG`.
+
+**Artifact verification (Phase 2C.5).** A `STAGED_FILE_HASH` must be the SHA-256 of the Champion file with **only this attempt** staged, rebuilt from the ledger row with `nitradodelivery.SingleAttemptFiles`, and its previous hash must be the empty file. An `UNSTAGED_FILE_HASH` must be the empty file. On a mismatch nothing is recorded and the API answers `ARTIFACT_HASH_MISMATCH` (409): the operator restores the expected file and reads it back again. Every in-game observation must name its observer.
 
 The original bandage does not have to remain at the drop point. The pickup is recorded instead, and after the second boot the check is that **no new** item appeared. The ledger's CHECKs from #97 still enforce the ordering: sighting after staging, pickup after sighting, second boot after the verified unstage, and the check after the second boot.
 
@@ -124,6 +127,7 @@ The original bandage does not have to remain at the drop point. The pickup is re
 | `UNCERTAIN` | A human looked and cannot decide | Recorded as a `REVIEW_UNCERTAIN` assessment (repeatable, append-only). **The attempt stays unresolved: refund and manual fulfilment remain blocked.** |
 
 * Every outcome needs a note.
+* **`NOT_SPAWNED` and `SPAWNED` need recorded evidence** (Phase 2C.5): a `REVIEW_OBSERVATION` (`IN_GAME_OBSERVATION`, with a named observer and what was found), or for `SPAWNED` an earlier `ITEM_OBSERVED` / `PICKUP_CONFIRMED`. The service checks this (`EVIDENCE_REQUIRED`), and so does a 0055 trigger for any writer (`SA424` → `ErrShopReviewEvidenceRequired`). Authorization is OWNER/ADMIN plus the open lock, like every mutation.
 * After a resolution, further assessments are refused.
 * **No outcome creates an attempt**, and the ledger refuses any new attempt after a `FAILED_REVIEW` whatever the resolution. An uncertain attempt is never re-staged automatically.
 
