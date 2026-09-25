@@ -154,3 +154,16 @@ WHERE id=$1`,in.AddonID,in.CustomerID,in.SubscriptionID,in.PriceID,in.Tier,in.St
 
 // Compile-time proof that this repository's storage remains Postgres-backed.
 var _ = (*pgxpool.Pool)(nil)
+
+// SaveCaseCancelFlag is only a scoped materialized view of Stripe's confirmed
+// cancellation state. No base billing rows or entitlement periods are altered.
+func (r *CaseAddonSubscriptionRepository) SaveCaseCancelFlag(ctx context.Context, orgID, installationID int64, subID string, cancel bool) error {
+	if orgID<=0 || installationID<=0 || subID=="" {return ErrCaseCheckoutConflict}
+	tag,err:=r.pool.Exec(ctx,`UPDATE case_addon_subscriptions
+SET cancel_at_period_end=$4,updated_at=NOW()
+WHERE organization_id=$1 AND installation_id=$2 AND provider_subscription_id=$3
+AND provider='stripe' AND status IN ('ACTIVE','TRIAL')`,orgID,installationID,subID,cancel)
+	if err!=nil{return fmt.Errorf("save case cancellation: %w",err)}
+	if tag.RowsAffected()!=1{return ErrCaseCheckoutConflict}
+	return nil
+}
