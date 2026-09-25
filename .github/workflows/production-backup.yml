@@ -146,7 +146,16 @@ jobs:
           cat "out/${name}.manifest.txt" >> "$GITHUB_STEP_SUMMARY"
           echo "name=${name}" >> "$GITHUB_OUTPUT"
           rm -f bundle.tar check.tar work/backup.dump
-      - name: Store the encrypted backup (GitHub artifact, 90 days)
+      - name: Choose the destination
+        id: dest
+        env:
+          S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.BACKUP_S3_ACCESS_KEY_ID }}
+        run: |
+          if [ -n "$S3_BUCKET" ] && [ -n "$AWS_ACCESS_KEY_ID" ]; then echo "offsite=true" >> "$GITHUB_OUTPUT"; echo "destination: private S3-compatible bucket"
+          else echo "offsite=false" >> "$GITHUB_OUTPUT"; echo "destination: encrypted GitHub artifact (public repository: ciphertext only)"; fi
+      - name: Store the encrypted backup (GitHub artifact, 90 days) - only without a private bucket
+        if: steps.dest.outputs.offsite != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.seal.outputs.name }}
@@ -154,7 +163,8 @@ jobs:
           retention-days: 90
           compression-level: 0
           if-no-files-found: error
-      - name: Optional off-site copy (private S3-compatible bucket)
+      - name: Store the encrypted backup (private S3-compatible bucket)
+        if: steps.dest.outputs.offsite == 'true'
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.BACKUP_S3_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_S3_SECRET_ACCESS_KEY }}
@@ -162,7 +172,6 @@ jobs:
           S3_ENDPOINT: ${{ secrets.BACKUP_S3_ENDPOINT }}
           AWS_DEFAULT_REGION: auto
         run: |
-          if [ -z "$S3_BUCKET" ] || [ -z "$AWS_ACCESS_KEY_ID" ]; then echo "no off-site bucket configured: skipped"; exit 0; fi
           aws s3 cp out/ "s3://${S3_BUCKET}/champion-db/" --recursive --endpoint-url "$S3_ENDPOINT" --only-show-errors
           aws s3 ls "s3://${S3_BUCKET}/champion-db/${{ steps.seal.outputs.name }}" --endpoint-url "$S3_ENDPOINT" > /dev/null
-          echo "off-site copy stored and listed"
+          echo "stored in the private bucket and listed"
