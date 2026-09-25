@@ -51,6 +51,18 @@ func (f *caseTestStore) SaveCaseCancelFlag(_ context.Context,org,installation in
  f.row.ProviderSubscriptionID!=sub {return repository.ErrCaseCheckoutConflict}
  f.row.CancelAtPeriodEnd=cancel;return nil
 }
+func (f *caseTestStore) GetPendingCaseCheckout(_ context.Context,org,installation int64)(*repository.CaseCheckoutReservation,error){
+	if f.reservation==nil || f.reservation.OrganizationID!=org || f.reservation.InstallationID!=installation ||
+		f.reservation.SessionID=="" {return nil,repository.ErrCaseCheckoutConflict}
+	return f.reservation,nil
+}
+func (f *caseTestStore) ResetExpiredCaseCheckout(_ context.Context,org,installation,addonID,attempt int64,sessionID string)error{
+	row:=f.reservation
+	if row==nil || row.ID!=addonID || row.OrganizationID!=org || row.InstallationID!=installation ||
+		row.Attempt!=attempt || row.SessionID!=sessionID {return repository.ErrCaseCheckoutConflict}
+	row.SessionID="";row.CheckoutURL="";row.Attempt++
+	return nil
+}
 func (f *caseTestStore) ListByOrganization(_ context.Context,_ int64)([]repository.CaseAddonSubscription,error){
  return []repository.CaseAddonSubscription{},nil
 }
@@ -61,7 +73,7 @@ func newCaseTestBilling(t *testing.T)(*Service,*FakeProvider,*caseTestStore){
  if err!=nil {t.Fatal(err)}
  provider:=NewFakeProvider()
  store:=&caseTestStore{reservation:&repository.CaseCheckoutReservation{
- ID:8,OrganizationID:10,InstallationID:20,GameServerID:30,Tier:string(casebilling.Pro),ProviderCustomerID:"cus_case",
+ ID:8,Attempt:1,OrganizationID:10,InstallationID:20,GameServerID:30,Tier:string(casebilling.Pro),ProviderCustomerID:"cus_case",
  SessionID:"cs_case",
  }}
  s:=NewService(nil,catalog,provider,Options{WebhookSecret:"whsec_unit_case"})
