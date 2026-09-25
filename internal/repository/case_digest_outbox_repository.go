@@ -116,7 +116,7 @@ func (r *CaseDigestOutbox) ClaimNext(ctx context.Context) (*CaseDigestDelivery,e
 		FROM candidate c WHERE d.id=c.id
 		RETURNING d.id,d.organization_id,d.installation_id,d.guild_id,d.game_server_id,
 		          d.window_start,d.window_end,d.source_lines,d.hit_lines,d.kill_lines,
-		          d.collector_enabled,d.claim_version,d.attempts,d.requested_by_user_id
+		          d.collector_enabled,d.claim_version,d.attempts,COALESCE(d.requested_by_user_id,0)
 	`).Scan(&d.ID,&d.OrganizationID,&d.InstallationID,&d.GuildID,&d.GameServerID,
 		&d.WindowStart,&d.WindowEnd,&d.SourceLines,&d.HitLines,&d.KillLines,
 		&d.CollectorEnabled,&d.ClaimVersion,&d.Attempts,&d.RequesterUserID)
