@@ -74,7 +74,7 @@ func TestCaseStaffCategoryInheritanceFailsClosed(t *testing.T){
   PermissionOverwrites:ch.PermissionOverwrites}
  ch.ParentID="category"
  ch.PermissionOverwrites=nil
- if err:=validateCaseStaffChannel(g,ch,parent,"bot",[]string{"bot-role"});err!=nil{t.Fatal(err)}
+ if err:=validateCaseStaffChannel(g,ch,parent,"bot",[]string{"bot-role"});!errors.Is(err,ErrCaseStaffChannelUnsafe){t.Fatal("a private parent without target-channel overrides is insufficient")}
  parent.GuildID="foreign"
  if err:=validateCaseStaffChannel(g,ch,parent,"bot",[]string{"bot-role"});!errors.Is(err,ErrCaseStaffChannelUnsafe){
   t.Fatal("foreign parent must not supply staff permissions")
