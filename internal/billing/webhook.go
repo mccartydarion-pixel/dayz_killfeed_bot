@@ -116,6 +116,14 @@ type webhookInvoice struct {
 	PaymentIntent jsonID `json:"payment_intent"`
 	Lines         struct {
 		Data []struct {
+			Price jsonID `json:"price"` // legacy Stripe invoice line
+			Pricing struct {
+				PriceDetails struct { Price jsonID `json:"price"` } `json:"price_details"`
+			} `json:"pricing"`
+			Parent struct {
+				Type string `json:"type"`
+				SubscriptionItemDetails struct { Subscription jsonID `json:"subscription"` } `json:"subscription_item_details"`
+			} `json:"parent"`
 			Period struct {
 				Start int64 `json:"start"`
 				End   int64 `json:"end"`
@@ -138,6 +146,26 @@ func (inv *webhookInvoice) period() (start, end time.Time) {
 		end = time.Unix(p.End, 0).UTC()
 	}
 	return start, end
+}
+
+// casePeriod verifies paid coverage against the exact C.A.S.E. subscription
+// line and Stripe price, rather than the first invoice line (which may be
+// a proration, tax, manual invoice item, or a different product).
+func (inv *webhookInvoice) casePeriod(priceID, subscriptionID string) (start,end time.Time) {
+	if inv==nil || priceID=="" || subscriptionID=="" {return time.Time{},time.Time{}}
+	for _,line:=range inv.Lines.Data {
+		linePrice:=string(line.Pricing.PriceDetails.Price)
+		if linePrice=="" {linePrice=string(line.Price)}
+		if linePrice!=priceID || line.Parent.Type!="subscription_item_details" ||
+			string(line.Parent.SubscriptionItemDetails.Subscription)!=subscriptionID ||
+			line.Period.Start<=0 || line.Period.End<=line.Period.Start {continue}
+		e:=time.Unix(line.Period.End,0).UTC()
+		if e.After(end) {
+			start=time.Unix(line.Period.Start,0).UTC()
+			end=e
+		}
+	}
+	return start,end
 }
 
 // ParsedEvent is one webhook event, decoded into exactly the fields Champion's reconciliation
