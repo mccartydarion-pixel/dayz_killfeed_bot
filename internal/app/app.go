@@ -239,6 +239,7 @@ type App struct {
 	saasShopPurchaseLimiter   *saasRateLimiter
 	saasShopAdminLimiter      *saasRateLimiter
 	saasBillingActionLimiter  *saasRateLimiter
+	caseWatchDigestLimiter *saasRateLimiter
 	// saasAdminActionLimiter throttles the Client Admin Control Plane's higher-risk mutation
 	// routes (restart/stop/whitelist/banlist/permission changes/etc); saasAdminReadLimiter
 	// throttles its read routes (audit log, warnings list, permissions list).
