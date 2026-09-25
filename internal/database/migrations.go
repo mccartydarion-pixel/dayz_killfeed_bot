@@ -2285,6 +2285,16 @@ CREATE TABLE IF NOT EXISTS case_addon_trial_grants (
 `,
 	},
 
+	{
+		Name: "0058_case_checkout_attempt",
+		SQL: `
+-- Recovery after a Stripe-confirmed expired Checkout Session must never
+-- reuse the old Stripe idempotency identity.
+ALTER TABLE case_addon_subscriptions
+    ADD COLUMN IF NOT EXISTS checkout_attempt BIGINT NOT NULL DEFAULT 1
+        CHECK (checkout_attempt > 0);
+`,
+	},
 }
 
 // LiveSyncCommandLineCleanupSQL (migration 0052, Champion Live Sync phase 2.1, docs/
