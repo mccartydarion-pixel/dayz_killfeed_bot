@@ -47,10 +47,26 @@ func (a *App) requireCasePremium(w http.ResponseWriter, r *http.Request, cap cas
 		return adminActor{},false
 	}
 	if !allowed {
-		writeSaaSError(w,codeCasePremiumRequired,"the selected server does not have confirmed C.A.S.E. access")
+		writeSaaSError(w,codeCasePremiumRequired,casePremiumRequiredMessage(cap))
 		return adminActor{},false
 	}
 	return ac,true
+}
+
+// casePremiumRequiredMessage names the capability this route needs, so a
+// server with active Watch that calls a Pro-only route is told Pro is
+// required rather than that it has no C.A.S.E. access at all.
+func casePremiumRequiredMessage(cap casebilling.Capability) string {
+	switch cap {
+	case casebilling.CapWatch:
+		return "C.A.S.E. Watch access is required for the selected server"
+	case casebilling.CapPro:
+		return "C.A.S.E. Pro access is required for the selected server"
+	case casebilling.CapCommand:
+		return "C.A.S.E. Command access is required for the selected server"
+	default:
+		return "the required C.A.S.E. access is not active for the selected server"
+	}
 }
 
 // This read is a presentation contract, not an authorization token. Downstream
