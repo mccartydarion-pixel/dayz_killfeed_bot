@@ -27,7 +27,7 @@ type CaseWebhookState struct {
 	AddonID, OrganizationID, InstallationID, GameServerID int64
 	Tier, CustomerID, SubscriptionID, PriceID, Status string
 	CheckoutSessionID string
-	CurrentPeriodStart, CurrentPeriodEnd, TrialEnd *time.Time
+	CurrentPeriodStart, CurrentPeriodEnd, TrialEnd, PaidThrough *time.Time
 	CancelAtPeriodEnd bool
 }
 
@@ -144,9 +144,9 @@ VALUES('stripe',$1,$2,$3) ON CONFLICT DO NOTHING RETURNING addon_id`,
 	_,err=tx.Exec(ctx,`UPDATE case_addon_subscriptions
 SET provider='stripe',provider_customer_id=$2,provider_subscription_id=$3,
 provider_price_id=$4,tier=$5,status=$6,current_period_start=$7,current_period_end=$8,
-trial_ends_at=$9,cancel_at_period_end=$10,updated_at=NOW()
+trial_ends_at=$9,cancel_at_period_end=$10,paid_through=COALESCE(GREATEST(paid_through,$11),paid_through,$11),updated_at=NOW()
 WHERE id=$1`,in.AddonID,in.CustomerID,in.SubscriptionID,in.PriceID,in.Tier,in.Status,
-		in.CurrentPeriodStart,in.CurrentPeriodEnd,in.TrialEnd,in.CancelAtPeriodEnd)
+		in.CurrentPeriodStart,in.CurrentPeriodEnd,in.TrialEnd,in.CancelAtPeriodEnd,in.PaidThrough)
 	if err!=nil{return fmt.Errorf("apply case subscription: %w",err)}
 	if err=tx.Commit(ctx);err!=nil{return fmt.Errorf("commit case webhook: %w",err)}
 	return nil
