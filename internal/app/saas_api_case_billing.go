@@ -30,6 +30,7 @@ func (a *App) registerCaseBillingRoutes(){
 	const base="/api/saas/organizations/{organizationID}/billing/case"
 	h("GET "+base+"/servers",a.handleCaseBillingServers)
 	h("POST "+base+"/checkout",a.handleCaseBillingCheckout)
+	h("POST "+base+"/checkout/recover",a.handleCaseBillingRecover)
 	h("POST "+base+"/cancel",a.handleCaseBillingCancel)
 	h("POST "+base+"/reactivate",a.handleCaseBillingReactivate)
 }
@@ -123,6 +124,36 @@ func (a *App) handleCaseBillingCheckout(w http.ResponseWriter,r *http.Request){
 	}
 	billingAudit("case_checkout_created",br,"installation_id",req.InstallationID,"tier",req.Tier)
 	writeSaaSJSON(w,http.StatusOK,checkoutResponseDTO{CheckoutURL:out.URL})
+}
+
+// Recover only an expired, unsubscribed Stripe Checkout Session for the
+// authenticated organization's installation. This route creates no charge.
+func (a *App) handleCaseBillingRecover(w http.ResponseWriter,r *http.Request) {
+	br,ok:=a.billingContext(w,r,true)
+	if !ok || !enforceRateLimit(w,a.saasBillingActionLimiter,rateLimitKey(r)){return}
+	var body caseManageRequestBody
+	if !decodeFactionBody(w,r,&body){return}
+	if body.InstallationID<=0 {
+		writeSaaSError(w,codeInvalidRequest,"invalid installationId")
+		return
+	}
+	ctx,done:=context.WithTimeout(r.Context(),billingTimeout);defer done()
+	if err:=a.Billing.RecoverCaseCheckout(ctx,br.orgID,body.InstallationID);err!=nil {
+		switch {
+		case errors.Is(err,repository.ErrCaseCheckoutConflict),errors.Is(err,billing.ErrCaseCheckoutNotExpired):
+			writeSaaSError(w,codeCaseCheckoutConflict,"checkout is active, completed, or no longer recoverable")
+		case errors.Is(err,repository.ErrCaseWebhookMismatch):
+			writeSaaSError(w,codeCaseCheckoutConflict,"checkout identity requires reconciliation")
+		case errors.Is(err,billing.ErrProviderNotConfigured):
+			writeSaaSError(w,codeCaseNotAvailable,"billing provider unavailable")
+		default:
+			slog.Error("component=case_billing","event","checkout_recovery_failed","err",err.Error())
+			writeSaaSError(w,codeInternalError,"could not recover C.A.S.E. checkout")
+		}
+		return
+	}
+	billingAudit("case_checkout_expired_recovered",br,"installation_id",body.InstallationID)
+	writeSaaSJSON(w,http.StatusOK,map[string]any{"recovered":true})
 }
 
 type caseManageRequestBody struct {
