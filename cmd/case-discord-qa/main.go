@@ -158,14 +158,15 @@ func run(cfg probeConfig) error {
 	// fallback. If the response is lost the operator finds it by reference.
 	msg,sendErr:=session.ChannelMessageSendComplex(cfg.channelID,
 		&discordgo.MessageSend{Embeds:[]*discordgo.MessageEmbed{qaEmbed(ref)}})
-	if cfg.lostAckSimulation {
-		// This exercises the operator workflow after an ACK is intentionally
-		// discarded, NOT a claim that Discord's network actually timed out.
-		fmt.Printf("SIMULATED LOST ACK: reference=%s. Inspect the QA channel; do not re-run send-once for this reference.\n",ref)
-		return nil
-	}
 	if sendErr!=nil || msg==nil || msg.ID=="" {
 		return fmt.Errorf("send outcome unconfirmed; search QA channel for reference %s; DO NOT automatically resend",ref)
+	}
+	if cfg.lostAckSimulation {
+		// Discord returned an ACK successfully. Intentionally discard its
+		// identity to exercise the human UNKNOWN runbook, not to claim an
+		// actual transport failure. Exactly one message was sent.
+		fmt.Printf("SIMULATED LOST ACK AFTER A SUCCESSFUL SEND: reference=%s. Inspect the QA channel; do not re-run send-once for this reference.\n",ref)
+		return nil
 	}
 	read,err:=session.ChannelMessage(cfg.channelID,msg.ID)
 	if err!=nil || !matchesQAProbe(read,cfg.botID,cfg.channelID,ref) {
