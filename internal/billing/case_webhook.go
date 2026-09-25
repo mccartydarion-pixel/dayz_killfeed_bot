@@ -189,7 +189,7 @@ func (s *Service) applyCaseEvent(ctx context.Context,e ParsedEvent) error {
 		end,_:=e.Invoice.caseLine(subID,s.caseTierForPrice,false)
 		if !end.IsZero() {failedPeriodEnd=&end}
 	}
-	err=s.caseStore.ApplyCaseWebhook(ctx,repository.CaseWebhookState{
+	applied,err:=s.caseStore.ApplyCaseWebhookResult(ctx,repository.CaseWebhookState{
 		EventID:e.ID,EventType:e.Type,AddonID:addonID,OrganizationID:orgID,InstallationID:installationID,
 		GameServerID:serverID,Tier:string(tier),CustomerID:st.CustomerID,
 		SubscriptionID:subID,PriceID:st.PriceID,Status:status,
@@ -200,6 +200,13 @@ func (s *Service) applyCaseEvent(ctx context.Context,e ParsedEvent) error {
 		CancelAtPeriodEnd:st.CancelAtPeriodEnd,
 	})
 	if err!=nil{return fmt.Errorf("apply isolated case webhook: %w",err)}
+	if !applied {
+		// Replay/duplicate: the event id was already recorded, so the
+		// transaction was rolled back and the add-on was not touched.
+		slog.Info("component=case_billing","event","case_webhook_duplicate","outcome","no_op",
+			"organization_id",orgID,"installation_id",installationID,"stripe_event_id",e.ID,"type",e.Type)
+		return nil
+	}
 	slog.Info("component=case_billing","event","case_subscription_reconciled",
 		"organization_id",orgID,"installation_id",installationID,"tier",tier,"status",status,"stripe_event_id",e.ID)
 	return nil

@@ -103,11 +103,24 @@ func TestCASETierChangeAndResubscribeLifecycle(t *testing.T) {
 	if err := repo.ApplyCaseWebhook(ctx, checkout); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.ApplyCaseWebhook(ctx, ev("paid1", "invoice.paid", "CASE_WATCH", "price_watch", &end, "CASE_WATCH")); err != nil {
-		t.Fatal(err)
+	paid1 := ev("paid1", "invoice.paid", "CASE_WATCH", "price_watch", &end, "CASE_WATCH")
+	if applied, err := repo.ApplyCaseWebhookResult(ctx, paid1); err != nil || !applied {
+		t.Fatalf("first invoice.paid delivery: applied=%v err=%v", applied, err)
 	}
 	if r := get(); r.PaidTier != "CASE_WATCH" || r.PaidThrough == nil || !r.PaidThrough.Equal(us(end)) {
 		t.Fatalf("Watch paid: %+v", r)
+	}
+	// Replaying the same event id is acknowledged as a no-op (Phase 6.21 staging replay), even
+	// with different content: the recorded marker wins and nothing is updated.
+	beforeReplay := get()
+	replay := paid1
+	later := end.Add(30 * 24 * time.Hour)
+	replay.PaidThrough, replay.CurrentPeriodEnd = &later, &later
+	if applied, err := repo.ApplyCaseWebhookResult(ctx, replay); err != nil || applied {
+		t.Fatalf("replayed event id: applied=%v err=%v (want no-op)", applied, err)
+	}
+	if r := get(); !r.UpdatedAt.Equal(beforeReplay.UpdatedAt) || !r.PaidThrough.Equal(*beforeReplay.PaidThrough) {
+		t.Fatalf("replay changed the add-on: before %+v after %+v", beforeReplay, r)
 	}
 	// An unknown paid tier is rejected; the schema requires paid_tier with coverage.
 	if err := repo.ApplyCaseWebhook(ctx, ev("badtier", "invoice.paid", "CASE_WATCH", "price_watch", &end, "LOW")); !errors.Is(err, repository.ErrCaseWebhookMismatch) {

@@ -16,6 +16,7 @@ type caseTestStore struct {
  reservation *repository.CaseCheckoutReservation
  applied []repository.CaseWebhookState
  errorOnApply error
+ seen map[string]bool
 }
 func (f *caseTestStore) ReserveCaseCheckout(_ context.Context, org,installation,server int64,tier,customer string)(*repository.CaseCheckoutReservation,error){
  if f.reservation==nil{return nil,repository.ErrCaseCheckoutConflict}
@@ -32,16 +33,20 @@ func (f *caseTestStore) GetByCaseSubscriptionID(_ context.Context,id string)(*re
  if f.row!=nil && f.row.ProviderSubscriptionID==id{return f.row,nil}
  return nil,nil
 }
-func (f *caseTestStore) ApplyCaseWebhook(_ context.Context,in repository.CaseWebhookState)error{
- if f.errorOnApply!=nil{return f.errorOnApply}
+func (f *caseTestStore) ApplyCaseWebhookResult(_ context.Context,in repository.CaseWebhookState)(bool,error){
+ if f.errorOnApply!=nil{return false,f.errorOnApply}
  if f.reservation==nil || f.reservation.ID!=in.AddonID ||
  f.reservation.OrganizationID!=in.OrganizationID || f.reservation.InstallationID!=in.InstallationID ||
  f.reservation.GameServerID!=in.GameServerID ||
  (f.reservation.Tier!=in.Tier && (f.row==nil || f.row.ProviderSubscriptionID!=in.SubscriptionID)) ||
  f.reservation.ProviderCustomerID!=in.CustomerID ||
  (in.CheckoutSessionID!="" && in.CheckoutSessionID!=f.reservation.SessionID){
- return repository.ErrCaseWebhookMismatch}
- f.applied=append(f.applied,in);return nil
+ return false,repository.ErrCaseWebhookMismatch}
+ // Mirrors the case_addon_webhook_events primary key: a recorded event id is a no-op.
+ if f.seen==nil{f.seen=map[string]bool{}}
+ if f.seen[in.EventID]{return false,nil}
+ f.seen[in.EventID]=true
+ f.applied=append(f.applied,in);return true,nil
 }
 func (f *caseTestStore) GetScoped(_ context.Context,org,installation int64)(*repository.CaseAddonSubscription,error){
  if f.row!=nil && f.row.OrganizationID==org && f.row.InstallationID==installation {return f.row,nil}

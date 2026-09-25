@@ -111,7 +111,22 @@ WHERE c.provider='stripe' AND c.provider_subscription_id=$1`
 // ApplyCaseWebhook locks the exact reserved add-on and records the processed
 // event in the SAME PostgreSQL transaction as the subscription update. Failed
 // processing leaves no dedupe marker, allowing Stripe's retry to recover.
+// A duplicate delivery returns nil; use ApplyCaseWebhookResult to tell them apart.
 func (r *CaseAddonSubscriptionRepository) ApplyCaseWebhook(ctx context.Context, in CaseWebhookState) error {
+	return r.applyCaseWebhook(ctx, in, nil)
+}
+
+// ApplyCaseWebhookResult is ApplyCaseWebhook that also reports whether this
+// delivery changed anything: applied=false with a nil error means the event
+// id was already recorded (a replay/duplicate) and the transaction was rolled
+// back without touching the add-on.
+func (r *CaseAddonSubscriptionRepository) ApplyCaseWebhookResult(ctx context.Context, in CaseWebhookState) (applied bool, err error) {
+	var duplicate bool
+	err = r.applyCaseWebhook(ctx, in, &duplicate)
+	return err == nil && !duplicate, err
+}
+
+func (r *CaseAddonSubscriptionRepository) applyCaseWebhook(ctx context.Context, in CaseWebhookState, duplicate *bool) error {
 	if in.EventID=="" || in.EventType=="" || in.AddonID<=0 || in.SubscriptionID=="" ||
 		in.CustomerID=="" || in.PriceID=="" || in.OrganizationID<=0 || in.InstallationID<=0 || in.GameServerID<=0 {
 		return ErrCaseWebhookMismatch
@@ -202,6 +217,9 @@ VALUES('stripe',$1,$2,$3) ON CONFLICT DO NOTHING RETURNING addon_id`,
 	if errors.Is(err,pgx.ErrNoRows) {
 		// A duplicate may be acknowledged only after the first attempt's
 		// transaction committed successfully.
+		if duplicate != nil {
+			*duplicate = true
+		}
 		return nil
 	}
 	if err!=nil{return fmt.Errorf("record case event: %w",err)}

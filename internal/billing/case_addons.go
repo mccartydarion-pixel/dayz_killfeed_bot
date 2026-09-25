@@ -27,7 +27,8 @@ type CaseStore interface {
 	ReserveCaseCheckout(ctx context.Context, orgID, installationID, serverID int64, tier, customerID string) (*repository.CaseCheckoutReservation, error)
 	StoreCaseCheckout(ctx context.Context, id int64, sessionID, checkoutURL string) error
 	GetByCaseSubscriptionID(ctx context.Context, subscriptionID string) (*repository.CaseAddonSubscription, error)
-	ApplyCaseWebhook(ctx context.Context, in repository.CaseWebhookState) error
+	// ApplyCaseWebhookResult reports applied=false for an already-recorded event (duplicate).
+	ApplyCaseWebhookResult(ctx context.Context, in repository.CaseWebhookState) (applied bool, err error)
 	ListByOrganization(ctx context.Context, organizationID int64) ([]repository.CaseAddonSubscription, error)
 	GetScoped(ctx context.Context, organizationID, installationID int64) (*repository.CaseAddonSubscription, error)
 	SaveCaseCancelFlag(ctx context.Context, organizationID, installationID int64, subscriptionID string, cancel bool) error
