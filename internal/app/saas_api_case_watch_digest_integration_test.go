@@ -18,6 +18,7 @@ func TestCASEWatchDigestIsPaidScopedOptInAndRequiresStaffRoute(t *testing.T){
  // Direct handler tests bypass registerSaaSAPI, which normally builds this limiter.
  w.a.caseWatchDigestLimiter=newSaaSRateLimiter(time.Hour,1)
  w.a.CaseDigestOutbox=repository.NewCaseDigestOutbox(w.a.DB.Pool)
+ t.Cleanup(func(){_,err:=w.a.DB.Pool.Exec(context.Background(),"DELETE FROM case_watch_digest_outbox WHERE organization_id=$1",w.f.OrgID);if err!=nil{t.Errorf("cleanup case digest: %v",err)}})
  routePath:=w.path("/anti-cheat/premium/watch-digest")
  // None of the old observation/evidence routes requires a paid add-on.
  read:=w.call(w.a.handleAntiCheatOverview,http.MethodGet,w.path("/anti-cheat/overview"),w.f.OwnerDiscordID,nil,nil)
