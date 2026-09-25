@@ -108,7 +108,7 @@ func TestCASECheckoutAndWebhookTransaction(t *testing.T){
  if err!=nil || foreign!=nil {t.Fatalf("another tenant read add-on: %+v %v",foreign,err)}
  var n int
  if err:=db.Pool.QueryRow(ctx,`SELECT COUNT(*) FROM case_addon_webhook_events WHERE addon_id=$1`,reservation.ID).Scan(&n);err!=nil{t.Fatal(err)}
- if n!=1{t.Fatalf("expected one committed event, got %d",n)}
+ if n!=1{t.Fatalf("expected one committed initial event, got %d",n)}
  // ACTIVE after checkout is not proof of payment. The confirmed paid period
  // is granted only by a separate invoice.paid event and can never shrink.
  if scoped.PaidThrough!=nil{t.Fatal("checkout improperly marked invoice paid")}
@@ -121,6 +121,41 @@ func TestCASECheckoutAndWebhookTransaction(t *testing.T){
  paidRow,err:=repo.GetScoped(ctx,org,installation)
  if err!=nil || paidRow==nil || paidRow.PaidThrough==nil || !paidRow.PaidThrough.Equal(end.Truncate(time.Microsecond)){
   t.Fatalf("confirmed paid coverage not persisted: %+v %v",paidRow,err)
+ }
+ // Webhook delivery can be out of order: a failed invoice for the same
+ // already-paid period must not overwrite a newer invoice.paid confirmation.
+ staleFailure:=in
+ staleFailure.EventID=fmt.Sprintf("evt-case-old-failure-%d",marker)
+ staleFailure.EventType="invoice.payment_failed"
+ staleFailure.CheckoutSessionID=""
+ staleFailure.Status="PAST_DUE"
+ staleFailure.FailedPeriodEnd=&end
+ if err:=repo.ApplyCaseWebhook(ctx,staleFailure);err!=nil{t.Fatal(err)}
+ afterFailure,err:=repo.GetScoped(ctx,org,installation)
+ if err!=nil || afterFailure==nil || afterFailure.Status!="ACTIVE" ||
+ afterFailure.PaidThrough==nil || !afterFailure.PaidThrough.Equal(end.Truncate(time.Microsecond)){
+  t.Fatalf("out-of-order failed invoice revoked confirmed access: %+v %v",afterFailure,err)
+ }
+ // A genuinely newer unpaid period must still fail closed.
+ newFailure:=staleFailure
+ newFailure.EventID=fmt.Sprintf("evt-case-new-failure-%d",marker)
+ newerEnd:=end.Add(30*24*time.Hour)
+ newFailure.FailedPeriodEnd=&newerEnd
+ if err:=repo.ApplyCaseWebhook(ctx,newFailure);err!=nil{t.Fatal(err)}
+ afterFailure,err=repo.GetScoped(ctx,org,installation)
+ if err!=nil || afterFailure==nil || afterFailure.Status!="PAST_DUE" {
+  t.Fatalf("new unpaid cycle failed to revoke premium access: %+v %v",afterFailure,err)
+ }
+ // A later paid event recovers access without shrinking confirmed coverage.
+ recovered:=paid
+ recovered.EventID=fmt.Sprintf("evt-case-repaid-%d",marker)
+ recovered.CurrentPeriodEnd=&newerEnd
+ recovered.PaidThrough=&newerEnd
+ if err:=repo.ApplyCaseWebhook(ctx,recovered);err!=nil{t.Fatal(err)}
+ afterRecovery,err:=repo.GetScoped(ctx,org,installation)
+ if err!=nil || afterRecovery==nil || afterRecovery.Status!="ACTIVE" ||
+ afterRecovery.PaidThrough==nil || !afterRecovery.PaidThrough.Equal(newerEnd.Truncate(time.Microsecond)){
+  t.Fatalf("repaid period did not restore premium access: %+v %v",afterRecovery,err)
  }
  listed,err:=repo.ListByOrganization(ctx,org)
  if err!=nil || len(listed)!=1 || listed[0].ID!=reservation.ID ||
