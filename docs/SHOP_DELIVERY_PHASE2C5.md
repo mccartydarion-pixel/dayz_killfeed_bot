@@ -39,6 +39,15 @@
 * But the numbering must be made unique **before either set is deployed**. Renaming an undeployed migration is safe; renaming a deployed one is not.
 * Whichever PR merges second renumbers its migrations after the other's. If the Shop renumbers, update `LedgerMigrationName` (#95), the doc references, and `indexOfMigration("0054_shop_delivery_attempts")` in `migrations_shop_attempts_integration_test.go`.
 
+**Resolved on 2026-09-25.**
+
+* Production history was verified read-only: applied up to `0053_installation_embed_activation`, nothing numbered 0054 or above, and no Shop or C.A.S.E. Phase 6 table exists.
+* #94's migrations were renumbered to `0056_case_addon_subscriptions` … `0062_case_watch_requester` (commit `43b719b`). Their SQL is byte-identical and their relative order unchanged.
+* The Shop keeps 0054 and 0055.
+* The combined tree (main + #97 + #98 + #95 + #94) passed CI in run 36110561884.
+* `TestMigrationRegistryNumbersAreUniqueAndOrdered` (#94) and `TestLedgerMigrationObjectsAreDisjoint` (#97) guard against a recurrence.
+* Whichever of #97/#98 and #94 merges second must resolve one textual conflict in `internal/database/migrations.go`: keep both blocks, Shop entries first.
+
 ## 2. Exact merge order
 
 1. **#97** (into `main`).
@@ -163,7 +172,7 @@ The lock opens **only** when `CHAMPION_SHOP_CANARY_EXECUTION` is exactly `enable
 
 ## 8. Remaining blockers
 
-1. **Migration numbering against draft PR #94.** Coordinate before merging (section 1).
+1. ~~Migration numbering against draft PR #94~~: **resolved** (section 1). Only the textual `migrations.go` conflict remains; its resolution is deterministic.
 2. **Owner approval** to merge #97, then #98, then #95, and to deploy. Deploying runs 0054 and 0055 on production at startup.
 3. **An owner-created canary product and purchase** (Gate D), and the Phase 2C.2 gates A–I, each approved separately.
 4. **Setting the lock variables** for installation 11 is a separate approval, and should only happen right before Gate D.
