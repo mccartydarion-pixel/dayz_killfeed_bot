@@ -151,11 +151,14 @@ func (s *Service) applyCaseEvent(ctx context.Context,e ParsedEvent) error {
 	tier:=casebilling.Tier(meta["champion_case_tier"])
 	if _,ok:=casebilling.Lookup(string(tier)); !ok ||
 		s.caseTierForPrice(st.PriceID)!=tier {return repository.ErrCaseWebhookMismatch}
-	founderOffer:=meta["champion_case_trial_offer"]=="founder_pro_7d"
-	if meta["champion_case_trial_offer"]!="" && !founderOffer {
+	founderTag:=meta["champion_case_trial_offer"]=="founder_pro_7d"
+	if meta["champion_case_trial_offer"]!="" && !founderTag {
 		return repository.ErrCaseWebhookMismatch
 	}
 	status:=MapStatus(st.StripeStatus)
+	// The marker remains on paid subscriptions after a trial finishes.
+	// Never attempt to grant the seven-day offer on a paid renewal event.
+	founderOffer:=founderTag && status==repository.SubscriptionTrial
 	if e.Type==EventSubscriptionDeleted {status=repository.SubscriptionCanceled}
 	// We deliberately fail closed on a failed invoice even if a payment
 	// method left Stripe reporting ACTIVE. A later paid event reconciles it.
