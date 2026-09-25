@@ -31,6 +31,8 @@ type CaseStore interface {
 	ListByOrganization(ctx context.Context, organizationID int64) ([]repository.CaseAddonSubscription, error)
 	GetScoped(ctx context.Context, organizationID, installationID int64) (*repository.CaseAddonSubscription, error)
 	SaveCaseCancelFlag(ctx context.Context, organizationID, installationID int64, subscriptionID string, cancel bool) error
+	GetPendingCaseCheckout(ctx context.Context, organizationID, installationID int64) (*repository.CaseCheckoutReservation,error)
+	ResetExpiredCaseCheckout(ctx context.Context, organizationID, installationID, addonID, attempt int64, sessionID string) error
 }
 
 // CaseProvider is a separately extended Stripe boundary; the normal base
@@ -38,11 +40,13 @@ type CaseStore interface {
 type CaseProvider interface {
 	ValidateCasePrice(ctx context.Context, priceID string, expectedAmount int64, tier casebilling.Tier) error
 	CreateCaseCheckoutSession(ctx context.Context, in CaseCheckoutInput) (*CheckoutSession, error)
+	GetCaseCheckoutSession(ctx context.Context, id string) (*CaseCheckoutSessionState,error)
 }
 
 type CaseCheckoutInput struct {
 	CustomerID, PriceID string
 	OrganizationID, InstallationID, GameServerID, AddonID int64
+	Attempt int64
 	Tier casebilling.Tier
 	SuccessURL, CancelURL string
 }
@@ -155,7 +159,7 @@ func (s *Service) CaseCheckout(ctx context.Context, r *http.Request, orgID int64
 	session,err:=provider.CreateCaseCheckoutSession(ctx,CaseCheckoutInput{
 		CustomerID:base.ProviderCustomerID,PriceID:priceID,
 		OrganizationID:orgID,InstallationID:inst.ID,GameServerID:*inst.GameServerID,
-		AddonID:pending.ID,Tier:plan.Tier,SuccessURL:success,CancelURL:cancel,
+		AddonID:pending.ID,Attempt:pending.Attempt,Tier:plan.Tier,SuccessURL:success,CancelURL:cancel,
 	})
 	if err!=nil{return nil,fmt.Errorf("create case Stripe checkout: %w",err)}
 	if err:=s.caseStore.StoreCaseCheckout(ctx,pending.ID,session.ID,session.URL);err!=nil{return nil,err}
@@ -216,4 +220,41 @@ func (s *Service) CaseSetCancellation(ctx context.Context, organizationID, insta
 	}
 	row.CancelAtPeriodEnd=current.CancelAtPeriodEnd
 	return row,nil
+}
+
+// CaseCheckoutSessionState is a read-only Stripe Checkout projection for
+// recovering only a session whose provider status is unequivocally expired.
+type CaseCheckoutSessionState struct {
+	ID,Status,CustomerID,SubscriptionID string
+	Metadata map[string]string
+}
+
+var ErrCaseCheckoutNotExpired = errors.New("C.A.S.E. checkout session is not safely expired")
+
+// RecoverCaseCheckout does NOT create a Stripe session or charge a customer.
+// It only permits a new checkout attempt after Stripe confirms that the
+// previous session is expired with no attached subscription and still bound
+// to the same organization, server, tier and customer.
+func (s *Service) RecoverCaseCheckout(ctx context.Context, organizationID, installationID int64) error {
+	if s.caseStore==nil || s.provider==nil{return ErrProviderNotConfigured}
+	p,ok:=s.provider.(CaseProvider)
+	if !ok{return ErrProviderNotConfigured}
+	row,err:=s.caseStore.GetPendingCaseCheckout(ctx,organizationID,installationID)
+	if err!=nil{return err}
+	st,err:=p.GetCaseCheckoutSession(ctx,row.SessionID)
+	if err!=nil{return fmt.Errorf("retrieve pending case checkout: %w",err)}
+	if st==nil || st.ID!=row.SessionID || st.Status!="expired" ||
+		st.CustomerID!=row.ProviderCustomerID || st.SubscriptionID!="" {
+		return ErrCaseCheckoutNotExpired
+	}
+	expected:=CaseMetadata(CaseCheckoutInput{
+		AddonID:row.ID,OrganizationID:row.OrganizationID,
+		InstallationID:row.InstallationID,GameServerID:row.GameServerID,
+		Tier:casebilling.Tier(row.Tier),
+	})
+	for key,value:=range expected {
+		if st.Metadata[key]!=value{return repository.ErrCaseWebhookMismatch}
+	}
+	return s.caseStore.ResetExpiredCaseCheckout(ctx,organizationID,installationID,
+		row.ID,row.Attempt,row.SessionID)
 }
