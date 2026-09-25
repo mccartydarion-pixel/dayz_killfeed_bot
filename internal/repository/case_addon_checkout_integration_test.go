@@ -64,12 +64,26 @@ func TestCASECheckoutAndWebhookTransaction(t *testing.T){
  retry,err:=repo.ReserveCaseCheckout(ctx,org,installation,server,"CASE_PRO","cus_case_test")
  if err!=nil || retry.ID!=reservation.ID {t.Fatalf("checkout retry created another reservation: %+v %v",retry,err)}
  if err:=repo.StoreCaseCheckout(ctx,reservation.ID,"cs_case_test","https://checkout.stripe.example/test");err!=nil{t.Fatal(err)}
+ pending,err:=repo.GetPendingCaseCheckout(ctx,org,installation)
+ if err!=nil || pending.Attempt!=1 || pending.SessionID!="cs_case_test"{
+  t.Fatalf("pending checkout not correctly retrieved: %+v %v",pending,err)
+ }
+ if err:=repo.ResetExpiredCaseCheckout(ctx,other,installation,pending.ID,pending.Attempt,pending.SessionID);!errors.Is(err,repository.ErrCaseCheckoutConflict){
+  t.Fatalf("other organization reset checkout: %v",err)
+ }
+ if err:=repo.ResetExpiredCaseCheckout(ctx,org,installation,pending.ID,pending.Attempt,pending.SessionID);err!=nil{t.Fatal(err)}
+ if err:=repo.ResetExpiredCaseCheckout(ctx,org,installation,pending.ID,pending.Attempt,pending.SessionID);!errors.Is(err,repository.ErrCaseCheckoutConflict){
+  t.Fatalf("stale Checkout attempt reset twice: %v",err)
+ }
+ pending,err=repo.ReserveCaseCheckout(ctx,org,installation,server,"CASE_PRO","cus_case_test")
+ if err!=nil || pending.Attempt!=2 || pending.SessionID!=""{t.Fatalf("attempt not rotated: %+v %v",pending,err)}
+ if err:=repo.StoreCaseCheckout(ctx,pending.ID,"cs_case_retry","https://checkout.stripe.example/test/retry");err!=nil{t.Fatal(err)}
  end:=time.Now().Add(time.Hour)
  in:=repository.CaseWebhookState{
   EventID:fmt.Sprintf("evt-case-%d",marker),EventType:"checkout.session.completed",
   AddonID:reservation.ID,OrganizationID:org,InstallationID:installation,GameServerID:server,
   Tier:"CASE_PRO",CustomerID:"cus_case_test",SubscriptionID:fmt.Sprintf("sub_case_%d",marker),
-  PriceID:"price_case_pro",Status:"ACTIVE",CheckoutSessionID:"cs_case_test",
+  PriceID:"price_case_pro",Status:"ACTIVE",CheckoutSessionID:"cs_case_retry",
   CurrentPeriodEnd:&end,
  }
  forged:=in;forged.EventID+="-forged";forged.OrganizationID=other
@@ -79,6 +93,10 @@ func TestCASECheckoutAndWebhookTransaction(t *testing.T){
  bad:=in;bad.EventID+="-bad";bad.CheckoutSessionID="cs_other"
  if err:=repo.ApplyCaseWebhook(ctx,bad);!errors.Is(err,repository.ErrCaseWebhookMismatch){
   t.Fatalf("different checkout session accepted: %v",err)
+ }
+ stale:=in;stale.EventID+="-old-session";stale.CheckoutSessionID="cs_case_test"
+ if err:=repo.ApplyCaseWebhook(ctx,stale);!errors.Is(err,repository.ErrCaseWebhookMismatch){
+  t.Fatalf("expired checkout callback accepted after recovery: %v",err)
  }
  if err:=repo.ApplyCaseWebhook(ctx,in);err!=nil{t.Fatal(err)}
  if err:=repo.ApplyCaseWebhook(ctx,in);err!=nil{t.Fatalf("duplicate event not idempotent: %v",err)}
