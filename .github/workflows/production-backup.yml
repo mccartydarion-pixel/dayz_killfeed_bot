@@ -2,12 +2,15 @@ name: production-backup
 
 # Champion production PostgreSQL backup (docs/PRODUCTION_BACKUP.md).
 #
-# Lives ONLY on the branch ops/production-backup. Railway deploys main, so nothing here touches the bot
-# or the DayZ server. A job runs only when the pushed commit's message carries an explicit marker:
-#   [backup:selftest]    - full rehearsal against disposable databases, no secrets involved
-#   [backup:production]  - the real export; additionally needs the owner's approval of the
-#                          `production-backup` environment and its secrets
-# The repository is PUBLIC: logs print no data, and the backup leaves the job only encrypted.
+# Lives ONLY on the branch ops/production-backup; Railway deploys main, so nothing here touches the bot
+# or the DayZ server. A job runs only for an explicit trigger commit:
+#   [backup:selftest]    - full rehearsal on disposable databases and a local S3-compatible store
+#   [backup:production]  - the real export: an EMPTY commit by the owner carrying the marker, plus the
+#                          owner's approval of the protected `production-backup` environment
+# An ordinary code change can never start an export: it carries no marker, and a marked commit that
+# changes files is refused.
+# The repository is PUBLIC: logs print no data; the backup is stored only encrypted, only in the owner's
+# private bucket, and is verified by downloading it back and restoring that copy.
 
 on:
   push:
@@ -36,14 +39,29 @@ jobs:
         env: { POSTGRES_USER: champion, POSTGRES_PASSWORD: selftest, POSTGRES_DB: restore_check }
         ports: ["5432:5432"]
         options: --health-cmd "pg_isready -U champion -d restore_check" --health-interval 5s --health-timeout 5s --health-retries 20
+      retrieved:
+        image: postgres:18
+        env: { POSTGRES_USER: champion, POSTGRES_PASSWORD: selftest, POSTGRES_DB: retrieved_check }
+        ports: ["5434:5432"]
+        options: --health-cmd "pg_isready -U champion -d retrieved_check" --health-interval 5s --health-timeout 5s --health-retries 20
     env:
       SRC_URL: postgres://champion:selftest@127.0.0.1:5433/source_db
       TARGET_URL: postgres://champion:selftest@127.0.0.1:5432/restore_check
       PGSSLMODE: disable
+      AWS_ACCESS_KEY_ID: selftestkey
+      AWS_SECRET_ACCESS_KEY: selftestsecret123
+      AWS_DEFAULT_REGION: us-east-1
+      S3_ENDPOINT: http://127.0.0.1:9000
+      S3_BUCKET: champion-backup-selftest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with: { go-version-file: go.mod }
+      - name: Local S3-compatible store (MinIO) standing in for the private bucket
+        run: |
+          docker run -d --name minio -p 9000:9000 -e MINIO_ROOT_USER="$AWS_ACCESS_KEY_ID" -e MINIO_ROOT_PASSWORD="$AWS_SECRET_ACCESS_KEY" minio/minio server /data
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:9000/minio/health/live && break; sleep 1; done
+          aws s3 mb "s3://$S3_BUCKET" --endpoint-url "$S3_ENDPOINT"
       - name: Build a production-shaped source (all registered migrations + sample rows)
         env:
           TEST_DATABASE_URL: postgres://champion:selftest@127.0.0.1:5433/source_db?sslmode=disable
@@ -59,12 +77,21 @@ jobs:
           SELECT random() * 1e6, NOW() - (g || ' minutes')::interval, decode(md5(g::text), 'hex'), jsonb_build_object('g', g, 'x', 'ünïcødé'), repeat('Zz', g % 7), g * 1.000001
           FROM generate_series(1, 5000) g;
           SQL
+      - name: Passphrase fingerprint check (match, mismatch, too short)
+        run: |
+          pass="$(openssl rand -base64 48)"
+          echo "::add-mask::$pass"
+          echo "BACKUP_PASS=$pass" >> "$GITHUB_ENV"
+          BACKUP_PASS="$pass" BACKUP_PASSPHRASE_SHA256="$(printf '%s' "$pass" | sha256sum | cut -d' ' -f1)" bash ops/backup/check_passphrase.sh
+          if BACKUP_PASS="$pass" BACKUP_PASSPHRASE_SHA256="$(printf 'other' | sha256sum | cut -d' ' -f1)" bash ops/backup/check_passphrase.sh; then echo "mismatch accepted"; exit 1; fi
+          if BACKUP_PASS="short" BACKUP_PASSPHRASE_SHA256="$(printf 'short' | sha256sum | cut -d' ' -f1)" bash ops/backup/check_passphrase.sh; then echo "short passphrase accepted"; exit 1; fi
+          echo "passphrase checks: OK"
       - name: Dump (snapshot-consistent) and verify by restore
         run: |
           mkdir -p work
           bash ops/backup/dump.sh work
           bash ops/backup/verify.sh work
-      - name: Negative checks (the comparison detects a change; non-local targets are refused)
+      - name: Negative checks (a change is detected; non-local targets are refused)
         run: |
           docker run --rm --network host -e TARGET_URL postgres:18 sh -c 'psql "$TARGET_URL" -X -q -c "UPDATE selftest_types SET n = n + 1 WHERE id = 1"'
           docker run --rm --network host -e TARGET_URL -v "$PWD/work:/work" postgres:18 sh -c 'psql "$TARGET_URL" -X -q -f /work/inventory.sql -o /work/mutated.raw'
@@ -73,16 +100,15 @@ jobs:
           echo "a changed row is detected: OK"
           if TARGET_URL=postgres://x:y@db.example.com:5432/prod bash ops/backup/verify.sh work; then echo "non-local target accepted"; exit 1; fi
           echo "non-local restore target refused: OK"
-      - name: Encryption round trip
+      - name: Seal, store, retrieve from the store and restore the retrieved copy
         run: |
-          pass="$(openssl rand -base64 48)"
-          tar -C work -cf bundle.tar backup.dump source_inventory.txt target_inventory.txt toc.txt verify_summary.txt
-          printf '%s' "$pass" | gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 --symmetric --cipher-algo AES256 --s2k-digest-algo SHA512 --s2k-count 65011712 -o bundle.tar.gpg bundle.tar
-          printf '%s' "$pass" | gpg --batch --quiet --pinentry-mode loopback --passphrase-fd 0 --decrypt -o roundtrip.tar bundle.tar.gpg
-          cmp bundle.tar roundtrip.tar
-          if printf 'wrong' | gpg --batch --quiet --pinentry-mode loopback --passphrase-fd 0 --decrypt -o /dev/null bundle.tar.gpg 2>/dev/null; then echo "wrong passphrase accepted"; exit 1; fi
-          echo "encryption round trip: OK; wrong passphrase refused: OK"
-          echo "dump $(stat -c %s work/backup.dump) bytes sha256 $(sha256sum work/backup.dump | cut -d' ' -f1)"
+          name="champion-db-selftest-run${GITHUB_RUN_ID}"
+          bash ops/backup/seal.sh work out "$name"
+          bash ops/backup/store.sh out "$name"
+          TARGET_URL=postgres://champion:selftest@127.0.0.1:5434/retrieved_check bash ops/backup/retrieve_verify.sh "$name" "out/${name}.manifest.txt"
+          if BACKUP_PASS=wrong-passphrase-wrong-passphrase-wrong TARGET_URL=postgres://champion:selftest@127.0.0.1:5434/retrieved_check bash ops/backup/retrieve_verify.sh "$name" "out/${name}.manifest.txt" 2>/dev/null; then echo "wrong passphrase accepted"; exit 1; fi
+          echo "wrong passphrase refused on retrieval: OK"
+          grep -E '^(dump_bytes|encrypted_bytes|result|tables|migrations)=' "out/${name}.manifest.txt"
 
   production:
     if: contains(github.event.head_commit.message, '[backup:production]') && github.actor == github.repository_owner
@@ -95,18 +121,46 @@ jobs:
         env: { POSTGRES_USER: champion, POSTGRES_PASSWORD: restorecheck, POSTGRES_DB: restore_check }
         ports: ["5432:5432"]
         options: --health-cmd "pg_isready -U champion -d restore_check" --health-interval 5s --health-timeout 5s --health-retries 20
+      retrieved:
+        image: postgres:18
+        env: { POSTGRES_USER: champion, POSTGRES_PASSWORD: restorecheck, POSTGRES_DB: retrieved_check }
+        ports: ["5434:5432"]
+        options: --health-cmd "pg_isready -U champion -d retrieved_check" --health-interval 5s --health-timeout 5s --health-retries 20
     env:
       TARGET_URL: postgres://champion:restorecheck@127.0.0.1:5432/restore_check
+      AWS_ACCESS_KEY_ID: ${{ secrets.BACKUP_S3_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_S3_SECRET_ACCESS_KEY }}
+      S3_ENDPOINT: ${{ secrets.BACKUP_S3_ENDPOINT }}
+      S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
+      AWS_DEFAULT_REGION: ${{ vars.BACKUP_S3_REGION || 'auto' }}
     steps:
       - uses: actions/checkout@v4
-      - name: Required secrets are configured
+        with: { fetch-depth: 2 }
+      - name: Only an empty, deliberate trigger commit may start an export
+        run: |
+          if ! git diff --quiet HEAD^ HEAD; then echo "the [backup:production] commit changes files: refusing (use an empty trigger commit)"; exit 1; fi
+          echo "trigger commit is empty: OK"
+      - name: Required configuration is present (private destination is mandatory)
         env:
           SRC_URL: ${{ secrets.PROD_DATABASE_URL }}
-          BACKUP_PASS: ${{ secrets.BACKUP_ENCRYPTION_PASSPHRASE }}
         run: |
-          [ -n "$SRC_URL" ] || { echo "PROD_DATABASE_URL is not configured"; exit 1; }
-          [ "${#BACKUP_PASS}" -ge 32 ] || { echo "BACKUP_ENCRYPTION_PASSPHRASE must be at least 32 characters"; exit 1; }
-          echo "secrets present"
+          missing=""
+          [ -n "$SRC_URL" ] || missing="$missing PROD_DATABASE_URL"
+          [ -n "$S3_ENDPOINT" ] || missing="$missing BACKUP_S3_ENDPOINT"
+          [ -n "$S3_BUCKET" ] || missing="$missing BACKUP_S3_BUCKET"
+          [ -n "$AWS_ACCESS_KEY_ID" ] || missing="$missing BACKUP_S3_ACCESS_KEY_ID"
+          [ -n "$AWS_SECRET_ACCESS_KEY" ] || missing="$missing BACKUP_S3_SECRET_ACCESS_KEY"
+          if [ -n "$missing" ]; then echo "missing environment secrets:$missing"; exit 1; fi
+          echo "configuration present"
+      - name: The passphrase secret matches the owner-retained fingerprint
+        env:
+          BACKUP_PASS: ${{ secrets.BACKUP_ENCRYPTION_PASSPHRASE }}
+          BACKUP_PASSPHRASE_SHA256: ${{ vars.BACKUP_PASSPHRASE_SHA256 }}
+        run: bash ops/backup/check_passphrase.sh
+      - name: The private bucket is reachable
+        run: |
+          aws s3api head-bucket --bucket "$S3_BUCKET" --endpoint-url "$S3_ENDPOINT"
+          echo "bucket reachable"
       - name: Dump production (read-only, snapshot-consistent)
         env:
           SRC_URL: ${{ secrets.PROD_DATABASE_URL }}
@@ -114,64 +168,25 @@ jobs:
         run: |
           mkdir -p work
           bash ops/backup/dump.sh work
-      - name: Verify by restoring into the disposable PostgreSQL 18 (never production)
+      - name: Verify by restoring into a disposable PostgreSQL 18 (never production)
         run: bash ops/backup/verify.sh work
-      - name: Encrypt and fingerprint
+      - name: Encrypt, prove it opens, and write the manifest
         id: seal
         env:
           BACKUP_PASS: ${{ secrets.BACKUP_ENCRYPTION_PASSPHRASE }}
         run: |
-          stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-          name="champion-db-${stamp}-run${GITHUB_RUN_ID}"
-          mkdir -p out
-          tar -C work -cf bundle.tar backup.dump source_inventory.txt target_inventory.txt toc.txt verify_summary.txt pg_dump_version.txt server_version.txt
-          printf '%s' "$BACKUP_PASS" | gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 --symmetric --cipher-algo AES256 --s2k-digest-algo SHA512 --s2k-count 65011712 -o "out/${name}.tar.gpg" bundle.tar
-          printf '%s' "$BACKUP_PASS" | gpg --batch --quiet --pinentry-mode loopback --passphrase-fd 0 --decrypt -o check.tar "out/${name}.tar.gpg"
-          cmp bundle.tar check.tar
-          {
-            echo "archive=${name}"
-            echo "created_utc=${stamp}"
-            echo "run=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-            echo "commit=${GITHUB_SHA}"
-            echo "server_version=$(cat work/server_version.txt)"
-            echo "pg_dump=$(cat work/pg_dump_version.txt)"
-            echo "dump_bytes=$(stat -c %s work/backup.dump)"
-            echo "dump_sha256=$(sha256sum work/backup.dump | cut -d' ' -f1)"
-            echo "encrypted_bytes=$(stat -c %s out/${name}.tar.gpg)"
-            echo "encrypted_sha256=$(sha256sum out/${name}.tar.gpg | cut -d' ' -f1)"
-            echo "encryption=gpg symmetric AES256, S2K SHA512 x65011712"
-            cat work/verify_summary.txt
-          } > "out/${name}.manifest.txt"
-          cat "out/${name}.manifest.txt"
-          cat "out/${name}.manifest.txt" >> "$GITHUB_STEP_SUMMARY"
+          name="champion-db-$(date -u +%Y%m%dT%H%M%SZ)-run${GITHUB_RUN_ID}"
+          bash ops/backup/seal.sh work out "$name"
           echo "name=${name}" >> "$GITHUB_OUTPUT"
-          rm -f bundle.tar check.tar work/backup.dump
-      - name: Choose the destination
-        id: dest
+      - name: Store in the private bucket
+        run: bash ops/backup/store.sh out "${{ steps.seal.outputs.name }}"
+      - name: Retrieve from the bucket and restore the retrieved copy into a second disposable PostgreSQL 18
         env:
-          S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.BACKUP_S3_ACCESS_KEY_ID }}
+          BACKUP_PASS: ${{ secrets.BACKUP_ENCRYPTION_PASSPHRASE }}
+          TARGET_URL: postgres://champion:restorecheck@127.0.0.1:5434/retrieved_check
+        run: bash ops/backup/retrieve_verify.sh "${{ steps.seal.outputs.name }}" "out/${{ steps.seal.outputs.name }}.manifest.txt"
+      - name: Manifest (no data)
         run: |
-          if [ -n "$S3_BUCKET" ] && [ -n "$AWS_ACCESS_KEY_ID" ]; then echo "offsite=true" >> "$GITHUB_OUTPUT"; echo "destination: private S3-compatible bucket"
-          else echo "offsite=false" >> "$GITHUB_OUTPUT"; echo "destination: encrypted GitHub artifact (public repository: ciphertext only)"; fi
-      - name: Store the encrypted backup (GitHub artifact, 90 days) - only without a private bucket
-        if: steps.dest.outputs.offsite != 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ steps.seal.outputs.name }}
-          path: out/
-          retention-days: 90
-          compression-level: 0
-          if-no-files-found: error
-      - name: Store the encrypted backup (private S3-compatible bucket)
-        if: steps.dest.outputs.offsite == 'true'
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.BACKUP_S3_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_S3_SECRET_ACCESS_KEY }}
-          S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
-          S3_ENDPOINT: ${{ secrets.BACKUP_S3_ENDPOINT }}
-          AWS_DEFAULT_REGION: auto
-        run: |
-          aws s3 cp out/ "s3://${S3_BUCKET}/champion-db/" --recursive --endpoint-url "$S3_ENDPOINT" --only-show-errors
-          aws s3 ls "s3://${S3_BUCKET}/champion-db/${{ steps.seal.outputs.name }}" --endpoint-url "$S3_ENDPOINT" > /dev/null
-          echo "stored in the private bucket and listed"
+          cat "out/${{ steps.seal.outputs.name }}.manifest.txt"
+          { echo '```'; cat "out/${{ steps.seal.outputs.name }}.manifest.txt"; echo "retrieved_from_bucket_and_restored=PASS"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          rm -rf out work
