@@ -50,6 +50,7 @@ type webhookSubscription struct {
 	Status            string            `json:"status"`
 	CancelAtPeriodEnd bool              `json:"cancel_at_period_end"`
 	CanceledAt        int64             `json:"canceled_at"`
+	TrialStart        int64             `json:"trial_start"`
 	TrialEnd          int64             `json:"trial_end"`
 	Customer          jsonID            `json:"customer"`
 	Metadata          map[string]string `json:"metadata"`
@@ -190,6 +191,10 @@ func (s *webhookSubscription) state() *SubscriptionState {
 		out.CurrentPeriodEnd = time.Unix(item.CurrentPeriodEnd, 0).UTC()
 		out.PriceID = item.Price.ID
 		out.StripeInterval = item.Price.Recurring.Interval
+	}
+	if s.TrialStart > 0 {
+		t := time.Unix(s.TrialStart, 0).UTC()
+		out.TrialStart = &t
 	}
 	if s.TrialEnd > 0 {
 		t := time.Unix(s.TrialEnd, 0).UTC()
