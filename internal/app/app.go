@@ -698,6 +698,12 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 						casebilling.Pro: cfg.CaseProPriceID,
 						casebilling.Command: cfg.CaseCommandPriceID,
 					},
+					StripeKeyMode: billing.ClassifyStripeKey(cfg.StripeSecretKey),
+					// The isolated staging service (APP_ENV=staging) must run on
+					// a Stripe test key. Keyed on the explicit staging marker, not
+					// "anything but production", so an unset APP_ENV elsewhere
+					// can never block an existing deployment from starting.
+					RequireTestMode: cfg.AppEnv == "staging",
 				}); err != nil {
 					return nil, fmt.Errorf("configure case add-on billing: %w", err)
 				}

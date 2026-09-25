@@ -181,6 +181,55 @@ candidate prices: active, `livemode=false`, exact parent products, USD 499/999 m
 metadata. This verifies the catalog objects only. No checkout, customer, subscription or webhook
 has been exercised.
 
+## Staging readiness audit (2026-09-25)
+
+Read via the Railway CLI; variable **names** and masked classes only, never values. The live
+Champions project (`genuine-education`, service `dayz_killfeed_bot`) was not opened or read.
+
+| Item | State |
+| --- | --- |
+| Project `champions-case-staging` | separate project; environment named `production` by Railway default (not the live project) |
+| Service `case-billing-qa` | no source repo, no deployment, no domain |
+| Disposable `Postgres` (added 2026-09-25) | `postgres-ssl:18`, deployed, **private network only** (no public TCP proxy) |
+| `DATABASE_URL` | reference `${{Postgres.DATABASE_URL}}` -> `*.railway.internal` |
+| `APP_ENV` | `staging` (turns on the test-key startup guard) |
+| `CHAMPION_CASE_WATCH_PRICE_ID` / `_PRO_` | verified sandbox prices; `_COMMAND_` blank |
+| `CHAMPION_CASE_BILLING_ENABLED` / `_ACCESS_ENABLED` | `false` / `false` |
+| `CHAMPION_CASE_VERIFIED_THROUGH` | **missing** |
+| `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | **missing** |
+| `CHAMPION_BILLING_PLANS_JSON` | **missing** (see "base catalog" below) |
+| `DISCORD_TOKEN` | **missing**; the service will not start without it |
+
+**Fail-closed startup guards** (`TestCaseConfigurationFailsClosed`). The service refuses to start
+when: sales are on while access is off; access/sales are on without a verified tier; sales are on
+without a Stripe key, a Watch price or **`STRIPE_WEBHOOK_SECRET`**; tier or price ids are unknown or
+duplicated; or **`APP_ENV=staging` with anything but an `sk_test_`/`rk_test_` key**. With sales off,
+no plan is purchasable and checkout returns `CASE_NOT_AVAILABLE` without calling Stripe.
+
+**Base catalog must be in the same sandbox.** The approved LOW/MEDIUM/HIGH price ids
+(`price_1UIQiD65uHRSytQg…`) and the C.A.S.E. sandbox prices (`price_1UJVq…9sqOgctIAt…`) appear to
+belong to different Stripe accounts/sandboxes (inferred from their id segments, not proven). If
+so, a staging organization can never hold a paid base plan and every C.A.S.E. checkout is refused
+with `CASE_BASE_REQUIRED`. Create sandbox base prices in the C.A.S.E. sandbox and use them in
+staging's `CHAMPION_BILLING_PLANS_JSON`; never change the approved production catalog.
+
+**Discord isolation.** The app requires `DISCORD_TOKEN` and runs the full bot. Staging needs a
+**separate QA bot application** invited only to the QA guild. Never copy the production token: two
+processes on one bot token would fight over the same gateway session and guilds.
+
+### Extended read-only preflight
+
+```powershell
+# same private key loading as above, plus the staging catalog and webhook URL
+$env:CHAMPION_BILLING_PLANS_JSON = Get-Content .\staging-plans.json -Raw   # sandbox base prices only
+go run ./cmd/case-stripe-preflight -webhook-url https://<staging-host>/api/saas/billing/webhook
+```
+
+All requests are GETs. Expected output: `PASS WATCH`, `PASS PRO`, `PASS BASE <plan>` for each base
+price, and `PASS WEBHOOK` (enabled, `livemode=false`, all six events). A restricted key needs read
+access to Prices, Products and Webhook Endpoints. The signing secret cannot be read back from
+Stripe; the first signed event delivered to staging proves it (step 3 below).
+
 ## Sandbox lifecycle run (operator steps, Phase 6.10)
 
 Every step needs credentials that must never be pasted into chat, and an operator at the keyboard.

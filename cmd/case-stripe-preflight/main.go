@@ -105,6 +105,7 @@ func main(){
  watchProduct:=flag.String("watch-product","prod_VKAAcsjmLTvLGs","expected Watch test Product ID")
  proPrice:=flag.String("pro-price","price_1UJVqp9sqOgctIAtFWedx67E","expected Pro test Price ID")
  proProduct:=flag.String("pro-product","prod_VKABdveP3lpSWd","expected Pro test Product ID")
+ webhookURL:=flag.String("webhook-url","","optional: staging https://<host>/api/saas/billing/webhook to verify in the sandbox")
  flag.Parse()
  key:=strings.TrimSpace(os.Getenv("CASE_STRIPE_TEST_SECRET_KEY"))
  if key==""{
@@ -116,8 +117,27 @@ func main(){
   {tier:"PRO",priceID:*proPrice,productID:*proProduct,productTier:"CASE_PRO",cents:999},
  }
  ctx,cancel:=context.WithTimeout(context.Background(),35*time.Second);defer cancel()
- if err:=verify(ctx,&http.Client{Timeout:15*time.Second},"https://api.stripe.com",key,specs,os.Stdout);err!=nil{
+ client:=&http.Client{Timeout:15*time.Second}
+ if err:=verify(ctx,client,"https://api.stripe.com",key,specs,os.Stdout);err!=nil{
   fmt.Fprintln(os.Stderr,"C.A.S.E. Stripe preflight blocked:",err)
   os.Exit(2)
+ }
+ // Optional staging checks, still GET-only: the base catalog must live in
+ // the same sandbox, and the staging webhook endpoint must be subscribed.
+ if raw:=strings.TrimSpace(os.Getenv("CHAMPION_BILLING_PLANS_JSON"));raw!=""{
+  if err:=verifyBaseCatalog(ctx,client,"https://api.stripe.com",key,raw,specs,os.Stdout);err!=nil{
+   fmt.Fprintln(os.Stderr,"C.A.S.E. Stripe preflight blocked:",err)
+   os.Exit(2)
+  }
+ } else {
+  fmt.Println("SKIP BASE: CHAMPION_BILLING_PLANS_JSON not set (required before staging checkout)")
+ }
+ if *webhookURL!=""{
+  if err:=verifyWebhookEndpoint(ctx,client,"https://api.stripe.com",key,*webhookURL,os.Stdout);err!=nil{
+   fmt.Fprintln(os.Stderr,"C.A.S.E. Stripe preflight blocked:",err)
+   os.Exit(2)
+  }
+ } else {
+  fmt.Println("SKIP WEBHOOK: -webhook-url not given (required before staging checkout)")
  }
 }

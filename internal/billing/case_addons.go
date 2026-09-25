@@ -64,6 +64,34 @@ type CaseOptions struct {
 	AccessEnabled bool // explicit premium access rollout; defaults false
 	VerifiedThrough casebilling.Tier
 	PriceIDs map[casebilling.Tier]string
+	// StripeKeyMode is ClassifyStripeKey(STRIPE_SECRET_KEY); the key itself
+	// never enters this package's options.
+	StripeKeyMode StripeKeyMode
+	// RequireTestMode is set for every non-production APP_ENV: such a
+	// deployment refuses to start unless its Stripe key is a test key.
+	RequireTestMode bool
+}
+
+type StripeKeyMode int
+
+const (
+	StripeKeyUnknown StripeKeyMode = iota
+	StripeKeyTest
+	StripeKeyLive
+)
+
+// ClassifyStripeKey reads only the key's documented prefix; publishable
+// keys and webhook secrets are not secret API keys and classify as unknown.
+func ClassifyStripeKey(key string) StripeKeyMode {
+	key = strings.TrimSpace(key)
+	switch {
+	case strings.HasPrefix(key, "sk_test_"), strings.HasPrefix(key, "rk_test_"):
+		return StripeKeyTest
+	case strings.HasPrefix(key, "sk_live_"), strings.HasPrefix(key, "rk_live_"):
+		return StripeKeyLive
+	default:
+		return StripeKeyUnknown
+	}
 }
 
 type CaseCheckoutRequest struct {
@@ -91,7 +119,13 @@ func (s *Service) ConfigureCaseAddons(store CaseStore, opts CaseOptions) error {
 	if opts.VerifiedThrough != "" {
 		if _, ok := casebilling.Lookup(string(opts.VerifiedThrough)); !ok { return fmt.Errorf("unknown verified case tier") }
 	}
+	if opts.RequireTestMode && opts.StripeKeyMode != StripeKeyTest {
+		return fmt.Errorf("non-production environment requires a Stripe test-mode secret key")
+	}
 	if opts.Enabled && !opts.AccessEnabled { return fmt.Errorf("case sales cannot be enabled while premium access is disabled") }
+	// Access is granted only by signed webhooks; selling without the
+	// signing secret would charge customers who can never be activated.
+	if opts.Enabled && s.webhookSecret == "" { return fmt.Errorf("case sales require STRIPE_WEBHOOK_SECRET") }
 	if opts.Enabled || opts.AccessEnabled {
 		if opts.VerifiedThrough == "" { return fmt.Errorf("case release must name independently verified tier") }
 		if opts.Enabled {
