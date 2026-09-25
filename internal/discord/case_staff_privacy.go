@@ -10,6 +10,12 @@ import (
 
 var ErrCaseStaffChannelUnsafe = errors.New("C.A.S.E. staff destination is not verified private")
 
+// Do not include bot tokens, member lists or raw API response bodies in QA
+// diagnostics. The reason names only the failed policy check.
+func caseStaffUnsafe(reason string) error {
+	return fmt.Errorf("%w: %s", ErrCaseStaffChannelUnsafe, reason)
+}
+
 // validateCaseStaffChannel is a conservative privacy gate, not a claim that
 // every human granted a staff role has been audited. It refuses public
 // @everyone visibility and any role-specific view grant unless that role
@@ -18,22 +24,22 @@ func validateCaseStaffChannel(guild *discordgo.Guild, channel, parent *discordgo
 	botID string, botRoles []string) error {
 	if guild==nil || channel==nil || guild.ID=="" || channel.GuildID!=guild.ID ||
 		channel.Type!=discordgo.ChannelTypeGuildText || botID=="" {
-		return ErrCaseStaffChannelUnsafe
+		return caseStaffUnsafe("target must be a text channel in the expected guild, and bot identity must be available")
 	}
 	// Require explicit target-channel overrides. Category naming or an
 	// inherited-looking parent is not enough to prove the child's effective
 	// @everyone permissions when Discord settings are unsynchronized.
 	_ = parent
 	overwrites:=channel.PermissionOverwrites
-	if len(overwrites)==0{return ErrCaseStaffChannelUnsafe}
+	if len(overwrites)==0{return caseStaffUnsafe("target channel has no explicit permission overrides; configure the channel itself, not just its category")}
 	roles:=map[string]int64{}
 	for _,role:=range guild.Roles {if role!=nil {roles[role.ID]=role.Permissions}}
-	if roles[guild.ID]&discordgo.PermissionAdministrator!=0{return ErrCaseStaffChannelUnsafe}
+	if roles[guild.ID]&discordgo.PermissionAdministrator!=0{return caseStaffUnsafe("@everyone has Administrator at the guild level")}
 	everyoneDenied:=false
 	for _,ow:=range overwrites {
 		if ow==nil {continue}
 		if ow.Type==discordgo.PermissionOverwriteTypeRole && ow.ID==guild.ID {
-			if ow.Allow&discordgo.PermissionViewChannel!=0 {return ErrCaseStaffChannelUnsafe}
+			if ow.Allow&discordgo.PermissionViewChannel!=0 {return caseStaffUnsafe("@everyone explicitly allows View Channel")}
 			if ow.Deny&discordgo.PermissionViewChannel!=0 {everyoneDenied=true}
 			continue
 		}
@@ -41,29 +47,27 @@ func validateCaseStaffChannel(guild *discordgo.Guild, channel, parent *discordgo
 			ow.Allow&discordgo.PermissionViewChannel!=0 {
 			perms,found:=roles[ow.ID]
 			if !found || perms&(discordgo.PermissionAdministrator|discordgo.PermissionManageGuild)==0 {
-				return ErrCaseStaffChannelUnsafe
+				return caseStaffUnsafe("a non-management role is allowed to View Channel; limit access to reviewed staff roles")
 			}
 		}
 		if ow.Type==discordgo.PermissionOverwriteTypeMember && ow.ID==botID &&
 			ow.Deny&(discordgo.PermissionViewChannel|discordgo.PermissionSendMessages|discordgo.PermissionEmbedLinks|discordgo.PermissionReadMessageHistory)!=0 {
-			return ErrCaseStaffChannelUnsafe
+			return caseStaffUnsafe("QA bot has an explicit deny for a required channel permission")
 		}
 		if ow.Type==discordgo.PermissionOverwriteTypeMember &&
 			ow.Allow&discordgo.PermissionViewChannel!=0 && ow.ID!=botID &&
 			ow.ID!=guild.OwnerID {
-			return ErrCaseStaffChannelUnsafe
+			return caseStaffUnsafe("a non-owner, non-bot member has an explicit View Channel allow")
 		}
 	}
-	if !everyoneDenied {return ErrCaseStaffChannelUnsafe}
+	if !everyoneDenied {return caseStaffUnsafe("target channel must explicitly deny @everyone View Channel")}
 	effective:=*channel
 	effective.PermissionOverwrites=overwrites
 	botPerms:=memberChannelPermissions(guild,&effective,botID,botRoles)
-	if botPerms&discordgo.PermissionViewChannel==0 ||
-		botPerms&discordgo.PermissionSendMessages==0 ||
-		botPerms&discordgo.PermissionEmbedLinks==0 ||
-		botPerms&discordgo.PermissionReadMessageHistory==0 {
-		return ErrCaseStaffChannelUnsafe
-	}
+	if botPerms&discordgo.PermissionViewChannel==0 {return caseStaffUnsafe("QA bot lacks effective View Channel permission")}
+	if botPerms&discordgo.PermissionSendMessages==0 {return caseStaffUnsafe("QA bot lacks effective Send Messages permission")}
+	if botPerms&discordgo.PermissionEmbedLinks==0 {return caseStaffUnsafe("QA bot lacks effective Embed Links permission")}
+	if botPerms&discordgo.PermissionReadMessageHistory==0 {return caseStaffUnsafe("QA bot lacks effective Read Message History permission")}
 	return nil
 }
 
