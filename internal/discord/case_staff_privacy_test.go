@@ -13,7 +13,7 @@ func privateCaseFixture() (*discordgo.Guild,*discordgo.Channel) {
   Roles:[]*discordgo.Role{
    {ID:"guild",Permissions:discordgo.PermissionViewChannel},
    {ID:"bot-role",Permissions:discordgo.PermissionViewChannel|
-      discordgo.PermissionSendMessages|discordgo.PermissionEmbedLinks},
+      discordgo.PermissionSendMessages|discordgo.PermissionEmbedLinks|discordgo.PermissionReadMessageHistory},
    {ID:"staff",Permissions:discordgo.PermissionManageGuild},
    {ID:"verified",Permissions:discordgo.PermissionViewChannel},
   },
@@ -22,7 +22,7 @@ func privateCaseFixture() (*discordgo.Guild,*discordgo.Channel) {
   PermissionOverwrites:[]*discordgo.PermissionOverwrite{
    {ID:"guild",Type:discordgo.PermissionOverwriteTypeRole,Deny:discordgo.PermissionViewChannel},
    {ID:"bot",Type:discordgo.PermissionOverwriteTypeMember,
-    Allow:discordgo.PermissionViewChannel|discordgo.PermissionSendMessages|discordgo.PermissionEmbedLinks},
+    Allow:discordgo.PermissionViewChannel|discordgo.PermissionSendMessages|discordgo.PermissionEmbedLinks|discordgo.PermissionReadMessageHistory},
   },
  }
  return guild,channel
@@ -59,6 +59,9 @@ func TestCaseStaffChannelRequiresPrivateEveryoneAndBotPermissions(t *testing.T) 
  assert("foreign member visibility",func(_ *discordgo.Guild,c *discordgo.Channel){
   c.PermissionOverwrites=append(c.PermissionOverwrites,
    &discordgo.PermissionOverwrite{ID:"other",Type:discordgo.PermissionOverwriteTypeMember,Allow:discordgo.PermissionViewChannel})
+ },false)
+ assert("bot cannot read history",func(_ *discordgo.Guild,c *discordgo.Channel){
+  c.PermissionOverwrites[1].Deny=discordgo.PermissionReadMessageHistory
  },false)
  assert("bot cannot embed",func(_ *discordgo.Guild,c *discordgo.Channel){
   c.PermissionOverwrites[1].Deny=discordgo.PermissionEmbedLinks
