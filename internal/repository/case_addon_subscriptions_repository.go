@@ -112,7 +112,7 @@ ORDER BY c.installation_id`
 			&s.Tier, &s.Status, &s.Provider, &s.ProviderCustomerID,
 			&s.ProviderSubscriptionID, &s.ProviderPriceID,
 			&s.CurrentPeriodStart, &s.CurrentPeriodEnd, &s.TrialStartedAt, &s.TrialEndsAt,
-			&s.CancelAtPeriodEnd, &s.CreatedAt, &s.UpdatedAt, &s.SelectedGameServerID); err != nil {
+			&s.CancelAtPeriodEnd, &s.CreatedAt, &s.UpdatedAt, &s.SelectedGameServerID, &s.PaidThrough); err != nil {
 			return nil, fmt.Errorf("scan case addon: %w", err)
 		}
 		out = append(out, s)
