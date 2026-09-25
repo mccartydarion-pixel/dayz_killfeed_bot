@@ -60,7 +60,7 @@ Regression invariant: all existing LOW/MEDIUM/HIGH subscriptions, no-card base t
 
 ## Phase 6.2 implementation status (draft / disabled)
 
-Added migration 0055 for a single pending checkout reservation and transactionally
+Added migration 0057 for a single pending checkout reservation and transactionally
 recorded C.A.S.E. webhook delivery. The Go API exposes read-only catalog/status
 and owner/admin checkout; `CHAMPION_CASE_BILLING_ENABLED` is false by default.
 Both the Checkout Session and Stripe subscription receive server-authored
@@ -71,7 +71,7 @@ transactional deduplication ledger. Configured Stripe Price IDs must match
 approved recurring amounts and explicitly tagged Stripe Products. An unknown
 price or mismatched ownership fails closed.
 
-Phase 6.3 adds a paid-coverage migration (0056). Stripe `ACTIVE` and
+Phase 6.3 adds a paid-coverage migration (0058). Stripe `ACTIVE` and
 `checkout.session.completed` alone DO NOT grant paid access. Only a signed
 `invoice.paid` event containing a subscription billing-period end advances
 `paid_through` transactionally; subsequent subscription updates cannot erase
@@ -210,7 +210,7 @@ described in Phase 6.7. Ordinary free ADMIN_ALERTS messages still use their
 existing queue. Paid Watch requests use only the dedicated database outbox;
 the original in-memory publisher has no paid authorizer in the application.
 
-- Migrations 0059–0060 add PostgreSQL outbox and requesting actor. New
+- Migrations 0061–0062 add PostgreSQL outbox and requesting actor. New
   requests are locked and admitted under the installation row with a
   rolling one-hour server cooldown. Exact org/installation/guild/server
   identity is validated by the DB; competing replicas cannot insert two
@@ -280,3 +280,22 @@ double reconciliation and no resend after verification. See
 channel/roles, bot credential in staging (not pasted into chat), and a
 controlled lost-ack test are still required. Neither production paid access
 nor checkout is enabled or deployed.
+
+## Migration numbering (renumbered 2026-09-25)
+
+The Phase 6 migrations were renumbered, before any deployment, to follow the Shop delivery ledger. The Shop owns 0054 (`0054_shop_delivery_attempts`, PR #97) and 0055 (`0055_shop_delivery_attempt_evidence`, PR #98). Production has applied only up to `0053_installation_embed_activation`; this was verified read-only on 2026-09-25.
+
+* SQL is byte-identical, and the relative order is unchanged.
+* Earlier notes that cite 0054–0060 refer to these migrations under their new numbers.
+
+| Old | New |
+|---|---|
+| 0054 | `0056_case_addon_subscriptions` |
+| 0055 | `0057_case_checkout_reconciliation` |
+| 0056 | `0058_case_payment_confirmation` |
+| 0057 | `0059_case_founder_trial_ledger` |
+| 0058 | `0060_case_checkout_attempt` |
+| 0059 | `0061_case_watch_digest_outbox` |
+| 0060 | `0062_case_watch_requester` |
+
+`TestMigrationRegistryNumbersAreUniqueAndOrdered` now fails CI on any future number collision.

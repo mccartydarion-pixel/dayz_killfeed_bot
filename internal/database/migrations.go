@@ -2153,7 +2153,7 @@ ON CONFLICT (installation_id, route_key) DO NOTHING;
 `,
 	},
 	{
-		Name: "0054_case_addon_subscriptions",
+		Name: "0056_case_addon_subscriptions",
 		SQL: `
 -- Phase 6.1: C.A.S.E. is an ADDITIVE per-server purchase, never a new base plan.
 -- An installation may be repointed to a different game server; the purchased
@@ -2215,7 +2215,7 @@ CREATE INDEX IF NOT EXISTS idx_case_addon_org_status
 	},
 
 	{
-		Name: "0055_case_checkout_reconciliation",
+		Name: "0057_case_checkout_reconciliation",
 		SQL: `
 -- Phase 6.2: retain a single per-server pending checkout and its Stripe
 -- idempotency identity; do not create a new subscription when a retry races.
@@ -2245,7 +2245,7 @@ CREATE INDEX IF NOT EXISTS idx_case_addon_webhook_addon
 	},
 
 	{
-		Name: "0056_case_payment_confirmation",
+		Name: "0058_case_payment_confirmation",
 		SQL: `
 -- A Stripe subscription can appear ACTIVE before asynchronous payment
 -- succeeds. Preserve an independent invoice-paid proof for paid access.
@@ -2255,7 +2255,7 @@ ALTER TABLE case_addon_subscriptions
 `,
 	},
 	{
-		Name: "0057_case_founder_trial_ledger",
+		Name: "0059_case_founder_trial_ledger",
 		SQL: `
 -- Additive, immutable one-time founder trial identity. No grants/backfill.
 -- Future code must write a grant only after verifying an eligible existing
@@ -2286,7 +2286,7 @@ CREATE TABLE IF NOT EXISTS case_addon_trial_grants (
 	},
 
 	{
-		Name: "0058_case_checkout_attempt",
+		Name: "0060_case_checkout_attempt",
 		SQL: `
 -- Recovery after a Stripe-confirmed expired Checkout Session must never
 -- reuse the old Stripe idempotency identity.
@@ -2296,7 +2296,7 @@ ALTER TABLE case_addon_subscriptions
 `,
 	},
 	{
-		Name: "0059_case_watch_digest_outbox",
+		Name: "0061_case_watch_digest_outbox",
 		SQL: `
 -- Durable per-server paid staff digest. A pre-send claim can expire and be
 -- retried safely, but a SENDING row must NEVER be automatically resent:
@@ -2343,7 +2343,7 @@ CREATE INDEX IF NOT EXISTS idx_case_digest_scope
 `,
 	},
 	{
-		Name: "0060_case_watch_requester",
+		Name: "0062_case_watch_requester",
 		SQL: `
 -- Old rows from pre-release 0059 have NULL and are blocked by the worker.
 -- New paid messages must retain the authenticated requester, so a role

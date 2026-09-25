@@ -13,12 +13,18 @@ func TestCASEAddonMigrationIsAdditiveAndScoped(t *testing.T) {
 		switch m.Name {
 		case "0053_installation_embed_activation":
 			previous = i
-		case "0054_case_addon_subscriptions":
+		case "0056_case_addon_subscriptions":
 			found = i
 		}
 	}
-	if previous < 0 || found != previous+1 {
+	if previous < 0 || found <= previous {
 		t.Fatalf("CASE migration must follow 0053, got previous=%d found=%d", previous, found)
+	}
+	// Only the Shop ledger migrations (0054/0055, when present) may sit between 0053 and C.A.S.E.
+	for _, m := range migrations[previous+1 : found] {
+		if m.Name != "0054_shop_delivery_attempts" && m.Name != "0055_shop_delivery_attempt_evidence" {
+			t.Fatalf("unexpected migration %s between 0053 and the first C.A.S.E. migration", m.Name)
+		}
 	}
 	sql := strings.Join(strings.Fields(migrations[found].SQL), " ")
 	for _, want := range []string{

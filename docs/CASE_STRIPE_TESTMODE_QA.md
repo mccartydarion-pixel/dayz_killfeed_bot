@@ -34,7 +34,7 @@ server-scope and test-mode key/price verification. The website must read
 
 ## Implementation already added on draft PR
 
-- Additive migrations 0054–0058: server-scoped subscription, pending session,
+- Additive migrations 0056–0060: server-scoped subscription, pending session,
   atomic webhook ledger, paid invoice coverage, immutable one-time seven-day
   trial grant, and incrementing checkout attempt after provider-confirmed
   session expiry.

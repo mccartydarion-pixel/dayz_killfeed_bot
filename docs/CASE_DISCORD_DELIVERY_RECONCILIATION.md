@@ -155,7 +155,7 @@ automatic retry of the UNKNOWN row.
 ## Exit criteria before any customer-facing activation
 
 - Current draft backend + website CI passes at exact reviewed commit heads.
-- Disposable DB migration 0059/0060 and real REST stub regressions pass.
+- Disposable DB migration 0061/0062 and real REST stub regressions pass.
 - QA bot and test guild channel privacy reviewed; one actual QA Discord
   delivery and lost-ACK case observed, without touching live Champion routes.
 - No duplicate sends across restart/replicas; receipts and audit rows checked.
