@@ -11,13 +11,13 @@ SET extra_float_digits = 1;
 
 SELECT 'migration|' || name FROM schema_migrations ORDER BY name;
 
-SELECT 'object|' || c.relkind || '|' || n.nspname || '.' || c.relname
+SELECT 'object|' || c.relkind::text || '|' || n.nspname || '.' || c.relname
 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg\_toast%' AND n.nspname NOT LIKE 'pg\_temp%'
   AND c.relkind IN ('r', 'p', 'i', 'S', 'v', 'm', 'f')
 ORDER BY 1 COLLATE "C";
 
-SELECT 'trigger|' || n.nspname || '.' || c.relname || '|' || t.tgname || '|' || t.tgenabled
+SELECT 'trigger|' || n.nspname || '.' || c.relname || '|' || t.tgname || '|' || t.tgenabled::text
 FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE NOT t.tgisinternal AND n.nspname NOT IN ('pg_catalog', 'information_schema')
 ORDER BY 1 COLLATE "C";
