@@ -136,7 +136,8 @@ live billing activation is authorized by this draft.
   (with real customer, subscription and price IDs), a C.A.S.E. subscription
   with the **same Stripe customer**, the exact selected installation and
   bound game server, verified invoice-paid coverage or immutable founder
-  trial grant, plus the independently verified rollout tier. Missing database
+  trial grant, the backend's exact tier-to-Stripe-price mapping (retained even
+  when sales are paused), plus the independently verified rollout tier. Missing database
   access fails closed; no website, Discord role or return URL can grant access.
 - `GET .../admin/anti-cheat/entitlements` is a staff-authorized **read-only
   presentation snapshot**; it is not proof for downstream authorization.
