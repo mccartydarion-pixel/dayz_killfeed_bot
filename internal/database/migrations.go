@@ -2244,6 +2244,16 @@ CREATE INDEX IF NOT EXISTS idx_case_addon_webhook_addon
 `,
 	},
 
+	{
+		Name: "0056_case_payment_confirmation",
+		SQL: `
+-- A Stripe subscription can appear ACTIVE before asynchronous payment
+-- succeeds. Preserve an independent invoice-paid proof for paid access.
+-- C.A.S.E. ACTIVE access is withheld until a signed invoice.paid webhook.
+ALTER TABLE case_addon_subscriptions
+    ADD COLUMN IF NOT EXISTS paid_through TIMESTAMPTZ;
+`,
+	},
 }
 
 // LiveSyncCommandLineCleanupSQL (migration 0052, Champion Live Sync phase 2.1, docs/
