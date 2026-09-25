@@ -52,6 +52,7 @@ func TestCASECheckoutAndWebhookTransaction(t *testing.T){
  if err!=nil{t.Fatal(err)}
  defer func(){
   db.Pool.Exec(context.Background(),`DELETE FROM case_addon_webhook_events WHERE addon_id=$1`,reservation.ID)
+  db.Pool.Exec(context.Background(),`DELETE FROM case_addon_trial_grants WHERE addon_id=$1`,reservation.ID)
   db.Pool.Exec(context.Background(),`DELETE FROM case_addon_subscriptions WHERE id=$1`,reservation.ID)
   db.Pool.Exec(context.Background(),`DELETE FROM organizations WHERE id=$1`,org)
   db.Pool.Exec(context.Background(),`DELETE FROM app_users WHERE id=$1`,user)
@@ -117,6 +118,37 @@ func TestCASECheckoutAndWebhookTransaction(t *testing.T){
   t.Fatalf("cancel state lost paid access: %+v %v",paidRow,err)
  }
 
+
+ // Only a server-bound, explicit Pro trial claim grants trial access.
+ trialStart:=time.Now().UTC().Truncate(time.Second)
+ trialEnd:=trialStart.Add(7*24*time.Hour)
+ trial:=in
+ trial.EventID=fmt.Sprintf("evt-case-founder-%d",marker)
+ trial.EventType="customer.subscription.updated"
+ trial.CheckoutSessionID=""
+ trial.Status="TRIAL"
+ trial.TrialStart=&trialStart
+ trial.TrialEnd=&trialEnd
+ trial.CurrentPeriodEnd=&trialEnd
+ trial.FounderTrialOffer=true
+ if err:=repo.ApplyCaseWebhook(ctx,trial);err!=nil{t.Fatalf("first founder trial failed: %v",err)}
+ if err:=repo.ApplyCaseWebhook(ctx,trial);err!=nil{t.Fatalf("replayed founder trial failed: %v",err)}
+ trialRow,err:=repo.GetScoped(ctx,org,installation)
+ if err!=nil || trialRow==nil || !trialRow.FounderTrialGranted || trialRow.TrialStartedAt==nil {
+  t.Fatalf("one-time verified trial grant not exposed: %+v %v",trialRow,err)
+ }
+ // A different subscription must never consume a second grant on the same
+ // game server, even if its installer/customer attempts to reuse that server.
+ _,err=db.Pool.Exec(ctx,`INSERT INTO case_addon_trial_grants(
+  organization_id,game_server_id,installation_id,addon_id,provider_subscription_id,
+  tier,trial_started_at,trial_ends_at)
+  VALUES($1,$2,$3,$4,$5,'CASE_PRO',$6,$7)`,
+  org,server,installation,reservation.ID,trial.SubscriptionID+"-another",trialStart,trialEnd)
+ if err==nil {t.Fatal("duplicate founder trial on same server was accepted")}
+ // A trial longer than seven days cannot be stored, even with a new server.
+ _,err=db.Pool.Exec(ctx,`UPDATE case_addon_trial_grants SET trial_ends_at=$2
+  WHERE addon_id=$1`,reservation.ID,trialStart.Add(8*24*time.Hour))
+ if err==nil{t.Fatal("trial duration greater than seven days was accepted")}
  var plan,status string
  if err:=db.Pool.QueryRow(ctx,`SELECT plan,status FROM subscriptions WHERE organization_id=$1`,org).Scan(&plan,&status);err!=nil{t.Fatal(err)}
  if plan!="LOW" || status!="ACTIVE"{t.Fatalf("case webhook changed base billing %s/%s",plan,status)}
