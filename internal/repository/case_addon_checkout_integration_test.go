@@ -90,6 +90,28 @@ func TestCASECheckoutAndWebhookTransaction(t *testing.T){
  var n int
  if err:=db.Pool.QueryRow(ctx,`SELECT COUNT(*) FROM case_addon_webhook_events WHERE addon_id=$1`,reservation.ID).Scan(&n);err!=nil{t.Fatal(err)}
  if n!=1{t.Fatalf("expected one committed event, got %d",n)}
+ // ACTIVE after checkout is not proof of payment. The confirmed paid period
+ // is granted only by a separate invoice.paid event and can never shrink.
+ if scoped.PaidThrough!=nil{t.Fatal("checkout improperly marked invoice paid")}
+ paid:=in
+ paid.EventID=fmt.Sprintf("evt-case-invoice-%d",marker)
+ paid.EventType="invoice.paid"
+ paid.CheckoutSessionID=""
+ paid.PaidThrough=&end
+ if err:=repo.ApplyCaseWebhook(ctx,paid);err!=nil{t.Fatal(err)}
+ paidRow,err:=repo.GetScoped(ctx,org,installation)
+ if err!=nil || paidRow==nil || paidRow.PaidThrough==nil || !paidRow.PaidThrough.Equal(end){
+  t.Fatalf("confirmed paid coverage not persisted: %+v %v",paidRow,err)
+ }
+ if err:=repo.SaveCaseCancelFlag(ctx,other,installation,in.SubscriptionID,true);!errors.Is(err,repository.ErrCaseCheckoutConflict){
+  t.Fatalf("cross-org cancellation accepted: %v",err)
+ }
+ if err:=repo.SaveCaseCancelFlag(ctx,org,installation,in.SubscriptionID,true);err!=nil{t.Fatal(err)}
+ paidRow,err=repo.GetScoped(ctx,org,installation)
+ if err!=nil || paidRow==nil || !paidRow.CancelAtPeriodEnd || paidRow.PaidThrough==nil{
+  t.Fatalf("cancel state lost paid access: %+v %v",paidRow,err)
+ }
+
  var plan,status string
  if err:=db.Pool.QueryRow(ctx,`SELECT plan,status FROM subscriptions WHERE organization_id=$1`,org).Scan(&plan,&status);err!=nil{t.Fatal(err)}
  if plan!="LOW" || status!="ACTIVE"{t.Fatalf("case webhook changed base billing %s/%s",plan,status)}
