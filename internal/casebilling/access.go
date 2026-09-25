@@ -28,6 +28,7 @@ type AccessInput struct {
 	ProviderSubscriptionID string
 	ProviderPriceID      string
 	CurrentPeriodEnd     *time.Time
+	PaidThrough          *time.Time // verified invoice.paid, never inferred from ACTIVE status
 	TrialEndsAt          *time.Time
 }
 
@@ -55,7 +56,9 @@ func Resolve(in AccessInput, now time.Time) []Capability {
 	}
 	switch in.Status {
 	case "ACTIVE":
-		// Access lasts only for the provider-confirmed current period.
+		// Subscription ACTIVE does not prove the invoice was paid, especially
+		// with delayed payment methods. Require confirmed paid coverage.
+		if in.PaidThrough == nil || !in.PaidThrough.After(now) { return nil }
 	case "TRIAL":
 		if in.TrialEndsAt == nil || !in.TrialEndsAt.After(now) {
 			return nil
