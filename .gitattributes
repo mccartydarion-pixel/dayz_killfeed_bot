@@ -1,1 +1,3 @@
 internal/livesync/testdata/** -text
+ops/backup/** text eol=lf
+.github/workflows/production-backup.yml text eol=lf
