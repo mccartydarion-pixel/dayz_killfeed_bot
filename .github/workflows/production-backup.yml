@@ -5,6 +5,7 @@ name: production-backup
 # Lives ONLY on the branch ops/production-backup; Railway deploys main, so nothing here touches the bot
 # or the DayZ server. A job runs only for an explicit trigger commit:
 #   [backup:selftest]    - full rehearsal on disposable databases and a local S3-compatible store
+#   [backup:connectivity] - configuration and connectivity check only (protected environment, no export)
 #   [backup:production]  - the real export: an EMPTY commit by the owner carrying the marker, plus the
 #                          owner's approval of the protected `production-backup` environment
 # An ordinary code change can never start an export: it carries no marker, and a marked commit that
@@ -64,6 +65,8 @@ jobs:
           aws s3 mb "s3://$S3_BUCKET" --endpoint-url "$S3_ENDPOINT"
           aws s3api head-bucket --bucket "$S3_BUCKET" --endpoint-url "$S3_ENDPOINT"
           echo "local S3-compatible store ready"
+      - name: Connectivity check script (bucket write/read/cleanup and read-only database)
+        run: bash ops/backup/connectivity.sh
       - name: Build a production-shaped source (all registered migrations + sample rows)
         env:
           TEST_DATABASE_URL: postgres://champion:selftest@127.0.0.1:5433/source_db?sslmode=disable
@@ -111,6 +114,36 @@ jobs:
           if BACKUP_PASS=wrong-passphrase-wrong-passphrase-wrong TARGET_URL=postgres://champion:selftest@127.0.0.1:5434/retrieved_check bash ops/backup/retrieve_verify.sh "$name" "out/${name}.manifest.txt" 2>/dev/null; then echo "wrong passphrase accepted"; exit 1; fi
           echo "wrong passphrase refused on retrieval: OK"
           grep -E '^(dump_bytes|encrypted_bytes|result|tables|migrations)=' "out/${name}.manifest.txt"
+
+  connectivity:
+    # Configuration and connectivity only - never exports anything.
+    if: contains(github.event.head_commit.message, '[backup:connectivity]') && github.actor == github.repository_owner
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production-backup
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.BACKUP_S3_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_S3_SECRET_ACCESS_KEY }}
+      S3_ENDPOINT: ${{ secrets.BACKUP_S3_ENDPOINT }}
+      S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
+      AWS_DEFAULT_REGION: ${{ vars.BACKUP_S3_REGION || 'auto' }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 2 }
+      - name: Only an empty, deliberate trigger commit
+        run: git diff --quiet HEAD^ HEAD || { echo "the trigger commit changes files: refusing"; exit 1; }
+      - name: The passphrase secret matches the owner-retained fingerprint
+        env:
+          BACKUP_PASS: ${{ secrets.BACKUP_ENCRYPTION_PASSPHRASE }}
+          BACKUP_PASSPHRASE_SHA256: ${{ vars.BACKUP_PASSPHRASE_SHA256 }}
+        run: bash ops/backup/check_passphrase.sh
+      - name: Bucket and database connectivity (no export)
+        env:
+          SRC_URL: ${{ secrets.PROD_DATABASE_URL }}
+          PGSSLMODE: require
+        run: |
+          [ -n "$SRC_URL" ] || { echo "PROD_DATABASE_URL is not configured"; exit 1; }
+          bash ops/backup/connectivity.sh
 
   production:
     if: contains(github.event.head_commit.message, '[backup:production]') && github.actor == github.repository_owner
