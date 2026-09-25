@@ -45,7 +45,7 @@ func TestAccessRequiresSameServerPaidBaseAndVerifiedTier(t *testing.T) {
 		OrganizationID: 10, InstallationID: 20, SelectedGameServerID: 30,
 		BaseStatus: "ACTIVE", AddonOrganizationID: 10, AddonInstallationID: 20, BoundGameServerID: 30,
 		Tier: Pro, Status: "ACTIVE", Provider: "stripe",
-		ProviderSubscriptionID: "sub_test", ProviderPriceID: "price_test", CurrentPeriodEnd: &end,
+		ProviderSubscriptionID: "sub_test", ProviderPriceID: "price_test", CurrentPeriodEnd: &end, PaidThrough: &end,
 		TrialEndsAt: &trialEnd,
 	}
 	want := []Capability{CapWatch, CapPro}
@@ -73,6 +73,8 @@ func TestAccessRequiresSameServerPaidBaseAndVerifiedTier(t *testing.T) {
 		{"missing Stripe subscription", func(x *AccessInput) { x.ProviderSubscriptionID = "" }},
 		{"missing Stripe price", func(x *AccessInput) { x.ProviderPriceID = "" }},
 		{"expired period", func(x *AccessInput) { x.CurrentPeriodEnd = &now }},
+		{"unpaid ACTIVE", func(x *AccessInput) { x.PaidThrough = nil }},
+		{"paid coverage expired", func(x *AccessInput) { x.PaidThrough = &now }},
 		{"missing period", func(x *AccessInput) { x.CurrentPeriodEnd = nil }},
 		{"payment failure", func(x *AccessInput) { x.Status = "PAST_DUE" }},
 		{"canceled even inside old period", func(x *AccessInput) { x.Status = "CANCELED" }},
