@@ -59,6 +59,7 @@ func TestCaseRuntimeAccessIsServerScopedPaidAndIndependentOfCheckoutFlag(t *test
 		{"expired paid coverage",func(){addon.PaidThrough=&now}},
 		{"expired addon period",func(){addon.CurrentPeriodEnd=&now}},
 		{"missing stripe id",func(){addon.ProviderSubscriptionID=""}},
+		{"wrong price for tier",func(){addon.ProviderPriceID="price_unknown"}},
 		{"unverified tier",func(){addon.Tier=string(casebilling.Command)}},
 	}
 	for _,tc:=range testCases{
