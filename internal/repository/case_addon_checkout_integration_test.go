@@ -103,6 +103,11 @@ func TestCASECheckoutAndWebhookTransaction(t *testing.T){
  if err!=nil || paidRow==nil || paidRow.PaidThrough==nil || !paidRow.PaidThrough.Equal(end.Truncate(time.Microsecond)){
   t.Fatalf("confirmed paid coverage not persisted: %+v %v",paidRow,err)
  }
+ listed,err:=repo.ListByOrganization(ctx,org)
+ if err!=nil || len(listed)!=1 || listed[0].ID!=reservation.ID ||
+ listed[0].PaidThrough==nil || !listed[0].PaidThrough.Equal(end.Truncate(time.Microsecond)) {
+  t.Fatalf("scoped add-on listing lost paid coverage: %+v %v",listed,err)
+ }
  if err:=repo.SaveCaseCancelFlag(ctx,other,installation,in.SubscriptionID,true);!errors.Is(err,repository.ErrCaseCheckoutConflict){
   t.Fatalf("cross-org cancellation accepted: %v",err)
  }
