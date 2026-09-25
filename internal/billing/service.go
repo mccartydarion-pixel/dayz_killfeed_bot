@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yourname/dayz-killfeed/internal/casebilling"
 	"github.com/yourname/dayz-killfeed/internal/entitlements"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
@@ -47,6 +48,12 @@ type Service struct {
 	successPath    string // default returnPath when the caller doesn't send one
 	cancelPath     string
 	portalPath     string
+	// Phase 6 optional C.A.S.E. state never writes the organization base row.
+	caseStore CaseStore
+	casePrices map[casebilling.Tier]string
+	caseEnabled bool
+	caseAccessEnabled bool
+	caseVerifiedThrough casebilling.Tier
 }
 
 // Options configures a Service. Every path defaults to a sane value if empty, so a caller only
