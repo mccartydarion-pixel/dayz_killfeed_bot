@@ -2342,6 +2342,16 @@ CREATE INDEX IF NOT EXISTS idx_case_digest_scope
     ON case_watch_digest_outbox(organization_id,installation_id,game_server_id,requested_at DESC);
 `,
 	},
+	{
+		Name: "0060_case_watch_requester",
+		SQL: `
+-- Old rows from pre-release 0059 have NULL and are blocked by the worker.
+-- New paid messages must retain the authenticated requester, so a role
+-- revocation before delivery can be checked against fresh Discord roles.
+ALTER TABLE case_watch_digest_outbox
+    ADD COLUMN IF NOT EXISTS requested_by_user_id BIGINT REFERENCES app_users(id) ON DELETE RESTRICT;
+`,
+	},
 }
 
 // LiveSyncCommandLineCleanupSQL (migration 0052, Champion Live Sync phase 2.1, docs/
