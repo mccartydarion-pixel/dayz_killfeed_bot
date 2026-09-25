@@ -2295,6 +2295,53 @@ ALTER TABLE case_addon_subscriptions
         CHECK (checkout_attempt > 0);
 `,
 	},
+	{
+		Name: "0059_case_watch_digest_outbox",
+		SQL: `
+-- Durable per-server paid staff digest. A pre-send claim can expire and be
+-- retried safely, but a SENDING row must NEVER be automatically resent:
+-- a crash or network error may occur after Discord accepted a message.
+CREATE TABLE IF NOT EXISTS case_watch_digest_outbox (
+    id BIGSERIAL PRIMARY KEY,
+    organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE RESTRICT,
+    installation_id BIGINT NOT NULL,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE RESTRICT,
+    game_server_id BIGINT NOT NULL REFERENCES game_servers(id) ON DELETE RESTRICT,
+    requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    window_start TIMESTAMPTZ NOT NULL,
+    window_end TIMESTAMPTZ NOT NULL,
+    source_lines BIGINT NOT NULL CHECK (source_lines >= 0),
+    hit_lines BIGINT NOT NULL CHECK (hit_lines >= 0),
+    kill_lines BIGINT NOT NULL CHECK (kill_lines >= 0),
+    collector_enabled BOOLEAN NOT NULL,
+    status TEXT NOT NULL DEFAULT 'READY'
+        CHECK (status IN ('READY','CLAIMED','SENDING','SENT','UNKNOWN','BLOCKED')),
+    attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts BETWEEN 0 AND 3),
+    claim_version INTEGER NOT NULL DEFAULT 0 CHECK (claim_version >= 0),
+    claim_expires_at TIMESTAMPTZ,
+    next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    discord_channel_id TEXT,
+    discord_message_id TEXT,
+    reason_code TEXT,
+    sent_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT case_digest_installation_scope FOREIGN KEY (installation_id,organization_id)
+        REFERENCES installations(id,organization_id) ON DELETE RESTRICT,
+    CONSTRAINT case_digest_window CHECK (window_start < window_end),
+    CONSTRAINT case_digest_sent_receipt CHECK (
+        status <> 'SENT' OR
+        (NULLIF(BTRIM(COALESCE(discord_message_id,'')),'') IS NOT NULL
+         AND NULLIF(BTRIM(COALESCE(discord_channel_id,'')),'') IS NOT NULL
+         AND sent_at IS NOT NULL)
+    )
+);
+CREATE INDEX IF NOT EXISTS idx_case_digest_claim
+    ON case_watch_digest_outbox(status,next_attempt_at,id)
+    WHERE status IN ('READY','CLAIMED');
+CREATE INDEX IF NOT EXISTS idx_case_digest_scope
+    ON case_watch_digest_outbox(organization_id,installation_id,game_server_id,requested_at DESC);
+`,
+	},
 }
 
 // LiveSyncCommandLineCleanupSQL (migration 0052, Champion Live Sync phase 2.1, docs/
