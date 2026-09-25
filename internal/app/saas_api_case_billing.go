@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/yourname/dayz-killfeed/internal/billing"
 	"github.com/yourname/dayz-killfeed/internal/casebilling"
@@ -31,6 +30,8 @@ func (a *App) registerCaseBillingRoutes(){
 	const base="/api/saas/organizations/{organizationID}/billing/case"
 	h("GET "+base+"/servers",a.handleCaseBillingServers)
 	h("POST "+base+"/checkout",a.handleCaseBillingCheckout)
+	h("POST "+base+"/cancel",a.handleCaseBillingCancel)
+	h("POST "+base+"/reactivate",a.handleCaseBillingReactivate)
 }
 
 type casePlanDTO struct {
@@ -60,6 +61,7 @@ type caseServerDTO struct {
 	Tier string `json:"tier"`
 	Status string `json:"status"`
 	CurrentPeriodEnd *string `json:"currentPeriodEnd"`
+	PaidThrough *string `json:"paidThrough"`
 	TrialEndsAt *string `json:"trialEndsAt"`
 	CancelAtPeriodEnd bool `json:"cancelAtPeriodEnd"`
 	BoundToSelectedServer bool `json:"boundToSelectedServer"`
@@ -76,7 +78,7 @@ func (a *App) handleCaseBillingServers(w http.ResponseWriter,r *http.Request){
 		items=append(items,caseServerDTO{
 			InstallationID:sub.InstallationID,GameServerID:sub.GameServerID,
 			Tier:sub.Tier,Status:sub.Status,CurrentPeriodEnd:nullableTimeStr(sub.CurrentPeriodEnd),
-			TrialEndsAt:nullableTimeStr(sub.TrialEndsAt),CancelAtPeriodEnd:sub.CancelAtPeriodEnd,
+			TrialEndsAt:nullableTimeStr(sub.TrialEndsAt),PaidThrough:nullableTimeStr(sub.PaidThrough),CancelAtPeriodEnd:sub.CancelAtPeriodEnd,
 			BoundToSelectedServer:matches,
 		})
 	}
@@ -123,4 +125,54 @@ func (a *App) handleCaseBillingCheckout(w http.ResponseWriter,r *http.Request){
 	writeSaaSJSON(w,http.StatusOK,checkoutResponseDTO{CheckoutURL:out.URL})
 }
 
-var _ = time.Second
+type caseManageRequestBody struct {
+	InstallationID int64 `json:"installationId"`
+}
+
+func (a *App) handleCaseBillingCancel(w http.ResponseWriter,r *http.Request) {
+	a.handleCaseBillingManage(w,r,true)
+}
+func (a *App) handleCaseBillingReactivate(w http.ResponseWriter,r *http.Request) {
+	a.handleCaseBillingManage(w,r,false)
+}
+
+// Organization OWNER/ADMIN only. This manages the selected server's add-on,
+// not the organization's base subscription. No purchase-release flag is
+// required for cancellation: operators must never strand paid subscribers.
+func (a *App) handleCaseBillingManage(w http.ResponseWriter,r *http.Request,cancel bool) {
+	br,ok:=a.billingContext(w,r,true)
+	if !ok || !enforceRateLimit(w,a.saasBillingActionLimiter,rateLimitKey(r)){return}
+	var body caseManageRequestBody
+	if !decodeFactionBody(w,r,&body){return}
+	if body.InstallationID<=0 {
+		writeSaaSError(w,codeInvalidRequest,"invalid installationId")
+		return
+	}
+	ctx,done:=context.WithTimeout(r.Context(),billingTimeout);defer done()
+	sub,err:=a.Billing.CaseSetCancellation(ctx,br.orgID,body.InstallationID,cancel)
+	if err!=nil {
+		switch {
+		case errors.Is(err,billing.ErrCaseNotManaged),errors.Is(err,repository.ErrCaseCheckoutConflict):
+			writeSaaSError(w,codeCaseCheckoutConflict,"this server has no manageable C.A.S.E. subscription")
+		case errors.Is(err,billing.ErrProviderNotConfigured):
+			writeSaaSError(w,codeCaseNotAvailable,"billing provider unavailable")
+		case errors.Is(err,repository.ErrCaseWebhookMismatch):
+			writeSaaSError(w,codeCaseCheckoutConflict,"C.A.S.E. subscription needs reconciliation before changes")
+		default:
+			slog.Error("component=case_billing","event","manage_failed","err",err.Error())
+			writeSaaSError(w,codeInternalError,"could not update C.A.S.E. subscription")
+		}
+		return
+	}
+	event:="case_cancellation_scheduled"
+	if !cancel {event="case_cancellation_reversed"}
+	billingAudit(event,br,"installation_id",body.InstallationID,"tier",sub.Tier)
+	writeSaaSJSON(w,http.StatusOK,map[string]any{
+		"installationId":sub.InstallationID,
+		"tier":sub.Tier,"status":sub.Status,
+		"cancelAtPeriodEnd":sub.CancelAtPeriodEnd,
+		"currentPeriodEnd":nullableTimeStr(sub.CurrentPeriodEnd),
+		"paidThrough":nullableTimeStr(sub.PaidThrough),
+	})
+}
+
