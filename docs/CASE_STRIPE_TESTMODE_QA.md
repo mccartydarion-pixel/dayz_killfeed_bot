@@ -28,6 +28,37 @@ Test Products and recurring Prices, only after a test context is available:
   checkout until its capabilities pass verification.
 - Preserve the existing base LOW/MEDIUM/HIGH products and subscriptions.
 
+## Operator-supplied candidate Price IDs (unverified, 2026-09-25)
+
+The owner supplied the following public IDs as intended **test-mode**
+C.A.S.E. catalog candidates. Receipt of IDs is not independent proof of
+Stripe mode, amount, interval, product linkage, metadata or active status.
+Do not set these in production or turn on checkout yet.
+
+| Tier | Intended product | Intended Price | Expected |
+| --- | --- | --- | --- |
+| Watch | `prod_VKAAcsjmLTvLGs` | `price_1UJVqQ9sqOgctIAtK8UiKgJP` | USD 499 cents/month |
+| Pro | `prod_VKABdveP3lpSWd` | `price_1UJVqp9sqOgctIAtFWedx67E` | USD 999 cents/month |
+
+Only after a **read-only Stripe sandbox API check** confirms both Price
+and Product `livemode=false`, both active, exact parent product IDs,
+expected USD/monthly recurring amounts and Product metadata
+(`champion_product_kind=CASE_ADDON`, tier-specific
+`champion_case_tier`), set these on an **isolated staging service**:
+
+```text
+CHAMPION_CASE_WATCH_PRICE_ID=price_1UJVqQ9sqOgctIAtK8UiKgJP
+CHAMPION_CASE_PRO_PRICE_ID=price_1UJVqp9sqOgctIAtFWedx67E
+CHAMPION_CASE_COMMAND_PRICE_ID=
+CHAMPION_CASE_BILLING_ENABLED=false
+CHAMPION_CASE_ACCESS_ENABLED=false
+```
+
+Do not commit a secret key, alter the existing base plan Price mappings,
+or enable any production feature flag. The per-server test checkout
+requires a separate test customer, test webhook secret, disposable DB and
+explicit operator approval after validation.
+
 Even in test mode, do not set the checkout flag before endpoint, webhook,
 server-scope and test-mode key/price verification. The website must read
 `purchasable` from the backend, not hardcode availability.
