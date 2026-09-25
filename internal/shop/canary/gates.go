@@ -20,6 +20,11 @@ const (
 	GateLostCity = "LOST_CITY" // optional, independent of the Shop canary
 )
 
+// LedgerMigrationName is the durable attempt ledger this canary consumes. It is implemented and
+// registered in PR #97 (internal/database/shop_attempts.go), not here: this package never defines a
+// migration of its own.
+const LedgerMigrationName = "0054_shop_delivery_attempts"
+
 // WriteCapability stays UNVERIFIED until an authorized live upload has been read back with the
 // expected SHA-256. A listed FILEBROWSER_WRITE role is documentation, not proof.
 const WriteCapability = "UNVERIFIED"
@@ -57,7 +62,7 @@ func Gates() []Gate {
 				"the next boot (a scheduled one is fine: the file is empty) reaches CE init with no [::SpawnObjects] error naming the Champion file"},
 			Rollback: "upload the verified backup and confirm the original SHA-256; effective at the next start"},
 		{ID: GateC, Title: "Deploy the durable attempt ledger", Records: true,
-			Action:        "register and deploy migration " + ProposedAttemptMigrationName + " (tables, guards, triggers) as its own code change and deploy",
+			Action:        "merge and deploy PR #97: migration " + LedgerMigrationName + " (the durable attempt ledger) - no file write",
 			Preconditions: []string{"the migration's integration test is green in CI", "deployed independently of any file write"},
 			Evidence:      []string{"schema_migrations lists the migration", "refund and fulfil of a delivery without attempts behave exactly as before"},
 			Rollback:      "additive: drop the triggers, then the tables (the migration modifies no Shop row)"},

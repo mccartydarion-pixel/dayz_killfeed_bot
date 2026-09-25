@@ -45,7 +45,6 @@ This revision applies the owner's pre-execution corrections:
 | `internal/shop/canary` | Non-executing preparation code. An import-guard test keeps network, database and Nitrado packages out. |
 | `internal/shop/nitradodelivery/attempt.go` | The `UNSTAGE_REQUIRED` state. |
 | `cmd/shop-canary-prepare` | The read-only report tool. |
-| `internal/shop/canary/ledger_integration_test.go` | Applies the ledger proposal inside a transaction that is always rolled back. |
 
 ## 1. Live baseline
 
@@ -159,7 +158,7 @@ The exact change against the current live file (VERIFIED LIVE inputs, NOT applie
 
 * `ValidateProductionAttemptID` (VERIFIED IN TEST);
 * `PreviewSingleItem` refuses a real delivery with ID ≤ 0 (VERIFIED IN TEST);
-* the proposed ledger's `attempt_id = 'champion:d' || delivery_id || ':a' || attempt` CHECK, together with its tenant-bound foreign key (no delivery 0 exists), refuses it (VERIFIED IN TEST, integration).
+* the ledger's (migration 0054, PR #97) `attempt_id = 'champion:d' || delivery_id || ':a' || attempt` CHECK, together with its tenant-bound foreign key (no delivery 0 exists), refuses it (VERIFIED IN TEST in PR #97).
 
 | | A. Dedicated isolated canary record | B. Legitimate test purchase (existing Shop flow) |
 |---|---|---|
@@ -177,28 +176,19 @@ The exact change against the current live file (VERIFIED LIVE inputs, NOT applie
 
 Nothing is created until the owner approves Gate D.
 
-## 5. Durable attempt ledger (proposal `0054_shop_delivery_attempts`)
+## 5. Durable attempt ledger (implemented in PR #97)
 
-`canary.ProposedAttemptMigrationSQL` is **not registered** in `internal/database/migrations.go`; `TestMigrationIsProposalOnly` enforces this. `TestProposedLedgerMigration` (integration tag) runs all registered migrations on CI's disposable database and applies the proposal inside a transaction that is always rolled back, then checks:
+The ledger proposal first drafted in this PR has been **removed from here**. It is implemented, registered and tested as migration `0054_shop_delivery_attempts` in PR #97 (`internal/database/shop_attempts.go`, `internal/repository/shop_attempt_repository.go`, `docs/SHOP_DELIVERY_PHASE2C3.md`). This PR defines no migration, so there is no duplicate schema and no competing state machine: `canary.LedgerMigrationName` only names the migration this canary depends on.
 
-| Guarantee | Mechanism | Result |
-|---|---|---|
-| Tenant isolation | FK `(delivery_id, organization_id, installation_id)` → a new unique index on `shop_deliveries`; the insert guard re-checks the tenant; the CAS is scoped by org and installation | Cross-tenant insert refused; another tenant's CAS moves nothing |
-| Compare-and-set | `ProposedTransitionSQL` with `WHERE attempt_id AND state=expected AND tenant` | Wrong expected state: 0 rows; repeated CAS: 0 rows |
-| State machine | `BEFORE UPDATE` guard allows only the transitions of `nitradodelivery.CanAdvance`, including `UNSTAGE_REQUIRED`; the identity is immutable; terminal rows are immutable | Skipped states, identity edits and terminal edits refused |
-| Evidence at each stage | CHECKs: staged needs digest, time and boot; restart needs the new boot; verification and `UNSTAGED` need a verified unstage (time and digest); `FULFILLED` needs `verified_by`; `FAILED_REVIEW` needs a reason | Each missing piece refused |
-| Duplicate prevention | partial unique index (one open attempt per delivery); the insert guard refuses after any attempt that is fulfilled or under review; the attempt number must follow history; the insert locks the delivery row | Second open attempt, retry after `FAILED_REVIEW`, and wrong number refused; retry after `UNSTAGED` allowed |
-| Refund restrictions | trigger on `shop_deliveries`: no `CANCELLED` (refund) or manual `FULFILLED` while an attempt is in `FILE_PREPARED`…`VERIFICATION_REQUIRED`; `PLAN_CREATED → FILE_PREPARED` requires an open delivery and a `PENDING_FULFILLMENT` purchase | Refund refused while in flight or during verification; refund allowed at `PLAN_CREATED` and after `FAILED_REVIEW` (a human decision); a refunded attempt can never be prepared; no attempt on a refunded delivery |
-| Fulfillment integrity | deferred constraint trigger: a `FULFILLED` attempt commits only with its delivery `FULFILLED` | Refused alone; accepted together |
-| Audit | every transition is written to `shop_delivery_attempt_events` with a mandatory `champion.actor` | Missing actor refused; 7 events for a full run |
-| Crash recovery | every field `Reconcile` and `DecideRestart` need is durable; `ProposedOpenAttemptsSQL` lists open attempts per tenant | Reads exactly the open attempt |
+PR #97 goes beyond the original proposal:
 
-The class for this whole table is **VERIFIED IN TEST** once PR #95's integration job is green (section 10).
+* write-once evidence columns;
+* physical-evidence requirements for `FULFILLED`, including the second boot after the verified unstage;
+* a one-time human review resolution (`NOT_SPAWNED` / `SPAWNED`);
+* custom SQLSTATEs mapped to typed errors;
+* the Shop `Refund` and `Fulfill` integration, returning 409 `DELIVERY_ATTEMPT_ACTIVE`.
 
-**Deployment is its own step (Gate C):** a separate code change that registers the migration, plus a deploy, with no file write. Before that change:
-
-* `Refund` must map the guard's `check_violation` to a clear 409 ("an automatic delivery attempt is in progress"). Today it would surface as a generic error.
-* Gate I needs a single transaction that moves the attempt to `FULFILLED` and fulfils the delivery and purchase.
+The `UNSTAGE_REQUIRED` change to `internal/shop/nitradodelivery/attempt.go` is byte-identical in both PRs, so whichever merges second rebases without conflict. The operator tooling that drives the ledger for the canary is Phase 2C.4 (a separate PR stacked on #97).
 
 ## 6. Restart, exposure and cleanup verification
 
@@ -280,7 +270,7 @@ Log evidence, restarts and uploads never fulfil (VERIFIED IN TEST).
 |---|---|---|---|---|---|
 | **A** | Create the empty Champion file | `champion/champion_shop_delivery.json` (CREATE) | file absent (or already exactly empty: skip) | read-back SHA `328c4d64…`; write capability VERIFIED LIVE | Upload fails or the directory is not created: stop; the owner creates the folder or deletes the file |
 | **B** | Reference it | `cfggameplay.json` (MODIFY), `champion/backup/cfggameplay.json.99bcc7d7c382.bak` (CREATE) | `CheckReferencePrecondition` passes on a fresh read; config still `99bcc7d7…` | read-back `7c66bf0d…`; the next boot (a scheduled one is fine) shows no Champion spawner error | Mismatch, or an error at the next boot: restore the backup (`99bcc7d7…`) |
-| **C** | Deploy the ledger | database: `shop_delivery_attempts`, `shop_delivery_attempt_events`, triggers, `uq_shop_deliveries_id_tenant` | integration test green; Refund 409 mapping ready; a separate PR and deploy | `schema_migrations` row; refunds and fulfils without attempts unchanged | Any regression: drop the triggers, then the tables |
+| **C** | Deploy the ledger (PR #97, migration 0054) | database: `shop_delivery_attempts`, `shop_delivery_attempt_events`, triggers, `uq_shop_deliveries_id_tenant` | PR #97 approved and merged; its CI green | `schema_migrations` row; refunds and fulfils without attempts unchanged | Any regression: drop the triggers, then the tables |
 | **D** | Canary purchase | canary product (owner), `shop_purchases`, `shop_deliveries`, `SHOP_PURCHASE` ledger row | fresh drop point (owner at the spot); product at 1 point, FINITE stock 1, limit 1 | `PENDING_FULFILLMENT` + `MANUAL_READY`, within 0.5 m, a real ID | Wrong coordinates or any doubt: refund through the normal flow |
 | **E** | Stage BandageDressing ×1 | `champion/champion_shop_delivery.json` (REPLACE) | `CheckStagingReadiness` passes (operator window, quiet period, no pre-start, freshness); attempt `FILE_PREPARED`; file reads as the empty file | read-back of the staged SHA; attempt `AWAITING_RESTART` | Before any boot: restore the empty file, verify it, attempt `UNSTAGED` |
 | **F** | First restart and observation | server restart (owner) or the next scheduled one | operator present | milestones 1–4 | None; go to G at once |
@@ -293,7 +283,7 @@ Log evidence, restarts and uploads never fulfil (VERIFIED IN TEST).
 
 1. Approve Gate A (one upload, creating the empty file).
 2. After A is verified, approve Gate B (backup plus configuration upload).
-3. Approve the separate ledger PR and deploy (Gate C).
+3. Approve PR #97 (migration 0054) and its deploy (Gate C).
 4. Choose the canary record (B recommended), create the canary product, and approve Gate D at the drop point.
 5. Name the operator and the window, and choose manual or scheduled restart for F.
 6. Approve E, F, G, H and I one at a time, each after the previous gate's evidence.
@@ -342,7 +332,7 @@ The preparation is complete, but nothing can run until the owner decides:
 
 1. Whether to authorize Gate A, the first write.
 2. The canary record (B recommended) and the canary product.
-3. Whether and when to deploy the ledger (Gate C, a separate PR).
+3. Whether and when to merge and deploy PR #97 (Gate C).
 4. The operator, the availability window, and manual vs scheduled restart for Gate F.
 5. The drop-point spot. The observation itself must be fresh on the day.
 6. Lost City: re-enable or leave off (independent).

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"go/parser"
 	"go/token"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -527,26 +526,6 @@ func TestGatesAndUploadSequence(t *testing.T) {
 	seq := UploadSequence("champion/champion_shop_delivery.json", "aa", "bb", "champion/backup/x.bak")
 	if len(seq) != 7 || seq[3].Kind != "READ" || seq[4].Kind != "WRITE" || seq[5].Kind != "READ" || !strings.Contains(seq[5].AbortIf, "restore") {
 		t.Fatalf("%+v", seq)
-	}
-}
-
-func TestMigrationIsProposalOnly(t *testing.T) {
-	for _, s := range []string{nitradodelivery.AttemptPlanCreated, nitradodelivery.AttemptFilePrepared, nitradodelivery.AttemptFileStaged, nitradodelivery.AttemptAwaitingRestart,
-		nitradodelivery.AttemptRestartObserved, nitradodelivery.AttemptUnstageRequired, nitradodelivery.AttemptVerificationRequired, nitradodelivery.AttemptFulfilled,
-		nitradodelivery.AttemptAbandoned, nitradodelivery.AttemptUnstaged, nitradodelivery.AttemptFailedReview} {
-		if !strings.Contains(ProposedAttemptMigrationSQL, "'"+s+"'") {
-			t.Errorf("state %s missing from the proposed CHECK", s)
-		}
-	}
-	if !strings.Contains(ProposedAttemptMigrationSQL, "WHERE state NOT IN ('FULFILLED','ABANDONED','UNSTAGED','FAILED_REVIEW')") {
-		t.Fatal("open-attempt uniqueness")
-	}
-	reg, err := os.ReadFile(filepath.Join("..", "..", "database", "migrations.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(reg), "shop_delivery_attempts") || strings.Contains(string(reg), strconv.Quote(ProposedAttemptMigrationName)) {
-		t.Fatal("the attempt migration must not be registered in this phase")
 	}
 }
 
