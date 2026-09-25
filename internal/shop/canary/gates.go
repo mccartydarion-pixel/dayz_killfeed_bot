@@ -1,14 +1,23 @@
 package canary
 
-// Owner gates. Each is a separate, explicit approval; approving one never implies another. Nothing
-// in this package performs a gate - it only describes it.
+// Owner gates, in execution order. Each is a separate, explicit approval; approving one never implies
+// another. Nothing in this package performs a gate - it only describes it.
+//
+// Order rationale: the Champion file is created EMPTY before the configuration references it (A before
+// B), so a scheduled restart between any two gates meets either no reference or a reference to an
+// existing file that spawns nothing. The single item is written only at E, with an operator present,
+// and is replaced by the empty file again at G.
 const (
-	GateA = "A" // configuration modification
-	GateB = "B" // Champion spawner file upload (staging)
-	GateC = "C" // first restart
-	GateD = "D" // unstaging / cleanup
-	GateE = "E" // second restart
-	GateF = "F" // final fulfillment
+	GateA        = "A"         // create the empty Champion spawner file
+	GateB        = "B"         // reference it in cfggameplay.json
+	GateC        = "C"         // deploy the durable attempt ledger migration
+	GateD        = "D"         // create the canary purchase through the existing Shop flow
+	GateE        = "E"         // stage BandageDressing x1 (replace the empty file)
+	GateF        = "F"         // first restart (scheduled or manual) and observation
+	GateG        = "G"         // unstage (restore the empty file)
+	GateH        = "H"         // second restart and in-game no-respawn check
+	GateI        = "I"         // final fulfillment
+	GateLostCity = "LOST_CITY" // optional, independent of the Shop canary
 )
 
 // WriteCapability stays UNVERIFIED until an authorized live upload has been read back with the
@@ -20,48 +29,84 @@ type Gate struct {
 	ID            string
 	Title         string
 	Action        string
-	Writes        bool // performs a production write
-	Restarts      bool // needs a server start
+	Paths         []string // mission-relative paths it writes (none for record/restart gates)
+	Writes        bool     // performs a production file write
+	Records       bool     // performs a production database write or deployment
+	Restarts      bool     // needs a server start
+	ItemExposure  bool     // the single item is (or may be) on the server during this gate
 	Preconditions []string
 	Evidence      []string // what must be shown before the next gate may be requested
 	Rollback      string
 }
 
-// Gates returns the six gates in order.
+// Gates returns the canary gates in execution order (the Lost City decision is separate: LostCityGate).
 func Gates() []Gate {
+	art := "champion/champion_shop_delivery.json"
 	return []Gate{
-		{ID: GateA, Title: "Configuration modification", Writes: true,
-			Action:        "back up cfggameplay.json, then upload the proposed patch (objectSpawnersArr gains " + "champion/champion_shop_delivery.json" + ")",
-			Preconditions: []string{"the live file still has the reviewed current SHA-256", "a verified backup exists", "the owner does not edit the file during the window"},
-			Evidence:      []string{"read-back SHA-256 equals the proposed SHA-256", "the next boot's RPT shows no [::SpawnObjects] error other than a missing Champion file (if Gate B has not run)"},
-			Rollback:      "upload the verified backup and confirm the current SHA-256; effective at the next start"},
-		{ID: GateB, Title: "Champion file upload (stage BandageDressing x1)", Writes: true,
-			Action: "upload champion/champion_shop_delivery.json with exactly the reviewed staged content",
-			Preconditions: []string{"Gate A verified", "a drop point VERIFIED_CURRENT_SESSION taken immediately before", "the canary delivery record exists (its own approval)",
-				"the durable attempt ledger is deployed (its own approval) or the operator records every transition", "no restart.log pre-start pending and the current boot started more than the staging quiet period ago"},
-			Evidence: []string{"read-back SHA-256 equals the staged SHA-256", "attempt FILE_STAGED -> AWAITING_RESTART recorded"},
-			Rollback: "before any start: upload the unstaged (empty) content, verify its SHA-256, attempt -> UNSTAGED"},
-		{ID: GateC, Title: "First restart", Restarts: true,
-			Action:        "the owner restarts the server (or approves that the next scheduled restart is the canary restart)",
-			Preconditions: []string{"Gate B verified", "an operator is available to unstage within the same session"},
-			Evidence:      []string{"boot authority accepts a new boot that started after the stage", "that boot's RPT reached CE init with no [::SpawnObjects] error for the Champion file"},
-			Rollback:      "none: a started server may have spawned the item; continue to Gate D"},
-		{ID: GateD, Title: "Unstaging / cleanup", Writes: true,
-			Action:        "upload the unstaged Champion file (attempt removed) and verify its SHA-256",
-			Preconditions: []string{"attempt UNSTAGE_REQUIRED", "the file still has the staged SHA-256 (else stop and review)"},
-			Evidence:      []string{"read-back SHA-256 equals the unstaged SHA-256 before any further start", "attempt -> VERIFICATION_REQUIRED"},
-			Rollback:      "none needed: the unstaged file is the safe state"},
-		{ID: GateE, Title: "Second restart", Restarts: true,
-			Action:        "one more start with the entry removed, proving it does not spawn again",
-			Preconditions: []string{"Gate D verified"},
-			Evidence:      []string{"a new boot after the verified unstage, CE init reached, no Champion spawner error", "a single BandageDressing at the drop point, not two"},
-			Rollback:      "not applicable"},
-		{ID: GateF, Title: "Final fulfillment",
-			Action:        "the owner confirms in game that the BandageDressing was at the drop point; only then may the attempt become FULFILLED",
-			Preconditions: []string{"attempt VERIFICATION_REQUIRED", "Gate E clean"},
-			Evidence:      []string{"named in-game observation (who, when)"},
-			Rollback:      "if not found: FAILED_REVIEW, never an automatic retry"},
+		{ID: GateA, Title: "Create the empty Champion spawner file", Writes: true, Paths: []string{art},
+			Action: "upload the empty spawner file (EmptyArtifact) to " + art + "; nothing references it yet",
+			Preconditions: []string{art + " is absent (or already exactly the empty file: then skip)",
+				"whether an upload creates the champion/ directory is UNVERIFIED: if it does not, stop - the owner creates the folder in the Nitrado file browser"},
+			Evidence: []string{"read-back SHA-256 equals the empty-file SHA-256", "write capability becomes VERIFIED LIVE only with this read-back"},
+			Rollback: "leave it (an unreferenced file is never read) or the owner deletes it in the Nitrado file browser"},
+		{ID: GateB, Title: "Reference the Champion file in cfggameplay.json", Writes: true, Paths: []string{"cfggameplay.json", "champion/backup/"},
+			Action: "back up cfggameplay.json, then upload the patch that appends " + art + " to objectSpawnersArr (all other entries untouched)",
+			Preconditions: []string{"Gate A verified and CheckReferencePrecondition passes on a fresh read",
+				"the live cfggameplay.json still has the reviewed current SHA-256", "the owner does not edit the file during the window"},
+			Evidence: []string{"read-back SHA-256 equals the proposed SHA-256",
+				"the next boot (a scheduled one is fine: the file is empty) reaches CE init with no [::SpawnObjects] error naming the Champion file"},
+			Rollback: "upload the verified backup and confirm the original SHA-256; effective at the next start"},
+		{ID: GateC, Title: "Deploy the durable attempt ledger", Records: true,
+			Action:        "register and deploy migration " + ProposedAttemptMigrationName + " (tables, guards, triggers) as its own code change and deploy",
+			Preconditions: []string{"the migration's integration test is green in CI", "deployed independently of any file write"},
+			Evidence:      []string{"schema_migrations lists the migration", "refund and fulfil of a delivery without attempts behave exactly as before"},
+			Rollback:      "additive: drop the triggers, then the tables (the migration modifies no Shop row)"},
+		{ID: GateD, Title: "Create the canary purchase (existing Shop flow)", Records: true,
+			Action: "the owner buys a BandageDressing canary product (1 point, MANUAL_COORDINATE) at the drop point's X/Z through the normal Shop purchase flow",
+			Preconditions: []string{"a fresh drop point from the current boot, the owner standing at the spot (VerifyDropPoint)",
+				"the canary product exists: 1 point, purchase_limit 1, active only for the purchase window", "the delivery map is chernarusplus"},
+			Evidence: []string{"purchase PENDING_FULFILLMENT and delivery MANUAL_READY within 0.5 m of the drop point", "a real delivery id (never 0)"},
+			Rollback: "refund through the existing refund flow (allowed: no attempt is on the server yet)"},
+		{ID: GateE, Title: "Stage BandageDressing x1", Writes: true, ItemExposure: true, Paths: []string{art},
+			Action: "replace the empty Champion file with the reviewed single-item content for the real attempt",
+			Preconditions: []string{"Gates A-D verified",
+				"StagingReadiness passes: operator available for the whole exposure window, current boot older than the quiet period, no pending restart.log pre-start, drop point still fresh",
+				"attempt PLAN_CREATED -> FILE_PREPARED recorded (refunds are blocked from here)", "the Champion file still reads back as the empty file"},
+			Evidence: []string{"read-back SHA-256 equals the staged SHA-256", "attempt FILE_STAGED -> AWAITING_RESTART"},
+			Rollback: "before any start: restore the empty file, verify, attempt -> UNSTAGED (then the purchase may be refunded)"},
+		{ID: GateF, Title: "First restart and observation", Restarts: true, ItemExposure: true,
+			Action:        "a restart - owner-triggered (recommended: shortest exposure) or the next scheduled one; the operator records each milestone",
+			Preconditions: []string{"Gate E verified", "the operator is present"},
+			Evidence: []string{"restart initiated (restart.log or owner)", "new boot accepted by boot authority",
+				"spawner processing attempted (CE init reached, no Champion spawner error)", "item observed in game at the drop point and picked up (named observer)"},
+			Rollback: "none: a started server may have spawned the item; go to Gate G at once"},
+		{ID: GateG, Title: "Unstage", Writes: true, ItemExposure: true, Paths: []string{art},
+			Action:        "restore the empty Champion file and verify it before any further start",
+			Preconditions: []string{"attempt UNSTAGE_REQUIRED", "the file still has the staged SHA-256 (otherwise stop and review)"},
+			Evidence:      []string{"read-back of the empty-file SHA-256, timestamped before the next boot starts", "attempt -> VERIFICATION_REQUIRED"},
+			Rollback:      "not applicable: the empty file is the safe state"},
+		{ID: GateH, Title: "Second restart and no-respawn check", Restarts: true,
+			Action:        "one more start with the entry removed; the operator checks the drop point in game",
+			Preconditions: []string{"Gate G verified"},
+			Evidence: []string{"a new boot accepted after the verified unstage, CE init reached, no Champion spawner error",
+				"in game: no new BandageDressing at the drop point (the collected original is not required to be there)"},
+			Rollback: "a new bandage appeared: FAILED_REVIEW"},
+		{ID: GateI, Title: "Final fulfillment", Records: true,
+			Action:        "record VERIFICATION_REQUIRED -> FULFILLED and fulfil the delivery in the same transaction",
+			Preconditions: []string{"attempt VERIFICATION_REQUIRED", "Gate H clean", "Fulfill accepts the physical confirmation"},
+			Evidence:      []string{"attempt FULFILLED with verified_by; delivery and purchase FULFILLED"},
+			Rollback:      "item never observed: FAILED_REVIEW, never an automatic retry"},
 	}
+}
+
+// LostCityGate is the separate, optional map decision. It is not part of the canary and does not
+// depend on it.
+func LostCityGate() Gate {
+	return Gate{ID: GateLostCity, Title: "Re-enable The Lost City (optional, owner)", Writes: true, Paths: []string{"cfggameplay.json"},
+		Action:        "apply ProposeLostCityRestore to the then-current cfggameplay.json",
+		Preconditions: []string{"owner decision", "custom/The_Lost_City.json re-verified", "never combined with a Shop gate"},
+		Evidence:      []string{"read-back SHA-256 equals the proposal", "the next boot's RPT has no [::SpawnObjects] error for the Lost City file"},
+		Rollback:      "restore the verified backup"}
 }
 
 // UploadStep is one step of the write sequence. Kind is READ or WRITE; only WRITE steps need a gate.

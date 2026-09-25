@@ -35,17 +35,10 @@ var (
 	ErrPatchNotMinimal   = errors.New("internal: the patch changed something other than objectSpawnersArr")
 )
 
-// PatchOptions are the owner's choices. The Champion reference is always added; everything else is
-// explicit. Re-adding Lost City is OFF by default: the owner removed the reference and the patch never
-// silently restores a spawner (it would place 354 KB of map objects at the next start).
-type PatchOptions struct {
-	CorrectLosstSpelling bool // replace a present custom/The_Losst_City.json with custom/The_Lost_City.json
-	ReAddLostCity        bool // add custom/The_Lost_City.json when absent (owner decision)
-}
-
 // ConfigPatch is the proposal for one exact current file. It holds file content (cfggameplay.json has
 // no secret) but never a path outside the mission folder.
 type ConfigPatch struct {
+	Purpose        string // SHOP_REFERENCE or LOST_CITY_RESTORE: never both in one change
 	Path           string
 	CurrentSHA256  string
 	ProposedSHA256 string
@@ -56,21 +49,126 @@ type ConfigPatch struct {
 	Diff           string
 	Proposed       []byte
 	AffectedFiles  []AffectedFile
+	Preconditions  []string
 	BackupPlan     []string
 	RollbackPlan   []string
 }
 
+// Patch purposes. Shop activation and the Lost City map are separate owner decisions: a patch never
+// carries both.
+const (
+	PurposeShopReference   = "SHOP_REFERENCE"
+	PurposeLostCityRestore = "LOST_CITY_RESTORE"
+)
+
 // AffectedFile is one file a gate touches.
 type AffectedFile struct {
 	Path   string
-	Change string // MODIFY / CREATE
+	Change string // MODIFY / CREATE / REPLACE
 	Gate   string
 }
 
-// ProposePatch computes the minimal byte-preserving patch: only the objectSpawnersArr array text is
-// rewritten, every other byte (indentation, line endings, key order, numbers) is kept, and the result
-// is proven equal to the current file in every other key.
-func ProposePatch(current []byte, opt PatchOptions) (ConfigPatch, error) {
+// ProposePatch is the Shop change: reference the Champion spawner file. Every existing entry
+// (including any Lost City reference, spelled right or wrong) is kept exactly; nothing is removed
+// or corrected. The Champion file must already exist, empty, on the server (Gate A) before this patch
+// is applied (Gate B), so no restart can ever meet a reference to a missing file.
+func ProposePatch(current []byte) (ConfigPatch, error) {
+	p, err := proposeArray(current, func(before []string) ([]string, []string) {
+		for _, e := range before {
+			if e == nitradodelivery.ArtifactRelPath {
+				return before, nil
+			}
+		}
+		return append(append([]string{}, before...), nitradodelivery.ArtifactRelPath), []string{"add " + nitradodelivery.ArtifactRelPath}
+	})
+	if err != nil {
+		return p, err
+	}
+	empty, emptySHA := EmptyArtifact()
+	p.Purpose = PurposeShopReference
+	p.AffectedFiles = []AffectedFile{
+		{Path: nitradodelivery.ArtifactRelPath, Change: "CREATE", Gate: GateA},
+		{Path: ConfigRelPath, Change: "MODIFY", Gate: GateB},
+	}
+	p.Preconditions = []string{
+		"Gate A verified: " + nitradodelivery.ArtifactRelPath + " exists and reads back as the empty spawner file (" + fmt.Sprint(len(empty)) + " bytes, SHA-256 " + emptySHA + ")",
+		"re-read the Champion file immediately before this write: if it is missing or not the empty file, stop",
+	}
+	return p, nil
+}
+
+// ProposeLostCityRestore is the SEPARATE, optional owner change that re-enables the Lost City map:
+// a misspelled custom/The_Losst_City.json reference is corrected in place, otherwise
+// custom/The_Lost_City.json is appended. It never touches the Champion entry.
+func ProposeLostCityRestore(current []byte) (ConfigPatch, error) {
+	p, err := proposeArray(current, func(before []string) ([]string, []string) {
+		var after, changes []string
+		has := false
+		for _, e := range before {
+			switch e {
+			case LosstCityRelPath:
+				if has {
+					changes = append(changes, "drop duplicate "+LosstCityRelPath)
+					continue
+				}
+				changes = append(changes, "correct "+LosstCityRelPath+" -> "+LostCityRelPath)
+				e = LostCityRelPath
+				has = true
+			case LostCityRelPath:
+				if has {
+					continue
+				}
+				has = true
+			}
+			after = append(after, e)
+		}
+		if !has {
+			after = append(after, LostCityRelPath)
+			changes = append(changes, "add "+LostCityRelPath)
+		}
+		return after, changes
+	})
+	if err != nil {
+		return p, err
+	}
+	p.Purpose = PurposeLostCityRestore
+	p.AffectedFiles = []AffectedFile{{Path: ConfigRelPath, Change: "MODIFY", Gate: GateLostCity}}
+	p.Preconditions = []string{
+		LostCityRelPath + " still exists and parses as a spawner file (re-verify its SHA-256 on the day)",
+		"an owner decision independent of Shop activation: it re-creates every Lost City object at every start",
+	}
+	return p, nil
+}
+
+// EmptyArtifact is the Champion spawner file with no objects - the content Gate A creates and Gate G
+// restores. The server spawns nothing from it.
+func EmptyArtifact() ([]byte, string) {
+	b := nitradodelivery.SpawnerFile{Objects: []nitradodelivery.SpawnerObject{}}.Render()
+	return b, nitradodelivery.SHA256(b)
+}
+
+var (
+	ErrArtifactMissing  = errors.New("the Champion spawner file does not exist: create the empty file first (Gate A)")
+	ErrArtifactNotEmpty = errors.New("the Champion spawner file is not the verified empty file")
+)
+
+// CheckReferencePrecondition is Gate B's guard: the configuration may only reference a Champion file
+// that exists and is exactly the empty spawner file.
+func CheckReferencePrecondition(artifact []byte, present bool) error {
+	if !present {
+		return ErrArtifactMissing
+	}
+	f, err := nitradodelivery.ParseSpawnerFile(artifact)
+	if err != nil {
+		return err
+	}
+	if _, sha := EmptyArtifact(); len(f.Objects) != 0 || nitradodelivery.SHA256(artifact) != sha {
+		return ErrArtifactNotEmpty
+	}
+	return nil
+}
+
+func proposeArray(current []byte, edit func([]string) ([]string, []string)) (ConfigPatch, error) {
 	var cur map[string]any
 	if err := json.Unmarshal(current, &cur); err != nil {
 		return ConfigPatch{}, fmt.Errorf("%w: %v", ErrConfigInvalid, err)
@@ -86,7 +184,7 @@ func ProposePatch(current []byte, opt PatchOptions) (ConfigPatch, error) {
 	if before == nil {
 		before = []string{}
 	}
-	after, changes := proposeEntries(before, opt)
+	after, changes := edit(before)
 	if len(changes) == 0 {
 		return ConfigPatch{}, ErrNoChange
 	}
@@ -115,10 +213,6 @@ func ProposePatch(current []byte, opt PatchOptions) (ConfigPatch, error) {
 		Path: ConfigRelPath, CurrentSHA256: nitradodelivery.SHA256(current), ProposedSHA256: nitradodelivery.SHA256(proposed),
 		CurrentBytes: len(current), ProposedBytes: len(proposed), Before: before, After: after, Changes: changes,
 		Diff: nitradodelivery.Diff(current, proposed), Proposed: proposed,
-		AffectedFiles: []AffectedFile{
-			{Path: ConfigRelPath, Change: "MODIFY", Gate: GateA},
-			{Path: nitradodelivery.ArtifactRelPath, Change: "CREATE", Gate: GateB},
-		},
 	}
 	backup := ConfigBackupPath(p.CurrentSHA256)
 	p.BackupPlan = []string{
@@ -129,7 +223,6 @@ func ProposePatch(current []byte, opt PatchOptions) (ConfigPatch, error) {
 	p.RollbackPlan = []string{
 		"upload the verified backup " + backup + " content to " + ConfigRelPath + " and confirm SHA-256 " + p.CurrentSHA256,
 		"the rollback takes effect at the next server start; until then the running server keeps the configuration it booted with",
-		"the Champion spawner file may stay: an unreferenced file is never read",
 	}
 	return p, nil
 }
@@ -137,39 +230,6 @@ func ProposePatch(current []byte, opt PatchOptions) (ConfigPatch, error) {
 // ConfigBackupPath is the mission-relative backup name for a configuration digest.
 func ConfigBackupPath(sha string) string {
 	return nitradodelivery.ArtifactDir + "/backup/" + ConfigRelPath + "." + sha[:12] + ".bak"
-}
-
-func proposeEntries(before []string, opt PatchOptions) ([]string, []string) {
-	var after, changes []string
-	seen := map[string]bool{}
-	add := func(e string) {
-		if !seen[e] {
-			seen[e] = true
-			after = append(after, e)
-		}
-	}
-	for _, e := range before {
-		if e == LosstCityRelPath && opt.CorrectLosstSpelling {
-			changes = append(changes, "correct "+LosstCityRelPath+" -> "+LostCityRelPath)
-			e = LostCityRelPath
-		}
-		if seen[e] {
-			changes = append(changes, "drop duplicate "+e)
-		}
-		add(e)
-	}
-	if opt.ReAddLostCity && !seen[LostCityRelPath] {
-		changes = append(changes, "add "+LostCityRelPath+" (owner option)")
-		add(LostCityRelPath)
-	}
-	if !seen[nitradodelivery.ArtifactRelPath] {
-		changes = append(changes, "add "+nitradodelivery.ArtifactRelPath)
-		add(nitradodelivery.ArtifactRelPath)
-	}
-	if after == nil {
-		after = []string{}
-	}
-	return after, changes
 }
 
 // spawnerArraySpan finds the byte span of the objectSpawnersArr array value inside WorldsData and the

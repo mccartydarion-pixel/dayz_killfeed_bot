@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yourname/dayz-killfeed/internal/repository"
 	"github.com/yourname/dayz-killfeed/internal/shop/nitradodelivery"
 )
 
@@ -25,11 +26,11 @@ const liveShape = "{\n\t\"version\": 123,\n\t\"GeneralData\":\n\t{\n\t\t\"disabl
 const losstShape = "{\n\t\"version\": 123,\n\t\"WorldsData\":\n\t{\n\t\t\"lightingConfig\": 0,\n\t\t\"objectSpawnersArr\": [\"custom/The_Losst_City.json\", \"custom/other.json\"],\n\t\t\"x\": 1.50\n\t}\n}\n"
 
 func TestPatchEmptyArrayMinimalAndExact(t *testing.T) {
-	p, err := ProposePatch([]byte(liveShape), PatchOptions{CorrectLosstSpelling: true})
+	p, err := ProposePatch([]byte(liveShape))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(p.Before) != 0 || len(p.After) != 1 || p.After[0] != nitradodelivery.ArtifactRelPath {
+	if p.Purpose != PurposeShopReference || len(p.Before) != 0 || len(p.After) != 1 || p.After[0] != nitradodelivery.ArtifactRelPath {
 		t.Fatalf("entries: %v -> %v", p.Before, p.After)
 	}
 	want := strings.Replace(liveShape, "\"objectSpawnersArr\": [\n        ],", "\"objectSpawnersArr\": [\n\t\t\t\"champion/champion_shop_delivery.json\"\n\t\t],", 1)
@@ -50,52 +51,109 @@ func TestPatchEmptyArrayMinimalAndExact(t *testing.T) {
 	if strings.Join(changed, "|") != strings.Join(wantDiff, "|") {
 		t.Fatalf("diff: %q", changed)
 	}
-	if len(p.AffectedFiles) != 2 || p.AffectedFiles[0].Gate != GateA || p.AffectedFiles[1].Change != "CREATE" {
+	// Sequencing: the empty Champion file is created (Gate A) before the configuration references it (Gate B).
+	if len(p.AffectedFiles) != 2 || p.AffectedFiles[0].Gate != GateA || p.AffectedFiles[0].Change != "CREATE" ||
+		p.AffectedFiles[1].Gate != GateB || p.AffectedFiles[1].Path != ConfigRelPath {
 		t.Fatalf("%+v", p.AffectedFiles)
+	}
+	_, emptySHA := EmptyArtifact()
+	if !strings.Contains(strings.Join(p.Preconditions, " "), emptySHA) {
+		t.Fatal("the reference patch must require the verified empty Champion file")
 	}
 	if !strings.Contains(strings.Join(p.BackupPlan, " "), p.CurrentSHA256) || !strings.Contains(strings.Join(p.RollbackPlan, " "), p.CurrentSHA256) {
 		t.Fatal("backup/rollback must name the verified digest")
 	}
 	// Idempotent: the proposal is already applied.
-	if _, err := ProposePatch(p.Proposed, PatchOptions{CorrectLosstSpelling: true}); !errors.Is(err, ErrNoChange) {
+	if _, err := ProposePatch(p.Proposed); !errors.Is(err, ErrNoChange) {
 		t.Fatalf("second patch: %v", err)
 	}
 }
 
-func TestPatchPreservesEverythingElse(t *testing.T) {
-	p, err := ProposePatch([]byte(losstShape), PatchOptions{CorrectLosstSpelling: true})
+func TestReferenceRequiresTheEmptyChampionFile(t *testing.T) {
+	empty, sha := EmptyArtifact()
+	if strings.TrimSpace(string(empty)) != "{\n  \"Objects\": []\n}" || sha != nitradodelivery.SHA256(empty) {
+		t.Fatalf("empty artifact: %q", empty)
+	}
+	if err := CheckReferencePrecondition(nil, false); !errors.Is(err, ErrArtifactMissing) {
+		t.Fatalf("missing file: %v", err)
+	}
+	if err := CheckReferencePrecondition(empty, true); err != nil {
+		t.Fatal(err)
+	}
+	dp, sess := goodDrop()
+	c, _ := VerifyDropPoint(dp, 1, 11, "chernarusplus", sess, now, 0)
+	pv, _ := PreviewSingleItem(CanaryInput{Binding: binding(), DropPoint: dp, Check: c})
+	if err := CheckReferencePrecondition(pv.StagedJSON, true); !errors.Is(err, ErrArtifactNotEmpty) {
+		t.Fatalf("a staged file is not the empty file: %v", err)
+	}
+	if err := CheckReferencePrecondition([]byte(`{"Objects":[{"name":"X","pos":[1,2,3],"ypr":[0,0,0],"scale":1,"enableCEPersistency":false,"customString":"someone"}]}`), true); err == nil {
+		t.Fatal("a foreign file was accepted")
+	}
+	// Same objects, different bytes: only the exact rendered empty file qualifies.
+	if err := CheckReferencePrecondition([]byte(`{"Objects":[]}`), true); !errors.Is(err, ErrArtifactNotEmpty) {
+		t.Fatalf("non-canonical empty file: %v", err)
+	}
+}
+
+func TestShopPatchPreservesEverythingElse(t *testing.T) {
+	p, err := ProposePatch([]byte(losstShape))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(p.After, ",") != "custom/The_Lost_City.json,custom/other.json,champion/champion_shop_delivery.json" {
+	// Existing entries - even a misspelled one - are kept exactly; Shop activation never edits Lost City.
+	if strings.Join(p.After, ",") != LosstCityRelPath+",custom/other.json,"+nitradodelivery.ArtifactRelPath {
 		t.Fatalf("%v", p.After)
 	}
-	// Bytes outside the array are identical (the "1.50" literal survives, it would be "1.5" after a re-encode).
+	// Bytes outside the array are identical (the "1.50" literal survives; a re-encode would print 1.5).
 	i := strings.Index(losstShape, "[")
 	j := strings.Index(losstShape, "]") + 1
 	if !strings.HasPrefix(string(p.Proposed), losstShape[:i]) || !strings.HasSuffix(string(p.Proposed), losstShape[j:]) {
 		t.Fatal("bytes outside the spawner array changed")
 	}
-	// Without the spelling option the existing entry is preserved as is; Lost City is never re-added by default.
-	p2, err := ProposePatch([]byte(losstShape), PatchOptions{})
-	if err != nil || p2.After[0] != LosstCityRelPath || len(p2.After) != 3 {
-		t.Fatalf("%v %v", p2.After, err)
-	}
-	p3, _ := ProposePatch([]byte(liveShape), PatchOptions{})
+	p3, _ := ProposePatch([]byte(liveShape))
 	for _, e := range p3.After {
-		if e == LostCityRelPath {
-			t.Fatal("Lost City re-added without the owner option")
+		if e == LostCityRelPath || e == LosstCityRelPath {
+			t.Fatal("Shop activation restored Lost City")
 		}
-	}
-	p4, _ := ProposePatch([]byte(liveShape), PatchOptions{ReAddLostCity: true})
-	if strings.Join(p4.After, ",") != LostCityRelPath+","+nitradodelivery.ArtifactRelPath {
-		t.Fatalf("%v", p4.After)
 	}
 	// CRLF files keep CRLF.
 	crlf := strings.ReplaceAll(liveShape, "\n", "\r\n")
-	p5, err := ProposePatch([]byte(crlf), PatchOptions{})
+	p5, err := ProposePatch([]byte(crlf))
 	if err != nil || strings.Count(string(p5.Proposed), "\n") != strings.Count(string(p5.Proposed), "\r\n") {
 		t.Fatalf("crlf: %v", err)
+	}
+}
+
+func TestLostCityRestoreIsSeparate(t *testing.T) {
+	// Live shape (empty array): append.
+	p, err := ProposeLostCityRestore([]byte(liveShape))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Purpose != PurposeLostCityRestore || strings.Join(p.After, ",") != LostCityRelPath || len(p.AffectedFiles) != 1 || p.AffectedFiles[0].Gate != GateLostCity {
+		t.Fatalf("%+v", p)
+	}
+	// After the Shop reference: Lost City is appended and the Champion entry is untouched.
+	shop, _ := ProposePatch([]byte(liveShape))
+	p2, err := ProposeLostCityRestore(shop.Proposed)
+	if err != nil || strings.Join(p2.After, ",") != nitradodelivery.ArtifactRelPath+","+LostCityRelPath {
+		t.Fatalf("%v %v", p2.After, err)
+	}
+	// A misspelled reference is corrected in place.
+	p3, err := ProposeLostCityRestore([]byte(losstShape))
+	if err != nil || strings.Join(p3.After, ",") != LostCityRelPath+",custom/other.json" {
+		t.Fatalf("%v %v", p3.After, err)
+	}
+	if _, err := ProposeLostCityRestore(p.Proposed); !errors.Is(err, ErrNoChange) {
+		t.Fatalf("already enabled: %v", err)
+	}
+	if g := LostCityGate(); g.ID != GateLostCity {
+		t.Fatal("lost city gate")
+	}
+	for _, g := range Gates() {
+		if g.ID == GateLostCity {
+			t.Fatal("the Lost City decision must not be a canary gate")
+		}
 	}
 }
 
@@ -107,8 +165,11 @@ func TestPatchRefusesUnsafeInputs(t *testing.T) {
 		"not strings":    `{"WorldsData":{"objectSpawnersArr":[{"a":1}]}}`,
 		"outside worlds": `{"objectSpawnersArr":[],"WorldsData":{}}`,
 	} {
-		if _, err := ProposePatch([]byte(in), PatchOptions{}); err == nil {
+		if _, err := ProposePatch([]byte(in)); err == nil {
 			t.Errorf("%s: accepted", name)
+		}
+		if _, err := ProposeLostCityRestore([]byte(in)); err == nil {
+			t.Errorf("%s: lost city accepted", name)
 		}
 	}
 }
@@ -187,8 +248,18 @@ func TestSingleItemPreview(t *testing.T) {
 	if strings.TrimSpace(string(pv.UnstagedJSON)) != "{\n  \"Objects\": []\n}" {
 		t.Fatalf("unstaged: %s", pv.UnstagedJSON)
 	}
-	if !strings.Contains(pv.UnstageDiff, "- ") || strings.Contains(pv.StageDiff, "- ") {
-		t.Fatal("diffs")
+	// Stage: from the Gate A empty file only the empty list line goes; unstage: back to it.
+	var removed []string
+	for _, l := range strings.Split(pv.StageDiff, "\n") {
+		if strings.HasPrefix(l, "- ") {
+			removed = append(removed, l)
+		}
+	}
+	if len(removed) != 1 || removed[0] != "-   \"Objects\": []" || !strings.Contains(pv.UnstageDiff, "+   \"Objects\": []") {
+		t.Fatalf("diffs: %q", removed)
+	}
+	if empty, sha := EmptyArtifact(); string(pv.UnstagedJSON) != string(empty) || pv.UnstagedSHA256 != sha {
+		t.Fatal("unstaging restores exactly the Gate A empty file")
 	}
 	if pv.Rollback.BeforeSHA256 != pv.UnstagedSHA256 || pv.Rollback.AfterSHA256 != pv.StagedSHA256 {
 		t.Fatalf("rollback %+v", pv.Rollback)
@@ -199,10 +270,42 @@ func TestSingleItemPreview(t *testing.T) {
 	if pv.Fingerprint != pv2.Fingerprint || pv.Fingerprint == pv3.Fingerprint || pv3.AttemptID != "champion:d0:a2" {
 		t.Fatal("fingerprint")
 	}
-	// A real delivery id is not a preview.
-	pv4, _ := PreviewSingleItem(CanaryInput{Binding: binding(), DropPoint: dp, Check: c, DeliveryID: 501})
-	if pv4.Preview || pv4.AttemptID != "champion:d501:a1" {
-		t.Fatalf("%+v", pv4)
+	// The preview identity can never be used in production.
+	if err := ValidateProductionAttemptID(pv.AttemptID); !errors.Is(err, ErrPlaceholderAttempt) {
+		t.Fatalf("placeholder accepted: %v", err)
+	}
+	// A real canary delivery (existing purchase flow) is not a preview.
+	real := canaryDelivery(501, 4621.3, 8397.0)
+	pv4, err := PreviewSingleItem(CanaryInput{Binding: binding(), DropPoint: dp, Check: c, Delivery: &real})
+	if err != nil || pv4.Preview || pv4.AttemptID != "champion:d501:a1" || ValidateProductionAttemptID(pv4.AttemptID) != nil {
+		t.Fatalf("%+v %v", pv4, err)
+	}
+	if pv4.Pos != [3]float64{4621.3, 319.6, 8397.0} || pv4.Fingerprint == pv.Fingerprint || pv4.StagedSHA256 == pv.StagedSHA256 {
+		t.Fatal("the real plan must be recomputed from the real delivery")
+	}
+	for name, d := range map[string]repository.ShopDelivery{
+		"id 0":     canaryDelivery(0, 4621.1, 8397.2),
+		"far away": canaryDelivery(502, 4623.0, 8397.2),
+		"two units": func() repository.ShopDelivery {
+			d := canaryDelivery(503, 4621.1, 8397.2)
+			d.Items[0].Quantity = 2
+			return d
+		}(),
+		"refunded": func() repository.ShopDelivery {
+			d := canaryDelivery(504, 4621.1, 8397.2)
+			d.Status = repository.DeliveryStatusCancelled
+			return d
+		}(),
+		"other tenant": func() repository.ShopDelivery {
+			d := canaryDelivery(505, 4621.1, 8397.2)
+			d.InstallationID = 12
+			return d
+		}(),
+	} {
+		d := d
+		if _, err := PreviewSingleItem(CanaryInput{Binding: binding(), DropPoint: dp, Check: c, Delivery: &d}); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
 	}
 	// Unverified drop point, missing altitude and tenant mismatch are refused.
 	if _, err := PreviewSingleItem(CanaryInput{Binding: binding(), DropPoint: dp, Check: DropPointCheck{Status: DropPointRejected}}); !errors.Is(err, ErrDropPointNotVerified) {
@@ -285,24 +388,102 @@ func TestRestartRules(t *testing.T) {
 	}
 }
 
+func fullMilestones() Milestones {
+	at := func(m int) time.Time { return now.Add(time.Duration(m) * time.Minute) }
+	return Milestones{
+		RestartInitiated: &Evidence{At: at(1), Detail: "restart.log pre-start"},
+		NewBootAccepted:  &Evidence{At: at(10), Detail: "boot authority"},
+		SpawnerAttempted: &Evidence{At: at(10), Detail: "CE init, no Champion spawner error"},
+		ItemObserved:     &Evidence{At: at(12), By: "owner", Detail: "seen at drop point, picked up"},
+		EntryRemoved:     &Evidence{At: at(15), Detail: "empty file read back"},
+		SecondBootStart:  at(40),
+		NoSecondSpawn:    &Evidence{At: at(50), By: "owner", Detail: "no new bandage at the drop point"},
+	}
+}
+
+func TestMilestonesAreDistinct(t *testing.T) {
+	m := fullMilestones()
+	if !m.Complete() {
+		t.Fatalf("%+v", m.Check())
+	}
+	names := ""
+	for _, s := range m.Check() {
+		names += s.Name + ","
+	}
+	if names != "RESTART_INITIATED,NEW_BOOT_ACCEPTED,SPAWNER_ATTEMPTED,ITEM_OBSERVED,ENTRY_REMOVED,NO_SECOND_SPAWN," {
+		t.Fatal(names)
+	}
+	for name, mut := range map[string]func(*Milestones){
+		"restart without accepted boot": func(m *Milestones) { m.NewBootAccepted = nil },
+		"no spawner evidence":           func(m *Milestones) { m.SpawnerAttempted = nil },
+		"rpt clean but item not seen":   func(m *Milestones) { m.ItemObserved = nil },
+		"anonymous observation":         func(m *Milestones) { m.ItemObserved = &Evidence{At: now, Detail: "seen"} },
+		"removed after second boot":     func(m *Milestones) { m.EntryRemoved = &Evidence{At: m.SecondBootStart.Add(time.Minute)} },
+		"no second boot":                func(m *Milestones) { m.SecondBootStart = time.Time{} },
+		"check before second boot":      func(m *Milestones) { m.NoSecondSpawn = &Evidence{At: m.SecondBootStart.Add(-time.Minute), By: "owner"} },
+	} {
+		mm := fullMilestones()
+		mut(&mm)
+		if mm.Complete() {
+			t.Errorf("%s: complete", name)
+		}
+	}
+}
+
 func TestFulfillOnlyOnPhysicalConfirmation(t *testing.T) {
-	ok := PhysicalConfirmation{ConfirmedBy: "123", Method: "IN_GAME_OBSERVED", ObservedAt: now, SecondStartClean: true}
+	ok := PhysicalConfirmation{ConfirmedBy: "123", Method: "IN_GAME_OBSERVED", ObservedAt: now.Add(12 * time.Minute), PickedUpBy: "OwnerCharacter",
+		PickupObservedAt: now.Add(13 * time.Minute), NoRespawnCheckedAt: now.Add(50 * time.Minute), Milestones: fullMilestones()}
 	if s, err := Fulfill(nitradodelivery.AttemptVerificationRequired, ok); err != nil || s != nitradodelivery.AttemptFulfilled {
 		t.Fatal(err)
 	}
-	for name, c := range map[string]struct {
-		state string
-		conf  PhysicalConfirmation
-	}{
-		"from restart":   {nitradodelivery.AttemptRestartObserved, ok},
-		"from unstage":   {nitradodelivery.AttemptUnstageRequired, ok},
-		"anonymous":      {nitradodelivery.AttemptVerificationRequired, PhysicalConfirmation{Method: "IN_GAME_OBSERVED", ObservedAt: now, SecondStartClean: true}},
-		"log evidence":   {nitradodelivery.AttemptVerificationRequired, PhysicalConfirmation{ConfirmedBy: "1", Method: "RPT_NO_ERROR", ObservedAt: now, SecondStartClean: true}},
-		"no second boot": {nitradodelivery.AttemptVerificationRequired, PhysicalConfirmation{ConfirmedBy: "1", Method: "IN_GAME_OBSERVED", ObservedAt: now}},
+	for name, mut := range map[string]func(*PhysicalConfirmation) *string{
+		"from restart":     func(c *PhysicalConfirmation) *string { s := nitradodelivery.AttemptRestartObserved; return &s },
+		"from unstage":     func(c *PhysicalConfirmation) *string { s := nitradodelivery.AttemptUnstageRequired; return &s },
+		"anonymous":        func(c *PhysicalConfirmation) *string { c.ConfirmedBy = ""; return nil },
+		"log evidence":     func(c *PhysicalConfirmation) *string { c.Method = "RPT_NO_ERROR"; return nil },
+		"no pickup":        func(c *PhysicalConfirmation) *string { c.PickedUpBy = ""; return nil },
+		"pickup before":    func(c *PhysicalConfirmation) *string { c.PickupObservedAt = now; return nil },
+		"no respawn check": func(c *PhysicalConfirmation) *string { c.NoRespawnCheckedAt = time.Time{}; return nil },
+		"milestone gap":    func(c *PhysicalConfirmation) *string { c.Milestones.EntryRemoved = nil; return nil },
 	} {
-		if _, err := Fulfill(c.state, c.conf); !errors.Is(err, ErrFulfillmentNotAllowed) {
+		c := ok
+		state := nitradodelivery.AttemptVerificationRequired
+		if s := mut(&c); s != nil {
+			state = *s
+		}
+		if _, err := Fulfill(state, c); !errors.Is(err, ErrFulfillmentNotAllowed) {
 			t.Errorf("%s: fulfilled", name)
 		}
+	}
+}
+
+func TestStagingReadiness(t *testing.T) {
+	good := StagingReadiness{Now: now, Operator: OperatorWindow{Operator: "123", ConfirmedAt: now.Add(-time.Minute), From: now.Add(-time.Minute), Until: now.Add(3 * time.Hour)},
+		CurrentBootStart: now.Add(-30 * time.Minute), BootAccepted: true, DropPointObserved: now.Add(-4 * time.Minute)}
+	if err := CheckStagingReadiness(good); err != nil {
+		t.Fatal(err)
+	}
+	for name, c := range map[string]struct {
+		mut  func(*StagingReadiness)
+		want error
+	}{
+		"no operator":          {func(r *StagingReadiness) { r.Operator.Operator = "" }, ErrNoOperator},
+		"unconfirmed operator": {func(r *StagingReadiness) { r.Operator.ConfirmedAt = time.Time{} }, ErrNoOperator},
+		"window too short":     {func(r *StagingReadiness) { r.Operator.Until = now.Add(70 * time.Minute) }, ErrOperatorWindow},
+		"window starts later":  {func(r *StagingReadiness) { r.Operator.From = now.Add(time.Minute) }, ErrOperatorWindow},
+		"boot not accepted":    {func(r *StagingReadiness) { r.BootAccepted = false }, ErrBootNotAccepted},
+		"boot too recent":      {func(r *StagingReadiness) { r.CurrentBootStart = now.Add(-3 * time.Minute) }, ErrBootTooRecent},
+		"restart beginning":    {func(r *StagingReadiness) { r.PreStartPending = true }, ErrPreStartPending},
+		"stale drop point":     {func(r *StagingReadiness) { r.DropPointObserved = now.Add(-25 * time.Minute) }, ErrDropPointTooStale},
+	} {
+		r := good
+		c.mut(&r)
+		if err := CheckStagingReadiness(r); !errors.Is(err, c.want) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if MinOperatorWindow < 2*ObservedRestartInterval {
+		t.Fatal("the operator window must cover a scheduled restart and the unstage after it")
 	}
 }
 
@@ -311,12 +492,34 @@ func TestGatesAndUploadSequence(t *testing.T) {
 	ids := ""
 	for _, g := range gs {
 		ids += g.ID
-		if g.Action == "" || len(g.Evidence) == 0 || g.Rollback == "" {
+		if g.Action == "" || len(g.Evidence) == 0 || g.Rollback == "" || len(g.Preconditions) == 0 {
 			t.Errorf("gate %s incomplete", g.ID)
 		}
 	}
-	if ids != "ABCDEF" || !gs[0].Writes || !gs[1].Writes || !gs[2].Restarts || !gs[3].Writes || !gs[4].Restarts || gs[5].Writes || gs[5].Restarts {
+	if ids != "ABCDEFGHI" {
 		t.Fatalf("gates %s", ids)
+	}
+	by := map[string]Gate{}
+	for _, g := range gs {
+		by[g.ID] = g
+	}
+	// Writes, records and restarts are separate gates; the item is exposed only from E to G.
+	for id, want := range map[string][4]bool{ // writes, records, restarts, exposure
+		GateA: {true, false, false, false}, GateB: {true, false, false, false}, GateC: {false, true, false, false},
+		GateD: {false, true, false, false}, GateE: {true, false, false, true}, GateF: {false, false, true, true},
+		GateG: {true, false, false, true}, GateH: {false, false, true, false}, GateI: {false, true, false, false},
+	} {
+		g := by[id]
+		if got := [4]bool{g.Writes, g.Records, g.Restarts, g.ItemExposure}; got != want {
+			t.Errorf("gate %s: %v", id, got)
+		}
+	}
+	// The empty file is created before the configuration references it.
+	if by[GateA].Paths[0] != nitradodelivery.ArtifactRelPath || by[GateB].Paths[0] != ConfigRelPath {
+		t.Fatal("A creates the Champion file, B edits the configuration")
+	}
+	if !strings.Contains(strings.Join(by[GateE].Preconditions, " "), "operator") {
+		t.Fatal("staging requires a confirmed operator")
 	}
 	if WriteCapability != "UNVERIFIED" {
 		t.Fatal("write capability must stay UNVERIFIED until a live upload is verified")
@@ -374,11 +577,20 @@ func TestOutputsCarryNoCredentials(t *testing.T) {
 	dp, sess := goodDrop()
 	c, _ := VerifyDropPoint(dp, 1, 11, "chernarusplus", sess, now, 0)
 	pv, _ := PreviewSingleItem(CanaryInput{Binding: binding(), DropPoint: dp, Check: c})
-	p, _ := ProposePatch([]byte(liveShape), PatchOptions{})
-	all, _ := json.Marshal([]any{pv, p, Gates(), UploadSequence(ConfigRelPath, p.CurrentSHA256, p.ProposedSHA256, ConfigBackupPath(p.CurrentSHA256))})
+	p, _ := ProposePatch([]byte(liveShape))
+	lc, _ := ProposeLostCityRestore([]byte(liveShape))
+	all, _ := json.Marshal([]any{pv, p, lc, LostCityGate(), Gates(), UploadSequence(ConfigRelPath, p.CurrentSHA256, p.ProposedSHA256, ConfigBackupPath(p.CurrentSHA256))})
 	for _, bad := range []string{"token=", "Bearer", "password", "X-Amz", "Signature=", "/games/", "ftproot", "http://", "https://"} {
 		if strings.Contains(string(all), bad) {
 			t.Errorf("output contains %q", bad)
 		}
 	}
+}
+
+func canaryDelivery(id int64, x, z float64) repository.ShopDelivery {
+	gs := int64(1)
+	return repository.ShopDelivery{ID: id, PurchaseID: id + 1000, OrganizationID: 1, InstallationID: 11, GameServerID: &gs, PlayerID: 7,
+		DeliveryType: "MANUAL", Policy: repository.DeliveryPolicyManualCoordinate, MapKey: "chernarusplus", X: &x, Z: &z,
+		Status: repository.DeliveryStatusManualReady, PurchaseStatus: repository.ShopStatusPendingFulfillment,
+		Items: []repository.ShopPurchaseItem{{ProductName: "Canary BandageDressing", UnitPricePoints: 1, Quantity: 1, LineTotalPoints: 1}}}
 }

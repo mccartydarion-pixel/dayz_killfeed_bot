@@ -152,20 +152,155 @@ func fail(d RestartDecision, why string) RestartDecision {
 	return d
 }
 
-// PhysicalConfirmation is the only evidence that fulfills a canary: a named operator saw the item.
-type PhysicalConfirmation struct {
-	ConfirmedBy      string // Discord user id of the approving owner/admin
-	Method           string // IN_GAME_OBSERVED
-	ObservedAt       time.Time
-	SecondStartClean bool // DecideRestart reported a clean later start
+// --- exposure, milestones and fulfillment -----------------------------------------------------------
+
+// Once the item is staged, ANY start spawns it - the server also restarts on its own schedule (four
+// consecutive 68-minute intervals observed live). The exposure lasts from the staged upload until the
+// empty file is read back, which can take up to one full restart interval plus boot acceptance plus
+// the unstage. MinOperatorWindow covers two intervals so that an operator is present for the worst case.
+const (
+	ObservedRestartInterval = 68 * time.Minute
+	MinOperatorWindow       = 2 * ObservedRestartInterval
+)
+
+var (
+	ErrNoOperator        = errors.New("no operator has confirmed availability for the staging window")
+	ErrOperatorWindow    = errors.New("the operator's availability does not cover the whole exposure window")
+	ErrBootTooRecent     = errors.New("the current boot started inside the staging quiet period")
+	ErrPreStartPending   = errors.New("restart.log reports a restart beginning: do not stage now")
+	ErrBootNotAccepted   = errors.New("the current boot is not accepted by boot authority")
+	ErrDropPointTooStale = errors.New("the drop point is no longer fresh: take a new observation")
+)
+
+// OperatorWindow is the operator's confirmed availability, recorded before staging.
+type OperatorWindow struct {
+	Operator    string // Discord user id
+	ConfirmedAt time.Time
+	From, Until time.Time
 }
 
-var ErrFulfillmentNotAllowed = errors.New("fulfillment requires VERIFICATION_REQUIRED, a clean second start and a named in-game observation")
+// StagingReadiness is Gate E's final check, evaluated immediately before the staged upload.
+type StagingReadiness struct {
+	Now               time.Time
+	Operator          OperatorWindow
+	CurrentBootStart  time.Time
+	BootAccepted      bool
+	PreStartPending   bool // restart.log pre-start line seen and no newer boot accepted yet
+	DropPointObserved time.Time
+}
+
+// CheckStagingReadiness refuses to stage unless an operator covers the exposure window, the current
+// boot is accepted and old enough, no restart is beginning and the drop point is still fresh.
+func CheckStagingReadiness(r StagingReadiness) error {
+	w := r.Operator
+	switch {
+	case w.Operator == "" || w.ConfirmedAt.IsZero() || w.ConfirmedAt.After(r.Now):
+		return ErrNoOperator
+	case w.From.After(r.Now) || w.Until.Before(r.Now.Add(MinOperatorWindow)):
+		return ErrOperatorWindow
+	case !r.BootAccepted || r.CurrentBootStart.IsZero():
+		return ErrBootNotAccepted
+	case r.Now.Sub(r.CurrentBootStart) < StagingQuietPeriod:
+		return ErrBootTooRecent
+	case r.PreStartPending:
+		return ErrPreStartPending
+	case r.DropPointObserved.IsZero() || r.Now.Sub(r.DropPointObserved) > DropPointMaxAgeDflt:
+		return ErrDropPointTooStale
+	}
+	return nil
+}
+
+// Milestone names, in the order the canary must reach them. Each is separate evidence: a restart is
+// not a boot, a boot is not a spawn, an absent RPT error is not an item, and an item is not proof that
+// it will not spawn again.
+const (
+	MilestoneRestartInitiated = "RESTART_INITIATED" // restart.log pre-start line, or the owner's own restart
+	MilestoneNewBootAccepted  = "NEW_BOOT_ACCEPTED" // boot authority accepted a boot that started after staging
+	MilestoneSpawnerAttempted = "SPAWNER_ATTEMPTED" // that boot's RPT reached CE init (the spawner runs ~11 s later)
+	MilestoneItemObserved     = "ITEM_OBSERVED"     // in game: seen at the drop point and picked up, by a named observer
+	MilestoneEntryRemoved     = "ENTRY_REMOVED"     // the empty Champion file read back, before any further boot
+	MilestoneNoSecondSpawn    = "NO_SECOND_SPAWN"   // a later accepted boot, and in game no new item at the drop point
+)
+
+// Evidence is one milestone's proof.
+type Evidence struct {
+	At     time.Time
+	By     string // who observed or recorded it
+	Detail string
+}
+
+// Milestones is the canary's evidence record.
+type Milestones struct {
+	RestartInitiated, NewBootAccepted, SpawnerAttempted *Evidence
+	ItemObserved, EntryRemoved, NoSecondSpawn           *Evidence
+	SecondBootStart                                     time.Time // start of the first boot after EntryRemoved
+}
+
+// MilestoneStatus is one line of the checklist.
+type MilestoneStatus struct {
+	Name    string
+	Reached bool
+	Problem string
+}
+
+// Check lists every milestone and the ordering problems: the entry must be removed before the second
+// boot starts, the no-respawn check needs that second boot, and every in-game observation needs a
+// named observer.
+func (m Milestones) Check() []MilestoneStatus {
+	st := func(name string, e *Evidence, needBy bool) MilestoneStatus {
+		s := MilestoneStatus{Name: name, Reached: e != nil && !e.At.IsZero()}
+		if s.Reached && needBy && e.By == "" {
+			s.Reached, s.Problem = false, "needs a named observer"
+		}
+		return s
+	}
+	out := []MilestoneStatus{
+		st(MilestoneRestartInitiated, m.RestartInitiated, false),
+		st(MilestoneNewBootAccepted, m.NewBootAccepted, false),
+		st(MilestoneSpawnerAttempted, m.SpawnerAttempted, false),
+		st(MilestoneItemObserved, m.ItemObserved, true),
+		st(MilestoneEntryRemoved, m.EntryRemoved, false),
+		st(MilestoneNoSecondSpawn, m.NoSecondSpawn, true),
+	}
+	if out[4].Reached && !m.SecondBootStart.IsZero() && !m.EntryRemoved.At.Before(m.SecondBootStart) {
+		out[4].Reached, out[4].Problem = false, "removed only after the second boot started: possible second spawn"
+	}
+	if out[5].Reached && (m.SecondBootStart.IsZero() || !out[4].Reached || m.NoSecondSpawn.At.Before(m.SecondBootStart)) {
+		out[5].Reached, out[5].Problem = false, "needs a second boot after the verified removal, then the in-game check"
+	}
+	return out
+}
+
+// Complete reports whether every milestone is reached without a problem.
+func (m Milestones) Complete() bool {
+	for _, s := range m.Check() {
+		if !s.Reached {
+			return false
+		}
+	}
+	return true
+}
+
+// PhysicalConfirmation is the only evidence that fulfills a canary. The original item does not have
+// to remain at the drop point: it must have been seen there and picked up, and a later start must
+// not have produced a new one.
+type PhysicalConfirmation struct {
+	ConfirmedBy        string // Discord user id of the approving owner/admin
+	Method             string // IN_GAME_OBSERVED
+	ObservedAt         time.Time
+	PickedUpBy         string // the in-game character that collected it
+	PickupObservedAt   time.Time
+	NoRespawnCheckedAt time.Time // in game, after the second start
+	Milestones         Milestones
+}
+
+var ErrFulfillmentNotAllowed = errors.New("fulfillment requires VERIFICATION_REQUIRED, every canary milestone, and a named in-game observation with pickup")
 
 // Fulfill is the single VERIFICATION_REQUIRED -> FULFILLED step: never from a restart, an upload or
 // a log line.
 func Fulfill(state string, c PhysicalConfirmation) (string, error) {
-	if state != nd.AttemptVerificationRequired || c.ConfirmedBy == "" || c.Method != "IN_GAME_OBSERVED" || c.ObservedAt.IsZero() || !c.SecondStartClean {
+	if state != nd.AttemptVerificationRequired || c.ConfirmedBy == "" || c.Method != "IN_GAME_OBSERVED" || c.ObservedAt.IsZero() ||
+		c.PickedUpBy == "" || c.PickupObservedAt.IsZero() || c.PickupObservedAt.Before(c.ObservedAt) || c.NoRespawnCheckedAt.IsZero() || !c.Milestones.Complete() {
 		return state, ErrFulfillmentNotAllowed
 	}
 	return nd.AttemptFulfilled, nil
