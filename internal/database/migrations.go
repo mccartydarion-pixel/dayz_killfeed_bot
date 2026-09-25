@@ -2158,6 +2158,12 @@ ON CONFLICT (installation_id, route_key) DO NOTHING;
 		Name: "0054_shop_delivery_attempts",
 		SQL:  ShopDeliveryAttemptsSQL,
 	},
+	{
+		// Champion Shop Phase 2C.4 structured canary evidence (docs/SHOP_DELIVERY_PHASE2C4.md). Additive,
+		// append-only; depends on 0054. Inert until the canary execution gate is enabled.
+		Name: "0055_shop_delivery_attempt_evidence",
+		SQL:  ShopAttemptEvidenceSQL,
+	},
 }
 
 // LiveSyncCommandLineCleanupSQL (migration 0052, Champion Live Sync phase 2.1, docs/

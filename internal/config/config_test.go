@@ -145,3 +145,42 @@ func TestParseHeatmapDiscordIntervalMinutes(t *testing.T) {
 		}
 	}
 }
+
+func TestShopCanaryExecutionIsLockedByDefault(t *testing.T) {
+	for _, c := range []struct {
+		mode, ids string
+		want      bool
+	}{
+		{"", "", false},
+		{"", "11", false},
+		{"true", "11", false}, // a generic boolean never opens the canary
+		{"1", "11", false},
+		{"yes", "11", false},
+		{"ENABLED", "11", false},
+		{"enabled", "", false},
+		{"enabled", "x, -3, 0", false},
+		{"enabled", "11", true},
+		{" enabled ", "11, 11, 12", true},
+	} {
+		got := ParseShopCanaryExecution(c.mode, c.ids)
+		if got.Enabled != c.want {
+			t.Errorf("%q %q: %+v", c.mode, c.ids, got)
+		}
+	}
+	if g := ParseShopCanaryExecution("enabled", "11, 11, 12"); len(g.InstallationIDs) != 2 {
+		t.Fatalf("%+v", g)
+	}
+	// Other Shop / delivery / embed settings never open it.
+	for _, k := range []string{"CHAMPION_CUSTOM_EMBEDS_ENABLED", "CHAMPION_SHOP_AUTOMATIC_DELIVERY", "CHAMPION_SHOP_ENABLED", "NITRADO_TOKEN"} {
+		t.Setenv(k, "true")
+	}
+	t.Setenv("CHAMPION_SHOP_CANARY_EXECUTION", "")
+	t.Setenv("CHAMPION_SHOP_CANARY_INSTALLATION_IDS", "11")
+	cfg, err := Load()
+	if err != nil {
+		t.Skipf("config load needs other settings: %v", err)
+	}
+	if cfg.ShopCanaryExecution.Enabled {
+		t.Fatal("the canary lock opened without its own switch")
+	}
+}
