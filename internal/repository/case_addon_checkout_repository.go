@@ -30,6 +30,8 @@ type CaseWebhookState struct {
 	Tier, CustomerID, SubscriptionID, PriceID, Status string
 	CheckoutSessionID string
 	CurrentPeriodStart, CurrentPeriodEnd, TrialStart, TrialEnd, PaidThrough *time.Time
+	// PaidTier is the tier of the paid invoice line (defaults to Tier).
+	PaidTier string
 	FounderTrialOffer bool
 	FailedPeriodEnd *time.Time
 	CancelAtPeriodEnd bool
@@ -39,6 +41,9 @@ type CaseWebhookState struct {
 // connected guild, game server, and organization match the same ownership
 // chain. Once a row exists, every retry reuses its idempotency identity. A
 // failed/canceled purchase never silently creates another paid Stripe object.
+// A CANCELED add-on is history, not a current row: the partial unique indexes
+// from migration 0063 then admit exactly one new reservation with a new ID, so
+// late events for the old subscription can only ever reach the old row.
 func (r *CaseAddonSubscriptionRepository) ReserveCaseCheckout(ctx context.Context, organizationID, installationID, gameServerID int64, tier, customerID string) (*CaseCheckoutReservation, error) {
 	if organizationID <= 0 || installationID <= 0 || gameServerID <= 0 || strings.TrimSpace(customerID) == "" {
 		return nil, ErrCaseCheckoutConflict
@@ -60,7 +65,7 @@ ON CONFLICT DO NOTHING RETURNING id`
 	const get = `SELECT id,organization_id,installation_id,game_server_id,tier,
 COALESCE(provider_customer_id,''),COALESCE(checkout_session_id,''),COALESCE(checkout_url,''),
 status,COALESCE(provider_subscription_id,''),checkout_attempt
-FROM case_addon_subscriptions WHERE organization_id=$1 AND installation_id=$2`
+FROM case_addon_subscriptions WHERE organization_id=$1 AND installation_id=$2 AND status<>'CANCELED'`
 	var row CaseCheckoutReservation
 	var status,subscriptionID string
 	err = r.pool.QueryRow(ctx,get,organizationID,installationID).Scan(&row.ID,&row.OrganizationID,&row.InstallationID,&row.GameServerID,
@@ -124,8 +129,12 @@ FROM case_addon_subscriptions WHERE id=$1 FOR UPDATE`,in.AddonID).
 Scan(&orgID,&installationID,&serverID,&tier,&customer,&priorSub,&sessionID,&priorStatus,&priorPaidThrough)
 	if errors.Is(err,pgx.ErrNoRows){return ErrCaseWebhookMismatch}
 	if err!=nil{return fmt.Errorf("lock case addon: %w",err)}
+	// A reservation's tier is fixed until Stripe binds a subscription to it.
+	// Afterwards the tier follows that same subscription's configured price
+	// (a Watch <-> Pro change), never another subscription's.
+	boundTierChange:=priorSub!="" && priorSub==in.SubscriptionID && tier!=in.Tier
 	if orgID!=in.OrganizationID || installationID!=in.InstallationID ||
-		serverID!=in.GameServerID || tier!=in.Tier || customer!=in.CustomerID ||
+		serverID!=in.GameServerID || (tier!=in.Tier && !boundTierChange) || customer!=in.CustomerID ||
 		sessionID=="" || (in.CheckoutSessionID!="" && in.CheckoutSessionID!=sessionID) ||
 		(priorSub!="" && priorSub!=in.SubscriptionID) {
 		return ErrCaseWebhookMismatch
@@ -142,6 +151,11 @@ Scan(&orgID,&installationID,&serverID,&tier,&customer,&priorSub,&sessionID,&prio
 			return ErrCaseWebhookMismatch
 		}
 	}
+	// The billing layer always passes the paid invoice line's tier; a caller
+	// that omits it is asserting the payment covered the event's own tier.
+	if in.PaidThrough!=nil && in.PaidTier=="" {in.PaidTier=in.Tier}
+	if in.PaidThrough!=nil && !validCaseTier(in.PaidTier) {return ErrCaseWebhookMismatch}
+	if !validCaseTier(in.Tier) {return ErrCaseWebhookMismatch}
 	if in.Status!="ACTIVE" && in.Status!="TRIAL" && in.Status!="PAST_DUE" &&
 		in.Status!="CANCELED" && in.Status!="SUSPENDED" {return ErrCaseWebhookMismatch}
 	if in.FounderTrialOffer {
@@ -195,11 +209,51 @@ VALUES('stripe',$1,$2,$3) ON CONFLICT DO NOTHING RETURNING addon_id`,
 	_,err=tx.Exec(ctx,`UPDATE case_addon_subscriptions
 SET provider='stripe',provider_customer_id=$2,provider_subscription_id=$3,
 provider_price_id=$4,tier=$5,status=$6,current_period_start=$7,current_period_end=$8,
-trial_ends_at=$9,cancel_at_period_end=$10,paid_through=COALESCE(GREATEST(paid_through,$11),paid_through,$11),updated_at=NOW()
+trial_ends_at=$9,cancel_at_period_end=$10,paid_through=COALESCE(GREATEST(paid_through,$11),paid_through,$11),
+paid_tier=`+casePaidTierSQL+`,updated_at=NOW()
 WHERE id=$1`,in.AddonID,in.CustomerID,in.SubscriptionID,in.PriceID,in.Tier,in.Status,
-		in.CurrentPeriodStart,in.CurrentPeriodEnd,in.TrialEnd,in.CancelAtPeriodEnd,in.PaidThrough)
+		in.CurrentPeriodStart,in.CurrentPeriodEnd,in.TrialEnd,in.CancelAtPeriodEnd,in.PaidThrough,nullIfEmpty(in.PaidTier))
 	if err!=nil{return fmt.Errorf("apply case subscription: %w",err)}
 	if err=tx.Commit(ctx);err!=nil{return fmt.Errorf("commit case webhook: %w",err)}
+	return nil
+}
+
+// casePaidTierSQL moves paid_tier with the coverage it describes: a later
+// paid period takes its own tier; the SAME period end (an upgrade proration
+// invoice, or its original invoice delivered late) keeps the higher tier; an
+// older period never changes it. SET expressions all read the pre-update row.
+const casePaidTierSQL = `CASE
+    WHEN $11::timestamptz IS NULL THEN paid_tier
+    WHEN paid_through IS NULL OR $11::timestamptz > paid_through THEN $12::text
+    WHEN $11::timestamptz = paid_through AND
+        COALESCE(array_position(ARRAY['CASE_WATCH','CASE_PRO','CASE_COMMAND'],$12::text),0) >
+        COALESCE(array_position(ARRAY['CASE_WATCH','CASE_PRO','CASE_COMMAND'],paid_tier),0) THEN $12::text
+    ELSE paid_tier END`
+
+func validCaseTier(tier string) bool {
+	return tier=="CASE_WATCH" || tier=="CASE_PRO" || tier=="CASE_COMMAND"
+}
+
+func nullIfEmpty(v string) *string {
+	if v=="" {return nil}
+	return &v
+}
+
+// SaveCaseTierChange materializes a Stripe-confirmed (non-pending) price swap
+// for the exact bound subscription. It never touches paid_through/paid_tier:
+// premium capabilities still follow invoice.paid. Compare-and-swap on the
+// prior price, and idempotent if the webhook already recorded the new one.
+func (r *CaseAddonSubscriptionRepository) SaveCaseTierChange(ctx context.Context, orgID, installationID int64, subID, fromPrice, toPrice, toTier string) error {
+	if orgID<=0 || installationID<=0 || subID=="" || fromPrice=="" || toPrice=="" || !validCaseTier(toTier) {
+		return ErrCaseCheckoutConflict
+	}
+	tag,err:=r.pool.Exec(ctx,`UPDATE case_addon_subscriptions
+SET provider_price_id=$5,tier=$6,updated_at=NOW()
+WHERE organization_id=$1 AND installation_id=$2 AND provider_subscription_id=$3
+AND provider='stripe' AND status='ACTIVE' AND provider_price_id IN ($4,$5)`,
+		orgID,installationID,subID,fromPrice,toPrice,toTier)
+	if err!=nil{return fmt.Errorf("save case tier change: %w",err)}
+	if tag.RowsAffected()!=1{return ErrCaseCheckoutConflict}
 	return nil
 }
 

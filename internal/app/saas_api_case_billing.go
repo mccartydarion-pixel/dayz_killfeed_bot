@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/yourname/dayz-killfeed/internal/billing"
 	"github.com/yourname/dayz-killfeed/internal/casebilling"
@@ -16,12 +17,14 @@ const (
 	codeCaseNotAvailable = "CASE_NOT_AVAILABLE"
 	codeCaseCheckoutConflict = "CASE_CHECKOUT_CONFLICT"
 	codeCaseBaseRequired = "CASE_BASE_REQUIRED"
+	codeCasePreviewExpired = "CASE_PREVIEW_EXPIRED"
 )
 
 func init(){
 	httpStatusForCode[codeCaseNotAvailable]=http.StatusServiceUnavailable
 	httpStatusForCode[codeCaseCheckoutConflict]=http.StatusConflict
 	httpStatusForCode[codeCaseBaseRequired]=http.StatusConflict
+	httpStatusForCode[codeCasePreviewExpired]=http.StatusConflict
 }
 
 func (a *App) registerCaseBillingRoutes(){
@@ -33,6 +36,8 @@ func (a *App) registerCaseBillingRoutes(){
 	h("POST "+base+"/checkout/recover",a.handleCaseBillingRecover)
 	h("POST "+base+"/cancel",a.handleCaseBillingCancel)
 	h("POST "+base+"/reactivate",a.handleCaseBillingReactivate)
+	h("POST "+base+"/plan/preview",a.handleCaseBillingPlanPreview)
+	h("POST "+base+"/plan",a.handleCaseBillingPlanChange)
 }
 
 type casePlanDTO struct {
@@ -60,6 +65,10 @@ type caseServerDTO struct {
 	InstallationID int64 `json:"installationId"`
 	GameServerID int64 `json:"gameServerId"`
 	Tier string `json:"tier"`
+	// PaidTier is the tier currently paid for; access follows it until
+	// paidThrough. PendingDowngrade: tier (next renewal) is below paidTier.
+	PaidTier string `json:"paidTier"`
+	PendingDowngrade bool `json:"pendingDowngrade"`
 	Status string `json:"status"`
 	CurrentPeriodEnd *string `json:"currentPeriodEnd"`
 	PaidThrough *string `json:"paidThrough"`
@@ -80,7 +89,9 @@ func (a *App) handleCaseBillingServers(w http.ResponseWriter,r *http.Request){
 		matches:=sub.SelectedGameServerID!=nil && *sub.SelectedGameServerID==sub.GameServerID
 		items=append(items,caseServerDTO{
 			InstallationID:sub.InstallationID,GameServerID:sub.GameServerID,
-			Tier:sub.Tier,Status:sub.Status,CurrentPeriodEnd:nullableTimeStr(sub.CurrentPeriodEnd),
+			Tier:sub.Tier,Status:sub.Status,PaidTier:sub.PaidTier,
+			PendingDowngrade:sub.Status=="ACTIVE" && sub.PaidTier!="" && sub.PaidThrough!=nil && sub.PaidThrough.After(time.Now()) &&
+				casebilling.Rank(casebilling.Tier(sub.Tier))<casebilling.Rank(casebilling.Tier(sub.PaidTier)),CurrentPeriodEnd:nullableTimeStr(sub.CurrentPeriodEnd),
 			TrialEndsAt:nullableTimeStr(sub.TrialEndsAt),FounderTrialGranted:sub.FounderTrialGranted,
 			PaidThrough:nullableTimeStr(sub.PaidThrough),CancelAtPeriodEnd:sub.CancelAtPeriodEnd,
 			BoundToSelectedServer:matches,
@@ -211,3 +222,87 @@ func (a *App) handleCaseBillingManage(w http.ResponseWriter,r *http.Request,canc
 	})
 }
 
+
+type caseTierRequestBody struct {
+	InstallationID int64 `json:"installationId"`
+	Tier string `json:"tier"`
+	// ProrationDate echoes the preview's value; it is not a price or amount.
+	ProrationDate int64 `json:"prorationDate"`
+}
+
+// writeCaseTierError maps tier-change failures; no Stripe detail is exposed.
+func writeCaseTierError(w http.ResponseWriter,err error,event string) {
+	switch {
+	case errors.Is(err,billing.ErrCaseDisabled),errors.Is(err,billing.ErrProviderNotConfigured):
+		writeSaaSError(w,codeCaseNotAvailable,"C.A.S.E. upgrades are not yet available")
+	case errors.Is(err,billing.ErrCaseNotPurchasable):
+		writeSaaSError(w,codeInvalidPlan,"this C.A.S.E. package is not available")
+	case errors.Is(err,billing.ErrCaseBaseRequired):
+		writeSaaSError(w,codeCaseBaseRequired,"an active paid Champion subscription is required")
+	case errors.Is(err,billing.ErrCasePreviewExpired):
+		writeSaaSError(w,codeCasePreviewExpired,"preview expired; review the change again")
+	case errors.Is(err,billing.ErrCaseTierUnchanged):
+		writeSaaSError(w,codeCaseCheckoutConflict,"this server is already on that C.A.S.E. tier")
+	case errors.Is(err,billing.ErrCaseCancelScheduled):
+		writeSaaSError(w,codeCaseCheckoutConflict,"cancellation is scheduled; reactivate before changing tier")
+	case errors.Is(err,billing.ErrCaseChangePending):
+		writeSaaSError(w,codeCaseCheckoutConflict,"a previous tier change is awaiting payment")
+	case errors.Is(err,billing.ErrCaseNotManaged),errors.Is(err,repository.ErrCaseCheckoutConflict):
+		writeSaaSError(w,codeCaseCheckoutConflict,"this server has no active paid C.A.S.E. subscription to change")
+	case errors.Is(err,repository.ErrCaseWebhookMismatch):
+		writeSaaSError(w,codeCaseCheckoutConflict,"C.A.S.E. subscription needs reconciliation before changes")
+	default:
+		slog.Error("component=case_billing","event",event,"err",err.Error())
+		writeSaaSError(w,codeInternalError,"could not change C.A.S.E. tier")
+	}
+}
+
+func (a *App) decodeCaseTierRequest(w http.ResponseWriter,r *http.Request)(billingRequest,*caseTierRequestBody,bool){
+	br,ok:=a.billingContext(w,r,true)
+	if !ok || !enforceRateLimit(w,a.saasBillingActionLimiter,rateLimitKey(r)){return billingRequest{},nil,false}
+	var body caseTierRequestBody
+	if !decodeFactionBody(w,r,&body){return billingRequest{},nil,false}
+	if body.InstallationID<=0 || strings.TrimSpace(body.Tier)=="" {
+		writeSaaSError(w,codeInvalidRequest,"installationId and tier are required")
+		return billingRequest{},nil,false
+	}
+	return br,&body,true
+}
+
+// Organization OWNER/ADMIN only. Read-only: returns what the change will do
+// and cost (Stripe-calculated) before anything is mutated.
+func (a *App) handleCaseBillingPlanPreview(w http.ResponseWriter,r *http.Request){
+	br,body,ok:=a.decodeCaseTierRequest(w,r);if !ok{return}
+	ctx,done:=context.WithTimeout(r.Context(),billingTimeout);defer done()
+	p,err:=a.Billing.CasePreviewTierChange(ctx,br.orgID,body.InstallationID,body.Tier)
+	if err!=nil{writeCaseTierError(w,err,"tier_preview_failed");return}
+	writeSaaSJSON(w,http.StatusOK,map[string]any{
+		"installationId":body.InstallationID,"kind":p.Kind,
+		"currentTier":p.CurrentTier,"targetTier":p.TargetTier,
+		"amountDueNowCents":p.AmountDueNowCents,"currency":p.Currency,
+		"prorationDate":p.ProrationDate,"effectiveAt":nullableTimeStr(p.EffectiveAt),
+		"nextRenewalAmountCents":p.NextRenewalAmountCents,
+		"currentPeriodEnd":nullableTimeStr(p.CurrentPeriodEnd),
+	})
+}
+
+// Organization OWNER/ADMIN only. Applies a previewed Watch <-> Pro change on
+// the server's existing add-on subscription. 200 with status PAYMENT_PENDING
+// means Stripe is holding an upgrade until its proration is paid; access is
+// unchanged until the signed invoice.paid webhook arrives.
+func (a *App) handleCaseBillingPlanChange(w http.ResponseWriter,r *http.Request){
+	br,body,ok:=a.decodeCaseTierRequest(w,r);if !ok{return}
+	ctx,done:=context.WithTimeout(r.Context(),billingTimeout);defer done()
+	out,err:=a.Billing.CaseChangeTier(ctx,br.orgID,body.InstallationID,body.Tier,body.ProrationDate)
+	if err!=nil{writeCaseTierError(w,err,"tier_change_failed");return}
+	status:="APPLIED"
+	if out.Pending{status="PAYMENT_PENDING"}
+	billingAudit("case_tier_change_"+strings.ToLower(string(out.Kind)),br,
+		"installation_id",body.InstallationID,"tier",out.Row.Tier,"status",status)
+	writeSaaSJSON(w,http.StatusOK,map[string]any{
+		"installationId":out.Row.InstallationID,"kind":out.Kind,"status":status,
+		"tier":out.Row.Tier,"paidTier":out.Row.PaidTier,
+		"paidThrough":nullableTimeStr(out.Row.PaidThrough),
+		"currentPeriodEnd":nullableTimeStr(out.Row.CurrentPeriodEnd),
+	})
+}

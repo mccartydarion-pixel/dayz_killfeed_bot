@@ -29,6 +29,10 @@ type AccessInput struct {
 	ProviderPriceID      string
 	CurrentPeriodEnd     *time.Time
 	PaidThrough          *time.Time // verified invoice.paid, never inferred from ACTIVE status
+	// PaidTier is the tier that invoice.paid covered through PaidThrough. After
+	// an upgrade it stays lower until the proration invoice is paid; after a
+	// downgrade it stays higher until the paid period ends.
+	PaidTier             Tier
 	TrialEndsAt          *time.Time
 	FounderTrialGranted bool // exact stored, one-time server grant; Stripe trialing alone is insufficient
 }
@@ -55,11 +59,18 @@ func Resolve(in AccessInput, now time.Time) []Capability {
 		in.CurrentPeriodEnd == nil || !in.CurrentPeriodEnd.After(now) {
 		return nil
 	}
+	effective := in.Tier
 	switch in.Status {
 	case "ACTIVE":
 		// Subscription ACTIVE does not prove the invoice was paid, especially
 		// with delayed payment methods. Require confirmed paid coverage.
 		if in.PaidThrough == nil || !in.PaidThrough.After(now) { return nil }
+		// Capabilities follow what was actually paid for, never the tier a
+		// pending upgrade is about to bill. Rows written before paid_tier
+		// existed were backfilled to their tier (migration 0063).
+		if in.PaidTier != "" {
+			effective = in.PaidTier
+		}
 	case "TRIAL":
 		if !in.FounderTrialGranted || in.TrialEndsAt == nil || !in.TrialEndsAt.After(now) {
 			return nil
@@ -67,7 +78,7 @@ func Resolve(in AccessInput, now time.Time) []Capability {
 	default:
 		return nil
 	}
-	granted := tierCapabilities(in.Tier)
+	granted := tierCapabilities(effective)
 	verified := tierCapabilities(in.VerifiedThrough)
 	if len(granted) == 0 || len(verified) < len(granted) {
 		return nil

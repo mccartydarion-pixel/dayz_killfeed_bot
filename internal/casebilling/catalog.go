@@ -72,3 +72,8 @@ func tierCapabilities(tier Tier) []Capability {
 		return nil
 	}
 }
+
+// Rank orders tiers for upgrade/downgrade decisions; 0 is not a C.A.S.E. tier.
+func Rank(tier Tier) int {
+	return len(tierCapabilities(tier))
+}

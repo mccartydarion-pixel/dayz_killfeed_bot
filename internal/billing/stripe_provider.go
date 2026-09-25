@@ -143,6 +143,7 @@ func (p *StripeProvider) SetCancelAtPeriodEnd(ctx context.Context, subscriptionI
 // 2025-08-27 ("basil"), not on the subscription itself - see stripe-go v82's subscriptionitem.go.
 func normalizeSubscription(s *stripe.Subscription) *SubscriptionState {
 	out := &SubscriptionState{SubscriptionID: s.ID, StripeStatus: string(s.Status), CancelAtPeriodEnd: s.CancelAtPeriodEnd, Metadata: s.Metadata}
+	out.PendingUpdate = s.PendingUpdate != nil
 	if s.Customer != nil {
 		out.CustomerID = s.Customer.ID
 	}

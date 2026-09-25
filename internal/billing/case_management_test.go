@@ -78,7 +78,7 @@ func TestCASEActiveRequiresSignedInvoicePaidCoverage(t *testing.T) {
 	"parent":{"subscription_details":{"subscription":"sub_case"}},
 	"lines":{"data":[
 	{"parent":{"type":"invoice_item_details"},"pricing":{"price_details":{"price":"price_other"}},"period":{"start":` + formatUnix(now) + `,"end":` + formatUnix(end.Add(365*24*time.Hour)) + `}},
-	{"parent":{"type":"subscription_item_details","subscription_item_details":{"subscription":"sub_case"}},"pricing":{"price_details":{"price":"price_pro"}},"period":{"start":` + formatUnix(now) + `,"end":` + formatUnix(end) + `}}
+	{"amount":999,"parent":{"type":"subscription_item_details","subscription_item_details":{"subscription":"sub_case"}},"pricing":{"price_details":{"price":"price_pro"}},"period":{"start":` + formatUnix(now) + `,"end":` + formatUnix(end) + `}}
 	]}}`)
 	var invoice webhookInvoice
 	if err := json.Unmarshal(raw, &invoice); err != nil { t.Fatal(err) }
@@ -87,6 +87,9 @@ func TestCASEActiveRequiresSignedInvoicePaidCoverage(t *testing.T) {
 	if err := s.applyCaseEvent(context.Background(), paid); err != nil {t.Fatal(err)}
 	if len(store.applied) != 2 || store.applied[1].PaidThrough == nil || !store.applied[1].PaidThrough.Equal(end) {
 		t.Fatalf("invoice.paid coverage mismatch: %+v", store.applied)
+	}
+	if store.applied[1].PaidTier != string(casebilling.Pro) {
+		t.Fatalf("paid coverage not bound to the paid line's tier: %+v", store.applied[1])
 	}
 	if got := []string{store.applied[0].Status, store.applied[1].Status}; !reflect.DeepEqual(got, []string{"ACTIVE", "ACTIVE"}) {
 		t.Fatalf("expected active statuses but separate payment proof: %v", got)

@@ -54,3 +54,32 @@ func TestCASEAddonMigrationIsAdditiveAndScoped(t *testing.T) {
 		}
 	}
 }
+
+// 0063 only relaxes per-installation/server uniqueness to CURRENT rows
+// (keeping CANCELED history) and adds paid_tier; it touches no base billing.
+func TestCASEPlanChangeMigrationIsScoped(t *testing.T) {
+	var sql string
+	for _, m := range migrations {
+		if m.Name == "0063_case_plan_changes" {
+			sql = strings.Join(strings.Fields(m.SQL), " ")
+		}
+	}
+	if sql == "" {
+		t.Fatal("0063_case_plan_changes missing")
+	}
+	for _, want := range []string{
+		"ON case_addon_subscriptions(organization_id, installation_id) WHERE status <> 'CANCELED'",
+		"ON case_addon_subscriptions(organization_id, game_server_id) WHERE status <> 'CANCELED'",
+		"CHECK (paid_through IS NULL OR paid_tier IS NOT NULL)",
+		"UPDATE case_addon_subscriptions SET paid_tier=tier WHERE paid_through IS NOT NULL AND paid_tier IS NULL",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{"ALTER TABLE subscriptions", "UPDATE subscriptions", "DELETE FROM", "DROP TABLE", "uq_case_addon_provider_subscription"} {
+		if strings.Contains(sql, forbidden) {
+			t.Errorf("plan-change migration must not contain %q", forbidden)
+		}
+	}
+}

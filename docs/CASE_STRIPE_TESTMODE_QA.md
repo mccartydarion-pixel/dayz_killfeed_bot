@@ -153,8 +153,10 @@ because these prices validate.
    one-time 7-day grant per organization/game server, repeat/abandoned trial
    cases, end-of-trial charge disclosure and cancellation. Trial checkout
    remains unimplemented and must not be marketed yet.
-10. Upgrade/downgrade: show provider-calculated price/proration preview
-    before confirmation; downgrade default at renewal. **Not implemented.**
+10. Upgrade/downgrade: provider-calculated proration preview before
+    confirmation; downgrade takes effect at renewal. **Implemented (Phase
+    6.10) with FakeProvider tests; not yet exercised against Stripe** - see
+    "Sandbox lifecycle run" below.
 11. Refund, disputed invoice, subscription deletion, customer portal
     cancellation, missing webhook, and reconciliation recovery. **Not signed
     off.**
@@ -171,6 +173,47 @@ because these prices validate.
 14. Existing free observations, evidence, sessions and ADM worker must remain
     intact when C.A.S.E. expires or is absent. No automatic bans, guaranteed
     device detection or unverified detectors.
+
+## Preflight result (2026-09-25)
+
+The operator ran `go run ./cmd/case-stripe-preflight` with a sandbox key and it **PASSED** for both
+candidate prices: active, `livemode=false`, exact parent products, USD 499/999 monthly, correct
+metadata. This verifies the catalog objects only. No checkout, customer, subscription or webhook
+has been exercised.
+
+## Sandbox lifecycle run (operator steps, Phase 6.10)
+
+Every step needs credentials that must never be pasted into chat, and an operator at the keyboard.
+Test mode only; the live Champions Railway project and its secrets are never touched.
+
+1. On `champions-case-staging` / `case-billing-qa`: attach a disposable PostgreSQL, point the
+   service at branch `feat/case-billing-phase6-foundation`, and set in Railway (never in git):
+   `STRIPE_SECRET_KEY` = sandbox `sk_test_...`, `CHAMPION_BILLING_PLANS_JSON` = a **sandbox**
+   LOW/MEDIUM/HIGH catalog (sandbox base price ids), `CHAMPION_CASE_VERIFIED_THROUGH=CASE_PRO`,
+   `CHAMPION_CASE_ACCESS_ENABLED=true`, and `CHAMPION_CASE_BILLING_ENABLED=true` **on staging only**.
+2. Create a sandbox webhook endpoint to `https://<staging-host>/api/saas/billing/webhook` for
+   `checkout.session.completed`, `customer.subscription.created|updated|deleted`, `invoice.paid`,
+   `invoice.payment_failed`, and set its `whsec_...` as `STRIPE_WEBHOOK_SECRET`. (Local alternative:
+   `stripe listen --forward-to localhost:8080/api/saas/billing/webhook`.)
+3. With a test customer (card `4242 4242 4242 4242`), buy base LOW, then C.A.S.E. Watch for server
+   A. Expect one base + one add-on subscription on the same customer; add-on entitlement only after
+   `invoice.paid`; base row unchanged.
+4. Duplicate: repeat checkout for server A -> `CASE_CHECKOUT_CONFLICT`. Buy Watch for server B ->
+   a separate subscription; server A's access unchanged (no cross-server leakage).
+5. Replay: `stripe events resend <evt_id>` for each event type -> 200, no state change.
+6. Upgrade A to Pro: the preview amount must equal the invoice Stripe creates; Pro unlocks only
+   after that invoice is paid.
+7. Declined upgrade: set the customer's default card to `4000 0000 0000 0341`, upgrade server B ->
+   `PAYMENT_PENDING`, still Watch, add-on still ACTIVE, base unaffected.
+8. Downgrade A to Watch -> no invoice; Pro retained until period end. Advance a Stripe **test
+   clock** past the period: renewal bills 499 and access becomes Watch. Restore inside a period ->
+   no invoice.
+9. Renewal failure: with `4000 0000 0000 0341` as default, advance the test clock past renewal ->
+   `invoice.payment_failed`, add-on `PAST_DUE`, C.A.S.E. access off, base plan still ACTIVE.
+10. Cancel at period end -> access kept until the end; advance the clock ->
+    `customer.subscription.deleted`, row CANCELED; buy again -> new row, new subscription.
+
+Record event ids and PASS/FAIL per step only (no keys, no customer data).
 
 ## Release checklist
 

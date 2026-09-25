@@ -42,7 +42,7 @@ The implemented endpoints on the existing Go service are:
 - `GET /api/saas/organizations/{organizationID}/billing/case/servers` — scoped purchases, period, verified paid coverage and cancellation.
 - `POST /api/saas/organizations/{organizationID}/billing/case/checkout` — owner/admin, selected installation and tier, server-validated price.
 - `POST /api/saas/organizations/{organizationID}/billing/case/cancel` and `/reactivate` — owner/admin; scoped to one selected installation. Cancellation works even with new sales disabled.
-- No plan-change endpoint yet. Do not advertise upgrade/downgrade or trial as available.
+- `POST .../billing/case/plan/preview` then `POST .../billing/case/plan` — owner/admin; Watch <-> Pro on the server's existing add-on subscription (Phase 6.10). Founder trial is still not offered.
 
 The website implementation is a separate draft PR in `Champions_Killfed_Website`; it extends the existing Subscription page. Stripe IDs are never sent to the browser.
 
@@ -299,3 +299,70 @@ The Phase 6 migrations were renumbered, before any deployment, to follow the Sho
 | 0060 | `0062_case_watch_requester` |
 
 `TestMigrationRegistryNumbersAreUniqueAndOrdered` now fails CI on any future number collision.
+
+## Phase 6.10 — Watch/Pro plan changes and re-subscription (draft)
+
+**Mutual exclusivity.** A server has at most one *current* add-on row, and that row's Stripe
+subscription has exactly one price item. A tier change swaps that single price (`caseSingleItem`
+refuses anything else), so Watch and Pro can never bill side by side and no second subscription
+is created.
+
+**Tier authority.** The current tier is derived from the Stripe price via the server-side mapping
+(`CHAMPION_CASE_*_PRICE_ID`). `champion_case_tier` metadata now means "originally purchased tier"
+and is not rewritten. Binding metadata (add-on, organization, installation, game server, customer)
+is still verified on every event and before every Stripe write. An unconfigured price fails
+closed. The repository accepts a tier change only on the row already bound to that same Stripe
+subscription.
+
+**Entitlement follows `paid_tier`** (migration `0063_case_plan_changes`). A signed `invoice.paid`
+records the tier of its own qualifying line: a positive-amount `subscription_item_details` line for
+this subscription with a configured C.A.S.E. price. A later period end wins; on the same period end
+the higher tier wins; an older period never changes it. Access is the `paid_tier` capability set
+while `paid_through` is current, still bounded by rollout verification, the paid base plan, the
+exact server and the same customer.
+
+| Change | Stripe call | Charge | Access |
+| --- | --- | --- | --- |
+| Upgrade Watch→Pro | price swap, `proration_behavior=always_invoice`, `payment_behavior=pending_if_incomplete`, `proration_date` from the preview | Stripe-calculated proration now | Pro only after that proration `invoice.paid`. A declined payment leaves Stripe on Watch (`PAYMENT_PENDING`); nothing local changes |
+| Downgrade Pro→Watch | price swap, `proration_behavior=none` | none now; Watch price at renewal | Paid Pro kept until `paid_through`; the renewal invoice moves access to Watch |
+| Restore (back to the already-paid tier inside the period) | price swap, `proration_behavior=none` | none | unchanged (already paid) |
+
+No Subscription Schedule is used, so scheduled cancellation keeps working on a plain subscription.
+Rules: ACTIVE add-ons only (not TRIAL/PAST_DUE/PENDING/CANCELED); a scheduled cancellation must be
+reactivated first; one pending upgrade at a time; upgrades require the sales flag and the active
+paid base on the same customer; downgrades/restores work with sales paused. A preview's
+`prorationDate` must be confirmed within 15 minutes. The Stripe idempotency key is
+`champion-case-tier-{addon}-{fromPrice}-{toPrice}-{prorationDate}`.
+
+**Payment-failure policy (now explicit).** Base LOW/MEDIUM/HIGH access is never touched. A failed
+renewal ends C.A.S.E. access at the end of the paid period (`PAST_DUE`, no grace entitlement). A
+failed invoice for an already-paid period (e.g. a declined upgrade proration) is stale and keeps
+ACTIVE. A later `invoice.paid` restores access.
+
+**Re-subscription.** `uq_case_addon_org_installation` / `uq_case_addon_org_server` became partial
+unique indexes over `status <> 'CANCELED'`. A canceled add-on is kept as history (its Stripe
+subscription id stays unique). A new checkout creates a new row and a new idempotency identity, so
+late events for the old subscription only ever reach the old row. The founder-trial ledger is keyed
+by organization + game server and still cannot be granted twice.
+
+**API.**
+
+```ts
+// POST .../billing/case/plan/preview  (OWNER/ADMIN; read-only)
+{ installationId: number; tier: "CASE_WATCH" | "CASE_PRO" }
+-> { kind: "UPGRADE" | "DOWNGRADE" | "RESTORE"; currentTier; targetTier; amountDueNowCents; currency;
+     prorationDate: number; effectiveAt: string | null; nextRenewalAmountCents; currentPeriodEnd }
+// POST .../billing/case/plan  (OWNER/ADMIN)
+{ installationId; tier; prorationDate }   // prorationDate echoed from the preview, never an amount
+-> { kind; status: "APPLIED" | "PAYMENT_PENDING"; tier; paidTier; paidThrough; currentPeriodEnd }
+```
+
+`GET .../billing/case/servers` adds `paidTier` and `pendingDowngrade`. Errors: `CASE_PREVIEW_EXPIRED`
+(409); `CASE_CHECKOUT_CONFLICT` (409: unchanged tier, cancellation scheduled, change pending, not
+manageable, needs reconciliation); `CASE_BASE_REQUIRED`; `CASE_NOT_AVAILABLE`; `INVALID_PLAN`.
+
+Tests: `internal/billing/case_plan_change_test.go`, `internal/casebilling/access_test.go`
+(`TestAccessFollowsPaidTier`), `internal/repository/case_plan_change_integration_test.go`,
+`internal/app/saas_api_case_plan_change_integration_test.go`,
+`internal/database/migrations_case_addon_test.go`. All use FakeProvider. **Nothing in this phase has
+been executed against Stripe yet** - see `CASE_STRIPE_TESTMODE_QA.md` "Sandbox lifecycle run".

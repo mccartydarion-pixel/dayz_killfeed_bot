@@ -148,9 +148,13 @@ func (s *Service) applyCaseEvent(ctx context.Context,e ParsedEvent) error {
 	orgID,err:=parseCaseInt(meta,"champion_organization_id");if err!=nil{return err}
 	installationID,err:=parseCaseInt(meta,"champion_installation_id");if err!=nil{return err}
 	serverID,err:=parseCaseInt(meta,"champion_game_server_id");if err!=nil{return err}
-	tier:=casebilling.Tier(meta["champion_case_tier"])
-	if _,ok:=casebilling.Lookup(string(tier)); !ok ||
-		s.caseTierForPrice(st.PriceID)!=tier {return repository.ErrCaseWebhookMismatch}
+	// champion_case_tier records the ORIGINALLY purchased tier and must stay a
+	// real tier. The current tier is the server-configured price Stripe bills
+	// on this same bound subscription, so a Watch <-> Pro change reconciles
+	// without trusting mutable metadata; an unknown price fails closed.
+	if _,ok:=casebilling.Lookup(meta["champion_case_tier"]); !ok {return repository.ErrCaseWebhookMismatch}
+	tier:=s.caseTierForPrice(st.PriceID)
+	if tier=="" {return repository.ErrCaseWebhookMismatch}
 	founderTag:=meta["champion_case_trial_offer"]=="founder_pro_7d"
 	if meta["champion_case_trial_offer"]!="" && !founderTag {
 		return repository.ErrCaseWebhookMismatch
@@ -166,18 +170,23 @@ func (s *Service) applyCaseEvent(ctx context.Context,e ParsedEvent) error {
 		status=repository.SubscriptionPastDue
 	}
 	var paidThrough,failedPeriodEnd *time.Time
+	var paidTier casebilling.Tier
 	if e.Type==EventInvoicePaid {
-		// Only a signed paid invoice with a matching C.A.S.E. price AND
-		// subscription item proves paid premium coverage.
+		// Only a signed paid invoice with a positive C.A.S.E.-priced line for
+		// THIS subscription proves paid coverage, and only for that line's
+		// tier: an invoice paid before an upgrade (or delivered late after
+		// it) proves the old tier, never the new one.
 		if e.Invoice.Status!="paid" {return repository.ErrCaseWebhookMismatch}
-		_,end:=e.Invoice.casePeriod(st.PriceID,subID)
+		end,lineTier:=e.Invoice.caseLine(subID,s.caseTierForPrice,true)
 		if end.IsZero() {return repository.ErrCaseWebhookMismatch}
 		paidThrough=&end
+		paidTier=lineTier
 	}
 	if e.Type==EventInvoicePaymentFailed {
 		// Keep the failed invoice's own period to distinguish a stale,
-		// out-of-order failure from a new unpaid billing cycle.
-		_,end:=e.Invoice.casePeriod(st.PriceID,subID)
+		// out-of-order failure (or a declined upgrade proration for the
+		// already-paid period) from a new unpaid billing cycle.
+		end,_:=e.Invoice.caseLine(subID,s.caseTierForPrice,false)
 		if !end.IsZero() {failedPeriodEnd=&end}
 	}
 	err=s.caseStore.ApplyCaseWebhook(ctx,repository.CaseWebhookState{
@@ -186,6 +195,7 @@ func (s *Service) applyCaseEvent(ctx context.Context,e ParsedEvent) error {
 		SubscriptionID:subID,PriceID:st.PriceID,Status:status,
 		CheckoutSessionID:sessionID,CurrentPeriodStart:zeroToNil(st.CurrentPeriodStart),
 		CurrentPeriodEnd:zeroToNil(st.CurrentPeriodEnd),TrialStart:st.TrialStart,TrialEnd:st.TrialEnd, PaidThrough:paidThrough,
+		PaidTier:string(paidTier),
 		FounderTrialOffer:founderOffer, FailedPeriodEnd:failedPeriodEnd,
 		CancelAtPeriodEnd:st.CancelAtPeriodEnd,
 	})

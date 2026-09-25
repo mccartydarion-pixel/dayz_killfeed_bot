@@ -121,3 +121,32 @@ func TestCommandRequiresExplicitCommandVerification(t *testing.T) {
 		t.Fatalf("verified Command got %v, want %v", got, want)
 	}
 }
+
+// Capabilities follow the tier an invoice actually paid for, not the tier the
+// subscription will bill next (pending upgrade / scheduled downgrade).
+func TestAccessFollowsPaidTier(t *testing.T) {
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	end := now.Add(24 * time.Hour)
+	in := AccessInput{BillingEnabled: true, VerifiedThrough: Pro, OrganizationID: 1, InstallationID: 2,
+		SelectedGameServerID: 3, BaseStatus: "ACTIVE", AddonOrganizationID: 1, AddonInstallationID: 2,
+		BoundGameServerID: 3, Status: "ACTIVE", Provider: "stripe", ProviderSubscriptionID: "sub",
+		ProviderPriceID: "price", CurrentPeriodEnd: &end, PaidThrough: &end}
+	for _, tc := range []struct {
+		tier, paid Tier
+		want       []Capability
+	}{
+		{Pro, Watch, []Capability{CapWatch}},        // upgrade billed, proration unpaid
+		{Watch, Pro, []Capability{CapWatch, CapPro}}, // downgrade: paid Pro until paid_through
+		{Pro, Pro, []Capability{CapWatch, CapPro}},
+		{Pro, "", []Capability{CapWatch, CapPro}}, // pre-0063 row (backfilled in DB)
+	} {
+		in.Tier, in.PaidTier = tc.tier, tc.paid
+		if got := Resolve(in, now); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("tier %s paid %s: %v, want %v", tc.tier, tc.paid, got, tc.want)
+		}
+	}
+	in.Tier, in.PaidTier = Watch, Pro
+	if got := Resolve(in, end); got != nil {
+		t.Fatalf("paid Pro outlived paid_through: %v", got)
+	}
+}

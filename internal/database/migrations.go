@@ -2352,6 +2352,33 @@ ALTER TABLE case_watch_digest_outbox
     ADD COLUMN IF NOT EXISTS requested_by_user_id BIGINT REFERENCES app_users(id) ON DELETE RESTRICT;
 `,
 	},
+	{
+		Name: "0063_case_plan_changes",
+		SQL: `
+-- Phase 6.10: Watch <-> Pro changes and re-subscription after cancellation.
+-- paid_tier is the tier a signed invoice.paid actually covered through
+-- paid_through. tier/provider_price_id is what Stripe will bill next. An
+-- upgrade unlocks only when its proration invoice is paid; a downgrade keeps
+-- the already-paid tier until paid_through.
+ALTER TABLE case_addon_subscriptions
+    ADD COLUMN IF NOT EXISTS paid_tier TEXT
+        CHECK (paid_tier IS NULL OR paid_tier IN ('CASE_WATCH','CASE_PRO','CASE_COMMAND'));
+UPDATE case_addon_subscriptions SET paid_tier=tier
+    WHERE paid_through IS NOT NULL AND paid_tier IS NULL;
+ALTER TABLE case_addon_subscriptions DROP CONSTRAINT IF EXISTS case_addon_paid_tier_required;
+ALTER TABLE case_addon_subscriptions ADD CONSTRAINT case_addon_paid_tier_required
+    CHECK (paid_through IS NULL OR paid_tier IS NOT NULL);
+-- One CURRENT add-on per installation and per game server. A CANCELED row is
+-- retained as history (its Stripe subscription id stays unique) so the server
+-- can purchase again without deleting records or reusing an old identity.
+ALTER TABLE case_addon_subscriptions DROP CONSTRAINT IF EXISTS uq_case_addon_org_installation;
+ALTER TABLE case_addon_subscriptions DROP CONSTRAINT IF EXISTS uq_case_addon_org_server;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_case_addon_current_installation
+    ON case_addon_subscriptions(organization_id, installation_id) WHERE status <> 'CANCELED';
+CREATE UNIQUE INDEX IF NOT EXISTS uq_case_addon_current_server
+    ON case_addon_subscriptions(organization_id, game_server_id) WHERE status <> 'CANCELED';
+`,
+	},
 }
 
 // LiveSyncCommandLineCleanupSQL (migration 0052, Champion Live Sync phase 2.1, docs/

@@ -41,3 +41,43 @@ func (f *FakeProvider) GetCaseCheckoutSession(_ context.Context,id string)(*Case
 }
 
 var _ CaseProvider = (*FakeProvider)(nil)
+
+// Test knobs for tier changes: the Stripe-calculated proration a preview
+// returns, and whether the next charged upgrade's payment is declined
+// (Stripe then leaves the change pending and the old price in place).
+func (f *FakeProvider) SetCaseUpgradeProration(amountDue int64, declineNext bool) {
+	f.mu.Lock(); defer f.mu.Unlock()
+	f.caseProration = amountDue
+	f.caseDeclineNext = declineNext
+}
+
+func (f *FakeProvider) PreviewCaseTierChange(_ context.Context, subID, fromPrice, newPrice string, prorationDate int64) (*CaseProrationPreview, error) {
+	f.mu.Lock(); defer f.mu.Unlock()
+	f.Calls = append(f.Calls, FakeCall{"PreviewCaseTierChange", struct{ SubscriptionID, From, To string; ProrationDate int64 }{subID, fromPrice, newPrice, prorationDate}})
+	s, ok := f.subs[subID]
+	if !ok || s.PriceID != fromPrice {
+		return nil, fmt.Errorf("fake case subscription not on expected price")
+	}
+	return &CaseProrationPreview{AmountDue: f.caseProration, Currency: "usd"}, nil
+}
+
+func (f *FakeProvider) ChangeCaseTier(_ context.Context, in CaseTierChangeInput) (*CaseTierChangeResult, error) {
+	f.mu.Lock(); defer f.mu.Unlock()
+	f.Calls = append(f.Calls, FakeCall{"ChangeCaseTier", in})
+	s, ok := f.subs[in.SubscriptionID]
+	if !ok {
+		return nil, ErrSubscriptionNotFound
+	}
+	if s.PriceID != in.FromPriceID {
+		return nil, fmt.Errorf("fake case subscription not on expected price")
+	}
+	if in.Charge && f.caseDeclineNext {
+		f.caseDeclineNext = false
+		s.PendingUpdate = true
+		cp := *s
+		return &CaseTierChangeResult{State: &cp, Pending: true}, nil
+	}
+	s.PriceID = in.NewPriceID
+	cp := *s
+	return &CaseTierChangeResult{State: &cp}, nil
+}

@@ -85,6 +85,7 @@ type SubscriptionState struct {
 	TrialEnd           *time.Time
 	CancelAtPeriodEnd  bool
 	CanceledAt         *time.Time
+	PendingUpdate      bool // Stripe holds a change until its invoice is paid (payment_behavior=pending_if_incomplete)
 }
 
 var (

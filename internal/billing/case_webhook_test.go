@@ -36,7 +36,8 @@ func (f *caseTestStore) ApplyCaseWebhook(_ context.Context,in repository.CaseWeb
  if f.errorOnApply!=nil{return f.errorOnApply}
  if f.reservation==nil || f.reservation.ID!=in.AddonID ||
  f.reservation.OrganizationID!=in.OrganizationID || f.reservation.InstallationID!=in.InstallationID ||
- f.reservation.GameServerID!=in.GameServerID || f.reservation.Tier!=in.Tier ||
+ f.reservation.GameServerID!=in.GameServerID ||
+ (f.reservation.Tier!=in.Tier && (f.row==nil || f.row.ProviderSubscriptionID!=in.SubscriptionID)) ||
  f.reservation.ProviderCustomerID!=in.CustomerID ||
  (in.CheckoutSessionID!="" && in.CheckoutSessionID!=f.reservation.SessionID){
  return repository.ErrCaseWebhookMismatch}
@@ -62,6 +63,11 @@ func (f *caseTestStore) ResetExpiredCaseCheckout(_ context.Context,org,installat
 		row.Attempt!=attempt || row.SessionID!=sessionID {return repository.ErrCaseCheckoutConflict}
 	row.SessionID="";row.CheckoutURL="";row.Attempt++
 	return nil
+}
+func (f *caseTestStore) SaveCaseTierChange(_ context.Context,org,installation int64,sub,from,to,tier string)error{
+ if f.row==nil || f.row.OrganizationID!=org || f.row.InstallationID!=installation ||
+ f.row.ProviderSubscriptionID!=sub || (f.row.ProviderPriceID!=from && f.row.ProviderPriceID!=to) {return repository.ErrCaseCheckoutConflict}
+ f.row.ProviderPriceID=to;f.row.Tier=tier;return nil
 }
 func (f *caseTestStore) ListByOrganization(_ context.Context,_ int64)([]repository.CaseAddonSubscription,error){
  return []repository.CaseAddonSubscription{},nil

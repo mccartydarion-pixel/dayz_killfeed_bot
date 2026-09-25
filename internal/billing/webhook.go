@@ -7,6 +7,8 @@ import (
 
 	stripe "github.com/stripe/stripe-go/v82"
 	"github.com/stripe/stripe-go/v82/webhook"
+
+	"github.com/yourname/dayz-killfeed/internal/casebilling"
 )
 
 // VerifyWebhookEvent checks the Stripe-Signature header against payload using secret and returns
@@ -116,6 +118,7 @@ type webhookInvoice struct {
 	PaymentIntent jsonID `json:"payment_intent"`
 	Lines         struct {
 		Data []struct {
+			Amount int64 `json:"amount"` // negative for a proration credit line
 			Price jsonID `json:"price"` // legacy Stripe invoice line
 			Pricing struct {
 				PriceDetails struct { Price jsonID `json:"price"` } `json:"price_details"`
@@ -148,24 +151,28 @@ func (inv *webhookInvoice) period() (start, end time.Time) {
 	return start, end
 }
 
-// casePeriod verifies paid coverage against the exact C.A.S.E. subscription
-// line and Stripe price, rather than the first invoice line (which may be
-// a proration, tax, manual invoice item, or a different product).
-func (inv *webhookInvoice) casePeriod(priceID, subscriptionID string) (start,end time.Time) {
-	if inv==nil || priceID=="" || subscriptionID=="" {return time.Time{},time.Time{}}
+// caseLine returns the subscription-item line of THIS subscription whose
+// price is a configured C.A.S.E. price (tierOf != "") with the latest period
+// end; on the same end the higher tier wins (an upgrade invoice holds the new
+// tier's charge and the old tier's credit). paidOnly skips credit/zero lines,
+// so a Pro credit on a downgrade can never be read as paid Pro coverage.
+func (inv *webhookInvoice) caseLine(subscriptionID string, tierOf func(string) casebilling.Tier, paidOnly bool) (end time.Time, tier casebilling.Tier) {
+	if inv==nil || subscriptionID=="" || tierOf==nil {return time.Time{},""}
 	for _,line:=range inv.Lines.Data {
 		linePrice:=string(line.Pricing.PriceDetails.Price)
 		if linePrice=="" {linePrice=string(line.Price)}
-		if linePrice!=priceID || line.Parent.Type!="subscription_item_details" ||
+		t:=tierOf(linePrice)
+		if t=="" || line.Parent.Type!="subscription_item_details" ||
 			string(line.Parent.SubscriptionItemDetails.Subscription)!=subscriptionID ||
-			line.Period.Start<=0 || line.Period.End<=line.Period.Start {continue}
+			line.Period.Start<=0 || line.Period.End<=line.Period.Start ||
+			(paidOnly && line.Amount<=0) {continue}
 		e:=time.Unix(line.Period.End,0).UTC()
-		if e.After(end) {
-			start=time.Unix(line.Period.Start,0).UTC()
+		if e.After(end) || (e.Equal(end) && casebilling.Rank(t)>casebilling.Rank(tier)) {
 			end=e
+			tier=t
 		}
 	}
-	return start,end
+	return end,tier
 }
 
 // ParsedEvent is one webhook event, decoded into exactly the fields Champion's reconciliation

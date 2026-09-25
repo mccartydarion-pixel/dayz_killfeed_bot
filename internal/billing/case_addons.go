@@ -33,6 +33,7 @@ type CaseStore interface {
 	SaveCaseCancelFlag(ctx context.Context, organizationID, installationID int64, subscriptionID string, cancel bool) error
 	GetPendingCaseCheckout(ctx context.Context, organizationID, installationID int64) (*repository.CaseCheckoutReservation,error)
 	ResetExpiredCaseCheckout(ctx context.Context, organizationID, installationID, addonID, attempt int64, sessionID string) error
+	SaveCaseTierChange(ctx context.Context, organizationID, installationID int64, subscriptionID, fromPrice, toPrice, toTier string) error
 }
 
 // CaseProvider is a separately extended Stripe boundary; the normal base
@@ -41,6 +42,13 @@ type CaseProvider interface {
 	ValidateCasePrice(ctx context.Context, priceID string, expectedAmount int64, tier casebilling.Tier) error
 	CreateCaseCheckoutSession(ctx context.Context, in CaseCheckoutInput) (*CheckoutSession, error)
 	GetCaseCheckoutSession(ctx context.Context, id string) (*CaseCheckoutSessionState,error)
+	// PreviewCaseTierChange is read-only: what an immediately invoiced
+	// proration for swapping fromPrice to newPrice would charge right now.
+	PreviewCaseTierChange(ctx context.Context, subscriptionID, fromPriceID, newPriceID string, prorationDate int64) (*CaseProrationPreview,error)
+	// ChangeCaseTier swaps the add-on subscription's single price. Charge
+	// invoices the proration now and leaves the change PENDING at Stripe
+	// unless that payment succeeds; otherwise no proration is created.
+	ChangeCaseTier(ctx context.Context, in CaseTierChangeInput) (*CaseTierChangeResult,error)
 }
 
 type CaseCheckoutInput struct {
@@ -137,14 +145,8 @@ func (s *Service) CaseCheckout(ctx context.Context, r *http.Request, orgID int64
 		return nil,ErrCaseNotPurchasable
 	}
 	if orgID<=0 || req.InstallationID<=0 || installations==nil {return nil,ErrCaseNotPurchasable}
-	base,err:=s.store.GetForOrganization(ctx,orgID)
+	base,err:=s.casePaidBase(ctx,orgID,time.Now())
 	if err!=nil{return nil,err}
-	now:=time.Now()
-	if base==nil || base.Status!=repository.SubscriptionActive ||
-		base.Provider!=repository.ProviderStripe || base.ProviderCustomerID=="" ||
-		base.ProviderSubscriptionID=="" || base.CurrentPeriodEnd==nil || !base.CurrentPeriodEnd.After(now) {
-		return nil,ErrCaseBaseRequired
-	}
 	inst,err:=installations.GetScoped(ctx,orgID,req.InstallationID)
 	if err!=nil{return nil,err}
 	if inst==nil || inst.GameServerID==nil{return nil,repository.ErrCaseCheckoutConflict}
@@ -169,6 +171,19 @@ func (s *Service) CaseCheckout(ctx context.Context, r *http.Request, orgID int64
 	if err!=nil{return nil,fmt.Errorf("create case Stripe checkout: %w",err)}
 	if err:=s.caseStore.StoreCaseCheckout(ctx,pending.ID,session.ID,session.URL);err!=nil{return nil,err}
 	return &CheckoutResult{URL:session.URL},nil
+}
+
+// casePaidBase is the prerequisite for any C.A.S.E. sale: an active, paid
+// Stripe base subscription whose customer the add-on is billed to.
+func (s *Service) casePaidBase(ctx context.Context, orgID int64, now time.Time) (*repository.Subscription,error) {
+	base,err:=s.store.GetForOrganization(ctx,orgID)
+	if err!=nil{return nil,err}
+	if base==nil || base.Status!=repository.SubscriptionActive ||
+		base.Provider!=repository.ProviderStripe || base.ProviderCustomerID=="" ||
+		base.ProviderSubscriptionID=="" || base.CurrentPeriodEnd==nil || !base.CurrentPeriodEnd.After(now) {
+		return nil,ErrCaseBaseRequired
+	}
+	return base,nil
 }
 
 // CaseMetadata returns the exact same binding fields on BOTH Checkout Session
@@ -199,16 +214,7 @@ func (s *Service) CaseSetCancellation(ctx context.Context, organizationID, insta
 	if row.Status!="ACTIVE" && row.Status!="TRIAL" { return nil,ErrCaseNotManaged }
 	current,err:=s.provider.GetSubscription(ctx,row.ProviderSubscriptionID)
 	if err!=nil{return nil,err}
-	if current.SubscriptionID!=row.ProviderSubscriptionID || current.CustomerID!=row.ProviderCustomerID ||
-		current.PriceID!=row.ProviderPriceID ||
-		current.Metadata["champion_product_kind"]!=caseProductKind ||
-		current.Metadata["champion_case_addon_id"]!=strconv.FormatInt(row.ID,10) ||
-		current.Metadata["champion_organization_id"]!=strconv.FormatInt(organizationID,10) ||
-		current.Metadata["champion_installation_id"]!=strconv.FormatInt(installationID,10) ||
-		current.Metadata["champion_game_server_id"]!=strconv.FormatInt(row.GameServerID,10) ||
-		current.Metadata["champion_case_tier"]!=row.Tier {
-		return nil,repository.ErrCaseWebhookMismatch
-	}
+	if err:=s.validateCaseBinding(row,current,organizationID,installationID);err!=nil{return nil,err}
 	if current.StripeStatus!="active" && current.StripeStatus!="trialing" {return nil,ErrCaseNotManaged}
 	if current.CancelAtPeriodEnd!=cancel {
 		current,err=s.provider.SetCancelAtPeriodEnd(ctx,row.ProviderSubscriptionID,cancel)
@@ -225,6 +231,26 @@ func (s *Service) CaseSetCancellation(ctx context.Context, organizationID, insta
 	}
 	row.CancelAtPeriodEnd=current.CancelAtPeriodEnd
 	return row,nil
+}
+
+// validateCaseBinding proves Stripe's live subscription is exactly this
+// organization/installation/server's add-on before any Stripe mutation. The
+// current tier is proven by the configured price; champion_case_tier only
+// has to name the originally purchased tier (it is not rewritten on a change).
+func (s *Service) validateCaseBinding(row *repository.CaseAddonSubscription, current *SubscriptionState, organizationID, installationID int64) error {
+	if row==nil || current==nil {return ErrCaseNotManaged}
+	_,purchased:=casebilling.Lookup(current.Metadata["champion_case_tier"])
+	if current.SubscriptionID!=row.ProviderSubscriptionID || current.CustomerID!=row.ProviderCustomerID ||
+		current.PriceID!=row.ProviderPriceID ||
+		current.Metadata["champion_product_kind"]!=caseProductKind ||
+		current.Metadata["champion_case_addon_id"]!=strconv.FormatInt(row.ID,10) ||
+		current.Metadata["champion_organization_id"]!=strconv.FormatInt(organizationID,10) ||
+		current.Metadata["champion_installation_id"]!=strconv.FormatInt(installationID,10) ||
+		current.Metadata["champion_game_server_id"]!=strconv.FormatInt(row.GameServerID,10) ||
+		!purchased || string(s.caseTierForPrice(current.PriceID))!=row.Tier {
+		return repository.ErrCaseWebhookMismatch
+	}
+	return nil
 }
 
 // CaseCheckoutSessionState is a read-only Stripe Checkout projection for

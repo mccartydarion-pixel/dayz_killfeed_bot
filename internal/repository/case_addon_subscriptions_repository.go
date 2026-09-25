@@ -21,6 +21,7 @@ type CaseAddonSubscription struct {
 	CheckoutSessionID                                  string
 	CurrentPeriodStart, CurrentPeriodEnd              *time.Time
 	TrialStartedAt, TrialEndsAt, PaidThrough          *time.Time
+	PaidTier                                          string // tier covered by invoice.paid through PaidThrough
 	CancelAtPeriodEnd                                 bool
 	FounderTrialGranted                                bool
 	CreatedAt, UpdatedAt                              time.Time
@@ -43,7 +44,7 @@ func (s CaseAddonSubscription) AccessInput(organizationID, installationID int64,
 		BoundGameServerID: s.GameServerID, Tier: casebilling.Tier(s.Tier),
 		Status: s.Status, Provider: s.Provider, ProviderSubscriptionID: s.ProviderSubscriptionID,
 		ProviderPriceID: s.ProviderPriceID, CurrentPeriodEnd: s.CurrentPeriodEnd,
-		TrialEndsAt: s.TrialEndsAt, PaidThrough: s.PaidThrough,
+		TrialEndsAt: s.TrialEndsAt, PaidThrough: s.PaidThrough, PaidTier: casebilling.Tier(s.PaidTier),
 		FounderTrialGranted: s.FounderTrialGranted,
 	}
 }
@@ -57,7 +58,11 @@ const caseAddonColumns = `c.id, c.organization_id, c.installation_id, c.game_ser
 	g.organization_id=c.organization_id AND g.game_server_id=c.game_server_id AND
 	g.installation_id=c.installation_id AND g.addon_id=c.id AND
 	g.provider_subscription_id=c.provider_subscription_id) AS founder_trial_granted,
-	COALESCE(c.checkout_session_id,'') AS checkout_session_id`
+	COALESCE(c.checkout_session_id,'') AS checkout_session_id, COALESCE(c.paid_tier,'')`
+
+// caseCurrentFirst picks an installation's CURRENT add-on ahead of retained
+// CANCELED history (migration 0063 allows one current row plus history).
+const caseCurrentFirst = `(c.status<>'CANCELED') DESC, c.id DESC`
 
 func scanCaseAddon(row pgx.Row) (CaseAddonSubscription, error) {
 	var s CaseAddonSubscription
@@ -65,7 +70,7 @@ func scanCaseAddon(row pgx.Row) (CaseAddonSubscription, error) {
 		&s.Tier, &s.Status, &s.Provider, &s.ProviderCustomerID,
 		&s.ProviderSubscriptionID, &s.ProviderPriceID,
 		&s.CurrentPeriodStart, &s.CurrentPeriodEnd, &s.TrialStartedAt, &s.TrialEndsAt,
-		&s.CancelAtPeriodEnd, &s.CreatedAt, &s.UpdatedAt, &s.SelectedGameServerID, &s.PaidThrough, &s.FounderTrialGranted, &s.CheckoutSessionID)
+		&s.CancelAtPeriodEnd, &s.CreatedAt, &s.UpdatedAt, &s.SelectedGameServerID, &s.PaidThrough, &s.FounderTrialGranted, &s.CheckoutSessionID, &s.PaidTier)
 	return s, err
 }
 
@@ -86,7 +91,8 @@ func (r *CaseAddonSubscriptionRepository) GetScoped(ctx context.Context, organiz
 	const q = `SELECT ` + caseAddonColumns + `
 FROM case_addon_subscriptions c
 JOIN installations i ON i.id=c.installation_id AND i.organization_id=c.organization_id
-WHERE c.organization_id=$1 AND c.installation_id=$2`
+WHERE c.organization_id=$1 AND c.installation_id=$2
+ORDER BY ` + caseCurrentFirst + ` LIMIT 1`
 	s, err := scanCaseAddon(r.pool.QueryRow(ctx, q, organizationID, installationID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -104,23 +110,20 @@ func (r *CaseAddonSubscriptionRepository) ListByOrganization(ctx context.Context
 	if organizationID <= 0 {
 		return out, nil
 	}
-	const q = `SELECT ` + caseAddonColumns + `
+	// One row per installation: its current add-on, else its latest history.
+	const q = `SELECT DISTINCT ON (c.installation_id) ` + caseAddonColumns + `
 FROM case_addon_subscriptions c
 JOIN installations i ON i.id=c.installation_id AND i.organization_id=c.organization_id
 WHERE c.organization_id=$1
-ORDER BY c.installation_id`
+ORDER BY c.installation_id, ` + caseCurrentFirst
 	rows, err := r.pool.Query(ctx, q, organizationID)
 	if err != nil {
 		return nil, fmt.Errorf("list scoped case addons: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var s CaseAddonSubscription
-		if err := rows.Scan(&s.ID, &s.OrganizationID, &s.InstallationID, &s.GameServerID,
-			&s.Tier, &s.Status, &s.Provider, &s.ProviderCustomerID,
-			&s.ProviderSubscriptionID, &s.ProviderPriceID,
-			&s.CurrentPeriodStart, &s.CurrentPeriodEnd, &s.TrialStartedAt, &s.TrialEndsAt,
-			&s.CancelAtPeriodEnd, &s.CreatedAt, &s.UpdatedAt, &s.SelectedGameServerID, &s.PaidThrough, &s.FounderTrialGranted, &s.CheckoutSessionID); err != nil {
+		s, err := scanCaseAddon(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan case addon: %w", err)
 		}
 		out = append(out, s)
