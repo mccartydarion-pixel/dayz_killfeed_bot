@@ -48,6 +48,7 @@ type caseSourceIntegrity struct {
  ElapsedTimeTrusted bool `json:"elapsedTimeTrusted"`
  MovementDetectorStatus string `json:"movementDetectorStatus"`
  DetectorsEnabled bool `json:"detectorsEnabled"`
+ Continuity caseContinuityReport `json:"continuity"`
  Enforcement string `json:"enforcement"`
 }
 
@@ -147,6 +148,13 @@ func (a *App) handleAntiCheatIntegrity(w http.ResponseWriter,r *http.Request) {
   writeSaaSError(w,codeInternalError,"could not read latest C.A.S.E. source");return
  }
  if sourceID!=nil{out.LatestEvidenceSourceRef=caseSourceRef(*sourceID)}
+ summaries,err:=caseContinuitySources(ctx,a.DB.Pool,ac.scope.GuildID,serverID,10)
+ if err!=nil {
+  slog.Warn("component=case","event","source_continuity_read_failed","err",err.Error())
+  writeSaaSError(w,codeInternalError,"could not read C.A.S.E. source continuity");return
+ }
+ out.Continuity=caseContinuityAssessment(out.SelectedSourceRef,summaries,
+  available,out.CollectorConfigured,out.CheckpointBytes!=nil)
  a.recordAudit(ctx,ac,"CASE_SOURCE_INTEGRITY_VIEWED","","","success",nil,
   map[string]any{"workerAvailable":available,"sourceState":out.SourceState})
  writeSaaSJSON(w,http.StatusOK,out)
