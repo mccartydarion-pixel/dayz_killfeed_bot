@@ -37,12 +37,14 @@ Provide `case.watch`, `case.pro`, `case.command` as server-scoped capabilities; 
 
 ## API and website handoff
 
-- `GET /api/saas/case/billing/catalog`: verified purchasable packages and public pricing.
-- `GET /api/saas/case/billing/servers`: linked servers and tier/status/renewal/cancellation, scoped to organization.
-- `POST /api/saas/case/billing/checkout`: owner/admin, validated installation, server-owned tier and price.
-- `POST /api/saas/case/billing/change`: scoped existing add-on, preview before confirmation.
-- `POST /api/saas/case/billing/cancel` and `/reactivate`: scope + Stripe reconciliation.
-- Extend the existing Subscription page with Security Add-ons, linked-server selection, verified status, price, renewal details, optional founder trial, and customer portal access. Do not hardcode Stripe price IDs in the website.
+The implemented endpoints on the existing Go service are:
+- `GET /api/saas/billing/case/plans` — backend-derived catalog and purchasable flags.
+- `GET /api/saas/organizations/{organizationID}/billing/case/servers` — scoped purchases, period, verified paid coverage and cancellation.
+- `POST /api/saas/organizations/{organizationID}/billing/case/checkout` — owner/admin, selected installation and tier, server-validated price.
+- `POST /api/saas/organizations/{organizationID}/billing/case/cancel` and `/reactivate` — owner/admin; scoped to one selected installation. Cancellation works even with new sales disabled.
+- No plan-change endpoint yet. Do not advertise upgrade/downgrade or trial as available.
+
+The website implementation is a separate draft PR in `Champions_Killfed_Website`; it extends the existing Subscription page. Stripe IDs are never sent to the browser.
 
 ## Work sequence / release gates
 
@@ -69,8 +71,20 @@ transactional deduplication ledger. Configured Stripe Price IDs must match
 approved recurring amounts and explicitly tagged Stripe Products. An unknown
 price or mismatched ownership fails closed.
 
+Phase 6.3 adds a paid-coverage migration (0056). Stripe `ACTIVE` and
+`checkout.session.completed` alone DO NOT grant paid access. Only a signed
+`invoice.paid` event containing a subscription billing-period end advances
+`paid_through` transactionally; subsequent subscription updates cannot erase
+it. An ACTIVE add-on entitlement requires current `paid_through` and verified
+rollout tier. A TRIAL add-on instead requires a genuine unexpired Stripe trial.
+The exact linked game server and active paid base remain mandatory. The
+`/cancel` and `/reactivate` routes update only a matching C.A.S.E.
+subscription after fetching and validating Stripe metadata. They do not change
+base billing, and a scheduled cancellation retains confirmed paid access.
+
 Unresolved release gates: reconcile canceled/expired or abandoned Checkout
-Sessions safely; prove invoice payment before granting paid premium processing;
-design trial eligibility and subscription changes; verify current capability
-coverage and QA all Stripe test-mode lifecycle scenarios. No production
-deployment or live Stripe catalog mutation is part of this draft.
+Sessions safely; create and verify test-mode Stripe Products/Prices; design a
+one-time founder trial eligibility ledger and previewed upgrades/downgrades;
+confirm actual C.A.S.E. feature availability; implement refund/payment dispute
+handling and full Stripe lifecycle QA. No production deployment or live Stripe
+catalog mutation is part of this draft.
