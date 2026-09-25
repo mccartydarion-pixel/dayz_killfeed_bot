@@ -117,14 +117,34 @@ func TestShopLedgerMigrationsOnExistingData(t *testing.T) {
 	open2 := order("mig-open-0002", "PENDING_FULFILLMENT", "MANUAL_READY")
 	order("mig-done-0003", "FULFILLED", "FULFILLED")
 	order("mig-refd-0004", "REFUNDED", "CANCELLED")
+	// Existing data of the other workstreams that later migrations (e.g. C.A.S.E. Phase 6, when merged)
+	// must also leave untouched: the organization's base subscription and C.A.S.E. evidence.
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO subscriptions(organization_id, provider, provider_customer_id, provider_subscription_id, plan, status)
+		VALUES($1,'stripe','cus_mig','sub_mig','PRO','ACTIVE')`, org); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO case_evidence_events(guild_id, server_id, source_id, source_end_offset, line_sha256, event_type)
+		VALUES($1,$2,'adm:mig',120,$3,'KILL')`, guild, server, strings.Repeat("c", 64)); err != nil {
+		t.Fatal(err)
+	}
 	snapshot := func() string {
 		t.Helper()
-		var s string
+		var shop, subs, caseEv, inst string
 		if err := db.Pool.QueryRow(ctx, `SELECT string_agg(format('%s:%s:%s:%s', d.id, d.status, p.status, p.total_points), ',' ORDER BY d.id)
-			FROM shop_deliveries d JOIN shop_purchases p ON p.id = d.purchase_id`).Scan(&s); err != nil {
+			FROM shop_deliveries d JOIN shop_purchases p ON p.id = d.purchase_id`).Scan(&shop); err != nil {
 			t.Fatal(err)
 		}
-		return s
+		if err := db.Pool.QueryRow(ctx, `SELECT string_agg(format('%s:%s:%s:%s:%s', organization_id, plan, status, provider_customer_id, provider_subscription_id), ',' ORDER BY id)
+			FROM subscriptions`).Scan(&subs); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Pool.QueryRow(ctx, `SELECT string_agg(format('%s:%s:%s:%s', id, source_id, line_sha256, event_type), ',' ORDER BY id) FROM case_evidence_events`).Scan(&caseEv); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Pool.QueryRow(ctx, `SELECT string_agg(format('%s:%s:%s', id, status, game_server_id), ',' ORDER BY id) FROM installations`).Scan(&inst); err != nil {
+			t.Fatal(err)
+		}
+		return shop + " | " + subs + " | " + caseEv + " | " + inst
 	}
 	before := snapshot()
 
@@ -135,7 +155,7 @@ func TestShopLedgerMigrationsOnExistingData(t *testing.T) {
 	}
 	t.Logf("ledger migrations applied on existing data in %s", time.Since(start).Round(time.Millisecond))
 	if after := snapshot(); after != before {
-		t.Fatalf("existing Shop rows changed:\n%s\n%s", before, after)
+		t.Fatalf("existing Shop / billing / C.A.S.E. rows changed:\n%s\n%s", before, after)
 	}
 	var names []string
 	rows, err := db.Pool.Query(ctx, `SELECT name FROM schema_migrations ORDER BY applied_at, name`)
