@@ -2254,6 +2254,37 @@ ALTER TABLE case_addon_subscriptions
     ADD COLUMN IF NOT EXISTS paid_through TIMESTAMPTZ;
 `,
 	},
+	{
+		Name: "0057_case_founder_trial_ledger",
+		SQL: `
+-- Additive, immutable one-time founder trial identity. No grants/backfill.
+-- Future code must write a grant only after verifying an eligible existing
+-- base customer and a real Stripe Pro trial on this exact bound game server.
+CREATE TABLE IF NOT EXISTS case_addon_trial_grants (
+    organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE RESTRICT,
+    game_server_id BIGINT NOT NULL REFERENCES game_servers(id) ON DELETE RESTRICT,
+    installation_id BIGINT NOT NULL,
+    addon_id BIGINT NOT NULL REFERENCES case_addon_subscriptions(id) ON DELETE RESTRICT,
+    provider_subscription_id TEXT NOT NULL CHECK (LENGTH(BTRIM(provider_subscription_id)) > 0),
+    tier TEXT NOT NULL DEFAULT 'CASE_PRO' CHECK (tier = 'CASE_PRO'),
+    trial_started_at TIMESTAMPTZ NOT NULL,
+    trial_ends_at TIMESTAMPTZ NOT NULL,
+    granted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT case_founder_trial_scope FOREIGN KEY (installation_id, organization_id)
+        REFERENCES installations(id, organization_id) ON DELETE RESTRICT,
+    CONSTRAINT case_founder_trial_duration CHECK (
+        trial_ends_at > trial_started_at AND
+        trial_ends_at <= trial_started_at + INTERVAL '7 days'
+    ),
+    PRIMARY KEY (organization_id, game_server_id),
+    CONSTRAINT uq_case_founder_trial_subscription UNIQUE (provider_subscription_id),
+    CONSTRAINT uq_case_founder_trial_addon UNIQUE (addon_id)
+);
+-- The unique (organization_id, game_server_id) key survives a change of
+-- installation or cancellation. A new trial for the same server is impossible.
+`,
+	},
+
 }
 
 // LiveSyncCommandLineCleanupSQL (migration 0052, Champion Live Sync phase 2.1, docs/
