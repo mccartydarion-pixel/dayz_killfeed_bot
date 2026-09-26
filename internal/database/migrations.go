@@ -2164,7 +2164,47 @@ ON CONFLICT (installation_id, route_key) DO NOTHING;
 		Name: "0055_shop_delivery_attempt_evidence",
 		SQL:  ShopAttemptEvidenceSQL,
 	},
+	{
+		// C.A.S.E. 2G.2: an inert, source-linked shadow-evaluation ledger.
+		// No scheduled runner or enforcement. Append after all prior migrations.
+		Name: "0056_case_shadow_evaluations",
+		SQL: CaseShadowLedgerSQL,
+	},
 }
+
+// CaseShadowLedgerSQL is additive. The composite FK ensures that an evidence
+// link belongs to the SAME guild and game server as the evaluation. A blocked
+// evaluation is diagnostic only; this schema does not store scores or sanctions.
+const CaseShadowLedgerSQL = `
+CREATE UNIQUE INDEX IF NOT EXISTS uq_case_evidence_scope_id
+ ON case_evidence_events(guild_id,server_id,id);
+CREATE TABLE IF NOT EXISTS case_shadow_evaluations (
+ id BIGSERIAL PRIMARY KEY,
+ guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+ server_id BIGINT NOT NULL REFERENCES game_servers(id) ON DELETE CASCADE,
+ detector_id TEXT NOT NULL CHECK (char_length(detector_id) BETWEEN 1 AND 80),
+ detector_version TEXT NOT NULL CHECK (char_length(detector_version) BETWEEN 1 AND 40),
+ fingerprint CHAR(64) NOT NULL,
+ status TEXT NOT NULL CHECK (status = 'BLOCKED'),
+ reason_codes TEXT[] NOT NULL CHECK (cardinality(reason_codes) > 0),
+ created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+ CONSTRAINT uq_case_shadow_fingerprint UNIQUE(guild_id,server_id,detector_id,detector_version,fingerprint),
+ CONSTRAINT uq_case_shadow_scope_id UNIQUE(guild_id,server_id,id)
+);
+CREATE TABLE IF NOT EXISTS case_shadow_evaluation_evidence (
+ guild_id BIGINT NOT NULL,
+ server_id BIGINT NOT NULL,
+ evaluation_id BIGINT NOT NULL,
+ evidence_id BIGINT NOT NULL,
+ PRIMARY KEY(evaluation_id,evidence_id),
+ FOREIGN KEY(guild_id,server_id,evaluation_id)
+  REFERENCES case_shadow_evaluations(guild_id,server_id,id) ON DELETE CASCADE,
+ FOREIGN KEY(guild_id,server_id,evidence_id)
+  REFERENCES case_evidence_events(guild_id,server_id,id) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_case_shadow_scope_recent
+ ON case_shadow_evaluations(guild_id,server_id,id DESC);
+`
 
 // LiveSyncCommandLineCleanupSQL (migration 0052, Champion Live Sync phase 2.1, docs/
 // CHAMPION_LIVE_SYNC.md section 7.8): parser cls-1.1 stored each RPT's command-line header with its IP
