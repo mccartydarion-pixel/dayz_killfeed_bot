@@ -1,6 +1,7 @@
 package billing
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -66,5 +67,38 @@ func TestCaseCoverageFromLinesPicksThisSubscriptionsPaidCaseLine(t *testing.T) {
 	// A failed-invoice view (paidOnly=false) still sees the credit line's period.
 	if _, en, _ := caseCoverageFromLines([]CaseInvoiceLine{line(-494, "price_watch", "sub_a", true, s, e)}, "sub_a", tierOf, false); !en.Equal(e) {
 		t.Fatal("paidOnly=false must consider credit lines")
+	}
+}
+
+// invoice.paid records exactly the invoice that funds the coverage; a legacy (pre-0064) add-on first
+// gets its earlier paid invoices reconstructed from Stripe; a backfilled one does not list anything.
+func TestCaseInvoicePaidRecordsCoverageAndBackfillsLegacyOnce(t *testing.T) {
+	h := newCaseTierHarness(t, casebilling.Watch, true)
+	ctx := context.Background()
+	prior := CaseInvoice{ID: "in_prior", CustomerID: "cus_case", SubscriptionID: "sub_case", Status: "paid", Currency: "usd", AmountPaid: 499,
+		Lines: []CaseInvoiceLine{{Amount: 499, PriceID: "price_watch", SubscriptionID: "sub_case", SubscriptionItem: true,
+			PeriodStart: h.now.Add(-30 * 24 * time.Hour).Unix(), PeriodEnd: h.now.Unix()}}}
+	h.provider.PutCaseInvoice(prior, "pi_prior")
+	h.store.row.CoverageBackfilled = false
+	inv := caseInvoice(t, caseLineJSON(499, "price_watch", h.now, h.end))
+	inv.ID, inv.Currency, inv.AmountPaid = "in_now", "usd", 499
+	if err := h.s.applyCaseEvent(ctx, ParsedEvent{ID: "evt_cov_paid", Type: EventInvoicePaid, Invoice: inv}); err != nil {
+		t.Fatal(err)
+	}
+	last := h.store.applied[len(h.store.applied)-1]
+	if last.Coverage == nil || last.Coverage.InvoiceID != "in_now" || last.Coverage.Tier != "CASE_WATCH" || !last.Coverage.PeriodEnd.Equal(h.end) ||
+		last.Coverage.AmountPaid != 499 || last.Coverage.SubscriptionID != "sub_case" {
+		t.Fatalf("coverage not recorded for the paid invoice: %+v", last.Coverage)
+	}
+	if last.Backfill == nil || len(last.Backfill) != 1 || last.Backfill[0].InvoiceID != "in_prior" {
+		t.Fatalf("legacy add-on must reconstruct earlier paid invoices: %+v", last.Backfill)
+	}
+	h.store.row.CoverageBackfilled = true
+	listed := len(h.calls("ListCasePaidInvoices"))
+	if err := h.s.applyCaseEvent(ctx, ParsedEvent{ID: "evt_cov_paid_2", Type: EventInvoicePaid, Invoice: inv}); err != nil {
+		t.Fatal(err)
+	}
+	if last := h.store.applied[len(h.store.applied)-1]; last.Backfill != nil || len(h.calls("ListCasePaidInvoices")) != listed {
+		t.Fatal("a backfilled add-on must not list invoices again")
 	}
 }

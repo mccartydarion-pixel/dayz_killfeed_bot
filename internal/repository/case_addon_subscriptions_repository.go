@@ -22,6 +22,8 @@ type CaseAddonSubscription struct {
 	CurrentPeriodStart, CurrentPeriodEnd              *time.Time
 	TrialStartedAt, TrialEndsAt, PaidThrough          *time.Time
 	PaidTier                                          string // tier covered by invoice.paid through PaidThrough
+	CoverageState                                     string // OK, PARTIALLY_REFUNDED, REFUNDED, DISPUTED or DISPUTE_LOST (0064)
+	CoverageBackfilled                                bool   // false: paid before 0064, ledger not yet reconstructed
 	CancelAtPeriodEnd                                 bool
 	FounderTrialGranted                                bool
 	CreatedAt, UpdatedAt                              time.Time
@@ -58,7 +60,8 @@ const caseAddonColumns = `c.id, c.organization_id, c.installation_id, c.game_ser
 	g.organization_id=c.organization_id AND g.game_server_id=c.game_server_id AND
 	g.installation_id=c.installation_id AND g.addon_id=c.id AND
 	g.provider_subscription_id=c.provider_subscription_id) AS founder_trial_granted,
-	COALESCE(c.checkout_session_id,'') AS checkout_session_id, COALESCE(c.paid_tier,'')`
+	COALESCE(c.checkout_session_id,'') AS checkout_session_id, COALESCE(c.paid_tier,''),
+	c.coverage_state, c.coverage_backfilled`
 
 // caseCurrentFirst picks an installation's CURRENT add-on ahead of retained
 // CANCELED history (migration 0063 allows one current row plus history).
@@ -70,7 +73,8 @@ func scanCaseAddon(row pgx.Row) (CaseAddonSubscription, error) {
 		&s.Tier, &s.Status, &s.Provider, &s.ProviderCustomerID,
 		&s.ProviderSubscriptionID, &s.ProviderPriceID,
 		&s.CurrentPeriodStart, &s.CurrentPeriodEnd, &s.TrialStartedAt, &s.TrialEndsAt,
-		&s.CancelAtPeriodEnd, &s.CreatedAt, &s.UpdatedAt, &s.SelectedGameServerID, &s.PaidThrough, &s.FounderTrialGranted, &s.CheckoutSessionID, &s.PaidTier)
+		&s.CancelAtPeriodEnd, &s.CreatedAt, &s.UpdatedAt, &s.SelectedGameServerID, &s.PaidThrough, &s.FounderTrialGranted, &s.CheckoutSessionID, &s.PaidTier,
+		&s.CoverageState, &s.CoverageBackfilled)
 	return s, err
 }
 

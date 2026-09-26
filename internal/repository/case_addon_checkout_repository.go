@@ -35,6 +35,19 @@ type CaseWebhookState struct {
 	FounderTrialOffer bool
 	FailedPeriodEnd *time.Time
 	CancelAtPeriodEnd bool
+	// Coverage is the paid invoice this event proves (invoice.paid only). It is recorded in the
+	// coverage ledger (migration 0064) in the same transaction; replays never reset its status.
+	Coverage *CaseInvoiceCoverage
+	// Backfill reconstructs the ledger of an add-on paid before 0064 (coverage_backfilled=false);
+	// non-nil (even empty) marks the ledger complete, nil leaves the flag unchanged.
+	Backfill []CaseInvoiceCoverage
+}
+
+// CaseInvoiceCoverage is one paid C.A.S.E. invoice's coverage: the tier it paid for, until when.
+type CaseInvoiceCoverage struct {
+	InvoiceID, SubscriptionID, PaymentIntentID, Tier, Currency string
+	PeriodStart, PeriodEnd                                   time.Time
+	AmountPaid                                               int64
 }
 
 // ReserveCaseCheckout only creates a pending row when the installation,
@@ -232,6 +245,7 @@ paid_tier=`+casePaidTierSQL+`,updated_at=NOW()
 WHERE id=$1`,in.AddonID,in.CustomerID,in.SubscriptionID,in.PriceID,in.Tier,in.Status,
 		in.CurrentPeriodStart,in.CurrentPeriodEnd,in.TrialEnd,in.CancelAtPeriodEnd,in.PaidThrough,nullIfEmpty(in.PaidTier))
 	if err!=nil{return fmt.Errorf("apply case subscription: %w",err)}
+	if err:=recordCaseCoverage(ctx,tx,in.AddonID,in.Backfill,in.Coverage);err!=nil{return err}
 	if err=tx.Commit(ctx);err!=nil{return fmt.Errorf("commit case webhook: %w",err)}
 	return nil
 }
@@ -272,6 +286,72 @@ AND provider='stripe' AND status='ACTIVE' AND provider_price_id IN ($4,$5)`,
 		orgID,installationID,subID,fromPrice,toPrice,toTier)
 	if err!=nil{return fmt.Errorf("save case tier change: %w",err)}
 	if tag.RowsAffected()!=1{return ErrCaseCheckoutConflict}
+	return nil
+}
+
+// recordCaseCoverage writes invoice coverage for one add-on inside the caller's transaction and then
+// recomputes paid_through/paid_tier/coverage_state from the ledger. Inserts never overwrite an
+// existing row, so a replayed or late invoice.paid cannot undo a recorded refund or dispute.
+func recordCaseCoverage(ctx context.Context, tx pgx.Tx, addonID int64, backfill []CaseInvoiceCoverage, coverage *CaseInvoiceCoverage) error {
+	insert := func(c CaseInvoiceCoverage) error {
+		if c.InvoiceID == "" || c.SubscriptionID == "" || !validCaseTier(c.Tier) || !c.PeriodStart.Before(c.PeriodEnd) || c.AmountPaid < 0 {
+			return ErrCaseWebhookMismatch
+		}
+		_, err := tx.Exec(ctx, `INSERT INTO case_addon_invoice_coverage(addon_id,provider,provider_invoice_id,provider_subscription_id,
+			provider_payment_intent_id,tier,period_start,period_end,amount_paid_cents,currency,status)
+			VALUES($1,'stripe',$2,$3,NULLIF($4,''),$5,$6,$7,$8,NULLIF($9,''),'PAID')
+			ON CONFLICT ON CONSTRAINT uq_case_invoice_coverage DO NOTHING`,
+			addonID, c.InvoiceID, c.SubscriptionID, c.PaymentIntentID, c.Tier, c.PeriodStart, c.PeriodEnd, c.AmountPaid, c.Currency)
+		if err != nil {
+			return fmt.Errorf("record case invoice coverage: %w", err)
+		}
+		return nil
+	}
+	for _, c := range backfill {
+		if err := insert(c); err != nil {
+			return err
+		}
+	}
+	if backfill != nil { // non-nil (even empty) = reconstruction ran; the ledger is now complete
+		if _, err := tx.Exec(ctx, `UPDATE case_addon_subscriptions SET coverage_backfilled=TRUE WHERE id=$1`, addonID); err != nil {
+			return fmt.Errorf("mark case coverage backfilled: %w", err)
+		}
+	}
+	if coverage != nil {
+		if err := insert(*coverage); err != nil {
+			return err
+		}
+	}
+	return recomputeCaseCoverage(ctx, tx, addonID)
+}
+
+// recomputeCaseCoverage derives paid access from invoices in good standing (PAID, PARTIALLY_REFUNDED,
+// DISPUTE_WON): the latest period end, the higher tier on a tie. coverage_state reports the most
+// severe status among the latest period's invoices. It only runs once the ledger is complete
+// (coverage_backfilled) and non-empty; otherwise the pre-0064 forward-only values are kept.
+func recomputeCaseCoverage(ctx context.Context, tx pgx.Tx, addonID int64) error {
+	_, err := tx.Exec(ctx, `
+WITH good AS (
+    SELECT period_end, tier FROM case_addon_invoice_coverage
+    WHERE addon_id=$1 AND status IN ('PAID','PARTIALLY_REFUNDED','DISPUTE_WON')
+    ORDER BY period_end DESC, array_position(ARRAY['CASE_WATCH','CASE_PRO','CASE_COMMAND'],tier) DESC
+    LIMIT 1),
+latest AS (
+    SELECT MAX(CASE status WHEN 'DISPUTE_LOST' THEN 4 WHEN 'REFUNDED' THEN 3 WHEN 'VOIDED' THEN 3
+                           WHEN 'DISPUTED' THEN 2 WHEN 'PARTIALLY_REFUNDED' THEN 1 ELSE 0 END) AS severity
+    FROM case_addon_invoice_coverage
+    WHERE addon_id=$1 AND period_end=(SELECT MAX(period_end) FROM case_addon_invoice_coverage WHERE addon_id=$1))
+UPDATE case_addon_subscriptions SET
+    paid_through=(SELECT period_end FROM good),
+    paid_tier=(SELECT tier FROM good),
+    coverage_state=(SELECT CASE severity WHEN 4 THEN 'DISPUTE_LOST' WHEN 3 THEN 'REFUNDED' WHEN 2 THEN 'DISPUTED'
+                                         WHEN 1 THEN 'PARTIALLY_REFUNDED' ELSE 'OK' END FROM latest),
+    updated_at=NOW()
+WHERE id=$1 AND coverage_backfilled
+  AND EXISTS (SELECT 1 FROM case_addon_invoice_coverage WHERE addon_id=$1)`, addonID)
+	if err != nil {
+		return fmt.Errorf("recompute case coverage: %w", err)
+	}
 	return nil
 }
 

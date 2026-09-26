@@ -171,16 +171,24 @@ func (s *Service) applyCaseEvent(ctx context.Context,e ParsedEvent) error {
 	}
 	var paidThrough,failedPeriodEnd *time.Time
 	var paidTier casebilling.Tier
+	var coverage *repository.CaseInvoiceCoverage
+	var backfill []repository.CaseInvoiceCoverage
 	if e.Type==EventInvoicePaid {
 		// Only a signed paid invoice with a positive C.A.S.E.-priced line for
 		// THIS subscription proves paid coverage, and only for that line's
 		// tier: an invoice paid before an upgrade (or delivered late after
 		// it) proves the old tier, never the new one.
 		if e.Invoice.Status!="paid" {return repository.ErrCaseWebhookMismatch}
-		end,lineTier:=e.Invoice.caseLine(subID,s.caseTierForPrice,true)
+		start,end,lineTier:=caseCoverageFromLines(e.Invoice.caseLines(),subID,s.caseTierForPrice,true)
 		if end.IsZero() {return repository.ErrCaseWebhookMismatch}
 		paidThrough=&end
 		paidTier=lineTier
+		// Record exactly which invoice funds this coverage (migration 0064), so a later refund,
+		// dispute or void can revoke it without touching other invoices' coverage.
+		coverage=&repository.CaseInvoiceCoverage{InvoiceID:e.Invoice.ID,SubscriptionID:subID,
+			PaymentIntentID:string(e.Invoice.PaymentIntent),Tier:string(lineTier),Currency:e.Invoice.Currency,
+			PeriodStart:start,PeriodEnd:end,AmountPaid:e.Invoice.AmountPaid}
+		if backfill,err=s.caseCoverageBackfill(ctx,subID); err!=nil {return err}
 	}
 	if e.Type==EventInvoicePaymentFailed {
 		// Keep the failed invoice's own period to distinguish a stale,
@@ -198,6 +206,7 @@ func (s *Service) applyCaseEvent(ctx context.Context,e ParsedEvent) error {
 		PaidTier:string(paidTier),
 		FounderTrialOffer:founderOffer, FailedPeriodEnd:failedPeriodEnd,
 		CancelAtPeriodEnd:st.CancelAtPeriodEnd,
+		Coverage:coverage, Backfill:backfill,
 	})
 	if err!=nil{return fmt.Errorf("apply isolated case webhook: %w",err)}
 	if !applied {
@@ -218,3 +227,36 @@ func (s *Service) ClassifyCaseEventForTest(ctx context.Context,e ParsedEvent)(bo
 	return s.classifyCaseEvent(ctx,e)
 }
 
+
+// caseCoverageBackfill reconstructs the coverage ledger of an add-on paid before migration 0064
+// (coverage_backfilled=false) from its paid Stripe invoices, read-only, so the first ledger-based
+// recalculation cannot drop coverage those earlier invoices paid for. Returns nil when not needed.
+func (s *Service) caseCoverageBackfill(ctx context.Context, subscriptionID string) ([]repository.CaseInvoiceCoverage, error) {
+	row, err := s.caseStore.GetByCaseSubscriptionID(ctx, subscriptionID)
+	if err != nil || row == nil || row.CoverageBackfilled {
+		return nil, err
+	}
+	p, ok := s.provider.(CaseProvider)
+	if !ok {
+		return nil, ErrProviderNotConfigured
+	}
+	invoices, err := p.ListCasePaidInvoices(ctx, subscriptionID)
+	if err != nil {
+		return nil, fmt.Errorf("reconstruct case coverage: %w", err)
+	}
+	out := make([]repository.CaseInvoiceCoverage, 0, len(invoices))
+	for _, inv := range invoices {
+		if inv.SubscriptionID != subscriptionID || inv.CustomerID != row.ProviderCustomerID || inv.Status != "paid" {
+			continue
+		}
+		start, end, tier := caseCoverageFromLines(inv.Lines, subscriptionID, s.caseTierForPrice, true)
+		if end.IsZero() {
+			continue
+		}
+		out = append(out, repository.CaseInvoiceCoverage{InvoiceID: inv.ID, SubscriptionID: subscriptionID, Tier: string(tier),
+			Currency: inv.Currency, PeriodStart: start, PeriodEnd: end, AmountPaid: inv.AmountPaid})
+	}
+	// A non-nil (possibly empty) result tells the repository the reconstruction ran, so the
+	// ledger is marked complete even when no earlier paid invoice exists.
+	return out, nil
+}

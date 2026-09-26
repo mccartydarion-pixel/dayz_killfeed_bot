@@ -158,22 +158,27 @@ func (inv *webhookInvoice) period() (start, end time.Time) {
 // tier's charge and the old tier's credit). paidOnly skips credit/zero lines,
 // so a Pro credit on a downgrade can never be read as paid Pro coverage.
 func (inv *webhookInvoice) caseLine(subscriptionID string, tierOf func(string) casebilling.Tier, paidOnly bool) (end time.Time, tier casebilling.Tier) {
-	if inv==nil || subscriptionID=="" || tierOf==nil {return time.Time{},""}
-	for _,line:=range inv.Lines.Data {
-		linePrice:=string(line.Pricing.PriceDetails.Price)
-		if linePrice=="" {linePrice=string(line.Price)}
-		t:=tierOf(linePrice)
-		if t=="" || line.Parent.Type!="subscription_item_details" ||
-			string(line.Parent.SubscriptionItemDetails.Subscription)!=subscriptionID ||
-			line.Period.Start<=0 || line.Period.End<=line.Period.Start ||
-			(paidOnly && line.Amount<=0) {continue}
-		e:=time.Unix(line.Period.End,0).UTC()
-		if e.After(end) || (e.Equal(end) && casebilling.Rank(t)>casebilling.Rank(tier)) {
-			end=e
-			tier=t
-		}
+	_, end, tier = caseCoverageFromLines(inv.caseLines(), subscriptionID, tierOf, paidOnly)
+	return end, tier
+}
+
+// caseLines normalizes the event's invoice lines for caseCoverageFromLines (the one coverage rule).
+func (inv *webhookInvoice) caseLines() []CaseInvoiceLine {
+	if inv == nil {
+		return nil
 	}
-	return end,tier
+	out := make([]CaseInvoiceLine, 0, len(inv.Lines.Data))
+	for _, line := range inv.Lines.Data {
+		price := string(line.Pricing.PriceDetails.Price)
+		if price == "" {
+			price = string(line.Price)
+		}
+		out = append(out, CaseInvoiceLine{Amount: line.Amount, PriceID: price,
+			SubscriptionID: string(line.Parent.SubscriptionItemDetails.Subscription),
+			SubscriptionItem: line.Parent.Type == "subscription_item_details",
+			PeriodStart: line.Period.Start, PeriodEnd: line.Period.End})
+	}
+	return out
 }
 
 // ParsedEvent is one webhook event, decoded into exactly the fields Champion's reconciliation
