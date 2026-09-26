@@ -285,7 +285,7 @@ func (r *CaseAddonSubscriptionRepository) SaveCaseCancelFlag(ctx context.Context
 	tag,err:=r.pool.Exec(ctx,`UPDATE case_addon_subscriptions
 SET cancel_at_period_end=$4,updated_at=NOW()
 WHERE organization_id=$1 AND installation_id=$2 AND provider_subscription_id=$3
-AND provider='stripe' AND status IN ('ACTIVE','TRIAL')`,orgID,installationID,subID,cancel)
+AND provider='stripe' AND status IN ('ACTIVE','TRIAL','PAST_DUE')`,orgID,installationID,subID,cancel)
 	if err!=nil{return fmt.Errorf("save case cancellation: %w",err)}
 	if tag.RowsAffected()!=1{return ErrCaseCheckoutConflict}
 	return nil

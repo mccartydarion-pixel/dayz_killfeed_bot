@@ -337,7 +337,9 @@ paid base on the same customer; downgrades/restores work with sales paused. A pr
 **Payment-failure policy (now explicit).** Base LOW/MEDIUM/HIGH access is never touched. A failed
 renewal ends C.A.S.E. access at the end of the paid period (`PAST_DUE`, no grace entitlement). A
 failed invoice for an already-paid period (e.g. a declined upgrade proration) is stale and keeps
-ACTIVE. A later `invoice.paid` restores access.
+ACTIVE. A later `invoice.paid` restores access. A `PAST_DUE` add-on (Stripe `past_due`, still in dunning) can
+be cancelled or reactivated through `POST .../billing/case/cancel|reactivate` (Phase 6.24): a failed payment
+never locks the customer into further charge attempts, and toggling the flag grants no access.
 
 **Re-subscription.** `uq_case_addon_org_installation` / `uq_case_addon_org_server` became partial
 unique indexes over `status <> 'CANCELED'`. A canceled add-on is kept as history (its Stripe

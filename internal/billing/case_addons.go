@@ -246,11 +246,14 @@ func (s *Service) CaseSetCancellation(ctx context.Context, organizationID, insta
 	if err!=nil{return nil,err}
 	if row==nil || row.Provider!="stripe" || row.ProviderSubscriptionID=="" ||
 		row.ProviderCustomerID=="" || row.ProviderPriceID=="" {return nil,ErrCaseNotManaged}
-	if row.Status!="ACTIVE" && row.Status!="TRIAL" { return nil,ErrCaseNotManaged }
+	// PAST_DUE (a failed renewal still in Stripe dunning) must stay cancellable:
+	// a failed payment must never lock a customer into further charge attempts.
+	// Toggling cancel_at_period_end grants no access and changes no paid coverage.
+	if row.Status!="ACTIVE" && row.Status!="TRIAL" && row.Status!="PAST_DUE" { return nil,ErrCaseNotManaged }
 	current,err:=s.provider.GetSubscription(ctx,row.ProviderSubscriptionID)
 	if err!=nil{return nil,err}
 	if err:=s.validateCaseBinding(row,current,organizationID,installationID);err!=nil{return nil,err}
-	if current.StripeStatus!="active" && current.StripeStatus!="trialing" {return nil,ErrCaseNotManaged}
+	if current.StripeStatus!="active" && current.StripeStatus!="trialing" && current.StripeStatus!="past_due" {return nil,ErrCaseNotManaged}
 	if current.CancelAtPeriodEnd!=cancel {
 		current,err=s.provider.SetCancelAtPeriodEnd(ctx,row.ProviderSubscriptionID,cancel)
 		if err!=nil{return nil,fmt.Errorf("update case Stripe cancellation: %w",err)}
