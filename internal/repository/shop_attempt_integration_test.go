@@ -441,6 +441,12 @@ func TestShopAttemptRecovery(t *testing.T) {
 		wantIs(t, "manual fulfil of an unresolved review", w.manualFulfill(o), ErrShopDeliveryAttemptActive)
 		_, err = w.create(o)
 		wantIs(t, "retry after an uncertain attempt", err, ErrShopAttemptConflict)
+		// Migration 0055: a resolution needs a recorded in-game observation by a named observer.
+		_, err = w.attempts.ResolveReview(w.ctx, o.f.OrgID, o.f.InstallationID, o.lastAttemptID, ReviewNotSpawned, "owner-discord", "no observation")
+		wantIs(t, "resolution without an in-game observation", err, ErrShopReviewEvidenceRequired)
+		_, err = w.attempts.RecordEvidence(w.ctx, o.f.OrgID, o.f.InstallationID, o.lastAttemptID, "owner-discord", ShopAttemptEvidenceInput{
+			Kind: EvidenceReviewObservation, Source: SourceInGameObservation, ObservedBy: "owner-in-game", ObservedAt: time.Now(), Detail: "checked the drop point and the player"})
+		must(t, err)
 		if from == AttemptAwaitingRestart {
 			// Resolved SPAWNED: still never refunded by this path; a manual fulfilment is now allowed.
 			_, err = w.attempts.ResolveReview(w.ctx, o.f.OrgID, o.f.InstallationID, o.lastAttemptID, ReviewSpawned, "owner-discord", "player confirmed")
