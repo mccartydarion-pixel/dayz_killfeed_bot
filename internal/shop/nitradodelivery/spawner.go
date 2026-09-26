@@ -75,12 +75,26 @@ func (f SpawnerFile) Render() []byte {
 // ECE_DYNAMIC_PERSISTENCY: an untouched object is not saved, a picked-up one persists in the
 // player's inventory like any item.
 func (p Plan) Entries() []SpawnerObject {
-	out := make([]SpawnerObject, 0, p.quantity)
-	for i := 0; i < p.quantity; i++ {
-		out = append(out, SpawnerObject{Name: p.className, Pos: [3]float64{p.x, p.y, p.z}, Scale: 1,
-			CustomString: fmt.Sprintf("%s:u%d", p.AttemptID(), i+1)})
+	return AttemptEntries(p.AttemptID(), p.className, p.quantity, [3]float64{p.x, p.y, p.z})
+}
+
+// AttemptEntries are the spawner objects one attempt stages, rebuilt from the attempt's durable facts
+// (the ledger row stores exactly these). Plan.Entries is defined through it, so both always agree.
+func AttemptEntries(attemptID, className string, quantity int, pos [3]float64) []SpawnerObject {
+	out := make([]SpawnerObject, 0, quantity)
+	for i := 0; i < quantity; i++ {
+		out = append(out, SpawnerObject{Name: className, Pos: pos, Scale: 1, CustomString: fmt.Sprintf("%s:u%d", attemptID, i+1)})
 	}
 	return out
+}
+
+// SingleAttemptFiles are the exact bytes of the Champion spawner file with only this attempt staged,
+// and with nothing staged (the empty file): what a verified read-back must hash to while staged and
+// after the unstage.
+func SingleAttemptFiles(attemptID, className string, quantity int, pos [3]float64) (staged, empty []byte) {
+	empty = SpawnerFile{Objects: []SpawnerObject{}}.Render()
+	staged = SpawnerFile{Objects: AttemptEntries(attemptID, className, quantity, pos)}.Render()
+	return staged, empty
 }
 
 func belongsTo(o SpawnerObject, attemptID string) bool {

@@ -2159,6 +2159,12 @@ ON CONFLICT (installation_id, route_key) DO NOTHING;
 		SQL:  ShopDeliveryAttemptsSQL,
 	},
 	{
+		// Champion Shop Phase 2C.4 structured canary evidence (docs/SHOP_DELIVERY_PHASE2C4.md). Additive,
+		// append-only; depends on 0054. Inert until the canary execution gate is enabled.
+		Name: "0055_shop_delivery_attempt_evidence",
+		SQL:  ShopAttemptEvidenceSQL,
+	},
+	{
 		Name: "0056_case_addon_subscriptions",
 		SQL: `
 -- Phase 6.1: C.A.S.E. is an ADDITIVE per-server purchase, never a new base plan.

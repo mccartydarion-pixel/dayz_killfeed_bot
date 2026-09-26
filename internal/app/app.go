@@ -46,6 +46,7 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/server"
 	"github.com/yourname/dayz-killfeed/internal/servers"
 	"github.com/yourname/dayz-killfeed/internal/shop"
+	"github.com/yourname/dayz-killfeed/internal/shop/canaryops"
 )
 
 // App owns the main runtime dependencies.
@@ -81,6 +82,10 @@ type App struct {
 	EconomyAccounts *economy.Accounts
 	// Shop is the Champion Shop (catalog, purchases with Champion Points); see docs/SHOP.md.
 	Shop *shop.Service
+	// ShopCanary is the Phase 2C.4 canary operator service (docs/SHOP_DELIVERY_PHASE2C4.md); its
+	// mutations are locked unless ShopCanaryGate is opened by CHAMPION_SHOP_CANARY_EXECUTION.
+	ShopCanary     *canaryops.Service
+	ShopCanaryGate canaryops.Gate
 	// Billing is the Champion Billing service (Stripe checkout, portal, webhooks); see
 	// docs/BILLING.md. Nil-safe: registerBillingRoutes always assigns it, even with no
 	// STRIPE_SECRET_KEY configured (Billing.Configured() is then false and every action fails
@@ -668,6 +673,9 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.LinkService = linking.NewService(app.Links, app.ActivityRepository, app.Servers, app.Links)
 			app.SaaSUsers = repository.NewUserRepository(db.Pool)
 			app.SaaSOrganizations = repository.NewOrganizationRepository(db.Pool)
+			app.ShopCanaryGate = canaryops.NewGate(cfg.ShopCanaryExecution.Enabled, cfg.ShopCanaryExecution.InstallationIDs)
+			app.ShopCanary = canaryops.New(repository.NewShopAttemptRepository(db.Pool), repository.NewShopRepository(db.Pool), app.SaaSOrganizations, app.EconomyAccounts, app.ShopCanaryGate)
+			slog.Info("component=shop_canary", "execution_enabled", cfg.ShopCanaryExecution.Enabled, "installations", len(cfg.ShopCanaryExecution.InstallationIDs))
 			app.SaaSGuildConnections = repository.NewGuildConnectionRepository(db.Pool)
 			app.SaaSServers = repository.NewSaaSServerRepository(db.Pool)
 			app.SaaSInstallations = repository.NewInstallationRepository(db.Pool)
