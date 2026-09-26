@@ -386,3 +386,74 @@ func TestVerifiedRoleSyncStates(t *testing.T) {
 		}
 	})
 }
+
+// TestLinkLifecycleAcrossRestartAndAdminFallback: a pending challenge created
+// by one process completes in a restarted one; the admin manual fallback
+// verifies and assigns the role; neither weakens the five-minute rule.
+func TestLinkLifecycleAcrossRestartAndAdminFallback(t *testing.T) {
+	ctx := context.Background()
+	newService := func(t *testing.T, roles linking.RoleAssigner) *linking.LinkVerificationService {
+		db := saasIntegrationDB(t)
+		links := NewLinkRepository(db.Pool)
+		svc := linking.NewService(links, NewActivityRepository(db.Pool), NewServerRepository(db.Pool), links)
+		svc.SetRoleAssigner(roles)
+		return svc
+	}
+
+	t.Run("pending challenge survives an application restart", func(t *testing.T) {
+		f := newLinkBindingFixture(t, "ONLINE", 6*time.Minute)
+		discordID := fmt.Sprintf("discord-%d", time.Now().UnixNano())
+		first := newService(t, &scriptedRoles{})
+		if _, err := first.Request(ctx, f.GuildRowID, discordID, f.PlayerName); err != nil {
+			t.Fatal(err)
+		}
+		now := time.Now()
+		if err := first.ObserveDisconnect(ctx, f.GuildRowID, f.PlayerID, now.Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		// Process restarts between the disconnect and the reconnect.
+		roles := &scriptedRoles{}
+		second := newService(t, roles)
+		if err := second.ObserveConnect(ctx, f.GuildRowID, f.PlayerID, now.Add(2*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		link, err := second.Status(ctx, f.GuildRowID, discordID)
+		if err != nil || link == nil || link.Status != linking.StatusVerified || roles.attempts[discordID] != 1 {
+			t.Fatalf("expected VERIFIED with the role assigned after restart, got %+v err=%v attempts=%v", link, err, roles.attempts)
+		}
+		if st, _ := roleSyncStatus(t, ctx, f, discordID); st != linking.RoleSyncAssigned {
+			t.Fatalf("expected ASSIGNED, got %q", st)
+		}
+	})
+
+	t.Run("admin manual fallback verifies and assigns the role", func(t *testing.T) {
+		f := newLinkBindingFixture(t, "ONLINE", 6*time.Minute)
+		discordID := fmt.Sprintf("discord-%d", time.Now().UnixNano())
+		roles := &scriptedRoles{}
+		svc := newService(t, roles)
+		if _, err := svc.Request(ctx, f.GuildRowID, discordID, f.PlayerName); err != nil {
+			t.Fatal(err)
+		}
+		if err := svc.ApproveManually(ctx, f.GuildRowID, f.PlayerName); err != nil {
+			t.Fatalf("admin approval failed: %v", err)
+		}
+		link, _ := svc.Status(ctx, f.GuildRowID, discordID)
+		if link == nil || link.Status != linking.StatusVerified || roles.attempts[discordID] != 1 {
+			t.Fatalf("expected VERIFIED with role via admin fallback, got %+v attempts=%v", link, roles.attempts)
+		}
+		if st, _ := roleSyncStatus(t, ctx, f, discordID); st != linking.RoleSyncAssigned {
+			t.Fatalf("expected ASSIGNED, got %q", st)
+		}
+	})
+
+	t.Run("admin fallback cannot verify without a pending request", func(t *testing.T) {
+		f := newLinkBindingFixture(t, "ONLINE", 2*time.Minute) // under five minutes: no pending link can exist
+		svc := newService(t, &scriptedRoles{})
+		if _, err := svc.Request(ctx, f.GuildRowID, fmt.Sprintf("discord-%d", time.Now().UnixNano()), f.PlayerName); !errors.Is(err, linking.ErrPlaytimeRequired) {
+			t.Fatalf("expected the five-minute rule, got %v", err)
+		}
+		if err := svc.ApproveManually(ctx, f.GuildRowID, f.PlayerName); !errors.Is(err, linking.ErrPlayerNotFound) {
+			t.Fatalf("admin fallback must require a pending request, got %v", err)
+		}
+	})
+}
