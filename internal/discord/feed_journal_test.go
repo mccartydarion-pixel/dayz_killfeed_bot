@@ -232,6 +232,48 @@ func TestJournalRestartKeepsNewestTenVisible(t *testing.T) {
 	eventually(t, "journal holds exactly the shown window", func() bool { return j.open("KILLFEED:1") == 10 })
 }
 
+// A failed delete must keep the next card queued and journaled, without
+// falsely marking either the old card removed or the new card posted.
+func TestJournalStrictCapacityBlocksUntilOldestRemoved(t *testing.T) {
+	rig := newRecoveryRig(t, time.Hour, 5*time.Second)
+	rig.cancel()
+	rig.feed.WaitDone()
+	j := newMemJournal()
+	feed, _ := startJournalFeed(t, FeedModeImmediate, time.Hour, rig.kf, j, nil)
+	for n := 1; n <= 10; n++ {
+		feed.EnqueueDetected(card(n), time.Now())
+	}
+	eventually(t, "ten posted and journaled", func() bool {
+		return len(rig.emu.titles(rig.kf)) == 10 && j.open("KILLFEED:1") == 10
+	})
+	rig.emu.mu.Lock()
+	for i := 0; i < 20; i++ {
+		rig.emu.delFault[rig.kf] = append(rig.emu.delFault[rig.kf], discordFault{status: 500})
+	}
+	rig.emu.mu.Unlock()
+	feed.EnqueueDetected(card(11), time.Now())
+	eventually(t, "failed delete", func() bool { return ledger("KILLFEED").CleanupFailures > 0 })
+	if got := rig.emu.titles(rig.kf); !reflect.DeepEqual(got, titlesRange(1, 10)) {
+		t.Fatalf("card posted before a successful eviction: %v", got)
+	}
+	eventually(t, "journal retains the old card and the pending new card", func() bool {
+		rows, err := j.Open(context.Background(), "KILLFEED:1")
+		if err != nil || len(rows) != 11 { return false }
+		return rows[0].MessageID != "" && rows[10].MessageID == ""
+	})
+	rig.emu.mu.Lock()
+	rig.emu.delFault[rig.kf] = nil
+	rig.emu.mu.Unlock()
+	eventually(t, "cleanup resumes ordered delivery", func() bool {
+		return reflect.DeepEqual(rig.emu.titles(rig.kf), titlesRange(2, 11))
+	})
+	eventually(t, "journal converges to visible ten", func() bool { return j.open("KILLFEED:1") == 10 })
+	rig.emu.mu.Lock()
+	peak := rig.emu.peak[rig.kf]
+	rig.emu.mu.Unlock()
+	if peak > 10 { t.Fatalf("peak visible cards %d, want <=10", peak) }
+}
+
 // A card queued longer than the replay window is not posted as if live; it is
 // dropped, counted and logged - not silently lost.
 func TestJournalStaleQueuedCardIsDroppedAndCounted(t *testing.T) {
