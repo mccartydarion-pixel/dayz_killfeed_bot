@@ -9,9 +9,10 @@ import (
 )
 
 type linkTestRepository struct {
-	players []PlayerCandidate
-	pending *LinkRecord
-	claimed *LinkRecord
+	players   []PlayerCandidate
+	pending   *LinkRecord
+	claimed   *LinkRecord
+	byDiscord *LinkRecord
 
 	// challenge state for a single pending link - enough for these tests,
 	// which only ever exercise one link's disconnect/reconnect sequence at a time.
@@ -31,7 +32,7 @@ func (r *linkTestRepository) FindPlayers(context.Context, int64, string) ([]Play
 	return r.players, nil
 }
 func (r *linkTestRepository) GetByDiscord(context.Context, int64, string) (*LinkRecord, error) {
-	return nil, nil
+	return r.byDiscord, nil
 }
 func (r *linkTestRepository) GetByPlayer(context.Context, int64, int64) (*LinkRecord, error) {
 	return r.claimed, nil
@@ -137,16 +138,16 @@ func (a linkTestActivity) GetObservedPlaytime(context.Context, int64, int64, int
 }
 
 type linkTestServer struct {
-	id  int64
+	ids []int64
 	err error
 }
 
-func (s linkTestServer) ConnectedServerID(context.Context, int64) (int64, error) {
-	return s.id, s.err
+func (s linkTestServer) ActiveServerIDs(context.Context, int64) ([]int64, error) {
+	return s.ids, s.err
 }
 
 func newLinkTestService(repo *linkTestRepository, playtime time.Duration) *LinkVerificationService {
-	return NewService(repo, linkTestActivity{playtime: playtime}, linkTestServer{id: 7})
+	return NewService(repo, linkTestActivity{playtime: playtime}, linkTestServer{ids: []int64{7}})
 }
 
 func TestRequestRequiresObservedPlayer(t *testing.T) {
@@ -178,7 +179,7 @@ func TestRequestCreatesPendingLinkAtFiveMinutes(t *testing.T) {
 
 func TestRequestDoesNotConvertActivityFailureToPlayerNotFound(t *testing.T) {
 	repo := &linkTestRepository{players: []PlayerCandidate{{ID: 10, DayZID: "tcp-id", DisplayName: "TCP"}}}
-	service := NewService(repo, linkTestActivity{err: errors.New("database unavailable")}, linkTestServer{id: 7})
+	service := NewService(repo, linkTestActivity{err: errors.New("database unavailable")}, linkTestServer{ids: []int64{7}})
 	_, err := service.Request(context.Background(), 1, "discord", "TCP")
 	if !errors.Is(err, ErrLinkCheckUnavailable) {
 		t.Fatalf("expected link-check-unavailable, got %v", err)
@@ -191,7 +192,7 @@ func TestRequestDoesNotConvertActivityFailureToPlayerNotFound(t *testing.T) {
 // required), not a database/lookup failure.
 func TestRequestTreatsMissingActivityRowAsZeroPlaytime(t *testing.T) {
 	repo := &linkTestRepository{players: []PlayerCandidate{{ID: 10, DayZID: "tcp-id", DisplayName: "TCP"}}}
-	service := NewService(repo, linkTestActivity{playtime: 0, err: nil}, linkTestServer{id: 7})
+	service := NewService(repo, linkTestActivity{playtime: 0, err: nil}, linkTestServer{ids: []int64{7}})
 	_, err := service.Request(context.Background(), 1, "discord", "TCP")
 	if !errors.Is(err, ErrPlaytimeRequired) {
 		t.Fatalf("expected playtime-required for an unobserved player, got %v", err)
@@ -212,7 +213,7 @@ func TestRequestEligibleOverFiveMinutes(t *testing.T) {
 func TestRequestPropagatesResolvedServerAndGuildScope(t *testing.T) {
 	repo := &linkTestRepository{players: []PlayerCandidate{{ID: 10, DayZID: "tcp-id", DisplayName: "TCP"}}}
 	spy := &scopeSpyActivity{playtime: 5 * time.Minute}
-	service := NewService(repo, spy, linkTestServer{id: 42})
+	service := NewService(repo, spy, linkTestServer{ids: []int64{42}})
 	if _, err := service.Request(context.Background(), 99, "discord", "TCP"); err != nil {
 		t.Fatalf("expected eligible request to succeed, got %v", err)
 	}
@@ -399,5 +400,67 @@ func TestSanitizeLinkErrorRedactsConnectionSecrets(t *testing.T) {
 	}
 	if got := sanitizeLinkError(errors.New("column \"foo\" does not exist")); got == "redacted" {
 		t.Fatal("expected an ordinary query error to pass through unredacted")
+	}
+}
+
+// perServerActivity returns a fixed playtime per server ID.
+type perServerActivity map[int64]time.Duration
+
+func (a perServerActivity) GetObservedPlaytime(_ context.Context, _, serverID, _ int64, _ time.Time) (time.Duration, error) {
+	return a[serverID], nil
+}
+
+// TestRequestWithNoActiveServerIsNotConfigured is the LINK CHECK UNAVAILABLE
+// regression: a guild with no active server is a configuration state with its
+// own error, not a backend outage.
+func TestRequestWithNoActiveServerIsNotConfigured(t *testing.T) {
+	repo := &linkTestRepository{players: []PlayerCandidate{{ID: 10, DayZID: "tcp-id", DisplayName: "TCP"}}}
+	_, err := NewService(repo, linkTestActivity{playtime: time.Hour}, linkTestServer{}).Request(context.Background(), 1, "discord", "TCP")
+	if !errors.Is(err, ErrNoConnectedServer) || errors.Is(err, ErrLinkCheckUnavailable) {
+		t.Fatalf("expected no-connected-server, got %v", err)
+	}
+	if repo.pending != nil {
+		t.Fatal("no pending link may be created without a server")
+	}
+}
+
+// TestRequestServerLookupFailureIsUnavailable: only a real lookup failure is
+// reported as unavailable.
+func TestRequestServerLookupFailureIsUnavailable(t *testing.T) {
+	repo := &linkTestRepository{players: []PlayerCandidate{{ID: 10, DayZID: "tcp-id", DisplayName: "TCP"}}}
+	_, err := NewService(repo, linkTestActivity{playtime: time.Hour}, linkTestServer{err: errors.New("connection refused")}).Request(context.Background(), 1, "discord", "TCP")
+	if !errors.Is(err, ErrLinkCheckUnavailable) {
+		t.Fatalf("expected link-check-unavailable, got %v", err)
+	}
+}
+
+// TestRequestWithMultipleActiveServersUsesBestSingleServer: a multi-server
+// guild no longer fails every link. The best single server counts; playtime is
+// never summed across servers.
+func TestRequestWithMultipleActiveServersUsesBestSingleServer(t *testing.T) {
+	repo := &linkTestRepository{players: []PlayerCandidate{{ID: 10, DayZID: "tcp-id", DisplayName: "TCP"}}}
+	servers := linkTestServer{ids: []int64{3, 4}}
+	if _, err := NewService(repo, perServerActivity{3: time.Minute, 4: 6 * time.Minute}, servers).Request(context.Background(), 1, "discord", "TCP"); err != nil {
+		t.Fatalf("expected pending link from server 4, got %v", err)
+	}
+	repo2 := &linkTestRepository{players: []PlayerCandidate{{ID: 10, DayZID: "tcp-id", DisplayName: "TCP"}}}
+	_, err := NewService(repo2, perServerActivity{3: 3 * time.Minute, 4: 3 * time.Minute}, servers).Request(context.Background(), 1, "discord", "TCP")
+	if !errors.Is(err, ErrPlaytimeRequired) {
+		t.Fatalf("3+3 minutes on two servers must not satisfy the 5-minute rule, got %v", err)
+	}
+}
+
+// TestRequestAlreadyLinkedAndClaimed covers the two ownership refusals.
+func TestRequestAlreadyLinkedAndClaimed(t *testing.T) {
+	repo := &linkTestRepository{players: []PlayerCandidate{{ID: 10, DayZID: "tcp-id", DisplayName: "TCP"}}, byDiscord: &LinkRecord{Status: StatusVerified}}
+	if _, err := newLinkTestService(repo, time.Hour).Request(context.Background(), 1, "discord", "TCP"); !errors.Is(err, ErrAlreadyLinked) {
+		t.Fatalf("expected already-linked, got %v", err)
+	}
+	repo = &linkTestRepository{players: []PlayerCandidate{{ID: 10, DayZID: "tcp-id", DisplayName: "TCP"}}, claimed: &LinkRecord{DiscordUserID: "someone-else", Status: StatusVerified}}
+	if _, err := newLinkTestService(repo, time.Hour).Request(context.Background(), 1, "discord", "TCP"); !errors.Is(err, ErrPlayerClaimed) {
+		t.Fatalf("expected player-claimed, got %v", err)
+	}
+	if repo.pending != nil {
+		t.Fatal("a claimed player must not get a second pending link")
 	}
 }

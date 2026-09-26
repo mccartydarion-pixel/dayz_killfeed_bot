@@ -223,6 +223,8 @@ func linkErrorMessage(err error) string {
 	switch {
 	case errors.Is(err, linking.ErrLinkCheckUnavailable):
 		return "⚠️ **LINK CHECK UNAVAILABLE**\nChampion cannot verify server activity right now. Please try again shortly."
+	case errors.Is(err, linking.ErrNoConnectedServer):
+		return "⚙️ **SERVER NOT CONNECTED**\nNo DayZ server is connected to this Discord yet, so Champion has no server activity to check. Ask an admin to connect the server in the Champion dashboard."
 	case errors.Is(err, linking.ErrPlayerNotFound):
 		return "❌ **PLAYER NOT FOUND**\nChampion has not seen that PlayStation username on the DayZ server yet."
 	case errors.Is(err, linking.ErrPlaytimeRequired):
