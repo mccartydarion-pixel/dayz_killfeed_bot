@@ -15,7 +15,7 @@ jobs:
     services:
       # A throwaway database that exists only for this job - never production.
       postgres:
-        image: postgres:16
+        image: postgres:18
         env:
           POSTGRES_USER: champion
           POSTGRES_PASSWORD: champion
@@ -46,7 +46,7 @@ jobs:
         run: go test ./...
 
       - name: Race tests (publishers and ADM pipeline)
-        run: go test -race ./internal/discord ./internal/killfeed ./internal/app
+        run: go test -race ./internal/discord ./internal/killfeed ./internal/app ./internal/shop/... ./internal/config
 
       - name: Integration tests (disposable PostgreSQL)
         env:
