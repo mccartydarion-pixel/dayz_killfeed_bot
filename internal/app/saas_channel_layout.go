@@ -135,7 +135,7 @@ var championDestinations = []championDestination{
 		Starter: &starterCard{"💰 CHAMPION ECONOMY", "Champion Points and shop activity will appear here."},
 	},
 	{
-		Key: "ONLINE_COUNTER", Label: "Players Online", Category: categoryHub, ChannelName: discord.OnlineCounterName(0),
+		Key: "ONLINE_COUNTER", Label: "Players Online", Category: categoryHub, ChannelName: discord.OnlineCounterName(0, 0),
 		Routes: []string{"ONLINE_COUNTER"}, Anchors: []string{"ONLINE_COUNTER"}, Voice: true,
 	},
 	{
@@ -805,10 +805,10 @@ func resolveLayoutChannel(d channelLayoutDiscord, guildID string, channels []dis
 
 // matches reports whether ch is this destination's channel: a text channel
 // with its exact name, or - for the voice counter, whose name changes with
-// the count - a voice channel with the counter prefix.
+// the count - a voice channel whose name is a counter name in any format.
 func (d championDestination) matches(ch discord.RawGuildChannel) bool {
 	if d.Voice {
-		return ch.Type == discordgo.ChannelTypeGuildVoice && strings.HasPrefix(ch.Name, discord.ChannelOnlinePlayersPrefix)
+		return ch.Type == discordgo.ChannelTypeGuildVoice && discord.IsOnlineCounterName(ch.Name)
 	}
 	return ch.Type == discordgo.ChannelTypeGuildText && strings.EqualFold(ch.Name, d.ChannelName)
 }

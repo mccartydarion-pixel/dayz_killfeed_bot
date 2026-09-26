@@ -7,8 +7,10 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
-// ChannelOnlinePlayersPrefix is the voice-counter prefix; the live count is
-// appended as the channel name (e.g. "🟢・Online Players: 0").
+// ChannelOnlinePlayersPrefix is the legacy voice-counter prefix
+// ("🟢・Online Players: 0"). Current builds name the counter
+// "🟢・Online: 2/18" (see OnlineCounterName); use IsOnlineCounterName to
+// recognise a counter channel in either format.
 const ChannelOnlinePlayersPrefix = "🟢・Online Players"
 
 // GuildAPI is the subset of Discord guild operations the setup manager needs.

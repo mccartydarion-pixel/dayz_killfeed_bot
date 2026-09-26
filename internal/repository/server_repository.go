@@ -2,10 +2,13 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/yourname/dayz-killfeed/internal/linking"
 )
 
 type GameServer struct {
@@ -62,8 +65,28 @@ func (r *ServerRepository) ListActive(ctx context.Context) ([]GameServer, error)
 	}
 	return out, rows.Err()
 }
+
+// ConnectedServerID resolves the one game server the guild's account-link
+// checks read activity from. It follows the same rule as the public online
+// counter (selectPublicCounterServer): the guild's selected public server when
+// it is still active, otherwise the guild's only active server.
+//
+// game_servers.status is deliberately NOT used as a filter. It is an
+// informational label written by several flows with different vocabularies -
+// /server connect writes CONNECTED, the SaaS installation flow writes
+// ONLINE/OFFLINE from Nitrado's service status - so filtering on
+// ('connected','ready','active') rejected every SaaS-onboarded server and made
+// every /link fail with LINK CHECK UNAVAILABLE. "active" is what decides
+// whether a worker runs for a server, so it is what decides eligibility here.
+//
+// Errors wrap linking.ErrNoConnectedServer / linking.ErrMultipleConnectedServers
+// so callers can tell "installation not configured" from a database failure.
 func (r *ServerRepository) ConnectedServerID(ctx context.Context, guildID int64) (int64, error) {
-	rows, err := r.pool.Query(ctx, `SELECT id FROM game_servers WHERE guild_id=$1 AND active AND LOWER(status) IN ('connected','ready','active') ORDER BY id`, guildID)
+	var selected int64
+	if err := r.pool.QueryRow(ctx, `SELECT COALESCE(selected_public_server_id,0) FROM guilds WHERE id=$1`, guildID).Scan(&selected); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return 0, err
+	}
+	rows, err := r.pool.Query(ctx, `SELECT id FROM game_servers WHERE guild_id=$1 AND active ORDER BY id`, guildID)
 	if err != nil {
 		return 0, err
 	}
@@ -79,13 +102,26 @@ func (r *ServerRepository) ConnectedServerID(ctx context.Context, guildID int64)
 	if err := rows.Err(); err != nil {
 		return 0, err
 	}
-	switch len(ids) {
+	return resolveLinkServer(guildID, selected, ids)
+}
+
+// resolveLinkServer applies ConnectedServerID's selection rule to already
+// loaded rows (split out so the rule is unit-testable without a database).
+func resolveLinkServer(guildID, selected int64, activeIDs []int64) (int64, error) {
+	if selected > 0 {
+		for _, id := range activeIDs {
+			if id == selected {
+				return id, nil
+			}
+		}
+	}
+	switch len(activeIDs) {
 	case 0:
-		return 0, fmt.Errorf("no connected server for guild %d", guildID)
+		return 0, fmt.Errorf("%w for guild %d", linking.ErrNoConnectedServer, guildID)
 	case 1:
-		return ids[0], nil
+		return activeIDs[0], nil
 	default:
-		return 0, fmt.Errorf("multiple connected servers for guild %d; explicit server selection required", guildID)
+		return 0, fmt.Errorf("%w for guild %d; select the public server with /server select", linking.ErrMultipleConnectedServers, guildID)
 	}
 }
 
