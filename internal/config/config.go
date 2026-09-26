@@ -38,6 +38,10 @@ type Config struct {
 
 	NitradoToken     string
 	NitradoServiceID string
+	// NitradoAPIBaseURL is NITRADO_API_BASE_URL: an isolated-staging-only
+	// replacement for the Nitrado API (internal/nitrado/nitradofixture).
+	// Load accepts it only with APP_ENV=staging.
+	NitradoAPIBaseURL string
 
 	KillfeedChannelID         string
 	DatabaseURL               string
@@ -135,6 +139,14 @@ func Load() (*Config, error) {
 		StripeWebhookSecret:   strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET")),
 		BillingPlansJSON:      os.Getenv("CHAMPION_BILLING_PLANS_JSON"),
 		BillingAllowedOrigins: os.Getenv("CHAMPION_BILLING_ALLOWED_ORIGINS"),
+
+		NitradoAPIBaseURL: strings.TrimSpace(os.Getenv("NITRADO_API_BASE_URL")),
+	}
+	if err := ValidateNitradoAPIBaseURL(cfg.NitradoAPIBaseURL, cfg.AppEnv); err != nil {
+		return nil, err
+	}
+	if err := ValidateStagingIsolation(cfg.AppEnv, cfg.StripeSecretKey); err != nil {
+		return nil, err
 	}
 
 	if cfg.HTTPPort == "" {
@@ -149,6 +161,38 @@ func Load() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// ValidateNitradoAPIBaseURL allows a Nitrado API replacement only in an
+// environment that declares itself staging (an allowlist: a production
+// service with APP_ENV unset or anything else refuses to start), and only as
+// an absolute http(s) URL.
+func ValidateNitradoAPIBaseURL(raw, appEnv string) error {
+	if raw == "" {
+		return nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(appEnv), "staging") {
+		return fmt.Errorf("NITRADO_API_BASE_URL is only allowed with APP_ENV=staging")
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("NITRADO_API_BASE_URL must be an absolute http(s) URL")
+	}
+	return nil
+}
+
+// ValidateStagingIsolation refuses production-only credentials in a service
+// that declares APP_ENV=staging: a live Stripe key there could charge real
+// customers. (Discord and Nitrado isolation cannot be proven from a value;
+// see docs/incidents/2026-09-26-staging-infrastructure.md.)
+func ValidateStagingIsolation(appEnv, stripeSecretKey string) error {
+	if !strings.EqualFold(strings.TrimSpace(appEnv), "staging") {
+		return nil
+	}
+	if strings.HasPrefix(strings.TrimSpace(stripeSecretKey), "sk_live_") || strings.HasPrefix(strings.TrimSpace(stripeSecretKey), "rk_live_") {
+		return fmt.Errorf("APP_ENV=staging refuses a live Stripe key (STRIPE_SECRET_KEY); leave it unset or use a test key")
+	}
+	return nil
 }
 
 func getEnv(key, fallback string) string {

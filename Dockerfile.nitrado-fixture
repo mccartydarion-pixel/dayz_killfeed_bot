@@ -1,0 +1,18 @@
+# Read-only synthetic Nitrado API for isolated staging only
+# (internal/nitrado/nitradofixture). Never deploy next to production.
+FROM golang:1.25-alpine AS builder
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /out/nitrado-fixture ./cmd/nitrado-fixture
+
+FROM alpine:3.20
+RUN addgroup -S app && adduser -S -G app app
+WORKDIR /app
+COPY --from=builder /out/nitrado-fixture /app/nitrado-fixture
+EXPOSE 8080
+USER app
+ENTRYPOINT ["/app/nitrado-fixture"]

@@ -2164,7 +2164,59 @@ ON CONFLICT (installation_id, route_key) DO NOTHING;
 		Name: "0055_shop_delivery_attempt_evidence",
 		SQL:  ShopAttemptEvidenceSQL,
 	},
+	{
+		// P0 2026-09-26 Verified-role reconciliation (docs/ONLINE_COUNTER_AND_LINK_CHECK.md). Additive,
+		// nullable columns only; no row is rewritten. Existing VERIFIED links keep role_sync_status NULL
+		// (never reconciled automatically - their role state predates tracking); links verified from
+		// now on are PENDING until Discord confirms the role, so a failed assignment survives restarts.
+		Name: "0056_player_link_role_sync",
+		SQL:  PlayerLinkRoleSyncSQL,
+	},
+	{
+		// P0 2026-09-26 immediate killfeed journal (docs/incidents/2026-09-26-staging-infrastructure.md).
+		// New table only; no existing row is read or rewritten. Written only by feeds running
+		// KILLFEED_DELIVERY_MODE=immediate, so it stays empty under the production default.
+		Name: "0057_discord_feed_cards",
+		SQL:  DiscordFeedCardsSQL,
+	},
 }
+
+// DiscordFeedCardsSQL (migration 0057) is the immediate-mode feed journal: each queued card is
+// recorded before it is posted, marked when Discord confirms it (message_id) and again when it
+// leaves the channel, so a restart - including a crash - neither loses queued cards nor leaves the
+// previous process's cards in the channel. feed_key is "<route>:<server id>".
+const DiscordFeedCardsSQL = `
+CREATE TABLE IF NOT EXISTS discord_feed_cards (
+    id BIGSERIAL PRIMARY KEY,
+    feed_key TEXT NOT NULL,
+    nonce TEXT NOT NULL,
+    embed JSONB NOT NULL,
+    detected_at TIMESTAMPTZ,
+    enqueued_at TIMESTAMPTZ NOT NULL,
+    channel_id TEXT,
+    message_id TEXT,
+    posted_at TIMESTAMPTZ,
+    removed_at TIMESTAMPTZ,
+    dropped_at TIMESTAMPTZ,
+    drop_reason TEXT,
+    UNIQUE (feed_key, nonce)
+);
+CREATE INDEX IF NOT EXISTS idx_discord_feed_cards_open ON discord_feed_cards(feed_key, id)
+    WHERE removed_at IS NULL AND dropped_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_discord_feed_cards_enqueued ON discord_feed_cards(enqueued_at);
+`
+
+// PlayerLinkRoleSyncSQL (migration 0056) records whether the Verified Discord role was actually
+// assigned for a VERIFIED link - distinct from the link itself being verified.
+const PlayerLinkRoleSyncSQL = `
+ALTER TABLE player_links ADD COLUMN IF NOT EXISTS role_sync_status TEXT;
+ALTER TABLE player_links ADD COLUMN IF NOT EXISTS role_sync_attempts INT NOT NULL DEFAULT 0;
+ALTER TABLE player_links ADD COLUMN IF NOT EXISTS role_sync_last_attempt_at TIMESTAMPTZ;
+ALTER TABLE player_links ADD COLUMN IF NOT EXISTS role_synced_at TIMESTAMPTZ;
+ALTER TABLE player_links ADD COLUMN IF NOT EXISTS role_sync_error TEXT;
+CREATE INDEX IF NOT EXISTS idx_player_links_role_pending ON player_links(guild_id, role_sync_last_attempt_at)
+    WHERE status = 'VERIFIED' AND role_sync_status IN ('PENDING', 'FAILED');
+`
 
 // LiveSyncCommandLineCleanupSQL (migration 0052, Champion Live Sync phase 2.1, docs/
 // CHAMPION_LIVE_SYNC.md section 7.8): parser cls-1.1 stored each RPT's command-line header with its IP

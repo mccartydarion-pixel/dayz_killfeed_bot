@@ -149,7 +149,7 @@ func (p *BuildFeedPublisher) Flush(ctx context.Context) {
 	} else {
 		embeds = []*discordgo.MessageEmbed{BuildActivitySummaryEmbed(items, dropped, server)}
 	}
-	if _, err := p.sender.ChannelMessageSendComplex(channel, &discordgo.MessageSend{Embeds: embeds}); err != nil {
+	if _, err := deliverMessage(p.sender, "BUILD_FEED", channel, &discordgo.MessageSend{Embeds: embeds}); err != nil {
 		slog.Warn("component=build_feed", "event", "build_feed_send_failed", "server_id", p.serverID, "err", err.Error())
 	}
 }

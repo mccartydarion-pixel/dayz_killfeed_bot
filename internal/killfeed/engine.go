@@ -143,6 +143,9 @@ type PresenceSnapshot struct {
 	LastVoicePublishCount  int
 	LastVoicePublishAt     time.Time
 	LastVoicePublishResult string
+	// Presence is how the online count is backed (presence_evidence.go);
+	// OnlineCount is only a fact when Presence.Known.
+	Presence PresenceEvidence
 }
 
 // KillPublisher is the consumer for authoritative PLAYER_KILL events.
@@ -263,7 +266,12 @@ type Engine struct {
 	consecFailures int
 	discoverFails  int       // consecutive empty/failed discovery passes, drives backoff
 	lastRescan     time.Time // last time we checked for a newer ADM file
-	sampleCaptured bool      // whether we've logged the gameplay sample for the selected log
+	// growthReadSize is the listed size that last triggered a growth-only
+	// read (same modified second; see pollSelected). One read per distinct
+	// listed size, so a listing that overstates the file never causes a
+	// download every poll.
+	growthReadSize int64
+	sampleCaptured bool // whether we've logged the gameplay sample for the selected log
 
 	dedupe         *Deduplicator
 	publisher      KillPublisher
@@ -308,6 +316,9 @@ type Engine struct {
 
 	players   *PlayerTracker
 	onPlayers func(count int) // optional hook when the online player set changes
+	// onNewBoot is told when a verified newer boot is selected (a DayZ server
+	// restart), after the previous boot's presence was cleared.
+	onNewBoot func(cleared int)
 
 	previousFileName       string
 	lastRotationAt         time.Time
@@ -319,9 +330,13 @@ type Engine struct {
 	lastVoicePublishAt     time.Time
 	lastVoicePublishResult string
 	presenceMu             sync.RWMutex
-	lastDownloadAt         time.Time
-	rotationPending        bool
-	lastStaleProbeAt       time.Time
+	// presenceState/presenceEvidenceAt/presenceUnknownSince back the
+	// presence evidence model (presence_evidence.go). Guarded by presenceMu.
+	presenceState      string
+	presenceEvidenceAt time.Time
+	lastDownloadAt     time.Time
+	rotationPending    bool
+	lastStaleProbeAt   time.Time
 	// lastAltProbeAt/altProbeHistory/directSizeHint back the direct-read
 	// probing of non-selected candidates (adm_alt_probe.go).
 	lastAltProbeAt            time.Time
@@ -690,6 +705,18 @@ func (e *Engine) PlayerTracker() *PlayerTracker {
 	return e.players
 }
 
+// OnNewBoot registers a hook fired when the engine switches to a verified newer
+// server boot (a DayZ server restart). cleared is how many players the
+// previous boot still had tracked as online. It runs on the polling goroutine
+// before any line of the new boot is processed, so it must be quick and must
+// never call Discord.
+func (e *Engine) OnNewBoot(fn func(cleared int)) {
+	if e == nil {
+		return
+	}
+	e.onNewBoot = fn
+}
+
 // OnPlayersChanged registers a hook fired when the online player set changes.
 func (e *Engine) OnPlayersChanged(fn func(count int)) {
 	if e == nil {
@@ -720,6 +747,7 @@ func (e *Engine) PresenceSnapshot() PresenceSnapshot {
 		snapshot.OnlineCount = e.players.OnlineCount()
 		snapshot.TrackedEntries = len(e.players.GetOnlinePlayers())
 	}
+	snapshot.Presence = e.PresenceEvidence()
 	return snapshot
 }
 
@@ -1234,24 +1262,31 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 			// again even though nothing has changed. Reuses staleProbeInterval
 			// so there is one consistent cadence for "how often do we check a
 			// quiet source again," not a second magic number.
-			if !e.lastStaleRediscoveryAt.IsZero() && time.Since(e.lastStaleRediscoveryAt) < staleProbeInterval {
-				e.reportPoll()
-				return nil
+			if e.lastStaleRediscoveryAt.IsZero() || time.Since(e.lastStaleRediscoveryAt) >= staleProbeInterval {
+				e.lastStaleRediscoveryAt = time.Now()
+				e.markSelectedStale(e.selected)
+				slog.Warn("component=adm", "event", "selected_stale", "file", e.selected.Name)
+				e.state = StateDiscovery
+				return e.discoverOnce(ctx)
 			}
-			e.lastStaleRediscoveryAt = time.Now()
-			e.markSelectedStale(e.selected)
-			slog.Warn("component=adm", "event", "selected_stale", "file", e.selected.Name)
-			e.state = StateDiscovery
-			return e.discoverOnce(ctx)
+			// Rediscovery and the direct probe are both throttled. Fall
+			// through to the cheap metadata poll below instead of returning:
+			// growth the listing already shows is then read at the normal
+			// poll cadence rather than waiting up to staleProbeInterval for
+			// the next probe window (the latency source after any quiet
+			// period longer than staleGiveUpAfter). Unchanged metadata costs
+			// one stat and no content read.
+		} else {
+			// The probe found and processed genuinely new content directly,
+			// using its own checkpoint-aware read. Stop here rather than
+			// falling through into the metadata-comparison poll below,
+			// which would re-derive changed/truncated state from the same
+			// (still stale) directory metadata that caused this branch to
+			// fire and could misread it as a truncation, double-processing
+			// bytes the probe already consumed.
+			e.reportPoll()
+			return nil
 		}
-		// The probe found and processed genuinely new content directly, using
-		// its own checkpoint-aware read. Stop here rather than falling through
-		// into the metadata-comparison poll below, which would re-derive
-		// changed/truncated state from the same (still stale) directory
-		// metadata that caused this branch to fire and could misread it as a
-		// truncation, double-processing bytes the probe already consumed.
-		e.reportPoll()
-		return nil
 	}
 
 	// Periodically check for a newer ADM file (post-restart) on a slow cadence,
@@ -1273,6 +1308,14 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 	e.noteTransportSuccess()
 
 	changed := e.tracker.ShouldReadAgain(current.Path, current.Size, current.Modified)
+	if !changed && current.Size != e.growthReadSize && e.tracker.GrewSinceRead(current.Path, current.Size) {
+		// Nitrado's modified_at has one-second resolution: lines appended in
+		// the same second as the last read leave it unchanged. Growth past the
+		// size seen at that read is new content; without this it waited for
+		// the next write in a later second (minutes on a quiet server).
+		changed = true
+		e.growthReadSize = current.Size
+	}
 	if e.diagnostics != nil {
 		e.diagnostics.Update(func(s *RuntimeDiagnosticSnapshot) {
 			s.LastMetadataCheck = time.Now()
@@ -1393,6 +1436,7 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 	e.lastLogChange = e.lastPoll
 	e.tracker.UpdateCheckpoint(e.serviceID, current.Path, int64(len(content)), current.Modified, newOffset)
 	checkpointOK := e.saveDurableCheckpoint(ctx, current, newOffset)
+	e.noteSourceGrowth(bytesConsumed)
 	if e.diagnostics != nil {
 		e.diagnostics.Update(func(s *RuntimeDiagnosticSnapshot) {
 			s.CheckpointOffset = newOffset
@@ -1501,6 +1545,7 @@ func (e *Engine) tryDeltaPoll(ctx context.Context, current *nitrado.LogFile, old
 	e.lastLogChange = e.lastPoll
 	e.tracker.UpdateCheckpoint(e.serviceID, current.Path, targetSize, current.Modified, newOffset)
 	checkpointOK := e.saveDurableCheckpoint(ctx, current, newOffset)
+	e.noteSourceGrowth(bytesConsumed)
 	if e.diagnostics != nil {
 		e.diagnostics.Update(func(s *RuntimeDiagnosticSnapshot) {
 			s.CheckpointOffset = newOffset
@@ -1588,7 +1633,13 @@ func (e *Engine) probeStaleSource(ctx context.Context, current *nitrado.LogFile)
 	if unread < 0 {
 		unread = 0
 	}
-	classification := "WRONG_OR_INACTIVE_ADM_SOURCE"
+	// No growth by direct read is only proof of a wrong/inactive source once
+	// it has lasted past staleGiveUpAfter; before that it is a quiet server
+	// (an old modified time alone never proves the source is broken).
+	classification := ProbeSourceQuiet
+	if !e.lastLogChange.IsZero() && time.Since(e.lastLogChange) > staleGiveUpAfter {
+		classification = "WRONG_OR_INACTIVE_ADM_SOURCE"
+	}
 	if directSize > current.Size || contentChanged || unread > 0 {
 		classification = "NITRADO_METADATA_STALE"
 	}
@@ -1610,6 +1661,25 @@ func (e *Engine) probeStaleSource(ctx context.Context, current *nitrado.LogFile)
 	if unread > 0 {
 		e.processProbeTail(ctx, current, content, checkpointOffset)
 	}
+}
+
+// noteSourceGrowth records that a normal metadata-driven read consumed new
+// bytes from the selected ADM. That is live evidence the source is writing and
+// that listing metadata has caught up, so a quiet/stale/wrong probe label
+// from an earlier quiet window no longer describes it and is cleared. (A
+// stale source merely re-selected by discovery never reaches here, so it is
+// never falsely healed.)
+func (e *Engine) noteSourceGrowth(bytes int64) {
+	if e == nil || bytes <= 0 || e.diagnostics == nil {
+		return
+	}
+	now := time.Now()
+	e.diagnostics.Update(func(s *RuntimeDiagnosticSnapshot) {
+		s.LastSourceGrowthAt = now
+		if s.ProbeClassification != "" {
+			s.ProbeClassification = ""
+		}
+	})
 }
 
 // processProbeTail processes only the unread tail discovered by a stale probe,
@@ -1639,6 +1709,12 @@ func (e *Engine) processProbeTail(ctx context.Context, current *nitrado.LogFile,
 	e.lastDownloadAt = time.Now()
 	e.tracker.UpdateCheckpoint(e.serviceID, current.Path, int64(len(content)), current.Modified, safeOffset)
 	checkpointOK := e.saveDurableCheckpoint(ctx, current, safeOffset)
+	if safeOffset > startOffset && e.diagnostics != nil {
+		// Growth proven by direct read; the NITRADO_METADATA_STALE label
+		// stays, because the listing is still what lags.
+		now := time.Now()
+		e.diagnostics.Update(func(s *RuntimeDiagnosticSnapshot) { s.LastSourceGrowthAt = now })
+	}
 	e.emitDownloadReport(DownloadReport{ServerID: e.serverID, File: current.Name, RemoteSize: current.Size, DownloadedBytes: int64(len(content)), PreviousOffset: startOffset, NewOffset: safeOffset, NewBytes: safeOffset - startOffset, EventsParsed: eventsParsed, Result: "success", CheckpointCurrent: checkpointOK, At: time.Now()})
 	slog.Info("component=adm", "event", "stale_probe_processed", "server_id", e.serverID, "file", current.Name, "previous_offset", startOffset, "new_offset", safeOffset, "events_parsed", eventsParsed)
 }
@@ -1696,6 +1772,7 @@ func (e *Engine) processLineAt(line, sourcePath string, endOffset int64) (bool, 
 		e.metrics.EventsIgnored++
 		return false, nil
 	}
+	ev.DetectedAt = time.Now()
 	e.metrics.EventsParsed++
 	if e.diagnostics != nil {
 		e.diagnostics.Update(func(s *RuntimeDiagnosticSnapshot) {
@@ -1832,6 +1909,7 @@ func (e *Engine) processLineAt(line, sourcePath string, endOffset int64) (bool, 
 					})
 				}
 				slog.Info("component=presence", "event", "connect_committed", "server_id", e.serverID, "online_count", e.players.OnlineCount())
+				e.notePresenceEvent(connectAt)
 				e.firePlayersChanged()
 				// Published only here: after dedupe, after durable persistence, and
 				// only when the player was genuinely not online yet - a repeated
@@ -1853,6 +1931,7 @@ func (e *Engine) processLineAt(line, sourcePath string, endOffset int64) (bool, 
 					})
 				}
 				slog.Info("component=presence", "event", "disconnect_committed", "server_id", e.serverID, "online_count", e.players.OnlineCount())
+				e.notePresenceEvent(disconnectAt)
 				e.firePlayersChanged()
 				e.publishConnection(ConnectionNotice{Kind: ConnectionDisconnected, Name: ev.Player.Name, Session: session})
 			}

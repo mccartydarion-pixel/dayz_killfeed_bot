@@ -95,6 +95,10 @@ type Event struct {
 	// TimeOfDay preserves the raw HH:MM:SS clock from the ADM line when a full
 	// session date is not available (the date comes from the log filename).
 	TimeOfDay string
+	// DetectedAt is when Champion read and parsed this line (UTC wall clock).
+	// It is observability only (latency measurement), never persisted as the
+	// event's time: the in-game time is TimeOfDay, in the server's local zone.
+	DetectedAt time.Time `json:"-"`
 
 	// Player is the subject for connect/disconnect/death/suicide/unconscious/etc.
 	Player *PlayerRef

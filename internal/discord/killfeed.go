@@ -211,7 +211,7 @@ func (p *KillfeedPublisher) PublishKill(ev *killfeed.Event) error {
 	// The rotating feed batches embeds and posts them on its own cycle; see
 	// RotatingFeed. Without one configured, fall back to an immediate send.
 	if p.feed != nil {
-		p.feed.Enqueue(embed)
+		p.feed.EnqueueDetected(embed, ev.DetectedAt)
 		slog.Debug("component=discord", "msg", "killfeed queued", "victim", victim, "killer", killer)
 		return nil
 	}
@@ -223,9 +223,12 @@ func (p *KillfeedPublisher) PublishKill(ev *killfeed.Event) error {
 			Parse: []discordgo.AllowedMentionType{}, // parse nothing
 		},
 	}
-	if _, err := p.client.Session().ChannelMessageSendComplex(channelID, send); err != nil {
-		slog.Error("component=discord", "msg", "killfeed publish failed", "err", err.Error())
-		return nil // never propagate; log processing must continue
+	if _, err := deliverMessage(p.client.Session(), "KILLFEED", channelID, send); err != nil {
+		// Returned so the engine counts a publish error rather than a
+		// published kill; the persistence hook never stops log processing
+		// on it. The kill itself is already durable in the database.
+		slog.Error("component=discord", "msg", "killfeed publish failed", "err", err.Error(), "class", ClassifyDeliveryError(err))
+		return fmt.Errorf("killfeed delivery failed: %w", err)
 	}
 	slog.Debug("component=discord", "msg", "killfeed published", "victim", victim, "killer", killer)
 	return nil

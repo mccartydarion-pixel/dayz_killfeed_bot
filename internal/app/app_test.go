@@ -180,7 +180,7 @@ func TestBindOnlineCounterRefreshesSetupCreatedAfterStartup(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	bindOnlineCounter(store, "guild-1", counter)
+	bindLegacyOnlineCounter(store, "guild-1", counter)
 	if counter.ChannelID() != "voice-1" {
 		t.Fatalf("expected counter to bind setup channel, got %q", counter.ChannelID())
 	}
@@ -199,5 +199,39 @@ func TestVerifyNitradoContinuesAfterUnauthorizedToken(t *testing.T) {
 	authenticated, verified, _, _, _ := a.verifyNitrado(context.Background())
 	if authenticated || verified {
 		t.Fatalf("expected unauthorized Nitrado token to remain degraded, got authenticated=%v verified=%v", authenticated, verified)
+	}
+}
+
+// TestFeedDeliveryModeFromEnvironment: only KILLFEED_DELIVERY_MODE=immediate
+// enables immediate delivery; unset (the production value) and anything else
+// is the rotating cycle. runServerWorker applies this one value to both the
+// killfeed and the deathfeed.
+func TestFeedDeliveryModeFromEnvironment(t *testing.T) {
+	for _, tc := range []struct{ env, want string }{
+		{"", discord.FeedModeRotating},
+		{"immediate", discord.FeedModeImmediate},
+		{" IMMEDIATE ", discord.FeedModeImmediate},
+		{"rotating", discord.FeedModeRotating},
+		{"fast", discord.FeedModeRotating},
+	} {
+		t.Setenv("KILLFEED_DELIVERY_MODE", tc.env)
+		if got := feedDeliveryMode(); got != tc.want {
+			t.Errorf("KILLFEED_DELIVERY_MODE=%q: got %s, want %s", tc.env, got, tc.want)
+		}
+	}
+}
+
+func TestRuntimeBuildReportsDeploymentIdentity(t *testing.T) {
+	t.Setenv("RAILWAY_GIT_COMMIT_SHA", "0123abc")
+	t.Setenv("KILLFEED_DELIVERY_MODE", "immediate")
+	a := &App{Config: &config.Config{AppEnv: "staging", NitradoAPIBaseURL: "http://fixture:8080"}}
+	b := a.runtimeBuild()
+	if b.Commit != "0123abc" || b.AppEnv != "staging" || b.KillfeedDeliveryMode != discord.FeedModeImmediate || b.NitradoSource != "fixture" {
+		t.Fatalf("staging build %+v", b)
+	}
+	t.Setenv("KILLFEED_DELIVERY_MODE", "")
+	a = &App{Config: &config.Config{AppEnv: "production"}}
+	if b := a.runtimeBuild(); b.KillfeedDeliveryMode != discord.FeedModeRotating || b.NitradoSource != "nitrado" {
+		t.Fatalf("production build %+v", b)
 	}
 }
