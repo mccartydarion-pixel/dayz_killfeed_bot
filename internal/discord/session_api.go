@@ -50,6 +50,13 @@ func (a *SessionAPI) ChannelEdit(channelID string, data *discordgo.ChannelEdit) 
 	return a.S.ChannelEditComplex(channelID, data)
 }
 
+// ChannelRename renames a channel without discordgo's built-in 429 sleep: a
+// rate limit comes back as *discordgo.RateLimitError so the voice counter can
+// schedule its own retry instead of blocking (see VoiceChannelRenamer).
+func (a *SessionAPI) ChannelRename(channelID, name string) (*discordgo.Channel, error) {
+	return a.S.ChannelEditComplex(channelID, &discordgo.ChannelEdit{Name: name}, discordgo.WithRetryOnRatelimit(false))
+}
+
 // ChannelMessageSendComplex sends a message with an embed and components
 // (buttons), used by the public interactive panels.
 func (a *SessionAPI) ChannelMessageSendComplex(channelID string, embed *discordgo.MessageEmbed, components []discordgo.MessageComponent) (*discordgo.Message, error) {

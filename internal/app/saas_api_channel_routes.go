@@ -435,12 +435,30 @@ func (a *App) syncRoutedPanelsNow(ctx context.Context) {
 // ONLINE_COUNTER route of the configured guild, when one exists. Without a
 // route the legacy GuildSetup channel (bound at startup) stays in place.
 func (a *App) syncOnlineCounterRoute(ctx context.Context) {
-	if a.onlineCounter == nil || a.ChannelRoutes == nil || a.guildServers == nil {
+	if a.onlineCounter == nil {
 		return
+	}
+	channelID, ok := a.onlineCounterRouteChannel(ctx)
+	if !ok {
+		return
+	}
+	if a.onlineCounter.ChannelID() != channelID {
+		a.onlineCounter.SetChannelID(channelID)
+		// A fresh channel's name is unknown; the counter loop reads it and
+		// reconciles it to the current count on its next evaluation.
+		a.pokeOnlineCounter()
+	}
+}
+
+// onlineCounterRouteChannel resolves the ONLINE_COUNTER route channel,
+// preferring the public counter server's own route.
+func (a *App) onlineCounterRouteChannel(ctx context.Context) (string, bool) {
+	if a.ChannelRoutes == nil || a.guildServers == nil {
+		return "", false
 	}
 	guildRowID, serverIDs, err := a.guildServers(ctx)
 	if err != nil {
-		return
+		return "", false
 	}
 	a.counterOwnerMu.RLock()
 	preferred := a.publicCounterServerID
@@ -454,21 +472,7 @@ func (a *App) syncOnlineCounterRoute(ctx context.Context) {
 		if err != nil || !found || channelID == "" {
 			continue
 		}
-		if a.onlineCounter.ChannelID() != channelID {
-			a.onlineCounter.SetChannelID(channelID)
-			// A fresh channel starts at 0; reconcile it to the public
-			// server's tracked count now instead of waiting for a join.
-			if preferred != 0 {
-				a.presenceMu.Lock()
-				tracker := a.presenceTrackers[preferred]
-				a.presenceMu.Unlock()
-				if tracker != nil {
-					if err := a.onlineCounter.Reconcile(tracker.OnlineCount()); err != nil {
-						slog.Warn("component=voice_counter", "event", "route_reconcile_failed", "err", err.Error())
-					}
-				}
-			}
-		}
-		return
+		return channelID, true
 	}
+	return "", false
 }

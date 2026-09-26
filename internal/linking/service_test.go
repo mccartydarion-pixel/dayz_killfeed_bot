@@ -3,6 +3,7 @@ package linking
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -399,5 +400,72 @@ func TestSanitizeLinkErrorRedactsConnectionSecrets(t *testing.T) {
 	}
 	if got := sanitizeLinkError(errors.New("column \"foo\" does not exist")); got == "redacted" {
 		t.Fatal("expected an ordinary query error to pass through unredacted")
+	}
+}
+
+// TestRequestOutcomesAreDistinguishable covers every /link outcome the
+// player must be able to tell apart.
+func TestRequestOutcomesAreDistinguishable(t *testing.T) {
+	player := []PlayerCandidate{{ID: 10, DayZID: "tcp-id", DisplayName: "TCP"}}
+	cases := []struct {
+		name     string
+		players  []PlayerCandidate
+		username string
+		activity linkTestActivity
+		server   linkTestServer
+		check    func(error) bool
+	}{
+		{"player not observed at all", nil, "TCP", linkTestActivity{playtime: time.Hour}, linkTestServer{id: 7},
+			func(err error) bool { return errors.Is(err, ErrPlayerNotFound) }},
+		{"incorrect username (mention)", player, "<@1234567890>", linkTestActivity{playtime: time.Hour}, linkTestServer{id: 7},
+			func(err error) bool { return errors.Is(err, ErrInvalidUsername) }},
+		{"incorrect username (too short)", player, "ab", linkTestActivity{playtime: time.Hour}, linkTestServer{id: 7},
+			func(err error) bool { return errors.Is(err, ErrInvalidUsername) }},
+		{"known name, never observed on server", player, "TCP", linkTestActivity{}, linkTestServer{id: 7},
+			func(err error) bool {
+				return errors.Is(err, ErrPlayerNotObserved) && errors.Is(err, ErrPlaytimeRequired)
+			}},
+		{"less than five minutes", player, "TCP", linkTestActivity{playtime: 3*time.Minute + 20*time.Second}, linkTestServer{id: 7},
+			func(err error) bool {
+				var s *PlaytimeShortfallError
+				return errors.As(err, &s) && s.Observed == 3*time.Minute+20*time.Second && s.Required == 5*time.Minute && errors.Is(err, ErrPlaytimeRequired)
+			}},
+		{"activity data unavailable", player, "TCP", linkTestActivity{err: errors.New("connection reset")}, linkTestServer{id: 7},
+			func(err error) bool {
+				return errors.Is(err, ErrActivityUnavailable) && errors.Is(err, ErrLinkCheckUnavailable)
+			}},
+		{"installation not configured", player, "TCP", linkTestActivity{playtime: time.Hour}, linkTestServer{err: fmt.Errorf("%w for guild 1", ErrNoConnectedServer)},
+			func(err error) bool { return errors.Is(err, ErrInstallationNotConfigured) }},
+		{"several servers, none selected", player, "TCP", linkTestActivity{playtime: time.Hour}, linkTestServer{err: fmt.Errorf("%w for guild 1", ErrMultipleConnectedServers)},
+			func(err error) bool { return errors.Is(err, ErrServerSelectionRequired) }},
+		{"server lookup database failure", player, "TCP", linkTestActivity{playtime: time.Hour}, linkTestServer{err: errors.New("conn refused")},
+			func(err error) bool {
+				return errors.Is(err, ErrLinkCheckUnavailable) && !errors.Is(err, ErrInstallationNotConfigured)
+			}},
+		{"successful at exactly five minutes", player, "tcp", linkTestActivity{playtime: 5 * time.Minute}, linkTestServer{id: 7},
+			func(err error) bool { return err == nil }},
+	}
+	for _, tc := range cases {
+		repo := &linkTestRepository{players: tc.players}
+		_, err := NewService(repo, tc.activity, tc.server).Request(context.Background(), 1, "discord", tc.username)
+		if !tc.check(err) {
+			t.Errorf("%s: unexpected result %v", tc.name, err)
+		}
+		if err != nil && repo.pending != nil {
+			t.Errorf("%s: a failed request must not create a pending link", tc.name)
+		}
+	}
+}
+
+func TestPlausibleUsernameAcceptsRealConsoleNames(t *testing.T) {
+	for _, name := range []string{"TCP", "Champion_TCP", "dark-wolf-77", "Xbox Gamer Tag", "Gamer#1234"} {
+		if !plausibleUsername(name) {
+			t.Errorf("%q must be accepted", name)
+		}
+	}
+	for _, name := range []string{"ab", "@TCP", "https://psn", "a\x00b", "abcdefghijklmnopqrstuvwxyz0123456"} {
+		if plausibleUsername(name) {
+			t.Errorf("%q must be rejected", name)
+		}
 	}
 }

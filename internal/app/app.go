@@ -106,6 +106,11 @@ type App struct {
 	// from the ONLINE_COUNTER route when one exists (legacy GuildSetup
 	// otherwise).
 	onlineCounter *discord.VoiceChannelCounter
+	// onlineLoop drives onlineCounter from the authoritative current player
+	// count (see online_counter.go); setupStore rebinds its channel.
+	onlineLoopOnce sync.Once
+	onlineLoop     *onlineCounterLoop
+	setupStore     discord.SetupStore
 	// guildServers lists the configured guild's row id and active servers
 	// (set once routing starts).
 	guildServers func(ctx context.Context) (int64, []int64, error)
@@ -1311,12 +1316,14 @@ func (a *App) Run() error {
 	// today; per-server counters are a known gap, see Section 1 report). ---
 	onlineCounter := discord.NewVoiceChannelCounter(api, "")
 	a.onlineCounter = onlineCounter
+	a.setupStore = setupStore
 	onlineCounter.OnPublish(func(count int, result string) { a.recordPublicVoicePublish(count, result) })
 	if cfg := setupStore; cfg != nil {
 		if gs, err := cfg.Get(a.Config.DiscordGuildID); err == nil && gs != nil && gs.OnlinePlayersChannelID != "" {
 			onlineCounter.SetChannelID(gs.OnlinePlayersChannelID)
 		}
 	}
+	go a.runOnlineCounter(ctx, onlineCounter)
 	if a.AdminService != nil {
 		a.AdminService.SetPipelineDiagnostics(func(diagCtx context.Context) map[string]any {
 			out := map[string]any{"worker": "NOT FOUND", "classification": "UNKNOWN"}
@@ -1422,7 +1429,30 @@ func (a *App) Run() error {
 			if actualErr != nil {
 				out["actual_discord_count"] = "UNAVAILABLE"
 			}
-			out["classification"] = classifyPresenceActual(snapshot, actualCount, actualKnown, true, true)
+			// The counter publishes the authoritative current count (Nitrado
+			// query, or a proven ADM player list), not the raw tracker.
+			desired := snapshot
+			if st := a.OnlineCounterStatus(); st.ServerID == selectedID && !st.EvaluatedAt.IsZero() {
+				out["counter_source"] = st.Source
+				out["counter_known"] = st.Reading.Known
+				out["counter_desired_name"] = st.Reading.Name()
+				out["counter_held_last_known"] = st.Held
+				out["counter_evaluated_at"] = diagnosticTime(st.EvaluatedAt)
+				out["nitrado_status"] = st.NitradoStatus
+				if st.NitradoCount != nil {
+					out["nitrado_player_current"] = *st.NitradoCount
+				} else {
+					out["nitrado_player_current"] = "UNKNOWN"
+				}
+				if st.NitradoError != "" {
+					out["nitrado_error"] = "UNAVAILABLE"
+				}
+				out["tracker_matches_nitrado"] = st.NitradoCount != nil && *st.NitradoCount == st.TrackerCount
+				if st.Reading.Known {
+					desired.OnlineCount = st.Reading.Count
+				}
+			}
+			out["classification"] = classifyPresenceActual(desired, actualCount, actualKnown, true, true)
 			return out
 		})
 	}
@@ -1674,6 +1704,7 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 			a.Workers.Stop(workerName)
 		}
 		a.unregisterPresenceTracker(row.ID)
+		a.unregisterCounterSource(row.ID)
 	}()
 
 	client, credentialErr := a.nitradoClientForServer(workerCtx, row)
@@ -1685,7 +1716,6 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 			return fmt.Errorf("reset stale activity session for server %d: %w", row.ID, err)
 		}
 	}
-	bindOnlineCounter(setupStore, a.Config.DiscordGuildID, onlineCounter)
 	engine := killfeed.NewEngine(client, row.ProviderServiceID, killfeed.NewADMParser())
 	engine.SetStateSink(a.State)
 	engine.SetDiagnostics(killfeed.NewRuntimeDiagnostics(row.ID))
@@ -1694,6 +1724,7 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 		engine.SetDurableCheckpoint(&admCheckpointStoreAdapter{repo: a.Checkpoints}, row.GuildID, row.ID)
 	}
 	a.registerPresenceTracker(row.ID, engine.PlayerTracker())
+	a.registerCounterSource(row.ID, counterSource{serviceID: row.ProviderServiceID, live: client, engine: engine})
 	if a.consumeFirstConnect(row.ID) {
 		engine.StartAtLogTail()
 	}
@@ -1888,22 +1919,30 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 	}
 	a.addLocationQueue(lq)
 
-	engine.OnPlayersChanged(func(count int) {
-		if !a.ownsPublicCounter(row.ID) {
-			return
-		}
-		a.State.SetOnlinePlayers(count)
-		if onlineCounter != nil {
-			bindOnlineCounter(setupStore, a.Config.DiscordGuildID, onlineCounter)
-			onlineCounter.Publish(count)
-			_ = onlineCounter.Reconcile(count)
-			a.State.SetOnlineCounter(onlineCounter.LastPublished(), onlineCounter.UpdateErrors(), onlineCounter.PermissionBlocked())
+	// Presence changes only nudge the online counter loop (online_counter.go),
+	// which reads the authoritative count and renames the channel on its own
+	// goroutine. This callback runs on the ADM pipeline and must never make a
+	// Discord or Nitrado call itself: a rename rate limit here used to stall
+	// kill processing for minutes.
+	engine.OnPlayersChanged(func(int) {
+		if a.ownsPublicCounter(row.ID) {
+			a.pokeOnlineCounter()
 		}
 	})
-	if a.ownsPublicCounter(row.ID) && onlineCounter != nil {
-		bindOnlineCounter(setupStore, a.Config.DiscordGuildID, onlineCounter)
-		_ = onlineCounter.Reconcile(engine.PlayerTracker().OnlineCount())
-	}
+	engine.OnNewBoot(func(cleared int) {
+		// A server restart ended every open session of the previous boot:
+		// close them in the activity store too, so phantom "connected" rows
+		// stop accruing observed playtime for /link.
+		if a.ActivityRepository != nil {
+			resetCtx, cancel := context.WithTimeout(workerCtx, 5*time.Second)
+			if err := a.ActivityRepository.ResetConnectedForRestart(resetCtx, row.GuildID, row.ID); err != nil {
+				slog.Warn("component=link_activity", "event", "server_restart_reset_failed", "server_id", row.ID, "err", err.Error())
+			} else {
+				slog.Info("component=link_activity", "event", "server_restart_reset", "server_id", row.ID, "cleared_presence", cleared)
+			}
+			cancel()
+		}
+	})
 
 	if a.Workers != nil {
 		a.Workers.Register(workerName)

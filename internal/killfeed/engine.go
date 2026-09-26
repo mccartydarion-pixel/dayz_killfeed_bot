@@ -308,6 +308,9 @@ type Engine struct {
 
 	players   *PlayerTracker
 	onPlayers func(count int) // optional hook when the online player set changes
+	// onNewBoot is told when a verified newer server boot is selected (a DayZ
+	// server restart), after the previous boot's presence was cleared.
+	onNewBoot func(cleared int)
 
 	previousFileName       string
 	lastRotationAt         time.Time
@@ -688,6 +691,17 @@ func (e *Engine) PlayerTracker() *PlayerTracker {
 		return nil
 	}
 	return e.players
+}
+
+// OnNewBoot registers a hook fired when the engine switches to a verified newer
+// server boot (a DayZ server restart). cleared is how many players the
+// previous boot still had tracked as online. The hook runs on the polling
+// goroutine before any line of the new boot is processed, so it must be quick.
+func (e *Engine) OnNewBoot(fn func(cleared int)) {
+	if e == nil {
+		return
+	}
+	e.onNewBoot = fn
 }
 
 // OnPlayersChanged registers a hook fired when the online player set changes.
@@ -1151,8 +1165,12 @@ func (e *Engine) selectLog(lf nitrado.LogFile) bool {
 	}
 
 	// ADM session != player session: switching which file Champion reads (first
-	// selection or later rotation) must never clear live presence. Only
-	// authoritative PLAYER_CONNECT/PLAYER_DISCONNECT events change who is online.
+	// selection, a stale-source switch, a mount alias) must never clear live
+	// presence. Only authoritative PLAYER_CONNECT/PLAYER_DISCONNECT events
+	// change who is online - with one exception: a verified NEWER boot is a
+	// server restart, which ends every connection of the previous boot
+	// (DayZ writes no disconnect lines on shutdown), so that boot's presence
+	// is cleared rather than carried forward as phantom online players.
 	//
 	// Rotation is judged by LOGICAL source identity, not raw path: switching
 	// between mount representations of the exact same ADM (e.g.
@@ -1174,8 +1192,12 @@ func (e *Engine) selectLog(lf nitrado.LogFile) bool {
 			// give-up path before it ever got a normal read - even though it
 			// may be perfectly live.
 			e.lastLogChange = time.Now()
-			slog.Info("component=adm", "event", "rotation", "previous", previousName, "current", candidate.Name, "presence_retained", true)
-			slog.Info("component=presence", "event", "rotation", "presence_retained", true, "online_count", e.players.OnlineCount())
+			if e.isNewerBoot(candidate.Path) {
+				e.resetPresenceForNewBoot(previousName, candidate.Name)
+			} else {
+				slog.Info("component=adm", "event", "rotation", "previous", previousName, "current", candidate.Name, "presence_retained", true)
+				slog.Info("component=presence", "event", "rotation", "presence_retained", true, "online_count", e.players.OnlineCount())
+			}
 		}
 	}
 	if !e.logSourceFound {
@@ -1859,6 +1881,41 @@ func (e *Engine) processLineAt(line, sourcePath string, endOffset int64) (bool, 
 		}
 	}
 	return true, nil
+}
+
+// isNewerBoot reports whether path is stamped as a boot strictly newer than the
+// currently accepted one - i.e. selecting it means the DayZ server restarted.
+// Unstamped files and the first selection of an engine never qualify.
+func (e *Engine) isNewerBoot(path string) bool {
+	if e.acceptedBoot.IsZero() {
+		return false
+	}
+	st, ok := admBootStamp(path)
+	return ok && st.After(e.acceptedBoot)
+}
+
+// resetPresenceForNewBoot clears the previous boot's online players.
+func (e *Engine) resetPresenceForNewBoot(previous, current string) {
+	cleared := 0
+	if e.players != nil {
+		cleared = e.players.OnlineCount()
+		e.players.Reset()
+	}
+	// No player list of the new boot has proven the (now empty) tracker yet.
+	e.presenceMu.Lock()
+	e.playerListStats.LastCompleteSnapshotAt = time.Time{}
+	e.presenceMu.Unlock()
+	if e.diagnostics != nil {
+		e.diagnostics.Update(func(s *RuntimeDiagnosticSnapshot) { s.TrackerCount = 0 })
+	}
+	slog.Info("component=adm", "event", "rotation", "previous", previous, "current", current, "presence_retained", false, "reason", "new_server_boot")
+	slog.Info("component=presence", "event", "server_restart_reset", "server_id", e.serverID, "cleared", cleared)
+	if e.onNewBoot != nil {
+		e.onNewBoot(cleared)
+	}
+	if cleared > 0 {
+		e.firePlayersChanged()
+	}
 }
 
 // firePlayersChanged invokes the registered hook after the online set changes.

@@ -5,9 +5,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // ErrPlayerNotFound means Champion has not observed the requested PlayStation name.
@@ -18,6 +20,47 @@ var ErrPlaytimeRequired = errors.New("minimum observed playtime required")
 var ErrLinkCheckUnavailable = errors.New("link check unavailable")
 var ErrNoConnectedServer = errors.New("no connected server")
 var ErrMultipleConnectedServers = errors.New("multiple connected servers")
+
+// The outcomes below refine the two broad ones above so the player (and an
+// admin reading the logs) can tell exactly why a /link did not go through.
+// Each wraps its broad parent, so errors.Is(err, ErrLinkCheckUnavailable) /
+// errors.Is(err, ErrPlaytimeRequired) keep matching for existing callers.
+
+// ErrInvalidUsername means the typed name cannot be a console username
+// (a Discord mention, a URL, far too short/long) - rejected before any lookup.
+var ErrInvalidUsername = errors.New("invalid username")
+
+// ErrInstallationNotConfigured means the guild has no active game server to
+// verify against (no /server connect or SaaS installation yet).
+var ErrInstallationNotConfigured = fmt.Errorf("%w: installation not configured", ErrLinkCheckUnavailable)
+
+// ErrServerSelectionRequired means the guild has several active game servers
+// and none is selected as the public server, so it is ambiguous which
+// server's activity proves the account.
+var ErrServerSelectionRequired = fmt.Errorf("%w: server selection required", ErrLinkCheckUnavailable)
+
+// ErrActivityUnavailable means the activity store could not be read (database
+// failure), which is distinct from the player simply having no activity.
+var ErrActivityUnavailable = fmt.Errorf("%w: activity data unavailable", ErrLinkCheckUnavailable)
+
+// ErrPlayerNotObserved means the name is known to Champion but no connected
+// time has been recorded for it on the selected server.
+var ErrPlayerNotObserved = fmt.Errorf("%w: player not observed on the selected server", ErrPlaytimeRequired)
+
+// MinimumObservedPlaytime is how long a player must have been observed
+// connected to the selected server before a link request is accepted.
+const MinimumObservedPlaytime = 5 * time.Minute
+
+// PlaytimeShortfallError reports some, but not enough, observed playtime.
+type PlaytimeShortfallError struct {
+	Observed, Required time.Duration
+}
+
+func (e *PlaytimeShortfallError) Error() string {
+	return fmt.Sprintf("observed %s of required %s", e.Observed.Truncate(time.Second), e.Required)
+}
+
+func (e *PlaytimeShortfallError) Unwrap() error { return ErrPlaytimeRequired }
 
 // PlayerCandidate is a known player returned by the repository.
 type PlayerCandidate struct {
@@ -162,6 +205,9 @@ func (s *LinkVerificationService) Request(ctx context.Context, guildID int64, di
 	if username == "" {
 		return nil, ErrPlayerNotFound
 	}
+	if !plausibleUsername(username) {
+		return nil, ErrInvalidUsername
+	}
 	if existing, err := s.repo.GetByDiscord(ctx, guildID, discordUserID); err != nil {
 		slog.Warn("component=link", "guild", guildID, "server_resolved", false, "database_available", false, "activity_query", "not_run", "error_class", "DATABASE_UNAVAILABLE")
 		return nil, ErrLinkCheckUnavailable
@@ -182,14 +228,16 @@ func (s *LinkVerificationService) Request(ctx context.Context, guildID int64, di
 	candidate := candidates[0]
 	serverID, serverErr := s.serverID.ConnectedServerID(ctx, guildID)
 	if serverErr != nil {
-		errorClass := "SERVER_CONTEXT_UNAVAILABLE"
-		if strings.Contains(strings.ToLower(serverErr.Error()), "no connected server") {
-			errorClass = "NO_CONNECTED_SERVER"
-		} else if strings.Contains(strings.ToLower(serverErr.Error()), "multiple connected servers") {
-			errorClass = "MULTIPLE_CONNECTED_SERVERS"
+		errorClass, outcome := "SERVER_CONTEXT_UNAVAILABLE", ErrLinkCheckUnavailable
+		lower := strings.ToLower(serverErr.Error())
+		switch {
+		case errors.Is(serverErr, ErrNoConnectedServer) || strings.Contains(lower, "no connected server"):
+			errorClass, outcome = "NO_CONNECTED_SERVER", ErrInstallationNotConfigured
+		case errors.Is(serverErr, ErrMultipleConnectedServers) || strings.Contains(lower, "multiple connected servers"):
+			errorClass, outcome = "MULTIPLE_CONNECTED_SERVERS", ErrServerSelectionRequired
 		}
-		slog.Warn("component=link", "guild", guildID, "server_resolved", false, "database_available", true, "activity_query", "not_run", "error_class", errorClass)
-		return nil, ErrLinkCheckUnavailable
+		slog.Warn("component=link", "guild", guildID, "server_resolved", false, "database_available", errorClass != "SERVER_CONTEXT_UNAVAILABLE", "activity_query", "not_run", "error_class", errorClass, "message", sanitizeLinkError(serverErr))
+		return nil, outcome
 	}
 	slog.Debug("component=link", "guild", guildID, "server_resolved", true, "database_available", true, "activity_query", "pending", "error_class", "SERVER_RESOLVED")
 	playtime, activityErr := s.activity.GetObservedPlaytime(ctx, guildID, serverID, candidate.ID, time.Now())
@@ -199,12 +247,15 @@ func (s *LinkVerificationService) Request(ctx context.Context, guildID int64, di
 		if errors.As(activityErr, &stater) {
 			sqlState = stater.SQLState()
 		}
-		slog.Warn("component=link", "stage", "activity_lookup", "guild", guildID, "server_resolved", true, "database_available", false, "activity_query", "failure", "error_class", "ACTIVITY_LOOKUP_FAILED", "sql_state", sqlState, "message", sanitizeLinkError(activityErr))
-		return nil, ErrLinkCheckUnavailable
+		slog.Warn("component=link", "stage", "activity_lookup", "guild", guildID, "server_id", serverID, "server_resolved", true, "database_available", false, "activity_query", "failure", "error_class", "ACTIVITY_LOOKUP_FAILED", "sql_state", sqlState, "message", sanitizeLinkError(activityErr))
+		return nil, ErrActivityUnavailable
 	}
-	slog.Debug("component=link", "guild", guildID, "server_resolved", true, "database_available", true, "activity_query", "success", "error_class", "ACTIVITY_LOOKUP_SUCCESS")
-	if playtime < 5*time.Minute {
-		return nil, ErrPlaytimeRequired
+	slog.Info("component=link", "guild", guildID, "server_id", serverID, "server_resolved", true, "activity_query", "success", "observed_seconds", int64(playtime/time.Second))
+	if playtime <= 0 {
+		return nil, ErrPlayerNotObserved
+	}
+	if playtime < MinimumObservedPlaytime {
+		return nil, &PlaytimeShortfallError{Observed: playtime, Required: MinimumObservedPlaytime}
 	}
 	if claimed, err := s.repo.GetByPlayer(ctx, guildID, candidate.ID); err != nil {
 		return nil, ErrLinkCheckUnavailable
@@ -313,6 +364,27 @@ func (s *LinkVerificationService) complete(ctx context.Context, guildID int64, d
 		}
 	}
 	return nil
+}
+
+// plausibleUsername rejects input that cannot be a console username before it
+// reaches the player lookup: Discord mentions, URLs, control characters, and
+// lengths no console platform allows. It is deliberately lenient beyond that
+// (Xbox gamertags may contain spaces and a "#1234" suffix); an unknown but
+// plausible name is reported as ErrPlayerNotFound instead.
+func plausibleUsername(name string) bool {
+	n := len([]rune(name))
+	if n < 3 || n > 32 {
+		return false
+	}
+	if strings.ContainsAny(name, "@<>/\\:") {
+		return false
+	}
+	for _, r := range name {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
 }
 
 // sqlStater matches *pgconn.PgError without importing pgx into this package.
