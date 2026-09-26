@@ -393,8 +393,9 @@ func (f *RotatingFeed) flush() {
 }
 
 // postImmediate (immediate mode) posts every pending card, strictly in order,
-// and keeps the channel at most maxItems managed cards by removing the oldest
-// card right after each new one is confirmed. Unlike the rotating cycle it
+// and keeps the channel at most maxItems managed cards by deleting the oldest
+// confirmed card before posting the next one. If deletion fails, the pending
+// card stays in order (and in the journal) until cleanup succeeds. Unlike the rotating cycle it
 // never skips a card because others are waiting: every event is delivered
 // (bounded only by maxPendingCards, whose overflow is counted, never silent).
 func (f *RotatingFeed) postImmediate() {
@@ -445,7 +446,43 @@ func (f *RotatingFeed) postImmediate() {
 			break
 		}
 		it := f.pending[0]
+		// An earlier expiration or route cleanup may have failed. Such a
+		// card is still visible even if no longer in window; do not create
+		// another card on this channel until the orphan is actually gone.
+		blocked := false
+		for _, o := range f.orphans {
+			if o.channelID == channelID {
+				blocked = true
+				break
+			}
+		}
+		var oldest postedCard
+		full := f.maxItems > 0 && len(f.window) >= f.maxItems
+		if full {
+			oldest = f.window[0]
+		}
 		f.mu.Unlock()
+		if blocked {
+			stopClass = "CLEANUP_PENDING"
+			break
+		}
+		if full {
+			// Delete first, *then* publish. A failed deletion must neither
+			// remove the card from our window nor mark its journal row removed.
+			// The pending card stays queued, preserving both order and crash
+			// replay. This is a hard per-channel capacity gate.
+			if len(f.deleteIDs(channelID, []string{oldest.id})) != 0 {
+				Deliveries.recordCleanup(f.route, 1, 1)
+				stopClass = "CLEANUP_FAILED"
+				break
+			}
+			f.journalRemoved([]string{oldest.id})
+			f.mu.Lock()
+			if len(f.window) > 0 && f.window[0].id == oldest.id {
+				f.window = f.window[1:]
+			}
+			f.mu.Unlock()
+		}
 
 		msg, err := f.send(channelID, it)
 		if err != nil {
@@ -466,13 +503,7 @@ func (f *RotatingFeed) postImmediate() {
 		f.mu.Lock()
 		f.pending = f.pending[1:]
 		f.window = append(f.window, postedCard{id: msg.ID, postedAt: postedAt})
-		var evicted []postedCard
-		if over := len(f.window) - f.maxItems; over > 0 {
-			evicted = append(evicted, f.window[:over]...)
-			f.window = append([]postedCard(nil), f.window[over:]...)
-		}
 		f.mu.Unlock()
-		f.deleteCards(channelID, evicted)
 	}
 
 	f.mu.Lock()
@@ -637,6 +668,16 @@ func (f *RotatingFeed) retryOrphans() {
 		}
 		o.attempts++
 		if o.attempts >= maxCleanupAttempts {
+			if f.mode == FeedModeImmediate {
+				// A visible orphan must remain a capacity blocker. Giving
+				// up would allow the next send to exceed maxItems.
+				o.attempts = maxCleanupAttempts
+				if o.attempts == maxCleanupAttempts {
+					slog.Error("component=discord", "msg", "feed cleanup still failing; immediate publication paused on this channel", "route", f.route, "channel_id", o.channelID, "message_id", o.id)
+				}
+				still = append(still, o)
+				continue
+			}
 			abandoned++
 			closed = append(closed, o.id)
 			slog.Error("component=discord", "msg", "feed card could not be removed; manual cleanup needed", "route", f.route, "channel_id", o.channelID, "message_id", o.id)
