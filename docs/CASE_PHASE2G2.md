@@ -7,3 +7,7 @@ RecordBlocked is a library method, not a live job or HTTP mutation route. It req
 Unit checks cover the default-off gate and fingerprint. Disposable-PostgreSQL tests cover replay idempotence, original evidence linkage, blocked-only state and cross-server rejection. No Nitrado, Discord, collector, source selection, or gameplay configuration changes.
 
 Release order: validate the 2G.1 dependency and Cloudflare build failure; test the 2G.2 branch; merge 2G.1 first, then rebase or reconcile 2G.2 onto main and separately review its migration. Do not deploy the schema to production until CI and migration review are complete. Real shadow execution, actor-level analysis, read APIs, human review and rule-specific prerequisite gates remain future work. CASE-MOV-001 and all enforcement stay disabled.
+
+## Exact-commit verification
+
+Re-evaluate the check runs attached to the final 2G.2 commit after any Cloudflare integration repair; do not rely on a previously failed build or a pass from the 2G.1 base commit. The ledger migration is additive but must complete its disposable-PostgreSQL test gate before rollout. No live runner is wired even after migration.
