@@ -189,7 +189,9 @@ Residual risk at `4fb68c2`+ (not covered by a fix):
 
 ### Temporary 11-card window
 
-**NOT FIXED in any commit.** Immediate mode creates the new card, then deletes the oldest; Discord has no atomic swap.
+> **Update (`a8e9040`–`05e02c9`, owner commits):** immediate mode now deletes the oldest card **before** posting when the window is full, and a failed deletion blocks the next post. `TestImmediateWindowNeverExceedsTenCards` asserts a peak of 10; it fails on the earlier code, where the peak was 11. `TestImmediateCleanupFailureIsRecordedAndRecovered` and `TestJournalStrictCapacityBlocksUntilOldestRemoved` cover the blocking. This is fixed in tests, not live-verified; see `2026-09-26-phase3-staging-deployment.md`. The assessment below describes `6aab65d` and earlier.
+
+**NOT FIXED up to `6aab65d`.** Immediate mode creates the new card, then deletes the oldest; Discord has no atomic swap.
 
 | Case | Behaviour | Demonstrated by |
 |---|---|---|
