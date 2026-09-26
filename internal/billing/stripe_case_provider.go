@@ -7,7 +7,10 @@ import (
 
 	stripe "github.com/stripe/stripe-go/v82"
 	checkoutsession "github.com/stripe/stripe-go/v82/checkout/session"
+	stripecharge "github.com/stripe/stripe-go/v82/charge"
+	stripedispute "github.com/stripe/stripe-go/v82/dispute"
 	stripeinvoice "github.com/stripe/stripe-go/v82/invoice"
+	stripeinvoicepayment "github.com/stripe/stripe-go/v82/invoicepayment"
 	stripeprice "github.com/stripe/stripe-go/v82/price"
 	"github.com/stripe/stripe-go/v82/subscription"
 
@@ -140,4 +143,111 @@ func (p *StripeProvider) ChangeCaseTier(ctx context.Context, in CaseTierChangeIn
 		return nil, fmt.Errorf("update case subscription tier: %w", err)
 	}
 	return &CaseTierChangeResult{State: normalizeSubscription(s), Pending: s.PendingUpdate != nil}, nil
+}
+
+// InvoiceForPaymentIntent resolves the invoice a PaymentIntent paid, through InvoicePayments (the only
+// link in API 2026-08-26: charges, PaymentIntents and invoices carry no direct reference). Read-only.
+func (p *StripeProvider) InvoiceForPaymentIntent(ctx context.Context, paymentIntentID string) (string, error) {
+	if paymentIntentID == "" {
+		return "", nil
+	}
+	params := &stripe.InvoicePaymentListParams{Payment: &stripe.InvoicePaymentListPaymentParams{
+		Type: stripe.String("payment_intent"), PaymentIntent: stripe.String(paymentIntentID)}}
+	params.Context = ctx
+	found := ""
+	it := stripeinvoicepayment.List(params)
+	for it.Next() {
+		ip := it.InvoicePayment()
+		if ip.Invoice == nil || ip.Invoice.ID == "" {
+			continue
+		}
+		if found != "" && found != ip.Invoice.ID {
+			return "", fmt.Errorf("payment intent is linked to more than one invoice")
+		}
+		found = ip.Invoice.ID
+	}
+	if err := it.Err(); err != nil {
+		return "", fmt.Errorf("list invoice payments: %w", err)
+	}
+	return found, nil
+}
+
+func normalizeCaseInvoice(inv *stripe.Invoice) *CaseInvoice {
+	out := &CaseInvoice{ID: inv.ID, Status: string(inv.Status), Currency: string(inv.Currency), AmountPaid: inv.AmountPaid}
+	if inv.Customer != nil {
+		out.CustomerID = inv.Customer.ID
+	}
+	if inv.Parent != nil && inv.Parent.SubscriptionDetails != nil && inv.Parent.SubscriptionDetails.Subscription != nil {
+		out.SubscriptionID = inv.Parent.SubscriptionDetails.Subscription.ID
+	}
+	if inv.Lines != nil {
+		for _, l := range inv.Lines.Data {
+			line := CaseInvoiceLine{Amount: l.Amount}
+			if l.Pricing != nil && l.Pricing.PriceDetails != nil {
+				line.PriceID = l.Pricing.PriceDetails.Price
+			}
+			if l.Parent != nil {
+				line.SubscriptionItem = string(l.Parent.Type) == "subscription_item_details"
+				if l.Parent.SubscriptionItemDetails != nil {
+					line.SubscriptionID = l.Parent.SubscriptionItemDetails.Subscription
+				}
+			}
+			if l.Period != nil {
+				line.PeriodStart, line.PeriodEnd = l.Period.Start, l.Period.End
+			}
+			out.Lines = append(out.Lines, line)
+		}
+	}
+	return out
+}
+
+// GetCaseInvoice reads one invoice (read-only). A single-item C.A.S.E. invoice fits the embedded lines.
+func (p *StripeProvider) GetCaseInvoice(ctx context.Context, invoiceID string) (*CaseInvoice, error) {
+	inv, err := stripeinvoice.Get(invoiceID, &stripe.InvoiceParams{Params: *withCtx(ctx)})
+	if err != nil {
+		return nil, fmt.Errorf("get invoice: %w", err)
+	}
+	return normalizeCaseInvoice(inv), nil
+}
+
+// ListCasePaidInvoices lists every paid invoice of one subscription (read-only), used once to
+// reconstruct the coverage ledger of an add-on paid before migration 0064.
+func (p *StripeProvider) ListCasePaidInvoices(ctx context.Context, subscriptionID string) ([]CaseInvoice, error) {
+	params := &stripe.InvoiceListParams{Subscription: stripe.String(subscriptionID), Status: stripe.String("paid")}
+	params.Context = ctx
+	var out []CaseInvoice
+	it := stripeinvoice.List(params)
+	for it.Next() {
+		out = append(out, *normalizeCaseInvoice(it.Invoice()))
+	}
+	if err := it.Err(); err != nil {
+		return nil, fmt.Errorf("list paid invoices: %w", err)
+	}
+	return out, nil
+}
+
+// CasePaymentState reads the live refund and dispute state of one PaymentIntent (read-only).
+func (p *StripeProvider) CasePaymentState(ctx context.Context, paymentIntentID string) (*CasePaymentState, error) {
+	st := &CasePaymentState{}
+	cp := &stripe.ChargeListParams{PaymentIntent: stripe.String(paymentIntentID)}
+	cp.Context = ctx
+	ci := stripecharge.List(cp)
+	for ci.Next() {
+		c := ci.Charge()
+		st.AmountCaptured += c.AmountCaptured
+		st.AmountRefunded += c.AmountRefunded
+	}
+	if err := ci.Err(); err != nil {
+		return nil, fmt.Errorf("list charges: %w", err)
+	}
+	dp := &stripe.DisputeListParams{PaymentIntent: stripe.String(paymentIntentID)}
+	dp.Context = ctx
+	di := stripedispute.List(dp)
+	for di.Next() {
+		st.DisputeStatuses = append(st.DisputeStatuses, string(di.Dispute().Status))
+	}
+	if err := di.Err(); err != nil {
+		return nil, fmt.Errorf("list disputes: %w", err)
+	}
+	return st, nil
 }

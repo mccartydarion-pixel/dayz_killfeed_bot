@@ -18,6 +18,9 @@ type FakeProvider struct {
 	caseSessions map[string]*CaseCheckoutSessionState
 	caseProration   int64
 	caseDeclineNext bool
+	caseInvoices    map[string]CaseInvoice
+	caseInvoiceByPI map[string]string
+	casePayments    map[string]CasePaymentState
 	// Calls records every method invocation for tests that want to assert on call shape
 	// (e.g. "checkout was created with the trial days we expected").
 	Calls []FakeCall

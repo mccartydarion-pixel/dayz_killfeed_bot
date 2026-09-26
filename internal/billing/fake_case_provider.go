@@ -81,3 +81,50 @@ func (f *FakeProvider) ChangeCaseTier(_ context.Context, in CaseTierChangeInput)
 	cp := *s
 	return &CaseTierChangeResult{State: &cp}, nil
 }
+
+// Refund/dispute fixtures (test-only). A PaymentIntent maps to one invoice and a payment state.
+func (f *FakeProvider) PutCaseInvoice(inv CaseInvoice, paymentIntentID string) {
+	f.mu.Lock(); defer f.mu.Unlock()
+	if f.caseInvoices == nil { f.caseInvoices = map[string]CaseInvoice{} }
+	if f.caseInvoiceByPI == nil { f.caseInvoiceByPI = map[string]string{} }
+	f.caseInvoices[inv.ID] = inv
+	if paymentIntentID != "" { f.caseInvoiceByPI[paymentIntentID] = inv.ID }
+}
+
+func (f *FakeProvider) PutCasePaymentState(paymentIntentID string, st CasePaymentState) {
+	f.mu.Lock(); defer f.mu.Unlock()
+	if f.casePayments == nil { f.casePayments = map[string]CasePaymentState{} }
+	f.casePayments[paymentIntentID] = st
+}
+
+func (f *FakeProvider) InvoiceForPaymentIntent(_ context.Context, pi string) (string, error) {
+	f.mu.Lock(); defer f.mu.Unlock()
+	f.Calls = append(f.Calls, FakeCall{"InvoiceForPaymentIntent", pi})
+	return f.caseInvoiceByPI[pi], nil
+}
+
+func (f *FakeProvider) GetCaseInvoice(_ context.Context, id string) (*CaseInvoice, error) {
+	f.mu.Lock(); defer f.mu.Unlock()
+	f.Calls = append(f.Calls, FakeCall{"GetCaseInvoice", id})
+	inv, ok := f.caseInvoices[id]
+	if !ok { return nil, fmt.Errorf("fake invoice not found") }
+	cp := inv
+	return &cp, nil
+}
+
+func (f *FakeProvider) ListCasePaidInvoices(_ context.Context, sub string) ([]CaseInvoice, error) {
+	f.mu.Lock(); defer f.mu.Unlock()
+	f.Calls = append(f.Calls, FakeCall{"ListCasePaidInvoices", sub})
+	var out []CaseInvoice
+	for _, inv := range f.caseInvoices {
+		if inv.SubscriptionID == sub && inv.Status == "paid" { out = append(out, inv) }
+	}
+	return out, nil
+}
+
+func (f *FakeProvider) CasePaymentState(_ context.Context, pi string) (*CasePaymentState, error) {
+	f.mu.Lock(); defer f.mu.Unlock()
+	f.Calls = append(f.Calls, FakeCall{"CasePaymentState", pi})
+	st := f.casePayments[pi]
+	return &st, nil
+}

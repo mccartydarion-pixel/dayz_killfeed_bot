@@ -50,6 +50,12 @@ type CaseProvider interface {
 	// invoices the proration now and leaves the change PENDING at Stripe
 	// unless that payment succeeds; otherwise no proration is created.
 	ChangeCaseTier(ctx context.Context, in CaseTierChangeInput) (*CaseTierChangeResult,error)
+	// Read-only lookups for refund/dispute/void reconciliation (Phase 6.26B). In API 2026-08-26
+	// a charge links to its invoice only through an InvoicePayment for its PaymentIntent.
+	InvoiceForPaymentIntent(ctx context.Context, paymentIntentID string) (string, error) // "" = no invoice
+	GetCaseInvoice(ctx context.Context, invoiceID string) (*CaseInvoice, error)
+	ListCasePaidInvoices(ctx context.Context, subscriptionID string) ([]CaseInvoice, error)
+	CasePaymentState(ctx context.Context, paymentIntentID string) (*CasePaymentState, error)
 }
 
 type CaseCheckoutInput struct {
