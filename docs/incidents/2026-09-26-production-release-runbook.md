@@ -86,3 +86,62 @@ Record every result as PASS, FAIL or NOT OBSERVED. There are no assumed passes: 
 2. Railway and database access for checks 2a, 3, 5 and 7, or run them and share the output (never secrets).
 3. A decision on risk 1: (a) or (b).
 4. Acknowledgement of risk 2 (no live staging evidence).
+
+---
+
+## 7. Final release gate (owner decision: controlled manual cleanup, no automatic channel clearing)
+
+**Gate status: NOT READY FOR EXECUTION.** Each row records only what was actually observed.
+
+| # | Gate item | Observed status | Evidence |
+|---|---|---|---|
+| 1 | CI on the latest head | **PASS (observed)** | `abdf7c8`: GitHub `test` check success; `main` = `605f1ec` (no conflict) |
+| 2 | Recoverable production backup | **NOT OBSERVED** | no Railway or database access in this session |
+| 3 | Both read-only SQL files on production | **NOT RUN** | no production database access. Both files were validated only on local copies of the `0055` and `0057` schemas. |
+| 4 | Conflicting feed routes / legacy channels resolved | **NOT OBSERVED** | depends on R3–R5 from item 3 |
+| 5 | Discord permissions; existing feed message IDs | **NOT OBSERVED** | `discord.com` is denied by the network policy. The leftover card IDs **cannot exist before the deploy** (see 7.1). |
+| 6 | The merge triggers the expected Railway deployment | **NOT OBSERVED** | no Railway access |
+| 7 | Migrations `0056`/`0057` and rollback compatibility | **PASS (tests, observed locally)** | `605f1ec` suite on the `0057` schema: 1,712 tests, 0 failures. Migrations applied from `0001`, and preflight SQL run on the `0055` and `0057` schemas. Not observed against production data. |
+| 8 | Written deployment and rollback sequence | **PREPARED** | sections 4 and 5, refined in 7.2 |
+| 9 | Variable before the merge; old application healthy afterwards | **PREPARED; NOT OBSERVED** | `605f1ec` does not read `KILLFEED_DELIVERY_MODE` (verified in its source). Its health after the change can only be observed at execution. |
+| 10 | Remove only the identified pre-release message IDs | **PREPARED** | 7.1 |
+
+### 7.1 Identifying the pre-release feed cards by exact message ID
+
+**Timing matters.** `605f1ec` deletes its current batch and posts a final batch of up to 10 cards per feed when it receives the shutdown signal (`Run` → `flush()` on `ctx.Done()`). The cards to remove are therefore created *during* the switch. Any ID list taken before the deploy would name cards the old process deletes itself.
+
+Capture is read-only (`GET /channels/{id}/messages?limit=100` with the production bot token, via `railway run` so the token is never printed):
+
+1. **Before step 2** (baseline B0): list the combat channel (and the legacy death channel, if R5 shows one in use). Record ID, author ID, timestamp, embed title and footer. This is evidence only; nothing is deleted from it.
+2. **After the new deployment passes A1** (list L1): a message is a **pre-release feed card** only if **all** of these hold:
+   * its author is the production bot;
+   * its ID is **not** in `SELECT message_id FROM discord_feed_cards WHERE message_id IS NOT NULL` (the new process's own cards);
+   * its embed is a kill or death card: footer text ends with `EVERY KILL TELLS A STORY`, and the title is a kill title or `☠️ PLAYER DEATH` / `💀 SUICIDE`;
+   * it was created before the new process's first `posted_at` for that channel.
+
+   Excluded:
+   * the starter card (title `🔫 COMBAT FEED`);
+   * PvE cards (description-only amber embeds, no title or footer), which are not rotating-feed cards;
+   * panels and anything by another author.
+3. **Owner review.** The exact ID list, with timestamp and title for each, goes to the owner. Nothing is deleted without explicit approval of *that list*.
+4. **Delete** each approved ID with a single `DELETE /channels/{channel}/messages/{id}`: never a bulk or "clear channel" call. Then re-list and confirm that exactly those IDs are gone and every excluded message remains.
+
+Expected size: at most 10 kill + 10 death cards per server worker, plus any older cards a past failed delete left behind (listed separately for the owner to decide).
+
+### 7.2 Sequence with Railway auto-deploy from `main`
+
+1. Run items 2–6 and record the output. Stop on any unresolved R5 finding. Capture B0 and note `T0`.
+2. Set `KILLFEED_DELIVERY_MODE=immediate` on the production bot service only and apply it. Railway redeploys the **current** `605f1ec` image. Observe: `/health` OK; the deployment is still `605f1ec`; rotating cards still post at the cycle; no crash loop. If it is unhealthy, unset the variable and stop.
+3. Mark PR #108 ready and merge it. Merging creates a commit on `main`, and Railway auto-deploys it; if "Wait for CI" is enabled, it deploys only after `main`'s checks pass. Note the merge SHA; A1 must report exactly that SHA.
+4. The new process starts in immediate mode, applies `0056`/`0057` under the migration advisory lock, then starts its workers. Run A1–A10.
+5. After A1 passes: capture L1, build the candidate list (7.1), get owner approval, delete by ID, verify.
+6. On any **C** failure: section 5 (roll back in Railway; revert the merge with a new commit so auto-deploy does not bring the release back; then unset the variable). Clean up the immediate cards with the same by-ID procedure (7.1). Their IDs come directly from `discord_feed_cards` (`message_id`, `removed_at IS NULL`).
+
+### 7.3 Access needed to complete the gate
+
+* Network access for this session: `backboard.railway.app` and `discord.com` (environment settings).
+* A Railway token for the production project in the environment settings (`RAILWAY_TOKEN`). Items 2, 6 and 9 need it, and running both SQL files through `railway run` against the production database needs it too.
+
+  If you prefer to run items 2–6 yourself, share the outputs; secret values are not needed.
+
+Production variables, the merge, the deploy, migrations, restarts and message deletion all remain **not executed** until explicit authorization.
