@@ -123,6 +123,35 @@ func TestShopPatchPreservesEverythingElse(t *testing.T) {
 	}
 }
 
+// TestShopPatchKeepsEnabledLostCity covers the live configuration since 2026-09-25: the owner
+// re-enabled The Lost City, so the array already holds its (correctly spelled) reference.
+func TestShopPatchKeepsEnabledLostCity(t *testing.T) {
+	enabled := strings.Replace(liveShape, "[\n        ]", "[\n\t\t\t\""+LostCityRelPath+"\"\n\t\t]", 1)
+	p, err := ProposePatch([]byte(enabled))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(p.Before, ",") != LostCityRelPath || strings.Join(p.After, ",") != LostCityRelPath+","+nitradodelivery.ArtifactRelPath {
+		t.Fatalf("%v -> %v", p.Before, p.After)
+	}
+	i := strings.Index(enabled, "\"objectSpawnersArr\": [") + len("\"objectSpawnersArr\": ")
+	j := i + strings.Index(enabled[i:], "]") + 1
+	if !strings.HasPrefix(string(p.Proposed), enabled[:i]) || !strings.HasSuffix(string(p.Proposed), enabled[j:]) {
+		t.Fatal("bytes outside the spawner array changed")
+	}
+	// Lost City needs no change, before or after the Shop reference.
+	if _, err := ProposeLostCityRestore([]byte(enabled)); !errors.Is(err, ErrNoChange) {
+		t.Fatalf("before: %v", err)
+	}
+	if _, err := ProposeLostCityRestore(p.Proposed); !errors.Is(err, ErrNoChange) {
+		t.Fatalf("after: %v", err)
+	}
+	// Re-proposing on the patched file changes nothing.
+	if _, err := ProposePatch(p.Proposed); !errors.Is(err, ErrNoChange) {
+		t.Fatalf("idempotent: %v", err)
+	}
+}
+
 func TestLostCityRestoreIsSeparate(t *testing.T) {
 	// Live shape (empty array): append.
 	p, err := ProposeLostCityRestore([]byte(liveShape))
