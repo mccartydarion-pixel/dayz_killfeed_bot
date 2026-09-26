@@ -62,6 +62,12 @@ type Config struct {
 	// default on any problem).
 	CustomEmbedsEnabled bool
 
+	// ShopCanaryExecution is the Shop Phase 2C.4 canary execution lock (docs/SHOP_DELIVERY_PHASE2C4.md).
+	// It is its own switch: no other Shop, economy or delivery setting enables it. Mutating canary
+	// operations are allowed only when CHAMPION_SHOP_CANARY_EXECUTION is exactly "enabled" AND the
+	// installation is listed in CHAMPION_SHOP_CANARY_INSTALLATION_IDS. Default: locked.
+	ShopCanaryExecution ShopCanaryExecution
+
 	// PublicBaseURL is the public origin of this service (no trailing slash), used to build
 	// absolute URLs for publicly served assets such as faction logos
 	// (/assets/faction-logos/...). CHAMPION_PUBLIC_BASE_URL wins; otherwise it is derived from
@@ -116,6 +122,7 @@ func Load() (*Config, error) {
 		WebsiteAPISecret:          strings.TrimSpace(os.Getenv("WEBSITE_API_SECRET")),
 		AdminDiscordIDs:           ParseAdminDiscordIDs(os.Getenv("CHAMPION_ADMIN_DISCORD_IDS")),
 		CustomEmbedsEnabled:       parseBoolWithDefault(os.Getenv("CHAMPION_CUSTOM_EMBEDS_ENABLED"), false),
+		ShopCanaryExecution:       ParseShopCanaryExecution(os.Getenv("CHAMPION_SHOP_CANARY_EXECUTION"), os.Getenv("CHAMPION_SHOP_CANARY_INSTALLATION_IDS")),
 		PublicBaseURL:             ParsePublicBaseURL(os.Getenv("CHAMPION_PUBLIC_BASE_URL"), os.Getenv("RAILWAY_PUBLIC_DOMAIN")),
 
 		DiscordPresenceEnabled:         parseBoolWithDefault(os.Getenv("DISCORD_PRESENCE_ENABLED"), true),
@@ -278,4 +285,33 @@ func ParsePublicBaseURL(explicit, railwayDomain string) string {
 		return "https://" + d
 	}
 	return ""
+}
+
+// ShopCanaryExecution is the parsed canary execution lock.
+type ShopCanaryExecution struct {
+	Enabled         bool
+	InstallationIDs []int64
+}
+
+// ParseShopCanaryExecution enables the lock only for the exact word "enabled" (not "true", "1" or
+// "yes": an accidental generic boolean never opens it) and only with at least one valid installation
+// id. Anything else is locked.
+func ParseShopCanaryExecution(mode, ids string) ShopCanaryExecution {
+	if strings.TrimSpace(mode) != "enabled" {
+		return ShopCanaryExecution{}
+	}
+	var out []int64
+	seen := map[int64]bool{}
+	for _, part := range strings.Split(ids, ",") {
+		id, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64)
+		if err != nil || id <= 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	if len(out) == 0 {
+		return ShopCanaryExecution{}
+	}
+	return ShopCanaryExecution{Enabled: true, InstallationIDs: out}
 }

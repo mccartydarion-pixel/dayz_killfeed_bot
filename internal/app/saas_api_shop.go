@@ -24,16 +24,17 @@ import (
 // and repository.ShopRepository, and the Points debit is the economy's one ledger path.
 
 const (
-	codeShopProductNotFound  = "SHOP_PRODUCT_NOT_FOUND"
-	codeShopProductDisabled  = "SHOP_PRODUCT_DISABLED"
-	codeShopCategoryNotFound = "SHOP_CATEGORY_NOT_FOUND"
-	codeOutOfStock           = "OUT_OF_STOCK"
-	codePurchaseLimitReached = "PURCHASE_LIMIT_REACHED"
-	codeInvalidQuantity      = "INVALID_QUANTITY"
-	codeDuplicatePurchase    = "DUPLICATE_PURCHASE"
-	codePurchaseNotFound     = "PURCHASE_NOT_FOUND"
-	codeInvalidPurchaseState = "INVALID_PURCHASE_STATUS"
-	codeShopForbidden        = "SHOP_FORBIDDEN"
+	codeShopProductNotFound   = "SHOP_PRODUCT_NOT_FOUND"
+	codeShopProductDisabled   = "SHOP_PRODUCT_DISABLED"
+	codeShopCategoryNotFound  = "SHOP_CATEGORY_NOT_FOUND"
+	codeOutOfStock            = "OUT_OF_STOCK"
+	codePurchaseLimitReached  = "PURCHASE_LIMIT_REACHED"
+	codeInvalidQuantity       = "INVALID_QUANTITY"
+	codeDuplicatePurchase     = "DUPLICATE_PURCHASE"
+	codePurchaseNotFound      = "PURCHASE_NOT_FOUND"
+	codeInvalidPurchaseState  = "INVALID_PURCHASE_STATUS"
+	codeDeliveryAttemptActive = "DELIVERY_ATTEMPT_ACTIVE"
+	codeShopForbidden         = "SHOP_FORBIDDEN"
 )
 
 func init() {
@@ -46,6 +47,7 @@ func init() {
 	httpStatusForCode[codeDuplicatePurchase] = http.StatusConflict
 	httpStatusForCode[codePurchaseNotFound] = http.StatusNotFound
 	httpStatusForCode[codeInvalidPurchaseState] = http.StatusConflict
+	httpStatusForCode[codeDeliveryAttemptActive] = http.StatusConflict
 	httpStatusForCode[codeShopForbidden] = http.StatusForbidden
 }
 
@@ -78,6 +80,7 @@ func (a *App) registerShopRoutes() {
 	h("POST "+base+"/purchases/{purchaseID}/fulfill", a.handleShopFulfill)
 	h("POST "+base+"/purchases/{purchaseID}/refund", a.handleShopRefund)
 	a.registerShopDeliveryRoutes(base)
+	a.registerShopCanaryRoutes(base)
 }
 
 func (a *App) shopContext(w http.ResponseWriter, r *http.Request, admin bool) (economyRequest, bool) {
@@ -132,6 +135,8 @@ func shopFailed(w http.ResponseWriter, what string, err error) {
 		writeSaaSError(w, codePurchaseNotFound, "purchase not found")
 	case errors.Is(err, repository.ErrShopInvalidStatus):
 		writeSaaSError(w, codeInvalidPurchaseState, "the purchase is not in a state that allows this")
+	case errors.Is(err, repository.ErrShopDeliveryAttemptActive):
+		writeSaaSError(w, codeDeliveryAttemptActive, "an automatic delivery attempt may have put this item on the server: it cannot be refunded or fulfilled by hand until the attempt is resolved")
 	case errors.Is(err, repository.ErrInvalidLedgerAmount):
 		writeSaaSError(w, codeInvalidRequest, "the total price is out of range")
 	case errors.Is(err, shop.ErrInvalidKey):

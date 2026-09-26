@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 	"sync"
@@ -395,6 +396,28 @@ func TestReconcileAfterCrash(t *testing.T) {
 	} {
 		if got, action := Reconcile(c.state, c.inFile, c.start); got != c.want || action == "" {
 			t.Errorf("%s: %s (%s)", name, got, action)
+		}
+	}
+}
+
+// The in-memory prototype and the durable ledger (migration 0054) enforce the same state machine.
+func TestAttemptStatesMatchDurableLedger(t *testing.T) {
+	if len(attemptTransitions) != len(repository.ShopAttemptTransitions) {
+		t.Fatalf("state count: %d vs %d", len(attemptTransitions), len(repository.ShopAttemptTransitions))
+	}
+	for from, tos := range attemptTransitions {
+		got := repository.ShopAttemptTransitions[from]
+		if fmt.Sprint(got) != fmt.Sprint(tos) {
+			t.Errorf("%s: prototype %v, ledger %v", from, tos, got)
+		}
+	}
+	for _, s := range [][2]string{{AttemptPlanCreated, repository.AttemptPlanCreated}, {AttemptFilePrepared, repository.AttemptFilePrepared},
+		{AttemptFileStaged, repository.AttemptFileStaged}, {AttemptAwaitingRestart, repository.AttemptAwaitingRestart}, {AttemptRestartObserved, repository.AttemptRestartObserved},
+		{AttemptUnstageRequired, repository.AttemptUnstageRequired}, {AttemptVerificationRequired, repository.AttemptVerificationRequired},
+		{AttemptFulfilled, repository.AttemptFulfilled}, {AttemptAbandoned, repository.AttemptAbandoned}, {AttemptUnstaged, repository.AttemptUnstaged},
+		{AttemptFailedReview, repository.AttemptFailedReview}} {
+		if s[0] != s[1] {
+			t.Errorf("%s != %s", s[0], s[1])
 		}
 	}
 }
