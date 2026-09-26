@@ -7,6 +7,8 @@ import (
 
 	stripe "github.com/stripe/stripe-go/v82"
 	"github.com/stripe/stripe-go/v82/webhook"
+
+	"github.com/yourname/dayz-killfeed/internal/casebilling"
 )
 
 // VerifyWebhookEvent checks the Stripe-Signature header against payload using secret and returns
@@ -39,7 +41,34 @@ const (
 	EventSubscriptionDeleted  = "customer.subscription.deleted"
 	EventInvoicePaid          = "invoice.paid"
 	EventInvoicePaymentFailed = "invoice.payment_failed"
+
+	// Payment reversals (Phase 6.26B). Handled only for C.A.S.E. invoices; base billing ignores them.
+	EventChargeRefunded          = "charge.refunded"
+	EventChargeRefundUpdated     = "charge.refund.updated"
+	EventDisputeCreated          = "charge.dispute.created"
+	EventDisputeUpdated          = "charge.dispute.updated"
+	EventDisputeClosed           = "charge.dispute.closed"
+	EventDisputeFundsReinstated  = "charge.dispute.funds_reinstated"
+	EventInvoiceVoided           = "invoice.voided"
+	EventInvoiceUncollectible    = "invoice.marked_uncollectible"
 )
+
+// isCaseReversalEvent reports the event types reconciled against C.A.S.E. invoice coverage.
+func isCaseReversalEvent(t string) bool {
+	switch t {
+	case EventChargeRefunded, EventChargeRefundUpdated, EventDisputeCreated, EventDisputeUpdated,
+		EventDisputeClosed, EventDisputeFundsReinstated, EventInvoiceVoided, EventInvoiceUncollectible:
+		return true
+	}
+	return false
+}
+
+// webhookPaymentRef is the minimal shape of a charge, refund or dispute object: only its id and the
+// PaymentIntent it belongs to. Amounts and statuses are always re-read live from Stripe.
+type webhookPaymentRef struct {
+	ID            string `json:"id"`
+	PaymentIntent jsonID `json:"payment_intent"`
+}
 
 // webhookSubscription is the minimal shape read out of a customer.subscription.* event's object -
 // deliberately not the full generated stripe.Subscription (this repository only reads price,
@@ -50,6 +79,7 @@ type webhookSubscription struct {
 	Status            string            `json:"status"`
 	CancelAtPeriodEnd bool              `json:"cancel_at_period_end"`
 	CanceledAt        int64             `json:"canceled_at"`
+	TrialStart        int64             `json:"trial_start"`
 	TrialEnd          int64             `json:"trial_end"`
 	Customer          jsonID            `json:"customer"`
 	Metadata          map[string]string `json:"metadata"`
@@ -107,6 +137,8 @@ type webhookInvoice struct {
 	ID            string `json:"id"`
 	Customer      jsonID `json:"customer"`
 	Subscription  jsonID `json:"subscription"`
+	// Stripe copies the subscription's metadata (Champion's champion_organization_id) onto the invoice.
+	Parent struct { SubscriptionDetails struct { Subscription jsonID `json:"subscription"`; Metadata map[string]string `json:"metadata"` } `json:"subscription_details"` } `json:"parent"`
 	Status        string `json:"status"`
 	AmountPaid    int64  `json:"amount_paid"`
 	AmountDue     int64  `json:"amount_due"`
@@ -114,6 +146,15 @@ type webhookInvoice struct {
 	PaymentIntent jsonID `json:"payment_intent"`
 	Lines         struct {
 		Data []struct {
+			Amount int64 `json:"amount"` // negative for a proration credit line
+			Price jsonID `json:"price"` // legacy Stripe invoice line
+			Pricing struct {
+				PriceDetails struct { Price jsonID `json:"price"` } `json:"price_details"`
+			} `json:"pricing"`
+			Parent struct {
+				Type string `json:"type"`
+				SubscriptionItemDetails struct { Subscription jsonID `json:"subscription"` } `json:"subscription_item_details"`
+			} `json:"parent"`
 			Period struct {
 				Start int64 `json:"start"`
 				End   int64 `json:"end"`
@@ -138,6 +179,35 @@ func (inv *webhookInvoice) period() (start, end time.Time) {
 	return start, end
 }
 
+// caseLine returns the subscription-item line of THIS subscription whose
+// price is a configured C.A.S.E. price (tierOf != "") with the latest period
+// end; on the same end the higher tier wins (an upgrade invoice holds the new
+// tier's charge and the old tier's credit). paidOnly skips credit/zero lines,
+// so a Pro credit on a downgrade can never be read as paid Pro coverage.
+func (inv *webhookInvoice) caseLine(subscriptionID string, tierOf func(string) casebilling.Tier, paidOnly bool) (end time.Time, tier casebilling.Tier) {
+	_, end, tier = caseCoverageFromLines(inv.caseLines(), subscriptionID, tierOf, paidOnly)
+	return end, tier
+}
+
+// caseLines normalizes the event's invoice lines for caseCoverageFromLines (the one coverage rule).
+func (inv *webhookInvoice) caseLines() []CaseInvoiceLine {
+	if inv == nil {
+		return nil
+	}
+	out := make([]CaseInvoiceLine, 0, len(inv.Lines.Data))
+	for _, line := range inv.Lines.Data {
+		price := string(line.Pricing.PriceDetails.Price)
+		if price == "" {
+			price = string(line.Price)
+		}
+		out = append(out, CaseInvoiceLine{Amount: line.Amount, PriceID: price,
+			SubscriptionID: string(line.Parent.SubscriptionItemDetails.Subscription),
+			SubscriptionItem: line.Parent.Type == "subscription_item_details",
+			PeriodStart: line.Period.Start, PeriodEnd: line.Period.End})
+	}
+	return out
+}
+
 // ParsedEvent is one webhook event, decoded into exactly the fields Champion's reconciliation
 // needs, with everything else (payment card data, line item detail, tax) left out.
 type ParsedEvent struct {
@@ -146,6 +216,7 @@ type ParsedEvent struct {
 	Session *webhookCheckoutSession
 	Sub     *webhookSubscription
 	Invoice *webhookInvoice
+	Payment *webhookPaymentRef // charge.refunded, charge.refund.updated, charge.dispute.*
 }
 
 // ParseEvent decodes a verified stripe.Event's object into the typed shape for its event type.
@@ -172,7 +243,22 @@ func ParseEvent(e stripe.Event) (ParsedEvent, error) {
 		if err := json.Unmarshal(e.Data.Raw, &inv); err != nil {
 			return out, fmt.Errorf("parse %s: %w", out.Type, err)
 		}
+		if inv.Subscription == "" { inv.Subscription = inv.Parent.SubscriptionDetails.Subscription }
 		out.Invoice = &inv
+	case EventInvoiceVoided, EventInvoiceUncollectible:
+		var inv webhookInvoice
+		if err := json.Unmarshal(e.Data.Raw, &inv); err != nil {
+			return out, fmt.Errorf("parse %s: %w", out.Type, err)
+		}
+		if inv.Subscription == "" { inv.Subscription = inv.Parent.SubscriptionDetails.Subscription }
+		out.Invoice = &inv
+	case EventChargeRefunded, EventChargeRefundUpdated, EventDisputeCreated, EventDisputeUpdated,
+		EventDisputeClosed, EventDisputeFundsReinstated:
+		var ref webhookPaymentRef
+		if err := json.Unmarshal(e.Data.Raw, &ref); err != nil {
+			return out, fmt.Errorf("parse %s: %w", out.Type, err)
+		}
+		out.Payment = &ref
 	}
 	return out, nil
 }
@@ -181,13 +267,17 @@ func ParseEvent(e stripe.Event) (ParsedEvent, error) {
 // GetSubscription/normalizeSubscription would produce, so webhook handling and explicit
 // reconciliation share one downstream code path (Service.applySubscriptionState).
 func (s *webhookSubscription) state() *SubscriptionState {
-	out := &SubscriptionState{SubscriptionID: s.ID, CustomerID: string(s.Customer), StripeStatus: s.Status, CancelAtPeriodEnd: s.CancelAtPeriodEnd}
+	out := &SubscriptionState{SubscriptionID: s.ID, CustomerID: string(s.Customer), StripeStatus: s.Status, CancelAtPeriodEnd: s.CancelAtPeriodEnd, Metadata: s.Metadata}
 	if len(s.Items.Data) > 0 {
 		item := s.Items.Data[0]
 		out.CurrentPeriodStart = time.Unix(item.CurrentPeriodStart, 0).UTC()
 		out.CurrentPeriodEnd = time.Unix(item.CurrentPeriodEnd, 0).UTC()
 		out.PriceID = item.Price.ID
 		out.StripeInterval = item.Price.Recurring.Interval
+	}
+	if s.TrialStart > 0 {
+		t := time.Unix(s.TrialStart, 0).UTC()
+		out.TrialStart = &t
 	}
 	if s.TrialEnd > 0 {
 		t := time.Unix(s.TrialEnd, 0).UTC()

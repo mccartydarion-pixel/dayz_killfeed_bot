@@ -20,6 +20,7 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/adminrepo"
 	"github.com/yourname/dayz-killfeed/internal/analytics"
 	"github.com/yourname/dayz-killfeed/internal/billing"
+	"github.com/yourname/dayz-killfeed/internal/casebilling"
 	"github.com/yourname/dayz-killfeed/internal/bounties"
 	"github.com/yourname/dayz-killfeed/internal/config"
 	"github.com/yourname/dayz-killfeed/internal/database"
@@ -90,6 +91,8 @@ type App struct {
 	// STRIPE_SECRET_KEY configured (Billing.Configured() is then false and every action fails
 	// closed with BILLING_UNAVAILABLE rather than panicking).
 	Billing *billing.Service
+	// CaseDigestOutbox owns paid Watch staff messages across app replicas.
+	CaseDigestOutbox *repository.CaseDigestOutbox
 	// BountyBoard keeps the persistent public board (BOUNTY route). Nil-safe.
 	BountyBoard *discord.BountyBoard
 	// HeatmapBoard keeps the persistent PvP heatmap summary (HEATMAPS route),
@@ -243,6 +246,12 @@ type App struct {
 	saasShopPurchaseLimiter   *saasRateLimiter
 	saasShopAdminLimiter      *saasRateLimiter
 	saasBillingActionLimiter  *saasRateLimiter
+	caseWatchDigestLimiter *saasRateLimiter
+	// Test seams; nil in production. Both callbacks fail closed by default.
+	caseWatchPrivacyCheck func(context.Context,string,string) error
+	caseWatchRequesterCheck func(context.Context,repository.AdminScope,int64)(bool,error)
+	caseWatchSender func(context.Context,string,*discordgo.MessageEmbed) (string,error)
+	caseWatchMessageLookup func(context.Context,string,string)(*discordgo.Message,string,error)
 	// saasAdminActionLimiter throttles the Client Admin Control Plane's higher-risk mutation
 	// routes (restart/stop/whitelist/banlist/permission changes/etc); saasAdminReadLimiter
 	// throttles its read routes (audit log, warnings list, permissions list).
@@ -671,6 +680,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.SaaSServers = repository.NewSaaSServerRepository(db.Pool)
 			app.SaaSInstallations = repository.NewInstallationRepository(db.Pool)
 			app.SaaSSubscriptions = repository.NewSubscriptionRepository(db.Pool)
+			app.CaseDigestOutbox = repository.NewCaseDigestOutbox(db.Pool)
 			app.SaaSPlayer = repository.NewPlayerServerRepository(db.Pool)
 			if billingCatalog, err := billing.LoadCatalog(cfg.BillingPlansJSON); err != nil {
 				// A malformed catalog is a startup-time configuration error (see
@@ -685,6 +695,26 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 				app.Billing = billing.NewService(app.SaaSSubscriptions, billingCatalog, provider, billing.Options{
 					AllowedOrigins: billing.ParseAllowedOrigins(cfg.BillingAllowedOrigins), WebhookSecret: cfg.StripeWebhookSecret,
 				})
+				// Store and route C.A.S.E. independently of the one-row base
+				// subscription. The checkout flag defaults false in every environment.
+				if err := app.Billing.ConfigureCaseAddons(repository.NewCaseAddonSubscriptionRepository(db.Pool), billing.CaseOptions{
+					Enabled: cfg.CaseBillingEnabled,
+					AccessEnabled: cfg.CaseAccessEnabled,
+					VerifiedThrough: casebilling.Tier(cfg.CaseVerifiedThrough),
+					PriceIDs: map[casebilling.Tier]string{
+						casebilling.Watch: cfg.CaseWatchPriceID,
+						casebilling.Pro: cfg.CaseProPriceID,
+						casebilling.Command: cfg.CaseCommandPriceID,
+					},
+					StripeKeyMode: billing.ClassifyStripeKey(cfg.StripeSecretKey),
+					// The isolated staging service (APP_ENV=staging) must run on
+					// a Stripe test key. Keyed on the explicit staging marker, not
+					// "anything but production", so an unset APP_ENV elsewhere
+					// can never block an existing deployment from starting.
+					RequireTestMode: cfg.AppEnv == "staging",
+				}); err != nil {
+					return nil, fmt.Errorf("configure case add-on billing: %w", err)
+				}
 			}
 			app.SaaSCredentials = repository.NewCredentialRepository(db.Pool)
 			app.SaaSChannelRoutes = repository.NewChannelRouteRepository(db.Pool)
@@ -1533,8 +1563,13 @@ func (a *App) Run() error {
 				// ADMIN_ALERTS: operational conditions reported by the server
 				// workers and the zone engine; with no route nothing is sent.
 				a.AdminAlerts = discord.NewAdminAlertPublisher(session, a.ChannelRoutes)
+				// Paid Watch messages use the durable outbox exclusively. The
+				// legacy in-memory queue has NO premium authorizer in production.
 				a.AdminAlerts.SetServerNames(a.serverNameFunc())
 				go a.AdminAlerts.Run(ctx)
+				if a.CaseDigestOutbox != nil && a.Config.CaseAccessEnabled {
+					go a.runCaseDigestWorker(ctx)
+				}
 			}
 			if routingEnabled && a.Heatmap != nil {
 				// HEATMAPS: one persistent PvP summary per routed channel, read
