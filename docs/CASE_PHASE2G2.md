@@ -1,0 +1,9 @@
+# C.A.S.E. Phase 2G.2 — Inert Shadow Ledger
+
+This branch extends the unmerged 2G.1 foundation branch. Migration 0056 creates a durable record of **blocked evaluations only**, plus immutable links to exact persisted ADM evidence IDs. Each link has composite (guild_id, server_id) foreign keys on both ledger and evidence, preventing cross-installation references. The deterministic fingerprint incorporates guild, server, detector ID/version and ordered unique evidence IDs. Identical replay is idempotent; a different detector version has separate identity.
+
+RecordBlocked is a library method, not a live job or HTTP mutation route. It requires an explicit boolean gate, which defaults false, and validates the registered detector's blocked state. It derives blocker codes from the fixed registry rather than trusting caller-supplied reasons. It verifies every evidence ID in the same database transaction as insertion and rejects unknown/cross-server/duplicate IDs. It cannot store scores, findings, warnings, bans or sanctions. No production caller is attached and no environment variable is enabled.
+
+Unit checks cover the default-off gate and fingerprint. Disposable-PostgreSQL tests cover replay idempotence, original evidence linkage, blocked-only state and cross-server rejection. No Nitrado, Discord, collector, source selection, or gameplay configuration changes.
+
+Release order: validate the 2G.1 dependency and Cloudflare build failure; test the 2G.2 branch; merge 2G.1 first, then rebase or reconcile 2G.2 onto main and separately review its migration. Do not deploy the schema to production until CI and migration review are complete. Real shadow execution, actor-level analysis, read APIs, human review and rule-specific prerequisite gates remain future work. CASE-MOV-001 and all enforcement stay disabled.
