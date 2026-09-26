@@ -584,7 +584,13 @@ func (a *App) allRotatingFeeds() []*discord.RotatingFeed {
 func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	slog.Info("component=startup", "msg", "starting DayZ killfeed")
 
-	nitradoClient := nitrado.NewClient("https://api.nitrado.net", cfg.NitradoToken, nil)
+	if cfg.NitradoAPIBaseURL != "" {
+		// Isolated staging only (config.Load refuses it unless APP_ENV=staging):
+		// every Nitrado client in this process talks to the read-only fixture.
+		nitrado.SetAPIBaseURLOverride(cfg.NitradoAPIBaseURL)
+		slog.Warn("component=nitrado", "msg", "NITRADO_API_BASE_URL override active: using the staging Nitrado fixture, not the real Nitrado API")
+	}
+	nitradoClient := nitrado.NewClient(nitrado.DefaultBaseURL, cfg.NitradoToken, nil)
 	slog.Info("component=nitrado", "msg", "client configured", "base_url", nitradoClient.BaseURL())
 
 	// Welcomer consumes GuildMemberAdd, so request only the Guild Members
@@ -1904,6 +1910,16 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 	deathFeed.SetMode(feedDeliveryMode())
 	deathPublisher.SetFeed(deathFeed)
 	a.addRotatingFeed(deathFeed)
+	if a.DB != nil && a.DB.Pool != nil {
+		// Feed journal (migration 0057): immediate mode records every card so
+		// a restart replays undelivered cards and takes back the previous
+		// process's shown cards. Rotating mode only drains what an earlier
+		// immediate process left (rollback), so under the production default
+		// the table stays empty.
+		journal := repository.NewFeedCardRepository(a.DB.Pool)
+		killFeed.SetJournal(journal, fmt.Sprintf("KILLFEED:%d", row.ID))
+		deathFeed.SetJournal(journal, fmt.Sprintf("DEATH_FEED:%d", row.ID))
+	}
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {

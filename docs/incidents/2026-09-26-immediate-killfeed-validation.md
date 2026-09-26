@@ -2,6 +2,8 @@
 
 **Release candidate:** PR #108. The brief named `3cc3748`. The code validated here is that commit plus the immediate-delivery fixes in this change (runtime changes are listed in section 4).
 
+> **Update (staging infrastructure pass):** two limitations below are fixed. The feed journal (migration `0057`) replays queued cards after a crash and takes back the previous process's cards after a restart. ADM growth within the same second as the last read is now read on the next poll. See `2026-09-26-staging-infrastructure.md`.
+
 **No live staging deployment was performed, and nothing in production or `champions-case-staging` was touched.** The classifications are:
 
 * **BLOCKED:** needs live staging.

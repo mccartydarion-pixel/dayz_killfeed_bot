@@ -266,7 +266,12 @@ type Engine struct {
 	consecFailures int
 	discoverFails  int       // consecutive empty/failed discovery passes, drives backoff
 	lastRescan     time.Time // last time we checked for a newer ADM file
-	sampleCaptured bool      // whether we've logged the gameplay sample for the selected log
+	// growthReadSize is the listed size that last triggered a growth-only
+	// read (same modified second; see pollSelected). One read per distinct
+	// listed size, so a listing that overstates the file never causes a
+	// download every poll.
+	growthReadSize int64
+	sampleCaptured bool // whether we've logged the gameplay sample for the selected log
 
 	dedupe         *Deduplicator
 	publisher      KillPublisher
@@ -1303,6 +1308,14 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 	e.noteTransportSuccess()
 
 	changed := e.tracker.ShouldReadAgain(current.Path, current.Size, current.Modified)
+	if !changed && current.Size != e.growthReadSize && e.tracker.GrewSinceRead(current.Path, current.Size) {
+		// Nitrado's modified_at has one-second resolution: lines appended in
+		// the same second as the last read leave it unchanged. Growth past the
+		// size seen at that read is new content; without this it waited for
+		// the next write in a later second (minutes on a quiet server).
+		changed = true
+		e.growthReadSize = current.Size
+	}
 	if e.diagnostics != nil {
 		e.diagnostics.Update(func(s *RuntimeDiagnosticSnapshot) {
 			s.LastMetadataCheck = time.Now()

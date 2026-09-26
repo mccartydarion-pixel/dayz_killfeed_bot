@@ -94,6 +94,22 @@ Field | Notes
 
 A `server_id` belonging to a different guild returns `404 unknown_server`.
 
+### `build` (deployment identity)
+
+Every successful response carries `build`, so a deployment can be checked
+against its pinned commit and configuration without shell access:
+
+Field | Notes
+--- | ---
+`commit` | `RAILWAY_GIT_COMMIT_SHA`, else the Go VCS stamp, else `unknown`
+`appEnv` | `APP_ENV`
+`killfeedDeliveryMode` | `rotating` (default, `KILLFEED_DELIVERY_MODE` unset) or `immediate`
+`nitradoSource` | `nitrado`, or `fixture` when `NITRADO_API_BASE_URL` points at the staging Nitrado fixture (accepted only with `APP_ENV=staging`)
+
+Delivery ledger fields for journaled feeds: `replayed` (cards restored after a
+restart), `dropped` (backlog overflow, or too old to replay after a restart),
+`journal_failures` (feed-journal writes that failed; delivery continued).
+
 ### No server selected
 
 If the guild has no single selected public server and no `server_id` was

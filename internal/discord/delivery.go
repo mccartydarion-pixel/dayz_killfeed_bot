@@ -177,8 +177,15 @@ type RouteDelivery struct {
 	CleanupFailures  int64 `json:"cleanup_failures,omitempty"`
 	OrphanedCards    int64 `json:"orphaned_cards,omitempty"`
 	AbandonedCleanup int64 `json:"abandoned_cleanup,omitempty"`
-	// Dropped counts undelivered cards discarded by a backlog bound.
+	// Dropped counts undelivered cards discarded by a backlog bound or, after
+	// a restart, left out of the replay because they were too old.
 	Dropped int64 `json:"dropped,omitempty"`
+	// Replayed counts queued cards restored from the feed journal after a
+	// restart (immediate mode).
+	Replayed int64 `json:"replayed,omitempty"`
+	// JournalFailures counts feed-journal writes/reads that failed. Delivery
+	// continues from memory; a failure only weakens restart recovery.
+	JournalFailures int64 `json:"journal_failures,omitempty"`
 }
 
 // State is the route's delivery state: OK, FAILING (consecutive transient
@@ -278,6 +285,20 @@ func (l *DeliveryLedger) recordDropped(route string, n int) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.entry(route).Dropped += int64(n)
+}
+
+// recordReplayed counts cards restored from the journal after a restart.
+func (l *DeliveryLedger) recordReplayed(route string, n int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.entry(route).Replayed += int64(n)
+}
+
+// recordJournalFailure counts a failed feed-journal operation.
+func (l *DeliveryLedger) recordJournalFailure(route string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.entry(route).JournalFailures++
 }
 
 // recordCleanupState updates the orphan backlog after a retry pass.

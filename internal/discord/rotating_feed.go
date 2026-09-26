@@ -57,6 +57,8 @@ type feedItem struct {
 	// nonce identifies this card to Discord for every attempt, so a retry of
 	// a create that actually succeeded returns that message, not a duplicate.
 	nonce string
+	// journaled is set once the card is in the feed journal (immediate mode).
+	journaled bool
 }
 
 // postedCard is a card currently shown in the channel (immediate mode).
@@ -90,9 +92,12 @@ type orphanCard struct {
 // failure stops the batch and keeps the failed card and everything after it,
 // in order, for the next attempt. Each card carries a Discord nonce, so a
 // retried create never produces a second card. A card is counted delivered
-// only after Discord confirms it. Undelivered cards live in memory: a crash
-// (not a graceful shutdown, which flushes) loses them - the events themselves
-// are already durable in the database.
+// only after Discord confirms it. In immediate mode with a journal
+// (SetJournal) every card is also recorded in the database before it is
+// posted, so a crash does not lose it: the next start replays it (see
+// restore). Without a journal - and in rotating mode, which never journals -
+// undelivered cards live in memory only and a crash (not a graceful shutdown,
+// which flushes) loses them; the events themselves are durable either way.
 type RotatingFeed struct {
 	api         rotatingFeedAPI
 	store       SetupStore
@@ -113,6 +118,9 @@ type RotatingFeed struct {
 	retryTimer    *time.Timer
 	faultChannel  string
 	faultUntil    time.Time
+
+	journal    FeedJournal // optional; see SetJournal
+	journalKey string
 
 	// routeChannelFn, when set, is consulted first each flush (the
 	// installation route model - see KillfeedPublisher.RouteChannelID); an
@@ -219,6 +227,10 @@ func (f *RotatingFeed) Run(ctx context.Context) {
 	}
 	defer close(f.done)
 	defer f.stopRetryTimer()
+	f.restore()
+	if f.mode == FeedModeImmediate {
+		f.poke() // replayed cards go out now, not on the next event
+	}
 	ticker := time.NewTicker(f.interval)
 	defer ticker.Stop()
 	for {
@@ -236,6 +248,7 @@ func (f *RotatingFeed) Run(ctx context.Context) {
 			if f.mode == FeedModeImmediate {
 				f.expireImmediate(time.Now())
 				f.postImmediate() // anything a failed post left pending
+				f.purgeJournal()
 			} else {
 				f.flush()
 			}
@@ -279,6 +292,7 @@ func (f *RotatingFeed) send(channelID string, it feedItem) (*discordgo.Message, 
 	}
 	var msg *discordgo.Message
 	var err error
+	callStart := time.Now()
 	if ns, ok := f.api.(nonceSender); ok && it.nonce != "" {
 		// Every attempt (deliver's in-call retries and later re-queues)
 		// reuses the card's nonce: Discord returns the existing message for a
@@ -292,7 +306,19 @@ func (f *RotatingFeed) send(channelID string, it feedItem) (*discordgo.Message, 
 		msg, err = deliverMessage(f.api, f.route, channelID, data)
 	}
 	if err == nil {
-		Deliveries.recordLatency(f.route, it.detectedAt, it.enqueuedAt, time.Now())
+		now := time.Now()
+		Deliveries.recordLatency(f.route, it.detectedAt, it.enqueuedAt, now)
+		if f.mode == FeedModeImmediate {
+			// One line per card so a staging run can compute p50/p95/p99 per
+			// stage from the logs (the ledger keeps only avg/max/last).
+			detectMs := int64(-1)
+			if !it.detectedAt.IsZero() {
+				detectMs = now.Sub(it.detectedAt).Milliseconds()
+			}
+			slog.Info("component=discord", "msg", "feed card delivered", "route", f.route,
+				"queue_ms", callStart.Sub(it.enqueuedAt).Milliseconds(), "discord_ms", now.Sub(callStart).Milliseconds(),
+				"detect_to_publish_ms", detectMs)
+		}
 	}
 	return msg, err
 }
@@ -376,6 +402,7 @@ func (f *RotatingFeed) postImmediate() {
 		return
 	}
 	f.retryOrphans()
+	f.journalPending()
 	f.mu.Lock()
 	if len(f.pending) == 0 {
 		f.mu.Unlock()
@@ -383,15 +410,17 @@ func (f *RotatingFeed) postImmediate() {
 	}
 	channelID := f.channelID()
 	if channelID == "" {
-		f.boundPendingLocked()
+		dropped := f.boundPendingLocked()
 		f.mu.Unlock()
+		f.journalDropped(dropped, dropBacklogOverflow)
 		return // nowhere to post yet: cards wait
 	}
 	if channelID == f.faultChannel && time.Now().Before(f.faultUntil) {
 		// Configuration fault on this channel: no request per event. Cards
 		// wait for the channel to be repaired or re-routed.
-		f.boundPendingLocked()
+		dropped := f.boundPendingLocked()
 		f.mu.Unlock()
+		f.journalDropped(dropped, dropBacklogOverflow)
 		return
 	}
 	var moved []postedCard
@@ -407,6 +436,9 @@ func (f *RotatingFeed) postImmediate() {
 
 	stopClass := ""
 	for {
+		// A card enqueued while this loop runs must be journaled before it
+		// is posted, or a restart would replay it (no-op when all are).
+		f.journalPending()
 		f.mu.Lock()
 		if len(f.pending) == 0 {
 			f.mu.Unlock()
@@ -423,14 +455,17 @@ func (f *RotatingFeed) postImmediate() {
 				f.mu.Lock()
 				f.pending = f.pending[1:] // cannot ever succeed; recorded in the ledger
 				f.mu.Unlock()
+				f.journalDropped([]feedItem{it}, dropRejected)
 				continue
 			}
 			stopClass = class // keep this card first, in order
 			break
 		}
+		postedAt := time.Now()
+		f.journalPosted(it, channelID, msg.ID, postedAt)
 		f.mu.Lock()
 		f.pending = f.pending[1:]
-		f.window = append(f.window, postedCard{id: msg.ID, postedAt: time.Now()})
+		f.window = append(f.window, postedCard{id: msg.ID, postedAt: postedAt})
 		var evicted []postedCard
 		if over := len(f.window) - f.maxItems; over > 0 {
 			evicted = append(evicted, f.window[:over]...)
@@ -458,21 +493,27 @@ func (f *RotatingFeed) postImmediate() {
 		f.retryDelay = 0
 		f.faultChannel, f.faultUntil = "", time.Time{}
 	}
-	f.boundPendingLocked()
+	dropped := f.boundPendingLocked()
 	f.mu.Unlock()
+	f.journalDropped(dropped, dropBacklogOverflow)
 }
 
 // maxPendingCards bounds an immediate-mode backlog (a long Discord outage or
 // broken route). Overflow drops the OLDEST cards and is counted in the ledger.
 const maxPendingCards = 500
 
-// boundPendingLocked enforces maxPendingCards. Caller holds f.mu.
-func (f *RotatingFeed) boundPendingLocked() {
-	if over := len(f.pending) - maxPendingCards; over > 0 {
-		f.pending = append([]feedItem(nil), f.pending[over:]...)
-		Deliveries.recordDropped(f.route, over)
-		slog.Error("component=discord", "msg", "feed backlog overflow; oldest undelivered cards dropped", "route", f.route, "dropped", over)
+// boundPendingLocked enforces maxPendingCards and returns the cards it
+// dropped (the caller journals them after releasing f.mu). Caller holds f.mu.
+func (f *RotatingFeed) boundPendingLocked() []feedItem {
+	over := len(f.pending) - maxPendingCards
+	if over <= 0 {
+		return nil
 	}
+	dropped := append([]feedItem(nil), f.pending[:over]...)
+	f.pending = append([]feedItem(nil), f.pending[over:]...)
+	Deliveries.recordDropped(f.route, over)
+	slog.Error("component=discord", "msg", "feed backlog overflow; oldest undelivered cards dropped", "route", f.route, "dropped", over)
+	return dropped
 }
 
 // scheduleRetryLocked arms a single wake-up. Caller holds f.mu.
@@ -538,6 +579,7 @@ func (f *RotatingFeed) deleteCards(channelID string, cards []postedCard) {
 		ids[i] = c.id
 	}
 	failed := f.deleteIDs(channelID, ids)
+	f.journalRemoved(without(ids, failed))
 	if len(failed) == 0 {
 		return
 	}
@@ -586,23 +628,45 @@ func (f *RotatingFeed) retryOrphans() {
 		return
 	}
 	var still []orphanCard
+	var closed []string // deleted, or abandoned: no longer this feed's card
 	abandoned := 0
 	for _, o := range orphans {
 		if len(f.deleteIDs(o.channelID, []string{o.id})) == 0 {
+			closed = append(closed, o.id)
 			continue
 		}
 		o.attempts++
 		if o.attempts >= maxCleanupAttempts {
 			abandoned++
+			closed = append(closed, o.id)
 			slog.Error("component=discord", "msg", "feed card could not be removed; manual cleanup needed", "route", f.route, "channel_id", o.channelID, "message_id", o.id)
 			continue
 		}
 		still = append(still, o)
 	}
+	f.journalRemoved(closed)
 	f.mu.Lock()
 	f.orphans = append(still, f.orphans...)
 	orphaned := len(f.orphans)
 	f.scheduleOrphanRetryLocked()
 	f.mu.Unlock()
 	Deliveries.recordCleanupState(f.route, orphaned, abandoned)
+}
+
+// without returns ids minus drop, in order.
+func without(ids, drop []string) []string {
+	if len(drop) == 0 {
+		return ids
+	}
+	skip := make(map[string]bool, len(drop))
+	for _, id := range drop {
+		skip[id] = true
+	}
+	var out []string
+	for _, id := range ids {
+		if !skip[id] {
+			out = append(out, id)
+		}
+	}
+	return out
 }

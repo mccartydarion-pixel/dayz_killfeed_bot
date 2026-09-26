@@ -8,6 +8,8 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/discord"
 	"log/slog"
 	"net/http"
+	"os"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -36,6 +38,47 @@ type RuntimeStatusResponse struct {
 	// Health is the evidence-based per-installation state (HEALTHY,
 	// DEGRADED, UNAVAILABLE, UNKNOWN) with the reasons behind it.
 	Health *RuntimeHealth `json:"health,omitempty"`
+	// Build identifies what this process is running, so a deployment can be
+	// checked against its pinned commit and configuration without shell
+	// access. Names and modes only - never a credential.
+	Build *RuntimeBuild `json:"build,omitempty"`
+}
+
+// RuntimeBuild is the deployment identity block of GET /api/runtime/status.
+type RuntimeBuild struct {
+	Commit               string `json:"commit"`
+	AppEnv               string `json:"appEnv"`
+	KillfeedDeliveryMode string `json:"killfeedDeliveryMode"`
+	// NitradoSource is "nitrado" (the real API) or "fixture"
+	// (NITRADO_API_BASE_URL, staging only).
+	NitradoSource string `json:"nitradoSource"`
+}
+
+// buildCommit is Railway's commit for GitHub-sourced deploys, else the VCS
+// revision stamped by the Go toolchain, else "unknown".
+func buildCommit() string {
+	if sha := strings.TrimSpace(os.Getenv("RAILWAY_GIT_COMMIT_SHA")); sha != "" {
+		return sha
+	}
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, s := range info.Settings {
+			if s.Key == "vcs.revision" && s.Value != "" {
+				return s.Value
+			}
+		}
+	}
+	return "unknown"
+}
+
+func (a *App) runtimeBuild() *RuntimeBuild {
+	b := &RuntimeBuild{Commit: buildCommit(), KillfeedDeliveryMode: feedDeliveryMode(), NitradoSource: "nitrado"}
+	if a.Config != nil {
+		b.AppEnv = a.Config.AppEnv
+		if a.Config.NitradoAPIBaseURL != "" {
+			b.NitradoSource = "fixture"
+		}
+	}
+	return b
 }
 
 // RuntimeServerStatus is one entry in the "pick a server" fallback, returned
@@ -139,7 +182,7 @@ func (a *App) runtimeStatusHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := RuntimeStatusResponse{OK: true, GuildID: requestedGuildID}
+	resp := RuntimeStatusResponse{OK: true, GuildID: requestedGuildID, Build: a.runtimeBuild()}
 
 	serverID := guild.SelectedPublicServerID
 	if raw := strings.TrimSpace(r.URL.Query().Get("server_id")); raw != "" {

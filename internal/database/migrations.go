@@ -2172,7 +2172,39 @@ ON CONFLICT (installation_id, route_key) DO NOTHING;
 		Name: "0056_player_link_role_sync",
 		SQL:  PlayerLinkRoleSyncSQL,
 	},
+	{
+		// P0 2026-09-26 immediate killfeed journal (docs/incidents/2026-09-26-staging-infrastructure.md).
+		// New table only; no existing row is read or rewritten. Written only by feeds running
+		// KILLFEED_DELIVERY_MODE=immediate, so it stays empty under the production default.
+		Name: "0057_discord_feed_cards",
+		SQL:  DiscordFeedCardsSQL,
+	},
 }
+
+// DiscordFeedCardsSQL (migration 0057) is the immediate-mode feed journal: each queued card is
+// recorded before it is posted, marked when Discord confirms it (message_id) and again when it
+// leaves the channel, so a restart - including a crash - neither loses queued cards nor leaves the
+// previous process's cards in the channel. feed_key is "<route>:<server id>".
+const DiscordFeedCardsSQL = `
+CREATE TABLE IF NOT EXISTS discord_feed_cards (
+    id BIGSERIAL PRIMARY KEY,
+    feed_key TEXT NOT NULL,
+    nonce TEXT NOT NULL,
+    embed JSONB NOT NULL,
+    detected_at TIMESTAMPTZ,
+    enqueued_at TIMESTAMPTZ NOT NULL,
+    channel_id TEXT,
+    message_id TEXT,
+    posted_at TIMESTAMPTZ,
+    removed_at TIMESTAMPTZ,
+    dropped_at TIMESTAMPTZ,
+    drop_reason TEXT,
+    UNIQUE (feed_key, nonce)
+);
+CREATE INDEX IF NOT EXISTS idx_discord_feed_cards_open ON discord_feed_cards(feed_key, id)
+    WHERE removed_at IS NULL AND dropped_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_discord_feed_cards_enqueued ON discord_feed_cards(enqueued_at);
+`
 
 // PlayerLinkRoleSyncSQL (migration 0056) records whether the Verified Discord role was actually
 // assigned for a VERIFIED link - distinct from the link itself being verified.

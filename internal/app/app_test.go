@@ -220,3 +220,18 @@ func TestFeedDeliveryModeFromEnvironment(t *testing.T) {
 		}
 	}
 }
+
+func TestRuntimeBuildReportsDeploymentIdentity(t *testing.T) {
+	t.Setenv("RAILWAY_GIT_COMMIT_SHA", "0123abc")
+	t.Setenv("KILLFEED_DELIVERY_MODE", "immediate")
+	a := &App{Config: &config.Config{AppEnv: "staging", NitradoAPIBaseURL: "http://fixture:8080"}}
+	b := a.runtimeBuild()
+	if b.Commit != "0123abc" || b.AppEnv != "staging" || b.KillfeedDeliveryMode != discord.FeedModeImmediate || b.NitradoSource != "fixture" {
+		t.Fatalf("staging build %+v", b)
+	}
+	t.Setenv("KILLFEED_DELIVERY_MODE", "")
+	a = &App{Config: &config.Config{AppEnv: "production"}}
+	if b := a.runtimeBuild(); b.KillfeedDeliveryMode != discord.FeedModeRotating || b.NitradoSource != "nitrado" {
+		t.Fatalf("production build %+v", b)
+	}
+}

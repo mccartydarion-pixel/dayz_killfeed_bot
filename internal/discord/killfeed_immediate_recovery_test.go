@@ -270,10 +270,15 @@ func TestImmediateFailureRecovery(t *testing.T) {
 		if got := rig.emu.titles(rig.kf); !reflect.DeepEqual(got, titlesRange(1, 1)) {
 			t.Fatalf("graceful shutdown must deliver queued cards, channel %v", got)
 		}
-		// A crash (no final pass) cannot deliver in-memory cards: document it.
+		// A crash (no final pass) cannot deliver in-memory cards; without a
+		// journal they are lost (with one, the next start replays them - see
+		// TestJournalCrashReplaysQueuedCards). Discord keeps failing here, so
+		// the retry timer cannot deliver the card before it is inspected.
 		crashed := newRecoveryRig(t, time.Hour, 5*time.Second)
 		crashed.emu.mu.Lock()
-		crashed.emu.postFault[crashed.kf] = []discordFault{{status: 503}, {status: 503}, {status: 503}}
+		for i := 0; i < 1000; i++ {
+			crashed.emu.postFault[crashed.kf] = append(crashed.emu.postFault[crashed.kf], discordFault{status: 503})
+		}
 		crashed.emu.mu.Unlock()
 		crashed.feed.EnqueueDetected(card(1), time.Now())
 		eventually(t, "queued", func() bool { return crashed.emu.count(crashed.emu.posts, crashed.kf) >= 3 })
