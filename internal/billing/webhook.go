@@ -41,7 +41,34 @@ const (
 	EventSubscriptionDeleted  = "customer.subscription.deleted"
 	EventInvoicePaid          = "invoice.paid"
 	EventInvoicePaymentFailed = "invoice.payment_failed"
+
+	// Payment reversals (Phase 6.26B). Handled only for C.A.S.E. invoices; base billing ignores them.
+	EventChargeRefunded          = "charge.refunded"
+	EventChargeRefundUpdated     = "charge.refund.updated"
+	EventDisputeCreated          = "charge.dispute.created"
+	EventDisputeUpdated          = "charge.dispute.updated"
+	EventDisputeClosed           = "charge.dispute.closed"
+	EventDisputeFundsReinstated  = "charge.dispute.funds_reinstated"
+	EventInvoiceVoided           = "invoice.voided"
+	EventInvoiceUncollectible    = "invoice.marked_uncollectible"
 )
+
+// isCaseReversalEvent reports the event types reconciled against C.A.S.E. invoice coverage.
+func isCaseReversalEvent(t string) bool {
+	switch t {
+	case EventChargeRefunded, EventChargeRefundUpdated, EventDisputeCreated, EventDisputeUpdated,
+		EventDisputeClosed, EventDisputeFundsReinstated, EventInvoiceVoided, EventInvoiceUncollectible:
+		return true
+	}
+	return false
+}
+
+// webhookPaymentRef is the minimal shape of a charge, refund or dispute object: only its id and the
+// PaymentIntent it belongs to. Amounts and statuses are always re-read live from Stripe.
+type webhookPaymentRef struct {
+	ID            string `json:"id"`
+	PaymentIntent jsonID `json:"payment_intent"`
+}
 
 // webhookSubscription is the minimal shape read out of a customer.subscription.* event's object -
 // deliberately not the full generated stripe.Subscription (this repository only reads price,
@@ -189,6 +216,7 @@ type ParsedEvent struct {
 	Session *webhookCheckoutSession
 	Sub     *webhookSubscription
 	Invoice *webhookInvoice
+	Payment *webhookPaymentRef // charge.refunded, charge.refund.updated, charge.dispute.*
 }
 
 // ParseEvent decodes a verified stripe.Event's object into the typed shape for its event type.
@@ -217,6 +245,20 @@ func ParseEvent(e stripe.Event) (ParsedEvent, error) {
 		}
 		if inv.Subscription == "" { inv.Subscription = inv.Parent.SubscriptionDetails.Subscription }
 		out.Invoice = &inv
+	case EventInvoiceVoided, EventInvoiceUncollectible:
+		var inv webhookInvoice
+		if err := json.Unmarshal(e.Data.Raw, &inv); err != nil {
+			return out, fmt.Errorf("parse %s: %w", out.Type, err)
+		}
+		if inv.Subscription == "" { inv.Subscription = inv.Parent.SubscriptionDetails.Subscription }
+		out.Invoice = &inv
+	case EventChargeRefunded, EventChargeRefundUpdated, EventDisputeCreated, EventDisputeUpdated,
+		EventDisputeClosed, EventDisputeFundsReinstated:
+		var ref webhookPaymentRef
+		if err := json.Unmarshal(e.Data.Raw, &ref); err != nil {
+			return out, fmt.Errorf("parse %s: %w", out.Type, err)
+		}
+		out.Payment = &ref
 	}
 	return out, nil
 }

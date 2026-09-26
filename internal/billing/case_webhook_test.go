@@ -17,6 +17,7 @@ type caseTestStore struct {
  applied []repository.CaseWebhookState
  errorOnApply error
  seen map[string]bool
+ reversals []repository.CaseReversalState
 }
 func (f *caseTestStore) ReserveCaseCheckout(_ context.Context, org,installation,server int64,tier,customer string)(*repository.CaseCheckoutReservation,error){
  if f.reservation==nil{return nil,repository.ErrCaseCheckoutConflict}
@@ -68,6 +69,12 @@ func (f *caseTestStore) ResetExpiredCaseCheckout(_ context.Context,org,installat
 		row.Attempt!=attempt || row.SessionID!=sessionID {return repository.ErrCaseCheckoutConflict}
 	row.SessionID="";row.CheckoutURL="";row.Attempt++
 	return nil
+}
+func (f *caseTestStore) ApplyCaseInvoiceReversal(_ context.Context,in repository.CaseReversalState)(bool,error){
+ if f.seen==nil{f.seen=map[string]bool{}}
+ if f.seen[in.EventID]{return false,nil}
+ f.seen[in.EventID]=true
+ f.reversals=append(f.reversals,in);return true,nil
 }
 func (f *caseTestStore) SaveCaseTierChange(_ context.Context,org,installation int64,sub,from,to,tier string)error{
  if f.row==nil || f.row.OrganizationID!=org || f.row.InstallationID!=installation ||

@@ -293,6 +293,14 @@ AND provider='stripe' AND status='ACTIVE' AND provider_price_id IN ($4,$5)`,
 // recomputes paid_through/paid_tier/coverage_state from the ledger. Inserts never overwrite an
 // existing row, so a replayed or late invoice.paid cannot undo a recorded refund or dispute.
 func recordCaseCoverage(ctx context.Context, tx pgx.Tx, addonID int64, backfill []CaseInvoiceCoverage, coverage *CaseInvoiceCoverage) error {
+	if err := insertCaseCoverage(ctx, tx, addonID, backfill, coverage); err != nil {
+		return err
+	}
+	return recomputeCaseCoverage(ctx, tx, addonID)
+}
+
+// insertCaseCoverage adds ledger rows (never overwriting) and marks a reconstruction complete.
+func insertCaseCoverage(ctx context.Context, tx pgx.Tx, addonID int64, backfill []CaseInvoiceCoverage, coverage *CaseInvoiceCoverage) error {
 	insert := func(c CaseInvoiceCoverage) error {
 		if c.InvoiceID == "" || c.SubscriptionID == "" || !validCaseTier(c.Tier) || !c.PeriodStart.Before(c.PeriodEnd) || c.AmountPaid < 0 {
 			return ErrCaseWebhookMismatch
@@ -322,7 +330,7 @@ func recordCaseCoverage(ctx context.Context, tx pgx.Tx, addonID int64, backfill 
 			return err
 		}
 	}
-	return recomputeCaseCoverage(ctx, tx, addonID)
+	return nil
 }
 
 // recomputeCaseCoverage derives paid access from invoices in good standing (PAID, PARTIALLY_REFUNDED,
@@ -353,6 +361,114 @@ WHERE id=$1 AND coverage_backfilled
 		return fmt.Errorf("recompute case coverage: %w", err)
 	}
 	return nil
+}
+
+// CaseReversalState is one verified refund/dispute/void outcome for one C.A.S.E. invoice. Status is
+// computed by the billing service from live Stripe state (see billing.caseInvoiceCoverageStatus).
+type CaseReversalState struct {
+	EventID, EventType                                   string
+	AddonID, OrganizationID, InstallationID              int64
+	SubscriptionID, CustomerID, InvoiceID                 string
+	PaymentIntentID, Status, DisputeStatus                string
+	AmountRefunded                                        int64
+	Adopt                                                 *CaseInvoiceCoverage // the invoice's coverage if not yet in the ledger
+	Backfill                                              []CaseInvoiceCoverage
+}
+
+var validCoverageStatus = map[string]bool{"PAID": true, "PARTIALLY_REFUNDED": true, "REFUNDED": true, "DISPUTED": true,
+	"DISPUTE_WON": true, "DISPUTE_LOST": true, "VOIDED": true}
+
+// ApplyCaseInvoiceReversal records one refund/dispute/void outcome in a single transaction: the
+// event marker (dedupe), any ledger reconstruction/adoption, the invoice's new status, the
+// recomputed coverage and an append-only history row. A replayed event id is a no-op
+// (applied=false). An invoice that never funded coverage only gets a history row.
+func (r *CaseAddonSubscriptionRepository) ApplyCaseInvoiceReversal(ctx context.Context, in CaseReversalState) (bool, error) {
+	if in.EventID == "" || in.EventType == "" || in.AddonID <= 0 || in.InvoiceID == "" || in.SubscriptionID == "" ||
+		in.CustomerID == "" || in.AmountRefunded < 0 || !validCoverageStatus[in.Status] {
+		return false, ErrCaseWebhookMismatch
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("begin case reversal: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	var orgID, installationID int64
+	var customer, sub string
+	var paidThroughBefore *time.Time
+	var paidTierBefore *string
+	err = tx.QueryRow(ctx, `SELECT organization_id,installation_id,COALESCE(provider_customer_id,''),COALESCE(provider_subscription_id,''),
+		paid_through,paid_tier FROM case_addon_subscriptions WHERE id=$1 FOR UPDATE`, in.AddonID).
+		Scan(&orgID, &installationID, &customer, &sub, &paidThroughBefore, &paidTierBefore)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, ErrCaseWebhookMismatch
+	}
+	if err != nil {
+		return false, fmt.Errorf("lock case addon: %w", err)
+	}
+	if orgID != in.OrganizationID || installationID != in.InstallationID || customer != in.CustomerID || sub != in.SubscriptionID {
+		return false, ErrCaseWebhookMismatch
+	}
+	var marker int64
+	err = tx.QueryRow(ctx, `INSERT INTO case_addon_webhook_events(provider,event_id,event_type,addon_id)
+		VALUES('stripe',$1,$2,$3) ON CONFLICT DO NOTHING RETURNING addon_id`, in.EventID, in.EventType, in.AddonID).Scan(&marker)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil // already recorded: acknowledged, nothing changes
+	}
+	if err != nil {
+		return false, fmt.Errorf("record case reversal event: %w", err)
+	}
+	if err := insertCaseCoverage(ctx, tx, in.AddonID, in.Backfill, nil); err != nil {
+		return false, err
+	}
+	var previous *string
+	var ownerAddon int64
+	err = tx.QueryRow(ctx, `SELECT status,addon_id FROM case_addon_invoice_coverage WHERE provider='stripe' AND provider_invoice_id=$1 FOR UPDATE`,
+		in.InvoiceID).Scan(&previous, &ownerAddon)
+	if errors.Is(err, pgx.ErrNoRows) && in.Adopt != nil && in.Status != "VOIDED" {
+		if in.Adopt.InvoiceID != in.InvoiceID || in.Adopt.SubscriptionID != in.SubscriptionID {
+			return false, ErrCaseWebhookMismatch
+		}
+		if err := insertCaseCoverage(ctx, tx, in.AddonID, nil, in.Adopt); err != nil {
+			return false, err
+		}
+		paid := "PAID"
+		previous, ownerAddon, err = &paid, in.AddonID, nil
+	}
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return false, fmt.Errorf("lock case invoice coverage: %w", err)
+	}
+	if previous != nil {
+		if ownerAddon != in.AddonID {
+			return false, ErrCaseWebhookMismatch
+		}
+		if _, err := tx.Exec(ctx, `UPDATE case_addon_invoice_coverage SET status=$2,
+			amount_refunded_cents=CASE WHEN $2='VOIDED' THEN amount_refunded_cents ELSE $3 END,
+			dispute_status=COALESCE(NULLIF($4,''),dispute_status),
+			provider_payment_intent_id=COALESCE(provider_payment_intent_id,NULLIF($5,'')), updated_at=NOW()
+			WHERE provider='stripe' AND provider_invoice_id=$1`, in.InvoiceID, in.Status, in.AmountRefunded, in.DisputeStatus, in.PaymentIntentID); err != nil {
+			return false, fmt.Errorf("update case invoice coverage: %w", err)
+		}
+		if err := recomputeCaseCoverage(ctx, tx, in.AddonID); err != nil {
+			return false, err
+		}
+	}
+	var paidThroughAfter *time.Time
+	var paidTierAfter *string
+	if err := tx.QueryRow(ctx, `SELECT paid_through,paid_tier FROM case_addon_subscriptions WHERE id=$1`, in.AddonID).
+		Scan(&paidThroughAfter, &paidTierAfter); err != nil {
+		return false, fmt.Errorf("read recomputed coverage: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO case_addon_coverage_events(addon_id,provider_invoice_id,stripe_event_id,event_type,
+		previous_status,new_status,amount_refunded_cents,dispute_status,paid_through_before,paid_through_after,paid_tier_before,paid_tier_after)
+		VALUES($1,$2,$3,$4,$5,$6,$7,NULLIF($8,''),$9,$10,$11,$12)`,
+		in.AddonID, in.InvoiceID, in.EventID, in.EventType, previous, in.Status, in.AmountRefunded, in.DisputeStatus,
+		paidThroughBefore, paidThroughAfter, paidTierBefore, paidTierAfter); err != nil {
+		return false, fmt.Errorf("record case coverage history: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit case reversal: %w", err)
+	}
+	return true, nil
 }
 
 // Compile-time proof that this repository's storage remains Postgres-backed.

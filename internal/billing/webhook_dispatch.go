@@ -32,6 +32,17 @@ func (s *Service) HandleWebhook(ctx context.Context, payload []byte, sigHeader s
 		slog.Warn("component=billing", "event", "billing_webhook_parse_failed", "stripe_event_id", event.ID, "type", string(event.Type), "err", err.Error())
 		return nil
 	}
+	// Refunds, disputes and voids reach C.A.S.E. only through a verified invoice -> stored C.A.S.E.
+	// subscription chain; anything else falls through to base handling (acknowledged, ignored).
+	if isCaseReversalEvent(parsed.Type) {
+		handled, err := s.handleCaseReversal(ctx, parsed)
+		if err != nil {
+			return fmt.Errorf("reconcile C.A.S.E. payment reversal: %w", err)
+		}
+		if handled {
+			return nil
+		}
+	}
 	isCase, err := s.classifyCaseEvent(ctx,parsed)
 	if err != nil {return fmt.Errorf("classify Stripe subscription kind: %w",err)}
 	if isCase {return s.applyCaseEvent(ctx,parsed)}

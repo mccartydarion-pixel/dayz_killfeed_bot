@@ -35,6 +35,9 @@ type CaseStore interface {
 	GetPendingCaseCheckout(ctx context.Context, organizationID, installationID int64) (*repository.CaseCheckoutReservation,error)
 	ResetExpiredCaseCheckout(ctx context.Context, organizationID, installationID, addonID, attempt int64, sessionID string) error
 	SaveCaseTierChange(ctx context.Context, organizationID, installationID int64, subscriptionID, fromPrice, toPrice, toTier string) error
+	// ApplyCaseInvoiceReversal records a refund/dispute/void outcome for one invoice and recomputes
+	// coverage; applied=false for an already-recorded event id.
+	ApplyCaseInvoiceReversal(ctx context.Context, in repository.CaseReversalState) (applied bool, err error)
 }
 
 // CaseProvider is a separately extended Stripe boundary; the normal base

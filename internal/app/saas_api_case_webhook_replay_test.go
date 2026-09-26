@@ -63,6 +63,10 @@ func (s *replayCaseStore) ResetExpiredCaseCheckout(context.Context, int64, int64
 	s.writes = append(s.writes, "ResetExpiredCaseCheckout")
 	return nil
 }
+func (s *replayCaseStore) ApplyCaseInvoiceReversal(context.Context, repository.CaseReversalState) (bool, error) {
+	s.writes = append(s.writes, "ApplyCaseInvoiceReversal")
+	return false, nil
+}
 func (s *replayCaseStore) SaveCaseTierChange(context.Context, int64, int64, string, string, string, string) error {
 	s.writes = append(s.writes, "SaveCaseTierChange")
 	return nil
