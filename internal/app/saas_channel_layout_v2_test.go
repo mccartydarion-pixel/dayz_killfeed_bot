@@ -311,3 +311,28 @@ func TestCleanupDeletesOnlyProvenRetiredChannels(t *testing.T) {
 		t.Fatalf("the deleted legacy channel's field must be cleared, got %v", clear)
 	}
 }
+
+// TestCleanupClearsLegacyFieldForChannelAlreadyGone: a retired legacy
+// channel the customer deleted by hand is reported GONE, and its legacy
+// pointer must be cleared too - otherwise the online counter's legacy
+// fallback keeps renaming an Unknown Channel (Discord 10003).
+func TestCleanupClearsLegacyFieldForChannelAlreadyGone(t *testing.T) {
+	store := &retiredStoreFake{rows: []repository.RetiredChannel{
+		{ChannelID: "old-online", Kind: "CHANNEL", Source: "LEGACY_SETUP", LegacyField: "OnlinePlayersChannelID"},
+		{ChannelID: "old-route", Kind: "CHANNEL", Source: "ROUTE"},
+	}}
+	guild := &cleanupGuildFake{} // neither channel exists any more
+	resp, clear, err := cleanupRetired(context.Background(), store, guild, 1, 2, "g", []string{"old-online", "old-route"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(guild.deleted) != 0 {
+		t.Fatalf("nothing may be deleted for a gone channel, deleted %v", guild.deleted)
+	}
+	if len(resp.Skipped) != 2 || resp.Skipped[0].Reason != "GONE" {
+		t.Fatalf("expected both GONE, got %+v", resp.Skipped)
+	}
+	if len(clear) != 1 || clear[0] != "OnlinePlayersChannelID" {
+		t.Fatalf("expected the gone legacy channel's field cleared, got %v", clear)
+	}
+}

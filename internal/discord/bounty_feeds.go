@@ -278,7 +278,7 @@ func (t *BountyTracker) send(channel string, embeds []*discordgo.MessageEmbed) {
 	if t.sender == nil || len(embeds) == 0 {
 		return
 	}
-	_, err := t.sender.ChannelMessageSendComplex(channel, &discordgo.MessageSend{
+	_, err := deliverMessage(t.sender, "BOUNTY_TRACKING", channel, &discordgo.MessageSend{
 		Embeds:          embeds,
 		AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}}, // names never ping
 	})

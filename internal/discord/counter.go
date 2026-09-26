@@ -48,12 +48,61 @@ type VoiceChannelCounter struct {
 	dirty             bool
 	timer             *time.Timer
 	debounce          time.Duration
-	blocked           bool      // 403/permission: stop retrying until repair
+	blocked           bool      // permanent fault (403/404): stop until the binding changes
 	retryAfter        time.Time // Discord 429: do not retry before this
 	updateErrors      int
 	lastPublishedAt   time.Time
 	lastPublishResult string
 	onPublish         func(count int, result string)
+
+	// publishedUnknown is set when the bound channel changes: the new
+	// channel's name is unknown, so the next count must be written even if it
+	// equals lastPublished on the old channel.
+	publishedUnknown bool
+	// faultClass/faultChannelID record a permanent configuration fault
+	// (UNKNOWN_CHANNEL, MISSING_PERMISSIONS) for the channel it happened on.
+	// It needs reconciliation (a new binding), never blind retries.
+	faultClass     string
+	faultChannelID string
+	faultAt        time.Time
+	// transientAttempts bounds 5xx/network retries for one pending count.
+	transientAttempts int
+	lastError         string
+	lastAttemptAt     time.Time
+	retryBackoff      time.Duration
+}
+
+// Counter fault classes. A fault is a configuration problem, not a transient
+// delivery failure: the counter stops calling Discord for that channel until
+// SetChannelID binds a different one (/setup repair or a route change).
+const (
+	CounterFaultUnknownChannel     = "UNKNOWN_CHANNEL"
+	CounterFaultMissingPermissions = "MISSING_PERMISSIONS"
+)
+
+// maxCounterTransientRetries bounds retries for 5xx/network failures of one
+// pending count; the next presence change starts a fresh budget.
+const maxCounterTransientRetries = 3
+
+// Discord JSON error codes that make a channel permanently unusable.
+const (
+	discordCodeUnknownChannel    = 10003
+	discordCodeMissingAccess     = 50001
+	discordCodeMissingPermission = 50013
+)
+
+// CounterHealth is the counter's delivery state for diagnostics.
+type CounterHealth struct {
+	ChannelID      string    `json:"channel_id"`
+	State          string    `json:"state"` // UNBOUND | OK | PENDING | RETRYING | RATE_LIMITED | CONFIG_FAULT
+	FaultClass     string    `json:"fault_class,omitempty"`
+	FaultChannelID string    `json:"fault_channel_id,omitempty"`
+	FaultAt        time.Time `json:"fault_at,omitempty"`
+	LastPublished  int       `json:"last_published"`
+	LastSuccessAt  time.Time `json:"last_success_at,omitempty"`
+	LastAttemptAt  time.Time `json:"last_attempt_at,omitempty"`
+	LastError      string    `json:"last_error,omitempty"`
+	FailedAttempts int       `json:"failed_attempts"`
 }
 
 // NewVoiceChannelCounter creates a counter bound to a voice channel ID.
@@ -66,13 +115,69 @@ func NewVoiceChannelCounter(namer VoiceChannelNamer, channelID string) *VoiceCha
 }
 
 // SetChannelID updates the bound voice channel (e.g. after /setup or repair).
+// Binding a different channel clears any fault recorded against the old one
+// (that is the reconciliation a fault waits for) and forces the next count to
+// be written, since the new channel's current name is unknown. Re-binding the
+// same ID is a no-op, so a fault on it stays in place.
 func (c *VoiceChannelCounter) SetChannelID(id string) {
 	if c == nil {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if id == c.channelID {
+		return
+	}
+	previous := c.channelID
 	c.channelID = id
+	c.publishedUnknown = true
+	c.transientAttempts = 0
+	if c.blocked || c.faultClass != "" {
+		slog.Info("component=voice_counter", "event", "fault_cleared_by_rebind", "previous_channel_id", previous, "channel_id", id, "fault_class", c.faultClass)
+	}
+	c.blocked = false
+	c.faultClass = ""
+	c.faultChannelID = ""
+	c.faultAt = time.Time{}
+}
+
+// Health returns the counter's delivery state for diagnostics.
+func (c *VoiceChannelCounter) Health() CounterHealth {
+	if c == nil {
+		return CounterHealth{State: "UNBOUND"}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	h := CounterHealth{
+		ChannelID: c.channelID, FaultClass: c.faultClass, FaultChannelID: c.faultChannelID, FaultAt: c.faultAt,
+		LastPublished: c.lastPublished, LastSuccessAt: c.lastPublishedAt, LastAttemptAt: c.lastAttemptAt,
+		LastError: c.lastError, FailedAttempts: c.updateErrors,
+	}
+	switch {
+	case c.channelID == "":
+		h.State = "UNBOUND"
+	case c.blocked:
+		h.State = "CONFIG_FAULT"
+	case time.Now().Before(c.retryAfter):
+		h.State = "RATE_LIMITED"
+	case c.transientAttempts > 0:
+		h.State = "RETRYING"
+	case c.dirty:
+		h.State = "PENDING"
+	default:
+		h.State = "OK"
+	}
+	return h
+}
+
+// Faulted reports whether a permanent configuration fault stopped renames.
+func (c *VoiceChannelCounter) Faulted() bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.blocked
 }
 
 // ChannelID returns the bound voice channel ID.
@@ -170,8 +275,23 @@ func (c *VoiceChannelCounter) ActualCount() (int, bool, error) {
 // Reconcile fetches the authoritative channel name and edits only when its
 // actual numeric count differs from the selected worker's desired count.
 func (c *VoiceChannelCounter) Reconcile(desired int) error {
+	if c == nil {
+		return nil
+	}
+	if c.Faulted() {
+		// A faulted binding is not retried on every presence change; it
+		// waits for SetChannelID to bind a working channel.
+		return nil
+	}
 	actual, known, err := c.ActualCount()
 	if err != nil {
+		c.mu.Lock()
+		c.lastAttemptAt = time.Now()
+		c.lastError = sanitizeCounterError(err)
+		if class := permanentCounterFault(err); class != "" {
+			c.recordFaultLocked(class, c.channelID)
+		}
+		c.mu.Unlock()
 		return err
 	}
 	if known && actual == desired {
@@ -192,7 +312,7 @@ func (c *VoiceChannelCounter) Publish(count int) {
 		return
 	}
 	c.mu.Lock()
-	if count == c.lastPublished {
+	if count == c.lastPublished && !c.publishedUnknown {
 		c.mu.Unlock()
 		return // no change; do nothing
 	}
@@ -223,7 +343,7 @@ func (c *VoiceChannelCounter) flush() {
 	count := c.pending
 	c.dirty = false
 	channelID := c.channelID
-	if count == c.lastPublished || c.blocked {
+	if (count == c.lastPublished && !c.publishedUnknown) || c.blocked {
 		c.mu.Unlock()
 		return
 	}
@@ -245,8 +365,12 @@ func (c *VoiceChannelCounter) flush() {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.lastAttemptAt = time.Now()
 	if err == nil {
 		c.lastPublished = count
+		c.publishedUnknown = false
+		c.transientAttempts = 0
+		c.lastError = ""
 		c.lastPublishedAt = time.Now()
 		c.lastPublishResult = "SUCCESS"
 		callback := c.onPublish
@@ -260,11 +384,12 @@ func (c *VoiceChannelCounter) flush() {
 
 	c.updateErrors++
 	c.lastPublishResult = "FAILURE"
+	c.lastError = sanitizeCounterError(err)
 	callback := c.onPublish
 	if callback != nil {
 		go callback(count, "FAILURE")
 	}
-	handleRenameError(err, c)
+	handleRenameError(err, c, channelID, true)
 }
 
 func (c *VoiceChannelCounter) editConfirmed(count, previous int) error {
@@ -274,16 +399,24 @@ func (c *VoiceChannelCounter) editConfirmed(count, previous int) error {
 	c.editMu.Lock()
 	defer c.editMu.Unlock()
 	slog.Info("component=voice_counter", "event", "channel_edit_started", "desired", count)
-	_, err := c.namer.ChannelEdit(c.ChannelID(), &discordgo.ChannelEdit{Name: OnlineCounterName(count)})
+	channelID := c.ChannelID()
+	_, err := c.namer.ChannelEdit(channelID, &discordgo.ChannelEdit{Name: OnlineCounterName(count)})
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.lastAttemptAt = time.Now()
 	if err != nil {
 		c.updateErrors++
 		c.lastPublishResult = "FAILURE"
-		handleRenameError(err, c)
+		c.lastError = sanitizeCounterError(err)
+		// Reconcile is re-driven by the next presence change, so it only
+		// classifies here; it never schedules its own retries.
+		handleRenameError(err, c, channelID, false)
 		slog.Warn("component=voice_counter", "event", "channel_edit_failed", "desired", count, "error_class", "discord_edit_failed")
 		return err
 	}
+	c.publishedUnknown = false
+	c.transientAttempts = 0
+	c.lastError = ""
 	c.lastPublished = count
 	c.lastPublishedAt = time.Now()
 	c.lastPublishResult = "SUCCESS"
@@ -294,39 +427,107 @@ func (c *VoiceChannelCounter) editConfirmed(count, previous int) error {
 	return nil
 }
 
-// handleRenameError classifies a rename failure: 403 blocks until repair, 429
-// schedules a Retry-After, and transient errors get a single bounded retry.
-func handleRenameError(err error, c *VoiceChannelCounter) {
+// permanentCounterFault returns the fault class for errors that retrying can
+// never fix: the channel is gone (404 / 10003) or the bot may not manage it
+// (403 / 50001 / 50013). Anything else is "" (transient or unknown).
+func permanentCounterFault(err error) string {
 	var restErr *discordgo.RESTError
-	if errors.As(err, &restErr) && restErr.Response != nil {
-		status := restErr.Response.StatusCode
-		switch {
-		case status == 403:
-			c.blocked = true
-			slog.Error("component=discord", "msg", "online counter rename forbidden; run /setup repair", "status", status)
-			return
-		case status == 429:
-			// Honor Retry-After (seconds) from the response header if present.
-			wait := 5 * time.Second
-			if restErr.Response != nil {
-				if h := restErr.Response.Header.Get("Retry-After"); h != "" {
-					if secs, perr := strconv.ParseFloat(h, 64); perr == nil && secs > 0 {
-						wait = time.Duration(secs * float64(time.Second))
-					}
-				}
-			}
-			c.retryAfter = time.Now().Add(wait)
-			slog.Warn("component=discord", "msg", "online counter rate limited; honoring retry-after", "wait", wait.String())
-			c.dirty = true
-			c.timer = time.AfterFunc(wait, func() { c.flush() })
-			return
-		case status >= 500:
-			// Transient server error: one bounded retry.
-			slog.Warn("component=discord", "msg", "online counter transient failure; retrying once", "status", status)
-			c.dirty = true
-			c.timer = time.AfterFunc(5*time.Second, func() { c.flush() })
-			return
+	if !errors.As(err, &restErr) {
+		return ""
+	}
+	if restErr.Message != nil {
+		switch restErr.Message.Code {
+		case discordCodeUnknownChannel:
+			return CounterFaultUnknownChannel
+		case discordCodeMissingAccess, discordCodeMissingPermission:
+			return CounterFaultMissingPermissions
 		}
 	}
-	slog.Warn("component=discord", "msg", "online counter rename failed", "err", err.Error())
+	if restErr.Response != nil {
+		switch restErr.Response.StatusCode {
+		case 404:
+			return CounterFaultUnknownChannel
+		case 403:
+			return CounterFaultMissingPermissions
+		}
+	}
+	return ""
+}
+
+// recordFaultLocked marks a permanent configuration fault. Caller holds c.mu.
+func (c *VoiceChannelCounter) recordFaultLocked(class, channelID string) {
+	if c.blocked && c.faultClass == class && c.faultChannelID == channelID {
+		return
+	}
+	c.blocked = true
+	c.dirty = false
+	c.transientAttempts = 0
+	c.faultClass = class
+	c.faultChannelID = channelID
+	c.faultAt = time.Now()
+	if c.timer != nil {
+		c.timer.Stop()
+	}
+	slog.Error("component=discord", "msg", "online counter channel configuration fault; renames stopped until the channel is repaired",
+		"fault_class", class, "channel_id", channelID, "action", "run /setup repair or re-map the ONLINE_COUNTER route")
+}
+
+// handleRenameError classifies a rename failure. Permanent faults (403, 404,
+// Unknown Channel) stop renames for that channel until it is re-bound; 429
+// schedules a Retry-After; 5xx and network errors get bounded exponential
+// retries when schedule is set (the debounced publish path). Caller holds c.mu.
+func handleRenameError(err error, c *VoiceChannelCounter, channelID string, schedule bool) {
+	if class := permanentCounterFault(err); class != "" {
+		c.recordFaultLocked(class, channelID)
+		return
+	}
+	var restErr *discordgo.RESTError
+	if errors.As(err, &restErr) && restErr.Response != nil && restErr.Response.StatusCode == 429 {
+		// Honor Retry-After (seconds) from the response header if present.
+		wait := 5 * time.Second
+		if h := restErr.Response.Header.Get("Retry-After"); h != "" {
+			if secs, perr := strconv.ParseFloat(h, 64); perr == nil && secs > 0 {
+				wait = time.Duration(secs * float64(time.Second))
+			}
+		}
+		c.retryAfter = time.Now().Add(wait)
+		slog.Warn("component=discord", "msg", "online counter rate limited; honoring retry-after", "wait", wait.String())
+		if schedule {
+			c.dirty = true
+			c.timer = time.AfterFunc(wait, func() { c.flush() })
+		}
+		return
+	}
+	// Transient (5xx, network, unknown): bounded exponential retry.
+	c.transientAttempts++
+	if !schedule {
+		slog.Warn("component=discord", "msg", "online counter rename failed", "err", c.lastError, "attempt", c.transientAttempts)
+		return
+	}
+	if c.transientAttempts > maxCounterTransientRetries {
+		slog.Warn("component=discord", "msg", "online counter rename failed; retry budget exhausted until the next presence change",
+			"err", c.lastError, "attempts", c.transientAttempts)
+		c.transientAttempts = 0
+		return
+	}
+	base := c.retryBackoff
+	if base <= 0 {
+		base = 5 * time.Second
+	}
+	wait := base << (c.transientAttempts - 1)
+	slog.Warn("component=discord", "msg", "online counter transient failure; retrying", "err", c.lastError, "attempt", c.transientAttempts, "retry_in", wait.String())
+	c.dirty = true
+	c.timer = time.AfterFunc(wait, func() { c.flush() })
+}
+
+// sanitizeCounterError bounds an error for diagnostics output.
+func sanitizeCounterError(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	if len(msg) > 200 {
+		msg = msg[:200]
+	}
+	return msg
 }

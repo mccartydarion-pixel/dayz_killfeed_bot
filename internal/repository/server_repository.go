@@ -62,8 +62,14 @@ func (r *ServerRepository) ListActive(ctx context.Context) ([]GameServer, error)
 	}
 	return out, rows.Err()
 }
+
+// ConnectedServerID resolves the one server bound to guildID. Binding is the
+// active flag - the same predicate the runtime uses to start workers
+// (ListActive/ListActiveByGuild) - not status, which the SaaS dashboard
+// writes as Nitrado power state (ONLINE/OFFLINE, see nitradoServiceStatus).
+// Only an explicit DISCONNECTED teardown row is excluded.
 func (r *ServerRepository) ConnectedServerID(ctx context.Context, guildID int64) (int64, error) {
-	rows, err := r.pool.Query(ctx, `SELECT id FROM game_servers WHERE guild_id=$1 AND active AND LOWER(status) IN ('connected','ready','active') ORDER BY id`, guildID)
+	rows, err := r.pool.Query(ctx, `SELECT id FROM game_servers WHERE guild_id=$1 AND active AND UPPER(COALESCE(status,'')) <> 'DISCONNECTED' ORDER BY id`, guildID)
 	if err != nil {
 		return 0, err
 	}

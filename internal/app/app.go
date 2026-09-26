@@ -106,6 +106,12 @@ type App struct {
 	// from the ONLINE_COUNTER route when one exists (legacy GuildSetup
 	// otherwise).
 	onlineCounter *discord.VoiceChannelCounter
+	// onlineCounterRouted is set while the counter is bound to an
+	// ONLINE_COUNTER route. The route is authoritative: the legacy
+	// GuildSetup channel is only a fallback and must never override it
+	// (a retired legacy channel that was deleted is exactly how the counter
+	// ended up renaming an Unknown Channel on every presence change).
+	onlineCounterRouted atomic.Bool
 	// guildServers lists the configured guild's row id and active servers
 	// (set once routing starts).
 	guildServers func(ctx context.Context) (int64, []int64, error)
@@ -360,6 +366,23 @@ func (a *App) recordPublicVoicePublish(count int, result string) {
 
 // livePresenceCount returns the exact running worker's online count for a
 // server, or (0, false) if no worker is currently registered for it.
+// knownPresenceCount returns a server's online count only when presence
+// evidence backs it (killfeed.PresenceEvidence). An engine that has not yet
+// seen a snapshot, a restart or its unknown window expire returns
+// known=false: that count is a lower bound, never something to publish as 0.
+func (a *App) knownPresenceCount(serverID int64) (int, bool) {
+	a.presenceMu.Lock()
+	engine, ok := a.presenceEngines[serverID]
+	a.presenceMu.Unlock()
+	if !ok || engine == nil {
+		return 0, false
+	}
+	if !engine.PresenceEvidence().Known {
+		return 0, false
+	}
+	return engine.PlayerTracker().OnlineCount(), true
+}
+
 func (a *App) livePresenceCount(serverID int64) (int, bool) {
 	a.presenceMu.Lock()
 	tracker, ok := a.presenceTrackers[serverID]
@@ -856,7 +879,17 @@ func (a *App) verifyNitrado(ctx context.Context) (authenticated, verified bool, 
 	return true, true, service.Game, service.Type, service.Status
 }
 
-func bindOnlineCounter(store discord.SetupStore, guildID string, counter *discord.VoiceChannelCounter) {
+// bindOnlineCounter applies the legacy GuildSetup channel as a fallback
+// binding. It is a no-op while the counter is bound to an ONLINE_COUNTER
+// route (see syncOnlineCounterRoute), which always takes precedence.
+func (a *App) bindOnlineCounter(store discord.SetupStore, guildID string, counter *discord.VoiceChannelCounter) {
+	if a != nil && a.onlineCounterRouted.Load() {
+		return
+	}
+	bindLegacyOnlineCounter(store, guildID, counter)
+}
+
+func bindLegacyOnlineCounter(store discord.SetupStore, guildID string, counter *discord.VoiceChannelCounter) {
 	if store == nil || counter == nil || guildID == "" {
 		return
 	}
@@ -1685,7 +1718,7 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 			return fmt.Errorf("reset stale activity session for server %d: %w", row.ID, err)
 		}
 	}
-	bindOnlineCounter(setupStore, a.Config.DiscordGuildID, onlineCounter)
+	a.bindOnlineCounter(setupStore, a.Config.DiscordGuildID, onlineCounter)
 	engine := killfeed.NewEngine(client, row.ProviderServiceID, killfeed.NewADMParser())
 	engine.SetStateSink(a.State)
 	engine.SetDiagnostics(killfeed.NewRuntimeDiagnostics(row.ID))
@@ -1892,17 +1925,29 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 		if !a.ownsPublicCounter(row.ID) {
 			return
 		}
+		// Until presence evidence exists the tracker only holds players
+		// seen connecting since this worker started - publishing that
+		// would show 0 (or an undercount) for a populated server.
+		if !engine.PresenceEvidence().Known {
+			slog.Debug("component=presence", "event", "counter_publish_deferred", "server_id", row.ID, "reason", "presence_unknown", "tracked_lower_bound", count)
+			return
+		}
 		a.State.SetOnlinePlayers(count)
 		if onlineCounter != nil {
-			bindOnlineCounter(setupStore, a.Config.DiscordGuildID, onlineCounter)
+			a.bindOnlineCounter(setupStore, a.Config.DiscordGuildID, onlineCounter)
 			onlineCounter.Publish(count)
 			_ = onlineCounter.Reconcile(count)
 			a.State.SetOnlineCounter(onlineCounter.LastPublished(), onlineCounter.UpdateErrors(), onlineCounter.PermissionBlocked())
 		}
 	})
 	if a.ownsPublicCounter(row.ID) && onlineCounter != nil {
-		bindOnlineCounter(setupStore, a.Config.DiscordGuildID, onlineCounter)
-		_ = onlineCounter.Reconcile(engine.PlayerTracker().OnlineCount())
+		a.bindOnlineCounter(setupStore, a.Config.DiscordGuildID, onlineCounter)
+		// A freshly started worker has no presence evidence yet; the
+		// channel keeps its last value until a snapshot, restart or the
+		// unknown window resolves it (the OnPlayersChanged hook above).
+		if count, known := a.knownPresenceCount(row.ID); known {
+			_ = onlineCounter.Reconcile(count)
+		}
 	}
 
 	if a.Workers != nil {

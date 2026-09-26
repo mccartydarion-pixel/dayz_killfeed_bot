@@ -137,9 +137,9 @@ func (p *DeathfeedPublisher) PublishDeath(ev *killfeed.Event) error {
 			Parse: []discordgo.AllowedMentionType{},
 		},
 	}
-	if _, err := p.client.Session().ChannelMessageSendComplex(channelID, send); err != nil {
-		slog.Error("component=discord", "msg", "death feed publish failed", "err", err.Error())
-		return nil // never propagate; log processing must continue
+	if _, err := deliverMessage(p.client.Session(), "DEATH_FEED", channelID, send); err != nil {
+		slog.Error("component=discord", "msg", "death feed publish failed", "err", err.Error(), "class", ClassifyDeliveryError(err))
+		return nil // never propagate; log processing must continue (recorded in the delivery ledger)
 	}
 	slog.Debug("component=discord", "msg", "death feed published", "type", string(ev.Type))
 	return nil

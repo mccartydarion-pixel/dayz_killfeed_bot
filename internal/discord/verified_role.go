@@ -40,7 +40,9 @@ func (a *VerifiedRoleAssigner) AssignVerifiedRole(ctx context.Context, discordUs
 	if setup == nil || setup.VerifiedRoleID == "" {
 		return fmt.Errorf("verified role not configured; run /setup verified-role")
 	}
-	if err := a.client.Session().GuildMemberRoleAdd(a.guildID, discordUserID, setup.VerifiedRoleID); err != nil {
+	if err := deliver("VERIFIED_ROLE", "", func() error {
+		return a.client.Session().GuildMemberRoleAdd(a.guildID, discordUserID, setup.VerifiedRoleID)
+	}); err != nil {
 		return fmt.Errorf("assign verified role: %w", err)
 	}
 	return nil
@@ -62,7 +64,10 @@ func (a *VerifiedRoleAssigner) NotifyVerified(ctx context.Context, discordUserID
 	if roleAssigned {
 		message += " Your Verified role has been assigned."
 	}
-	if _, err := a.client.Session().ChannelMessageSend(channel.ID, message); err != nil {
+	if err := deliver("VERIFICATION_DM", "", func() error {
+		_, err := a.client.Session().ChannelMessageSend(channel.ID, message)
+		return err
+	}); err != nil {
 		return fmt.Errorf("send verification DM: %w", err)
 	}
 	return nil

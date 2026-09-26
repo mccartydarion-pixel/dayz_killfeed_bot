@@ -137,7 +137,13 @@ func (e *Engine) finishSnapshot(s *PlayerListSnapshot) {
 		return
 	}
 	added, removed := e.players.ReconcileSnapshot(s.Entries)
+	becameKnown := e.setPresenceEvidence(PresenceSnapshotConfirmed, time.Now())
 	if added == 0 && removed == 0 {
+		if becameKnown {
+			// The count did not change, but it is now a confirmed fact
+			// and must be published.
+			e.firePlayersChanged()
+		}
 		return
 	}
 	e.presenceMu.Lock()

@@ -432,8 +432,10 @@ func (a *App) syncRoutedPanelsNow(ctx context.Context) {
 }
 
 // syncOnlineCounterRoute binds the online-players counter to the
-// ONLINE_COUNTER route of the configured guild, when one exists. Without a
-// route the legacy GuildSetup channel (bound at startup) stays in place.
+// ONLINE_COUNTER route of the configured guild, when one exists. The route is
+// authoritative: while it is bound the legacy GuildSetup channel is ignored
+// (see App.bindOnlineCounter). Only a confirmed absence of any route - never
+// a lookup error - falls back to the legacy channel.
 func (a *App) syncOnlineCounterRoute(ctx context.Context) {
 	if a.onlineCounter == nil || a.ChannelRoutes == nil || a.guildServers == nil {
 		return
@@ -449,21 +451,26 @@ func (a *App) syncOnlineCounterRoute(ctx context.Context) {
 	if preferred != 0 {
 		order = append([]int64{preferred}, serverIDs...)
 	}
+	resolveFailed := false
 	for _, serverID := range order {
 		channelID, found, err := a.ChannelRoutes.Resolve(ctx, guildRowID, serverID, "ONLINE_COUNTER")
-		if err != nil || !found || channelID == "" {
+		if err != nil {
+			resolveFailed = true
 			continue
 		}
+		if !found || channelID == "" {
+			continue
+		}
+		a.onlineCounterRouted.Store(true)
 		if a.onlineCounter.ChannelID() != channelID {
+			slog.Info("component=voice_counter", "event", "bound_to_route", "channel_id", channelID, "previous_channel_id", a.onlineCounter.ChannelID())
 			a.onlineCounter.SetChannelID(channelID)
 			// A fresh channel starts at 0; reconcile it to the public
-			// server's tracked count now instead of waiting for a join.
+			// server's tracked count now instead of waiting for a join -
+			// but only when that count is backed by presence evidence.
 			if preferred != 0 {
-				a.presenceMu.Lock()
-				tracker := a.presenceTrackers[preferred]
-				a.presenceMu.Unlock()
-				if tracker != nil {
-					if err := a.onlineCounter.Reconcile(tracker.OnlineCount()); err != nil {
+				if count, known := a.knownPresenceCount(preferred); known {
+					if err := a.onlineCounter.Reconcile(count); err != nil {
 						slog.Warn("component=voice_counter", "event", "route_reconcile_failed", "err", err.Error())
 					}
 				}
@@ -471,4 +478,11 @@ func (a *App) syncOnlineCounterRoute(ctx context.Context) {
 		}
 		return
 	}
+	if resolveFailed {
+		return // keep whatever is bound now
+	}
+	if a.onlineCounterRouted.Swap(false) {
+		slog.Info("component=voice_counter", "event", "route_removed_legacy_fallback")
+	}
+	bindLegacyOnlineCounter(a.legacySetupStore(), a.Config.DiscordGuildID, a.onlineCounter)
 }

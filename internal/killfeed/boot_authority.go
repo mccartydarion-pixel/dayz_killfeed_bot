@@ -269,6 +269,9 @@ func (e *Engine) acceptBoot(lf nitrado.LogFile) {
 		return
 	}
 	file := canonicalADMID(lf.Path)
+	// A boot strictly newer than an already-accepted one is a server
+	// restart observed live: the restart disconnected everyone.
+	restart := !e.acceptedBoot.IsZero() && st.After(e.acceptedBoot)
 	if st.After(e.acceptedBoot) || e.acceptedFile == nil {
 		e.acceptedBoot = st
 		now := time.Now()
@@ -277,5 +280,8 @@ func (e *Engine) acceptBoot(lf nitrado.LogFile) {
 	if !st.Before(e.acceptedBoot) {
 		c := lf
 		e.acceptedFile = &c
+	}
+	if restart {
+		e.resetPresenceForNewBoot(st)
 	}
 }

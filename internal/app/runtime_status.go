@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"github.com/yourname/dayz-killfeed/internal/discord"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -32,6 +33,9 @@ type RuntimeStatusResponse struct {
 	LastParsedEventAt      *string               `json:"lastParsedEventAt"`
 	LastPersistedEventAt   *string               `json:"lastPersistedEventAt"`
 	Servers                []RuntimeServerStatus `json:"servers,omitempty"`
+	// Health is the evidence-based per-installation state (HEALTHY,
+	// DEGRADED, UNAVAILABLE, UNKNOWN) with the reasons behind it.
+	Health *RuntimeHealth `json:"health,omitempty"`
 }
 
 // RuntimeServerStatus is one entry in the "pick a server" fallback, returned
@@ -161,9 +165,21 @@ func (a *App) runtimeStatusHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp.ServerID = serverID
+	binding := "NOT_FOUND"
 	if row, rowErr := a.Servers.GetByID(ctx, serverID); rowErr == nil && row != nil {
+		if row.GuildID != guildRowID {
+			// Tenant isolation: another guild's server is never described here.
+			writeRuntimeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "unknown_server"})
+			return
+		}
 		resp.ServerName = row.DisplayName
+		binding = "INACTIVE"
+		if row.Active && !strings.EqualFold(row.Status, "DISCONNECTED") {
+			binding = "BOUND"
+		}
 	}
+	health := a.runtimeHealth(serverID, binding)
+	resp.Health = &health
 
 	if presence, found := a.livePresenceSnapshot(serverID); found {
 		online := presence.OnlineCount
@@ -182,6 +198,10 @@ func (a *App) runtimeStatusHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		classification := pipeline.Classification()
 		resp.PipelineClassification = nullableString(classification)
+		if presence, found := a.livePresenceSnapshot(serverID); found && !presence.Presence.Known {
+			// Unknown presence is never reported as a count (least of all 0).
+			resp.PlayersOnline = nil
+		}
 
 		status := "STOPPED"
 		switch {
@@ -194,4 +214,25 @@ func (a *App) runtimeStatusHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeRuntimeJSON(w, http.StatusOK, resp)
+}
+
+// runtimeHealth gathers in-memory evidence for one server and evaluates it.
+func (a *App) runtimeHealth(serverID int64, binding string) RuntimeHealth {
+	in := healthInputs{Binding: binding, Deliveries: discord.Deliveries.Snapshot()}
+	a.presenceMu.Lock()
+	engine := a.presenceEngines[serverID]
+	a.presenceMu.Unlock()
+	if engine != nil && engine.Diagnostics() != nil {
+		in.WorkerFound = true
+		in.Pipeline = engine.Diagnostics().Snapshot()
+		in.Presence = engine.PresenceSnapshot()
+		if pending, ok := engine.PendingEvents(); ok {
+			in.Pending = &pending
+		}
+	}
+	if a.onlineCounter != nil {
+		in.Counter = a.onlineCounter.Health()
+		in.CounterOwned = a.ownsPublicCounter(serverID)
+	}
+	return evaluateRuntimeHealth(in)
 }

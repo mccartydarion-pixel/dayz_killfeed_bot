@@ -51,7 +51,7 @@ GET /api/runtime/status?discord_guild_id=<snowflake>&server_id=<optional>
 
 Field | Source | Notes
 --- | --- | ---
-`playersOnline` | `Engine.PresenceSnapshot().OnlineCount` | live tracker's current online count
+`playersOnline` | `Engine.PresenceSnapshot().OnlineCount` | live tracker's current online count; `null` while presence evidence is `UNKNOWN` (never a false `0`)
 `trackerCount` | `Engine.PresenceSnapshot().TrackedEntries` | total entries the tracker currently holds (may exceed `playersOnline`)
 `workerRunning` | `RuntimeDiagnosticSnapshot.WorkerRunning` | `false` when no worker/engine is registered for the server
 `logSource` | `RuntimeDiagnosticSnapshot.SelectedADM` | `null` if no ADM log has been selected yet
@@ -63,6 +63,33 @@ Field | Source | Notes
 
 Any field above is `null` when the underlying value has never been observed -
 never a fabricated timestamp or zero value standing in for "unknown".
+
+### `health` (per-installation diagnostics)
+
+Every per-server response carries a `health` object. Its `state` is derived
+only from evidence the running worker holds - a successful deployment alone
+never makes it `HEALTHY`.
+
+State | Meaning
+--- | ---
+`HEALTHY` | server bound, worker reading a selected ADM, presence known, no delivery fault
+`DEGRADED` | working, but with a listed fault (presence unknown, counter/route config fault, failing deliveries, stuck persistence queue, stale/wrong ADM source)
+`UNAVAILABLE` | server not bound/active, worker stopped, or no ADM source selected
+`UNKNOWN` | no live evidence yet (no worker registered, or no source check completed)
+
+Field | Notes
+--- | ---
+`state`, `reasons` | the verdict and every reason behind it
+`installationBinding` | `BOUND`, `INACTIVE`, `NOT_FOUND`
+`selectedAdm`, `pipelineStatus` | selected ADM and its classification (`SOURCE_QUIET` = no new bytes yet, `WRONG_OR_INACTIVE_ADM_SOURCE` only after `staleGiveUpAfter`)
+`lastSourceReadAt` / `lastSourceGrowthAt` | last successful ADM read / last read that consumed new bytes
+`lastPersistedEventAt`, `lastDiscordDeliveryAt` | last durable event write / last successful Discord delivery on any route
+`playersOnline`, `presenceState`, `presenceEvidenceAt` | `presenceState` is `UNKNOWN`, `SNAPSHOT_CONFIRMED`, `BOOT_RESET` or `EVENT_DERIVED`; `playersOnline` is `null` while `UNKNOWN`
+`pendingEvents`, `oldestPendingAgeSeconds`, `droppedEvents` | persistence queue backlog
+`failedDeliveries`, `deliveries[]` | per-route Discord delivery ledger (`KILLFEED`, `DEATH_FEED`, `HITFEED`, `CONNECTIONS`, `PVE_FEED`, `BUILD_FEED`, `BOUNTY_TRACKING`, `ECONOMY_FEED`, `VERIFIED_ROLE`, `VERIFICATION_DM`) with last success/failure and error class
+`onlineCounter` | channel, `state` (`OK`, `PENDING`, `RETRYING`, `RATE_LIMITED`, `CONFIG_FAULT`, `UNBOUND`), fault class/channel, last success
+
+A `server_id` belonging to a different guild returns `404 unknown_server`.
 
 ### No server selected
 

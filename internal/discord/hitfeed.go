@@ -286,7 +286,7 @@ func (p *HitfeedPublisher) send(channel string, encounters []*hitEncounter) {
 	for _, enc := range encounters {
 		embeds = append(embeds, p.card(enc))
 	}
-	_, err := p.sender.ChannelMessageSendComplex(channel, &discordgo.MessageSend{
+	_, err := deliverMessage(p.sender, "HITFEED", channel, &discordgo.MessageSend{
 		Embeds:          embeds,
 		AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}}, // player names never ping
 	})

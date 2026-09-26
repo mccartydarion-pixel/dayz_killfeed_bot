@@ -156,15 +156,27 @@ func (f *RotatingFeed) flush() {
 	}
 
 	newIDs := make([]string, 0, len(items))
-	for _, embed := range items {
-		msg, err := f.api.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
+	var retry []*discordgo.MessageEmbed
+	for i, embed := range items {
+		msg, err := deliverMessage(f.api, "KILLFEED", channelID, &discordgo.MessageSend{
 			Embeds: []*discordgo.MessageEmbed{embed},
 			AllowedMentions: &discordgo.MessageAllowedMentions{
 				Parse: []discordgo.AllowedMentionType{},
 			},
 		})
 		if err != nil {
-			slog.Warn("component=discord", "msg", "rotating feed publish failed", "channel_id", channelID, "err", err.Error())
+			class := ClassifyDeliveryError(err)
+			slog.Warn("component=discord", "msg", "rotating feed publish failed", "channel_id", channelID, "class", class, "err", err.Error())
+			if class == DeliveryConfigFault {
+				// The channel is unusable: stop this cycle instead of
+				// failing every remaining item against it, and keep them
+				// for the next cycle (a repaired route picks them up).
+				retry = append(retry, items[i:]...)
+				break
+			}
+			if class != DeliveryRejected {
+				retry = append(retry, embed) // transient after bounded retries: next cycle
+			}
 			continue
 		}
 		newIDs = append(newIDs, msg.ID)
@@ -173,5 +185,10 @@ func (f *RotatingFeed) flush() {
 	f.mu.Lock()
 	f.lastMsgIDs = newIDs
 	f.lastChannelID = channelID
+	if len(retry) > 0 {
+		// Undelivered items go ahead of anything enqueued meanwhile; the
+		// next flush still trims to the newest maxItems.
+		f.pending = append(retry, f.pending...)
+	}
 	f.mu.Unlock()
 }
