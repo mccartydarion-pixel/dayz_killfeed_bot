@@ -1890,12 +1890,12 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 	deathPublisher := discord.NewDeathfeedPublisher(a.Discord, setupStore, a.Config.DiscordGuildID)
 	engine.SetDeathPublisher(deathPublisher)
 
-	killFeed := discord.NewRotatingFeed(a.Discord.Session(), setupStore, a.Config.DiscordGuildID, func(s *discord.GuildSetup) string { return s.KillfeedChannelID }, rotatingFeedInterval, rotatingFeedBatchSize)
+	killFeed := discord.NewRotatingFeed(discord.NewFeedSession(a.Discord.Session()), setupStore, a.Config.DiscordGuildID, func(s *discord.GuildSetup) string { return s.KillfeedChannelID }, rotatingFeedInterval, rotatingFeedBatchSize)
 	killFeed.SetRouteChannelResolver(publisher.RouteChannelID)
 	killFeed.SetMode(feedDeliveryMode())
 	publisher.SetFeed(killFeed)
 	a.addRotatingFeed(killFeed)
-	deathFeed := discord.NewRotatingFeed(a.Discord.Session(), setupStore, a.Config.DiscordGuildID, func(s *discord.GuildSetup) string { return s.DeathChannelID }, rotatingFeedInterval, rotatingFeedBatchSize)
+	deathFeed := discord.NewRotatingFeed(discord.NewFeedSession(a.Discord.Session()), setupStore, a.Config.DiscordGuildID, func(s *discord.GuildSetup) string { return s.DeathChannelID }, rotatingFeedInterval, rotatingFeedBatchSize)
 	// Channel System V2: deaths share the combat feed. With a KILLFEED route
 	// the death feed posts there; the legacy death channel is only the
 	// fallback for guilds without routes.

@@ -201,3 +201,22 @@ func TestVerifyNitradoContinuesAfterUnauthorizedToken(t *testing.T) {
 		t.Fatalf("expected unauthorized Nitrado token to remain degraded, got authenticated=%v verified=%v", authenticated, verified)
 	}
 }
+
+// TestFeedDeliveryModeFromEnvironment: only KILLFEED_DELIVERY_MODE=immediate
+// enables immediate delivery; unset (the production value) and anything else
+// is the rotating cycle. runServerWorker applies this one value to both the
+// killfeed and the deathfeed.
+func TestFeedDeliveryModeFromEnvironment(t *testing.T) {
+	for _, tc := range []struct{ env, want string }{
+		{"", discord.FeedModeRotating},
+		{"immediate", discord.FeedModeImmediate},
+		{" IMMEDIATE ", discord.FeedModeImmediate},
+		{"rotating", discord.FeedModeRotating},
+		{"fast", discord.FeedModeRotating},
+	} {
+		t.Setenv("KILLFEED_DELIVERY_MODE", tc.env)
+		if got := feedDeliveryMode(); got != tc.want {
+			t.Errorf("KILLFEED_DELIVERY_MODE=%q: got %s, want %s", tc.env, got, tc.want)
+		}
+	}
+}

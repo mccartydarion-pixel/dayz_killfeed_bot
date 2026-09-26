@@ -171,6 +171,14 @@ type RouteDelivery struct {
 	LastDetectToDeliverMs int64 `json:"last_detect_to_deliver_ms,omitempty"`
 	MaxDetectToDeliverMs  int64 `json:"max_detect_to_deliver_ms,omitempty"`
 	totalQueueWaitMs      int64
+
+	// Card cleanup (feeds that remove old cards): failed deletions, cards
+	// currently awaiting a delete retry, and cards given up on.
+	CleanupFailures  int64 `json:"cleanup_failures,omitempty"`
+	OrphanedCards    int64 `json:"orphaned_cards,omitempty"`
+	AbandonedCleanup int64 `json:"abandoned_cleanup,omitempty"`
+	// Dropped counts undelivered cards discarded by a backlog bound.
+	Dropped int64 `json:"dropped,omitempty"`
 }
 
 // State is the route's delivery state: OK, FAILING (consecutive transient
@@ -254,6 +262,31 @@ func (l *DeliveryLedger) recordLatency(route string, detectedAt, enqueuedAt, del
 			r.MaxDetectToDeliverMs = d
 		}
 	}
+}
+
+// recordCleanup counts failed card deletions and the current orphan backlog.
+func (l *DeliveryLedger) recordCleanup(route string, failed, orphaned int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	r := l.entry(route)
+	r.CleanupFailures += int64(failed)
+	r.OrphanedCards = int64(orphaned)
+}
+
+// recordDropped counts undelivered cards a backlog bound discarded.
+func (l *DeliveryLedger) recordDropped(route string, n int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.entry(route).Dropped += int64(n)
+}
+
+// recordCleanupState updates the orphan backlog after a retry pass.
+func (l *DeliveryLedger) recordCleanupState(route string, orphaned, abandoned int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	r := l.entry(route)
+	r.OrphanedCards = int64(orphaned)
+	r.AbandonedCleanup += int64(abandoned)
 }
 
 // RecordFailure lets callers outside this package (e.g. role assignment in
