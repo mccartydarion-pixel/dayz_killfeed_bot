@@ -890,10 +890,15 @@ func (r *ShopRepository) Fulfill(ctx context.Context, org, inst, id, actorUserID
 	if err := healDelivery(ctx, tx, id); err != nil {
 		return nil, err
 	}
+	// A manual fulfilment never bypasses an automatic delivery attempt that may have put the item on the
+	// server (migration 0054): that attempt is fulfilled only through FulfillAttempt, with evidence.
+	if err := attemptBlocksClose(ctx, tx, org, inst, id, false, fmt.Sprintf("user:%d", actorUserID)); err != nil {
+		return nil, err
+	}
 	tag, err := tx.Exec(ctx, `UPDATE shop_deliveries SET status='FULFILLED', fulfilled_at=NOW(), fulfilled_by_user_id=$4, updated_at=NOW()
 WHERE purchase_id=$3 AND organization_id=$1 AND installation_id=$2 AND status='MANUAL_READY'`, org, inst, id, actorUserID)
 	if err != nil {
-		return nil, err
+		return nil, mapAttemptErr(err)
 	}
 	if tag.RowsAffected() == 0 {
 		return nil, ErrShopInvalidStatus
@@ -957,9 +962,19 @@ func (r *ShopRepository) Refund(ctx context.Context, p RefundParams) (*RefundRes
 		return nil, err
 	}
 	if purchase.Status != ShopStatusFulfilled {
+		// An in-flight or possibly spawned automatic delivery is never refunded (migration 0054): not
+		// while an attempt may have put the item on the server, and not after an uncertain attempt
+		// (FAILED_REVIEW) until a human has resolved it NOT_SPAWNED.
+		actor := strings.TrimSpace(p.ActorDiscordID)
+		if actor == "" {
+			actor = fmt.Sprintf("user:%d", p.ActorUserID)
+		}
+		if err := attemptBlocksClose(ctx, tx, p.OrganizationID, p.InstallationID, purchase.ID, true, actor); err != nil {
+			return nil, err
+		}
 		if _, err := tx.Exec(ctx, `UPDATE shop_deliveries SET status='CANCELLED', cancelled_at=NOW(), cancelled_by_user_id=$4, cancel_reason='REFUNDED', updated_at=NOW()
 WHERE purchase_id=$3 AND organization_id=$1 AND installation_id=$2 AND status='MANUAL_READY'`, p.OrganizationID, p.InstallationID, purchase.ID, p.ActorUserID); err != nil {
-			return nil, err
+			return nil, mapAttemptErr(err)
 		}
 	}
 	itemName := ""

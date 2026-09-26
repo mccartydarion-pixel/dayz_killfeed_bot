@@ -2153,6 +2153,12 @@ ON CONFLICT (installation_id, route_key) DO NOTHING;
 `,
 	},
 	{
+		// Champion Shop Phase 2C.3 durable delivery-attempt ledger (docs/SHOP_DELIVERY_PHASE2C3.md).
+		// Additive; inert until something creates an attempt (automatic delivery stays disabled).
+		Name: "0054_shop_delivery_attempts",
+		SQL:  ShopDeliveryAttemptsSQL,
+	},
+	{
 		Name: "0056_case_addon_subscriptions",
 		SQL: `
 -- Phase 6.1: C.A.S.E. is an ADDITIVE per-server purchase, never a new base plan.
@@ -2462,8 +2468,9 @@ func (d *DB) Migrate(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	// Ensure the migrations bookkeeping table exists first.
-	if _, err := d.Pool.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`); err != nil {
+	// Ensure the migrations bookkeeping table exists first (under the migration lock, so two
+	// instances starting on an empty database do not race on CREATE TABLE).
+	if err := d.withMigrationLock(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`); err != nil {
 		return fmt.Errorf("create schema_migrations: %w", err)
 	}
 
@@ -2480,6 +2487,23 @@ func (d *DB) Migrate(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("begin migration %s: %w", m.Name, err)
 		}
+		// Two instances starting together (a rolling deploy with overlap, or a restart during a
+		// deploy) serialize here, and the loser re-checks inside the lock and skips the migration
+		// instead of failing on a duplicate object or schema_migrations key. The lock is released
+		// with the transaction.
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, migrationLockKey); err != nil {
+			_ = tx.Rollback(ctx)
+			return fmt.Errorf("lock migration %s: %w", m.Name, err)
+		}
+		var already bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE name=$1)`, m.Name).Scan(&already); err != nil {
+			_ = tx.Rollback(ctx)
+			return fmt.Errorf("recheck migration %s: %w", m.Name, err)
+		}
+		if already {
+			_ = tx.Rollback(ctx)
+			continue
+		}
 		if _, err := tx.Exec(ctx, m.SQL); err != nil {
 			_ = tx.Rollback(ctx)
 			return fmt.Errorf("apply migration %s: %w", m.Name, err)
@@ -2494,6 +2518,24 @@ func (d *DB) Migrate(ctx context.Context) error {
 		slog.Info("component=database", "msg", "migration applied", "name", m.Name)
 	}
 	return nil
+}
+
+// migrationLockKey is the transaction-level advisory lock that serializes concurrent Migrate calls.
+const migrationLockKey int64 = 0x43484d5047524154 // "CHMPGRAT"
+
+func (d *DB) withMigrationLock(ctx context.Context, sql string) error {
+	tx, err := d.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, migrationLockKey); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, sql); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (d *DB) isApplied(ctx context.Context, name string) (bool, error) {
