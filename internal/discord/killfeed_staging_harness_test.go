@@ -50,6 +50,7 @@ type discordEmu struct {
 	delFault  map[string][]discordFault
 	posts     map[string]int // POST requests per channel (including faulted)
 	creates   map[string]int // messages actually created
+	peak      map[string]int // most messages ever visible at once
 	nonces    map[string]string
 	latency   func() time.Duration
 	hangFor   time.Duration
@@ -57,7 +58,7 @@ type discordEmu struct {
 
 func newDiscordEmu() *discordEmu {
 	return &discordEmu{channels: map[string][]fakeMessage{}, postFault: map[string][]discordFault{}, delFault: map[string][]discordFault{},
-		posts: map[string]int{}, creates: map[string]int{}, nonces: map[string]string{}, latency: func() time.Duration { return 0 }}
+		posts: map[string]int{}, creates: map[string]int{}, peak: map[string]int{}, nonces: map[string]string{}, latency: func() time.Duration { return 0 }}
 }
 
 func (d *discordEmu) takeFault(m map[string][]discordFault, ch string) discordFault {
@@ -111,13 +112,30 @@ func (d *discordEmu) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		id := strconv.Itoa(d.next)
 		d.channels[ch] = append(d.channels[ch], fakeMessage{ID: id, Nonce: body.Nonce, Embed: body.Embeds[0]})
 		d.creates[ch]++
+		if n := len(d.channels[ch]); n > d.peak[ch] {
+			d.peak[ch] = n
+		}
 		if body.Nonce != "" {
 			d.nonces[ch+"/"+body.Nonce] = id
 		}
 		hang := d.hangFor
 		d.mu.Unlock()
 		if f.hang || hang > 0 {
-			time.Sleep(hang)
+			// Created, but the reply is withheld until hang elapses, the test
+			// turns hanging off (hangFor = 0), or the client goes away.
+			for deadline := time.Now().Add(hang); time.Now().Before(deadline); {
+				d.mu.Lock()
+				released := d.hangFor == 0
+				d.mu.Unlock()
+				if released {
+					break
+				}
+				select {
+				case <-r.Context().Done():
+					return
+				case <-time.After(10 * time.Millisecond):
+				}
+			}
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(discordgo.Message{ID: id, ChannelID: ch})

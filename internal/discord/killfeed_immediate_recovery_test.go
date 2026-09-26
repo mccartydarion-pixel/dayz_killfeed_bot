@@ -345,3 +345,22 @@ func TestRollbackImmediateToRotating(t *testing.T) {
 		t.Fatalf("expected the previous process's cards untouched, got %v", got)
 	}
 }
+
+// TestImmediateWindowPeaksAtElevenCards documents a known, unfixed
+// limitation: a new card is created before the oldest is deleted (Discord
+// has no atomic swap), so a full channel shows maxItems+1 cards for about one
+// request per new card. A failed delete keeps the extra card until the
+// orphan retry succeeds (TestImmediateCleanupFailureIsRecordedAndRecovered).
+func TestImmediateWindowPeaksAtElevenCards(t *testing.T) {
+	rig := newRecoveryRig(t, time.Hour, 5*time.Second)
+	for n := 1; n <= 15; n++ {
+		rig.feed.EnqueueDetected(card(n), time.Now())
+	}
+	eventually(t, "newest 10 settle", func() bool { return reflect.DeepEqual(rig.emu.titles(rig.kf), titlesRange(6, 15)) })
+	rig.emu.mu.Lock()
+	peak := rig.emu.peak[rig.kf]
+	rig.emu.mu.Unlock()
+	if peak != 11 {
+		t.Fatalf("peak visible cards %d; the documented behaviour is 11 (create before delete)", peak)
+	}
+}
