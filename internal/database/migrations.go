@@ -2391,6 +2391,68 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_case_addon_current_server
     ON case_addon_subscriptions(organization_id, game_server_id) WHERE status <> 'CANCELED';
 `,
 	},
+	{
+		Name: "0064_case_invoice_coverage",
+		SQL: `
+-- Phase 6.26B: invoice-level C.A.S.E. coverage so refunds, disputes and voids can revoke exactly
+-- the coverage they reverse. Additive; touches no base billing table.
+-- One row per paid C.A.S.E. invoice. Coverage in good standing (PAID, PARTIALLY_REFUNDED,
+-- DISPUTE_WON) grants its tier until period_end; REFUNDED, DISPUTED, DISPUTE_LOST and VOIDED grant
+-- nothing. paid_through/paid_tier on the add-on are recomputed from these rows.
+CREATE TABLE IF NOT EXISTS case_addon_invoice_coverage (
+    id BIGSERIAL PRIMARY KEY,
+    addon_id BIGINT NOT NULL REFERENCES case_addon_subscriptions(id) ON DELETE RESTRICT,
+    provider TEXT NOT NULL CHECK (provider = 'stripe'),
+    provider_invoice_id TEXT NOT NULL CHECK (LENGTH(BTRIM(provider_invoice_id)) > 0),
+    provider_subscription_id TEXT NOT NULL CHECK (LENGTH(BTRIM(provider_subscription_id)) > 0),
+    provider_payment_intent_id TEXT,
+    tier TEXT NOT NULL CHECK (tier IN ('CASE_WATCH','CASE_PRO','CASE_COMMAND')),
+    period_start TIMESTAMPTZ NOT NULL,
+    period_end TIMESTAMPTZ NOT NULL,
+    amount_paid_cents BIGINT NOT NULL DEFAULT 0 CHECK (amount_paid_cents >= 0),
+    amount_refunded_cents BIGINT NOT NULL DEFAULT 0 CHECK (amount_refunded_cents >= 0),
+    currency TEXT,
+    status TEXT NOT NULL DEFAULT 'PAID'
+        CHECK (status IN ('PAID','PARTIALLY_REFUNDED','REFUNDED','DISPUTED','DISPUTE_WON','DISPUTE_LOST','VOIDED')),
+    dispute_status TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_case_invoice_coverage UNIQUE (provider, provider_invoice_id),
+    CONSTRAINT case_invoice_coverage_period CHECK (period_start < period_end)
+);
+CREATE INDEX IF NOT EXISTS idx_case_invoice_coverage_addon
+    ON case_addon_invoice_coverage(addon_id, period_end DESC);
+-- Append-only audit history of every coverage change (never updated or deleted by the app).
+CREATE TABLE IF NOT EXISTS case_addon_coverage_events (
+    id BIGSERIAL PRIMARY KEY,
+    addon_id BIGINT NOT NULL REFERENCES case_addon_subscriptions(id) ON DELETE RESTRICT,
+    provider_invoice_id TEXT NOT NULL,
+    stripe_event_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    previous_status TEXT,
+    new_status TEXT NOT NULL,
+    amount_refunded_cents BIGINT,
+    dispute_status TEXT,
+    paid_through_before TIMESTAMPTZ,
+    paid_through_after TIMESTAMPTZ,
+    paid_tier_before TEXT,
+    paid_tier_after TEXT,
+    recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_case_coverage_events_addon
+    ON case_addon_coverage_events(addon_id, recorded_at DESC);
+ALTER TABLE case_addon_subscriptions
+    ADD COLUMN IF NOT EXISTS coverage_state TEXT NOT NULL DEFAULT 'OK'
+        CHECK (coverage_state IN ('OK','PARTIALLY_REFUNDED','REFUNDED','DISPUTED','DISPUTE_LOST'));
+-- New add-ons start with a complete (empty) ledger. Pre-existing paid rows were paid before the
+-- ledger existed: their invoices are reconstructed from Stripe before the first recalculation.
+ALTER TABLE case_addon_subscriptions
+    ADD COLUMN IF NOT EXISTS coverage_backfilled BOOLEAN NOT NULL DEFAULT TRUE;
+UPDATE case_addon_subscriptions SET coverage_backfilled = FALSE
+    WHERE paid_through IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM case_addon_invoice_coverage c WHERE c.addon_id = case_addon_subscriptions.id);
+`,
+	},
 }
 
 // LiveSyncCommandLineCleanupSQL (migration 0052, Champion Live Sync phase 2.1, docs/

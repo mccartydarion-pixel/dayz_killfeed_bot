@@ -83,3 +83,35 @@ func TestCASEPlanChangeMigrationIsScoped(t *testing.T) {
 		}
 	}
 }
+
+// 0064 adds invoice-level coverage history only: additive tables/columns on C.A.S.E. objects,
+// no base billing table, and pre-existing paid rows flagged for reconstruction.
+func TestCASEInvoiceCoverageMigrationIsAdditive(t *testing.T) {
+	var sql string
+	for _, m := range migrations {
+		if m.Name == "0064_case_invoice_coverage" {
+			sql = strings.Join(strings.Fields(m.SQL), " ")
+		}
+	}
+	if sql == "" {
+		t.Fatal("0064_case_invoice_coverage missing")
+	}
+	for _, want := range []string{
+		"CREATE TABLE IF NOT EXISTS case_addon_invoice_coverage",
+		"CONSTRAINT uq_case_invoice_coverage UNIQUE (provider, provider_invoice_id)",
+		"CHECK (status IN ('PAID','PARTIALLY_REFUNDED','REFUNDED','DISPUTED','DISPUTE_WON','DISPUTE_LOST','VOIDED'))",
+		"CREATE TABLE IF NOT EXISTS case_addon_coverage_events",
+		"ADD COLUMN IF NOT EXISTS coverage_state TEXT NOT NULL DEFAULT 'OK'",
+		"ADD COLUMN IF NOT EXISTS coverage_backfilled BOOLEAN NOT NULL DEFAULT TRUE",
+		"UPDATE case_addon_subscriptions SET coverage_backfilled = FALSE WHERE paid_through IS NOT NULL",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{"ALTER TABLE subscriptions", "UPDATE subscriptions", "billing_transactions", "DELETE FROM", "DROP TABLE", "DROP COLUMN"} {
+		if strings.Contains(sql, forbidden) {
+			t.Errorf("coverage migration must not contain %q", forbidden)
+		}
+	}
+}
