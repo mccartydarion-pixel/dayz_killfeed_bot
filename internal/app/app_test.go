@@ -180,31 +180,9 @@ func TestBindOnlineCounterRefreshesSetupCreatedAfterStartup(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	(&App{}).bindOnlineCounter(store, "guild-1", counter)
+	bindLegacyOnlineCounter(store, "guild-1", counter)
 	if counter.ChannelID() != "voice-1" {
 		t.Fatalf("expected counter to bind setup channel, got %q", counter.ChannelID())
-	}
-}
-
-// TestLegacyOnlineCounterNeverOverridesRoute reproduces the production
-// Unknown Channel (10003) loop: the V2 layout routed ONLINE_COUNTER to a new
-// channel and retired the legacy /setup channel, which was then deleted, but
-// every presence change re-bound the counter to the stale legacy ID. While a
-// route is bound, the legacy binding must be a no-op.
-func TestLegacyOnlineCounterNeverOverridesRoute(t *testing.T) {
-	store := discord.NewInMemorySetupStore()
-	if err := store.Save(discord.GuildSetup{GuildID: "guild-1", OnlinePlayersChannelID: "deleted-legacy"}); err != nil {
-		t.Fatal(err)
-	}
-	counter := discord.NewVoiceChannelCounter(nil, "")
-	a := &App{}
-	a.onlineCounterRouted.Store(true)
-	counter.SetChannelID("route-channel")
-	for i := 0; i < 5; i++ { // presence changes / worker restarts
-		a.bindOnlineCounter(store, "guild-1", counter)
-	}
-	if counter.ChannelID() != "route-channel" {
-		t.Fatalf("legacy channel overrode the ONLINE_COUNTER route: bound %q", counter.ChannelID())
 	}
 }
 

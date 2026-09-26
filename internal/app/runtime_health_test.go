@@ -77,7 +77,7 @@ func TestRuntimeHealthDegraded(t *testing.T) {
 	}{
 		"presence unknown": {func(in *healthInputs) {
 			in.Presence.Presence = killfeed.PresenceEvidence{State: killfeed.PresenceUnknown}
-		}, "presence unknown"},
+		}, "player count unknown"},
 		"counter unknown channel": {func(in *healthInputs) {
 			in.Counter = discord.CounterHealth{State: "CONFIG_FAULT", FaultClass: discord.CounterFaultUnknownChannel}
 		}, "UNKNOWN_CHANNEL"},

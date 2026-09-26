@@ -51,7 +51,7 @@ GET /api/runtime/status?discord_guild_id=<snowflake>&server_id=<optional>
 
 Field | Source | Notes
 --- | --- | ---
-`playersOnline` | `Engine.PresenceSnapshot().OnlineCount` | live tracker's current online count; `null` while presence evidence is `UNKNOWN` (never a false `0`)
+`playersOnline` | online counter loop reading (`online_counter.go`) | the same authoritative count the voice counter shows (Nitrado live query, else complete ADM evidence); `null` while unknown (never a false `0`)
 `trackerCount` | `Engine.PresenceSnapshot().TrackedEntries` | total entries the tracker currently holds (may exceed `playersOnline`)
 `workerRunning` | `RuntimeDiagnosticSnapshot.WorkerRunning` | `false` when no worker/engine is registered for the server
 `logSource` | `RuntimeDiagnosticSnapshot.SelectedADM` | `null` if no ADM log has been selected yet
@@ -84,9 +84,12 @@ Field | Notes
 `selectedAdm`, `pipelineStatus` | selected ADM and its classification (`SOURCE_QUIET` = no new bytes yet, `WRONG_OR_INACTIVE_ADM_SOURCE` only after `staleGiveUpAfter`)
 `lastSourceReadAt` / `lastSourceGrowthAt` | last successful ADM read / last read that consumed new bytes
 `lastPersistedEventAt`, `lastDiscordDeliveryAt` | last durable event write / last successful Discord delivery on any route
-`playersOnline`, `presenceState`, `presenceEvidenceAt` | `presenceState` is `UNKNOWN`, `SNAPSHOT_CONFIRMED`, `BOOT_RESET` or `EVENT_DERIVED`; `playersOnline` is `null` while `UNKNOWN`
+`playersOnline`, `playersSource` | the counter's authoritative reading and its source (`NITRADO_QUERY`, `NITRADO_SERVER_STOPPED`, `ADM_PLAYER_LIST`, `ADM_BOOT_RESET`, `UNKNOWN`); `null` while unknown. Policy: docs/ONLINE_COUNTER_AND_LINK_CHECK.md
+`presenceState`, `presenceEvidenceAt` | ADM evidence state: `UNKNOWN`, `SNAPSHOT_CONFIRMED` or `BOOT_RESET`
+`presenceDisagreementSince` | set while Nitrado and a proven ADM player list disagree (Nitrado is shown); DEGRADED after 11 minutes
+`verifiedRoles` | VERIFIED links by Verified-role delivery state (`PENDING`, `ASSIGNED`, `FAILED`, `MEMBER_GONE`; `""` = verified before tracking); any `FAILED` is DEGRADED
 `pendingEvents`, `oldestPendingAgeSeconds`, `droppedEvents` | persistence queue backlog
-`failedDeliveries`, `deliveries[]` | per-route Discord delivery ledger (`KILLFEED`, `DEATH_FEED`, `HITFEED`, `CONNECTIONS`, `PVE_FEED`, `BUILD_FEED`, `BOUNTY_TRACKING`, `ECONOMY_FEED`, `VERIFIED_ROLE`, `VERIFICATION_DM`) with last success/failure and error class
+`failedDeliveries`, `deliveries[]` | per-route Discord delivery ledger (feeds that queue cards also report `avg_queue_wait_ms`, `max_queue_wait_ms`, `last_detect_to_deliver_ms`) (`KILLFEED`, `DEATH_FEED`, `HITFEED`, `CONNECTIONS`, `PVE_FEED`, `BUILD_FEED`, `BOUNTY_TRACKING`, `ECONOMY_FEED`, `VERIFIED_ROLE`, `VERIFICATION_DM`) with last success/failure and error class
 `onlineCounter` | channel, `state` (`OK`, `PENDING`, `RETRYING`, `RATE_LIMITED`, `CONFIG_FAULT`, `UNBOUND`), fault class/channel, last success
 
 A `server_id` belonging to a different guild returns `404 unknown_server`.

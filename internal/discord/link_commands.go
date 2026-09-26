@@ -2,7 +2,6 @@ package discord
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -62,20 +61,7 @@ func (h *LinkCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interacti
 		}
 		link, err := h.service.Request(context.Background(), guildID, i.Member.User.ID, username)
 		if err != nil {
-			switch {
-			case errors.Is(err, linking.ErrLinkCheckUnavailable):
-				respondEphemeral(s, i, "⚠️ **LINK CHECK UNAVAILABLE**\nChampion is currently unable to verify server activity. Please try again shortly.")
-			case errors.Is(err, linking.ErrPlayerNotFound):
-				respondEphemeral(s, i, "❌ **PLAYER NOT FOUND**\nChampion has not seen that PlayStation username on the DayZ server yet.")
-			case errors.Is(err, linking.ErrPlaytimeRequired):
-				respondEphemeral(s, i, "⏱️ **MORE PLAYTIME REQUIRED**\nChampion has detected that account, but it has not been observed on the server for the required 5 minutes yet. Stay connected and try `/link` again.")
-			case errors.Is(err, linking.ErrAlreadyLinked):
-				respondEphemeral(s, i, "⚠️ **ACCOUNT ALREADY LINKED**\nUse `/unlink` before linking another account.")
-			case errors.Is(err, linking.ErrPlayerClaimed):
-				respondEphemeral(s, i, "❌ **ALREADY LINKED**\nThat PlayStation account is already linked to another Discord member.")
-			default:
-				respondEphemeral(s, i, "❌ Could not create a pending link right now.")
-			}
+			respondEphemeral(s, i, linkErrorMessage(err))
 			return
 		}
 		respondEphemeral(s, i, fmt.Sprintf("🟡 **PENDING VERIFICATION**\n\nPlayStation\n%s\n\nTo prove you're this account, **disconnect from the server and reconnect** before your request expires <t:%d:R>. Champion will verify it automatically within seconds of you reconnecting.\n\nCan't reconnect in time? Ask an admin to run `/admin verify-link`.", link.RequestedName, link.ExpiresAt.Unix()))

@@ -198,8 +198,11 @@ func (a *App) runtimeStatusHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		classification := pipeline.Classification()
 		resp.PipelineClassification = nullableString(classification)
-		if presence, found := a.livePresenceSnapshot(serverID); found && !presence.Presence.Known {
-			// Unknown presence is never reported as a count (least of all 0).
+		// One authority for the count: the same reading as health/the voice
+		// counter. Unknown is null, never 0.
+		if count, known := a.knownPresenceCount(serverID); known {
+			resp.PlayersOnline = &count
+		} else if presence, found := a.livePresenceSnapshot(serverID); found && !presence.Presence.Known {
 			resp.PlayersOnline = nil
 		}
 
@@ -233,6 +236,19 @@ func (a *App) runtimeHealth(serverID int64, binding string) RuntimeHealth {
 	if a.onlineCounter != nil {
 		in.Counter = a.onlineCounter.Health()
 		in.CounterOwned = a.ownsPublicCounter(serverID)
+	}
+	if st := a.OnlineCounterStatus(); st.ServerID == serverID && !st.EvaluatedAt.IsZero() {
+		in.CounterStatus = &st
+	}
+	in.Now = time.Now()
+	if a.Links != nil && a.Guilds != nil && a.Config != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		if _, guildRowID, err := a.Guilds.GetGuild(ctx, a.Config.DiscordGuildID); err == nil && guildRowID > 0 {
+			if counts, err := a.Links.RoleSyncCounts(ctx, guildRowID); err == nil {
+				in.RoleSync = counts
+			}
+		}
+		cancel()
 	}
 	return evaluateRuntimeHealth(in)
 }

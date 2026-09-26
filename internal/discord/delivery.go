@@ -160,6 +160,17 @@ type RouteDelivery struct {
 	LastFailureAt       time.Time `json:"last_failure_at,omitempty"`
 	LastErrorClass      string    `json:"last_error_class,omitempty"`
 	LastError           string    `json:"last_error,omitempty"`
+
+	// Latency of delivered queued cards (feeds that record it):
+	// queue wait = persisted/enqueued -> posted; detect-to-deliver = ADM line
+	// read by Champion -> posted. Milliseconds; 0 when never measured.
+	LatencySamples        int64 `json:"latency_samples,omitempty"`
+	LastQueueWaitMs       int64 `json:"last_queue_wait_ms,omitempty"`
+	MaxQueueWaitMs        int64 `json:"max_queue_wait_ms,omitempty"`
+	AvgQueueWaitMs        int64 `json:"avg_queue_wait_ms,omitempty"`
+	LastDetectToDeliverMs int64 `json:"last_detect_to_deliver_ms,omitempty"`
+	MaxDetectToDeliverMs  int64 `json:"max_detect_to_deliver_ms,omitempty"`
+	totalQueueWaitMs      int64
 }
 
 // State is the route's delivery state: OK, FAILING (consecutive transient
@@ -218,6 +229,31 @@ func (l *DeliveryLedger) recordFailure(route, channelID, class string, err error
 	r.LastFailureAt = time.Now()
 	r.LastErrorClass = class
 	r.LastError = truncateErr(err)
+}
+
+// recordLatency records one delivered card's stage timings.
+func (l *DeliveryLedger) recordLatency(route string, detectedAt, enqueuedAt, deliveredAt time.Time) {
+	if enqueuedAt.IsZero() {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	r := l.entry(route)
+	wait := deliveredAt.Sub(enqueuedAt).Milliseconds()
+	r.LatencySamples++
+	r.LastQueueWaitMs = wait
+	r.totalQueueWaitMs += wait
+	r.AvgQueueWaitMs = r.totalQueueWaitMs / r.LatencySamples
+	if wait > r.MaxQueueWaitMs {
+		r.MaxQueueWaitMs = wait
+	}
+	if !detectedAt.IsZero() {
+		d := deliveredAt.Sub(detectedAt).Milliseconds()
+		r.LastDetectToDeliverMs = d
+		if d > r.MaxDetectToDeliverMs {
+			r.MaxDetectToDeliverMs = d
+		}
+	}
 }
 
 // RecordFailure lets callers outside this package (e.g. role assignment in

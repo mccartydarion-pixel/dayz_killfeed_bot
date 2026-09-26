@@ -5,38 +5,31 @@ import (
 	"time"
 )
 
-// Presence evidence states. The tracker's count is only published as fact
-// once one of the known states is reached: a fresh process (or a resume from
-// a checkpoint/log tail) has no idea who was already online, and must never
-// report that ignorance as "0 players".
+// Presence evidence states. The tracker's count is only ADM evidence once one
+// of the known states is reached: a fresh process (or a resume from a
+// checkpoint/log tail) has no idea who was already online, and must never
+// report that ignorance as "0 players". Connect/disconnect lines alone never
+// make presence known. The online counter's authority and fallback policy
+// (Nitrado live query first, then this evidence) is in
+// internal/app/online_counter.go and docs/ONLINE_COUNTER_AND_LINK_CHECK.md.
 const (
 	// PresenceUnknown: no evidence yet about who was online before this
 	// engine started reading. The tracker holds at most a lower bound.
 	PresenceUnknown = "UNKNOWN"
 	// PresenceSnapshotConfirmed: a complete ADM PlayerList snapshot
-	// reconciled the tracker (authoritative).
+	// reconciled the tracker (authoritative at that moment).
 	PresenceSnapshotConfirmed = "SNAPSHOT_CONFIRMED"
 	// PresenceBootReset: a verified newer boot (server restart) was selected
 	// and read from its start; everyone from the previous session was
-	// disconnected by the restart, so empty is known-correct.
+	// disconnected by the restart, so every player since is tracked.
 	PresenceBootReset = "BOOT_RESET"
-	// PresenceEventDerived: the unknown window expired without a snapshot
-	// (servers without adminLogPlayerList). The count is built from
-	// connect/disconnect events only - best effort, labelled as such.
-	PresenceEventDerived = "EVENT_DERIVED"
 )
 
-// presenceUnknownWindow is how long presence may stay UNKNOWN before falling
-// back to event-derived counting: one DayZ PlayerList interval (5 minutes)
-// plus margin, so a server with snapshots enabled always confirms first.
-var presenceUnknownWindow = 6 * time.Minute
-
-// PresenceEvidence describes how trustworthy the current online count is.
+// PresenceEvidence describes how trustworthy the ADM tracker's count is.
 type PresenceEvidence struct {
-	State        string    `json:"state"`
-	Known        bool      `json:"known"`
-	EvidenceAt   time.Time `json:"evidence_at,omitempty"`
-	UnknownSince time.Time `json:"unknown_since,omitempty"`
+	State      string    `json:"state"`
+	Known      bool      `json:"known"`
+	EvidenceAt time.Time `json:"evidence_at,omitempty"`
 }
 
 // PresenceEvidence returns the current presence evidence state.
@@ -50,16 +43,7 @@ func (e *Engine) PresenceEvidence() PresenceEvidence {
 	if state == "" {
 		state = PresenceUnknown
 	}
-	return PresenceEvidence{State: state, Known: state != PresenceUnknown, EvidenceAt: e.presenceEvidenceAt, UnknownSince: e.presenceUnknownSince}
-}
-
-// startPresenceClock starts the unknown window at the first source selection.
-func (e *Engine) startPresenceClock(now time.Time) {
-	e.presenceMu.Lock()
-	if e.presenceUnknownSince.IsZero() && e.presenceState == "" {
-		e.presenceUnknownSince = now
-	}
-	e.presenceMu.Unlock()
+	return PresenceEvidence{State: state, Known: state != PresenceUnknown, EvidenceAt: e.presenceEvidenceAt}
 }
 
 // setPresenceEvidence records a state transition and reports whether presence
@@ -88,36 +72,31 @@ func (e *Engine) notePresenceEvent(at time.Time) {
 }
 
 // resetPresenceForNewBoot clears the previous session's players when a
-// verified newer boot (server restart) is selected. Called only from
-// acceptBoot for a boot strictly newer than an already-accepted one, after
-// drainRotationTail has consumed the old file, so no old-session line can
-// arrive afterwards and re-add a player.
+// verified newer boot (server restart) is selected: DayZ writes no disconnect
+// lines on shutdown. Called only from acceptBoot for a boot strictly newer
+// than an already-accepted one, after drainRotationTail has consumed the old
+// file, so no old-session line can arrive afterwards and re-add a player.
+// onNewBoot then closes the previous boot's open activity sessions so phantom
+// sessions stop accruing link playtime.
 func (e *Engine) resetPresenceForNewBoot(boot time.Time) {
 	if e.players == nil {
 		return
 	}
 	previous := e.players.OnlineCount()
 	e.players.Reset()
+	// No player list of the new boot has proven the (now empty) tracker yet;
+	// the boot itself is the evidence until one does.
+	e.presenceMu.Lock()
+	e.playerListStats.LastCompleteSnapshotAt = time.Time{}
+	e.presenceMu.Unlock()
 	e.setPresenceEvidence(PresenceBootReset, time.Now())
-	slog.Info("component=presence", "event", "boot_reset", "server_id", e.serverID, "boot", boot.Format("2006-01-02T15:04:05"), "cleared_players", previous)
-	e.firePlayersChanged()
-}
-
-// checkPresenceWindow promotes UNKNOWN to EVENT_DERIVED once the unknown
-// window expires without a snapshot, firing the players hook once so the
-// (now labelled best-effort) count is published. Called every poll cycle.
-func (e *Engine) checkPresenceWindow(now time.Time) {
-	e.presenceMu.RLock()
-	expired := (e.presenceState == "" || e.presenceState == PresenceUnknown) &&
-		!e.presenceUnknownSince.IsZero() && now.Sub(e.presenceUnknownSince) >= presenceUnknownWindow
-	e.presenceMu.RUnlock()
-	if !expired {
-		return
+	if e.diagnostics != nil {
+		e.diagnostics.Update(func(s *RuntimeDiagnosticSnapshot) { s.TrackerCount = 0 })
 	}
-	e.setPresenceEvidence(PresenceEventDerived, now)
-	slog.Warn("component=presence", "event", "presence_event_derived", "server_id", e.serverID,
-		"reason", "no complete PlayerList snapshot within window; enable adminLogPlayerList for authoritative presence",
-		"window", presenceUnknownWindow.String())
+	slog.Info("component=presence", "event", "server_restart_reset", "server_id", e.serverID, "boot", boot.Format("2006-01-02T15:04:05"), "cleared", previous)
+	if e.onNewBoot != nil {
+		e.onNewBoot(previous)
+	}
 	e.firePlayersChanged()
 }
 

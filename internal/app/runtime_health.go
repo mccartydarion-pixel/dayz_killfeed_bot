@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/yourname/dayz-killfeed/internal/discord"
@@ -36,14 +37,23 @@ type RuntimeHealth struct {
 	LastPersistedEventAt  *string `json:"lastPersistedEventAt"`
 	LastDiscordDeliveryAt *string `json:"lastDiscordDeliveryAt"`
 
-	PlayersOnline      *int    `json:"playersOnline"` // null while presence is UNKNOWN
-	PresenceState      string  `json:"presenceState"`
+	PlayersOnline      *int    `json:"playersOnline"` // the counter's authoritative reading; null while unknown
+	PlayersSource      string  `json:"playersSource"` // NITRADO_QUERY | NITRADO_SERVER_STOPPED | ADM_PLAYER_LIST | ADM_BOOT_RESET | UNKNOWN
+	PresenceState      string  `json:"presenceState"` // ADM evidence: UNKNOWN | SNAPSHOT_CONFIRMED | BOOT_RESET
 	PresenceEvidenceAt *string `json:"presenceEvidenceAt"`
+	// PresenceDisagreementSince is set while Nitrado and the proven ADM
+	// tracker disagree (Nitrado is shown).
+	PresenceDisagreementSince *string `json:"presenceDisagreementSince"`
 
 	PendingEvents           *int     `json:"pendingEvents"`
 	OldestPendingAgeSeconds *float64 `json:"oldestPendingAgeSeconds"`
 	DroppedEvents           *int64   `json:"droppedEvents"`
 	FailedDeliveries        int64    `json:"failedDeliveries"`
+
+	// VerifiedRoles counts VERIFIED links by Verified-role delivery state
+	// (PENDING / ASSIGNED / FAILED / MEMBER_GONE; "" = verified before
+	// role tracking existed). A verified link is not an assigned role.
+	VerifiedRoles map[string]int `json:"verifiedRoles,omitempty"`
 
 	OnlineCounter discord.CounterHealth   `json:"onlineCounter"`
 	Deliveries    []discord.RouteDelivery `json:"deliveries"`
@@ -59,7 +69,13 @@ type healthInputs struct {
 	Pending      *killfeed.PendingEvents
 	Counter      discord.CounterHealth
 	CounterOwned bool // this server drives the online counter
-	Deliveries   []discord.RouteDelivery
+	// CounterStatus is the online counter loop's latest evaluation for this
+	// server (nil when this server is not the counter's public server or it
+	// has not evaluated yet).
+	CounterStatus *onlineCounterStatus
+	Now           time.Time
+	RoleSync      map[string]int
+	Deliveries    []discord.RouteDelivery
 }
 
 func evaluateRuntimeHealth(in healthInputs) RuntimeHealth {
@@ -109,11 +125,29 @@ func evaluateRuntimeHealth(in healthInputs) RuntimeHealth {
 		ev := in.Presence.Presence
 		h.PresenceState = ev.State
 		h.PresenceEvidenceAt = nullableTime(ev.EvidenceAt)
-		if ev.Known {
+		h.PlayersSource = counterSourceUnknown
+		switch {
+		case in.CounterStatus != nil && in.CounterStatus.Reading.Known:
+			// One authority: the same reading the voice counter shows.
+			count := in.CounterStatus.Reading.Count
+			h.PlayersOnline, h.PlayersSource = &count, in.CounterStatus.Source
+		case in.CounterStatus == nil && ev.Known:
+			// Not the counter's server: ADM evidence is the only source.
 			count := in.Presence.OnlineCount
-			h.PlayersOnline = &count
-		} else {
-			degraded = append(degraded, "player presence unknown (waiting for a PlayerList snapshot or restart)")
+			h.PlayersOnline, h.PlayersSource = &count, "ADM_"+ev.State
+		default:
+			degraded = append(degraded, "current player count unknown (no fresh Nitrado query and no complete ADM evidence)")
+		}
+		if in.CounterStatus != nil && in.CounterStatus.Disagreement != nil {
+			d := in.CounterStatus.Disagreement
+			h.PresenceDisagreementSince = nullableTime(d.Since)
+			now := in.Now
+			if now.IsZero() {
+				now = time.Now()
+			}
+			if now.Sub(d.Since) > onlineCounterADMTrust {
+				degraded = append(degraded, fmt.Sprintf("Nitrado (%d) and ADM player list (%d) have disagreed since %s", d.NitradoCount, d.ADMCount, d.Since.UTC().Format(time.RFC3339)))
+			}
 		}
 
 		if in.Pending != nil {
@@ -137,6 +171,11 @@ func evaluateRuntimeHealth(in healthInputs) RuntimeHealth {
 		case "UNBOUND":
 			degraded = append(degraded, "online counter channel is not configured")
 		}
+	}
+
+	h.VerifiedRoles = in.RoleSync
+	if n := in.RoleSync["FAILED"]; n > 0 {
+		degraded = append(degraded, fmt.Sprintf("%d verified link(s) whose Verified role could not be assigned yet (retrying)", n))
 	}
 
 	var lastDelivery time.Time

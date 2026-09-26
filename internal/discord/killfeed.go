@@ -211,7 +211,7 @@ func (p *KillfeedPublisher) PublishKill(ev *killfeed.Event) error {
 	// The rotating feed batches embeds and posts them on its own cycle; see
 	// RotatingFeed. Without one configured, fall back to an immediate send.
 	if p.feed != nil {
-		p.feed.Enqueue(embed)
+		p.feed.EnqueueDetected(embed, ev.DetectedAt)
 		slog.Debug("component=discord", "msg", "killfeed queued", "victim", victim, "killer", killer)
 		return nil
 	}

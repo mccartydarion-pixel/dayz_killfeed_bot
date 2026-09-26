@@ -1,12 +1,14 @@
 package nitrado
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 )
 
 // Read-only, whitelist-decoded service facts (Shop Phase 2C.1 capability discovery,
@@ -165,4 +167,78 @@ func (c *Client) TokenFacts(ctx context.Context) (TokenFacts, error) {
 		return TokenFacts{}, err
 	}
 	return TokenFacts{Scopes: wire.Data.Token.Scopes}, nil
+}
+
+// GameserverLive is the live occupancy Nitrado reports for a gameserver: its run
+// status and the game query's current/max player counts (GET
+// /services/:id/gameservers, whitelisted fields only - the same body carries
+// credentials, which are never decoded).
+//
+// PlayerCurrent is nil when Nitrado has no query result (server starting,
+// stopped, query not yet run, or the query block serialized as an empty
+// array). A nil PlayerCurrent is "unknown", never zero.
+type GameserverLive struct {
+	// ServiceID is the service the response describes (data.gameserver.
+	// service_id); 0 when Nitrado omitted it. Callers use BelongsTo to refuse
+	// a count that cannot be proven to be the requested service's.
+	ServiceID     int64
+	Status        string // e.g. "started", "stopped", "restarting"
+	Slots         int
+	PlayerCurrent *int
+	PlayerMax     int
+}
+
+// BelongsTo reports whether the response is provably for serviceID.
+func (g GameserverLive) BelongsTo(serviceID string) bool {
+	return g.ServiceID > 0 && strconv.FormatInt(g.ServiceID, 10) == serviceID
+}
+
+// Running reports whether Nitrado says the game process is up.
+func (g GameserverLive) Running() bool { return g.Status == "started" }
+
+// Stopped reports whether Nitrado says the game process is definitely down, so
+// no player can be connected.
+func (g GameserverLive) Stopped() bool { return g.Status == "stopped" || g.Status == "suspended" }
+
+// Capacity is the player slot count to display: the query's max when known,
+// else the service's slot count.
+func (g GameserverLive) Capacity() int {
+	if g.PlayerMax > 0 {
+		return g.PlayerMax
+	}
+	return g.Slots
+}
+
+// GameserverLive reads the live status and query player counts for a service.
+func (c *Client) GameserverLive(ctx context.Context, serviceID string) (GameserverLive, error) {
+	var wire struct {
+		Data struct {
+			Gameserver struct {
+				ServiceID int64           `json:"service_id"`
+				Status    string          `json:"status"`
+				Slots     int             `json:"slots"`
+				Query     json.RawMessage `json:"query"`
+			} `json:"gameserver"`
+		} `json:"data"`
+	}
+	if err := c.getJSON(ctx, "/services/"+url.PathEscape(serviceID)+"/gameservers", "gameserver status", &wire); err != nil {
+		return GameserverLive{}, err
+	}
+	g := wire.Data.Gameserver
+	out := GameserverLive{ServiceID: g.ServiceID, Status: g.Status, Slots: g.Slots}
+	// Nitrado serializes an empty query as [] rather than {}; only an object
+	// carries counts.
+	if q := bytes.TrimSpace(g.Query); len(q) > 0 && q[0] == '{' {
+		var query struct {
+			PlayerCurrent *int `json:"player_current"`
+			PlayerMax     int  `json:"player_max"`
+		}
+		if err := json.Unmarshal(q, &query); err == nil {
+			if query.PlayerCurrent != nil && *query.PlayerCurrent >= 0 {
+				out.PlayerCurrent = query.PlayerCurrent
+			}
+			out.PlayerMax = query.PlayerMax
+		}
+	}
+	return out, nil
 }

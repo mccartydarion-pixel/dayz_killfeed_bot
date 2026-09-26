@@ -311,6 +311,9 @@ type Engine struct {
 
 	players   *PlayerTracker
 	onPlayers func(count int) // optional hook when the online player set changes
+	// onNewBoot is told when a verified newer boot is selected (a DayZ server
+	// restart), after the previous boot's presence was cleared.
+	onNewBoot func(cleared int)
 
 	previousFileName       string
 	lastRotationAt         time.Time
@@ -324,12 +327,11 @@ type Engine struct {
 	presenceMu             sync.RWMutex
 	// presenceState/presenceEvidenceAt/presenceUnknownSince back the
 	// presence evidence model (presence_evidence.go). Guarded by presenceMu.
-	presenceState        string
-	presenceEvidenceAt   time.Time
-	presenceUnknownSince time.Time
-	lastDownloadAt       time.Time
-	rotationPending      bool
-	lastStaleProbeAt     time.Time
+	presenceState      string
+	presenceEvidenceAt time.Time
+	lastDownloadAt     time.Time
+	rotationPending    bool
+	lastStaleProbeAt   time.Time
 	// lastAltProbeAt/altProbeHistory/directSizeHint back the direct-read
 	// probing of non-selected candidates (adm_alt_probe.go).
 	lastAltProbeAt            time.Time
@@ -696,6 +698,18 @@ func (e *Engine) PlayerTracker() *PlayerTracker {
 		return nil
 	}
 	return e.players
+}
+
+// OnNewBoot registers a hook fired when the engine switches to a verified newer
+// server boot (a DayZ server restart). cleared is how many players the
+// previous boot still had tracked as online. It runs on the polling goroutine
+// before any line of the new boot is processed, so it must be quick and must
+// never call Discord.
+func (e *Engine) OnNewBoot(fn func(cleared int)) {
+	if e == nil {
+		return
+	}
+	e.onNewBoot = fn
 }
 
 // OnPlayersChanged registers a hook fired when the online player set changes.
@@ -1202,7 +1216,6 @@ func (e *Engine) selectLog(lf nitrado.LogFile) bool {
 		e.sink.SetLogSource(candidate.Name, candidate.Path, candidate.Size, candidate.Modified)
 		e.sink.SetDiscovery(string(StatePolling), 0, 0)
 	}
-	e.startPresenceClock(time.Now())
 	e.acceptBoot(candidate)
 	e.noteADMSession(candidate.Path)
 	e.lastRescan = time.Now()
@@ -1746,6 +1759,7 @@ func (e *Engine) processLineAt(line, sourcePath string, endOffset int64) (bool, 
 		e.metrics.EventsIgnored++
 		return false, nil
 	}
+	ev.DetectedAt = time.Now()
 	e.metrics.EventsParsed++
 	if e.diagnostics != nil {
 		e.diagnostics.Update(func(s *RuntimeDiagnosticSnapshot) {
@@ -2103,7 +2117,6 @@ func (e *Engine) reportPoll() {
 	if e == nil {
 		return
 	}
-	e.checkPresenceWindow(time.Now())
 	if e.onAdmSnapshot != nil {
 		e.onAdmSnapshot(e.AdmSnapshot())
 	}

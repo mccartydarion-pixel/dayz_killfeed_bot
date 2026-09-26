@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yourname/dayz-killfeed/internal/discord"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -431,18 +432,34 @@ func (a *App) syncRoutedPanelsNow(ctx context.Context) {
 	a.syncOnlineCounterRoute(ctx)
 }
 
-// syncOnlineCounterRoute binds the online-players counter to the
-// ONLINE_COUNTER route of the configured guild, when one exists. The route is
-// authoritative: while it is bound the legacy GuildSetup channel is ignored
-// (see App.bindOnlineCounter). Only a confirmed absence of any route - never
-// a lookup error - falls back to the legacy channel.
+// syncOnlineCounterRoute re-applies the counter's channel binding after a
+// route change and asks the counter loop to reconcile the (possibly new)
+// channel. The loop, not this call, does any Discord I/O.
 func (a *App) syncOnlineCounterRoute(ctx context.Context) {
-	if a.onlineCounter == nil || a.ChannelRoutes == nil || a.guildServers == nil {
+	if a.onlineCounter == nil {
 		return
+	}
+	a.bindCounterChannel(ctx, a.onlineCounter)
+	a.pokeOnlineCounter()
+}
+
+// Route lookup outcomes for the ONLINE_COUNTER channel.
+const (
+	counterRouteFound  = "FOUND"
+	counterRouteAbsent = "ABSENT"
+	counterRouteError  = "LOOKUP_ERROR"
+)
+
+// onlineCounterRouteChannel resolves the ONLINE_COUNTER route channel,
+// preferring the public counter server's own route. A lookup error is
+// reported separately from a confirmed absence.
+func (a *App) onlineCounterRouteChannel(ctx context.Context) (string, string) {
+	if a.ChannelRoutes == nil || a.guildServers == nil {
+		return "", counterRouteAbsent
 	}
 	guildRowID, serverIDs, err := a.guildServers(ctx)
 	if err != nil {
-		return
+		return "", counterRouteError
 	}
 	a.counterOwnerMu.RLock()
 	preferred := a.publicCounterServerID
@@ -451,38 +468,52 @@ func (a *App) syncOnlineCounterRoute(ctx context.Context) {
 	if preferred != 0 {
 		order = append([]int64{preferred}, serverIDs...)
 	}
-	resolveFailed := false
+	lookupFailed := false
 	for _, serverID := range order {
 		channelID, found, err := a.ChannelRoutes.Resolve(ctx, guildRowID, serverID, "ONLINE_COUNTER")
 		if err != nil {
-			resolveFailed = true
+			lookupFailed = true
 			continue
 		}
-		if !found || channelID == "" {
-			continue
+		if found && channelID != "" {
+			return channelID, counterRouteFound
 		}
-		a.onlineCounterRouted.Store(true)
-		if a.onlineCounter.ChannelID() != channelID {
-			slog.Info("component=voice_counter", "event", "bound_to_route", "channel_id", channelID, "previous_channel_id", a.onlineCounter.ChannelID())
-			a.onlineCounter.SetChannelID(channelID)
-			// A fresh channel starts at 0; reconcile it to the public
-			// server's tracked count now instead of waiting for a join -
-			// but only when that count is backed by presence evidence.
-			if preferred != 0 {
-				if count, known := a.knownPresenceCount(preferred); known {
-					if err := a.onlineCounter.Reconcile(count); err != nil {
-						slog.Warn("component=voice_counter", "event", "route_reconcile_failed", "err", err.Error())
-					}
-				}
-			}
-		}
+	}
+	if lookupFailed {
+		return "", counterRouteError
+	}
+	return "", counterRouteAbsent
+}
+
+// bindCounterChannel applies the single channel-precedence rule: the
+// ONLINE_COUNTER route always wins; the legacy GuildSetup channel is used only
+// when a route is CONFIRMED absent; a lookup error keeps the current binding
+// (it is not evidence the route is gone). SetChannelID is a no-op for the
+// same ID, so a fault on the bound channel survives re-binding.
+func (a *App) bindCounterChannel(ctx context.Context, counter *discord.VoiceChannelCounter) {
+	if counter == nil {
 		return
 	}
-	if resolveFailed {
-		return // keep whatever is bound now
+	channelID, outcome := a.onlineCounterRouteChannel(ctx)
+	switch outcome {
+	case counterRouteFound:
+		a.onlineCounterRouted.Store(true)
+		if counter.ChannelID() != channelID {
+			slog.Info("component=voice_counter", "event", "bound_to_route", "channel_id", channelID, "previous_channel_id", counter.ChannelID())
+			counter.SetChannelID(channelID)
+		}
+	case counterRouteAbsent:
+		if a.onlineCounterRouted.Swap(false) {
+			slog.Info("component=voice_counter", "event", "route_removed_legacy_fallback")
+		}
+		store := a.setupStore
+		if store == nil {
+			store = a.legacySetupStore()
+		}
+		guildID := ""
+		if a.Config != nil {
+			guildID = a.Config.DiscordGuildID
+		}
+		bindLegacyOnlineCounter(store, guildID, counter)
 	}
-	if a.onlineCounterRouted.Swap(false) {
-		slog.Info("component=voice_counter", "event", "route_removed_legacy_fallback")
-	}
-	bindLegacyOnlineCounter(a.legacySetupStore(), a.Config.DiscordGuildID, a.onlineCounter)
 }

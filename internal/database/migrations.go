@@ -2164,7 +2164,27 @@ ON CONFLICT (installation_id, route_key) DO NOTHING;
 		Name: "0055_shop_delivery_attempt_evidence",
 		SQL:  ShopAttemptEvidenceSQL,
 	},
+	{
+		// P0 2026-09-26 Verified-role reconciliation (docs/ONLINE_COUNTER_AND_LINK_CHECK.md). Additive,
+		// nullable columns only; no row is rewritten. Existing VERIFIED links keep role_sync_status NULL
+		// (never reconciled automatically - their role state predates tracking); links verified from
+		// now on are PENDING until Discord confirms the role, so a failed assignment survives restarts.
+		Name: "0056_player_link_role_sync",
+		SQL:  PlayerLinkRoleSyncSQL,
+	},
 }
+
+// PlayerLinkRoleSyncSQL (migration 0056) records whether the Verified Discord role was actually
+// assigned for a VERIFIED link - distinct from the link itself being verified.
+const PlayerLinkRoleSyncSQL = `
+ALTER TABLE player_links ADD COLUMN IF NOT EXISTS role_sync_status TEXT;
+ALTER TABLE player_links ADD COLUMN IF NOT EXISTS role_sync_attempts INT NOT NULL DEFAULT 0;
+ALTER TABLE player_links ADD COLUMN IF NOT EXISTS role_sync_last_attempt_at TIMESTAMPTZ;
+ALTER TABLE player_links ADD COLUMN IF NOT EXISTS role_synced_at TIMESTAMPTZ;
+ALTER TABLE player_links ADD COLUMN IF NOT EXISTS role_sync_error TEXT;
+CREATE INDEX IF NOT EXISTS idx_player_links_role_pending ON player_links(guild_id, role_sync_last_attempt_at)
+    WHERE status = 'VERIFIED' AND role_sync_status IN ('PENDING', 'FAILED');
+`
 
 // LiveSyncCommandLineCleanupSQL (migration 0052, Champion Live Sync phase 2.1, docs/
 // CHAMPION_LIVE_SYNC.md section 7.8): parser cls-1.1 stored each RPT's command-line header with its IP

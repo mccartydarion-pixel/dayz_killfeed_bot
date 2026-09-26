@@ -182,41 +182,27 @@ func TestRotationWithoutNewerBootRetainsPresence(t *testing.T) {
 	}
 }
 
-// TestPresenceUnknownWindowIsBounded: servers without adminLogPlayerList
-// never write snapshots. Presence must not stay UNKNOWN (freezing the
-// counter) forever; after the window it becomes EVENT_DERIVED and the hook
-// fires once so the best-effort count is published.
-func TestPresenceUnknownWindowIsBounded(t *testing.T) {
-	old := presenceUnknownWindow
-	presenceUnknownWindow = 50 * time.Millisecond
-	defer func() { presenceUnknownWindow = old }()
-
+// TestConnectEventsAloneNeverMakePresenceKnown: after a mid-session start the
+// tracker only holds players seen connecting. No amount of connect and
+// disconnect lines turns that lower bound into a known count - only a
+// complete PlayerList snapshot or a verified restart does. (The counter then
+// relies on Nitrado's live query, or shows unknown.)
+func TestConnectEventsAloneNeverMakePresenceKnown(t *testing.T) {
 	f := newBootFake()
 	t0 := time.Date(2026, 9, 24, 12, 8, 14, 0, time.UTC)
-	f.put(noftpCfg+"/"+bootAName, bootAHeader+aliceOn+bobOn+bobOff, t0)
+	pathA := noftpCfg + "/" + bootAName
+	f.put(pathA, bootAHeader+aliceOn+bobOn+bobOff, t0)
 	e := NewEngine(f, "svc", NewADMParser())
-	hook := &playersHook{}
-	e.OnPlayersChanged(hook.fn)
 	pollN(t, e, 3)
-	if e.PresenceEvidence().Known {
-		t.Fatal("must start UNKNOWN")
+	for i := 0; i < 5; i++ {
+		grow(f, pathA, bobOn+bobOff, t0.Add(time.Duration(i+1)*time.Minute))
+		pollN(t, e, 1)
 	}
-	time.Sleep(60 * time.Millisecond)
-	before := len(hook.counts)
-	pollN(t, e, 1)
-	ev := e.PresenceEvidence()
-	if ev.State != PresenceEventDerived || !ev.Known {
-		t.Fatalf("expected EVENT_DERIVED after the window, got %+v", ev)
+	if ev := e.PresenceEvidence(); ev.Known || ev.State != PresenceUnknown {
+		t.Fatalf("events alone must leave presence UNKNOWN, got %+v", ev)
 	}
-	if len(hook.counts) != before+1 {
-		t.Fatalf("expected one publish at the transition, got %d", len(hook.counts)-before)
-	}
-	if last, _ := hook.last(); last != 1 {
-		t.Fatalf("event-derived count must be Alice only (Bob connected then disconnected), got %d", last)
-	}
-	pollN(t, e, 2)
-	if len(hook.counts) != before+1 {
-		t.Fatal("the transition must fire exactly once")
+	if got := e.PlayerTracker().OnlineCount(); got != 1 {
+		t.Fatalf("tracker lower bound should be Alice only, got %d", got)
 	}
 }
 

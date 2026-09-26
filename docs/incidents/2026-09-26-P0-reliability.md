@@ -1,5 +1,9 @@
 # P0 2026-09-26 — Production reliability incident & recovery
 
+> Superseded in part by the consolidation of PRs #106/#107/#108 — see
+> [2026-09-26-consolidation.md](2026-09-26-consolidation.md) for the release
+> candidate's final behavior, test results and readiness gates.
+
 Production: `dayz_killfeed_bot` (Railway `genuine-education`), deployment
 `8bbde7db-2a47-4d42-9f13-9f740aad5538`, commit `605f1ec`.
 
@@ -100,7 +104,7 @@ Files: `internal/killfeed/engine.go` (`pollSelected`, `probeStaleSource`,
 | Area | Defect | Fix |
 |---|---|---|
 | Presence | A verified newer boot (server restart) **retained** previous-session players until the next PlayerList | `acceptBoot` → `resetPresenceForNewBoot` (only for a strictly newer verified boot, after the old file is drained) |
-| Presence | After every deploy the tracker starts empty and the counter was reconciled to **0** for a populated server | Presence evidence model: `UNKNOWN` → `SNAPSHOT_CONFIRMED` / `BOOT_RESET` / `EVENT_DERIVED` (6 min cap for servers without `adminLogPlayerList`); nothing is published while `UNKNOWN` |
+| Presence | After every deploy the tracker starts empty and the counter was reconciled to **0** for a populated server | One count authority (consolidated with #107): Nitrado live query first, then complete ADM evidence (`SNAPSHOT_CONFIRMED` / `BOOT_RESET`), else unknown (hold, then `?`); never a false 0. See docs/ONLINE_COUNTER_AND_LINK_CHECK.md |
 | Killfeed | Immediate-send failure returned `nil`, so a dropped kill counted as **published** | Returns the error |
 | All feeds | One send attempt; failures only logged | `deliverMessage`/`deliver`: bounded retry + backoff, Retry-After (capped 10 s), no retry for config faults; per-route ledger |
 | Rotating feed | A failed post was dropped from the cycle | Transient failures and config faults are re-queued for the next cycle; a payload Discord rejects (400) is dropped but recorded in the ledger |
@@ -108,8 +112,8 @@ Files: `internal/killfeed/engine.go` (`pollSelected`, `probeStaleSource`,
 | Runtime API | `?server_id=` returned another guild's server | `404 unknown_server` |
 
 Known limitation: the bot's own Discord status line (`PresenceCounts`) still
-sums raw trackers, so it can show a lower bound during the ≤ 6 min `UNKNOWN`
-window after a deploy. The channel counter and runtime API do not.
+sums raw trackers, so it can show a lower bound after a deploy until evidence
+arrives. The channel counter and runtime API do not.
 
 ## Latency budget (derived from code constants, not measured in production)
 
@@ -120,9 +124,9 @@ window after a deploy. The channel counter and runtime API do not.
 | Growth after a quiet period > 8 min | ≤ 60 s (probe window) | ≤ 10 s (next poll) |
 | Growth hidden by lagging metadata (2–8 min quiet) | ≤ 60 s direct probe | same |
 | Parse → persist | synchronous ack | same |
-| Presence → online counter | 3 s debounce; **0 shown for a populated server after every deploy** | 3 s; nothing shown until evidence (≤ 6 min cap) |
+| Presence → online counter | 3 s debounce, rename on the ADM goroutine; **0 shown for a populated server after every deploy** | evaluated ≤ 15 s after a change on its own goroutine; renames ≥ 5 min apart (Discord limit 2/10 min); last value held, never a false 0 |
 | Counter on a deleted channel | never (endless 404) | `CONFIG_FAULT` until repair |
-| **Kill → Discord killfeed** | **0–10 min (`rotatingFeedInterval`)** | **unchanged — owner decision** |
+| **Kill → Discord killfeed** | **0–10 min (`rotatingFeedInterval`)** | unchanged by default; opt-in `KILLFEED_DELIVERY_MODE=immediate` removes the queue wait (see the consolidation report) |
 | Hit/build feed batching | 5 s window | same |
 
 **The dominant killfeed delay is by design.** Every kill and death, routed or
@@ -180,7 +184,7 @@ operator-initiated cleanup.
    * Logs: `component=voice_counter event=bound_to_route` at startup, and no
      further `online counter rename failed`. If `CONFIG_FAULT` shows, run
      `/setup repair`.
-   * `presence_known` within ≤ 6 minutes, then the counter equals the in-game count.
+   * `component=voice_counter event=reading source=NITRADO_QUERY` within about a minute, and the counter equals the in-game count.
    * `/link` from a player with ≥ 5 min on the server returns the pending-link
      message, not `LINK CHECK UNAVAILABLE`.
    * `stale_probe classification=SOURCE_QUIET` during quiet periods,

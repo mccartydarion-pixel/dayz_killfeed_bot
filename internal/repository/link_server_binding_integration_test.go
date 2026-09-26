@@ -82,10 +82,10 @@ func TestConnectedServerIDResolvesDashboardConnectedServer(t *testing.T) {
 	}
 }
 
-// TestConnectedServerIDExcludesDisconnectedAndOtherGuilds keeps teardown and
+// TestConnectedServerIDExcludesDeactivatedAndOtherGuilds keeps teardown and
 // tenant isolation intact: a deactivated server never resolves, and one
 // guild's server is never visible to another guild.
-func TestConnectedServerIDExcludesDisconnectedAndOtherGuilds(t *testing.T) {
+func TestConnectedServerIDExcludesDeactivatedAndOtherGuilds(t *testing.T) {
 	f := newLinkBindingFixture(t, "ONLINE", time.Minute)
 	other := newLinkBindingFixture(t, "ONLINE", time.Minute)
 	db := saasIntegrationDB(t)
@@ -95,19 +95,14 @@ func TestConnectedServerIDExcludesDisconnectedAndOtherGuilds(t *testing.T) {
 	if got, err := servers.ConnectedServerID(ctx, other.GuildRowID); err != nil || got != other.ServerID {
 		t.Fatalf("other guild resolved (%d, %v), want its own server %d", got, err, other.ServerID)
 	}
+	if ids, err := servers.ActiveServerIDs(ctx, f.GuildRowID); err != nil || len(ids) != 1 || ids[0] != f.ServerID {
+		t.Fatalf("guild must see only its own active server, got %v %v", ids, err)
+	}
 	if err := servers.Deactivate(ctx, f.ServerID); err != nil {
 		t.Fatal(err)
 	}
-	_, err := servers.ConnectedServerID(ctx, f.GuildRowID)
-	if err == nil || !strings.Contains(err.Error(), "no connected server") {
+	if _, err := servers.ConnectedServerID(ctx, f.GuildRowID); !errors.Is(err, linking.ErrNoConnectedServer) {
 		t.Fatalf("expected no connected server after teardown, got %v", err)
-	}
-	// Active but explicitly DISCONNECTED status is still not a binding.
-	if _, err := db.Pool.Exec(ctx, `UPDATE game_servers SET active=TRUE, status='DISCONNECTED' WHERE id=$1`, f.ServerID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := servers.ConnectedServerID(ctx, f.GuildRowID); err == nil {
-		t.Fatal("expected a DISCONNECTED row to stay unbound")
 	}
 }
 
@@ -187,4 +182,207 @@ type recordingRoles struct{ assigned []string }
 func (r *recordingRoles) AssignVerifiedRole(_ context.Context, discordUserID string) error {
 	r.assigned = append(r.assigned, discordUserID)
 	return nil
+}
+
+// scriptedRoles fails AssignVerifiedRole with errs[user] (nil = success) and
+// records every attempt.
+type scriptedRoles struct {
+	errs     map[string]error
+	attempts map[string]int
+}
+
+func (r *scriptedRoles) AssignVerifiedRole(_ context.Context, discordUserID string) error {
+	if r.attempts == nil {
+		r.attempts = map[string]int{}
+	}
+	r.attempts[discordUserID]++
+	return r.errs[discordUserID]
+}
+
+func roleSyncStatus(t *testing.T, ctx context.Context, f linkBindingFixture, discordID string) (string, int) {
+	t.Helper()
+	db := saasIntegrationDB(t)
+	var status *string
+	var attempts int
+	if err := db.Pool.QueryRow(ctx, `SELECT role_sync_status, role_sync_attempts FROM player_links WHERE guild_id=$1 AND discord_user_id=$2`, f.GuildRowID, discordID).Scan(&status, &attempts); err != nil {
+		t.Fatal(err)
+	}
+	if status == nil {
+		return "", attempts
+	}
+	return *status, attempts
+}
+
+// verifyViaChallenge runs Request + disconnect/reconnect for a fresh Discord user.
+func verifyViaChallenge(t *testing.T, ctx context.Context, svc *linking.LinkVerificationService, f linkBindingFixture) string {
+	t.Helper()
+	discordID := fmt.Sprintf("discord-%d", time.Now().UnixNano())
+	if _, err := svc.Request(ctx, f.GuildRowID, discordID, f.PlayerName); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if err := svc.ObserveDisconnect(ctx, f.GuildRowID, f.PlayerID, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.ObserveConnect(ctx, f.GuildRowID, f.PlayerID, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	return discordID
+}
+
+// TestVerifiedRoleFailureSurvivesRestartAndIsReconciled: a VERIFIED link whose
+// role assignment failed is recorded FAILED (never mistaken for assigned), and
+// a brand-new service instance (a restarted process) re-delivers it.
+func TestVerifiedRoleFailureSurvivesRestartAndIsReconciled(t *testing.T) {
+	ctx := context.Background()
+	f := newLinkBindingFixture(t, "ONLINE", 6*time.Minute)
+	db := saasIntegrationDB(t)
+	links := NewLinkRepository(db.Pool)
+	failing := &scriptedRoles{errs: map[string]error{}}
+	before := linking.NewService(links, NewActivityRepository(db.Pool), NewServerRepository(db.Pool), links)
+	before.SetRoleAssigner(failing)
+	// Every assignment fails transiently in the "old process".
+	failing.errs = map[string]error{}
+	discordID := fmt.Sprintf("discord-%d", time.Now().UnixNano())
+	failing.errs[discordID] = errors.New("discord 503")
+	if _, err := before.Request(ctx, f.GuildRowID, discordID, f.PlayerName); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	_ = before.ObserveDisconnect(ctx, f.GuildRowID, f.PlayerID, now.Add(time.Second))
+	if err := before.ObserveConnect(ctx, f.GuildRowID, f.PlayerID, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	link, _ := before.Status(ctx, f.GuildRowID, discordID)
+	if link == nil || link.Status != linking.StatusVerified {
+		t.Fatalf("the link itself must be VERIFIED regardless of the role, got %+v", link)
+	}
+	if st, attempts := roleSyncStatus(t, ctx, f, discordID); st != linking.RoleSyncFailed || attempts != 1 {
+		t.Fatalf("expected FAILED after one attempt, got %q/%d", st, attempts)
+	}
+
+	// Restart: a new service with a working Discord. The persisted FAILED
+	// state is picked up once the per-link backoff has elapsed.
+	if _, err := db.Pool.Exec(ctx, `UPDATE player_links SET role_sync_last_attempt_at=NOW()-INTERVAL '10 minutes' WHERE guild_id=$1 AND discord_user_id=$2`, f.GuildRowID, discordID); err != nil {
+		t.Fatal(err)
+	}
+	working := &scriptedRoles{}
+	after := linking.NewService(links, NewActivityRepository(db.Pool), NewServerRepository(db.Pool), links)
+	after.SetRoleAssigner(working)
+	n, err := after.ReconcileRoles(ctx, f.GuildRowID, 10)
+	if err != nil || n != 1 || working.attempts[discordID] != 1 {
+		t.Fatalf("expected the failed role re-delivered once, got n=%d err=%v attempts=%v", n, err, working.attempts)
+	}
+	if st, _ := roleSyncStatus(t, ctx, f, discordID); st != linking.RoleSyncAssigned {
+		t.Fatalf("expected ASSIGNED, got %q", st)
+	}
+	// Idempotent: an ASSIGNED link is never selected again.
+	if n, _ := after.ReconcileRoles(ctx, f.GuildRowID, 10); n != 0 || working.attempts[discordID] != 1 {
+		t.Fatalf("ASSIGNED link must not be retried (n=%d attempts=%d)", n, working.attempts[discordID])
+	}
+}
+
+// TestVerifiedRoleSyncStates covers success-at-verification, member gone,
+// role not configured, backoff, and untracked pre-migration links.
+func TestVerifiedRoleSyncStates(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("assigned at verification", func(t *testing.T) {
+		f := newLinkBindingFixture(t, "ONLINE", 6*time.Minute)
+		db := saasIntegrationDB(t)
+		links := NewLinkRepository(db.Pool)
+		svc := linking.NewService(links, NewActivityRepository(db.Pool), NewServerRepository(db.Pool), links)
+		svc.SetRoleAssigner(&scriptedRoles{})
+		id := verifyViaChallenge(t, ctx, svc, f)
+		if st, _ := roleSyncStatus(t, ctx, f, id); st != linking.RoleSyncAssigned {
+			t.Fatalf("expected ASSIGNED, got %q", st)
+		}
+	})
+
+	t.Run("member left is terminal", func(t *testing.T) {
+		f := newLinkBindingFixture(t, "ONLINE", 6*time.Minute)
+		db := saasIntegrationDB(t)
+		links := NewLinkRepository(db.Pool)
+		roles := &scriptedRoles{errs: map[string]error{}}
+		svc := linking.NewService(links, NewActivityRepository(db.Pool), NewServerRepository(db.Pool), links)
+		svc.SetRoleAssigner(roles)
+		discordID := fmt.Sprintf("discord-%d", time.Now().UnixNano())
+		roles.errs[discordID] = fmt.Errorf("assign: %w", linking.ErrMemberNotInGuild)
+		if _, err := svc.Request(ctx, f.GuildRowID, discordID, f.PlayerName); err != nil {
+			t.Fatal(err)
+		}
+		now := time.Now()
+		_ = svc.ObserveDisconnect(ctx, f.GuildRowID, f.PlayerID, now.Add(time.Second))
+		_ = svc.ObserveConnect(ctx, f.GuildRowID, f.PlayerID, now.Add(2*time.Second))
+		if st, _ := roleSyncStatus(t, ctx, f, discordID); st != linking.RoleSyncMemberGone {
+			t.Fatalf("expected MEMBER_GONE, got %q", st)
+		}
+		_, _ = db.Pool.Exec(ctx, `UPDATE player_links SET role_sync_last_attempt_at=NOW()-INTERVAL '1 hour' WHERE guild_id=$1`, f.GuildRowID)
+		if n, _ := svc.ReconcileRoles(ctx, f.GuildRowID, 10); n != 0 || roles.attempts[discordID] != 1 {
+			t.Fatalf("MEMBER_GONE must not be retried (attempts=%d)", roles.attempts[discordID])
+		}
+	})
+
+	t.Run("no role configured stays pending", func(t *testing.T) {
+		f := newLinkBindingFixture(t, "ONLINE", 6*time.Minute)
+		db := saasIntegrationDB(t)
+		links := NewLinkRepository(db.Pool)
+		roles := &scriptedRoles{errs: map[string]error{}}
+		svc := linking.NewService(links, NewActivityRepository(db.Pool), NewServerRepository(db.Pool), links)
+		svc.SetRoleAssigner(roles)
+		discordID := fmt.Sprintf("discord-%d", time.Now().UnixNano())
+		roles.errs[discordID] = fmt.Errorf("%w; run /setup verified-role", linking.ErrRoleNotConfigured)
+		if _, err := svc.Request(ctx, f.GuildRowID, discordID, f.PlayerName); err != nil {
+			t.Fatal(err)
+		}
+		now := time.Now()
+		_ = svc.ObserveDisconnect(ctx, f.GuildRowID, f.PlayerID, now.Add(time.Second))
+		_ = svc.ObserveConnect(ctx, f.GuildRowID, f.PlayerID, now.Add(2*time.Second))
+		if st, attempts := roleSyncStatus(t, ctx, f, discordID); st != linking.RoleSyncPending || attempts != 0 {
+			t.Fatalf("expected PENDING with no attempt burned, got %q/%d", st, attempts)
+		}
+		// Admin configures the role: the reconciler delivers it.
+		delete(roles.errs, discordID)
+		if n, err := svc.ReconcileRoles(ctx, f.GuildRowID, 10); err != nil || n != 1 {
+			t.Fatalf("expected delivery once a role is configured, got n=%d err=%v", n, err)
+		}
+	})
+
+	t.Run("failed link respects backoff", func(t *testing.T) {
+		f := newLinkBindingFixture(t, "ONLINE", 6*time.Minute)
+		db := saasIntegrationDB(t)
+		links := NewLinkRepository(db.Pool)
+		roles := &scriptedRoles{errs: map[string]error{}}
+		svc := linking.NewService(links, NewActivityRepository(db.Pool), NewServerRepository(db.Pool), links)
+		svc.SetRoleAssigner(roles)
+		discordID := fmt.Sprintf("discord-%d", time.Now().UnixNano())
+		roles.errs[discordID] = errors.New("discord 500")
+		if _, err := svc.Request(ctx, f.GuildRowID, discordID, f.PlayerName); err != nil {
+			t.Fatal(err)
+		}
+		now := time.Now()
+		_ = svc.ObserveDisconnect(ctx, f.GuildRowID, f.PlayerID, now.Add(time.Second))
+		_ = svc.ObserveConnect(ctx, f.GuildRowID, f.PlayerID, now.Add(2*time.Second))
+		if n, _ := svc.ReconcileRoles(ctx, f.GuildRowID, 10); n != 0 || roles.attempts[discordID] != 1 {
+			t.Fatalf("a link attempted just now must wait for its backoff (attempts=%d)", roles.attempts[discordID])
+		}
+	})
+
+	t.Run("pre-migration verified links are never touched", func(t *testing.T) {
+		f := newLinkBindingFixture(t, "ONLINE", 6*time.Minute)
+		db := saasIntegrationDB(t)
+		links := NewLinkRepository(db.Pool)
+		roles := &scriptedRoles{}
+		svc := linking.NewService(links, NewActivityRepository(db.Pool), NewServerRepository(db.Pool), links)
+		svc.SetRoleAssigner(roles)
+		id := verifyViaChallenge(t, ctx, svc, f)
+		// Simulate a link verified before migration 0056.
+		if _, err := db.Pool.Exec(ctx, `UPDATE player_links SET role_sync_status=NULL, role_sync_attempts=0 WHERE guild_id=$1 AND discord_user_id=$2`, f.GuildRowID, id); err != nil {
+			t.Fatal(err)
+		}
+		before := roles.attempts[id]
+		if n, _ := svc.ReconcileRoles(ctx, f.GuildRowID, 10); n != 0 || roles.attempts[id] != before {
+			t.Fatal("untracked (pre-migration) links must not be reconciled automatically")
+		}
+	})
 }
