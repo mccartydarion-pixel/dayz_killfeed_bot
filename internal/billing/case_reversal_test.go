@@ -119,3 +119,11 @@ func TestCaseVoidedInvoiceIsRecordedWithoutCoverage(t *testing.T) {
 		t.Fatalf("void must be recorded without adopting coverage: %+v", h.store.reversals)
 	}
 }
+
+// A store without the coverage ledger reports the feature unavailable, never an empty history.
+func TestCaseCoverageRequiresALedgerStore(t *testing.T) {
+	h := reversalHarness(t)
+	if _, _, err := h.s.CaseCoverage(context.Background(), 10, 20); err != ErrProviderNotConfigured {
+		t.Fatalf("want ErrProviderNotConfigured, got %v", err)
+	}
+}

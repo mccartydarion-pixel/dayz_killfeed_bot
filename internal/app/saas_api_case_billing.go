@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,6 +33,7 @@ func (a *App) registerCaseBillingRoutes(){
 	h("GET /api/saas/billing/case/plans",a.handleCaseBillingPlans)
 	const base="/api/saas/organizations/{organizationID}/billing/case"
 	h("GET "+base+"/servers",a.handleCaseBillingServers)
+	h("GET "+base+"/coverage",a.handleCaseBillingCoverage)
 	h("POST "+base+"/checkout",a.handleCaseBillingCheckout)
 	h("POST "+base+"/checkout/recover",a.handleCaseBillingRecover)
 	h("POST "+base+"/cancel",a.handleCaseBillingCancel)
@@ -77,6 +79,9 @@ type caseServerDTO struct {
 	CancelAtPeriodEnd bool `json:"cancelAtPeriodEnd"`
 	BoundToSelectedServer bool `json:"boundToSelectedServer"`
 	CanRetryCheckout bool `json:"canRetryCheckout"`
+	// CoverageState reflects refunds/disputes on the latest paid period:
+	// OK, PARTIALLY_REFUNDED, REFUNDED, DISPUTED or DISPUTE_LOST.
+	CoverageState string `json:"coverageState"`
 }
 
 func (a *App) handleCaseBillingServers(w http.ResponseWriter,r *http.Request){
@@ -96,10 +101,74 @@ func (a *App) handleCaseBillingServers(w http.ResponseWriter,r *http.Request){
 			PaidThrough:nullableTimeStr(sub.PaidThrough),CancelAtPeriodEnd:sub.CancelAtPeriodEnd,
 			BoundToSelectedServer:matches,
 			CanRetryCheckout:sub.Status=="PENDING" && sub.ProviderSubscriptionID=="" && sub.CheckoutSessionID=="",
+			CoverageState:caseCoverageStateOrOK(sub.CoverageState),
 		})
 	}
 	writeSaaSJSON(w,http.StatusOK,map[string]any{"items":items,
 		"canManageBilling":br.role==repository.RoleOwner || br.role==repository.RoleAdmin})
+}
+
+func caseCoverageStateOrOK(s string) string {
+	if s=="" {return "OK"}
+	return s
+}
+
+type caseCoverageInvoiceDTO struct {
+	Tier string `json:"tier"`
+	PeriodStart string `json:"periodStart"`
+	PeriodEnd string `json:"periodEnd"`
+	AmountPaidCents int64 `json:"amountPaidCents"`
+	AmountRefundedCents int64 `json:"amountRefundedCents"`
+	Currency string `json:"currency"`
+	Status string `json:"status"`
+	DisputeStatus string `json:"disputeStatus,omitempty"`
+	UpdatedAt string `json:"updatedAt"`
+}
+
+type caseCoverageEventDTO struct {
+	EventType string `json:"eventType"`
+	PreviousStatus string `json:"previousStatus,omitempty"`
+	NewStatus string `json:"newStatus"`
+	DisputeStatus string `json:"disputeStatus,omitempty"`
+	AmountRefundedCents *int64 `json:"amountRefundedCents"`
+	PaidThroughBefore *string `json:"paidThroughBefore"`
+	PaidThroughAfter *string `json:"paidThroughAfter"`
+	PaidTierBefore string `json:"paidTierBefore,omitempty"`
+	PaidTierAfter string `json:"paidTierAfter,omitempty"`
+	RecordedAt string `json:"recordedAt"`
+}
+
+// Organization OWNER/ADMIN only: payment amounts, refunds and disputes for one
+// installation's add-on. Read-only, database only (no Stripe call), and no
+// Stripe identifiers leave the server.
+func (a *App) handleCaseBillingCoverage(w http.ResponseWriter,r *http.Request){
+	br,ok:=a.billingContext(w,r,true);if !ok{return}
+	installationID,err:=strconv.ParseInt(r.URL.Query().Get("installationId"),10,64)
+	if err!=nil || installationID<=0 {
+		writeSaaSError(w,codeInvalidRequest,"invalid installationId")
+		return
+	}
+	ctx,cancel:=context.WithTimeout(r.Context(),billingTimeout);defer cancel()
+	records,events,err:=a.Billing.CaseCoverage(ctx,br.orgID,installationID)
+	if errors.Is(err,billing.ErrProviderNotConfigured) {
+		writeSaaSError(w,codeCaseNotAvailable,"C.A.S.E. billing unavailable")
+		return
+	}
+	if err!=nil{billingFailed(w,"list case coverage",err);return}
+	invoices:=make([]caseCoverageInvoiceDTO,0,len(records))
+	for _,c:=range records {
+		invoices=append(invoices,caseCoverageInvoiceDTO{Tier:c.Tier,PeriodStart:c.PeriodStart.UTC().Format(time.RFC3339),
+			PeriodEnd:c.PeriodEnd.UTC().Format(time.RFC3339),AmountPaidCents:c.AmountPaid,AmountRefundedCents:c.AmountRefunded,
+			Currency:c.Currency,Status:c.Status,DisputeStatus:c.DisputeStatus,UpdatedAt:c.UpdatedAt.UTC().Format(time.RFC3339)})
+	}
+	history:=make([]caseCoverageEventDTO,0,len(events))
+	for _,e:=range events {
+		history=append(history,caseCoverageEventDTO{EventType:e.EventType,PreviousStatus:e.PreviousStatus,NewStatus:e.NewStatus,
+			DisputeStatus:e.DisputeStatus,AmountRefundedCents:e.AmountRefunded,PaidThroughBefore:nullableTimeStr(e.PaidThroughBefore),
+			PaidThroughAfter:nullableTimeStr(e.PaidThroughAfter),PaidTierBefore:e.PaidTierBefore,PaidTierAfter:e.PaidTierAfter,
+			RecordedAt:e.RecordedAt.UTC().Format(time.RFC3339)})
+	}
+	writeSaaSJSON(w,http.StatusOK,map[string]any{"installationId":installationID,"invoices":invoices,"history":history})
 }
 
 type caseCheckoutRequestBody struct {

@@ -176,6 +176,22 @@ func (s *Service) CaseSubscriptions(ctx context.Context, orgID int64) ([]reposit
 	return s.caseStore.ListByOrganization(ctx,orgID)
 }
 
+// CaseCoverageReader is implemented by the PostgreSQL store; the read is optional so a store
+// without a coverage ledger reports the feature unavailable instead of empty history.
+type CaseCoverageReader interface {
+	ListCaseCoverage(ctx context.Context, organizationID, installationID int64) ([]repository.CaseCoverageRecord, []repository.CaseCoverageEvent, error)
+}
+
+// CaseCoverage returns one installation's invoice coverage and audit history, scoped to the
+// organization. It never calls Stripe and exposes no Stripe identifiers.
+func (s *Service) CaseCoverage(ctx context.Context, orgID, installationID int64) ([]repository.CaseCoverageRecord, []repository.CaseCoverageEvent, error) {
+	reader, ok := s.caseStore.(CaseCoverageReader)
+	if s.caseStore == nil || !ok {
+		return nil, nil, ErrProviderNotConfigured
+	}
+	return reader.ListCaseCoverage(ctx, orgID, installationID)
+}
+
 // CaseCheckout creates a separate add-on subscription on the EXISTING Stripe
 // customer, never a new base subscription, and never grants access on redirect.
 // If a retry races, the stable reserved add-on ID is the Stripe idempotency key.
