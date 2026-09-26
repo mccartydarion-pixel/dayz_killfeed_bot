@@ -122,8 +122,9 @@ func TestImmediateRollingWindowChannelState(t *testing.T) {
 	eventually(t, "quiet-period expiration empties the channel", func() bool { return len(rig.emu.titles(rig.kf)) == 0 })
 }
 
-// TestImmediateCleanupFailureIsRecordedAndRecovered: failed deletes are
-// counted, retried and eventually converge to the 10-card window.
+// TestImmediateCleanupFailureIsRecordedAndRecovered verifies the hard
+// delete-before-post gate against actual emulated channel state: failed
+// deletes keep the next card queued rather than displaying an eleventh.
 func TestImmediateCleanupFailureIsRecordedAndRecovered(t *testing.T) {
 	rig := newRecoveryRig(t, time.Hour, 5*time.Second)
 	for n := 1; n <= 10; n++ {
@@ -131,29 +132,39 @@ func TestImmediateCleanupFailureIsRecordedAndRecovered(t *testing.T) {
 	}
 	eventually(t, "10 cards", func() bool { return len(rig.emu.titles(rig.kf)) == 10 })
 	rig.emu.mu.Lock()
-	rig.emu.delFault[rig.kf] = []discordFault{{status: 500, code: 0}, {status: 500, code: 0}}
-	rig.emu.mu.Unlock()
-	rig.feed.EnqueueDetected(card(11), time.Now()) // evicts kill-01: delete fails
-	eventually(t, "card 11 posted", func() bool {
-		got := rig.emu.titles(rig.kf)
-		return len(got) > 0 && got[len(got)-1] == "kill-11"
-	})
-	eventually(t, "failure recorded", func() bool { return ledger("KILLFEED").CleanupFailures >= 1 })
-	if got := rig.emu.titles(rig.kf); len(got) != 11 {
-		t.Fatalf("setup: expected the failed eviction to leave 11 cards, got %d", len(got))
+	// The first eviction attempt hits both the bulk/single failure path;
+	// subsequent attempts must not publish until cleanup is confirmed.
+	for i := 0; i < 20; i++ {
+		rig.emu.delFault[rig.kf] = append(rig.emu.delFault[rig.kf], discordFault{status: 500})
 	}
-	// Recovery: the next activity retries the orphan.
+	rig.emu.mu.Unlock()
+	rig.feed.EnqueueDetected(card(11), time.Now())
+	eventually(t, "failed deletion recorded", func() bool { return ledger("KILLFEED").CleanupFailures >= 1 })
+	if got := rig.emu.titles(rig.kf); !reflect.DeepEqual(got, titlesRange(1, 10)) {
+		t.Fatalf("failed deletion must block card 11; got %v", got)
+	}
+	rig.feed.mu.Lock()
+	pending := len(rig.feed.pending)
+	rig.feed.mu.Unlock()
+	if pending != 1 {
+		t.Fatalf("failed eviction must retain one pending card, got %d", pending)
+	}
+	rig.emu.mu.Lock()
+	rig.emu.delFault[rig.kf] = nil
+	rig.emu.mu.Unlock()
+	eventually(t, "retry deletes oldest before posting card 11", func() bool {
+		return reflect.DeepEqual(rig.emu.titles(rig.kf), titlesRange(2, 11))
+	})
 	rig.feed.EnqueueDetected(card(12), time.Now())
-	eventually(t, "orphan cleaned up, window back to 10", func() bool {
-		got := rig.emu.titles(rig.kf)
-		return reflect.DeepEqual(got, titlesRange(3, 12))
+	eventually(t, "ordered next card", func() bool {
+		return reflect.DeepEqual(rig.emu.titles(rig.kf), titlesRange(3, 12))
 	})
-	// The orphan gauge is updated when the retry pass returns, just after the
-	// delete lands in the channel.
-	eventually(t, "orphan backlog clear in the ledger", func() bool {
-		r := ledger("KILLFEED")
-		return r.OrphanedCards == 0 && r.AbandonedCleanup == 0 && r.CleanupFailures >= 1
-	})
+	rig.emu.mu.Lock()
+	peak := rig.emu.peak[rig.kf]
+	rig.emu.mu.Unlock()
+	if peak > 10 {
+		t.Fatalf("strict window exceeded 10 visible cards: peak=%d", peak)
+	}
 }
 
 // TestImmediateFailureRecovery covers 429, 403, 404, 5xx, network timeout,
@@ -346,12 +357,9 @@ func TestRollbackImmediateToRotating(t *testing.T) {
 	}
 }
 
-// TestImmediateWindowPeaksAtElevenCards documents a known, unfixed
-// limitation: a new card is created before the oldest is deleted (Discord
-// has no atomic swap), so a full channel shows maxItems+1 cards for about one
-// request per new card. A failed delete keeps the extra card until the
-// orphan retry succeeds (TestImmediateCleanupFailureIsRecordedAndRecovered).
-func TestImmediateWindowPeaksAtElevenCards(t *testing.T) {
+// TestImmediateWindowNeverExceedsTenCards measures the actual peak visible
+// channel state, not just the feed's in-memory window.
+func TestImmediateWindowNeverExceedsTenCards(t *testing.T) {
 	rig := newRecoveryRig(t, time.Hour, 5*time.Second)
 	for n := 1; n <= 15; n++ {
 		rig.feed.EnqueueDetected(card(n), time.Now())
@@ -360,7 +368,7 @@ func TestImmediateWindowPeaksAtElevenCards(t *testing.T) {
 	rig.emu.mu.Lock()
 	peak := rig.emu.peak[rig.kf]
 	rig.emu.mu.Unlock()
-	if peak != 11 {
-		t.Fatalf("peak visible cards %d; the documented behaviour is 11 (create before delete)", peak)
+	if peak != 10 {
+		t.Fatalf("peak visible cards %d, want strict maximum 10 (delete before post)", peak)
 	}
 }
