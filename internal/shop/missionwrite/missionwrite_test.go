@@ -43,7 +43,8 @@ func gateA(t *testing.T) Request {
 
 func journal(t *testing.T) *Journal {
 	t.Helper()
-	j, err := OpenJournal(filepath.Join(t.TempDir(), "journal.jsonl"))
+	d := t.TempDir()
+	j, err := InitJournal(filepath.Join(d, "journal", "journal.jsonl"), filepath.Join(d, "anchor", "anchor.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +81,7 @@ func TestGateASuccessfulTwoStepUpload(t *testing.T) {
 		t.Fatal("Prepare must not write")
 	}
 	o, err := Execute(context.Background(), s.client(), r, p.ID, j)
-	if err != nil || o.Status != StatusWrittenVerified || o.After != emptySHA || o.AfterBytes != 20 || !o.DirectoryMade {
+	if err != nil || o.Status != StatusWrittenVerified || o.After != emptySHA || o.AfterBytes != 20 || o.Directory != DirCreated {
 		t.Fatalf("%v %+v", err, o)
 	}
 	if got, _ := s.file(champFile); string(got) != "{\n  \"Objects\": []\n}\n" {
@@ -104,7 +105,7 @@ func TestGateASuccessfulTwoStepUpload(t *testing.T) {
 		t.Fatal("cfggameplay.json was touched")
 	}
 	es, _ := j.Entries()
-	if len(es) != 2 || es[0].Status != "STARTED" || es[1].Status != StatusWrittenVerified {
+	if len(es) != 3 || es[1].Status != "STARTED" || es[2].Status != StatusWrittenVerified {
 		t.Fatalf("journal: %+v", es)
 	}
 }
@@ -115,7 +116,7 @@ func TestExistingParentDirectoryIsNotRecreated(t *testing.T) {
 	r := gateA(t)
 	p := plan(t, s, r)
 	o, err := Execute(context.Background(), s.client(), r, p.ID, journal(t))
-	if err != nil || o.Status != StatusWrittenVerified || o.DirectoryMade || len(s.mkdirCalls) != 0 {
+	if err != nil || o.Status != StatusWrittenVerified || o.Directory != DirNotNeeded || len(s.mkdirCalls) != 0 {
 		t.Fatalf("%v %+v mkdir=%d", err, o, len(s.mkdirCalls))
 	}
 }
@@ -125,7 +126,8 @@ func TestPermissionDenied(t *testing.T) {
 	s.tokenStatus = 403
 	r, j := gateA(t), journal(t)
 	o, err := Execute(context.Background(), s.client(), r, plan(t, s, r).ID, j)
-	if err != nil || o.Status != StatusNotWritten || len(s.transfers) != 0 || !strings.Contains(o.Checks[len(o.Checks)-1].Detail, "kind=permission") {
+	if err != nil || o.Status != StatusNotWritten || len(s.transfers) != 0 || check(o, "upload token") != "FAIL" || check(o, "read-back") != "PASS" ||
+		!strings.Contains(fmt.Sprint(o.Checks), "kind=permission") {
 		t.Fatalf("%v %+v", err, o)
 	}
 	if _, ok := s.file(champFile); ok {

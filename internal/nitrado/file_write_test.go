@@ -90,6 +90,8 @@ func TestPostUploadSendsExactBytesOnceAndFollowsNoRedirect(t *testing.T) {
 		}
 	}))
 	defer fs.Close()
+	AllowInsecureUploadURL = true // the local TLS server is 127.0.0.1, outside the real trust boundary
+	defer func() { AllowInsecureUploadURL = false }()
 	c := NewClient("https://api.invalid", "API-BEARER", fs.Client())
 	payload := []byte("{\n  \"Objects\": []\n}\n")
 	tg := UploadTarget{url: fs.URL + "/upload/abc", token: "TKN"}
@@ -137,5 +139,36 @@ func TestMkdirIsOneLevel(t *testing.T) {
 		if c.Mkdir(context.Background(), "7", "/games/a/m", bad) == nil {
 			t.Errorf("accepted %q", bad)
 		}
+	}
+}
+
+func TestUploadTrustBoundary(t *testing.T) {
+	for raw, want := range map[string]bool{
+		"https://files.nitrado.net/upload/x":         true,
+		"https://nitrado.net/upload/x":               true,
+		"https://FS1.Nitrado.NET./upload/x":          true,
+		"https://files.nitrado.net:443/upload/x":     true,
+		"http://files.nitrado.net/upload/x":          false, // not https
+		"https://files.nitrado.net:8443/upload/x":    false, // non-default port
+		"https://evil.example/upload/x":              false, // foreign host
+		"https://nitrado.net.evil.example/upload/x":  false, // look-alike suffix
+		"https://evilnitrado.net/upload/x":           false, // not a subdomain
+		"https://203.0.113.7/upload/x":               false, // IP literal
+		"https://[2001:db8::1]/upload/x":             false,
+		"https://user:pw@files.nitrado.net/upload/x": false, // user-info
+		"https:files.nitrado.net":                    false, // opaque
+		"//files.nitrado.net/upload":                 false, // no scheme
+	} {
+		if got := checkUploadURL(raw) == nil; got != want {
+			t.Errorf("%s: trusted=%t want %t", raw, got, want)
+		}
+	}
+	// PostUpload re-checks the boundary itself: a target that is outside it is never contacted.
+	var hit atomic.Int32
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hit.Add(1) }))
+	defer srv.Close()
+	err := NewClient("https://api.invalid", "x", srv.Client()).PostUpload(context.Background(), UploadTarget{url: srv.URL + "/u", token: "T"}, []byte("x"))
+	if !errors.Is(err, ErrInsecureUploadURL) || hit.Load() != 0 {
+		t.Fatalf("%v hits=%d", err, hit.Load())
 	}
 }

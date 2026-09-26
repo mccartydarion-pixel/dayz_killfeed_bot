@@ -38,21 +38,23 @@ type standIn struct {
 	mkdirCalls  []url.Values
 
 	// Failure knobs.
-	tokenStatus    int                   // non-zero: the token request answers this status
-	transferStatus int                   // non-zero: the transfer answers this status (after storing nothing)
-	partialStore   bool                  // store only half the bytes, answer 200
-	dropBefore     bool                  // hijack and close the transfer connection before storing
-	dropAfter      bool                  // store, then hijack and close without a response
-	claimNoStore   bool                  // answer 200 but store nothing
-	corruptRead    bool                  // downloads of the destination return other bytes
-	mkdirStatus    int                   // non-zero: mkdir answers this status and creates nothing
-	insecureURL    string                // token response URL override
-	beforeToken    func(s *standIn)      // hook run when the token is requested
-	afterMkdir     func(s *standIn)      // hook run after a successful mkdir
-	expireTokens   bool                  // tokens are issued but have expired by the transfer
-	afterTransfer  func(s *standIn)      // hook run after a transfer
-	failLists      bool                  // every directory listing fails with 500
-	onRequest      func(r *http.Request) // observation hook
+	tokenStatus     int                   // non-zero: the token request answers this status
+	transferStatus  int                   // non-zero: the transfer answers this status (after storing nothing)
+	partialStore    bool                  // store only half the bytes, answer 200
+	dropBefore      bool                  // hijack and close the transfer connection before storing
+	dropAfter       bool                  // store, then hijack and close without a response
+	claimNoStore    bool                  // answer 200 but store nothing
+	corruptRead     bool                  // downloads of the destination return other bytes
+	mkdirStatus     int                   // non-zero: mkdir answers this status and creates nothing
+	insecureURL     string                // token response URL override
+	beforeToken     func(s *standIn)      // hook run when the token is requested
+	afterMkdir      func(s *standIn)      // hook run after a successful mkdir
+	mkdirThenFail   bool                  // mkdir creates the folder but answers 500
+	tokenSideEffect func(s *standIn)      // side effect of the token request (runs before tokenStatus)
+	expireTokens    bool                  // tokens are issued but have expired by the transfer
+	afterTransfer   func(s *standIn)      // hook run after a transfer
+	failLists       bool                  // every directory listing fails with 500
+	onRequest       func(r *http.Request) // observation hook
 }
 
 type transfer struct {
@@ -168,6 +170,10 @@ func (s *standIn) serve(w http.ResponseWriter, r *http.Request) {
 		s.mkdirCalls = append(s.mkdirCalls, r.PostForm)
 		st := s.mkdirStatus
 		parent, name := r.PostForm.Get("path"), r.PostForm.Get("name")
+		if s.mkdirThenFail && s.dirs[parent] {
+			s.dirs[parent+"/"+name] = true
+			st = 500
+		}
 		if st == 0 {
 			if !s.dirs[parent] {
 				st = 404
@@ -244,6 +250,11 @@ func (s *standIn) serveUploadToken(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 	if s.beforeToken != nil {
 		s.beforeToken(s)
+	}
+	if s.tokenSideEffect != nil {
+		s.mu.Lock()
+		s.tokenSideEffect(s)
+		s.mu.Unlock()
 	}
 	if s.tokenStatus != 0 {
 		writeJSON(w, s.tokenStatus, map[string]any{"status": "error", "message": "refused"})

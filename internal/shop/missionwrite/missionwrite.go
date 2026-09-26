@@ -41,6 +41,7 @@ type Remote interface {
 	RequestUploadToken(ctx context.Context, serviceID, dir, name string) (nitrado.UploadTarget, error)
 	PostUpload(ctx context.Context, t nitrado.UploadTarget, data []byte) error
 	Mkdir(ctx context.Context, serviceID, parent, name string) error
+	DownloadHost(ctx context.Context, serviceID, path string) (string, error)
 }
 
 // Operation is an explicitly selected write.
@@ -193,6 +194,10 @@ type Inspection struct {
 	CurrentBytes     int
 	GameserverStatus string
 	BootFile         string // newest DayZServer_*.ADM, "" if unverifiable
+	// FileServerHost is the host of a signed download URL (read-only probe). Upload URLs must be
+	// inside nitrado.TrustedUploadDomain; this shows before approval whether Nitrado's file server is.
+	FileServerHost        string
+	FileServerHostTrusted bool
 }
 
 type physical struct{ missionDir, fileRoot, configPath, bootDir string }
@@ -228,6 +233,9 @@ func Inspect(ctx context.Context, rm Remote, r Request) (Inspection, error) {
 		return in, ErrInspection
 	}
 	in.Spawners = append([]string{}, gp.Spawners...)
+	if h, err := rm.DownloadHost(ctx, r.Binding.NitradoServiceID, in.phys.configPath); err == nil {
+		in.FileServerHost, in.FileServerHostTrusted = h, nitrado.TrustedUploadHost(h)
+	}
 
 	if err := readTarget(ctx, rm, r, &in); err != nil {
 		return in, err
@@ -390,20 +398,29 @@ type Check struct {
 
 // Outcome is the verified result of Execute. It carries digests and sizes only.
 type Outcome struct {
-	PlanID        string  `json:"planId"`
-	Status        string  `json:"status"`
-	Before        string  `json:"before"`
-	After         string  `json:"after"`
-	AfterBytes    int     `json:"afterBytes"`
-	DirectoryMade bool    `json:"directoryCreated"`
-	Transfer      string  `json:"transfer"` // "not attempted", "2xx" or a sanitized error
-	Checks        []Check `json:"checks"`
+	PlanID     string  `json:"planId"`
+	Status     string  `json:"status"`
+	Before     string  `json:"before"`
+	After      string  `json:"after"`
+	AfterBytes int     `json:"afterBytes"`
+	Directory  string  `json:"directory"` // not needed / created / not created / created despite a mkdir error / unknown
+	Transfer   string  `json:"transfer"`  // "not attempted", "2xx" or a sanitized error
+	Checks     []Check `json:"checks"`
 }
+
+// Directory outcomes.
+const (
+	DirNotNeeded         = "not needed (already present)"
+	DirCreated           = "created"
+	DirNotCreated        = "not created"
+	DirCreatedDespiteErr = "present after a mkdir error (side effect; the file write was not attempted)"
+	DirUnknown           = "unknown (mkdir failed and the folder could not be listed)"
+)
 
 // Execute performs the authorized write. authorizedID must be the plan ID the owner approved; it is
 // recomputed from a fresh inspection, so any change since approval refuses the write.
 func Execute(ctx context.Context, rm Remote, r Request, authorizedID string, j *Journal) (Outcome, error) {
-	out := Outcome{PlanID: authorizedID, Status: StatusNotWritten, Transfer: "not attempted"}
+	out := Outcome{PlanID: authorizedID, Status: StatusNotWritten, Transfer: "not attempted", Directory: DirNotNeeded}
 	if strings.TrimSpace(authorizedID) == "" {
 		return out, ErrAuthorizationMissing
 	}
@@ -413,6 +430,11 @@ func Execute(ctx context.Context, rm Remote, r Request, authorizedID string, j *
 	if err := r.Validate(); err != nil {
 		return out, err
 	}
+	unlock, err := j.Lock()
+	if err != nil {
+		return out, err
+	}
+	defer unlock()
 	svc := r.Binding.NitradoServiceID
 	if open, err := j.Outstanding(svc, r.Path); err != nil {
 		return out, err
@@ -434,13 +456,13 @@ func Execute(ctx context.Context, rm Remote, r Request, authorizedID string, j *
 	in := plan.Inspection
 	out.Before = in.Current
 	// The authorization is consumed BEFORE any write: a crash from here on leaves a STARTED entry,
-	// which blocks further writes to this destination until resolved.
+	// which blocks further writes to this destination until the owner resolves it.
 	if err := j.Append(Entry{PlanID: plan.ID, Operation: string(r.Operation), Service: svc, Path: r.Path, Status: "STARTED", Detail: "before=" + in.Current}); err != nil {
 		return out, fmt.Errorf("missionwrite: journal: %w", err)
 	}
 	finish := func(o Outcome, detail string) (Outcome, error) {
-		if err := j.Append(Entry{PlanID: plan.ID, Operation: string(r.Operation), Service: svc, Path: r.Path, Status: o.Status, Detail: detail}); err != nil {
-			return o, fmt.Errorf("missionwrite: outcome %s could not be journaled: %w", o.Status, err)
+		if err := j.Append(Entry{PlanID: plan.ID, Operation: string(r.Operation), Service: svc, Path: r.Path, Status: o.Status, Detail: detail + "; directory: " + o.Directory}); err != nil {
+			return o, fmt.Errorf("missionwrite: outcome %s could not be journaled (the STARTED entry keeps the destination blocked): %w", o.Status, err)
 		}
 		return o, nil
 	}
@@ -449,18 +471,38 @@ func Execute(ctx context.Context, rm Remote, r Request, authorizedID string, j *
 	dir = strings.TrimSuffix(dir, "/")
 	if !in.ParentExists {
 		mkErr := rm.Mkdir(ctx, svc, in.phys.missionDir, dir)
-		var now Inspection = in
-		if err := readTarget(ctx, rm, r, &now); err != nil || !now.ParentExists {
-			// The directory is not there: no file can have been written.
+		now := in
+		lerr := readTarget(ctx, rm, r, &now)
+		switch {
+		case mkErr == nil && lerr == nil && now.ParentExists:
+			out.Directory = DirCreated
+			out.Checks = append(out.Checks, Check{"mkdir", "PASS", "champion/ created and listed"})
+		case mkErr == nil:
+			// Reported success, but the folder is not visible: do not write into an unverified folder.
+			out.Directory = DirUnknown
+			if lerr == nil {
+				out.Directory = DirNotCreated
+			}
+			out.Checks = append(out.Checks, Check{"mkdir", "FAIL", "mkdir reported success but the folder is not listed"})
+			return finish(out, "folder not verified; no file write attempted")
+		default:
+			// Any mkdir error stops the operation, whatever the folder state is; the state is reported.
+			switch {
+			case lerr != nil:
+				out.Directory = DirUnknown
+			case now.ParentExists:
+				out.Directory = DirCreatedDespiteErr
+			default:
+				out.Directory = DirNotCreated
+			}
 			out.Checks = append(out.Checks, Check{"mkdir", "FAIL", errText(mkErr)})
 			return finish(out, "mkdir failed; no file write attempted")
 		}
-		out.DirectoryMade = true
-		out.Checks = append(out.Checks, Check{"mkdir", "PASS", "directory present after mkdir (" + errText(mkErr) + ")"})
 	}
 
 	// Re-verify immediately before the write (narrows the race: Nitrado has no conditional write).
-	var pre Inspection = in
+	pre := in
+	pre.ParentExists = true
 	if err := readTarget(ctx, rm, r, &pre); err != nil || pre.Current != r.ExpectCurrent {
 		out.Checks = append(out.Checks, Check{"pre-write destination", "FAIL", "destination changed or unreadable"})
 		return finish(out, "aborted before the upload request")
@@ -474,34 +516,37 @@ func Execute(ctx context.Context, rm Remote, r Request, authorizedID string, j *
 		return finish(out, "unsafe parent path")
 	}
 
-	target, err := rm.RequestUploadToken(ctx, svc, parentPath, name)
-	if err != nil {
-		out.Checks = append(out.Checks, Check{"upload token", "FAIL", errText(err)})
-		return finish(out, "no upload token; nothing sent")
-	}
-	transferErr := rm.PostUpload(ctx, target, r.Payload)
-	out.Transfer = "2xx"
-	if transferErr != nil {
-		out.Transfer = errText(transferErr)
+	target, tokenErr := rm.RequestUploadToken(ctx, svc, parentPath, name)
+	var transferErr error
+	if tokenErr != nil {
+		out.Checks = append(out.Checks, Check{"upload token", "FAIL", errText(tokenErr)})
+	} else {
+		transferErr = rm.PostUpload(ctx, target, r.Payload)
+		out.Transfer = "2xx"
+		if transferErr != nil {
+			out.Transfer = errText(transferErr)
+		}
 	}
 
-	// Independent read-back decides the outcome.
-	var after Inspection = in
+	// Independent read-back decides the outcome - also after a failed token request, because the
+	// token call itself is a server-side request whose side effects are undocumented.
+	after := in
 	after.ParentExists = true
 	if err := readTarget(ctx, rm, r, &after); err != nil {
 		out.Status = StatusUncertain
 		out.Checks = append(out.Checks, Check{"read-back", "UNVERIFIED", "the destination could not be read back"})
-		return finish(out, "read-back failed after a transfer attempt")
+		return finish(out, "read-back failed after a write request")
 	}
 	out.After, out.AfterBytes = after.Current, after.CurrentBytes
+	refused := tokenErr != nil || transferErr != nil
 	switch {
-	case after.Current == r.ExpectPayloadSHA256 && after.CurrentBytes == len(r.Payload):
+	case after.Current == r.ExpectPayloadSHA256 && after.CurrentBytes == len(r.Payload) && tokenErr == nil:
 		out.Status = StatusWrittenVerified
 		out.Checks = append(out.Checks, Check{"read-back", "PASS", fmt.Sprintf("%d bytes, SHA-256 %s", after.CurrentBytes, after.Current)})
-	case after.Current == Absent && transferErr != nil:
+	case after.Current == Absent && refused:
 		out.Status = StatusNotWritten
-		out.Checks = append(out.Checks, Check{"read-back", "PASS", "destination still absent after a refused transfer"})
-		return finish(out, "transfer refused; destination verified absent")
+		out.Checks = append(out.Checks, Check{"read-back", "PASS", "destination verified absent after the refused request"})
+		return finish(out, "request refused; destination verified absent")
 	case after.Current == Absent:
 		out.Status = StatusUncertain
 		out.Checks = append(out.Checks, Check{"read-back", "FAIL", "the file server reported success but the file is absent"})

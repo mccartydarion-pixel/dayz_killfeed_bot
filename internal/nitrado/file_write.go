@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -68,12 +69,27 @@ func (e *WriteError) Error() string {
 	return fmt.Sprintf("nitrado %s failed: kind=%s %s", e.Phase, e.Kind, e.Detail)
 }
 
-// ErrInsecureUploadURL: the upload destination is not an https URL with a host. The token is never
+// ErrInsecureUploadURL: the upload destination is outside the trust boundary. The token is never
 // sent to it.
-var ErrInsecureUploadURL = errors.New("nitrado: upload destination is not an https URL")
+var ErrInsecureUploadURL = errors.New("nitrado: upload destination is outside the trusted Nitrado https hosts")
 
-// AllowInsecureUploadURL permits http upload destinations. Only the disposable test stand-in sets it.
+// TrustedUploadDomain is the only registrable domain an upload token may be sent to: the URL
+// must be https, on the default port, without user-info, and its host must be this domain or a
+// subdomain of it (never an IP literal, never a look-alike such as nitrado.net.example.com).
+const TrustedUploadDomain = "nitrado.net"
+
+// AllowInsecureUploadURL disables the trust boundary. Only the disposable test stand-in sets it
+// (enforced by missionwrite.TestWriteCapabilityIsIsolated).
 var AllowInsecureUploadURL = false
+
+// TrustedUploadHost reports whether host (no port) is inside the trust boundary.
+func TrustedUploadHost(host string) bool {
+	h := strings.ToLower(strings.TrimSuffix(host, "."))
+	if h == "" || net.ParseIP(h) != nil {
+		return false
+	}
+	return h == TrustedUploadDomain || strings.HasSuffix(h, "."+TrustedUploadDomain)
+}
 
 // DirEntry is one file-server list entry, directories included (ListDir returns files only).
 type DirEntry struct {
@@ -141,13 +157,30 @@ func (c *Client) RequestUploadToken(ctx context.Context, serviceID, dir, name st
 
 func checkUploadURL(raw string) error {
 	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" || u.User != nil {
+	if err != nil || u.Host == "" || u.User != nil || u.Opaque != "" {
 		return ErrInsecureUploadURL
 	}
-	if u.Scheme == "https" || (u.Scheme == "http" && AllowInsecureUploadURL) {
+	if AllowInsecureUploadURL && (u.Scheme == "http" || u.Scheme == "https") {
 		return nil
 	}
-	return ErrInsecureUploadURL
+	if u.Scheme != "https" || (u.Port() != "" && u.Port() != "443") || !TrustedUploadHost(u.Hostname()) {
+		return ErrInsecureUploadURL
+	}
+	return nil
+}
+
+// DownloadHost resolves a download token for path (a READ) and returns only the host of the signed
+// URL, for the dry run's trust-boundary report. The URL itself is discarded.
+func (c *Client) DownloadHost(ctx context.Context, serviceID, path string) (string, error) {
+	signed, err := c.fetchSignedURL(ctx, "/services/"+url.PathEscape(serviceID)+"/gameservers/file_server/download?file="+url.QueryEscape(path), "file download")
+	if err != nil {
+		return "", err
+	}
+	u, err := url.Parse(signed)
+	if err != nil || u.Hostname() == "" {
+		return "", errors.New("download URL has no host")
+	}
+	return strings.ToLower(u.Hostname()), nil
 }
 
 // PostUpload is step 2: exactly one POST of data to the target. It does not follow redirects (the

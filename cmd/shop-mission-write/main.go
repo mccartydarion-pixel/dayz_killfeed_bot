@@ -11,7 +11,7 @@
 //	    -mission dayzps_missions/dayzOffline.chernarusplus -path champion/champion_shop_delivery.json \
 //	    -expect-current absent -expect-config-sha256 <sha> -expect-spawners '["custom/The_Lost_City.json"]' \
 //	    -expect-payload-sha256 328c4d64bb81bdbdddad2431a12b6197182f5fa5646bf16c7e0e8d437bc8dc5f \
-//	    -journal <file>                       # dry run: prints the plan ID
+//	    # dry run (default): prints the inspection, the journal state and the plan ID
 //	    ... -execute -authorize <plan ID>     # the one authorized write
 package main
 
@@ -52,7 +52,11 @@ func run() int {
 	expectConfig := flag.String("expect-config-sha256", "", "expected cfggameplay.json SHA-256")
 	expectSpawners := flag.String("expect-spawners", "", `expected objectSpawnersArr as JSON, e.g. '["custom/The_Lost_City.json"]'`)
 	expectPayload := flag.String("expect-payload-sha256", "", "expected payload SHA-256")
-	journalPath := flag.String("journal", "", "local journal file (single-use authorizations, outcomes)")
+	defJournal, defAnchor, _ := missionwrite.DefaultPaths()
+	journalPath := flag.String("journal", defJournal, "ABSOLUTE path of the local journal (single-use authorizations, outcomes)")
+	anchorPath := flag.String("anchor", defAnchor, "ABSOLUTE path of the journal anchor (a different directory)")
+	initJournal := flag.Bool("init-journal", false, "create the journal and anchor once (refuses if either exists); no server call")
+	adoptJournal := flag.Bool("adopt-journal", false, "owner action: re-anchor an intact journal whose anchor was lost; no server call")
 	execute := flag.Bool("execute", false, "perform the write (requires -authorize)")
 	authorize := flag.String("authorize", "", "the plan ID the owner approved")
 	resolve := flag.String("resolve", "", "record the owner's resolution of an UNCERTAIN/interrupted plan ID (journal only; no server call)")
@@ -60,18 +64,41 @@ func run() int {
 	timeout := flag.Duration("timeout", 120*time.Second, "overall timeout")
 	flag.Parse()
 
-	j, err := missionwrite.OpenJournal(*journalPath)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "refused:", err)
-		return exitRefused
+	switch {
+	case *initJournal:
+		if _, err := missionwrite.InitJournal(*journalPath, *anchorPath); err != nil {
+			fmt.Fprintln(os.Stderr, "refused:", err)
+			return exitRefused
+		}
+		fmt.Println("journal created:", *journalPath)
+		fmt.Println("anchor created: ", *anchorPath)
+		return exitOK
+	case *adoptJournal:
+		if _, err := missionwrite.AdoptJournal(*journalPath, *anchorPath); err != nil {
+			fmt.Fprintln(os.Stderr, "refused:", err)
+			return exitRefused
+		}
+		fmt.Println("journal adopted; outstanding writes (if any) remain outstanding")
+		return exitOK
 	}
+	// The journal is opened (never created) and verified against its anchor. A dry run reports its
+	// state; -execute and -resolve refuse without a verified journal.
+	j, jerr := missionwrite.OpenJournal(*journalPath, *anchorPath)
 	if *resolve != "" {
+		if jerr != nil {
+			fmt.Fprintln(os.Stderr, "refused:", jerr)
+			return exitRefused
+		}
 		if err := j.Resolve(*resolve, *service, *dest, *note); err != nil {
 			fmt.Fprintln(os.Stderr, "refused:", err)
 			return exitRefused
 		}
-		fmt.Println("resolution recorded for", *resolve)
+		fmt.Println("resolution recorded for", *resolve, "(the plan ID stays used)")
 		return exitOK
+	}
+	if *execute && jerr != nil {
+		fmt.Fprintln(os.Stderr, "refused:", jerr)
+		return exitRefused
 	}
 
 	var spawners []string
@@ -118,6 +145,12 @@ func run() int {
 			fmt.Println("\nREFUSED:", err)
 			return exitRefused
 		}
+		if jerr != nil {
+			fmt.Println("\njournal: NOT READY -", jerr)
+		} else {
+			open, _ := j.Outstanding(*service, *dest)
+			fmt.Printf("\njournal: verified (%s); outstanding write for this destination: %t\n", *journalPath, open)
+		}
 		fmt.Println("\nplan (NOT EXECUTED):")
 		for i, s := range p.Steps {
 			fmt.Printf("  %d. %s\n", i+1, s)
@@ -136,7 +169,7 @@ func run() int {
 	fmt.Println("status:    ", o.Status)
 	fmt.Println("before:    ", o.Before)
 	fmt.Printf("after:      %s (%d bytes)\n", o.After, o.AfterBytes)
-	fmt.Println("directory: ", map[bool]string{true: "created", false: "not created"}[o.DirectoryMade])
+	fmt.Println("directory: ", o.Directory)
 	fmt.Println("transfer:  ", o.Transfer)
 	for _, c := range o.Checks {
 		fmt.Printf("  %-10s %-28s %s\n", c.Result, c.Name, c.Detail)
@@ -180,6 +213,14 @@ func printInspection(in missionwrite.Inspection) {
 	}
 	fmt.Println("  gameserver status: ", in.GameserverStatus)
 	fmt.Println("  current boot:      ", orUnverified(in.BootFile))
+	switch {
+	case in.FileServerHost == "":
+		fmt.Println("  file-server host:   UNVERIFIED")
+	case in.FileServerHostTrusted:
+		fmt.Printf("  file-server host:   %s (inside the upload trust boundary *.%s)\n", in.FileServerHost, nitrado.TrustedUploadDomain)
+	default:
+		fmt.Printf("  file-server host:   %s - OUTSIDE the upload trust boundary *.%s: an upload would be refused before the token is sent\n", in.FileServerHost, nitrado.TrustedUploadDomain)
+	}
 }
 
 func orUnverified(s string) string {
