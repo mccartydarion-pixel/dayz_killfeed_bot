@@ -16,3 +16,7 @@ This release installs an inert, versioned detector registry and read-only, scope
 Before any detector can execute in shadow mode: define persistent source-addressed evaluation storage with scoped foreign keys and uniqueness; build a separately gated evaluation runner; attach immutable evidence IDs, version and provenance; test idempotence, cross-tenant isolation, bounded replay and rollback. Then prove each rule's input prerequisites with actual data. Enforcement stays disabled by design.
 
 No Nitrado, Discord, server, collector or source-selection configuration changes.
+
+## Release validation
+
+Do not promote on stale CI results: inspect check runs for the exact final commit after any deployment-integration configuration change. The Go test job and the Cloudflare build check are independent gates; a stale failed check on an older commit is not proof that a newer build passed. The live killfeed runs on Railway, not this inert readiness route. Verify Railway health after release.
