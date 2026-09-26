@@ -148,3 +148,23 @@ Recovery **never runs automatically**. Restoring production is a separate, expli
 * The job has `permissions: contents: read`. It cannot push, merge or deploy.
 * Nothing in this branch is merged into `main`.
 * The Shop PRs #97, #98 and #95 stay unmerged until a production backup has a `PASS` manifest and the owner has a verified copy.
+
+## 8. Backup log
+
+### 2026-09-26: first production backup (owner-approved), PASS
+
+| Field | Value |
+|---|---|
+| Archive | `champion-db-20260926T052123Z-run36220469776` |
+| Run | https://github.com/mccartydarion-pixel/dayz_killfeed_bot/actions/runs/36220469776 (trigger commit `818af5e`, empty) |
+| Destination | private Cloudflare R2 bucket, `champion-db/champion-db-20260926T052123Z-run36220469776.tar.gpg` plus `.manifest.txt` |
+| Server / pg_dump | 18.6 / 18.6 |
+| Dump | 9,668,660 bytes, SHA-256 `d855c13da84fc814eb864b003568562744860d0b61f5832f1511dc1883d601e9` |
+| Encrypted archive | 9,421,604 bytes, SHA-256 `2a54ddb4e7adc6d2ab585522255e2e74aa106fd9b3eac261dcbedc2f1e3f8fe6` (GPG AES256, S2K SHA512 ×65,011,712) |
+| Snapshot | one exported REPEATABLE READ, read-only snapshot; `pg_dump` took 25 s |
+| Restore 1 (local copy) | archive of 917 entries restored into disposable PostgreSQL 18; inventory identical: **PASS** |
+| Restore 2 (retrieved copy) | downloaded from R2, archive SHA-256 matched, decrypted, dump SHA-256 matched, restored into a second disposable PostgreSQL 18; inventory identical: **PASS** |
+| Inventory | 53 migrations (last `0053_installation_embed_activation`); 89 tables with exact row counts and content hashes; 425 relations, 275 indexes, 1,071 constraints, 61 sequences, 2 functions, 2 triggers, 1 extension |
+| Log check | no connection string or endpoint in the run log |
+
+This is the pre-0054 backup required before PRs #97, #98 and #95 can be deployed.
