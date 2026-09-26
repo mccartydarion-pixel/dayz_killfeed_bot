@@ -16,8 +16,10 @@ var ErrAlreadyLinked = errors.New("account already linked")
 var ErrPlayerClaimed = errors.New("player already linked")
 var ErrPlaytimeRequired = errors.New("minimum observed playtime required")
 var ErrLinkCheckUnavailable = errors.New("link check unavailable")
+
+// ErrNoConnectedServer means the guild has no active DayZ server: a
+// configuration state for an admin to fix, not a backend outage.
 var ErrNoConnectedServer = errors.New("no connected server")
-var ErrMultipleConnectedServers = errors.New("multiple connected servers")
 
 // PlayerCandidate is a known player returned by the repository.
 type PlayerCandidate struct {
@@ -106,8 +108,11 @@ type LinkVerificationService struct {
 type ActivityReader interface {
 	GetObservedPlaytime(context.Context, int64, int64, int64, time.Time) (time.Duration, error)
 }
+
+// ServerResolver lists a guild's active servers: the servers whose ADM
+// activity is being ingested.
 type ServerResolver interface {
-	ConnectedServerID(context.Context, int64) (int64, error)
+	ActiveServerIDs(context.Context, int64) ([]int64, error)
 }
 
 // SetRoleAssigner attaches the role assigner after construction, for callers
@@ -180,27 +185,34 @@ func (s *LinkVerificationService) Request(ctx context.Context, guildID int64, di
 		return nil, ErrPlayerNotFound
 	}
 	candidate := candidates[0]
-	serverID, serverErr := s.serverID.ConnectedServerID(ctx, guildID)
+	serverIDs, serverErr := s.serverID.ActiveServerIDs(ctx, guildID)
 	if serverErr != nil {
-		errorClass := "SERVER_CONTEXT_UNAVAILABLE"
-		if strings.Contains(strings.ToLower(serverErr.Error()), "no connected server") {
-			errorClass = "NO_CONNECTED_SERVER"
-		} else if strings.Contains(strings.ToLower(serverErr.Error()), "multiple connected servers") {
-			errorClass = "MULTIPLE_CONNECTED_SERVERS"
-		}
-		slog.Warn("component=link", "guild", guildID, "server_resolved", false, "database_available", true, "activity_query", "not_run", "error_class", errorClass)
+		slog.Warn("component=link", "guild", guildID, "server_resolved", false, "database_available", false, "activity_query", "not_run", "error_class", "SERVER_LOOKUP_FAILED", "message", sanitizeLinkError(serverErr))
 		return nil, ErrLinkCheckUnavailable
 	}
-	slog.Debug("component=link", "guild", guildID, "server_resolved", true, "database_available", true, "activity_query", "pending", "error_class", "SERVER_RESOLVED")
-	playtime, activityErr := s.activity.GetObservedPlaytime(ctx, guildID, serverID, candidate.ID, time.Now())
-	if activityErr != nil {
-		var sqlState string
-		var stater sqlStater
-		if errors.As(activityErr, &stater) {
-			sqlState = stater.SQLState()
+	if len(serverIDs) == 0 {
+		slog.Warn("component=link", "guild", guildID, "server_resolved", false, "database_available", true, "activity_query", "not_run", "error_class", "NO_CONNECTED_SERVER")
+		return nil, ErrNoConnectedServer
+	}
+	slog.Debug("component=link", "guild", guildID, "server_resolved", true, "servers", len(serverIDs), "database_available", true, "activity_query", "pending", "error_class", "SERVER_RESOLVED")
+	// Playtime is judged per server and the best single server counts: never a
+	// sum across servers, so the five-minute requirement is never weakened.
+	var playtime time.Duration
+	now := time.Now()
+	for _, serverID := range serverIDs {
+		observed, activityErr := s.activity.GetObservedPlaytime(ctx, guildID, serverID, candidate.ID, now)
+		if activityErr != nil {
+			var sqlState string
+			var stater sqlStater
+			if errors.As(activityErr, &stater) {
+				sqlState = stater.SQLState()
+			}
+			slog.Warn("component=link", "stage", "activity_lookup", "guild", guildID, "server_resolved", true, "database_available", false, "activity_query", "failure", "error_class", "ACTIVITY_LOOKUP_FAILED", "sql_state", sqlState, "message", sanitizeLinkError(activityErr))
+			return nil, ErrLinkCheckUnavailable
 		}
-		slog.Warn("component=link", "stage", "activity_lookup", "guild", guildID, "server_resolved", true, "database_available", false, "activity_query", "failure", "error_class", "ACTIVITY_LOOKUP_FAILED", "sql_state", sqlState, "message", sanitizeLinkError(activityErr))
-		return nil, ErrLinkCheckUnavailable
+		if observed > playtime {
+			playtime = observed
+		}
 	}
 	slog.Debug("component=link", "guild", guildID, "server_resolved", true, "database_available", true, "activity_query", "success", "error_class", "ACTIVITY_LOOKUP_SUCCESS")
 	if playtime < 5*time.Minute {

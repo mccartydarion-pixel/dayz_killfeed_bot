@@ -62,21 +62,35 @@ func (r *ServerRepository) ListActive(ctx context.Context) ([]GameServer, error)
 	}
 	return out, rows.Err()
 }
-func (r *ServerRepository) ConnectedServerID(ctx context.Context, guildID int64) (int64, error) {
-	rows, err := r.pool.Query(ctx, `SELECT id FROM game_servers WHERE guild_id=$1 AND active AND LOWER(status) IN ('connected','ready','active') ORDER BY id`, guildID)
+
+// ActiveServerIDs returns the IDs of every active game_servers row for one
+// guild: the same set ListActiveByGuild starts ADM workers for, so readers of
+// player_server_activity see exactly the servers whose activity is ingested.
+// status is deliberately not filtered: it is display state (the dashboard
+// writes ONLINE/OFFLINE, /server connect writes CONNECTED), and deactivation
+// always clears active.
+func (r *ServerRepository) ActiveServerIDs(ctx context.Context, guildID int64) ([]int64, error) {
+	rows, err := r.pool.Query(ctx, `SELECT id FROM game_servers WHERE guild_id=$1 AND active ORDER BY id`, guildID)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	defer rows.Close()
 	var ids []int64
 	for rows.Next() {
 		var id int64
 		if err := rows.Scan(&id); err != nil {
-			return 0, err
+			return nil, err
 		}
 		ids = append(ids, id)
 	}
-	if err := rows.Err(); err != nil {
+	return ids, rows.Err()
+}
+
+// ConnectedServerID returns the guild's single active server (see
+// ActiveServerIDs), or an error when there is none or more than one.
+func (r *ServerRepository) ConnectedServerID(ctx context.Context, guildID int64) (int64, error) {
+	ids, err := r.ActiveServerIDs(ctx, guildID)
+	if err != nil {
 		return 0, err
 	}
 	switch len(ids) {
