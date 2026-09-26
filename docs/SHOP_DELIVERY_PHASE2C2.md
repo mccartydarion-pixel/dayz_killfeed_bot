@@ -308,8 +308,8 @@ All VERIFIED IN TEST:
 | Staging readiness and operator window | `TestStagingReadiness` |
 | Physical fulfillment with pickup | `TestFulfillOnlyOnPhysicalConfirmation` |
 | Gate order and properties; upload sequence | `TestGatesAndUploadSequence` |
-| Ledger not registered | `TestMigrationIsProposalOnly` |
-| Ledger guarantees (PostgreSQL) | `TestProposedLedgerMigration` (integration) |
+| Config preservation with Lost City already enabled (live since 2026-09-25) | `TestShopPatchKeepsEnabledLostCity` |
+| Ledger migrations on existing data, concurrent startups (PR #97) | `TestShopLedgerMigrationsOnExistingData`, `TestConcurrentStartupsMigrateOnce` (integration) |
 | State machine and reconcile | `nitradodelivery` tests |
 | Read-only and redaction | `TestPackageIsNonExecuting`, `TestOutputsCarryNoCredentials`, 2C.1 `TestReaderIsReadOnly` |
 
@@ -324,7 +324,7 @@ PR #95: `backend-ci` runs build, vet (including the integration tag), unit tests
 * Reads of the recent RPT files and the current ADM (counts only).
 * `GET /api/admin/live-sync`.
 
-## 12. Verdict
+## 12. Verdict (original revision; superseded by section 13)
 
 **BLOCKED — AWAITING OWNER DECISIONS**
 
@@ -336,3 +336,89 @@ The preparation is complete, but nothing can run until the owner decides:
 4. The operator, the availability window, and manual vs scheduled restart for Gate F.
 5. The drop-point spot. The observation itself must be fresh on the day.
 6. Lost City: re-enable or leave off (independent).
+
+## 13. Final canary preparation (2026-09-26)
+
+This section supersedes the live values in sections 1 and 8 where they differ.
+
+### 13.1 What changed since the review
+
+| Item | Status |
+|---|---|
+| Gate C (ledger, migration 0054, PR #97) | **Done.** Deployed 2026-09-26 (Railway `997fb02e`); `cmd/shop-ledger-verify -phase 0054`: all PASS. |
+| Operator service and evidence (migration 0055, PR #98) | **Deployed** 2026-09-26 (Railway `23d3b0a1`, commit `a849ee6`). `-phase 0055`: all PASS. 55 migrations; 0 attempts, history and evidence rows; economy totals unchanged; canary API `executionLocked: true`; mutation refused with 423. |
+| Canary execution lock | **Closed.** Neither `CHAMPION_SHOP_CANARY_EXECUTION` nor `CHAMPION_SHOP_CANARY_INSTALLATION_IDS` is set. The startup log reports `execution_enabled=false installations=0`. |
+| The Lost City | **Re-enabled by the owner** on 2026-09-25. The last verified live `cfggameplay.json` (2026-09-25, `docs/SHOP_LEDGER_ROLLOUT.md` section 0) is 2951 bytes, SHA-256 `4d000807963a…`, `objectSpawnersArr = ["custom/The_Lost_City.json"]`. |
+
+What follows from this:
+
+* **Section 1's `cfggameplay.json` facts and Gate B's hashes in section 8 are obsolete.** Section 1 records `99bcc7d7…` and an empty array; Gate B pins `99bcc7d7…` → `7c66bf0d…`. Gate B must instead use the current and proposed SHA-256 printed by a fresh `cmd/shop-canary-prepare` run on the day.
+* **Gate B keeps the Lost City reference.**
+  * `ProposePatch` appends `champion/champion_shop_delivery.json` after every existing entry and changes no other byte (`TestShopPatchKeepsEnabledLostCity`).
+  * The expected result is `["custom/The_Lost_City.json", "champion/champion_shop_delivery.json"]`.
+* **The `LOST_CITY` gate is not needed.** `ProposeLostCityRestore` reports "nothing to change" on the current file, before and after the Shop reference.
+* **The empty Champion file is unchanged:** 20 bytes, SHA-256 `328c4d64bb81bdbdddad2431a12b6197182f5fa5646bf16c7e0e8d437bc8dc5f`.
+
+### 13.2 Fresh live read (owner-run, read-only)
+
+This revision did **not** re-read the live server: the session was not permitted to use the production Nitrado token.
+
+The owner runs it from the repository folder:
+
+```
+railway run -s dayz_killfeed_bot go run ./cmd/shop-canary-prepare -service 19806451 -org 1 -installation 11 -game-server 1
+```
+
+It only makes GET requests and signed downloads. It requests no upload token, and prints no token, signed URL or account path.
+
+Accept the output only if all of these hold:
+
+* the mission is the Chernarus mission already verified in 2C.1;
+* the Gate A line reads `current Champion file: not readable (absent)`, or the file is present with SHA-256 `328c4d64…`;
+* the Gate B `current` line is the file the owner expects. An owner edit changes its SHA-256, which is fine, but that value is what Gate B pins;
+* `objectSpawnersArr` goes from `["custom/The_Lost_City.json"]` to `["custom/The_Lost_City.json" "champion/champion_shop_delivery.json"]`, and the only change is `add champion/champion_shop_delivery.json`;
+* `[LOST_CITY]` reports no change, and `custom/The_Lost_City.json` parses as a spawner file.
+
+The boot identity is read on the day of Gate D, because the drop point must come from the current boot. It is `bootAuthority.acceptedBoot` from `GET /api/admin/live-sync`.
+
+### 13.3 The BandageDressing canary plan
+
+* **Item.** One `BandageDressing`, quantity 1, built through the production plan validator (`nitradodelivery.NewPlan`).
+* **Drop point.** It must be verified for the current boot (`VerifyDropPoint`): tenant, `chernarusplus`, altitude from the ADM, current-boot source, and freshness.
+* **Product.** 1 point, FINITE stock 1, purchase limit 1, active only for the purchase window.
+* **Purchase.** A normal Shop purchase by the owner (Gate D) at the drop point's X/Z. The delivery must be within 0.5 m of the drop point.
+* **Staged file.** Its content and SHA-256 depend on the real delivery ID (`champion:d<id>:a1`). They are computed from the real record after Gate D (`PreviewSingleItem` with `Delivery` set).
+* **No placeholder delivery.** A preview built on delivery 0 is refused for production by `ValidateProductionAttemptID`; the ledger's CHECK constraint and foreign key refuse it too.
+* **Unstaged content.** The empty file (`328c4d64…`), which is also the rollback content.
+* **Recording.** With 0055 deployed, gates D–I are recorded through the operator API (`/shop/canary/attempts`): create attempt, evidence, advance, review and fulfil.
+  * Physical evidence kinds need `IN_GAME_OBSERVATION`.
+  * Fulfilment needs a named pickup confirmation.
+  * A review needs a `REVIEW_OBSERVATION`.
+
+### 13.4 Authorization gates, in order
+
+Each gate is a separate, explicit owner approval.
+
+| # | Gate | What it does | Touches |
+|---|---|---|---|
+| 1 | **A — create the empty Champion file** | One upload of the 20-byte empty spawner file, read back as `328c4d64…`. Nothing references it yet. | Nitrado file (new) |
+| 2 | **B — reference it** | Back up `cfggameplay.json`, upload the patch pinned to the fresh current SHA-256, and read back the proposed SHA-256. The next boot (a scheduled one is fine: the file is empty) must show no Champion spawner error. | Nitrado `cfggameplay.json` |
+| 3 | **Open the execution lock** | Set `CHAMPION_SHOP_CANARY_EXECUTION=enabled` and `CHAMPION_SHOP_CANARY_INSTALLATION_IDS=11` on `dayz_killfeed_bot`. This redeploys the bot only, never Champions. | Railway variables |
+| 4 | **D — canary purchase** | The owner buys the 1-point canary at the fresh drop point, and the attempt is created (`PLAN_CREATED`). | Shop records (1 point) |
+| 5 | **E — stage the file** | After `CheckStagingReadiness` passes, replace the empty Champion file with BandageDressing ×1 and read back the staged SHA-256. | Nitrado Champion file |
+| 6 | **F — restart** | An owner-triggered restart (recommended: shortest exposure) or the next scheduled one. The operator records the milestones. | Champions restart |
+| 7 | **G — unstage** | Restore the empty file and verify it before any further boot (`UNSTAGE_REQUIRED` → `VERIFICATION_REQUIRED`). | Nitrado Champion file |
+| 8 | **H — second restart and no-respawn check** | One more boot. In game, no new bandage appears at the drop point. | Champions restart |
+| 9 | **I — physical confirmation and fulfilment** | Record the named in-game observation and pickup as evidence. Then mark the attempt, delivery and purchase `FULFILLED` in one transaction. | Shop records |
+| 10 | **Close the execution lock** | Unset both variables. This redeploys the bot only. | Railway variables |
+
+Rollback at every step is as in section 8.
+
+Automatic delivery stays disabled throughout: `nitradodelivery.PrototypeAdapter.Enabled = false`, and there is no worker.
+
+### 13.5 Remaining blockers
+
+1. The owner's fresh, read-only `shop-canary-prepare` run (13.2), which pins Gate B's hashes.
+2. Owner approval of Gate A, the first live write. Write capability stays UNVERIFIED until then.
+3. For Gate F: the operator, the availability window, and manual vs scheduled restart. The drop point on the day.
+4. Merging this PR. It contains code and documents only, no migration, and nothing in it executes.
