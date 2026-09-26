@@ -13,10 +13,15 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/billing"
 )
 
-// requiredWebhookEvents are exactly the events Champion's webhook handles.
+// requiredWebhookEvents are exactly the events Champion's webhook handles. The
+// refund/dispute/void events (Phase 6.26B) reconcile C.A.S.E. invoice coverage; without
+// them a refunded or disputed add-on invoice would keep granting access.
 var requiredWebhookEvents = []string{
 	"checkout.session.completed", "customer.subscription.created", "customer.subscription.updated",
 	"customer.subscription.deleted", "invoice.paid", "invoice.payment_failed",
+	"charge.refunded", "charge.refund.updated",
+	"charge.dispute.created", "charge.dispute.updated", "charge.dispute.closed", "charge.dispute.funds_reinstated",
+	"invoice.voided", "invoice.marked_uncollectible",
 }
 
 // stripeGet performs one authenticated read-only GET; errors never include

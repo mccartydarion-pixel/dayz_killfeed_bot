@@ -368,3 +368,62 @@ Tests: `internal/billing/case_plan_change_test.go`, `internal/casebilling/access
 `internal/app/saas_api_case_plan_change_integration_test.go`,
 `internal/database/migrations_case_addon_test.go`. All use FakeProvider. **Nothing in this phase has
 been executed against Stripe yet** - see `CASE_STRIPE_TESTMODE_QA.md` "Sandbox lifecycle run".
+
+## Phase 6.26B — refunds, disputes and invoice-level coverage
+
+**Policy (approved).** Coverage is recorded per paid C.A.S.E. invoice, and access is recomputed
+from that ledger. Status always comes from live Stripe state (charges and disputes of the
+invoice's PaymentIntent), never from the event body alone, so duplicate and out-of-order
+deliveries converge.
+
+| Live state of the invoice's payment | Ledger status | Coverage |
+|---|---|---|
+| refunded >= amount paid | `REFUNDED` | revoked |
+| partially refunded | `PARTIALLY_REFUNDED` | kept, flagged |
+| dispute open or unknown status | `DISPUTED` | suspended |
+| dispute `won` / `warning_closed` / `prevented` | `DISPUTE_WON` | restored |
+| dispute `lost` | `DISPUTE_LOST` | revoked |
+| `invoice.voided` / `marked_uncollectible` | `VOIDED` (history only) | none (an unpaid invoice never granted coverage) |
+
+Precedence: lost > full refund > open dispute > partial refund > won > paid. A refunded Pro upgrade
+proration revokes only that invoice, so the add-on falls back to the still-paid Watch invoice. A
+later `invoice.paid` for an already-reversed invoice cannot revive it (`ON CONFLICT DO NOTHING`).
+
+**Attribution.** Never by customer id alone: event -> PaymentIntent -> `/v1/invoice_payments` ->
+live invoice -> `parent.subscription_details.subscription` -> an add-on row that already stores
+that subscription id, and the invoice customer must equal the add-on's customer. A C.A.S.E.
+subscription with a foreign customer is logged (`case_reversal_unattributed`) and acknowledged;
+anything that is not a C.A.S.E. invoice falls through to base handling (recorded, ignored).
+
+**Schema (migration `0064_case_invoice_coverage`, additive).** `case_addon_invoice_coverage`
+(one row per invoice, `UNIQUE (provider, provider_invoice_id)`), `case_addon_coverage_events`
+(append-only history: previous/new status, refunded amount, dispute status, paid_through and
+paid_tier before/after), and on `case_addon_subscriptions`: `coverage_state`
+(`OK|PARTIALLY_REFUNDED|REFUNDED|DISPUTED|DISPUTE_LOST`, the worst status of the latest covered
+period) and `coverage_backfilled`. Rows paid before 0064 are marked `coverage_backfilled=false`;
+their paid invoices are reconstructed from Stripe (read-only list) on the next `invoice.paid` or
+reversal, before the first recalculation, so a legacy reversal cannot drop other paid coverage.
+Recalculation only runs on a backfilled, non-empty ledger. Each reversal is one transaction: event
+marker (dedupe) -> backfill/adopt -> status -> recompute -> history row.
+
+**API.** `GET .../billing/case/servers` adds `coverageState`. New, OWNER/ADMIN only,
+organization-scoped, database-only, no Stripe identifiers:
+
+```ts
+// GET .../billing/case/coverage?installationId=N
+-> { installationId; invoices: { tier; periodStart; periodEnd; amountPaidCents; amountRefundedCents;
+       currency; status; disputeStatus?; updatedAt }[];
+     history: { eventType; previousStatus?; newStatus; disputeStatus?; amountRefundedCents | null;
+       paidThroughBefore | null; paidThroughAfter | null; paidTierBefore?; paidTierAfter?; recordedAt }[] }  // newest 100
+```
+
+**Webhook endpoint.** The staging endpoint must additionally subscribe to `charge.refunded`,
+`charge.refund.updated`, `charge.dispute.created|updated|closed|funds_reinstated`,
+`invoice.voided`, `invoice.marked_uncollectible`; `case-stripe-preflight` fails until it does.
+Changing the endpoint is an operator action (not done by this change).
+
+Tests: `internal/billing/case_coverage_test.go`, `internal/billing/case_reversal_test.go`,
+`internal/repository/case_reversal_integration_test.go` (PostgreSQL end-to-end),
+`internal/app/saas_api_case_coverage_integration_test.go`,
+`internal/database/migrations_case_addon_test.go`, `cmd/case-stripe-preflight/staging_test.go`.
+No refund or dispute has been executed against Stripe.

@@ -242,7 +242,10 @@ Test mode only; the live Champions Railway project and its secrets are never tou
    `CHAMPION_CASE_ACCESS_ENABLED=true`, and `CHAMPION_CASE_BILLING_ENABLED=true` **on staging only**.
 2. Create a sandbox webhook endpoint to `https://<staging-host>/api/saas/billing/webhook` for
    `checkout.session.completed`, `customer.subscription.created|updated|deleted`, `invoice.paid`,
-   `invoice.payment_failed`, and set its `whsec_...` as `STRIPE_WEBHOOK_SECRET`. (Local alternative:
+   `invoice.payment_failed`, plus (Phase 6.26B) `charge.refunded`, `charge.refund.updated`,
+   `charge.dispute.created|updated|closed|funds_reinstated`, `invoice.voided`,
+   `invoice.marked_uncollectible`, and set its `whsec_...` as `STRIPE_WEBHOOK_SECRET`. The extended
+   preflight fails until all 14 events are enabled. (Local alternative:
    `stripe listen --forward-to localhost:8080/api/saas/billing/webhook`.)
 3. With a test customer (card `4242 4242 4242 4242`), buy base LOW, then C.A.S.E. Watch for server
    A. Expect one base + one add-on subscription on the same customer; add-on entitlement only after
@@ -261,6 +264,13 @@ Test mode only; the live Champions Railway project and its secrets are never tou
    `invoice.payment_failed`, add-on `PAST_DUE`, C.A.S.E. access off, base plan still ACTIVE.
 10. Cancel at period end -> access kept until the end; advance the clock ->
     `customer.subscription.deleted`, row CANCELED; buy again -> new row, new subscription.
+
+11. (Phase 6.26B; each refund or dispute needs its own approval) Full refund of a Watch invoice ->
+    `charge.refunded`, coverage row `REFUNDED`, add-on `coverageState=REFUNDED`, C.A.S.E. access
+    off, base unchanged. Partial refund -> `PARTIALLY_REFUNDED`, access kept. A dispute (Stripe's
+    dispute test card) -> `DISPUTED`, access suspended; winning evidence -> `DISPUTE_WON`, access
+    restored; losing evidence -> `DISPUTE_LOST`, access revoked. Resend each event -> no change.
+    `GET .../billing/case/coverage?installationId=N` shows the ledger and history.
 
 Record event ids and PASS/FAIL per step only (no keys, no customer data).
 

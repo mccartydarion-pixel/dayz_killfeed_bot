@@ -95,6 +95,9 @@ func TestStagingWebhookEndpointVerification(t *testing.T) {
 	liveEp.Livemode = &live
 	wildcard := good
 	wildcard.EnabledEvents = []string{"*"}
+	// An endpoint configured before Phase 6.26B (lifecycle events only) must fail.
+	preReversal := good
+	preReversal.EnabledEvents = requiredWebhookEvents[:6]
 	for name, tc := range map[string]struct {
 		eps     []webhookEndpoint
 		url     string
@@ -103,6 +106,7 @@ func TestStagingWebhookEndpointVerification(t *testing.T) {
 		"ok":             {[]webhookEndpoint{good}, want, ""},
 		"wildcard":       {[]webhookEndpoint{wildcard}, want, ""},
 		"missing events": {[]webhookEndpoint{missing}, want, "missing events"},
+		"no reversals":   {[]webhookEndpoint{preReversal}, want, "charge.refunded, charge.refund.updated, charge.dispute.created"},
 		"disabled":       {[]webhookEndpoint{disabled}, want, "disabled or not test mode"},
 		"live endpoint":  {[]webhookEndpoint{liveEp}, want, "disabled or not test mode"},
 		"absent":         {nil, want, "no sandbox webhook endpoint"},
