@@ -9,6 +9,12 @@ Status: **NOT APPROVED FOR PRODUCTION EXECUTION**. This is an operator plan, not
 - Railway exposes no existing operator one-shot command execution in this project; connector does not offer SQL inspection or raw credentials. No production shadow replay has been performed.
 - Separate `champions-case-staging` project exists. Its reliability QA bot, QA PostgreSQL and Nitrado fixture have no reported deployment; the existing billing QA service and Postgres must not be repurposed.
 
+## Staging execution environment (2026-09-27)
+
+A dedicated empty service `case-shadow-oneshot-qa` was created in the separate Railway project `champions-case-staging`. Its restart policy is `NEVER`; it has no source, credentials, variables, cron or deployments. This project has an environment named `production`, but it is **not** the live `genuine-education` project. The service has not executed the CLI or connected to any database.
+
+Do not attach the GitHub branch using a connector operation that immediately deploys or enables autodeploy. Pin the exact reviewed CLI commit or image, configure non-recurring execution, and prove source/autodeploy controls before attaching any database variable. Do not add a recurring cron. Build fixture-only rehearsal against a disposable database; never borrow billing QA or live production credentials. The staging service is an infrastructure placeholder, not evidence that the operational gate passed.
+
 ## Required design before any write
 
 1. Do not alter the live bot service, deploy PR #112 solely to collect a record, add a public endpoint, expose a database, or use an automatic cron/retry policy.
