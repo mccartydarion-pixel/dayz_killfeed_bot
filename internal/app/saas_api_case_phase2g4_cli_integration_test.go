@@ -113,5 +113,17 @@ func TestCASE2G4OneShotCLIEndToEnd(t *testing.T) {
  if _,err=ledger.GetShadowHistoryByID(ctx,w.guildID,w.serverID+1,id);err==nil{
   t.Fatal("cross-server exact history lookup succeeded")
  }
+ // Exercise the actual CLI after the record is no longer in the newest page.
+ // It must verify the exact returned ID and remain idempotent.
+ newestID:=regexp.MustCompile(`BLOCKED_EVALUATION_ID=([0-9]+)`).FindStringSubmatch(next)
+ if len(newestID)!=2{t.Fatalf("fresh evaluation ID absent: %q",next)}
+ oldPage,err:=ledger.ListShadowHistory(ctx,w.guildID,w.serverID,nil,50)
+ if err!=nil{t.Fatal(err)}
+ for _,h:=range oldPage{if strconv.FormatInt(h.ID,10)==newestID[1]{t.Fatal("fresh evaluation still in newest history page")}}
+ replayOld,err:=invoke("1",freshExecute...)
+ if err!=nil||!strings.Contains(replayOld,"BLOCKED_EVALUATION_ID="+newestID[1]+" ")||
+  !strings.Contains(replayOld,"READBACK=PASS ENFORCEMENT=DISABLED")||count()!=before+53{
+  t.Fatalf("CLI failed exact older replay: %q %v",replayOld,err)
+ }
 
 }
