@@ -34,6 +34,30 @@ CREATE TABLE IF NOT EXISTS case_review_cases (
 CREATE INDEX IF NOT EXISTS idx_case_review_queue
  ON case_review_cases(installation_id,status,id DESC);
 
+-- Case provenance is immutable after admission. Only neutral review status and
+-- updated_at may change, via a future independently authorized transaction.
+CREATE OR REPLACE FUNCTION case_review_identity_immutable() RETURNS TRIGGER AS $
+BEGIN
+ IF TG_OP = 'DELETE' THEN
+  RAISE EXCEPTION 'C.A.S.E. review cases cannot be deleted by the runtime';
+ END IF;
+ IF ROW(NEW.guild_id,NEW.server_id,NEW.installation_id,
+        NEW.discord_guild_connection_id,NEW.detector_id,NEW.detector_version,
+        NEW.evidence_fingerprint,NEW.source_quality_ref,NEW.created_at)
+    IS DISTINCT FROM
+    ROW(OLD.guild_id,OLD.server_id,OLD.installation_id,
+        OLD.discord_guild_connection_id,OLD.detector_id,OLD.detector_version,
+        OLD.evidence_fingerprint,OLD.source_quality_ref,OLD.created_at) THEN
+  RAISE EXCEPTION 'C.A.S.E. review case identity is immutable';
+ END IF;
+ RETURN NEW;
+END;
+$ LANGUAGE plpgsql;
+CREATE TRIGGER trg_case_review_identity_immutable
+ BEFORE UPDATE OR DELETE ON case_review_cases
+ FOR EACH ROW EXECUTE FUNCTION case_review_identity_immutable();
+
+
 CREATE TABLE IF NOT EXISTS case_review_evidence (
  guild_id BIGINT NOT NULL,
  server_id BIGINT NOT NULL,
@@ -47,6 +71,16 @@ CREATE TABLE IF NOT EXISTS case_review_evidence (
   REFERENCES case_evidence_events(guild_id,server_id,id) ON DELETE RESTRICT
 );
 CREATE INDEX IF NOT EXISTS idx_case_review_evidence_case ON case_review_evidence(guild_id,server_id,installation_id,case_id);
+
+CREATE OR REPLACE FUNCTION case_review_evidence_immutable() RETURNS TRIGGER AS $
+BEGIN
+ RAISE EXCEPTION 'C.A.S.E. case evidence links are immutable';
+END;
+$ LANGUAGE plpgsql;
+CREATE TRIGGER trg_case_review_evidence_immutable
+ BEFORE UPDATE OR DELETE ON case_review_evidence
+ FOR EACH ROW EXECUTE FUNCTION case_review_evidence_immutable();
+
 
 CREATE TABLE IF NOT EXISTS case_review_audit (
  id BIGSERIAL PRIMARY KEY,
