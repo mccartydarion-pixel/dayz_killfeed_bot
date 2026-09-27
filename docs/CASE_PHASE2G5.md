@@ -33,7 +33,7 @@ A gap between retained byte offsets is **not** evidence of dropped ADM lines: th
 
 ## Persisted-evidence audit (CI only)
 
-`CaseEvidenceRepository.AuditCaseEvidenceAdmissibility` executes a bounded, tenant-and-server-scoped read of up to `limit+1` persisted event rows; the extra row marks a truncated window. It projects source address, clock and **separate subject, actor and target** X/Z pairs. It counts complete, partial and absent positions for each role independently; it never combines axes from different people, returns player identity, or exposes canonical source names to a web route. It calls the same pure audit without touching detection or enforcement.
+`CaseEvidenceRepository.AuditCaseEvidenceAdmissibility` executes a bounded, tenant-and-server-scoped read-only repeatable-read transaction of up to `limit+1` persisted event rows; the extra row marks a truncated window. It projects source address, clock and **separate subject, actor and target** X/Z pairs. It counts complete, partial and absent positions for each role independently; it never combines axes from different people, returns player identity, or exposes canonical source names to a web route. It calls the same pure audit without touching detection or enforcement.
 
 A disposable-PostgreSQL integration test seeds three synthetic observations spanning two ADM sources and one foreign-server record, then verifies per-server and per-guild isolation, the bounded page edge, incomplete coordinate pairs, invalid clock text, midnight/clock decrease ambiguity, and the permanently blocked movement gate. Database-only tests use `TEST_DATABASE_URL` plus `ALLOW_INTEGRATION_DB_TESTS=true`; no live credentials or data enter CI.
 
