@@ -341,4 +341,5 @@ func TestSetupMultiInstallationDeadlineAndPartialReport(t *testing.T) {
   if strings.Contains(joined,"All required systems are configured.") {t.Fatal("partial report claimed completion")}
  }
  if setupErrorKind(context.DeadlineExceeded)!="deadline"||setupErrorKind(nil)!="none" {t.Fatal("deadline classification")}
+ if !strings.Contains(setupErrorMessage(context.DeadlineExceeded),"time limit") {t.Fatal("zero-progress timeout cannot be generic retry error")}
 }
