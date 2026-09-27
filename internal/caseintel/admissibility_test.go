@@ -128,7 +128,7 @@ func TestAdmissibilityNonFiniteCoordinatesAreUnusable(t *testing.T){
 
 func TestAdmissibilityEventBucketsAreBoundedAndNotFullLogClaims(t *testing.T) {
  types:=[]string{"PLAYER_HIT","PLAYER_KILL","PLAYER_CONNECT","PLAYER_DISCONNECT",
-  "PLAYER_RESPAWN","PLAYER_DEATH","PLAYER_SUICIDE","UNRECOGNIZED_EVENT"}
+  "PLAYER_RESPAWN","PLAYER_DEATH","SUICIDE_ACTION","UNRECOGNIZED_EVENT"}
  rows:=make([]AdmissibilitySample,0,len(types))
  for i,kind:=range types {
   e:=sample(int64(i+1),int64(i+1),"source","12:00:00")
