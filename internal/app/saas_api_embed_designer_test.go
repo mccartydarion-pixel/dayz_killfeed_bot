@@ -451,3 +451,29 @@ func TestMetadataExamplesPreviewCleanly(t *testing.T) {
 		t.Fatalf("sample stats: %q", last.Value)
 	}
 }
+
+
+func TestCASEDesignerPreviewIsCustomizableButNeverReportsLive(t *testing.T) {
+ cases:=[]struct{route,variable string}{
+  {"CASE_STATUS","detector_status"},{"CASE_EVIDENCE","observation_status"},{"CASE_ALERTS","case_status"},
+ }
+ for _,tc:=range cases {
+  t.Run(tc.route,func(t *testing.T){
+   cfg:=embedtemplates.Config{Enabled:true,Color:"#D4AF37",Title:embedtemplates.Text{Enabled:true,Template:"C.A.S.E. • {{"+tc.variable+"}}"}}
+   resp,emb,err:=renderEmbedDraft(tc.route,draft(cfg,map[string]string{tc.variable:"BLOCKED"}),runtimeRenderingOff,designerAt)
+   if err!=nil||!resp.Renderable||emb==nil||!strings.Contains(emb.Title,"BLOCKED"){t.Fatalf("design preview: %+v %v",resp,err)}
+   if resp.CustomRenderingSupported||resp.RuntimeRendering!="NOT_ENABLED" {t.Fatalf("no live publisher exists: %+v",resp)}
+   if !strings.Contains(strings.Join(resp.Warnings," "),"DESIGN PREVIEW ONLY"){t.Fatalf("synthetic warning missing: %v",resp.Warnings)}
+   _,_,err=renderEmbedDraft(tc.route,draft(cfg,map[string]string{tc.variable:"BLOCKED","player":"PrivatePlayer"}),runtimeRenderingOff,designerAt)
+   if err==nil||err.code!=codeEmbedTemplateInvalid {t.Fatal("unapproved player identity must not be accepted")}
+  })
+ }
+}
+
+func TestCASEDesignerCannotSendUnreviewedFinding(t *testing.T) {
+ d:=&designerDiscordFake{channels:[]discord.RawGuildChannel{{ID:"private-case",Name:"🚨・case-alerts",Type:discordgo.ChannelTypeGuildText,Private:true}}}
+ routes:=&designerRoutesFake{routes:map[string]string{"CASE_ALERTS":"private-case"}}
+ cfg:=embedtemplates.Config{Enabled:true,Color:"#D4AF37",Title:embedtemplates.Text{Enabled:true,Template:"C.A.S.E. DEMO"}}
+ _,err:=sendEmbedTest(context.Background(),routes,d,1,2,"guild","CASE_ALERTS",draft(cfg,nil),runtimeRenderingOff,designerAt)
+ if err==nil||err.code!=codeEmbedCustomNotSupported||len(d.sent)!=0 {t.Fatalf("CASE must not be sent as a live event: error=%v sends=%d",err,len(d.sent))}
+}
