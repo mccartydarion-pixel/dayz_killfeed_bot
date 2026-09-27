@@ -4,6 +4,7 @@ package app
 
 import (
  "context"
+ "strings"
  "fmt"
  "net/http"
  "testing"
@@ -20,6 +21,9 @@ func TestCASEIntegrityServerIsolationAndAuthorization(t *testing.T) {
  rr:=w.call(w.a.handleAntiCheatIntegrity,http.MethodGet,path,w.f.OwnerDiscordID,nil,nil)
  if rr.Code!=http.StatusOK{t.Fatalf("owner read: %d %s",rr.Code,rr.Body.String())}
  out:=decodeBody[caseSourceIntegrity](t,rr)
+ if strings.Contains(rr.Body.String(),in.SourceID)||strings.Contains(rr.Body.String(),"dayzps/config/"){
+  t.Fatal("canonical ADM source path leaked through quality response")
+ }
  if out.ServerID!=w.serverID||out.EvidenceLines24h!=1||out.LatestEvidenceOffset==nil||*out.LatestEvidenceOffset!=500||
   out.LatestEvidenceSourceRef==nil||*out.LatestEvidenceSourceRef==in.SourceID||
   out.Continuity.CurrentSourceEvidenceStatus!="UNKNOWN"||len(out.Continuity.RecentSources)!=1||out.Continuity.RecentSources[0].RecordedLines!=1||
