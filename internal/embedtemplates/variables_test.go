@@ -3,7 +3,7 @@ package embedtemplates
 import "testing"
 
 var knownCategories = map[string]bool{CatPlayers: true, CatCombat: true, CatKillerStats: true, CatVictimStats: true, CatHeadToHead: true,
-	CatStreaks: true, CatEventStory: true, CatBounty: true, CatCompetitive: true, CatEconomy: true, CatActivity: true, CatServer: true}
+	CatStreaks: true, CatEventStory: true, CatBounty: true, CatCompetitive: true, CatEconomy: true, CatActivity: true, CatServer: true, CatCASE: true}
 
 var knownFormats = map[string]bool{"text": true, "integer": true, "decimal": true, "distance": true, "label": true, "points": true, "timestamp": true}
 

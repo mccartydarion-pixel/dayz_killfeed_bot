@@ -62,3 +62,15 @@ type nilSource struct{}
 func (nilSource) ResolveTemplate(context.Context, int64, int64, string) (int64, *embedtemplates.Config, error) {
 	return 0, nil, nil
 }
+
+
+func TestCASEStoredTemplatesCannotActivateEvenWithGlobalRenderingEnabled(t *testing.T) {
+ on:=&App{EmbedRenderer:embedrender.New(embedrender.Options{Source:nilSource{},Enabled:true})}
+ for _,route:=range []string{"CASE_STATUS","CASE_EVIDENCE","CASE_ALERTS"} {
+  cfg:=embedtemplates.Config{Enabled:true,RouteKey:route,Color:"#D4AF37",Title:embedtemplates.Text{Enabled:true,Template:"C.A.S.E. design"}}
+  st:=on.embedActivationStatus(route,&embedtemplates.Stored{Config:cfg},repository.EmbedModeCustom)
+  if !st.TemplateSaved||!st.TemplateValid||st.RouteSupported||st.CanActivate||st.Runtime!=embedRuntimeBlocked||st.BlockedReason!=embedReasonRouteUnsupported {
+   t.Fatalf("%s must stay blocked with valid saved design and global switch on: %+v",route,st)
+  }
+ }
+}
