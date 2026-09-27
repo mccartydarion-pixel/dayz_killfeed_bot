@@ -146,6 +146,12 @@ func (h *SetupHandler) handleVerifiedRole(s *discordgo.Session, i *discordgo.Int
 	respondEphemeral(s, i, "✅ Verified role set. It will be assigned automatically when a /link request is verified.")
 }
 
+// One Discord guild can have many linked installations. Each performs scoped route
+// verification and persistence. The prior 90-second deadline timed out in production
+// after 9-10 installations, even though channel creation had succeeded. Keep this
+// bounded well below Discord's 15-minute interaction response token lifetime.
+const setupLayoutTimeout = 5 * time.Minute
+
 // handleSetup defers the interaction immediately so Discord's ~3 second ack
 // window can never expire while EnsureConfigured does Discord/DB work; the
 // result is delivered later via an edit to the deferred response.
@@ -169,19 +175,43 @@ func (h *SetupHandler) handleSetup(s *discordgo.Session, i *discordgo.Interactio
 		h.editEphemeral(s, i, "❌ Channel setup is unavailable right now. Try again later or use Setup on the Champion website.")
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), setupLayoutTimeout)
 	defer cancel()
 	// The whole layout (every installation) completes before anything is rendered: the reply is
 	// built once, from the final, channel-ID-deduplicated result.
 	result, err := h.layout(ctx, i.GuildID)
 	if err != nil {
-		h.editEphemeral(s, i, setupErrorMessage(err))
+		// A guild-wide run can complete several installations and create/reuse
+		// real channels before an interruption. Never discard that progress or
+		// present a generic all-failed response for a partially applied layout.
+		if result.Installations > 0 {
+			h.editEphemeralEmbed(s, i, SetupLayoutPartialEmbed(result, repair, errors.Is(err, context.DeadlineExceeded)))
+		} else {
+			h.editEphemeral(s, i, setupErrorMessage(err))
+		}
 	} else {
 		h.editEphemeralEmbed(s, i, SetupLayoutEmbed(result, repair))
 	}
 	slog.Info("component=setup", "action", action, "stage", "completed", "guild_id", i.GuildID, "installations", result.Installations,
+		"error_kind", setupErrorKind(err),
 		"channels", len(result.Channels()), "created", result.Count(SetupChannelCreated), "reused", result.Count(SetupChannelReused),
 		"updated", result.Count(SetupChannelUpdated), "failed", len(result.FailedSystems()), "legacy", result.LegacyChannels(), "error", err != nil)
+}
+
+// setupErrorKind makes the operational failure visible without logging secrets.
+func setupErrorKind(err error) string {
+	switch {
+	case err == nil:
+		return "none"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, ErrMissingManageChannels):
+		return "missing_manage_channels"
+	default:
+		return "layout_error"
+	}
 }
 
 // editEphemeralEmbed replaces a deferred ephemeral response with one embed.
