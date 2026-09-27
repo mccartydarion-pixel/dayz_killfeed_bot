@@ -526,3 +526,30 @@ func TestCASESetupCardsCannotImplyLiveFindings(t *testing.T) {
  }
  if routeProducerAudit["CASE_ALERTS"].Detail=="" {t.Fatal("setup-only route must advertise its limitation")}
 }
+
+
+func TestCASESetupDoesNotApprovePublicCustomerRoute(t *testing.T) {
+ publicCat:=discord.RawGuildChannel{ID:"public",Name:"custom",Type:discordgo.ChannelTypeGuildCategory}
+ publicChan:=discord.RawGuildChannel{ID:"public-alert",Name:"custom-case",Type:discordgo.ChannelTypeGuildText,ParentID:publicCat.ID}
+ g:=newLayoutGuildFake(publicCat,publicChan)
+ w:=&layoutRoutesFake{routes:map[string]string{"CASE_ALERTS":publicChan.ID}}
+ existing:=[]repository.ChannelRoute{{RouteKey:"CASE_ALERTS",ChannelID:publicChan.ID,ManagedByChampion:false}}
+ res,err:=applyChannelLayout(context.Background(),g,w,channelLayoutInput{OrganizationID:1,InstallationID:2,GuildID:"g",Existing:existing,Producers:auditProducers(),Preserve:true,SyncPanels:panelsPosted(g,w)})
+ if err!=nil{t.Fatal(err)}
+ rep:=report(res,"CASE_ALERTS")
+ if rep.Health!=HealthBroken||rep.ChannelID!=publicChan.ID||!strings.Contains(rep.Detail,"not in a private category") {
+  t.Fatalf("public manual route was approved: %+v",rep)
+ }
+ if w.routes["CASE_ALERTS"]!=publicChan.ID||g.starters[publicChan.ID]!=0 {
+  t.Fatal("setup changed or posted into customer's public channel")
+ }
+}
+
+func TestCASESetupRejectsCategoryWithPublicViewOverride(t *testing.T) {
+ cat:=discord.RawGuildChannel{ID:"unsafe",Name:"🔒 CHAMPION • C.A.S.E.",Type:discordgo.ChannelTypeGuildCategory,Private:true,PublicViewOverride:true}
+ g:=newLayoutGuildFake(cat)
+ w:=&layoutRoutesFake{routes:map[string]string{}}
+ res:=runLayout(t,g,w,auditProducers(),panelsPosted(g,w))
+ if res.Categories[categoryCASE].ID==cat.ID {t.Fatal("category with explicit @everyone allow was reused")}
+ if !res.Categories[categoryCASE].Private {t.Fatal("replacement category is not private")}
+}
