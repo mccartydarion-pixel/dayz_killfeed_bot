@@ -7,6 +7,7 @@ import (
  "fmt"
  "os"
  "strings"
+ "sync"
  "testing"
  "time"
 
@@ -85,6 +86,40 @@ func TestCASEReviewFixtureTransaction(t *testing.T){
  end:=input;end.ActionKey=b;end.ExpectedStatus="REVIEWED";end.ToStatus="RESOLVED";end.ReasonCode="STAFF_CLOSED";end.At=at.Add(time.Second)
  ok,err=writer.ApplySynthetic(ctx,end);if err!=nil||!ok{t.Fatalf("resolve: %v %v",ok,err)}
  s,n=state();if s!="RESOLVED"||n!=2{t.Fatalf("missing resolution audit: %s %d",s,n)}
+ // Two competing reviews must serialize on one scoped case. Only one
+ // transition and one audit row may survive; no duplicated successful review.
+ contested:=one("INSERT INTO case_review_cases(guild_id,server_id,installation_id,discord_guild_connection_id,detector_id,detector_version,evidence_fingerprint,source_quality_ref,status) VALUES($1,$2,$3,$4,'SYNTHETIC','0.0.0',$5,$6,'PENDING_REVIEW') RETURNING id",guild,srv,inst,conn,b,c)
+ type result struct{ok bool;err error}
+ results:=make(chan result,2)
+ start:=make(chan struct{})
+ var wg sync.WaitGroup
+ for _,key:=range []string{b,c}{
+  wg.Add(1)
+  go func(actionKey string){
+   defer wg.Done()
+   <-start
+   attempt:=input
+   attempt.CaseID=contested
+   attempt.ActionKey=actionKey
+   attempt.At=at.Add(3*time.Second)
+   success,e:=writer.ApplySynthetic(ctx,attempt)
+   results<-result{success,e}
+  }(key)
+ }
+ close(start);wg.Wait();close(results)
+ successes,failures:=0,0
+ for item:=range results{
+  if item.ok && item.err==nil{successes++}else if !item.ok && item.err!=nil{failures++}else{
+   t.Fatalf("ambiguous concurrent review outcome: %+v",item)
+  }
+ }
+ var contestedState string
+ var contestedAudit int
+ if err=db.Pool.QueryRow(ctx,"SELECT status FROM case_review_cases WHERE id=$1",contested).Scan(&contestedState);err!=nil{t.Fatal(err)}
+ if err=db.Pool.QueryRow(ctx,"SELECT COUNT(*) FROM case_review_audit WHERE case_id=$1",contested).Scan(&contestedAudit);err!=nil{t.Fatal(err)}
+ if successes!=1||failures!=1||contestedState!="REVIEWED"||contestedAudit!=1{
+  t.Fatalf("concurrent review broke atomicity: success=%d failed=%d status=%s audit=%d",successes,failures,contestedState,contestedAudit)
+ }
  if _,err=db.Pool.Exec(ctx,"DELETE FROM organization_members WHERE organization_id=$1 AND user_id=$2",org,owner);err!=nil{t.Fatal(err)}
  reject(input) // Even replay must recheck current membership.
 }
