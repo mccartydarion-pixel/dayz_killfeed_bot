@@ -89,3 +89,22 @@ func (r *ShadowLedger) ListShadowHistory(ctx context.Context,guildID,serverID in
  }
  return out,rows.Err()
 }
+
+// GetShadowHistoryByID reads one exact, scoped diagnostic even when it is
+// older than the newest history page. This is internal to the operator CLI;
+// it does not expose an HTTP route or activate any detector.
+func (r *ShadowLedger) GetShadowHistoryByID(ctx context.Context,guildID,serverID,evaluationID int64)(ShadowHistoryRow,error){
+ if r==nil||r.pool==nil{return ShadowHistoryRow{},errors.New("C.A.S.E. shadow database unavailable")}
+ if guildID<=0||serverID<=0||evaluationID<=0{return ShadowHistoryRow{},errors.New("invalid exact history scope")}
+ var item ShadowHistoryRow
+ err:=r.pool.QueryRow(ctx,`SELECT e.id,e.detector_id,e.detector_version,e.status,e.reason_codes,e.created_at,
+  COALESCE(array_agg(link.evidence_id ORDER BY link.evidence_id) FILTER (WHERE link.evidence_id IS NOT NULL),'{}'::bigint[])
+ FROM case_shadow_evaluations e
+ LEFT JOIN case_shadow_evaluation_evidence link
+ ON link.guild_id=e.guild_id AND link.server_id=e.server_id AND link.evaluation_id=e.id
+ WHERE e.guild_id=$1 AND e.server_id=$2 AND e.id=$3
+ GROUP BY e.id`,guildID,serverID,evaluationID).Scan(
+  &item.ID,&item.DetectorID,&item.Version,&item.Status,&item.ReasonCodes,&item.CreatedAt,&item.EvidenceIDs)
+ if err!=nil{return ShadowHistoryRow{},err}
+ return item,nil
+}
