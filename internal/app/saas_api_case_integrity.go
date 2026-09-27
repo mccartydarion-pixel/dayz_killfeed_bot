@@ -9,8 +9,10 @@ import (
  "time"
 
  "github.com/jackc/pgx/v5"
+ "github.com/yourname/dayz-killfeed/internal/caseintel"
  "github.com/yourname/dayz-killfeed/internal/killfeed"
  "github.com/yourname/dayz-killfeed/internal/permissions"
+ "github.com/yourname/dayz-killfeed/internal/repository"
 )
 
 // C.A.S.E. Phase 2E is a read-only view of the already-running ADM worker.
@@ -49,6 +51,7 @@ type caseSourceIntegrity struct {
  MovementDetectorStatus string `json:"movementDetectorStatus"`
  DetectorsEnabled bool `json:"detectorsEnabled"`
  Continuity caseContinuityReport `json:"continuity"`
+ EvidenceAdmissibility caseintel.AdmissibilityReport `json:"evidenceAdmissibility"`
  Enforcement string `json:"enforcement"`
 }
 
@@ -155,6 +158,16 @@ func (a *App) handleAntiCheatIntegrity(w http.ResponseWriter,r *http.Request) {
  }
  out.Continuity=caseContinuityAssessment(out.SelectedSourceRef,summaries,
   available,out.CollectorConfigured,out.CheckpointBytes!=nil)
+ // Exactly the already-authorized guild/server, independently bounded to 200
+ // persisted observations; the audit itself uses a read-only SQL snapshot.
+ // This is a second observational snapshot, not atomic with worker health.
+ admissibility,err:=repository.NewCaseEvidenceRepository(a.DB.Pool).
+  AuditCaseEvidenceAdmissibility(ctx,ac.scope.GuildID,serverID,200)
+ if err!=nil{
+  slog.Warn("component=case","event","source_admissibility_read_failed","err",err.Error())
+  writeSaaSError(w,codeInternalError,"could not read C.A.S.E. evidence quality");return
+ }
+ out.EvidenceAdmissibility=admissibility
  a.recordAudit(ctx,ac,"CASE_SOURCE_INTEGRITY_VIEWED","","","success",nil,
   map[string]any{"workerAvailable":available,"sourceState":out.SourceState})
  writeSaaSJSON(w,http.StatusOK,out)
