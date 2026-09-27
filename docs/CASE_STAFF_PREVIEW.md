@@ -1,6 +1,6 @@
 # C.A.S.E. — synthetic staff card preview
 
-This branch is stacked on Phase 2G.5 draft PR #113 and addresses issue #115. Its only renderer is `discord.BuildCASEStaffDemoEmbed()`, a fixed Go fixture. It takes **no player, source, server, finding, or credential input**, creates a fresh embed on demand, and uses a fixed fixture timestamp. There is no publisher wiring, route, new endpoint, command, scheduler, webhook, or send call in this change. It does not create a C.A.S.E. case or risk score.
+This branch is stacked on Phase 2G.5 draft PR #113 and addresses issue #115. Its only renderer is `discord.BuildCASEStaffDemoEmbed()`, a fixed Go fixture. It takes **no player, source, server, finding, or credential input**, creates a fresh embed on demand, and uses a fixed fixture timestamp. There is no publisher wiring, route, new endpoint, runtime command, scheduler, webhook, or send call in this change. The separate offline CLI `go run ./cmd/case-staff-preview` only prints this immutable fixture as JSON to stdout; it has no network or Discord send path. It does not create a C.A.S.E. case or risk score.
 
 The card says **SYNTHETIC PREVIEW — NOT A REAL PLAYER OR DETECTION** and reports the only defensible current detector state: `CASE-MOV-001 BLOCKED`, safe speed pairs zero and enforcement disabled. No accusation, player identity, private location, or false source-coverage claim is shown.
 
@@ -25,3 +25,7 @@ Nothing in this section is implemented or authorized to send. The fixed syntheti
 ## Operational publisher boundary (draft implementation)
 
 The existing `ADMIN_ALERTS` publisher now explicitly admits only its six defined operational kinds at both `Publish` and `send`. Unknown and C.A.S.E. diagnostic/preview kinds are dropped, including if directly inserted into its queue. A regression verifies non-delivery and preserves delivery of ADM_STALE. This is defensive separation, **not** a finding notification system: it defines no C.A.S.E. event, route, outbox, scheduler, or send path. Review the impact on all existing operational callers and the latest exact-head CI before merging. Production is unchanged until an approved release.
+
+## Offline visual inspection
+
+Run `go run ./cmd/case-staff-preview` from the repository checkout to print an indented Discord-compatible embed JSON object to stdout. This is a local-only design export. It does **not** post to Discord, contact the API, accept a player or server, read the database, or fetch secrets. It is intentionally the fixed `DEMO ONLY` card, not a sample live accusation. Its unit test checks deterministic JSON output, synthetic labelling, `BLOCKED`, `DISABLED`, and absence of mass mentions/webhook URLs. Reviewing this output is independent of any live evidence acceptance gate.
