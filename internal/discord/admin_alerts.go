@@ -61,6 +61,11 @@ const (
 	adminAlertFooter         = "CHAMPION • STAFF INTELLIGENCE"
 )
 
+type alertScope struct {
+	guildRowID int64
+	serverID   int64
+}
+
 type serverAlertState struct {
 	stale            bool
 	downloadFailures int
@@ -81,12 +86,12 @@ type AdminAlertPublisher struct {
 	now         func() time.Time
 
 	mu      sync.Mutex
-	servers map[int64]*serverAlertState
+	servers map[alertScope]*serverAlertState
 	dropped int
 }
 
 func NewAdminAlertPublisher(sender HitSender, resolver RouteResolver) *AdminAlertPublisher {
-	return &AdminAlertPublisher{sender: sender, resolver: resolver, queue: make(chan AdminAlert, adminAlertQueueSize), now: time.Now, servers: map[int64]*serverAlertState{}}
+	return &AdminAlertPublisher{sender: sender, resolver: resolver, queue: make(chan AdminAlert, adminAlertQueueSize), now: time.Now, servers: map[alertScope]*serverAlertState{}}
 }
 
 // SetServerNames adds the server's name to every alert.
@@ -96,11 +101,12 @@ func (p *AdminAlertPublisher) SetServerNames(f ServerNameFunc) {
 	}
 }
 
-func (p *AdminAlertPublisher) state(serverID int64) *serverAlertState {
-	st := p.servers[serverID]
+func (p *AdminAlertPublisher) state(guildRowID, serverID int64) *serverAlertState {
+	key := alertScope{guildRowID: guildRowID, serverID: serverID}
+	st := p.servers[key]
 	if st == nil {
 		st = &serverAlertState{}
-		p.servers[serverID] = st
+		p.servers[key] = st
 	}
 	return st
 }
@@ -113,7 +119,7 @@ func (p *AdminAlertPublisher) ObserveSnapshot(guildRowID, serverID int64, snap k
 	now := p.now()
 	stale := snap.OnlineCount > 0 && !snap.LastLogChange.IsZero() && now.Sub(snap.LastLogChange) > admStaleAfter
 	p.mu.Lock()
-	st := p.state(serverID)
+	st := p.state(guildRowID, serverID)
 	changed := stale != st.stale
 	st.stale = stale
 	p.mu.Unlock()
@@ -138,7 +144,7 @@ func (p *AdminAlertPublisher) ObserveDownload(guildRowID int64, report killfeed.
 	}
 	var alert *AdminAlert
 	p.mu.Lock()
-	st := p.state(report.ServerID)
+	st := p.state(guildRowID, report.ServerID)
 	switch report.Result {
 	case "failure":
 		st.downloadFailures++
