@@ -28,7 +28,7 @@ A gap between retained byte offsets is **not** evidence of dropped ADM lines: th
 - Count valid/invalid clock strings and missing/partial coordinate pairs independently for subject, actor and target. Treat non-finite PostgreSQL float8 values (NaN or either infinity) as unusable coordinates and report `NON_FINITE_COORDINATE`, not a complete position.
 - Compare adjacent clock strings only after grouping and ordering by byte offset **within** a source. No cross-source clock arithmetic.
 - Report bounded window edges and multiple-source ambiguity.
-- Expose only fixed aggregate event categories (hit, kill, observed boundary, other) over the retained bounded sample. Categories sum to `observationCount`; they do not estimate missing or unrecorded ADM events.
+- Expose only fixed aggregate event categories (hit, kill, observed boundary, other) over the retained bounded sample. Boundary event labels match the collector's persisted `PLAYER_CONNECT`, `PLAYER_DISCONNECT`, `PLAYER_RESPAWN`, `PLAYER_DEATH`, and `SUICIDE_ACTION`; unknown types remain `other`. Categories sum to `observationCount`; they do not estimate missing or unrecorded ADM events.
 - Unconditionally report `MovementDetectorStatus=BLOCKED`, `SafeSpeedPairs=0`, `Enforcement=DISABLED`, including when all recorded coordinates and clock strings look valid.
 - No score, player verdict, finding, alert, Discord action or sanction is created.
 
