@@ -29,8 +29,9 @@ func TestCASEStaffDemoIsClearlySyntheticAndNonEnforcing(t *testing.T) {
    t.Fatalf("demo contains prohibited claim %q",prohibited)
   }
  }
- if embed.Timestamp!=time.Date(2026,9,27,12,0,0,0,time.UTC).Format(time.RFC3339) {
-  t.Fatalf("demo timestamp must be stable fixture time, got %q",embed.Timestamp)
+ stamp,err:=time.Parse(time.RFC3339Nano,embed.Timestamp)
+ if err!=nil||!stamp.Equal(time.Date(2026,9,27,12,0,0,0,time.UTC)) {
+  t.Fatalf("demo timestamp must be stable fixture time, got %q: %v",embed.Timestamp,err)
  }
  if len(embed.Fields)!=8 {t.Fatalf("unexpected demo fields %d",len(embed.Fields))}
  // Builder always returns a fresh object. Mutating a preview cannot affect
