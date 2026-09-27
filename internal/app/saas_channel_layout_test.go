@@ -540,6 +540,11 @@ func TestCASESetupDoesNotApprovePublicCustomerRoute(t *testing.T) {
  if rep.Health!=HealthBroken||rep.ChannelID!=publicChan.ID||!strings.Contains(rep.Detail,"not in a private category") {
   t.Fatalf("public manual route was approved: %+v",rep)
  }
+ status,err:=inspectChannelLayout(g,"g",existing,auditProducers())
+ if err!=nil{t.Fatal(err)}
+ var observed ChannelDestinationReport
+ for _,item:=range status {if item.Key=="CASE_ALERTS"{observed=item;break}}
+ if observed.Health!=HealthBroken||!strings.Contains(observed.Detail,"not staff-private") {t.Fatalf("read-only layout status approved public route: %+v",observed)}
  if w.routes["CASE_ALERTS"]!=publicChan.ID||g.starters[publicChan.ID]!=0 {
   t.Fatal("setup changed or posted into customer's public channel")
  }
