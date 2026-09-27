@@ -254,7 +254,7 @@ func SetupLayoutPartialEmbed(r SetupLayoutResult, repair, timedOut bool) *discor
 	}
 	embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
 		Name: "Progress and next step",
-		Value: fmt.Sprintf("• Installations completed: %d\\n• %s\\n• Check the existing channels and setup status before retrying. A repeat run reuses managed channels.", r.Installations, reason),
+		Value: fmt.Sprintf("• Installations completed: %d\n• %s\n• Check the existing channels and setup status before retrying. A repeat run reuses managed channels.", r.Installations, reason),
 	})
 	// The normal success result is not applicable to an incomplete run.
 	for _, field := range embed.Fields {
