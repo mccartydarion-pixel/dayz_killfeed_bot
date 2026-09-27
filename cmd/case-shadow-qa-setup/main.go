@@ -23,7 +23,7 @@ const (
  qaSource = "CASE-QA-SYNTHETIC-ONLY"
 )
 
-func authorize(project, service, gate, dsn string) error {
+func authorize(project, service, gate, dsn, expectedHost string) error {
  if project != qaProjectID || service != qaServiceID || gate != "1" {
   return errors.New("dedicated C.A.S.E. staging gate required")
  }
@@ -31,14 +31,14 @@ func authorize(project, service, gate, dsn string) error {
  cfg,err:=pgxpool.ParseConfig(dsn)
  if err!=nil{return errors.New("invalid QA database configuration")}
  host:=strings.ToLower(cfg.ConnConfig.Host)
- if !strings.HasSuffix(host,".railway.internal") {
+ if expectedHost=="" || !strings.EqualFold(host,expectedHost) || !strings.HasSuffix(host,".railway.internal") {
   return errors.New("QA setup requires a private Railway database host")
  }
  return nil
 }
 
-func run(ctx context.Context,project,service,gate,dsn string) error {
- if err:=authorize(project,service,gate,dsn);err!=nil{return err}
+func run(ctx context.Context,project,service,gate,dsn,expectedHost string) error {
+ if err:=authorize(project,service,gate,dsn,expectedHost);err!=nil{return err}
  db,err:=database.Connect(ctx,dsn)
  if err!=nil{return errors.New("QA database unavailable")}
  defer db.Close()
@@ -81,7 +81,7 @@ func run(ctx context.Context,project,service,gate,dsn string) error {
 func main(){
  ctx,cancel:=context.WithTimeout(context.Background(),90*time.Second);defer cancel()
  if err:=run(ctx,os.Getenv("RAILWAY_PROJECT_ID"),os.Getenv("RAILWAY_SERVICE_ID"),
-  os.Getenv("CASE_QA_SETUP_ALLOWED"),os.Getenv("DATABASE_URL"));err!=nil{
+  os.Getenv("CASE_QA_SETUP_ALLOWED"),os.Getenv("DATABASE_URL"),os.Getenv("CASE_QA_DATABASE_HOST"));err!=nil{
   fmt.Fprintln(os.Stderr,"CASE_QA_SETUP=FAILED (no credentials or source content logged)")
   os.Exit(2)
  }
