@@ -14,10 +14,29 @@ import (
 )
 func TestCASEIntegrityServerIsolationAndAuthorization(t *testing.T) {
  w:=newClientAdminWorld(t)
+ path:=w.path("/anti-cheat/integrity")
+ // A newly created/quiet installation is unknown, never "no cheating".
+ quiet:=w.call(w.a.handleAntiCheatIntegrity,http.MethodGet,path,w.f.OwnerDiscordID,nil,nil)
+ if quiet.Code!=http.StatusOK{t.Fatalf("quiet server read: %d %s",quiet.Code,quiet.Body.String())}
+ quietOut:=decodeBody[caseSourceIntegrity](t,quiet)
+ if quietOut.EvidenceAdmissibility.ObservationCount!=0||
+ quietOut.EvidenceAdmissibility.SourceCount!=0||
+ quietOut.EvidenceAdmissibility.MovementDetectorStatus!="BLOCKED"||
+ quietOut.EvidenceAdmissibility.SafeSpeedPairs!=0||
+ quietOut.EvidenceAdmissibility.Enforcement!="DISABLED"||
+ quietOut.DetectorsEnabled||quietOut.ElapsedTimeTrusted||
+ quietOut.EvidenceAdmissibility.Coverage!="FILTERED_SOURCE_EVENTS_ONLY"{
+  t.Fatalf("quiet server must stay unverified: %+v",quietOut)
+ }
+ sawNoEvents:=false
+ for _,blocker:=range quietOut.EvidenceAdmissibility.Blockers{
+  if blocker=="NO_OBSERVED_EVENTS"{sawNoEvents=true}
+  if blocker=="NO_CHEATING"{t.Fatal("quiet server falsely classified as no cheating")}
+ }
+ if !sawNoEvents {t.Fatalf("missing quiet-server blocker: %+v",quietOut.EvidenceAdmissibility.Blockers)}
  repo:=repository.NewCaseEvidenceRepository(w.a.DB.Pool)
  in:=caseHitInput(w.guildID,w.serverID,500,"dayzps/config/integrity.ADM",fmt.Sprintf("%064x",500))
  if err:=repo.RecordCaseEvidence(context.Background(),in);err!=nil{t.Fatal(err)}
- path:=w.path("/anti-cheat/integrity")
  rr:=w.call(w.a.handleAntiCheatIntegrity,http.MethodGet,path,w.f.OwnerDiscordID,nil,nil)
  if rr.Code!=http.StatusOK{t.Fatalf("owner read: %d %s",rr.Code,rr.Body.String())}
  out:=decodeBody[caseSourceIntegrity](t,rr)
