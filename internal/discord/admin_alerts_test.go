@@ -151,3 +151,22 @@ func TestAdminAlertPublishNeverBlocks(t *testing.T) {
 	nilP.ObserveSnapshot(1, 1, killfeed.AdmSnapshot{})
 	nilP.ObserveDownload(1, killfeed.DownloadReport{})
 }
+
+
+func TestCASEAndUnknownKindsCannotUseOperationalAdminAlerts(t *testing.T) {
+ p, sender, resolver, _ := newAlertFixture()
+ resolver.set(7, 1, routeKeyAdminAlerts, "chan-admin")
+ for _, kind := range []string{"CASE_MOVEMENT_FINDING", "CASE_SHADOW_DIAGNOSTIC", "CASE_STAFF_DEMO", "", "UNKNOWN_KIND"} {
+  a := AdminAlert{GuildRowID:7, ServerID:1, Kind:kind, Severity:AlertCritical, Headline:"FALSE ACCUSATION", Detail:"not an operational condition"}
+  p.Publish(a)
+  // Defend even against direct queue insertion or future bypass of Publish.
+  p.queue <- a
+ }
+ drain(p)
+ if sender.total()!=0 {t.Fatalf("non-operational kinds reached Discord: %d",sender.total())}
+ if len(p.queue)!=0 {t.Fatalf("non-operational alert remained queued: %d",len(p.queue))}
+ // Existing operational conditions must continue to work.
+ p.Publish(AdminAlert{GuildRowID:7,ServerID:1,Kind:AlertKindADMStale,Severity:AlertWarning,Headline:"ADM STALE"})
+ drain(p)
+ if sender.total()!=1 {t.Fatalf("operational alert was blocked: %d",sender.total())}
+}
