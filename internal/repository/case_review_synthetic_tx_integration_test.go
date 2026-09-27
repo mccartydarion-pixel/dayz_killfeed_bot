@@ -120,9 +120,38 @@ func TestCASEReviewFixtureTransaction(t *testing.T){
  ok,err=writer.ApplySynthetic(ctx,input);if err!=nil||ok{t.Fatalf("identical action replay: %v %v",ok,err)}
  bad=input;bad.Note="Changed note";reject(bad)
  bad=input;bad.ActionKey=b;reject(bad)
+ // Due inspection is a diagnostic only: no evidence link, no due entry.
+ inspector:=NewCASEOutboxInspector(db.Pool)
+ pendingKey:=strings.Repeat("d",64)
+ outboxID:=one("INSERT INTO case_staff_outbox(guild_id,server_id,installation_id,case_id,event_version,delivery_key,status,next_attempt_at) VALUES($1,$2,$3,$4,1,$5,'PENDING',$6) RETURNING id",guild,srv,inst,caseID,pendingKey,at)
+ inspect:=SyntheticDueInspection{FixtureOnly:true,Scope:input.Scope,At:at.Add(10*time.Second),Limit:10}
+ due,inspectErr:=inspector.InspectDueSynthetic(ctx,inspect)
+ if inspectErr!=nil||len(due)!=0{t.Fatalf("no-evidence item exposed: %+v %v",due,inspectErr)}
+ evidenceID:=one("INSERT INTO case_evidence_events(guild_id,server_id,source_id,source_end_offset,line_sha256,event_type) VALUES($1,$2,'synthetic-outbox-fixture',123,$3,'PLAYER_HIT') RETURNING id",guild,srv,a)
+ if _,err=db.Pool.Exec(ctx,"INSERT INTO case_review_evidence(guild_id,server_id,installation_id,case_id,evidence_id) VALUES($1,$2,$3,$4,$5)",guild,srv,inst,caseID,evidenceID);err!=nil{t.Fatal(err)}
+ due,inspectErr=inspector.InspectDueSynthetic(ctx,inspect)
+ if inspectErr!=nil||len(due)!=1||due[0].ID!=outboxID||due[0].DeliveryKey!=pendingKey||due[0].CaseID!=caseID{
+  t.Fatalf("exact scoped fixture due: %+v %v",due,inspectErr)
+ }
+ inspect.Scope.InstallationID=otherInst
+ due,inspectErr=inspector.InspectDueSynthetic(ctx,inspect)
+ if inspectErr!=nil||len(due)!=0{t.Fatalf("foreign outbox scope leaked: %+v %v",due,inspectErr)}
+ inspect.Scope=input.Scope
+ inspect.At=at.Add(-time.Second)
+ due,inspectErr=inspector.InspectDueSynthetic(ctx,inspect)
+ if inspectErr!=nil||len(due)!=0{t.Fatalf("early outbox item claimed due: %+v %v",due,inspectErr)}
+ inspect.At=at.Add(10*time.Second)
+ inspect.FixtureOnly=false
+ if _,inspectErr=inspector.InspectDueSynthetic(ctx,inspect);!errors.Is(inspectErr,ErrCASEReviewFixtureDisabled){t.Fatalf("outbox fixture gate bypass: %v",inspectErr)}
+ inspect.FixtureOnly=true
+ inspect.Limit=51
+ if _,inspectErr=inspector.InspectDueSynthetic(ctx,inspect);inspectErr==nil{t.Fatal("unbounded outbox inspection accepted")}
+ inspect.Limit=10
  end:=input;end.ActionKey=b;end.ExpectedStatus="REVIEWED";end.ToStatus="RESOLVED";end.ReasonCode="STAFF_CLOSED";end.At=at.Add(time.Second)
  ok,err=writer.ApplySynthetic(ctx,end);if err!=nil||!ok{t.Fatalf("resolve: %v %v",ok,err)}
  s,n=state();if s!="RESOLVED"||n!=2{t.Fatalf("missing resolution audit: %s %d",s,n)}
+ due,inspectErr=inspector.InspectDueSynthetic(ctx,inspect)
+ if inspectErr!=nil||len(due)!=0{t.Fatalf("resolved case still appears due: %+v %v",due,inspectErr)}
  // Two competing reviews must serialize on one scoped case. Only one
  // transition and one audit row may survive; no duplicated successful review.
  contested:=one("INSERT INTO case_review_cases(guild_id,server_id,installation_id,discord_guild_connection_id,detector_id,detector_version,evidence_fingerprint,source_quality_ref,status) VALUES($1,$2,$3,$4,'SYNTHETIC','0.0.0',$5,$6,'PENDING_REVIEW') RETURNING id",guild,srv,inst,conn,b,c)
