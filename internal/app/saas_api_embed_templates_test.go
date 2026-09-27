@@ -3,21 +3,20 @@ package app
 import (
 	"context"
 	"sort"
-	"strings"
 	"testing"
 
 	"github.com/yourname/dayz-killfeed/internal/embedrender"
 	"github.com/yourname/dayz-killfeed/internal/embedtemplates"
 )
 
-// The template registry must match template-capable channel routes. Voice
-// and setup-only C.A.S.E. routes are excluded because they do not render live embeds.
+// The template registry matches text-channel route vocabulary. Some routes,
+// including C.A.S.E., can be designed before a real publisher is reviewed.
 func TestEmbedTemplateRoutesMatchTheChannelRouteBlueprint(t *testing.T) {
 	var blueprint, templ []string
 	for k := range championRouteKeys {
-		if k == "ONLINE_COUNTER" || strings.HasPrefix(k, "CASE_") {
-			// Voice and setup-only C.A.S.E. informational channels have no
-			// runtime embed publisher or template customization.
+		if k == "ONLINE_COUNTER" {
+			// A voice counter is not a message route. C.A.S.E. routes
+			// support stored/previewed templates but no live publisher yet.
 			continue
 		}
 		blueprint = append(blueprint, k)
@@ -34,8 +33,9 @@ func TestEmbedTemplateRoutesMatchTheChannelRouteBlueprint(t *testing.T) {
 		}
 	}
 	for _, route := range []string{"CASE_STATUS", "CASE_EVIDENCE", "CASE_ALERTS"} {
-		if embedtemplates.ValidRoute(route) {
-			t.Fatalf("%s is setup-only, not a customizable live embed route", route)
+		if !embedtemplates.ValidRoute(route) {t.Fatalf("%s missing template contract", route)}
+		if (&App{}).runtimeRenderingFor(route) != "NOT_ENABLED" {
+			t.Fatalf("%s has no authorized live publisher", route)
 		}
 	}
 	// Every route the website's designer offers (lib/saas/embedTypes.ts) is accepted.
