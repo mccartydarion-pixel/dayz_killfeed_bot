@@ -113,10 +113,15 @@ func safeError(err error)string{
  }
 }
 
+func databaseURL(privateURL,publicURL string)string{
+ if privateURL!=""{return privateURL}
+ return publicURL
+}
+
 func run(parent context.Context,o options,gate,publicURL,privateURL string)error{
  if err:=validate(o,gate);err!=nil{return err}
  // Prefer private Railway networking. Public URL is a fallback only for explicitly isolated operator environments.
- dsn:=privateURL;if dsn==""{dsn=publicURL}
+ dsn:=databaseURL(privateURL,publicURL)
  if dsn==""{return errors.New("database URL missing")}
  ctx,cancel:=context.WithTimeout(parent,25*time.Second);defer cancel()
  cfg,err:=pgxpool.ParseConfig(dsn);if err!=nil{return errors.New("invalid database configuration")}
