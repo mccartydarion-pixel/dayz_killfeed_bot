@@ -94,10 +94,12 @@ func (r *CaseReviewMutation) ApplySynthetic(ctx context.Context,in SyntheticRevi
  if !authorized{return false,errors.New("actor not authorized for selected installation")}
 
  var state string
+ var openedAt,updatedAt time.Time
  err=tx.QueryRow(ctx,`
-  SELECT status FROM case_review_cases
+  SELECT status,created_at,updated_at FROM case_review_cases
   WHERE id=$1 AND guild_id=$2 AND server_id=$3 AND installation_id=$4
-  FOR UPDATE`,in.CaseID,in.Scope.GuildID,in.Scope.ServerID,in.Scope.InstallationID).Scan(&state)
+  FOR UPDATE`,in.CaseID,in.Scope.GuildID,in.Scope.ServerID,in.Scope.InstallationID).
+  Scan(&state,&openedAt,&updatedAt)
  if errors.Is(err,pgx.ErrNoRows){return false,errors.New("review case not found in exact scope")}
  if err!=nil{return false,err}
 
@@ -122,6 +124,9 @@ func (r *CaseReviewMutation) ApplySynthetic(ctx context.Context,in SyntheticRevi
   return false,errors.New("review action key collision")
  }
  if !errors.Is(err,pgx.ErrNoRows){return false,err}
+ if in.At.UTC().Before(openedAt)||in.At.UTC().Before(updatedAt){
+  return false,errors.New("synthetic review time precedes case history")
+ }
  if state!=in.ExpectedStatus{return false,errors.New("review status changed")}
  if !reviewTransition(state,in.ToStatus){return false,errors.New("review transition refused")}
 
