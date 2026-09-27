@@ -6,6 +6,7 @@ import (
  "fmt"
 
  "github.com/yourname/dayz-killfeed/internal/caseintel"
+ "github.com/jackc/pgx/v5"
 )
 
 // AuditCaseEvidenceAdmissibility reads a bounded tenant/server-specific slice
@@ -18,7 +19,12 @@ func (r *CaseEvidenceRepository) AuditCaseEvidenceAdmissibility(ctx context.Cont
  if guildID<=0||serverID<=0||limit<1||limit>500{
   return caseintel.AdmissibilityReport{},errors.New("invalid evidence scope or bound")
  }
- rows,err:=r.pool.Query(ctx,`SELECT id,source_id,source_end_offset,line_sha256,event_type,adm_clock,
+ // A single read-only snapshot prevents partial reads across collector writes
+ // and prevents this audit from writing even if extended in the future.
+ tx,err:=r.pool.BeginTx(ctx,pgx.TxOptions{IsoLevel:pgx.RepeatableRead,AccessMode:pgx.ReadOnly})
+ if err!=nil{return caseintel.AdmissibilityReport{},errors.New("read-only evidence snapshot unavailable")}
+ defer tx.Rollback(ctx)
+ rows,err:=tx.Query(ctx,`SELECT id,source_id,source_end_offset,line_sha256,event_type,adm_clock,
  subject_x,subject_z,actor_x,actor_z,target_x,target_z FROM case_evidence_events
  WHERE guild_id=$1 AND server_id=$2 ORDER BY id DESC LIMIT $3`,guildID,serverID,limit+1)
  if err!=nil{return caseintel.AdmissibilityReport{},fmt.Errorf("read bounded source evidence: %w",err)}
@@ -37,5 +43,8 @@ func (r *CaseEvidenceRepository) AuditCaseEvidenceAdmissibility(ctx context.Cont
  if err!=nil{return caseintel.AdmissibilityReport{},errors.New("persisted evidence read failed")}
  truncated:=len(samples)>limit
  if truncated {samples=samples[:limit]}
+ if err=tx.Commit(ctx);err!=nil{
+  return caseintel.AdmissibilityReport{},errors.New("read-only evidence snapshot failed")
+ }
  return caseintel.AuditAdmissibility(samples,limit,truncated)
 }
