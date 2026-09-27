@@ -48,6 +48,8 @@ func (f *layoutGuildFake) CreateGuildCategory(_, name string) (*discord.RawGuild
 }
 func (f *layoutGuildFake) CreatePrivateGuildCategory(_, name string) (*discord.RawGuildChannel, error) {
 	ch := f.create(name, discordgo.ChannelTypeGuildCategory, "")
+	ch.Private = true
+	f.channels[len(f.channels)-1].Private = true
 	f.private[ch.ID] = true
 	return ch, nil
 }
@@ -459,4 +461,50 @@ func TestApplyChannelLayoutKeepsCustomerRouteOfSkippedDestination(t *testing.T) 
 			t.Fatal("a customer channel must never be reported as retirable")
 		}
 	}
+}
+
+func TestCASESetupCreatesPrivateInformationalDestinationsIdempotently(t *testing.T) {
+ g:=newLayoutGuildFake()
+ w:=&layoutRoutesFake{routes:map[string]string{}}
+ first:=runLayout(t,g,w,auditProducers(),panelsPosted(g,w))
+ cat,n:=g.byName("🔒 CHAMPION • C.A.S.E.")
+ if n!=1||!cat.Private||!g.private[cat.ID]{t.Fatalf("CASE category must be private, count=%d category=%+v",n,cat)}
+ want:=map[string]string{"CASE_STATUS":"🛡️・case-status","CASE_EVIDENCE":"📁・case-evidence","CASE_ALERTS":"🚨・case-alerts"}
+ for route,name:=range want {
+  ch,count:=g.byName(name)
+  if count!=1||ch.ParentID!=cat.ID||w.routes[route]!=ch.ID {t.Fatalf("%s not routed under CASE: channel=%+v count=%d route=%q",route,ch,count,w.routes[route])}
+  rep:=report(first,route)
+  if rep.Health!=HealthActive||rep.Checks==nil||!rep.Checks.passed()||!rep.StarterSent {t.Fatalf("%s has no verified setup notice: %+v",route,rep)}
+  if g.starters[ch.ID]!=1 {t.Fatalf("%s starter count=%d",route,g.starters[ch.ID])}
+ }
+ before:=g.createCalls
+ second:=runLayout(t,g,w,auditProducers(),panelsPosted(g,w))
+ if g.createCalls!=before {t.Fatalf("repeat setup created %d duplicate channels",g.createCalls-before)}
+ for route,name:=range want {
+  ch,_:=g.byName(name)
+  if g.starters[ch.ID]!=1||report(second,route).StarterSent {t.Fatalf("%s posted duplicate starter",route)}
+ }
+}
+
+func TestCASESetupRejectsPublicCategoryAndChannelReuse(t *testing.T) {
+ publicCat:=discord.RawGuildChannel{ID:"public-cat",Name:"🔒 CHAMPION • C.A.S.E.",Type:discordgo.ChannelTypeGuildCategory}
+ publicAlert:=discord.RawGuildChannel{ID:"public-alert",Name:"🚨・case-alerts",Type:discordgo.ChannelTypeGuildText,ParentID:publicCat.ID}
+ g:=newLayoutGuildFake(publicCat,publicAlert)
+ w:=&layoutRoutesFake{routes:map[string]string{"CASE_ALERTS":publicAlert.ID}}
+ res:=runLayout(t,g,w,auditProducers(),panelsPosted(g,w))
+ caseCat:=res.Categories[categoryCASE]
+ if caseCat.ID==publicCat.ID||!caseCat.Private||!g.private[caseCat.ID]{t.Fatalf("public category was adopted: %+v",caseCat)}
+ newAlert:=report(res,"CASE_ALERTS")
+ if newAlert.ChannelID==publicAlert.ID||newAlert.ChannelID==""||w.routes["CASE_ALERTS"]!=newAlert.ChannelID {
+  t.Fatalf("public alert channel reused: %+v",newAlert)
+ }
+ ch,_:=g.byName("🚨・case-alerts")
+ _=ch // Existing customer-visible channel is preserved, never modified or deleted.
+ if len(g.channels)<5 {t.Fatalf("expected private category plus three channels, got %d",len(g.channels))}
+ // A private category with a channel explicitly allowing @everyone is also refused.
+ g2:=newLayoutGuildFake(discord.RawGuildChannel{ID:"private-cat",Name:"🔒 CHAMPION • C.A.S.E.",Type:discordgo.ChannelTypeGuildCategory,Private:true},
+  discord.RawGuildChannel{ID:"public-override",Name:"🚨・case-alerts",Type:discordgo.ChannelTypeGuildText,ParentID:"private-cat",PublicViewOverride:true})
+ w2:=&layoutRoutesFake{routes:map[string]string{"CASE_ALERTS":"public-override"}}
+ res2:=runLayout(t,g2,w2,auditProducers(),panelsPosted(g2,w2))
+ if report(res2,"CASE_ALERTS").ChannelID=="public-override" {t.Fatal("publicly overridden CASE channel was reused")}
 }
