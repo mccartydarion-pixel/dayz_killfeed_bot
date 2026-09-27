@@ -92,3 +92,15 @@ func TestAdmissibilityRoleCoordinatesNeverCombineAcrossPlayers(t *testing.T){
  if report.SafeSpeedPairs!=0||report.MovementDetectorStatus!="BLOCKED"||
  report.Enforcement!="DISABLED"{t.Fatal("role positions cannot activate movement inference")}
 }
+
+func TestAdmissibilitySHAHexCaseDoesNotInventCollision(t *testing.T){
+ a:=sample(1,10,"source","12:00:00")
+ a.LineSHA256=strings.Repeat("ab",32)
+ b:=a;b.EvidenceID=2;b.LineSHA256=strings.ToUpper(a.LineSHA256)
+ report,err:=AuditAdmissibility([]AdmissibilitySample{a,b},2,false)
+ if err!=nil{t.Fatal(err)}
+ if report.DuplicateSourceAddresses!=1||report.OffsetHashCollisions!=0||
+ hasAdmissibilityBlocker(report,"SOURCE_OFFSET_HASH_COLLISION") {
+  t.Fatalf("SHA hex capitalization must not create a false source collision: %+v",report)
+ }
+}
