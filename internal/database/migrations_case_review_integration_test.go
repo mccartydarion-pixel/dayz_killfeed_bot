@@ -64,12 +64,12 @@ func TestCASEReviewSchemaIsInertAndScoped(t *testing.T) {
  shouldFail(`INSERT INTO case_review_evidence(guild_id,server_id,installation_id,case_id,evidence_id)
  VALUES($1,$2,$3,$4,$5)`,guild,server,installation,caseID,otherEvidence)
  // A case's audit/outbox cannot be relabeled as belonging to a second installation.
- shouldFail(\`INSERT INTO case_review_audit(guild_id,server_id,installation_id,case_id,
+ shouldFail(`INSERT INTO case_review_audit(guild_id,server_id,installation_id,case_id,
  action_key,actor_user_id,from_status,to_status,reason_code)
- VALUES($1,$2,$3,$4,$5,$6,'PENDING_REVIEW','DISMISSED','STAFF_REVIEW')\`,
+ VALUES($1,$2,$3,$4,$5,$6,'PENDING_REVIEW','DISMISSED','STAFF_REVIEW')`,
  guild,server,foreignInstallation,caseID,hexB,user)
- shouldFail(\`INSERT INTO case_staff_outbox(guild_id,server_id,installation_id,case_id,event_version,delivery_key,status)
- VALUES($1,$2,$3,$4,3,$5,'PENDING')\`,
+ shouldFail(`INSERT INTO case_staff_outbox(guild_id,server_id,installation_id,case_id,event_version,delivery_key,status)
+ VALUES($1,$2,$3,$4,3,$5,'PENDING')`,
  guild,server,foreignInstallation,caseID,hexB)
  // A second case under the same installation cannot reuse fingerprint identity.
  shouldFail(`INSERT INTO case_review_cases(guild_id,server_id,installation_id,discord_guild_connection_id,
