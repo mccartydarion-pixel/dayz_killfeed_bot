@@ -60,3 +60,9 @@ func TestSourceProvenancePlanBindsExactContent(t *testing.T){
   if a==v{t.Fatal("different source provenance reused an operator plan")}
  }
 }
+
+func TestDatabaseURLPrefersPrivateConnection(t *testing.T){
+ if got:=databaseURL("postgres://private","postgres://public");got!="postgres://private"{t.Fatalf("private URL not selected: %q",got)}
+ if got:=databaseURL("","postgres://public");got!="postgres://public"{t.Fatalf("public fallback not selected: %q",got)}
+ if got:=databaseURL("","");got!=""{t.Fatal("missing URL should stay missing")}
+}
