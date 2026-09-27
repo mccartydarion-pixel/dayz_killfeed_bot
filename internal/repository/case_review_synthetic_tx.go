@@ -78,6 +78,10 @@ func (r *CaseReviewMutation) ApplySynthetic(ctx context.Context,in SyntheticRevi
 
  // Both staff membership and installation ownership are checked from the
  // database, not inferred from an opaque actor ID or the client's scope.
+ // Hold a membership row SHARE lock through audit and status commit. A role
+ // UPDATE or membership DELETE must serialize against this review; otherwise
+ // revocation could commit while review waits for its case-row lock.
+ // Lock order: membership first, then case. Replays also take the lock.
  var authorized bool
  err=tx.QueryRow(ctx,`
  SELECT EXISTS (
@@ -89,6 +93,7 @@ func (r *CaseReviewMutation) ApplySynthetic(ctx context.Context,in SyntheticRevi
    AND gs.guild_id=$3 AND gs.organization_id=i.organization_id
    AND dc.organization_id=i.organization_id
    AND m.user_id=$4 AND m.role IN ('OWNER','ADMIN')
+  FOR SHARE OF m
  )`,in.Scope.InstallationID,in.Scope.ServerID,in.Scope.GuildID,in.ActorUserID).Scan(&authorized)
  if err!=nil{return false,fmt.Errorf("verify synthetic review membership: %w",err)}
  if !authorized{return false,errors.New("actor not authorized for selected installation")}
