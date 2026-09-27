@@ -37,6 +37,12 @@ jobs:
       - name: Build
         run: go build ./...
 
+      - name: C.A.S.E. standalone image is inert by default
+        run: |
+          docker build -f Dockerfile.case-shadow-once -t case-shadow-once-ci .
+          output="$(docker run --rm --network none case-shadow-once-ci)"
+          test "$output" = "CASE_SHADOW_QA_INERT_NO_DATABASE"
+
       - name: Vet
         run: |
           go vet ./...
