@@ -72,3 +72,23 @@ func TestAdmissibilityEmptyAndBoundsFailClosed(t *testing.T){
   t.Fatal("accepted over-limit evidence")
  }
 }
+
+func TestAdmissibilityRoleCoordinatesNeverCombineAcrossPlayers(t *testing.T){
+ a:=sample(1,1,"source","11:01:01")
+ a.X=nil;a.Z=nil
+ a.ActorX=ptrCoord(4) // incomplete actor
+ a.TargetZ=ptrCoord(5) // incomplete target: cannot combine with actor X
+ b:=sample(2,2,"source","11:01:02")
+ b.ActorX=ptrCoord(6);b.ActorZ=ptrCoord(7)
+ b.TargetX=ptrCoord(8);b.TargetZ=ptrCoord(9)
+ report,err:=AuditAdmissibility([]AdmissibilitySample{a,b},2,false)
+ if err!=nil{t.Fatal(err)}
+ if report.CompleteCoordinatePairs!=1||report.MissingCoordinatePairs!=1||
+ report.ActorCompleteCoordinatePairs!=1||report.ActorPartialCoordinatePairs!=1||
+ report.TargetCompleteCoordinatePairs!=1||report.TargetPartialCoordinatePairs!=1||
+ !hasAdmissibilityBlocker(report,"PARTIAL_COORDINATE_PAIR") {
+  t.Fatalf("role-specific coordinate classification failed: %+v",report)
+ }
+ if report.SafeSpeedPairs!=0||report.MovementDetectorStatus!="BLOCKED"||
+ report.Enforcement!="DISABLED"{t.Fatal("role positions cannot activate movement inference")}
+}
