@@ -166,9 +166,21 @@ func (p *AdminAlertPublisher) ObserveDownload(guildRowID int64, report killfeed.
 	}
 }
 
+// operationalAdminAlertKind is an explicit boundary: C.A.S.E. diagnostics,
+// preview cards, or future finding events cannot enter the operational route.
+func operationalAdminAlertKind(kind string) bool {
+ switch kind {
+ case AlertKindADMStale, AlertKindNitradoFailure, AlertKindZoneIntrusion,
+  AlertKindUAVIntrusion, AlertKindBaseRadar, AlertKindZoneBanViolated:
+  return true
+ default:
+  return false
+ }
+}
+
 // Publish enqueues an alert without blocking; a full queue drops it.
 func (p *AdminAlertPublisher) Publish(a AdminAlert) {
-	if p == nil {
+	if p == nil || !operationalAdminAlertKind(a.Kind) {
 		return
 	}
 	if a.At.IsZero() {
@@ -203,6 +215,9 @@ func (p *AdminAlertPublisher) Run(ctx context.Context) {
 }
 
 func (p *AdminAlertPublisher) send(ctx context.Context, a AdminAlert) {
+	if !operationalAdminAlertKind(a.Kind) {
+		return
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("component=admin_alerts", "msg", "send panic recovered", "panic", fmt.Sprint(r))
