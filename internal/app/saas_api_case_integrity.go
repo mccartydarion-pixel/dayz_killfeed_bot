@@ -103,11 +103,16 @@ func caseSourceSnapshot(serverID int64,now time.Time,source killfeed.ADMSourceHe
 // This is an observation-availability label, not collector health, data
 // completeness, gameplay activity or a cheating verdict. Retained rows may
 // predate an unavailable worker or a disabled collector.
-func caseEvidenceObservationStatus(worker,collector bool,sourceRef *string,selectedIsAccepted *bool,latestEvidence *time.Time,count int64) string {
+func caseEvidenceObservationStatus(worker,collector bool,sourceRef *string,selectedIsAccepted *bool,
+ latestEvidenceSourceRef *string,latestEvidence *time.Time,count int64) string {
  if !worker {return "WORKER_UNAVAILABLE"}
  if !collector {return "COLLECTOR_NOT_CONFIGURED"}
  if sourceRef==nil||selectedIsAccepted==nil||!*selectedIsAccepted {return "SOURCE_UNVERIFIED"}
  if latestEvidence==nil && count==0 {return "NO_RETAINED_EVENTS"}
+ // The latest retained record must have an independently matched source ref.
+ // A row from a previous ADM boot is historical, not current-source coverage.
+ if latestEvidenceSourceRef==nil||latestEvidence==nil {return "RETAINED_SOURCE_UNVERIFIED"}
+ if *latestEvidenceSourceRef!=*sourceRef {return "HISTORICAL_OR_OTHER_SOURCE_EVENTS"}
  return "RETAINED_EVENTS_OBSERVED"
 }
 
@@ -181,7 +186,8 @@ func (a *App) handleAntiCheatIntegrity(w http.ResponseWriter,r *http.Request) {
  }
  out.EvidenceAdmissibility=admissibility
  out.EvidenceObservationStatus=caseEvidenceObservationStatus(available,out.CollectorConfigured,
-  out.SelectedSourceRef,out.SelectedIsAccepted,out.LatestEvidenceIngestedAt,out.EvidenceLines24h)
+  out.SelectedSourceRef,out.SelectedIsAccepted,out.LatestEvidenceSourceRef,
+  out.LatestEvidenceIngestedAt,out.EvidenceLines24h)
  a.recordAudit(ctx,ac,"CASE_SOURCE_INTEGRITY_VIEWED","","","success",nil,
   map[string]any{"workerAvailable":available,"sourceState":out.SourceState})
  writeSaaSJSON(w,http.StatusOK,out)
