@@ -57,66 +57,7 @@ type AdmissibilityReport struct {
  Blockers []string `json:"blockers"`
 }
 
-var sha256Hex = regexp.MustCompile(`^[0-9a-fA-F]{64}package caseintel
-
-import (
- "errors"
- "math"
- "regexp"
- "sort"
- "strings"
- "time"
-)
-
-// AdmissibilitySample is a bounded projection of already persisted ADM evidence.
-// SourceID is used only inside this audit and is never returned to clients.
-type AdmissibilitySample struct {
- EvidenceID int64
- SourceID string
- SourceEndOffset int64
- LineSHA256 string
- EventType string
- ADMClock string
- X, Z *float64 // SUBJECT: retained for per-event coordinate completeness
- ActorX, ActorZ *float64
- TargetX, TargetZ *float64
-}
-
-// AdmissibilityReport reports source-data limitations, not suspicion or player risk.
-// An observed coordinate pair is not a continuous movement sample.
-type AdmissibilityReport struct {
- Mode string `json:"mode"`
- Coverage string `json:"coverage"`
- TimeBasis string `json:"timeBasis"`
- MovementDetectorStatus string `json:"movementDetectorStatus"`
- SafeSpeedPairs int `json:"safeSpeedPairs"`
- Enforcement string `json:"enforcement"`
- ObservationCount int `json:"observationCount"`
- SourceCount int `json:"sourceCount"`
- ValidSourceAddresses int `json:"validSourceAddresses"`
- InvalidSourceAddresses int `json:"invalidSourceAddresses"`
- OffsetHashCollisions int `json:"offsetHashCollisions"`
- DuplicateSourceAddresses int `json:"duplicateSourceAddresses"`
- ValidClockStrings int `json:"validClockStrings"`
- InvalidClockStrings int `json:"invalidClockStrings"`
- SameSecondAdjacent int `json:"sameSecondAdjacent"`
- ClockDecreasesInSource int `json:"clockDecreasesInSource"`
- CompleteCoordinatePairs int `json:"completeCoordinatePairs"`
- PartialCoordinatePairs int `json:"partialCoordinatePairs"`
- MissingCoordinatePairs int `json:"missingCoordinatePairs"`
- NonFiniteCoordinateValues int `json:"nonFiniteCoordinateValues"`
- // Additional per-role counts; no cross-role coordinate pair is ever formed.
- ActorCompleteCoordinatePairs int `json:"actorCompleteCoordinatePairs"`
- ActorPartialCoordinatePairs int `json:"actorPartialCoordinatePairs"`
- ActorMissingCoordinatePairs int `json:"actorMissingCoordinatePairs"`
- TargetCompleteCoordinatePairs int `json:"targetCompleteCoordinatePairs"`
- TargetPartialCoordinatePairs int `json:"targetPartialCoordinatePairs"`
- TargetMissingCoordinatePairs int `json:"targetMissingCoordinatePairs"`
- WindowTruncated bool `json:"windowTruncated"`
- Blockers []string `json:"blockers"`
-}
-
-)
+var sha256Hex = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
 
 // A stored float8 NaN or infinity is not a usable ADM coordinate.
 func finiteCoordinate(p *float64) bool {return p!=nil && !math.IsNaN(*p) && !math.IsInf(*p,0)}
