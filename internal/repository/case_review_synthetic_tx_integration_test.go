@@ -49,7 +49,7 @@ func TestCASEReviewFixtureTransaction(t *testing.T){
  caseID:=one("INSERT INTO case_review_cases(guild_id,server_id,installation_id,discord_guild_connection_id,detector_id,detector_version,evidence_fingerprint,source_quality_ref,status) VALUES($1,$2,$3,$4,'SYNTHETIC','0.0.0',$5,$6,'PENDING_REVIEW') RETURNING id",guild,srv,inst,conn,a,c)
  foreignCase:=one("INSERT INTO case_review_cases(guild_id,server_id,installation_id,discord_guild_connection_id,detector_id,detector_version,evidence_fingerprint,source_quality_ref,status) VALUES($1,$2,$3,$4,'SYNTHETIC','0.0.0',$5,$6,'PENDING_REVIEW') RETURNING id",guild,otherSrv,otherInst,conn,a,c)
  writer:=NewCaseReviewMutation(db.Pool)
- at:=time.Date(2026,9,27,17,0,0,0,time.UTC)
+ at:=time.Now().UTC().Truncate(time.Second).Add(2*time.Second)
  input:=SyntheticReviewInput{FixtureOnly:true,CallerCapabilityVerified:true,Scope:CaseReviewScope{GuildID:guild,ServerID:srv,InstallationID:inst},CaseID:caseID,ActorUserID:owner,ActionKey:a,ExpectedStatus:"PENDING_REVIEW",ToStatus:"REVIEWED",ReasonCode:"EVIDENCE_REVIEWED",Note:"Synthetic review",At:at}
  state:=func()(string,int){
   t.Helper();var s string;var n int
@@ -68,6 +68,7 @@ func TestCASEReviewFixtureTransaction(t *testing.T){
  bad=input;bad.CaseID=foreignCase;reject(bad)
  bad=input;bad.ActionKey="invalid";reject(bad)
  bad=input;bad.Note="@everyone";reject(bad)
+ bad=input;bad.At=time.Date(2000,1,1,0,0,0,0,time.UTC);reject(bad)
  bad=input;bad.ToStatus="RESOLVED";reject(bad)
  bad=input;bad.FixtureOnly=false;reject(bad)
  bad=input;bad.CallerCapabilityVerified=false;reject(bad)
