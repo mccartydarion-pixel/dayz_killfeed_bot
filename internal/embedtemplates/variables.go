@@ -32,6 +32,7 @@ const (
 	CatEconomy     = "Economy"
 	CatActivity    = "Activity"
 	CatServer      = "Server"
+	CatCASE        = "C.A.S.E."
 )
 
 const always = "Always present."
@@ -160,6 +161,28 @@ var routeVariableDefinitions = map[string][]VariableDefinition{
 	"STATS_LEADERBOARDS": {serverName(), timestamp()},
 	"AUTO_LEADERBOARD":   {serverName(), timestamp()},
 	"SERVER_STATUS":      {serverName(), timestamp()},
+	// C.A.S.E. templates can be saved and previewed, but no live C.A.S.E.
+	// publisher exists. The fields describe the contract for separately
+	// reviewed future aggregate/status and finding events. None is fetched
+	// or inferred from gameplay by the designer.
+	"CASE_STATUS": {
+		v("detector_status", "Detector Status", CatCASE, "Reviewed detector gate state, not a player judgment.", "BLOCKED", "label", "future authorized aggregate status event", "Future publisher only; not currently rendered live.", true),
+		v("observation_status", "Evidence Observation", CatCASE, "Availability classification of retained console ADM evidence.", "SOURCE_UNVERIFIED", "label", "future authorized staff integrity aggregate", "Future publisher only; not continuous coverage.", true),
+		v("enforcement", "Enforcement", CatCASE, "Whether automated enforcement is enabled.", "DISABLED", "label", "future authorized system state", "Future publisher only.", true),
+		serverName(), timestamp(),
+	},
+	"CASE_EVIDENCE": {
+		v("observation_status", "Evidence Observation", CatCASE, "Aggregate retained-evidence availability label.", "NO_RETAINED_EVENTS", "label", "future authorized staff integrity aggregate", "Future publisher only; not innocence or full coverage.", true),
+		v("sample_count", "Retained Sample Count", CatCASE, "Number of retained records in the bounded sample, not all ADM lines.", "0", "integer", "future bounded admissibility report", "Future publisher only; zero does not mean no cheating.", true),
+		v("quality_status", "Quality Status", CatCASE, "Evidence-quality gate state, not a player verdict.", "BLOCKED", "label", "future reviewed admissibility report", "Future publisher only.", true),
+		serverName(), timestamp(),
+	},
+	"CASE_ALERTS": {
+		v("case_id", "Case ID", CatCASE, "Identifier of a separately reviewed staff finding.", "CASE-DEMO-001", "text", "future approved staff finding", "Future reviewed finding only; never inferred from blocked diagnostics.", true),
+		v("case_status", "Case Status", CatCASE, "Workflow state of a reviewed finding.", "REVIEW_REQUIRED", "label", "future approved staff finding", "Future reviewed finding only.", true),
+		v("reason", "Review Reason", CatCASE, "Non-accusatory reason supplied by an approved finding workflow.", "Evidence requires staff review", "text", "future approved staff finding", "Future reviewed finding only.", true),
+		serverName(), timestamp(),
+	},
 }
 
 // VariableDefinitions returns a copy of a route's variable metadata (nil if unknown).
