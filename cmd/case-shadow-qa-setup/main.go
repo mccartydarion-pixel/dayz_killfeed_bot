@@ -18,13 +18,14 @@ import (
 const (
  qaProjectID = "0cb1c55e-71c6-4865-96a8-dc7c7e7b3dc9"
  qaServiceID = "98eb3f02-aca3-4d2e-bab9-5debb158d79f"
+ qaDBServiceID = "a12e5f66-542c-4689-b822-3072392bd2b0"
  qaGuildKey = "case-qa-synthetic-staging-only"
  qaProviderKey = "case-qa-synthetic-only"
  qaSource = "CASE-QA-SYNTHETIC-ONLY"
 )
 
-func authorize(project, service, gate, dsn, expectedHost string) error {
- if project != qaProjectID || service != qaServiceID || gate != "1" {
+func authorize(project, service, dbService, gate, dsn, expectedHost string) error {
+ if project != qaProjectID || service != qaServiceID || dbService != qaDBServiceID || gate != "1" {
   return errors.New("dedicated C.A.S.E. staging gate required")
  }
  if dsn=="" {return errors.New("private QA database connection required")}
@@ -37,8 +38,8 @@ func authorize(project, service, gate, dsn, expectedHost string) error {
  return nil
 }
 
-func run(ctx context.Context,project,service,gate,dsn,expectedHost string) error {
- if err:=authorize(project,service,gate,dsn,expectedHost);err!=nil{return err}
+func run(ctx context.Context,project,service,dbService,gate,dsn,expectedHost string) error {
+ if err:=authorize(project,service,dbService,gate,dsn,expectedHost);err!=nil{return err}
  db,err:=database.Connect(ctx,dsn)
  if err!=nil{return errors.New("QA database unavailable")}
  defer db.Close()
@@ -65,12 +66,23 @@ func run(ctx context.Context,project,service,gate,dsn,expectedHost string) error
   if err!=nil{return errors.New("QA synthetic evidence insert failed")}
   _=tag
  }
- var evidenceCount,otherCount,evaluationCount int
+ var evidenceCount,otherCount,evaluationCount,invalidCount int
  err=db.Pool.QueryRow(ctx,`SELECT COUNT(*) FILTER(WHERE source_id=$3),
  COUNT(*) FILTER(WHERE source_id<>$3)
  FROM case_evidence_events WHERE guild_id=$1 AND server_id=$2`,
  guildID,serverID,qaSource).Scan(&evidenceCount,&otherCount)
  if err!=nil||evidenceCount!=2||otherCount!=0{return errors.New("QA evidence scope mismatch")}
+ // Never accept two rows merely by count when prior fixture data was altered.
+ err=db.Pool.QueryRow(ctx,`SELECT COUNT(*) FROM case_evidence_events
+ WHERE guild_id=$1 AND server_id=$2 AND source_id=$3 AND
+ (event_type<>'PLAYER_HIT' OR adm_clock<>'17:20:01' OR
+  (source_end_offset=$4 AND line_sha256<>$6) OR
+  (source_end_offset=$5 AND line_sha256<>$7) OR
+  source_end_offset NOT IN ($4,$5))`,
+ guildID,serverID,qaSource,int64(110),int64(220),
+ fmt.Sprintf("%x",sha256.Sum256([]byte(fmt.Sprintf("%s:%d",qaSource,110)))),
+ fmt.Sprintf("%x",sha256.Sum256([]byte(fmt.Sprintf("%s:%d",qaSource,220))))).Scan(&invalidCount)
+ if err!=nil||invalidCount!=0{return errors.New("QA synthetic evidence integrity mismatch")}
  err=db.Pool.QueryRow(ctx,`SELECT COUNT(*) FROM case_shadow_evaluations WHERE guild_id=$1 AND server_id=$2`,guildID,serverID).Scan(&evaluationCount)
  if err!=nil||evaluationCount!=0{return errors.New("QA setup expected zero evaluations")}
  fmt.Printf("CASE_QA_SETUP=PASS GUILD=%d SERVER=%d SYNTHETIC_EVIDENCE=%d EVALUATIONS=%d ENFORCEMENT=DISABLED\n",
@@ -81,7 +93,7 @@ func run(ctx context.Context,project,service,gate,dsn,expectedHost string) error
 func main(){
  ctx,cancel:=context.WithTimeout(context.Background(),90*time.Second);defer cancel()
  if err:=run(ctx,os.Getenv("RAILWAY_PROJECT_ID"),os.Getenv("RAILWAY_SERVICE_ID"),
-  os.Getenv("CASE_QA_SETUP_ALLOWED"),os.Getenv("DATABASE_URL"),os.Getenv("CASE_QA_DATABASE_HOST"));err!=nil{
+  os.Getenv("CASE_QA_DATABASE_SERVICE_ID"),os.Getenv("CASE_QA_SETUP_ALLOWED"),os.Getenv("DATABASE_URL"),os.Getenv("CASE_QA_DATABASE_HOST"));err!=nil{
   fmt.Fprintln(os.Stderr,"CASE_QA_SETUP=FAILED (no credentials or source content logged)")
   os.Exit(2)
  }
