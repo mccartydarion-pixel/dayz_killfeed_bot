@@ -468,7 +468,7 @@ func applyChannelLayout(ctx context.Context, d channelLayoutDiscord, w channelRo
 				continue
 			}
 			ch, ok := byID[r.ChannelID]
-			if ok && p.Destination.matches(ch) && (p.Destination.Category != categoryCASE || (byID[ch.ParentID].Private && !ch.PublicViewOverride)) {
+			if ok && p.Destination.matches(ch) && (p.Destination.Category != categoryCASE || (byID[ch.ParentID].Private && !byID[ch.ParentID].PublicViewOverride && !ch.PublicViewOverride)) {
 				reused[p.Destination.Key] = ch
 				if parent, ok := byID[ch.ParentID]; ok && parent.Type == discordgo.ChannelTypeGuildCategory && categoryHint[p.Destination.Category] == "" {
 					categoryHint[p.Destination.Category] = parent.ID
@@ -563,6 +563,22 @@ func applyChannelLayout(ctx context.Context, d channelLayoutDiscord, w channelRo
 				sum.Reused = append(sum.Reused, ch.Name)
 			}
 			finalChannel[ch.ID] = true
+		}
+		// A customer can manually point a C.A.S.E. route at a public channel.
+		// Preserve that choice without touching or posting to the channel, but
+		// fail setup verification rather than claim that it is staff-private.
+		if dest.Category == categoryCASE && customerChannel[dest.Key] &&
+			(!byID[ch.ParentID].Private || byID[ch.ParentID].PublicViewOverride || ch.PublicViewOverride) {
+			report.ChannelID = ch.ID
+			report.Health = HealthBroken
+			report.Detail = "customer-owned C.A.S.E. route is not in a private category; no content posted"
+			sum.Preserved = append(sum.Preserved, dest.Routes...)
+			sum.Broken = append(sum.Broken, dest.Key)
+			result.Destinations = append(result.Destinations, report)
+			for _, key := range dest.Routes {
+				result.Routes[key] = ChannelRouteInfo{ChannelID: ch.ID, ChannelName: ch.Name, ManagedByChampion: false}
+			}
+			continue
 		}
 		report.ChannelID = ch.ID
 		if ch.Name != "" {
@@ -777,13 +793,13 @@ func brokenDetail(c DestinationChecks, panel bool) string {
 func resolveLayoutCategory(d channelLayoutDiscord, guildID string, channels []discord.RawGuildChannel, cat championCategory, hintID string) (discord.RawGuildChannel, error) {
 	if hintID != "" {
 		for _, ch := range channels {
-			if ch.ID == hintID && ch.Type == discordgo.ChannelTypeGuildCategory && (cat.Key != categoryCASE || ch.Private) {
+			if ch.ID == hintID && ch.Type == discordgo.ChannelTypeGuildCategory && (cat.Key != categoryCASE || (ch.Private && !ch.PublicViewOverride)) {
 				return ch, nil
 			}
 		}
 	}
 	for _, ch := range channels {
-		if ch.Type == discordgo.ChannelTypeGuildCategory && strings.EqualFold(strings.TrimSpace(ch.Name), cat.Name) && (cat.Key != categoryCASE || ch.Private) {
+		if ch.Type == discordgo.ChannelTypeGuildCategory && strings.EqualFold(strings.TrimSpace(ch.Name), cat.Name) && (cat.Key != categoryCASE || (ch.Private && !ch.PublicViewOverride)) {
 			return ch, nil
 		}
 	}
