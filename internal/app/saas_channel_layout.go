@@ -143,17 +143,17 @@ var championDestinations = []championDestination{
 	{
 		Key: "CASE_STATUS", Label: "C.A.S.E. Status", Category: categoryCASE, ChannelName: "🛡️・case-status",
 		Routes: []string{"CASE_STATUS"}, Anchors: []string{"CASE_STATUS"},
-		Starter: &starterCard{"🛡️ C.A.S.E. STATUS • INFORMATION ONLY", "C.A.S.E. evidence-quality and detector readiness are available in the authorized dashboard.\\n\\n**Current boundary**\\n• CASE-MOV-001: BLOCKED\\n• Safe speed pairs: 0\\n• Enforcement: DISABLED\\n\\nThis channel is a setup information card, not live telemetry or a cheating verdict."},
+		Starter: &starterCard{"🛡️ C.A.S.E. STATUS • INFORMATION ONLY", "C.A.S.E. evidence-quality and detector readiness are available in the authorized dashboard.\n\n**Current boundary**\n• CASE-MOV-001: BLOCKED\n• Safe speed pairs: 0\n• Enforcement: DISABLED\n\nThis channel is a setup information card, not live telemetry or a cheating verdict."},
 	},
 	{
 		Key: "CASE_EVIDENCE", Label: "C.A.S.E. Evidence", Category: categoryCASE, ChannelName: "📁・case-evidence",
 		Routes: []string{"CASE_EVIDENCE"}, Anchors: []string{"CASE_EVIDENCE"},
-		Starter: &starterCard{"📁 C.A.S.E. EVIDENCE • STAFF GUIDE", "Review source quality through the authenticated, installation-scoped C.A.S.E. dashboard. No player evidence, ADM paths, coordinates, or private links are posted here automatically.\\n\\nThe retained sample is bounded and does not prove complete ADM coverage. No finding or case is currently generated."},
+		Starter: &starterCard{"📁 C.A.S.E. EVIDENCE • STAFF GUIDE", "Review source quality through the authenticated, installation-scoped C.A.S.E. dashboard. No player evidence, ADM paths, coordinates, or private links are posted here automatically.\n\nThe retained sample is bounded and does not prove complete ADM coverage. No finding or case is currently generated."},
 	},
 	{
 		Key: "CASE_ALERTS", Label: "C.A.S.E. Alerts", Category: categoryCASE, ChannelName: "🚨・case-alerts",
 		Routes: []string{"CASE_ALERTS"}, Anchors: []string{"CASE_ALERTS"},
-		Starter: &starterCard{"🚨 C.A.S.E. ALERTS • NOT ENABLED", "Reserved for a separately reviewed future staff finding publisher. **No live detection or cheating notifications are active.**\\n\\nCASE-MOV-001 remains BLOCKED; no scores, accusations, bans, kicks, or enforcement. This setup card is not evidence about any player."},
+		Starter: &starterCard{"🚨 C.A.S.E. ALERTS • NOT ENABLED", "Reserved for a separately reviewed future staff finding publisher. **No live detection or cheating notifications are active.**\n\nCASE-MOV-001 remains BLOCKED; no scores, accusations, bans, kicks, or enforcement. This setup card is not evidence about any player."},
 	},
 	{
 		Key: "ADMIN_LOGS", Label: "Admin Logs", Category: categoryStaff, ChannelName: "🛡️・admin-logs",
