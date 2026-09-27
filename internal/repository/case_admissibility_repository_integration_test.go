@@ -57,12 +57,20 @@ func TestAdmissibilityReadsPersistedEvidenceWithinExactScope(t *testing.T) {
  insert(serverID,"qa-source-a",90000,"00:00:00",3.0,nil)
  insert(serverID,"qa-source-b",10,"invalid",nil,nil)
  insert(otherServerID,"foreign-source",999,"09:00:00",1.0,2.0)
+ // The first hit carries one actor axis and a different target axis;
+ // they must never become a fabricated complete coordinate pair.
+ _,err=db.Pool.Exec(ctx,`UPDATE case_evidence_events SET
+ actor_x=12,actor_z=NULL,target_x=NULL,target_z=25
+ WHERE guild_id=$1 AND server_id=$2 AND source_id='qa-source-a' AND source_end_offset=100`,guildID,serverID)
+ if err!=nil{t.Fatal(err)}
  audit:=NewCaseEvidenceRepository(db.Pool)
  out,err:=audit.AuditCaseEvidenceAdmissibility(ctx,guildID,serverID,3)
  if err!=nil{t.Fatal(err)}
  if out.ObservationCount!=3||out.SourceCount!=2||out.WindowTruncated||
  out.ValidSourceAddresses!=3||out.InvalidClockStrings!=1||out.ClockDecreasesInSource!=1||
  out.CompleteCoordinatePairs!=1||out.PartialCoordinatePairs!=1||out.MissingCoordinatePairs!=1||
+ out.ActorPartialCoordinatePairs!=1||out.ActorCompleteCoordinatePairs!=0||
+ out.TargetPartialCoordinatePairs!=1||out.TargetCompleteCoordinatePairs!=0||
  out.MovementDetectorStatus!="BLOCKED"||out.SafeSpeedPairs!=0||out.Enforcement!="DISABLED"{
   t.Fatalf("persisted ADM audit mismatch: %+v",out)
  }
