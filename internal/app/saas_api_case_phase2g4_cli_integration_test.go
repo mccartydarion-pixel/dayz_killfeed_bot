@@ -23,7 +23,7 @@ func TestCASE2G4OneShotCLIEndToEnd(t *testing.T) {
   t.Fatal("one-shot CLI integration requires the explicit disposable database gate")
  }
  w:=newClientAdminWorld(t)
- ctx,cancel:=context.WithTimeout(context.Background(),90*time.Second);defer cancel()
+ ctx,cancel:=context.WithTimeout(context.Background(),180*time.Second);defer cancel()
  evidence:=repository.NewCaseEvidenceRepository(w.a.DB.Pool)
  source:="case/phase2g4-cli-fixture.ADM"
  for _,offset:=range []int64{110,220} {
@@ -74,4 +74,22 @@ func TestCASE2G4OneShotCLIEndToEnd(t *testing.T) {
  found:=false
  for _,h:=range history{if h.ID==id&&h.Status=="BLOCKED"&&len(h.ReasonCodes)==4&&len(h.EvidenceIDs)==2{found=true}}
  if !found{t.Fatal("independent scoped history does not match CLI output")}
+ // A newly persisted source line invalidates the approved evidence window.
+ // Reusing the old preview must fail without creating a second record.
+ if err:=evidence.RecordCaseEvidence(ctx,caseHitInput(w.guildID,w.serverID,330,source,fmt.Sprintf("%064x",330)));err!=nil{t.Fatal(err)}
+ stale,err:=invoke("1",execute...)
+ if err==nil||count()!=before+1{t.Fatalf("stale evidence plan was accepted: %q %v",stale,err)}
+ refreshed,err:=invoke("","-mode","preview")
+ if err!=nil||count()!=before+1{t.Fatalf("fresh preview failed or wrote: %q %v",refreshed,err)}
+ nextFP:=regexp.MustCompile(`FINGERPRINT=([0-9a-f]{64})`).FindStringSubmatch(refreshed)
+ nextPlan:=regexp.MustCompile(`PLAN_HASH=([0-9a-f]{64})`).FindStringSubmatch(refreshed)
+ if len(nextFP)!=2||len(nextPlan)!=2||nextFP[1]==fp[1]||nextPlan[1]==plan[1]{
+  t.Fatalf("source growth did not invalidate both preview identities: %q",refreshed)
+ }
+ freshExecute:=[]string{"-mode","execute","-expected-fingerprint",nextFP[1],"-expected-plan",nextPlan[1],"-ack","BLOCKED_DIAGNOSTICS_ONLY"}
+ next,err:=invoke("1",freshExecute...)
+ if err!=nil||!strings.Contains(next,"READBACK=PASS ENFORCEMENT=DISABLED")||count()!=before+2{
+  t.Fatalf("fresh approved snapshot failed: %q %v",next,err)
+ }
+ if strings.Contains(next,"BLOCKED_EVALUATION_ID="+evaluation[1]+" "){t.Fatal("changed evidence reused old evaluation ID")}
 }
