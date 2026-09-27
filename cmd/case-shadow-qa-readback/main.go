@@ -81,7 +81,7 @@ func run(ctx context.Context,project,service,database,dsn,host string)error{
  defer pool.Close()
  guild,server,err:=inspect(ctx,pool)
  if err!=nil{return err}
- fmt.Printf("CASE_QA_INDEPENDENT_READBACK=PASS GUILD=%d SERVER=%d EVALUATION_ID=1 STATUS=BLOCKED EVIDENCE=2 TOTAL_EVALUATIONS=1 ENFORCEMENT=DISABLED\\n",guild,server)
+ fmt.Printf("CASE_QA_INDEPENDENT_READBACK=PASS GUILD=%d SERVER=%d EVALUATION_ID=1 STATUS=BLOCKED EVIDENCE=2 TOTAL_EVALUATIONS=1 ENFORCEMENT=DISABLED\n",guild,server)
  return nil
 }
 func main(){
