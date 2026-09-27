@@ -6,6 +6,8 @@ package main
 
 import (
  "context"
+ "crypto/sha256"
+ "encoding/hex"
  "errors"
  "flag"
  "fmt"
@@ -30,11 +32,13 @@ type options struct {
  guild,server int64
  limit int
  expected string
+ expectedPlan string
  ack string
 }
 type snapshot struct{
  ids []int64
  fingerprint string
+ planHash string
 }
 
 func validate(o options, gate string)error{
@@ -43,9 +47,18 @@ func validate(o options, gate string)error{
  if o.mode=="execute"{
   if gate!="1"{return errors.New("one-shot write gate is disabled")}
   if o.ack!=executeAcknowledgment{return errors.New("explicit blocked-only acknowledgment required")}
-  if len(o.expected)!=64||strings.Trim(o.expected,"0123456789abcdef")!=""{return errors.New("64-character lowercase preflight fingerprint required")}
+  if !isLowerSHA(o.expected)||!isLowerSHA(o.expectedPlan){return errors.New("64-character lowercase fingerprint and source plan hash required")}
  }
  return nil
+}
+
+func isLowerSHA(s string)bool{return len(s)==64&&strings.Trim(s,"0123456789abcdef")==""}
+
+func provenanceHash(guild,server int64,source string,lines []string)string{
+ h:=sha256.New()
+ fmt.Fprintf(h,"case-shadow-source-v1:%d:%d:%s:%s:%d:%s",guild,server,detectorID,detectorVersion,len(source),source)
+ for _,line:=range lines{fmt.Fprintf(h,"|%d:%s",len(line),line)}
+ return hex.EncodeToString(h.Sum(nil))
 }
 
 func selectSnapshot(ctx context.Context,pool *pgxpool.Pool,o options)(snapshot,error){
@@ -56,18 +69,24 @@ func selectSnapshot(ctx context.Context,pool *pgxpool.Pool,o options)(snapshot,e
  err=tx.QueryRow(ctx,`SELECT source_id FROM case_evidence_events
   WHERE guild_id=$1 AND server_id=$2 ORDER BY id DESC LIMIT 1`,o.guild,o.server).Scan(&source)
  if err!=nil{return snapshot{},errors.New("no selected-source evidence for requested server")}
- rows,err:=tx.Query(ctx,`SELECT id FROM case_evidence_events
+ rows,err:=tx.Query(ctx,`SELECT id,source_end_offset,line_sha256 FROM case_evidence_events
   WHERE guild_id=$1 AND server_id=$2 AND source_id=$3
   ORDER BY source_end_offset DESC,id DESC LIMIT $4`,o.guild,o.server,source,o.limit)
  if err!=nil{return snapshot{},errors.New("bounded evidence query failed")}
  ids:=make([]int64,0,o.limit)
- for rows.Next(){var id int64;if err=rows.Scan(&id);err!=nil{rows.Close();return snapshot{},err};ids=append(ids,id)}
+ provenance:=make([]string,0,o.limit)
+ for rows.Next(){
+  var id,offset int64;var lineHash string
+  if err=rows.Scan(&id,&offset,&lineHash);err!=nil{rows.Close();return snapshot{},err}
+  ids=append(ids,id)
+  provenance=append(provenance,fmt.Sprintf("%d:%d:%s",id,offset,lineHash))
+ }
  err=rows.Err();rows.Close();if err!=nil{return snapshot{},err}
  if len(ids)==0{return snapshot{},errors.New("no evidence in selected source")}
  fp,err:=caseintel.EvidenceFingerprint(o.guild,o.server,detectorID,detectorVersion,ids)
  if err!=nil{return snapshot{},err}
  // Deliberately do not emit physical source path or player identifiers.
- return snapshot{ids:ids,fingerprint:fp},nil
+ return snapshot{ids:ids,fingerprint:fp,planHash:provenanceHash(o.guild,o.server,source,provenance)},nil
 }
 
 func main(){
@@ -77,6 +96,7 @@ func main(){
  flag.Int64Var(&o.server,"server",0,"database game server ID")
  flag.IntVar(&o.limit,"limit",10,"bounded evidence window, 1-50")
  flag.StringVar(&o.expected,"expected-fingerprint","","exact fingerprint from preview (execute only)")
+ flag.StringVar(&o.expectedPlan,"expected-plan","","exact source provenance plan hash from preview (execute only)")
  flag.StringVar(&o.ack,"ack","","must equal BLOCKED_DIAGNOSTICS_ONLY (execute only)")
  flag.Parse()
  if err:=run(context.Background(),o,os.Getenv("CASE_SHADOW_ONESHOT_ALLOWED"),os.Getenv("DATABASE_PUBLIC_URL"),os.Getenv("DATABASE_URL"));err!=nil{
@@ -106,15 +126,15 @@ func run(parent context.Context,o options,gate,publicURL,privateURL string)error
  defer pool.Close()
  if err=pool.Ping(ctx);err!=nil{return errors.New("database unavailable")}
  snap,err:=selectSnapshot(ctx,pool,o);if err!=nil{return err}
- fmt.Printf("MODE=%s GUILD=%d SERVER=%d DETECTOR=%s VERSION=%s EVIDENCE_COUNT=%d FINGERPRINT=%s\n",
-  o.mode,o.guild,o.server,detectorID,detectorVersion,len(snap.ids),snap.fingerprint)
+ fmt.Printf("MODE=%s GUILD=%d SERVER=%d DETECTOR=%s VERSION=%s EVIDENCE_COUNT=%d FINGERPRINT=%s PLAN_HASH=%s\n",
+  o.mode,o.guild,o.server,detectorID,detectorVersion,len(snap.ids),snap.fingerprint,snap.planHash)
  if o.mode=="preview"{fmt.Println("READ_ONLY: no evaluation recorded");return nil}
- if !strings.EqualFold(snap.fingerprint,o.expected){return errors.New("evidence window changed: fingerprint mismatch")}
+ if snap.fingerprint!=o.expected||snap.planHash!=o.expectedPlan{return errors.New("evidence source or window changed: plan mismatch")}
  // Recheck the full snapshot immediately before the write. RecordBlocked
  // independently validates every evidence ID and guild/server inside its
  // insert transaction; neither stage can emit a finding or a sanction.
  snap2,err:=selectSnapshot(ctx,pool,o);if err!=nil{return err}
- if !slices.Equal(snap.ids,snap2.ids){return errors.New("evidence window changed during preflight")}
+ if !slices.Equal(snap.ids,snap2.ids)||snap.planHash!=snap2.planHash{return errors.New("evidence source or content changed during preflight")}
  ledger:=repository.NewShadowLedger(pool)
  id,err:=ledger.RecordBlocked(ctx,repository.BlockedShadowInput{
   Enabled:true,GuildID:o.guild,ServerID:o.server,
