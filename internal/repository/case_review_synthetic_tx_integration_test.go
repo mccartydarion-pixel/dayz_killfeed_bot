@@ -67,6 +67,7 @@ func TestCASEReviewFixtureTransaction(t *testing.T){
  if readErr!=nil||len(visible)!=0{t.Fatalf("outsider saw fixture case: %+v %v",visible,readErr)}
  read.ActorUserID=owner
  read.Scope.InstallationID=otherInst
+ read.Scope.ServerID=otherSrv
  visible,readErr=reader.ListAuthorizedSynthetic(ctx,read)
  if readErr!=nil||len(visible)!=1||visible[0].ID!=foreignCase{
   t.Fatalf("selected foreign installation should return only its own fixture: %+v %v",visible,readErr)
