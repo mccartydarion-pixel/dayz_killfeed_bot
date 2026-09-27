@@ -743,6 +743,13 @@ func inspectChannelLayout(d channelLayoutDiscord, guildID string, existingRoutes
 		if exists {
 			rep.ChannelName = ch.Name
 		}
+		if dest.Category == categoryCASE && exists &&
+			(!byID[ch.ParentID].Private || byID[ch.ParentID].PublicViewOverride || ch.PublicViewOverride) {
+			rep.Health = HealthBroken
+			rep.Detail = "C.A.S.E. channel is not staff-private; repair or choose a private destination"
+			out = append(out, rep)
+			continue
+		}
 		rep.Checks = &DestinationChecks{ChannelExists: exists, RouteMapped: true, ProducerConnected: p.Health == HealthActive}
 		if exists && dest.Voice {
 			rep.Checks.BotCanSend, rep.Checks.VisibleContent = true, true
