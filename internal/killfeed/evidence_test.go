@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/yourname/dayz-killfeed/internal/caseintel"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
