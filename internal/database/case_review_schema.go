@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS case_review_evidence (
  evidence_id BIGINT NOT NULL,
  PRIMARY KEY(case_id,evidence_id),
  FOREIGN KEY(guild_id,server_id,installation_id,case_id)
-  REFERENCES case_review_cases(guild_id,server_id,installation_id,id) ON DELETE CASCADE,
+  REFERENCES case_review_cases(guild_id,server_id,installation_id,id) ON DELETE RESTRICT,
  FOREIGN KEY(guild_id,server_id,evidence_id)
   REFERENCES case_evidence_events(guild_id,server_id,id) ON DELETE RESTRICT
 );
@@ -63,9 +63,23 @@ CREATE TABLE IF NOT EXISTS case_review_audit (
  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
  CONSTRAINT uq_case_review_action UNIQUE(case_id,action_key),
  FOREIGN KEY(guild_id,server_id,installation_id,case_id)
-  REFERENCES case_review_cases(guild_id,server_id,installation_id,id) ON DELETE CASCADE
+  REFERENCES case_review_cases(guild_id,server_id,installation_id,id) ON DELETE RESTRICT
 );
 CREATE INDEX IF NOT EXISTS idx_case_review_audit_history ON case_review_audit(case_id,id);
+
+-- Application-level audit history must not be edited or deleted. Coupled
+-- with RESTRICT on case references, a direct case DELETE cannot erase it.
+-- Privileged schema owners still control migrations; this does not replace
+-- role separation and audited administrative maintenance.
+CREATE OR REPLACE FUNCTION case_review_audit_immutable() RETURNS TRIGGER AS $
+BEGIN
+ RAISE EXCEPTION 'C.A.S.E. review audit is immutable';
+END;
+$ LANGUAGE plpgsql;
+CREATE TRIGGER trg_case_review_audit_immutable
+ BEFORE UPDATE OR DELETE ON case_review_audit
+ FOR EACH ROW EXECUTE FUNCTION case_review_audit_immutable();
+
 
 -- No destination ID or arbitrary payload: a future publisher must resolve
 -- CASE_ALERTS privately and revalidate every permission before delivery.
@@ -98,7 +112,7 @@ CREATE TABLE IF NOT EXISTS case_staff_outbox (
   OR (status <> 'LEASED' AND lease_token IS NULL AND lease_until IS NULL)
  ),
  FOREIGN KEY(guild_id,server_id,installation_id,case_id)
-  REFERENCES case_review_cases(guild_id,server_id,installation_id,id) ON DELETE CASCADE
+  REFERENCES case_review_cases(guild_id,server_id,installation_id,id) ON DELETE RESTRICT
 );
 CREATE INDEX IF NOT EXISTS idx_case_staff_outbox_due
  ON case_staff_outbox(status,next_attempt_at,id) WHERE status IN ('PENDING','RETRY_WAIT');
