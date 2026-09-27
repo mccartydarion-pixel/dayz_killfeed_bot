@@ -170,3 +170,22 @@ func TestCASEAndUnknownKindsCannotUseOperationalAdminAlerts(t *testing.T) {
  drain(p)
  if sender.total()!=1 {t.Fatalf("operational alert was blocked: %d",sender.total())}
 }
+
+
+func TestOperationalAlertAllowlistPreservesEverySupportedKind(t *testing.T) {
+ supported := []string{
+  AlertKindADMStale, AlertKindNitradoFailure, AlertKindZoneIntrusion,
+  AlertKindUAVIntrusion, AlertKindBaseRadar, AlertKindZoneBanViolated,
+ }
+ p, sender, resolver, _ := newAlertFixture()
+ resolver.set(7, 1, routeKeyAdminAlerts, "chan-admin")
+ for _, kind := range supported {
+  if !operationalAdminAlertKind(kind) {t.Fatalf("supported kind rejected: %s",kind)}
+  p.Publish(AdminAlert{GuildRowID:7,ServerID:1,Kind:kind,Severity:AlertWarning,Headline:kind})
+ }
+ drain(p)
+ if sender.total()!=len(supported) {t.Fatalf("expected %d supported operational alerts, got %d",len(supported),sender.total())}
+ for _, kind := range []string{"CASE_MOVEMENT_FINDING","CASE_SHADOW_DIAGNOSTIC","CASE_STAFF_DEMO","","UNKNOWN_KIND"} {
+  if operationalAdminAlertKind(kind) {t.Fatalf("non-operational kind admitted: %q",kind)}
+ }
+}
