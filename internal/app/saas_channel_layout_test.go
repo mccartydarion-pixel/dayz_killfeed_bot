@@ -19,6 +19,7 @@ type layoutGuildFake struct {
 	private     map[string]bool // category IDs created private
 	botMessages map[string]int  // channel ID -> bot messages present
 	starters    map[string]int  // channel ID -> starter cards sent
+	starterEmbeds map[string]*discordgo.MessageEmbed
 	missing     map[string][]string
 	seq         int
 	createCalls int
@@ -27,7 +28,7 @@ type layoutGuildFake struct {
 }
 
 func newLayoutGuildFake(seed ...discord.RawGuildChannel) *layoutGuildFake {
-	return &layoutGuildFake{channels: seed, private: map[string]bool{}, botMessages: map[string]int{}, starters: map[string]int{}, missing: map[string][]string{}}
+	return &layoutGuildFake{channels: seed, private: map[string]bool{}, botMessages: map[string]int{}, starters: map[string]int{}, starterEmbeds: map[string]*discordgo.MessageEmbed{}, missing: map[string][]string{}}
 }
 
 func (f *layoutGuildFake) ListAllGuildChannels(string) ([]discord.RawGuildChannel, error) {
@@ -70,7 +71,8 @@ func (f *layoutGuildFake) Verify(_, channelID string) discord.Verification {
 	}
 	return discord.Verification{GuildFound: true}
 }
-func (f *layoutGuildFake) SendChannelEmbed(channelID string, _ *discordgo.MessageEmbed) error {
+func (f *layoutGuildFake) SendChannelEmbed(channelID string, embed *discordgo.MessageEmbed) error {
+	f.starterEmbeds[channelID] = embed
 	f.starters[channelID]++
 	f.botMessages[channelID]++
 	return nil
@@ -476,6 +478,11 @@ func TestCASESetupCreatesPrivateInformationalDestinationsIdempotently(t *testing
   rep:=report(first,route)
   if rep.Health!=HealthActive||rep.Checks==nil||!rep.Checks.passed()||!rep.StarterSent {t.Fatalf("%s has no verified setup notice: %+v",route,rep)}
   if g.starters[ch.ID]!=1 {t.Fatalf("%s starter count=%d",route,g.starters[ch.ID])}
+  embed:=g.starterEmbeds[ch.ID]
+  if embed==nil||embed.Title==""||embed.Description=="" {t.Fatalf("%s must receive an actual Discord embed, got %+v",route,embed)}
+  if route=="CASE_ALERTS" && (!strings.Contains(embed.Title,"NOT ENABLED") || !strings.Contains(embed.Description,"No live detection")) {
+   t.Fatalf("alert starter must not imply a live finding: %+v",embed)
+  }
  }
  before:=g.createCalls
  second:=runLayout(t,g,w,auditProducers(),panelsPosted(g,w))
