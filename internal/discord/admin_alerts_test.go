@@ -223,3 +223,42 @@ func TestCASEBoundaryDoesNotCrossGuild(t *testing.T) {
   t.Fatalf("expected exactly one authorized operational alert, got %d",sender.total())
  }
 }
+
+
+func TestOperationalAlertConditionStateIsGuildAndServerScoped(t *testing.T) {
+ p, sender, resolver, clock := newAlertFixture()
+ resolver.set(7, 1, routeKeyAdminAlerts, "guild-seven")
+ resolver.set(8, 1, routeKeyAdminAlerts, "guild-eight")
+ stale := killfeed.AdmSnapshot{OnlineCount:2, LastLogChange:clock.Add(-10*time.Minute)}
+ // The same numeric server ID must not suppress a second guild's transition.
+ p.ObserveSnapshot(7, 1, stale)
+ p.ObserveSnapshot(8, 1, stale)
+ drain(p)
+ if len(sender.messages("guild-seven"))!=1 || len(sender.messages("guild-eight"))!=1 {
+  t.Fatalf("independent stale transitions lost: guild7=%d guild8=%d",
+   len(sender.messages("guild-seven")),len(sender.messages("guild-eight")))
+ }
+ // Recovering one guild must not resolve the other.
+ fresh := killfeed.AdmSnapshot{OnlineCount:2, LastLogChange:*clock}
+ p.ObserveSnapshot(7, 1, fresh)
+ p.ObserveSnapshot(8, 1, stale)
+ drain(p)
+ if len(sender.messages("guild-seven"))!=2 || len(sender.messages("guild-eight"))!=1 {
+  t.Fatalf("guild-specific stale resolution leaked: guild7=%d guild8=%d",
+   len(sender.messages("guild-seven")),len(sender.messages("guild-eight")))
+ }
+ fail := killfeed.DownloadReport{ServerID:1,Result:"failure",ErrorClass:"TIMEOUT"}
+ for i:=0;i<3;i++ {p.ObserveDownload(7,fail);p.ObserveDownload(8,fail)}
+ drain(p)
+ if len(sender.messages("guild-seven"))!=3 || len(sender.messages("guild-eight"))!=2 {
+  t.Fatalf("failure streaks crossed guilds: guild7=%d guild8=%d",
+   len(sender.messages("guild-seven")),len(sender.messages("guild-eight")))
+ }
+ p.ObserveDownload(7,killfeed.DownloadReport{ServerID:1,Result:"success"})
+ p.ObserveDownload(8,fail)
+ drain(p)
+ if len(sender.messages("guild-seven"))!=4 || len(sender.messages("guild-eight"))!=2 {
+  t.Fatalf("recovery crossed guilds: guild7=%d guild8=%d",
+   len(sender.messages("guild-seven")),len(sender.messages("guild-eight")))
+ }
+}
