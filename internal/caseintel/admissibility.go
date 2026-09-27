@@ -4,6 +4,7 @@ import (
  "errors"
  "regexp"
  "sort"
+ "strings"
  "time"
 )
 
@@ -83,9 +84,10 @@ func AuditAdmissibility(samples []AdmissibilitySample, limit int, truncated bool
    report.ValidSourceAddresses++
    existing:=seen[sample.SourceID]
    if existing==nil {existing=make(map[int64]string);seen[sample.SourceID]=existing}
+   normalizedHash:=strings.ToLower(sample.LineSHA256)
    if old,found:=existing[sample.SourceEndOffset];found {
-    if old==sample.LineSHA256 {report.DuplicateSourceAddresses++} else {report.OffsetHashCollisions++}
-   } else {existing[sample.SourceEndOffset]=sample.LineSHA256}
+    if old==normalizedHash {report.DuplicateSourceAddresses++} else {report.OffsetHashCollisions++}
+   } else {existing[sample.SourceEndOffset]=normalizedHash}
   }
   if sample.SourceID!="" {sourceRecords[sample.SourceID]=append(sourceRecords[sample.SourceID],sample)}
   if len(sample.ADMClock)==8 {
