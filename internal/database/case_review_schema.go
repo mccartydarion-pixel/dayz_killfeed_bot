@@ -36,7 +36,7 @@ CREATE INDEX IF NOT EXISTS idx_case_review_queue
 
 -- Case provenance is immutable after admission. Only neutral review status and
 -- updated_at may change, via a future independently authorized transaction.
-CREATE OR REPLACE FUNCTION case_review_identity_immutable() RETURNS TRIGGER AS $
+CREATE OR REPLACE FUNCTION case_review_identity_immutable() RETURNS TRIGGER AS $$
 BEGIN
  IF TG_OP = 'DELETE' THEN
   RAISE EXCEPTION 'C.A.S.E. review cases cannot be deleted by the runtime';
@@ -52,7 +52,7 @@ BEGIN
  END IF;
  RETURN NEW;
 END;
-$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql;
 CREATE TRIGGER trg_case_review_identity_immutable
  BEFORE UPDATE OR DELETE ON case_review_cases
  FOR EACH ROW EXECUTE FUNCTION case_review_identity_immutable();
@@ -72,11 +72,11 @@ CREATE TABLE IF NOT EXISTS case_review_evidence (
 );
 CREATE INDEX IF NOT EXISTS idx_case_review_evidence_case ON case_review_evidence(guild_id,server_id,installation_id,case_id);
 
-CREATE OR REPLACE FUNCTION case_review_evidence_immutable() RETURNS TRIGGER AS $
+CREATE OR REPLACE FUNCTION case_review_evidence_immutable() RETURNS TRIGGER AS $$
 BEGIN
  RAISE EXCEPTION 'C.A.S.E. case evidence links are immutable';
 END;
-$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql;
 CREATE TRIGGER trg_case_review_evidence_immutable
  BEFORE UPDATE OR DELETE ON case_review_evidence
  FOR EACH ROW EXECUTE FUNCTION case_review_evidence_immutable();
@@ -105,11 +105,11 @@ CREATE INDEX IF NOT EXISTS idx_case_review_audit_history ON case_review_audit(ca
 -- with RESTRICT on case references, a direct case DELETE cannot erase it.
 -- Privileged schema owners still control migrations; this does not replace
 -- role separation and audited administrative maintenance.
-CREATE OR REPLACE FUNCTION case_review_audit_immutable() RETURNS TRIGGER AS $
+CREATE OR REPLACE FUNCTION case_review_audit_immutable() RETURNS TRIGGER AS $$
 BEGIN
  RAISE EXCEPTION 'C.A.S.E. review audit is immutable';
 END;
-$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql;
 CREATE TRIGGER trg_case_review_audit_immutable
  BEFORE UPDATE OR DELETE ON case_review_audit
  FOR EACH ROW EXECUTE FUNCTION case_review_audit_immutable();
@@ -153,7 +153,7 @@ CREATE INDEX IF NOT EXISTS idx_case_staff_outbox_due
 
 -- The opaque delivery identity cannot be reassigned after enqueue. A future
 -- transactional outbox repository must separately enforce legal transitions.
-CREATE OR REPLACE FUNCTION case_staff_outbox_identity_immutable() RETURNS TRIGGER AS $
+CREATE OR REPLACE FUNCTION case_staff_outbox_identity_immutable() RETURNS TRIGGER AS $$
 BEGIN
  IF TG_OP = 'DELETE' THEN
   RAISE EXCEPTION 'C.A.S.E. staff delivery history cannot be deleted by the runtime';
@@ -167,7 +167,7 @@ BEGIN
  END IF;
  RETURN NEW;
 END;
-$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql;
 CREATE TRIGGER trg_case_staff_outbox_identity_immutable
  BEFORE UPDATE OR DELETE ON case_staff_outbox
  FOR EACH ROW EXECUTE FUNCTION case_staff_outbox_identity_immutable();
