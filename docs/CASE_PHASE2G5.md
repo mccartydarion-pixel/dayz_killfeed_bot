@@ -24,7 +24,7 @@ A gap between retained byte offsets is **not** evidence of dropped ADM lines: th
 ## Automated contract checks
 
 - Reject invalid sample limit or over-limit input; report empty samples explicitly.
-- Distinguish malformed source addresses, same-address replay and same-address changed-hash collision.
+- Distinguish malformed source addresses, same-address replay and same-address changed-hash collision; compare valid SHA-256 hexadecimal case-insensitively.
 - Count valid/invalid clock strings and missing/partial coordinate pairs.
 - Compare adjacent clock strings only after grouping and ordering by byte offset **within** a source. No cross-source clock arithmetic.
 - Report bounded window edges and multiple-source ambiguity.
@@ -50,6 +50,14 @@ This branch has not fetched a current real ADM sample. A real-world observationa
 For an exact Champions server and documented observation window, privately record: running worker presence, collector flag, selected/accepted source reference match, most recent source/offset, checkpoint/remote size provenance, transport failures, retained event count, source changes, invalid clocks, boundary ambiguity, and source-address collision outcomes. Compare counts to the relevant retained event allowlist; do not claim full ADM-log coverage from filtered rows. An empty sample is `NO_OBSERVED_EVENTS`, not `NO_CHEATING`.
 
 The reviewer must verify that source-health snapshots are not atomic across endpoints. Do not make a byte-perfect cross-snapshot claim. No public dashboard element should display canonical source paths, tokens or raw player identifiers.
+
+## Staff acceptance capture (existing authorized view)
+
+After review and a separately approved backend deployment, select the **Champions** installation, authenticate as an actor with `PLAYER_LOCATION_VIEW`, and issue the existing `GET .../admin/anti-cheat/integrity` request. Capture only the following *aggregate* fields in the restricted release record: `generatedAt`, `serverId`, `workerAvailable`, `sourceState`, `collectorConfigured`, `selectedIsAccepted`, `evidenceLines24h`, `latestEvidenceIngestedAt`, continuity status, and the `evidenceAdmissibility` aggregate counters/blockers. Do **not** paste private source paths, player data, DSNs, session cookies or Nitrado secrets into a public ticket, CI artifact or Discord.
+
+The `evidenceAdmissibility` audit covers the **latest 200 retained records by ingestion ID**, not a 24-hour period; `evidenceLines24h` is a separate ingestion-time count. It is a filtered, truncated page when `windowTruncated=true`. Compare repeat observations to establish whether new retained events appear without interpreting snapshot differences as exact missing bytes. When the server is quiet, require `NO_OBSERVED_EVENTS` if the sample is empty, not `NO_CHEATING`; when the worker is unavailable, do not describe the source as healthy.
+
+A production activation decision for this read-only response is separate from any production **shadow evaluation**. Do not copy the staging one-shot process to the live bot. This release only permits observation of data quality after routine code review and deployment; it never authorizes scores, Discord cheating alerts, cases, bans, or enforcement.
 
 ## Phase exit and non-exit criteria
 
