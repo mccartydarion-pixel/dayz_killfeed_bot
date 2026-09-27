@@ -14,6 +14,7 @@ import (
  "strings"
  "time"
 
+ "github.com/jackc/pgx/v5"
  "github.com/jackc/pgx/v5/pgxpool"
  "github.com/yourname/dayz-killfeed/internal/caseintel"
  "github.com/yourname/dayz-killfeed/internal/repository"
@@ -34,7 +35,6 @@ type options struct {
 type snapshot struct{
  ids []int64
  fingerprint string
- sourceRef string // only SHA-256 pseudonym of selected source, no raw path in output
 }
 
 func validate(o options, gate string)error{
@@ -51,7 +51,7 @@ func validate(o options, gate string)error{
 func selectSnapshot(ctx context.Context,pool *pgxpool.Pool,o options)(snapshot,error){
  // No cross-source stitching: source is chosen by the newest ingested row.
  // These offsets are source addresses, not elapsed gameplay time.
- tx,err:=pool.Begin(ctx);if err!=nil{return snapshot{},err};defer tx.Rollback(ctx)
+ tx,err:=pool.BeginTx(ctx,pgx.TxOptions{IsoLevel:pgx.RepeatableRead,AccessMode:pgx.ReadOnly});if err!=nil{return snapshot{},err};defer tx.Rollback(ctx)
  var source string
  err=tx.QueryRow(ctx,`SELECT source_id FROM case_evidence_events
   WHERE guild_id=$1 AND server_id=$2 ORDER BY id DESC LIMIT 1`,o.guild,o.server).Scan(&source)
@@ -100,6 +100,7 @@ func run(parent context.Context,o options,gate,publicURL,privateURL string)error
  ctx,cancel:=context.WithTimeout(parent,25*time.Second);defer cancel()
  cfg,err:=pgxpool.ParseConfig(dsn);if err!=nil{return errors.New("invalid database configuration")}
  cfg.MaxConns=1;cfg.MinConns=0
+ if cfg.ConnConfig.RuntimeParams==nil{cfg.ConnConfig.RuntimeParams=make(map[string]string)}
  cfg.ConnConfig.RuntimeParams["application_name"]="champion-case-shadow-once"
  pool,err:=pgxpool.NewWithConfig(ctx,cfg);if err!=nil{return errors.New("database connection failed")}
  defer pool.Close()
