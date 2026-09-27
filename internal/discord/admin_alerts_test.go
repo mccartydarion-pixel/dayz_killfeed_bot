@@ -189,3 +189,21 @@ func TestOperationalAlertAllowlistPreservesEverySupportedKind(t *testing.T) {
   if operationalAdminAlertKind(kind) {t.Fatalf("non-operational kind admitted: %q",kind)}
  }
 }
+
+
+func TestCASEBoundaryDoesNotCrossServerOrFallback(t *testing.T) {
+ p, sender, resolver, _ := newAlertFixture()
+ resolver.set(7, 2, routeKeyAdminAlerts, "chan-server-two")
+ // Server one has no staff route. Even an allowed operational kind must
+ // not fall through to server two's configured channel.
+ p.Publish(AdminAlert{GuildRowID:7,ServerID:1,Kind:AlertKindADMStale,Severity:AlertWarning,Headline:"ADM STALE"})
+ // A C.A.S.E. kind remains forbidden even when server two has a route.
+ p.Publish(AdminAlert{GuildRowID:7,ServerID:2,Kind:"CASE_MOVEMENT_FINDING",Severity:AlertCritical,Headline:"DO NOT SEND"})
+ drain(p)
+ if sender.total()!=0 {t.Fatalf("missing route or C.A.S.E. alert leaked to Discord: %d",sender.total())}
+ p.Publish(AdminAlert{GuildRowID:7,ServerID:2,Kind:AlertKindADMStale,Severity:AlertWarning,Headline:"ADM STALE"})
+ drain(p)
+ if len(sender.messages("chan-server-two"))!=1 || sender.total()!=1 {
+  t.Fatalf("expected exactly one server-two operational alert, got %d",sender.total())
+ }
+}
