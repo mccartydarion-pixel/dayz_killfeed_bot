@@ -49,6 +49,7 @@ const (
 	categoryLive  = "LIVE"
 	categoryHub   = "HUB"
 	categoryStaff = "STAFF"
+	categoryCASE  = "CASE"
 )
 
 // championCategory is one Champion-managed Discord category.
@@ -62,6 +63,7 @@ var championCategories = []championCategory{
 	{categoryLive, "🏆 CHAMPION • LIVE", false},
 	{categoryHub, "🏆 CHAMPION • HUB", false},
 	{categoryStaff, "🔒 CHAMPION • STAFF", true},
+	{categoryCASE, "🔒 CHAMPION • C.A.S.E.", true},
 }
 
 // starterCard is the single restrained message a live-feed channel gets
@@ -139,6 +141,21 @@ var championDestinations = []championDestination{
 		Routes: []string{"ONLINE_COUNTER"}, Anchors: []string{"ONLINE_COUNTER"}, Voice: true,
 	},
 	{
+		Key: "CASE_STATUS", Label: "C.A.S.E. Status", Category: categoryCASE, ChannelName: "🛡️・case-status",
+		Routes: []string{"CASE_STATUS"}, Anchors: []string{"CASE_STATUS"},
+		Starter: &starterCard{"🛡️ C.A.S.E. STATUS • INFORMATION ONLY", "C.A.S.E. evidence-quality and detector readiness are available in the authorized dashboard.\\n\\n**Current boundary**\\n• CASE-MOV-001: BLOCKED\\n• Safe speed pairs: 0\\n• Enforcement: DISABLED\\n\\nThis channel is a setup information card, not live telemetry or a cheating verdict."},
+	},
+	{
+		Key: "CASE_EVIDENCE", Label: "C.A.S.E. Evidence", Category: categoryCASE, ChannelName: "📁・case-evidence",
+		Routes: []string{"CASE_EVIDENCE"}, Anchors: []string{"CASE_EVIDENCE"},
+		Starter: &starterCard{"📁 C.A.S.E. EVIDENCE • STAFF GUIDE", "Review source quality through the authenticated, installation-scoped C.A.S.E. dashboard. No player evidence, ADM paths, coordinates, or private links are posted here automatically.\\n\\nThe retained sample is bounded and does not prove complete ADM coverage. No finding or case is currently generated."},
+	},
+	{
+		Key: "CASE_ALERTS", Label: "C.A.S.E. Alerts", Category: categoryCASE, ChannelName: "🚨・case-alerts",
+		Routes: []string{"CASE_ALERTS"}, Anchors: []string{"CASE_ALERTS"},
+		Starter: &starterCard{"🚨 C.A.S.E. ALERTS • NOT ENABLED", "Reserved for a separately reviewed future staff finding publisher. **No live detection or cheating notifications are active.**\\n\\nCASE-MOV-001 remains BLOCKED; no scores, accusations, bans, kicks, or enforcement. This setup card is not evidence about any player."},
+	},
+	{
 		Key: "ADMIN_LOGS", Label: "Admin Logs", Category: categoryStaff, ChannelName: "🛡️・admin-logs",
 		Routes: []string{"ADMIN_LOGS", "ADMIN_ALERTS", "BUILD_FEED"}, Anchors: []string{"ADMIN_LOGS", "ADMIN_ALERTS", "BUILD_FEED"},
 		Starter: &starterCard{"🛡️ ADMIN LOGS", "Champion staff operations will appear here.\n\n**Includes**\n• ADM log health\n• Operational alerts\n• Build activity, when the server logs it"},
@@ -176,6 +193,11 @@ var routeProducerAudit = map[string]routeProducer{
 	// the server logs build actions; channelRouteProducers reports it ACTIVE
 	// once one has actually been parsed.
 	"BUILD_FEED": {HealthBlocked, detailSourceBlocked + ": no build/placement line parsed yet - enable adminLogPlacement / adminLogBuildActions in the server config"},
+	// Setup itself posts these fixed informational cards. These are NOT live
+	// detector, evidence, or Discord finding publishers.
+	"CASE_STATUS": {HealthActive, "Setup-managed informational card only; live diagnostics remain in the authorized dashboard"},
+	"CASE_EVIDENCE": {HealthActive, "Setup-managed staff guidance only; no private evidence is published"},
+	"CASE_ALERTS": {HealthActive, "Setup-managed disabled-alert notice only; no C.A.S.E. finding publisher"},
 }
 
 // championRouteKeys is the fixed set of valid route_key values - never an
