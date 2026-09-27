@@ -16,7 +16,9 @@ type AdmissibilitySample struct {
  LineSHA256 string
  EventType string
  ADMClock string
- X, Z *float64
+ X, Z *float64 // SUBJECT: retained for per-event coordinate completeness
+ ActorX, ActorZ *float64
+ TargetX, TargetZ *float64
 }
 
 // AdmissibilityReport reports source-data limitations, not suspicion or player risk.
@@ -41,6 +43,13 @@ type AdmissibilityReport struct {
  CompleteCoordinatePairs int `json:"completeCoordinatePairs"`
  PartialCoordinatePairs int `json:"partialCoordinatePairs"`
  MissingCoordinatePairs int `json:"missingCoordinatePairs"`
+ // Additional per-role counts; no cross-role coordinate pair is ever formed.
+ ActorCompleteCoordinatePairs int `json:"actorCompleteCoordinatePairs"`
+ ActorPartialCoordinatePairs int `json:"actorPartialCoordinatePairs"`
+ ActorMissingCoordinatePairs int `json:"actorMissingCoordinatePairs"`
+ TargetCompleteCoordinatePairs int `json:"targetCompleteCoordinatePairs"`
+ TargetPartialCoordinatePairs int `json:"targetPartialCoordinatePairs"`
+ TargetMissingCoordinatePairs int `json:"targetMissingCoordinatePairs"`
  WindowTruncated bool `json:"windowTruncated"`
  Blockers []string `json:"blockers"`
 }
@@ -87,6 +96,16 @@ func AuditAdmissibility(samples []AdmissibilitySample, limit int, truncated bool
   case sample.X!=nil || sample.Z!=nil:report.PartialCoordinatePairs++
   default:report.MissingCoordinatePairs++
   }
+  switch {
+  case sample.ActorX!=nil && sample.ActorZ!=nil:report.ActorCompleteCoordinatePairs++
+  case sample.ActorX!=nil || sample.ActorZ!=nil:report.ActorPartialCoordinatePairs++
+  default:report.ActorMissingCoordinatePairs++
+  }
+  switch {
+  case sample.TargetX!=nil && sample.TargetZ!=nil:report.TargetCompleteCoordinatePairs++
+  case sample.TargetX!=nil || sample.TargetZ!=nil:report.TargetPartialCoordinatePairs++
+  default:report.TargetMissingCoordinatePairs++
+  }
  }
  report.SourceCount=len(sourceRecords)
  if report.SourceCount>1 {report.Blockers=append(report.Blockers,"NO_CROSS_SOURCE_STITCH")}
@@ -94,7 +113,9 @@ func AuditAdmissibility(samples []AdmissibilitySample, limit int, truncated bool
  if report.OffsetHashCollisions>0 {report.Blockers=append(report.Blockers,"SOURCE_OFFSET_HASH_COLLISION")}
  if report.DuplicateSourceAddresses>0 {report.Blockers=append(report.Blockers,"DUPLICATE_SOURCE_ADDRESS_IN_SAMPLE")}
  if report.InvalidClockStrings>0 {report.Blockers=append(report.Blockers,"ADM_CLOCK_MISSING_OR_INVALID")}
- if report.PartialCoordinatePairs>0 {report.Blockers=append(report.Blockers,"PARTIAL_COORDINATE_PAIR")}
+ if report.PartialCoordinatePairs>0||report.ActorPartialCoordinatePairs>0||report.TargetPartialCoordinatePairs>0 {
+  report.Blockers=append(report.Blockers,"PARTIAL_COORDINATE_PAIR")
+ }
  if report.ObservationCount==0 {report.Blockers=append(report.Blockers,"NO_OBSERVED_EVENTS")}
  for _,events:=range sourceRecords {
   sort.Slice(events,func(i,j int)bool {
