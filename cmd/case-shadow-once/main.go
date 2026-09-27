@@ -141,18 +141,13 @@ func run(parent context.Context,o options,gate,publicURL,privateURL string)error
   DetectorID:detectorID,Version:detectorVersion,EvidenceIDs:snap.ids,
  })
  if err!=nil{return err}
- history,err:=ledger.ListShadowHistory(ctx,o.guild,o.server,nil,50)
- if err!=nil{return errors.New("post-write history read failed")}
- ok:=false
- for _,item:=range history {
-  if item.ID!=id{continue}
-  sorted:=append([]int64(nil),snap.ids...);slices.Sort(sorted)
-  if item.Status!="BLOCKED"||!slices.Equal(sorted,item.EvidenceIDs)||len(item.ReasonCodes)!=4 {
-   return errors.New("post-write history does not match expected blocked evaluation")
-  }
-  ok=true;break
+ item,err:=ledger.GetShadowHistoryByID(ctx,o.guild,o.server,id)
+ if err!=nil{return errors.New("post-write exact evaluation read failed")}
+ sorted:=append([]int64(nil),snap.ids...);slices.Sort(sorted)
+ if item.ID!=id||item.DetectorID!=detectorID||item.Version!=detectorVersion||
+  item.Status!="BLOCKED"||!slices.Equal(sorted,item.EvidenceIDs)||len(item.ReasonCodes)!=4{
+  return errors.New("post-write exact evaluation does not match expected blocked record")
  }
- if !ok{return errors.New("post-write readback not found in bounded history")}
  fmt.Printf("BLOCKED_EVALUATION_ID=%d EVIDENCE_COUNT=%d READBACK=PASS ENFORCEMENT=DISABLED\n",id,len(snap.ids))
  return nil
 }
