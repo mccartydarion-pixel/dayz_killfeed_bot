@@ -23,7 +23,9 @@ func TestCASEIntegrityServerIsolationAndAuthorization(t *testing.T) {
  if out.ServerID!=w.serverID||out.EvidenceLines24h!=1||out.LatestEvidenceOffset==nil||*out.LatestEvidenceOffset!=500||
   out.LatestEvidenceSourceRef==nil||*out.LatestEvidenceSourceRef==in.SourceID||
   out.Continuity.CurrentSourceEvidenceStatus!="UNKNOWN"||len(out.Continuity.RecentSources)!=1||out.Continuity.RecentSources[0].RecordedLines!=1||
-  out.DetectorsEnabled||out.ElapsedTimeTrusted||out.MovementDetectorStatus!="BLOCKED"{
+  out.EvidenceAdmissibility.ObservationCount!=1||out.EvidenceAdmissibility.SourceCount!=1||
+ out.EvidenceAdmissibility.MovementDetectorStatus!="BLOCKED"||out.EvidenceAdmissibility.SafeSpeedPairs!=0||
+ out.EvidenceAdmissibility.Enforcement!="DISABLED"||out.DetectorsEnabled||out.ElapsedTimeTrusted||out.MovementDetectorStatus!="BLOCKED"{
   t.Fatalf("integrity scope/contract: %+v",out)
  }
  // One guild may contain more than one installation. Never aggregate both.
@@ -36,7 +38,8 @@ func TestCASEIntegrityServerIsolationAndAuthorization(t *testing.T) {
  if err:=repo.RecordCaseEvidence(context.Background(),other);err!=nil{t.Fatal(err)}
  rr=w.call(w.a.handleAntiCheatIntegrity,http.MethodGet,path,w.f.OwnerDiscordID,nil,nil)
  out=decodeBody[caseSourceIntegrity](t,rr)
- if out.EvidenceLines24h!=1||*out.LatestEvidenceOffset!=500||len(out.Continuity.RecentSources)!=1||out.Continuity.RecentSources[0].RecordedLines!=1{t.Fatal("foreign server evidence leaked")}
+ if out.EvidenceLines24h!=1||*out.LatestEvidenceOffset!=500||len(out.Continuity.RecentSources)!=1||out.Continuity.RecentSources[0].RecordedLines!=1||out.EvidenceAdmissibility.ObservationCount!=1||
+ out.EvidenceAdmissibility.SourceCount!=1 {t.Fatal("foreign server evidence leaked")}
  stranger:=syncUser(t,w.a,fmt.Sprintf("case-integrity-stranger-%d",time.Now().UnixNano()),"Stranger")
  denied:=w.call(w.a.handleAntiCheatIntegrity,http.MethodGet,path,stranger.DiscordUserID,nil,nil)
  if denied.Code!=http.StatusForbidden{t.Fatalf("unauthorized integrity read: %d",denied.Code)}
