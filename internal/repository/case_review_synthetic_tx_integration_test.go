@@ -54,6 +54,41 @@ func TestCASEReviewFixtureTransaction(t *testing.T){
  writer:=NewCaseReviewMutation(db.Pool)
  at:=time.Now().UTC().Truncate(time.Second).Add(2*time.Second)
  input:=SyntheticReviewInput{FixtureOnly:true,CallerCapabilityVerified:true,Scope:CaseReviewScope{GuildID:guild,ServerID:srv,InstallationID:inst},CaseID:caseID,ActorUserID:owner,ActionKey:a,ExpectedStatus:"PENDING_REVIEW",ToStatus:"REVIEWED",ReasonCode:"EVIDENCE_REVIEWED",Note:"Synthetic review",At:at}
+ // Authorization is enforced inside the SAME bounded queue statement.
+ // Merely asserting FixtureOnly cannot grant a foreign or revoked actor access.
+ reader:=NewCaseReviewReader(db.Pool)
+ read:=SyntheticAuthorizedCaseRead{FixtureOnly:true,Scope:input.Scope,ActorUserID:owner,Limit:1}
+ visible,readErr:=reader.ListAuthorizedSynthetic(ctx,read)
+ if readErr!=nil||len(visible)!=1||visible[0].ID!=caseID||visible[0].EvidenceCount!=0||visible[0].AuditCount!=0{
+  t.Fatalf("authorized fixture read: %+v %v",visible,readErr)
+ }
+ read.ActorUserID=outsider
+ visible,readErr=reader.ListAuthorizedSynthetic(ctx,read)
+ if readErr!=nil||len(visible)!=0{t.Fatalf("outsider saw fixture case: %+v %v",visible,readErr)}
+ read.ActorUserID=owner
+ read.Scope.InstallationID=otherInst
+ visible,readErr=reader.ListAuthorizedSynthetic(ctx,read)
+ if readErr!=nil||len(visible)!=1||visible[0].ID!=foreignCase{
+  t.Fatalf("selected foreign installation should return only its own fixture: %+v %v",visible,readErr)
+ }
+ read.Scope=input.Scope
+ cursor:=caseID
+ read.Before=&cursor
+ visible,readErr=reader.ListAuthorizedSynthetic(ctx,read)
+ if readErr!=nil||len(visible)!=0{t.Fatalf("cursor escaped descending scope: %+v %v",visible,readErr)}
+ read.Before=nil
+ read.FixtureOnly=false
+ if _,readErr=reader.ListAuthorizedSynthetic(ctx,read);!errors.Is(readErr,ErrCASEReviewFixtureDisabled){
+  t.Fatalf("fixture read gate bypass: %v",readErr)
+ }
+ read.FixtureOnly=true
+ read.Limit=51
+ if _,readErr=reader.ListAuthorizedSynthetic(ctx,read);readErr==nil{t.Fatal("unbounded case page accepted")}
+ read.Limit=1
+ if _,err=db.Pool.Exec(ctx,"UPDATE organization_members SET role='MEMBER' WHERE organization_id=$1 AND user_id=$2",org,owner);err!=nil{t.Fatal(err)}
+ visible,readErr=reader.ListAuthorizedSynthetic(ctx,read)
+ if readErr!=nil||len(visible)!=0{t.Fatalf("revoked role saw case queue: %+v %v",visible,readErr)}
+ if _,err=db.Pool.Exec(ctx,"UPDATE organization_members SET role='OWNER' WHERE organization_id=$1 AND user_id=$2",org,owner);err!=nil{t.Fatal(err)}
  state:=func()(string,int){
   t.Helper();var s string;var n int
   if e:=db.Pool.QueryRow(ctx,"SELECT status FROM case_review_cases WHERE id=$1",caseID).Scan(&s);e!=nil{t.Fatal(e)}
