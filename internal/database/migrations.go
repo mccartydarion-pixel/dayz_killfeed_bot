@@ -2169,6 +2169,12 @@ ON CONFLICT (installation_id, route_key) DO NOTHING;
 		Name: "0056_case_shadow_evaluations",
 		SQL: CaseShadowLedgerSQL,
 	},
+	{
+		// Inert C.A.S.E. core review/outbox schema; no production writer or sender.
+		// 0057-0062 are reserved in an independent older billing candidate.
+		Name: "0063_case_review_outbox_skeleton",
+		SQL: CASEReviewSkeletonSQL,
+	},
 }
 
 // CaseShadowLedgerSQL is additive. The composite FK ensures that an evidence
