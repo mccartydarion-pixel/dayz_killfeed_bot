@@ -1,6 +1,7 @@
 package discord
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -274,6 +275,10 @@ func setupErrorMessage(err error) string {
 		return "ℹ️ This Discord server is not connected to Champion yet.\nConnect it in **Setup** on the Champion website, then run `/setup` again."
 	case errors.Is(err, ErrMissingManageChannels):
 		return "❌ Champion needs the **Manage Channels** permission to set up its channels. Grant it and run `/setup repair`."
+	case errors.Is(err, context.DeadlineExceeded):
+		return "⚠️ Setup reached its time limit before an installation completed. Some channels may already exist; check channel status before retrying."
+	case errors.Is(err, context.Canceled):
+		return "⚠️ Setup was interrupted. Some channels may already exist; check channel status before retrying."
 	}
 	return "❌ Setup failed. Try `/setup repair` again in a moment."
 }
