@@ -102,6 +102,11 @@ func TestCASEReviewSchemaIsInertAndScoped(t *testing.T) {
  // The future repository must enforce review permissions, transition checks,
  // and an audit insert in the same transaction.
  if _,err:=db.Pool.Exec(ctx,`UPDATE case_review_cases SET status='REVIEWED',updated_at=NOW() WHERE id=$1`,caseID);err!=nil{t.Fatalf("legitimate status update blocked: %v",err)}
+ // A future outbox worker may update delivery state, but cannot relabel the
+ // immutable tenant, finding version or idempotency key or erase the receipt.
+ shouldFail(`UPDATE case_staff_outbox SET delivery_key=$2 WHERE case_id=$1`,caseID,hexB)
+ shouldFail(`UPDATE case_staff_outbox SET event_version=99 WHERE case_id=$1`,caseID)
+ shouldFail(`DELETE FROM case_staff_outbox WHERE case_id=$1`,caseID)
  // Review history must not be silently edited, deleted, or removed by deleting its parent case.
  shouldFail(`UPDATE case_review_audit SET note='overwritten' WHERE case_id=$1`,caseID)
  shouldFail(`DELETE FROM case_review_audit WHERE case_id=$1`,caseID)
