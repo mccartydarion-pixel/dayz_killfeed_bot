@@ -498,3 +498,36 @@ func TestEmbedTemplateAuditLoggingIsSafe(t *testing.T) {
 		}
 	}
 }
+
+
+func TestCASETemplateSavePreviewAndActivationRemainSeparate(t *testing.T) {
+ w:=newEmbedWorld(t)
+ org,inst,owner:=w.a1.OrgID,w.a1.InstallationID,w.a1.OwnerDiscordID
+ routes:=[]struct{key,variable string}{{"CASE_STATUS","detector_status"},{"CASE_EVIDENCE","quality_status"},{"CASE_ALERTS","case_status"}}
+ for _,route:=range routes {
+  cfg:=map[string]any{"routeKey":route.key,"enabled":true,"color":"#D4AF37",
+   "title":map[string]any{"enabled":true,"template":"C.A.S.E. preview: {{"+route.variable+"}}"},
+   "description":map[string]any{"enabled":true,"template":"DEMO ONLY — NOT A REAL DETECTION"}}
+  saved:=w.put(org,inst,route.key,owner,cfg)
+  if saved.Code!=http.StatusOK || !strings.Contains(saved.Body.String(),`"customized":true`) {
+   t.Fatalf("%s save: %d %s",route.key,saved.Code,saved.Body.String())
+  }
+  fetched:=w.get(org,inst,route.key,owner)
+  if fetched.Code!=http.StatusOK || !strings.Contains(fetched.Body.String(),`"runtimeRendering":"NOT_ENABLED"`) {
+   t.Fatalf("%s stored template must remain non-live: %d %s",route.key,fetched.Code,fetched.Body.String())
+  }
+  preview:=w.call(w.a.handlePreviewEmbedTemplate,http.MethodPost,org,inst,route.key,owner,
+   map[string]any{"template":cfg,"variables":map[string]string{route.variable:"BLOCKED"}})
+  if preview.Code!=http.StatusOK || !strings.Contains(preview.Body.String(),`"renderable":true`) ||
+   !strings.Contains(preview.Body.String(),"DESIGN PREVIEW ONLY") ||
+   !strings.Contains(preview.Body.String(),`"customRenderingSupported":false`) {
+   t.Fatalf("%s preview must render, disclose synthetic status, and not claim live support: %d %s",route.key,preview.Code,preview.Body.String())
+  }
+  activate:=w.activate(org,inst,route.key,owner,repository.EmbedModeCustom)
+  if activate.Code==http.StatusOK || !strings.Contains(activate.Body.String(),embedReasonRouteUnsupported) {
+   t.Fatalf("%s custom activation must fail closed: %d %s",route.key,activate.Code,activate.Body.String())
+  }
+  foreign:=w.get(w.b1.OrgID,inst,route.key,w.b1.OwnerDiscordID)
+  if foreign.Code!=http.StatusNotFound {t.Fatalf("%s cross-installation read got %d",route.key,foreign.Code)}
+ }
+}
