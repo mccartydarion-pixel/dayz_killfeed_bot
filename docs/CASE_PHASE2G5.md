@@ -44,6 +44,10 @@ The existing `GET .../admin/anti-cheat/integrity` response now includes `evidenc
 
 The source-health snapshot, source-continuity query and admissibility audit are separate observations, **not one atomic view of live log state**. The report contains only aggregate counts and quality blockers; canonical ADM paths, source IDs, player identities, and coordinates are never returned through this new field. Empty rows explicitly mean `NO_OBSERVED_EVENTS`, not no cheating. Integration tests assert server isolation, unauthorized-user rejection, permanently blocked movement and absence of raw source paths.
 
+## Evidence observation availability
+
+The existing staff integrity response also provides `evidenceObservationStatus`, an explicit availability label that is **not** collector health or a player judgment. When the worker is absent it returns `WORKER_UNAVAILABLE` even if historical rows remain; when the collector is not configured it returns `COLLECTOR_NOT_CONFIGURED`. Without a selected source it is `SOURCE_UNVERIFIED`. With a selected source and no retained records it is `NO_RETAINED_EVENTS`, not `NO_CHEATING`; otherwise `RETAINED_EVENTS_OBSERVED` means retained observations exist, not that the collector is continuously healthy or complete. Existing independent source-state and transport fields remain authoritative for source-health context. An old observation is not a current gameplay signal.
+
 ## Evidence acceptance process for real console ADM
 
 This branch has not fetched a current real ADM sample. A real-world observational gate must use the existing authorized and scoped C.A.S.E. evidence/integrity views, preferably the already-running collector; **do not create a second Nitrado poller**, expose raw source paths, export private player data to CI, or silently treat an empty server as an ingestion failure.
