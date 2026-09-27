@@ -33,6 +33,10 @@ type AdmissibilityReport struct {
  SafeSpeedPairs int `json:"safeSpeedPairs"`
  Enforcement string `json:"enforcement"`
  ObservationCount int `json:"observationCount"`
+ HitObservations int `json:"hitObservations"`
+ KillObservations int `json:"killObservations"`
+ BoundaryObservations int `json:"boundaryObservations"`
+ OtherObservations int `json:"otherObservations"`
  SourceCount int `json:"sourceCount"`
  ValidSourceAddresses int `json:"validSourceAddresses"`
  InvalidSourceAddresses int `json:"invalidSourceAddresses"`
@@ -95,6 +99,15 @@ func AuditAdmissibility(samples []AdmissibilitySample, limit int, truncated bool
    } else {existing[sample.SourceEndOffset]=normalizedHash}
   }
   if sample.SourceID!="" {sourceRecords[sample.SourceID]=append(sourceRecords[sample.SourceID],sample)}
+  // A fixed set of aggregate buckets; never expose arbitrary event strings.
+  // These are retained observations, not all events in the ADM file.
+  switch sample.EventType {
+  case "PLAYER_HIT":report.HitObservations++
+  case "PLAYER_KILL":report.KillObservations++
+  case "PLAYER_CONNECT","PLAYER_DISCONNECT","PLAYER_RESPAWN","PLAYER_DEATH","PLAYER_SUICIDE":
+   report.BoundaryObservations++
+  default:report.OtherObservations++
+  }
   if len(sample.ADMClock)==8 {
    if _,err:=time.Parse("15:04:05",sample.ADMClock);err==nil {report.ValidClockStrings++} else {report.InvalidClockStrings++}
   } else {report.InvalidClockStrings++}
