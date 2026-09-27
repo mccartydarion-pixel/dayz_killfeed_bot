@@ -25,7 +25,7 @@ A gap between retained byte offsets is **not** evidence of dropped ADM lines: th
 
 - Reject invalid sample limit or over-limit input; report empty samples explicitly.
 - Distinguish malformed source addresses, same-address replay and same-address changed-hash collision; compare valid SHA-256 hexadecimal case-insensitively.
-- Count valid/invalid clock strings and missing/partial coordinate pairs.
+- Count valid/invalid clock strings and missing/partial coordinate pairs independently for subject, actor and target. Treat non-finite PostgreSQL float8 values (NaN or either infinity) as unusable coordinates and report `NON_FINITE_COORDINATE`, not a complete position.
 - Compare adjacent clock strings only after grouping and ordering by byte offset **within** a source. No cross-source clock arithmetic.
 - Report bounded window edges and multiple-source ambiguity.
 - Unconditionally report `MovementDetectorStatus=BLOCKED`, `SafeSpeedPairs=0`, `Enforcement=DISABLED`, including when all recorded coordinates and clock strings look valid.
