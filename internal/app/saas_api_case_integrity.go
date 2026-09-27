@@ -42,6 +42,7 @@ type caseSourceIntegrity struct {
  LatestEvidenceSourceRef *string `json:"latestEvidenceSourceRef"`
  LatestEvidenceOffset *int64 `json:"latestEvidenceOffset"`
  EvidenceLines24h int64 `json:"evidenceLines24h"`
+ EvidenceObservationStatus string `json:"evidenceObservationStatus"`
  NewerBootVerificationReason string `json:"newerBootVerificationReason"`
  NewerBootVerificationAt *time.Time `json:"newerBootVerificationAt"`
  NewerBootCandidateRef *string `json:"newerBootCandidateRef"`
@@ -97,6 +98,17 @@ func caseSourceSnapshot(serverID int64,now time.Time,source killfeed.ADMSourceHe
   offset:=pipeline.CheckpointOffset;out.CheckpointBytes=&offset
  }
  return out
+}
+
+// This is an observation-availability label, not collector health, data
+// completeness, gameplay activity or a cheating verdict. Retained rows may
+// predate an unavailable worker or a disabled collector.
+func caseEvidenceObservationStatus(worker,collector bool,sourceRef *string,latestEvidence *time.Time,count int64) string {
+ if !worker {return "WORKER_UNAVAILABLE"}
+ if !collector {return "COLLECTOR_NOT_CONFIGURED"}
+ if sourceRef==nil {return "SOURCE_UNVERIFIED"}
+ if latestEvidence==nil && count==0 {return "NO_RETAINED_EVENTS"}
+ return "RETAINED_EVENTS_OBSERVED"
 }
 
 func (a *App) handleAntiCheatIntegrity(w http.ResponseWriter,r *http.Request) {
@@ -168,6 +180,8 @@ func (a *App) handleAntiCheatIntegrity(w http.ResponseWriter,r *http.Request) {
   writeSaaSError(w,codeInternalError,"could not read C.A.S.E. evidence quality");return
  }
  out.EvidenceAdmissibility=admissibility
+ out.EvidenceObservationStatus=caseEvidenceObservationStatus(available,out.CollectorConfigured,
+  out.SelectedSourceRef,out.LatestEvidenceIngestedAt,out.EvidenceLines24h)
  a.recordAudit(ctx,ac,"CASE_SOURCE_INTEGRITY_VIEWED","","","success",nil,
   map[string]any{"workerAvailable":available,"sourceState":out.SourceState})
  writeSaaSJSON(w,http.StatusOK,out)
