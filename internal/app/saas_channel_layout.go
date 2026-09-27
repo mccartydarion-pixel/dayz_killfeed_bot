@@ -468,7 +468,7 @@ func applyChannelLayout(ctx context.Context, d channelLayoutDiscord, w channelRo
 				continue
 			}
 			ch, ok := byID[r.ChannelID]
-			if ok && p.Destination.matches(ch) {
+			if ok && p.Destination.matches(ch) && (p.Destination.Category != categoryCASE || (byID[ch.ParentID].Private && !ch.PublicViewOverride)) {
 				reused[p.Destination.Key] = ch
 				if parent, ok := byID[ch.ParentID]; ok && parent.Type == discordgo.ChannelTypeGuildCategory && categoryHint[p.Destination.Category] == "" {
 					categoryHint[p.Destination.Category] = parent.ID
@@ -777,13 +777,13 @@ func brokenDetail(c DestinationChecks, panel bool) string {
 func resolveLayoutCategory(d channelLayoutDiscord, guildID string, channels []discord.RawGuildChannel, cat championCategory, hintID string) (discord.RawGuildChannel, error) {
 	if hintID != "" {
 		for _, ch := range channels {
-			if ch.ID == hintID && ch.Type == discordgo.ChannelTypeGuildCategory {
+			if ch.ID == hintID && ch.Type == discordgo.ChannelTypeGuildCategory && (cat.Key != categoryCASE || ch.Private) {
 				return ch, nil
 			}
 		}
 	}
 	for _, ch := range channels {
-		if ch.Type == discordgo.ChannelTypeGuildCategory && strings.EqualFold(strings.TrimSpace(ch.Name), cat.Name) {
+		if ch.Type == discordgo.ChannelTypeGuildCategory && strings.EqualFold(strings.TrimSpace(ch.Name), cat.Name) && (cat.Key != categoryCASE || ch.Private) {
 			return ch, nil
 		}
 	}
@@ -804,11 +804,11 @@ func resolveLayoutCategory(d channelLayoutDiscord, guildID string, channels []di
 // the category, then create. Name recovery never adopts a same-named channel
 // elsewhere in the guild.
 func resolveLayoutChannel(d channelLayoutDiscord, guildID string, channels []discord.RawGuildChannel, categoryID string, dest championDestination, reused discord.RawGuildChannel) (discord.RawGuildChannel, bool, error) {
-	if reused.ID != "" {
+	if reused.ID != "" && (dest.Category != categoryCASE || (reused.ParentID == categoryID && !reused.PublicViewOverride)) {
 		return reused, false, nil
 	}
 	for _, ch := range channels {
-		if ch.ParentID == categoryID && dest.matches(ch) {
+		if ch.ParentID == categoryID && dest.matches(ch) && (dest.Category != categoryCASE || !ch.PublicViewOverride) {
 			return ch, false, nil
 		}
 	}
