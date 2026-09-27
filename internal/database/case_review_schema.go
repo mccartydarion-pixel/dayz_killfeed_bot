@@ -41,11 +41,11 @@ BEGIN
  IF TG_OP = 'DELETE' THEN
   RAISE EXCEPTION 'C.A.S.E. review cases cannot be deleted by the runtime';
  END IF;
- IF ROW(NEW.guild_id,NEW.server_id,NEW.installation_id,
+ IF ROW(NEW.id,NEW.guild_id,NEW.server_id,NEW.installation_id,
         NEW.discord_guild_connection_id,NEW.detector_id,NEW.detector_version,
         NEW.evidence_fingerprint,NEW.source_quality_ref,NEW.created_at)
     IS DISTINCT FROM
-    ROW(OLD.guild_id,OLD.server_id,OLD.installation_id,
+    ROW(OLD.id,OLD.guild_id,OLD.server_id,OLD.installation_id,
         OLD.discord_guild_connection_id,OLD.detector_id,OLD.detector_version,
         OLD.evidence_fingerprint,OLD.source_quality_ref,OLD.created_at) THEN
   RAISE EXCEPTION 'C.A.S.E. review case identity is immutable';
@@ -150,4 +150,26 @@ CREATE TABLE IF NOT EXISTS case_staff_outbox (
 );
 CREATE INDEX IF NOT EXISTS idx_case_staff_outbox_due
  ON case_staff_outbox(status,next_attempt_at,id) WHERE status IN ('PENDING','RETRY_WAIT');
+
+-- The opaque delivery identity cannot be reassigned after enqueue. A future
+-- transactional outbox repository must separately enforce legal transitions.
+CREATE OR REPLACE FUNCTION case_staff_outbox_identity_immutable() RETURNS TRIGGER AS $
+BEGIN
+ IF TG_OP = 'DELETE' THEN
+  RAISE EXCEPTION 'C.A.S.E. staff delivery history cannot be deleted by the runtime';
+ END IF;
+ IF ROW(NEW.id,NEW.guild_id,NEW.server_id,NEW.installation_id,
+        NEW.case_id,NEW.event_version,NEW.delivery_key,NEW.created_at)
+    IS DISTINCT FROM
+    ROW(OLD.id,OLD.guild_id,OLD.server_id,OLD.installation_id,
+        OLD.case_id,OLD.event_version,OLD.delivery_key,OLD.created_at) THEN
+  RAISE EXCEPTION 'C.A.S.E. staff delivery identity is immutable';
+ END IF;
+ RETURN NEW;
+END;
+$ LANGUAGE plpgsql;
+CREATE TRIGGER trg_case_staff_outbox_identity_immutable
+ BEFORE UPDATE OR DELETE ON case_staff_outbox
+ FOR EACH ROW EXECUTE FUNCTION case_staff_outbox_identity_immutable();
+
 `
