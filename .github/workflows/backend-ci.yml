@@ -52,6 +52,10 @@ jobs:
             echo "Ungated staging fixture setup unexpectedly succeeded"
             exit 1
           fi
+          if docker run --rm --network none --entrypoint /app/case-shadow-qa-readback case-shadow-once-ci; then
+            echo "Unscoped independent readback unexpectedly succeeded"
+            exit 1
+          fi
 
       - name: Vet
         run: |
