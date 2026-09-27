@@ -64,3 +64,20 @@ func TestCaseBoundaryOnlyForProvenLifecycle(t *testing.T) {
 		if got!=tt.expected {t.Fatalf("%s -> %q, expected %q",tt.kind,got,tt.expected)}
 	}
 }
+
+func TestCasePersistedSuicideEventUsesBoundaryAuditVocabulary(t *testing.T) {
+ in:=caseEvidenceInput(&Event{Type:EventSuicideAction,Raw:"synthetic suicide",TimeOfDay:"10:00:00"},
+  1,2,"/ftproot/dayzps/config/synthetic.ADM",100)
+ if in.EventType!="SUICIDE_ACTION"||in.BoundaryKind!="SUICIDE" {
+  t.Fatalf("collector event vocabulary changed: %q %q",in.EventType,in.BoundaryKind)
+ }
+ report,err:=caseintel.AuditAdmissibility([]caseintel.AdmissibilitySample{{
+  EvidenceID:1,SourceID:in.SourceID,SourceEndOffset:in.SourceEndOffset,
+  LineSHA256:in.LineSHA256,EventType:in.EventType,ADMClock:in.ADMClock,
+ }},1,false)
+ if err!=nil {t.Fatal(err)}
+ if report.BoundaryObservations!=1||report.OtherObservations!=0||
+ report.MovementDetectorStatus!="BLOCKED"||report.SafeSpeedPairs!=0||report.Enforcement!="DISABLED"{
+  t.Fatalf("collector/audit suicide boundary contract broken: %+v",report)
+ }
+}
