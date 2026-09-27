@@ -45,7 +45,7 @@ func NewSynthetic(key string, scope Scope, at time.Time) (Item,error) {
  return Item{Key:key,Scope:scope,Status:Pending,NextAt:at.UTC()},nil
 }
 
-type Lease struct { Version uint64; Until time.Time }
+type Lease struct { Version uint64; From, Until time.Time }
 
 func Acquire(item Item, now time.Time) (Item,Lease,error) {
  if now.IsZero() {return item,Lease{},errors.New("missing time")}
@@ -64,13 +64,13 @@ func Acquire(item Item, now time.Time) (Item,Lease,error) {
  item.Attempts++
  item.LeaseVersion++
  item.LeaseUntil=now.Add(LeaseDuration)
- return item,Lease{Version:item.LeaseVersion,Until:item.LeaseUntil},nil
+ return item,Lease{Version:item.LeaseVersion,From:now,Until:item.LeaseUntil},nil
 }
 
 func matching(item Item, lease Lease, at time.Time) bool {
  return !at.IsZero() && item.Status==Leased && lease.Version>0 &&
   lease.Version==item.LeaseVersion && lease.Until.Equal(item.LeaseUntil) &&
-  !at.UTC().After(item.LeaseUntil)
+  !at.UTC().Before(lease.From) && !at.UTC().After(item.LeaseUntil)
 }
 
 func Ack(item Item, lease Lease, at time.Time) (Item,error) {
