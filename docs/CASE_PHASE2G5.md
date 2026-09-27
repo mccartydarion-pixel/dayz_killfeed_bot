@@ -37,6 +37,12 @@ A gap between retained byte offsets is **not** evidence of dropped ADM lines: th
 
 A disposable-PostgreSQL integration test seeds three synthetic observations spanning two ADM sources and one foreign-server record, then verifies per-server and per-guild isolation, the bounded page edge, incomplete coordinate pairs, invalid clock text, midnight/clock decrease ambiguity, and the permanently blocked movement gate. Database-only tests use `TEST_DATABASE_URL` plus `ALLOW_INTEGRATION_DB_TESTS=true`; no live credentials or data enter CI.
 
+## Authorized source-integrity view
+
+The existing `GET .../admin/anti-cheat/integrity` response now includes `evidenceAdmissibility`. It reuses the existing `PLAYER_LOCATION_VIEW` capability, selected installation server scope, read limiter and audit event; no new route or permission bypass is introduced. The server reads at most 200 retained rows plus one truncation marker using a read-only repeatable-read SQL transaction. No additional Nitrado polling occurs.
+
+The source-health snapshot, source-continuity query and admissibility audit are separate observations, **not one atomic view of live log state**. The report contains only aggregate counts and quality blockers; canonical ADM paths, source IDs, player identities, and coordinates are never returned through this new field. Empty rows explicitly mean `NO_OBSERVED_EVENTS`, not no cheating. Integration tests assert server isolation, unauthorized-user rejection, permanently blocked movement and absence of raw source paths.
+
 ## Evidence acceptance process for real console ADM
 
 This branch has not fetched a current real ADM sample. A real-world observational gate must use the existing authorized and scoped C.A.S.E. evidence/integrity views, preferably the already-running collector; **do not create a second Nitrado poller**, expose raw source paths, export private player data to CI, or silently treat an empty server as an ingestion failure.
