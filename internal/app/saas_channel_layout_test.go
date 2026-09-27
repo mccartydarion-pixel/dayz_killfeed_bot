@@ -508,3 +508,21 @@ func TestCASESetupRejectsPublicCategoryAndChannelReuse(t *testing.T) {
  res2:=runLayout(t,g2,w2,auditProducers(),panelsPosted(g2,w2))
  if report(res2,"CASE_ALERTS").ChannelID=="public-override" {t.Fatal("publicly overridden CASE channel was reused")}
 }
+
+
+func TestCASESetupCardsCannotImplyLiveFindings(t *testing.T) {
+ for _,key:=range []string{"CASE_STATUS","CASE_EVIDENCE","CASE_ALERTS"} {
+  dest:=destinationByKey(key)
+  if dest.Category!=categoryCASE||dest.Starter==nil||len(dest.Routes)!=1||dest.Routes[0]!=key {
+   t.Fatalf("%s must have a dedicated setup-only destination: %+v",key,dest)
+  }
+  if dest.Starter.Body=="" || !strings.Contains(strings.ToUpper(dest.Starter.Title),map[string]string{
+   "CASE_STATUS":"INFORMATION ONLY","CASE_EVIDENCE":"STAFF GUIDE","CASE_ALERTS":"NOT ENABLED",
+  }[key]) {t.Fatalf("%s missing clear informational status: %+v",key,dest.Starter)}
+ }
+ alerts:=destinationByKey("CASE_ALERTS").Starter.Body
+ for _,s:=range []string{"No live detection","BLOCKED","no scores","not evidence about any player"} {
+  if !strings.Contains(strings.ToLower(alerts),strings.ToLower(s)) {t.Fatalf("alerts notice missing %q",s)}
+ }
+ if routeProducerAudit["CASE_ALERTS"].Detail=="" {t.Fatal("setup-only route must advertise its limitation")}
+}
