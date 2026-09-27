@@ -104,7 +104,7 @@ func AuditAdmissibility(samples []AdmissibilitySample, limit int, truncated bool
   switch sample.EventType {
   case "PLAYER_HIT":report.HitObservations++
   case "PLAYER_KILL":report.KillObservations++
-  case "PLAYER_CONNECT","PLAYER_DISCONNECT","PLAYER_RESPAWN","PLAYER_DEATH","PLAYER_SUICIDE":
+  case "PLAYER_CONNECT","PLAYER_DISCONNECT","PLAYER_RESPAWN","PLAYER_DEATH","SUICIDE_ACTION":
    report.BoundaryObservations++
   default:report.OtherObservations++
   }
