@@ -98,8 +98,9 @@ func TestCASEReviewSchemaIsInertAndScoped(t *testing.T) {
  shouldFail(`UPDATE case_review_cases SET source_quality_ref=$2 WHERE id=$1`,caseID,hexA)
  shouldFail(`UPDATE case_review_evidence SET evidence_id=$2 WHERE case_id=$1`,caseID,otherEvidence)
  shouldFail(`DELETE FROM case_review_evidence WHERE case_id=$1`,caseID)
- // A future authorized transition can update neutral review status, but must
- // independently write the audit record in the same transaction.
+ // Status remains a mutable field; this schema alone does not authorize it.
+ // The future repository must enforce review permissions, transition checks,
+ // and an audit insert in the same transaction.
  if _,err:=db.Pool.Exec(ctx,`UPDATE case_review_cases SET status='REVIEWED',updated_at=NOW() WHERE id=$1`,caseID);err!=nil{t.Fatalf("legitimate status update blocked: %v",err)}
  // Review history must not be silently edited, deleted, or removed by deleting its parent case.
  shouldFail(`UPDATE case_review_audit SET note='overwritten' WHERE case_id=$1`,caseID)
