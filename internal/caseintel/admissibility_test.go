@@ -125,3 +125,25 @@ func TestAdmissibilityNonFiniteCoordinatesAreUnusable(t *testing.T){
   t.Fatal("invalid coordinate evidence must never enable inference")
  }
 }
+
+func TestAdmissibilityEventBucketsAreBoundedAndNotFullLogClaims(t *testing.T) {
+ types:=[]string{"PLAYER_HIT","PLAYER_KILL","PLAYER_CONNECT","PLAYER_DISCONNECT",
+  "PLAYER_RESPAWN","PLAYER_DEATH","PLAYER_SUICIDE","UNRECOGNIZED_EVENT"}
+ rows:=make([]AdmissibilitySample,0,len(types))
+ for i,kind:=range types {
+  e:=sample(int64(i+1),int64(i+1),"source","12:00:00")
+  e.EventType=kind
+  rows=append(rows,e)
+ }
+ out,err:=AuditAdmissibility(rows,len(rows),false)
+ if err!=nil{t.Fatal(err)}
+ if out.HitObservations!=1||out.KillObservations!=1||
+ out.BoundaryObservations!=5||out.OtherObservations!=1 ||
+ out.HitObservations+out.KillObservations+out.BoundaryObservations+out.OtherObservations!=out.ObservationCount {
+  t.Fatalf("fixed retained-event buckets incorrect: %+v",out)
+ }
+ if out.Coverage!="FILTERED_SOURCE_EVENTS_ONLY"||out.MovementDetectorStatus!="BLOCKED"||
+ out.SafeSpeedPairs!=0||out.Enforcement!="DISABLED" {
+  t.Fatalf("event buckets must not infer full ADM coverage or cheat detection: %+v",out)
+ }
+}
