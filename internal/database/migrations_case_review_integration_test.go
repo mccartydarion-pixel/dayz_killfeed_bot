@@ -93,6 +93,15 @@ func TestCASEReviewSchemaIsInertAndScoped(t *testing.T) {
  VALUES($1,$2,$3,$4,2,$5,'SENT')`,guild,server,installation,caseID,hexB)
  shouldFail(`INSERT INTO case_staff_outbox(guild_id,server_id,installation_id,case_id,event_version,delivery_key,status)
  VALUES($1,$2,$3,$4,2,$5,'LEASED')`,guild,server,installation,caseID,hexB)
+ // Review history must not be silently edited, deleted, or removed by deleting its parent case.
+ shouldFail(`UPDATE case_review_audit SET note='overwritten' WHERE case_id=$1`,caseID)
+ shouldFail(`DELETE FROM case_review_audit WHERE case_id=$1`,caseID)
+ shouldFail(`DELETE FROM case_review_cases WHERE id=$1`,caseID)
+ // The evidence source itself cannot be removed while an active case links it.
+ shouldFail(`DELETE FROM case_evidence_events WHERE id=$1`,evidence)
+ var auditCount int
+ if err:=db.Pool.QueryRow(ctx,`SELECT COUNT(*) FROM case_review_audit WHERE case_id=$1`,caseID).Scan(&auditCount);err!=nil{t.Fatal(err)}
+ if auditCount!=1 {t.Fatalf("audit history changed: %d rows",auditCount)}
  // Migration itself created no live reviews or deliveries before fixtures.
  var cases,entries int
  if err:=db.Pool.QueryRow(ctx,`SELECT COUNT(*) FROM case_review_cases`).Scan(&cases);err!=nil{t.Fatal(err)}
