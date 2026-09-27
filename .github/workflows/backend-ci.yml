@@ -48,6 +48,10 @@ jobs:
             echo "Ungated verifier execution unexpectedly succeeded"
             exit 1
           fi
+          if docker run --rm --network none --entrypoint /app/case-shadow-qa-setup case-shadow-once-ci; then
+            echo "Ungated staging fixture setup unexpectedly succeeded"
+            exit 1
+          fi
 
       - name: Vet
         run: |
