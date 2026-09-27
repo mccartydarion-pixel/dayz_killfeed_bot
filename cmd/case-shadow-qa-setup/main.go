@@ -44,36 +44,42 @@ func run(ctx context.Context,project,service,dbService,gate,dsn,expectedHost str
  if err!=nil{return errors.New("QA database unavailable")}
  defer db.Close()
  if err=db.Migrate(ctx);err!=nil{return errors.New("QA schema migration failed")}
- var guildID,serverID int64
- err=db.Pool.QueryRow(ctx,`INSERT INTO guilds(discord_guild_id)
+ guildID,serverID,err:=seedSynthetic(ctx,db.Pool)
+ if err!=nil{return err}
+ fmt.Printf("CASE_QA_SETUP=PASS GUILD=%d SERVER=%d SYNTHETIC_EVIDENCE=2 EVALUATIONS=0 ENFORCEMENT=DISABLED\n",guildID,serverID)
+ return nil
+}
+
+func seedSynthetic(ctx context.Context,pool *pgxpool.Pool)(guildID,serverID int64,err error){
+ err=pool.QueryRow(ctx,`INSERT INTO guilds(discord_guild_id)
  VALUES($1) ON CONFLICT(discord_guild_id)
  DO UPDATE SET discord_guild_id=EXCLUDED.discord_guild_id
  RETURNING id`,qaGuildKey).Scan(&guildID)
- if err!=nil{return errors.New("QA guild fixture failed")}
- err=db.Pool.QueryRow(ctx,`INSERT INTO game_servers
+ if err!=nil{return 0,0,errors.New("QA guild fixture failed")}
+ err=pool.QueryRow(ctx,`INSERT INTO game_servers
  (guild_id,provider,provider_service_id,game,platform,status,display_name)
  VALUES($1,'qa-fixture',$2,'dayz','PLAYSTATION','ACTIVE','CASE QA Synthetic')
  ON CONFLICT(guild_id,provider,provider_service_id)
  DO UPDATE SET display_name=EXCLUDED.display_name RETURNING id`,guildID,qaProviderKey).Scan(&serverID)
- if err!=nil{return errors.New("QA server fixture failed")}
+ if err!=nil{return 0,0,errors.New("QA server fixture failed")}
  for _,offset:=range []int64{110,220}{
   hash:=sha256.Sum256([]byte(fmt.Sprintf("%s:%d",qaSource,offset)))
-  tag,err:=db.Pool.Exec(ctx,`INSERT INTO case_evidence_events
+  tag,err:=pool.Exec(ctx,`INSERT INTO case_evidence_events
   (guild_id,server_id,source_id,source_end_offset,line_sha256,event_type,adm_clock)
   VALUES($1,$2,$3,$4,$5,'PLAYER_HIT','17:20:01')
   ON CONFLICT (guild_id,server_id,source_id,source_end_offset) DO NOTHING`,
    guildID,serverID,qaSource,offset,fmt.Sprintf("%x",hash))
-  if err!=nil{return errors.New("QA synthetic evidence insert failed")}
+  if err!=nil{return 0,0,errors.New("QA synthetic evidence insert failed")}
   _=tag
  }
  var evidenceCount,otherCount,evaluationCount,invalidCount int
- err=db.Pool.QueryRow(ctx,`SELECT COUNT(*) FILTER(WHERE source_id=$3),
+ err=pool.QueryRow(ctx,`SELECT COUNT(*) FILTER(WHERE source_id=$3),
  COUNT(*) FILTER(WHERE source_id<>$3)
  FROM case_evidence_events WHERE guild_id=$1 AND server_id=$2`,
  guildID,serverID,qaSource).Scan(&evidenceCount,&otherCount)
- if err!=nil||evidenceCount!=2||otherCount!=0{return errors.New("QA evidence scope mismatch")}
+ if err!=nil||evidenceCount!=2||otherCount!=0{return 0,0,errors.New("QA evidence scope mismatch")}
  // Never accept two rows merely by count when prior fixture data was altered.
- err=db.Pool.QueryRow(ctx,`SELECT COUNT(*) FROM case_evidence_events
+ err=pool.QueryRow(ctx,`SELECT COUNT(*) FROM case_evidence_events
  WHERE guild_id=$1 AND server_id=$2 AND source_id=$3 AND
  (event_type<>'PLAYER_HIT' OR adm_clock<>'17:20:01' OR
   (source_end_offset=$4 AND line_sha256<>$6) OR
@@ -82,12 +88,10 @@ func run(ctx context.Context,project,service,dbService,gate,dsn,expectedHost str
  guildID,serverID,qaSource,int64(110),int64(220),
  fmt.Sprintf("%x",sha256.Sum256([]byte(fmt.Sprintf("%s:%d",qaSource,110)))),
  fmt.Sprintf("%x",sha256.Sum256([]byte(fmt.Sprintf("%s:%d",qaSource,220))))).Scan(&invalidCount)
- if err!=nil||invalidCount!=0{return errors.New("QA synthetic evidence integrity mismatch")}
- err=db.Pool.QueryRow(ctx,`SELECT COUNT(*) FROM case_shadow_evaluations WHERE guild_id=$1 AND server_id=$2`,guildID,serverID).Scan(&evaluationCount)
- if err!=nil||evaluationCount!=0{return errors.New("QA setup expected zero evaluations")}
- fmt.Printf("CASE_QA_SETUP=PASS GUILD=%d SERVER=%d SYNTHETIC_EVIDENCE=%d EVALUATIONS=%d ENFORCEMENT=DISABLED\n",
-  guildID,serverID,evidenceCount,evaluationCount)
- return nil
+ if err!=nil||invalidCount!=0{return 0,0,errors.New("QA synthetic evidence integrity mismatch")}
+ err=pool.QueryRow(ctx,`SELECT COUNT(*) FROM case_shadow_evaluations WHERE guild_id=$1 AND server_id=$2`,guildID,serverID).Scan(&evaluationCount)
+ if err!=nil||evaluationCount!=0{return 0,0,errors.New("QA setup expected zero evaluations")}
+ return guildID,serverID,nil
 }
 
 func main(){
