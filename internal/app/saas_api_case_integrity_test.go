@@ -43,24 +43,29 @@ func TestCaseSourceIntegrityQuietIsNotEvidenceAbsence(t *testing.T){
 func TestCASEEvidenceObservationStatusIsNotAHealthOrCheatVerdict(t *testing.T) {
  now:=time.Date(2026,9,27,12,0,0,0,time.UTC)
  source:=caseSourceRef("source-a.ADM")
+ accepted:=true
+ rejected:=false
  tests:=[]struct{
   name string
   worker,collector bool
   source *string
+  accepted *bool
   latest *time.Time
   count int64
   want string
  }{
-  {"worker absent despite historical rows",false,true,source,&now,5,"WORKER_UNAVAILABLE"},
-  {"collector off despite historical rows",true,false,source,&now,5,"COLLECTOR_NOT_CONFIGURED"},
-  {"source missing despite retained rows",true,true,nil,&now,5,"SOURCE_UNVERIFIED"},
-  {"quiet empty sample",true,true,source,nil,0,"NO_RETAINED_EVENTS"},
-  {"old events still observed",true,true,source,&now,0,"RETAINED_EVENTS_OBSERVED"},
-  {"recent count but latest missing",true,true,source,nil,1,"RETAINED_EVENTS_OBSERVED"},
+  {"worker absent despite historical rows",false,true,source,&accepted,&now,5,"WORKER_UNAVAILABLE"},
+  {"collector off despite historical rows",true,false,source,&accepted,&now,5,"COLLECTOR_NOT_CONFIGURED"},
+  {"source missing despite retained rows",true,true,nil,&accepted,&now,5,"SOURCE_UNVERIFIED"},
+  {"source acceptance unknown",true,true,source,nil,&now,5,"SOURCE_UNVERIFIED"},
+  {"selected source rejected",true,true,source,&rejected,&now,5,"SOURCE_UNVERIFIED"},
+  {"quiet empty sample",true,true,source,&accepted,nil,0,"NO_RETAINED_EVENTS"},
+  {"old events still observed",true,true,source,&accepted,&now,0,"RETAINED_EVENTS_OBSERVED"},
+  {"recent count but latest missing",true,true,source,&accepted,nil,1,"RETAINED_EVENTS_OBSERVED"},
  }
  for _,tt:=range tests {
   t.Run(tt.name,func(t *testing.T){
-   got:=caseEvidenceObservationStatus(tt.worker,tt.collector,tt.source,tt.latest,tt.count)
+   got:=caseEvidenceObservationStatus(tt.worker,tt.collector,tt.source,tt.accepted,tt.latest,tt.count)
    if got!=tt.want {t.Fatalf("got %q want %q",got,tt.want)}
   })
  }
