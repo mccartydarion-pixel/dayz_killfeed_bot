@@ -16,6 +16,10 @@ type RawGuildChannel struct {
 	Name     string
 	Type     discordgo.ChannelType
 	ParentID string
+	// Private records an explicit @everyone VIEW_CHANNEL deny on a category.
+	Private bool
+	// PublicViewOverride detects an explicit @everyone VIEW_CHANNEL allow.
+	PublicViewOverride bool
 }
 
 // ListAllGuildChannels returns every channel of guildID, including
@@ -45,7 +49,14 @@ func (c *Client) ListAllGuildChannels(guildID string) ([]RawGuildChannel, error)
 		if ch == nil {
 			continue
 		}
-		out = append(out, RawGuildChannel{ID: ch.ID, Name: ch.Name, Type: ch.Type, ParentID: ch.ParentID})
+		private, publicAllow := false, false
+		for _, overwrite := range ch.PermissionOverwrites {
+			if overwrite.ID == guildID && overwrite.Type == discordgo.PermissionOverwriteTypeRole {
+				private = overwrite.Deny&discordgo.PermissionViewChannel != 0
+				publicAllow = overwrite.Allow&discordgo.PermissionViewChannel != 0
+			}
+		}
+		out = append(out, RawGuildChannel{ID: ch.ID, Name: ch.Name, Type: ch.Type, ParentID: ch.ParentID, Private: private, PublicViewOverride: publicAllow})
 	}
 	return out, nil
 }
@@ -157,7 +168,7 @@ func (c *Client) CreatePrivateGuildCategory(guildID, name string) (*RawGuildChan
 	if err != nil {
 		return nil, fmt.Errorf("create private guild category: %w", err)
 	}
-	return &RawGuildChannel{ID: ch.ID, Name: ch.Name, Type: ch.Type, ParentID: ch.ParentID}, nil
+	return &RawGuildChannel{ID: ch.ID, Name: ch.Name, Type: ch.Type, ParentID: ch.ParentID, Private: true}, nil
 }
 
 // SendChannelEmbed posts one embed to channelID - used for a managed
