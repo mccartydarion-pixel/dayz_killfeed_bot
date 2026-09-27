@@ -74,6 +74,17 @@ func TestAdmissibilityReadsPersistedEvidenceWithinExactScope(t *testing.T) {
  out.MovementDetectorStatus!="BLOCKED"||out.SafeSpeedPairs!=0||out.Enforcement!="DISABLED"{
   t.Fatalf("persisted ADM audit mismatch: %+v",out)
  }
+ // PostgreSQL float8 can retain NaN; it must not count as a usable point.
+ _,err=db.Pool.Exec(ctx,`UPDATE case_evidence_events SET subject_x='NaN'::float8
+ WHERE guild_id=$1 AND server_id=$2 AND source_id='qa-source-a'
+ AND source_end_offset=100`,guildID,serverID)
+ if err!=nil{t.Fatal(err)}
+ nonFinite,err:=audit.AuditCaseEvidenceAdmissibility(ctx,guildID,serverID,3)
+ if err!=nil||nonFinite.NonFiniteCoordinateValues!=1||
+ nonFinite.CompleteCoordinatePairs!=0||nonFinite.PartialCoordinatePairs!=2||
+ nonFinite.SafeSpeedPairs!=0||nonFinite.MovementDetectorStatus!="BLOCKED"{
+  t.Fatalf("persisted non-finite axis incorrectly accepted: %+v %v",nonFinite,err)
+ }
  truncated,err:=audit.AuditCaseEvidenceAdmissibility(ctx,guildID,serverID,2)
  if err!=nil||!truncated.WindowTruncated||truncated.ObservationCount!=2{
   t.Fatalf("limit+1 edge missing: %+v %v",truncated,err)
