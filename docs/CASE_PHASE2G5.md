@@ -31,6 +31,12 @@ A gap between retained byte offsets is **not** evidence of dropped ADM lines: th
 - Unconditionally report `MovementDetectorStatus=BLOCKED`, `SafeSpeedPairs=0`, `Enforcement=DISABLED`, including when all recorded coordinates and clock strings look valid.
 - No score, player verdict, finding, alert, Discord action or sanction is created.
 
+## Persisted-evidence audit (CI only)
+
+`CaseEvidenceRepository.AuditCaseEvidenceAdmissibility` executes a bounded, tenant-and-server-scoped read of up to `limit+1` persisted event rows; the extra row marks a truncated window. It projects source address, clock and **subject-role** X/Z only. It does not mix coordinates from separate actor/target/subject roles, return player identity, or expose canonical source names to a web route. It calls the same pure audit without touching detection or enforcement.
+
+A disposable-PostgreSQL integration test seeds three synthetic observations spanning two ADM sources and one foreign-server record, then verifies per-server and per-guild isolation, the bounded page edge, incomplete coordinate pairs, invalid clock text, midnight/clock decrease ambiguity, and the permanently blocked movement gate. Database-only tests use `TEST_DATABASE_URL` plus `ALLOW_INTEGRATION_DB_TESTS=true`; no live credentials or data enter CI.
+
 ## Evidence acceptance process for real console ADM
 
 This branch has not fetched a current real ADM sample. A real-world observational gate must use the existing authorized and scoped C.A.S.E. evidence/integrity views, preferably the already-running collector; **do not create a second Nitrado poller**, expose raw source paths, export private player data to CI, or silently treat an empty server as an ingestion failure.
