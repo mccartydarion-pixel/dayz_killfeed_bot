@@ -81,5 +81,7 @@ func TestInvalidSyntheticIdentityAndFailureCodes(t *testing.T) {
   if next,err:=Failure(claimed,lease,now.Add(time.Second),code);err==nil||next.Status!=Leased{t.Fatal("accepted unsafe raw error")}
  }
  if _,err:=Ack(claimed,Lease{Version:lease.Version+1,Until:lease.Until},now.Add(time.Second));err==nil{t.Fatal("stale token accepted")}
+ if _,err:=Ack(claimed,lease,now.Add(-time.Second));err==nil {t.Fatal("ack before lease issue accepted")}
+ if _,err:=Failure(claimed,lease,now.Add(-time.Second),"RATE_LIMIT");err==nil {t.Fatal("failure before lease issue accepted")}
  if _,err:=Suppress(claimed,"unreviewed reason");err==nil{t.Fatal("unapproved suppression accepted")}
 }
