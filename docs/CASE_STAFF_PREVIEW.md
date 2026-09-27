@@ -20,3 +20,8 @@ Nothing in this section is implemented or authorized to send. The fixed syntheti
 **Acceptance tests for a future publisher PR.** Default-off and BLOCKED no-send; missing/stale/mismatched source no-send; forbidden or missing destination no fallback; guild/installation and reviewer permissions; cross-server isolation; retry/concurrency deduplication; mention escaping; failed-send audit and bounded retries; revoked evidence link; suppression; rollback; and unchanged live killfeed. First satisfy #114 with separately authorized, staff-only real Champions source readback and independent detector validity review. Then review a distinct implementation and private-channel test before separately approving live findings.
 
 **Sequence:** review #112 and #113, approve a separate read-only rollout for #114, validate detector prerequisites and false positives, review publisher design and private QA, and only then consider real finding-based notifications. This preview's green CI bypasses none of those gates.
+
+
+## Operational publisher boundary (draft implementation)
+
+The existing `ADMIN_ALERTS` publisher now explicitly admits only its six defined operational kinds at both `Publish` and `send`. Unknown and C.A.S.E. diagnostic/preview kinds are dropped, including if directly inserted into its queue. A regression verifies non-delivery and preserves delivery of ADM_STALE. This is defensive separation, **not** a finding notification system: it defines no C.A.S.E. event, route, outbox, scheduler, or send path. Review the impact on all existing operational callers and the latest exact-head CI before merging. Production is unchanged until an approved release.
