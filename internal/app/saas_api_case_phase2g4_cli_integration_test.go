@@ -92,4 +92,26 @@ func TestCASE2G4OneShotCLIEndToEnd(t *testing.T) {
   t.Fatalf("fresh approved snapshot failed: %q %v",next,err)
  }
  if strings.Contains(next,"BLOCKED_EVALUATION_ID="+evaluation[1]+" "){t.Fatal("changed evidence reused old evaluation ID")}
+ // Even if newer diagnostics push the first record beyond the newest 50,
+ // its exact scoped readback must still be available without a false failure.
+ for i:=1;i<=51;i++{
+  fingerprint:=fmt.Sprintf("%064x",i)
+  _,err:=w.a.DB.Pool.Exec(ctx,`INSERT INTO case_shadow_evaluations
+   (guild_id,server_id,detector_id,detector_version,fingerprint,status,reason_codes)
+   VALUES($1,$2,'CASE-MOV-001','0.1.0',$3,'BLOCKED',ARRAY['VERIFIED_EVENT_ELAPSED_TIME'])`,
+   w.guildID,w.serverID,fingerprint)
+  if err!=nil{t.Fatalf("insert newer synthetic diagnostic %d: %v",i,err)}
+ }
+ ledger:=repository.NewShadowLedger(w.a.DB.Pool)
+ recent,err:=ledger.ListShadowHistory(ctx,w.guildID,w.serverID,nil,50)
+ if err!=nil{t.Fatal(err)}
+ for _,h:=range recent{if h.ID==id{t.Fatal("older evaluation unexpectedly remained in newest history page")}}
+ exact,err:=ledger.GetShadowHistoryByID(ctx,w.guildID,w.serverID,id)
+ if err!=nil||exact.ID!=id||exact.Status!="BLOCKED"||len(exact.EvidenceIDs)!=2{
+  t.Fatalf("exact scoped older readback failed: %+v %v",exact,err)
+ }
+ if _,err=ledger.GetShadowHistoryByID(ctx,w.guildID,w.serverID+1,id);err==nil{
+  t.Fatal("cross-server exact history lookup succeeded")
+ }
+
 }
