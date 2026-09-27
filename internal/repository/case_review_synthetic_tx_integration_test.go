@@ -4,6 +4,7 @@ package repository
 
 import (
  "context"
+ "errors"
  "fmt"
  "os"
  "strings"
@@ -11,6 +12,7 @@ import (
  "testing"
  "time"
 
+ "github.com/jackc/pgx/v5/pgconn"
  "github.com/yourname/dayz-killfeed/internal/database"
 )
 
@@ -120,6 +122,41 @@ func TestCASEReviewFixtureTransaction(t *testing.T){
  if successes!=1||failures!=1||contestedState!="REVIEWED"||contestedAudit!=1{
   t.Fatalf("concurrent review broke atomicity: success=%d failed=%d status=%s audit=%d",successes,failures,contestedState,contestedAudit)
  }
+ // Hold a different case row to make the review wait AFTER acquiring its
+ // membership lock. A concurrent role revocation must not pass that lock.
+ revocationCase:=one("INSERT INTO case_review_cases(guild_id,server_id,installation_id,discord_guild_connection_id,detector_id,detector_version,evidence_fingerprint,source_quality_ref,status) VALUES($1,$2,$3,$4,'SYNTHETIC','0.0.0',$5,$6,'PENDING_REVIEW') RETURNING id",guild,srv,inst,conn,c,c)
+ blocking,err:=db.Pool.Begin(ctx);if err!=nil{t.Fatal(err)}
+ if _,err=blocking.Exec(ctx,"SELECT id FROM case_review_cases WHERE id=$1 FOR UPDATE",revocationCase);err!=nil{_ = blocking.Rollback(ctx);t.Fatal(err)}
+ attempt:=input;attempt.CaseID=revocationCase;attempt.ActionKey=c;attempt.At=at.Add(4*time.Second)
+ reviewResult:=make(chan result,1)
+ go func(){success,e:=writer.ApplySynthetic(ctx,attempt);reviewResult<-result{success,e}}()
+ // NOWAIT detects the held membership lock without relying on a sleep to
+ // infer that the reviewing transaction reached its authorization check.
+ membershipLocked:=false
+ deadline:=time.Now().Add(5*time.Second)
+ for time.Now().Before(deadline){
+  var ignored int64
+  e:=db.Pool.QueryRow(ctx,"SELECT user_id FROM organization_members WHERE organization_id=$1 AND user_id=$2 FOR UPDATE NOWAIT",org,owner).Scan(&ignored)
+  var pgErr *pgconn.PgError
+  if errors.As(e,&pgErr)&&pgErr.Code=="55P03"{membershipLocked=true;break}
+  if e!=nil{_ = blocking.Rollback(ctx);t.Fatalf("probe member lock: %v",e)}
+  time.Sleep(20*time.Millisecond)
+ }
+ if !membershipLocked{_ = blocking.Rollback(ctx);t.Fatal("review did not retain membership lock while waiting for case")}
+ revokeCtx,cancelRevoke:=context.WithTimeout(ctx,150*time.Millisecond)
+ _,revocationErr:=db.Pool.Exec(revokeCtx,"UPDATE organization_members SET role='MEMBER' WHERE organization_id=$1 AND user_id=$2",org,owner)
+ cancelRevoke()
+ if revocationErr==nil{_ = blocking.Rollback(ctx);t.Fatal("role revocation committed through an active review lock")}
+ if err=blocking.Commit(ctx);err!=nil{t.Fatal(err)}
+ outcome:=<-reviewResult
+ if !outcome.ok||outcome.err!=nil{t.Fatalf("review should commit before serialized revocation: %+v",outcome)}
+ var reviewCount int
+ if err=db.Pool.QueryRow(ctx,"SELECT COUNT(*) FROM case_review_audit WHERE case_id=$1",revocationCase).Scan(&reviewCount);err!=nil||reviewCount!=1{t.Fatalf("revocation race audit count=%d err=%v",reviewCount,err)}
+ // Once revocation actually commits, a new action and an exact replay must
+ // both fail closed. This also proves we did not merely trust fixture flags.
+ if _,err=db.Pool.Exec(ctx,"UPDATE organization_members SET role='MEMBER' WHERE organization_id=$1 AND user_id=$2",org,owner);err!=nil{t.Fatal(err)}
+ reject(attempt)
+ if _,err=db.Pool.Exec(ctx,"UPDATE organization_members SET role='OWNER' WHERE organization_id=$1 AND user_id=$2",org,owner);err!=nil{t.Fatal(err)}
  if _,err=db.Pool.Exec(ctx,"DELETE FROM organization_members WHERE organization_id=$1 AND user_id=$2",org,owner);err!=nil{t.Fatal(err)}
  reject(input) // Even replay must recheck current membership.
 }
