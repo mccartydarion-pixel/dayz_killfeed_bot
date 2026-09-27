@@ -1,10 +1,10 @@
 # C.A.S.E. Phase 2G.5 — Evidence admissibility and console ADM coverage
 
-**Status: evidence-quality work; no detector activation.** This branch starts from the CI-green Phase 2G.4 staging head, but introduces no Railway configuration, bot integration, migration, public endpoint, scheduled job or sanction.
+**Status: separate current-main read-only evidence-quality candidate; no detector activation.** This branch starts from the deployed setup/Embed Designer main, not the older stacked 2G.4 branch. It adds bounded aggregate output to an existing protected integrity endpoint and a read-only repository query; no Railway configuration, database migration, new endpoint, scheduler, collector, Discord sender or sanction.
 
 ## What has been demonstrated
 
-The separate `champions-case-staging` PostgreSQL completed an entirely synthetic one-shot evaluation, an independent SQL readback, and an idempotent replay. Those tests establish diagnostic plumbing and storage isolation, **not movement-cheat detection** and **not production evidence completeness**. Production `genuine-education` and Champions killfeed are unchanged.
+The separate `champions-case-staging` PostgreSQL completed an entirely synthetic one-shot evaluation, an independent SQL readback, and an idempotent replay. Those tests establish diagnostic plumbing and storage isolation, **not movement-cheat detection** and **not production evidence completeness**. This standalone candidate does not execute staging evaluations or modify production. The existing live bot and killfeed are unchanged by its draft branch.
 
 ## Observability contract
 
@@ -52,11 +52,11 @@ The existing staff integrity response also provides `evidenceObservationStatus`,
 
 **BLOCKED: no authenticated read-only data plane through connected tools.** The connected Railway inspection can read service/deployment metadata and aggregate logs but cannot execute a scoped PostgreSQL SELECT or invoke the staff-authorized `/anti-cheat/integrity` endpoint using an existing authenticated session. A production deployment log emitted `component=case event=evidence_collector_enabled`, which establishes only that the collector was enabled on that process; it does not establish current source health, line retention count, player activity, transport completeness or detector readiness. Do not expose Railway DB credentials to create a workaround and do not inspect private player content through deployment logs.
 
-The feature head is still a **draft stacked PR**, not live production. The real-data acceptance call can occur only after a reviewed, separately authorized read-only feature deployment and access to the already protected staff API (or an independently scoped read-only SQL capability). Record only the aggregate capture fields from the procedure below and refuse to infer movement from an ADM wall-clock delta. No one-shot production evaluator and no automatic staff accusation are authorized by this phase.
+The feature head is a **standalone current-main PR**, not live production. The real-data acceptance call can occur only after a reviewed, separately authorized read-only feature deployment and access to the already protected staff API (or an independently scoped read-only SQL capability). Record only the aggregate capture fields from the procedure below and refuse to infer movement from an ADM wall-clock delta. No one-shot production evaluator and no automatic staff accusation are authorized by this phase.
 
 ## Evidence acceptance process for real console ADM
 
-This branch has not fetched a current real ADM sample. A real-world observational gate must use the existing authorized and scoped C.A.S.E. evidence/integrity views, preferably the already-running collector; **do not create a second Nitrado poller**, expose raw source paths, export private player data to CI, or silently treat an empty server as an ingestion failure.
+This candidate has not fetched a current real ADM sample. A real-world observational gate must use the existing authorized and scoped C.A.S.E. evidence/integrity views, preferably the already-running collector; **do not create a second Nitrado poller**, expose raw source paths, export private player data to CI, or silently treat an empty server as an ingestion failure.
 
 For an exact Champions server and documented observation window, privately record: running worker presence, collector flag, selected/accepted source reference match, most recent source/offset, checkpoint/remote size provenance, transport failures, retained event count, source changes, invalid clocks, boundary ambiguity, and source-address collision outcomes. Compare counts to the relevant retained event allowlist; do not claim full ADM-log coverage from filtered rows. An empty sample is `NO_OBSERVED_EVENTS`, not `NO_CHEATING`.
 
