@@ -67,7 +67,9 @@ func TestAdmissibilityReadsPersistedEvidenceWithinExactScope(t *testing.T) {
  out,err:=audit.AuditCaseEvidenceAdmissibility(ctx,guildID,serverID,3)
  if err!=nil{t.Fatal(err)}
  if out.ObservationCount!=3||out.SourceCount!=2||out.WindowTruncated||
- out.ValidSourceAddresses!=3||out.InvalidClockStrings!=1||out.ClockDecreasesInSource!=1||
+ out.ValidSourceAddresses!=3||out.HitObservations!=3||out.KillObservations!=0||
+ out.BoundaryObservations!=0||out.OtherObservations!=0||
+ out.InvalidClockStrings!=1||out.ClockDecreasesInSource!=1||
  out.CompleteCoordinatePairs!=1||out.PartialCoordinatePairs!=1||out.MissingCoordinatePairs!=1||
  out.ActorPartialCoordinatePairs!=1||out.ActorCompleteCoordinatePairs!=0||
  out.TargetPartialCoordinatePairs!=1||out.TargetCompleteCoordinatePairs!=0||
