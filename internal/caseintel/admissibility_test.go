@@ -1,6 +1,7 @@
 package caseintel
 
 import (
+ "math"
  "strings"
  "testing"
 )
@@ -102,5 +103,25 @@ func TestAdmissibilitySHAHexCaseDoesNotInventCollision(t *testing.T){
  if report.DuplicateSourceAddresses!=1||report.OffsetHashCollisions!=0||
  hasAdmissibilityBlocker(report,"SOURCE_OFFSET_HASH_COLLISION") {
   t.Fatalf("SHA hex capitalization must not create a false source collision: %+v",report)
+ }
+}
+
+func TestAdmissibilityNonFiniteCoordinatesAreUnusable(t *testing.T){
+ a:=sample(1,10,"source","12:00:00")
+ a.X=ptrCoord(math.NaN())
+ a.ActorX=ptrCoord(math.Inf(1));a.ActorZ=ptrCoord(6)
+ a.TargetX=ptrCoord(math.Inf(-1));a.TargetZ=ptrCoord(math.NaN())
+ report,err:=AuditAdmissibility([]AdmissibilitySample{a},1,false)
+ if err!=nil{t.Fatal(err)}
+ if report.NonFiniteCoordinateValues!=4||
+ report.CompleteCoordinatePairs!=0||report.PartialCoordinatePairs!=1||
+ report.ActorCompleteCoordinatePairs!=0||report.ActorPartialCoordinatePairs!=1||
+ report.TargetCompleteCoordinatePairs!=0||report.TargetMissingCoordinatePairs!=1||
+ !hasAdmissibilityBlocker(report,"NON_FINITE_COORDINATE")||
+ !hasAdmissibilityBlocker(report,"PARTIAL_COORDINATE_PAIR"){
+  t.Fatalf("invalid numeric ADM axes counted as usable: %+v",report)
+ }
+ if report.SafeSpeedPairs!=0||report.MovementDetectorStatus!="BLOCKED"||report.Enforcement!="DISABLED"{
+  t.Fatal("invalid coordinate evidence must never enable inference")
  }
 }
