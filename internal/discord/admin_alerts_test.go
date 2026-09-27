@@ -207,3 +207,19 @@ func TestCASEBoundaryDoesNotCrossServerOrFallback(t *testing.T) {
   t.Fatalf("expected exactly one server-two operational alert, got %d",sender.total())
  }
 }
+
+
+func TestCASEBoundaryDoesNotCrossGuild(t *testing.T) {
+ p, sender, resolver, _ := newAlertFixture()
+ resolver.set(8, 1, routeKeyAdminAlerts, "chan-other-guild")
+ // An identical server ID in a different guild is not permission to send.
+ p.Publish(AdminAlert{GuildRowID:7,ServerID:1,Kind:AlertKindADMStale,Severity:AlertWarning,Headline:"ADM STALE"})
+ p.Publish(AdminAlert{GuildRowID:8,ServerID:1,Kind:"CASE_MOVEMENT_FINDING",Severity:AlertCritical,Headline:"DO NOT SEND"})
+ drain(p)
+ if sender.total()!=0 {t.Fatalf("cross-guild or C.A.S.E. alert leaked: %d",sender.total())}
+ p.Publish(AdminAlert{GuildRowID:8,ServerID:1,Kind:AlertKindADMStale,Severity:AlertWarning,Headline:"ADM STALE"})
+ drain(p)
+ if len(sender.messages("chan-other-guild"))!=1 || sender.total()!=1 {
+  t.Fatalf("expected exactly one authorized operational alert, got %d",sender.total())
+ }
+}
