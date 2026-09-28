@@ -8,7 +8,7 @@ import (
  "github.com/yourname/dayz-killfeed/internal/permissions"
 )
 
-// This endpoint exposes the installed, disabled detector registry. It is not
+// This endpoint exposes the disabled client readiness catalog. It is not
 // an execution endpoint and cannot create a finding, case, alert or sanction.
 type caseDetectorReadiness struct {
  Mode string `json:"mode"`
@@ -29,7 +29,7 @@ func (a *App) handleAntiCheatDetectorReadiness(w http.ResponseWriter,r *http.Req
  if ac.scope.ServerID==nil{writeSaaSError(w,codeInvalidRequest,"no DayZ server selected");return}
  if a.DB==nil||a.DB.Pool==nil{writeSaaSError(w,codeInternalError,"C.A.S.E. unavailable");return}
  if !enforceRateLimit(w,a.saasAdminReadLimiter,rateLimitKey(r)){return}
- defs:=caseintel.Registry()
+ defs:=caseintel.ClientCatalog()
  // Global source limitations are not eliminated by healthy polling.
  quality:=caseintel.QualityReport{CoverageStatus:"FILTERED_SOURCE_EVENTS_ONLY",
   TimeStatus:"CLOCK_ONLY_NO_TRUSTED_ELAPSED_TIME",MovementDetectorStatus:"BLOCKED",

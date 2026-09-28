@@ -14,6 +14,22 @@ func TestDetectorRegistryCannotBeMutatedAndFailsClosed(t *testing.T) {
  for _,p:=range out.Blockers {if p.Status!="UNSATISFIED"||p.Reason==""{t.Fatalf("missing blocker reason: %+v",p)}}
 }
 
+func TestClientCatalogIsEightBlockedModulesWithReasons(t *testing.T) {
+ defs:=ClientCatalog()
+ want:=[]string{"Base Boost Detection","Skywalk Detection","Dupe Detection","PC Detection (Xbox)","No-Clip Detection","Undermap Detection","Suspicious Logins","Teleport Alerts"}
+ if len(defs)!=len(want){t.Fatalf("catalog length: %d",len(defs))}
+ seen:=map[string]bool{}
+ for i,def:=range defs {
+  if def.Name!=want[i]||def.Mode!="BLOCKED"||def.ID=="CASE-MOV-001"||seen[def.ID] {t.Fatalf("unexpected module: %+v",def)}
+  seen[def.ID]=true
+  out:=EvaluatePrerequisites(def,QualityReport{})
+  if out.Status!="BLOCKED"||out.Enforcement!="DISABLED"||out.RiskScore!=nil||len(out.Findings)!=0||len(out.Blockers)==0 {t.Fatalf("unsafe module: %+v",out)}
+  for _,blocker:=range out.Blockers {if blocker.Reason=="" {t.Fatalf("missing reason: %+v",out)}}
+ }
+ defs[0].Mode="ENABLED";defs[0].Prerequisites[0]="PASSED"
+ if fresh:=ClientCatalog()[0];fresh.Mode!="BLOCKED"||fresh.Prerequisites[0]=="PASSED" {t.Fatalf("catalog mutated: %+v",fresh)}
+}
+
 func TestEvidenceFingerprintScopedDeterministicAndRejectsDuplicates(t *testing.T) {
  a,err:=EvidenceFingerprint(11,22,"CASE-MOV-001","0.1.0",[]int64{4,2,3})
  if err!=nil{t.Fatal(err)}

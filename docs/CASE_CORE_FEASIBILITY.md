@@ -2,6 +2,8 @@
 
 This is the scope-frozen feasibility review under issue #124. **No detector is authorized or enabled by this document.** Data visibility in the existing PlayStation ADM collector is not the same as validated cheat detection.
 
+**Owner scope update (2026-09-28):** the eight client-facing modules in [CASE_CORE_EIGHT_MODULES.md](CASE_CORE_EIGHT_MODULES.md) replace the exploratory signal list below. The table remains a source-limitation study, not a list of offered detectors. `CASE-MOV-001` remains only as a blocked internal diagnostic and is not a client module.
+
 ## Present source contract (verified from main source)
 
 The existing C.A.S.E. evidence collector records only the selected ADM event types in `internal/killfeed/evidence.go`: connect, disconnect, respawn, death, kill, hit, unconscious, regained consciousness, and suicide. A retained record has the server/guild scope, canonical ADM source identity, byte end offset, SHA-256 of the raw line, date-less ADM clock, optional subject/actor/target coordinates and event-specific values. The collector runs inside the existing poller and waits for evidence storage acknowledgement before advancing its checkpoint. **No additional ADM polling is authorized.**
@@ -21,7 +23,7 @@ The production bounded audit has shown a historical 200-record page from six sou
 
 **No first cheating detector has passed eligibility yet.** The nearest existing domain for further study is hit/kill sequence *source-quality analysis*, because those event types are actually retained; that does not imply an anti-cheat verdict or a commitment to a detector. Perform an isolated synthetic audit first; then separately approved staff-only real-source observation. Record definition, provenance, exclusion model, rate of unverified evidence, counterexamples and false-positive review *before* considering shadow evaluation.
 
-The current registry contains only CASE-MOV-001 with permanently BLOCKED prerequisites. Do not add an enabled detector to satisfy a roadmap percentage.
+The historical execution registry contains only CASE-MOV-001 with permanently BLOCKED prerequisites. The separate eight-module client readiness catalog is also entirely BLOCKED. Do not add an enabled detector to satisfy a roadmap percentage.
 
 ## Staff review model gate (offline only)
 
