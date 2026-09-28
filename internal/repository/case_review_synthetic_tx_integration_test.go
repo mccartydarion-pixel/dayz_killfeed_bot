@@ -360,9 +360,10 @@ func TestCASEReviewFixtureTransaction(t *testing.T){
  if _,err=db.Pool.Exec(ctx,"UPDATE organization_members SET role='OWNER' WHERE organization_id=$1 AND user_id=$2",org,owner);err!=nil{t.Fatal(err)}
  if _,err=db.Pool.Exec(ctx,"DELETE FROM organization_members WHERE organization_id=$1 AND user_id=$2",org,owner);err!=nil{t.Fatal(err)}
  reject(input) // Even replay must recheck current membership.
+ if _,err=db.Pool.Exec(ctx,"INSERT INTO organization_members(organization_id,user_id,role) VALUES($1,$2,'OWNER')",org,owner);err!=nil{t.Fatal(err)}
  // Exercise the dormant non-fixture transaction against disposable data.
  // The HTTP review route is intentionally absent until release approval.
- reviewedCase:=one("INSERT INTO case_review_cases(guild_id,server_id,installation_id,discord_guild_connection_id,detector_id,detector_version,evidence_fingerprint,source_quality_ref,status) VALUES($1,$2,$3,$4,'SYNTHETIC','0.0.0',$5,$6,'PENDING_REVIEW') RETURNING id",guild,srv,inst,conn,strings.Repeat("d",64),c)
+ reviewedCase:=one("INSERT INTO case_review_cases(guild_id,server_id,installation_id,discord_guild_connection_id,detector_id,detector_version,evidence_fingerprint,source_quality_ref,status) VALUES($1,$2,$3,$4,'SYNTHETIC','0.0.0',$5,$6,'PENDING_REVIEW') RETURNING id",guild,srv,inst,conn,strings.Repeat("1",64),c)
  realInput:=CaseReviewAction{Scope:input.Scope,CaseID:reviewedCase,ActorUserID:owner,
   ActionKey:strings.Repeat("e",64),ExpectedStatus:"PENDING_REVIEW",ToStatus:"REVIEWED",
   ReasonCode:"EVIDENCE_REVIEWED",Note:"Neutral fixture review",At:at}
