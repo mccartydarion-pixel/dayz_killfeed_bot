@@ -71,7 +71,7 @@ func (r *CASEOutboxLeaseRepository) ClaimDueSynthetic(ctx context.Context,in Syn
    WHERE e.guild_id=c.guild_id AND e.server_id=c.server_id
     AND e.installation_id=c.installation_id AND e.case_id=c.id
   )
- ORDER BY o.next_attempt_at,o.id LIMIT 1 FOR UPDATE OF o SKIP LOCKED`,
+ ORDER BY o.next_attempt_at,o.id LIMIT 1 FOR UPDATE OF o,c SKIP LOCKED`,
  in.Scope.GuildID,in.Scope.ServerID,in.Scope.InstallationID,in.At.UTC()).
  Scan(&item.ID,&item.CaseID,&item.EventVersion,&item.DeliveryKey,&item.Attempts)
  if errors.Is(err,pgx.ErrNoRows){return SyntheticOutboxLease{},false,nil}
