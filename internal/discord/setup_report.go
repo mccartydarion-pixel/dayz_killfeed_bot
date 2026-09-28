@@ -1,6 +1,7 @@
 package discord
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -238,6 +239,33 @@ func SetupLayoutEmbed(r SetupLayoutResult, repair bool) *discordgo.MessageEmbed 
 	}
 }
 
+// SetupLayoutPartialEmbed reports real completed work without claiming that a
+// guild-wide run finished. Do not expose raw backend or Discord errors here.
+func SetupLayoutPartialEmbed(r SetupLayoutResult, repair, timedOut bool) *discordgo.MessageEmbed {
+	embed := SetupLayoutEmbed(r, repair)
+	embed.Title = "⚠️ CHAMPIONS® SETUP INCOMPLETE"
+	if repair {
+		embed.Title = "⚠️ CHAMPIONS® REPAIR INCOMPLETE"
+	}
+	embed.Color = presentation.WarningAmber
+	embed.Description = "**Status:** Partial progress — the guild-wide run did not finish."
+	reason := "An installation could not be processed. Completed work is retained; no existing channels were deleted."
+	if timedOut {
+		reason = "The guild-wide operation reached its time limit. Completed work is retained; no existing channels were deleted."
+	}
+	embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
+		Name: "Progress and next step",
+		Value: fmt.Sprintf("• Installations completed: %d\n• %s\n• Check the existing channels and setup status before retrying. A repeat run reuses managed channels.", r.Installations, reason),
+	})
+	// The normal success result is not applicable to an incomplete run.
+	for _, field := range embed.Fields {
+		if field.Name == "Result" {
+			field.Value = "Incomplete — this is not a successful all-installation verification."
+		}
+	}
+	return embed
+}
+
 // setupErrorMessage is the plain reply for a run that could not start.
 func setupErrorMessage(err error) string {
 	switch {
@@ -247,6 +275,10 @@ func setupErrorMessage(err error) string {
 		return "ℹ️ This Discord server is not connected to Champion yet.\nConnect it in **Setup** on the Champion website, then run `/setup` again."
 	case errors.Is(err, ErrMissingManageChannels):
 		return "❌ Champion needs the **Manage Channels** permission to set up its channels. Grant it and run `/setup repair`."
+	case errors.Is(err, context.DeadlineExceeded):
+		return "⚠️ Setup reached its time limit before an installation completed. Some channels may already exist; check channel status before retrying."
+	case errors.Is(err, context.Canceled):
+		return "⚠️ Setup was interrupted. Some channels may already exist; check channel status before retrying."
 	}
 	return "❌ Setup failed. Try `/setup repair` again in a moment."
 }

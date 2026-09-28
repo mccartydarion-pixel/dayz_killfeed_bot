@@ -65,6 +65,16 @@ func TestSetupRepairReportsEachChannelOnceAcrossInstallations(t *testing.T) {
 	if len(chans) != g.createCalls-len(championCategories) {
 		t.Fatalf("one report entry per real channel: %d entries, %d channels created", len(chans), g.createCalls-len(championCategories))
 	}
+	// Discord /setup must surface each C.A.S.E. destination exactly once even
+	// when many installations share the same guild.
+	verified := first.VerifiedSystems()
+	for _, label := range []string{"C.A.S.E. Status", "C.A.S.E. Evidence", "C.A.S.E. Alerts"} {
+		count := 0
+		for _, got := range verified {
+			if got == label {count++}
+		}
+		if count != 1 {t.Fatalf("/setup should report %q once, got %d", label, count)}
+	}
 	if first.Count(discord.SetupChannelCreated) != len(chans) || first.Count(discord.SetupChannelReused) != 0 {
 		t.Fatalf("first run: every channel created once, none double-counted as reused: created=%d reused=%d",
 			first.Count(discord.SetupChannelCreated), first.Count(discord.SetupChannelReused))

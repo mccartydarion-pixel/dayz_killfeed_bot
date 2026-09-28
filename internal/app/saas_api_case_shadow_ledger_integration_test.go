@@ -59,4 +59,23 @@ func TestCASEBlockedShadowLedgerIdempotentAndTenantScoped(t *testing.T){
  WHERE guild_id=$1 AND server_id=$2`,w.guildID,w.serverID).Scan(&count);err!=nil||count!=1{
   t.Fatalf("unexpected shadow evaluations: %d %v",count,err)
  }
+ // A newer bounded page must not make the original blocked diagnostic
+ // unaddressable by exact ID. All rows are isolated disposable fixtures.
+ for i:=1;i<=51;i++{
+  _,err=w.a.DB.Pool.Exec(ctx,`INSERT INTO case_shadow_evaluations
+   (guild_id,server_id,detector_id,detector_version,fingerprint,status,reason_codes)
+   VALUES($1,$2,'CASE-MOV-001','0.1.0',$3,'BLOCKED',ARRAY['VERIFIED_EVENT_ELAPSED_TIME'])`,
+   w.guildID,w.serverID,fmt.Sprintf("%064x",i))
+  if err!=nil{t.Fatalf("insert newer diagnostic %d: %v",i,err)}
+ }
+ recent,err:=ledger.ListShadowHistory(ctx,w.guildID,w.serverID,nil,50)
+ if err!=nil||len(recent)!=50{t.Fatalf("bounded newest history: %d %v",len(recent),err)}
+ for _,entry:=range recent{if entry.ID==id{t.Fatal("older evaluation remained on newest page")}}
+ exact,err:=ledger.GetShadowHistoryByID(ctx,w.guildID,w.serverID,id)
+ if err!=nil||exact.ID!=id||exact.Status!="BLOCKED"||len(exact.ReasonCodes)!=4||len(exact.EvidenceIDs)!=2{
+  t.Fatalf("exact old readback failed: %+v %v",exact,err)
+ }
+ if _,err=ledger.GetShadowHistoryByID(ctx,w.guildID,other,id);err==nil{t.Fatal("cross-server exact read succeeded")}
+ if _,err=ledger.GetShadowHistoryByID(ctx,w.guildID+1,w.serverID,id);err==nil{t.Fatal("cross-guild exact read succeeded")}
+ if _,err=ledger.GetShadowHistoryByID(ctx,w.guildID,w.serverID,0);err==nil{t.Fatal("invalid exact ID accepted")}
 }

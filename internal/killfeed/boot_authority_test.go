@@ -435,6 +435,29 @@ func TestClassifyADMSourceHealth(t *testing.T) {
 	}
 }
 
+func TestAcceptedLaterBootClearsStaleListedCandidate(t *testing.T) {
+	e := NewEngine(&fakeLogSource{}, "svc", NewADMParser())
+	old := "dayzps/config/" + bootAName
+	later := "dayzps/config/" + bootBName
+	e.lastNewBootFile = old
+	e.updateBootStats(func(s *BootAuthorityStats) {
+		s.LastNewBootFile, s.LastNewBootSeenAt = old, time.Now().Add(-time.Hour)
+	})
+	e.acceptBoot(nitrado.LogFile{Path: noftpCfg + "/" + bootBName})
+	if stats := e.BootAuthority(); stats.AcceptedFile != later || stats.LastNewBootFile != "" || !stats.LastNewBootSeenAt.IsZero() {
+		t.Fatalf("accepted later boot kept obsolete pending listing: %+v", stats)
+	}
+	if e.lastNewBootFile != "" { t.Fatal("obsolete engine candidate was not cleared") }
+	// An older listing in a pre-existing snapshot must not win over an
+	// accepted later boot, while a genuinely newer candidate still does.
+	now := time.Now()
+	h := ADMSourceHealth{LastCycleAt: now, LastChangeAt: now, AcceptedFile: later,
+		NewestListedFile: old, NewestListedSince: now.Add(-time.Hour)}
+	if state, _ := ClassifyADMSourceHealth(h, now); state != ADMHealthy { t.Fatalf("older listing marked lagging: %s", state) }
+	h.AcceptedFile, h.NewestListedFile = old, later
+	if state, _ := ClassifyADMSourceHealth(h, now); state != ADMSourceLagging { t.Fatalf("newer unaccepted boot was missed: %s", state) }
+}
+
 func TestNewerBootFallbackToReadableMountAlias(t *testing.T) {
  f:=newBootFake()
  now:=time.Date(2026,9,24,12,8,14,0,time.UTC)
