@@ -90,9 +90,9 @@ func (r *ShadowLedger) ListShadowHistory(ctx context.Context,guildID,serverID in
  return out,rows.Err()
 }
 
-
-// GetShadowHistoryByID reads one exact scoped diagnostic even after it falls
-// beyond the newest history page. It has no runtime caller or write path.
+// GetShadowHistoryByID reads one exact, scoped diagnostic even when it is
+// older than the newest history page. This is internal to the operator CLI;
+// it does not expose an HTTP route or activate any detector.
 func (r *ShadowLedger) GetShadowHistoryByID(ctx context.Context,guildID,serverID,evaluationID int64)(ShadowHistoryRow,error){
  if r==nil||r.pool==nil{return ShadowHistoryRow{},errors.New("C.A.S.E. shadow database unavailable")}
  if guildID<=0||serverID<=0||evaluationID<=0{return ShadowHistoryRow{},errors.New("invalid exact history scope")}

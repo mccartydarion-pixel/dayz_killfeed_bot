@@ -37,6 +37,26 @@ jobs:
       - name: Build
         run: go build ./...
 
+      - name: C.A.S.E. standalone image is inert by default
+        run: |
+          docker build -f Dockerfile.case-shadow-once -t case-shadow-once-ci .
+          output="$(docker run --rm --network none case-shadow-once-ci)"
+          test "$output" = "CASE_SHADOW_QA_INERT_NO_DATABASE"
+          # The packaged CLI must exist and fail closed before touching a database.
+          if docker run --rm --network none --entrypoint /app/case-shadow-once case-shadow-once-ci \
+            -mode execute -guild 1 -server 1 -limit 2; then
+            echo "Ungated verifier execution unexpectedly succeeded"
+            exit 1
+          fi
+          if docker run --rm --network none --entrypoint /app/case-shadow-qa-setup case-shadow-once-ci; then
+            echo "Ungated staging fixture setup unexpectedly succeeded"
+            exit 1
+          fi
+          if docker run --rm --network none --entrypoint /app/case-shadow-qa-readback case-shadow-once-ci; then
+            echo "Unscoped independent readback unexpectedly succeeded"
+            exit 1
+          fi
+
       - name: Vet
         run: |
           go vet ./...
