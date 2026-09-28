@@ -201,7 +201,7 @@ func TestCASEReviewFixtureTransaction(t *testing.T){
  leaseReview:=input;leaseReview.CaseID=leaseCase;leaseReview.ActionKey=strings.Repeat("d",64);leaseReview.At=at.Add(2*time.Second)
  ok,err=writer.ApplySynthetic(ctx,leaseReview)
  if err!=nil||!ok{t.Fatalf("lease fixture review: %v %v",ok,err)}
- leaseID:=one("INSERT INTO case_staff_outbox(guild_id,server_id,installation_id,case_id,event_version,delivery_key,status,next_attempt_at) VALUES($1,$2,$3,$4,1,$5,'PENDING',$6) RETURNING id",guild,srv,inst,leaseCase,strings.Repeat("g",64),at)
+ leaseID:=one("INSERT INTO case_staff_outbox(guild_id,server_id,installation_id,case_id,event_version,delivery_key,status,next_attempt_at) VALUES($1,$2,$3,$4,1,$5,'PENDING',$6) RETURNING id",guild,srv,inst,leaseCase,strings.Repeat("f",64),at)
  claimer:=NewCASEOutboxLeaseRepository(db.Pool)
  claim:=SyntheticOutboxClaim{FixtureOnly:true,Scope:input.Scope,At:at.Add(10*time.Second),LeaseFor:30*time.Second}
  if _,taken,e:=claimer.ClaimDueSynthetic(ctx,SyntheticOutboxClaim{Scope:input.Scope,At:claim.At,LeaseFor:claim.LeaseFor});taken||!errors.Is(e,ErrCASEReviewFixtureDisabled){t.Fatalf("fixture claim gate bypass: %v",e)}
