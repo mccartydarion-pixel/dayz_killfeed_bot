@@ -43,6 +43,7 @@ type caseSourceIntegrity struct {
  LatestEvidenceOffset *int64 `json:"latestEvidenceOffset"`
  EvidenceLines24h int64 `json:"evidenceLines24h"`
  EvidenceObservationStatus string `json:"evidenceObservationStatus"`
+ PipelineHealth casePipelineHealth `json:"pipelineHealth"`
  NewerBootVerificationReason string `json:"newerBootVerificationReason"`
  NewerBootVerificationAt *time.Time `json:"newerBootVerificationAt"`
  NewerBootCandidateRef *string `json:"newerBootCandidateRef"`
@@ -188,6 +189,7 @@ func (a *App) handleAntiCheatIntegrity(w http.ResponseWriter,r *http.Request) {
  out.EvidenceObservationStatus=caseEvidenceObservationStatus(available,out.CollectorConfigured,
   out.SelectedSourceRef,out.SelectedIsAccepted,out.LatestEvidenceSourceRef,
   out.LatestEvidenceIngestedAt,out.EvidenceLines24h)
+ out.PipelineHealth=caseAssessPipelineHealth(out)
  a.recordAudit(ctx,ac,"CASE_SOURCE_INTEGRITY_VIEWED","","","success",nil,
   map[string]any{"workerAvailable":available,"sourceState":out.SourceState})
  writeSaaSJSON(w,http.StatusOK,out)
