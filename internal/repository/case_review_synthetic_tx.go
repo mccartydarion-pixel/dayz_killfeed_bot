@@ -34,9 +34,9 @@ type SyntheticReviewInput struct {
  At time.Time
 }
 
-// CaseReviewMutation is deliberately not exposed through any HTTP endpoint.
-// Its SQL still verifies the actor's same-organization OWNER/ADMIN membership,
-// the installation, and a row-locked scoped case before mutating a fixture.
+// CaseReviewMutation backs an otherwise disabled, independently gated staff
+// route. SQL revalidates current OWNER/ADMIN membership, installation and the
+// row-locked case, even if a caller bypasses the HTTP layer.
 type CaseReviewMutation struct { pool *pgxpool.Pool }
 
 func NewCaseReviewMutation(pool *pgxpool.Pool) *CaseReviewMutation {
@@ -83,9 +83,9 @@ type CaseReviewAction struct {
 
 // ApplyReviewed performs the same DB-enforced exact-installation membership,
 // immutable replay and atomic audit/status transition as the fixture method.
-// It has no HTTP/runtime caller yet and does NOT create cases or outbox rows.
-// A separate reviewed, default-off route must independently authenticate the
-// actor, establish case/evidence admission, and require explicit launch approval.
+// It is used only by a default-off protected route and does NOT create cases
+// or outbox rows. It independently checks the real validated detector registry
+// and an exact linked evidence row; full real-source admission is a prior gate.
 func (r *CaseReviewMutation) ApplyReviewed(ctx context.Context,in CaseReviewAction)(bool,error){
  return r.applyReviewTransaction(ctx,in,true)
 }
