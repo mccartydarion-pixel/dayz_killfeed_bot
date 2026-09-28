@@ -245,6 +245,50 @@ func TestCASEReviewFixtureTransaction(t *testing.T){
   t.Fatalf("lease persistence mismatch: %s %d %v",leaseStatus,attempts,err)
  }
  if _,taken,e:=claimer.ClaimDueSynthetic(ctx,claim);e!=nil||taken{t.Fatalf("leased/status-only row claimed again: %v %v",taken,e)}
+ // A lease is not permission to send after staff resolves the case. The
+ // exact scoped token can be suppressed only after an audited resolution.
+ suppression:=SyntheticResolvedLeaseSuppression{FixtureOnly:true,Scope:input.Scope,
+  OutboxID:leaseID,LeaseToken:winning.LeaseToken,At:at.Add(12*time.Second)}
+ if changed,e:=claimer.SuppressResolvedSynthetic(ctx,suppression);e!=nil||changed{
+  t.Fatalf("unresolved fixture lease suppressed: %v %v",changed,e)
+ }
+ wrong:=suppression;wrong.LeaseToken=strings.Repeat("a",64)
+ if changed,e:=claimer.SuppressResolvedSynthetic(ctx,wrong);e!=nil||changed{
+  t.Fatalf("stale token suppressed fixture lease: %v %v",changed,e)
+ }
+ wrong=suppression;wrong.Scope.InstallationID=otherInst
+ if changed,e:=claimer.SuppressResolvedSynthetic(ctx,wrong);e!=nil||changed{
+  t.Fatalf("foreign installation suppressed fixture lease: %v %v",changed,e)
+ }
+ wrong=suppression;wrong.FixtureOnly=false
+ if changed,e:=claimer.SuppressResolvedSynthetic(ctx,wrong);changed||!errors.Is(e,ErrCASEReviewFixtureDisabled){
+  t.Fatalf("suppression fixture gate bypass: %v %v",changed,e)
+ }
+ resolvedLease:=leaseReview
+ resolvedLease.ActionKey=strings.Repeat("e",64)
+ resolvedLease.ExpectedStatus="REVIEWED"
+ resolvedLease.ToStatus="RESOLVED"
+ resolvedLease.ReasonCode="STAFF_CLOSED"
+ resolvedLease.At=at.Add(11*time.Second)
+ if changed,e:=writer.ApplySynthetic(ctx,resolvedLease);e!=nil||!changed{
+  t.Fatalf("resolve leased fixture case: %v %v",changed,e)
+ }
+ if changed,e:=claimer.SuppressResolvedSynthetic(ctx,suppression);e!=nil||!changed{
+  t.Fatalf("audited fixture suppression: %v %v",changed,e)
+ }
+ if changed,e:=claimer.SuppressResolvedSynthetic(ctx,suppression);e!=nil||changed{
+  t.Fatalf("fixture suppression replay: %v %v",changed,e)
+ }
+ var finalStatus,finalToken string
+ var leaseCleared bool
+ if e:=db.Pool.QueryRow(ctx,`SELECT status,COALESCE(lease_token,''),lease_until IS NULL
+  FROM case_staff_outbox WHERE id=$1`,leaseID).Scan(&finalStatus,&finalToken,&leaseCleared);e!=nil||
+  finalStatus!="SUPPRESSED"||finalToken!=""||!leaseCleared{
+  t.Fatalf("fixture lease not cleared: %s %q %v %v",finalStatus,finalToken,leaseCleared,e)
+ }
+ if _,taken,e:=claimer.ClaimDueSynthetic(ctx,claim);e!=nil||taken{
+  t.Fatalf("suppressed fixture reclaimed: %v %v",taken,e)
+ }
  // Two competing reviews must serialize on one scoped case. Only one
  // transition and one audit row may survive; no duplicated successful review.
  contested:=one("INSERT INTO case_review_cases(guild_id,server_id,installation_id,discord_guild_connection_id,detector_id,detector_version,evidence_fingerprint,source_quality_ref,status) VALUES($1,$2,$3,$4,'SYNTHETIC','0.0.0',$5,$6,'PENDING_REVIEW') RETURNING id",guild,srv,inst,conn,b,c)
