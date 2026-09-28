@@ -63,6 +63,33 @@ func reviewTransition(from,to string) bool {
 // matches; collisions fail closed. This is not live finding admission.
 func (r *CaseReviewMutation) ApplySynthetic(ctx context.Context,in SyntheticReviewInput)(bool,error){
  if !in.FixtureOnly||!in.CallerCapabilityVerified{return false,ErrCASEReviewFixtureDisabled}
+ return r.applyReviewTransaction(ctx,CaseReviewAction{
+  Scope:in.Scope,CaseID:in.CaseID,ActorUserID:in.ActorUserID,
+  ActionKey:in.ActionKey,ExpectedStatus:in.ExpectedStatus,
+  ToStatus:in.ToStatus,ReasonCode:in.ReasonCode,Note:in.Note,At:in.At,
+ })
+}
+
+// CaseReviewAction is the trusted server-side transaction input, not a request
+// DTO. The real handler must resolve the actor and selected installation via
+// requireCapability and never accept caller-provided actor/scope IDs.
+type CaseReviewAction struct {
+ Scope CaseReviewScope
+ CaseID,ActorUserID int64
+ ActionKey,ExpectedStatus,ToStatus,ReasonCode,Note string
+ At time.Time
+}
+
+// ApplyReviewed performs the same DB-enforced exact-installation membership,
+// immutable replay and atomic audit/status transition as the fixture method.
+// It has no HTTP/runtime caller yet and does NOT create cases or outbox rows.
+// A separate reviewed, default-off route must independently authenticate the
+// actor, establish case/evidence admission, and require explicit launch approval.
+func (r *CaseReviewMutation) ApplyReviewed(ctx context.Context,in CaseReviewAction)(bool,error){
+ return r.applyReviewTransaction(ctx,in)
+}
+
+func (r *CaseReviewMutation) applyReviewTransaction(ctx context.Context,in CaseReviewAction)(bool,error){
  if r==nil||r.pool==nil{return false,errors.New("case review database unavailable")}
  if in.Scope.GuildID<=0||in.Scope.ServerID<=0||in.Scope.InstallationID<=0||
   in.CaseID<=0||in.ActorUserID<=0||!reviewValidKey(in.ActionKey)||
@@ -70,7 +97,7 @@ func (r *CaseReviewMutation) ApplySynthetic(ctx context.Context,in SyntheticRevi
   in.At.IsZero()||len(strings.TrimSpace(in.Note))==0||
   len([]rune(in.Note))>500||strings.ContainsAny(in.Note,"@\r\n<>")||
   !reviewReasonValid(in.ReasonCode,in.ToStatus) {
-  return false,errors.New("invalid synthetic review request")
+  return false,errors.New("invalid case review request")
  }
  tx,err:=r.pool.BeginTx(ctx,pgx.TxOptions{})
  if err!=nil{return false,err}
@@ -95,7 +122,7 @@ func (r *CaseReviewMutation) ApplySynthetic(ctx context.Context,in SyntheticRevi
    AND m.user_id=$4 AND m.role IN ('OWNER','ADMIN')
   FOR SHARE OF m
  )`,in.Scope.InstallationID,in.Scope.ServerID,in.Scope.GuildID,in.ActorUserID).Scan(&authorized)
- if err!=nil{return false,fmt.Errorf("verify synthetic review membership: %w",err)}
+ if err!=nil{return false,fmt.Errorf("verify case review membership: %w",err)}
  if !authorized{return false,errors.New("actor not authorized for selected installation")}
 
  var state string
@@ -130,7 +157,7 @@ func (r *CaseReviewMutation) ApplySynthetic(ctx context.Context,in SyntheticRevi
  }
  if !errors.Is(err,pgx.ErrNoRows){return false,err}
  if in.At.UTC().Before(openedAt)||in.At.UTC().Before(updatedAt){
-  return false,errors.New("synthetic review time precedes case history")
+  return false,errors.New("review time precedes case history")
  }
  if state!=in.ExpectedStatus{return false,errors.New("review status changed")}
  if !reviewTransition(state,in.ToStatus){return false,errors.New("review transition refused")}
@@ -152,7 +179,7 @@ func (r *CaseReviewMutation) ApplySynthetic(ctx context.Context,in SyntheticRevi
  `,in.ToStatus,in.At.UTC(),in.CaseID,in.Scope.GuildID,in.Scope.ServerID,
  in.Scope.InstallationID,state)
  if err!=nil{return false,err}
- if tag.RowsAffected()!=1{return false,errors.New("synthetic review compare-and-swap failed")}
+ if tag.RowsAffected()!=1{return false,errors.New("case review compare-and-swap failed")}
  if err=tx.Commit(ctx);err!=nil{return false,err}
  return true,nil
 }
