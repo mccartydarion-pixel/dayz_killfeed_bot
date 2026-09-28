@@ -134,6 +134,15 @@ func TestCASEReviewFixtureTransaction(t *testing.T){
  if inspectErr!=nil||len(due)!=1||due[0].ID!=outboxID||due[0].DeliveryKey!=pendingKey||due[0].CaseID!=caseID{
   t.Fatalf("exact scoped fixture due: %+v %v",due,inspectErr)
  }
+ // A direct status-only write is not an audited staff review. Even with
+ // linked evidence and a pending outbox row it must stay out of diagnostics.
+ statusOnly:=one("INSERT INTO case_review_cases(guild_id,server_id,installation_id,discord_guild_connection_id,detector_id,detector_version,evidence_fingerprint,source_quality_ref,status) VALUES($1,$2,$3,$4,'SYNTHETIC','0.0.0',$5,$6,'REVIEWED') RETURNING id",guild,srv,inst,conn,strings.Repeat("d",64),c)
+ if _,err=db.Pool.Exec(ctx,"INSERT INTO case_review_evidence(guild_id,server_id,installation_id,case_id,evidence_id) VALUES($1,$2,$3,$4,$5)",guild,srv,inst,statusOnly,evidenceID);err!=nil{t.Fatal(err)}
+ one("INSERT INTO case_staff_outbox(guild_id,server_id,installation_id,case_id,event_version,delivery_key,status,next_attempt_at) VALUES($1,$2,$3,$4,1,$5,'PENDING',$6) RETURNING id",guild,srv,inst,statusOnly,strings.Repeat("e",64),at)
+ due,inspectErr=inspector.InspectDueSynthetic(ctx,inspect)
+ if inspectErr!=nil||len(due)!=1||due[0].ID!=outboxID{
+  t.Fatalf("status-only review entered due diagnostic: %+v %v",due,inspectErr)
+ }
  inspect.Scope.InstallationID=otherInst
  due,inspectErr=inspector.InspectDueSynthetic(ctx,inspect)
  if inspectErr!=nil||len(due)!=0{t.Fatalf("foreign outbox scope leaked: %+v %v",due,inspectErr)}
