@@ -46,7 +46,8 @@ func TestCASESessionAPIReconstructsFromSourceOffsetsAndScopesTenant(t *testing.T
 	if rr.Code!=http.StatusOK{t.Fatalf("owner cannot read sessions: %d %s",rr.Code,rr.Body.String())}
 	out:=decodeBody[caseSessionPage](t,rr)
 	if out.ServerID!=w.serverID||out.Mode!="RECONSTRUCTION_ONLY"||out.DetectorsEnabled||
-		out.Enforcement!="DISABLED"||len(out.Sources)!=1{
+		out.Enforcement!="DISABLED"||len(out.Sources)!=1||out.LoginObservations.DetectorsEnabled||
+		out.LoginObservations.RepeatedConnectWindows!=0||out.LoginObservations.RestartContext!="UNVERIFIED"{
 		t.Fatalf("unsafe session response: %+v",out)
 	}
 	s:=out.Sources[0]
@@ -72,7 +73,7 @@ func TestCASESessionAPIReconstructsFromSourceOffsetsAndScopesTenant(t *testing.T
 	if err:=repo.RecordCaseEvidence(ctx,extra);err!=nil{t.Fatal(err)}
 	rr=w.call(w.a.handleAntiCheatSessions,http.MethodGet,path,w.f.OwnerDiscordID,nil,nil)
 	out=decodeBody[caseSessionPage](t,rr)
-	if out.Sources[0].ObservationCount!=4{t.Fatal("cross-installation session record leaked")}
+	if out.Sources[0].ObservationCount!=4||out.LoginObservations.RepeatedConnectWindows!=0{t.Fatal("cross-installation session record leaked")}
 	// A user lacking authorized scope cannot read player positions.
 	stranger:=syncUser(t,w.a,fmt.Sprintf("case-session-stranger-%d",time.Now().UnixNano()),"Stranger")
 	denied:=w.call(w.a.handleAntiCheatSessions,http.MethodGet,path,stranger.DiscordUserID,nil,nil)
@@ -95,6 +96,7 @@ func TestCASESessionAPIValidationAndBoundedPagination(t *testing.T){
 	if !out.WindowTruncated||out.NextCursor==nil||out.Sources[0].ObservationCount!=2{
 		t.Fatalf("window limit not disclosed: %+v",out)
 	}
+	if !out.LoginObservations.WindowTruncated||out.LoginObservations.Status!="OBSERVATION_ONLY"||out.LoginObservations.DetectorsEnabled {t.Fatalf("login page overclaimed: %+v",out.LoginObservations)}
 	invalid:=w.call(w.a.handleAntiCheatSessions,http.MethodGet,
 		w.path("/anti-cheat/sessions?playerId=garbage"),w.f.OwnerDiscordID,nil,nil)
 	if invalid.Code!=http.StatusBadRequest{t.Fatalf("invalid player ID accepted: %d",invalid.Code)}

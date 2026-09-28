@@ -27,6 +27,8 @@ Detector health must be read from the protected, exact-installation source/conti
 
 The offline `AssessDetectorHealth` classifier models `ACTIVE`, `DISABLED`, `DEGRADED`, `INSUFFICIENT_EVIDENCE`, `UNSUPPORTED` and `ERROR`. Since every current catalog module is `BLOCKED`, it cannot report `ACTIVE` even when fixture inputs claim validation. Timestamps, freshness limits and poller delay are explicit inputs for future protected readback. It has no production caller or dashboard binding.
 
+The existing protected `/anti-cheat/sessions` reconstruction now includes a bounded `loginObservations` summary for Suspicious Logins. It counts repeated connect lines without a recorded disconnect **within the same ADM source** and links their retained evidence IDs. It discloses pagination truncation and leaves rapid reconnect timing and restart context unverified. A normal recorded disconnect/reconnect or a source boundary is not classified as suspicious. This is a staff-only source-order observation, not a login detector, case or notification. It reuses the existing exact server/player query, rate limit, authorization and audit rather than introducing another poller.
+
 ## Build order
 
 1. Verify current-source retained evidence and protected health/continuity.
