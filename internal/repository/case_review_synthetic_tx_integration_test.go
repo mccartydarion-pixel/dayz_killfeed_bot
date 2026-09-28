@@ -371,12 +371,17 @@ func TestCASEReviewFixtureTransaction(t *testing.T){
  if changed,e:=writer.ApplyReviewed(ctx,otherActor);changed||e==nil{t.Fatalf("outsider review accepted: %v %v",changed,e)}
  otherScope:=realInput;otherScope.Scope.InstallationID=otherInst
  if changed,e:=writer.ApplyReviewed(ctx,otherScope);changed||e==nil{t.Fatalf("foreign installation accepted: %v %v",changed,e)}
- if changed,e:=writer.ApplyReviewed(ctx,realInput);e!=nil||!changed{t.Fatalf("review transaction: %v %v",changed,e)}
- if changed,e:=writer.ApplyReviewed(ctx,realInput);e!=nil||changed{t.Fatalf("review replay: %v %v",changed,e)}
+ if changed,e:=writer.ApplyReviewed(ctx,realInput);changed||e==nil||
+  !strings.Contains(e.Error(),"not independently validated"){
+  t.Fatalf("unvalidated fixture admitted by production review: %v %v",changed,e)
+ }
+ if changed,e:=writer.ApplyReviewed(ctx,realInput);changed||e==nil{
+  t.Fatalf("blocked review replay admitted: %v %v",changed,e)
+ }
  var realStatus string
  var realAudits int
  if e:=db.Pool.QueryRow(ctx,"SELECT status FROM case_review_cases WHERE id=$1",reviewedCase).Scan(&realStatus);e!=nil{t.Fatal(e)}
  if e:=db.Pool.QueryRow(ctx,"SELECT COUNT(*) FROM case_review_audit WHERE case_id=$1",reviewedCase).Scan(&realAudits);e!=nil{t.Fatal(e)}
- if realStatus!="REVIEWED"||realAudits!=1{t.Fatalf("review not atomic: %s %d",realStatus,realAudits)}
+ if realStatus!="PENDING_REVIEW"||realAudits!=0{t.Fatalf("blocked review mutated case: %s %d",realStatus,realAudits)}
 
 }
