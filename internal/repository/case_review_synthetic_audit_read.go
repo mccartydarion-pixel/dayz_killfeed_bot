@@ -6,8 +6,8 @@ import (
  "time"
 )
 
-// SyntheticAuthorizedAuditRead is fixture-only. A future route must authenticate
-// the actor and selected installation before any repository call.
+// SyntheticAuthorizedAuditRead retains the fixture-only caller contract.
+// The live read route independently authenticates its actor and installation.
 type SyntheticAuthorizedAuditRead struct {
  FixtureOnly bool
  Scope CaseReviewScope
@@ -27,16 +27,21 @@ type SyntheticAuditSummary struct {
  CreatedAt time.Time
 }
 
-// ListAuthorizedAuditSynthetic checks membership and exact installation scope
-// in the same bounded statement as the audit rows. It has no runtime caller.
+// ListAuthorizedAuditSynthetic preserves the fixture gate for offline callers.
 func (r *CaseReviewReader) ListAuthorizedAuditSynthetic(ctx context.Context,in SyntheticAuthorizedAuditRead)([]SyntheticAuditSummary,error){
  if !in.FixtureOnly{return nil,ErrCASEReviewFixtureDisabled}
+ return r.ListAuthorizedAudit(ctx,in.Scope,in.CaseID,in.ActorUserID,in.Before,in.Limit)
+}
+
+// ListAuthorizedAudit checks membership, case and installation scope in the
+// same bounded SELECT. It exposes state transitions, not private review notes.
+func (r *CaseReviewReader) ListAuthorizedAudit(ctx context.Context,scope CaseReviewScope,caseID,actorUserID int64,before *int64,limit int)([]SyntheticAuditSummary,error){
  if r==nil||r.pool==nil{return nil,errors.New("C.A.S.E. review database unavailable")}
- if in.Scope.GuildID<=0||in.Scope.ServerID<=0||in.Scope.InstallationID<=0||
-  in.CaseID<=0||in.ActorUserID<=0||in.Limit<1||in.Limit>50{
+ if scope.GuildID<=0||scope.ServerID<=0||scope.InstallationID<=0||
+  caseID<=0||actorUserID<=0||limit<1||limit>50{
   return nil,errors.New("invalid authorized audit history request")
  }
- if in.Before!=nil&&*in.Before<=0{return nil,errors.New("invalid audit history cursor")}
+ if before!=nil&&*before<=0{return nil,errors.New("invalid audit history cursor")}
  rows,err:=r.pool.Query(ctx,`
  SELECT a.id,a.from_status,a.to_status,a.reason_code,a.created_at
  FROM case_review_audit a
@@ -56,11 +61,11 @@ func (r *CaseReviewReader) ListAuthorizedAuditSynthetic(ctx context.Context,in S
     AND m.user_id=$6 AND m.role IN ('OWNER','ADMIN')
   )
  ORDER BY a.id DESC LIMIT $7`,
- in.Scope.GuildID,in.Scope.ServerID,in.Scope.InstallationID,in.CaseID,
- in.Before,in.ActorUserID,in.Limit)
+ scope.GuildID,scope.ServerID,scope.InstallationID,caseID,
+ before,actorUserID,limit)
  if err!=nil{return nil,err}
  defer rows.Close()
- out:=make([]SyntheticAuditSummary,0,in.Limit)
+ out:=make([]SyntheticAuditSummary,0,limit)
  for rows.Next(){
   var v SyntheticAuditSummary
   if err=rows.Scan(&v.ID,&v.FromStatus,&v.ToStatus,&v.ReasonCode,&v.CreatedAt);err!=nil{return nil,err}
