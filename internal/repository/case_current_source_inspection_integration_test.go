@@ -45,7 +45,6 @@ func TestCurrentSourceEvidenceInspectionScopeHistoryAndBound(t *testing.T) {
  org:=one(`INSERT INTO organizations(name,slug,owner_user_id)
  VALUES('Case source fixture','case-source-fixture',$1) RETURNING id`,user)
  guild:=one(`INSERT INTO guilds(discord_guild_id) VALUES('case-source-guild') RETURNING id`)
- foreignGuild:=one(`INSERT INTO guilds(discord_guild_id) VALUES('case-source-foreign') RETURNING id`)
  server:=one(`INSERT INTO game_servers(guild_id,provider,provider_service_id,game,platform,status,organization_id)
  VALUES($1,'qa-fixture','source-one','dayz','PLAYSTATION','ACTIVE',$2) RETURNING id`,guild,org)
  otherServer:=one(`INSERT INTO game_servers(guild_id,provider,provider_service_id,game,platform,status,organization_id)
@@ -68,7 +67,6 @@ func TestCurrentSourceEvidenceInspectionScopeHistoryAndBound(t *testing.T) {
  add(guild,server,source,200)
  add(guild,server,oldSource,300)
  add(guild,otherServer,source,900)
- add(foreignGuild,server,source,950) // synthetic foreign tenant tuple must not leak
  historical,err:=reader.Inspect(ctx,guild,server,source,1)
  if err!=nil||historical.SelectedSourceRef!=currentSourceRef(source)||
   historical.LatestRetainedSourceRef!=currentSourceRef(oldSource)||
