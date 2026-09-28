@@ -209,6 +209,17 @@ func TestCASEReviewFixtureTransaction(t *testing.T){
  if _,taken,e:=claimer.ClaimDueSynthetic(ctx,early);e!=nil||taken{t.Fatalf("early fixture claimed: %v %v",taken,e)}
  foreignClaim:=claim;foreignClaim.Scope.InstallationID=otherInst
  if _,taken,e:=claimer.ClaimDueSynthetic(ctx,foreignClaim);e!=nil||taken{t.Fatalf("foreign installation claimed: %v %v",taken,e)}
+ // A concurrent staff transition owns the case row. Claim must skip it
+ // instead of leasing a row whose REVIEWED state may be changing.
+ lockedCase,lockErr:=db.Pool.Begin(ctx)
+ if lockErr!=nil{t.Fatal(lockErr)}
+ if _,lockErr=lockedCase.Exec(ctx,"SELECT id FROM case_review_cases WHERE id=$1 FOR UPDATE",leaseCase);lockErr!=nil{
+  _=lockedCase.Rollback(ctx);t.Fatal(lockErr)
+ }
+ if _,taken,e:=claimer.ClaimDueSynthetic(ctx,claim);e!=nil||taken{
+  _=lockedCase.Rollback(ctx);t.Fatalf("claim raced case transition: %v %v",taken,e)
+ }
+ if lockErr=lockedCase.Rollback(ctx);lockErr!=nil{t.Fatal(lockErr)}
  type leaseResult struct{item SyntheticOutboxLease;taken bool;err error}
  leases:=make(chan leaseResult,2)
  var claimWG sync.WaitGroup
