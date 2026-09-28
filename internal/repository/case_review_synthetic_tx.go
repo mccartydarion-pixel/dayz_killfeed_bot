@@ -7,6 +7,7 @@ import (
  "strings"
  "time"
 
+ "github.com/yourname/dayz-killfeed/internal/caseintel"
  "github.com/jackc/pgx/v5"
  "github.com/jackc/pgx/v5/pgxpool"
 )
@@ -67,7 +68,7 @@ func (r *CaseReviewMutation) ApplySynthetic(ctx context.Context,in SyntheticRevi
   Scope:in.Scope,CaseID:in.CaseID,ActorUserID:in.ActorUserID,
   ActionKey:in.ActionKey,ExpectedStatus:in.ExpectedStatus,
   ToStatus:in.ToStatus,ReasonCode:in.ReasonCode,Note:in.Note,At:in.At,
- })
+ },false)
 }
 
 // CaseReviewAction is the trusted server-side transaction input, not a request
@@ -86,10 +87,10 @@ type CaseReviewAction struct {
 // A separate reviewed, default-off route must independently authenticate the
 // actor, establish case/evidence admission, and require explicit launch approval.
 func (r *CaseReviewMutation) ApplyReviewed(ctx context.Context,in CaseReviewAction)(bool,error){
- return r.applyReviewTransaction(ctx,in)
+ return r.applyReviewTransaction(ctx,in,true)
 }
 
-func (r *CaseReviewMutation) applyReviewTransaction(ctx context.Context,in CaseReviewAction)(bool,error){
+func (r *CaseReviewMutation) applyReviewTransaction(ctx context.Context,in CaseReviewAction,requireValidated bool)(bool,error){
  if r==nil||r.pool==nil{return false,errors.New("case review database unavailable")}
  if in.Scope.GuildID<=0||in.Scope.ServerID<=0||in.Scope.InstallationID<=0||
   in.CaseID<=0||in.ActorUserID<=0||!reviewValidKey(in.ActionKey)||
@@ -125,15 +126,36 @@ func (r *CaseReviewMutation) applyReviewTransaction(ctx context.Context,in CaseR
  if err!=nil{return false,fmt.Errorf("verify case review membership: %w",err)}
  if !authorized{return false,errors.New("actor not authorized for selected installation")}
 
- var state string
+ var state,detectorID,detectorVersion string
  var openedAt,updatedAt time.Time
  err=tx.QueryRow(ctx,`
-  SELECT status,created_at,updated_at FROM case_review_cases
+  SELECT status,detector_id,detector_version,created_at,updated_at
+  FROM case_review_cases
   WHERE id=$1 AND guild_id=$2 AND server_id=$3 AND installation_id=$4
   FOR UPDATE`,in.CaseID,in.Scope.GuildID,in.Scope.ServerID,in.Scope.InstallationID).
-  Scan(&state,&openedAt,&updatedAt)
+  Scan(&state,&detectorID,&detectorVersion,&openedAt,&updatedAt)
  if errors.Is(err,pgx.ErrNoRows){return false,errors.New("review case not found in exact scope")}
  if err!=nil{return false,err}
+ if requireValidated {
+  // An opt-in review handler cannot turn a legacy fixture, unknown detector
+  // or unlinked source into an allegation merely by changing review state.
+  validated:=false
+  for _,d:=range caseintel.Registry(){
+   if d.ID==detectorID && d.Version==detectorVersion && d.Mode=="VALIDATED_SHADOW"{
+    validated=true;break
+   }
+  }
+  if !validated{return false,errors.New("case detector not independently validated")}
+  var linked bool
+  err=tx.QueryRow(ctx,`SELECT EXISTS (
+   SELECT 1 FROM case_review_evidence ev
+   JOIN case_evidence_events e ON e.id=ev.evidence_id
+    AND e.guild_id=ev.guild_id AND e.server_id=ev.server_id
+   WHERE ev.guild_id=$1 AND ev.server_id=$2 AND ev.installation_id=$3
+    AND ev.case_id=$4
+  )`,in.Scope.GuildID,in.Scope.ServerID,in.Scope.InstallationID,in.CaseID).Scan(&linked)
+  if err!=nil||!linked{return false,errors.New("case has no verified linked evidence")}
+ }
 
  // Check the replay after acquiring the case lock and verifying live membership.
  // Idempotence cannot be used as an authorization bypass after role revocation.
