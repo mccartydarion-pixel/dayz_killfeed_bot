@@ -4,6 +4,7 @@ import "testing"
 
 func TestInvestigationModesCannotOverrideMissingTelemetryOrValidation(t *testing.T) {
  in:=InvestigationInput{ModuleID:"CASE-TELEPORT-001",Mode:SensitivityStrict,
+  Thresholds:&ValidatedThresholds{Approved:true,MinimumEvidence:1,Strict:1,Balanced:2,Relaxed:3},
   SourceCurrent:true,PollingCaughtUp:true,RequiredTelemetryPresent:true,
   ModuleValidated:true,EvidenceProvenanceVerified:true,ExclusionsChecked:true,
   DuplicateFree:true,IndependentObservations:10}
@@ -26,6 +27,7 @@ func TestInvestigationModesCannotOverrideMissingTelemetryOrValidation(t *testing
 
 func TestInvestigationSensitivityOnlyChangesCorroboration(t *testing.T) {
  in:=InvestigationInput{ModuleID:"CASE-LOGIN-001",Mode:SensitivityBalanced,
+  Thresholds:&ValidatedThresholds{Approved:true,MinimumEvidence:1,Strict:1,Balanced:2,Relaxed:3},
   SourceCurrent:true,PollingCaughtUp:true,RequiredTelemetryPresent:true,
   ModuleValidated:true,EvidenceProvenanceVerified:true,ExclusionsChecked:true,
   DuplicateFree:true,IndependentObservations:1}
@@ -42,4 +44,8 @@ func TestInvestigationSensitivityOnlyChangesCorroboration(t *testing.T) {
  if got:=AssessInvestigation(in);got.Status=="REVIEW_CANDIDATE" {t.Fatalf("exclusion: %+v",got)}
  in.ExclusionsChecked=true;in.ModuleID="CASE-UNKNOWN"
  if got:=AssessInvestigation(in);got.Status=="REVIEW_CANDIDATE" {t.Fatalf("unknown: %+v",got)}
+ in.ModuleID="CASE-LOGIN-001";in.Thresholds=nil
+ if got:=AssessInvestigation(in);got.Status=="REVIEW_CANDIDATE"||!containsReason(got.Reasons,"THRESHOLD_NOT_VALIDATED") {t.Fatalf("unvalidated thresholds: %+v",got)}
+ in.Thresholds=&ValidatedThresholds{Approved:true,MinimumEvidence:2,Strict:1,Balanced:2,Relaxed:3}
+ if got:=AssessInvestigation(in);got.Status=="REVIEW_CANDIDATE" {t.Fatalf("strict below evidence floor: %+v",got)}
 }

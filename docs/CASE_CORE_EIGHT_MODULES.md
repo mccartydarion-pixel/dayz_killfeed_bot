@@ -21,9 +21,11 @@ The catalog lists the owner's proposed advanced capabilities per module. Base Bo
 
 All eight share the intended **Observe → Correlate → Validate → Notify** investigation flow. Observe never accuses. Correlate joins exact-installation events and legitimate explanations. Validate independently checks current source, poller lag, required fields, provenance, exclusions and duplicate evidence. Notify is a separate private, default-off capability requiring an authenticated case and delivery receipt. A neutral staff review candidate never establishes a violation.
 
-The offline `AssessInvestigation` policy models the three owner modes: Relaxed, Balanced (default) and Strict. It uses illustrative corroboration counts (3/2/1) **only for a synthetic review candidate**, not a validated production threshold or verdict. All modes require the same source, provenance, module-validation and exception standards. No mode can recover missing telemetry or enable sending; actual thresholds require independent false-positive validation and owner controls before use.
+The offline `AssessInvestigation` policy models the three owner modes: Relaxed, Balanced (default) and Strict. It requires an approved per-module threshold profile and a shared minimum evidence floor; no numeric production threshold is supplied by the catalog. All modes require the same source, provenance, module-validation and exception standards. No mode can recover missing telemetry or enable sending; threshold values require independent false-positive validation and owner controls before use.
 
 Detector health must be read from the protected, exact-installation source/continuity aggregate rather than inferred from runtime log lines. A stale source, behind poller or missing required fields yields `DEGRADED / SUSPENDED` with the affected module, reason and action to suspend conclusions. The offline policy implements this suspension; the live health panel and case sender are not wired to it. A preview mode selection does not change server configuration.
+
+The offline `AssessDetectorHealth` classifier models `ACTIVE`, `DISABLED`, `DEGRADED`, `INSUFFICIENT_EVIDENCE`, `UNSUPPORTED` and `ERROR`. Since every current catalog module is `BLOCKED`, it cannot report `ACTIVE` even when fixture inputs claim validation. Timestamps, freshness limits and poller delay are explicit inputs for future protected readback. It has no production caller or dashboard binding.
 
 ## Build order
 
