@@ -62,7 +62,7 @@ func AssessInvestigation(in InvestigationInput) InvestigationDecision {
  if in.IndependentObservations<out.RequiredObservations {out.Reasons=append(out.Reasons,"INSUFFICIENT_CORROBORATION")}
  if len(out.Reasons)>0 {out.Stage="VALIDATE";return out}
  out.Stage="VALIDATE";out.Status="REVIEW_CANDIDATE"
- // NOTIFY is a separate authenticated, default-off release gate. Even a
+ // NOTIFY is a separate authenticated, default-off capability. Even a
  // candidate is neutral and cannot establish a violation or send a message.
  return out
 }
