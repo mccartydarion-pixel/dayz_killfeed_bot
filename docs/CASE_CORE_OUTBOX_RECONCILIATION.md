@@ -1,0 +1,7 @@
+# C.A.S.E. offline outbox reconciliation gate
+
+An expired lease is **not** proof that a private Discord message was not sent. This pure fixture-only state reducer accepts a matching opaque delivery key, exact guild/installation/server scope, current lease version, post-expiry observation timestamp and independently verified outcome. A verified delivery transitions to SENT without another network attempt. Independently verified non-delivery transitions to a bounded retry (or DEAD after five attempts). Ambiguous, missing, stale, cross-installation or unverified reports leave the item LEASED for manual reconciliation. A successful synthetic fixture is not a real Discord receipt.
+
+The current code has **no production caller**, database read/write, timer, Discord transport, route configuration or automatic send. A future sender must establish receipts and non-delivery itself rather than trusting caller booleans. Discord sends do not provide transactional exactly-once semantics; never retry solely because a lease elapsed. Owner opt-in, current route permissions, independently eligible reviewed findings and source/detector gates still need verification before live delivery.
+
+This is offline foundation for issue #124 Gate E. Neither #114 real current-source acceptance nor any detector gate is cleared. No live cheating alerts or enforcement are authorized.
