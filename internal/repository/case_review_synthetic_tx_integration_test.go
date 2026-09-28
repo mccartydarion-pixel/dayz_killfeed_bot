@@ -194,6 +194,46 @@ func TestCASEReviewFixtureTransaction(t *testing.T){
  s,n=state();if s!="RESOLVED"||n!=2{t.Fatalf("missing resolution audit: %s %d",s,n)}
  due,inspectErr=inspector.InspectDueSynthetic(ctx,inspect)
  if inspectErr!=nil||len(due)!=0{t.Fatalf("resolved case still appears due: %+v %v",due,inspectErr)}
+ // The lease repository is fixture-only and never sends. A status-only
+ // REVIEWED row above must not qualify, even with evidence and a due outbox.
+ leaseCase:=one("INSERT INTO case_review_cases(guild_id,server_id,installation_id,discord_guild_connection_id,detector_id,detector_version,evidence_fingerprint,source_quality_ref,status) VALUES($1,$2,$3,$4,'SYNTHETIC','0.0.0',$5,$6,'PENDING_REVIEW') RETURNING id",guild,srv,inst,conn,strings.Repeat("f",64),c)
+ if _,err=db.Pool.Exec(ctx,"INSERT INTO case_review_evidence(guild_id,server_id,installation_id,case_id,evidence_id) VALUES($1,$2,$3,$4,$5)",guild,srv,inst,leaseCase,evidenceID);err!=nil{t.Fatal(err)}
+ leaseReview:=input;leaseReview.CaseID=leaseCase;leaseReview.ActionKey=strings.Repeat("d",64);leaseReview.At=at.Add(2*time.Second)
+ ok,err=writer.ApplySynthetic(ctx,leaseReview)
+ if err!=nil||!ok{t.Fatalf("lease fixture review: %v %v",ok,err)}
+ leaseID:=one("INSERT INTO case_staff_outbox(guild_id,server_id,installation_id,case_id,event_version,delivery_key,status,next_attempt_at) VALUES($1,$2,$3,$4,1,$5,'PENDING',$6) RETURNING id",guild,srv,inst,leaseCase,strings.Repeat("f",64),at)
+ claimer:=NewCASEOutboxLeaseRepository(db.Pool)
+ claim:=SyntheticOutboxClaim{FixtureOnly:true,Scope:input.Scope,At:at.Add(10*time.Second),LeaseFor:30*time.Second}
+ if _,taken,e:=claimer.ClaimDueSynthetic(ctx,SyntheticOutboxClaim{Scope:input.Scope,At:claim.At,LeaseFor:claim.LeaseFor});taken||!errors.Is(e,ErrCASEReviewFixtureDisabled){t.Fatalf("fixture claim gate bypass: %v",e)}
+ early:=claim;early.At=at.Add(-time.Second)
+ if _,taken,e:=claimer.ClaimDueSynthetic(ctx,early);e!=nil||taken{t.Fatalf("early fixture claimed: %v %v",taken,e)}
+ foreignClaim:=claim;foreignClaim.Scope.InstallationID=otherInst
+ if _,taken,e:=claimer.ClaimDueSynthetic(ctx,foreignClaim);e!=nil||taken{t.Fatalf("foreign installation claimed: %v %v",taken,e)}
+ type leaseResult struct{item SyntheticOutboxLease;taken bool;err error}
+ leases:=make(chan leaseResult,2)
+ var claimWG sync.WaitGroup
+ startClaims:=make(chan struct{})
+ for i:=0;i<2;i++{
+  claimWG.Add(1)
+  go func(){defer claimWG.Done();<-startClaims;item,taken,e:=claimer.ClaimDueSynthetic(ctx,claim);leases<-leaseResult{item,taken,e}}()
+ }
+ close(startClaims);claimWG.Wait();close(leases)
+ claimed:=0
+ var winning SyntheticOutboxLease
+ for result:=range leases{
+  if result.err!=nil{t.Fatalf("concurrent fixture claim error: %v",result.err)}
+  if result.taken{claimed++;winning=result.item}
+ }
+ if claimed!=1||winning.ID!=leaseID||winning.CaseID!=leaseCase||
+  winning.Attempts!=1||len(winning.LeaseToken)!=64||!winning.LeaseUntil.Equal(claim.At.Add(claim.LeaseFor)){
+  t.Fatalf("atomic fixture claim failed: count=%d lease=%+v",claimed,winning)
+ }
+ var leaseStatus,storedToken string
+ var attempts int
+ if err=db.Pool.QueryRow(ctx,"SELECT status,attempts,lease_token FROM case_staff_outbox WHERE id=$1",leaseID).Scan(&leaseStatus,&attempts,&storedToken);err!=nil||leaseStatus!="LEASED"||attempts!=1||storedToken!=winning.LeaseToken{
+  t.Fatalf("lease persistence mismatch: %s %d %v",leaseStatus,attempts,err)
+ }
+ if _,taken,e:=claimer.ClaimDueSynthetic(ctx,claim);e!=nil||taken{t.Fatalf("leased/status-only row claimed again: %v %v",taken,e)}
  // Two competing reviews must serialize on one scoped case. Only one
  // transition and one audit row may survive; no duplicated successful review.
  contested:=one("INSERT INTO case_review_cases(guild_id,server_id,installation_id,discord_guild_connection_id,detector_id,detector_version,evidence_fingerprint,source_quality_ref,status) VALUES($1,$2,$3,$4,'SYNTHETIC','0.0.0',$5,$6,'PENDING_REVIEW') RETURNING id",guild,srv,inst,conn,b,c)
