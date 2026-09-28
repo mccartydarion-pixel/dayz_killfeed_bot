@@ -172,7 +172,7 @@ func (r *CaseReviewMutation) applyReviewTransaction(ctx context.Context,in CaseR
  if err==nil {
   if previousFrom==in.ExpectedStatus&&previousTo==in.ToStatus&&
    previousReason==in.ReasonCode&&previousNote==in.Note&&
-   previousActor==in.ActorUserID&&previousTime.Equal(in.At.UTC()){
+   previousActor==in.ActorUserID&&(!requireValidated||previousTime.Equal(in.At.UTC())){
    return false,tx.Commit(ctx)
   }
   return false,errors.New("review action key collision")
