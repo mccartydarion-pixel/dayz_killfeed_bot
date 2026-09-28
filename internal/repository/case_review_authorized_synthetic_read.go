@@ -6,9 +6,9 @@ import (
 
 )
 
-// SyntheticAuthorizedCaseRead is a fixture-only read contract, not an HTTP
-// credential. The future route must authenticate the actor and capability
-// before invoking any repository method. No runtime caller is registered.
+// SyntheticAuthorizedCaseRead preserves the fixture-only caller contract.
+// FixtureOnly is not an HTTP credential; the live read route independently
+// authenticates the actor and capability before calling ListAuthorized.
 type SyntheticAuthorizedCaseRead struct {
  FixtureOnly bool
  Scope CaseReviewScope
@@ -24,12 +24,20 @@ type SyntheticAuthorizedCaseRead struct {
 // identities, coordinates, raw ADM paths or unreviewed detector details.
 func (r *CaseReviewReader) ListAuthorizedSynthetic(ctx context.Context,in SyntheticAuthorizedCaseRead)([]CaseReviewSummary,error){
  if !in.FixtureOnly{return nil,ErrCASEReviewFixtureDisabled}
+ return r.ListAuthorized(ctx,in.Scope,in.ActorUserID,in.Before,in.Limit)
+}
+
+// ListAuthorized is a read-only queue for an already authenticated actor.
+// Membership, installation, guild and server scope are rechecked in the same
+// SQL statement as the rows, so a revoked role cannot race a separate preflight.
+// The HTTP caller must also enforce its installation capability and rate limit.
+func (r *CaseReviewReader) ListAuthorized(ctx context.Context,scope CaseReviewScope,actorUserID int64,before *int64,limit int)([]CaseReviewSummary,error){
  if r==nil||r.pool==nil{return nil,errors.New("C.A.S.E. review database unavailable")}
- if in.Scope.GuildID<=0||in.Scope.ServerID<=0||in.Scope.InstallationID<=0||
-  in.ActorUserID<=0||in.Limit<1||in.Limit>50{
+ if scope.GuildID<=0||scope.ServerID<=0||scope.InstallationID<=0||
+  actorUserID<=0||limit<1||limit>50{
   return nil,errors.New("invalid authorized case review request")
  }
- if in.Before!=nil&&*in.Before<=0{return nil,errors.New("invalid case review cursor")}
+ if before!=nil&&*before<=0{return nil,errors.New("invalid case review cursor")}
  rows,err:=r.pool.Query(ctx,`
  SELECT c.id,c.detector_id,c.detector_version,c.status,
   (SELECT COUNT(*) FROM case_review_evidence ev
@@ -54,10 +62,10 @@ func (r *CaseReviewReader) ListAuthorizedSynthetic(ctx context.Context,in Synthe
    AND m.user_id=$5 AND m.role IN ('OWNER','ADMIN')
  )
  ORDER BY c.id DESC LIMIT $6`,
- in.Scope.GuildID,in.Scope.ServerID,in.Scope.InstallationID,in.Before,in.ActorUserID,in.Limit)
+ scope.GuildID,scope.ServerID,scope.InstallationID,before,actorUserID,limit)
  if err!=nil{return nil,err}
  defer rows.Close()
- out:=make([]CaseReviewSummary,0,in.Limit)
+ out:=make([]CaseReviewSummary,0,limit)
  for rows.Next(){
   var v CaseReviewSummary
   if err=rows.Scan(&v.ID,&v.DetectorID,&v.DetectorVersion,&v.Status,
