@@ -272,7 +272,16 @@ func (e *Engine) acceptBoot(lf nitrado.LogFile) {
 	if st.After(e.acceptedBoot) || e.acceptedFile == nil {
 		e.acceptedBoot = st
 		now := time.Now()
-		e.updateBootStats(func(s *BootAuthorityStats) { s.AcceptedBoot, s.AcceptedFile, s.AcceptedAt = st, file, now })
+		e.updateBootStats(func(s *BootAuthorityStats) {
+			s.AcceptedBoot, s.AcceptedFile, s.AcceptedAt = st, file, now
+			// A previously listed candidate is no longer pending once this or a
+			// later boot is accepted, including through the rotation path.
+			if listed, ok := admBootStamp(e.lastNewBootFile); ok && !listed.After(st) {
+				e.lastNewBootFile = ""
+				s.LastNewBootFile = ""
+				s.LastNewBootSeenAt = time.Time{}
+			}
+		})
 	}
 	if !st.Before(e.acceptedBoot) {
 		c := lf

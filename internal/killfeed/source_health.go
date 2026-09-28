@@ -87,7 +87,7 @@ func ClassifyADMSourceHealth(h ADMSourceHealth, now time.Time) (state, reason st
 		return ADMWorkerStalled, "no ADM poll cycle completed recently"
 	case h.TransportStreak >= admTransportErrorAfter:
 		return ADMTransportError, "consecutive Nitrado failures: " + h.LastErrorClass
-	case h.NewestListedFile != "" && h.NewestListedFile != h.AcceptedFile && now.Sub(h.NewestListedSince) > admNewBootGrace:
+	case newerUnacceptedBoot(h) && now.Sub(h.NewestListedSince) > admNewBootGrace:
 		return ADMSourceLagging, "a newer boot is listed but not accepted"
 	case h.OnlinePlayers > 0 && !h.LastChangeAt.IsZero() && now.Sub(h.LastChangeAt) > admActiveStallAfter:
 		return ADMSourceLagging, "players online and the ADM is not advancing"
@@ -95,4 +95,13 @@ func ClassifyADMSourceHealth(h ADMSourceHealth, now time.Time) (state, reason st
 		return ADMQuiet, "polling healthy; the current boot's ADM has not changed"
 	}
 	return ADMHealthy, "polling healthy"
+}
+
+func newerUnacceptedBoot(h ADMSourceHealth) bool {
+	if h.NewestListedFile == "" || h.NewestListedFile == h.AcceptedFile { return false }
+	listed, listedOK := admBootStamp(h.NewestListedFile)
+	accepted, acceptedOK := admBootStamp(h.AcceptedFile)
+	// Unknown identities remain conservative; only a proven older listing
+	// may suppress the lag warning.
+	return !listedOK || !acceptedOK || listed.After(accepted)
 }
