@@ -19,6 +19,9 @@ func caseCurrentSourceWitness(s caseSourceIntegrity) caseSourceWitness {
  out:=caseSourceWitness{Status:"NOT_OBSERVED"}
  reason:=func(code string){out.Reasons=append(out.Reasons,code)}
  if s.ServerID<=0||s.GeneratedAt.IsZero() {reason("INVALID_CAPTURE");return out}
+ if s.DetectorsEnabled||s.MovementDetectorStatus!="BLOCKED"||s.Enforcement!="DISABLED" {
+  reason("UNSAFE_RUNTIME_MODE");return out
+ }
  if !s.WorkerAvailable {reason("WORKER_UNAVAILABLE");return out}
  if !s.CollectorConfigured {reason("COLLECTOR_NOT_CONFIGURED");return out}
  if s.SelectedSourceRef==nil||s.AcceptedSourceRef==nil||
@@ -42,6 +45,9 @@ func caseCurrentSourceWitness(s caseSourceIntegrity) caseSourceWitness {
  out.LatestEvidenceIngestedAt=s.LatestEvidenceIngestedAt.UTC()
  if out.LatestEvidenceIngestedAt.After(s.GeneratedAt) {
   reason("CAPTURE_CLOCK_INCONSISTENT");return out
+ }
+ if s.LastSourceChangeAt!=nil&&s.LastSourceChangeAt.After(s.GeneratedAt) {
+  reason("SOURCE_CHANGE_CLOCK_INCONSISTENT");return out
  }
  // A retained row from a previous observation window cannot independently
  // satisfy current-boot acceptance when an observed source change is newer.
