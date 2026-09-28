@@ -119,6 +119,38 @@ func TestCASEReviewFixtureTransaction(t *testing.T){
  ok,err:=writer.ApplySynthetic(ctx,input);if err!=nil||!ok{t.Fatalf("review: %v %v",ok,err)}
  s,n:=state();if s!="REVIEWED"||n!=1{t.Fatalf("missing atomic pair: %s %d",s,n)}
  ok,err=writer.ApplySynthetic(ctx,input);if err!=nil||ok{t.Fatalf("identical action replay: %v %v",ok,err)}
+ // Audit history is read only through the exact installation and a
+ // currently authorized OWNER/ADMIN in the same bounded query.
+ auditRead:=SyntheticAuthorizedAuditRead{FixtureOnly:true,Scope:input.Scope,CaseID:caseID,ActorUserID:owner,Limit:1}
+ history,historyErr:=reader.ListAuthorizedAuditSynthetic(ctx,auditRead)
+ if historyErr!=nil||len(history)!=1||history[0].FromStatus!="PENDING_REVIEW"||
+  history[0].ToStatus!="REVIEWED"||history[0].ReasonCode!="EVIDENCE_REVIEWED"{
+  t.Fatalf("authorized audit history: %+v %v",history,historyErr)
+ }
+ auditCursor:=history[0].ID
+ auditRead.Before=&auditCursor
+ history,historyErr=reader.ListAuthorizedAuditSynthetic(ctx,auditRead)
+ if historyErr!=nil||len(history)!=0{t.Fatalf("audit cursor escaped scope: %+v %v",history,historyErr)}
+ auditRead.Before=nil
+ auditRead.ActorUserID=outsider
+ history,historyErr=reader.ListAuthorizedAuditSynthetic(ctx,auditRead)
+ if historyErr!=nil||len(history)!=0{t.Fatalf("outsider saw audit history: %+v %v",history,historyErr)}
+ auditRead.ActorUserID=owner
+ auditRead.Scope.InstallationID=otherInst
+ auditRead.Scope.ServerID=otherSrv
+ history,historyErr=reader.ListAuthorizedAuditSynthetic(ctx,auditRead)
+ if historyErr!=nil||len(history)!=0{t.Fatalf("foreign installation saw audit history: %+v %v",history,historyErr)}
+ auditRead.Scope=input.Scope
+ auditRead.FixtureOnly=false
+ if _,historyErr=reader.ListAuthorizedAuditSynthetic(ctx,auditRead);!errors.Is(historyErr,ErrCASEReviewFixtureDisabled){t.Fatalf("audit fixture gate bypass: %v",historyErr)}
+ auditRead.FixtureOnly=true
+ auditRead.Limit=51
+ if _,historyErr=reader.ListAuthorizedAuditSynthetic(ctx,auditRead);historyErr==nil{t.Fatal("unbounded audit history accepted")}
+ auditRead.Limit=1
+ if _,err=db.Pool.Exec(ctx,"UPDATE organization_members SET role='MEMBER' WHERE organization_id=$1 AND user_id=$2",org,owner);err!=nil{t.Fatal(err)}
+ history,historyErr=reader.ListAuthorizedAuditSynthetic(ctx,auditRead)
+ if historyErr!=nil||len(history)!=0{t.Fatalf("revoked role saw audit history: %+v %v",history,historyErr)}
+ if _,err=db.Pool.Exec(ctx,"UPDATE organization_members SET role='OWNER' WHERE organization_id=$1 AND user_id=$2",org,owner);err!=nil{t.Fatal(err)}
  bad=input;bad.Note="Changed note";reject(bad)
  bad=input;bad.ActionKey=b;reject(bad)
  // Due inspection is a diagnostic only: no evidence link, no due entry.
