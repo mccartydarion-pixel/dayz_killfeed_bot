@@ -1,6 +1,6 @@
 # C.A.S.E. core: offline-only private alert outbox state contract
 
-This is synthetic state-transition modeling for the scope-frozen release tracker #124. No current C.A.S.E. finding is admitted, no database/outbox table is created, and no code runs in the bot worker. There is **no Discord client, send, schedule, transport integration or case publisher** in this candidate.
+This is historical synthetic state-transition modeling, not an active roadmap. The Core 8 roadmap is PR #155. No current C.A.S.E. finding is admitted, no database/outbox table is created, and no code runs in the bot worker. There is **no Discord client, send, schedule, transport integration or case publisher** in this candidate.
 
 The offline model covers a tenant/installation/server-scoped opaque delivery key, PENDING -> LEASED -> SENT, bounded retry with 30/60/120/240-second waits and max five attempts, terminal DEAD for exhausted or unavailable/unauthorized private destinations, and explicit suppression. Duplicate or stale acknowledgements fail; suppression invalidates an in-flight receipt. An expired lease is **not retried blindly**: a live system must first reconcile whether the remote send succeeded, using durable identity and a server-side delivery receipt. The model does not claim that Discord provides transactional exactly-once sends.
 

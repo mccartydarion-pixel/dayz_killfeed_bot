@@ -1,6 +1,6 @@
 # C.A.S.E. core — console signal feasibility and first finding admission
 
-This is the scope-frozen feasibility review under issue #124. **No detector is authorized or enabled by this document.** Data visibility in the existing PlayStation ADM collector is not the same as validated cheat detection.
+This is a historical source-feasibility study, not the detector roadmap. PR #155 defines the approved Core 8. **No detector is authorized or enabled by this document.** Data visibility in the existing PlayStation ADM collector is not the same as validated cheat detection.
 
 **Owner scope update (2026-09-28):** the eight client-facing modules in [CASE_CORE_EIGHT_MODULES.md](CASE_CORE_EIGHT_MODULES.md) replace the exploratory signal list below. The table remains a source-limitation study, not a list of offered detectors. `CASE-MOV-001` remains only as a blocked internal diagnostic and is not a client module.
 

@@ -11,7 +11,7 @@ Do not add additional detector modules or expand the anti-cheat roadmap beyond t
 
 The objective is to improve detection accuracy, evidence quality, false-positive protection, reliability, Discord alerts, and customer configuration without introducing unnecessary complexity.
 
-This document in draft PR #155 is the active development roadmap. GitHub issue #124 was retired at the owner's request.
+This document in PR #155 is the sole active C.A.S.E. roadmap. Earlier phase and gate labels in historical engineering notes are archival; they do not add detectors, impose a separate release checklist, or supersede this Core 8 scope. Evidence validation and production safety requirements in this document still apply.
 
 Inspect the existing repository and C.A.S.E. architecture before making modifications. Reuse existing components wherever possible.
 
