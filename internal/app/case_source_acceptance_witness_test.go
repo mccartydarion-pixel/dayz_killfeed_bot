@@ -38,6 +38,10 @@ func TestCASECurrentSourceWitnessFailClosed(t *testing.T) {
   {"missing offset",func(x *caseSourceIntegrity){x.LatestEvidenceOffset=nil}},
   {"negative offset",func(x *caseSourceIntegrity){n:=int64(-1);x.LatestEvidenceOffset=&n}},
   {"ingestion after capture",func(x *caseSourceIntegrity){v:=now.Add(time.Second);x.LatestEvidenceIngestedAt=&v}},
+  {"source change after capture",func(x *caseSourceIntegrity){v:=now.Add(time.Second);x.LastSourceChangeAt=&v}},
+  {"detector active",func(x *caseSourceIntegrity){x.DetectorsEnabled=true}},
+  {"movement detector active",func(x *caseSourceIntegrity){x.MovementDetectorStatus="ACTIVE"}},
+  {"enforcement active",func(x *caseSourceIntegrity){x.Enforcement="ENABLED"}},
   {"old event predates boot",func(x *caseSourceIntegrity){v:=now.Add(-time.Hour);x.LatestEvidenceIngestedAt=&v}},
   {"zero server",func(x *caseSourceIntegrity){x.ServerID=0}},
  }
