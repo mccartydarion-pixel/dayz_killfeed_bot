@@ -49,6 +49,13 @@ func (r *CASEOutboxInspector) InspectDueSynthetic(ctx context.Context,in Synthet
   AND o.status IN ('PENDING','RETRY_WAIT') AND o.next_attempt_at<=$4
   AND o.attempts<5 AND c.status='REVIEWED'
   AND EXISTS (
+   SELECT 1 FROM case_review_audit a
+   WHERE a.guild_id=c.guild_id AND a.server_id=c.server_id
+    AND a.installation_id=c.installation_id AND a.case_id=c.id
+    AND a.from_status='PENDING_REVIEW' AND a.to_status='REVIEWED'
+    AND a.reason_code='EVIDENCE_REVIEWED'
+  )
+  AND EXISTS (
    SELECT 1 FROM case_review_evidence e
    WHERE e.guild_id=c.guild_id AND e.server_id=c.server_id
     AND e.installation_id=c.installation_id AND e.case_id=c.id
