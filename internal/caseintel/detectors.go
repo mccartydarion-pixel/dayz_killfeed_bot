@@ -15,6 +15,7 @@ type DetectorDefinition struct {
  Name string `json:"name"`
  Mode string `json:"mode"`
  Prerequisites []string `json:"prerequisites"`
+ Capabilities []string `json:"capabilities,omitempty"`
 }
 type PrerequisiteState struct {
  Name string `json:"name"`
@@ -43,14 +44,14 @@ var detectorRegistry=[]DetectorDefinition{
 // internal for historical blocked diagnostics; it is not a client module.
 func ClientCatalog() []DetectorDefinition {
  defs:=[]DetectorDefinition{
-  {ID:"CASE-BASE-001",Version:"0.1.0",Name:"Base Boost Detection",Mode:"BLOCKED",Prerequisites:[]string{"VERIFIED_BASE_OWNERSHIP_AND_BUILD_ACTIONS"}},
-  {ID:"CASE-SKYWALK-001",Version:"0.1.0",Name:"Skywalk Detection",Mode:"BLOCKED",Prerequisites:[]string{"VALIDATED_CONTINUOUS_POSITION_AND_MAP_GEOMETRY"}},
-  {ID:"CASE-DUPE-001",Version:"0.1.0",Name:"Dupe Detection",Mode:"BLOCKED",Prerequisites:[]string{"AUTHORITATIVE_INVENTORY_TRANSACTIONS"}},
-  {ID:"CASE-PC-XBOX-001",Version:"0.1.0",Name:"PC Detection (Xbox)",Mode:"BLOCKED",Prerequisites:[]string{"TRUSTED_XBOX_PLATFORM_ATTESTATION"}},
-  {ID:"CASE-NOCLIP-001",Version:"0.1.0",Name:"No-Clip Detection",Mode:"BLOCKED",Prerequisites:[]string{"VALIDATED_CONTINUOUS_POSITION_AND_COLLISION"}},
-  {ID:"CASE-UNDERMAP-001",Version:"0.1.0",Name:"Undermap Detection",Mode:"BLOCKED",Prerequisites:[]string{"VALIDATED_CONTINUOUS_POSITION_AND_MAP_GEOMETRY"}},
-  {ID:"CASE-LOGIN-001",Version:"0.1.0",Name:"Suspicious Logins",Mode:"BLOCKED",Prerequisites:[]string{"TRUSTED_LOGIN_IDENTITY_AND_CONTEXT"}},
-  {ID:"CASE-TELEPORT-001",Version:"0.1.0",Name:"Teleport Alerts",Mode:"BLOCKED",Prerequisites:[]string{"VERIFIED_EVENT_ELAPSED_TIME","VALIDATED_MOVEMENT_SAMPLES","SOURCE_CONTINUITY","EXCEPTION_MODEL"}},
+  {ID:"CASE-BASE-001",Version:"0.1.0",Name:"Base Boost Detection",Mode:"BLOCKED",Prerequisites:[]string{"VERIFIED_BASE_OWNERSHIP_AND_BUILD_ACTIONS"},Capabilities:[]string{"Custom protection zones","Faction permissions","Repeated intrusion patterns","Private owner notifications"}},
+  {ID:"CASE-SKYWALK-001",Version:"0.1.0",Name:"Skywalk Detection",Mode:"BLOCKED",Prerequisites:[]string{"VALIDATED_CONTINUOUS_POSITION_AND_MAP_GEOMETRY"},Capabilities:[]string{"Terrain comparison","Custom structure exclusions","Repeated-position verification","Evidence snapshots"}},
+  {ID:"CASE-DUPE-001",Version:"0.1.0",Name:"Dupe Detection",Mode:"BLOCKED",Prerequisites:[]string{"AUTHORITATIVE_INVENTORY_TRANSACTIONS"},Capabilities:[]string{"Restart correlation","Reconnect patterns","Item evidence when available","Linked incident timelines"}},
+  {ID:"CASE-PC-XBOX-001",Version:"0.1.0",Name:"PC Detection (Xbox)",Mode:"BLOCKED",Prerequisites:[]string{"TRUSTED_XBOX_PLATFORM_ATTESTATION"},Capabilities:[]string{"Platform evidence validation","Suspicious-session correlation","Staff review"}},
+  {ID:"CASE-NOCLIP-001",Version:"0.1.0",Name:"No-Clip Detection",Mode:"BLOCKED",Prerequisites:[]string{"VALIDATED_CONTINUOUS_POSITION_AND_COLLISION"},Capabilities:[]string{"Map-aware validation","Custom building exclusions","Movement reconstruction"}},
+  {ID:"CASE-UNDERMAP-001",Version:"0.1.0",Name:"Undermap Detection",Mode:"BLOCKED",Prerequisites:[]string{"VALIDATED_CONTINUOUS_POSITION_AND_MAP_GEOMETRY"},Capabilities:[]string{"Underground-zone exclusions","Terrain elevation comparisons","Repeated-event confirmation"}},
+  {ID:"CASE-LOGIN-001",Version:"0.1.0",Name:"Suspicious Logins",Mode:"BLOCKED",Prerequisites:[]string{"TRUSTED_LOGIN_IDENTITY_AND_CONTEXT"},Capabilities:[]string{"Session history","Repeated reconnect patterns","Restart awareness","Related incident correlation"}},
+  {ID:"CASE-TELEPORT-001",Version:"0.1.0",Name:"Teleport Alerts",Mode:"BLOCKED",Prerequisites:[]string{"VERIFIED_EVENT_ELAPSED_TIME","VALIDATED_MOVEMENT_SAMPLES","SOURCE_CONTINUITY","EXCEPTION_MODEL"},Capabilities:[]string{"Distance and elapsed-time analysis","Vehicle exclusions","Respawn awareness","Historical movement verification"}},
  }
  return defs
 }
