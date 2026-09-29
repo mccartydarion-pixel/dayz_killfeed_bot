@@ -52,6 +52,8 @@ func (a *App) registerClientAdminCapabilityRoutes(base string) {
 
 	h("POST "+base+"/stats/player/{playerID}/reset-streak", a.handleResetPlayerStreak)
 	h("POST "+base+"/stats/reset-season", a.handleResetEveryoneStats)
+	h("POST "+base+"/ranked/server-season", a.handleStartServerRankedSeason)
+	h("POST "+base+"/ranked/server-season/reset", a.handleResetServerRankedSeason)
 }
 
 // --- shared helpers ------------------------------------------------------------------------------
