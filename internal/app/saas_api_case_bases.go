@@ -4,6 +4,7 @@ import (
  "context"
  "encoding/json"
  "errors"
+ "io"
  "log/slog"
  "net/http"
  "strconv"
@@ -59,12 +60,25 @@ type caseCreateBaseDraftRequest struct{
  Radius float64 `json:"radius"`
 }
 
+// Decode one bounded object. A second JSON value, an unknown field, or a
+// truncated/oversized body must fail before any draft or grant is persisted.
+func readCaseBaseJSON(w http.ResponseWriter,r *http.Request,out any) error {
+ decoder:=json.NewDecoder(http.MaxBytesReader(w,r.Body,4096))
+ decoder.DisallowUnknownFields()
+ if err:=decoder.Decode(out);err!=nil{return err}
+ var trailing any
+ if err:=decoder.Decode(&trailing);err!=io.EOF {
+  if err!=nil{return err}
+  return errors.New("multiple JSON values")
+ }
+ return nil
+}
+
 func (a *App) handleCaseCreateBaseDraft(w http.ResponseWriter,r *http.Request){
  ac,repo,ok:=a.caseBaseActor(w,r);if !ok{return}
  if !enforceRateLimit(w,a.saasAdminActionLimiter,rateLimitKey(r)){return}
  var req caseCreateBaseDraftRequest
- decoder:=json.NewDecoder(r.Body);decoder.DisallowUnknownFields()
- if err:=decoder.Decode(&req);err!=nil{writeSaaSError(w,codeInvalidRequest,"invalid base draft");return}
+ if err:=readCaseBaseJSON(w,r,&req);err!=nil{writeSaaSError(w,codeInvalidRequest,"invalid base draft");return}
  ctx,cancel:=context.WithTimeout(r.Context(),adminTimeout);defer cancel()
  b,err:=repo.CreateDraft(ctx,repository.CaseBaseDraftInput{
   InstallationID:ac.scope.InstallationID,GuildID:ac.scope.GuildID,ServerID:*ac.scope.ServerID,
@@ -99,8 +113,7 @@ func (a *App) handleCaseAddBaseGrant(w http.ResponseWriter,r *http.Request){
  id,good:=pathInt64(w,r,"baseID");if !good{return}
  if !enforceRateLimit(w,a.saasAdminActionLimiter,rateLimitKey(r)){return}
  var req caseAddGrantRequest
- decoder:=json.NewDecoder(r.Body);decoder.DisallowUnknownFields()
- if err:=decoder.Decode(&req);err!=nil{writeSaaSError(w,codeInvalidRequest,"invalid base grant");return}
+ if err:=readCaseBaseJSON(w,r,&req);err!=nil{writeSaaSError(w,codeInvalidRequest,"invalid base grant");return}
  ctx,cancel:=context.WithTimeout(r.Context(),adminTimeout);defer cancel()
  grant,err:=repo.AddDraftGrant(ctx,ac.scope.InstallationID,ac.scope.GuildID,*ac.scope.ServerID,id,req.PlayerID,req.FactionID,req.ValidUntil)
  if errors.Is(err,repository.ErrCaseBaseNotFound){writeSaaSError(w,codeInvalidRequest,"base draft or grant subject unavailable");return}
