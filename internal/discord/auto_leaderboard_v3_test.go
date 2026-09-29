@@ -179,8 +179,14 @@ func TestAutoLeaderboardEntryCounts(t *testing.T) {
 			if n == 0 && emb.Description != presentation.EmptyBoard {
 				t.Fatalf("empty %s must say %q, got %q", emb.Title, presentation.EmptyBoard, emb.Description)
 			}
-			if n > 0 && emb.Description != "" {
-				t.Fatalf("%s: no empty-state line when players qualify", emb.Title)
+			if n > 0 {
+				if emb.Title == AutoBoardRanksTitle {
+					if emb.Description != "Selected public server • active Ranked season" {
+						t.Fatalf("rank scope description: %q", emb.Description)
+					}
+				} else if emb.Description != "" {
+					t.Fatalf("%s: no empty-state line when players qualify", emb.Title)
+				}
 			}
 		}
 		assertPackageWithinLimits(t, embeds)
