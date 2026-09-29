@@ -231,14 +231,14 @@ func TestLegacyRetirablesOnlyReplacedChampionChannels(t *testing.T) {
 		ADMMonitorChannelID: "old-adm",
 		LinkPanelChannelID:  "old-link",
 	}
-	routes := map[string]ChannelRouteInfo{"KILLFEED": {ChannelID: "combat"}, "ADMIN_LOGS": {ChannelID: "admin-logs"}}
+	routes := map[string]ChannelRouteInfo{"KILLFEED": {ChannelID: "combat"}, "PVE_FEED": {ChannelID: "pve-feed"}, "ADMIN_LOGS": {ChannelID: "admin-logs"}}
 	got := legacyRetirablesFor(gs, routes, map[string]bool{"live": true})
 	ids := map[string]repository.RetiredChannel{}
 	for _, r := range got {
 		ids[r.ChannelID] = r
 	}
 	if ids["old-death"].LegacyField != "DeathChannelID" || ids["old-death"].Source != "LEGACY_SETUP" {
-		t.Fatalf("the legacy death feed is replaced by combat-feed: %+v", got)
+		t.Fatalf("the legacy death feed is replaced by the separate PvE feed: %+v", got)
 	}
 	if _, ok := ids["old-adm"]; !ok {
 		t.Fatal("the legacy ADM monitor is replaced by admin-logs")
