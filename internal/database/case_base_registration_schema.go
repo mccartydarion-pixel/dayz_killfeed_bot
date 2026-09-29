@@ -64,6 +64,26 @@ CREATE TABLE IF NOT EXISTS case_base_authorizations (
  CONSTRAINT fk_case_base_grant_faction FOREIGN KEY (guild_id,faction_id)
   REFERENCES factions(guild_id,id) ON DELETE RESTRICT
 );
+
+-- Lock the base claim while writing a grant. This serializes grant changes
+-- with withdrawal and keeps direct database writers under the same rule.
+CREATE OR REPLACE FUNCTION case_base_grant_requires_draft()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+ PERFORM 1 FROM case_registered_bases b
+ WHERE b.installation_id=NEW.installation_id AND b.guild_id=NEW.guild_id
+   AND b.server_id=NEW.server_id AND b.id=NEW.base_id AND b.state='DRAFT'
+ FOR UPDATE;
+ IF NOT FOUND THEN
+  RAISE EXCEPTION 'C.A.S.E. base draft unavailable for grant'
+   USING ERRCODE='23514';
+ END IF;
+ RETURN NEW;
+END;
+$$;
+CREATE TRIGGER trg_case_base_grant_requires_draft
+ BEFORE INSERT OR UPDATE ON case_base_authorizations
+ FOR EACH ROW EXECUTE FUNCTION case_base_grant_requires_draft();
 CREATE INDEX IF NOT EXISTS idx_case_base_grants_scope
  ON case_base_authorizations(installation_id,guild_id,server_id,base_id,valid_from);
 `;

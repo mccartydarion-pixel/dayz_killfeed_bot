@@ -4,6 +4,7 @@ package repository
 
 import (
  "context"
+ "errors"
  "testing"
  "time"
 )
@@ -99,4 +100,51 @@ func TestCaseBaseRegistrationScopeAndGrantConstraints(t *testing.T) {
  }
  if _,err=reader.ListBases(ctx,0,fx.GuildRowID,fx.ServerRowID,0,10);err==nil{t.Fatal("invalid scope accepted")}
 
+}
+
+func TestCaseBaseGrantWithdrawRaceCannotPersistGrant(t *testing.T) {
+ repo,fx,seedPlayer:=newZoneTestWorld(t)
+ ctx,cancel:=context.WithTimeout(context.Background(),5*time.Second)
+ defer cancel()
+ owner:=seedPlayer("Race owner")
+ guest:=seedPlayer("Race guest")
+ reader:=NewCaseBaseRegistrationRepository(repo.pool)
+ base,err:=reader.CreateDraft(ctx,CaseBaseDraftInput{
+  InstallationID:fx.InstallationID,GuildID:fx.GuildRowID,ServerID:fx.ServerRowID,
+  OwnerPlayerID:owner,MapKey:"chernarusplus",Name:"Race base",CenterX:10,CenterZ:20,Radius:30,
+ })
+ if err!=nil{t.Fatal(err)}
+ tx,err:=repo.pool.Begin(ctx)
+ if err!=nil{t.Fatal(err)}
+ defer tx.Rollback(context.Background())
+ var locked int64
+ if err=tx.QueryRow(ctx,`SELECT id FROM case_registered_bases WHERE id=$1 FOR UPDATE`,base.ID).Scan(&locked);err!=nil{t.Fatal(err)}
+ done:=make(chan error,1)
+ go func(){
+  _,grantErr:=reader.AddDraftGrant(ctx,fx.InstallationID,fx.GuildRowID,fx.ServerRowID,base.ID,&guest,nil,nil)
+  done<-grantErr
+ }()
+ select{
+ case grantErr:=<-done:
+  t.Fatalf("grant did not wait for base claim lock: %v",grantErr)
+ case <-time.After(40*time.Millisecond):
+ }
+ if _,err=tx.Exec(ctx,`UPDATE case_registered_bases SET state='REVOKED',revoked_at=NOW() WHERE id=$1`,base.ID);err!=nil{t.Fatal(err)}
+ if err=tx.Commit(ctx);err!=nil{t.Fatal(err)}
+ select{
+ case grantErr:=<-done:
+  if grantErr==nil{t.Fatal("grant committed after withdrawal")}
+ case <-ctx.Done():
+  t.Fatalf("grant did not settle after withdrawal: %v",ctx.Err())
+ }
+ var count int
+ if err=repo.pool.QueryRow(ctx,`SELECT count(*) FROM case_base_authorizations WHERE base_id=$1`,base.ID).Scan(&count);err!=nil||count!=0{
+  t.Fatalf("withdrawn draft retains %d new grants: %v",count,err)
+ }
+ // Direct writers must also obey the draft state guard; the API is not
+ // the only path able to write to the table.
+ _,err=repo.pool.Exec(ctx,`INSERT INTO case_base_authorizations
+ (installation_id,guild_id,server_id,base_id,player_id,valid_from)
+ VALUES($1,$2,$3,$4,$5,NOW())`,fx.InstallationID,fx.GuildRowID,fx.ServerRowID,base.ID,guest)
+ if errors.Is(err,context.DeadlineExceeded)||err==nil{t.Fatalf("direct grant on withdrawn draft accepted or timed out: %v",err)}
 }
