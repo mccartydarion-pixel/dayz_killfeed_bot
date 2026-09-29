@@ -1873,6 +1873,7 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 		}()
 	}
 
+	var pveFeed *discord.PveFeedPublisher
 	if a.ChannelRoutes != nil && a.Discord != nil && a.Discord.Session() != nil {
 		// PVE_FEED: provably non-PvP deaths (today: explicit suicides). Only a
 		// death the feed CLAIMS (a PVE_FEED route exists for this server) is kept
@@ -1880,17 +1881,9 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 		// legacy death feed behaves exactly as before. No KILLFEED fallback.
 		// Bounded queue + a single goroutine; Discord/DB failures cannot reach
 		// persistence, ADM parsing or the other feeds.
-		pveFeed := discord.NewPveFeedPublisher(a.Discord.Session(), a.ChannelRoutes, row.GuildID, row.ID)
+		pveFeed = discord.NewPveFeedPublisher(a.Discord.Session(), a.ChannelRoutes, row.GuildID, row.ID)
 		pveFeed.SetCustomizer(a.embedCustomizer(), a.serverNameFunc())
 		engine.SetPveDeathPublisher(pveFeed)
-		go func() {
-			defer func() {
-				if r := recover(); r != nil {
-					slog.Error("component=servers", "msg", "pve feed panic recovered", "server_id", row.ID, "panic", fmt.Sprint(r))
-				}
-			}()
-			pveFeed.Run(workerCtx)
-		}()
 	}
 
 	deathPublisher := discord.NewDeathfeedPublisher(a.Discord, setupStore, a.Config.DiscordGuildID)
@@ -1924,6 +1917,17 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 	deathFeed.SetMode(feedDeliveryMode())
 	deathPublisher.SetFeed(deathFeed)
 	a.addRotatingFeed(deathFeed)
+	if pveFeed != nil {
+		pveFeed.SetFeed(deathFeed)
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("component=servers", "msg", "pve feed panic recovered", "server_id", row.ID, "panic", fmt.Sprint(r))
+				}
+			}()
+			pveFeed.Run(workerCtx)
+		}()
+	}
 	if a.DB != nil && a.DB.Pool != nil {
 		// Feed journal (migration 0066): immediate mode records every card so
 		// a restart replays undelivered cards and takes back the previous
