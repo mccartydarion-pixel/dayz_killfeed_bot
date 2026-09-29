@@ -51,9 +51,11 @@ func TestCoreEightCatalogHealthNeverInfersActiveFromPolling(t *testing.T) {
 }
 
 func TestCatalogHealthFailsClosedForUnexpectedReleaseMode(t *testing.T) {
- defs:=[]caseintel.DetectorDefinition{{ID:"CASE-LOGIN-001",Mode:"ACTIVE"}}
+ defs:=[]caseintel.DetectorDefinition{{ID:"CASE-LOGIN-001",Mode:"ACTIVE"},
+  {ID:"CASE-PC-XBOX-001",Mode:"BLOCKED"}}
  got:=caseAssessDetectorCatalogHealth(defs,caseSourceIntegrity{})
- if len(got)!=1||got[0].State!="ERROR"||!got[0].ConclusionsSuspended {
+ if len(got)!=2||got[0].State!="ERROR"||!got[0].ConclusionsSuspended||
+  got[1].State!="ERROR"||!got[1].ConclusionsSuspended {
   t.Fatalf("unexpected mode silently activated: %+v",got)
  }
 }

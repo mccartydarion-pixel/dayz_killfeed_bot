@@ -14,13 +14,15 @@ func TestDetectorRegistryCannotBeMutatedAndFailsClosed(t *testing.T) {
  for _,p:=range out.Blockers {if p.Status!="UNSATISFIED"||p.Reason==""{t.Fatalf("missing blocker reason: %+v",p)}}
 }
 
-func TestClientCatalogIsEightBlockedModulesWithReasons(t *testing.T) {
+func TestClientCatalogIsEightUnavailableModulesWithReasons(t *testing.T) {
  defs:=ClientCatalog()
  want:=[]string{"Base Boost Detection","Skywalk Detection","Dupe Detection","PC Detection (Xbox)","No-Clip Detection","Undermap Detection","Suspicious Logins","Teleport Alerts"}
  if len(defs)!=len(want){t.Fatalf("catalog length: %d",len(defs))}
  seen:=map[string]bool{}
  for i,def:=range defs {
-  if def.Name!=want[i]||def.Mode!="BLOCKED"||def.ID=="CASE-MOV-001"||seen[def.ID]||len(def.Capabilities)==0 {t.Fatalf("unexpected module: %+v",def)}
+  expectedMode:="BLOCKED"
+  if def.ID=="CASE-PC-XBOX-001" {expectedMode="UNSUPPORTED"}
+  if def.Name!=want[i]||def.Mode!=expectedMode||def.ID=="CASE-MOV-001"||seen[def.ID]||len(def.Capabilities)==0 {t.Fatalf("unexpected module: %+v",def)}
   seen[def.ID]=true
   out:=EvaluatePrerequisites(def,QualityReport{})
   if out.Status!="BLOCKED"||out.Enforcement!="DISABLED"||out.RiskScore!=nil||len(out.Findings)!=0||len(out.Blockers)==0 {t.Fatalf("unsafe module: %+v",out)}

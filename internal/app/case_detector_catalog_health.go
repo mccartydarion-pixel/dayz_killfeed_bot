@@ -46,7 +46,8 @@ func caseAssessDetectorCatalogHealth(defs []caseintel.DetectorDefinition, s case
   } else {
    item.Reasons=append(item.Reasons,"MODULE_TELEMETRY_UNVALIDATED")
   }
-  if def.Mode!="BLOCKED" {
+  if (def.ID=="CASE-PC-XBOX-001" && def.Mode!="UNSUPPORTED") ||
+   (def.ID!="CASE-PC-XBOX-001" && def.Mode!="BLOCKED") {
    // A catalog change cannot silently promote this protected view.
    item.State="ERROR"
    item.Reasons=append(item.Reasons,"UNEXPECTED_CATALOG_MODE")
