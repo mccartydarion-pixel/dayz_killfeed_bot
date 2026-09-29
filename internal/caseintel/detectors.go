@@ -44,7 +44,7 @@ var detectorRegistry=[]DetectorDefinition{
 // internal for historical blocked diagnostics; it is not a client module.
 func ClientCatalog() []DetectorDefinition {
  defs:=[]DetectorDefinition{
-  {ID:"CASE-BASE-001",Version:"0.1.0",Name:"Base Boost Detection",Mode:"BLOCKED",Prerequisites:[]string{"VERIFIED_BASE_OWNERSHIP_AND_BUILD_ACTIONS"},Capabilities:[]string{"Custom protection zones","Faction permissions","Repeated intrusion patterns","Private owner notifications"}},
+  {ID:"CASE-BASE-001",Version:"0.1.0",Name:"Base Boost Detection",Mode:"BLOCKED",Prerequisites:[]string{"VERIFIED_BASE_OWNERSHIP_AND_BUILD_ACTIONS"},Capabilities:[]string{"Custom protection zones","Faction permissions","Repeated intrusion patterns","Staff investigation reporting"}},
   {ID:"CASE-SKYWALK-001",Version:"0.1.0",Name:"Skywalk Detection",Mode:"BLOCKED",Prerequisites:[]string{"VALIDATED_CONTINUOUS_POSITION_AND_MAP_GEOMETRY"},Capabilities:[]string{"Terrain comparison","Custom structure exclusions","Repeated-position verification","Evidence snapshots"}},
   {ID:"CASE-DUPE-001",Version:"0.1.0",Name:"Dupe Detection",Mode:"BLOCKED",Prerequisites:[]string{"AUTHORITATIVE_INVENTORY_TRANSACTIONS"},Capabilities:[]string{"Restart correlation","Reconnect patterns","Item evidence when available","Linked incident timelines"}},
   {ID:"CASE-PC-XBOX-001",Version:"0.1.0",Name:"PC Detection (Xbox)",Mode:"BLOCKED",Prerequisites:[]string{"TRUSTED_XBOX_PLATFORM_ATTESTATION"},Capabilities:[]string{"Platform evidence validation","Suspicious-session correlation","Staff review"}},
@@ -95,7 +95,7 @@ func EvaluatePrerequisites(def DetectorDefinition, quality QualityReport) Detect
   "VALIDATED_MOVEMENT_SAMPLES":"Event-triggered positions are not a continuous or validated movement trace.",
   "SOURCE_CONTINUITY":"Selected-event source coverage cannot prove complete sampling.",
   "EXCEPTION_MODEL":"Vehicle, respawn, teleport, admin and map-boundary exclusions are not validated.",
-  "VERIFIED_BASE_OWNERSHIP_AND_BUILD_ACTIONS":"ADM evidence does not establish base ownership, building placement or authorization.",
+  "VERIFIED_BASE_OWNERSHIP_AND_BUILD_ACTIONS":"Build lines have a parser and staff feed, but are not retained as C.A.S.E. evidence or validated against a real ADM sample; ownership and authorization are unverified.",
   "VALIDATED_CONTINUOUS_POSITION_AND_MAP_GEOMETRY":"Intermittent event positions do not establish player height, terrain or geometry crossings.",
   "AUTHORITATIVE_INVENTORY_TRANSACTIONS":"ADM evidence does not contain authoritative item creation and inventory transactions.",
   "TRUSTED_XBOX_PLATFORM_ATTESTATION":"No trusted Xbox client-platform attestation is available from the ADM collector.",
