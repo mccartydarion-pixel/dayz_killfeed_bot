@@ -27,6 +27,63 @@ type RankedAward struct {
 	Amount   int64
 }
 
+type ServerStanding struct {
+	PlayerID  int64
+	Name      string
+	RP        int64
+	Tier      ranked.Tier
+	NextTier  ranked.Tier
+	Remaining int64
+}
+
+// ServerStandings reads the active local season only. All displayed totals
+// come from immutable awarded rows; archived seasons remain intact separately.
+func (r *RankedRepository) ServerStandings(ctx context.Context, serverID int64, limit int) ([]ServerStanding, error) {
+	if r == nil || r.pool == nil || serverID <= 0 || limit < 1 || limit > 250 {
+		return nil, fmt.Errorf("valid server ID and limit (1..250) are required")
+	}
+	var seasonID int64
+	var values []int64
+	err := r.pool.QueryRow(ctx, `SELECT id,thresholds FROM ranked_seasons
+WHERE scope='SERVER' AND status='ACTIVE' AND server_id=$1`, serverID).Scan(&seasonID, &values)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrRankedIneligible
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load server ranked season: %w", err)
+	}
+	if len(values) != 7 {
+		return nil, fmt.Errorf("invalid stored ranked thresholds")
+	}
+	var thresholds ranked.Thresholds
+	copy(thresholds[:], values)
+	if err := thresholds.Validate(); err != nil {
+		return nil, err
+	}
+	rows, err := r.pool.Query(ctx, `SELECT p.id,p.display_name,SUM(a.amount)::bigint AS rp
+FROM ranked_awards a JOIN ranked_seasons s ON s.id=a.season_id
+JOIN players p ON p.id::text=a.attacker_key AND p.guild_id=(SELECT guild_id FROM game_servers WHERE id=s.server_id)
+WHERE a.season_id=$1 AND a.outcome='AWARDED'
+GROUP BY p.id,p.display_name ORDER BY rp DESC,p.id ASC LIMIT $2`, seasonID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query server standings: %w", err)
+	}
+	defer rows.Close()
+	var out []ServerStanding
+	for rows.Next() {
+		var entry ServerStanding
+		if err := rows.Scan(&entry.PlayerID, &entry.Name, &entry.RP); err != nil {
+			return nil, err
+		}
+		entry.Tier, entry.NextTier, entry.Remaining, err = thresholds.Progress(entry.RP)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, entry)
+	}
+	return out, rows.Err()
+}
+
 // RecordServerKill processes a previously persisted kill in an active local
 // season. The award and five-minute pair decision are committed together.
 // Replays return the existing decision without awarding again. Delayed kills
@@ -42,6 +99,16 @@ func (r *RankedRepository) RecordServerKill(ctx context.Context, seasonID, killI
 		return result, fmt.Errorf("begin ranked award: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	// Archived seasons reject new awards, but a replay of an already decided
+	// kill must still return its immutable outcome after the reset.
+	result = RankedAward{SeasonID: seasonID, KillID: killID}
+	err = tx.QueryRow(ctx, `SELECT outcome,amount FROM ranked_awards WHERE season_id=$1 AND kill_id=$2`, seasonID, killID).Scan(&result.Outcome, &result.Amount)
+	if err == nil {
+		return result, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return RankedAward{}, fmt.Errorf("read ranked replay: %w", err)
+	}
 
 	var serverID, guildID, killerID, victimID, rp int64
 	var fingerprint string
