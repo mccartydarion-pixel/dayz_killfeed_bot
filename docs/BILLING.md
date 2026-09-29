@@ -91,6 +91,48 @@ Any synced user (standard service-auth + acting-user chain; no organization cont
 
 Private (`isPublic:false`) plans never appear. With an empty catalog, `items` is `[]`.
 
+### 6a. Anonymous public pricing catalog (Phase 6.26I)
+
+```
+GET /api/saas/billing/public-plans
+```
+
+For anonymous website visitors. **Only** the website's server-to-server bearer
+(`Authorization: Bearer <WEBSITE_API_SECRET>`) is required - no acting user, no Discord login, no
+organization. The authenticated `GET /api/saas/billing/plans` above, checkout, subscription
+management and entitlements are unchanged (they still require a synced acting user).
+
+```json
+{ "version": 1,
+  "plans": [
+    { "key": "MEDIUM", "category": "BASE", "name": "Medium", "displayTier": "MEDIUM",
+      "description": "...", "features": ["..."],
+      "prices": [ {"interval":"MONTHLY","amountCents":999,"currency":"usd"},
+                  {"interval":"YEARLY","amountCents":9990,"currency":"usd"} ],
+      "availability": "AVAILABLE", "purchasable": true, "popular": true, "sortOrder": 2,
+      "perServer": false, "requiresBasePlan": false },
+    { "key": "CASE_WATCH", "category": "CASE_ADDON", "name": "C.A.S.E. Watch", "displayTier": "WATCH",
+      "description": "...", "features": ["..."],
+      "prices": [ {"interval":"MONTHLY","amountCents":499,"currency":"usd"} ],
+      "availability": "COMING_SOON", "purchasable": false, "popular": false, "sortOrder": 103,
+      "perServer": true, "requiresBasePlan": true } ] }
+```
+
+* Plans are sorted by `sortOrder`: public base plans (from `CHAMPION_BILLING_PLANS_JSON`) first, then
+  C.A.S.E. Watch and Pro. C.A.S.E. Command is omitted until its release gates pass.
+* `availability`: `AVAILABLE` (purchasable now), `UNAVAILABLE` (base plan listed but checkout is not
+  configured or no interval is priced), `COMING_SOON` (C.A.S.E. add-on whose sales flag, verified tier
+  or configured price is not open). `purchasable` is `true` only for `AVAILABLE`. With production's
+  C.A.S.E. flags off, Watch and Pro are always `COMING_SOON`.
+* `prices` only lists intervals that are actually sold; amounts are integer cents, currency lowercase.
+* Never included: Stripe price/product ids, customer or subscription ids, limits, trial settings,
+  private plans or any organization data.
+* Caching: `Cache-Control: public, max-age=300, stale-while-revalidate=600` and an `ETag`
+  (`If-None-Match` returns `304`). Rate limit: 120 requests per minute per caller.
+* Fail safe: without billing or with an empty base catalog the route returns `503 BILLING_UNAVAILABLE`
+  with `Cache-Control: no-store`; it never falls back to hard-coded prices. A missing or wrong
+  service bearer is `401`.
+
 ## 7. Current subscription
 
 ```
