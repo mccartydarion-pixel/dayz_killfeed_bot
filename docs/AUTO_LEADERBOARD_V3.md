@@ -156,3 +156,17 @@ in the draft Ranked stack and is not deployed until the stack is released.
   Status, Player Link, Player Stats and the others. A multi-embed package is
   never split across several messages: without multi-embed support nothing is
   posted and an error is recorded.
+
+
+## Obsolete board cleanup
+
+After every successful publish the scheduler sweeps the leaderboard channel(s) (the routed `AUTO_LEADERBOARD` channels plus the legacy `GuildSetup` leaderboard channel) and deletes **only** messages that are all of:
+
+- authored by the bot itself (not a player, not another bot),
+- a plain message (not a `/leaderboard` or other interaction reply),
+- a leaderboard *board* by its first embed title — the pre-V2 `SEASON LEADERBOARD` / `CHAMPION KILLFEED\nSEASON LEADERBOARD` / `🏆 CHAMPION LEADERBOARD` cards, the V2 `🏆 SEASON LEADERBOARD` card, or a duplicate `📊 AUTO LEADERBOARD 📊` header,
+- not the currently recorded board message.
+
+The Player Stats panel, Server Ranks, player messages and every other panel are never touched. The sweep reads at most 100 recent messages per channel and is skipped for a routed refresh with any channel error. It removes old single-embed boards left by earlier releases, a legacy board whose retirement delete failed, and orphaned placeholders.
+
+Retiring the legacy board now durably clears `guilds.leaderboard_message_id` (the setup upsert COALESCEs ids, so an empty value used to keep the retired id). If the recorded legacy board was deleted in Discord, the next refresh posts a fresh board instead of failing every refresh.

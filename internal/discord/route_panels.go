@@ -89,6 +89,16 @@ func NewRoutePanels(api RoutePanelAPI, store RoutePanelStore) *RoutePanels {
 	return &RoutePanels{api: api, store: store, lastHash: make(map[string]string)}
 }
 
+// Recorded lists the messages currently recorded for (guildRowID, routeKey).
+func (p *RoutePanels) Recorded(ctx context.Context, guildRowID int64, routeKey string) ([]RoutePanelMessage, error) {
+	if p == nil || p.store == nil {
+		return nil, nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.store.List(ctx, guildRowID, routeKey)
+}
+
 // ChannelContent renders the panel for one routed channel. An error skips that
 // channel for this pass (its existing message is left exactly as it is).
 type ChannelContent func(channelID string) (PanelContent, error)

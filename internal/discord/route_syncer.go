@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
 // RouteSyncInterval is how often the syncer re-evaluates routes on its own.
@@ -254,10 +256,43 @@ func retireLegacyPanel(api messageDeleter, store SetupStore, guildID string, cha
 	if channelID := channel(setup); channelID != "" && api != nil {
 		_ = api.ChannelMessageDelete(channelID, messageID) // best-effort: it may already be gone
 	}
+	before := *setup
 	clear(setup)
 	if err := store.Save(*setup); err != nil {
 		slog.Warn("component=discord", "event", "legacy_panel_retire_save_failed", "err", err.Error())
 	}
+	// Save cannot clear a message id on the Postgres store (its upsert keeps
+	// existing ids when a value is empty), so a retired id used to survive and
+	// resurface after every restart. Clear the retired columns explicitly.
+	if c, ok := store.(messageIDClearer); ok {
+		if cols := clearedMessageColumns(before, *setup); len(cols) > 0 {
+			if err := c.ClearMessageIDs(guildID, cols...); err != nil {
+				slog.Warn("component=discord", "event", "legacy_panel_retire_clear_failed", "err", err.Error())
+			}
+		}
+	}
+}
+
+// messageIDClearer is implemented by setup stores whose Save cannot clear ids.
+type messageIDClearer interface {
+	ClearMessageIDs(guildID string, columns ...string) error
+}
+
+// clearedMessageColumns lists the panel message-id columns that went from set
+// to empty between before and after.
+func clearedMessageColumns(before, after GuildSetup) []string {
+	var cols []string
+	add := func(b, a, col string) {
+		if b != "" && a == "" {
+			cols = append(cols, col)
+		}
+	}
+	add(before.LeaderboardMessageID, after.LeaderboardMessageID, repository.GuildColumnLeaderboardMessage)
+	add(before.PlayerStatsInfoMessageID, after.PlayerStatsInfoMessageID, repository.GuildColumnPlayerStatsInfoMessage)
+	add(before.LinkPanelMessageID, after.LinkPanelMessageID, repository.GuildColumnLinkPanelMessage)
+	add(before.ServerStatusMessageID, after.ServerStatusMessageID, repository.GuildColumnServerStatusMessage)
+	add(before.OnlinePlayersMessageID, after.OnlinePlayersMessageID, repository.GuildColumnOnlinePlayersMessage)
+	return cols
 }
 
 // NewLegacyLeaderboardRetirer returns the callback the LeaderboardScheduler

@@ -88,6 +88,20 @@ func (a *SessionAPI) ChannelMessageEditEmbeds(channelID, messageID string, embed
 	return a.S.ChannelMessageEditComplex(edit)
 }
 
+// ChannelMessages lists up to limit recent messages in a channel (newest
+// first). Used only to find the bot's own obsolete leaderboard boards.
+func (a *SessionAPI) ChannelMessages(channelID string, limit int) ([]*discordgo.Message, error) {
+	return a.S.ChannelMessages(channelID, limit, "", "", "")
+}
+
+// BotUserID is the connected bot's own user id ("" before the gateway is ready).
+func (a *SessionAPI) BotUserID() string {
+	if a == nil || a.S == nil || a.S.State == nil || a.S.State.User == nil {
+		return ""
+	}
+	return a.S.State.User.ID
+}
+
 // ChannelMessageDelete removes a message (used to retire a superseded panel).
 func (a *SessionAPI) ChannelMessageDelete(channelID, messageID string) error {
 	return a.S.ChannelMessageDelete(channelID, messageID)
@@ -99,4 +113,5 @@ var (
 	_ MultiEmbedMessageAPI = (*SessionAPI)(nil)
 	_ MessageEditor        = (*SessionAPI)(nil)
 	_ RoutePanelAPI        = (*SessionAPI)(nil)
+	_ ChannelHistoryAPI    = (*SessionAPI)(nil)
 )

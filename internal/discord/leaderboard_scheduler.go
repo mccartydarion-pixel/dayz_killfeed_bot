@@ -143,6 +143,9 @@ func (s *LeaderboardScheduler) RefreshOnce(ctx context.Context) error {
 		slog.Warn("component=discord", "msg", "leaderboard refresh failed", "err", err.Error())
 		return err
 	}
+	if id != "" {
+		s.sweep([]string{s.panel.ChannelID()}, map[string]bool{id: true})
+	}
 	if changed && s.onMessageID != nil && id != "" {
 		s.onMessageID(id)
 	}
@@ -190,7 +193,33 @@ func (s *LeaderboardScheduler) refreshRouted(ctx context.Context, snapshot Leade
 		s.panel.Reset()
 		s.legacyRetired = true
 	}
+	if res.Errors == 0 {
+		// Every routed channel now holds its recorded V3 board: remove any
+		// other copy the bot left behind (an old single-embed season board, a
+		// legacy board whose retirement delete failed, an orphaned placeholder).
+		if recorded, recErr := s.routePanels.Recorded(ctx, guildRowID, routeKeyAutoLeaderboard); recErr == nil {
+			keep := make(map[string]bool, len(recorded))
+			for _, r := range recorded {
+				keep[r.MessageID] = true
+			}
+			s.sweep(append(append([]string(nil), channels...), s.panel.ChannelID()), keep)
+		}
+	}
 	return true, nil
+}
+
+// sweep removes the bot's obsolete leaderboard boards from channels, keeping
+// the current board message ids. No-op when the Discord API cannot list
+// channel history.
+func (s *LeaderboardScheduler) sweep(channels []string, keep map[string]bool) {
+	if s.panel == nil {
+		return
+	}
+	history, ok := s.panel.editor.(ChannelHistoryAPI)
+	if !ok {
+		return
+	}
+	sweepObsoleteLeaderboards(history, channels, keep)
 }
 
 // loadSnapshot loads EVERY category before anything is rendered, so the

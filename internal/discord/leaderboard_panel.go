@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -44,7 +45,22 @@ func NewLeaderboardPanel(editor MessageEditor, channelID, messageID string, cfg 
 	return &LeaderboardPanel{editor: editor, channelID: channelID, messageID: messageID, config: cfg}
 }
 
-func (p *LeaderboardPanel) MessageID() string { return p.messageID }
+func (p *LeaderboardPanel) MessageID() string {
+	if p == nil {
+		return ""
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.messageID
+}
+
+// ChannelID is the legacy leaderboard channel this panel publishes to.
+func (p *LeaderboardPanel) ChannelID() string {
+	if p == nil {
+		return ""
+	}
+	return p.channelID
+}
 
 // Reset forgets the current message so the next Update posts a fresh one. Used
 // after the legacy panel message was retired in favour of routed panels.
@@ -84,10 +100,20 @@ func (p *LeaderboardPanel) Update(snapshot LeaderboardSnapshot) (string, bool, e
 
 	var msg *discordgo.Message
 	var err error
-	if p.messageID == "" {
-		msg, err = api.ChannelMessageSendEmbeds(p.channelID, embeds, nil)
-	} else {
+	if p.messageID != "" {
 		msg, err = api.ChannelMessageEditEmbeds(p.channelID, p.messageID, embeds, nil)
+		if err != nil && isUnknownMessage(err) {
+			// The recorded board was deleted (by an admin or a failed
+			// migration): post a fresh one instead of failing every refresh.
+			slog.Warn("component=discord", "event", "leaderboard_message_missing", "channel_id", p.channelID, "message_id", p.messageID)
+			p.mu.Lock()
+			p.messageID = ""
+			p.mu.Unlock()
+			msg, err = nil, nil
+		}
+	}
+	if err == nil && p.messageID == "" {
+		msg, err = api.ChannelMessageSendEmbeds(p.channelID, embeds, nil)
 	}
 	if err != nil {
 		return p.messageID, false, err

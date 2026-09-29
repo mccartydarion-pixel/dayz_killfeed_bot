@@ -1174,6 +1174,9 @@ func (a *App) Run() error {
 	}
 	if a.SeasonService != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
 		seasonHandler := discord.NewSeasonCommandHandler(a.SeasonService, a.Guilds)
+		if a.Ranked != nil && a.Servers != nil {
+			seasonHandler.SetRankedStatus(rankedSeasonStatus{servers: a.Servers, ranked: a.Ranked})
+		}
 		if err := discord.RegisterSeasonCommands(session, a.Config.DiscordGuildID); err != nil {
 			slog.Warn("component=discord", "msg", "failed to register season commands", "err", err.Error())
 		}
@@ -2767,4 +2770,19 @@ func (a *App) runRoleReconciler(ctx context.Context) {
 		}
 		timer.Reset(roleReconcileInterval)
 	}
+}
+
+// rankedSeasonStatus joins the guild's active servers with their Ranked
+// seasons for /season status.
+type rankedSeasonStatus struct {
+	servers *repository.ServerRepository
+	ranked  *repository.RankedRepository
+}
+
+func (r rankedSeasonStatus) ListActiveByGuild(ctx context.Context, guildID int64) ([]repository.GameServer, error) {
+	return r.servers.ListActiveByGuild(ctx, guildID)
+}
+
+func (r rankedSeasonStatus) ActiveServerSeason(ctx context.Context, guildID, serverID int64) (*repository.ServerRankedSeason, error) {
+	return r.ranked.ActiveServerSeason(ctx, guildID, serverID)
 }

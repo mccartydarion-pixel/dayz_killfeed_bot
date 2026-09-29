@@ -1,6 +1,8 @@
 # Server Ranked season lifecycle
 
-This draft adds owner-only endpoints under the installation admin API:
+Owner-only endpoints under the installation admin API (released with #175; the owner UI is the website's Server Admin → Server Controls → Server Ranked):
+
+- `GET /ranked/server-season` returns the selected server's active season or `null`.
 
 - `POST /ranked/server-season` opens the selected server's first local season.
 - `POST /ranked/server-season/reset` archives the current local season and opens another. The request must include `"confirm": "RESET SERVER RANKED"`.
@@ -13,4 +15,17 @@ Example rules for a proposed season, **not a product default**:
 {"rpPerKill":100,"thresholds":[100,300,600,1000,1500,2100,2800]}
 ```
 
-The local kill persistence path now awards RP after a new kill row is saved. The award is idempotent and observes the five-minute same-victim cooldown. A per-server worker reconciles missing decisions at startup and every minute after transient errors without reposting killfeed messages. Starting a season does not retroactively award kills before its start time. This stack remains draft and should not be merged or exposed to owners in production until season rules and rollout are approved. Global awards and Elite Top 250 still depend on verified platform player identity and cross-server event identity.
+The local kill persistence path now awards RP after a new kill row is saved. The award is idempotent and observes the five-minute same-victim cooldown. A per-server worker reconciles missing decisions at startup and every minute after transient errors without reposting killfeed messages. Starting a season does not retroactively award kills before its start time. The code is released; RP awards stay dormant until an owner explicitly starts a season with their own values. Global awards and Elite Top 250 still depend on verified platform player identity and cross-server event identity.
+
+## Stats season vs Ranked season
+
+They are different things and are always labelled separately:
+
+| | Stats season | Ranked (RP) season |
+|---|---|---|
+| Scope | Guild | One game server |
+| Table | `seasons` | `ranked_seasons` / `ranked_awards` |
+| Controls | `/season start`, `/season end` (Administrator / Manage Server) | Website Server Admin (Owner only), reset needs `RESET SERVER RANKED` |
+| Effect | Labels kill/death history; season results | Awards RP per eligible enemy kill; tiers Unranked → Master |
+
+`/season status` shows both: the stats season first, then each active server's Ranked status (not started / active since, RP per eligible kill). The Server Ranks panel's inactive notice says the stats season is separate. Neither season resets the all-time Auto Leaderboard boards (kills, killstreaks, deaths, longest kills).
