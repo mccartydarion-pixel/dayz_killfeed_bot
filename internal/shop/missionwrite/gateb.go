@@ -227,7 +227,10 @@ func prepareConfig(ctx context.Context, rm Remote, r Request) (ConfigPlan, error
 	}
 	rp := r
 	rp.Payload = cp.Payload
-	cp.ID = "mw-" + SHA256([]byte(planID(rp, in) + "\x1echampion=" + cp.ChampionState + "\x1ebackup=" + cp.BackupPath + "=" + cp.BackupState))[:24]
+	// The backup folder's existence is part of the plan: a failed run that created champion/backup must
+	// yield a NEW plan ID (the old one is consumed), never the same, already-used ID.
+	cp.ID = "mw-" + SHA256([]byte(fmt.Sprintf("%s\x1echampion=%s\x1ebackup=%s=%s\x1ebackup_dir=%t",
+		planID(rp, in), cp.ChampionState, cp.BackupPath, cp.BackupState, cp.BackupDirExists)))[:24]
 	cp.Steps = configSteps(kind, cp, in)
 	return cp, nil
 }

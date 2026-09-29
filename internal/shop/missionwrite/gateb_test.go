@@ -3,6 +3,7 @@ package missionwrite
 import (
 	"context"
 	"errors"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -346,5 +347,137 @@ func TestGateANeverAuthorizesGateB(t *testing.T) {
 	cp := prepB(t, s, gateB(t))
 	if cp.ID == pa.ID {
 		t.Fatal("distinct operations must have distinct plan IDs")
+	}
+}
+
+// A run that creates champion/backup and then fails leaves the config untouched, consumes its plan ID,
+// and the next dry run yields a NEW plan ID that can proceed (the folder is reused, not recreated).
+func TestGateBRetryAfterBackupFolderCreated(t *testing.T) {
+	ctx := context.Background()
+	for name, fail := range map[string]func(s *standIn){
+		"mkdir error but folder created": func(s *standIn) { s.mkdirThenFail = true },
+		"folder created, backup refused": func(s *standIn) { s.tokenStatus = 403 },
+		"folder created, backup dropped": func(s *standIn) { s.onlyTransfer = 1; s.dropBefore = true },
+		"folder created, backup 507":     func(s *standIn) { s.onlyTransfer = 1; s.transferStatus = 507 },
+	} {
+		s := afterGateA(t)
+		j := journal(t)
+		first := prepB(t, s, gateB(t))
+		fail(s)
+		o, err := Execute(ctx, s.client(), gateB(t), first.ID, j)
+		if err != nil || o.Status != StatusNotWritten || !s.dirs[backupDir] {
+			t.Errorf("%s: %v %+v folder=%t", name, err, o, s.dirs[backupDir])
+			continue
+		}
+		if got, _ := s.file(cfgFile); string(got) != liveConfig {
+			t.Errorf("%s: config touched", name)
+		}
+		*s = standIn{t: s.t, srv: s.srv, serviceID: s.serviceID, root: s.root, files: s.files, dirs: s.dirs, status: s.status, secret: s.secret, tokens: map[string]string{}}
+		second := prepB(t, s, gateB(t))
+		if second.ID == first.ID || !second.BackupDirExists {
+			t.Errorf("%s: retry plan %s (first %s) dirExists=%t", name, second.ID, first.ID, second.BackupDirExists)
+			continue
+		}
+		if _, err := Execute(ctx, s.client(), gateB(t), first.ID, j); !errors.Is(err, ErrAuthorizationUsed) {
+			t.Errorf("%s: the consumed ID must stay dead: %v", name, err)
+		}
+		o, err = Execute(ctx, s.client(), gateB(t), second.ID, j)
+		if err != nil || o.Status != StatusWrittenVerified || len(s.mkdirCalls) != 0 {
+			t.Errorf("%s: retry %v %+v mkdir=%d", name, err, o, len(s.mkdirCalls))
+		}
+	}
+}
+
+// The server backup is read back (listed and downloaded) after its upload and BEFORE the config
+// upload token is requested; a backup that does not read back never lets the overwrite happen.
+func TestGateBBackupReadBackPrecedesOverwrite(t *testing.T) {
+	s := afterGateA(t)
+	var seq []string
+	s.onRequest = func(r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/fs/upload"):
+			seq = append(seq, "transfer")
+		case strings.HasPrefix(r.URL.Path, "/fs/download") && strings.HasSuffix(r.URL.Query().Get("f"), ".bak"):
+			seq = append(seq, "backup-read")
+		case strings.HasSuffix(r.URL.Path, "/file_server/upload"):
+			seq = append(seq, "token")
+		}
+	}
+	r := gateB(t)
+	o, err := Execute(context.Background(), s.client(), r, prepB(t, s, r).ID, journal(t))
+	if err != nil || o.Status != StatusWrittenVerified {
+		t.Fatalf("%v %+v", err, o)
+	}
+	got := strings.Join(seq, ",")
+	// backup token, backup transfer, backup read-back (x2: verification and pre-write re-check), config token, config transfer
+	if !strings.HasPrefix(got, "token,transfer,backup-read,backup-read,token,transfer") {
+		t.Fatalf("order: %s", got)
+	}
+}
+
+func TestGateBInterruptedBackupUpload(t *testing.T) {
+	ctx := context.Background()
+	// Dropped after the server stored it: the read-back proves the backup, Gate B proceeds.
+	s := afterGateA(t)
+	r := gateB(t)
+	cp := prepB(t, s, r)
+	s.onlyTransfer, s.dropAfter = 1, true
+	if o, err := Execute(ctx, s.client(), r, cp.ID, journal(t)); err != nil || o.Status != StatusWrittenVerified || check(o, "backup") != "PASS" {
+		t.Fatalf("drop after store: %v %+v", err, o)
+	}
+	// Dropped before storing: no backup, no overwrite.
+	s = afterGateA(t)
+	cp = prepB(t, s, r)
+	s.onlyTransfer, s.dropBefore = 1, true
+	o, err := Execute(ctx, s.client(), r, cp.ID, journal(t))
+	if err != nil || o.Status != StatusNotWritten || check(o, "backup") != "FAIL" || len(s.uploadCalls) != 1 {
+		t.Fatalf("drop before store: %v %+v", err, o)
+	}
+	if got, _ := s.file(cfgFile); string(got) != liveConfig {
+		t.Fatal("config touched")
+	}
+	// A partial backup left behind blocks the next plan until the owner inspects it.
+	s = afterGateA(t)
+	cp = prepB(t, s, r)
+	s.onlyTransfer, s.partialStore = 1, true
+	if o, _ := Execute(ctx, s.client(), r, cp.ID, journal(t)); o.Status != StatusNotWritten || !strings.Contains(o.Checks[len(o.Checks)-1].Detail, "unexpected content") {
+		t.Fatalf("partial backup: %+v", o)
+	}
+	if _, err := PrepareConfig(ctx, s.client(), r); !errors.Is(err, ErrBackupConflict) {
+		t.Fatalf("partial backup must block the next plan: %v", err)
+	}
+}
+
+func TestGateBRollbackRefusals(t *testing.T) {
+	ctx := context.Background()
+	s := afterGateA(t)
+	j := journal(t)
+	cp := prepB(t, s, gateB(t))
+	if o, _ := Execute(ctx, s.client(), gateB(t), cp.ID, j); o.Status != StatusWrittenVerified {
+		t.Fatalf("gate B: %+v", o)
+	}
+	both := []string{"custom/The_Lost_City.json", "champion/champion_shop_delivery.json"}
+	// Stale current hash (the config changed after the rollback was planned).
+	rb := rollback(t, proposed(t), both)
+	rp := prepB(t, s, rb)
+	s.files[cfgFile] = []byte(strings.Replace(string(proposed(t)), "1.50", "1.52", 1))
+	if _, err := Execute(ctx, s.client(), rb, rp.ID, j); err == nil {
+		t.Fatal("stale rollback executed")
+	}
+	// Wrong expected spawners, custom payload, rollback to a different digest.
+	s.files[cfgFile] = proposed(t)
+	bad := rollback(t, proposed(t), []string{"custom/The_Lost_City.json"})
+	if _, err := PrepareConfig(ctx, s.client(), bad); !errors.Is(err, ErrSpawnersChanged) {
+		t.Fatalf("spawners: %v", err)
+	}
+	bad = rollback(t, proposed(t), both)
+	bad.Payload = []byte(liveConfig)
+	if bad.Validate() == nil {
+		t.Fatal("custom rollback payload accepted")
+	}
+	bad = rollback(t, proposed(t), both)
+	bad.ExpectPayloadSHA256 = strings.Repeat("1", 64)
+	if _, err := PrepareConfig(ctx, s.client(), bad); !errors.Is(err, ErrBackupMissing) {
+		t.Fatalf("other digest: %v", err)
 	}
 }
