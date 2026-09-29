@@ -2195,6 +2195,13 @@ ON CONFLICT (installation_id, route_key) DO NOTHING;
 		Name: "0066_discord_feed_cards",
 		SQL:  DiscordFeedCardsSQL,
 	},
+	{
+		// Champion Shop: the attempt ledger's artifact_path may also be the custom/ location
+		// (docs/SHOP_CUSTOM_RELOCATION.md). Forward-only CHECK widening; no row is read or rewritten.
+		// 0067 is left to the open ranked-ledger / C.A.S.E. base-registration PRs.
+		Name: "0068_shop_delivery_attempt_artifact_path",
+		SQL:  ShopAttemptArtifactPathSQL,
+	},
 }
 
 // DiscordFeedCardsSQL (migration 0066) is the immediate-mode feed journal: each queued card is

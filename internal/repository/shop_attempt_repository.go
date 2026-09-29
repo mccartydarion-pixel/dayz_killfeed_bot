@@ -153,7 +153,20 @@ type ShopAttemptCreate struct {
 	PosX, PosY, PosZ                           float64
 	DropSourceFile                             string
 	DropSourceOffset                           int64
+	// ArtifactPath is the mission-relative Champion spawner file the attempt stages. Empty means the
+	// legacy location (unchanged behaviour); the only other accepted value is the custom/ location,
+	// which migration 0068 permits.
+	ArtifactPath string
 }
+
+// Attempt artifact locations the ledger accepts (migration 0054 + 0068).
+const (
+	ShopAttemptLegacyArtifactPath = "champion/champion_shop_delivery.json"
+	ShopAttemptCustomArtifactPath = "custom/champion_shop_delivery.json"
+)
+
+// ErrShopAttemptArtifactPath: the requested artifact path is not one the ledger accepts.
+var ErrShopAttemptArtifactPath = errors.New("shop attempt: unsupported artifact path")
 
 // ShopAttemptEvidence is the write-once evidence a transition records. A nil field is left as it is.
 type ShopAttemptEvidence struct {
@@ -227,13 +240,21 @@ func (r *ShopAttemptRepository) inTx(ctx context.Context, actor, note string, fn
 // delivery, and an attempt number that skips history.
 func (r *ShopAttemptRepository) Create(ctx context.Context, in ShopAttemptCreate, actor string) (ShopAttempt, error) {
 	var out ShopAttempt
+	artifact := in.ArtifactPath
+	switch artifact {
+	case "":
+		artifact = ShopAttemptLegacyArtifactPath
+	case ShopAttemptLegacyArtifactPath, ShopAttemptCustomArtifactPath:
+	default:
+		return out, ErrShopAttemptArtifactPath
+	}
 	err := r.inTx(ctx, actor, "plan created", func(tx pgx.Tx) error {
 		var err error
 		out, err = scanAttempt(tx.QueryRow(ctx, `INSERT INTO shop_delivery_attempts(organization_id, installation_id, delivery_id, attempt, attempt_id,
  fingerprint, artifact_path, class_name, quantity, pos_x, pos_y, pos_z, drop_source_file, drop_source_offset)
-VALUES($1,$2,$3,$4,$5,$6,'champion/champion_shop_delivery.json',$7,$8,$9,$10,$11,$12,$13) RETURNING `+attemptCols,
+VALUES($1,$2,$3,$4,$5,$6,$14,$7,$8,$9,$10,$11,$12,$13) RETURNING `+attemptCols,
 			in.OrganizationID, in.InstallationID, in.DeliveryID, in.Attempt, in.AttemptID, in.Fingerprint, in.ClassName, in.Quantity,
-			in.PosX, in.PosY, in.PosZ, in.DropSourceFile, in.DropSourceOffset))
+			in.PosX, in.PosY, in.PosZ, in.DropSourceFile, in.DropSourceOffset, artifact))
 		return err
 	})
 	return out, err
