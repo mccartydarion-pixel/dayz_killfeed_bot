@@ -18,7 +18,7 @@ Code: `internal/discord/leaderboard_panel.go` (`BuildAutoLeaderboardEmbeds`,
 | 0 | `📊 AUTO LEADERBOARD 📊` (header) | — | server display name(s), refresh time | Champion Gold |
 | 1 | `🔫 All Time Top 15 Kills 🔫` | ALL TIME | `StatsRepository.TopByKills` | Champion Gold |
 | 2 | `🥷 All Time Top 15 Killstreaks 🥷` | ALL TIME | `StatsRepository.TopByBestStreak` | Event Gold |
-| 3 | `🎖️ Current Top 15 Ranks 🎖️` | CURRENT | `RankReader` (**not wired: see below**) | Champion Gold |
+| 3 | `🎖️ Current Top 15 Ranks 🎖️` | CURRENT | selected public server's active `ServerSeasonRankReader` | Champion Gold |
 | 4 | `💀 All Time Top 15 Deaths 💀` | ALL TIME | `StatsRepository.TopByDeaths` | Combat Red |
 | 5 | `🔭 All Time Top 15 Longest Kills 🔭` | ALL TIME | `StatsRepository.TopLongestKill` | Steel |
 
@@ -66,7 +66,7 @@ out as 3 columns × 5 rows:
   - deaths: `1 Death` / `5,012 Deaths`
   - longest kills: `98.3m`, `215.0m`, `1,104.2m` (one decimal, thousands
     separators)
-  - ranks: the rank label itself
+  - ranks: current server tier and RP, e.g. `DIAMOND • 6,053 RP`
 - A value is never shown as "Value" or "Kill(s)".
 - Only qualifying players are rendered. If 7 players qualify, the board shows
   7 cells and no placeholders. Anything past 15 is dropped.
@@ -105,25 +105,19 @@ touches the table. The board shows the record streak, not the current active
 streak. The integration test `TestAutoLeaderboardV3Queries` covers this: the
 record survives a reset, and kills from two seasons both count.
 
-## Current Ranks: source blocked
+## Current Ranks: selected server season
 
-Champion has **no player rank, tier or progression system** today. Nothing
-in the schema or the code defines player ranks, tiers, rating or ranking
-points. Streak tiers (`internal/streaks`) are kill-streak milestones, not
-player ranks. Faction role ranks are also not player ranks.
+The Ranks embed uses the guild's selected public game server (or its only
+active game server). It reads that server's active Ranked season and orders
+players by seasonal RP, then player ID for ties. The value shows tier and RP;
+the embed explicitly says it belongs to the selected public server. The four
+all-time boards remain guild scoped.
 
-The Ranks board is therefore **inactive** in production:
-
-- `LeaderboardScheduler` only renders it when a `RankReader` is set via
-  `SetRankSource`. `app.go` wires none, so the live package is 5 embeds:
-  header, kills, streaks, deaths, longest.
-- The board is **never** filled with kills, K/D, Champion Points or season
-  points under a "Ranks" title.
-- The builder and its tests are ready and use fixture rank data only
-  (`FixtureAutoLeaderboardSnapshot`). Once an authoritative rank system exists,
-  implement `RankReader.TopCurrentRanks`, ordered by that system's own
-  ordering, and call `SetRankSource`. The Ranks embed then appears at
-  position 3.
+Before a local season is started, or while a multi-server guild has no public
+server selection, the Ranks embed is omitted. An actual database error still
+fails the entire refresh and preserves the last good message. Dedicated
+`SERVER_RANKS` panels remain separate for each game server. This wiring is
+in the draft Ranked stack and is not deployed until the stack is released.
 
 ## Refresh model
 
