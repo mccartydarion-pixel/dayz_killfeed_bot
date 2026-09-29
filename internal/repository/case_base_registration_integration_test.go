@@ -217,7 +217,7 @@ func TestCaseBaseGrantIntervalsRejectOverlapAndAllowRenewal(t *testing.T) {
  }
  var observed time.Time
  if err=repo.pool.QueryRow(ctx,`SELECT valid_until FROM case_base_authorizations
- WHERE base_id=$1 AND player_id=$2`,base.ID,second).Scan(&observed);err!=nil||!observed.Equal(shorter){
+ WHERE base_id=$1 AND player_id=$2`,base.ID,second).Scan(&observed);err!=nil||!observed.Equal(shorter.Truncate(time.Microsecond)){
   t.Fatalf("grant close readback=%v err=%v",observed,err)
  }
  var count int
