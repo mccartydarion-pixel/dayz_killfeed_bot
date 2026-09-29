@@ -10,8 +10,7 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
-// ServerRanksSnapshot is a single server's active local Ranked season. The
-// global platform board is a different view and must not be passed here.
+// ServerRanksSnapshot is a single server's active Ranked season.
 type ServerRanksSnapshot struct {
 	ServerName string
 	SeasonName string
