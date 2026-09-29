@@ -15,6 +15,7 @@ type DetectorDefinition struct {
  Name string `json:"name"`
  Mode string `json:"mode"`
  Prerequisites []string `json:"prerequisites"`
+ Capabilities []string `json:"capabilities,omitempty"`
 }
 type PrerequisiteState struct {
  Name string `json:"name"`
@@ -36,6 +37,23 @@ type DetectorEvaluation struct {
 var detectorRegistry=[]DetectorDefinition{
  {ID:"CASE-MOV-001",Version:"0.1.0",Name:"Movement timing prerequisites",Mode:"BLOCKED",
  Prerequisites:[]string{"VERIFIED_EVENT_ELAPSED_TIME","VALIDATED_MOVEMENT_SAMPLES","SOURCE_CONTINUITY","EXCEPTION_MODEL"}},
+}
+
+// ClientCatalog is the owner's eight-module core scope. It is a readiness
+// catalog, not an executable registry. The old movement prerequisite remains
+// internal for historical blocked diagnostics; it is not a client module.
+func ClientCatalog() []DetectorDefinition {
+ defs:=[]DetectorDefinition{
+  {ID:"CASE-BASE-001",Version:"0.1.0",Name:"Base Boost Detection",Mode:"BLOCKED",Prerequisites:[]string{"VERIFIED_BASE_OWNERSHIP_AND_BUILD_ACTIONS"},Capabilities:[]string{"Custom protection zones","Faction permissions","Repeated intrusion patterns","Staff investigation reporting"}},
+  {ID:"CASE-SKYWALK-001",Version:"0.1.0",Name:"Skywalk Detection",Mode:"BLOCKED",Prerequisites:[]string{"VALIDATED_CONTINUOUS_POSITION_AND_MAP_GEOMETRY"},Capabilities:[]string{"Terrain comparison","Custom structure exclusions","Repeated-position verification","Evidence snapshots"}},
+  {ID:"CASE-DUPE-001",Version:"0.1.0",Name:"Dupe Detection",Mode:"BLOCKED",Prerequisites:[]string{"AUTHORITATIVE_INVENTORY_TRANSACTIONS"},Capabilities:[]string{"Restart correlation","Reconnect patterns","Item evidence when available","Linked incident timelines"}},
+  {ID:"CASE-PC-XBOX-001",Version:"0.1.0",Name:"PC Detection (Xbox)",Mode:"BLOCKED",Prerequisites:[]string{"TRUSTED_XBOX_PLATFORM_ATTESTATION"},Capabilities:[]string{"Platform evidence validation","Suspicious-session correlation","Staff review"}},
+  {ID:"CASE-NOCLIP-001",Version:"0.1.0",Name:"No-Clip Detection",Mode:"BLOCKED",Prerequisites:[]string{"VALIDATED_CONTINUOUS_POSITION_AND_COLLISION"},Capabilities:[]string{"Map-aware validation","Custom building exclusions","Movement reconstruction"}},
+  {ID:"CASE-UNDERMAP-001",Version:"0.1.0",Name:"Undermap Detection",Mode:"BLOCKED",Prerequisites:[]string{"VALIDATED_CONTINUOUS_POSITION_AND_MAP_GEOMETRY"},Capabilities:[]string{"Underground-zone exclusions","Terrain elevation comparisons","Repeated-event confirmation"}},
+  {ID:"CASE-LOGIN-001",Version:"0.1.0",Name:"Suspicious Logins",Mode:"BLOCKED",Prerequisites:[]string{"TRUSTED_LOGIN_IDENTITY_AND_CONTEXT"},Capabilities:[]string{"Session history","Repeated reconnect patterns","Restart awareness","Related incident correlation"}},
+  {ID:"CASE-TELEPORT-001",Version:"0.1.0",Name:"Teleport Alerts",Mode:"BLOCKED",Prerequisites:[]string{"VERIFIED_EVENT_ELAPSED_TIME","VALIDATED_MOVEMENT_SAMPLES","SOURCE_CONTINUITY","EXCEPTION_MODEL"},Capabilities:[]string{"Distance and elapsed-time analysis","Vehicle exclusions","Respawn awareness","Historical movement verification"}},
+ }
+ return defs
 }
 
 // Registry returns independent copies: callers cannot mutate the global
@@ -77,6 +95,12 @@ func EvaluatePrerequisites(def DetectorDefinition, quality QualityReport) Detect
   "VALIDATED_MOVEMENT_SAMPLES":"Event-triggered positions are not a continuous or validated movement trace.",
   "SOURCE_CONTINUITY":"Selected-event source coverage cannot prove complete sampling.",
   "EXCEPTION_MODEL":"Vehicle, respawn, teleport, admin and map-boundary exclusions are not validated.",
+  "VERIFIED_BASE_OWNERSHIP_AND_BUILD_ACTIONS":"The branch retains parsed build actions, but a real ADM sample, registered base ownership, and event-time authorization are unverified.",
+  "VALIDATED_CONTINUOUS_POSITION_AND_MAP_GEOMETRY":"Intermittent event positions do not establish player height, terrain or geometry crossings.",
+  "AUTHORITATIVE_INVENTORY_TRANSACTIONS":"ADM evidence does not contain authoritative item creation and inventory transactions.",
+  "TRUSTED_XBOX_PLATFORM_ATTESTATION":"No trusted Xbox client-platform attestation is available from the ADM collector.",
+  "VALIDATED_CONTINUOUS_POSITION_AND_COLLISION":"Intermittent event positions do not establish collision or wall traversal.",
+  "TRUSTED_LOGIN_IDENTITY_AND_CONTEXT":"Connect records do not establish trusted account, device, network or session context.",
  }
  for _,p:=range def.Prerequisites {
   out.Blockers=append(out.Blockers,PrerequisiteState{Name:p,Status:"UNSATISFIED",Reason:reason[p]})

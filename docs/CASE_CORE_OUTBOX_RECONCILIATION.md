@@ -4,4 +4,4 @@ An expired lease is **not** proof that a private Discord message was not sent. T
 
 The current code has **no production caller**, database read/write, timer, Discord transport, route configuration or automatic send. A future sender must establish receipts and non-delivery itself rather than trusting caller booleans. Discord sends do not provide transactional exactly-once semantics; never retry solely because a lease elapsed. Owner opt-in, current route permissions, independently eligible reviewed findings and source/detector gates still need verification before live delivery.
 
-This is offline foundation for issue #124 Gate E. Neither #114 real current-source acceptance nor any detector gate is cleared. No live cheating alerts or enforcement are authorized.
+This is historical offline foundation under the Core 8 roadmap in PR #155. Current-source retained evidence remains unverified, and no approved detector is validated. No live cheating alerts or enforcement are authorized.

@@ -280,6 +280,9 @@ type Engine struct {
 	locationQueue *LocationQueue
 	// Optional opt-in C.A.S.E. evidence sink, source-addressed and durable.
 	evidenceStore EvidenceStore
+	// Build observations require a second explicit allowlist; the existing
+	// collector opt-in alone must not increase live ADM checkpoint writes.
+	buildEvidenceEnabled bool
 	// Live Sync phase 1 (engine_observations.go): player-list snapshots, per-file server-local
 	// clocks and the current ADM boot session.
 	playerLists     playerListAssembler

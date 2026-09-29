@@ -20,6 +20,7 @@ func TestCASEIntegrityServerIsolationAndAuthorization(t *testing.T) {
  if quiet.Code!=http.StatusOK{t.Fatalf("quiet server read: %d %s",quiet.Code,quiet.Body.String())}
  quietOut:=decodeBody[caseSourceIntegrity](t,quiet)
  if quietOut.EvidenceObservationStatus!="WORKER_UNAVAILABLE"||
+ quietOut.PipelineHealth.State!="DEGRADED"||!quietOut.PipelineHealth.ConclusionsSuspended||
  quietOut.EvidenceAdmissibility.ObservationCount!=0||
  quietOut.EvidenceAdmissibility.SourceCount!=0||
  quietOut.EvidenceAdmissibility.MovementDetectorStatus!="BLOCKED"||
@@ -45,6 +46,7 @@ func TestCASEIntegrityServerIsolationAndAuthorization(t *testing.T) {
   t.Fatal("canonical ADM source path leaked through quality response")
  }
  if out.EvidenceObservationStatus!="WORKER_UNAVAILABLE"||out.ServerID!=w.serverID||out.EvidenceLines24h!=1||out.LatestEvidenceOffset==nil||*out.LatestEvidenceOffset!=500||
+  out.PipelineHealth.State!="DEGRADED"||!out.PipelineHealth.ConclusionsSuspended||
   out.LatestEvidenceSourceRef==nil||*out.LatestEvidenceSourceRef==in.SourceID||
   out.Continuity.CurrentSourceEvidenceStatus!="UNKNOWN"||len(out.Continuity.RecentSources)!=1||out.Continuity.RecentSources[0].RecordedLines!=1||
   out.EvidenceAdmissibility.ObservationCount!=1||out.EvidenceAdmissibility.SourceCount!=1||

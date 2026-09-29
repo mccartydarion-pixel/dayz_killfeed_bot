@@ -82,3 +82,49 @@ func TestCasePersistedSuicideEventUsesBoundaryAuditVocabulary(t *testing.T) {
   t.Fatalf("collector/audit suicide boundary contract broken: %+v",report)
  }
 }
+
+const caseTestBuild = `16:31:00 | Player "Builder" (id=b001 pos=<100.5, 200.5, 5.5>) built Fence Wall on Fence with Hatchet`
+
+func TestCaseBuildEvidenceKeepsSourceAndTupleBeforeFeedDedupe(t *testing.T) {
+ e:=NewEngine(nil,"svc",NewADMParser())
+ e.SetDurableCheckpoint(nil,11,22)
+ store:=&caseEvidenceRecorder{}
+ e.SetEvidenceStore(store)
+ e.SetBuildEvidenceEnabled(true)
+ for _,offset:=range []int64{100,200} {
+  if _,err:=e.processLineAt(caseTestBuild,"/ftproot/dayzps/config/build.ADM",offset);err!=nil{t.Fatal(err)}
+ }
+ if len(store.items)!=2{t.Fatalf("expected two independent build observations, got %d",len(store.items))}
+ a,b:=store.items[0],store.items[1]
+ if a.EventType!="BUILD_ACTION"||a.Build==nil||a.Build.Action!="Built"||
+  a.Build.Object!="Fence Wall"||a.Build.Target!="Fence"||a.Build.Tool!="Hatchet"||
+  a.Subject.DayZID!="b001"||a.Subject.X==nil||*a.Subject.X!=100.5||
+  a.Subject.Z==nil||*a.Subject.Z!=200.5||a.Subject.Altitude==nil||*a.Subject.Altitude!=5.5||
+  a.ADMClock!="16:31:00"||a.SourceID!=b.SourceID||a.SourceEndOffset!=100||b.SourceEndOffset!=200{
+  t.Fatalf("build tuple or provenance lost: %+v %+v",a,b)
+ }
+}
+
+func TestCaseBuildEvidenceFailureStopsSourceCheckpoint(t *testing.T) {
+ e:=NewEngine(nil,"svc",NewADMParser())
+ e.SetDurableCheckpoint(nil,11,22)
+ store:=&caseEvidenceRecorder{err:errors.New("temporary storage failure")}
+ e.SetEvidenceStore(store)
+ e.SetBuildEvidenceEnabled(true)
+ if _,err:=e.processLineAt(caseTestBuild,"/ftproot/dayzps/config/build.ADM",400);err==nil{t.Fatal("missing build evidence must stop checkpoint")}
+ store.err=nil
+ if _,err:=e.processLineAt(caseTestBuild,"/ftproot/dayzps/config/build.ADM",400);err!=nil{t.Fatal(err)}
+ if len(store.items)!=1{t.Fatalf("retry must record build evidence once, got %d",len(store.items))}
+}
+
+func TestCaseBuildEvidenceRequiresSecondOptIn(t *testing.T) {
+ e:=NewEngine(nil,"svc",NewADMParser())
+ e.SetDurableCheckpoint(nil,11,22)
+ store:=&caseEvidenceRecorder{}
+ e.SetEvidenceStore(store)
+ if _,err:=e.processLineAt(caseTestBuild,"/ftproot/dayzps/config/build.ADM",100);err!=nil{t.Fatal(err)}
+ if len(store.items)!=0{t.Fatal("existing collector must not observe build actions without separate opt-in")}
+ e.SetBuildEvidenceEnabled(true)
+ if _,err:=e.processLineAt(caseTestBuild,"/ftproot/dayzps/config/build.ADM",200);err!=nil{t.Fatal(err)}
+ if len(store.items)!=1||store.items[0].Build==nil{t.Fatalf("explicit build opt-in failed: %+v",store.items)}
+}
