@@ -17,10 +17,12 @@ func TestCASEDetectorReadinessIsScopedReadOnlyAndBlocked(t *testing.T) {
  out:=decodeBody[caseDetectorReadiness](t,rr)
  if out.ServerID!=w.serverID||out.Mode!="READINESS_ONLY"||out.ExecutionEnabled||
   out.DetectorsEnabled||out.Enforcement!="DISABLED"||len(out.Findings)!=0||
-  len(out.Cases)!=0||len(out.Registry)!=8||len(out.Evaluations)!=8{
+  len(out.Cases)!=0||len(out.Registry)!=8||len(out.Evaluations)!=8||len(out.Health)!=8{
   t.Fatalf("unsafe readiness response: %+v",out)
  }
  for i,result:=range out.Evaluations {
+  health:=out.Health[i]
+  if health.ModuleID!=out.Registry[i].ID||health.State=="ACTIVE"||!health.ConclusionsSuspended||health.LastSuccessfulEvaluationAt!=nil {t.Fatalf("unsafe detector health: %+v",health)}
   if out.Registry[i].ID=="CASE-MOV-001"||result.DetectorID!=out.Registry[i].ID||
    result.Status!="BLOCKED"||result.RiskScore!=nil||len(result.Findings)!=0||
    len(result.EvidenceIDs)!=0||len(result.Blockers)==0{t.Fatalf("unsafe detector state: %+v",result)}

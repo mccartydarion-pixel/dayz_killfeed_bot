@@ -33,7 +33,7 @@ Capabilities:
 - Suspicious construction activity.
 - Watchtower and structure-placement investigation.
 - Repeated unauthorized activity correlation.
-- Private base-owner notifications when purchased and enabled.
+- Staff-only evidence-backed investigation reporting when validated.
 
 Important: Boost Detection refers to unauthorized base construction and boosting, NOT kill farming or statistical boosting.
 
@@ -286,10 +286,6 @@ Avoid unnecessary notifications, repeated alerts, and channel spam.
 
 Maintain the existing /setup integration.
 
-If a server owner has enabled purchasable player security services, supported base-related monitoring may also generate private notifications for authorized owners.
-
-Player-facing notifications and staff anti-cheat investigations must remain separate.
-
 ---
 
 # PHASE 7 — CLIENT DASHBOARD
@@ -316,35 +312,7 @@ Keep advanced configuration understandable for ordinary server owners.
 
 ---
 
-# PHASE 8 — SECURITY MARKETPLACE COMPATIBILITY
-
-Preserve compatibility with the planned CHAMPIONS Player Hub Security Marketplace.
-
-The marketplace is separate from the anti-cheat detection suite.
-
-Clients may enable eligible security services for purchase by their players.
-
-Players purchase services using the existing unified Champ Credits / Discord Credits balance.
-
-Do not create another currency or wallet.
-
-Examples:
-
-- C.A.S.E. | BASE BOOST ALERT
-- C.A.S.E. | BASE RAID ALARM
-- C.A.S.E. | BASE BLACK BOX
-- C.A.S.E. | OFFLINE PROTECTION
-- C.A.S.E. | SENTINEL PRO
-
-Do not implement these marketplace products as additional anti-cheat detectors.
-
-Preserve the existing Player Hub and Discord Activity Launch integration.
-
-Do not rebuild the Player Hub or replace the existing Discord Activity entry point.
-
----
-
-# PHASE 9 — TESTING AND RELEASE GATES
+# PHASE 8 — TESTING AND RELEASE GATES
 
 Each detector requires independent verification.
 
@@ -378,7 +346,7 @@ Preserve the existing live killfeed.
 
 Preserve the existing economy and player balances.
 
-Preserve existing subscriptions and billing.
+Preserve existing subscriptions and billing without changing them in this anti-cheat workstream.
 
 Preserve player verification.
 
