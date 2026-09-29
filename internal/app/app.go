@@ -61,6 +61,7 @@ type App struct {
 	Kills        *repository.KillRepository
 	Deaths       *repository.DeathRepository
 	Stats        *repository.StatsRepository
+	Ranked       *repository.RankedRepository
 	Sessions     *repository.SessionRepository
 	Checkpoints  *repository.CheckpointRepository
 	Streaks      *repository.StreakRepository
@@ -207,6 +208,7 @@ type App struct {
 	// RouteSyncer keeps those guild-level routed artifacts in step with the
 	// installation routes. Nil-safe: without it routes are simply not synced.
 	RouteSyncer *discord.RouteSyncer
+	ServerRanksBoards []*discord.ServerRanksBoard
 	// adminSaaS is the cross-tenant, read-only platform-admin read model behind
 	// /api/admin (internal/adminrepo); adminChannelNames optionally overrides the
 	// Discord-cache channel name lookup (tests).
@@ -652,6 +654,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.Kills = repository.NewKillRepository(db.Pool)
 			app.Deaths = repository.NewDeathRepository(db.Pool)
 			app.Stats = repository.NewStatsRepository(db.Pool)
+			app.Ranked = repository.NewRankedRepository(db.Pool)
 			app.Sessions = repository.NewSessionRepository(db.Pool)
 			app.Checkpoints = repository.NewCheckpointRepository(db.Pool)
 			app.Streaks = repository.NewStreakRepository(db.Pool)
@@ -1548,6 +1551,13 @@ func (a *App) Run() error {
 			var routePanels *discord.RoutePanels
 			if routingEnabled {
 				routePanels = discord.NewRoutePanels(api, discord.NewRoutePanelStore(a.GuildRoutePanels))
+			}
+			if routingEnabled && a.Ranked != nil {
+				for _, serverRow := range activeServers {
+					board := discord.NewServerRanksBoard(a.ChannelRoutes, routePanels, a.Ranked, guildRowID, serverRow.ID, serverRow.DisplayName)
+					a.ServerRanksBoards = append(a.ServerRanksBoards, board)
+					go board.Run(ctx)
+				}
 			}
 			if routingEnabled && a.EconomyService != nil {
 				// ECONOMY: the public transaction feed, per (guild, server) through the
