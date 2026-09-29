@@ -28,6 +28,7 @@ const (
 	RouteLinkGamertag      = "LINK_GAMERTAG"
 	RouteStatsLeaderboards = "STATS_LEADERBOARDS"
 	RouteAutoLeaderboard   = "AUTO_LEADERBOARD"
+	RouteServerRanks       = "SERVER_RANKS"
 	RouteHitfeed           = "HITFEED"
 	RouteBounty            = "BOUNTY"
 	RouteBountyTracking    = "BOUNTY_TRACKING"
