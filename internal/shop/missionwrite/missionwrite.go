@@ -98,22 +98,34 @@ type Request struct {
 	ExpectPayloadSHA256 string
 }
 
+type opKind int
+
+const (
+	kindCreate        opKind = iota // Gate A: a new file with a built-in payload
+	kindConfigPatch                 // Gate B: cfggameplay.json, payload derived from the live bytes
+	kindConfigRestore               // Gate B rollback: cfggameplay.json, payload = the verified backup
+)
+
 type opSpec struct {
+	kind          opKind
 	path          string
-	payload       func() []byte
+	payload       func() []byte // kindCreate only
 	mustBeAbsent  bool
 	createsParent bool
 }
 
 var ops = map[Operation]*opSpec{
 	OpCreateEmptyChampionFile: {
+		kind:          kindCreate,
 		path:          nitradodelivery.ArtifactRelPath,
 		payload:       func() []byte { b, _ := canary.EmptyArtifact(); return b },
 		mustBeAbsent:  true,
 		createsParent: true,
 	},
-	OpStageItem:   nil,
-	OpUnstageItem: nil,
+	OpReferenceChampionFile: {kind: kindConfigPatch, path: canary.ConfigRelPath},
+	OpRestoreConfig:         {kind: kindConfigRestore, path: canary.ConfigRelPath},
+	OpStageItem:             nil,
+	OpUnstageItem:           nil,
 }
 
 var (
@@ -168,6 +180,15 @@ func (r Request) Validate() error {
 	}
 	if r.ExpectCurrent != Absent && !sha256Re.MatchString(r.ExpectCurrent) {
 		return ErrExpectation
+	}
+	if spec.kind != kindCreate {
+		// The destination IS cfggameplay.json: it must exist with exactly the expected digest, and the
+		// payload is derived from the fresh live bytes (patch) or the verified backup (restore) - a
+		// caller-supplied payload is refused.
+		if r.ExpectCurrent == Absent || r.ExpectCurrent != r.ExpectConfigSHA256 || r.Payload != nil {
+			return ErrExpectation
+		}
+		return nil
 	}
 	if spec.mustBeAbsent && r.ExpectCurrent != Absent {
 		return ErrUnexpectedState
@@ -229,10 +250,16 @@ func Inspect(ctx context.Context, rm Remote, r Request) (Inspection, error) {
 	}
 	in.ConfigSHA256, in.ConfigBytes = SHA256(cfg), len(cfg)
 	gp := capability.ParseCfgGameplay(cfg)
-	if !gp.ValidJSON || !gp.HasSpawnersKey {
+	switch {
+	case gp.ValidJSON && gp.HasSpawnersKey:
+		in.Spawners = append([]string{}, gp.Spawners...)
+	case ops[r.Operation] != nil && ops[r.Operation].kind == kindConfigRestore:
+		// A rollback may have to repair a damaged configuration (e.g. a partial upload): it is
+		// inspected as "no spawner list" and restored from the verified backup.
+		in.Spawners = []string{}
+	default:
 		return in, ErrInspection
 	}
-	in.Spawners = append([]string{}, gp.Spawners...)
 	if h, err := rm.DownloadHost(ctx, r.Binding.NitradoServiceID, in.phys.configPath); err == nil {
 		in.FileServerHost, in.FileServerHostTrusted = h, nitrado.TrustedUploadHost(h)
 	}
@@ -266,6 +293,10 @@ func readTarget(ctx context.Context, rm Remote, r Request, in *Inspection) error
 		return ErrInspection
 	}
 	in.ParentExists, in.Current, in.CurrentBytes = false, Absent, 0
+	if dir == "" { // a file in the mission folder itself (cfggameplay.json)
+		in.ParentExists = true
+		return readNamed(ctx, rm, svc, in, entries, in.phys.missionDir, name)
+	}
 	for _, e := range entries {
 		if e.Name == dir {
 			if !e.IsDir {
@@ -285,6 +316,11 @@ func readTarget(ctx context.Context, rm Remote, r Request, in *Inspection) error
 	if err != nil {
 		return ErrInspection
 	}
+	return readNamed(ctx, rm, svc, in, children, parent, name)
+}
+
+// readNamed fills Current from one listing of parent: absent, or the downloaded file's digest.
+func readNamed(ctx context.Context, rm Remote, svc string, in *Inspection, children []nitrado.DirEntry, parent, name string) error {
 	for _, e := range children {
 		if e.Name != name {
 			continue
@@ -355,6 +391,10 @@ func planID(r Request, in Inspection) string {
 func Prepare(ctx context.Context, rm Remote, r Request) (Plan, error) {
 	if err := r.Validate(); err != nil {
 		return Plan{}, err
+	}
+	if ops[r.Operation].kind != kindCreate {
+		cp, err := prepareConfig(ctx, rm, r)
+		return cp.Plan, err
 	}
 	in, err := Inspect(ctx, rm, r)
 	if err != nil {
@@ -429,6 +469,9 @@ func Execute(ctx context.Context, rm Remote, r Request, authorizedID string, j *
 	}
 	if err := r.Validate(); err != nil {
 		return out, err
+	}
+	if ops[r.Operation].kind != kindCreate {
+		return executeConfig(ctx, rm, r, authorizedID, j)
 	}
 	unlock, err := j.Lock()
 	if err != nil {

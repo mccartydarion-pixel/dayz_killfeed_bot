@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -41,7 +42,7 @@ const (
 func main() { os.Exit(run()) }
 
 func run() int {
-	op := flag.String("operation", "", "the one operation: gate-a-create-empty (gate-e-stage and gate-g-unstage are not active)")
+	op := flag.String("operation", "", "the one operation: gate-a-create-empty : gate-a-create-empty, gate-b-reference or gate-b-rollback (gate-e-stage and gate-g-unstage are not active)")
 	service := flag.String("service", "", "Nitrado service ID")
 	org := flag.Int64("org", 0, "organization ID")
 	inst := flag.Int64("installation", 0, "installation ID")
@@ -55,6 +56,7 @@ func run() int {
 	defJournal, defAnchor, _ := missionwrite.DefaultPaths()
 	journalPath := flag.String("journal", defJournal, "ABSOLUTE path of the local journal (single-use authorizations, outcomes)")
 	anchorPath := flag.String("anchor", defAnchor, "ABSOLUTE path of the journal anchor (a different directory)")
+	localBackups := flag.String("local-backups", filepath.Join(filepath.Dir(defJournal), "backups"), "ABSOLUTE folder for the owner-side copy of cfggameplay.json (Gate B)")
 	initJournal := flag.Bool("init-journal", false, "create the journal and anchor once (refuses if either exists); no server call")
 	adoptJournal := flag.Bool("adopt-journal", false, "owner action: re-anchor an intact journal whose anchor was lost; no server call")
 	execute := flag.Bool("execute", false, "perform the write (requires -authorize)")
@@ -138,12 +140,32 @@ func run() int {
 	defer cancel()
 	client := nitrado.NewClient(nitrado.DefaultBaseURL, token, &http.Client{Timeout: 45 * time.Second})
 
+	configOp := req.Operation == missionwrite.OpReferenceChampionFile || req.Operation == missionwrite.OpRestoreConfig
 	if !*execute {
-		p, err := missionwrite.Prepare(ctx, client, req)
+		var p missionwrite.Plan
+		var err error
+		var cp missionwrite.ConfigPlan
+		if configOp {
+			cp, err = missionwrite.PrepareConfig(ctx, client, req)
+			p = cp.Plan
+		} else {
+			p, err = missionwrite.Prepare(ctx, client, req)
+		}
 		printInspection(p.Inspection)
 		if err != nil {
 			fmt.Println("\nREFUSED:", err)
 			return exitRefused
+		}
+		if configOp {
+			printConfigPlan(cp)
+			if req.Operation == missionwrite.OpReferenceChampionFile {
+				lb, err := saveLocalBackup(*localBackups, cp.Current)
+				if err != nil {
+					fmt.Println("\nREFUSED: local backup:", err)
+					return exitRefused
+				}
+				fmt.Printf("  local backup:       %s (%d bytes, SHA-256 verified)\n", lb, len(cp.Current))
+			}
 		}
 		if jerr != nil {
 			fmt.Println("\njournal: NOT READY -", jerr)
@@ -160,6 +182,13 @@ func run() int {
 		return exitOK
 	}
 
+	if req.Operation == missionwrite.OpReferenceChampionFile {
+		// A second, owner-side copy of the exact original must exist before the overwrite.
+		if err := checkLocalBackup(*localBackups, req.ExpectCurrent); err != nil {
+			fmt.Fprintln(os.Stderr, "refused: local backup:", err, "- run the dry run first")
+			return exitRefused
+		}
+	}
 	o, err := missionwrite.Execute(ctx, client, req, *authorize, j)
 	if err != nil && o.Status == missionwrite.StatusNotWritten && o.Transfer == "not attempted" && len(o.Checks) == 0 {
 		fmt.Println("REFUSED (nothing attempted):", err)
@@ -221,6 +250,67 @@ func printInspection(in missionwrite.Inspection) {
 	default:
 		fmt.Printf("  file-server host:   %s - OUTSIDE the upload trust boundary *.%s: an upload would be refused before the token is sent\n", in.FileServerHost, nitrado.TrustedUploadDomain)
 	}
+}
+
+func printConfigPlan(cp missionwrite.ConfigPlan) {
+	after, _ := json.Marshal(cp.SpawnersAfter)
+	fmt.Println("\nconfiguration change:")
+	fmt.Printf("  before:             cfggameplay.json %d bytes, SHA-256 %s\n", len(cp.Current), missionwrite.SHA256(cp.Current))
+	fmt.Printf("  after:              cfggameplay.json %d bytes, SHA-256 %s\n", cp.PayloadBytes, cp.PayloadSHA256)
+	fmt.Println("  objectSpawnersArr → ", string(after))
+	fmt.Println("  Champion file:     ", cp.ChampionState)
+	state := "absent (created by this plan)"
+	if cp.BackupState != missionwrite.Absent {
+		state = "present, SHA-256 " + cp.BackupState
+	}
+	fmt.Println("  server backup:     ", cp.BackupPath, "-", state)
+	fmt.Println("  diff:")
+	for _, l := range strings.Split(cp.Diff, "\n") {
+		if strings.HasPrefix(l, "+ ") || strings.HasPrefix(l, "- ") {
+			fmt.Println("    " + l)
+		}
+	}
+}
+
+// saveLocalBackup writes the exact original bytes to <dir>/cfggameplay.json.<sha12>.bak (never
+// overwriting a different file) and verifies them by reading back.
+func saveLocalBackup(dir string, b []byte) (string, error) {
+	if !filepath.IsAbs(dir) {
+		return "", fmt.Errorf("the folder must be absolute")
+	}
+	sha := missionwrite.SHA256(b)
+	p := filepath.Join(dir, "cfggameplay.json."+sha[:12]+".bak")
+	if old, err := os.ReadFile(p); err == nil {
+		if missionwrite.SHA256(old) != sha {
+			return "", fmt.Errorf("%s exists with different content", p)
+		}
+		return p, nil
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(p, b, 0o600); err != nil {
+		return "", err
+	}
+	back, err := os.ReadFile(p)
+	if err != nil || missionwrite.SHA256(back) != sha {
+		return "", fmt.Errorf("read-back mismatch")
+	}
+	return p, nil
+}
+
+func checkLocalBackup(dir, sha string) error {
+	if len(sha) < 12 {
+		return fmt.Errorf("no expected digest")
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "cfggameplay.json."+sha[:12]+".bak"))
+	if err != nil {
+		return err
+	}
+	if missionwrite.SHA256(b) != sha {
+		return fmt.Errorf("the local copy does not match %s", sha)
+	}
+	return nil
 }
 
 func orUnverified(s string) string {

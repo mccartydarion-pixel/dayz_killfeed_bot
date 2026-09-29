@@ -45,6 +45,8 @@ type standIn struct {
 	dropAfter       bool                  // store, then hijack and close without a response
 	claimNoStore    bool                  // answer 200 but store nothing
 	corruptRead     bool                  // downloads of the destination return other bytes
+	corruptSuffix   string                // downloads of paths with this suffix return other bytes
+	onlyTransfer    int                   // >0: the transfer failure switches apply only to this (1-based) transfer
 	mkdirStatus     int                   // non-zero: mkdir answers this status and creates nothing
 	insecureURL     string                // token response URL override
 	beforeToken     func(s *standIn)      // hook run when the token is requested
@@ -237,6 +239,9 @@ func (s *standIn) serveDownload(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(404)
 		return
 	}
+	if s.corruptSuffix != "" && strings.HasSuffix(p, s.corruptSuffix) {
+		b = append([]byte("X"), b...)
+	}
 	if s.corruptRead && strings.HasSuffix(p, "/champion_shop_delivery.json") {
 		b = []byte("{\n  \"Objects\": [1]\n}\n")
 	}
@@ -283,8 +288,9 @@ func (s *standIn) serveTransfer(w http.ResponseWriter, r *http.Request) {
 	if s.expireTokens {
 		ok = false
 	}
+	active := s.onlyTransfer == 0 || len(s.transfers) == s.onlyTransfer
 	s.mu.Unlock()
-	if s.dropBefore {
+	if s.dropBefore && active {
 		hijackClose(w)
 		return
 	}
@@ -292,7 +298,7 @@ func (s *standIn) serveTransfer(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 401, map[string]any{"status": "error", "message": "invalid or expired token"})
 		return
 	}
-	if s.transferStatus != 0 {
+	if s.transferStatus != 0 && active {
 		writeJSON(w, s.transferStatus, map[string]any{"status": "error", "message": "refused"})
 		return
 	}
@@ -303,8 +309,8 @@ func (s *standIn) serveTransfer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch {
-	case s.claimNoStore:
-	case s.partialStore:
+	case s.claimNoStore && active:
+	case s.partialStore && active:
 		s.files[dest] = body[:len(body)/2]
 	default:
 		s.files[dest] = body
@@ -313,7 +319,7 @@ func (s *standIn) serveTransfer(w http.ResponseWriter, r *http.Request) {
 	if s.afterTransfer != nil {
 		s.afterTransfer(s)
 	}
-	if s.dropAfter {
+	if s.dropAfter && active {
 		hijackClose(w)
 		return
 	}
