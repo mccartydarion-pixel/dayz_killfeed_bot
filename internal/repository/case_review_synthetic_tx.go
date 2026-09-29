@@ -7,6 +7,7 @@ import (
  "strings"
  "time"
 
+ "github.com/yourname/dayz-killfeed/internal/caseintel"
  "github.com/jackc/pgx/v5"
  "github.com/jackc/pgx/v5/pgxpool"
 )
@@ -33,9 +34,9 @@ type SyntheticReviewInput struct {
  At time.Time
 }
 
-// CaseReviewMutation is deliberately not exposed through any HTTP endpoint.
-// Its SQL still verifies the actor's same-organization OWNER/ADMIN membership,
-// the installation, and a row-locked scoped case before mutating a fixture.
+// CaseReviewMutation backs an otherwise disabled, independently gated staff
+// route. SQL revalidates current OWNER/ADMIN membership, installation and the
+// row-locked case, even if a caller bypasses the HTTP layer.
 type CaseReviewMutation struct { pool *pgxpool.Pool }
 
 func NewCaseReviewMutation(pool *pgxpool.Pool) *CaseReviewMutation {
@@ -63,6 +64,33 @@ func reviewTransition(from,to string) bool {
 // matches; collisions fail closed. This is not live finding admission.
 func (r *CaseReviewMutation) ApplySynthetic(ctx context.Context,in SyntheticReviewInput)(bool,error){
  if !in.FixtureOnly||!in.CallerCapabilityVerified{return false,ErrCASEReviewFixtureDisabled}
+ return r.applyReviewTransaction(ctx,CaseReviewAction{
+  Scope:in.Scope,CaseID:in.CaseID,ActorUserID:in.ActorUserID,
+  ActionKey:in.ActionKey,ExpectedStatus:in.ExpectedStatus,
+  ToStatus:in.ToStatus,ReasonCode:in.ReasonCode,Note:in.Note,At:in.At,
+ },false)
+}
+
+// CaseReviewAction is the trusted server-side transaction input, not a request
+// DTO. The real handler must resolve the actor and selected installation via
+// requireCapability and never accept caller-provided actor/scope IDs.
+type CaseReviewAction struct {
+ Scope CaseReviewScope
+ CaseID,ActorUserID int64
+ ActionKey,ExpectedStatus,ToStatus,ReasonCode,Note string
+ At time.Time
+}
+
+// ApplyReviewed performs the same DB-enforced exact-installation membership,
+// immutable replay and atomic audit/status transition as the fixture method.
+// It is used only by a default-off protected route and does NOT create cases
+// or outbox rows. It independently checks the real validated detector registry
+// and an exact linked evidence row; full real-source admission is a prior gate.
+func (r *CaseReviewMutation) ApplyReviewed(ctx context.Context,in CaseReviewAction)(bool,error){
+ return r.applyReviewTransaction(ctx,in,true)
+}
+
+func (r *CaseReviewMutation) applyReviewTransaction(ctx context.Context,in CaseReviewAction,requireValidated bool)(bool,error){
  if r==nil||r.pool==nil{return false,errors.New("case review database unavailable")}
  if in.Scope.GuildID<=0||in.Scope.ServerID<=0||in.Scope.InstallationID<=0||
   in.CaseID<=0||in.ActorUserID<=0||!reviewValidKey(in.ActionKey)||
@@ -70,7 +98,7 @@ func (r *CaseReviewMutation) ApplySynthetic(ctx context.Context,in SyntheticRevi
   in.At.IsZero()||len(strings.TrimSpace(in.Note))==0||
   len([]rune(in.Note))>500||strings.ContainsAny(in.Note,"@\r\n<>")||
   !reviewReasonValid(in.ReasonCode,in.ToStatus) {
-  return false,errors.New("invalid synthetic review request")
+  return false,errors.New("invalid case review request")
  }
  tx,err:=r.pool.BeginTx(ctx,pgx.TxOptions{})
  if err!=nil{return false,err}
@@ -95,18 +123,39 @@ func (r *CaseReviewMutation) ApplySynthetic(ctx context.Context,in SyntheticRevi
    AND m.user_id=$4 AND m.role IN ('OWNER','ADMIN')
   FOR SHARE OF m
  )`,in.Scope.InstallationID,in.Scope.ServerID,in.Scope.GuildID,in.ActorUserID).Scan(&authorized)
- if err!=nil{return false,fmt.Errorf("verify synthetic review membership: %w",err)}
+ if err!=nil{return false,fmt.Errorf("verify case review membership: %w",err)}
  if !authorized{return false,errors.New("actor not authorized for selected installation")}
 
- var state string
+ var state,detectorID,detectorVersion string
  var openedAt,updatedAt time.Time
  err=tx.QueryRow(ctx,`
-  SELECT status,created_at,updated_at FROM case_review_cases
+  SELECT status,detector_id,detector_version,created_at,updated_at
+  FROM case_review_cases
   WHERE id=$1 AND guild_id=$2 AND server_id=$3 AND installation_id=$4
   FOR UPDATE`,in.CaseID,in.Scope.GuildID,in.Scope.ServerID,in.Scope.InstallationID).
-  Scan(&state,&openedAt,&updatedAt)
+  Scan(&state,&detectorID,&detectorVersion,&openedAt,&updatedAt)
  if errors.Is(err,pgx.ErrNoRows){return false,errors.New("review case not found in exact scope")}
  if err!=nil{return false,err}
+ if requireValidated {
+  // An opt-in review handler cannot turn a legacy fixture, unknown detector
+  // or unlinked source into an allegation merely by changing review state.
+  validated:=false
+  for _,d:=range caseintel.Registry(){
+   if d.ID==detectorID && d.Version==detectorVersion && d.Mode=="VALIDATED_SHADOW"{
+    validated=true;break
+   }
+  }
+  if !validated{return false,errors.New("case detector not independently validated")}
+  var linked bool
+  err=tx.QueryRow(ctx,`SELECT EXISTS (
+   SELECT 1 FROM case_review_evidence ev
+   JOIN case_evidence_events e ON e.id=ev.evidence_id
+    AND e.guild_id=ev.guild_id AND e.server_id=ev.server_id
+   WHERE ev.guild_id=$1 AND ev.server_id=$2 AND ev.installation_id=$3
+    AND ev.case_id=$4
+  )`,in.Scope.GuildID,in.Scope.ServerID,in.Scope.InstallationID,in.CaseID).Scan(&linked)
+  if err!=nil||!linked{return false,errors.New("case has no verified linked evidence")}
+ }
 
  // Check the replay after acquiring the case lock and verifying live membership.
  // Idempotence cannot be used as an authorization bypass after role revocation.
@@ -123,14 +172,14 @@ func (r *CaseReviewMutation) ApplySynthetic(ctx context.Context,in SyntheticRevi
  if err==nil {
   if previousFrom==in.ExpectedStatus&&previousTo==in.ToStatus&&
    previousReason==in.ReasonCode&&previousNote==in.Note&&
-   previousActor==in.ActorUserID&&previousTime.Equal(in.At.UTC()){
+   previousActor==in.ActorUserID&&(!requireValidated||previousTime.Equal(in.At.UTC())){
    return false,tx.Commit(ctx)
   }
   return false,errors.New("review action key collision")
  }
  if !errors.Is(err,pgx.ErrNoRows){return false,err}
  if in.At.UTC().Before(openedAt)||in.At.UTC().Before(updatedAt){
-  return false,errors.New("synthetic review time precedes case history")
+  return false,errors.New("review time precedes case history")
  }
  if state!=in.ExpectedStatus{return false,errors.New("review status changed")}
  if !reviewTransition(state,in.ToStatus){return false,errors.New("review transition refused")}
@@ -152,7 +201,7 @@ func (r *CaseReviewMutation) ApplySynthetic(ctx context.Context,in SyntheticRevi
  `,in.ToStatus,in.At.UTC(),in.CaseID,in.Scope.GuildID,in.Scope.ServerID,
  in.Scope.InstallationID,state)
  if err!=nil{return false,err}
- if tag.RowsAffected()!=1{return false,errors.New("synthetic review compare-and-swap failed")}
+ if tag.RowsAffected()!=1{return false,errors.New("case review compare-and-swap failed")}
  if err=tx.Commit(ctx);err!=nil{return false,err}
  return true,nil
 }
