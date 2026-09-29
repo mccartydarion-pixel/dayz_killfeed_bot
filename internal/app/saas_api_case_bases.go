@@ -22,6 +22,8 @@ func (a *App) registerCaseBaseRoutes(base string){
  h("POST "+base+"/case/bases",a.handleCaseCreateBaseDraft)
  h("GET "+base+"/case/bases/{baseID}/grants",a.handleCaseListBaseGrants)
  h("POST "+base+"/case/bases/{baseID}/grants",a.handleCaseAddBaseGrant)
+ h("POST "+base+"/case/bases/{baseID}/withdraw",a.handleCaseWithdrawBaseDraft)
+ h("POST "+base+"/case/bases/{baseID}/grants/{grantID}/end",a.handleCaseEndBaseGrant)
 }
 
 func (a *App) caseBaseActor(w http.ResponseWriter,r *http.Request)(adminActor,*repository.CaseBaseRegistrationRepository,bool){
@@ -105,4 +107,29 @@ func (a *App) handleCaseAddBaseGrant(w http.ResponseWriter,r *http.Request){
  if err!=nil{writeSaaSError(w,codeInvalidRequest,"invalid base grant");return}
  a.recordAudit(ctx,ac,"CASE_BASE_DRAFT_GRANT_CREATED","case-base:"+strconv.FormatInt(id,10),"","success",nil,map[string]any{"grantId":grant.ID})
  writeSaaSJSON(w,http.StatusCreated,map[string]any{"grant":grant,"operational":false})
+}
+
+func (a *App) handleCaseWithdrawBaseDraft(w http.ResponseWriter,r *http.Request){
+ ac,repo,ok:=a.caseBaseActor(w,r);if !ok{return}
+ id,good:=pathInt64(w,r,"baseID");if !good{return}
+ if !enforceRateLimit(w,a.saasAdminActionLimiter,rateLimitKey(r)){return}
+ ctx,cancel:=context.WithTimeout(r.Context(),adminTimeout);defer cancel()
+ b,err:=repo.RevokeDraft(ctx,ac.scope.InstallationID,ac.scope.GuildID,*ac.scope.ServerID,id)
+ if errors.Is(err,repository.ErrCaseBaseNotFound){writeSaaSError(w,codeInvalidRequest,"base draft unavailable");return}
+ if err!=nil{writeSaaSError(w,codeInternalError,"could not withdraw base draft");return}
+ a.recordAudit(ctx,ac,"CASE_BASE_DRAFT_WITHDRAWN","case-base:"+strconv.FormatInt(id,10),"","success",nil,map[string]any{"state":b.State})
+ writeSaaSJSON(w,http.StatusOK,map[string]any{"base":b,"operational":false})
+}
+
+func (a *App) handleCaseEndBaseGrant(w http.ResponseWriter,r *http.Request){
+ ac,repo,ok:=a.caseBaseActor(w,r);if !ok{return}
+ baseID,good:=pathInt64(w,r,"baseID");if !good{return}
+ grantID,good:=pathInt64(w,r,"grantID");if !good{return}
+ if !enforceRateLimit(w,a.saasAdminActionLimiter,rateLimitKey(r)){return}
+ ctx,cancel:=context.WithTimeout(r.Context(),adminTimeout);defer cancel()
+ grant,err:=repo.EndDraftGrant(ctx,ac.scope.InstallationID,ac.scope.GuildID,*ac.scope.ServerID,baseID,grantID)
+ if errors.Is(err,repository.ErrCaseBaseNotFound){writeSaaSError(w,codeInvalidRequest,"active base grant unavailable");return}
+ if err!=nil{writeSaaSError(w,codeInternalError,"could not end base grant");return}
+ a.recordAudit(ctx,ac,"CASE_BASE_DRAFT_GRANT_ENDED","case-base:"+strconv.FormatInt(baseID,10),"","success",nil,map[string]any{"grantId":grant.ID})
+ writeSaaSJSON(w,http.StatusOK,map[string]any{"grant":grant,"operational":false})
 }

@@ -154,3 +154,43 @@ func (r *CaseBaseRegistrationRepository) AddDraftGrant(ctx context.Context,
  if errors.Is(err,pgx.ErrNoRows){return CaseBaseAuthorization{},ErrCaseBaseNotFound}
  return a,err
 }
+
+func (r *CaseBaseRegistrationRepository) RevokeDraft(ctx context.Context,installationID,guildID,serverID,baseID int64)(CaseRegisteredBase,error){
+ if r==nil||r.pool==nil||installationID<=0||guildID<=0||serverID<=0||baseID<=0{
+  return CaseRegisteredBase{},errors.New("invalid C.A.S.E. base scope")
+ }
+ var b CaseRegisteredBase
+ err:=r.pool.QueryRow(ctx,`UPDATE case_registered_bases
+ SET state='REVOKED',revoked_at=NOW(),updated_at=NOW()
+ WHERE installation_id=$1 AND guild_id=$2 AND server_id=$3 AND id=$4 AND state='DRAFT'
+ RETURNING id,installation_id,guild_id,server_id,owner_player_id,
+ map_key,name,center_x,center_z,radius,state,reviewed_at,revoked_at`,
+ installationID,guildID,serverID,baseID).
+ Scan(&b.ID,&b.InstallationID,&b.GuildID,&b.ServerID,&b.OwnerPlayerID,
+  &b.MapKey,&b.Name,&b.CenterX,&b.CenterZ,&b.Radius,&b.State,&b.ReviewedAt,&b.RevokedAt)
+ if errors.Is(err,pgx.ErrNoRows){return CaseRegisteredBase{},ErrCaseBaseNotFound}
+ return b,err
+}
+
+// EndDraftGrant preserves its historical start and closes an active interval.
+// An already-ended grant or a withdrawn base cannot be altered through this path.
+func (r *CaseBaseRegistrationRepository) EndDraftGrant(ctx context.Context,
+ installationID,guildID,serverID,baseID,grantID int64)(CaseBaseAuthorization,error){
+ if r==nil||r.pool==nil||installationID<=0||guildID<=0||serverID<=0||baseID<=0||grantID<=0{
+  return CaseBaseAuthorization{},errors.New("invalid C.A.S.E. base scope")
+ }
+ now:=time.Now().UTC()
+ var a CaseBaseAuthorization
+ err:=r.pool.QueryRow(ctx,`UPDATE case_base_authorizations a
+ SET valid_until=$6
+ FROM case_registered_bases b
+ WHERE b.installation_id=$1 AND b.guild_id=$2 AND b.server_id=$3 AND b.id=$4 AND b.state='DRAFT'
+ AND a.installation_id=b.installation_id AND a.guild_id=b.guild_id AND
+  a.server_id=b.server_id AND a.base_id=b.id AND a.id=$5
+ AND a.valid_from<$6 AND (a.valid_until IS NULL OR a.valid_until>$6)
+ RETURNING a.id,a.base_id,a.player_id,a.faction_id,a.valid_from,a.valid_until`,
+ installationID,guildID,serverID,baseID,grantID,now).
+ Scan(&a.ID,&a.BaseID,&a.PlayerID,&a.FactionID,&a.ValidFrom,&a.ValidUntil)
+ if errors.Is(err,pgx.ErrNoRows){return CaseBaseAuthorization{},ErrCaseBaseNotFound}
+ return a,err
+}

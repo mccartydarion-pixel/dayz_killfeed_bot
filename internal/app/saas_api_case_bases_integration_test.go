@@ -64,8 +64,34 @@ func TestCaseBaseDraftAdminFlowIsOwnerScopedAndInert(t *testing.T){
  if invalid.Code!=http.StatusBadRequest{t.Fatalf("ambiguous grant accepted: %d",invalid.Code)}
  denied= w.call(w.a.handleCaseListBaseGrants,http.MethodGet,path,admin,nil,pv)
  if denied.Code!=http.StatusForbidden{t.Fatalf("non-owner read grants: %d",denied.Code)}
+
+ endPV:=map[string]string{"baseID":strconv.FormatInt(out.Base.ID,10),"grantID":strconv.FormatInt(got.Grant.ID,10)}
+ endPath:=w.path("/case/bases/x/grants/y/end")
+ denied=w.call(w.a.handleCaseEndBaseGrant,http.MethodPost,endPath,admin,nil,endPV)
+ if denied.Code!=http.StatusForbidden{t.Fatalf("non-owner ended grant: %d",denied.Code)}
+ ended:=w.call(w.a.handleCaseEndBaseGrant,http.MethodPost,endPath,w.f.OwnerDiscordID,nil,endPV)
+ if ended.Code!=http.StatusOK{t.Fatalf("end grant: %d %s",ended.Code,ended.Body.String())}
+ endedOut:=decodeBody[struct{Grant repository.CaseBaseAuthorization `json:"grant"`}](t,ended)
+ if endedOut.Grant.ValidUntil==nil||!endedOut.Grant.ValidUntil.After(endedOut.Grant.ValidFrom){
+  t.Fatalf("grant history lost: %+v",endedOut)
+ }
+ repeat:=w.call(w.a.handleCaseEndBaseGrant,http.MethodPost,endPath,w.f.OwnerDiscordID,nil,endPV)
+ if repeat.Code!=http.StatusBadRequest{t.Fatalf("ended grant changed twice: %d",repeat.Code)}
+ withdrawPV:=map[string]string{"baseID":strconv.FormatInt(out.Base.ID,10)}
+ withdrawPath:=w.path("/case/bases/x/withdraw")
+ denied=w.call(w.a.handleCaseWithdrawBaseDraft,http.MethodPost,withdrawPath,admin,nil,withdrawPV)
+ if denied.Code!=http.StatusForbidden{t.Fatalf("non-owner withdrew draft: %d",denied.Code)}
+ withdrawn:=w.call(w.a.handleCaseWithdrawBaseDraft,http.MethodPost,withdrawPath,w.f.OwnerDiscordID,nil,withdrawPV)
+ if withdrawn.Code!=http.StatusOK{t.Fatalf("withdraw draft: %d %s",withdrawn.Code,withdrawn.Body.String())}
+ withdrawnOut:=decodeBody[struct{Base repository.CaseRegisteredBase `json:"base"`}](t,withdrawn)
+ if withdrawnOut.Base.State!="REVOKED"||withdrawnOut.Base.RevokedAt==nil{
+  t.Fatalf("withdrawal not recorded: %+v",withdrawnOut)
+ }
+ blockedGrant:=w.call(w.a.handleCaseAddBaseGrant,http.MethodPost,path,w.f.OwnerDiscordID,
+  caseAddGrantRequest{PlayerID:&guest},pv)
+ if blockedGrant.Code!=http.StatusBadRequest{t.Fatalf("withdrawn draft accepted grant: %d",blockedGrant.Code)}
  var state string
- if err:=w.a.DB.Pool.QueryRow(context.Background(),`SELECT state FROM case_registered_bases WHERE id=$1`,out.Base.ID).Scan(&state);err!=nil||state!="DRAFT"{
-  t.Fatalf("draft was promoted: %q %v",state,err)
+ if err:=w.a.DB.Pool.QueryRow(context.Background(),`SELECT state FROM case_registered_bases WHERE id=$1`,out.Base.ID).Scan(&state);err!=nil||state!="REVOKED"{
+  t.Fatalf("draft state wrong after withdrawal: %q %v",state,err)
  }
 }
