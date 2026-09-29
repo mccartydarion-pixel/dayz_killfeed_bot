@@ -47,6 +47,7 @@ const (
 type PveFeedPublisher struct {
 	sender HitSender // the narrow Discord surface *discordgo.Session satisfies
 	route  *RouteBinding
+	feed   *RotatingFeed // optional shared 50-card PvE/death window
 
 	// Optional custom embed templates (nil = the Champion default, always).
 	// Presentation only: which deaths the feed owns is decided elsewhere.
@@ -79,6 +80,14 @@ func NewPveFeedPublisher(sender HitSender, resolver RouteResolver, guildRowID, s
 }
 
 // SetCustomizer enables custom embed templates for this server's PVE_FEED cards.
+// SetFeed shares the managed death/PvE window. It must be set before Run;
+// otherwise the standalone legacy batched publisher is retained for callers.
+func (p *PveFeedPublisher) SetFeed(feed *RotatingFeed) {
+	if p != nil {
+		p.feed = feed
+	}
+}
+
 func (p *PveFeedPublisher) SetCustomizer(c EmbedCustomizer, serverName ServerNameFunc) {
 	if p == nil {
 		return
@@ -224,6 +233,15 @@ func (p *PveFeedPublisher) send(channel string, batch []killfeed.PveDeathNotice,
 	}
 	if omitted > 0 {
 		embeds[0].Description += fmt.Sprintf("\n… %d earlier PvE deaths were not shown", omitted)
+	}
+	// Routed production feeds use one shared managed window with ordinary
+	// death/suicide cards. No untracked PvE messages can accumulate past its
+	// 50-card limit; the feed owns ordered journal/retry/delete-before-post.
+	if p.feed != nil {
+		for _, embed := range embeds {
+			p.feed.EnqueueDetected(embed, time.Time{})
+		}
+		return
 	}
 	_, err := deliverMessage(p.sender, "PVE_FEED", channel, &discordgo.MessageSend{
 		Embeds:          embeds,

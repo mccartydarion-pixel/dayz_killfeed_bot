@@ -47,7 +47,11 @@ func TestLayoutHubHasServerStatusAndVoiceCounter(t *testing.T) {
 	if d := report(res, "ONLINE_COUNTER"); d.Health != HealthActive || !d.Voice {
 		t.Fatalf("voice counter report: %+v", d)
 	}
-	// Death feed and PvE share the combat feed: no separate channels.
+	// The separate PvE destination is created by /setup; obsolete legacy names are not.
+	pve, n := g.byName("☠️・pve-feed")
+	if n != 1 || w.routes["PVE_FEED"] != pve.ID || w.routes["KILLFEED"] == pve.ID {
+		t.Fatalf("separate PvE setup route missing: %+v", pve)
+	}
 	for _, name := range []string{"death-feed", "☠️・death-feed", "pvefeed"} {
 		if _, n := g.byName(name); n != 0 {
 			t.Fatalf("%s must not exist in V2", name)
@@ -98,9 +102,9 @@ func TestRepairPreservesCustomerRoutes(t *testing.T) {
 	if _, n := g.byName("🎯・hitfeed"); n != 0 {
 		t.Fatal("a destination served entirely by a customer channel needs no Champion channel")
 	}
-	combat, n := g.byName("🔫・combat-feed")
-	if n != 1 || w.routes["PVE_FEED"] != combat.ID {
-		t.Fatal("the Champion-managed part of a destination still gets the V2 channel")
+	pve, n := g.byName("☠️・pve-feed")
+	if n != 1 || w.routes["PVE_FEED"] != pve.ID || w.routes["KILLFEED"] != "my-feed" {
+		t.Fatal("the PvE route gets its own Champion-managed channel while customer kill route is preserved")
 	}
 	if g.starters["my-feed"] != 0 || g.starters["my-hits"] != 0 {
 		t.Fatal("Champion never posts into a customer's channel")
@@ -227,14 +231,14 @@ func TestLegacyRetirablesOnlyReplacedChampionChannels(t *testing.T) {
 		ADMMonitorChannelID: "old-adm",
 		LinkPanelChannelID:  "old-link",
 	}
-	routes := map[string]ChannelRouteInfo{"KILLFEED": {ChannelID: "combat"}, "ADMIN_LOGS": {ChannelID: "admin-logs"}}
+	routes := map[string]ChannelRouteInfo{"KILLFEED": {ChannelID: "combat"}, "PVE_FEED": {ChannelID: "pve-feed"}, "ADMIN_LOGS": {ChannelID: "admin-logs"}}
 	got := legacyRetirablesFor(gs, routes, map[string]bool{"live": true})
 	ids := map[string]repository.RetiredChannel{}
 	for _, r := range got {
 		ids[r.ChannelID] = r
 	}
 	if ids["old-death"].LegacyField != "DeathChannelID" || ids["old-death"].Source != "LEGACY_SETUP" {
-		t.Fatalf("the legacy death feed is replaced by combat-feed: %+v", got)
+		t.Fatalf("the legacy death feed is replaced by the separate PvE feed: %+v", got)
 	}
 	if _, ok := ids["old-adm"]; !ok {
 		t.Fatal("the legacy ADM monitor is replaced by admin-logs")

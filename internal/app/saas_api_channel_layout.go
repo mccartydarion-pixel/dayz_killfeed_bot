@@ -56,7 +56,7 @@ var legacySetupReplacements = []struct {
 	clear           func(*discord.GuildSetup)
 }{
 	{"KillfeedChannelID", "KILLFEED", func(g *discord.GuildSetup) string { return g.KillfeedChannelID }, func(g *discord.GuildSetup) { g.KillfeedChannelID = "" }},
-	{"DeathChannelID", "KILLFEED", func(g *discord.GuildSetup) string { return g.DeathChannelID }, func(g *discord.GuildSetup) { g.DeathChannelID = "" }},
+	{"DeathChannelID", "PVE_FEED", func(g *discord.GuildSetup) string { return g.DeathChannelID }, func(g *discord.GuildSetup) { g.DeathChannelID = "" }},
 	{"LeaderboardsChannelID", "AUTO_LEADERBOARD", func(g *discord.GuildSetup) string { return g.LeaderboardsChannelID }, func(g *discord.GuildSetup) { g.LeaderboardsChannelID, g.LeaderboardMessageID = "", "" }},
 	{"PlayerStatsChannelID", "STATS_LEADERBOARDS", func(g *discord.GuildSetup) string { return g.PlayerStatsChannelID }, func(g *discord.GuildSetup) { g.PlayerStatsChannelID, g.PlayerStatsInfoMessageID = "", "" }},
 	{"LinkPanelChannelID", "LINK_GAMERTAG", func(g *discord.GuildSetup) string { return g.LinkPanelChannelID }, func(g *discord.GuildSetup) { g.LinkPanelChannelID, g.LinkPanelMessageID = "", "" }},
