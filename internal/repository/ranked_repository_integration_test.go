@@ -103,7 +103,25 @@ VALUES('SERVER','PLAYSTATION',$1,'ACTIVE',100,ARRAY[100,300,600,1000,1500,2100,2
 	if err != nil || len(standings) != 1 || standings[0].RP != 100 {
 		t.Fatalf("reset standings=%+v err=%v", standings, err)
 	}
-	if _, err := repo.RecordServerKill(ctx, season, newKill(5, firstAt.Add(10*time.Minute))); !errors.Is(err, ErrRankedIneligible) {
+	if _, err := repo.RecordServerKill(ctx, season, newKill(5, firstAt.Add(time.Minute))); !errors.Is(err, ErrRankedIneligible) {
 		t.Fatalf("archived season accepted kill: %v", err)
+	}
+	instant := newKill(7, start.Add(12*time.Minute))
+	decision, err := repo.AwardActiveServerKill(ctx, server.ID, instant)
+	if err != nil || decision.Outcome != "COOLDOWN" {
+		t.Fatalf("live award cooldown = %+v, %v", decision, err)
+	}
+	missing := newKill(8, start.Add(17*time.Minute))
+	count, err := repo.ReconcileServerAwards(ctx, server.ID)
+	if err != nil || count != 1 {
+		t.Fatalf("reconcile count=%d err=%v", count, err)
+	}
+	decision, err = repo.RecordServerKill(ctx, second, missing)
+	if err != nil || decision.Outcome != "AWARDED" || decision.Amount != 100 {
+		t.Fatalf("reconciled decision = %+v, %v", decision, err)
+	}
+	count, err = repo.ReconcileServerAwards(ctx, server.ID)
+	if err != nil || count != 0 {
+		t.Fatalf("replay reconciliation count=%d err=%v", count, err)
 	}
 }
