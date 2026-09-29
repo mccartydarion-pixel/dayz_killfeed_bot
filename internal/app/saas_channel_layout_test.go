@@ -184,7 +184,7 @@ func TestRouteVocabularyHasNoCasinoAndEveryRouteOneDestination(t *testing.T) {
 		}
 	}
 	want := map[string]string{
-		"KILLFEED": "COMBAT_FEED", "PVE_FEED": "COMBAT_FEED", "HITFEED": "HITFEED", "BOUNTY": "BOUNTIES", "BOUNTY_TRACKING": "BOUNTIES",
+		"KILLFEED": "COMBAT_FEED", "PVE_FEED": "PVE_FEED", "HITFEED": "HITFEED", "BOUNTY": "BOUNTIES", "BOUNTY_TRACKING": "BOUNTIES",
 		"CONNECTIONS": "CONNECTIONS", "HEATMAPS": "HEATMAPS", "AUTO_LEADERBOARD": "LEADERBOARDS", "STATS_LEADERBOARDS": "LEADERBOARDS",
 		"LINK_GAMERTAG": "PLAYER_LINK", "ECONOMY": "ECONOMY", "SHOP": "ECONOMY", "ADMIN_LOGS": "ADMIN_LOGS", "ADMIN_ALERTS": "ADMIN_LOGS", "BUILD_FEED": "ADMIN_LOGS",
 		"SERVER_STATUS": "SERVER_STATUS", "ONLINE_COUNTER": "ONLINE_COUNTER",
@@ -202,7 +202,7 @@ func TestPlanChannelLayoutSkipsDestinationsWithoutProducers(t *testing.T) {
 	for _, p := range plans {
 		health[p.Destination.Key] = p.Health
 	}
-	for _, key := range []string{"COMBAT_FEED", "HITFEED", "BOUNTIES", "CONNECTIONS", "HEATMAPS", "SERVER_STATUS", "LEADERBOARDS", "PLAYER_LINK", "ECONOMY", "ONLINE_COUNTER", "ADMIN_LOGS"} {
+	for _, key := range []string{"COMBAT_FEED", "PVE_FEED", "HITFEED", "BOUNTIES", "CONNECTIONS", "HEATMAPS", "SERVER_STATUS", "LEADERBOARDS", "PLAYER_LINK", "ECONOMY", "ONLINE_COUNTER", "ADMIN_LOGS"} {
 		if health[key] != HealthActive {
 			t.Fatalf("%s want ACTIVE, got %s", key, health[key])
 		}
@@ -254,8 +254,9 @@ func TestApplyChannelLayoutFreshGuild(t *testing.T) {
 		t.Fatal("SHOP and ECONOMY must share the economy channel")
 	}
 	combat, _ := g.byName("🔫・combat-feed")
-	if w.routes["KILLFEED"] != combat.ID || w.routes["PVE_FEED"] != combat.ID {
-		t.Fatal("KILLFEED and PVE_FEED must share combat-feed")
+	pve, n := g.byName("☠️・pve-feed")
+	if n != 1 || pve.ID == combat.ID || w.routes["KILLFEED"] != combat.ID || w.routes["PVE_FEED"] != pve.ID {
+		t.Fatal("/setup must route kills and deaths/PvE to separate destinations")
 	}
 	heat, _ := g.byName("🗺️・heatmaps")
 	live, _ := g.byName("🏆 CHAMPION • LIVE")
