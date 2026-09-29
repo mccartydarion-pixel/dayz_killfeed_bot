@@ -17,14 +17,29 @@ import (
 // objectSpawnersArr, only after a verified server-side backup of the exact original bytes exists.
 // Its rollback restores that backup and is a separate, separately authorized operation.
 const (
-	OpReferenceChampionFile Operation = "gate-b-reference"
-	OpRestoreConfig         Operation = "gate-b-rollback"
+	OpReferenceChampionFile Operation = "gate-b-reference" // retired: the legacy champion/ entry
+	OpRestoreConfig         Operation = "gate-b-rollback"  // restores ANY verified config backup by its SHA-256
+	// Relocation (docs/SHOP_CUSTOM_RELOCATION.md).
+	OpCreateCustomChampionFile  Operation = "gate-c-create-custom"
+	OpRelocateChampionReference Operation = "gate-d-relocate-reference"
 )
+
+// championFor is the Champion file an operation depends on: the legacy location for the retired
+// Gate B, the custom/ location otherwise.
+func championFor(kind opKind) string {
+	if kind == kindConfigPatch {
+		return nitradodelivery.LegacyArtifactRelPath
+	}
+	return nitradodelivery.ArtifactRelPath
+}
+
+// backsUp reports whether the operation writes a verified backup of the current config first.
+func backsUp(kind opKind) bool { return kind == kindConfigPatch || kind == kindConfigRelocate }
 
 var (
 	ErrChampionNotEmpty  = errors.New("missionwrite: the Champion spawner file is not exactly the verified empty file")
 	ErrAlreadyReferenced = errors.New("missionwrite: cfggameplay.json already references the Champion file")
-	ErrPatchNotExact     = errors.New("missionwrite: the derived patch is not exactly one appended champion/champion_shop_delivery.json")
+	ErrPatchNotExact     = errors.New("missionwrite: the derived patch is not exactly the intended single Champion entry change")
 	ErrBackupConflict    = errors.New("missionwrite: a different file already exists at the backup path")
 	ErrBackupMissing     = errors.New("missionwrite: the verified server-side backup is missing or does not match")
 	ErrNothingToRestore  = errors.New("missionwrite: cfggameplay.json already has the backed-up content")
@@ -171,7 +186,7 @@ func prepareConfig(ctx context.Context, rm Remote, r Request) (ConfigPlan, error
 		return cp, ErrConfigChanged // changed during the inspection itself
 	}
 	cp.Current = raw
-	champ, err := stateOf(ctx, rm, svc, in, nitradodelivery.ArtifactRelPath)
+	champ, err := stateOf(ctx, rm, svc, in, championFor(kind))
 	if err != nil {
 		return cp, err
 	}
@@ -183,15 +198,48 @@ func prepareConfig(ctx context.Context, rm Remote, r Request) (ConfigPlan, error
 			return cp, ErrChampionNotEmpty
 		}
 		for _, s := range in.Spawners {
+			if s == nitradodelivery.LegacyArtifactRelPath {
+				return cp, ErrAlreadyReferenced
+			}
+		}
+		p, err := canary.ProposePatchFor(raw, nitradodelivery.LegacyArtifactRelPath)
+		if err != nil {
+			return cp, fmt.Errorf("%w: %v", ErrPatchNotExact, err)
+		}
+		want := append(append([]string{}, r.ExpectSpawners...), nitradodelivery.LegacyArtifactRelPath)
+		if !equalList(p.Before, r.ExpectSpawners) || !equalList(p.After, want) || len(p.Changes) != 1 {
+			return cp, ErrPatchNotExact
+		}
+		cp.Payload, cp.SpawnersAfter, cp.Diff = p.Proposed, p.After, p.Diff
+		cp.BackupPath = canary.ConfigBackupPath(in.ConfigSHA256)
+		b, err := stateOf(ctx, rm, svc, in, cp.BackupPath)
+		if err != nil {
+			return cp, err
+		}
+		if b.sha != Absent && b.sha != in.ConfigSHA256 {
+			return cp, ErrBackupConflict
+		}
+		cp.BackupState, cp.BackupDirExists = b.sha, b.parentExists
+	case kindConfigRelocate:
+		if err := canary.CheckReferencePrecondition(champ.data, champ.sha != Absent); err != nil {
+			return cp, ErrChampionNotEmpty
+		}
+		for _, s := range in.Spawners {
 			if s == nitradodelivery.ArtifactRelPath {
 				return cp, ErrAlreadyReferenced
 			}
 		}
-		p, err := canary.ProposePatch(raw)
+		p, err := canary.ProposeRelocation(raw)
 		if err != nil {
 			return cp, fmt.Errorf("%w: %v", ErrPatchNotExact, err)
 		}
-		want := append(append([]string{}, r.ExpectSpawners...), nitradodelivery.ArtifactRelPath)
+		want := make([]string, len(r.ExpectSpawners))
+		for i, s := range r.ExpectSpawners {
+			want[i] = s
+			if s == nitradodelivery.LegacyArtifactRelPath {
+				want[i] = nitradodelivery.ArtifactRelPath
+			}
+		}
 		if !equalList(p.Before, r.ExpectSpawners) || !equalList(p.After, want) || len(p.Changes) != 1 {
 			return cp, ErrPatchNotExact
 		}
@@ -237,13 +285,13 @@ func prepareConfig(ctx context.Context, rm Remote, r Request) (ConfigPlan, error
 
 func configSteps(kind opKind, cp ConfigPlan, in Inspection) []string {
 	var s []string
-	if kind == kindConfigPatch {
+	if backsUp(kind) {
 		switch {
 		case cp.BackupState != Absent:
 			s = append(s, "READ  server backup "+cp.BackupPath+" already present with the original SHA-256 (reused, not rewritten)")
 		default:
 			if !cp.BackupDirExists {
-				s = append(s, "WRITE mkdir champion/backup (one directory, inside champion/)")
+				s = append(s, "WRITE mkdir "+nitradodelivery.BackupDir+" (one directory, inside "+path.Dir(nitradodelivery.BackupDir)+"/)")
 			}
 			s = append(s,
 				fmt.Sprintf("WRITE backup: upload the exact original %d bytes to %s", len(cp.Current), cp.BackupPath),
@@ -298,15 +346,15 @@ func executeConfig(ctx context.Context, rm Remote, r Request, authorizedID strin
 		return o, nil
 	}
 
-	// 1. Verified server-side backup of the exact original bytes (Gate B only).
-	if kind == kindConfigPatch {
+	// 1. Verified server-side backup of the exact current bytes (patch and relocation).
+	if backsUp(kind) {
 		if cp.BackupState == Absent {
 			if !cp.BackupDirExists {
-				champDir, perr := capability.SafePath(in.phys.fileRoot, in.phys.missionDir+"/"+nitradodelivery.ArtifactDir)
+				backupParent, perr := capability.SafePath(in.phys.fileRoot, in.phys.missionDir+"/"+path.Dir(nitradodelivery.BackupDir))
 				if perr != nil {
 					return finish(out, "unsafe backup folder path; cfggameplay.json untouched")
 				}
-				mkErr := rm.Mkdir(ctx, svc, champDir, "backup")
+				mkErr := rm.Mkdir(ctx, svc, backupParent, path.Base(nitradodelivery.BackupDir))
 				now, lerr := stateOf(ctx, rm, svc, in, cp.BackupPath)
 				switch {
 				case mkErr == nil && lerr == nil && now.parentExists:
@@ -347,8 +395,8 @@ func executeConfig(ctx context.Context, rm Remote, r Request, authorizedID strin
 		out.Checks = append(out.Checks, Check{"pre-write cfggameplay.json", "FAIL", "changed or unreadable"})
 		return finish(out, "aborted before the upload request")
 	}
-	if kind == kindConfigPatch {
-		if c, err := stateOf(ctx, rm, svc, in, nitradodelivery.ArtifactRelPath); err != nil || canary.CheckReferencePrecondition(c.data, c.sha != Absent) != nil {
+	if backsUp(kind) {
+		if c, err := stateOf(ctx, rm, svc, in, championFor(kind)); err != nil || canary.CheckReferencePrecondition(c.data, c.sha != Absent) != nil {
 			out.Checks = append(out.Checks, Check{"pre-write Champion file", "FAIL", "no longer exactly the empty file"})
 			return finish(out, "aborted before the upload request")
 		}
@@ -356,7 +404,7 @@ func executeConfig(ctx context.Context, rm Remote, r Request, authorizedID strin
 	// The backup must still hold the original bytes: for the patch that is the current config, for the
 	// rollback it is the payload being restored.
 	wantBackup := cp.PayloadSHA256
-	if kind == kindConfigPatch {
+	if backsUp(kind) {
 		wantBackup = in.ConfigSHA256
 	}
 	if b, err := stateOf(ctx, rm, svc, in, cp.BackupPath); err != nil || b.sha != wantBackup {
@@ -420,7 +468,7 @@ func executeConfig(ctx context.Context, rm Remote, r Request, authorizedID strin
 	} else {
 		out.Checks = append(out.Checks, Check{"referenced spawner files present", "FAIL", "missing: " + strings.Join(missing, ", ")})
 	}
-	if c, err := stateOf(ctx, rm, svc, in, nitradodelivery.ArtifactRelPath); err == nil && c.sha == cp.ChampionState {
+	if c, err := stateOf(ctx, rm, svc, in, championFor(kind)); err == nil && c.sha == cp.ChampionState {
 		out.Checks = append(out.Checks, Check{"Champion file unchanged", "PASS", c.sha})
 	} else {
 		out.Checks = append(out.Checks, Check{"Champion file unchanged", "FAIL", "changed or unreadable"})

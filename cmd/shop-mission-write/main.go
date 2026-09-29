@@ -4,12 +4,13 @@
 // reads the file back and reports WRITTEN_VERIFIED, NOT_WRITTEN or UNCERTAIN. It never prints the
 // Nitrado token, an upload token, a signed URL or the account's physical path.
 //
-// Only Gate A is active:
+// Active operations: gate-c-create-custom and gate-d-relocate-reference (docs/SHOP_CUSTOM_RELOCATION.md)
+// and gate-b-rollback. Gate A and Gate B (the legacy champion/ location) are completed and refused.
 //
-//	NITRADO_TOKEN=... go run ./cmd/shop-mission-write -operation gate-a-create-empty \
+//	NITRADO_TOKEN=... go run ./cmd/shop-mission-write -operation gate-c-create-custom \
 //	    -service 19806451 -org 1 -installation 11 -game-server 1 \
-//	    -mission dayzps_missions/dayzOffline.chernarusplus -path champion/champion_shop_delivery.json \
-//	    -expect-current absent -expect-config-sha256 <sha> -expect-spawners '["custom/The_Lost_City.json"]' \
+//	    -mission dayzps_missions/dayzOffline.chernarusplus -path custom/champion_shop_delivery.json \
+//	    -expect-current absent -expect-config-sha256 <sha> -expect-spawners '[...]' \
 //	    -expect-payload-sha256 328c4d64bb81bdbdddad2431a12b6197182f5fa5646bf16c7e0e8d437bc8dc5f \
 //	    # dry run (default): prints the inspection, the journal state and the plan ID
 //	    ... -execute -authorize <plan ID>     # the one authorized write
@@ -123,6 +124,10 @@ func run() int {
 		Payload:             payloadFor(missionwrite.Operation(*op)),
 		ExpectPayloadSHA256: strings.ToLower(*expectPayload),
 	}
+	if missionwrite.Retired(req.Operation) {
+		fmt.Fprintln(os.Stderr, "refused: operation", req.Operation, "is completed and retired (superseded by gate-c-create-custom / gate-d-relocate-reference)")
+		return exitRefused
+	}
 	if err := req.Validate(); err != nil {
 		fmt.Fprintln(os.Stderr, "refused:", err)
 		return exitRefused
@@ -140,7 +145,8 @@ func run() int {
 	defer cancel()
 	client := nitrado.NewClient(nitrado.DefaultBaseURL, token, &http.Client{Timeout: 45 * time.Second})
 
-	configOp := req.Operation == missionwrite.OpReferenceChampionFile || req.Operation == missionwrite.OpRestoreConfig
+	configOp := req.Operation == missionwrite.OpReferenceChampionFile || req.Operation == missionwrite.OpRestoreConfig || req.Operation == missionwrite.OpRelocateChampionReference
+	backsUp := req.Operation == missionwrite.OpReferenceChampionFile || req.Operation == missionwrite.OpRelocateChampionReference
 	if !*execute {
 		var p missionwrite.Plan
 		var err error
@@ -158,7 +164,7 @@ func run() int {
 		}
 		if configOp {
 			printConfigPlan(cp)
-			if req.Operation == missionwrite.OpReferenceChampionFile {
+			if backsUp {
 				lb, err := saveLocalBackup(*localBackups, cp.Current)
 				if err != nil {
 					fmt.Println("\nREFUSED: local backup:", err)
@@ -182,8 +188,8 @@ func run() int {
 		return exitOK
 	}
 
-	if req.Operation == missionwrite.OpReferenceChampionFile {
-		// A second, owner-side copy of the exact original must exist before the overwrite.
+	if backsUp {
+		// A second, owner-side copy of the exact current config must exist before the overwrite.
 		if err := checkLocalBackup(*localBackups, req.ExpectCurrent); err != nil {
 			fmt.Fprintln(os.Stderr, "refused: local backup:", err, "- run the dry run first")
 			return exitRefused
@@ -218,7 +224,7 @@ func run() int {
 
 // payloadFor returns the operation's fixed payload: the tool never reads a payload from a file.
 func payloadFor(op missionwrite.Operation) []byte {
-	if op == missionwrite.OpCreateEmptyChampionFile {
+	if op == missionwrite.OpCreateEmptyChampionFile || op == missionwrite.OpCreateCustomChampionFile {
 		b, _ := canary.EmptyArtifact()
 		return b
 	}

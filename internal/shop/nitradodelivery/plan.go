@@ -26,13 +26,21 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
-// Artifact location. The spawner file is Champion-owned and lives in its own directory of the
-// mission folder; Champion never edits a server-owner file (cfggameplay.json is changed once, by the
-// owner, to reference it - see docs). Nothing here accepts a path from a request.
+// Artifact location. The spawner file is Champion-owned and lives in the mission's custom/ folder:
+// on Nitrado console services the game host only receives user files from custom/ (the first boot
+// after Gate B reported the original champion/ location as missing - docs/SHOP_CUSTOM_RELOCATION.md).
+// Champion never edits a server-owner file except through the guarded, owner-approved gates. Nothing
+// here accepts a path from a request.
 const (
-	ArtifactDir      = "champion"
+	ArtifactDir      = "custom"
 	ArtifactFile     = "champion_shop_delivery.json"
 	ArtifactRelPath  = ArtifactDir + "/" + ArtifactFile // relative to the mission folder
+	// LegacyArtifactRelPath is the first location (Gates A/B, 2026-09-26/29). The game host never
+	// received it; it stays on the file server, unreferenced once Gate D has run.
+	LegacyArtifactRelPath = "champion/" + ArtifactFile
+	// BackupDir holds verified backups. It is deliberately NOT under custom/, so backups never reach
+	// the game host.
+	BackupDir = "champion/backup"
 	MaxUnitsPerOrder = 10                               // one spawner entry per unit
 	MaxStagedObjects = 50                               // per installation file
 )

@@ -9,6 +9,7 @@ import (
 
 	"github.com/yourname/dayz-killfeed/internal/shop/canary"
 	"github.com/yourname/dayz-killfeed/internal/shop/capability"
+	"github.com/yourname/dayz-killfeed/internal/shop/nitradodelivery"
 )
 
 const (
@@ -32,7 +33,7 @@ func afterGateA(t *testing.T) *standIn {
 
 func proposed(t *testing.T) []byte {
 	t.Helper()
-	p, err := canary.ProposePatch([]byte(liveConfig))
+	p, err := canary.ProposePatchFor([]byte(liveConfig), nitradodelivery.LegacyArtifactRelPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +179,7 @@ func TestGateBStaleStateRefusal(t *testing.T) {
 	s.files[cfgFile] = []byte(changed)
 	r2 := gateB(t)
 	r2.ExpectCurrent, r2.ExpectConfigSHA256 = SHA256([]byte(changed)), SHA256([]byte(changed))
-	p2, _ := canary.ProposePatch([]byte(changed))
+	p2, _ := canary.ProposePatchFor([]byte(changed), nitradodelivery.LegacyArtifactRelPath)
 	r2.ExpectPayloadSHA256 = SHA256(p2.Proposed)
 	if _, err := Execute(ctx, s.client(), r2, cp.ID, journal(t)); !errors.Is(err, ErrAuthorizationStale) {
 		t.Fatalf("stale: %v", err)

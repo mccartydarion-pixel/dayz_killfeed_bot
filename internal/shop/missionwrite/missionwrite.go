@@ -82,6 +82,7 @@ var (
 	ErrAuthorizationMissing = errors.New("missionwrite: an explicit single-use authorization (the plan ID) is required")
 	ErrAuthorizationStale   = errors.New("missionwrite: the authorization does not match the fresh plan (state changed since approval)")
 	ErrAuthorizationUsed    = errors.New("missionwrite: this authorization was already used")
+	ErrParentMissing        = errors.New("missionwrite: the destination folder does not exist and this operation never creates folders")
 	ErrUncertainOutstanding = errors.New("missionwrite: an earlier write to this destination is UNCERTAIN or incomplete; resolve it first")
 )
 
@@ -101,9 +102,10 @@ type Request struct {
 type opKind int
 
 const (
-	kindCreate        opKind = iota // Gate A: a new file with a built-in payload
-	kindConfigPatch                 // Gate B: cfggameplay.json, payload derived from the live bytes
-	kindConfigRestore               // Gate B rollback: cfggameplay.json, payload = the verified backup
+	kindCreate         opKind = iota // Gate A: a new file with a built-in payload
+	kindConfigPatch                  // Gate B: cfggameplay.json, payload derived from the live bytes
+	kindConfigRestore                // config rollback: cfggameplay.json, payload = a verified backup
+	kindConfigRelocate               // relocation Gate D: replace the legacy Champion entry in place
 )
 
 type opSpec struct {
@@ -112,28 +114,45 @@ type opSpec struct {
 	payload       func() []byte // kindCreate only
 	mustBeAbsent  bool
 	createsParent bool
+	// retired: completed and superseded; the package keeps it for audit and tests, the command line
+	// refuses it (Retired).
+	retired bool
 }
 
+// Retired reports whether op is a completed, superseded operation the command line must refuse.
+func Retired(op Operation) bool { s := ops[op]; return s != nil && s.retired }
+
 var ops = map[Operation]*opSpec{
+	// Gate A and Gate B (2026-09-26/29): the legacy champion/ location, which the game host never
+	// received. Completed; retired.
 	OpCreateEmptyChampionFile: {
 		kind:          kindCreate,
-		path:          nitradodelivery.ArtifactRelPath,
+		path:          nitradodelivery.LegacyArtifactRelPath,
 		payload:       func() []byte { b, _ := canary.EmptyArtifact(); return b },
 		mustBeAbsent:  true,
 		createsParent: true,
+		retired:       true,
 	},
-	OpReferenceChampionFile: {kind: kindConfigPatch, path: canary.ConfigRelPath},
-	OpRestoreConfig:         {kind: kindConfigRestore, path: canary.ConfigRelPath},
-	OpStageItem:             nil,
-	OpUnstageItem:           nil,
+	OpReferenceChampionFile: {kind: kindConfigPatch, path: canary.ConfigRelPath, retired: true},
+	// Relocation Gate C: the empty file inside the EXISTING custom/ folder (never created here).
+	OpCreateCustomChampionFile: {
+		kind:         kindCreate,
+		path:         nitradodelivery.ArtifactRelPath,
+		payload:      func() []byte { b, _ := canary.EmptyArtifact(); return b },
+		mustBeAbsent: true,
+	},
+	// Relocation Gate D: the legacy entry becomes custom/champion_shop_delivery.json.
+	OpRelocateChampionReference: {kind: kindConfigRelocate, path: canary.ConfigRelPath},
+	OpRestoreConfig:             {kind: kindConfigRestore, path: canary.ConfigRelPath},
+	OpStageItem:                 nil,
+	OpUnstageItem:               nil,
 }
 
 var (
-	sha256Re   = regexp.MustCompile(`^[0-9a-f]{64}$`)
-	relPathRe  = regexp.MustCompile(`^([A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+\.json$`) // spawner JSON files only
-	admFileRe  = regexp.MustCompile(`^DayZServer_[A-Za-z0-9_]+_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.ADM$`)
-	missionRe  = regexp.MustCompile(`^[a-z0-9]+_missions/[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)?$`)
-	parentName = nitradodelivery.ArtifactDir
+	sha256Re  = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	relPathRe = regexp.MustCompile(`^([A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+\.json$`) // spawner JSON files only
+	admFileRe = regexp.MustCompile(`^DayZServer_[A-Za-z0-9_]+_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.ADM$`)
+	missionRe = regexp.MustCompile(`^[a-z0-9]+_missions/[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)?$`)
 )
 
 // SHA256 is the lowercase hex digest.
@@ -429,9 +448,12 @@ func Prepare(ctx context.Context, rm Remote, r Request) (Plan, error) {
 	if err := checkExpectations(r, in); err != nil {
 		return Plan{Inspection: in}, err
 	}
+	if !in.ParentExists && !ops[r.Operation].createsParent {
+		return Plan{Inspection: in}, ErrParentMissing
+	}
 	p := Plan{ID: planID(r, in), Operation: r.Operation, Path: r.Path, Inspection: in}
 	if !in.ParentExists {
-		p.Steps = append(p.Steps, "WRITE mkdir "+parentName+" in the mission folder (one directory, not recursive)")
+		p.Steps = append(p.Steps, "WRITE mkdir "+path.Dir(r.Path)+" in the mission folder (one directory, not recursive)")
 	}
 	p.Steps = append(p.Steps,
 		"READ  re-verify: destination "+Absent+", cfggameplay.json "+in.ConfigSHA256[:12]+"…",
