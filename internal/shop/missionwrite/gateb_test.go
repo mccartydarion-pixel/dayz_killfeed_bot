@@ -481,3 +481,30 @@ func TestGateBRollbackRefusals(t *testing.T) {
 		t.Fatalf("other digest: %v", err)
 	}
 }
+
+// Dual mount (Nitrado): the server's own directory (game_specific.path) shows the newest boot while
+// the mission's mount lags. The boot identity must come from the newest across both, so a restart
+// that only appears in the server's mount is still detected.
+func TestBootIdentityUsesNewestAcrossMounts(t *testing.T) {
+	s := afterGateA(t)
+	serverCfg := testRoot + "/ftproot/dayzps/config"
+	s.gameMount = "ftproot"
+	for d := serverCfg; d != testRoot; d = d[:strings.LastIndex(d, "/")] {
+		s.dirs[d] = true
+	}
+	s.files[serverCfg+"/DayZServer_PS4_x64_2026-09-29_04-59-38.ADM"] = []byte("AdminLog started\n") // newer than the mission mount's
+	r := gateB(t)
+	cp := prepB(t, s, r)
+	if cp.Inspection.BootFile != "DayZServer_PS4_x64_2026-09-29_04-59-38.ADM" {
+		t.Fatalf("boot identity from the lagging mount: %s", cp.Inspection.BootFile)
+	}
+	s.afterTransfer = func(s *standIn) {
+		if len(s.transfers) == 2 { // the config upload: a restart visible only in the server's mount
+			s.files[serverCfg+"/DayZServer_PS4_x64_2026-09-29_06-07-38.ADM"] = []byte("AdminLog started\n")
+		}
+	}
+	o, err := Execute(context.Background(), s.client(), r, cp.ID, journal(t))
+	if err != nil || o.Status != StatusWrittenVerified || check(o, "no restart") != "FAIL" {
+		t.Fatalf("%v %+v", err, o)
+	}
+}

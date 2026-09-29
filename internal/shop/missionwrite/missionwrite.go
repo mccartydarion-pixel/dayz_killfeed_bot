@@ -221,7 +221,10 @@ type Inspection struct {
 	FileServerHostTrusted bool
 }
 
-type physical struct{ missionDir, fileRoot, configPath, bootDir string }
+type physical struct {
+	missionDir, fileRoot, configPath string
+	bootDirs                         []string // every mount's <game>/config, server's own directory first
+}
 
 func (*physical) String() string { return "<physical paths redacted>" }
 
@@ -271,13 +274,24 @@ func Inspect(ctx context.Context, rm Remote, r Request) (Inspection, error) {
 	gs, err := rm.GameserverFacts(ctx, r.Binding.NitradoServiceID)
 	if err == nil {
 		in.GameserverStatus = gs.Status
-		prefix := strings.TrimSuffix(in.phys.missionDir, in.MissionPath)
-		if prefix != in.phys.missionDir && gs.Game != "" {
-			if d, perr := capability.SafePath(in.phys.fileRoot, prefix+gs.Game+"/config"); perr == nil {
-				in.phys.bootDir = d
-				in.BootFile = newestADM(ctx, rm, r.Binding.NitradoServiceID, d)
+		// Nitrado exposes two mounts that can disagree about the newest logs: the server's own
+		// directory (game_specific.path, e.g. noftp) and the tree-walked one the mission may live in
+		// (e.g. ftproot, whose log listing can lag). The boot identity is the newest ADM across BOTH,
+		// so a restart during the write window cannot hide behind a stale listing.
+		var dirs []string
+		if gs.GamePath != "" {
+			if d, perr := capability.SafePath(in.phys.fileRoot, gs.GamePath+"/config"); perr == nil {
+				dirs = append(dirs, d)
 			}
 		}
+		prefix := strings.TrimSuffix(in.phys.missionDir, in.MissionPath)
+		if prefix != in.phys.missionDir && gs.Game != "" {
+			if d, perr := capability.SafePath(in.phys.fileRoot, prefix+gs.Game+"/config"); perr == nil && (len(dirs) == 0 || dirs[0] != d) {
+				dirs = append(dirs, d)
+			}
+		}
+		in.phys.bootDirs = dirs
+		in.BootFile = newestADMAcross(ctx, rm, r.Binding.NitradoServiceID, dirs)
 	}
 	return in, nil
 }
@@ -339,6 +353,18 @@ func readNamed(ctx context.Context, rm Remote, svc string, in *Inspection, child
 		in.Current, in.CurrentBytes = SHA256(b), len(b)
 	}
 	return nil
+}
+
+// newestADMAcross returns the newest DayZServer_*.ADM name over every listable directory ("" if none).
+// The names carry the boot timestamp, so the lexical maximum is the latest boot.
+func newestADMAcross(ctx context.Context, rm Remote, svc string, dirs []string) string {
+	best := ""
+	for _, d := range dirs {
+		if n := newestADM(ctx, rm, svc, d); n > best {
+			best = n
+		}
+	}
+	return best
 }
 
 func newestADM(ctx context.Context, rm Remote, svc, dir string) string {
@@ -613,10 +639,10 @@ func Execute(ctx context.Context, rm Remote, r Request, authorizedID string, j *
 }
 
 func restartCheck(ctx context.Context, rm Remote, svc string, in Inspection) Check {
-	if in.BootFile == "" || in.phys.bootDir == "" {
+	if in.BootFile == "" || len(in.phys.bootDirs) == 0 {
 		return Check{"no restart", "UNVERIFIED", "the boot identity was not readable before the write"}
 	}
-	now := newestADM(ctx, rm, svc, in.phys.bootDir)
+	now := newestADMAcross(ctx, rm, svc, in.phys.bootDirs)
 	gs, err := rm.GameserverFacts(ctx, svc)
 	switch {
 	case now == "" || err != nil:

@@ -46,6 +46,7 @@ type standIn struct {
 	claimNoStore    bool                  // answer 200 but store nothing
 	corruptRead     bool                  // downloads of the destination return other bytes
 	corruptSuffix   string                // downloads of paths with this suffix return other bytes
+	gameMount       string                // mount named by game_specific.path (default noftp)
 	onlyTransfer    int                   // >0: the transfer failure switches apply only to this (1-based) transfer
 	mkdirStatus     int                   // non-zero: mkdir answers this status and creates nothing
 	insecureURL     string                // token response URL override
@@ -152,7 +153,7 @@ func (s *standIn) serve(w http.ResponseWriter, r *http.Request) {
 		s.mu.Unlock()
 		writeJSON(w, 200, map[string]any{"data": map[string]any{"gameserver": map[string]any{
 			"service_id": 19806451, "game": "dayzps", "status": st,
-			"game_specific": map[string]any{"path": s.root + "/noftp/dayzps", "path_available": true, "features": map[string]any{"has_file_browser": true}},
+			"game_specific": map[string]any{"path": s.root + "/" + s.mount() + "/dayzps", "path_available": true, "features": map[string]any{"has_file_browser": true}},
 			"settings":      map[string]any{"config": map[string]any{"mission": "dayzOffline.chernarusplus", "enableCfgGameplayFile": "1"}},
 		}}})
 	case r.Method == http.MethodGet && r.URL.Path == base+"/gameservers/file_server/list":
@@ -335,4 +336,11 @@ func hijackClose(w http.ResponseWriter) {
 	if err == nil {
 		c.Close()
 	}
+}
+
+func (s *standIn) mount() string {
+	if s.gameMount != "" {
+		return s.gameMount
+	}
+	return "noftp"
 }
