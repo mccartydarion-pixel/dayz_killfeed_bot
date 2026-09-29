@@ -1655,7 +1655,7 @@ func (a *App) Run() error {
 				setupManager.SetRouteGate(a.RouteSyncer.HasRoute)
 				go a.RouteSyncer.Run(ctx)
 			}
-			store := &persistenceStoreAdapter{players: a.Players, kills: a.Kills, deaths: a.Deaths, seasons: a.Seasons, factions: a.Factions, wars: a.Wars, events: a.Events, bounties: a.Bounties, bountySvc: a.BountyService, streaks: a.Streaks, anomalies: a.Anomalies, activity: a.ActivityRepository, servers: a.Servers, stats: a.Stats, analytics: a.AnalyticsRepository, factionStats: a.FactionHubStats, locations: a.Locations, zones: a.Zones, panelDirty: func() {
+			store := &persistenceStoreAdapter{players: a.Players, kills: a.Kills, deaths: a.Deaths, seasons: a.Seasons, ranked: a.Ranked, factions: a.Factions, wars: a.Wars, events: a.Events, bounties: a.Bounties, bountySvc: a.BountyService, streaks: a.Streaks, anomalies: a.Anomalies, activity: a.ActivityRepository, servers: a.Servers, stats: a.Stats, analytics: a.AnalyticsRepository, factionStats: a.FactionHubStats, locations: a.Locations, zones: a.Zones, panelDirty: func() {
 				if a.LeaderboardScheduler != nil {
 					a.LeaderboardScheduler.MarkDirty()
 				}
@@ -1969,6 +1969,26 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 		deathFeed.Run(workerCtx)
 	}()
 
+	if store.ranked != nil {
+		go func() {
+			reconcile := func() {
+				if count, err := store.ranked.ReconcileServerAwards(workerCtx, row.ID); err != nil && workerCtx.Err() == nil {
+					slog.Warn("component=ranked", "event", "reconciliation_failed", "server_id", row.ID, "err", err.Error())
+				} else if count > 0 {
+					slog.Info("component=ranked", "event", "awards_reconciled", "server_id", row.ID, "count", count)
+				}
+			}
+			reconcile()
+			ticker := time.NewTicker(time.Minute)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-workerCtx.Done(): return
+				case <-ticker.C: reconcile()
+				}
+			}
+		}()
+	}
 	pq := killfeed.NewPersistenceQueueWithServerID(store, row.GuildID, row.ID, row.ProviderServiceID)
 	pq.SetKillPostProcessor(store)
 	pq.SetDeathPostProcessor(store)
@@ -2185,6 +2205,7 @@ type persistenceStoreAdapter struct {
 	kills     *repository.KillRepository
 	deaths    *repository.DeathRepository
 	seasons   *repository.SeasonRepository
+	ranked    *repository.RankedRepository
 	factions  *repository.FactionRepository
 	wars      *repository.PostgresWarRepository
 	events    *repository.EventRepository
@@ -2426,6 +2447,11 @@ func (p *persistenceStoreAdapter) ResolveStreakContext(ctx context.Context, guil
 }
 
 func (p *persistenceStoreAdapter) ProcessPersistedKill(ctx context.Context, killID int64, record repository.KillRecord, ev *killfeed.Event) {
+	if p.ranked != nil && record.ServerID > 0 {
+		if _, err := p.ranked.AwardActiveServerKill(ctx, record.ServerID, killID); err != nil && !errors.Is(err, repository.ErrRankedIneligible) {
+			slog.Warn("component=ranked", "event", "award_failed_retry_scheduled", "server_id", record.ServerID, "kill_id", killID, "err", err.Error())
+		}
+	}
 	// Runs on every exit (including the bounty claim at the end): the kill is durable, so cached
 	// faction figures are stale and the killer's factions may have earned an achievement.
 	defer p.factionStats.NotifyCombat(record.GuildID, record.ServerID, record.KillerPlayerID)
