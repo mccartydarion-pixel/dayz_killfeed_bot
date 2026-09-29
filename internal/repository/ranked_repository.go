@@ -14,8 +14,7 @@ import (
 
 var ErrRankedIneligible = errors.New("kill is not eligible for server ranked points")
 
-// RankedRepository records local season awards. Global awards intentionally
-// have no write API until platform-qualified cross-server identity is proven.
+// RankedRepository records server season awards.
 type RankedRepository struct{ pool *pgxpool.Pool }
 
 func NewRankedRepository(pool *pgxpool.Pool) *RankedRepository { return &RankedRepository{pool: pool} }
@@ -165,8 +164,7 @@ ORDER BY event_time DESC LIMIT 1`, seasonID, attacker, victim).Scan(&previous)
 			result.Outcome, result.Amount = "COOLDOWN", 0
 		}
 	}
-	// The source key is local to this physical server. The global ledger will
-	// require a separately verified cross-guild physical-source identity.
+	// The source key identifies this server's persisted event.
 	sourceKey := fmt.Sprintf("%d:%s", serverID, fingerprint)
 	var inserted int64
 	err = tx.QueryRow(ctx, `INSERT INTO ranked_awards
