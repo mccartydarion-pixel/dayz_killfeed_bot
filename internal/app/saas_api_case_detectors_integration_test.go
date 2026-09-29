@@ -22,6 +22,7 @@ func TestCASEDetectorReadinessIsScopedReadOnlyAndBlocked(t *testing.T) {
  }
  for i,result:=range out.Evaluations {
   health:=out.Health[i]
+  if out.Registry[i].ID=="CASE-PC-XBOX-001" && (out.Registry[i].Mode!="UNSUPPORTED"||health.State!="UNSUPPORTED") {t.Fatalf("Xbox availability disagrees: catalog=%+v health=%+v",out.Registry[i],health)}
   if health.ModuleID!=out.Registry[i].ID||health.State=="ACTIVE"||!health.ConclusionsSuspended||health.LastSuccessfulEvaluationAt!=nil {t.Fatalf("unsafe detector health: %+v",health)}
   if out.Registry[i].ID=="CASE-MOV-001"||result.DetectorID!=out.Registry[i].ID||
    result.Status!="BLOCKED"||result.RiskScore!=nil||len(result.Findings)!=0||
