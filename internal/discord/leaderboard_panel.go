@@ -189,9 +189,8 @@ func buildAutoLeaderboardEmbeds(s LeaderboardSnapshot, cfg LeaderboardConfig, na
 			ranks = append(ranks, presentation.BoardEntry{Name: r.DisplayName, Value: presentation.SafeName(r.Rank, 32)})
 		}
 		rankEmbed := autoBoardEmbed(AutoBoardRanksTitle, presentation.ChampionGold, ranks, cfg.TopRanksLimit, nameCap)
-		rankEmbed.Description = "Selected public server • active Ranked season"
-		if len(rankEmbed.Fields) == 0 {
-			rankEmbed.Description += "\n" + presentation.EmptyBoard
+		if len(rankEmbed.Fields) > 0 {
+			rankEmbed.Description = "Selected public server • active Ranked season"
 		}
 		embeds = append(embeds, rankEmbed)
 	}
