@@ -2195,7 +2195,48 @@ ON CONFLICT (installation_id, route_key) DO NOTHING;
 		Name: "0066_discord_feed_cards",
 		SQL:  DiscordFeedCardsSQL,
 	},
+	{
+		// Ranked RP storage only. No runtime awards or public rank source are wired.
+		Name: "0067_ranked_ledger_foundation",
+		SQL:  RankedLedgerFoundationSQL,
+	},
 }
+
+// RankedLedgerFoundationSQL creates server-scoped seasonal RP storage.
+// No existing kills or economy rows are rewritten.
+const RankedLedgerFoundationSQL = `
+CREATE TABLE IF NOT EXISTS ranked_seasons (
+    id BIGSERIAL PRIMARY KEY,
+    scope TEXT NOT NULL DEFAULT 'SERVER' CHECK (scope = 'SERVER'),
+    platform TEXT NOT NULL CHECK (platform IN ('PLAYSTATION','XBOX')),
+    server_id BIGINT NOT NULL REFERENCES game_servers(id) ON DELETE RESTRICT,
+    status TEXT NOT NULL DEFAULT 'DRAFT' CHECK (status IN ('DRAFT','ACTIVE','ARCHIVED')),
+    rp_per_kill BIGINT NOT NULL CHECK (rp_per_kill > 0),
+    thresholds BIGINT[] NOT NULL CHECK (array_length(thresholds,1)=7),
+    starts_at TIMESTAMPTZ NOT NULL,
+    ends_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CHECK (ends_at IS NULL OR ends_at > starts_at)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ranked_active_server ON ranked_seasons(server_id) WHERE status='ACTIVE' AND scope='SERVER';
+CREATE TABLE IF NOT EXISTS ranked_awards (
+    id BIGSERIAL PRIMARY KEY,
+    season_id BIGINT NOT NULL REFERENCES ranked_seasons(id) ON DELETE RESTRICT,
+    kill_id BIGINT NOT NULL REFERENCES kills(id) ON DELETE RESTRICT,
+    source_key TEXT NOT NULL CHECK (length(source_key)>0),
+    attacker_key TEXT NOT NULL CHECK (length(attacker_key)>0),
+    victim_key TEXT NOT NULL CHECK (length(victim_key)>0),
+    event_time TIMESTAMPTZ NOT NULL,
+    outcome TEXT NOT NULL CHECK (outcome IN ('AWARDED','COOLDOWN','OUT_OF_ORDER')),
+    amount BIGINT NOT NULL CHECK (amount>=0),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(season_id,kill_id),
+    UNIQUE(season_id,source_key),
+    CHECK ((outcome='AWARDED' AND amount>0) OR (outcome<>'AWARDED' AND amount=0))
+);
+CREATE INDEX IF NOT EXISTS idx_ranked_awards_standings ON ranked_awards(season_id,attacker_key) WHERE outcome='AWARDED';
+CREATE INDEX IF NOT EXISTS idx_ranked_awards_repeat ON ranked_awards(season_id,attacker_key,victim_key,event_time DESC) WHERE outcome='AWARDED';
+`
 
 // DiscordFeedCardsSQL (migration 0066) is the immediate-mode feed journal: each queued card is
 // recorded before it is posted, marked when Discord confirms it (message_id) and again when it

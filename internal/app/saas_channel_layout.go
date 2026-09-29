@@ -133,6 +133,10 @@ var championDestinations = []championDestination{
 		Routes: []string{"AUTO_LEADERBOARD", "STATS_LEADERBOARDS"}, Anchors: []string{"AUTO_LEADERBOARD", "STATS_LEADERBOARDS"},
 	},
 	{
+		Key: "SERVER_RANKS", Label: "Server Ranks", Category: categoryHub, ChannelName: "🎖️・server-ranks",
+		Routes: []string{"SERVER_RANKS"}, Anchors: []string{"SERVER_RANKS"},
+	},
+	{
 		Key: "PLAYER_LINK", Label: "Player Link", Category: categoryHub, ChannelName: "🔗・player-link",
 		Routes: []string{"LINK_GAMERTAG"}, Anchors: []string{"LINK_GAMERTAG"},
 	},
@@ -188,6 +192,7 @@ var routeProducerAudit = map[string]routeProducer{
 	"SERVER_STATUS":      {HealthActive, "ServerStatusBoard persistent server status (per-server ADM state)"},
 	"ONLINE_COUNTER":     {HealthActive, "VoiceChannelCounter online-player count"},
 	"AUTO_LEADERBOARD":   {HealthActive, "LeaderboardScheduler persistent leaderboard"},
+	"SERVER_RANKS":       {HealthActive, "ServerRanksBoard persistent per-server panel"},
 	"STATS_LEADERBOARDS": {HealthActive, "RouteSyncer player stats panel"},
 	"LINK_GAMERTAG":      {HealthActive, "RouteSyncer link panel"},
 	"ECONOMY":            {HealthActive, "EconomyFeed"},
@@ -259,6 +264,9 @@ func (a *App) channelRouteProducers() map[string]routeProducer {
 	}
 	if a.LeaderboardScheduler == nil {
 		broken("leaderboard scheduler is not running", "AUTO_LEADERBOARD")
+	}
+	if len(a.ServerRanksBoards) == 0 {
+		broken("server ranks board is not running", "SERVER_RANKS")
 	}
 	if a.RouteSyncer == nil {
 		broken("route panel syncer is not running", "STATS_LEADERBOARDS", "LINK_GAMERTAG")

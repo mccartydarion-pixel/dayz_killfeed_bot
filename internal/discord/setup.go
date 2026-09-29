@@ -124,7 +124,9 @@ func (m *SetupManager) RestoreLegacyPanels(guildID string) (*GuildSetup, *SetupR
 		}
 	}
 	if setup.LeaderboardsChannelID != "" && setup.LeaderboardMessageID == "" && !m.hasRoute(routeKeyAutoLeaderboard) {
-		msg, err := m.api.ChannelMessageSendEmbed(setup.LeaderboardsChannelID, BuildLeaderboardEmbed(LeaderboardSnapshot{GeneratedAt: time.Now()}, DefaultLeaderboardConfig()))
+		// Placeholder header only: the leaderboard scheduler edits this same
+		// message into the full multi-embed Auto Leaderboard on its next refresh.
+		msg, err := m.api.ChannelMessageSendEmbed(setup.LeaderboardsChannelID, autoLeaderboardHeader(LeaderboardSnapshot{GeneratedAt: time.Now()}))
 		if err != nil {
 			report.Failed["leaderboard-message"] = err.Error()
 		} else {
