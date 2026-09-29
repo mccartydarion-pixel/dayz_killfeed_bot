@@ -96,6 +96,8 @@ jobs:
           if BACKUP_PASS="$pass" BACKUP_PASSPHRASE_SHA256="$(printf 'other' | sha256sum | cut -d' ' -f1)" bash ops/backup/check_passphrase.sh; then echo "mismatch accepted"; exit 1; fi
           if BACKUP_PASS="short" BACKUP_PASSPHRASE_SHA256="$(printf 'short' | sha256sum | cut -d' ' -f1)" bash ops/backup/check_passphrase.sh; then echo "short passphrase accepted"; exit 1; fi
           echo "passphrase checks: OK"
+      - name: Inventory comparison rules (offline)
+        run: bash ops/backup/test_compare_inventory.sh
       - name: Dump (snapshot-consistent) and verify by restore
         run: |
           mkdir -p work

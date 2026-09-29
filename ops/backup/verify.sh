@@ -38,12 +38,21 @@ echo "restore: OK"
 pg psql "$TARGET_URL" -X -q -v ON_ERROR_STOP=1 -f /work/inventory.sql -o /work/target_inventory.raw
 LC_ALL=C sort "$work/target_inventory.raw" > "$work/target_inventory.txt"
 rm -f "$work/target_inventory.raw"
-if diff -q "$work/source_inventory.txt" "$work/target_inventory.txt" > /dev/null; then
-  result=PASS
-else
+# Exact match for everything except sequence values, which may legitimately be ahead in the dump
+# (sequences are not transactional; see compare_inventory.sh). Only difference kinds are printed.
+here="$(cd "$(dirname "$0")" && pwd)"
+result=PASS
+if ! bash "$here/compare_inventory.sh" "$work/source_inventory.txt" "$work/target_inventory.txt" > "$work/inventory_compare.txt"; then
   result=FAIL
   diff "$work/source_inventory.txt" "$work/target_inventory.txt" | cut -d'|' -f1-2 | sort -u | head -40 > "$work/inventory_diff_keys.txt" || true
 fi
+cat "$work/inventory_compare.txt"
+# 5. The restored copy is safe to write to: no sequence is behind the ids already in its table.
+cp "$here/sequence_check.sql" "$work/sequence_check.sql"
+pg psql "$TARGET_URL" -X -q -v ON_ERROR_STOP=1 -f /work/sequence_check.sql -o /work/sequence_check.txt
+behind=$(grep -c '^sequence_behind_data|' "$work/sequence_check.txt" || true)
+echo "sequences_behind_data=$behind"
+if [ "$behind" != "0" ]; then result=FAIL; fi
 {
   echo "result=$result"
   echo "toc_entries=$entries"
