@@ -42,9 +42,24 @@ func TestShopAttemptArtifactPaths(t *testing.T) {
 			t.Errorf("%q: %v", bad, err)
 		}
 	}
-	// ...and by the database itself.
+	// ...and by the database itself. Raw statements carry an actor exactly like the repository does
+	// (0054 refuses any ledger change without champion.actor), so the error below is the CHECK's.
+	withActor := func(sql string, args ...any) error {
+		tx, err := w.db.Pool.Begin(w.ctx)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback(w.ctx)
+		if _, err := tx.Exec(w.ctx, `SELECT set_config('champion.actor', 'artifact-path-test', true), set_config('champion.evidence', 'test', true)`); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(w.ctx, sql, args...); err != nil {
+			return err
+		}
+		return tx.Commit(w.ctx)
+	}
 	o := w.order(w.a)
-	_, err = w.db.Pool.Exec(w.ctx, `INSERT INTO shop_delivery_attempts(organization_id, installation_id, delivery_id, attempt, attempt_id, fingerprint, artifact_path,
+	err = withActor(`INSERT INTO shop_delivery_attempts(organization_id, installation_id, delivery_id, attempt, attempt_id, fingerprint, artifact_path,
  class_name, quantity, pos_x, pos_y, pos_z, drop_source_file, drop_source_offset)
 VALUES($1,$2,$3,1,$4,$5,'custom/other.json','BandageDressing',1,4621.1,319.6,8397.2,'x.ADM',853)`,
 		o.f.OrgID, o.f.InstallationID, o.delivery, fmt.Sprintf("champion:d%d:a1", o.delivery), strings.Repeat("ab", 32))
@@ -53,8 +68,8 @@ VALUES($1,$2,$3,1,$4,$5,'custom/other.json','BandageDressing',1,4621.1,319.6,839
 		t.Fatalf("database CHECK: %v", err)
 	}
 	// Immutable per attempt: a recorded legacy path can never be rewritten to custom/ (0054 identity trigger).
-	_, err = w.db.Pool.Exec(w.ctx, `UPDATE shop_delivery_attempts SET artifact_path=$1 WHERE id=$2`, ShopAttemptCustomArtifactPath, legacy.ID)
-	if !errors.As(err, &pe) || pe.Code != "SA422" {
+	err = withActor(`UPDATE shop_delivery_attempts SET artifact_path=$1 WHERE id=$2`, ShopAttemptCustomArtifactPath, legacy.ID)
+	if !errors.As(err, &pe) || pe.Code != "SA422" || !strings.Contains(pe.Message, "immutable") {
 		t.Fatalf("immutability: %v", err)
 	}
 	// Exactly one artifact_path CHECK remains, and it is the named 0068 constraint.
