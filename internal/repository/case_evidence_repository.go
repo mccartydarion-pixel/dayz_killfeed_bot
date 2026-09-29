@@ -75,7 +75,7 @@ func (r *CaseEvidenceRepository) RecordCaseEvidence(ctx context.Context, item Ca
 		return errors.New("invalid C.A.S.E. source address")
 	}
 	if item.EventType == "BUILD_ACTION" {
-		if item.Build == nil || item.Subject.DayZID == "" ||
+		if item.Build == nil ||
 			(item.Build.Action != "Placed" && item.Build.Action != "Built" && item.Build.Action != "Dismantled") ||
 			item.Build.Object == "" || len([]rune(item.Build.Object)) > 64 ||
 			len([]rune(item.Build.Target)) > 64 || len([]rune(item.Build.Tool)) > 64 ||
