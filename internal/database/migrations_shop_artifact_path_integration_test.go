@@ -53,12 +53,24 @@ func TestShopAttemptArtifactPathMigrationOnHistoricalData(t *testing.T) {
 		return one(`INSERT INTO shop_deliveries(purchase_id, organization_id, installation_id, game_server_id, player_id, delivery_policy, map_key, coord_x, coord_z, status)
 			VALUES($1,$2,$3,$4,$5,'MANUAL_COORDINATE','chernarusplus',4621.1,8397.2,'MANUAL_READY') RETURNING id`, p, org, inst, server, player)
 	}
+	// Like the repository: every ledger change carries an actor and evidence note in its transaction
+	// (0054 refuses a change without champion.actor).
 	attempt := func(d int64, path string) error {
-		_, err := db.Pool.Exec(ctx, `INSERT INTO shop_delivery_attempts(organization_id, installation_id, delivery_id, attempt, attempt_id, fingerprint, artifact_path,
+		tx, err := db.Pool.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback(ctx)
+		if _, err := tx.Exec(ctx, `SELECT set_config('champion.actor', 'migration-test', true), set_config('champion.evidence', 'plan created', true)`); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO shop_delivery_attempts(organization_id, installation_id, delivery_id, attempt, attempt_id, fingerprint, artifact_path,
  class_name, quantity, pos_x, pos_y, pos_z, drop_source_file, drop_source_offset)
 VALUES($1,$2,$3,1,$4,$5,$6,'BandageDressing',1,4621.1,319.6,8397.2,'dayzps/config/DayZServer_PS4_x64_2026-09-29_08-23-54.ADM',853)`,
-			org, inst, d, fmt.Sprintf("champion:d%d:a1", d), strings.Repeat("ab", 32), path)
-		return err
+			org, inst, d, fmt.Sprintf("champion:d%d:a1", d), strings.Repeat("ab", 32), path); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
 	}
 	// Historical data under 0054's CHECK: a legacy attempt (and the history row its trigger writes).
 	if err := attempt(delivery("mig68-legacy"), "champion/champion_shop_delivery.json"); err != nil {
