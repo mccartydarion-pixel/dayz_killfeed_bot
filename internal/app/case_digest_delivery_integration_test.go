@@ -14,8 +14,9 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/yourname/dayz-killfeed/internal/billing"
+	"github.com/yourname/dayz-killfeed/internal/casebilling"
 	"github.com/yourname/dayz-killfeed/internal/repository"
-	"github.com/yourname/dayz-killfeed/internal/routing"
 )
 
 func setupCaseDigestWorld(t *testing.T) (*clientAdminWorld,*repository.CaseDigestOutbox,repository.CaseDigestInput){
@@ -31,7 +32,7 @@ func setupCaseDigestWorld(t *testing.T) (*clientAdminWorld,*repository.CaseDiges
 	}
 	w.a.caseWatchDigestLimiter=newSaaSRateLimiter(time.Hour,1)
 	err:=w.a.SaaSChannelRoutes.UpsertRoute(context.Background(),w.f.OrgID,w.f.InstallationID,
-		routing.RouteAdminAlerts,"private-staff-channel",false)
+		repository.CaseWatchDigestRouteKey,"private-staff-channel",false)
 	if err!=nil{t.Fatal(err)}
 	w.a.caseWatchPrivacyCheck=func(_ context.Context,guild,channel string)error{
 		if guild==""||channel!="private-staff-channel"{return fmt.Errorf("destination privacy failed")}
@@ -94,7 +95,7 @@ func TestCASEWatchOutboxRevocationAndPrivacyFailBeforeDiscord(t *testing.T){
 		}},
 		{"route removed",func(t *testing.T,w *clientAdminWorld){
 			if err:=w.a.SaaSChannelRoutes.DeleteRoute(context.Background(),w.f.OrgID,w.f.InstallationID,
-				routing.RouteAdminAlerts);err!=nil{t.Fatal(err)}
+				repository.CaseWatchDigestRouteKey);err!=nil{t.Fatal(err)}
 		}},
 	}{
 		t.Run(tc.name,func(t *testing.T){
@@ -183,5 +184,82 @@ func TestCASEWatchOutboxConcurrentAdmissionAcrossReplicas(t *testing.T){
 	wg.Wait()
 	if accepted.Load()!=1||cooled.Load()!=workers-1 {
 		t.Fatalf("replicas admitted %d, cooled %d; expected 1/%d",accepted.Load(),cooled.Load(),workers-1)
+	}
+}
+
+// Phase 6.26F.2: after merging main's operational-alert isolation, an authorized Watch digest is
+// still delivered (by the durable worker, to the private C.A.S.E. status channel), and the general
+// ADMIN_ALERTS route is never used as a fallback - not even when it is configured and private.
+func TestCASEWatchDigestUsesOnlyThePrivateCaseStatusChannel(t *testing.T){
+	ctx:=context.Background()
+	reason:=func(w *clientAdminWorld,id int64)string{
+		var r *string
+		if err:=w.a.DB.Pool.QueryRow(ctx,`SELECT reason_code FROM case_watch_digest_outbox WHERE id=$1`,id).Scan(&r);err!=nil{t.Fatal(err)}
+		if r==nil{return ""}
+		return *r
+	}
+	// 1. CASE_STATUS missing, ADMIN_ALERTS configured (and passing the privacy check): blocked.
+	w,store,input:=setupCaseDigestWorld(t)
+	if err:=w.a.SaaSChannelRoutes.DeleteRoute(ctx,w.f.OrgID,w.f.InstallationID,repository.CaseWatchDigestRouteKey);err!=nil{t.Fatal(err)}
+	if err:=w.a.SaaSChannelRoutes.UpsertRoute(ctx,w.f.OrgID,w.f.InstallationID,"ADMIN_ALERTS","private-staff-channel",false);err!=nil{t.Fatal(err)}
+	var sends atomic.Int64
+	var sentTo []string
+	w.a.caseWatchSender=func(_ context.Context,channel string,_ *discordgo.MessageEmbed)(string,error){
+		sends.Add(1);sentTo=append(sentTo,channel);return "discord-message-1",nil
+	}
+	id,err:=store.Enqueue(ctx,input)
+	if err!=nil{t.Fatal(err)}
+	if worked,err:=w.a.processOneCaseDigest(ctx);err!=nil||!worked{t.Fatalf("worker: %v %v",worked,err)}
+	d,_:=store.GetScoped(ctx,w.f.OrgID,w.f.InstallationID,id)
+	if d.Status!="BLOCKED"||reason(w,id)!="STAFF_ROUTE_MISSING"||sends.Load()!=0{
+		t.Fatalf("ADMIN_ALERTS used as a paid digest fallback: %s %s sends=%d",d.Status,reason(w,id),sends.Load())
+	}
+	rr:=w.call(w.a.handleAntiCheatWatchDigest,http.MethodPost,w.path("/anti-cheat/premium/watch-digest"),w.f.OwnerDiscordID,nil,nil)
+	if rr.Code!=http.StatusConflict{t.Fatalf("API accepted a digest without the C.A.S.E. status channel: %d %s",rr.Code,rr.Body.String())}
+
+	// 2. The private CASE_STATUS channel configured: the authorized digest is delivered exactly once, there.
+	w,store,input=setupCaseDigestWorld(t)
+	if err:=w.a.SaaSChannelRoutes.UpsertRoute(ctx,w.f.OrgID,w.f.InstallationID,"ADMIN_ALERTS","general-admin-alerts",false);err!=nil{t.Fatal(err)}
+	sends.Store(0);sentTo=nil
+	w.a.caseWatchSender=func(_ context.Context,channel string,_ *discordgo.MessageEmbed)(string,error){
+		sends.Add(1);sentTo=append(sentTo,channel);return "discord-message-2",nil
+	}
+	id,err=store.Enqueue(ctx,input)
+	if err!=nil{t.Fatal(err)}
+	if worked,err:=w.a.processOneCaseDigest(ctx);err!=nil||!worked{t.Fatalf("worker: %v %v",worked,err)}
+	d,_=store.GetScoped(ctx,w.f.OrgID,w.f.InstallationID,id)
+	if d.Status!="SENT"||sends.Load()!=1||len(sentTo)!=1||sentTo[0]!="private-staff-channel"{
+		t.Fatalf("authorized digest: %s sends=%d to=%v",d.Status,sends.Load(),sentTo)
+	}
+}
+
+// C.A.S.E. access disabled, or no paid add-on for the installation: nothing is sent.
+func TestCASEWatchDigestDisabledOrUnconfiguredCannotSend(t *testing.T){
+	ctx:=context.Background()
+	for _,tc:=range []struct{name string; mut func(*testing.T,*clientAdminWorld)}{
+		{"access flag off",func(t *testing.T,w *clientAdminWorld){
+			svc:=billing.NewService(w.a.SaaSSubscriptions,nil,nil,billing.Options{})
+			if err:=svc.ConfigureCaseAddons(repository.NewCaseAddonSubscriptionRepository(w.a.DB.Pool),billing.CaseOptions{
+				Enabled:false,AccessEnabled:false,PriceIDs:map[casebilling.Tier]string{casebilling.Watch:"price_case_watch",casebilling.Pro:"price_case_pro"},
+			});err!=nil{t.Fatal(err)}
+			w.a.Billing=svc
+		}},
+		{"billing not configured",func(_ *testing.T,w *clientAdminWorld){w.a.Billing=billing.NewService(w.a.SaaSSubscriptions,nil,nil,billing.Options{})}},
+		{"add-on removed",func(t *testing.T,w *clientAdminWorld){
+			if _,err:=w.a.DB.Pool.Exec(ctx,`UPDATE case_addon_subscriptions SET paid_through=NULL,paid_tier=NULL,coverage_state='REFUNDED'
+				WHERE organization_id=$1 AND installation_id=$2`,w.f.OrgID,w.f.InstallationID);err!=nil{t.Fatal(err)}
+		}},
+	}{
+		t.Run(tc.name,func(t *testing.T){
+			w,store,input:=setupCaseDigestWorld(t)
+			id,err:=store.Enqueue(ctx,input)
+			if err!=nil{t.Fatal(err)}
+			var sends atomic.Int64
+			w.a.caseWatchSender=func(context.Context,string,*discordgo.MessageEmbed)(string,error){sends.Add(1);return "x",nil}
+			tc.mut(t,w)
+			if worked,err:=w.a.processOneCaseDigest(ctx);err!=nil||!worked{t.Fatalf("worker: %v %v",worked,err)}
+			d,_:=store.GetScoped(ctx,w.f.OrgID,w.f.InstallationID,id)
+			if d.Status!="BLOCKED"||sends.Load()!=0{t.Fatalf("unpaid digest: %s sends=%d",d.Status,sends.Load())}
+		})
 	}
 }

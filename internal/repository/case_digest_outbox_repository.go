@@ -16,6 +16,11 @@ var (
 	ErrCaseDigestClaimLost = errors.New("case digest claim no longer owned")
 )
 
+// CaseWatchDigestRouteKey is the ONLY destination for paid Watch digests: the installation's
+// private C.A.S.E. status channel (Channel System V2 category "CHAMPION • C.A.S.E."). The
+// general ADMIN_ALERTS route never receives paid Watch evidence.
+const CaseWatchDigestRouteKey = "CASE_STATUS"
+
 // CaseDigestOutbox is independent of free operational alerts and C.A.S.E.
 // observation. It records a complete source-count snapshot, never player data.
 type CaseDigestOutbox struct{ pool *pgxpool.Pool }
@@ -146,9 +151,9 @@ func (r *CaseDigestOutbox) BeginSend(ctx context.Context,d CaseDigestDelivery,ch
 			  AND c.organization_id=d.organization_id AND c.guild_id=d.guild_id
 			  AND gs.guild_id=d.guild_id
 			  AND (gs.organization_id IS NULL OR gs.organization_id=d.organization_id)
-			  AND cr.route_key='ADMIN_ALERTS' AND cr.channel_id=$3
+			  AND cr.route_key=$4 AND cr.channel_id=$3
 		  )
-	`,d.ID,d.ClaimVersion,channelID)
+	`,d.ID,d.ClaimVersion,channelID,CaseWatchDigestRouteKey)
 	if err!=nil{return err}
 	if tag.RowsAffected()!=1{return ErrCaseDigestClaimLost}
 	return nil

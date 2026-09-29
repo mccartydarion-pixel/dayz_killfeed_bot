@@ -269,13 +269,28 @@ func (e *Engine) acceptBoot(lf nitrado.LogFile) {
 		return
 	}
 	file := canonicalADMID(lf.Path)
+	// A boot strictly newer than an already-accepted one is a server
+	// restart observed live: the restart disconnected everyone.
+	restart := !e.acceptedBoot.IsZero() && st.After(e.acceptedBoot)
 	if st.After(e.acceptedBoot) || e.acceptedFile == nil {
 		e.acceptedBoot = st
 		now := time.Now()
-		e.updateBootStats(func(s *BootAuthorityStats) { s.AcceptedBoot, s.AcceptedFile, s.AcceptedAt = st, file, now })
+		e.updateBootStats(func(s *BootAuthorityStats) {
+			s.AcceptedBoot, s.AcceptedFile, s.AcceptedAt = st, file, now
+			// A previously listed candidate is no longer pending once this or a
+			// later boot is accepted, including through the rotation path.
+			if listed, ok := admBootStamp(e.lastNewBootFile); ok && !listed.After(st) {
+				e.lastNewBootFile = ""
+				s.LastNewBootFile = ""
+				s.LastNewBootSeenAt = time.Time{}
+			}
+		})
 	}
 	if !st.Before(e.acceptedBoot) {
 		c := lf
 		e.acceptedFile = &c
+	}
+	if restart {
+		e.resetPresenceForNewBoot(st)
 	}
 }

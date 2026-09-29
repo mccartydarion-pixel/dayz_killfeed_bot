@@ -41,13 +41,17 @@ func TestLayoutHubHasServerStatusAndVoiceCounter(t *testing.T) {
 			voices++
 		}
 	}
-	if voices != 1 || counter.ParentID != hub.ID || !strings.HasPrefix(counter.Name, discord.ChannelOnlinePlayersPrefix) || w.routes["ONLINE_COUNTER"] != counter.ID {
+	if voices != 1 || counter.ParentID != hub.ID || !discord.IsOnlineCounterName(counter.Name) || w.routes["ONLINE_COUNTER"] != counter.ID {
 		t.Fatalf("want exactly one routed voice counter under HUB, got %d: %+v", voices, counter)
 	}
 	if d := report(res, "ONLINE_COUNTER"); d.Health != HealthActive || !d.Voice {
 		t.Fatalf("voice counter report: %+v", d)
 	}
-	// Death feed and PvE share the combat feed: no separate channels.
+	// The separate PvE destination is created by /setup; obsolete legacy names are not.
+	pve, n := g.byName("☠️・pve-feed")
+	if n != 1 || w.routes["PVE_FEED"] != pve.ID || w.routes["KILLFEED"] == pve.ID {
+		t.Fatalf("separate PvE setup route missing: %+v", pve)
+	}
 	for _, name := range []string{"death-feed", "☠️・death-feed", "pvefeed"} {
 		if _, n := g.byName(name); n != 0 {
 			t.Fatalf("%s must not exist in V2", name)
@@ -57,13 +61,26 @@ func TestLayoutHubHasServerStatusAndVoiceCounter(t *testing.T) {
 	// A renamed counter ("... : 17") is still recognized on the next run.
 	for i := range g.channels {
 		if g.channels[i].ID == counter.ID {
-			g.channels[i].Name = discord.OnlineCounterName(17)
+			g.channels[i].Name = discord.OnlineCounterName(17, 18)
 		}
 	}
 	creates := g.createCalls
 	runLayout(t, g, w, auditProducers(), panelsPosted(g, w))
 	if g.createCalls != creates {
 		t.Fatal("the renamed voice counter must be reused, never duplicated")
+	}
+	// ... and so is one showing the unknown state, or the legacy format an
+	// older build wrote.
+	for _, name := range []string{discord.OnlineCounterUnknownName(18), "🟢・Online Players: 3"} {
+		for i := range g.channels {
+			if g.channels[i].ID == counter.ID {
+				g.channels[i].Name = name
+			}
+		}
+		runLayout(t, g, w, auditProducers(), panelsPosted(g, w))
+		if g.createCalls != creates {
+			t.Fatalf("voice counter named %q must be reused, never duplicated", name)
+		}
 	}
 }
 
@@ -85,9 +102,9 @@ func TestRepairPreservesCustomerRoutes(t *testing.T) {
 	if _, n := g.byName("🎯・hitfeed"); n != 0 {
 		t.Fatal("a destination served entirely by a customer channel needs no Champion channel")
 	}
-	combat, n := g.byName("🔫・combat-feed")
-	if n != 1 || w.routes["PVE_FEED"] != combat.ID {
-		t.Fatal("the Champion-managed part of a destination still gets the V2 channel")
+	pve, n := g.byName("☠️・pve-feed")
+	if n != 1 || w.routes["PVE_FEED"] != pve.ID || w.routes["KILLFEED"] != "my-feed" {
+		t.Fatal("the PvE route gets its own Champion-managed channel while customer kill route is preserved")
 	}
 	if g.starters["my-feed"] != 0 || g.starters["my-hits"] != 0 {
 		t.Fatal("Champion never posts into a customer's channel")
@@ -214,14 +231,14 @@ func TestLegacyRetirablesOnlyReplacedChampionChannels(t *testing.T) {
 		ADMMonitorChannelID: "old-adm",
 		LinkPanelChannelID:  "old-link",
 	}
-	routes := map[string]ChannelRouteInfo{"KILLFEED": {ChannelID: "combat"}, "ADMIN_LOGS": {ChannelID: "admin-logs"}}
+	routes := map[string]ChannelRouteInfo{"KILLFEED": {ChannelID: "combat"}, "PVE_FEED": {ChannelID: "pve-feed"}, "ADMIN_LOGS": {ChannelID: "admin-logs"}}
 	got := legacyRetirablesFor(gs, routes, map[string]bool{"live": true})
 	ids := map[string]repository.RetiredChannel{}
 	for _, r := range got {
 		ids[r.ChannelID] = r
 	}
 	if ids["old-death"].LegacyField != "DeathChannelID" || ids["old-death"].Source != "LEGACY_SETUP" {
-		t.Fatalf("the legacy death feed is replaced by combat-feed: %+v", got)
+		t.Fatalf("the legacy death feed is replaced by the separate PvE feed: %+v", got)
 	}
 	if _, ok := ids["old-adm"]; !ok {
 		t.Fatal("the legacy ADM monitor is replaced by admin-logs")
@@ -309,5 +326,30 @@ func TestCleanupDeletesOnlyProvenRetiredChannels(t *testing.T) {
 	}
 	if len(clear) != 1 || clear[0] != "DeathChannelID" {
 		t.Fatalf("the deleted legacy channel's field must be cleared, got %v", clear)
+	}
+}
+
+// TestCleanupClearsLegacyFieldForChannelAlreadyGone: a retired legacy
+// channel the customer deleted by hand is reported GONE, and its legacy
+// pointer must be cleared too - otherwise the online counter's legacy
+// fallback keeps renaming an Unknown Channel (Discord 10003).
+func TestCleanupClearsLegacyFieldForChannelAlreadyGone(t *testing.T) {
+	store := &retiredStoreFake{rows: []repository.RetiredChannel{
+		{ChannelID: "old-online", Kind: "CHANNEL", Source: "LEGACY_SETUP", LegacyField: "OnlinePlayersChannelID"},
+		{ChannelID: "old-route", Kind: "CHANNEL", Source: "ROUTE"},
+	}}
+	guild := &cleanupGuildFake{} // neither channel exists any more
+	resp, clear, err := cleanupRetired(context.Background(), store, guild, 1, 2, "g", []string{"old-online", "old-route"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(guild.deleted) != 0 {
+		t.Fatalf("nothing may be deleted for a gone channel, deleted %v", guild.deleted)
+	}
+	if len(resp.Skipped) != 2 || resp.Skipped[0].Reason != "GONE" {
+		t.Fatalf("expected both GONE, got %+v", resp.Skipped)
+	}
+	if len(clear) != 1 || clear[0] != "OnlinePlayersChannelID" {
+		t.Fatalf("expected the gone legacy channel's field cleared, got %v", clear)
 	}
 }

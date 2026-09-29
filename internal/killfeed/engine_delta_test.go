@@ -336,9 +336,8 @@ func TestEngineDeltaCheckpointRestartResumesSafely(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// "Restart": a brand-new Engine, same checkpoint store, same file now grown. Modified must
-	// advance too - ShouldReadAgain (tracker.go) detects growth from a changed Modified timestamp,
-	// not size alone, matching how Nitrado's real directory-listing metadata signals a live file.
+	// "Restart": a brand-new Engine, same checkpoint store, same file now grown (Modified advances
+	// too, as Nitrado's listing does when a write lands in a later second).
 	grown := initial + "line three\n"
 	engine2, fake2 := newDeltaEngine(nitrado.DeltaModeAuto, grown, int64(len(grown)))
 	fake2.logs[0].Modified = modified.Add(time.Minute)

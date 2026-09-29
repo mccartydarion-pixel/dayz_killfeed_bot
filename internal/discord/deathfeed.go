@@ -122,7 +122,7 @@ func (p *DeathfeedPublisher) PublishDeath(ev *killfeed.Event) error {
 	// death channel as fallback); see RotatingFeed. Without one configured,
 	// fall back to an immediate send to the legacy channel.
 	if p.feed != nil {
-		p.feed.Enqueue(embed)
+		p.feed.EnqueueDetected(embed, ev.DetectedAt)
 		slog.Debug("component=discord", "msg", "death feed queued", "type", string(ev.Type))
 		return nil
 	}
@@ -137,9 +137,9 @@ func (p *DeathfeedPublisher) PublishDeath(ev *killfeed.Event) error {
 			Parse: []discordgo.AllowedMentionType{},
 		},
 	}
-	if _, err := p.client.Session().ChannelMessageSendComplex(channelID, send); err != nil {
-		slog.Error("component=discord", "msg", "death feed publish failed", "err", err.Error())
-		return nil // never propagate; log processing must continue
+	if _, err := deliverMessage(p.client.Session(), "DEATH_FEED", channelID, send); err != nil {
+		slog.Error("component=discord", "msg", "death feed publish failed", "err", err.Error(), "class", ClassifyDeliveryError(err))
+		return nil // never propagate; log processing must continue (recorded in the delivery ledger)
 	}
 	slog.Debug("component=discord", "msg", "death feed published", "type", string(ev.Type))
 	return nil

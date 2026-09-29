@@ -1,6 +1,7 @@
 package discord
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -316,4 +317,29 @@ func (r *recordingEditor) ChannelMessageEditEmbed(channelID, messageID string, e
 	r.mu.Unlock()
 	r.called <- struct{}{}
 	return &discordgo.Message{ID: messageID, ChannelID: channelID}, nil
+}
+
+
+func TestSetupMultiInstallationDeadlineAndPartialReport(t *testing.T) {
+ if setupLayoutTimeout < 4*time.Minute || setupLayoutTimeout >= 15*time.Minute {
+  t.Fatalf("multi-installation setup deadline must accommodate production guild size and Discord token window: %v",setupLayoutTimeout)
+ }
+ var result SetupLayoutResult
+ result.Installations=9
+ result.AddChannel(SetupChannel{ID:"case-status",Name:"case-status",System:"C.A.S.E. Status",Outcome:SetupChannelCreated})
+ result.AddVerifiedSystem("C.A.S.E. Status")
+ for _,repair:=range []bool{false,true} {
+  e:=SetupLayoutPartialEmbed(result,repair,true)
+  if !strings.Contains(e.Title,"INCOMPLETE")||!strings.Contains(e.Description,"Partial progress"){
+   t.Fatalf("partial work must not be presented as successful: %+v",e)
+  }
+  joined:=""
+  for _,field:=range e.Fields {joined+=field.Name+" "+field.Value}
+  for _,want:=range []string{"Installations completed: 9","Created: 1","time limit","Incomplete"}{
+   if !strings.Contains(joined,want){t.Fatalf("missing %q in partial report: %s",want,joined)}
+  }
+  if strings.Contains(joined,"All required systems are configured.") {t.Fatal("partial report claimed completion")}
+ }
+ if setupErrorKind(context.DeadlineExceeded)!="deadline"||setupErrorKind(nil)!="none" {t.Fatal("deadline classification")}
+ if !strings.Contains(setupErrorMessage(context.DeadlineExceeded),"time limit") {t.Fatal("zero-progress timeout cannot be generic retry error")}
 }

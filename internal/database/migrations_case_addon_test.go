@@ -20,9 +20,10 @@ func TestCASEAddonMigrationIsAdditiveAndScoped(t *testing.T) {
 	if previous < 0 || found <= previous {
 		t.Fatalf("CASE migration must follow 0053, got previous=%d found=%d", previous, found)
 	}
-	// Only the Shop ledger migrations (0054/0055, when present) may sit between 0053 and C.A.S.E.
+	// Only the Shop ledger (0054/0055) and C.A.S.E. Core (0056) migrations may sit between 0053 and C.A.S.E.
 	for _, m := range migrations[previous+1 : found] {
-		if m.Name != "0054_shop_delivery_attempts" && m.Name != "0055_shop_delivery_attempt_evidence" {
+		if m.Name != "0054_shop_delivery_attempts" && m.Name != "0055_shop_delivery_attempt_evidence" &&
+			m.Name != "0056_case_shadow_evaluations" { // main's C.A.S.E. Core ledger (frozen pair 0056)
 			t.Fatalf("unexpected migration %s between 0053 and the first C.A.S.E. migration", m.Name)
 		}
 	}

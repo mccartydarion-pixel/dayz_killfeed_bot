@@ -228,7 +228,7 @@ func (f *EconomyFeed) send(channel string, embeds []*discordgo.MessageEmbed) {
 	if f.sender == nil || len(embeds) == 0 {
 		return
 	}
-	_, err := f.sender.ChannelMessageSendComplex(channel, &discordgo.MessageSend{
+	_, err := deliverMessage(f.sender, "ECONOMY_FEED", channel, &discordgo.MessageSend{
 		Embeds:          embeds,
 		AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}}, // names never ping
 	})

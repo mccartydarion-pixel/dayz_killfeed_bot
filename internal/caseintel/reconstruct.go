@@ -88,6 +88,7 @@ type Reconstruction struct {
 	NoDurationInference bool `json:"noDurationInference"`
 	Sources []SourceWindow `json:"sources"`
 	Quality QualityReport `json:"quality"`
+	LoginObservations LoginObservationReport `json:"loginObservations"`
 	DetectorsEnabled bool `json:"detectorsEnabled"`
 	Enforcement string `json:"enforcement"`
 }
@@ -254,5 +255,6 @@ func Reconstruct(playerID int64, events []Event, limit int, truncated bool) Reco
 		result.Sources=append(result.Sources,source)
 	}
 	result.Quality=AssessQuality(result)
+	result.LoginObservations=AssessLoginObservations(result)
 	return result
 }

@@ -11,7 +11,6 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/casebilling"
 	"github.com/yourname/dayz-killfeed/internal/discord"
 	"github.com/yourname/dayz-killfeed/internal/repository"
-	"github.com/yourname/dayz-killfeed/internal/routing"
 )
 
 // caseWatchPrivateDestination always makes a fresh Discord API check in the
@@ -91,7 +90,7 @@ func (a *App) processOneCaseDigest(ctx context.Context)(bool,error){
 	if err!=nil{return retry("BILLING_LOOKUP_FAILED")}
 	if !allowed{return block("PREMIUM_ACCESS_REVOKED")}
 	// Resolve against PostgreSQL, NOT a potentially stale runtime route cache.
-	channel,found,err:=a.SaaSChannelRoutes.ResolveChannel(ctx,d.GuildID,d.GameServerID,routing.RouteAdminAlerts)
+	channel,found,err:=a.SaaSChannelRoutes.ResolveChannel(ctx,d.GuildID,d.GameServerID,repository.CaseWatchDigestRouteKey)
 	if err!=nil{return retry("ROUTE_LOOKUP_FAILED")}
 	if !found || channel=="" {return block("STAFF_ROUTE_MISSING")}
 	if err:=a.caseWatchPrivateDestination(ctx,scope.DiscordGuildID,channel);err!=nil{

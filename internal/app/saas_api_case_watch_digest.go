@@ -11,7 +11,6 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/casebilling"
 	"github.com/yourname/dayz-killfeed/internal/permissions"
 	"github.com/yourname/dayz-killfeed/internal/repository"
-	"github.com/yourname/dayz-killfeed/internal/routing"
 )
 
 const codeCaseStaffRouteRequired = "CASE_STAFF_ROUTE_REQUIRED"
@@ -33,17 +32,17 @@ func (a *App) handleAntiCheatWatchDigest(w http.ResponseWriter,r *http.Request){
 	ctx,cancel:=context.WithTimeout(r.Context(),adminTimeout)
 	defer cancel()
 	// Do not use the route cache for a privacy-sensitive paid operation.
-	channel,found,routeErr:=a.SaaSChannelRoutes.ResolveChannel(ctx,ac.scope.GuildID,serverID,routing.RouteAdminAlerts)
+	channel,found,routeErr:=a.SaaSChannelRoutes.ResolveChannel(ctx,ac.scope.GuildID,serverID,repository.CaseWatchDigestRouteKey)
 	if routeErr!=nil{
 		slog.Warn("component=case","event","watch_digest_route_failed","server_id",serverID,"err",routeErr.Error())
 		writeSaaSError(w,codeCaseAccessUnavailable,"staff channel lookup unavailable");return
 	}
 	if !found || channel=="" {
-		writeSaaSError(w,codeCaseStaffRouteRequired,"configure a private ADMIN_ALERTS channel first");return
+		writeSaaSError(w,codeCaseStaffRouteRequired,"configure the private C.A.S.E. status channel (case-status) first");return
 	}
 	if err:=a.caseWatchPrivateDestination(ctx,ac.scope.DiscordGuildID,channel);err!=nil{
 		writeSaaSError(w,codeCaseStaffRouteRequired,
-			"ADMIN_ALERTS must deny public viewing and allow Champion to send embeds");return
+			"the C.A.S.E. status channel must deny public viewing and allow Champion to send embeds");return
 	}
 	now:=time.Now().UTC()
 	from:=now.Add(-24*time.Hour)

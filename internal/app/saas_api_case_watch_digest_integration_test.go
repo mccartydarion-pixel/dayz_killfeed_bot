@@ -9,7 +9,6 @@ import (
  "testing"
  "time"
 
- "github.com/yourname/dayz-killfeed/internal/routing"
  "github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -33,7 +32,7 @@ func TestCASEWatchDigestIsPaidScopedOptInAndRequiresStaffRoute(t *testing.T){
  rr=w.call(w.a.handleAntiCheatWatchDigest,http.MethodPost,routePath,w.f.OwnerDiscordID,nil,nil)
  if rr.Code!=http.StatusConflict {t.Fatalf("missing staff route accepted: %d %s",rr.Code,rr.Body.String())}
  if err:=w.a.SaaSChannelRoutes.UpsertRoute(context.Background(),w.f.OrgID,w.f.InstallationID,
-  routing.RouteAdminAlerts,"staff-test-channel",false);err!=nil{t.Fatal(err)}
+  repository.CaseWatchDigestRouteKey,"staff-test-channel",false);err!=nil{t.Fatal(err)}
  // Seed source evidence from this selected server; no additional Nitrado polling.
  evidence:=repository.NewCaseEvidenceRepository(w.a.DB.Pool)
  in:=caseHitInput(w.guildID,w.serverID,100,"dayzps/config/digest.ADM",fmt.Sprintf("%064x",100))

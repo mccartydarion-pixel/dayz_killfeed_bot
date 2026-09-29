@@ -15,8 +15,8 @@ import (
 // Champion Channel System V2 (docs/SAAS_API.md "Channel layout").
 //
 // A route key names a feature (KILLFEED); a destination is the Discord
-// channel one or more routes share (combat-feed carries KILLFEED and
-// PVE_FEED). FEATURE ROUTE != DISCORD CHANNEL.
+// channel one or more routes share. KILLFEED and PVE_FEED now have
+// separate destinations. FEATURE ROUTE != DISCORD CHANNEL.
 //
 // NO BLANK CHANNEL policy: auto-setup creates a destination only when a
 // route anchoring it has a working producer, and after setup every created
@@ -49,6 +49,7 @@ const (
 	categoryLive  = "LIVE"
 	categoryHub   = "HUB"
 	categoryStaff = "STAFF"
+	categoryCASE  = "CASE"
 )
 
 // championCategory is one Champion-managed Discord category.
@@ -62,6 +63,7 @@ var championCategories = []championCategory{
 	{categoryLive, "🏆 CHAMPION • LIVE", false},
 	{categoryHub, "🏆 CHAMPION • HUB", false},
 	{categoryStaff, "🔒 CHAMPION • STAFF", true},
+	{categoryCASE, "🔒 CHAMPION • C.A.S.E.", true},
 }
 
 // starterCard is the single restrained message a live-feed channel gets
@@ -96,8 +98,13 @@ type championDestination struct {
 var championDestinations = []championDestination{
 	{
 		Key: "COMBAT_FEED", Label: "Combat Feed", Category: categoryLive, ChannelName: "🔫・combat-feed",
-		Routes: []string{"KILLFEED", "PVE_FEED"}, Anchors: []string{"KILLFEED", "PVE_FEED"},
-		Starter: &starterCard{"🔫 COMBAT FEED", "Champion combat events will appear here.\n\n**Includes**\n• Player eliminations\n• Deaths\n• PvE events"},
+		Routes: []string{"KILLFEED"}, Anchors: []string{"KILLFEED"},
+		Starter: &starterCard{"🔫 COMBAT FEED", "Player-versus-player eliminations will appear here."},
+	},
+	{
+		Key: "PVE_FEED", Label: "PvE & Death Feed", Category: categoryLive, ChannelName: "☠️・pve-feed",
+		Routes: []string{"PVE_FEED"}, Anchors: []string{"PVE_FEED"},
+		Starter: &starterCard{"☠️ PvE & DEATH FEED", "Deaths, suicides, and supported PvE events will appear here."},
 	},
 	{
 		Key: "HITFEED", Label: "Hitfeed", Category: categoryLive, ChannelName: "🎯・hitfeed",
@@ -135,8 +142,23 @@ var championDestinations = []championDestination{
 		Starter: &starterCard{"💰 CHAMPION ECONOMY", "Champion Points and shop activity will appear here."},
 	},
 	{
-		Key: "ONLINE_COUNTER", Label: "Players Online", Category: categoryHub, ChannelName: discord.OnlineCounterName(0),
+		Key: "ONLINE_COUNTER", Label: "Players Online", Category: categoryHub, ChannelName: discord.OnlineCounterName(0, 0),
 		Routes: []string{"ONLINE_COUNTER"}, Anchors: []string{"ONLINE_COUNTER"}, Voice: true,
+	},
+	{
+		Key: "CASE_STATUS", Label: "C.A.S.E. Status", Category: categoryCASE, ChannelName: "🛡️・case-status",
+		Routes: []string{"CASE_STATUS"}, Anchors: []string{"CASE_STATUS"},
+		Starter: &starterCard{"🛡️ C.A.S.E. STATUS • INFORMATION ONLY", "C.A.S.E. evidence-quality and detector readiness are available in the authorized dashboard.\n\n**Current boundary**\n• CASE-MOV-001: BLOCKED\n• Safe speed pairs: 0\n• Enforcement: DISABLED\n\nThis channel is a setup information card, not live telemetry or a cheating verdict."},
+	},
+	{
+		Key: "CASE_EVIDENCE", Label: "C.A.S.E. Evidence", Category: categoryCASE, ChannelName: "📁・case-evidence",
+		Routes: []string{"CASE_EVIDENCE"}, Anchors: []string{"CASE_EVIDENCE"},
+		Starter: &starterCard{"📁 C.A.S.E. EVIDENCE • STAFF GUIDE", "Review source quality through the authenticated, installation-scoped C.A.S.E. dashboard. No player evidence, ADM paths, coordinates, or private links are posted here automatically.\n\nThe retained sample is bounded and does not prove complete ADM coverage. No finding or case is currently generated."},
+	},
+	{
+		Key: "CASE_ALERTS", Label: "C.A.S.E. Alerts", Category: categoryCASE, ChannelName: "🚨・case-alerts",
+		Routes: []string{"CASE_ALERTS"}, Anchors: []string{"CASE_ALERTS"},
+		Starter: &starterCard{"🚨 C.A.S.E. ALERTS • NOT ENABLED", "Reserved for a separately reviewed future staff finding publisher. **No live detection or cheating notifications are active.**\n\nCASE-MOV-001 remains BLOCKED; no scores, accusations, bans, kicks, or enforcement. This setup card is not evidence about any player."},
 	},
 	{
 		Key: "ADMIN_LOGS", Label: "Admin Logs", Category: categoryStaff, ChannelName: "🛡️・admin-logs",
@@ -176,6 +198,11 @@ var routeProducerAudit = map[string]routeProducer{
 	// the server logs build actions; channelRouteProducers reports it ACTIVE
 	// once one has actually been parsed.
 	"BUILD_FEED": {HealthBlocked, detailSourceBlocked + ": no build/placement line parsed yet - enable adminLogPlacement / adminLogBuildActions in the server config"},
+	// Setup itself posts these fixed informational cards. These are NOT live
+	// detector, evidence, or Discord finding publishers.
+	"CASE_STATUS": {HealthActive, "Setup-managed informational card; staff-requested paid Watch observation digests (privacy re-verified before every send); live diagnostics remain in the authorized dashboard"},
+	"CASE_EVIDENCE": {HealthActive, "Setup-managed staff guidance only; no private evidence is published"},
+	"CASE_ALERTS": {HealthActive, "Setup-managed disabled-alert notice only; no C.A.S.E. finding publisher"},
 }
 
 // championRouteKeys is the fixed set of valid route_key values - never an
@@ -446,7 +473,7 @@ func applyChannelLayout(ctx context.Context, d channelLayoutDiscord, w channelRo
 				continue
 			}
 			ch, ok := byID[r.ChannelID]
-			if ok && p.Destination.matches(ch) {
+			if ok && p.Destination.matches(ch) && (p.Destination.Category != categoryCASE || (byID[ch.ParentID].Private && !byID[ch.ParentID].PublicViewOverride && !ch.PublicViewOverride)) {
 				reused[p.Destination.Key] = ch
 				if parent, ok := byID[ch.ParentID]; ok && parent.Type == discordgo.ChannelTypeGuildCategory && categoryHint[p.Destination.Category] == "" {
 					categoryHint[p.Destination.Category] = parent.ID
@@ -541,6 +568,22 @@ func applyChannelLayout(ctx context.Context, d channelLayoutDiscord, w channelRo
 				sum.Reused = append(sum.Reused, ch.Name)
 			}
 			finalChannel[ch.ID] = true
+		}
+		// A customer can manually point a C.A.S.E. route at a public channel.
+		// Preserve that choice without touching or posting to the channel, but
+		// fail setup verification rather than claim that it is staff-private.
+		if dest.Category == categoryCASE && customerChannel[dest.Key] &&
+			(!byID[ch.ParentID].Private || byID[ch.ParentID].PublicViewOverride || ch.PublicViewOverride) {
+			report.ChannelID = ch.ID
+			report.Health = HealthBroken
+			report.Detail = "customer-owned C.A.S.E. route is not in a private category; no content posted"
+			sum.Preserved = append(sum.Preserved, dest.Routes...)
+			sum.Broken = append(sum.Broken, dest.Key)
+			result.Destinations = append(result.Destinations, report)
+			for _, key := range dest.Routes {
+				result.Routes[key] = ChannelRouteInfo{ChannelID: ch.ID, ChannelName: ch.Name, ManagedByChampion: false}
+			}
+			continue
 		}
 		report.ChannelID = ch.ID
 		if ch.Name != "" {
@@ -705,6 +748,13 @@ func inspectChannelLayout(d channelLayoutDiscord, guildID string, existingRoutes
 		if exists {
 			rep.ChannelName = ch.Name
 		}
+		if dest.Category == categoryCASE && exists &&
+			(!byID[ch.ParentID].Private || byID[ch.ParentID].PublicViewOverride || ch.PublicViewOverride) {
+			rep.Health = HealthBroken
+			rep.Detail = "C.A.S.E. channel is not staff-private; repair or choose a private destination"
+			out = append(out, rep)
+			continue
+		}
 		rep.Checks = &DestinationChecks{ChannelExists: exists, RouteMapped: true, ProducerConnected: p.Health == HealthActive}
 		if exists && dest.Voice {
 			rep.Checks.BotCanSend, rep.Checks.VisibleContent = true, true
@@ -755,13 +805,13 @@ func brokenDetail(c DestinationChecks, panel bool) string {
 func resolveLayoutCategory(d channelLayoutDiscord, guildID string, channels []discord.RawGuildChannel, cat championCategory, hintID string) (discord.RawGuildChannel, error) {
 	if hintID != "" {
 		for _, ch := range channels {
-			if ch.ID == hintID && ch.Type == discordgo.ChannelTypeGuildCategory {
+			if ch.ID == hintID && ch.Type == discordgo.ChannelTypeGuildCategory && (cat.Key != categoryCASE || (ch.Private && !ch.PublicViewOverride)) {
 				return ch, nil
 			}
 		}
 	}
 	for _, ch := range channels {
-		if ch.Type == discordgo.ChannelTypeGuildCategory && strings.EqualFold(strings.TrimSpace(ch.Name), cat.Name) {
+		if ch.Type == discordgo.ChannelTypeGuildCategory && strings.EqualFold(strings.TrimSpace(ch.Name), cat.Name) && (cat.Key != categoryCASE || (ch.Private && !ch.PublicViewOverride)) {
 			return ch, nil
 		}
 	}
@@ -782,11 +832,11 @@ func resolveLayoutCategory(d channelLayoutDiscord, guildID string, channels []di
 // the category, then create. Name recovery never adopts a same-named channel
 // elsewhere in the guild.
 func resolveLayoutChannel(d channelLayoutDiscord, guildID string, channels []discord.RawGuildChannel, categoryID string, dest championDestination, reused discord.RawGuildChannel) (discord.RawGuildChannel, bool, error) {
-	if reused.ID != "" {
+	if reused.ID != "" && (dest.Category != categoryCASE || (reused.ParentID == categoryID && !reused.PublicViewOverride)) {
 		return reused, false, nil
 	}
 	for _, ch := range channels {
-		if ch.ParentID == categoryID && dest.matches(ch) {
+		if ch.ParentID == categoryID && dest.matches(ch) && (dest.Category != categoryCASE || !ch.PublicViewOverride) {
 			return ch, false, nil
 		}
 	}
@@ -805,10 +855,10 @@ func resolveLayoutChannel(d channelLayoutDiscord, guildID string, channels []dis
 
 // matches reports whether ch is this destination's channel: a text channel
 // with its exact name, or - for the voice counter, whose name changes with
-// the count - a voice channel with the counter prefix.
+// the count - a voice channel whose name is a counter name in any format.
 func (d championDestination) matches(ch discord.RawGuildChannel) bool {
 	if d.Voice {
-		return ch.Type == discordgo.ChannelTypeGuildVoice && strings.HasPrefix(ch.Name, discord.ChannelOnlinePlayersPrefix)
+		return ch.Type == discordgo.ChannelTypeGuildVoice && discord.IsOnlineCounterName(ch.Name)
 	}
 	return ch.Type == discordgo.ChannelTypeGuildText && strings.EqualFold(ch.Name, d.ChannelName)
 }

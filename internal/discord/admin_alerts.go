@@ -34,13 +34,11 @@ const (
 	AlertKindUAVIntrusion    = "UAV_INTRUSION"
 	AlertKindBaseRadar       = "BASE_RADAR_INTRUSION"
 	AlertKindZoneBanViolated = "ZONE_BAN_VIOLATION"
+	// AlertKindCaseWatchDigest labels the paid C.A.S.E. Watch digest embed. It is NOT an
+	// operational kind: the ADMIN_ALERTS publisher refuses it (operationalAdminAlertKind), and the
+	// durable digest outbox sends it only to the private C.A.S.E. status channel.
 	AlertKindCaseWatchDigest = "CASE_WATCH_DIGEST"
 )
-
-// CaseWatchScope is constructed by the authenticated server, not the browser.
-type CaseWatchScope struct {
-	OrganizationID, InstallationID, GameServerID int64
-}
 
 // AdminAlert is one operational condition for one server.
 type AdminAlert struct {
@@ -54,8 +52,6 @@ type AdminAlert struct {
 	// SkipChannel suppresses the send when ADMIN_ALERTS resolves to it (the
 	// source already posted there itself).
 	SkipChannel string
-	// A paid digest is always checked again when the queue drains.
-	CaseWatch *CaseWatchScope
 }
 
 const (
@@ -68,6 +64,9 @@ const (
 	nitradoFailureAlertAfter = 3
 	adminAlertFooter         = "CHAMPION • STAFF INTELLIGENCE"
 )
+
+// A duplicated numeric server ID in another guild must have independent alert state.
+type alertScope struct { guildRowID, serverID int64 }
 
 type serverAlertState struct {
 	stale            bool
@@ -85,34 +84,16 @@ type AdminAlertPublisher struct {
 	sender      HitSender
 	resolver    RouteResolver
 	serverNames ServerNameFunc
-	caseWatchAllowed func(context.Context, CaseWatchScope) (bool, error)
 	queue       chan AdminAlert
 	now         func() time.Time
 
 	mu      sync.Mutex
-	servers map[int64]*serverAlertState
+	servers map[alertScope]*serverAlertState
 	dropped int
 }
 
 func NewAdminAlertPublisher(sender HitSender, resolver RouteResolver) *AdminAlertPublisher {
-	return &AdminAlertPublisher{sender: sender, resolver: resolver, queue: make(chan AdminAlert, adminAlertQueueSize), now: time.Now, servers: map[int64]*serverAlertState{}}
-}
-
-// SetCaseWatchAuthorizer is required for any paid message. A nil callback
-// suppresses paid output without changing ordinary operational alerts.
-func (p *AdminAlertPublisher) SetCaseWatchAuthorizer(f func(context.Context, CaseWatchScope) (bool, error)) {
-	if p != nil {p.caseWatchAllowed=f}
-}
-
-// QueueCaseWatchDigest accepts a server-authored observation summary only.
-// It never blocks the caller when the bounded Discord queue is full.
-func (p *AdminAlertPublisher) QueueCaseWatchDigest(a AdminAlert, scope CaseWatchScope) bool {
-	if p==nil || a.Kind!=AlertKindCaseWatchDigest || a.GuildRowID<=0 ||
-		scope.OrganizationID<=0 || scope.InstallationID<=0 || scope.GameServerID<=0 ||
-		a.ServerID!=scope.GameServerID {return false}
-	a.CaseWatch=&scope
-	if a.At.IsZero(){a.At=p.now()}
-	select {case p.queue<-a:return true;default:return false}
+	return &AdminAlertPublisher{sender: sender, resolver: resolver, queue: make(chan AdminAlert, adminAlertQueueSize), now: time.Now, servers: map[alertScope]*serverAlertState{}}
 }
 
 // SetServerNames adds the server's name to every alert.
@@ -122,11 +103,12 @@ func (p *AdminAlertPublisher) SetServerNames(f ServerNameFunc) {
 	}
 }
 
-func (p *AdminAlertPublisher) state(serverID int64) *serverAlertState {
-	st := p.servers[serverID]
+func (p *AdminAlertPublisher) state(guildRowID, serverID int64) *serverAlertState {
+	key := alertScope{guildRowID: guildRowID, serverID: serverID}
+	st := p.servers[key]
 	if st == nil {
 		st = &serverAlertState{}
-		p.servers[serverID] = st
+		p.servers[key] = st
 	}
 	return st
 }
@@ -139,7 +121,7 @@ func (p *AdminAlertPublisher) ObserveSnapshot(guildRowID, serverID int64, snap k
 	now := p.now()
 	stale := snap.OnlineCount > 0 && !snap.LastLogChange.IsZero() && now.Sub(snap.LastLogChange) > admStaleAfter
 	p.mu.Lock()
-	st := p.state(serverID)
+	st := p.state(guildRowID, serverID)
 	changed := stale != st.stale
 	st.stale = stale
 	p.mu.Unlock()
@@ -164,7 +146,7 @@ func (p *AdminAlertPublisher) ObserveDownload(guildRowID int64, report killfeed.
 	}
 	var alert *AdminAlert
 	p.mu.Lock()
-	st := p.state(report.ServerID)
+	st := p.state(guildRowID, report.ServerID)
 	switch report.Result {
 	case "failure":
 		st.downloadFailures++
@@ -192,9 +174,21 @@ func (p *AdminAlertPublisher) ObserveDownload(guildRowID int64, report killfeed.
 	}
 }
 
+// operationalAdminAlertKind is an explicit boundary: C.A.S.E. diagnostics,
+// preview cards, or future finding events cannot enter the operational route.
+func operationalAdminAlertKind(kind string) bool {
+ switch kind {
+ case AlertKindADMStale, AlertKindNitradoFailure, AlertKindZoneIntrusion,
+  AlertKindUAVIntrusion, AlertKindBaseRadar, AlertKindZoneBanViolated:
+  return true
+ default:
+  return false
+ }
+}
+
 // Publish enqueues an alert without blocking; a full queue drops it.
 func (p *AdminAlertPublisher) Publish(a AdminAlert) {
-	if p == nil {
+	if p == nil || !operationalAdminAlertKind(a.Kind) {
 		return
 	}
 	if a.At.IsZero() {
@@ -229,6 +223,7 @@ func (p *AdminAlertPublisher) Run(ctx context.Context) {
 }
 
 func (p *AdminAlertPublisher) send(ctx context.Context, a AdminAlert) {
+	if !operationalAdminAlertKind(a.Kind) { return }
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("component=admin_alerts", "msg", "send panic recovered", "panic", fmt.Sprint(r))
@@ -237,11 +232,6 @@ func (p *AdminAlertPublisher) send(ctx context.Context, a AdminAlert) {
 	if p.sender == nil || p.resolver == nil {
 		return
 	}
-	if a.Kind==AlertKindCaseWatchDigest {
-		if a.CaseWatch==nil || a.CaseWatch.GameServerID!=a.ServerID ||
-			a.CaseWatch.OrganizationID<=0 || a.CaseWatch.InstallationID<=0 ||
-			p.caseWatchAllowed==nil {return}
-	} else if a.CaseWatch!=nil {return}
 	channel, found, err := p.resolver.Resolve(ctx, a.GuildRowID, a.ServerID, routeKeyAdminAlerts)
 	if err != nil {
 		slog.Warn("component=admin_alerts", "event", "channel_route_fallback", "route_key", routeKeyAdminAlerts, "server_id", a.ServerID, "reason", "lookup_error", "err", err.Error())
@@ -250,22 +240,11 @@ func (p *AdminAlertPublisher) send(ctx context.Context, a AdminAlert) {
 	if !found || channel == "" || channel == a.SkipChannel {
 		return
 	}
-	// Route lookup can block; authorize immediately before the actual send,
-	// after routing, rather than trusting the earlier enqueue decision.
-	if a.CaseWatch!=nil {
-		allowed,checkErr:=p.caseWatchAllowed(ctx,*a.CaseWatch)
-		if checkErr!=nil || !allowed {
-			if checkErr!=nil {slog.Warn("component=case","event","watch_digest_access_failed","server_id",a.ServerID,"err",checkErr.Error())}
-			return
-		}
-	}
 	name := ""
 	if p.serverNames != nil {
 		name = p.serverNames(a.ServerID)
 	}
-	embed:=BuildAdminAlertEmbed(a,name)
-	if a.Kind==AlertKindCaseWatchDigest {embed=BuildCaseWatchDigestEmbed(a,name)}
-	if _, err := p.sender.ChannelMessageSendComplex(channel, &discordgo.MessageSend{Embeds: []*discordgo.MessageEmbed{embed}}); err != nil {
+	if _, err := p.sender.ChannelMessageSendComplex(channel, &discordgo.MessageSend{Embeds: []*discordgo.MessageEmbed{BuildAdminAlertEmbed(a, name)}}); err != nil {
 		slog.Warn("component=admin_alerts", "event", "admin_alert_send_failed", "kind", a.Kind, "server_id", a.ServerID, "err", err.Error())
 	}
 }
