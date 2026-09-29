@@ -22,6 +22,24 @@ type ServerRankedSeason struct {
 	StartsAt time.Time `json:"startsAt"`
 }
 
+// ActiveServerSeason returns the selected server's active rules or nil before
+// its first season. Both guild and server IDs are required for tenant scope.
+func (r *RankedRepository) ActiveServerSeason(ctx context.Context, guildID, serverID int64) (*ServerRankedSeason, error) {
+	if r == nil || r.pool == nil || guildID <= 0 || serverID <= 0 { return nil, fmt.Errorf("guild and server IDs are required") }
+	var s ServerRankedSeason
+	var values []int64
+	err := r.pool.QueryRow(ctx, `SELECT s.id,s.platform,s.rp_per_kill,s.thresholds,s.starts_at
+FROM ranked_seasons s JOIN game_servers gs ON gs.id=s.server_id AND gs.guild_id=$1
+WHERE s.scope='SERVER' AND s.status='ACTIVE' AND s.server_id=$2`, guildID, serverID).Scan(&s.ID, &s.Platform, &s.RPPerKill, &values, &s.StartsAt)
+	if errors.Is(err, pgx.ErrNoRows) { return nil, nil }
+	if err != nil { return nil, fmt.Errorf("load active server ranked season: %w", err) }
+	if len(values) != 7 { return nil, fmt.Errorf("invalid stored ranked thresholds") }
+	copy(s.Thresholds[:], values)
+	if err = s.Thresholds.Validate(); err != nil { return nil, err }
+	s.ServerID, s.Status = serverID, "ACTIVE"
+	return &s, nil
+}
+
 // StartServerSeason opens a local season, or atomically archives the active
 // season and starts a new one when reset is explicitly requested. The server
 // row lock serializes concurrent starts and prevents a reset from crossing
