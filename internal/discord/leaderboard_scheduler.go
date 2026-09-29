@@ -2,6 +2,7 @@ package discord
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"sync"
@@ -56,9 +57,8 @@ type AutoLeaderboardReader interface {
 
 // RankReader is the authoritative CURRENT player-rank source for the
 // "Current Top 15 Ranks" board, ordered by that rank system's own ordering.
-// Champion has no player rank/tier system yet, so production wires none and
-// the Ranks embed stays inactive: it is never substituted with kills, K/D or
-// points under a "Ranks" title.
+// The selected public server's active Ranked season supplies this board.
+// Without an active season the Ranks embed remains inactive.
 type RankReader interface {
 	TopCurrentRanks(ctx context.Context, guildID int64, limit int) ([]RankEntry, error)
 }
@@ -218,10 +218,12 @@ func (s *LeaderboardScheduler) loadSnapshot(ctx context.Context) (LeaderboardSna
 	snap := LeaderboardSnapshot{TopKills: kills, TopStreaks: streaks, TopDeaths: deaths, TopLongest: longest}
 	if s.ranks != nil {
 		ranks, rankErr := s.ranks.TopCurrentRanks(ctx, s.guildRowID, boardLimit(s.cfg.TopRanksLimit))
-		if rankErr != nil {
+		if rankErr != nil && !errors.Is(rankErr, repository.ErrRankedIneligible) {
 			return LeaderboardSnapshot{}, rankErr
 		}
-		snap.CurrentRanks, snap.RanksEnabled = ranks, true
+		if rankErr == nil {
+			snap.CurrentRanks, snap.RanksEnabled = ranks, true
+		}
 	}
 	snap.ServerName = s.serverName(ctx)
 	snap.GeneratedAt = time.Now()
