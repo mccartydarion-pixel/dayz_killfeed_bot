@@ -2195,6 +2195,11 @@ ON CONFLICT (installation_id, route_key) DO NOTHING;
 		Name: "0066_discord_feed_cards",
 		SQL:  DiscordFeedCardsSQL,
 	},
+	{
+		// Inert Core Eight Base Boost registration; no detector reader or notifier.
+		Name: "0067_case_base_registration",
+		SQL: CASEBaseRegistrationSQL,
+	},
 }
 
 // DiscordFeedCardsSQL (migration 0066) is the immediate-mode feed journal: each queued card is

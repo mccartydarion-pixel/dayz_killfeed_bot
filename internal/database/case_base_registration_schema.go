@@ -1,0 +1,69 @@
+package database
+
+// CASEBaseRegistrationSQL is inert registration storage for Core Eight Base
+// Boost. Nothing reads it to make a detector conclusion, case, or Discord alert.
+// Composite keys prevent a base or grant from crossing its installation,
+// guild, game server, or player/faction boundary.
+const CASEBaseRegistrationSQL = `
+CREATE UNIQUE INDEX IF NOT EXISTS uq_case_game_server_scope
+ ON game_servers(guild_id,id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_case_player_scope
+ ON players(guild_id,id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_case_faction_scope
+ ON factions(guild_id,id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_case_installation_server
+ ON installations(id,game_server_id);
+
+CREATE TABLE IF NOT EXISTS case_registered_bases (
+ id BIGSERIAL PRIMARY KEY,
+ installation_id BIGINT NOT NULL,
+ guild_id BIGINT NOT NULL,
+ server_id BIGINT NOT NULL,
+ owner_player_id BIGINT NOT NULL,
+ map_key TEXT NOT NULL CHECK (char_length(map_key) BETWEEN 1 AND 80),
+ name TEXT NOT NULL CHECK (char_length(name) BETWEEN 1 AND 128),
+ center_x DOUBLE PRECISION NOT NULL CHECK (center_x BETWEEN -100000 AND 100000),
+ center_z DOUBLE PRECISION NOT NULL CHECK (center_z BETWEEN -100000 AND 100000),
+ radius DOUBLE PRECISION NOT NULL CHECK (radius BETWEEN 1 AND 5000),
+ state TEXT NOT NULL DEFAULT 'DRAFT' CHECK (state IN ('DRAFT','REVIEWED','REVOKED')),
+ reviewed_at TIMESTAMPTZ,
+ revoked_at TIMESTAMPTZ,
+ created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+ updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+ CHECK ((state='REVIEWED' AND reviewed_at IS NOT NULL AND revoked_at IS NULL)
+     OR (state='REVOKED' AND revoked_at IS NOT NULL)
+     OR (state='DRAFT' AND reviewed_at IS NULL AND revoked_at IS NULL)),
+ CONSTRAINT fk_case_base_installation_server FOREIGN KEY (installation_id,server_id)
+  REFERENCES installations(id,game_server_id) ON DELETE CASCADE,
+ CONSTRAINT fk_case_base_game_server FOREIGN KEY (guild_id,server_id)
+  REFERENCES game_servers(guild_id,id) ON DELETE CASCADE,
+ CONSTRAINT fk_case_base_owner FOREIGN KEY (guild_id,owner_player_id)
+  REFERENCES players(guild_id,id) ON DELETE RESTRICT,
+ CONSTRAINT uq_case_base_scope UNIQUE (installation_id,guild_id,server_id,id)
+);
+CREATE INDEX IF NOT EXISTS idx_case_bases_scope
+ ON case_registered_bases(installation_id,guild_id,server_id,state,id);
+
+CREATE TABLE IF NOT EXISTS case_base_authorizations (
+ id BIGSERIAL PRIMARY KEY,
+ installation_id BIGINT NOT NULL,
+ guild_id BIGINT NOT NULL,
+ server_id BIGINT NOT NULL,
+ base_id BIGINT NOT NULL,
+ player_id BIGINT,
+ faction_id BIGINT,
+ valid_from TIMESTAMPTZ NOT NULL,
+ valid_until TIMESTAMPTZ,
+ created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+ CHECK ((player_id IS NOT NULL) <> (faction_id IS NOT NULL)),
+ CHECK (valid_until IS NULL OR valid_until > valid_from),
+ CONSTRAINT fk_case_base_grant_scope FOREIGN KEY (installation_id,guild_id,server_id,base_id)
+  REFERENCES case_registered_bases(installation_id,guild_id,server_id,id) ON DELETE CASCADE,
+ CONSTRAINT fk_case_base_grant_player FOREIGN KEY (guild_id,player_id)
+  REFERENCES players(guild_id,id) ON DELETE RESTRICT,
+ CONSTRAINT fk_case_base_grant_faction FOREIGN KEY (guild_id,faction_id)
+  REFERENCES factions(guild_id,id) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_case_base_grants_scope
+ ON case_base_authorizations(installation_id,guild_id,server_id,base_id,valid_from);
+`;

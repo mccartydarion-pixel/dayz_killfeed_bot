@@ -1,0 +1,108 @@
+package app
+
+import (
+ "context"
+ "encoding/json"
+ "errors"
+ "log/slog"
+ "net/http"
+ "strconv"
+ "strings"
+ "time"
+
+ "github.com/yourname/dayz-killfeed/internal/permissions"
+ "github.com/yourname/dayz-killfeed/internal/repository"
+)
+
+// Base registration is owner-only draft management. It cannot activate a
+// detector, mark ownership verified, or send a C.A.S.E. Discord notification.
+func (a *App) registerCaseBaseRoutes(base string){
+ h:=a.HTTPServer.Handle
+ h("GET "+base+"/case/bases",a.handleCaseListBases)
+ h("POST "+base+"/case/bases",a.handleCaseCreateBaseDraft)
+ h("GET "+base+"/case/bases/{baseID}/grants",a.handleCaseListBaseGrants)
+ h("POST "+base+"/case/bases/{baseID}/grants",a.handleCaseAddBaseGrant)
+}
+
+func (a *App) caseBaseActor(w http.ResponseWriter,r *http.Request)(adminActor,*repository.CaseBaseRegistrationRepository,bool){
+ ac,ok:=a.requireCapability(w,r,permissions.CapUAVManage)
+ if !ok{return adminActor{},nil,false}
+ if ac.scope.ServerID==nil{writeSaaSError(w,codeInvalidRequest,"no DayZ server selected");return adminActor{},nil,false}
+ if a.DB==nil||a.DB.Pool==nil{writeSaaSError(w,codeInternalError,"C.A.S.E. base drafts unavailable");return adminActor{},nil,false}
+ return ac,repository.NewCaseBaseRegistrationRepository(a.DB.Pool),true
+}
+
+func (a *App) handleCaseListBases(w http.ResponseWriter,r *http.Request){
+ ac,repo,ok:=a.caseBaseActor(w,r);if !ok{return}
+ if !enforceRateLimit(w,a.saasAdminReadLimiter,rateLimitKey(r)){return}
+ before:=int64(0)
+ if raw:=r.URL.Query().Get("beforeId");raw!=""{
+  var err error
+  before,err=strconv.ParseInt(raw,10,64)
+  if err!=nil||before<=0{writeSaaSError(w,codeInvalidRequest,"invalid beforeId");return}
+ }
+ ctx,cancel:=context.WithTimeout(r.Context(),adminTimeout);defer cancel()
+ rows,err:=repo.ListBases(ctx,ac.scope.InstallationID,ac.scope.GuildID,*ac.scope.ServerID,before,50)
+ if err!=nil{slog.Warn("component=case","event","list_base_drafts_failed","err",err.Error());writeSaaSError(w,codeInternalError,"could not list base drafts");return}
+ a.recordAudit(ctx,ac,"CASE_BASE_DRAFTS_VIEWED","","","success",nil,map[string]any{"count":len(rows)})
+ writeSaaSJSON(w,http.StatusOK,map[string]any{"items":rows,"operational":false})
+}
+
+type caseCreateBaseDraftRequest struct{
+ OwnerPlayerID int64 `json:"ownerPlayerId"`
+ MapKey string `json:"mapKey"`
+ Name string `json:"name"`
+ CenterX float64 `json:"centerX"`
+ CenterZ float64 `json:"centerZ"`
+ Radius float64 `json:"radius"`
+}
+
+func (a *App) handleCaseCreateBaseDraft(w http.ResponseWriter,r *http.Request){
+ ac,repo,ok:=a.caseBaseActor(w,r);if !ok{return}
+ if !enforceRateLimit(w,a.saasAdminActionLimiter,rateLimitKey(r)){return}
+ var req caseCreateBaseDraftRequest
+ decoder:=json.NewDecoder(r.Body);decoder.DisallowUnknownFields()
+ if err:=decoder.Decode(&req);err!=nil{writeSaaSError(w,codeInvalidRequest,"invalid base draft");return}
+ ctx,cancel:=context.WithTimeout(r.Context(),adminTimeout);defer cancel()
+ b,err:=repo.CreateDraft(ctx,repository.CaseBaseDraftInput{
+  InstallationID:ac.scope.InstallationID,GuildID:ac.scope.GuildID,ServerID:*ac.scope.ServerID,
+  OwnerPlayerID:req.OwnerPlayerID,MapKey:strings.TrimSpace(req.MapKey),Name:strings.TrimSpace(req.Name),
+  CenterX:req.CenterX,CenterZ:req.CenterZ,Radius:req.Radius,
+ })
+ if errors.Is(err,repository.ErrCaseBaseNotFound){writeSaaSError(w,codeInvalidRequest,"owner player is not on this installation's guild");return}
+ if err!=nil{slog.Warn("component=case","event","create_base_draft_failed","err",err.Error());writeSaaSError(w,codeInvalidRequest,"invalid or mismatched base draft");return}
+ a.recordAudit(ctx,ac,"CASE_BASE_DRAFT_CREATED","case-base:"+strconv.FormatInt(b.ID,10),"","success",nil,map[string]any{"state":b.State})
+ writeSaaSJSON(w,http.StatusCreated,map[string]any{"base":b,"operational":false})
+}
+
+type caseAddGrantRequest struct{
+ PlayerID *int64 `json:"playerId"`
+ FactionID *int64 `json:"factionId"`
+ ValidUntil *time.Time `json:"validUntil"`
+}
+
+func (a *App) handleCaseListBaseGrants(w http.ResponseWriter,r *http.Request){
+ ac,repo,ok:=a.caseBaseActor(w,r);if !ok{return}
+ id,good:=pathInt64(w,r,"baseID");if !good{return}
+ if !enforceRateLimit(w,a.saasAdminReadLimiter,rateLimitKey(r)){return}
+ ctx,cancel:=context.WithTimeout(r.Context(),adminTimeout);defer cancel()
+ rows,err:=repo.ListAuthorizations(ctx,ac.scope.InstallationID,ac.scope.GuildID,*ac.scope.ServerID,id)
+ if err!=nil{slog.Warn("component=case","event","list_base_grants_failed","err",err.Error());writeSaaSError(w,codeInternalError,"could not list base grants");return}
+ a.recordAudit(ctx,ac,"CASE_BASE_GRANTS_VIEWED","case-base:"+strconv.FormatInt(id,10),"","success",nil,map[string]any{"count":len(rows)})
+ writeSaaSJSON(w,http.StatusOK,map[string]any{"items":rows,"operational":false})
+}
+
+func (a *App) handleCaseAddBaseGrant(w http.ResponseWriter,r *http.Request){
+ ac,repo,ok:=a.caseBaseActor(w,r);if !ok{return}
+ id,good:=pathInt64(w,r,"baseID");if !good{return}
+ if !enforceRateLimit(w,a.saasAdminActionLimiter,rateLimitKey(r)){return}
+ var req caseAddGrantRequest
+ decoder:=json.NewDecoder(r.Body);decoder.DisallowUnknownFields()
+ if err:=decoder.Decode(&req);err!=nil{writeSaaSError(w,codeInvalidRequest,"invalid base grant");return}
+ ctx,cancel:=context.WithTimeout(r.Context(),adminTimeout);defer cancel()
+ grant,err:=repo.AddDraftGrant(ctx,ac.scope.InstallationID,ac.scope.GuildID,*ac.scope.ServerID,id,req.PlayerID,req.FactionID,req.ValidUntil)
+ if errors.Is(err,repository.ErrCaseBaseNotFound){writeSaaSError(w,codeInvalidRequest,"base draft or grant subject unavailable");return}
+ if err!=nil{writeSaaSError(w,codeInvalidRequest,"invalid base grant");return}
+ a.recordAudit(ctx,ac,"CASE_BASE_DRAFT_GRANT_CREATED","case-base:"+strconv.FormatInt(id,10),"","success",nil,map[string]any{"grantId":grant.ID})
+ writeSaaSJSON(w,http.StatusCreated,map[string]any{"grant":grant,"operational":false})
+}
