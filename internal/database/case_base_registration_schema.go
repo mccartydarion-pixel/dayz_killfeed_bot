@@ -70,6 +70,21 @@ CREATE TABLE IF NOT EXISTS case_base_authorizations (
 CREATE OR REPLACE FUNCTION case_base_grant_requires_draft()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
+ IF TG_OP='UPDATE' THEN
+  IF ROW(NEW.installation_id,NEW.guild_id,NEW.server_id,NEW.base_id,
+         NEW.player_id,NEW.faction_id,NEW.valid_from,NEW.created_at)
+     IS DISTINCT FROM
+     ROW(OLD.installation_id,OLD.guild_id,OLD.server_id,OLD.base_id,
+         OLD.player_id,OLD.faction_id,OLD.valid_from,OLD.created_at) THEN
+   RAISE EXCEPTION 'C.A.S.E. base grant identity and start are immutable'
+    USING ERRCODE='23514';
+  END IF;
+  IF OLD.valid_until IS NOT NULL AND
+     (NEW.valid_until IS NULL OR NEW.valid_until>OLD.valid_until) THEN
+   RAISE EXCEPTION 'C.A.S.E. base grant end cannot be reopened or extended'
+    USING ERRCODE='23514';
+  END IF;
+ END IF;
  PERFORM 1 FROM case_registered_bases b
  WHERE b.installation_id=NEW.installation_id AND b.guild_id=NEW.guild_id
    AND b.server_id=NEW.server_id AND b.id=NEW.base_id AND b.state='DRAFT'
