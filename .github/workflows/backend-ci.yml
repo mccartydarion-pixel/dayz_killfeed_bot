@@ -15,7 +15,7 @@ jobs:
     services:
       # A throwaway database that exists only for this job - never production.
       postgres:
-        image: postgres:16
+        image: postgres:18
         env:
           POSTGRES_USER: champion
           POSTGRES_PASSWORD: champion
