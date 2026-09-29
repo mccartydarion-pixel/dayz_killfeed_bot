@@ -114,13 +114,16 @@ func (r *RankedRepository) RecordServerKill(ctx context.Context, seasonID, killI
 	var fingerprint string
 	var eventTime time.Time
 	err = tx.QueryRow(ctx, `
-SELECT s.server_id,k.guild_id,k.killer_player_id,k.victim_player_id,s.rp_per_kill,k.event_fingerprint,k.event_time
+SELECT s.server_id,k.guild_id,k.killer_player_id,k.victim_player_id,s.rp_per_kill,k.event_fingerprint,ev.happened_at
 FROM ranked_seasons s JOIN game_servers gs ON gs.id=s.server_id
 JOIN kills k ON k.id=$2 AND k.server_id=s.server_id AND k.guild_id=gs.guild_id
+LEFT JOIN live_sync_server_clock c ON c.server_id=s.server_id
+CROSS JOIN LATERAL (SELECT COALESCE(k.event_time,
+  (k.source_local_time - make_interval(mins => c.utc_offset_minutes)) AT TIME ZONE 'UTC') AS happened_at) ev
 WHERE s.id=$1 AND s.scope='SERVER' AND s.status='ACTIVE' AND s.platform=gs.platform
   AND k.killer_player_id IS NOT NULL AND k.victim_player_id IS NOT NULL
-  AND k.killer_player_id<>k.victim_player_id AND k.event_time IS NOT NULL
-  AND k.event_time>=s.starts_at AND (s.ends_at IS NULL OR k.event_time<s.ends_at)
+  AND k.killer_player_id<>k.victim_player_id AND ev.happened_at IS NOT NULL
+  AND ev.happened_at>=s.starts_at AND (s.ends_at IS NULL OR ev.happened_at<s.ends_at)
 FOR SHARE OF s`, seasonID, killID).Scan(&serverID, &guildID, &killerID, &victimID, &rp, &fingerprint, &eventTime)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return result, ErrRankedIneligible
@@ -208,11 +211,14 @@ func (r *RankedRepository) ReconcileServerAwards(ctx context.Context, serverID i
 	for {
 		rows, err := r.pool.Query(ctx, `SELECT s.id,k.id FROM ranked_seasons s JOIN game_servers gs ON gs.id=s.server_id AND gs.platform=s.platform
 JOIN kills k ON k.server_id=s.server_id AND k.guild_id=gs.guild_id
+LEFT JOIN live_sync_server_clock c ON c.server_id=s.server_id
+CROSS JOIN LATERAL (SELECT COALESCE(k.event_time,
+  (k.source_local_time - make_interval(mins => c.utc_offset_minutes)) AT TIME ZONE 'UTC') AS happened_at) ev
 WHERE s.scope='SERVER' AND s.status='ACTIVE' AND s.server_id=$1
-AND k.event_time>=s.starts_at AND (s.ends_at IS NULL OR k.event_time<s.ends_at)
+AND ev.happened_at>=s.starts_at AND (s.ends_at IS NULL OR ev.happened_at<s.ends_at)
 AND k.killer_player_id IS NOT NULL AND k.victim_player_id IS NOT NULL AND k.killer_player_id<>k.victim_player_id
 AND NOT EXISTS (SELECT 1 FROM ranked_awards a WHERE a.season_id=s.id AND a.kill_id=k.id)
-ORDER BY k.event_time,k.id LIMIT $2`, serverID, batchSize)
+ORDER BY ev.happened_at,k.id LIMIT $2`, serverID, batchSize)
 		if err != nil { return processed, fmt.Errorf("query missing ranked awards: %w", err) }
 		type candidate struct{ seasonID, killID int64 }
 		var pending []candidate
