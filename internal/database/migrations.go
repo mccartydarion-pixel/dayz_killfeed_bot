@@ -2197,12 +2197,12 @@ ON CONFLICT (installation_id, route_key) DO NOTHING;
 	},
 	{
 		// Inert Core Eight Base Boost registration; no detector reader or notifier.
-		Name: "0067_case_base_registration",
+		Name: "0070_case_base_registration",
 		SQL: CASEBaseRegistrationSQL,
 	},
 	{
 		// Inert owner preferences; no detector reads or release flags.
-		Name: "0068_case_detector_settings",
+		Name: "0071_case_detector_settings",
 		SQL: CASEDetectorSettingsSQL,
 	},
 }
