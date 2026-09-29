@@ -47,7 +47,11 @@ func TestLayoutHubHasServerStatusAndVoiceCounter(t *testing.T) {
 	if d := report(res, "ONLINE_COUNTER"); d.Health != HealthActive || !d.Voice {
 		t.Fatalf("voice counter report: %+v", d)
 	}
-	// Death feed and PvE share the combat feed: no separate channels.
+	// The separate PvE destination is created by /setup; obsolete legacy names are not.
+	pve, n := g.byName("☠️・pve-feed")
+	if n != 1 || w.routes["PVE_FEED"] != pve.ID || w.routes["KILLFEED"] == pve.ID {
+		t.Fatalf("separate PvE setup route missing: %+v", pve)
+	}
 	for _, name := range []string{"death-feed", "☠️・death-feed", "pvefeed"} {
 		if _, n := g.byName(name); n != 0 {
 			t.Fatalf("%s must not exist in V2", name)
@@ -98,9 +102,9 @@ func TestRepairPreservesCustomerRoutes(t *testing.T) {
 	if _, n := g.byName("🎯・hitfeed"); n != 0 {
 		t.Fatal("a destination served entirely by a customer channel needs no Champion channel")
 	}
-	combat, n := g.byName("🔫・combat-feed")
-	if n != 1 || w.routes["PVE_FEED"] != combat.ID {
-		t.Fatal("the Champion-managed part of a destination still gets the V2 channel")
+	pve, n := g.byName("☠️・pve-feed")
+	if n != 1 || w.routes["PVE_FEED"] != pve.ID || w.routes["KILLFEED"] != "my-feed" {
+		t.Fatal("the PvE route gets its own Champion-managed channel while customer kill route is preserved")
 	}
 	if g.starters["my-feed"] != 0 || g.starters["my-hits"] != 0 {
 		t.Fatal("Champion never posts into a customer's channel")
