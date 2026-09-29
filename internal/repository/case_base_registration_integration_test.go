@@ -182,7 +182,7 @@ func TestCaseBaseGrantIntervalsRejectOverlapAndAllowRenewal(t *testing.T) {
  }
  var factionID int64
  if err=repo.pool.QueryRow(ctx,`INSERT INTO factions(guild_id,name,tag,owner_player_id)
- VALUES($1,'Interval faction ' || $3::text,'I' || $3::text,$2) RETURNING id`,fx.GuildRowID,owner,base.ID).Scan(&factionID);err!=nil{t.Fatal(err)}
+ VALUES($1,'Interval faction ' || $3::bigint::text,'I' || $3::bigint::text,$2) RETURNING id`,fx.GuildRowID,owner,base.ID).Scan(&factionID);err!=nil{t.Fatal(err)}
  factionInsert:=`INSERT INTO case_base_authorizations
  (installation_id,guild_id,server_id,base_id,faction_id,valid_from,valid_until)
  VALUES($1,$2,$3,$4,$5,$6,$7)`
