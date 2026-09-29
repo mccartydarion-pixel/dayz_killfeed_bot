@@ -197,3 +197,49 @@ func TestCaseBaseGrantIntervalsRejectOverlapAndAllowRenewal(t *testing.T) {
   t.Fatalf("grant history count=%d err=%v",count,err)
  }
 }
+
+func TestCaseBaseGrantConcurrentOverlapSerializes(t *testing.T) {
+ repo,fx,seedPlayer:=newZoneTestWorld(t)
+ ctx,cancel:=context.WithTimeout(context.Background(),5*time.Second)
+ defer cancel()
+ owner:=seedPlayer("Concurrent owner")
+ guest:=seedPlayer("Concurrent guest")
+ base,err:=NewCaseBaseRegistrationRepository(repo.pool).CreateDraft(ctx,CaseBaseDraftInput{
+  InstallationID:fx.InstallationID,GuildID:fx.GuildRowID,ServerID:fx.ServerRowID,
+  OwnerPlayerID:owner,MapKey:"chernarusplus",Name:"Concurrent base",CenterX:1,CenterZ:2,Radius:30,
+ })
+ if err!=nil{t.Fatal(err)}
+ tx,err:=repo.pool.Begin(ctx)
+ if err!=nil{t.Fatal(err)}
+ defer tx.Rollback(context.Background())
+ from:=time.Now().UTC()
+ insert:=`INSERT INTO case_base_authorizations
+ (installation_id,guild_id,server_id,base_id,player_id,valid_from)
+ VALUES($1,$2,$3,$4,$5,$6)`
+ if _,err=tx.Exec(ctx,insert,fx.InstallationID,fx.GuildRowID,fx.ServerRowID,base.ID,guest,from);err!=nil{
+  t.Fatal(err)
+ }
+ done:=make(chan error,1)
+ go func(){
+  _,insertErr:=repo.pool.Exec(ctx,insert,fx.InstallationID,fx.GuildRowID,fx.ServerRowID,base.ID,guest,from.Add(time.Minute))
+  done<-insertErr
+ }()
+ select{
+ case insertErr:=<-done:
+  t.Fatalf("concurrent grant did not wait for claim lock: %v",insertErr)
+ case <-time.After(40*time.Millisecond):
+ }
+ if err=tx.Commit(ctx);err!=nil{t.Fatal(err)}
+ select{
+ case insertErr:=<-done:
+  if insertErr==nil{t.Fatal("overlapping grant committed after first transaction")}
+ case <-ctx.Done():
+  t.Fatalf("concurrent grant did not settle: %v",ctx.Err())
+ }
+ var count int
+ if err=repo.pool.QueryRow(ctx,`SELECT count(*) FROM case_base_authorizations
+ WHERE installation_id=$1 AND guild_id=$2 AND server_id=$3 AND base_id=$4 AND player_id=$5`,
+  fx.InstallationID,fx.GuildRowID,fx.ServerRowID,base.ID,guest).Scan(&count);err!=nil||count!=1{
+  t.Fatalf("concurrent grant history count=%d err=%v",count,err)
+ }
+}
