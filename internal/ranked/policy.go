@@ -1,6 +1,5 @@
 // Package ranked contains the rules for CHAMPIONS Ranked Points. Persistence
-// and kill ingestion are deliberately separate so ranks cannot be awarded
-// before a verified cross-server console identity is available.
+// and kill ingestion are separate so server seasons can award persisted kills.
 package ranked
 
 import (
@@ -41,8 +40,7 @@ func (t Thresholds) Validate() error {
 	return nil
 }
 
-// Progress computes a tier and the remaining RP for the next tier. Elite Top
-// 250 is a leaderboard position among Master players, never an RP threshold.
+// Progress computes a tier and the remaining RP for the next tier.
 func (t Thresholds) Progress(rp int64) (tier Tier, next Tier, remaining int64, err error) {
 	if err = t.Validate(); err != nil {
 		return "", "", 0, err
@@ -61,8 +59,8 @@ func (t Thresholds) Progress(rp int64) (tier Tier, next Tier, remaining int64, e
 }
 
 // EligibleRepeat reports whether the same attacker can earn RP from the same
-// victim again. The caller must use verified platform identities, event time,
-// and a durable, cross-server ledger. Kills remain ordinary combat events when
+// victim again. The caller must use the server's player IDs, event time,
+// and a durable local award ledger. Kills remain ordinary combat events when
 // this returns false.
 func EligibleRepeat(killAt, previousAwardAt time.Time) bool {
 	return !killAt.Before(previousAwardAt.Add(SameVictimCooldown))
