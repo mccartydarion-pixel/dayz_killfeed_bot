@@ -89,11 +89,20 @@ VALUES('SERVER','PLAYSTATION',$1,'ACTIVE',100,ARRAY[100,300,600,1000,1500,2100,2
 	if err := db.Pool.QueryRow(ctx, `SELECT COALESCE(SUM(amount),0) FROM ranked_awards WHERE season_id=$1`, season).Scan(&total); err != nil || total != 200 {
 		t.Fatalf("season total=%d err=%v, want 200", total, err)
 	}
+	standings, err := repo.ServerStandings(ctx, server.ID, 15)
+	if err != nil || len(standings) != 1 || standings[0].PlayerID != attacker || standings[0].RP != 200 || standings[0].Tier != "ROOKIE" || standings[0].Remaining != 100 {
+		t.Fatalf("server standings=%+v err=%v", standings, err)
+	}
 	if _, err := db.Pool.Exec(ctx, `UPDATE ranked_seasons SET status='ARCHIVED' WHERE id=$1`, season); err != nil {
 		t.Fatal(err)
 	}
+	check(season, first, "AWARDED", 100) // an archived season remains replayable
 	second := newSeason(start.Add(10 * time.Minute))
 	check(second, newKill(6, start.Add(11*time.Minute)), "AWARDED", 100)
+	standings, err = repo.ServerStandings(ctx, server.ID, 15)
+	if err != nil || len(standings) != 1 || standings[0].RP != 100 {
+		t.Fatalf("reset standings=%+v err=%v", standings, err)
+	}
 	if _, err := repo.RecordServerKill(ctx, season, newKill(5, firstAt.Add(10*time.Minute))); !errors.Is(err, ErrRankedIneligible) {
 		t.Fatalf("archived season accepted kill: %v", err)
 	}
