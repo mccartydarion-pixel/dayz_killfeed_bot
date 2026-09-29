@@ -2200,6 +2200,11 @@ ON CONFLICT (installation_id, route_key) DO NOTHING;
 		Name: "0067_case_base_registration",
 		SQL: CASEBaseRegistrationSQL,
 	},
+	{
+		// Inert owner preferences; no detector reads or release flags.
+		Name: "0068_case_detector_settings",
+		SQL: CASEDetectorSettingsSQL,
+	},
 }
 
 // DiscordFeedCardsSQL (migration 0066) is the immediate-mode feed journal: each queued card is
