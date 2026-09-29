@@ -1,0 +1,9 @@
+# C.A.S.E. Embed Designer contract — draft
+
+This change makes the installation-scoped `CASE_STATUS`, `CASE_EVIDENCE`, and `CASE_ALERTS` routes valid **stored, validated and previewable** Embed Designer templates. Colors, title, description, fields, media, and approved placeholders follow the same existing template model and sanitizing render path as the other routes.
+
+The C.A.S.E. variable dictionary is explicitly forward-looking, not a gameplay/ADM extractor: `CASE_STATUS` offers detector_status, observation_status and enforcement; `CASE_EVIDENCE` offers observation_status, bounded sample_count and quality_status; `CASE_ALERTS` offers case_id, case_status and reason. Each also has the generic server_name/timestamp. No raw player identity, canonical source path, coordinates, freeform URL, confidence score or unreviewed accusation variable is authorized. Variables can only be supplied manually to a preview until a separate reviewed producer exists.
+
+A saved template **does not** enable runtime delivery. Every C.A.S.E. route reports `runtimeRendering=NOT_ENABLED` and `customRenderingSupported=false` because no live publisher is connected. Preview renders through the existing production sanitization pipeline but explicitly says DESIGN PREVIEW ONLY and that sample variables are not evidence or a real finding. The live test-send endpoint remains fail-closed for C.A.S.E.; the category's separate fixed starter embeds from /setup are unaffected. `CASE-MOV-001` remains BLOCKED, safe speed pairs 0, enforcement DISABLED.
+
+Future activation requires the real ADM acceptance gate #114, an approved source-specific event contract, private per-installation routing, deduplicated reviewed-finding outbox, and independent no-send/no-cross-tenant tests. No production deployment, raw data fetch, finding publisher or Discord send is part of this PR.

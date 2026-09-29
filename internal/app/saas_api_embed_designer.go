@@ -222,6 +222,9 @@ func renderEmbedDraft(routeKey string, req EmbedDraftRequest, runtimeRendering s
 		}
 	}
 
+	if strings.HasPrefix(routeKey, "CASE_") {
+		resp.Warnings = append(resp.Warnings, "C.A.S.E. DESIGN PREVIEW ONLY: supplied values are synthetic/manual examples, not live ADM evidence, a reviewed finding or a player accusation. No C.A.S.E. event publisher is enabled.")
+	}
 	if !resp.CustomRenderingSupported {
 		resp.Warnings = append(resp.Warnings, "This route does not use custom templates in Discord yet - the preview shows the design only.")
 	} else if runtimeRendering != runtimeRenderingEnabled {

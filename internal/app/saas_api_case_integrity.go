@@ -9,8 +9,10 @@ import (
  "time"
 
  "github.com/jackc/pgx/v5"
+ "github.com/yourname/dayz-killfeed/internal/caseintel"
  "github.com/yourname/dayz-killfeed/internal/killfeed"
  "github.com/yourname/dayz-killfeed/internal/permissions"
+ "github.com/yourname/dayz-killfeed/internal/repository"
 )
 
 // C.A.S.E. Phase 2E is a read-only view of the already-running ADM worker.
@@ -40,6 +42,8 @@ type caseSourceIntegrity struct {
  LatestEvidenceSourceRef *string `json:"latestEvidenceSourceRef"`
  LatestEvidenceOffset *int64 `json:"latestEvidenceOffset"`
  EvidenceLines24h int64 `json:"evidenceLines24h"`
+ EvidenceObservationStatus string `json:"evidenceObservationStatus"`
+ PipelineHealth casePipelineHealth `json:"pipelineHealth"`
  NewerBootVerificationReason string `json:"newerBootVerificationReason"`
  NewerBootVerificationAt *time.Time `json:"newerBootVerificationAt"`
  NewerBootCandidateRef *string `json:"newerBootCandidateRef"`
@@ -49,6 +53,7 @@ type caseSourceIntegrity struct {
  MovementDetectorStatus string `json:"movementDetectorStatus"`
  DetectorsEnabled bool `json:"detectorsEnabled"`
  Continuity caseContinuityReport `json:"continuity"`
+ EvidenceAdmissibility caseintel.AdmissibilityReport `json:"evidenceAdmissibility"`
  Enforcement string `json:"enforcement"`
 }
 
@@ -94,6 +99,22 @@ func caseSourceSnapshot(serverID int64,now time.Time,source killfeed.ADMSourceHe
   offset:=pipeline.CheckpointOffset;out.CheckpointBytes=&offset
  }
  return out
+}
+
+// This is an observation-availability label, not collector health, data
+// completeness, gameplay activity or a cheating verdict. Retained rows may
+// predate an unavailable worker or a disabled collector.
+func caseEvidenceObservationStatus(worker,collector bool,sourceRef *string,selectedIsAccepted *bool,
+ latestEvidenceSourceRef *string,latestEvidence *time.Time,count int64) string {
+ if !worker {return "WORKER_UNAVAILABLE"}
+ if !collector {return "COLLECTOR_NOT_CONFIGURED"}
+ if sourceRef==nil||selectedIsAccepted==nil||!*selectedIsAccepted {return "SOURCE_UNVERIFIED"}
+ if latestEvidence==nil && count==0 {return "NO_RETAINED_EVENTS"}
+ // The latest retained record must have an independently matched source ref.
+ // A row from a previous ADM boot is historical, not current-source coverage.
+ if latestEvidenceSourceRef==nil||latestEvidence==nil {return "RETAINED_SOURCE_UNVERIFIED"}
+ if *latestEvidenceSourceRef!=*sourceRef {return "HISTORICAL_OR_OTHER_SOURCE_EVENTS"}
+ return "RETAINED_EVENTS_OBSERVED"
 }
 
 func (a *App) handleAntiCheatIntegrity(w http.ResponseWriter,r *http.Request) {
@@ -155,6 +176,20 @@ func (a *App) handleAntiCheatIntegrity(w http.ResponseWriter,r *http.Request) {
  }
  out.Continuity=caseContinuityAssessment(out.SelectedSourceRef,summaries,
   available,out.CollectorConfigured,out.CheckpointBytes!=nil)
+ // Exactly the already-authorized guild/server, independently bounded to 200
+ // persisted observations; the audit itself uses a read-only SQL snapshot.
+ // This is a second observational snapshot, not atomic with worker health.
+ admissibility,err:=repository.NewCaseEvidenceRepository(a.DB.Pool).
+  AuditCaseEvidenceAdmissibility(ctx,ac.scope.GuildID,serverID,200)
+ if err!=nil{
+  slog.Warn("component=case","event","source_admissibility_read_failed","err",err.Error())
+  writeSaaSError(w,codeInternalError,"could not read C.A.S.E. evidence quality");return
+ }
+ out.EvidenceAdmissibility=admissibility
+ out.EvidenceObservationStatus=caseEvidenceObservationStatus(available,out.CollectorConfigured,
+  out.SelectedSourceRef,out.SelectedIsAccepted,out.LatestEvidenceSourceRef,
+  out.LatestEvidenceIngestedAt,out.EvidenceLines24h)
+ out.PipelineHealth=caseAssessPipelineHealth(out)
  a.recordAudit(ctx,ac,"CASE_SOURCE_INTEGRITY_VIEWED","","","success",nil,
   map[string]any{"workerAvailable":available,"sourceState":out.SourceState})
  writeSaaSJSON(w,http.StatusOK,out)

@@ -3,18 +3,21 @@
 -- again AFTER it (the "after" run is the live acceptance baseline), e.g.
 --   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v guild="'<DISCORD_GUILD_ID>'" -f 2026-09-26-release-preflight-queries.sql
 -- Complements 2026-09-26-evidence-queries.sql (counter/linking root causes).
--- Validated against the deployed schema (0055, 605f1ec) and the release schema (0057).
+-- Validated against the pre-release schemas (0055 at 605f1ec; 0064 at main f4d956e) and the
+-- release schema (0066: main + this release's 0065/0066).
 BEGIN TRANSACTION READ ONLY;
 SET LOCAL statement_timeout = '15s';
 
--- R1. Migration state. Before the deploy: last = 0055_shop_delivery_attempt_evidence,
--- feed_journal_table = NULL, role_sync_column = 0. After: 0057, table present, 1.
+-- R1. Migration state. Before the deploy: last = whatever production runs (0064_case_build_evidence
+-- if it runs main f4d956e; 0055 if still 605f1ec), feed_journal_table = NULL, role_sync_column = 0.
+-- After: 0066_discord_feed_cards (migrations are keyed by name; ordering follows the list, so
+-- MAX(name) is 0066), table present, 1.
 SELECT COUNT(*) AS applied, MAX(name) AS last_migration FROM schema_migrations;
 SELECT to_regclass('public.discord_feed_cards') AS feed_journal_table;
 SELECT COUNT(*) AS role_sync_column FROM information_schema.columns
 WHERE table_name = 'player_links' AND column_name = 'role_sync_status';
 
--- R2. Migration 0056 cost: ALTER TABLE player_links (metadata-only on PG 11+, constant
+-- R2. Migration 0065 (player_link_role_sync) cost: ALTER TABLE player_links (metadata-only on PG 11+, constant
 -- default) plus one partial CREATE INDEX that briefly blocks writes to player_links.
 SELECT COUNT(*) AS player_links_rows, pg_size_pretty(pg_total_relation_size('player_links')) AS player_links_size;
 SELECT current_setting('server_version') AS postgres_version;
@@ -63,7 +66,7 @@ SELECT gs.id AS server_id, gs.provider_service_id, gs.status, gs.active
 FROM game_servers gs JOIN guilds g ON g.id = gs.guild_id
 WHERE g.discord_guild_id = :guild ORDER BY gs.id;
 
--- R7. Links: VERIFIED links existing before 0056 keep role_sync_status NULL and are never
+-- R7. Links: VERIFIED links existing before 0065 keep role_sync_status NULL and are never
 -- reconciled automatically; only links verified after the release are.
 SELECT pl.status, COUNT(*) AS links FROM player_links pl JOIN guilds g ON g.id = pl.guild_id
 WHERE g.discord_guild_id = :guild GROUP BY pl.status ORDER BY pl.status;

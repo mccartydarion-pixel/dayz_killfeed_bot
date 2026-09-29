@@ -71,6 +71,8 @@ type fakeGuildChannel struct {
 	Name     string
 	Type     discordgo.ChannelType
 	ParentID string
+	Private bool
+	PublicViewOverride bool
 	Position int
 }
 
@@ -119,7 +121,7 @@ func (f *fakeDiscordVerifier) ListGuildChannels(guildID string) ([]discord.Guild
 func (f *fakeDiscordVerifier) ListAllGuildChannels(guildID string) ([]discord.RawGuildChannel, error) {
 	out := make([]discord.RawGuildChannel, 0, len(f.channels[guildID]))
 	for _, ch := range f.channels[guildID] {
-		out = append(out, discord.RawGuildChannel{ID: ch.ID, Name: ch.Name, Type: ch.Type, ParentID: ch.ParentID})
+		out = append(out, discord.RawGuildChannel{ID: ch.ID, Name: ch.Name, Type: ch.Type, ParentID: ch.ParentID, Private: ch.Private, PublicViewOverride: ch.PublicViewOverride})
 	}
 	return out, nil
 }
@@ -157,6 +159,8 @@ func (f *fakeDiscordVerifier) CreatePrivateGuildCategory(guildID, name string) (
 			f.privateCategories = map[string]bool{}
 		}
 		f.privateCategories[ch.ID] = true
+		ch.Private = true
+		f.channels[guildID][len(f.channels[guildID])-1].Private = true
 	}
 	return ch, err
 }
@@ -1425,12 +1429,13 @@ var championAllRouteKeys = []string{
 	"KILLFEED", "PVE_FEED", "LINK_GAMERTAG", "STATS_LEADERBOARDS", "AUTO_LEADERBOARD",
 	"HITFEED", "BOUNTY", "BOUNTY_TRACKING", "HEATMAPS", "ECONOMY", "SHOP",
 	"CONNECTIONS", "BUILD_FEED", "ADMIN_ALERTS", "ADMIN_LOGS", "SERVER_STATUS", "ONLINE_COUNTER",
+	"CASE_STATUS", "CASE_EVIDENCE", "CASE_ALERTS",
 }
 
 // championActiveDestinationCount is how many channels auto-setup creates
 // with the audited producers (every destination: ten text channels and the
 // online-players voice counter).
-const championActiveDestinationCount = 11
+const championActiveDestinationCount = 14
 
 func listChannelRoutes(t *testing.T, a *App, orgID, installationID int64, actingDiscordID string) *httptest.ResponseRecorder {
 	t.Helper()

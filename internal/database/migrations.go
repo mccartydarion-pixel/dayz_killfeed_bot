@@ -2165,23 +2165,39 @@ ON CONFLICT (installation_id, route_key) DO NOTHING;
 		SQL:  ShopAttemptEvidenceSQL,
 	},
 	{
+		// C.A.S.E. 2G.2: inert, source-linked shadow-evaluation ledger.
+		Name: "0056_case_shadow_evaluations",
+		SQL: CaseShadowLedgerSQL,
+	},
+	{
+		// Inert C.A.S.E. core review/outbox schema; no production writer or sender.
+		// 0057-0062 are reserved in an independent older billing candidate.
+		Name: "0063_case_review_outbox_skeleton",
+		SQL: CASEReviewSkeletonSQL,
+	},
+	{
+		// Inert C.A.S.E. build-action evidence; no detector or alert activation.
+		Name: "0064_case_build_evidence",
+		SQL: CASEBuildEvidenceSQL,
+	},
+	{
 		// P0 2026-09-26 Verified-role reconciliation (docs/ONLINE_COUNTER_AND_LINK_CHECK.md). Additive,
 		// nullable columns only; no row is rewritten. Existing VERIFIED links keep role_sync_status NULL
 		// (never reconciled automatically - their role state predates tracking); links verified from
 		// now on are PENDING until Discord confirms the role, so a failed assignment survives restarts.
-		Name: "0056_player_link_role_sync",
+		Name: "0065_player_link_role_sync",
 		SQL:  PlayerLinkRoleSyncSQL,
 	},
 	{
 		// P0 2026-09-26 immediate killfeed journal (docs/incidents/2026-09-26-staging-infrastructure.md).
 		// New table only; no existing row is read or rewritten. Written only by feeds running
 		// KILLFEED_DELIVERY_MODE=immediate, so it stays empty under the production default.
-		Name: "0057_discord_feed_cards",
+		Name: "0066_discord_feed_cards",
 		SQL:  DiscordFeedCardsSQL,
 	},
 }
 
-// DiscordFeedCardsSQL (migration 0057) is the immediate-mode feed journal: each queued card is
+// DiscordFeedCardsSQL (migration 0066) is the immediate-mode feed journal: each queued card is
 // recorded before it is posted, marked when Discord confirms it (message_id) and again when it
 // leaves the channel, so a restart - including a crash - neither loses queued cards nor leaves the
 // previous process's cards in the channel. feed_key is "<route>:<server id>".
@@ -2206,7 +2222,7 @@ CREATE INDEX IF NOT EXISTS idx_discord_feed_cards_open ON discord_feed_cards(fee
 CREATE INDEX IF NOT EXISTS idx_discord_feed_cards_enqueued ON discord_feed_cards(enqueued_at);
 `
 
-// PlayerLinkRoleSyncSQL (migration 0056) records whether the Verified Discord role was actually
+// PlayerLinkRoleSyncSQL (migration 0065) records whether the Verified Discord role was actually
 // assigned for a VERIFIED link - distinct from the link itself being verified.
 const PlayerLinkRoleSyncSQL = `
 ALTER TABLE player_links ADD COLUMN IF NOT EXISTS role_sync_status TEXT;
@@ -2216,6 +2232,40 @@ ALTER TABLE player_links ADD COLUMN IF NOT EXISTS role_synced_at TIMESTAMPTZ;
 ALTER TABLE player_links ADD COLUMN IF NOT EXISTS role_sync_error TEXT;
 CREATE INDEX IF NOT EXISTS idx_player_links_role_pending ON player_links(guild_id, role_sync_last_attempt_at)
     WHERE status = 'VERIFIED' AND role_sync_status IN ('PENDING', 'FAILED');
+`
+
+// CaseShadowLedgerSQL is additive. The composite FK ensures that an evidence
+// link belongs to the SAME guild and game server as the evaluation. A blocked
+// evaluation is diagnostic only; this schema does not store scores or sanctions.
+const CaseShadowLedgerSQL = `
+CREATE UNIQUE INDEX IF NOT EXISTS uq_case_evidence_scope_id
+ ON case_evidence_events(guild_id,server_id,id);
+CREATE TABLE IF NOT EXISTS case_shadow_evaluations (
+ id BIGSERIAL PRIMARY KEY,
+ guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+ server_id BIGINT NOT NULL REFERENCES game_servers(id) ON DELETE CASCADE,
+ detector_id TEXT NOT NULL CHECK (char_length(detector_id) BETWEEN 1 AND 80),
+ detector_version TEXT NOT NULL CHECK (char_length(detector_version) BETWEEN 1 AND 40),
+ fingerprint CHAR(64) NOT NULL,
+ status TEXT NOT NULL CHECK (status = 'BLOCKED'),
+ reason_codes TEXT[] NOT NULL CHECK (cardinality(reason_codes) > 0),
+ created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+ CONSTRAINT uq_case_shadow_fingerprint UNIQUE(guild_id,server_id,detector_id,detector_version,fingerprint),
+ CONSTRAINT uq_case_shadow_scope_id UNIQUE(guild_id,server_id,id)
+);
+CREATE TABLE IF NOT EXISTS case_shadow_evaluation_evidence (
+ guild_id BIGINT NOT NULL,
+ server_id BIGINT NOT NULL,
+ evaluation_id BIGINT NOT NULL,
+ evidence_id BIGINT NOT NULL,
+ PRIMARY KEY(evaluation_id,evidence_id),
+ FOREIGN KEY(guild_id,server_id,evaluation_id)
+  REFERENCES case_shadow_evaluations(guild_id,server_id,id) ON DELETE CASCADE,
+ FOREIGN KEY(guild_id,server_id,evidence_id)
+  REFERENCES case_evidence_events(guild_id,server_id,id) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_case_shadow_scope_recent
+ ON case_shadow_evaluations(guild_id,server_id,id DESC);
 `
 
 // LiveSyncCommandLineCleanupSQL (migration 0052, Champion Live Sync phase 2.1, docs/

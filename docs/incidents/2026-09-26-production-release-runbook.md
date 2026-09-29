@@ -145,3 +145,17 @@ Expected size: at most 10 kill + 10 death cards per server worker, plus any olde
   If you prefer to run items 2–6 yourself, share the outputs; secret values are not needed.
 
 Production variables, the merge, the deploy, migrations, restarts and message deletion all remain **not executed** until explicit authorization.
+
+---
+
+## 8. Update: `main` moved (merged into the PR, 2026-09-29)
+
+`main` advanced from `605f1ec` to `f4d956e` (31 C.A.S.E. commits, #104–#155) while this release waited. That changes the following.
+
+* **Merge.** `main` was merged into the PR branch with a merge commit; no history was rewritten. The only conflict was the migration list.
+* **Migrations renumbered.** `main` now has `0056_case_shadow_evaluations`, `0063_case_review_outbox_skeleton` and `0064_case_build_evidence` (`0057`–`0062` are reserved by another billing candidate). This release's migrations were renamed to **`0065_player_link_role_sync`** and **`0066_discord_feed_cards`**, with unchanged SQL, and listed after `main`'s. Neither was ever applied anywhere outside tests, so the rename is safe. Everywhere above that says `0056`/`0057` for this release now means `0065`/`0066`.
+* **Production baseline is unknown here.** Railway auto-deploys `main`, so production may now run `f4d956e`, not `605f1ec`. Step 1 must record the SHA production actually runs (from the Railway deployment or `/api/runtime/status` if present). **That SHA is the rollback target.**
+  * **C.A.S.E. preservation.** The release changes no C.A.S.E. file. Every C.A.S.E. change comes from `main` as-is, and its migrations run in `main`'s order.
+  * **Rollback compatibility.** Checked against `main` (`f4d956e`): its full integration suite on the release schema (`0066`) passes, 45 packages, 1,856 tests, 0 failures.
+  * **Merged tree.** Build and vet are clean; unit tests pass in 45 packages; integration on a fresh database (`0001`–`0066`) passes 46 packages, 2,015 tests, 0 failures; `-race` passes for app, killfeed and discord. The preflight SQL is validated on the `0064` and `0066` schemas.
+* **`605f1ec` facts still hold for `f4d956e`.** `f4d956e` does not read `KILLFEED_DELIVERY_MODE` (not present on `main`). Its rotating feed still posts a final batch at shutdown, so the by-ID leftover-card procedure (7.1) is unchanged.
