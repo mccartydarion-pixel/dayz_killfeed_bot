@@ -124,4 +124,31 @@ VALUES('SERVER','PLAYSTATION',$1,'ACTIVE',100,ARRAY[100,300,600,1000,1500,2100,2
 	if err != nil || count != 0 {
 		t.Fatalf("replay reconciliation count=%d err=%v", count, err)
 	}
+
+	// A real ADM kill has no event_time. Its source_local_time is the
+	// wall clock carried by the ADM filename and line, not a UTC instant.
+	sourceUTC := start.Add(23 * time.Minute)
+	sourceLocal := sourceUTC.Add(-4 * time.Hour)
+	admKill, err := kills.InsertKillReturning(ctx, KillRecord{
+		GuildID: guild, ServerID: server.ID, SessionID: "ranked-adm",
+		Fingerprint: fmt.Sprintf("ranked-adm-%d", suffix),
+		KillerPlayerID: attacker, VictimPlayerID: victim,
+		SourceFile: "DayZServer_PS4_x64_2026-09-29_00-00-00.ADM",
+		SourceOffset: 200, SourceLocalTime: &sourceLocal,
+	})
+	if err != nil { t.Fatal(err) }
+	if _, err = repo.AwardActiveServerKill(ctx, server.ID, admKill); !errors.Is(err, ErrRankedIneligible) {
+		t.Fatalf("ADM kill with unknown UTC offset should wait: %v", err)
+	}
+	if err = NewLiveSyncRepository(db.Pool).SetServerUTCOffset(ctx, guild, server.ID, -240, "ranked-integration-fixture"); err != nil {
+		t.Fatal(err)
+	}
+	count, err = repo.ReconcileServerAwards(ctx, server.ID)
+	if err != nil || count != 1 { t.Fatalf("ADM reconciliation count=%d err=%v", count, err) }
+	admAward, err := repo.AwardActiveServerKill(ctx, server.ID, admKill)
+	if err != nil || admAward.Outcome != "AWARDED" || admAward.Amount != 100 {
+		t.Fatalf("ADM award=%+v err=%v", admAward, err)
+	}
+	count, err = repo.ReconcileServerAwards(ctx, server.ID)
+	if err != nil || count != 0 { t.Fatalf("ADM replay count=%d err=%v", count, err) }
 }
