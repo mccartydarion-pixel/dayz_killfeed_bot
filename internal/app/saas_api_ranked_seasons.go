@@ -19,6 +19,21 @@ type serverRankedSeasonRequest struct {
 	Confirm string `json:"confirm"`
 }
 
+func (a *App) handleGetServerRankedSeason(w http.ResponseWriter, r *http.Request) {
+	ac, ok := a.requireCapability(w, r, permissions.CapServerStatsReset)
+	if !ok { return }
+	if ac.scope.ServerID == nil || *ac.scope.ServerID <= 0 {
+		writeSaaSError(w, codeInvalidRequest, "no DayZ server selected")
+		return
+	}
+	if a.Ranked == nil { writeSaaSError(w, codeInternalError, "ranked season system unavailable"); return }
+	ctx, cancel := context.WithTimeout(r.Context(), adminTimeout)
+	defer cancel()
+	season, err := a.Ranked.ActiveServerSeason(ctx, ac.scope.GuildID, *ac.scope.ServerID)
+	if err != nil { writeSaaSError(w, codeInternalError, "could not load Ranked season"); return }
+	writeSaaSJSON(w, http.StatusOK, map[string]any{"season": season})
+}
+
 func (a *App) handleStartServerRankedSeason(w http.ResponseWriter, r *http.Request) {
 	a.changeServerRankedSeason(w, r, false)
 }
