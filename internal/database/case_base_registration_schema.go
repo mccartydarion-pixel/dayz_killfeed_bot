@@ -78,6 +78,20 @@ BEGIN
   RAISE EXCEPTION 'C.A.S.E. base draft unavailable for grant'
    USING ERRCODE='23514';
  END IF;
+ -- Intervals are half-open. The base row lock serializes concurrent grants
+ -- for the same claim; no two intervals for one subject may overlap.
+ PERFORM 1 FROM case_base_authorizations a
+ WHERE a.installation_id=NEW.installation_id AND a.guild_id=NEW.guild_id
+   AND a.server_id=NEW.server_id AND a.base_id=NEW.base_id
+   AND a.id<>NEW.id
+   AND ((NEW.player_id IS NOT NULL AND a.player_id=NEW.player_id)
+     OR (NEW.faction_id IS NOT NULL AND a.faction_id=NEW.faction_id))
+   AND (a.valid_until IS NULL OR NEW.valid_from<a.valid_until)
+   AND (NEW.valid_until IS NULL OR a.valid_from<NEW.valid_until);
+ IF FOUND THEN
+  RAISE EXCEPTION 'C.A.S.E. base grant overlaps an existing subject interval'
+   USING ERRCODE='23P01';
+ END IF;
  RETURN NEW;
 END;
 $$;

@@ -148,3 +148,52 @@ func TestCaseBaseGrantWithdrawRaceCannotPersistGrant(t *testing.T) {
  VALUES($1,$2,$3,$4,$5,NOW())`,fx.InstallationID,fx.GuildRowID,fx.ServerRowID,base.ID,guest)
  if errors.Is(err,context.DeadlineExceeded)||err==nil{t.Fatalf("direct grant on withdrawn draft accepted or timed out: %v",err)}
 }
+
+func TestCaseBaseGrantIntervalsRejectOverlapAndAllowRenewal(t *testing.T) {
+ repo,fx,seedPlayer:=newZoneTestWorld(t)
+ ctx:=context.Background()
+ owner:=seedPlayer("Interval owner")
+ guest:=seedPlayer("Interval guest")
+ second:=seedPlayer("Other guest")
+ base,err:=NewCaseBaseRegistrationRepository(repo.pool).CreateDraft(ctx,CaseBaseDraftInput{
+  InstallationID:fx.InstallationID,GuildID:fx.GuildRowID,ServerID:fx.ServerRowID,
+  OwnerPlayerID:owner,MapKey:"chernarusplus",Name:"Interval base",CenterX:1,CenterZ:2,Radius:30,
+ })
+ if err!=nil{t.Fatal(err)}
+ from:=time.Now().UTC().Add(-2*time.Hour)
+ until:=from.Add(time.Hour)
+ insert:=`INSERT INTO case_base_authorizations
+ (installation_id,guild_id,server_id,base_id,player_id,valid_from,valid_until)
+ VALUES($1,$2,$3,$4,$5,$6,$7)`
+ args:=[]any{fx.InstallationID,fx.GuildRowID,fx.ServerRowID,base.ID,guest,from,until}
+ if _,err=repo.pool.Exec(ctx,insert,args...);err!=nil{t.Fatal(err)}
+ if _,err=repo.pool.Exec(ctx,insert,fx.InstallationID,fx.GuildRowID,fx.ServerRowID,base.ID,guest,from.Add(30*time.Minute),until.Add(time.Hour));err==nil{
+  t.Fatal("overlapping player grant accepted")
+ }
+ if _,err=repo.pool.Exec(ctx,insert,fx.InstallationID,fx.GuildRowID,fx.ServerRowID,base.ID,guest,until,until.Add(time.Hour));err!=nil{
+  t.Fatalf("adjacent renewal rejected: %v",err)
+ }
+ if _,err=repo.pool.Exec(ctx,insert,fx.InstallationID,fx.GuildRowID,fx.ServerRowID,base.ID,second,from,until);err!=nil{
+  t.Fatalf("different player grant rejected: %v",err)
+ }
+ if _,err=repo.pool.Exec(ctx,`UPDATE case_base_authorizations SET valid_until=$1
+ WHERE base_id=$2 AND player_id=$3 AND valid_from=$4`,until.Add(30*time.Minute),base.ID,guest,from);err==nil{
+  t.Fatal("grant extension into renewal interval accepted")
+ }
+ var factionID int64
+ if err=repo.pool.QueryRow(ctx,`INSERT INTO factions(guild_id,name,tag,owner_player_id)
+ VALUES($1,'Interval faction ' || $3::text,'I' || $3::text,$2) RETURNING id`,fx.GuildRowID,owner,base.ID).Scan(&factionID);err!=nil{t.Fatal(err)}
+ factionInsert:=`INSERT INTO case_base_authorizations
+ (installation_id,guild_id,server_id,base_id,faction_id,valid_from,valid_until)
+ VALUES($1,$2,$3,$4,$5,$6,$7)`
+ if _,err=repo.pool.Exec(ctx,factionInsert,fx.InstallationID,fx.GuildRowID,fx.ServerRowID,base.ID,factionID,from,until);err!=nil{
+  t.Fatalf("faction grant rejected: %v",err)
+ }
+ if _,err=repo.pool.Exec(ctx,factionInsert,fx.InstallationID,fx.GuildRowID,fx.ServerRowID,base.ID,factionID,from.Add(time.Minute),until);err==nil{
+  t.Fatal("overlapping faction grant accepted")
+ }
+ var count int
+ if err=repo.pool.QueryRow(ctx,`SELECT count(*) FROM case_base_authorizations WHERE base_id=$1`,base.ID).Scan(&count);err!=nil||count!=4{
+  t.Fatalf("grant history count=%d err=%v",count,err)
+ }
+}
