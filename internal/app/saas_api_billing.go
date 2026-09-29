@@ -47,6 +47,7 @@ func (a *App) registerBillingRoutes() {
 	}
 	h := a.HTTPServer.Handle
 	h("GET /api/saas/billing/plans", a.handleBillingPlans)
+	a.registerPublicCatalogRoute()
 	const base = "/api/saas/organizations/{organizationID}/billing"
 	h("GET "+base+"/subscription", a.handleBillingSubscription)
 	h("POST "+base+"/checkout", a.handleBillingCheckout)

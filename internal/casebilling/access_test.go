@@ -20,7 +20,7 @@ func TestCatalogIsClosedAndIsolatedFromBasePlans(t *testing.T) {
 			t.Fatalf("plan %d not closed/approved: %+v", i, p)
 		}
 		got, ok := Lookup(string(p.Tier))
-		if !ok || got != p {
+		if !ok || !reflect.DeepEqual(got, p) {
 			t.Fatalf("lookup %q: %+v %v", p.Tier, got, ok)
 		}
 	}

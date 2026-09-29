@@ -33,18 +33,40 @@ type Plan struct {
 	Currency     string
 	Interval     string
 	Purchasable  bool
+	// Description and Features are the approved public marketing copy. They describe only
+	// shipped, observation-only behaviour: C.A.S.E. never claims to detect, confirm or punish
+	// cheating.
+	Description string
+	Features    []string
 }
 
 var catalog = []Plan{
-	{Tier: Watch, Name: "C.A.S.E. Watch", AmountCents: 499, Currency: "usd", Interval: "month", Purchasable: false},
-	{Tier: Pro, Name: "C.A.S.E. Pro", AmountCents: 999, Currency: "usd", Interval: "month", Purchasable: false},
-	{Tier: Command, Name: "C.A.S.E. Command", AmountCents: 1499, Currency: "usd", Interval: "month", Purchasable: false},
+	{Tier: Watch, Name: "C.A.S.E. Watch", AmountCents: 499, Currency: "usd", Interval: "month", Purchasable: false,
+		Description: "Per-server C.A.S.E. observation for staff: persisted ADM source coverage delivered privately.",
+		Features: []string{
+			"Staff-requested observation digest for the selected server",
+			"Delivered only to your private C.A.S.E. staff channel",
+			"Source observations only - no automated verdicts or enforcement",
+		}},
+	{Tier: Pro, Name: "C.A.S.E. Pro", AmountCents: 999, Currency: "usd", Interval: "month", Purchasable: false,
+		Description: "Everything in Watch, plus bounded evidence export for staff review.",
+		Features: []string{
+			"Everything in C.A.S.E. Watch",
+			"Bounded, source-provenanced evidence export (CSV)",
+			"Source observations only - no automated verdicts or enforcement",
+		}},
+	{Tier: Command, Name: "C.A.S.E. Command", AmountCents: 1499, Currency: "usd", Interval: "month", Purchasable: false,
+		Description: "Reserved for a future release; not yet available.",
+		Features:    []string{}},
 }
 
 // Plans returns a detached snapshot, so callers cannot mutate the catalog.
 func Plans() []Plan {
 	out := make([]Plan, len(catalog))
 	copy(out, catalog)
+	for i := range out {
+		out[i].Features = append([]string{}, catalog[i].Features...)
+	}
 	return out
 }
 
@@ -54,6 +76,7 @@ func Lookup(raw string) (Plan, bool) {
 	key := Tier(strings.ToUpper(strings.TrimSpace(raw)))
 	for _, plan := range catalog {
 		if plan.Tier == key {
+			plan.Features = append([]string{}, plan.Features...)
 			return plan, true
 		}
 	}

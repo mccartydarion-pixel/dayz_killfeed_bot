@@ -99,6 +99,10 @@ func (s *Service) Catalog() *Catalog { return s.catalog }
 // Plans returns the public plan catalog exactly as the pricing page should render it.
 func (s *Service) Plans() []Plan { return s.catalog.PublicPlans() }
 
+// CheckoutConfigured reports whether a base checkout could be created at all (a Stripe provider is
+// configured). It is the same precondition Checkout enforces first; it never calls Stripe.
+func (s *Service) CheckoutConfigured() bool { return s != nil && s.provider != nil }
+
 // --- subscription summary -----------------------------------------------------------------------
 
 // Summary is the website's subscription view (docs/BILLING.md "Current subscription" /

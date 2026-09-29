@@ -257,6 +257,7 @@ type App struct {
 	saasShopPurchaseLimiter   *saasRateLimiter
 	saasShopAdminLimiter      *saasRateLimiter
 	saasBillingActionLimiter  *saasRateLimiter
+	saasPublicCatalogLimiter  *saasRateLimiter
 	caseWatchDigestLimiter *saasRateLimiter
 	// Test seams; nil in production. Both callbacks fail closed by default.
 	caseWatchPrivacyCheck func(context.Context,string,string) error
