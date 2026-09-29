@@ -23,6 +23,9 @@ func TestCaseConfigurationFailsClosed(t *testing.T) {
 		wantErr     bool
 	}{
 		{"all defaults (production today)", NewFakeProvider(), "whsec_x", StripeKeyUnknown, false, CaseOptions{PriceIDs: prices}, false},
+		// The real production shape (2026-09-29): APP_ENV=development (so no test-mode requirement),
+		// a live Stripe key, every C.A.S.E. flag unset and no C.A.S.E. price configured.
+		{"production shape: live key, no case prices, flags off", NewFakeProvider(), "whsec_x", StripeKeyLive, false, CaseOptions{}, false},
 		{"sales without access", NewFakeProvider(), "whsec_x", StripeKeyUnknown, false, CaseOptions{Enabled: true, VerifiedThrough: casebilling.Pro, PriceIDs: prices}, true},
 		{"access without verified tier", NewFakeProvider(), "whsec_x", StripeKeyUnknown, false, CaseOptions{AccessEnabled: true, PriceIDs: prices}, true},
 		{"sales without Stripe key", nil, "whsec_x", StripeKeyUnknown, false, CaseOptions{Enabled: true, AccessEnabled: true, VerifiedThrough: casebilling.Pro, PriceIDs: prices}, true},
