@@ -123,7 +123,7 @@ func TestCASETierChangeRoutesRefuseReversedCoverage(t *testing.T) {
 		Metadata: billing.CaseMetadata(billing.CaseCheckoutInput{AddonID: row.ID, OrganizationID: w.f.OrgID,
 			InstallationID: w.f.InstallationID, GameServerID: w.serverID, Tier: casebilling.Watch}),
 	})
-	service := billing.NewService(w.a.SaaSSubscriptions, nil, provider, billing.Options{})
+	service := billing.NewService(w.a.SaaSSubscriptions, nil, provider, billing.Options{WebhookSecret: "whsec_reversed_coverage"})
 	if err := service.ConfigureCaseAddons(repo, billing.CaseOptions{
 		Enabled: true, AccessEnabled: true, VerifiedThrough: casebilling.Pro,
 		PriceIDs: map[casebilling.Tier]string{casebilling.Watch: "price_case_watch", casebilling.Pro: "price_case_pro"},
