@@ -225,7 +225,7 @@ func (p *PveFeedPublisher) send(channel string, batch []killfeed.PveDeathNotice,
 	if omitted > 0 {
 		embeds[0].Description += fmt.Sprintf("\n… %d earlier PvE deaths were not shown", omitted)
 	}
-	_, err := p.sender.ChannelMessageSendComplex(channel, &discordgo.MessageSend{
+	_, err := deliverMessage(p.sender, "PVE_FEED", channel, &discordgo.MessageSend{
 		Embeds:          embeds,
 		AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}}, // player names never ping
 	})

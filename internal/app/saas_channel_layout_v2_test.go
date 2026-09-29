@@ -41,7 +41,7 @@ func TestLayoutHubHasServerStatusAndVoiceCounter(t *testing.T) {
 			voices++
 		}
 	}
-	if voices != 1 || counter.ParentID != hub.ID || !strings.HasPrefix(counter.Name, discord.ChannelOnlinePlayersPrefix) || w.routes["ONLINE_COUNTER"] != counter.ID {
+	if voices != 1 || counter.ParentID != hub.ID || !discord.IsOnlineCounterName(counter.Name) || w.routes["ONLINE_COUNTER"] != counter.ID {
 		t.Fatalf("want exactly one routed voice counter under HUB, got %d: %+v", voices, counter)
 	}
 	if d := report(res, "ONLINE_COUNTER"); d.Health != HealthActive || !d.Voice {
@@ -57,13 +57,26 @@ func TestLayoutHubHasServerStatusAndVoiceCounter(t *testing.T) {
 	// A renamed counter ("... : 17") is still recognized on the next run.
 	for i := range g.channels {
 		if g.channels[i].ID == counter.ID {
-			g.channels[i].Name = discord.OnlineCounterName(17)
+			g.channels[i].Name = discord.OnlineCounterName(17, 18)
 		}
 	}
 	creates := g.createCalls
 	runLayout(t, g, w, auditProducers(), panelsPosted(g, w))
 	if g.createCalls != creates {
 		t.Fatal("the renamed voice counter must be reused, never duplicated")
+	}
+	// ... and so is one showing the unknown state, or the legacy format an
+	// older build wrote.
+	for _, name := range []string{discord.OnlineCounterUnknownName(18), "🟢・Online Players: 3"} {
+		for i := range g.channels {
+			if g.channels[i].ID == counter.ID {
+				g.channels[i].Name = name
+			}
+		}
+		runLayout(t, g, w, auditProducers(), panelsPosted(g, w))
+		if g.createCalls != creates {
+			t.Fatalf("voice counter named %q must be reused, never duplicated", name)
+		}
 	}
 }
 
@@ -309,5 +322,30 @@ func TestCleanupDeletesOnlyProvenRetiredChannels(t *testing.T) {
 	}
 	if len(clear) != 1 || clear[0] != "DeathChannelID" {
 		t.Fatalf("the deleted legacy channel's field must be cleared, got %v", clear)
+	}
+}
+
+// TestCleanupClearsLegacyFieldForChannelAlreadyGone: a retired legacy
+// channel the customer deleted by hand is reported GONE, and its legacy
+// pointer must be cleared too - otherwise the online counter's legacy
+// fallback keeps renaming an Unknown Channel (Discord 10003).
+func TestCleanupClearsLegacyFieldForChannelAlreadyGone(t *testing.T) {
+	store := &retiredStoreFake{rows: []repository.RetiredChannel{
+		{ChannelID: "old-online", Kind: "CHANNEL", Source: "LEGACY_SETUP", LegacyField: "OnlinePlayersChannelID"},
+		{ChannelID: "old-route", Kind: "CHANNEL", Source: "ROUTE"},
+	}}
+	guild := &cleanupGuildFake{} // neither channel exists any more
+	resp, clear, err := cleanupRetired(context.Background(), store, guild, 1, 2, "g", []string{"old-online", "old-route"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(guild.deleted) != 0 {
+		t.Fatalf("nothing may be deleted for a gone channel, deleted %v", guild.deleted)
+	}
+	if len(resp.Skipped) != 2 || resp.Skipped[0].Reason != "GONE" {
+		t.Fatalf("expected both GONE, got %+v", resp.Skipped)
+	}
+	if len(clear) != 1 || clear[0] != "OnlinePlayersChannelID" {
+		t.Fatalf("expected the gone legacy channel's field cleared, got %v", clear)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/economy"
@@ -220,11 +221,20 @@ func respondModal(s *discordgo.Session, i *discordgo.InteractionCreate, customID
 }
 
 func linkErrorMessage(err error) string {
+	var shortfall *linking.PlaytimeShortfallError
 	switch {
-	case errors.Is(err, linking.ErrLinkCheckUnavailable):
+	case errors.Is(err, linking.ErrInvalidUsername):
+		return "❌ **INVALID PLAYSTATION USERNAME**\nEnter your PlayStation Online ID exactly as it appears in-game - not your Discord name or an @mention."
+	case errors.Is(err, linking.ErrNoConnectedServer):
+		return "⚙️ **SERVER NOT CONNECTED**\nNo DayZ server is connected to this Discord yet, so Champion has no server activity to check. Ask an admin to connect the server in the Champion dashboard."
+	case errors.Is(err, linking.ErrActivityUnavailable), errors.Is(err, linking.ErrLinkCheckUnavailable):
 		return "⚠️ **LINK CHECK UNAVAILABLE**\nChampion cannot verify server activity right now. Please try again shortly."
 	case errors.Is(err, linking.ErrPlayerNotFound):
-		return "❌ **PLAYER NOT FOUND**\nChampion has not seen that PlayStation username on the DayZ server yet."
+		return "❌ **PLAYER NOT FOUND**\nChampion has not seen that PlayStation username on the DayZ server. Check the spelling, or join the server and try again after 5 minutes."
+	case errors.Is(err, linking.ErrPlayerNotObserved):
+		return "⏱️ **NOT OBSERVED ON SERVER**\nChampion knows that username but has not recorded you online on a connected server yet. Join the server, stay connected for 5 minutes, then try again."
+	case errors.As(err, &shortfall):
+		return fmt.Sprintf("⏱️ **MORE PLAYTIME REQUIRED**\nChampion has observed that account online for %s of the required %s. Stay connected and try again.", formatLinkPlaytime(shortfall.Observed), formatLinkPlaytime(shortfall.Required))
 	case errors.Is(err, linking.ErrPlaytimeRequired):
 		return "⏱️ **MORE PLAYTIME REQUIRED**\nStay connected for at least 5 minutes, then try again."
 	case errors.Is(err, linking.ErrAlreadyLinked):
@@ -234,4 +244,18 @@ func linkErrorMessage(err error) string {
 	default:
 		return "❌ Could not create a pending link right now."
 	}
+}
+
+// formatLinkPlaytime renders an observed duration as whole minutes and
+// seconds ("3m 20s"), never rounding a shortfall up to the requirement.
+func formatLinkPlaytime(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	d = d.Truncate(time.Second)
+	m, sec := int(d/time.Minute), int((d%time.Minute)/time.Second)
+	if sec == 0 {
+		return fmt.Sprintf("%dm", m)
+	}
+	return fmt.Sprintf("%dm %ds", m, sec)
 }
