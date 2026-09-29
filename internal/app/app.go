@@ -1719,12 +1719,12 @@ func (a *App) Run() error {
 // visible at once, the whole batch replaced every rotatingFeedInterval.
 const (
 	rotatingFeedInterval  = 10 * time.Minute
-	rotatingFeedBatchSize = 10
+	rotatingFeedBatchSize = 50
 )
 
 // feedDeliveryMode reads KILLFEED_DELIVERY_MODE. Only the exact value
 // "immediate" enables immediate delivery (each kill/death card posted as soon
-// as it is persisted, same rolling 10-card window); anything else, including
+// as it is persisted, with a separate rolling 50-card window per feed); anything else, including
 // unset, keeps the production rotating cycle unchanged.
 func feedDeliveryMode() string {
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("KILLFEED_DELIVERY_MODE")), discord.FeedModeImmediate) {
@@ -1902,16 +1902,30 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 	publisher.SetFeed(killFeed)
 	a.addRotatingFeed(killFeed)
 	deathFeed := discord.NewRotatingFeed(discord.NewFeedSession(a.Discord.Session()), setupStore, a.Config.DiscordGuildID, func(s *discord.GuildSetup) string { return s.DeathChannelID }, rotatingFeedInterval, rotatingFeedBatchSize)
-	// Channel System V2: deaths share the combat feed. With a KILLFEED route
-	// the death feed posts there; the legacy death channel is only the
-	// fallback for guilds without routes.
-	deathFeed.SetRouteChannelResolver(publisher.RouteChannelID)
+	// Death and suicide cards resolve the installation's PVE_FEED route,
+	// separate from KILLFEED. The legacy death channel is the fallback only
+	// when that route does not exist or cannot be resolved.
+	if a.ChannelRoutes != nil {
+		deathFeed.SetRouteChannelResolver(func() string {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			channelID, found, err := a.ChannelRoutes.Resolve(ctx, row.GuildID, row.ID, "PVE_FEED")
+			if err != nil {
+				slog.Warn("component=discord", "event", "channel_route_fallback", "route_key", "PVE_FEED", "server_id", row.ID, "reason", "lookup_error", "err", err.Error())
+				return ""
+			}
+			if !found {
+				return ""
+			}
+			return channelID
+		})
+	}
 	deathFeed.SetRoute("DEATH_FEED")
 	deathFeed.SetMode(feedDeliveryMode())
 	deathPublisher.SetFeed(deathFeed)
 	a.addRotatingFeed(deathFeed)
 	if a.DB != nil && a.DB.Pool != nil {
-		// Feed journal (migration 0057): immediate mode records every card so
+		// Feed journal (migration 0066): immediate mode records every card so
 		// a restart replays undelivered cards and takes back the previous
 		// process's shown cards. Rotating mode only drains what an earlier
 		// immediate process left (rollback), so under the production default
