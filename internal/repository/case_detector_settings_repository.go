@@ -70,13 +70,13 @@ func (r *CaseDetectorSettingsRepository) Set(ctx context.Context,installationID,
  }
  s:=CaseDetectorSetting{ModuleID:moduleID,Configured:true}
  var updated time.Time
- err:=r.pool.QueryRow(ctx,`INSERT INTO case_detector_settings AS current
+ err:=r.pool.QueryRow(ctx,`INSERT INTO case_detector_settings AS s
  (installation_id,guild_id,server_id,module_id,sensitivity)
  VALUES($1,$2,$3,$4,$5)
  ON CONFLICT (installation_id,guild_id,server_id,module_id) DO UPDATE
  SET sensitivity=EXCLUDED.sensitivity,
-  revision=current.revision+CASE WHEN current.sensitivity IS DISTINCT FROM EXCLUDED.sensitivity THEN 1 ELSE 0 END,
-  updated_at=CASE WHEN current.sensitivity IS DISTINCT FROM EXCLUDED.sensitivity THEN NOW() ELSE current.updated_at END
+  revision=s.revision+CASE WHEN s.sensitivity IS DISTINCT FROM EXCLUDED.sensitivity THEN 1 ELSE 0 END,
+  updated_at=CASE WHEN s.sensitivity IS DISTINCT FROM EXCLUDED.sensitivity THEN NOW() ELSE s.updated_at END
  RETURNING sensitivity,revision,updated_at`,
   installationID,guildID,serverID,moduleID,mode).Scan(&s.Sensitivity,&s.Revision,&updated)
  if err!=nil{return CaseDetectorSetting{},err}
