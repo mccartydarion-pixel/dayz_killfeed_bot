@@ -43,3 +43,46 @@ func TestEvidenceFingerprintScopedDeterministicAndRejectsDuplicates(t *testing.T
   if _,err:=EvidenceFingerprint(11,22,"CASE-MOV-001","0.1.0",ids);err==nil{t.Fatalf("accepted bad evidence IDs: %v",ids)}
  }
 }
+
+func TestEachCoreModuleSuspendsOnMissingOrStaleEvidence(t *testing.T) {
+ thresholds:=&ValidatedThresholds{Approved:true,MinimumEvidence:2,Strict:2,Balanced:3,Relaxed:4}
+ for _,def:=range ClientCatalog() {
+  base:=InvestigationInput{ModuleID:def.ID,Mode:SensitivityStrict,Thresholds:thresholds,
+   SourceCurrent:true,PollingCaughtUp:true,RequiredTelemetryPresent:true,
+   ModuleValidated:true,EvidenceProvenanceVerified:true,ExclusionsChecked:true,
+   DuplicateFree:true,IndependentObservations:100}
+  for _,mode:=range []Sensitivity{SensitivityRelaxed,SensitivityBalanced,SensitivityStrict} {
+   base.Mode=mode
+   for _,variant:=range []struct{name string;change func(*InvestigationInput)}{
+    {"missing telemetry",func(in *InvestigationInput){in.RequiredTelemetryPresent=false}},
+    {"stale source",func(in *InvestigationInput){in.SourceCurrent=false}},
+    {"poll delayed",func(in *InvestigationInput){in.PollingCaughtUp=false}},
+   } {
+    in:=base;variant.change(&in)
+    got:=AssessInvestigation(in)
+    if got.Status!="SUSPENDED"||got.CanNotify||got.ViolationEstablished {
+     t.Fatalf("%s %s %s: %+v",def.ID,mode,variant.name,got)
+    }
+   }
+   duplicate:=base;duplicate.DuplicateFree=false
+   if got:=AssessInvestigation(duplicate);got.Status=="REVIEW_CANDIDATE"||got.CanNotify {
+    t.Fatalf("%s %s duplicate evidence accepted: %+v",def.ID,mode,got)
+   }
+   unvalidated:=base;unvalidated.ModuleValidated=false
+   if got:=AssessInvestigation(unvalidated);got.Status=="REVIEW_CANDIDATE"||got.CanNotify {
+    t.Fatalf("%s %s unvalidated module accepted: %+v",def.ID,mode,got)
+   }
+  }
+ }
+}
+
+func TestCoreEightEvidenceFingerprintSeparatesInstallations(t *testing.T) {
+ for _,def:=range ClientCatalog() {
+  a,err:=EvidenceFingerprint(11,22,def.ID,def.Version,[]int64{1,2})
+  if err!=nil {t.Fatalf("%s: %v",def.ID,err)}
+  guild,err:=EvidenceFingerprint(12,22,def.ID,def.Version,[]int64{1,2})
+  if err!=nil||guild==a {t.Fatalf("%s crossed installation boundary",def.ID)}
+  server,err:=EvidenceFingerprint(11,23,def.ID,def.Version,[]int64{1,2})
+  if err!=nil||server==a {t.Fatalf("%s crossed server boundary",def.ID)}
+ }
+}
