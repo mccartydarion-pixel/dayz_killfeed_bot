@@ -1616,6 +1616,10 @@ func (a *App) Run() error {
 							_ = setupStore.Save(*latest)
 						}
 					})
+					// Header shows the real server display name(s). No rank source is
+					// wired: Champion has no player rank system yet, so the Current
+					// Ranks board stays inactive (see docs/AUTO_LEADERBOARD_V3.md).
+					a.LeaderboardScheduler.SetServerNames(guildServers, a.serverNameFunc())
 					if routingEnabled {
 						a.LeaderboardScheduler.SetRouting(a.ChannelRoutes, guildServers, routePanels,
 							discord.NewLegacyLeaderboardRetirer(api, setupStore, a.Config.DiscordGuildID))
