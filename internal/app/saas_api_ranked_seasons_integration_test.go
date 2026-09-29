@@ -5,6 +5,7 @@ package app
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/yourname/dayz-killfeed/internal/ranked"
@@ -17,11 +18,17 @@ func TestServerRankedSeasonOwnerStartAndReset(t *testing.T) {
 	thresholds := ranked.Thresholds{100, 300, 600, 1000, 1500, 2100, 2800}
 	start := serverRankedSeasonRequest{RPPerKill: 100, Thresholds: thresholds}
 	path := w.path("/ranked/server-season")
+	if rr := w.call(w.a.handleGetServerRankedSeason, http.MethodGet, path, w.f.OwnerDiscordID, nil, nil); rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"season":null`) {
+		t.Fatalf("expected empty owner season state: %d %s", rr.Code, rr.Body.String())
+	}
 	if rr := w.call(w.a.handleStartServerRankedSeason, http.MethodPost, path, "other-user", start, nil); rr.Code == http.StatusOK {
 		t.Fatal("non-owner started ranked season")
 	}
 	if rr := w.call(w.a.handleStartServerRankedSeason, http.MethodPost, path, w.f.OwnerDiscordID, start, nil); rr.Code != http.StatusOK {
 		t.Fatalf("owner start: %d %s", rr.Code, rr.Body.String())
+	}
+	if rr := w.call(w.a.handleGetServerRankedSeason, http.MethodGet, path, w.f.OwnerDiscordID, nil, nil); rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"rpPerKill":100`) {
+		t.Fatalf("owner read active rules: %d %s", rr.Code, rr.Body.String())
 	}
 	if rr := w.call(w.a.handleStartServerRankedSeason, http.MethodPost, path, w.f.OwnerDiscordID, start, nil); rr.Code != http.StatusConflict {
 		t.Fatalf("duplicate start: %d %s", rr.Code, rr.Body.String())
