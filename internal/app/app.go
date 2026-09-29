@@ -1626,9 +1626,11 @@ func (a *App) Run() error {
 							_ = setupStore.Save(*latest)
 						}
 					})
-					// Header shows the real server display name(s). No rank source is
-					// wired: Champion has no player rank system yet, so the Current
-					// Ranks board stays inactive (see docs/AUTO_LEADERBOARD_V3.md).
+					// The guild V3 ranks embed follows its selected public server's
+					// active Ranked season. The dedicated boards remain per-server.
+					if a.Ranked != nil && a.Servers != nil {
+						a.LeaderboardScheduler.SetRankSource(discord.ServerSeasonRankReader{Servers: a.Servers, Ranked: a.Ranked})
+					}
 					a.LeaderboardScheduler.SetServerNames(guildServers, a.serverNameFunc())
 					if routingEnabled {
 						a.LeaderboardScheduler.SetRouting(a.ChannelRoutes, guildServers, routePanels,
