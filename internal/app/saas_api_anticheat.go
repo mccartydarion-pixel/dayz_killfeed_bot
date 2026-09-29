@@ -119,6 +119,7 @@ func (a *App) registerAntiCheatRoutes(base string) {
 	a.HTTPServer.Handle("GET "+base+"/anti-cheat/shadow-history", a.handleAntiCheatShadowHistory)
 	a.HTTPServer.Handle("GET "+base+"/anti-cheat/cases", a.handleAntiCheatCases)
 	a.HTTPServer.Handle("GET "+base+"/anti-cheat/cases/{caseID}/history", a.handleAntiCheatCaseHistory)
+	a.HTTPServer.Handle("GET "+base+"/anti-cheat/cases/{caseID}/evidence-refs", a.handleAntiCheatCaseEvidenceRefs)
 }
 
 // handleAntiCheatOverview does not read other servers under the same Discord
