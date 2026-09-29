@@ -51,7 +51,7 @@ func caseEvidenceCandidate(t EventType) bool {
 	switch t {
 	case EventPlayerConnect,EventPlayerDisconnect,EventPlayerRespawn,
 		EventPlayerDeath,EventPlayerKill,EventPlayerHit,EventPlayerUnconscious,
-		EventPlayerConscious,EventSuicideAction:
+		EventPlayerConscious,EventSuicideAction,EventBuildAction:
 		return true
 	default:
 		return false
@@ -62,7 +62,7 @@ func caseEvidenceInput(ev *Event, guildID,serverID int64,sourcePath string,endOf
 	sum:=sha256.Sum256([]byte(ev.Raw))
 	actor:=ev.Attacker
 	if actor==nil {actor=ev.Killer}
-	return repository.CaseEvidenceInput{
+	out := repository.CaseEvidenceInput{
 		GuildID:guildID,ServerID:serverID,SourceID:canonicalADMID(sourcePath),
 		SourceEndOffset:endOffset,LineSHA256:hex.EncodeToString(sum[:]),
 		EventType:string(ev.Type),ADMClock:ev.TimeOfDay,
@@ -70,6 +70,10 @@ func caseEvidenceInput(ev *Event, guildID,serverID int64,sourcePath string,endOf
 		Weapon:ev.Weapon,Ammo:ev.Ammo,HitZone:ev.HitZone,HitZoneID:ev.HitZoneID,
 		Damage:ev.Damage,HP:ev.HP,DistanceMeters:ev.Distance,BoundaryKind:caseBoundary(ev),
 	}
+	if ev.Type==EventBuildAction && ev.Build!=nil {
+		out.Build=&repository.CaseBuildEvidence{Action:ev.Build.Action,Object:ev.Build.Object,Target:ev.Build.Target,Tool:ev.Build.Tool}
+	}
+	return out
 }
 
 // observeEvidence runs BEFORE legacy semantic dedupe. Two physically distinct

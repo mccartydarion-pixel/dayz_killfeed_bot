@@ -2175,6 +2175,11 @@ ON CONFLICT (installation_id, route_key) DO NOTHING;
 		Name: "0063_case_review_outbox_skeleton",
 		SQL: CASEReviewSkeletonSQL,
 	},
+	{
+		// Inert C.A.S.E. build-action evidence; no detector or alert activation.
+		Name: "0064_case_build_evidence",
+		SQL: CASEBuildEvidenceSQL,
+	},
 }
 
 // CaseShadowLedgerSQL is additive. The composite FK ensures that an evidence
