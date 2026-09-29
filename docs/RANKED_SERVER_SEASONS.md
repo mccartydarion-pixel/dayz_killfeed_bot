@@ -13,4 +13,4 @@ Example rules for a proposed season, **not a product default**:
 {"rpPerKill":100,"thresholds":[100,300,600,1000,1500,2100,2800]}
 ```
 
-The current stack has no live kill-to-RP wiring. An active season created through this API would show zero standings until the ingestion path is built and enabled. This PR is draft and should not be merged or exposed to owners in production until that path and season rules are approved. Global awards and Elite Top 250 still depend on verified platform player identity and cross-server event identity.
+The local kill persistence path now awards RP after a new kill row is saved. The award is idempotent and observes the five-minute same-victim cooldown. A per-server worker reconciles missing decisions at startup and every minute after transient errors without reposting killfeed messages. Starting a season does not retroactively award kills before its start time. This stack remains draft and should not be merged or exposed to owners in production until season rules and rollout are approved. Global awards and Elite Top 250 still depend on verified platform player identity and cross-server event identity.
