@@ -12,6 +12,10 @@ This is one of the approved Core Eight. It means unauthorized construction insid
 
 A staff build card proves neither ownership nor unauthorized entry. A parsed source-addressed build observation still cannot establish those facts. A placement position without a verified base zone, identity, and time-specific member/faction permissions cannot establish a violation. A missing build line cannot prove that no building occurred when server flags, polling, or coverage are unknown. Existing connect/hit/kill positions cannot substitute for a construction action.
 
+## Existing zone and faction data
+
+`installation_zones` includes a `BASE_RADAR` type with a center, radius, and authorization/ignore entries. It does not record a player-owned registered base or a time-specific ownership claim. A staff-created zone, alert route, or authorization entry must not be treated as a base registration. Faction membership has history, but the build line's ADM clock has no trusted event date; current membership cannot prove permission at the time of construction. Overlapping zones must remain ambiguous until an explicit rule and verified registrations exist.
+
 ## Next isolated implementation
 
 1. Obtain a representative real ADM build line from an authorized test server, with placement/build flags independently verified. Confirm parser fields and coordinate order; record the exact source address, not an inferred gameplay timestamp.

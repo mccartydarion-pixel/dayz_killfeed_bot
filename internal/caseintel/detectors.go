@@ -95,7 +95,7 @@ func EvaluatePrerequisites(def DetectorDefinition, quality QualityReport) Detect
   "VALIDATED_MOVEMENT_SAMPLES":"Event-triggered positions are not a continuous or validated movement trace.",
   "SOURCE_CONTINUITY":"Selected-event source coverage cannot prove complete sampling.",
   "EXCEPTION_MODEL":"Vehicle, respawn, teleport, admin and map-boundary exclusions are not validated.",
-  "VERIFIED_BASE_OWNERSHIP_AND_BUILD_ACTIONS":"Build lines have a parser and staff feed, but are not retained as C.A.S.E. evidence or validated against a real ADM sample; ownership and authorization are unverified.",
+  "VERIFIED_BASE_OWNERSHIP_AND_BUILD_ACTIONS":"The branch retains parsed build actions, but a real ADM sample, registered base ownership, and event-time authorization are unverified.",
   "VALIDATED_CONTINUOUS_POSITION_AND_MAP_GEOMETRY":"Intermittent event positions do not establish player height, terrain or geometry crossings.",
   "AUTHORITATIVE_INVENTORY_TRANSACTIONS":"ADM evidence does not contain authoritative item creation and inventory transactions.",
   "TRUSTED_XBOX_PLATFORM_ATTESTATION":"No trusted Xbox client-platform attestation is available from the ADM collector.",
