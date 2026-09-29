@@ -2202,25 +2202,22 @@ ON CONFLICT (installation_id, route_key) DO NOTHING;
 	},
 }
 
-// RankedLedgerFoundationSQL creates isolated seasonal RP storage. A global
-// season can be activated only after cross-server console identity and source
-// event keys are verified. No existing kills or economy rows are rewritten.
+// RankedLedgerFoundationSQL creates server-scoped seasonal RP storage.
+// No existing kills or economy rows are rewritten.
 const RankedLedgerFoundationSQL = `
 CREATE TABLE IF NOT EXISTS ranked_seasons (
     id BIGSERIAL PRIMARY KEY,
-    scope TEXT NOT NULL CHECK (scope IN ('GLOBAL','SERVER')),
+    scope TEXT NOT NULL DEFAULT 'SERVER' CHECK (scope = 'SERVER'),
     platform TEXT NOT NULL CHECK (platform IN ('PLAYSTATION','XBOX')),
-    server_id BIGINT REFERENCES game_servers(id) ON DELETE RESTRICT,
+    server_id BIGINT NOT NULL REFERENCES game_servers(id) ON DELETE RESTRICT,
     status TEXT NOT NULL DEFAULT 'DRAFT' CHECK (status IN ('DRAFT','ACTIVE','ARCHIVED')),
     rp_per_kill BIGINT NOT NULL CHECK (rp_per_kill > 0),
     thresholds BIGINT[] NOT NULL CHECK (array_length(thresholds,1)=7),
     starts_at TIMESTAMPTZ NOT NULL,
     ends_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CHECK ((scope='GLOBAL' AND server_id IS NULL) OR (scope='SERVER' AND server_id IS NOT NULL)),
     CHECK (ends_at IS NULL OR ends_at > starts_at)
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_ranked_active_global ON ranked_seasons(platform) WHERE status='ACTIVE' AND scope='GLOBAL';
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ranked_active_server ON ranked_seasons(server_id) WHERE status='ACTIVE' AND scope='SERVER';
 CREATE TABLE IF NOT EXISTS ranked_awards (
     id BIGSERIAL PRIMARY KEY,
