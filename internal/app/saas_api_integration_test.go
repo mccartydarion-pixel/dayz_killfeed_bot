@@ -1435,7 +1435,7 @@ var championAllRouteKeys = []string{
 // championActiveDestinationCount is how many channels auto-setup creates
 // with the audited producers (every destination: ten text channels and the
 // online-players voice counter).
-const championActiveDestinationCount = 14
+const championActiveDestinationCount = 15
 
 func listChannelRoutes(t *testing.T, a *App, orgID, installationID int64, actingDiscordID string) *httptest.ResponseRecorder {
 	t.Helper()
@@ -1540,7 +1540,7 @@ func TestAutoSetupChannelsIsIdempotent(t *testing.T) {
 		}
 	}
 	if total != championActiveDestinationCount {
-		t.Fatalf("expected exactly %d text channels after two auto-setup calls, got %d", championActiveDestinationCount, total)
+		t.Fatalf("expected exactly %d text/voice channels after two auto-setup calls, got %d", championActiveDestinationCount, total)
 	}
 }
 
