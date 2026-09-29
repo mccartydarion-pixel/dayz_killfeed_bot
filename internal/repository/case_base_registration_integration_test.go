@@ -192,6 +192,34 @@ func TestCaseBaseGrantIntervalsRejectOverlapAndAllowRenewal(t *testing.T) {
  if _,err=repo.pool.Exec(ctx,factionInsert,fx.InstallationID,fx.GuildRowID,fx.ServerRowID,base.ID,factionID,from.Add(time.Minute),until);err==nil{
   t.Fatal("overlapping faction grant accepted")
  }
+ // A direct writer may close an interval, but cannot rewrite who it
+ // authorized, when it began, or reopen/extend a closed grant.
+ if _,err=repo.pool.Exec(ctx,`UPDATE case_base_authorizations SET player_id=$1
+ WHERE base_id=$2 AND player_id=$3 AND valid_from=$4`,second,base.ID,guest,from);err==nil{
+  t.Fatal("grant subject rewrite accepted")
+ }
+ if _,err=repo.pool.Exec(ctx,`UPDATE case_base_authorizations SET valid_from=$1
+ WHERE base_id=$2 AND player_id=$3 AND valid_from=$4`,from.Add(-time.Minute),base.ID,second,from);err==nil{
+  t.Fatal("grant start rewrite accepted")
+ }
+ if _,err=repo.pool.Exec(ctx,`UPDATE case_base_authorizations SET valid_until=$1
+ WHERE base_id=$2 AND player_id=$3`,until.Add(time.Minute),base.ID,second);err==nil{
+  t.Fatal("closed grant extension accepted")
+ }
+ if _,err=repo.pool.Exec(ctx,`UPDATE case_base_authorizations SET valid_until=NULL
+ WHERE base_id=$1 AND player_id=$2`,base.ID,second);err==nil{
+  t.Fatal("closed grant reopened")
+ }
+ shorter:=from.Add(30*time.Minute)
+ if _,err=repo.pool.Exec(ctx,`UPDATE case_base_authorizations SET valid_until=$1
+ WHERE base_id=$2 AND player_id=$3`,shorter,base.ID,second);err!=nil{
+  t.Fatalf("closing grant early rejected: %v",err)
+ }
+ var observed time.Time
+ if err=repo.pool.QueryRow(ctx,`SELECT valid_until FROM case_base_authorizations
+ WHERE base_id=$1 AND player_id=$2`,base.ID,second).Scan(&observed);err!=nil||!observed.Equal(shorter){
+  t.Fatalf("grant close readback=%v err=%v",observed,err)
+ }
  var count int
  if err=repo.pool.QueryRow(ctx,`SELECT count(*) FROM case_base_authorizations WHERE base_id=$1`,base.ID).Scan(&count);err!=nil||count!=4{
   t.Fatalf("grant history count=%d err=%v",count,err)
