@@ -417,6 +417,16 @@ organization-scoped, database-only, no Stripe identifiers:
        paidThroughBefore | null; paidThroughAfter | null; paidTierBefore?; paidTierAfter?; recordedAt }[] }  // newest 100
 ```
 
+**Tier changes on reversed coverage (Phase 6.26F).** While `coverageState` is `REFUNDED`,
+`DISPUTED` or `DISPUTE_LOST` and no paid coverage remains (`paidThrough` null or past), the add-on
+can still be `ACTIVE` in Stripe, but `POST .../plan/preview` and `POST .../plan` return
+`CASE_CHECKOUT_CONFLICT` (409) without calling Stripe: an upgrade would otherwise charge only the
+Pro-minus-Watch proration against the reversed payment and grant Pro. A partial refund, or a
+dispute while another paid invoice still covers the period, does not block changes. A dispute that
+is won is reported as `coverageState=OK` (access restored); the `DISPUTE_WON` outcome stays on the
+invoice row and in the audit history. Access is always read from `/anti-cheat/entitlements`, never
+from `status`, `tier` or the Stripe price.
+
 **Webhook endpoint.** The staging endpoint must additionally subscribe to `charge.refunded`,
 `charge.refund.updated`, `charge.dispute.created|updated|closed|funds_reinstated`,
 `invoice.voided`, `invoice.marked_uncollectible`; `case-stripe-preflight` fails until it does.

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -96,5 +97,58 @@ func TestCASETierChangeRoutesPreviewThenApply(t *testing.T) {
 	}
 	if plan != "LOW" || status != "ACTIVE" || baseSub != fmt.Sprintf("sub-base-%d", w.f.OrgID) {
 		t.Fatalf("tier change touched base billing: %s %s %s", plan, status, baseSub)
+	}
+}
+
+// Phase 6.26F: after a full refund (or an open/lost dispute) the add-on is still ACTIVE, but its
+// coverage is revoked. The real routes refuse preview and apply with 409 and never reach Stripe,
+// so a customer cannot buy Pro for only the proration difference against a refunded Watch.
+func TestCASETierChangeRoutesRefuseReversedCoverage(t *testing.T) {
+	w := newClientAdminWorld(t)
+	ctx := context.Background()
+	repo, end := seedCasePremiumAccess(t, w)
+	row, err := repo.GetScoped(ctx, w.f.OrgID, w.f.InstallationID)
+	if err != nil || row == nil {
+		t.Fatalf("seeded add-on: %+v %v", row, err)
+	}
+	if _, err := w.a.DB.Pool.Exec(ctx, `UPDATE case_addon_subscriptions
+		SET tier='CASE_WATCH', provider_price_id='price_case_watch', paid_through=NULL, paid_tier=NULL, coverage_state='REFUNDED'
+		WHERE id=$1`, row.ID); err != nil {
+		t.Fatal(err)
+	}
+	provider := billing.NewFakeProvider()
+	provider.Put(billing.SubscriptionState{
+		SubscriptionID: row.ProviderSubscriptionID, CustomerID: row.ProviderCustomerID, PriceID: "price_case_watch",
+		StripeStatus: "active", CurrentPeriodStart: end.Add(-30 * 24 * time.Hour), CurrentPeriodEnd: end,
+		Metadata: billing.CaseMetadata(billing.CaseCheckoutInput{AddonID: row.ID, OrganizationID: w.f.OrgID,
+			InstallationID: w.f.InstallationID, GameServerID: w.serverID, Tier: casebilling.Watch}),
+	})
+	service := billing.NewService(w.a.SaaSSubscriptions, nil, provider, billing.Options{})
+	if err := service.ConfigureCaseAddons(repo, billing.CaseOptions{
+		Enabled: true, AccessEnabled: true, VerifiedThrough: casebilling.Pro,
+		PriceIDs: map[casebilling.Tier]string{casebilling.Watch: "price_case_watch", casebilling.Pro: "price_case_pro"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	w.a.Billing = service
+	path := fmt.Sprintf("/api/saas/organizations/%d/billing/case/plan", w.f.OrgID)
+	body := map[string]any{"installationId": w.f.InstallationID, "tier": "CASE_PRO"}
+	if rr := w.call(w.a.handleCaseBillingPlanPreview, http.MethodPost, path+"/preview", w.f.OwnerDiscordID, body, nil); rr.Code != http.StatusConflict ||
+		!strings.Contains(rr.Body.String(), "refunded or disputed") {
+		t.Fatalf("preview on refunded coverage: %d %s", rr.Code, rr.Body.String())
+	}
+	body["prorationDate"] = time.Now().Unix()
+	if rr := w.call(w.a.handleCaseBillingPlanChange, http.MethodPost, path, w.f.OwnerDiscordID, body, nil); rr.Code != http.StatusConflict {
+		t.Fatalf("apply on refunded coverage: %d %s", rr.Code, rr.Body.String())
+	}
+	if len(provider.Calls) != 0 {
+		t.Fatalf("Stripe was called: %+v", provider.Calls)
+	}
+	after, _ := repo.GetScoped(ctx, w.f.OrgID, w.f.InstallationID)
+	if after.Tier != "CASE_WATCH" || after.PaidThrough != nil || after.CoverageState != "REFUNDED" {
+		t.Fatalf("refused change mutated the add-on: %+v", after)
+	}
+	if caps, err := service.CaseAccess(ctx, w.f.OrgID, w.f.InstallationID, w.serverID, time.Now()); err != nil || len(caps) != 0 {
+		t.Fatalf("refunded add-on grants access: %v %v", caps, err)
 	}
 }

@@ -332,6 +332,41 @@ func TestCaseTierChangeGuards(t *testing.T) {
 	}
 }
 
+// Phase 6.26F: a refunded, disputed or lost-dispute add-on is still ACTIVE in Stripe but has no
+// paid coverage. An upgrade would charge only the Pro-minus-Watch proration (crediting the
+// reversed Watch payment) and its invoice would grant Pro; a downgrade/restore would describe
+// paid access that does not exist. Both preview and apply refuse without any Stripe call.
+func TestCaseTierChangeRefusedWhileCoverageIsReversed(t *testing.T) {
+	ctx := context.Background()
+	for _, state := range []string{CoverageRefunded, CoverageDisputed, CoverageDisputeLost} {
+		for _, tc := range []struct {
+			from   casebilling.Tier
+			target string
+		}{{casebilling.Watch, "CASE_PRO"}, {casebilling.Pro, "CASE_WATCH"}} {
+			h := newCaseTierHarness(t, tc.from, true)
+			h.store.row.CoverageState, h.store.row.PaidThrough, h.store.row.PaidTier = state, nil, ""
+			if _, err := h.s.CasePreviewTierChange(ctx, 10, 20, tc.target); !errors.Is(err, ErrCaseCoverageReversed) {
+				t.Errorf("%s %s->%s preview: %v", state, tc.from, tc.target, err)
+			}
+			if _, err := h.s.CaseChangeTier(ctx, 10, 20, tc.target, time.Now().Unix()); !errors.Is(err, ErrCaseCoverageReversed) {
+				t.Errorf("%s %s->%s apply: %v", state, tc.from, tc.target, err)
+			}
+			if len(h.provider.Calls) != 0 {
+				t.Errorf("%s: Stripe was called: %+v", state, h.provider.Calls)
+			}
+		}
+	}
+	// Still allowed: a partial refund keeps coverage, and a dispute on one invoice while another
+	// paid invoice still covers the period (paid_through in the future).
+	for _, state := range []string{CoveragePartiallyRefunded, CoverageDisputed} {
+		h := newCaseTierHarness(t, casebilling.Watch, true)
+		h.store.row.CoverageState = state
+		if p, err := h.s.CasePreviewTierChange(ctx, 10, 20, "CASE_PRO"); err != nil || p.Kind != CaseTierUpgrade {
+			t.Errorf("%s with paid coverage: %+v %v", state, p, err)
+		}
+	}
+}
+
 // After a tier change the Stripe metadata still names the ORIGINAL tier; the
 // webhook and cancellation must follow the configured price instead, and an
 // unconfigured price must fail closed.

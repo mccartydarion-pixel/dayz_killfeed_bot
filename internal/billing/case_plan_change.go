@@ -38,6 +38,21 @@ var (
 	ErrCasePreviewExpired  = errors.New("C.A.S.E. tier change preview expired")
 )
 
+// ErrCaseCoverageReversed: the add-on's paid coverage was refunded or is (or was lost in) a
+// dispute and nothing paid remains. The Stripe subscription can still be "active", but a tier
+// change would credit the reversed payment in the proration and grant coverage for it.
+var ErrCaseCoverageReversed = errors.New("C.A.S.E. paid coverage was refunded or disputed")
+
+// caseCoverageReversed reports an ACTIVE add-on whose paid coverage has been revoked or
+// suspended by a refund or dispute, with no other paid coverage still in force.
+func caseCoverageReversed(row *repository.CaseAddonSubscription, now time.Time) bool {
+	switch row.CoverageState {
+	case CoverageRefunded, CoverageDisputed, CoverageDisputeLost:
+		return row.PaidThrough == nil || !row.PaidThrough.After(now)
+	}
+	return false
+}
+
 type CaseProrationPreview struct {
 	AmountDue int64
 	Currency  string
@@ -119,6 +134,9 @@ func (s *Service) planCaseTierChange(ctx context.Context, orgID, installationID 
 	}
 	if row.CancelAtPeriodEnd {
 		return nil, ErrCaseCancelScheduled
+	}
+	if caseCoverageReversed(row, now) {
+		return nil, ErrCaseCoverageReversed
 	}
 	current, err := s.provider.GetSubscription(ctx, row.ProviderSubscriptionID)
 	if err != nil {

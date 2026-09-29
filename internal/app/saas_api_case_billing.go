@@ -314,6 +314,8 @@ func writeCaseTierError(w http.ResponseWriter,err error,event string) {
 		writeSaaSError(w,codeCaseCheckoutConflict,"this server is already on that C.A.S.E. tier")
 	case errors.Is(err,billing.ErrCaseCancelScheduled):
 		writeSaaSError(w,codeCaseCheckoutConflict,"cancellation is scheduled; reactivate before changing tier")
+	case errors.Is(err,billing.ErrCaseCoverageReversed):
+		writeSaaSError(w,codeCaseCheckoutConflict,"this server's C.A.S.E. payment was refunded or disputed; tier changes are unavailable")
 	case errors.Is(err,billing.ErrCaseChangePending):
 		writeSaaSError(w,codeCaseCheckoutConflict,"a previous tier change is awaiting payment")
 	case errors.Is(err,billing.ErrCaseNotManaged),errors.Is(err,repository.ErrCaseCheckoutConflict):
