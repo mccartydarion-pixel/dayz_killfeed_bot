@@ -6,7 +6,7 @@ This is one of the approved Core Eight. It means unauthorized construction insid
 
 - `internal/killfeed/parser.go` parses player `placed`, `built` and `dismantled` ADM lines with a subject and optional position when `adminLogPlacement` or `adminLogBuildActions` is enabled on the DayZ server.
 - The existing `BUILD_FEED` publishes parsed, deduplicated build activity to the staff route. Its documentation explicitly says no real ADM build-line sample is in this repository; parser tests use fixtures.
-- The opt-in C.A.S.E. evidence collector now includes `BUILD_ACTION`; migration `0064_case_build_evidence` adds bounded action/object/target/tool columns to the existing source-addressed observation. The repository checks the tuple on source replay and the scoped read returns it with any actual player position. The staff build feed remains on its existing path. This is branch code only; no production migration or collector activation has been authorized.
+- The opt-in C.A.S.E. evidence collector can include `BUILD_ACTION` only after its independent `CASE_BUILD_EVIDENCE_ENABLED` and `CASE_BUILD_EVIDENCE_SERVER_IDS` gates (in addition to the existing collector gates); migration `0064_case_build_evidence` adds bounded action/object/target/tool columns to the existing source-addressed observation. The repository checks the tuple on source replay and the scoped read returns it with any actual player position. The staff build feed remains on its existing path. The build-action gate defaults off, including when an existing collector is enabled. Production merge is separately authorized, but no collector activation has been authorized.
 
 ## Why the detector stays blocked
 

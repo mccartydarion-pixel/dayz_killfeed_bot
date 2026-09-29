@@ -19,6 +19,12 @@ type EvidenceStore interface {
 
 const caseEvidenceWriteTimeout = 5 * time.Second
 
+// SetBuildEvidenceEnabled is independent of SetEvidenceStore. A new event
+// family cannot silently expand an existing production collector allowlist.
+func (e *Engine) SetBuildEvidenceEnabled(enabled bool) {
+	if e != nil { e.buildEvidenceEnabled = enabled }
+}
+
 // SetEvidenceStore is opt-in. Production enables it explicitly only when its
 // migration has run. No extra Nitrado polling or Discord publish path exists.
 func (e *Engine) SetEvidenceStore(store EvidenceStore) {
@@ -81,6 +87,7 @@ func caseEvidenceInput(ev *Event, guildID,serverID int64,sourcePath string,endOf
 // preserve both in evidence while the existing hitfeed behavior stays as-is.
 func (e *Engine) observeEvidence(ev *Event, sourcePath string, endOffset int64) error {
 	if e == nil || e.evidenceStore == nil || ev == nil || !caseEvidenceCandidate(ev.Type) { return nil }
+	if ev.Type == EventBuildAction && !e.buildEvidenceEnabled { return nil }
 	if e.guildID<=0 || e.serverID<=0 || sourcePath=="" || endOffset<0 {
 		return errors.New("C.A.S.E. evidence missing scoped source address")
 	}

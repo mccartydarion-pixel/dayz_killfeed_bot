@@ -17,5 +17,5 @@ ALTER TABLE case_evidence_events
    AND char_length(build_tool) <= 64
    AND ((event_type='BUILD_ACTION') = (build_action <> ''))
    AND ((build_action = '') = (build_object = ''))
- );
+ ) NOT VALID;
 `;

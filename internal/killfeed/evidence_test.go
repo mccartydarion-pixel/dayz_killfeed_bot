@@ -90,6 +90,7 @@ func TestCaseBuildEvidenceKeepsSourceAndTupleBeforeFeedDedupe(t *testing.T) {
  e.SetDurableCheckpoint(nil,11,22)
  store:=&caseEvidenceRecorder{}
  e.SetEvidenceStore(store)
+ e.SetBuildEvidenceEnabled(true)
  for _,offset:=range []int64{100,200} {
   if _,err:=e.processLineAt(caseTestBuild,"/ftproot/dayzps/config/build.ADM",offset);err!=nil{t.Fatal(err)}
  }
@@ -109,8 +110,21 @@ func TestCaseBuildEvidenceFailureStopsSourceCheckpoint(t *testing.T) {
  e.SetDurableCheckpoint(nil,11,22)
  store:=&caseEvidenceRecorder{err:errors.New("temporary storage failure")}
  e.SetEvidenceStore(store)
+ e.SetBuildEvidenceEnabled(true)
  if _,err:=e.processLineAt(caseTestBuild,"/ftproot/dayzps/config/build.ADM",400);err==nil{t.Fatal("missing build evidence must stop checkpoint")}
  store.err=nil
  if _,err:=e.processLineAt(caseTestBuild,"/ftproot/dayzps/config/build.ADM",400);err!=nil{t.Fatal(err)}
  if len(store.items)!=1{t.Fatalf("retry must record build evidence once, got %d",len(store.items))}
+}
+
+func TestCaseBuildEvidenceRequiresSecondOptIn(t *testing.T) {
+ e:=NewEngine(nil,"svc",NewADMParser())
+ e.SetDurableCheckpoint(nil,11,22)
+ store:=&caseEvidenceRecorder{}
+ e.SetEvidenceStore(store)
+ if _,err:=e.processLineAt(caseTestBuild,"/ftproot/dayzps/config/build.ADM",100);err!=nil{t.Fatal(err)}
+ if len(store.items)!=0{t.Fatal("existing collector must not observe build actions without separate opt-in")}
+ e.SetBuildEvidenceEnabled(true)
+ if _,err:=e.processLineAt(caseTestBuild,"/ftproot/dayzps/config/build.ADM",200);err!=nil{t.Fatal(err)}
+ if len(store.items)!=1||store.items[0].Build==nil{t.Fatalf("explicit build opt-in failed: %+v",store.items)}
 }
