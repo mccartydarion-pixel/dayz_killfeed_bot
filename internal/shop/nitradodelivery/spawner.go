@@ -194,7 +194,7 @@ type RollbackPlan struct {
 
 // PlanRollback describes backup, staged write, verification and restore for a before/after pair.
 func PlanRollback(p Plan, before, after []byte) RollbackPlan {
-	backup := fmt.Sprintf("%s/backup/%s.%s.bak", ArtifactDir, ArtifactFile, SHA256(before)[:12])
+	backup := fmt.Sprintf("%s/%s.%s.bak", BackupDir, ArtifactFile, SHA256(before)[:12])
 	return RollbackPlan{ArtifactPath: ArtifactRelPath, BeforeSHA256: SHA256(before), AfterSHA256: SHA256(after), BackupName: backup,
 		Steps: []string{
 			"download " + ArtifactRelPath + " and confirm its SHA-256 is " + SHA256(before),

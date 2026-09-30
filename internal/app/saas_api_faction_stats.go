@@ -43,6 +43,13 @@ func (a *App) factionStatsChanged(fr factionRequest, factionID int64) {
 	if a.FactionHubStats != nil {
 		a.FactionHubStats.Invalidate(fr.orgID, fr.instID, factionID)
 	}
+	// The same changes (members, roles, branding, recruitment, logo) are what the faction's
+	// recruitment card shows, so refresh it off the request path.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), factionTimeout)
+		defer cancel()
+		a.refreshFactionRecruit(ctx, fr.orgID, fr.instID, factionID)
+	}()
 }
 
 // handleFactionStats is GET .../factions/{factionID}/stats: {summary, memberContributions, updatedAt}.

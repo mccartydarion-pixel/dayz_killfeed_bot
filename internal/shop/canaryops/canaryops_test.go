@@ -19,6 +19,7 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/config"
 	"github.com/yourname/dayz-killfeed/internal/economy"
 	"github.com/yourname/dayz-killfeed/internal/repository"
+	"github.com/yourname/dayz-killfeed/internal/shop/nitradodelivery"
 )
 
 var now = time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
@@ -600,5 +601,13 @@ func TestServiceHasNoExecutionOperations(t *testing.T) {
 		if name := typ.Method(i).Name; !want[name] {
 			t.Errorf("unexpected operator operation %s", name)
 		}
+	}
+}
+
+// The attempt ledger (migration 0068) must accept exactly the file the plan stages.
+func TestAttemptArtifactPathMatchesTheLedger(t *testing.T) {
+	if nitradodelivery.ArtifactRelPath != repository.ShopAttemptCustomArtifactPath ||
+		nitradodelivery.LegacyArtifactRelPath != repository.ShopAttemptLegacyArtifactPath {
+		t.Fatalf("plan %s / ledger %s", nitradodelivery.ArtifactRelPath, repository.ShopAttemptCustomArtifactPath)
 	}
 }

@@ -62,6 +62,7 @@ type App struct {
 	Kills        *repository.KillRepository
 	Deaths       *repository.DeathRepository
 	Stats        *repository.StatsRepository
+	Ranked       *repository.RankedRepository
 	Sessions     *repository.SessionRepository
 	Checkpoints  *repository.CheckpointRepository
 	Streaks      *repository.StreakRepository
@@ -210,6 +211,7 @@ type App struct {
 	// RouteSyncer keeps those guild-level routed artifacts in step with the
 	// installation routes. Nil-safe: without it routes are simply not synced.
 	RouteSyncer *discord.RouteSyncer
+	ServerRanksBoards []*discord.ServerRanksBoard
 	// adminSaaS is the cross-tenant, read-only platform-admin read model behind
 	// /api/admin (internal/adminrepo); adminChannelNames optionally overrides the
 	// Discord-cache channel name lookup (tests).
@@ -242,6 +244,8 @@ type App struct {
 	// FactionHub is the web-first Faction Hub store (docs/FACTIONS.md); the four
 	// limiters throttle faction creation and join applications per acting user.
 	FactionHub                  *repository.FactionHubRepository
+	// factionRecruitAPI posts, edits and deletes faction recruitment cards (nil without Discord).
+	factionRecruitAPI recruitMessageAPI
 	saasFactionCreateLimiter    *saasRateLimiter
 	saasFactionCreateDayLimiter *saasRateLimiter
 	saasFactionApplyLimiter     *saasRateLimiter
@@ -662,6 +666,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.Kills = repository.NewKillRepository(db.Pool)
 			app.Deaths = repository.NewDeathRepository(db.Pool)
 			app.Stats = repository.NewStatsRepository(db.Pool)
+			app.Ranked = repository.NewRankedRepository(db.Pool)
 			app.Sessions = repository.NewSessionRepository(db.Pool)
 			app.Checkpoints = repository.NewCheckpointRepository(db.Pool)
 			app.Streaks = repository.NewStreakRepository(db.Pool)
@@ -1127,6 +1132,7 @@ func (a *App) Run() error {
 	}
 	session := a.Discord.Session()
 	api := discord.NewSessionAPI(session)
+	a.factionRecruitAPI = api
 	setupManager := discord.NewSetupManager(api, setupStore, a.Discord.BotID())
 	if a.LinkService != nil && a.Config.DiscordGuildID != "" {
 		verifiedRole := discord.NewVerifiedRoleAssigner(a.Discord, setupStore, a.Config.DiscordGuildID)
@@ -1202,6 +1208,9 @@ func (a *App) Run() error {
 	}
 	if a.SeasonService != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
 		seasonHandler := discord.NewSeasonCommandHandler(a.SeasonService, a.Guilds)
+		if a.Ranked != nil && a.Servers != nil {
+			seasonHandler.SetRankedStatus(rankedSeasonStatus{servers: a.Servers, ranked: a.Ranked})
+		}
 		if err := discord.RegisterSeasonCommands(session, a.Config.DiscordGuildID); err != nil {
 			slog.Warn("component=discord", "msg", "failed to register season commands", "err", err.Error())
 		}
@@ -1349,7 +1358,18 @@ func (a *App) Run() error {
 				setupHandler.Handle(s, i)
 			}
 		case discordgo.InteractionMessageComponent:
-			setupHandler.HandleResetConfirm(s, i)
+			customID := i.MessageComponentData().CustomID
+			switch {
+			case IsFactionRecruitInteraction(customID):
+				a.HandleFactionRecruitInteraction(s, i)
+			case strings.HasPrefix(customID, "champion_reset_"):
+				// Only the /setup reset buttons: every other button has its own handler above.
+				setupHandler.HandleResetConfirm(s, i)
+			}
+		case discordgo.InteractionModalSubmit:
+			if IsFactionRecruitInteraction(i.ModalSubmitData().CustomID) {
+				a.HandleFactionRecruitInteraction(s, i)
+			}
 		}
 	})
 
@@ -1580,6 +1600,13 @@ func (a *App) Run() error {
 			if routingEnabled {
 				routePanels = discord.NewRoutePanels(api, discord.NewRoutePanelStore(a.GuildRoutePanels))
 			}
+			if routingEnabled && a.Ranked != nil {
+				for _, serverRow := range activeServers {
+					board := discord.NewServerRanksBoard(a.ChannelRoutes, routePanels, a.Ranked, guildRowID, serverRow.ID, serverRow.DisplayName)
+					a.ServerRanksBoards = append(a.ServerRanksBoards, board)
+					go board.Run(ctx)
+				}
+			}
 			if routingEnabled && a.EconomyService != nil {
 				// ECONOMY: the public transaction feed, per (guild, server) through the
 				// shared resolver, no fallback. Fed only after a transaction committed
@@ -1652,6 +1679,12 @@ func (a *App) Run() error {
 							_ = setupStore.Save(*latest)
 						}
 					})
+					// The guild V3 ranks embed follows its selected public server's
+					// active Ranked season. The dedicated boards remain per-server.
+					if a.Ranked != nil && a.Servers != nil {
+						a.LeaderboardScheduler.SetRankSource(discord.ServerSeasonRankReader{Servers: a.Servers, Ranked: a.Ranked})
+					}
+					a.LeaderboardScheduler.SetServerNames(guildServers, a.serverNameFunc())
 					if routingEnabled {
 						a.LeaderboardScheduler.SetRouting(a.ChannelRoutes, guildServers, routePanels,
 							discord.NewLegacyLeaderboardRetirer(api, setupStore, a.Config.DiscordGuildID))
@@ -1677,7 +1710,7 @@ func (a *App) Run() error {
 				setupManager.SetRouteGate(a.RouteSyncer.HasRoute)
 				go a.RouteSyncer.Run(ctx)
 			}
-			store := &persistenceStoreAdapter{players: a.Players, kills: a.Kills, deaths: a.Deaths, seasons: a.Seasons, factions: a.Factions, wars: a.Wars, events: a.Events, bounties: a.Bounties, bountySvc: a.BountyService, streaks: a.Streaks, anomalies: a.Anomalies, activity: a.ActivityRepository, servers: a.Servers, stats: a.Stats, analytics: a.AnalyticsRepository, factionStats: a.FactionHubStats, locations: a.Locations, zones: a.Zones, panelDirty: func() {
+			store := &persistenceStoreAdapter{players: a.Players, kills: a.Kills, deaths: a.Deaths, seasons: a.Seasons, ranked: a.Ranked, factions: a.Factions, wars: a.Wars, events: a.Events, bounties: a.Bounties, bountySvc: a.BountyService, streaks: a.Streaks, anomalies: a.Anomalies, activity: a.ActivityRepository, servers: a.Servers, stats: a.Stats, analytics: a.AnalyticsRepository, factionStats: a.FactionHubStats, locations: a.Locations, zones: a.Zones, panelDirty: func() {
 				if a.LeaderboardScheduler != nil {
 					a.LeaderboardScheduler.MarkDirty()
 				}
@@ -1850,7 +1883,23 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 		buildFeed := discord.NewBuildFeedPublisher(a.Discord.Session(), a.ChannelRoutes, row.GuildID, row.ID)
 		buildFeed.SetServerName(a.serverNameFunc())
 		buildFeed.OnSeen(func() { a.buildActionsSeen.Add(1) })
-		engine.SetBuildPublisher(buildFeed)
+		var buildPublisher killfeed.BuildPublisher = buildFeed
+		if a.DB != nil && a.DB.Pool != nil {
+			// Base Raid Alarm: DMs a base owner when someone else dismantles part of
+			// their registered base. Off until the server owner turns it on.
+			raidAlarm := discord.NewBaseRaidAlarmPublisher(repository.NewBaseRaidAlarmRepository(a.DB.Pool), a.Discord.Session(), row.GuildID, row.ID)
+			raidAlarm.SetServerName(a.serverNameFunc())
+			buildPublisher = buildPublisherFanout{buildFeed, raidAlarm}
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						slog.Error("component=servers", "msg", "base raid alarm panic recovered", "server_id", row.ID, "panic", fmt.Sprint(r))
+					}
+				}()
+				raidAlarm.Run(workerCtx)
+			}()
+		}
+		engine.SetBuildPublisher(buildPublisher)
 		go func() {
 			defer func() {
 				if r := recover(); r != nil {
@@ -1991,6 +2040,26 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 		deathFeed.Run(workerCtx)
 	}()
 
+	if store.ranked != nil {
+		go func() {
+			reconcile := func() {
+				if count, err := store.ranked.ReconcileServerAwards(workerCtx, row.ID); err != nil && workerCtx.Err() == nil {
+					slog.Warn("component=ranked", "event", "reconciliation_failed", "server_id", row.ID, "err", err.Error())
+				} else if count > 0 {
+					slog.Info("component=ranked", "event", "awards_reconciled", "server_id", row.ID, "count", count)
+				}
+			}
+			reconcile()
+			ticker := time.NewTicker(time.Minute)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-workerCtx.Done(): return
+				case <-ticker.C: reconcile()
+				}
+			}
+		}()
+	}
 	pq := killfeed.NewPersistenceQueueWithServerID(store, row.GuildID, row.ID, row.ProviderServiceID)
 	pq.SetKillPostProcessor(store)
 	pq.SetDeathPostProcessor(store)
@@ -2207,6 +2276,7 @@ type persistenceStoreAdapter struct {
 	kills     *repository.KillRepository
 	deaths    *repository.DeathRepository
 	seasons   *repository.SeasonRepository
+	ranked    *repository.RankedRepository
 	factions  *repository.FactionRepository
 	wars      *repository.PostgresWarRepository
 	events    *repository.EventRepository
@@ -2448,6 +2518,11 @@ func (p *persistenceStoreAdapter) ResolveStreakContext(ctx context.Context, guil
 }
 
 func (p *persistenceStoreAdapter) ProcessPersistedKill(ctx context.Context, killID int64, record repository.KillRecord, ev *killfeed.Event) {
+	if p.ranked != nil && record.ServerID > 0 {
+		if _, err := p.ranked.AwardActiveServerKill(ctx, record.ServerID, killID); err != nil && !errors.Is(err, repository.ErrRankedIneligible) {
+			slog.Warn("component=ranked", "event", "award_failed_retry_scheduled", "server_id", record.ServerID, "kill_id", killID, "err", err.Error())
+		}
+	}
 	// Runs on every exit (including the bounty claim at the end): the kill is durable, so cached
 	// faction figures are stale and the killer's factions may have earned an achievement.
 	defer p.factionStats.NotifyCombat(record.GuildID, record.ServerID, record.KillerPlayerID)
@@ -2761,4 +2836,19 @@ func (a *App) runRoleReconciler(ctx context.Context) {
 		}
 		timer.Reset(roleReconcileInterval)
 	}
+}
+
+// rankedSeasonStatus joins the guild's active servers with their Ranked
+// seasons for /season status.
+type rankedSeasonStatus struct {
+	servers *repository.ServerRepository
+	ranked  *repository.RankedRepository
+}
+
+func (r rankedSeasonStatus) ListActiveByGuild(ctx context.Context, guildID int64) ([]repository.GameServer, error) {
+	return r.servers.ListActiveByGuild(ctx, guildID)
+}
+
+func (r rankedSeasonStatus) ActiveServerSeason(ctx context.Context, guildID, serverID int64) (*repository.ServerRankedSeason, error) {
+	return r.ranked.ActiveServerSeason(ctx, guildID, serverID)
 }

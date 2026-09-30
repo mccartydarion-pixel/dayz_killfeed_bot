@@ -32,7 +32,7 @@ func TestPatchEmptyArrayMinimalAndExact(t *testing.T) {
 	if p.Purpose != PurposeShopReference || len(p.Before) != 0 || len(p.After) != 1 || p.After[0] != nitradodelivery.ArtifactRelPath {
 		t.Fatalf("entries: %v -> %v", p.Before, p.After)
 	}
-	want := strings.Replace(liveShape, "\"objectSpawnersArr\": [\n        ],", "\"objectSpawnersArr\": [\n\t\t\t\"champion/champion_shop_delivery.json\"\n\t\t],", 1)
+	want := strings.Replace(liveShape, "\"objectSpawnersArr\": [\n        ],", "\"objectSpawnersArr\": [\n\t\t\t\"custom/champion_shop_delivery.json\"\n\t\t],", 1)
 	if string(p.Proposed) != want {
 		t.Fatalf("proposal not byte-exact:\n%s", p.Proposed)
 	}
@@ -46,7 +46,7 @@ func TestPatchEmptyArrayMinimalAndExact(t *testing.T) {
 			changed = append(changed, l)
 		}
 	}
-	wantDiff := []string{"- " + "        ],", "+ \t\t\t\"champion/champion_shop_delivery.json\"", "+ \t\t],"}
+	wantDiff := []string{"- " + "        ],", "+ \t\t\t\"custom/champion_shop_delivery.json\"", "+ \t\t],"}
 	if strings.Join(changed, "|") != strings.Join(wantDiff, "|") {
 		t.Fatalf("diff: %q", changed)
 	}
@@ -601,4 +601,52 @@ func canaryDelivery(id int64, x, z float64) repository.ShopDelivery {
 		DeliveryType: "MANUAL", Policy: repository.DeliveryPolicyManualCoordinate, MapKey: "chernarusplus", X: &x, Z: &z,
 		Status: repository.DeliveryStatusManualReady, PurchaseStatus: repository.ShopStatusPendingFulfillment,
 		Items: []repository.ShopPurchaseItem{{ProductName: "Canary BandageDressing", UnitPricePoints: 1, Quantity: 1, LineTotalPoints: 1}}}
+}
+
+// Relocation Gate D: the live post-Gate-B shape (Lost City + the legacy champion/ entry) becomes
+// Lost City + custom/, changing ONLY that one entry's line.
+func TestRelocationReplacesOnlyTheLegacyEntry(t *testing.T) {
+	enabled := strings.Replace(liveShape, "[\n        ]", "[\n\t\t\t\""+LostCityRelPath+"\"\n\t\t]", 1)
+	gateB, err := ProposePatchFor([]byte(enabled), nitradodelivery.LegacyArtifactRelPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := ProposeRelocation(gateB.Proposed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Purpose != PurposeShopRelocate || strings.Join(p.Before, ",") != LostCityRelPath+","+nitradodelivery.LegacyArtifactRelPath ||
+		strings.Join(p.After, ",") != LostCityRelPath+","+nitradodelivery.ArtifactRelPath {
+		t.Fatalf("%v -> %v", p.Before, p.After)
+	}
+	// Byte-exact: the proposal equals the input with just that one string replaced.
+	want := strings.Replace(string(gateB.Proposed), "\""+nitradodelivery.LegacyArtifactRelPath+"\"", "\""+nitradodelivery.ArtifactRelPath+"\"", 1)
+	if string(p.Proposed) != want {
+		t.Fatalf("not byte-exact:\n%s", p.Proposed)
+	}
+	var changed []string
+	for _, l := range strings.Split(p.Diff, "\n") {
+		if strings.HasPrefix(l, "+ ") || strings.HasPrefix(l, "- ") {
+			changed = append(changed, l)
+		}
+	}
+	if len(changed) != 2 || !strings.Contains(changed[0], nitradodelivery.LegacyArtifactRelPath) || !strings.Contains(changed[1], nitradodelivery.ArtifactRelPath) {
+		t.Fatalf("diff: %q", changed)
+	}
+	// Refusals: no legacy entry, legacy twice, custom already present, not JSON.
+	for name, in := range map[string]string{
+		"no legacy entry": enabled,
+		"legacy twice":    strings.Replace(string(gateB.Proposed), "\""+LostCityRelPath+"\"", "\""+nitradodelivery.LegacyArtifactRelPath+"\"", 1),
+		"already moved":   string(p.Proposed),
+		"both present":    strings.Replace(string(gateB.Proposed), "\""+LostCityRelPath+"\"", "\""+nitradodelivery.ArtifactRelPath+"\"", 1),
+		"not JSON":        "{",
+	} {
+		if _, err := ProposeRelocation([]byte(in)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	// Backups never land in the game-synchronised custom/ folder.
+	if !strings.HasPrefix(ConfigBackupPath(p.CurrentSHA256), "champion/backup/") {
+		t.Fatal(ConfigBackupPath(p.CurrentSHA256))
+	}
 }

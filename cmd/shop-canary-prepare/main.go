@@ -63,25 +63,32 @@ func run() error {
 	fmt.Println("mission:", rep.MissionPath)
 	fmt.Println("write capability:", canary.WriteCapability)
 
-	// Gate A: the empty Champion file.
+	// The empty Champion file in custom/ (relocation Gate C), and the legacy champion/ file.
 	empty, emptySHA := canary.EmptyArtifact()
-	fmt.Printf("\n[Gate A] create %s = empty spawner file, %d bytes, SHA-256 %s\n", "champion/champion_shop_delivery.json", len(empty), emptySHA)
-	artPath, err := capability.SafePath(rep.FileRoot, rep.MissionDir+"/champion/champion_shop_delivery.json")
-	if err != nil {
-		return err
-	}
-	if art, err := client.ReadLog(ctx, *service, artPath); err == nil {
-		fmt.Println("  current Champion file: present, SHA-256", nitradodelivery.SHA256(art), "- reference precondition:", errText(canary.CheckReferencePrecondition(art, true)))
-	} else {
-		fmt.Println("  current Champion file: not readable (absent) - reference precondition:", errText(canary.CheckReferencePrecondition(nil, false)))
+	fmt.Printf("\n[Gate C] create %s = empty spawner file, %d bytes, SHA-256 %s\n", nitradodelivery.ArtifactRelPath, len(empty), emptySHA)
+	for _, rel := range []string{nitradodelivery.ArtifactRelPath, nitradodelivery.LegacyArtifactRelPath} {
+		artPath, err := capability.SafePath(rep.FileRoot, rep.MissionDir+"/"+rel)
+		if err != nil {
+			return err
+		}
+		if art, err := client.ReadLog(ctx, *service, artPath); err == nil {
+			fmt.Println("  "+rel+": present, SHA-256", nitradodelivery.SHA256(art), "- reference precondition:", errText(canary.CheckReferencePrecondition(art, true)))
+		} else {
+			fmt.Println("  " + rel + ": not readable (absent)")
+		}
 	}
 
-	// Gate B: the reference patch (only after Gate A is verified).
-	p, err := canary.ProposePatch(raw)
+	// The reference: relocation Gate D while the legacy entry is present, otherwise the append patch.
+	p, err := canary.ProposeRelocation(raw)
+	title := "[Gate D] Shop reference relocation"
 	if err != nil {
-		return err
+		title = "[Shop reference] append"
+		if p, err = canary.ProposePatch(raw); err != nil {
+			fmt.Println("\n[Shop reference] no change:", err)
+			return nil
+		}
 	}
-	printPatch("[Gate B] Shop reference", p)
+	printPatch(title, p)
 	for _, s := range canary.UploadSequence(p.Path, p.CurrentSHA256, p.ProposedSHA256, canary.ConfigBackupPath(p.CurrentSHA256)) {
 		fmt.Printf("  %d %-6s %s | abort: %s\n", s.N, s.Kind, s.Action, s.AbortIf)
 	}

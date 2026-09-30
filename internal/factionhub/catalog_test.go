@@ -13,8 +13,22 @@ func TestCatalogsAreSortedUniqueAndStable(t *testing.T) {
 	if !sort.StringsAreSorted(DayzFlags) || !sort.StringsAreSorted(Armbands) {
 		t.Fatal("catalogs must be kept sorted (binary search)")
 	}
-	if got := strings.Join(DayzFlags, ","); got != "BLACK,BLUE,GREEN,RED" {
+	if got := strings.Join(DayzFlags, ","); got != "ALTIS,APA,BABYDEER,BEAR,BOHEMIA,BRAINZ,CANNIBALS,CDF,CHEDAKI,CHEL,CHERNARUS,CMC,CROOK,DAYZ,HUNTERZ,LIVONIA,LIVONIAARMY,LIVONIAPOLICE,NAPA,NSAHRANI,PIRATES,REFUGE,REX,ROOSTER,RSTA,SNAKE,SSAHRANI,TEC,UEC,WHITE,WOLF,ZAGORKY,ZENIT" {
 		t.Fatalf("flag catalog changed: %s", got)
+	}
+	if len(DayzFlags) != 33 {
+		t.Fatalf("DayZ ships 33 flags, catalog has %d", len(DayzFlags))
+	}
+	for _, k := range DayzFlags {
+		if _, ok := FlagClassName(k); !ok {
+			t.Fatalf("flag %s has no class name", k)
+		}
+	}
+	if cn, _ := FlagClassName("BABYDEER"); cn != "Flag_BabyDeer" {
+		t.Fatalf("class name spelling: %s", cn)
+	}
+	if _, ok := FlagClassName("BLACK"); ok {
+		t.Fatal("BLACK is not a DayZ flag")
 	}
 	if got := strings.Join(Armbands, ","); got != "BLACK,BLUE,GREEN,ORANGE,PINK,RED,WHITE,YELLOW" {
 		t.Fatalf("armband catalog changed: %s", got)
@@ -44,7 +58,7 @@ func TestValidateFlagAndArmbandKeys(t *testing.T) {
 	if got, err := ValidateFlagKey("  "); err != nil || got != "" {
 		t.Fatalf("empty clears: %q %v", got, err)
 	}
-	bad := []string{"PURPLE", "chernarus", "https://evil.example/flag.png", "red;color:red", "<b>RED</b>", "RED BLUE", "../RED", "url(x)", "NULL", "0", "REDD"}
+	bad := []string{"PURPLE", "blackflag", "Flag_CDF", "https://evil.example/flag.png", "red;color:red", "<b>RED</b>", "RED BLUE", "../RED", "url(x)", "NULL", "0", "REDD"}
 	for _, in := range bad {
 		var v *ValidationError
 		if _, err := ValidateFlagKey(in); !errors.As(err, &v) {

@@ -71,7 +71,47 @@ func (a *SessionAPI) ChannelMessageEditComplex(channelID, messageID string, embe
 	return a.S.ChannelMessageEditComplex(edit)
 }
 
+// ChannelMessageSendEmbeds sends ONE message carrying every embed (the Auto
+// Leaderboard package), so the categories appear and refresh together.
+func (a *SessionAPI) ChannelMessageSendEmbeds(channelID string, embeds []*discordgo.MessageEmbed, components []discordgo.MessageComponent) (*discordgo.Message, error) {
+	return a.S.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{Embeds: embeds, Components: components})
+}
+
+// ChannelMessageEditEmbeds replaces a message's whole embed array in one edit.
+// Components are only touched when given.
+func (a *SessionAPI) ChannelMessageEditEmbeds(channelID, messageID string, embeds []*discordgo.MessageEmbed, components []discordgo.MessageComponent) (*discordgo.Message, error) {
+	edit := discordgo.NewMessageEdit(channelID, messageID)
+	edit.Embeds = &embeds
+	if components != nil {
+		edit.Components = &components
+	}
+	return a.S.ChannelMessageEditComplex(edit)
+}
+
+// ChannelMessages lists up to limit recent messages in a channel (newest
+// first). Used only to find the bot's own obsolete leaderboard boards.
+func (a *SessionAPI) ChannelMessages(channelID string, limit int) ([]*discordgo.Message, error) {
+	return a.S.ChannelMessages(channelID, limit, "", "", "")
+}
+
+// BotUserID is the connected bot's own user id ("" before the gateway is ready).
+func (a *SessionAPI) BotUserID() string {
+	if a == nil || a.S == nil || a.S.State == nil || a.S.State.User == nil {
+		return ""
+	}
+	return a.S.State.User.ID
+}
+
 // ChannelMessageDelete removes a message (used to retire a superseded panel).
 func (a *SessionAPI) ChannelMessageDelete(channelID, messageID string) error {
 	return a.S.ChannelMessageDelete(channelID, messageID)
 }
+
+// The Auto Leaderboard depends on these at runtime (type assertions), so fail
+// the build - not a refresh - if SessionAPI ever loses them.
+var (
+	_ MultiEmbedMessageAPI = (*SessionAPI)(nil)
+	_ MessageEditor        = (*SessionAPI)(nil)
+	_ RoutePanelAPI        = (*SessionAPI)(nil)
+	_ ChannelHistoryAPI    = (*SessionAPI)(nil)
+)

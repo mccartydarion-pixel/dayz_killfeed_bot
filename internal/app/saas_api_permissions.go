@@ -284,8 +284,11 @@ func (a *App) registerClientAdminRoutes() {
 	h("GET "+base+"/audit-log", a.handleListAuditLog)
 
 	a.registerClientAdminCapabilityRoutes(base)
+	a.registerClientAdminFactionHubRoutes(base)
 	a.registerPlayerIntelligenceRoutes(base)
 	a.registerZoneRoutes(base)
+	a.registerCaseBaseRoutes(base)
+	a.registerCaseDetectorSettingRoutes(base)
 	a.registerHeatmapRoutes(base)
 }
 

@@ -160,7 +160,11 @@ var routeVariableDefinitions = map[string][]VariableDefinition{
 	"LINK_GAMERTAG":      {serverName(), timestamp()},
 	"STATS_LEADERBOARDS": {serverName(), timestamp()},
 	"AUTO_LEADERBOARD":   {serverName(), timestamp()},
+	"SERVER_RANKS":       {serverName(), timestamp()},
 	"SERVER_STATUS":      {serverName(), timestamp()},
+	// Faction recruitment cards are designed by faction leaders on the website (their colours,
+	// logo and copy), so the channel carries no owner template variables beyond the basics.
+	"FACTION_RECRUITMENT": {serverName(), timestamp()},
 	// C.A.S.E. templates can be saved and previewed, but no live C.A.S.E.
 	// publisher exists. The fields describe the contract for separately
 	// reviewed future aggregate/status and finding events. None is fetched
