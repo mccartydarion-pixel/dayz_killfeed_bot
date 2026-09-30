@@ -768,7 +768,9 @@ func (r *FactionHubRepository) Apply(ctx context.Context, organizationID, instal
 		if err != nil {
 			return err
 		}
-		if f.RecruitmentStatus != factionhub.RecruitmentOpen {
+		// OPEN factions take applications too (a player may prefer to introduce themselves);
+		// INVITE_ONLY factions take nothing else; CLOSED factions take nothing.
+		if f.RecruitmentStatus == factionhub.RecruitmentClosed {
 			return factionhub.ErrRecruitmentClosed
 		}
 		if already, err := hubInstallationMembership(ctx, tx, installationID, userID); err != nil {

@@ -50,6 +50,25 @@ RETURNING id, discord_user_id, discord_username, COALESCE(discord_global_name,''
 	return &out, nil
 }
 
+// EnsureDiscordUser returns the app_users row for a Discord account, creating it when the person
+// has never signed in to the website (a Discord button press is their first contact with
+// Champion). Unlike UpsertDiscordUser it never stamps last_login_at: pressing a button is not a
+// website login. Existing rows keep the profile the website recorded.
+func (r *UserRepository) EnsureDiscordUser(ctx context.Context, discordUserID, username, globalName, avatar string) (*AppUser, error) {
+	const q = `
+INSERT INTO app_users(discord_user_id, discord_username, discord_global_name, avatar)
+VALUES($1,$2,$3,$4)
+ON CONFLICT(discord_user_id) DO UPDATE SET updated_at = app_users.updated_at
+RETURNING id, discord_user_id, discord_username, COALESCE(discord_global_name,''), COALESCE(avatar,''), created_at, updated_at, last_login_at`
+	var out AppUser
+	err := r.pool.QueryRow(ctx, q, discordUserID, username, emptyToNil(globalName), emptyToNil(avatar)).
+		Scan(&out.ID, &out.DiscordUserID, &out.DiscordUsername, &out.DiscordGlobalName, &out.Avatar, &out.CreatedAt, &out.UpdatedAt, &out.LastLoginAt)
+	if err != nil {
+		return nil, fmt.Errorf("ensure discord user: %w", err)
+	}
+	return &out, nil
+}
+
 // GetByDiscordID returns the app_users row for a Discord user ID, or nil if
 // this Discord account has never signed in to the website.
 func (r *UserRepository) GetByDiscordID(ctx context.Context, discordUserID string) (*AppUser, error) {

@@ -27,8 +27,8 @@ const (
 
 // Recruitment statuses.
 const (
-	RecruitmentOpen       = "OPEN"        // players can submit applications
-	RecruitmentInviteOnly = "INVITE_ONLY" // applications cannot be freely submitted
+	RecruitmentOpen       = "OPEN"        // players join instantly (Join) or may apply first
+	RecruitmentInviteOnly = "INVITE_ONLY" // players apply and the leader/officers decide (Apply)
 	RecruitmentClosed     = "CLOSED"      // no recruitment
 )
 
@@ -79,6 +79,8 @@ var (
 	ErrTagTaken          = errors.New("faction tag already in use on this installation")
 	ErrAlreadyInFaction  = errors.New("user already belongs to a faction on this installation")
 	ErrRecruitmentClosed = errors.New("faction is not accepting applications")
+	// ErrJoinRequiresOpen: instant join is only for OPEN factions; INVITE_ONLY takes applications.
+	ErrJoinRequiresOpen = errors.New("this faction is invite only: apply and wait for the leader")
 	ErrAlreadyApplied    = errors.New("a pending application already exists")
 	ErrNotPending        = errors.New("application is not pending")
 	ErrLeaderProtected   = errors.New("the faction leader cannot be changed or removed")

@@ -471,10 +471,11 @@ func TestHubApplicationRules(t *testing.T) {
 		return w.repo.Apply(w.ctx, w.org1, inst, faction, user, "hello")
 	}
 
-	// Recruitment status gates applications.
-	_, err := apply(w.inst1, inviteOnly.ID, u[4])
-	wantErr(t, "INVITE_ONLY", err, factionhub.ErrRecruitmentClosed)
-	_, err = apply(w.inst1, closed.ID, u[4])
+	// Recruitment status gates applications: INVITE_ONLY takes them (the leader decides), CLOSED does not.
+	if _, err := apply(w.inst1, inviteOnly.ID, w.newUsers(1)[0]); err != nil {
+		t.Fatalf("INVITE_ONLY accepts applications: %v", err)
+	}
+	_, err := apply(w.inst1, closed.ID, u[4])
 	wantErr(t, "CLOSED", err, factionhub.ErrRecruitmentClosed)
 
 	app, err := apply(w.inst1, open.ID, u[4])

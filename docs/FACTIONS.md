@@ -310,6 +310,27 @@ website catalog (`lib/factions/dayzBranding.ts`) mirrors these keys with labels 
 never URLs. Add a key to the Go catalog (and here) before the website offers it. Migration `0073_faction_branding_exclusive`
 cleared the four pre-catalog placeholder keys (`BLACK`, `BLUE`, `GREEN`, `RED`) that were never DayZ flags.
 
+### Recruitment (Discord cards, Join / Apply)
+
+Recruitment statuses mean: **OPEN** = anyone joins instantly (`POST .../factions/{id}/join`, or the **Join** button);
+**INVITE_ONLY** = players apply (`POST .../applications`, or the **Apply** button, which opens a short modal for a
+message) and the leader/officers accept or deny; **CLOSED** = nothing. OPEN factions still take applications for players
+who prefer to introduce themselves. `ErrJoinRequiresOpen` (409) answers an instant join on an INVITE_ONLY faction.
+
+A leader or officer publishes one **recruitment card** per faction into the installation's `FACTION_RECRUITMENT` channel
+route (`POST .../factions/{id}/recruit`; `DELETE` removes it). The card (`BuildFactionRecruitCard`) carries the faction's
+colours, logo, flag, armband, description, requirements, member count and leader, plus a Join or Apply button
+(`champion:faction:join:{id}` / `champion:faction:apply:{id}`) and a link to the website. The card is edited in place
+whenever the faction changes (members, roles, branding, recruitment, logo, moderation) and deleted when the faction is
+dissolved; a card whose message was removed in Discord is posted again on the next publish. `hub_faction_recruit_posts`
+(migration 0074) records the one message per faction. `FactionProfile.recruitPost` reports it (`{channelId, messageId,
+url, postedAt, updatedAt}` or null).
+
+Button presses are scoped to the guild they happen in (`FactionForGuild`): a faction id from another server is not
+found. A Discord user who has never signed in to the website gets an `app_users` row on the spot
+(`EnsureDiscordUser`, which never stamps `last_login_at`), so joining from Discord needs no prior website visit.
+`CHAMPION_SITE_BASE_URL` (default `https://championshp.vip`) is the website origin used for links on the card.
+
 **Exclusive per server.** A flag and an armband can each be held by only one faction per installation (first come, first
 served; partial unique indexes `uq_hub_factions_installation_flag` / `_armband`). Claiming a taken key is `409` with a message
 that names the holder (`that flag is already claimed by Alpha Wolves [AW]`); re-saving your own key is not a conflict; `""`
