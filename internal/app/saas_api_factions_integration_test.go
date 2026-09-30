@@ -88,6 +88,7 @@ func newFactionWorld(t *testing.T) *factionWorld {
 	a.saasShopPurchaseLimiter = newSaaSRateLimiter(time.Hour, 100000)
 	a.saasShopAdminLimiter = newSaaSRateLimiter(time.Hour, 100000)
 	a.registerShopRoutes()
+	a.registerSecurityMarketplaceRoutes()
 	billingCatalog, err := billing.LoadCatalog(billingTestCatalogJSON)
 	if err != nil {
 		t.Fatal(err)
