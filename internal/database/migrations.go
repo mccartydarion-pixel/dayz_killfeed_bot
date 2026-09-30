@@ -2200,6 +2200,11 @@ ON CONFLICT (installation_id, route_key) DO NOTHING;
 		Name: "0067_ranked_ledger_foundation",
 		SQL:  RankedLedgerFoundationSQL,
 	},
+	{
+		// Inert Core Eight Base Boost registration; no detector reader or notifier.
+		Name: "0070_case_base_registration",
+		SQL: CASEBaseRegistrationSQL,
+	},
 }
 
 // RankedLedgerFoundationSQL creates server-scoped seasonal RP storage.
