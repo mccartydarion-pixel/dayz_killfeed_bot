@@ -918,3 +918,25 @@ func TestReconcileUnknownOrganization(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 }
+
+// A plan change swaps the Stripe price but leaves the subscription's champion_plan_key metadata as
+// it was at checkout. The customer.subscription.updated webhook that follows must keep the new
+// plan (resolved from the billed price), not revert to the stale metadata.
+func TestWebhookSubscriptionUpdatedTrustsBilledPriceOverStaleMetadata(t *testing.T) {
+	svc, store, provider := newTestService(t, sampleCatalog)
+	ctx := context.Background()
+	activeOrg(t, ctx, svc, store, provider, 62, "PRO", "price_pro_month")
+	sub, _ := store.GetForOrganization(ctx, 62)
+
+	payload := []byte(`{"id":"evt_600","type":"customer.subscription.updated","data":{"object":{
+		"id":"` + sub.ProviderSubscriptionID + `","status":"active","customer":"` + sub.ProviderCustomerID + `",
+		"metadata":{"champion_organization_id":"62","champion_plan_key":"LEGACY"},
+		"items":{"data":[{"current_period_start":1,"current_period_end":2,"price":{"id":"price_pro_month","recurring":{"interval":"month"}}}]}}}}`)
+	if err := svc.HandleWebhook(ctx, payload, sign(t, "whsec_test", payload)); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := store.GetForOrganization(ctx, 62)
+	if after.Plan != "PRO" {
+		t.Fatalf("plan = %q, want PRO (from the billed price, not stale metadata)", after.Plan)
+	}
+}
