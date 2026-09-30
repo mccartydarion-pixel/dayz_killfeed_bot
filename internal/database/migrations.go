@@ -2226,6 +2226,11 @@ ON CONFLICT (installation_id, route_key) DO NOTHING;
 		Name: "0073_faction_branding_exclusive",
 		SQL:  FactionBrandingExclusiveSQL,
 	},
+	{
+		// Faction Hub: one recruitment card per faction in the FACTION_RECRUITMENT channel.
+		Name: "0074_faction_recruitment",
+		SQL:  FactionRecruitmentSQL,
+	},
 }
 
 // RankedLedgerFoundationSQL creates server-scoped seasonal RP storage.

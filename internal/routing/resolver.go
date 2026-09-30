@@ -40,6 +40,9 @@ const (
 	RouteAdminAlerts       = "ADMIN_ALERTS"
 	RouteAdminLogs         = "ADMIN_LOGS"
 	RouteServerStatus      = "SERVER_STATUS"
+	// RouteFactionRecruitment is where faction leaders publish their recruitment card
+	// (one embed per faction with a Join / Apply button; docs/FACTIONS.md "Recruitment").
+	RouteFactionRecruitment = "FACTION_RECRUITMENT"
 	// RouteOnlineCounter points at the online-players voice counter channel
 	// (a voice channel whose name is the count; never a message route).
 	RouteOnlineCounter = "ONLINE_COUNTER"

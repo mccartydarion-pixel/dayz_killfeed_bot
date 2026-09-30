@@ -63,6 +63,7 @@ func (a *App) registerFactionHubRoutes() {
 	h("DELETE "+base+"/{factionID}/members/{memberID}", a.handleRemoveFactionMember)
 	a.registerFactionPhase4Routes()
 	a.registerFactionStatsRoutes()
+	a.registerFactionRecruitRoutes(base)
 }
 
 // --- DTOs -------------------------------------------------------------------------------------
@@ -138,6 +139,8 @@ type factionProfileDTO struct {
 	// Stats is the faction's competitive summary (Phase 5), or null when it could not be
 	// computed. Only figures proven from real runtime data; see docs/FACTION_STATS.md.
 	Stats *factionstats.Summary `json:"stats"`
+	// RecruitPost is the faction's recruitment card in Discord, or null when none is posted.
+	RecruitPost *recruitPostDTO `json:"recruitPost"`
 }
 
 type factionApplicationDTO struct {
@@ -349,7 +352,7 @@ func factionFailed(w http.ResponseWriter, what string, err error) {
 		errors.Is(err, factionhub.ErrNameTaken), errors.Is(err, factionhub.ErrTagTaken),
 		errors.Is(err, factionhub.ErrAlreadyInFaction), errors.Is(err, factionhub.ErrRecruitmentClosed),
 		errors.Is(err, factionhub.ErrAlreadyApplied), errors.Is(err, factionhub.ErrNotPending),
-		errors.Is(err, factionhub.ErrInvalidTransition):
+		errors.Is(err, factionhub.ErrInvalidTransition), errors.Is(err, factionhub.ErrJoinRequiresOpen):
 		// The typed errors carry fixed, safe messages.
 		writeSaaSError(w, codeConflict, err.Error())
 	default:
@@ -408,6 +411,9 @@ func (a *App) loadFactionProfile(ctx context.Context, fr factionRequest, faction
 		return factionProfileDTO{}, err
 	}
 	profile := a.buildFactionProfile(ctx, fr, *f, members)
+	if post, err := a.FactionHub.RecruitPost(ctx, fr.instID, factionID); err == nil && post != nil {
+		profile.RecruitPost = a.toRecruitPost(ctx, *f, post)
+	}
 	if a.FactionHubStats != nil {
 		if st, err := a.FactionHubStats.GetFactionStats(ctx, fr.orgID, fr.instID, factionID); err != nil {
 			slog.Warn("component=saas_api", "msg", "faction stats unavailable for profile", "err", err.Error())

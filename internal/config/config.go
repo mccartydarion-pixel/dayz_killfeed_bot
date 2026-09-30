@@ -77,6 +77,9 @@ type Config struct {
 	// (/assets/faction-logos/...). CHAMPION_PUBLIC_BASE_URL wins; otherwise it is derived from
 	// Railway's RAILWAY_PUBLIC_DOMAIN; otherwise empty and the API returns root-relative URLs.
 	PublicBaseURL string
+	// SiteBaseURL is the public website origin (CHAMPION_SITE_BASE_URL, default
+	// https://championshp.vip), used for links in Discord cards.
+	SiteBaseURL string
 
 	// Discord bot presence/activity settings (see internal/discord/presence.go).
 	DiscordPresenceEnabled bool
@@ -128,6 +131,7 @@ func Load() (*Config, error) {
 		CustomEmbedsEnabled:       parseBoolWithDefault(os.Getenv("CHAMPION_CUSTOM_EMBEDS_ENABLED"), false),
 		ShopCanaryExecution:       ParseShopCanaryExecution(os.Getenv("CHAMPION_SHOP_CANARY_EXECUTION"), os.Getenv("CHAMPION_SHOP_CANARY_INSTALLATION_IDS")),
 		PublicBaseURL:             ParsePublicBaseURL(os.Getenv("CHAMPION_PUBLIC_BASE_URL"), os.Getenv("RAILWAY_PUBLIC_DOMAIN")),
+		SiteBaseURL:               strings.TrimRight(strings.TrimSpace(os.Getenv("CHAMPION_SITE_BASE_URL")), "/"),
 
 		DiscordPresenceEnabled:         parseBoolWithDefault(os.Getenv("DISCORD_PRESENCE_ENABLED"), true),
 		DiscordPresenceRotationSeconds: parsePresenceRotationSeconds(os.Getenv("DISCORD_PRESENCE_ROTATION_SECONDS")),

@@ -241,6 +241,8 @@ type App struct {
 	// FactionHub is the web-first Faction Hub store (docs/FACTIONS.md); the four
 	// limiters throttle faction creation and join applications per acting user.
 	FactionHub                  *repository.FactionHubRepository
+	// factionRecruitAPI posts, edits and deletes faction recruitment cards (nil without Discord).
+	factionRecruitAPI recruitMessageAPI
 	saasFactionCreateLimiter    *saasRateLimiter
 	saasFactionCreateDayLimiter *saasRateLimiter
 	saasFactionApplyLimiter     *saasRateLimiter
@@ -1099,6 +1101,7 @@ func (a *App) Run() error {
 	}
 	session := a.Discord.Session()
 	api := discord.NewSessionAPI(session)
+	a.factionRecruitAPI = api
 	setupManager := discord.NewSetupManager(api, setupStore, a.Discord.BotID())
 	if a.LinkService != nil && a.Config.DiscordGuildID != "" {
 		verifiedRole := discord.NewVerifiedRoleAssigner(a.Discord, setupStore, a.Config.DiscordGuildID)
@@ -1324,7 +1327,18 @@ func (a *App) Run() error {
 				setupHandler.Handle(s, i)
 			}
 		case discordgo.InteractionMessageComponent:
-			setupHandler.HandleResetConfirm(s, i)
+			customID := i.MessageComponentData().CustomID
+			switch {
+			case IsFactionRecruitInteraction(customID):
+				a.HandleFactionRecruitInteraction(s, i)
+			case strings.HasPrefix(customID, "champion_reset_"):
+				// Only the /setup reset buttons: every other button has its own handler above.
+				setupHandler.HandleResetConfirm(s, i)
+			}
+		case discordgo.InteractionModalSubmit:
+			if IsFactionRecruitInteraction(i.ModalSubmitData().CustomID) {
+				a.HandleFactionRecruitInteraction(s, i)
+			}
 		}
 	})
 

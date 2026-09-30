@@ -265,6 +265,9 @@ func (a *App) handleModerationDissolveFaction(w http.ResponseWriter, r *http.Req
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), adminTimeout)
 	defer cancel()
+	if err := a.removeFactionRecruit(ctx, ac.scope.InstallationID, factionID); err != nil {
+		slog.Warn("component=faction_recruit", "msg", "card removal before dissolve failed", "faction_id", factionID, "err", err.Error())
+	}
 	gone, err := a.FactionHub.DissolveFaction(ctx, ac.scope.OrganizationID, ac.scope.InstallationID, factionID)
 	if err != nil {
 		factionFailed(w, "dissolve faction", err)
@@ -287,4 +290,9 @@ func (a *App) moderationStatsChanged(ac adminActor, factionID int64) {
 	if a.FactionHubStats != nil {
 		a.FactionHubStats.Invalidate(ac.scope.OrganizationID, ac.scope.InstallationID, factionID)
 	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), factionTimeout)
+		defer cancel()
+		a.refreshFactionRecruit(ctx, ac.scope.OrganizationID, ac.scope.InstallationID, factionID)
+	}()
 }
