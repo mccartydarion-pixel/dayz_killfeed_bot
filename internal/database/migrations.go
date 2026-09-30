@@ -2201,6 +2201,12 @@ ON CONFLICT (installation_id, route_key) DO NOTHING;
 		SQL:  RankedLedgerFoundationSQL,
 	},
 	{
+		// Champion Shop: the attempt ledger's artifact_path may also be the custom/ location
+		// (docs/SHOP_CUSTOM_RELOCATION.md). Forward-only CHECK widening; no row is read or rewritten.
+		Name: "0068_shop_delivery_attempt_artifact_path",
+		SQL:  ShopAttemptArtifactPathSQL,
+	},
+	{
 		// Inert Core Eight Base Boost registration; no detector reader or notifier.
 		Name: "0070_case_base_registration",
 		SQL: CASEBaseRegistrationSQL,
