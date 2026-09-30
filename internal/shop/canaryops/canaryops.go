@@ -319,6 +319,8 @@ func (s *Service) CreateAttempt(ctx context.Context, org, inst int64, a Actor, r
 		OrganizationID: org, InstallationID: inst, DeliveryID: d.ID, Attempt: n, AttemptID: plan.AttemptID(), Fingerprint: plan.Fingerprint(),
 		ClassName: plan.ClassName(), Quantity: plan.Quantity(), PosX: pos[0], PosY: pos[1], PosZ: pos[2],
 		DropSourceFile: req.DropSourceFile, DropSourceOffset: req.DropSourceOffset,
+		// The file the attempt stages: custom/ (the only user folder the console host receives).
+		ArtifactPath: nitradodelivery.ArtifactRelPath,
 	}, a.DiscordID)
 	if err != nil {
 		return AttemptView{}, err
