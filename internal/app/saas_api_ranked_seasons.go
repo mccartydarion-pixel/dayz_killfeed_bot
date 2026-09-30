@@ -13,6 +13,18 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
+// Ranked season error codes: specific and safe to show the owner (no ids,
+// tokens or player data).
+const (
+	codeRankedServerIneligible = "RANKED_SERVER_INELIGIBLE"
+	codeRankedNoActiveSeason   = "RANKED_NO_ACTIVE_SEASON"
+)
+
+func init() {
+	httpStatusForCode[codeRankedServerIneligible] = http.StatusBadRequest
+	httpStatusForCode[codeRankedNoActiveSeason] = http.StatusConflict
+}
+
 type serverRankedSeasonRequest struct {
 	RPPerKill int64 `json:"rpPerKill"`
 	Thresholds ranked.Thresholds `json:"thresholds"`
@@ -68,8 +80,13 @@ func (a *App) changeServerRankedSeason(w http.ResponseWriter, r *http.Request, r
 		writeSaaSError(w, codeAdminConfirmationNeeded, "an active Ranked season exists; use the reset endpoint to archive it")
 		return
 	}
-	if errors.Is(err, repository.ErrRankedIneligible) {
-		writeSaaSError(w, codeInvalidRequest, "server is unavailable or has no active Ranked season to reset")
+	if errors.Is(err, repository.ErrRankedServerIneligible) {
+		slog.Warn("component=ranked", "event", "season_change_rejected", "reason", "server_ineligible", "server_id", *ac.scope.ServerID)
+		writeSaaSError(w, codeRankedServerIneligible, "the selected DayZ server is not an active PlayStation or Xbox server for this Discord; reconnect or reselect it in Champion setup")
+		return
+	}
+	if errors.Is(err, repository.ErrRankedNoActiveSeason) {
+		writeSaaSError(w, codeRankedNoActiveSeason, "there is no active Ranked season to reset; start one instead")
 		return
 	}
 	if err != nil {

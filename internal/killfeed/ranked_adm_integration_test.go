@@ -68,7 +68,7 @@ func TestRealADMKillAwardsServerRankedRP(t *testing.T) {
 	server, err := repository.NewServerRepository(db.Pool).UpsertGameServer(ctx,
 		repository.GameServer{GuildID: guildID, Provider: "fixture",
 			ProviderServiceID: fmt.Sprintf("ranked-adm-%d", suffix),
-			Game: "dayz", Platform: "PLAYSTATION", Status: "ACTIVE", Active: true})
+			Game: "dayz", Platform: "PLAYSTATION", Status: "CONNECTED", Active: true})
 	if err != nil { t.Fatal(err) }
 	if err = repository.NewLiveSyncRepository(db.Pool).SetServerUTCOffset(
 		ctx, guildID, server.ID, -240, "ranked-adm-integration"); err != nil { t.Fatal(err) }
