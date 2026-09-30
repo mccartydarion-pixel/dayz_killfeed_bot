@@ -142,7 +142,8 @@ func (p *StripeProvider) SetCancelAtPeriodEnd(ctx context.Context, subscriptionI
 // current_period_start/end live on the subscription's first item as of Stripe API version
 // 2025-08-27 ("basil"), not on the subscription itself - see stripe-go v82's subscriptionitem.go.
 func normalizeSubscription(s *stripe.Subscription) *SubscriptionState {
-	out := &SubscriptionState{SubscriptionID: s.ID, StripeStatus: string(s.Status), CancelAtPeriodEnd: s.CancelAtPeriodEnd}
+	out := &SubscriptionState{SubscriptionID: s.ID, StripeStatus: string(s.Status), CancelAtPeriodEnd: s.CancelAtPeriodEnd, Metadata: s.Metadata}
+	out.PendingUpdate = s.PendingUpdate != nil
 	if s.Customer != nil {
 		out.CustomerID = s.Customer.ID
 	}
@@ -156,6 +157,10 @@ func normalizeSubscription(s *stripe.Subscription) *SubscriptionState {
 				out.StripeInterval = string(item.Price.Recurring.Interval)
 			}
 		}
+	}
+	if s.TrialStart > 0 {
+		t := time.Unix(s.TrialStart, 0).UTC()
+		out.TrialStart = &t
 	}
 	if s.TrialEnd > 0 {
 		t := time.Unix(s.TrialEnd, 0).UTC()

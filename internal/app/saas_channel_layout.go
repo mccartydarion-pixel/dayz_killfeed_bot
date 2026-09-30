@@ -211,7 +211,7 @@ var routeProducerAudit = map[string]routeProducer{
 	"BUILD_FEED": {HealthBlocked, detailSourceBlocked + ": no build/placement line parsed yet - enable adminLogPlacement / adminLogBuildActions in the server config"},
 	// Setup itself posts these fixed informational cards. These are NOT live
 	// detector, evidence, or Discord finding publishers.
-	"CASE_STATUS": {HealthActive, "Setup-managed informational card only; live diagnostics remain in the authorized dashboard"},
+	"CASE_STATUS": {HealthActive, "Setup-managed informational card; staff-requested paid Watch observation digests (privacy re-verified before every send); live diagnostics remain in the authorized dashboard"},
 	"CASE_EVIDENCE": {HealthActive, "Setup-managed staff guidance only; no private evidence is published"},
 	"CASE_ALERTS": {HealthActive, "Setup-managed disabled-alert notice only; no C.A.S.E. finding publisher"},
 }

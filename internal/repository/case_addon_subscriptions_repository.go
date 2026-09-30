@@ -1,0 +1,139 @@
+package repository
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/yourname/dayz-killfeed/internal/casebilling"
+)
+
+// CaseAddonSubscription is a server-bound C.A.S.E. subscription. It never
+// replaces the organization's existing base subscriptions row.
+type CaseAddonSubscription struct {
+	ID, OrganizationID, InstallationID, GameServerID int64
+	Tier, Status                                      string
+	Provider, ProviderCustomerID                      string
+	ProviderSubscriptionID, ProviderPriceID           string
+	CheckoutSessionID                                  string
+	CurrentPeriodStart, CurrentPeriodEnd              *time.Time
+	TrialStartedAt, TrialEndsAt, PaidThrough          *time.Time
+	PaidTier                                          string // tier covered by invoice.paid through PaidThrough
+	CoverageState                                     string // OK, PARTIALLY_REFUNDED, REFUNDED, DISPUTED or DISPUTE_LOST (0064)
+	CoverageBackfilled                                bool   // false: paid before 0064, ledger not yet reconstructed
+	CancelAtPeriodEnd                                 bool
+	FounderTrialGranted                                bool
+	CreatedAt, UpdatedAt                              time.Time
+	// A changed/removed installation server must not transfer paid access.
+	SelectedGameServerID *int64
+}
+
+// AccessInput requires the caller to supply the independently loaded base
+// subscription status, authenticated organization/installation scope, rollout flag and\n// maximum independently verified tier.
+func (s CaseAddonSubscription) AccessInput(organizationID, installationID int64, baseStatus string, enabled bool, verifiedThrough casebilling.Tier) casebilling.AccessInput {
+	selectedID := int64(0)
+	if s.SelectedGameServerID != nil {
+		selectedID = *s.SelectedGameServerID
+	}
+	return casebilling.AccessInput{
+		BillingEnabled: enabled, VerifiedThrough: verifiedThrough,
+		OrganizationID: organizationID, InstallationID: installationID,
+		SelectedGameServerID: selectedID, BaseStatus: baseStatus,
+		AddonOrganizationID: s.OrganizationID, AddonInstallationID: s.InstallationID,
+		BoundGameServerID: s.GameServerID, Tier: casebilling.Tier(s.Tier),
+		Status: s.Status, Provider: s.Provider, ProviderSubscriptionID: s.ProviderSubscriptionID,
+		ProviderPriceID: s.ProviderPriceID, CurrentPeriodEnd: s.CurrentPeriodEnd,
+		TrialEndsAt: s.TrialEndsAt, PaidThrough: s.PaidThrough, PaidTier: casebilling.Tier(s.PaidTier),
+		FounderTrialGranted: s.FounderTrialGranted,
+	}
+}
+
+const caseAddonColumns = `c.id, c.organization_id, c.installation_id, c.game_server_id,
+	c.tier, c.status, COALESCE(c.provider,''), COALESCE(c.provider_customer_id,''),
+	COALESCE(c.provider_subscription_id,''), COALESCE(c.provider_price_id,''),
+	c.current_period_start, c.current_period_end, c.trial_started_at, c.trial_ends_at,
+	c.cancel_at_period_end, c.created_at, c.updated_at, i.game_server_id, c.paid_through,
+	EXISTS (SELECT 1 FROM case_addon_trial_grants g WHERE
+	g.organization_id=c.organization_id AND g.game_server_id=c.game_server_id AND
+	g.installation_id=c.installation_id AND g.addon_id=c.id AND
+	g.provider_subscription_id=c.provider_subscription_id) AS founder_trial_granted,
+	COALESCE(c.checkout_session_id,'') AS checkout_session_id, COALESCE(c.paid_tier,''),
+	c.coverage_state, c.coverage_backfilled`
+
+// caseCurrentFirst picks an installation's CURRENT add-on ahead of retained
+// CANCELED history (migration 0063 allows one current row plus history).
+const caseCurrentFirst = `(c.status<>'CANCELED') DESC, c.id DESC`
+
+func scanCaseAddon(row pgx.Row) (CaseAddonSubscription, error) {
+	var s CaseAddonSubscription
+	err := row.Scan(&s.ID, &s.OrganizationID, &s.InstallationID, &s.GameServerID,
+		&s.Tier, &s.Status, &s.Provider, &s.ProviderCustomerID,
+		&s.ProviderSubscriptionID, &s.ProviderPriceID,
+		&s.CurrentPeriodStart, &s.CurrentPeriodEnd, &s.TrialStartedAt, &s.TrialEndsAt,
+		&s.CancelAtPeriodEnd, &s.CreatedAt, &s.UpdatedAt, &s.SelectedGameServerID, &s.PaidThrough, &s.FounderTrialGranted, &s.CheckoutSessionID, &s.PaidTier,
+		&s.CoverageState, &s.CoverageBackfilled)
+	return s, err
+}
+
+type CaseAddonSubscriptionRepository struct{ pool *pgxpool.Pool }
+
+func NewCaseAddonSubscriptionRepository(pool *pgxpool.Pool) *CaseAddonSubscriptionRepository {
+	return &CaseAddonSubscriptionRepository{pool: pool}
+}
+
+// GetScoped returns nil for an absent row OR an installation belonging to
+// another organization. The join also supplies the CURRENT selected server
+// separately from the purchased/bound server; AccessInput fails closed if they
+// differ. This phase intentionally exposes no write path or checkout action.
+func (r *CaseAddonSubscriptionRepository) GetScoped(ctx context.Context, organizationID, installationID int64) (*CaseAddonSubscription, error) {
+	if organizationID <= 0 || installationID <= 0 {
+		return nil, nil
+	}
+	const q = `SELECT ` + caseAddonColumns + `
+FROM case_addon_subscriptions c
+JOIN installations i ON i.id=c.installation_id AND i.organization_id=c.organization_id
+WHERE c.organization_id=$1 AND c.installation_id=$2
+ORDER BY ` + caseCurrentFirst + ` LIMIT 1`
+	s, err := scanCaseAddon(r.pool.QueryRow(ctx, q, organizationID, installationID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get scoped case addon: %w", err)
+	}
+	return &s, nil
+}
+
+// ListByOrganization cannot return another organization's add-ons even if an
+// installation or game server ID is guessed by a caller.
+func (r *CaseAddonSubscriptionRepository) ListByOrganization(ctx context.Context, organizationID int64) ([]CaseAddonSubscription, error) {
+	out := make([]CaseAddonSubscription, 0)
+	if organizationID <= 0 {
+		return out, nil
+	}
+	// One row per installation: its current add-on, else its latest history.
+	const q = `SELECT DISTINCT ON (c.installation_id) ` + caseAddonColumns + `
+FROM case_addon_subscriptions c
+JOIN installations i ON i.id=c.installation_id AND i.organization_id=c.organization_id
+WHERE c.organization_id=$1
+ORDER BY c.installation_id, ` + caseCurrentFirst
+	rows, err := r.pool.Query(ctx, q, organizationID)
+	if err != nil {
+		return nil, fmt.Errorf("list scoped case addons: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		s, err := scanCaseAddon(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan case addon: %w", err)
+		}
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate case addons: %w", err)
+	}
+	return out, nil
+}

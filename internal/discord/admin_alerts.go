@@ -34,6 +34,10 @@ const (
 	AlertKindUAVIntrusion    = "UAV_INTRUSION"
 	AlertKindBaseRadar       = "BASE_RADAR_INTRUSION"
 	AlertKindZoneBanViolated = "ZONE_BAN_VIOLATION"
+	// AlertKindCaseWatchDigest labels the paid C.A.S.E. Watch digest embed. It is NOT an
+	// operational kind: the ADMIN_ALERTS publisher refuses it (operationalAdminAlertKind), and the
+	// durable digest outbox sends it only to the private C.A.S.E. status channel.
+	AlertKindCaseWatchDigest = "CASE_WATCH_DIGEST"
 )
 
 // AdminAlert is one operational condition for one server.
@@ -315,4 +319,21 @@ func IntrusionAdminAlert(ev killfeed.IntrusionEvent) (AdminAlert, bool) {
 		GuildRowID: ev.Zone.GuildID, ServerID: ev.Zone.ServerID, Kind: kind, Severity: severity, Headline: headline,
 		Detail: who + " entered " + zone + ".", Fields: fields, At: ev.At, SkipChannel: skip,
 	}, true
+}
+
+// BuildCaseWatchDigestEmbed is observational, never an accusation, score or
+// statement that no cheating occurred in a period without recorded evidence.
+func BuildCaseWatchDigestEmbed(a AdminAlert, serverName string) *discordgo.MessageEmbed {
+	embed:=presentation.NewChampionEmbed("C.A.S.E. WATCH • OBSERVATION DIGEST",presentation.InfoSteel)
+	embed.Description="Persisted ADM source observations from the selected server. Counts describe collected evidence only; they are not cheat alerts or gameplay verdicts."
+	if strings.TrimSpace(serverName)!="" {
+		embed.Fields=append(embed.Fields,&discordgo.MessageEmbedField{Name:"Server",Value:presentation.SafeName(serverName,60),Inline:true})
+	}
+	for _,field:=range a.Fields {
+		if strings.TrimSpace(field[0])=="" || strings.TrimSpace(field[1])=="" {continue}
+		embed.Fields=append(embed.Fields,&discordgo.MessageEmbedField{Name:presentation.SafeName(field[0],70),Value:presentation.SafeName(field[1],150),Inline:true})
+	}
+	embed.Footer=&discordgo.MessageEmbedFooter{Text:"C.A.S.E. • SOURCE OBSERVATION ONLY • NO ENFORCEMENT"}
+	presentation.StampEmbed(embed,a.At)
+	return embed
 }

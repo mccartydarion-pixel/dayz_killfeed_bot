@@ -233,6 +233,7 @@ func TestStagingRefusesLiveStripeKey(t *testing.T) {
 		{"staging", "sk_live_abc", false},
 		{"STAGING", "rk_live_abc", false},
 		{"production", "sk_live_abc", true}, // production is not this guard's concern
+		{"development", "sk_live_abc", true}, // production currently runs with APP_ENV=development
 		{"", "sk_live_abc", true},
 	} {
 		if err := ValidateStagingIsolation(tc.env, tc.key); (err == nil) != tc.ok {
