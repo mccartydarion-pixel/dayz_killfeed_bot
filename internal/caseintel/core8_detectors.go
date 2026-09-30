@@ -86,14 +86,14 @@ func EvaluateBaseBoost(ctx EvalContext, in BaseBoostInput) Core8Result {
 					continue
 				}
 			}
-			behavior := "Unauthorized construction inside a registered base"
+			behavior := "Built inside someone else's base"
 			if isElevatedStructure(act.Object) {
-				behavior = "Unauthorized watchtower or elevated structure placement inside a registered base"
+				behavior = "Put up a watchtower inside someone else's base"
 			}
 			ev.observe(Finding{EvidenceIDs: []int64{act.EvidenceID}, EventAt: act.EventAt, ObservedAt: act.ObservedAt,
 				Coordinates: []Coordinates{coords(act.X, act.Z, act.Altitude)}, AffectedBaseID: base.BaseID, Behavior: behavior,
-				Explanation: fmt.Sprintf("Build action %q on %q %.0f m from the centre of base %s (radius %.0f m). The player is not the owner, not an authorized player, and not in an authorized faction at the event time.",
-					act.Action, act.Object, dist2D(base.X, base.Z, act.X, act.Z), base.BaseID, radius)},
+				Explanation: fmt.Sprintf("%s %s about %.0f m from the centre of base %s. They aren't the owner, on the base's friend list, or in an allowed faction.",
+					act.Action, act.Object, dist2D(base.X, base.Z, act.X, act.Z), base.BaseID)},
 				"BASE_OWNER", "AUTHORIZED_PLAYER", "AUTHORIZED_FACTION", "REGISTERED_AT_EVENT_TIME")
 			break
 		}
@@ -194,8 +194,8 @@ func EvaluateDupe(ctx EvalContext, in DupeInput) Core8Result {
 				continue
 			}
 			ev.observe(Finding{EvidenceIDs: []int64{first.EvidenceID, it.EvidenceID}, EventAt: it.EventAt, ObservedAt: it.ObservedAt,
-				Behavior: "Same item identity acquired twice around " + context,
-				Explanation: fmt.Sprintf("Persistent item %s (%s) was acquired at %s and again at %s with no recorded release, around %s. This is item-level evidence for staff review, not confirmed duplication.",
+				Behavior: "Same item picked up twice around " + context,
+				Explanation: fmt.Sprintf("Item %s (%s) was picked up at %s and again at %s without being dropped in between, around %s. Staff should check whether it was really duplicated.",
 					it.ItemID, it.ItemType, first.EventAt.UTC().Format(time.RFC3339), it.EventAt.UTC().Format(time.RFC3339), context)},
 				"ITEM_RELEASE", "ITEM_PROVENANCE", "RECONNECT_OR_RESTART_CONTEXT")
 		default:
@@ -249,8 +249,8 @@ func EvaluatePCXbox(ctx EvalContext, in PCDetectionInput) Core8Result {
 		case "XBOX":
 		case "PC", "WINDOWS", "STEAM":
 			ev.observe(Finding{EvidenceIDs: []int64{a.EvidenceID}, EventAt: a.EventAt, ObservedAt: a.ObservedAt,
-				Behavior:    "Trusted attestation reports a PC client on an Xbox server",
-				Explanation: fmt.Sprintf("Signature-verified platform attestation from %s reported platform %q.", a.Source, a.Platform)},
+				Behavior:    "A PC player on an Xbox server",
+				Explanation: fmt.Sprintf("The platform check from %s says this player is on %s.", a.Source, a.Platform)},
 				"ATTESTATION_SIGNATURE", "ATTESTATION_SOURCE")
 		default:
 			ev.exclude("PLATFORM_UNRECOGNIZED")
@@ -327,7 +327,7 @@ func EvaluateSuspiciousLogins(ctx EvalContext, in LoginInput) Core8Result {
 			continue
 		}
 		f := Finding{EventAt: events[end].at, RelatedIncidentKeys: append([]string(nil), in.RelatedIncidentKeys...),
-			Behavior: "Repeated abnormal login sequence"}
+			Behavior: "Reconnected many times in a short time"}
 		// A boundary connect shared with an earlier burst stays with that burst.
 		for _, e := range events[start : end+1] {
 			for _, id := range e.ids {
@@ -351,7 +351,7 @@ func EvaluateSuspiciousLogins(ctx EvalContext, in LoginInput) Core8Result {
 				f.ObservedAt = s.ObservedAt
 			}
 		}
-		f.Explanation = fmt.Sprintf("%d rapid or overlapping reconnects within %s, outside verified restart windows. This is a security review item, not a cheating verdict.", n, p.LoginBurstWindow)
+		f.Explanation = fmt.Sprintf("Reconnected %d times in %s, not during a server restart. Often this is just a bad connection, so it's worth a quick look before assuming anything.", n, plainDuration(p.LoginBurstWindow))
 		ev.observe(f, "SERVER_RESTART", "ORDINARY_RECONNECT")
 		start = end + 1
 	}
