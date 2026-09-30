@@ -17,6 +17,8 @@ import (
 
 // Base registration is owner-only draft management. It cannot activate a
 // detector, mark ownership verified, or send a C.A.S.E. Discord notification.
+// The Base Raid Alarm (saas_api_base_raid_alarm.go) reads these bases to DM
+// the base owner, only after the server owner turns it on.
 func (a *App) registerCaseBaseRoutes(base string){
  h:=a.HTTPServer.Handle
  h("GET "+base+"/case/bases",a.handleCaseListBases)
@@ -25,6 +27,8 @@ func (a *App) registerCaseBaseRoutes(base string){
  h("POST "+base+"/case/bases/{baseID}/grants",a.handleCaseAddBaseGrant)
  h("POST "+base+"/case/bases/{baseID}/withdraw",a.handleCaseWithdrawBaseDraft)
  h("POST "+base+"/case/bases/{baseID}/grants/{grantID}/end",a.handleCaseEndBaseGrant)
+ h("GET "+base+"/case/raid-alarm",a.handleGetBaseRaidAlarm)
+ h("PUT "+base+"/case/raid-alarm",a.handleSetBaseRaidAlarm)
 }
 
 func (a *App) caseBaseActor(w http.ResponseWriter,r *http.Request)(adminActor,*repository.CaseBaseRegistrationRepository,bool){

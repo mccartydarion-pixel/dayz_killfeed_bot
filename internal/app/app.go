@@ -1833,7 +1833,23 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 		buildFeed := discord.NewBuildFeedPublisher(a.Discord.Session(), a.ChannelRoutes, row.GuildID, row.ID)
 		buildFeed.SetServerName(a.serverNameFunc())
 		buildFeed.OnSeen(func() { a.buildActionsSeen.Add(1) })
-		engine.SetBuildPublisher(buildFeed)
+		var buildPublisher killfeed.BuildPublisher = buildFeed
+		if a.DB != nil && a.DB.Pool != nil {
+			// Base Raid Alarm: DMs a base owner when someone else dismantles part of
+			// their registered base. Off until the server owner turns it on.
+			raidAlarm := discord.NewBaseRaidAlarmPublisher(repository.NewBaseRaidAlarmRepository(a.DB.Pool), a.Discord.Session(), row.GuildID, row.ID)
+			raidAlarm.SetServerName(a.serverNameFunc())
+			buildPublisher = buildPublisherFanout{buildFeed, raidAlarm}
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						slog.Error("component=servers", "msg", "base raid alarm panic recovered", "server_id", row.ID, "panic", fmt.Sprint(r))
+					}
+				}()
+				raidAlarm.Run(workerCtx)
+			}()
+		}
+		engine.SetBuildPublisher(buildPublisher)
 		go func() {
 			defer func() {
 				if r := recover(); r != nil {
