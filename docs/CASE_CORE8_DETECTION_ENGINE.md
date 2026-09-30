@@ -82,7 +82,7 @@ These are why every module stays blocked. They are properties of the data source
 
 ## Dashboard and marketplace
 
-- The dashboard (website repo) should show `AssessCore8Health` state and reasons per module, plus `RequiredTelemetry`. A module must never show as operational unless health is `ACTIVE`. The owner toggle alone cannot achieve that, because the telemetry feeds and a released catalog mode are also required. Wiring this into the protected `/anti-cheat/detectors` read is a follow-up. It changes an API response, so it needs deploy authorization.
+- The protected `/anti-cheat/detector-readiness` read now includes `requiredTelemetry` for each module's health entry: one `{kind, status, reason}` per feed in `RequiredTelemetry`. Status is one of `CURRENT`, `STALE`, `UNAVAILABLE`, `NOT_CONFIGURED`, `UNVERIFIED` or `UNSUPPORTED`. Only the ADM feed can be `CURRENT`, and only from the live worker snapshot. The field is additive: module `state` and `reasons` are unchanged. The dashboard should list these feeds so an owner can see exactly what each detector is missing. A module must never show as operational unless its state is `ACTIVE`, which the owner toggle alone cannot achieve.
 - Owner sensitivity storage stays in draft [#170](https://github.com/mccartydarion-pixel/dayz_killfeed_bot/pull/170). The engine consumes it as `EvalContext.Mode` / `Thresholds`.
 - Security Marketplace products (#156) are not detectors. Base Boost findings carry `AffectedBaseID`, so a future purchased owner notice can be built on the separate player-facing path. The engine never sends player-facing messages.
 

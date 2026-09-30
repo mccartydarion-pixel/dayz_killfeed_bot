@@ -16,6 +16,17 @@ type caseDetectorCatalogHealth struct {
  Reasons []string `json:"reasons"`
  LastSuccessfulEvaluationAt *time.Time `json:"lastSuccessfulEvaluationAt"`
  ConclusionsSuspended bool `json:"conclusionsSuspended"`
+ RequiredTelemetry []caseTelemetryStatus `json:"requiredTelemetry"`
+}
+
+// caseTelemetryStatus explains, per required feed, why a module cannot run.
+// CURRENT is only ever reported for the ADM source, from the live worker
+// snapshot; every other feed is labelled from what the collector can
+// actually provide today. No status here can promote a module.
+type caseTelemetryStatus struct {
+ Kind string `json:"kind"`
+ Status string `json:"status"`
+ Reason string `json:"reason"`
 }
 
 func caseAssessDetectorCatalogHealth(defs []caseintel.DetectorDefinition, s caseSourceIntegrity) []caseDetectorCatalogHealth {
@@ -56,4 +67,54 @@ func caseAssessDetectorCatalogHealth(defs []caseintel.DetectorDefinition, s case
   out=append(out,item)
  }
  return out
+}
+
+// caseAttachRequiredTelemetry fills RequiredTelemetry from the Core Eight
+// engine's per-module data contract. It never changes State or Reasons.
+func caseAttachRequiredTelemetry(health []caseDetectorCatalogHealth, s caseSourceIntegrity, buildEvidenceEnabled bool) {
+ for i:=range health {
+  kinds:=caseintel.RequiredTelemetry(health[i].ModuleID)
+  health[i].RequiredTelemetry=make([]caseTelemetryStatus,0,len(kinds))
+  for _,k:=range kinds {
+   health[i].RequiredTelemetry=append(health[i].RequiredTelemetry,caseFeedStatus(k,s,buildEvidenceEnabled))
+  }
+ }
+}
+
+func caseFeedStatus(kind caseintel.TelemetryKind, s caseSourceIntegrity, buildEvidenceEnabled bool) caseTelemetryStatus {
+ st:=func(status,reason string)caseTelemetryStatus{return caseTelemetryStatus{Kind:string(kind),Status:status,Reason:reason}}
+ switch kind {
+ case caseintel.TelemetryADMEvents:
+  switch {
+  case !s.WorkerAvailable:
+   return st("UNAVAILABLE","No running ADM worker for this server.")
+  case s.SourceState!=killfeed.ADMHealthy&&s.SourceState!=killfeed.ADMQuiet:
+   return st("STALE","The selected ADM source is not current.")
+  case s.GeneratedAt.IsZero()||s.LastPollAt==nil||s.LastPollAt.After(s.GeneratedAt)||s.GeneratedAt.Sub(*s.LastPollAt)>2*time.Minute:
+   return st("STALE","The last ADM poll is older than two minutes or unverified.")
+  }
+  return st("CURRENT","ADM polling is current. ADM clocks are date-less, so event times are not trusted.")
+ case caseintel.TelemetryBuildActions:
+  if !buildEvidenceEnabled {
+   return st("NOT_CONFIGURED","Build-action evidence collection is off for this server.")
+  }
+  return st("UNVERIFIED","Build actions are collected, but no real ADM build line has been verified.")
+ case caseintel.TelemetryPositionSamples:
+  return st("UNVERIFIED","Only event-triggered positions without trusted event times are available.")
+ case caseintel.TelemetrySessionEvents:
+  return st("UNVERIFIED","Connect and disconnect lines exist, but without trusted event times.")
+ case caseintel.TelemetryBaseRegistry:
+  return st("UNAVAILABLE","Base registration is not released.")
+ case caseintel.TelemetryRestartSchedule:
+  return st("UNAVAILABLE","No verified restart schedule source is connected.")
+ case caseintel.TelemetryTerrainModel,caseintel.TelemetryStructureGeometry:
+  return st("UNAVAILABLE","No verified terrain or structure model for this map.")
+ case caseintel.TelemetryVehicleState:
+  return st("UNAVAILABLE","Vehicle state is not available from the ADM log.")
+ case caseintel.TelemetryInventoryItems:
+  return st("UNSUPPORTED","The ADM log has no item identity or inventory transactions.")
+ case caseintel.TelemetryPlatformAttestation:
+  return st("UNSUPPORTED","Console servers expose no trusted client-platform attestation.")
+ }
+ return st("UNAVAILABLE","Unknown telemetry feed.")
 }
