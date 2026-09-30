@@ -301,11 +301,21 @@ normalized to upper-case; `""` clears; anything else is `400`:
 
 | Catalog | Approved keys |
 |---|---|
-| `flagKey` (DayZ flags) | `BLACK`, `BLUE`, `GREEN`, `RED` |
+| `flagKey` (the 33 DayZ flags) | Both maps: `DAYZ`, `WHITE`, `BOHEMIA`, `PIRATES`, `CANNIBALS`, `BABYDEER`, `REFUGE`, `RSTA`, `SNAKE`. Chernarus: `CDF`, `CHEL`, `CMC`, `CHEDAKI`, `CHERNARUS`, `HUNTERZ`, `NAPA`, `ROOSTER`, `TEC`, `UEC`, `WOLF`, `ZENIT`. Livonia: `APA`, `ALTIS`, `BEAR`, `BRAINZ`, `CROOK`, `LIVONIA`, `LIVONIAARMY`, `LIVONIAPOLICE`, `NSAHRANI`, `REX`, `SSAHRANI`, `ZAGORKY` |
 | `armbandKey` (armbands) | `BLACK`, `BLUE`, `GREEN`, `ORANGE`, `PINK`, `RED`, `WHITE`, `YELLOW` |
 
-These match the website Phase 3 catalog (`lib/factions/dayzBranding.ts`). Keys are stable identifiers, never URLs. Add a key to the Go
-catalog (and here) before the website offers it. `primaryColor`/`secondaryColor` must be exactly `#RRGGBB` (normalized to upper-case);
+Flag keys are the game's item class names without the `Flag_` prefix, upper-cased (`Flag_BabyDeer` -> `BABYDEER`);
+`factionhub.FlagClassName` gives the class name back and `GET .../factions/branding` carries it as `className`. The
+website catalog (`lib/factions/dayzBranding.ts`) mirrors these keys with labels and map grouping. Keys are stable identifiers,
+never URLs. Add a key to the Go catalog (and here) before the website offers it. Migration `0073_faction_branding_exclusive`
+cleared the four pre-catalog placeholder keys (`BLACK`, `BLUE`, `GREEN`, `RED`) that were never DayZ flags.
+
+**Exclusive per server.** A flag and an armband can each be held by only one faction per installation (first come, first
+served; partial unique indexes `uq_hub_factions_installation_flag` / `_armband`). Claiming a taken key is `409` with a message
+that names the holder (`that flag is already claimed by Alpha Wolves [AW]`); re-saving your own key is not a conflict; `""`
+releases it; dissolving a faction releases both. `GET .../factions/branding` (any synced user) lists every approved key with
+`takenBy` (`{id,name,tag}` or `null`) so the design picker greys out taken keys. Server staff can force-release a key through
+the moderation API (docs/CLIENT_ADMIN.md). `primaryColor`/`secondaryColor` must be exactly `#RRGGBB` (normalized to upper-case);
 `rgb()`, `url()`, `var()`, `expression()`, named colors, short hex and any `;`, quote, brace or comment injection are `400`.
 `logoKey` is a legacy always-`null` field; the logo is `logo`, and `logoKey`/`logoUrl`/`logoAssetId` in a PUT body are rejected.
 

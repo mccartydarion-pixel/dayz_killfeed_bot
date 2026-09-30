@@ -135,8 +135,13 @@ POST   /warnings/{playerID}/{warningID}/clear  WARNINGS_CLEAR
 
 POST   /bounties/{playerID}/reset              BOUNTY_MANAGE
 
-GET    /factions                               FACTION_MODERATE
+GET    /factions                               FACTION_MODERATE     (legacy Discord-side factions)
 POST   /factions/{factionID}/dissolve          FACTION_DISSOLVE     body: {"confirm":"DISSOLVE"}
+GET    /hub-factions                           FACTION_MODERATE     Faction Hub (website) factions: leader, branding, pending count
+PUT    /hub-factions/{factionID}               FACTION_MODERATE     body: {name?, tag?, description?, recruitmentStatus?, releaseFlag?, releaseArmband?, reason}
+DELETE /hub-factions/{factionID}/members/{id}  FACTION_MODERATE     body: {reason}; the leader is protected (transfer first)
+POST   /hub-factions/{factionID}/transfer-leadership FACTION_MODERATE body: {memberId, reason}
+POST   /hub-factions/{factionID}/dissolve      FACTION_DISSOLVE     body: {"confirm":"DISSOLVE", reason}
 
 GET    /players/{playerID}/last-online         PLAYER_LAST_ONLINE_VIEW
 GET    /economy/accounts?q=                    ECONOMY_VIEW
@@ -208,6 +213,18 @@ same standard `docs/NITRADO_DELTA_READS.md` applied to the seek/offset-count end
 | ban list *duration* | **DEFERRED** | Nitrado's banlist API takes only `identifier`, no duration/expiry - Champion's own `installation_access_entries.expires_at` records the intent, but nothing currently enforces an automatic un-ban when it passes (see Deferred) |
 | base damage / container damage / third-person / raid toggles | **UNSUPPORTED/DEFERRED** | No endpoint for any of these appears anywhere in Nitrado's official SDK; these are almost certainly DayZ `serverDZ.cfg`-style file settings, which would need the same unverified file-write capability as priority |
 | generic `setConfig` (arbitrary allowlisted config writes) | **PARTIALLY DEFERRED** | Implemented for Champion-side settings that already exist in `server_configs`/`installation_channel_routes` (feed toggles, maintenance mode, location visibility) via their own dedicated endpoints above; a general DayZ-server-config-file writer is deferred with config writes generally |
+
+## What changed (Faction Hub moderation)
+
+The `/hub-factions` routes let server staff moderate the **website** Faction Hub (`hub_factions`, what players see in the
+Player Hub), which the older `/factions` routes never touched (those act on the Discord-side `factions` table). A Moderator can
+rename/re-tag a faction, rewrite its description, force recruiting closed, release a claimed flag or armband, remove any
+non-leader member and hand leadership to another member; an Administrator can dissolve a faction behind typed `DISSOLVE`
+confirmation. Every write requires a `reason` (<= 300 chars, audit log only, never shown to the faction) and records an
+`admin_audit_log` row (`FACTION_MODERATED`, `FACTION_MEMBER_REMOVED`, `FACTION_LEADERSHIP_TRANSFERRED`, `FACTION_HUB_DISSOLVED`)
+with a safe before/after snapshot (ids, name, tag, recruitment, branding keys, member count). Staff correct what players wrote;
+they never assign branding or colors for them (those fields are ignored on the moderation PUT). Dissolving deletes the faction
+row; members, applications, settings, history and logo metadata cascade and logo bytes are reclaimed by the asset sweeper.
 
 ## What changed (Phase 5: PvP / activity / intrusion heatmaps)
 
