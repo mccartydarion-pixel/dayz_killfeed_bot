@@ -174,11 +174,17 @@ func TestIncorrectDestinationAndBinding(t *testing.T) {
 			t.Errorf("%s: executed", name)
 		}
 	}
+	// Gate E / Gate G target only the custom/ Champion file and need a ledger attempt.
 	for _, op := range []Operation{OpStageItem, OpUnstageItem} {
 		r := gateA(t)
 		r.Operation = op
-		if err := r.Validate(); !errors.Is(err, ErrOperationNotActive) {
-			t.Errorf("%s: %v", op, err)
+		if err := r.Validate(); !errors.Is(err, ErrWrongDestination) {
+			t.Errorf("%s on the legacy path: %v", op, err)
+		}
+		r.Path = "custom/champion_shop_delivery.json"
+		r.Payload = nil
+		if err := r.Validate(); !errors.Is(err, ErrAttemptRequired) {
+			t.Errorf("%s without an attempt: %v", op, err)
 		}
 	}
 	// An upload destination that is not https (or has credentials in it) never receives the token.

@@ -97,6 +97,8 @@ type Request struct {
 	ExpectSpawners      []string // exact objectSpawnersArr
 	Payload             []byte
 	ExpectPayloadSHA256 string
+	// Attempt is required by Gate E and Gate G (read from the attempt ledger by the caller).
+	Attempt *AttemptFacts
 }
 
 type opKind int
@@ -106,7 +108,15 @@ const (
 	kindConfigPatch                  // Gate B: cfggameplay.json, payload derived from the live bytes
 	kindConfigRestore                // config rollback: cfggameplay.json, payload = a verified backup
 	kindConfigRelocate               // relocation Gate D: replace the legacy Champion entry in place
+	kindStage                        // Gate E: empty Champion file -> one attempt's staged file
+	kindUnstage                      // Gate G: that attempt's staged file -> the empty file
 )
+
+func isConfigKind(k opKind) bool {
+	return k == kindConfigPatch || k == kindConfigRestore || k == kindConfigRelocate
+}
+
+func isAttemptKind(k opKind) bool { return k == kindStage || k == kindUnstage }
 
 type opSpec struct {
 	kind          opKind
@@ -144,8 +154,9 @@ var ops = map[Operation]*opSpec{
 	// Relocation Gate D: the legacy entry becomes custom/champion_shop_delivery.json.
 	OpRelocateChampionReference: {kind: kindConfigRelocate, path: canary.ConfigRelPath},
 	OpRestoreConfig:             {kind: kindConfigRestore, path: canary.ConfigRelPath},
-	OpStageItem:                 nil,
-	OpUnstageItem:               nil,
+	// Gate E and Gate G: one ledger attempt, the custom/ Champion file, payload derived from the attempt.
+	OpStageItem:   {kind: kindStage, path: nitradodelivery.ArtifactRelPath},
+	OpUnstageItem: {kind: kindUnstage, path: nitradodelivery.ArtifactRelPath},
 }
 
 var (
@@ -199,6 +210,23 @@ func (r Request) Validate() error {
 	}
 	if r.ExpectCurrent != Absent && !sha256Re.MatchString(r.ExpectCurrent) {
 		return ErrExpectation
+	}
+	if isAttemptKind(spec.kind) {
+		// The payload is derived from the attempt; a caller-supplied payload must equal it exactly.
+		payload, current, err := attemptPayload(spec.kind, r.Attempt)
+		if err != nil {
+			return err
+		}
+		if r.Payload != nil && !bytes.Equal(r.Payload, payload) {
+			return ErrPayload
+		}
+		if r.ExpectCurrent != current {
+			return ErrUnexpectedState
+		}
+		if SHA256(payload) != r.ExpectPayloadSHA256 {
+			return ErrPayload
+		}
+		return nil
 	}
 	if spec.kind != kindCreate {
 		// The destination IS cfggameplay.json: it must exist with exactly the expected digest, and the
@@ -429,6 +457,9 @@ func planID(r Request, in Inspection) string {
 		"spawners=" + strings.Join(in.Spawners, "\n"),
 		fmt.Sprintf("payload_sha256=%s payload_bytes=%d", SHA256(r.Payload), len(r.Payload)),
 	}
+	if r.Attempt != nil {
+		lines = append(lines, attemptLine(r.Attempt))
+	}
 	return "mw-" + SHA256([]byte(strings.Join(lines, "\x1e")))[:24]
 }
 
@@ -437,7 +468,8 @@ func Prepare(ctx context.Context, rm Remote, r Request) (Plan, error) {
 	if err := r.Validate(); err != nil {
 		return Plan{}, err
 	}
-	if ops[r.Operation].kind != kindCreate {
+	r = withAttemptPayload(r)
+	if isConfigKind(ops[r.Operation].kind) {
 		cp, err := prepareConfig(ctx, rm, r)
 		return cp.Plan, err
 	}
@@ -451,12 +483,22 @@ func Prepare(ctx context.Context, rm Remote, r Request) (Plan, error) {
 	if !in.ParentExists && !ops[r.Operation].createsParent {
 		return Plan{Inspection: in}, ErrParentMissing
 	}
+	if isAttemptKind(ops[r.Operation].kind) {
+		// Staging only makes sense while the configuration references the Champion file.
+		ref := false
+		for _, s := range in.Spawners {
+			ref = ref || s == nitradodelivery.ArtifactRelPath
+		}
+		if !ref {
+			return Plan{Inspection: in}, ErrNotReferenced
+		}
+	}
 	p := Plan{ID: planID(r, in), Operation: r.Operation, Path: r.Path, Inspection: in}
 	if !in.ParentExists {
 		p.Steps = append(p.Steps, "WRITE mkdir "+path.Dir(r.Path)+" in the mission folder (one directory, not recursive)")
 	}
 	p.Steps = append(p.Steps,
-		"READ  re-verify: destination "+Absent+", cfggameplay.json "+in.ConfigSHA256[:12]+"…",
+		"READ  re-verify: destination "+short(r.ExpectCurrent)+", cfggameplay.json "+in.ConfigSHA256[:12]+"…",
 		fmt.Sprintf("WRITE upload token for %s, then one POST of %d bytes (SHA-256 %s)", r.Path, len(r.Payload), r.ExpectPayloadSHA256),
 		"READ  read the file back: exact size and SHA-256",
 		"READ  cfggameplay.json unchanged; no new boot; gameserver status unchanged",
@@ -518,7 +560,8 @@ func Execute(ctx context.Context, rm Remote, r Request, authorizedID string, j *
 	if err := r.Validate(); err != nil {
 		return out, err
 	}
-	if ops[r.Operation].kind != kindCreate {
+	r = withAttemptPayload(r)
+	if isConfigKind(ops[r.Operation].kind) {
 		return executeConfig(ctx, rm, r, authorizedID, j)
 	}
 	unlock, err := j.Lock()
@@ -634,14 +677,14 @@ func Execute(ctx context.Context, rm Remote, r Request, authorizedID string, j *
 	case after.Current == r.ExpectPayloadSHA256 && after.CurrentBytes == len(r.Payload) && tokenErr == nil:
 		out.Status = StatusWrittenVerified
 		out.Checks = append(out.Checks, Check{"read-back", "PASS", fmt.Sprintf("%d bytes, SHA-256 %s", after.CurrentBytes, after.Current)})
-	case after.Current == Absent && refused:
+	case after.Current == r.ExpectCurrent && refused:
 		out.Status = StatusNotWritten
-		out.Checks = append(out.Checks, Check{"read-back", "PASS", "destination verified absent after the refused request"})
-		return finish(out, "request refused; destination verified absent")
-	case after.Current == Absent:
+		out.Checks = append(out.Checks, Check{"read-back", "PASS", "destination verified unchanged (" + short(r.ExpectCurrent) + ") after the refused request"})
+		return finish(out, "request refused; destination verified unchanged")
+	case after.Current == r.ExpectCurrent:
 		out.Status = StatusUncertain
-		out.Checks = append(out.Checks, Check{"read-back", "FAIL", "the file server reported success but the file is absent"})
-		return finish(out, "reported success, file absent")
+		out.Checks = append(out.Checks, Check{"read-back", "FAIL", "the file server reported success but the destination is unchanged"})
+		return finish(out, "reported success, destination unchanged")
 	default:
 		out.Status = StatusUncertain
 		out.Checks = append(out.Checks, Check{"read-back", "FAIL", fmt.Sprintf("unexpected content: %d bytes, SHA-256 %s", after.CurrentBytes, after.Current)})

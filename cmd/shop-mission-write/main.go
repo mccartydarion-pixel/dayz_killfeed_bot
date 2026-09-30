@@ -4,7 +4,8 @@
 // reads the file back and reports WRITTEN_VERIFIED, NOT_WRITTEN or UNCERTAIN. It never prints the
 // Nitrado token, an upload token, a signed URL or the account's physical path.
 //
-// Active operations: gate-c-create-custom and gate-d-relocate-reference (docs/SHOP_CUSTOM_RELOCATION.md)
+// Active operations: gate-c-create-custom and gate-d-relocate-reference (docs/SHOP_CUSTOM_RELOCATION.md),
+// gate-e-stage and gate-g-unstage with -attempt (docs/SHOP_CANARY_STAGING.md)
 // and gate-b-rollback. Gate A and Gate B (the legacy champion/ location) are completed and refused.
 //
 //	NITRADO_TOKEN=... go run ./cmd/shop-mission-write -operation gate-c-create-custom \
@@ -62,6 +63,7 @@ func run() int {
 	adoptJournal := flag.Bool("adopt-journal", false, "owner action: re-anchor an intact journal whose anchor was lost; no server call")
 	execute := flag.Bool("execute", false, "perform the write (requires -authorize)")
 	authorize := flag.String("authorize", "", "the plan ID the owner approved")
+	attemptID := flag.String("attempt", "", "gate-e-stage / gate-g-unstage: the ledger attempt (read-only; needs DATABASE_PUBLIC_URL)")
 	resolve := flag.String("resolve", "", "record the owner's resolution of an UNCERTAIN/interrupted plan ID (journal only; no server call)")
 	note := flag.String("note", "", "resolution note (with -resolve)")
 	timeout := flag.Duration("timeout", 120*time.Second, "overall timeout")
@@ -123,6 +125,22 @@ func run() int {
 		ExpectSpawners:      spawners,
 		Payload:             payloadFor(missionwrite.Operation(*op)),
 		ExpectPayloadSHA256: strings.ToLower(*expectPayload),
+	}
+	isAttemptOp := req.Operation == missionwrite.OpStageItem || req.Operation == missionwrite.OpUnstageItem
+	if isAttemptOp {
+		if strings.TrimSpace(*attemptID) == "" {
+			fmt.Fprintln(os.Stderr, "refused:", missionwrite.ErrAttemptRequired)
+			return exitRefused
+		}
+		actx, acancel := context.WithTimeout(context.Background(), 30*time.Second)
+		a, err := loadAttempt(actx, *org, *inst, strings.TrimSpace(*attemptID))
+		acancel()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "refused:", err)
+			return exitRefused
+		}
+		req.Attempt = a
+		printAttempt(a)
 	}
 	if missionwrite.Retired(req.Operation) {
 		fmt.Fprintln(os.Stderr, "refused: operation", req.Operation, "is completed and retired (superseded by gate-c-create-custom / gate-d-relocate-reference)")
@@ -211,6 +229,9 @@ func run() int {
 	}
 	if err != nil {
 		fmt.Println("ERROR:", err)
+	}
+	if isAttemptOp {
+		printEvidence(req.Operation, req.Attempt, o, bootFrom(o))
 	}
 	switch o.Status {
 	case missionwrite.StatusWrittenVerified:
