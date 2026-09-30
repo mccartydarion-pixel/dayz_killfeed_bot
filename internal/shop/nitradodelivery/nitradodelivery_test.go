@@ -45,7 +45,7 @@ func TestPlanIsValidatedAndImmutable(t *testing.T) {
 	p := mustPlan(t, in)
 	if p.DeliveryID() != 42 || p.PurchaseID() != 99 || p.InstallationID() != 2 || p.NitradoServiceID() != "1234567" || p.MapKey() != "chernarusplus" ||
 		p.Quantity() != 2 || p.ClassName() != "M4A1" || p.Position() != [3]float64{7500.25, 214.5, 8300.5} || p.RequiredAction() != RequiredActionOwnerConfirmedRestart ||
-		p.ArtifactPath() != "champion/champion_shop_delivery.json" || p.AttemptID() != "champion:d42:a1" {
+		p.ArtifactPath() != "custom/champion_shop_delivery.json" || p.AttemptID() != "champion:d42:a1" {
 		t.Fatalf("%+v", p)
 	}
 	// Mutating the inputs or a returned slice never changes the plan.
@@ -230,9 +230,13 @@ func TestRollbackPlanning(t *testing.T) {
 	if SHA256(before) != rb.BeforeSHA256 {
 		t.Fatal("digest")
 	}
-	// Every path stays inside the Champion directory - never a caller-supplied path.
+	// The artifact is in custom/, the backup in champion/backup/ (never custom/) - never a
+	// caller-supplied path.
+	if !strings.HasPrefix(rb.ArtifactPath, ArtifactDir+"/") || !strings.HasPrefix(rb.BackupName, BackupDir+"/") {
+		t.Fatalf("paths %q %q", rb.ArtifactPath, rb.BackupName)
+	}
 	for _, path := range []string{rb.ArtifactPath, rb.BackupName} {
-		if !strings.HasPrefix(path, ArtifactDir+"/") || strings.Contains(path, "..") {
+		if strings.Contains(path, "..") {
 			t.Fatalf("path %q", path)
 		}
 	}

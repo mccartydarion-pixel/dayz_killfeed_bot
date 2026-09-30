@@ -82,7 +82,7 @@ func TestShopCanaryEndToEndSimulation(t *testing.T) {
 	const service = "19806451"
 	const root = "/games/ni0000000_1"
 	mission := root + "/ftproot/dayzps_missions/dayzOffline.chernarusplus"
-	artifact := mission + "/champion/champion_shop_delivery.json"
+	artifact := mission + "/custom/champion_shop_delivery.json"
 
 	buyer := w.players[0]
 	pid := w.linkPlayer(w.a1, buyer, "Canary Cleo")
