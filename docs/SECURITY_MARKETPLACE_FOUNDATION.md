@@ -1,0 +1,9 @@
+# Security Marketplace foundation
+
+The seven proposed player security services are distinct from the eight anti-cheat detector modules. `internal/securitymarket` holds their stable IDs and required capability labels. Its current catalog projects every service as `UNSUPPORTED`, `purchasable: false` because none of the underlying service capabilities has a protected verification path in this branch. This is not a live storefront or a claim that services work.
+
+The existing SaaS service authentication and organization/installation scope protect two read-only routes: `GET .../security-marketplace/catalog` for verified Player Hub identities and `GET .../security-marketplace/admin/catalog` for Client Hub owners/admins. Both return the same unavailable catalog and installation/server identity. They do not expose a purchase route or accept client-provided capability claims.
+
+The current Champion Points economy already uses one guild/player balance in `player_points` with `point_transactions` as its ledger. The existing Champion Shop debits through `applyLedger` inside its purchase transaction and scopes purchases to organization and installation. Marketplace checkout must reuse that ledger and the verified player link; it cannot create a wallet, invoke an independent debit, or treat an owner-defined price as evidence of product eligibility.
+
+Next safe steps: define a protected, installation-scoped capability read; add an owner configuration and purchase schema in isolated development; then implement a single atomic, idempotent purchase transaction with entitlement creation and tests for replay, insufficient funds and cross-installation access. Keep products unavailable until each capability and private notification path is verified. The Client Hub Marketplace Administration and Player Hub Security Store remain separate from the C.A.S.E. dashboard.
