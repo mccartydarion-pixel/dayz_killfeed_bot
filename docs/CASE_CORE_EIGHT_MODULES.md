@@ -31,6 +31,10 @@ The protected `/anti-cheat/integrity` response also projects `pipelineHealth` fr
 
 The existing protected `/anti-cheat/sessions` reconstruction now includes a bounded `loginObservations` summary for Suspicious Logins. It counts repeated connect lines without a recorded disconnect **within the same ADM source** and links their retained evidence IDs. It discloses pagination truncation and leaves rapid reconnect timing and restart context unverified. A normal recorded disconnect/reconnect or a source boundary is not classified as suspicious. This is a staff-only source-order observation, not a login detector, case or notification. It reuses the existing exact server/player query, rate limit, authorization and audit rather than introducing another poller.
 
+## Offline detection engine
+
+The per-module Observe → Correlate → Validate logic, telemetry contracts, evidence record, incident key and staff alert layout are in [CASE_CORE8_DETECTION_ENGINE.md](CASE_CORE8_DETECTION_ENGINE.md). The engine has no production caller. It cannot activate a module or notify while the catalog modes above remain `BLOCKED`/`UNSUPPORTED`.
+
 ## Build order
 
 1. Verify current-source retained evidence and protected health/continuity.
