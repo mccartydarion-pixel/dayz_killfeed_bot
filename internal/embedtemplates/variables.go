@@ -160,6 +160,7 @@ var routeVariableDefinitions = map[string][]VariableDefinition{
 	"LINK_GAMERTAG":      {serverName(), timestamp()},
 	"STATS_LEADERBOARDS": {serverName(), timestamp()},
 	"AUTO_LEADERBOARD":   {serverName(), timestamp()},
+	"SERVER_RANKS":       {serverName(), timestamp()},
 	"SERVER_STATUS":      {serverName(), timestamp()},
 	// C.A.S.E. templates can be saved and previewed, but no live C.A.S.E.
 	// publisher exists. The fields describe the contract for separately

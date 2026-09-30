@@ -198,6 +198,12 @@ never produce a second live copy:
   scheduler now exists whenever routing is available (not only when a legacy
   leaderboard channel was configured), so a route-only guild gets a leaderboard.
   Refreshes are serialised. Manual `/admin` refresh uses the same path.
+  Since Auto Leaderboard V3 the panel is ONE message carrying several embeds
+  (`PanelContent.Embeds`, sent/edited in one call through
+  `MultiEmbedMessageAPI`); it is still exactly one `guild_route_panels` row per
+  (guild, `AUTO_LEADERBOARD`, channel), so restart dedupe, route moves and
+  retirement are unchanged. Single-embed panels keep `PanelContent.Embed` and
+  the original send/edit path. See `docs/AUTO_LEADERBOARD_V3.md`.
 * **`ADMIN_LOGS`** - `activeChannel()` is re-evaluated on every snapshot and
   download (it previously cached the legacy channel forever). If the destination
   changes while a message exists elsewhere, the old message is deleted and a new

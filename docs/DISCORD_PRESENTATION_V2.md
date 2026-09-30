@@ -18,7 +18,7 @@ Shared primitives live in `internal/presentation`:
 | `leaderboard_embed.go` | `/leaderboard` response |
 
 The Discord renderers are `internal/discord/killfeed_embeds.go` (kills),
-`deathfeed.go` (deaths/suicides), `leaderboard_panel.go` (season board + panel
+`deathfeed.go` (deaths/suicides), `leaderboard_panel.go` (Auto Leaderboard V3 package + panel
 hash), `bounty_feeds.go`, `competitive_embeds.go`.
 
 ## Brand hierarchy
@@ -155,11 +155,18 @@ never "credits", "coins" or "Value".
 
 ## Leaderboards
 
-A scoreboard, not a stack of cards: **one field per category**, rows inside it.
+**Auto Leaderboard (persistent `AUTO_LEADERBOARD` board): superseded by
+[Auto Leaderboard V3](AUTO_LEADERBOARD_V3.md)** — one message carrying a
+header embed plus one embed per category, each a Top 15 grid of inline
+fields (one field per player, 3 columns × 5 rows). The previous
+one-field-per-category "🏆 SEASON LEADERBOARD" card is retired.
+
+The interactive `/leaderboard` response (`BuildPlayerLeaderboardEmbed`) keeps
+the compact scoreboard style — **one field per category**, rows inside it:
 
 ```
-🏆 SEASON LEADERBOARD
-Competitive Rankings
+🏆 PLAYER LEADERBOARD
+Lifetime Rankings
 
 ⚔️ TOP KILLERS
 🥇 IIIIIIIIIIII-I • **20 Kills**
@@ -168,15 +175,9 @@ Competitive Rankings
 `#4` WilliamAle--10 • **9 Kills**
 …
 
-🎯 LONGEST KILLS         📈 BEST K/D          🏆 CHAMPION POINTS
-🔥 LIVE EVENTS           🎯 MOST WANTED       (bullets of stored strings)
-
 CHAMPION • AUTO-REFRESH
 ```
 
-- Order: Top Killers (10), Longest Kills (5), Best K/D (5), Champion Points (5),
-  Live Events, Most Wanted. Limits come from `LeaderboardConfig`; K/D eligibility
-  stays in the query.
 - Rank format `marker name • **value**`: 🥇🥈🥉 for 1–3, `` `#N` `` from 4. No
   whitespace-aligned columns (they break on mobile).
 - Values are formatted per category by `FormatLeaderboardValue`: `20 Kills`,
@@ -184,16 +185,12 @@ CHAMPION • AUTO-REFRESH
   raw value — never "Value".
 - Rank names are capped at 32 runes (PSN IDs ≤16, Xbox ≤15+suffix, Steam ≤32).
 - Rows are dropped whole to stay within the 1024-char field limit.
-- Empty categories are omitted; an all-empty board is a single
-  `_No qualifying data yet._` line.
-- No "kill leader" spotlight: it would only repeat the 🥇 row.
-- `/leaderboard` (`BuildPlayerLeaderboardEmbed`) uses the same rank system — one
-  field — so there is one leaderboard style.
-- Target: **3–6 fields**.
+- An empty ranking is a single `_No qualifying data yet._` line.
 
 ### Persistent-panel hash
 
-`hashEmbed` (used by the legacy panel and `RoutePanels`) fingerprints title,
+`hashEmbed` (used by `RoutePanels`; the multi-embed Auto Leaderboard uses
+`hashEmbeds`, which adds the embed count and order) fingerprints title,
 description, URL, color, author, footer, thumbnail/image URLs, and every field's
 name, value and inline flag, length-prefixed. The timestamp is excluded (volatile).
 So an unchanged board is never re-edited, and a ranking change inside a field is
@@ -252,7 +249,7 @@ default card, which is also the fallback:
 
 `internal/discord/presentation_fixtures_test.go` has deterministic fixtures for
 every card (standard, headshot, longshot, extreme range, bounty, killing spree,
-streak ended, death, suicide, season leaderboard, player leaderboard). Print them:
+streak ended, death, suicide, auto leaderboard header + kills board, player leaderboard). Print them:
 
 ```bash
 go test ./internal/discord -run TestPresentationFixturePreview -v
@@ -276,5 +273,5 @@ custom-template fallback.
 | Streak ended | 6 | 4 |
 | Death | 2 | 1 |
 | Suicide | 4 | 2 |
-| Season leaderboard (10/5/5) | 20 | 3 |
+| Auto leaderboard (V3, per category embed) | — | 15 inline (one per player) |
 | Player leaderboard (10) | 10 | 1 |

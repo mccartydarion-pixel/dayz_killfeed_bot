@@ -29,10 +29,46 @@ type RoutePanelAPI interface {
 	ChannelMessageDelete(channelID, messageID string) error
 }
 
-// PanelContent is what a routed panel message shows.
+// PanelContent is what a routed panel message shows. Single-embed panels set
+// Embed (unchanged behaviour). A panel that is one message carrying several
+// embeds (the Auto Leaderboard) sets Embeds instead; when Embeds is non-empty
+// it wins and the whole array is sent/edited in one call.
 type PanelContent struct {
 	Embed      *discordgo.MessageEmbed
+	Embeds     []*discordgo.MessageEmbed
 	Components []discordgo.MessageComponent
+}
+
+// MultiEmbedMessageAPI sends and edits ONE message carrying several embeds.
+// *SessionAPI implements it. It is a separate, optional surface so every
+// existing single-embed RoutePanelAPI/MessageEditor keeps working unchanged.
+type MultiEmbedMessageAPI interface {
+	ChannelMessageSendEmbeds(channelID string, embeds []*discordgo.MessageEmbed, components []discordgo.MessageComponent) (*discordgo.Message, error)
+	ChannelMessageEditEmbeds(channelID, messageID string, embeds []*discordgo.MessageEmbed, components []discordgo.MessageComponent) (*discordgo.Message, error)
+}
+
+// sendPanel posts content as one message (multi-embed when Embeds is set).
+func (p *RoutePanels) sendPanel(channelID string, content PanelContent) (*discordgo.Message, error) {
+	if len(content.Embeds) > 0 {
+		api, ok := p.api.(MultiEmbedMessageAPI)
+		if !ok {
+			return nil, errNoMultiEmbed
+		}
+		return api.ChannelMessageSendEmbeds(channelID, content.Embeds, content.Components)
+	}
+	return p.api.ChannelMessageSendComplex(channelID, content.Embed, content.Components)
+}
+
+// editPanel replaces an existing panel message's content in one edit.
+func (p *RoutePanels) editPanel(channelID, messageID string, content PanelContent) (*discordgo.Message, error) {
+	if len(content.Embeds) > 0 {
+		api, ok := p.api.(MultiEmbedMessageAPI)
+		if !ok {
+			return nil, errNoMultiEmbed
+		}
+		return api.ChannelMessageEditEmbeds(channelID, messageID, content.Embeds, content.Components)
+	}
+	return p.api.ChannelMessageEditComplex(channelID, messageID, content.Embed, content.Components)
 }
 
 // RoutePanels reconciles guild-level persistent panels onto routed channels:
@@ -51,6 +87,16 @@ type RoutePanels struct {
 
 func NewRoutePanels(api RoutePanelAPI, store RoutePanelStore) *RoutePanels {
 	return &RoutePanels{api: api, store: store, lastHash: make(map[string]string)}
+}
+
+// Recorded lists the messages currently recorded for (guildRowID, routeKey).
+func (p *RoutePanels) Recorded(ctx context.Context, guildRowID int64, routeKey string) ([]RoutePanelMessage, error) {
+	if p == nil || p.store == nil {
+		return nil, nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.store.List(ctx, guildRowID, routeKey)
 }
 
 // ChannelContent renders the panel for one routed channel. An error skips that
@@ -110,7 +156,7 @@ func (p *RoutePanels) sync(ctx context.Context, guildRowID int64, routeKey strin
 		}
 		hash := ""
 		if skipUnchanged {
-			hash = hashEmbed(content.Embed)
+			hash = hashPanelContent(content)
 		}
 		messageID, has := recorded[channelID]
 		if has {
@@ -118,7 +164,7 @@ func (p *RoutePanels) sync(ctx context.Context, guildRowID int64, routeKey strin
 				if skipUnchanged && p.lastHash[hashKey(channelID)] == hash {
 					continue // nothing changed since the last write
 				}
-				_, editErr := p.api.ChannelMessageEditComplex(channelID, messageID, content.Embed, content.Components)
+				_, editErr := p.editPanel(channelID, messageID, content)
 				switch {
 				case editErr == nil:
 					res.Updated++
@@ -144,7 +190,7 @@ func (p *RoutePanels) sync(ctx context.Context, guildRowID int64, routeKey strin
 			}
 			// The recorded message is gone: fall through and post a fresh one.
 		}
-		msg, sendErr := p.api.ChannelMessageSendComplex(channelID, content.Embed, content.Components)
+		msg, sendErr := p.sendPanel(channelID, content)
 		if sendErr != nil || msg == nil {
 			res.Errors++
 			if sendErr != nil {
