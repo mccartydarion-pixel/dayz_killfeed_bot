@@ -47,6 +47,8 @@ func (a *App) registerBillingRoutes() {
 	}
 	h := a.HTTPServer.Handle
 	h("GET /api/saas/billing/plans", a.handleBillingPlans)
+	// Anonymous pricing page: service auth only, no acting user (saas_api_billing_public.go).
+	h("GET /api/saas/billing/public-plans", a.handleBillingPublicPlans)
 	const base = "/api/saas/organizations/{organizationID}/billing"
 	h("GET "+base+"/subscription", a.handleBillingSubscription)
 	h("POST "+base+"/checkout", a.handleBillingCheckout)
