@@ -5,8 +5,10 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/yourname/dayz-killfeed/internal/caseintel"
+	"github.com/yourname/dayz-killfeed/internal/killfeed"
 	"github.com/yourname/dayz-killfeed/internal/permissions"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
@@ -15,6 +17,27 @@ type caseSessionPage struct {
 	caseintel.Reconstruction
 	ServerID int64 `json:"serverId"`
 	NextCursor *string `json:"nextCursor"`
+	// LoginShadow is a read-only shadow run of the Suspicious Logins detector
+	// over this page. It has no thresholds and cannot notify or enforce.
+	LoginShadow caseintel.ShadowLoginReport `json:"loginShadow"`
+}
+
+// caseADMTelemetry describes the live ADM feed for one server from the
+// running worker's snapshot, with the same freshness rule as the health read.
+func (a *App) caseADMTelemetry(serverID int64, now time.Time) caseintel.TelemetrySnapshot {
+	a.presenceMu.Lock()
+	engine:=a.presenceEngines[serverID]
+	a.presenceMu.Unlock()
+	feed:=caseintel.TelemetryFeed{MaxAge:2*time.Minute}
+	if engine!=nil {
+		source:=engine.SourceHealth()
+		state,_:=killfeed.ClassifyADMSourceHealth(source,now)
+		feed.Available=true
+		feed.Verified=state==killfeed.ADMHealthy||state==killfeed.ADMQuiet
+		feed.LatestAt=source.LastCycleAt.UTC()
+	}
+	return caseintel.TelemetrySnapshot{Now:now,PollingDelayLimit:30*time.Second,
+		Feeds:map[caseintel.TelemetryKind]caseintel.TelemetryFeed{caseintel.TelemetryADMEvents:feed}}
 }
 
 // A reconstruction is a source-ordered view of real ADM evidence, never a
@@ -65,9 +88,21 @@ func (a *App) handleAntiCheatSessions(w http.ResponseWriter, r *http.Request) {
 		writeSaaSError(w,codeInternalError,"could not reconstruct C.A.S.E. sessions")
 		return
 	}
+	repo:=repository.NewCaseEvidenceRepository(a.DB.Pool)
+	offset,err:=repo.CaseServerUTCOffset(ctx,ac.scope.GuildID,*ac.scope.ServerID)
+	if err!=nil{
+		slog.Warn("component=case","event","session_clock_read_failed","err",err.Error())
+		offset=nil // fail closed: no trusted time, no shadow conclusions
+	}
+	truncated:=next!=nil||before!=nil
 	out:=caseSessionPage{
-		Reconstruction:caseintel.Reconstruct(playerID,observations,limit,next!=nil||before!=nil),
+		Reconstruction:caseintel.Reconstruct(playerID,observations,limit,truncated),
 		ServerID:*ac.scope.ServerID,
+		LoginShadow:caseintel.ShadowSuspiciousLogins(caseintel.ShadowLoginInput{
+			Scope:caseintel.Core8Scope{GuildID:ac.scope.GuildID,InstallationID:ac.scope.InstallationID,ServerID:*ac.scope.ServerID},
+			PlayerID:playerID,Events:observations,UTCOffsetMinutes:offset,
+			Telemetry:a.caseADMTelemetry(*ac.scope.ServerID,time.Now().UTC()),
+			SessionsRetained:caseEvidenceEnabledForServer(*ac.scope.ServerID),WindowTruncated:truncated}),
 	}
 	if next!=nil{
 		cursor:=strconv.FormatInt(*next,10)

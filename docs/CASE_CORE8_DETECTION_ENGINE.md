@@ -12,6 +12,8 @@ This is the implementation for Phases 2–6 of the [Core Eight roadmap](CASE_COR
 | `internal/caseintel/core8_engine.go` | `Finding` evidence record, `IncidentKey`, `ConfirmByStaff`, the shared VALIDATE stage (`finalize`) and staging `DefaultCore8Params` |
 | `internal/caseintel/core8_movement.go` | Teleport, Skywalk, Undermap, No-Clip over `PositionSample` and a per-installation `MapModel` |
 | `internal/caseintel/core8_detectors.go` | Base Boost, Dupe, PC Detection (Xbox), Suspicious Logins |
+| `internal/caseintel/core8_clock.go` | `ResolveSourceTimes` (trusted UTC event time from boot stamp + line clock + learned offset) and `BootRestartWindows` |
+| `internal/caseintel/core8_login_shadow.go` | `ShadowSuspiciousLogins`, the read-only shadow run on retained evidence |
 | `internal/discord/case_core8_alert.go` | `BuildCASECore8StaffEmbed`, the staff alert layout. It is not connected to any sender |
 
 ## Pipeline (same for all eight)
@@ -71,14 +73,23 @@ Not tested here: Discord delivery failures (owned by the existing `caseoutbox` t
 
 These are why every module stays blocked. They are properties of the data source, not of the engine.
 
-1. **No trusted event time.** ADM clocks are `HH:MM:SS` with no date and no sub-second resolution. So `TimeTrusted` cannot be true for ADM-derived samples, and every time-dependent rule (Teleport, No-Clip, Skywalk/Undermap duration, Login bursts, Dupe windows) has no qualifying input. A trusted clock needs, for example, a verified file-start anchor plus monotonic offsets, validated in staging.
+1. **Event time: derivable, not yet validated.** Each ADM line has only `HH:MM:SS`, but its boot file is named after the server-local boot time (checked against the `AdminLog started` header by boot authority). `ResolveSourceTimes` (`core8_clock.go`) rebuilds a full time from boot stamp + line clock + midnight rollovers in byte order, and converts it to UTC with the offset the live-sync layer learned from `restart.log` (`live_sync_server_clock`). Without that offset, or on a malformed clock, an out-of-order step or a rollover the ingestion gap contradicts, the row is untrusted. Resolution is one second. This is used only by the staff shadow read below; it has not been validated against real traffic for detection.
 2. **Positions are event-triggered or periodic.** Hit, kill, connect and build lines, plus optional `PlayerList` snapshots (typically minutes apart), are far too sparse for No-Clip. They may support Skywalk, Undermap or Teleport once item 1 is solved and the snapshot cadence is verified. Retaining `PlayerList` positions as C.A.S.E. evidence has not been verified.
 3. **No vehicle state.** Teleport and Skywalk exclude samples whose vehicle state is unknown, which is currently all of them.
 4. **No terrain or collision model.** `internal/dayzmap` holds verified bounds only. Elevation grids and collision volumes per map revision, plus owner-registered custom structures, still need to be sourced and verified.
 5. **No item identity or inventory transactions** in ADM. Dupe stays `ITEM_EVIDENCE_UNAVAILABLE`.
 6. **No platform attestation** on console. PC Detection (Xbox) stays `UNSUPPORTED`.
-7. **Restart schedule.** Needs a verified source (host API or owner schedule). An ADM gap is not a restart.
+7. **Restart schedule.** `BootRestartWindows` derives restarts from boot boundaries (a newer boot file is written evidence of a restart), for the shadow read only. An ADM gap alone is still not a restart, and no host API or owner schedule is connected.
 8. **Base registry.** Draft [#157](https://github.com/mccartydarion-pixel/dayz_killfeed_bot/pull/157) (migration 0070) is unmerged. A real ADM build line sample is still unverified.
+
+## Shadow evaluation: Suspicious Logins
+
+The protected `/anti-cheat/sessions` read now includes `loginShadow`: a read-only run of the Suspicious Logins evaluator over the same bounded evidence page (`ShadowSuspiciousLogins`, `core8_login_shadow.go`).
+
+- **Inputs.** Retained `PLAYER_CONNECT` / `PLAYER_DISCONNECT` rows for the player, event times from `ResolveSourceTimes`, restarts from `BootRestartWindows`, and the live ADM feed from the running worker.
+- **Gates.** No learned UTC offset → no trusted time. Collector not enabled for the server → `INSUFFICIENT_EVIDENCE`. Stale ADM polling → `SUSPENDED`. Rows ingested more than `ShadowMaxSampleLag` (15 min) after their event time, such as backfill, are excluded as stale.
+- **Output.** No thresholds are configured, so the status is at most `OBSERVATION_ONLY` and findings stay `OBSERVED`. `canNotify` is false and `enforcement` is `DISABLED`. The report also counts trusted and untrusted rows by reason and the restart windows found, so staff can judge the time basis.
+- **Purpose.** This is the roadmap's "isolated real shadow evaluation" step for one module. Reviewing its output on real servers is how thresholds and false-positive behaviour get validated before any release.
 
 ## Dashboard and marketplace
 
