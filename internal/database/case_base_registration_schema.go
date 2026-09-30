@@ -1,7 +1,8 @@
 package database
 
 // CASEBaseRegistrationSQL is inert registration storage for Core Eight Base
-// Boost. Nothing reads it to make a detector conclusion, case, or Discord alert.
+// Boost. Nothing reads it to make a detector conclusion or case. The owner-enabled
+// Base Raid Alarm (base_raid_alarm_schema.go) reads it to DM a base's owner.
 // Composite keys prevent a base or grant from crossing its installation,
 // guild, game server, or player/faction boundary.
 const CASEBaseRegistrationSQL = `

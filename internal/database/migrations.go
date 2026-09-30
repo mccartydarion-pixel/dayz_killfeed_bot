@@ -2216,6 +2216,11 @@ ON CONFLICT (installation_id, route_key) DO NOTHING;
 		Name: "0071_case_detector_settings",
 		SQL: CASEDetectorSettingsSQL,
 	},
+	{
+		// Base Raid Alarm: owner switch (off by default) and alarm log. Additive only.
+		Name: "0072_base_raid_alarm",
+		SQL:  BaseRaidAlarmSQL,
+	},
 }
 
 // RankedLedgerFoundationSQL creates server-scoped seasonal RP storage.
