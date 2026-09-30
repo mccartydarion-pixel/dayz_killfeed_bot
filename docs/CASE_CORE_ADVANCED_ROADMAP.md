@@ -143,6 +143,8 @@ Do not interpret missing intermediate movement data as proof of teleportation.
 
 # PHASE 2 — SHARED INTELLIGENT DETECTION ENGINE
 
+> Implementation status: offline engine for all eight modules, with health, evidence tiers, incident keys and the staff alert layout. Unit-tested, no production caller. See [CASE_CORE8_DETECTION_ENGINE.md](CASE_CORE8_DETECTION_ENGINE.md) for per-detector logic and the console telemetry limitations that keep every module blocked.
+
 Improve the existing C.A.S.E. detection pipeline.
 
 Each detector must follow four stages:

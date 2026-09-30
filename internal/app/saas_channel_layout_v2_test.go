@@ -200,6 +200,12 @@ func TestInspectChannelLayoutIsReadOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, d := range after {
+		if d.Key == "SERVER_RANKS" {
+			if d.Health != HealthBlocked {
+				t.Fatalf("server ranks without a running producer should stay blocked, got %s", d.Health)
+			}
+			continue
+		}
 		if d.Health != HealthActive {
 			t.Fatalf("%s want ACTIVE after setup, got %s (%s)", d.Key, d.Health, d.Detail)
 		}

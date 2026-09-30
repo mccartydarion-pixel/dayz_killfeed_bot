@@ -286,6 +286,8 @@ func (a *App) registerClientAdminRoutes() {
 	a.registerClientAdminCapabilityRoutes(base)
 	a.registerPlayerIntelligenceRoutes(base)
 	a.registerZoneRoutes(base)
+	a.registerCaseBaseRoutes(base)
+	a.registerCaseDetectorSettingRoutes(base)
 	a.registerHeatmapRoutes(base)
 }
 

@@ -29,6 +29,7 @@ func (a *App) registerPlayerRoutes() {
 	h := a.HTTPServer.Handle
 	h("GET /api/saas/player/servers", a.handlePlayerServers)
 	h("GET /api/saas/player/servers/{installationID}/stats", a.handlePlayerServerStats)
+	h("GET /api/saas/player/servers/{installationID}/ranked", a.handlePlayerServerRanked)
 }
 
 // --- DTOs (docs/PLAYER_API.md "Exact DTOs") -----------------------------------------------------
