@@ -102,11 +102,11 @@ func caseFeedStatus(kind caseintel.TelemetryKind, s caseSourceIntegrity, buildEv
  case caseintel.TelemetryPositionSamples:
   return st("UNVERIFIED","Only event-triggered positions without trusted event times are available.")
  case caseintel.TelemetrySessionEvents:
-  return st("UNVERIFIED","Connect and disconnect lines exist, but without trusted event times.")
+  return st("UNVERIFIED","Connect and disconnect lines are retained; event times are derived from the boot stamp and learned UTC offset for the staff shadow read only, not validated for detection.")
  case caseintel.TelemetryBaseRegistry:
   return st("UNAVAILABLE","Base registration is not released.")
  case caseintel.TelemetryRestartSchedule:
-  return st("UNAVAILABLE","No verified restart schedule source is connected.")
+  return st("UNAVAILABLE","Restarts are derived from boot boundaries for the staff shadow read only; no validated restart schedule is connected.")
  case caseintel.TelemetryTerrainModel,caseintel.TelemetryStructureGeometry:
   return st("UNAVAILABLE","No verified terrain or structure model for this map.")
  case caseintel.TelemetryVehicleState:
