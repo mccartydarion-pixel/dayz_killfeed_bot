@@ -381,3 +381,29 @@ func hasString(list []string, want string) bool {
 	}
 	return false
 }
+
+// plainDuration renders a duration for staff: "10 seconds", "2 minutes 5 seconds".
+func plainDuration(d time.Duration) string {
+	d = d.Round(time.Second)
+	if d < time.Second {
+		return "under a second"
+	}
+	unit := func(n int, one string) string {
+		if n == 1 {
+			return "1 " + one
+		}
+		return fmt.Sprintf("%d %ss", n, one)
+	}
+	h, m, sec := int(d.Hours()), int(d.Minutes())%60, int(d.Seconds())%60
+	parts := []string{}
+	if h > 0 {
+		parts = append(parts, unit(h, "hour"))
+	}
+	if m > 0 {
+		parts = append(parts, unit(m, "minute"))
+	}
+	if sec > 0 && h == 0 {
+		parts = append(parts, unit(sec, "second"))
+	}
+	return strings.Join(parts, " ")
+}

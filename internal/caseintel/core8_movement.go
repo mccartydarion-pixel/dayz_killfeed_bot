@@ -152,9 +152,9 @@ func EvaluateTeleport(ctx EvalContext, in TeleportInput) Core8Result {
 		}
 		ev.observe(Finding{EvidenceIDs: []int64{a.EvidenceID, b.EvidenceID}, EventAt: b.EventAt, ObservedAt: b.ObservedAt,
 			Coordinates: []Coordinates{coords(a.X, a.Z, a.Altitude), coords(b.X, b.Z, b.Altitude)},
-			Behavior:    "Position change faster than on-foot movement",
-			Explanation: fmt.Sprintf("%.0f m in %s (%.1f m/s) between two trusted samples in the same life, on foot, outside restart and exempt zones; limit %.1f m/s.",
-				d, dt.Round(time.Second), speed, p.TeleportMaxFootSpeed)},
+			Behavior:    "Moved across the map faster than anyone can run",
+			Explanation: fmt.Sprintf("Moved %.0f m in %s, about %.0f m/s. On foot, players top out around %.0f m/s. They weren't in a vehicle, hadn't respawned, and the server didn't restart in between.",
+				d, plainDuration(dt), speed, p.TeleportMaxFootSpeed)},
 			"RESPAWN", "SERVER_RESTART", "VEHICLE", "TELEPORT_EXEMPT_ZONE", "SAMPLE_GAP")
 	}
 	return ev.finalize()
@@ -209,12 +209,12 @@ func evaluateElevation(ctx EvalContext, in ElevationInput, moduleID string, abov
 		f.keyEvidenceIDs = append([]int64(nil), f.EvidenceIDs[:p.ElevationMinConsecutive]...)
 		span := run[len(run)-1].EventAt.Sub(run[0].EventAt).Round(time.Second)
 		if above {
-			f.Behavior = "Sustained position above terrain with no registered structure"
-			f.Explanation = fmt.Sprintf("%d consecutive trusted samples over %s at least %.1f m above verified terrain on %s, outside registered structures and not in a vehicle.", len(run), span, minOff, in.Map.Name)
+			f.Behavior = "Stood in the air with no building underneath"
+			f.Explanation = fmt.Sprintf("Seen %d times in a row over %s, at least %.0f m above the ground on %s. There's no registered tower or building there, and they weren't in a vehicle.", len(run), plainDuration(span), minOff, in.Map.Name)
 			ev.observe(f, "STRUCTURE_ZONE", "VEHICLE", "RESPAWN", "SINGLE_SAMPLE")
 		} else {
-			f.Behavior = "Sustained position below terrain outside underground areas"
-			f.Explanation = fmt.Sprintf("%d consecutive trusted samples over %s at least %.1f m below verified terrain on %s, outside registered bunkers and tunnels.", len(run), span, minOff, in.Map.Name)
+			f.Behavior = "Was below the ground"
+			f.Explanation = fmt.Sprintf("Seen %d times in a row over %s, at least %.0f m under the ground on %s, away from any known bunker or tunnel.", len(run), plainDuration(span), minOff, in.Map.Name)
 			ev.observe(f, "UNDERGROUND_ZONE", "STRUCTURE_ZONE", "RESPAWN", "SINGLE_SAMPLE")
 		}
 	}
@@ -318,9 +318,9 @@ func EvaluateNoClip(ctx EvalContext, in NoClipInput) Core8Result {
 			}
 			ev.observe(Finding{EvidenceIDs: []int64{a.EvidenceID, b.EvidenceID}, EventAt: b.EventAt, ObservedAt: b.ObservedAt,
 				Coordinates: []Coordinates{coords(a.X, a.Z, a.Altitude), coords(b.X, b.Z, b.Altitude)},
-				Behavior:    "Movement path crossed a solid structure",
-				Explanation: fmt.Sprintf("Path between two trusted samples %s apart crossed %.1f m through %q on %s, with no registered entrance on the path.",
-					dt.Round(100*time.Millisecond), depth, solid.Label, in.Map.Name)},
+				Behavior:    "Walked through a solid wall",
+				Explanation: fmt.Sprintf("In %s they moved %.1f m straight through %q on %s, where there's no door or gap.",
+					plainDuration(dt), depth, solid.Label, in.Map.Name)},
 				"LEGITIMATE_ENTRANCE", "SPARSE_SAMPLES", "VEHICLE", "RESPAWN")
 			break
 		}
