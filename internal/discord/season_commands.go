@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -17,9 +18,29 @@ type SeasonCommandStore interface {
 	GetSeasonHistory(context.Context, int64, int) ([]repository.Season, error)
 }
 
+// RankedSeasonStatusReader reports each server's separate Ranked (RP) season.
+// Optional: without it /season status only shows the stats season.
+type RankedSeasonStatusReader interface {
+	ListActiveByGuild(ctx context.Context, guildID int64) ([]repository.GameServer, error)
+	ActiveServerSeason(ctx context.Context, guildID, serverID int64) (*repository.ServerRankedSeason, error)
+}
+
+// SeasonCommandHandler serves /season. /season manages the guild's STATS
+// season (the "seasons" table that labels kill/death history). It never
+// starts, ends or resets a server's Ranked (RP) season - those are owner
+// controls on the Champion website (Server Admin -> Server Controls -> Server
+// Ranked) - but status shows both so the two are never confused.
 type SeasonCommandHandler struct {
 	seasons SeasonCommandStore
 	guilds  GuildStore
+	ranked  RankedSeasonStatusReader
+}
+
+// SetRankedStatus lets /season status list each server's Ranked season.
+func (h *SeasonCommandHandler) SetRankedStatus(r RankedSeasonStatusReader) {
+	if h != nil {
+		h.ranked = r
+	}
 }
 
 func NewSeasonCommandHandler(seasons SeasonCommandStore, guilds GuildStore) *SeasonCommandHandler {
@@ -34,11 +55,11 @@ func RegisterSeasonCommands(session *discordgo.Session, guildID string) error {
 	if session == nil {
 		return fmt.Errorf("discord session is nil")
 	}
-	cmd := &discordgo.ApplicationCommand{Name: "season", Description: "View and manage Champion seasons", Options: []*discordgo.ApplicationCommandOption{
-		{Name: "status", Description: "Show the active season", Type: discordgo.ApplicationCommandOptionSubCommand},
-		{Name: "start", Description: "Start a new season", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "name", Description: "Season name", Type: discordgo.ApplicationCommandOptionString, Required: true}}},
-		{Name: "end", Description: "Finalize the active season", Type: discordgo.ApplicationCommandOptionSubCommand},
-		{Name: "history", Description: "Show recent seasons", Type: discordgo.ApplicationCommandOptionSubCommand},
+	cmd := &discordgo.ApplicationCommand{Name: "season", Description: "Stats season (kill/death history) and each server's Ranked RP season status", Options: []*discordgo.ApplicationCommandOption{
+		{Name: "status", Description: "Show the stats season and each server's Ranked (RP) season", Type: discordgo.ApplicationCommandOptionSubCommand},
+		{Name: "start", Description: "Start a new STATS season (does not start Ranked RP)", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "name", Description: "Stats season name", Type: discordgo.ApplicationCommandOptionString, Required: true}}},
+		{Name: "end", Description: "Finalize the active STATS season (Ranked RP is unaffected)", Type: discordgo.ApplicationCommandOptionSubCommand},
+		{Name: "history", Description: "Show recent stats seasons", Type: discordgo.ApplicationCommandOptionSubCommand},
 	}}
 	_, err = session.ApplicationCommandCreate(applicationID, guildID, cmd)
 	return err
@@ -75,7 +96,7 @@ func (h *SeasonCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interac
 			respondEphemeral(s, i, "Cannot start season: "+err.Error())
 			return
 		}
-		respondEphemeral(s, i, fmt.Sprintf("🏆 **CHAMPION SEASON STARTED**\n\n**%s**\nStarted <t:%d:R>", season.Name, season.StartsAt.Unix()))
+		respondEphemeral(s, i, fmt.Sprintf("📊 **STATS SEASON STARTED**\n\n**%s**\nStarted <t:%d:R>\n\n%s", season.Name, season.StartsAt.Unix(), rankedIsSeparateNote))
 	case "end":
 		if !isAdminInteraction(i) {
 			respondEphemeral(s, i, "Administrator or Manage Server permission required.")
@@ -83,7 +104,7 @@ func (h *SeasonCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interac
 		}
 		active, err := h.seasons.GetActiveSeason(context.Background(), guildID)
 		if err != nil || active == nil {
-			respondEphemeral(s, i, "No active season.")
+			respondEphemeral(s, i, "No active stats season.")
 			return
 		}
 		result, err := h.seasons.FinalizeSeason(context.Background(), guildID, active.ID, time.Now().UTC())
@@ -91,16 +112,75 @@ func (h *SeasonCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interac
 			respondEphemeral(s, i, "Cannot finalize season: "+err.Error())
 			return
 		}
-		respondEphemeral(s, i, fmt.Sprintf("👑 **%s COMPLETE**\n\nTop player kills: %d\nTop faction kills: %d\nLongest kill: %.1fm", active.Name, result.TopPlayerKills, result.TopFactionKills, result.LongestKillValue))
+		respondEphemeral(s, i, fmt.Sprintf("👑 **%s COMPLETE** (stats season)\n\nTop player kills: %d\nTop faction kills: %d\nLongest kill: %.1fm\n\n%s", active.Name, result.TopPlayerKills, result.TopFactionKills, result.LongestKillValue, rankedIsSeparateNote))
 	}
 }
+
+// rankedIsSeparateNote is appended wherever a stats season changes, so an
+// owner never believes /season started or reset Ranked RP.
+const rankedIsSeparateNote = "Ranked (RP) seasons are separate and per server: owners start or reset them in Champion Server Admin → Server Controls → Server Ranked."
+
 func (h *SeasonCommandHandler) status(s *discordgo.Session, i *discordgo.InteractionCreate, guildID int64) {
-	active, err := h.seasons.GetActiveSeason(context.Background(), guildID)
-	if err != nil || active == nil {
-		respondEphemeral(s, i, "No active season.")
-		return
+	respondEphemeral(s, i, h.statusText(context.Background(), guildID, time.Now().UTC()))
+}
+
+// statusText renders both seasons, clearly separated:
+//
+//	📊 STATS SEASON   - the guild's kill/death history label (/season start|end)
+//	🎖️ RANKED (RP)     - each server's own RP season (website owner controls)
+//
+// All-time kills, deaths, streaks and longest kills are never reset by either.
+func (h *SeasonCommandHandler) statusText(ctx context.Context, guildID int64, now time.Time) string {
+	var b strings.Builder
+	b.WriteString("📊 **STATS SEASON**\n")
+	active, err := h.seasons.GetActiveSeason(ctx, guildID)
+	switch {
+	case err != nil:
+		b.WriteString("Stats season is temporarily unavailable.\n")
+	case active == nil:
+		b.WriteString("No active stats season.\n")
+	default:
+		fmt.Fprintf(&b, "**%s** — %s since <t:%d:R>\n", active.Name, active.Status, active.StartsAt.Unix())
 	}
-	respondEphemeral(s, i, fmt.Sprintf("🏆 **CHAMPION SEASON**\n\n%s\nStatus: **%s**\nStarted: <t:%d:R>", active.Name, active.Status, active.StartsAt.Unix()))
+	b.WriteString("Labels kill/death history. All-time leaderboards are never reset.\n\n")
+	b.WriteString("🎖️ **RANKED (RP) SEASON** — per server\n")
+	b.WriteString(h.rankedStatusLines(ctx, guildID))
+	return b.String()
+}
+
+func (h *SeasonCommandHandler) rankedStatusLines(ctx context.Context, guildID int64) string {
+	if h.ranked == nil {
+		return "Ranked status is unavailable.\n"
+	}
+	servers, err := h.ranked.ListActiveByGuild(ctx, guildID)
+	if err != nil {
+		return "Ranked status is temporarily unavailable.\n"
+	}
+	if len(servers) == 0 {
+		return "No active game server.\n"
+	}
+	var b strings.Builder
+	anyInactive := false
+	for _, srv := range servers {
+		name := presentation.SafeName(srv.DisplayName, 60)
+		if strings.TrimSpace(srv.DisplayName) == "" {
+			name = fmt.Sprintf("Server %d", srv.ID)
+		}
+		season, err := h.ranked.ActiveServerSeason(ctx, guildID, srv.ID)
+		switch {
+		case err != nil:
+			fmt.Fprintf(&b, "**%s** — status temporarily unavailable\n", name)
+		case season == nil:
+			anyInactive = true
+			fmt.Fprintf(&b, "**%s** — Not started. Players are Unranked and no RP is awarded.\n", name)
+		default:
+			fmt.Fprintf(&b, "**%s** — ACTIVE since <t:%d:R> · %s RP per eligible kill\n", name, season.StartsAt.Unix(), presentation.FormatThousands(season.RPPerKill))
+		}
+	}
+	if anyInactive {
+		b.WriteString("Owners start a Ranked season in Champion Server Admin → Server Controls → Server Ranked.\n")
+	}
+	return b.String()
 }
 func (h *SeasonCommandHandler) history(s *discordgo.Session, i *discordgo.InteractionCreate, guildID int64) {
 	rows, err := h.seasons.GetSeasonHistory(context.Background(), guildID, 5)
@@ -109,12 +189,12 @@ func (h *SeasonCommandHandler) history(s *discordgo.Session, i *discordgo.Intera
 		return
 	}
 	var b strings.Builder
-	b.WriteString("🏆 **CHAMPION SEASON HISTORY**\n\n")
+	b.WriteString("📊 **STATS SEASON HISTORY**\n\n")
 	for _, row := range rows {
 		fmt.Fprintf(&b, "%s — %s\n", row.Name, row.Status)
 	}
 	if len(rows) == 0 {
-		b.WriteString("No seasons yet.")
+		b.WriteString("No stats seasons yet.")
 	}
 	respondEphemeral(s, i, b.String())
 }

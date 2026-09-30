@@ -89,10 +89,14 @@ type fakeDiscord struct {
 	sendErr map[string]error // by channel
 	// lastEmbed is the description last sent/edited per channel (complex messages).
 	lastEmbed map[string]string
+	// lastEmbeds is the full embed array last sent/edited per channel, and
+	// multiCalls counts multi-embed sends/edits (one call per whole package).
+	lastEmbeds map[string][]*discordgo.MessageEmbed
+	multiCalls int
 }
 
 func newFakeDiscord() *fakeDiscord {
-	return &fakeDiscord{messages: map[string]map[string]bool{}, editErr: map[string]error{}, getErr: map[string]error{}, sendErr: map[string]error{}, lastEmbed: map[string]string{}}
+	return &fakeDiscord{messages: map[string]map[string]bool{}, editErr: map[string]error{}, getErr: map[string]error{}, sendErr: map[string]error{}, lastEmbed: map[string]string{}, lastEmbeds: map[string][]*discordgo.MessageEmbed{}}
 }
 
 func (f *fakeDiscord) send(channelID string) (*discordgo.Message, error) {
@@ -148,6 +152,38 @@ func (f *fakeDiscord) ChannelMessageEditComplex(channelID, messageID string, emb
 		f.record(channelID, embed)
 	}
 	return msg, err
+}
+
+func (f *fakeDiscord) recordAll(channelID string, embeds []*discordgo.MessageEmbed) {
+	f.mu.Lock()
+	f.multiCalls++
+	f.lastEmbeds[channelID] = embeds
+	f.mu.Unlock()
+	if len(embeds) > 0 {
+		f.record(channelID, embeds[0])
+	}
+}
+
+func (f *fakeDiscord) ChannelMessageSendEmbeds(channelID string, embeds []*discordgo.MessageEmbed, _ []discordgo.MessageComponent) (*discordgo.Message, error) {
+	msg, err := f.send(channelID)
+	if err == nil {
+		f.recordAll(channelID, embeds)
+	}
+	return msg, err
+}
+
+func (f *fakeDiscord) ChannelMessageEditEmbeds(channelID, messageID string, embeds []*discordgo.MessageEmbed, _ []discordgo.MessageComponent) (*discordgo.Message, error) {
+	msg, err := f.edit(channelID, messageID)
+	if err == nil {
+		f.recordAll(channelID, embeds)
+	}
+	return msg, err
+}
+
+func (f *fakeDiscord) embedsIn(channelID string) []*discordgo.MessageEmbed {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastEmbeds[channelID]
 }
 
 func (f *fakeDiscord) ChannelMessageSendEmbed(channelID string, _ *discordgo.MessageEmbed) (*discordgo.Message, error) {

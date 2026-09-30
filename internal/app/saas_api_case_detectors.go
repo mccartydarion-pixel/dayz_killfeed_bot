@@ -49,6 +49,7 @@ func (a *App) handleAntiCheatDetectorReadiness(w http.ResponseWriter,r *http.Req
  snapshot:=caseSourceSnapshot(serverID,now,source,pipeline,available)
  snapshot.CollectorConfigured=caseEvidenceEnabledForServer(serverID)
  health:=caseAssessDetectorCatalogHealth(defs,snapshot)
+ caseAttachRequiredTelemetry(health,snapshot,caseBuildEvidenceEnabledForServer(serverID))
  // Global source limitations are not eliminated by healthy polling.
  quality:=caseintel.QualityReport{CoverageStatus:"FILTERED_SOURCE_EVENTS_ONLY",
   TimeStatus:"CLOCK_ONLY_NO_TRUSTED_ELAPSED_TIME",MovementDetectorStatus:"BLOCKED",

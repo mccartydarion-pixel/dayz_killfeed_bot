@@ -82,7 +82,9 @@ WHERE p.guild_id=$1 AND p.id=$2`
 	return &prof, nil
 }
 
-// TopByKills returns the top players by kill count.
+// TopByKills returns the top players by ALL-TIME kill count in the guild: the
+// kills source table, never season- or window-filtered. Ties: kills DESC,
+// display_name ASC, player id ASC.
 func (r *StatsRepository) TopByKills(ctx context.Context, guildID int64, limit int) ([]LeaderboardEntry, error) {
 	const q = `
 SELECT p.display_name, COUNT(k.id) AS kills
@@ -90,7 +92,47 @@ FROM players p
 JOIN kills k ON k.killer_player_id=p.id AND k.guild_id=p.guild_id
 WHERE p.guild_id=$1
 GROUP BY p.id, p.display_name
-ORDER BY kills DESC, p.display_name ASC
+ORDER BY kills DESC, p.display_name ASC, p.id ASC
+LIMIT $2`
+	return r.queryLeaderboard(ctx, q, guildID, limit)
+}
+
+// TopByDeaths returns the players with the most ALL-TIME deaths in the guild,
+// counted from the deaths source table (every recorded death type, the same
+// count the player profile shows). Ties: deaths DESC, display_name ASC,
+// player id ASC.
+func (r *StatsRepository) TopByDeaths(ctx context.Context, guildID int64, limit int) ([]LeaderboardEntry, error) {
+	const q = `
+SELECT p.display_name, COUNT(d.id) AS death_count
+FROM players p
+JOIN deaths d ON d.player_id=p.id AND d.guild_id=p.guild_id
+WHERE p.guild_id=$1
+GROUP BY p.id, p.display_name
+ORDER BY death_count DESC, p.display_name ASC, p.id ASC
+LIMIT $2`
+	return r.queryLeaderboard(ctx, q, guildID, limit)
+}
+
+// TopByBestStreak returns players ranked by their ALL-TIME record kill streak:
+// player_combat_stats.best_streak, which is keyed by (guild, player) only,
+// only ever raised via GREATEST() in StreakRepository.Increment and never
+// reset (StreakRepository.Reset clears current_streak only; nothing resets it
+// per season). This is the record streak, not the current active one.
+// Ties: best_streak DESC, all-time kills DESC, display_name ASC, player id ASC.
+// One bounded aggregate query (the kill counts are grouped once, not per row).
+func (r *StatsRepository) TopByBestStreak(ctx context.Context, guildID int64, limit int) ([]LeaderboardEntry, error) {
+	const q = `
+SELECT p.display_name, s.best_streak
+FROM player_combat_stats s
+JOIN players p ON p.id=s.player_id AND p.guild_id=s.guild_id
+LEFT JOIN (
+  SELECT killer_player_id, COUNT(*) AS kill_count
+  FROM kills
+  WHERE guild_id=$1
+  GROUP BY killer_player_id
+) kc ON kc.killer_player_id=s.player_id
+WHERE s.guild_id=$1 AND s.best_streak > 0
+ORDER BY s.best_streak DESC, COALESCE(kc.kill_count,0) DESC, p.display_name ASC, p.id ASC
 LIMIT $2`
 	return r.queryLeaderboard(ctx, q, guildID, limit)
 }
@@ -139,7 +181,9 @@ LIMIT $2`
 	return out, rows.Err()
 }
 
-// TopLongestKill returns players ranked by their longest kill distance.
+// TopLongestKill returns players ranked by their ALL-TIME longest confirmed
+// kill distance (kills source table, no season filter). Ties: distance DESC,
+// display_name ASC, player id ASC.
 func (r *StatsRepository) TopLongestKill(ctx context.Context, guildID int64, limit int) ([]LeaderboardEntry, error) {
 	const q = `
 SELECT p.display_name, MAX(k.distance) AS longest
@@ -147,7 +191,7 @@ FROM players p
 JOIN kills k ON k.killer_player_id=p.id AND k.guild_id=p.guild_id
 WHERE p.guild_id=$1 AND k.distance IS NOT NULL
 GROUP BY p.id, p.display_name
-ORDER BY longest DESC, p.display_name ASC
+ORDER BY longest DESC, p.display_name ASC, p.id ASC
 LIMIT $2`
 
 	rows, err := r.pool.Query(ctx, q, guildID, limit)
