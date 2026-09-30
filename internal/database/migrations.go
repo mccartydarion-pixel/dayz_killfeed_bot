@@ -2205,6 +2205,11 @@ ON CONFLICT (installation_id, route_key) DO NOTHING;
 		Name: "0070_case_base_registration",
 		SQL: CASEBaseRegistrationSQL,
 	},
+	{
+		// Inert owner preferences; no detector reads or release flags.
+		Name: "0071_case_detector_settings",
+		SQL: CASEDetectorSettingsSQL,
+	},
 }
 
 // RankedLedgerFoundationSQL creates server-scoped seasonal RP storage.
