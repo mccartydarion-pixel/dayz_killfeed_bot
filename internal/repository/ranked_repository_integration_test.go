@@ -38,7 +38,7 @@ func TestRankedServerLedgerReplayCooldownAndSeasonReset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server, err := NewServerRepository(db.Pool).UpsertGameServer(ctx, GameServer{GuildID: guild, Provider: "fixture", ProviderServiceID: fmt.Sprintf("ranked-%d", suffix), Game: "dayz", Platform: "PLAYSTATION", Status: "ACTIVE", Active: true})
+	server, err := NewServerRepository(db.Pool).UpsertGameServer(ctx, GameServer{GuildID: guild, Provider: "fixture", ProviderServiceID: fmt.Sprintf("ranked-%d", suffix), Game: "dayz", Platform: "PLAYSTATION", Status: "CONNECTED", Active: true})
 	if err != nil {
 		t.Fatal(err)
 	}

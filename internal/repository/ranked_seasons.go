@@ -12,6 +12,13 @@ import (
 
 var ErrRankedSeasonConflict = errors.New("server already has an active ranked season")
 
+// ErrRankedServerIneligible: the selected server is not an active
+// PlayStation/Xbox server of this guild, so no Ranked season can open on it.
+var ErrRankedServerIneligible = errors.New("server is not an active PlayStation or Xbox server of this guild")
+
+// ErrRankedNoActiveSeason: a reset was requested but no season is active.
+var ErrRankedNoActiveSeason = errors.New("server has no active ranked season to reset")
+
 type ServerRankedSeason struct {
 	ID int64 `json:"id"`
 	ServerID int64 `json:"serverId"`
@@ -54,8 +61,12 @@ func (r *RankedRepository) StartServerSeason(ctx context.Context, guildID, serve
 	if err != nil { return season, fmt.Errorf("begin ranked season: %w", err) }
 	defer tx.Rollback(ctx)
 	var platform string
-	err = tx.QueryRow(ctx, `SELECT platform FROM game_servers WHERE id=$1 AND guild_id=$2 AND status='ACTIVE' AND platform IN ('PLAYSTATION','XBOX') FOR UPDATE`, serverID, guildID).Scan(&platform)
-	if errors.Is(err, pgx.ErrNoRows) { return season, ErrRankedIneligible }
+	// Eligibility is the server's active flag (what the ADM workers run on),
+	// its owning guild and a console platform. game_servers.status is a
+	// display label - production writes CONNECTED (/server select) or
+	// ONLINE/OFFLINE (SaaS setup), never ACTIVE - so it must not gate this.
+	err = tx.QueryRow(ctx, `SELECT platform FROM game_servers WHERE id=$1 AND guild_id=$2 AND active AND platform IN ('PLAYSTATION','XBOX') FOR UPDATE`, serverID, guildID).Scan(&platform)
+	if errors.Is(err, pgx.ErrNoRows) { return season, ErrRankedServerIneligible }
 	if err != nil { return season, fmt.Errorf("load ranked server: %w", err) }
 	var activeID int64
 	var activeStart time.Time
@@ -68,7 +79,7 @@ func (r *RankedRepository) StartServerSeason(ctx context.Context, guildID, serve
 			return season, fmt.Errorf("archive ranked season: %w", err)
 		}
 	} else if reset {
-		return season, ErrRankedIneligible
+		return season, ErrRankedNoActiveSeason
 	}
 	values := make([]int64, len(thresholds))
 	copy(values, thresholds[:])
