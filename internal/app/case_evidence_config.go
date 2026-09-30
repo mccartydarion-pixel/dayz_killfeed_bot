@@ -22,3 +22,15 @@ func caseEvidenceEnabledForServer(serverID int64) bool {
 	}
 	return false
 }
+
+// Build actions have their own explicit switch and per-server allowlist.
+// Both must be set even when the older C.A.S.E. collector is already enabled.
+func caseBuildEvidenceEnabledForServer(serverID int64) bool {
+	if !caseEvidenceEnabledForServer(serverID) ||
+		!strings.EqualFold(strings.TrimSpace(os.Getenv("CASE_BUILD_EVIDENCE_ENABLED")), "true") { return false }
+	for _, raw := range strings.Split(os.Getenv("CASE_BUILD_EVIDENCE_SERVER_IDS"), ",") {
+		id, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+		if err == nil && id == serverID { return true }
+	}
+	return false
+}

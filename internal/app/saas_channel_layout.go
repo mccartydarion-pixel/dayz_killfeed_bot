@@ -15,8 +15,8 @@ import (
 // Champion Channel System V2 (docs/SAAS_API.md "Channel layout").
 //
 // A route key names a feature (KILLFEED); a destination is the Discord
-// channel one or more routes share (combat-feed carries KILLFEED and
-// PVE_FEED). FEATURE ROUTE != DISCORD CHANNEL.
+// channel one or more routes share. KILLFEED and PVE_FEED now have
+// separate destinations. FEATURE ROUTE != DISCORD CHANNEL.
 //
 // NO BLANK CHANNEL policy: auto-setup creates a destination only when a
 // route anchoring it has a working producer, and after setup every created
@@ -98,8 +98,13 @@ type championDestination struct {
 var championDestinations = []championDestination{
 	{
 		Key: "COMBAT_FEED", Label: "Combat Feed", Category: categoryLive, ChannelName: "🔫・combat-feed",
-		Routes: []string{"KILLFEED", "PVE_FEED"}, Anchors: []string{"KILLFEED", "PVE_FEED"},
-		Starter: &starterCard{"🔫 COMBAT FEED", "Champion combat events will appear here.\n\n**Includes**\n• Player eliminations\n• Deaths\n• PvE events"},
+		Routes: []string{"KILLFEED"}, Anchors: []string{"KILLFEED"},
+		Starter: &starterCard{"🔫 COMBAT FEED", "Player-versus-player eliminations will appear here."},
+	},
+	{
+		Key: "PVE_FEED", Label: "PvE & Death Feed", Category: categoryLive, ChannelName: "☠️・pve-feed",
+		Routes: []string{"PVE_FEED"}, Anchors: []string{"PVE_FEED"},
+		Starter: &starterCard{"☠️ PvE & DEATH FEED", "Deaths, suicides, and supported PvE events will appear here."},
 	},
 	{
 		Key: "HITFEED", Label: "Hitfeed", Category: categoryLive, ChannelName: "🎯・hitfeed",
@@ -128,6 +133,10 @@ var championDestinations = []championDestination{
 		Routes: []string{"AUTO_LEADERBOARD", "STATS_LEADERBOARDS"}, Anchors: []string{"AUTO_LEADERBOARD", "STATS_LEADERBOARDS"},
 	},
 	{
+		Key: "SERVER_RANKS", Label: "Server Ranks", Category: categoryHub, ChannelName: "🎖️・server-ranks",
+		Routes: []string{"SERVER_RANKS"}, Anchors: []string{"SERVER_RANKS"},
+	},
+	{
 		Key: "PLAYER_LINK", Label: "Player Link", Category: categoryHub, ChannelName: "🔗・player-link",
 		Routes: []string{"LINK_GAMERTAG"}, Anchors: []string{"LINK_GAMERTAG"},
 	},
@@ -137,7 +146,7 @@ var championDestinations = []championDestination{
 		Starter: &starterCard{"💰 CHAMPION ECONOMY", "Champion Points and shop activity will appear here."},
 	},
 	{
-		Key: "ONLINE_COUNTER", Label: "Players Online", Category: categoryHub, ChannelName: discord.OnlineCounterName(0),
+		Key: "ONLINE_COUNTER", Label: "Players Online", Category: categoryHub, ChannelName: discord.OnlineCounterName(0, 0),
 		Routes: []string{"ONLINE_COUNTER"}, Anchors: []string{"ONLINE_COUNTER"}, Voice: true,
 	},
 	{
@@ -183,6 +192,7 @@ var routeProducerAudit = map[string]routeProducer{
 	"SERVER_STATUS":      {HealthActive, "ServerStatusBoard persistent server status (per-server ADM state)"},
 	"ONLINE_COUNTER":     {HealthActive, "VoiceChannelCounter online-player count"},
 	"AUTO_LEADERBOARD":   {HealthActive, "LeaderboardScheduler persistent leaderboard"},
+	"SERVER_RANKS":       {HealthActive, "ServerRanksBoard persistent per-server panel"},
 	"STATS_LEADERBOARDS": {HealthActive, "RouteSyncer player stats panel"},
 	"LINK_GAMERTAG":      {HealthActive, "RouteSyncer link panel"},
 	"ECONOMY":            {HealthActive, "EconomyFeed"},
@@ -254,6 +264,9 @@ func (a *App) channelRouteProducers() map[string]routeProducer {
 	}
 	if a.LeaderboardScheduler == nil {
 		broken("leaderboard scheduler is not running", "AUTO_LEADERBOARD")
+	}
+	if len(a.ServerRanksBoards) == 0 {
+		broken("server ranks board is not running", "SERVER_RANKS")
 	}
 	if a.RouteSyncer == nil {
 		broken("route panel syncer is not running", "STATS_LEADERBOARDS", "LINK_GAMERTAG")
@@ -850,10 +863,10 @@ func resolveLayoutChannel(d channelLayoutDiscord, guildID string, channels []dis
 
 // matches reports whether ch is this destination's channel: a text channel
 // with its exact name, or - for the voice counter, whose name changes with
-// the count - a voice channel with the counter prefix.
+// the count - a voice channel whose name is a counter name in any format.
 func (d championDestination) matches(ch discord.RawGuildChannel) bool {
 	if d.Voice {
-		return ch.Type == discordgo.ChannelTypeGuildVoice && strings.HasPrefix(ch.Name, discord.ChannelOnlinePlayersPrefix)
+		return ch.Type == discordgo.ChannelTypeGuildVoice && discord.IsOnlineCounterName(ch.Name)
 	}
 	return ch.Type == discordgo.ChannelTypeGuildText && strings.EqualFold(ch.Name, d.ChannelName)
 }

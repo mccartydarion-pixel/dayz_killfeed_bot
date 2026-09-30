@@ -27,6 +27,10 @@ type CaseEvidencePerson struct {
 	X, Z, Altitude *float64
 }
 
+type CaseBuildEvidence struct {
+	Action, Object, Target, Tool string
+}
+
 type CaseEvidenceInput struct {
 	GuildID, ServerID int64
 	SourceID string
@@ -38,6 +42,7 @@ type CaseEvidenceInput struct {
 	Weapon, Ammo, HitZone, HitZoneID string
 	Damage, HP, DistanceMeters *float64
 	BoundaryKind string
+	Build *CaseBuildEvidence
 }
 
 func caseBounded(s string, max int) string {
@@ -69,6 +74,17 @@ func (r *CaseEvidenceRepository) RecordCaseEvidence(ctx context.Context, item Ca
 	if item.GuildID <= 0 || item.ServerID <= 0 || item.SourceID == "" || item.SourceEndOffset < 0 || len(item.LineSHA256) != 64 || item.EventType == "" {
 		return errors.New("invalid C.A.S.E. source address")
 	}
+	if item.EventType == "BUILD_ACTION" {
+		if item.Build == nil ||
+			(item.Build.Action != "Placed" && item.Build.Action != "Built" && item.Build.Action != "Dismantled") ||
+			item.Build.Object == "" || len([]rune(item.Build.Object)) > 64 ||
+			len([]rune(item.Build.Target)) > 64 || len([]rune(item.Build.Tool)) > 64 ||
+			!utf8.ValidString(item.Build.Object+item.Build.Target+item.Build.Tool) {
+			return errors.New("invalid C.A.S.E. build evidence")
+		}
+	} else if item.Build != nil { return errors.New("build evidence on non-build event") }
+	build := CaseBuildEvidence{}
+	if item.Build != nil { build = *item.Build }
 	tx, err := r.pool.Begin(ctx)
 	if err != nil { return err }
 	defer tx.Rollback(ctx)
@@ -86,22 +102,27 @@ func (r *CaseEvidenceRepository) RecordCaseEvidence(ctx context.Context, item Ca
 		  guild_id,server_id,source_id,source_end_offset,line_sha256,event_type,adm_clock,
 		  subject_player_id,actor_player_id,target_player_id,subject_name,actor_name,target_name,
 		  subject_x,subject_z,subject_altitude,actor_x,actor_z,actor_altitude,target_x,target_z,target_altitude,
-		  weapon,ammo,hit_zone,hit_zone_id,damage,hp,distance_meters,boundary_kind)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30)
+		  weapon,ammo,hit_zone,hit_zone_id,damage,hp,distance_meters,boundary_kind,
+		  build_action,build_object,build_target,build_tool)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34)
 		ON CONFLICT (guild_id,server_id,source_id,source_end_offset) DO NOTHING
 		RETURNING id
 	`,
 		item.GuildID,item.ServerID,item.SourceID,item.SourceEndOffset,item.LineSHA256,item.EventType,caseBounded(item.ADMClock, 12),
 		subjectID,actorID,targetID,caseBounded(item.Subject.Name,128),caseBounded(item.Actor.Name,128),caseBounded(item.Target.Name,128),
 		item.Subject.X,item.Subject.Z,item.Subject.Altitude,item.Actor.X,item.Actor.Z,item.Actor.Altitude,item.Target.X,item.Target.Z,item.Target.Altitude,
-		caseBounded(item.Weapon,128),caseBounded(item.Ammo,128),caseBounded(item.HitZone,64),caseBounded(item.HitZoneID,64),item.Damage,item.HP,item.DistanceMeters,item.BoundaryKind).Scan(&id)
+		caseBounded(item.Weapon,128),caseBounded(item.Ammo,128),caseBounded(item.HitZone,64),caseBounded(item.HitZoneID,64),item.Damage,item.HP,item.DistanceMeters,item.BoundaryKind,
+		build.Action,build.Object,build.Target,build.Tool).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
-		var priorHash string
-		err = tx.QueryRow(ctx, `SELECT line_sha256 FROM case_evidence_events
+		var priorHash, priorType, priorAction, priorObject, priorTarget, priorTool string
+		err = tx.QueryRow(ctx, `SELECT line_sha256,event_type,build_action,build_object,build_target,build_tool FROM case_evidence_events
 		  WHERE guild_id=$1 AND server_id=$2 AND source_id=$3 AND source_end_offset=$4`,
-			item.GuildID,item.ServerID,item.SourceID,item.SourceEndOffset).Scan(&priorHash)
+			item.GuildID,item.ServerID,item.SourceID,item.SourceEndOffset).Scan(&priorHash,&priorType,&priorAction,&priorObject,&priorTarget,&priorTool)
 		if err != nil { return fmt.Errorf("verify replay: %w", err) }
 		if priorHash != item.LineSHA256 { return errors.New("C.A.S.E. source offset collision: changed ADM line at prior position") }
+		if priorType != item.EventType || priorAction != build.Action || priorObject != build.Object || priorTarget != build.Target || priorTool != build.Tool {
+			return errors.New("C.A.S.E. replay evidence mismatch")
+		}
 		return nil
 	}
 	if err != nil { return fmt.Errorf("persist C.A.S.E. evidence: %w", err) }
@@ -131,6 +152,10 @@ type CaseEvidenceRow struct {
 	HP *float64 `json:"hp,omitempty"`
 	DistanceMeters *float64 `json:"distanceMeters,omitempty"`
 	BoundaryKind string `json:"boundaryKind,omitempty"`
+	BuildAction string `json:"buildAction,omitempty"`
+	BuildObject string `json:"buildObject,omitempty"`
+	BuildTarget string `json:"buildTarget,omitempty"`
+	BuildTool string `json:"buildTool,omitempty"`
 	SubjectX *float64 `json:"subjectX,omitempty"`
 	SubjectZ *float64 `json:"subjectZ,omitempty"`
 	SubjectAltitude *float64 `json:"subjectAltitude,omitempty"`
@@ -152,7 +177,7 @@ func (r *CaseEvidenceRepository) ListCaseEvidence(ctx context.Context, guildID, 
 	         encode(sha256(convert_to(source_id,'UTF8')),'hex') AS source_ref,source_end_offset,line_sha256,
 	         subject_player_id,actor_player_id,target_player_id,
 	         subject_name,actor_name,target_name,weapon,ammo,hit_zone,hit_zone_id,
-	         damage,hp,distance_meters,boundary_kind,
+	         damage,hp,distance_meters,boundary_kind,build_action,build_object,build_target,build_tool,
 	         subject_x,subject_z,subject_altitude,actor_x,actor_z,actor_altitude,target_x,target_z,target_altitude
 	  FROM case_evidence_events
 	  WHERE guild_id=$1 AND server_id=$2
@@ -169,7 +194,7 @@ func (r *CaseEvidenceRepository) ListCaseEvidence(ctx context.Context, guildID, 
 	  if err=rows.Scan(&e.ID,&e.Type,&e.IngestedAt,&e.ADMClock,&e.SourceRef,&e.SourceEndOffset,&e.LineSHA256,
 	    &e.SubjectPlayerID,&e.ActorPlayerID,&e.TargetPlayerID,
 	    &e.SubjectName,&e.ActorName,&e.TargetName,&e.Weapon,&e.Ammo,&e.HitZone,&e.HitZoneID,
-	    &e.Damage,&e.HP,&e.DistanceMeters,&e.BoundaryKind,
+	    &e.Damage,&e.HP,&e.DistanceMeters,&e.BoundaryKind,&e.BuildAction,&e.BuildObject,&e.BuildTarget,&e.BuildTool,
 	    &e.SubjectX,&e.SubjectZ,&e.SubjectAltitude,&e.ActorX,&e.ActorZ,&e.ActorAltitude,&e.TargetX,&e.TargetZ,&e.TargetAltitude);err!=nil{return nil,err}
 	  e.SourceRef=e.SourceRef[:16]
 	  out=append(out,e)

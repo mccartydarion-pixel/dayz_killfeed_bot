@@ -2,7 +2,9 @@ package repository
 
 import (
 	"context"
+	"errors"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/yourname/dayz-killfeed/internal/caseintel"
 )
 
@@ -45,4 +47,20 @@ func (r *CaseEvidenceRepository) ListCaseSessionEvidence(ctx context.Context,
 	out=out[:limit]
 	cursor:=out[len(out)-1].ID
 	return out,&cursor,nil
+}
+
+// CaseServerUTCOffset returns the server's UTC offset in minutes as learned
+// from a restart.log line that states it, or nil when none has been learned.
+// Scoped by guild AND server so one tenant can never read another's clock.
+func (r *CaseEvidenceRepository) CaseServerUTCOffset(ctx context.Context, guildID, serverID int64) (*int, error) {
+	var minutes int
+	err := r.pool.QueryRow(ctx, `SELECT utc_offset_minutes FROM live_sync_server_clock WHERE guild_id=$1 AND server_id=$2`,
+		guildID, serverID).Scan(&minutes)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &minutes, nil
 }

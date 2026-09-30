@@ -125,13 +125,16 @@ func auditProducers() map[string]routeProducer {
 	for k, v := range routeProducerAudit {
 		out[k] = v
 	}
+	// The layout fixture has no running Ranked board. Production activates
+	// this route only after the panel producer is instantiated.
+	out["SERVER_RANKS"] = routeProducer{HealthBlocked, "server ranks board is not running"}
 	return out
 }
 
 // panelsPosted simulates the panel owners posting into every panel channel.
 func panelsPosted(g *layoutGuildFake, w *layoutRoutesFake) func(context.Context) {
 	return func(context.Context) {
-		for _, key := range []string{"BOUNTY", "HEATMAPS", "SERVER_STATUS", "AUTO_LEADERBOARD", "STATS_LEADERBOARDS", "LINK_GAMERTAG"} {
+		for _, key := range []string{"BOUNTY", "HEATMAPS", "SERVER_STATUS", "AUTO_LEADERBOARD", "SERVER_RANKS", "STATS_LEADERBOARDS", "LINK_GAMERTAG"} {
 			if ch := w.routes[key]; ch != "" {
 				g.botMessages[ch] = 1
 			}
@@ -184,8 +187,8 @@ func TestRouteVocabularyHasNoCasinoAndEveryRouteOneDestination(t *testing.T) {
 		}
 	}
 	want := map[string]string{
-		"KILLFEED": "COMBAT_FEED", "PVE_FEED": "COMBAT_FEED", "HITFEED": "HITFEED", "BOUNTY": "BOUNTIES", "BOUNTY_TRACKING": "BOUNTIES",
-		"CONNECTIONS": "CONNECTIONS", "HEATMAPS": "HEATMAPS", "AUTO_LEADERBOARD": "LEADERBOARDS", "STATS_LEADERBOARDS": "LEADERBOARDS",
+		"KILLFEED": "COMBAT_FEED", "PVE_FEED": "PVE_FEED", "HITFEED": "HITFEED", "BOUNTY": "BOUNTIES", "BOUNTY_TRACKING": "BOUNTIES",
+		"CONNECTIONS": "CONNECTIONS", "HEATMAPS": "HEATMAPS", "AUTO_LEADERBOARD": "LEADERBOARDS", "SERVER_RANKS": "SERVER_RANKS", "STATS_LEADERBOARDS": "LEADERBOARDS",
 		"LINK_GAMERTAG": "PLAYER_LINK", "ECONOMY": "ECONOMY", "SHOP": "ECONOMY", "ADMIN_LOGS": "ADMIN_LOGS", "ADMIN_ALERTS": "ADMIN_LOGS", "BUILD_FEED": "ADMIN_LOGS",
 		"SERVER_STATUS": "SERVER_STATUS", "ONLINE_COUNTER": "ONLINE_COUNTER",
 	}
@@ -202,10 +205,13 @@ func TestPlanChannelLayoutSkipsDestinationsWithoutProducers(t *testing.T) {
 	for _, p := range plans {
 		health[p.Destination.Key] = p.Health
 	}
-	for _, key := range []string{"COMBAT_FEED", "HITFEED", "BOUNTIES", "CONNECTIONS", "HEATMAPS", "SERVER_STATUS", "LEADERBOARDS", "PLAYER_LINK", "ECONOMY", "ONLINE_COUNTER", "ADMIN_LOGS"} {
+	for _, key := range []string{"COMBAT_FEED", "PVE_FEED", "HITFEED", "BOUNTIES", "CONNECTIONS", "HEATMAPS", "SERVER_STATUS", "LEADERBOARDS", "PLAYER_LINK", "ECONOMY", "ONLINE_COUNTER", "ADMIN_LOGS"} {
 		if health[key] != HealthActive {
 			t.Fatalf("%s want ACTIVE, got %s", key, health[key])
 		}
+	}
+	if health["SERVER_RANKS"] != HealthBlocked {
+		t.Fatalf("server ranks without a running board must be blocked, got %s", health["SERVER_RANKS"])
 	}
 
 	// A source-blocked BUILD_FEED never justifies admin-logs on its own.
@@ -216,6 +222,22 @@ func TestPlanChannelLayoutSkipsDestinationsWithoutProducers(t *testing.T) {
 		if p.Destination.Key == "ADMIN_LOGS" && p.Health != HealthBroken {
 			t.Fatalf("admin-logs with only a blocked source must not be ACTIVE, got %s", p.Health)
 		}
+	}
+}
+
+func TestSetupCreatesServerRanksOnlyWithPanelProducer(t *testing.T) {
+	blocked := auditProducers()
+	for _, p := range planChannelLayout(blocked) {
+		if p.Destination.Key == "SERVER_RANKS" && p.Health != HealthBlocked {
+			t.Fatal("server ranks must remain blocked without its panel producer")
+		}
+	}
+	blocked["SERVER_RANKS"] = routeProducer{HealthActive, "test panel producer"}
+	g := newLayoutGuildFake()
+	w := &layoutRoutesFake{routes: map[string]string{}}
+	res := runLayout(t, g, w, blocked, panelsPosted(g, w))
+	if route := w.routes["SERVER_RANKS"]; route == "" || report(res, "SERVER_RANKS").Health != HealthActive || g.botMessages[route] == 0 {
+		t.Fatalf("server ranks setup did not create a populated route: %+v", report(res, "SERVER_RANKS"))
 	}
 }
 
@@ -254,8 +276,9 @@ func TestApplyChannelLayoutFreshGuild(t *testing.T) {
 		t.Fatal("SHOP and ECONOMY must share the economy channel")
 	}
 	combat, _ := g.byName("🔫・combat-feed")
-	if w.routes["KILLFEED"] != combat.ID || w.routes["PVE_FEED"] != combat.ID {
-		t.Fatal("KILLFEED and PVE_FEED must share combat-feed")
+	pve, n := g.byName("☠️・pve-feed")
+	if n != 1 || pve.ID == combat.ID || w.routes["KILLFEED"] != combat.ID || w.routes["PVE_FEED"] != pve.ID {
+		t.Fatal("/setup must route kills and deaths/PvE to separate destinations")
 	}
 	heat, _ := g.byName("🗺️・heatmaps")
 	live, _ := g.byName("🏆 CHAMPION • LIVE")
@@ -423,7 +446,7 @@ func TestApplyChannelLayoutNameRecoveryStaysInCategory(t *testing.T) {
 
 func TestChannelRouteProducersDowngradeMissingRuntime(t *testing.T) {
 	got := (&App{}).channelRouteProducers()
-	for _, key := range []string{"KILLFEED", "BOUNTY", "HEATMAPS", "AUTO_LEADERBOARD", "LINK_GAMERTAG", "ECONOMY", "SHOP", "ADMIN_ALERTS"} {
+	for _, key := range []string{"KILLFEED", "BOUNTY", "HEATMAPS", "AUTO_LEADERBOARD", "SERVER_RANKS", "LINK_GAMERTAG", "ECONOMY", "SHOP", "ADMIN_ALERTS"} {
 		if got[key].Health != HealthBroken {
 			t.Fatalf("%s must be BROKEN when its runtime is absent, got %+v", key, got[key])
 		}

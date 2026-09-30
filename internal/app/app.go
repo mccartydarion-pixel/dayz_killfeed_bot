@@ -61,6 +61,7 @@ type App struct {
 	Kills        *repository.KillRepository
 	Deaths       *repository.DeathRepository
 	Stats        *repository.StatsRepository
+	Ranked       *repository.RankedRepository
 	Sessions     *repository.SessionRepository
 	Checkpoints  *repository.CheckpointRepository
 	Streaks      *repository.StreakRepository
@@ -106,6 +107,17 @@ type App struct {
 	// from the ONLINE_COUNTER route when one exists (legacy GuildSetup
 	// otherwise).
 	onlineCounter *discord.VoiceChannelCounter
+	// onlineCounterRouted is set while the counter is bound to an
+	// ONLINE_COUNTER route. The route is authoritative: the legacy
+	// GuildSetup channel is only a fallback and must never override it
+	// (a retired legacy channel that was deleted is exactly how the counter
+	// ended up renaming an Unknown Channel on every presence change).
+	onlineCounterRouted atomic.Bool
+	// onlineLoop drives onlineCounter from the authoritative current player
+	// count (online_counter.go); setupStore is the legacy channel fallback.
+	onlineLoopOnce sync.Once
+	onlineLoop     *onlineCounterLoop
+	setupStore     discord.SetupStore
 	// guildServers lists the configured guild's row id and active servers
 	// (set once routing starts).
 	guildServers func(ctx context.Context) (int64, []int64, error)
@@ -196,6 +208,7 @@ type App struct {
 	// RouteSyncer keeps those guild-level routed artifacts in step with the
 	// installation routes. Nil-safe: without it routes are simply not synced.
 	RouteSyncer *discord.RouteSyncer
+	ServerRanksBoards []*discord.ServerRanksBoard
 	// adminSaaS is the cross-tenant, read-only platform-admin read model behind
 	// /api/admin (internal/adminrepo); adminChannelNames optionally overrides the
 	// Discord-cache channel name lookup (tests).
@@ -573,7 +586,13 @@ func (a *App) allRotatingFeeds() []*discord.RotatingFeed {
 func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	slog.Info("component=startup", "msg", "starting DayZ killfeed")
 
-	nitradoClient := nitrado.NewClient("https://api.nitrado.net", cfg.NitradoToken, nil)
+	if cfg.NitradoAPIBaseURL != "" {
+		// Isolated staging only (config.Load refuses it unless APP_ENV=staging):
+		// every Nitrado client in this process talks to the read-only fixture.
+		nitrado.SetAPIBaseURLOverride(cfg.NitradoAPIBaseURL)
+		slog.Warn("component=nitrado", "msg", "NITRADO_API_BASE_URL override active: using the staging Nitrado fixture, not the real Nitrado API")
+	}
+	nitradoClient := nitrado.NewClient(nitrado.DefaultBaseURL, cfg.NitradoToken, nil)
 	slog.Info("component=nitrado", "msg", "client configured", "base_url", nitradoClient.BaseURL())
 
 	// Welcomer consumes GuildMemberAdd, so request only the Guild Members
@@ -635,6 +654,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.Kills = repository.NewKillRepository(db.Pool)
 			app.Deaths = repository.NewDeathRepository(db.Pool)
 			app.Stats = repository.NewStatsRepository(db.Pool)
+			app.Ranked = repository.NewRankedRepository(db.Pool)
 			app.Sessions = repository.NewSessionRepository(db.Pool)
 			app.Checkpoints = repository.NewCheckpointRepository(db.Pool)
 			app.Streaks = repository.NewStreakRepository(db.Pool)
@@ -856,7 +876,10 @@ func (a *App) verifyNitrado(ctx context.Context) (authenticated, verified bool, 
 	return true, true, service.Game, service.Type, service.Status
 }
 
-func bindOnlineCounter(store discord.SetupStore, guildID string, counter *discord.VoiceChannelCounter) {
+// bindLegacyOnlineCounter binds the legacy GuildSetup channel. Only
+// bindCounterChannel calls it, and only when the ONLINE_COUNTER route is
+// confirmed absent.
+func bindLegacyOnlineCounter(store discord.SetupStore, guildID string, counter *discord.VoiceChannelCounter) {
 	if store == nil || counter == nil || guildID == "" {
 		return
 	}
@@ -1081,6 +1104,7 @@ func (a *App) Run() error {
 		verifiedRole := discord.NewVerifiedRoleAssigner(a.Discord, setupStore, a.Config.DiscordGuildID)
 		a.LinkService.SetRoleAssigner(verifiedRole)
 		a.LinkService.SetNotifier(verifiedRole)
+		go a.runRoleReconciler(ctx)
 	}
 	setupHandler := discord.NewSetupHandler(setupManager, a.Guilds, a.WelcomeRepository)
 	// /setup runs the same Channel System V2 layout engine as the website's
@@ -1150,6 +1174,9 @@ func (a *App) Run() error {
 	}
 	if a.SeasonService != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
 		seasonHandler := discord.NewSeasonCommandHandler(a.SeasonService, a.Guilds)
+		if a.Ranked != nil && a.Servers != nil {
+			seasonHandler.SetRankedStatus(rankedSeasonStatus{servers: a.Servers, ranked: a.Ranked})
+		}
 		if err := discord.RegisterSeasonCommands(session, a.Config.DiscordGuildID); err != nil {
 			slog.Warn("component=discord", "msg", "failed to register season commands", "err", err.Error())
 		}
@@ -1310,13 +1337,16 @@ func (a *App) Run() error {
 	// debounced count changes. Shared across servers (one voice channel per guild
 	// today; per-server counters are a known gap, see Section 1 report). ---
 	onlineCounter := discord.NewVoiceChannelCounter(api, "")
+	onlineCounter.SetGuildID(a.Config.DiscordGuildID)
 	a.onlineCounter = onlineCounter
+	a.setupStore = setupStore
 	onlineCounter.OnPublish(func(count int, result string) { a.recordPublicVoicePublish(count, result) })
 	if cfg := setupStore; cfg != nil {
 		if gs, err := cfg.Get(a.Config.DiscordGuildID); err == nil && gs != nil && gs.OnlinePlayersChannelID != "" {
 			onlineCounter.SetChannelID(gs.OnlinePlayersChannelID)
 		}
 	}
+	go a.runOnlineCounter(ctx, onlineCounter)
 	if a.AdminService != nil {
 		a.AdminService.SetPipelineDiagnostics(func(diagCtx context.Context) map[string]any {
 			out := map[string]any{"worker": "NOT FOUND", "classification": "UNKNOWN"}
@@ -1422,7 +1452,38 @@ func (a *App) Run() error {
 			if actualErr != nil {
 				out["actual_discord_count"] = "UNAVAILABLE"
 			}
-			out["classification"] = classifyPresenceActual(snapshot, actualCount, actualKnown, true, true)
+			// The counter publishes the authoritative current count (Nitrado
+			// query, or proven ADM evidence), not the raw tracker.
+			desired := snapshot
+			if st := a.OnlineCounterStatus(); st.ServerID == selectedID && !st.EvaluatedAt.IsZero() {
+				out["counter_source"] = st.Source
+				out["counter_known"] = st.Reading.Known
+				out["counter_desired_name"] = st.Reading.Name()
+				out["counter_held_last_known"] = st.Held
+				out["counter_evaluated_at"] = diagnosticTime(st.EvaluatedAt)
+				out["adm_presence_state"] = st.ADMState
+				out["nitrado_status"] = st.NitradoStatus
+				if st.NitradoCount != nil {
+					out["nitrado_player_current"] = *st.NitradoCount
+				} else {
+					out["nitrado_player_current"] = "UNKNOWN"
+				}
+				if st.NitradoError != "" {
+					out["nitrado_error"] = "UNAVAILABLE"
+				}
+				if st.NitradoWrongService {
+					out["nitrado_error"] = "WRONG_SERVICE"
+				}
+				out["tracker_matches_nitrado"] = st.NitradoCount != nil && *st.NitradoCount == st.TrackerCount
+				if st.Disagreement != nil {
+					out["presence_disagreement_since"] = diagnosticTime(st.Disagreement.Since)
+				}
+				if st.Reading.Known {
+					desired.OnlineCount = st.Reading.Count
+				}
+			}
+			out["counter_health"] = onlineCounter.Health()
+			out["classification"] = classifyPresenceActual(desired, actualCount, actualKnown, true, true)
 			return out
 		})
 	}
@@ -1494,6 +1555,13 @@ func (a *App) Run() error {
 			if routingEnabled {
 				routePanels = discord.NewRoutePanels(api, discord.NewRoutePanelStore(a.GuildRoutePanels))
 			}
+			if routingEnabled && a.Ranked != nil {
+				for _, serverRow := range activeServers {
+					board := discord.NewServerRanksBoard(a.ChannelRoutes, routePanels, a.Ranked, guildRowID, serverRow.ID, serverRow.DisplayName)
+					a.ServerRanksBoards = append(a.ServerRanksBoards, board)
+					go board.Run(ctx)
+				}
+			}
 			if routingEnabled && a.EconomyService != nil {
 				// ECONOMY: the public transaction feed, per (guild, server) through the
 				// shared resolver, no fallback. Fed only after a transaction committed
@@ -1561,6 +1629,12 @@ func (a *App) Run() error {
 							_ = setupStore.Save(*latest)
 						}
 					})
+					// The guild V3 ranks embed follows its selected public server's
+					// active Ranked season. The dedicated boards remain per-server.
+					if a.Ranked != nil && a.Servers != nil {
+						a.LeaderboardScheduler.SetRankSource(discord.ServerSeasonRankReader{Servers: a.Servers, Ranked: a.Ranked})
+					}
+					a.LeaderboardScheduler.SetServerNames(guildServers, a.serverNameFunc())
 					if routingEnabled {
 						a.LeaderboardScheduler.SetRouting(a.ChannelRoutes, guildServers, routePanels,
 							discord.NewLegacyLeaderboardRetirer(api, setupStore, a.Config.DiscordGuildID))
@@ -1586,7 +1660,7 @@ func (a *App) Run() error {
 				setupManager.SetRouteGate(a.RouteSyncer.HasRoute)
 				go a.RouteSyncer.Run(ctx)
 			}
-			store := &persistenceStoreAdapter{players: a.Players, kills: a.Kills, deaths: a.Deaths, seasons: a.Seasons, factions: a.Factions, wars: a.Wars, events: a.Events, bounties: a.Bounties, bountySvc: a.BountyService, streaks: a.Streaks, anomalies: a.Anomalies, activity: a.ActivityRepository, servers: a.Servers, stats: a.Stats, analytics: a.AnalyticsRepository, factionStats: a.FactionHubStats, locations: a.Locations, zones: a.Zones, panelDirty: func() {
+			store := &persistenceStoreAdapter{players: a.Players, kills: a.Kills, deaths: a.Deaths, seasons: a.Seasons, ranked: a.Ranked, factions: a.Factions, wars: a.Wars, events: a.Events, bounties: a.Bounties, bountySvc: a.BountyService, streaks: a.Streaks, anomalies: a.Anomalies, activity: a.ActivityRepository, servers: a.Servers, stats: a.Stats, analytics: a.AnalyticsRepository, factionStats: a.FactionHubStats, locations: a.Locations, zones: a.Zones, panelDirty: func() {
 				if a.LeaderboardScheduler != nil {
 					a.LeaderboardScheduler.MarkDirty()
 				}
@@ -1664,8 +1738,19 @@ func (a *App) Run() error {
 // visible at once, the whole batch replaced every rotatingFeedInterval.
 const (
 	rotatingFeedInterval  = 10 * time.Minute
-	rotatingFeedBatchSize = 10
+	rotatingFeedBatchSize = 50
 )
+
+// feedDeliveryMode reads KILLFEED_DELIVERY_MODE. Only the exact value
+// "immediate" enables immediate delivery (each kill/death card posted as soon
+// as it is persisted, with a separate rolling 50-card window per feed); anything else, including
+// unset, keeps the production rotating cycle unchanged.
+func feedDeliveryMode() string {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("KILLFEED_DELIVERY_MODE")), discord.FeedModeImmediate) {
+		return discord.FeedModeImmediate
+	}
+	return discord.FeedModeRotating
+}
 
 func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServer, store *persistenceStoreAdapter, setupStore discord.SetupStore, onlineCounter *discord.VoiceChannelCounter) error {
 	workerName := fmt.Sprintf("adm_worker_%d", row.ID)
@@ -1674,6 +1759,7 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 			a.Workers.Stop(workerName)
 		}
 		a.unregisterPresenceTracker(row.ID)
+		a.unregisterCounterSource(row.ID)
 	}()
 
 	client, credentialErr := a.nitradoClientForServer(workerCtx, row)
@@ -1685,7 +1771,6 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 			return fmt.Errorf("reset stale activity session for server %d: %w", row.ID, err)
 		}
 	}
-	bindOnlineCounter(setupStore, a.Config.DiscordGuildID, onlineCounter)
 	engine := killfeed.NewEngine(client, row.ProviderServiceID, killfeed.NewADMParser())
 	engine.SetStateSink(a.State)
 	engine.SetDiagnostics(killfeed.NewRuntimeDiagnostics(row.ID))
@@ -1807,6 +1892,7 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 		}()
 	}
 
+	var pveFeed *discord.PveFeedPublisher
 	if a.ChannelRoutes != nil && a.Discord != nil && a.Discord.Session() != nil {
 		// PVE_FEED: provably non-PvP deaths (today: explicit suicides). Only a
 		// death the feed CLAIMS (a PVE_FEED route exists for this server) is kept
@@ -1814,9 +1900,44 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 		// legacy death feed behaves exactly as before. No KILLFEED fallback.
 		// Bounded queue + a single goroutine; Discord/DB failures cannot reach
 		// persistence, ADM parsing or the other feeds.
-		pveFeed := discord.NewPveFeedPublisher(a.Discord.Session(), a.ChannelRoutes, row.GuildID, row.ID)
+		pveFeed = discord.NewPveFeedPublisher(a.Discord.Session(), a.ChannelRoutes, row.GuildID, row.ID)
 		pveFeed.SetCustomizer(a.embedCustomizer(), a.serverNameFunc())
 		engine.SetPveDeathPublisher(pveFeed)
+	}
+
+	deathPublisher := discord.NewDeathfeedPublisher(a.Discord, setupStore, a.Config.DiscordGuildID)
+	engine.SetDeathPublisher(deathPublisher)
+
+	killFeed := discord.NewRotatingFeed(discord.NewFeedSession(a.Discord.Session()), setupStore, a.Config.DiscordGuildID, func(s *discord.GuildSetup) string { return s.KillfeedChannelID }, rotatingFeedInterval, rotatingFeedBatchSize)
+	killFeed.SetRouteChannelResolver(publisher.RouteChannelID)
+	killFeed.SetMode(feedDeliveryMode())
+	publisher.SetFeed(killFeed)
+	a.addRotatingFeed(killFeed)
+	deathFeed := discord.NewRotatingFeed(discord.NewFeedSession(a.Discord.Session()), setupStore, a.Config.DiscordGuildID, func(s *discord.GuildSetup) string { return s.DeathChannelID }, rotatingFeedInterval, rotatingFeedBatchSize)
+	// Death and suicide cards resolve the installation's PVE_FEED route,
+	// separate from KILLFEED. The legacy death channel is the fallback only
+	// when that route does not exist or cannot be resolved.
+	if a.ChannelRoutes != nil {
+		deathFeed.SetRouteChannelResolver(func() string {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			channelID, found, err := a.ChannelRoutes.Resolve(ctx, row.GuildID, row.ID, "PVE_FEED")
+			if err != nil {
+				slog.Warn("component=discord", "event", "channel_route_fallback", "route_key", "PVE_FEED", "server_id", row.ID, "reason", "lookup_error", "err", err.Error())
+				return ""
+			}
+			if !found {
+				return ""
+			}
+			return channelID
+		})
+	}
+	deathFeed.SetRoute("DEATH_FEED")
+	deathFeed.SetMode(feedDeliveryMode())
+	deathPublisher.SetFeed(deathFeed)
+	a.addRotatingFeed(deathFeed)
+	if pveFeed != nil {
+		pveFeed.SetFeed(deathFeed)
 		go func() {
 			defer func() {
 				if r := recover(); r != nil {
@@ -1826,21 +1947,16 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 			pveFeed.Run(workerCtx)
 		}()
 	}
-
-	deathPublisher := discord.NewDeathfeedPublisher(a.Discord, setupStore, a.Config.DiscordGuildID)
-	engine.SetDeathPublisher(deathPublisher)
-
-	killFeed := discord.NewRotatingFeed(a.Discord.Session(), setupStore, a.Config.DiscordGuildID, func(s *discord.GuildSetup) string { return s.KillfeedChannelID }, rotatingFeedInterval, rotatingFeedBatchSize)
-	killFeed.SetRouteChannelResolver(publisher.RouteChannelID)
-	publisher.SetFeed(killFeed)
-	a.addRotatingFeed(killFeed)
-	deathFeed := discord.NewRotatingFeed(a.Discord.Session(), setupStore, a.Config.DiscordGuildID, func(s *discord.GuildSetup) string { return s.DeathChannelID }, rotatingFeedInterval, rotatingFeedBatchSize)
-	// Channel System V2: deaths share the combat feed. With a KILLFEED route
-	// the death feed posts there; the legacy death channel is only the
-	// fallback for guilds without routes.
-	deathFeed.SetRouteChannelResolver(publisher.RouteChannelID)
-	deathPublisher.SetFeed(deathFeed)
-	a.addRotatingFeed(deathFeed)
+	if a.DB != nil && a.DB.Pool != nil {
+		// Feed journal (migration 0066): immediate mode records every card so
+		// a restart replays undelivered cards and takes back the previous
+		// process's shown cards. Rotating mode only drains what an earlier
+		// immediate process left (rollback), so under the production default
+		// the table stays empty.
+		journal := repository.NewFeedCardRepository(a.DB.Pool)
+		killFeed.SetJournal(journal, fmt.Sprintf("KILLFEED:%d", row.ID))
+		deathFeed.SetJournal(journal, fmt.Sprintf("DEATH_FEED:%d", row.ID))
+	}
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -1858,6 +1974,26 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 		deathFeed.Run(workerCtx)
 	}()
 
+	if store.ranked != nil {
+		go func() {
+			reconcile := func() {
+				if count, err := store.ranked.ReconcileServerAwards(workerCtx, row.ID); err != nil && workerCtx.Err() == nil {
+					slog.Warn("component=ranked", "event", "reconciliation_failed", "server_id", row.ID, "err", err.Error())
+				} else if count > 0 {
+					slog.Info("component=ranked", "event", "awards_reconciled", "server_id", row.ID, "count", count)
+				}
+			}
+			reconcile()
+			ticker := time.NewTicker(time.Minute)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-workerCtx.Done(): return
+				case <-ticker.C: reconcile()
+				}
+			}
+		}()
+	}
 	pq := killfeed.NewPersistenceQueueWithServerID(store, row.GuildID, row.ID, row.ProviderServiceID)
 	pq.SetKillPostProcessor(store)
 	pq.SetDeathPostProcessor(store)
@@ -1872,6 +2008,7 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 	// poller and the SAME durable checkpoint as the existing killfeed.
 	if caseEvidenceEnabledForServer(row.ID) && a.DB != nil && a.DB.Pool != nil && a.Checkpoints != nil {
 		engine.SetEvidenceStore(repository.NewCaseEvidenceRepository(a.DB.Pool))
+		engine.SetBuildEvidenceEnabled(caseBuildEvidenceEnabledForServer(row.ID))
 		slog.Info("component=case", "event", "evidence_collector_enabled", "server_id", row.ID)
 	}
 
@@ -1888,22 +2025,31 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 	}
 	a.addLocationQueue(lq)
 
-	engine.OnPlayersChanged(func(count int) {
-		if !a.ownsPublicCounter(row.ID) {
-			return
-		}
-		a.State.SetOnlinePlayers(count)
-		if onlineCounter != nil {
-			bindOnlineCounter(setupStore, a.Config.DiscordGuildID, onlineCounter)
-			onlineCounter.Publish(count)
-			_ = onlineCounter.Reconcile(count)
-			a.State.SetOnlineCounter(onlineCounter.LastPublished(), onlineCounter.UpdateErrors(), onlineCounter.PermissionBlocked())
+	// Presence changes only nudge the online counter loop (online_counter.go),
+	// which resolves the authoritative count and renames the channel on its
+	// own goroutine. This callback runs on the ADM pipeline and must never
+	// make a Discord or Nitrado call itself: a rename rate limit here would
+	// stall kill processing.
+	engine.OnPlayersChanged(func(int) {
+		if a.ownsPublicCounter(row.ID) {
+			a.pokeOnlineCounter()
 		}
 	})
-	if a.ownsPublicCounter(row.ID) && onlineCounter != nil {
-		bindOnlineCounter(setupStore, a.Config.DiscordGuildID, onlineCounter)
-		_ = onlineCounter.Reconcile(engine.PlayerTracker().OnlineCount())
-	}
+	engine.OnNewBoot(func(cleared int) {
+		// A server restart ended every open session of the previous boot:
+		// close them in the activity store too, so phantom "connected" rows
+		// stop accruing observed playtime for /link. Accrued time is kept.
+		if a.ActivityRepository != nil {
+			resetCtx, cancel := context.WithTimeout(workerCtx, 5*time.Second)
+			if err := a.ActivityRepository.ResetConnectedForRestart(resetCtx, row.GuildID, row.ID); err != nil {
+				slog.Warn("component=link_activity", "event", "server_restart_reset_failed", "server_id", row.ID, "err", err.Error())
+			} else {
+				slog.Info("component=link_activity", "event", "server_restart_reset", "server_id", row.ID, "cleared_presence", cleared)
+			}
+			cancel()
+		}
+	})
+	a.registerCounterSource(row.ID, counterSource{serviceID: row.ProviderServiceID, live: client, engine: engine})
 
 	if a.Workers != nil {
 		a.Workers.Register(workerName)
@@ -2064,6 +2210,7 @@ type persistenceStoreAdapter struct {
 	kills     *repository.KillRepository
 	deaths    *repository.DeathRepository
 	seasons   *repository.SeasonRepository
+	ranked    *repository.RankedRepository
 	factions  *repository.FactionRepository
 	wars      *repository.PostgresWarRepository
 	events    *repository.EventRepository
@@ -2305,6 +2452,11 @@ func (p *persistenceStoreAdapter) ResolveStreakContext(ctx context.Context, guil
 }
 
 func (p *persistenceStoreAdapter) ProcessPersistedKill(ctx context.Context, killID int64, record repository.KillRecord, ev *killfeed.Event) {
+	if p.ranked != nil && record.ServerID > 0 {
+		if _, err := p.ranked.AwardActiveServerKill(ctx, record.ServerID, killID); err != nil && !errors.Is(err, repository.ErrRankedIneligible) {
+			slog.Warn("component=ranked", "event", "award_failed_retry_scheduled", "server_id", record.ServerID, "kill_id", killID, "err", err.Error())
+		}
+	}
 	// Runs on every exit (including the bounty claim at the end): the kill is durable, so cached
 	// faction figures are stale and the killer's factions may have earned an achievement.
 	defer p.factionStats.NotifyCombat(record.GuildID, record.ServerID, record.KillerPlayerID)
@@ -2580,4 +2732,57 @@ func nitradoFailureMessage(kind nitrado.ErrorKind) string {
 	default:
 		return "unexpected Nitrado response"
 	}
+}
+
+// roleReconcileInterval/roleReconcileBatch bound the Verified-role
+// reconciler: at most roleReconcileBatch Discord role calls per interval.
+const (
+	roleReconcileInterval = 2 * time.Minute
+	roleReconcileBatch    = 10
+)
+
+// runRoleReconciler re-delivers Verified roles that failed (or never
+// completed) - including across process restarts, since the pending state is
+// persisted (migration 0056). It runs once shortly after startup, then on
+// roleReconcileInterval. It never blocks ADM ingestion (own goroutine).
+func (a *App) runRoleReconciler(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("component=link", "event", "role_reconciler_panic", "err", fmt.Sprint(r))
+		}
+	}()
+	timer := time.NewTimer(30 * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+		if a.Guilds != nil && a.LinkService != nil && a.Config != nil {
+			runCtx, cancel := context.WithTimeout(ctx, time.Minute)
+			if _, guildRowID, err := a.Guilds.GetGuild(runCtx, a.Config.DiscordGuildID); err == nil && guildRowID > 0 {
+				if _, err := a.LinkService.ReconcileRoles(runCtx, guildRowID, roleReconcileBatch); err != nil {
+					slog.Warn("component=link", "event", "role_reconcile_failed", "err", err.Error())
+				}
+			}
+			cancel()
+		}
+		timer.Reset(roleReconcileInterval)
+	}
+}
+
+// rankedSeasonStatus joins the guild's active servers with their Ranked
+// seasons for /season status.
+type rankedSeasonStatus struct {
+	servers *repository.ServerRepository
+	ranked  *repository.RankedRepository
+}
+
+func (r rankedSeasonStatus) ListActiveByGuild(ctx context.Context, guildID int64) ([]repository.GameServer, error) {
+	return r.servers.ListActiveByGuild(ctx, guildID)
+}
+
+func (r rankedSeasonStatus) ActiveServerSeason(ctx context.Context, guildID, serverID int64) (*repository.ServerRankedSeason, error) {
+	return r.ranked.ActiveServerSeason(ctx, guildID, serverID)
 }

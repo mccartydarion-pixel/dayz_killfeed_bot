@@ -100,10 +100,29 @@ func FixtureSeasonSnapshot() LeaderboardSnapshot {
 		s.TopKills = append(s.TopKills, repository.LeaderboardEntry{DisplayName: names[i], Value: kills[i]})
 	}
 	longest := []string{"298.4m", "214.7m", "198.3m", "177.1m", "98.3m"}
-	kd := []string{"4.25", "3.80", "2.10", "1.75", "1.42"}
 	for i := 0; i < 5; i++ {
 		s.TopLongest = append(s.TopLongest, repository.LeaderboardEntry{DisplayName: names[i], Value: longest[i]})
-		s.TopKD = append(s.TopKD, repository.LeaderboardEntry{DisplayName: names[i], Value: kd[i]})
+	}
+	return s
+}
+
+// FixtureAutoLeaderboardSnapshot is a full Auto Leaderboard V3 snapshot: 15
+// entries in every category (kills, streaks, fixture ranks, deaths, longest).
+func FixtureAutoLeaderboardSnapshot() LeaderboardSnapshot {
+	names := []string{"PlayerOne", "PlayerTwo", "PlayerThree", "PlayerFour", "PlayerFive", "IIIIIIIIIIII-I", "Its_H14METIYO", "zTonii99",
+		"WilliamAle--10", "KikiduritoR2", "Ceiyxe", "MmeyAFK_7", "superflame_1738", "Cool-Creeper65", "Semillita-azul-_"}
+	kills := []string{"6053", "5385", "4753", "4323", "3001", "2500", "2100", "1800", "1500", "1200", "900", "600", "300", "2", "1"}
+	streaks := []string{"27", "24", "19", "18", "15", "14", "12", "11", "10", "9", "8", "7", "6", "5", "1"}
+	deaths := []string{"5012", "4877", "4000", "3500", "3000", "2500", "2000", "1500", "1000", "800", "600", "400", "200", "2", "1"}
+	longest := []string{"1104.2", "341.8", "297.4", "250.0", "215.0", "200.1", "180.5", "150.2", "120.9", "110.0", "105.5", "101.1", "99.9", "98.3", "12.0"}
+	tiers := []string{"Diamond III", "Diamond II", "Diamond I", "Platinum III", "Platinum II", "Platinum I", "Gold III", "Gold II", "Gold I", "Silver III", "Silver II", "Silver I", "Bronze III", "Bronze II", "Bronze I"}
+	s := LeaderboardSnapshot{RanksEnabled: true, ServerName: "Champions Deathmatch", GeneratedAt: time.Unix(1790160000, 0)}
+	for i, n := range names {
+		s.TopKills = append(s.TopKills, repository.LeaderboardEntry{DisplayName: n, Value: kills[i]})
+		s.TopStreaks = append(s.TopStreaks, repository.LeaderboardEntry{DisplayName: n, Value: streaks[i]})
+		s.TopDeaths = append(s.TopDeaths, repository.LeaderboardEntry{DisplayName: n, Value: deaths[i]})
+		s.TopLongest = append(s.TopLongest, repository.LeaderboardEntry{DisplayName: n, Value: longest[i] + "m"})
+		s.CurrentRanks = append(s.CurrentRanks, RankEntry{DisplayName: n, Rank: tiers[i]})
 	}
 	return s
 }
@@ -133,7 +152,8 @@ func allFixtureEmbeds() []namedFixture {
 		{"streak ended", BuildKillEmbed(FixtureStreakEndedKill())},
 		{"death", BuildDeathEmbed(FixtureDeath())},
 		{"suicide", BuildDeathEmbed(FixtureSuicide())},
-		{"season leaderboard", BuildLeaderboardEmbed(FixtureSeasonSnapshot(), DefaultLeaderboardConfig())},
+		{"auto leaderboard header", BuildAutoLeaderboardEmbeds(FixtureSeasonSnapshot(), DefaultLeaderboardConfig())[0]},
+		{"auto leaderboard kills", BuildAutoLeaderboardEmbeds(FixtureSeasonSnapshot(), DefaultLeaderboardConfig())[1]},
 		{"player leaderboard", presentation.BuildPlayerLeaderboardEmbed("Kills", FixturePlayerLeaderboard(), "Lifetime")},
 	}
 }

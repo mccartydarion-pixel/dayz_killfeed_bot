@@ -5,8 +5,11 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"github.com/yourname/dayz-killfeed/internal/discord"
 	"log/slog"
 	"net/http"
+	"os"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -32,6 +35,50 @@ type RuntimeStatusResponse struct {
 	LastParsedEventAt      *string               `json:"lastParsedEventAt"`
 	LastPersistedEventAt   *string               `json:"lastPersistedEventAt"`
 	Servers                []RuntimeServerStatus `json:"servers,omitempty"`
+	// Health is the evidence-based per-installation state (HEALTHY,
+	// DEGRADED, UNAVAILABLE, UNKNOWN) with the reasons behind it.
+	Health *RuntimeHealth `json:"health,omitempty"`
+	// Build identifies what this process is running, so a deployment can be
+	// checked against its pinned commit and configuration without shell
+	// access. Names and modes only - never a credential.
+	Build *RuntimeBuild `json:"build,omitempty"`
+}
+
+// RuntimeBuild is the deployment identity block of GET /api/runtime/status.
+type RuntimeBuild struct {
+	Commit               string `json:"commit"`
+	AppEnv               string `json:"appEnv"`
+	KillfeedDeliveryMode string `json:"killfeedDeliveryMode"`
+	// NitradoSource is "nitrado" (the real API) or "fixture"
+	// (NITRADO_API_BASE_URL, staging only).
+	NitradoSource string `json:"nitradoSource"`
+}
+
+// buildCommit is Railway's commit for GitHub-sourced deploys, else the VCS
+// revision stamped by the Go toolchain, else "unknown".
+func buildCommit() string {
+	if sha := strings.TrimSpace(os.Getenv("RAILWAY_GIT_COMMIT_SHA")); sha != "" {
+		return sha
+	}
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, s := range info.Settings {
+			if s.Key == "vcs.revision" && s.Value != "" {
+				return s.Value
+			}
+		}
+	}
+	return "unknown"
+}
+
+func (a *App) runtimeBuild() *RuntimeBuild {
+	b := &RuntimeBuild{Commit: buildCommit(), KillfeedDeliveryMode: feedDeliveryMode(), NitradoSource: "nitrado"}
+	if a.Config != nil {
+		b.AppEnv = a.Config.AppEnv
+		if a.Config.NitradoAPIBaseURL != "" {
+			b.NitradoSource = "fixture"
+		}
+	}
+	return b
 }
 
 // RuntimeServerStatus is one entry in the "pick a server" fallback, returned
@@ -135,7 +182,7 @@ func (a *App) runtimeStatusHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := RuntimeStatusResponse{OK: true, GuildID: requestedGuildID}
+	resp := RuntimeStatusResponse{OK: true, GuildID: requestedGuildID, Build: a.runtimeBuild()}
 
 	serverID := guild.SelectedPublicServerID
 	if raw := strings.TrimSpace(r.URL.Query().Get("server_id")); raw != "" {
@@ -161,9 +208,21 @@ func (a *App) runtimeStatusHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp.ServerID = serverID
+	binding := "NOT_FOUND"
 	if row, rowErr := a.Servers.GetByID(ctx, serverID); rowErr == nil && row != nil {
+		if row.GuildID != guildRowID {
+			// Tenant isolation: another guild's server is never described here.
+			writeRuntimeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "unknown_server"})
+			return
+		}
 		resp.ServerName = row.DisplayName
+		binding = "INACTIVE"
+		if row.Active && !strings.EqualFold(row.Status, "DISCONNECTED") {
+			binding = "BOUND"
+		}
 	}
+	health := a.runtimeHealth(serverID, binding)
+	resp.Health = &health
 
 	if presence, found := a.livePresenceSnapshot(serverID); found {
 		online := presence.OnlineCount
@@ -182,6 +241,13 @@ func (a *App) runtimeStatusHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		classification := pipeline.Classification()
 		resp.PipelineClassification = nullableString(classification)
+		// One authority for the count: the same reading as health/the voice
+		// counter. Unknown is null, never 0.
+		if count, known := a.knownPresenceCount(serverID); known {
+			resp.PlayersOnline = &count
+		} else if presence, found := a.livePresenceSnapshot(serverID); found && !presence.Presence.Known {
+			resp.PlayersOnline = nil
+		}
 
 		status := "STOPPED"
 		switch {
@@ -194,4 +260,38 @@ func (a *App) runtimeStatusHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeRuntimeJSON(w, http.StatusOK, resp)
+}
+
+// runtimeHealth gathers in-memory evidence for one server and evaluates it.
+func (a *App) runtimeHealth(serverID int64, binding string) RuntimeHealth {
+	in := healthInputs{Binding: binding, Deliveries: discord.Deliveries.Snapshot()}
+	a.presenceMu.Lock()
+	engine := a.presenceEngines[serverID]
+	a.presenceMu.Unlock()
+	if engine != nil && engine.Diagnostics() != nil {
+		in.WorkerFound = true
+		in.Pipeline = engine.Diagnostics().Snapshot()
+		in.Presence = engine.PresenceSnapshot()
+		if pending, ok := engine.PendingEvents(); ok {
+			in.Pending = &pending
+		}
+	}
+	if a.onlineCounter != nil {
+		in.Counter = a.onlineCounter.Health()
+		in.CounterOwned = a.ownsPublicCounter(serverID)
+	}
+	if st := a.OnlineCounterStatus(); st.ServerID == serverID && !st.EvaluatedAt.IsZero() {
+		in.CounterStatus = &st
+	}
+	in.Now = time.Now()
+	if a.Links != nil && a.Guilds != nil && a.Config != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		if _, guildRowID, err := a.Guilds.GetGuild(ctx, a.Config.DiscordGuildID); err == nil && guildRowID > 0 {
+			if counts, err := a.Links.RoleSyncCounts(ctx, guildRowID); err == nil {
+				in.RoleSync = counts
+			}
+		}
+		cancel()
+	}
+	return evaluateRuntimeHealth(in)
 }

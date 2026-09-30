@@ -184,3 +184,59 @@ func TestShopCanaryExecutionIsLockedByDefault(t *testing.T) {
 		t.Fatal("the canary lock opened without its own switch")
 	}
 }
+
+// TestNitradoAPIBaseURLOnlyInStaging: the Nitrado API replacement is an
+// allowlist - only APP_ENV=staging accepts it, so a production service (with
+// APP_ENV unset, "production" or anything else) refuses to start with it.
+func TestNitradoAPIBaseURLOnlyInStaging(t *testing.T) {
+	for _, tc := range []struct {
+		raw, env string
+		ok       bool
+	}{
+		{"", "production", true},
+		{"", "", true},
+		{"http://nitrado-fixture.railway.internal:8080", "staging", true},
+		{"https://fixture.example", "STAGING", true},
+		{"http://nitrado-fixture.railway.internal:8080", "production", false},
+		{"http://nitrado-fixture.railway.internal:8080", "", false},
+		{"http://nitrado-fixture.railway.internal:8080", "development", false},
+		{"nitrado-fixture:8080", "staging", false},
+		{"ftp://fixture", "staging", false},
+	} {
+		if err := ValidateNitradoAPIBaseURL(tc.raw, tc.env); (err == nil) != tc.ok {
+			t.Errorf("ValidateNitradoAPIBaseURL(%q, %q) = %v, want ok=%v", tc.raw, tc.env, err, tc.ok)
+		}
+	}
+}
+
+func TestLoadRefusesNitradoOverrideOutsideStaging(t *testing.T) {
+	t.Setenv("DISCORD_TOKEN", "x")
+	t.Setenv("NITRADO_API_BASE_URL", "http://nitrado-fixture:8080")
+	t.Setenv("APP_ENV", "production")
+	if _, err := Load(); err == nil {
+		t.Fatal("Load accepted NITRADO_API_BASE_URL in production")
+	}
+	t.Setenv("APP_ENV", "staging")
+	cfg, err := Load()
+	if err != nil || cfg.NitradoAPIBaseURL != "http://nitrado-fixture:8080" {
+		t.Fatalf("staging Load: %v %+v", err, cfg)
+	}
+}
+
+func TestStagingRefusesLiveStripeKey(t *testing.T) {
+	for _, tc := range []struct {
+		env, key string
+		ok       bool
+	}{
+		{"staging", "", true},
+		{"staging", "sk_test_abc", true},
+		{"staging", "sk_live_abc", false},
+		{"STAGING", "rk_live_abc", false},
+		{"production", "sk_live_abc", true}, // production is not this guard's concern
+		{"", "sk_live_abc", true},
+	} {
+		if err := ValidateStagingIsolation(tc.env, tc.key); (err == nil) != tc.ok {
+			t.Errorf("ValidateStagingIsolation(%q, %q) = %v, want ok=%v", tc.env, tc.key, err, tc.ok)
+		}
+	}
+}

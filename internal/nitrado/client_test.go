@@ -136,3 +136,24 @@ func TestClientHasNoFTPTransportFields(t *testing.T) {
 		t.Fatal("expected Client's transport to be *http.Client")
 	}
 }
+
+func TestAPIBaseURLOverrideAppliesOnlyToDefaultClients(t *testing.T) {
+	t.Cleanup(func() { SetAPIBaseURLOverride("") })
+	if got := NewClient(DefaultBaseURL, "t", nil).BaseURL(); got != DefaultBaseURL {
+		t.Fatalf("no override: %s", got)
+	}
+	SetAPIBaseURLOverride("http://fixture:8080/")
+	if got := NewClient(DefaultBaseURL, "t", nil).BaseURL(); got != "http://fixture:8080" {
+		t.Fatalf("override not applied: %s", got)
+	}
+	if got := NewClient("", "t", nil).BaseURL(); got != "http://fixture:8080" {
+		t.Fatalf("override not applied to empty base: %s", got)
+	}
+	if got := NewClient("http://explicit", "t", nil).BaseURL(); got != "http://explicit" {
+		t.Fatalf("explicit base must win: %s", got)
+	}
+	SetAPIBaseURLOverride("")
+	if got := NewClient(DefaultBaseURL, "t", nil).BaseURL(); got != DefaultBaseURL {
+		t.Fatalf("reset: %s", got)
+	}
+}

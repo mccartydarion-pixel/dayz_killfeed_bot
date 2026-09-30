@@ -3,18 +3,22 @@ package app
 import (
  "context"
  "net/http"
+ "time"
+
+ "github.com/yourname/dayz-killfeed/internal/killfeed"
 
  "github.com/yourname/dayz-killfeed/internal/caseintel"
  "github.com/yourname/dayz-killfeed/internal/permissions"
 )
 
-// This endpoint exposes the installed, disabled detector registry. It is not
+// This endpoint exposes the disabled client readiness catalog. It is not
 // an execution endpoint and cannot create a finding, case, alert or sanction.
 type caseDetectorReadiness struct {
  Mode string `json:"mode"`
  ServerID int64 `json:"serverId"`
  Registry []caseintel.DetectorDefinition `json:"registry"`
  Evaluations []caseintel.DetectorEvaluation `json:"evaluations"`
+ Health []caseDetectorCatalogHealth `json:"health"`
  InputCoverage string `json:"inputCoverage"`
  ExecutionEnabled bool `json:"executionEnabled"`
  Findings []any `json:"findings"`
@@ -29,7 +33,23 @@ func (a *App) handleAntiCheatDetectorReadiness(w http.ResponseWriter,r *http.Req
  if ac.scope.ServerID==nil{writeSaaSError(w,codeInvalidRequest,"no DayZ server selected");return}
  if a.DB==nil||a.DB.Pool==nil{writeSaaSError(w,codeInternalError,"C.A.S.E. unavailable");return}
  if !enforceRateLimit(w,a.saasAdminReadLimiter,rateLimitKey(r)){return}
- defs:=caseintel.Registry()
+ defs:=caseintel.ClientCatalog()
+ serverID:=*ac.scope.ServerID
+ now:=time.Now().UTC()
+ a.presenceMu.Lock()
+ engine:=a.presenceEngines[serverID]
+ a.presenceMu.Unlock()
+ available:=engine!=nil
+ var source killfeed.ADMSourceHealth
+ var pipeline killfeed.RuntimeDiagnosticSnapshot
+ if available {
+  source=engine.SourceHealth()
+  if diag:=engine.Diagnostics();diag!=nil {pipeline=diag.Snapshot()}
+ }
+ snapshot:=caseSourceSnapshot(serverID,now,source,pipeline,available)
+ snapshot.CollectorConfigured=caseEvidenceEnabledForServer(serverID)
+ health:=caseAssessDetectorCatalogHealth(defs,snapshot)
+ caseAttachRequiredTelemetry(health,snapshot,caseBuildEvidenceEnabledForServer(serverID))
  // Global source limitations are not eliminated by healthy polling.
  quality:=caseintel.QualityReport{CoverageStatus:"FILTERED_SOURCE_EVENTS_ONLY",
   TimeStatus:"CLOCK_ONLY_NO_TRUSTED_ELAPSED_TIME",MovementDetectorStatus:"BLOCKED",
@@ -37,7 +57,7 @@ func (a *App) handleAntiCheatDetectorReadiness(w http.ResponseWriter,r *http.Req
  evals:=make([]caseintel.DetectorEvaluation,0,len(defs))
  for _,def:=range defs {evals=append(evals,caseintel.EvaluatePrerequisites(def,quality))}
  out:=caseDetectorReadiness{
-  Mode:"READINESS_ONLY",ServerID:*ac.scope.ServerID,Registry:defs,Evaluations:evals,
+  Mode:"READINESS_ONLY",ServerID:*ac.scope.ServerID,Registry:defs,Evaluations:evals,Health:health,
   InputCoverage:"PERSISTED_SELECTED_ADM_SOURCE_LINES",ExecutionEnabled:false,
   Findings:make([]any,0),Cases:make([]any,0),DetectorsEnabled:false,Enforcement:"DISABLED",
  }

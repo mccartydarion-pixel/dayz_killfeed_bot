@@ -101,6 +101,16 @@ func (t *Tracker) ShouldReadAgain(filePath string, size int64, modified time.Tim
 	return false
 }
 
+// GrewSinceRead reports whether the listed size exceeds the size seen at the
+// last read of filePath (see Engine.pollSelected: same-second growth).
+func (t *Tracker) GrewSinceRead(filePath string, size int64) bool {
+	if t == nil || filePath == "" {
+		return false
+	}
+	checkpoint, ok := t.Checkpoints[filePath]
+	return ok && size > checkpoint.FileSize
+}
+
 // ResetForRotation clears state when a rotated or truncated log is detected.
 func (t *Tracker) ResetForRotation(filePath string) {
 	if t == nil {

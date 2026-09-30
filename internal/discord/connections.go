@@ -233,7 +233,7 @@ func (p *ConnectionsPublisher) send(channel string, batch []killfeed.ConnectionN
 	if p.sender == nil {
 		return
 	}
-	_, err := p.sender.ChannelMessageSendComplex(channel, &discordgo.MessageSend{
+	_, err := deliverMessage(p.sender, "CONNECTIONS", channel, &discordgo.MessageSend{
 		Embeds:          []*discordgo.MessageEmbed{p.card(batch, omitted)},
 		AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}}, // player names never ping
 	})

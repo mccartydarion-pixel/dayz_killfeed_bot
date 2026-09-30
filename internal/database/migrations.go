@@ -2175,7 +2175,121 @@ ON CONFLICT (installation_id, route_key) DO NOTHING;
 		Name: "0063_case_review_outbox_skeleton",
 		SQL: CASEReviewSkeletonSQL,
 	},
+	{
+		// Inert C.A.S.E. build-action evidence; no detector or alert activation.
+		Name: "0064_case_build_evidence",
+		SQL: CASEBuildEvidenceSQL,
+	},
+	{
+		// P0 2026-09-26 Verified-role reconciliation (docs/ONLINE_COUNTER_AND_LINK_CHECK.md). Additive,
+		// nullable columns only; no row is rewritten. Existing VERIFIED links keep role_sync_status NULL
+		// (never reconciled automatically - their role state predates tracking); links verified from
+		// now on are PENDING until Discord confirms the role, so a failed assignment survives restarts.
+		Name: "0065_player_link_role_sync",
+		SQL:  PlayerLinkRoleSyncSQL,
+	},
+	{
+		// P0 2026-09-26 immediate killfeed journal (docs/incidents/2026-09-26-staging-infrastructure.md).
+		// New table only; no existing row is read or rewritten. Written only by feeds running
+		// KILLFEED_DELIVERY_MODE=immediate, so it stays empty under the production default.
+		Name: "0066_discord_feed_cards",
+		SQL:  DiscordFeedCardsSQL,
+	},
+	{
+		// Ranked RP storage only. No runtime awards or public rank source are wired.
+		Name: "0067_ranked_ledger_foundation",
+		SQL:  RankedLedgerFoundationSQL,
+	},
+	{
+		// Champion Shop: the attempt ledger's artifact_path may also be the custom/ location
+		// (docs/SHOP_CUSTOM_RELOCATION.md). Forward-only CHECK widening; no row is read or rewritten.
+		Name: "0068_shop_delivery_attempt_artifact_path",
+		SQL:  ShopAttemptArtifactPathSQL,
+	},
+	{
+		// Inert Core Eight Base Boost registration; no detector reader or notifier.
+		Name: "0070_case_base_registration",
+		SQL: CASEBaseRegistrationSQL,
+	},
+	{
+		// Inert owner preferences; no detector reads or release flags.
+		Name: "0071_case_detector_settings",
+		SQL: CASEDetectorSettingsSQL,
+	},
 }
+
+// RankedLedgerFoundationSQL creates server-scoped seasonal RP storage.
+// No existing kills or economy rows are rewritten.
+const RankedLedgerFoundationSQL = `
+CREATE TABLE IF NOT EXISTS ranked_seasons (
+    id BIGSERIAL PRIMARY KEY,
+    scope TEXT NOT NULL DEFAULT 'SERVER' CHECK (scope = 'SERVER'),
+    platform TEXT NOT NULL CHECK (platform IN ('PLAYSTATION','XBOX')),
+    server_id BIGINT NOT NULL REFERENCES game_servers(id) ON DELETE RESTRICT,
+    status TEXT NOT NULL DEFAULT 'DRAFT' CHECK (status IN ('DRAFT','ACTIVE','ARCHIVED')),
+    rp_per_kill BIGINT NOT NULL CHECK (rp_per_kill > 0),
+    thresholds BIGINT[] NOT NULL CHECK (array_length(thresholds,1)=7),
+    starts_at TIMESTAMPTZ NOT NULL,
+    ends_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CHECK (ends_at IS NULL OR ends_at > starts_at)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ranked_active_server ON ranked_seasons(server_id) WHERE status='ACTIVE' AND scope='SERVER';
+CREATE TABLE IF NOT EXISTS ranked_awards (
+    id BIGSERIAL PRIMARY KEY,
+    season_id BIGINT NOT NULL REFERENCES ranked_seasons(id) ON DELETE RESTRICT,
+    kill_id BIGINT NOT NULL REFERENCES kills(id) ON DELETE RESTRICT,
+    source_key TEXT NOT NULL CHECK (length(source_key)>0),
+    attacker_key TEXT NOT NULL CHECK (length(attacker_key)>0),
+    victim_key TEXT NOT NULL CHECK (length(victim_key)>0),
+    event_time TIMESTAMPTZ NOT NULL,
+    outcome TEXT NOT NULL CHECK (outcome IN ('AWARDED','COOLDOWN','OUT_OF_ORDER')),
+    amount BIGINT NOT NULL CHECK (amount>=0),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(season_id,kill_id),
+    UNIQUE(season_id,source_key),
+    CHECK ((outcome='AWARDED' AND amount>0) OR (outcome<>'AWARDED' AND amount=0))
+);
+CREATE INDEX IF NOT EXISTS idx_ranked_awards_standings ON ranked_awards(season_id,attacker_key) WHERE outcome='AWARDED';
+CREATE INDEX IF NOT EXISTS idx_ranked_awards_repeat ON ranked_awards(season_id,attacker_key,victim_key,event_time DESC) WHERE outcome='AWARDED';
+`
+
+// DiscordFeedCardsSQL (migration 0066) is the immediate-mode feed journal: each queued card is
+// recorded before it is posted, marked when Discord confirms it (message_id) and again when it
+// leaves the channel, so a restart - including a crash - neither loses queued cards nor leaves the
+// previous process's cards in the channel. feed_key is "<route>:<server id>".
+const DiscordFeedCardsSQL = `
+CREATE TABLE IF NOT EXISTS discord_feed_cards (
+    id BIGSERIAL PRIMARY KEY,
+    feed_key TEXT NOT NULL,
+    nonce TEXT NOT NULL,
+    embed JSONB NOT NULL,
+    detected_at TIMESTAMPTZ,
+    enqueued_at TIMESTAMPTZ NOT NULL,
+    channel_id TEXT,
+    message_id TEXT,
+    posted_at TIMESTAMPTZ,
+    removed_at TIMESTAMPTZ,
+    dropped_at TIMESTAMPTZ,
+    drop_reason TEXT,
+    UNIQUE (feed_key, nonce)
+);
+CREATE INDEX IF NOT EXISTS idx_discord_feed_cards_open ON discord_feed_cards(feed_key, id)
+    WHERE removed_at IS NULL AND dropped_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_discord_feed_cards_enqueued ON discord_feed_cards(enqueued_at);
+`
+
+// PlayerLinkRoleSyncSQL (migration 0065) records whether the Verified Discord role was actually
+// assigned for a VERIFIED link - distinct from the link itself being verified.
+const PlayerLinkRoleSyncSQL = `
+ALTER TABLE player_links ADD COLUMN IF NOT EXISTS role_sync_status TEXT;
+ALTER TABLE player_links ADD COLUMN IF NOT EXISTS role_sync_attempts INT NOT NULL DEFAULT 0;
+ALTER TABLE player_links ADD COLUMN IF NOT EXISTS role_sync_last_attempt_at TIMESTAMPTZ;
+ALTER TABLE player_links ADD COLUMN IF NOT EXISTS role_synced_at TIMESTAMPTZ;
+ALTER TABLE player_links ADD COLUMN IF NOT EXISTS role_sync_error TEXT;
+CREATE INDEX IF NOT EXISTS idx_player_links_role_pending ON player_links(guild_id, role_sync_last_attempt_at)
+    WHERE status = 'VERIFIED' AND role_sync_status IN ('PENDING', 'FAILED');
+`
 
 // CaseShadowLedgerSQL is additive. The composite FK ensures that an evidence
 // link belongs to the SAME guild and game server as the evaluation. A blocked
