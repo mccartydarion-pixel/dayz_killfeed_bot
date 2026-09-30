@@ -49,6 +49,7 @@ func (a *App) registerFactionHubRoutes() {
 	h("GET "+base, a.handleFactionDirectory)
 	h("POST "+base, a.handleCreateFaction)
 	h("GET "+base+"/me", a.handleMyFaction)
+	h("GET "+base+"/branding", a.handleFactionBranding)
 	h("GET "+base+"/{factionID}", a.handleGetFaction)
 	h("PUT "+base+"/{factionID}", a.handleUpdateFaction)
 	h("POST "+base+"/{factionID}/applications", a.handleApplyToFaction)
@@ -204,6 +205,20 @@ func decodeFactionCursor(s string) (int64, bool) {
 	return id, true
 }
 
+// factionBrandingDTO is the flag/armband availability on an installation: every approved key with
+// the faction that holds it (null = free). Class names let the website line keys up with server files.
+type factionBrandingDTO struct {
+	Flags     []brandingOptionDTO `json:"flags"`
+	Armbands  []brandingOptionDTO `json:"armbands"`
+	UpdatedAt string              `json:"updatedAt"`
+}
+
+type brandingOptionDTO struct {
+	Key       string         `json:"key"`
+	ClassName string         `json:"className,omitempty"`
+	TakenBy   *factionRefDTO `json:"takenBy"`
+}
+
 // --- shared request plumbing ------------------------------------------------------------------
 
 type factionRequest struct {
@@ -313,9 +328,13 @@ func factionCursor(w http.ResponseWriter, r *http.Request) (int64, bool) {
 // logged, never returned.
 func factionFailed(w http.ResponseWriter, what string, err error) {
 	var invalid *factionhub.ValidationError
+	var taken *factionhub.BrandingTakenError
 	switch {
 	case errors.As(err, &invalid):
 		writeSaaSError(w, codeInvalidRequest, "invalid faction input: "+strings.Join(invalid.Issues, "; "))
+	case errors.As(err, &taken):
+		// Exclusive branding: the message names the holder (public directory data, never private).
+		writeSaaSError(w, codeConflict, taken.Error())
 	case errors.Is(err, factionhub.ErrNotFound):
 		writeSaaSError(w, codeNotFound, "not found")
 	case errors.Is(err, factionhub.ErrForbidden):
@@ -442,6 +461,46 @@ func (a *App) handleFactionDirectory(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGetFaction is GET .../factions/{factionID}: the public profile.
+// handleFactionBranding lists every approved flag and armband with the faction holding it, so
+// the design picker can grey out taken keys. Any synced user on the installation may read it:
+// it exposes only names and tags that the public directory already shows.
+func (a *App) handleFactionBranding(w http.ResponseWriter, r *http.Request) {
+	fr, ok := a.factionContext(w, r)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), factionTimeout)
+	defer cancel()
+	if _, _, err := a.FactionHub.Directory(ctx, fr.orgID, fr.instID, repository.HubDirectoryQuery{Limit: 1}); err != nil {
+		factionFailed(w, "load branding", err) // a foreign installation is a 404 here as everywhere
+		return
+	}
+	claims, err := a.FactionHub.BrandingClaims(ctx, fr.orgID, fr.instID)
+	if err != nil {
+		factionFailed(w, "load branding", err)
+		return
+	}
+	flagHolder, armbandHolder := map[string]*factionRefDTO{}, map[string]*factionRefDTO{}
+	for _, c := range claims {
+		ref := &factionRefDTO{ID: c.ID, Name: c.Name, Tag: c.Tag}
+		if c.FlagKey != nil {
+			flagHolder[*c.FlagKey] = ref
+		}
+		if c.ArmbandKey != nil {
+			armbandHolder[*c.ArmbandKey] = ref
+		}
+	}
+	out := factionBrandingDTO{Flags: make([]brandingOptionDTO, 0, len(factionhub.DayzFlags)), Armbands: make([]brandingOptionDTO, 0, len(factionhub.Armbands)), UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
+	for _, k := range factionhub.DayzFlags {
+		cn, _ := factionhub.FlagClassName(k)
+		out.Flags = append(out.Flags, brandingOptionDTO{Key: k, ClassName: cn, TakenBy: flagHolder[k]})
+	}
+	for _, k := range factionhub.Armbands {
+		out.Armbands = append(out.Armbands, brandingOptionDTO{Key: k, TakenBy: armbandHolder[k]})
+	}
+	writeSaaSJSON(w, http.StatusOK, out)
+}
+
 func (a *App) handleGetFaction(w http.ResponseWriter, r *http.Request) {
 	fr, ok := a.factionContext(w, r)
 	if !ok {

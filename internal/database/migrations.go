@@ -2221,6 +2221,11 @@ ON CONFLICT (installation_id, route_key) DO NOTHING;
 		Name: "0072_base_raid_alarm",
 		SQL:  BaseRaidAlarmSQL,
 	},
+	{
+		// Faction Hub: real DayZ flag catalog; flag and armband exclusive per installation.
+		Name: "0073_faction_branding_exclusive",
+		SQL:  FactionBrandingExclusiveSQL,
+	},
 }
 
 // RankedLedgerFoundationSQL creates server-scoped seasonal RP storage.
