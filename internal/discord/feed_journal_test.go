@@ -312,9 +312,9 @@ func TestJournalRollbackToRotatingCleansImmediateCards(t *testing.T) {
 
 	rot, _ := startJournalFeed(t, FeedModeRotating, 300*time.Millisecond, rig.kf, j, nil)
 	eventually(t, "previous process's cards removed at startup", func() bool { return len(rig.emu.titles(rig.kf)) == 0 })
-	if n := j.open("KILLFEED:1"); n != 0 {
-		t.Fatalf("journal still has %d open rows after rollback", n)
-	}
+	// Restore deletes the cards before it closes their journal rows, so the
+	// rows are observed shortly after the channel empties, not at that instant.
+	eventually(t, "journal rows closed after rollback", func() bool { return j.open("KILLFEED:1") == 0 })
 	rot.EnqueueDetected(card(6), time.Now())
 	time.Sleep(100 * time.Millisecond)
 	if got := len(rig.emu.titles(rig.kf)); got != 0 {
