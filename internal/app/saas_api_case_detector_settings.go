@@ -16,6 +16,7 @@ func (a *App) registerCaseDetectorSettingRoutes(base string) {
  h:=a.HTTPServer.Handle
  h("GET "+base+"/case/detector-settings",a.handleCaseListDetectorSettings)
  h("PUT "+base+"/case/detector-settings/{moduleID}",a.handleCaseSetDetectorSetting)
+ h("POST "+base+"/case/alerts/test",a.handleCaseSendTestAlert)
 }
 
 func (a *App) caseDetectorSettingsActor(w http.ResponseWriter,r *http.Request)(adminActor,*repository.CaseDetectorSettingsRepository,bool){

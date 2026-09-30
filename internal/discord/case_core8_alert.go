@@ -3,6 +3,7 @@ package discord
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/caseintel"
@@ -150,4 +151,27 @@ func caseFallback(s, def string) string {
 		return def
 	}
 	return s
+}
+
+// CaseTestAlertMessage is the "Send test alert" message: the real staff card
+// built from obviously made-up sample data, marked TEST in the notice, title
+// and footer so it can never be mistaken for a real finding. Mentions are
+// disabled.
+func CaseTestAlertMessage(serverName string, at time.Time) *discordgo.MessageSend {
+	sample := caseintel.Finding{DetectorID: "CASE-TELEPORT-001", PlayerID: 0, PlayerName: "Sample Player (not real)",
+		EvidenceIDs: []int64{1, 2}, EventAt: at, ObservedAt: at,
+		Behavior:             "Moved across the map faster than anyone can run",
+		Explanation:          "Moved 2000 m in 10 seconds, about 200 m/s. On foot, players top out around 12 m/s. They weren't in a vehicle, hadn't respawned, and the server didn't restart in between.",
+		EvidenceCompleteness: "COMPLETE", ExclusionsChecked: []string{"RESPAWN", "SERVER_RESTART", "VEHICLE"},
+		Tier: caseintel.TierSuspicious, IncidentKey: "7e57a1e87e57a1e87e57a1e87e57a1e87e57a1e87e57a1e87e57a1e87e57a1e8"}
+	embed := BuildCASECore8StaffEmbed(sample, "Teleporting", serverName, "")
+	embed.Title = "🧪 TEST · " + embed.Title
+	embed.Footer.Text = "TEST · sample data · " + embed.Footer.Text
+	return &discordgo.MessageSend{
+		Content: "🧪 **Test alert.** This is what a C.A.S.E. staff alert looks like. The player and details are made up. Nothing was detected.",
+		Embeds:  []*discordgo.MessageEmbed{embed},
+		AllowedMentions: &discordgo.MessageAllowedMentions{
+			Parse: []discordgo.AllowedMentionType{}, Users: []string{}, Roles: []string{}, RepliedUser: false,
+		},
+	}
 }
