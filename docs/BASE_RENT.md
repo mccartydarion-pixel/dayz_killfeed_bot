@@ -48,3 +48,10 @@ Player (verified DayZ link):
 - `internal/app/saas_api_base_rent.go` (API and reminder worker)
 - The three match queries (raid alarm, Perimeter Watch, Black Box) skip paused
   bases; Faction Security only shares their alerts, so it stops too.
+
+## Paying from Discord
+
+`/mybase` shows a **Pay rent** button per rented base. It asks first (price
+and days), and charges only on **Confirm and pay**, through the same payment
+as the Security Store. The confirm prompt's message ID is the idempotency
+key, so clicking Confirm twice charges once.

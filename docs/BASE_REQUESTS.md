@@ -56,7 +56,10 @@ Both answer only the caller, privately, and need a verified `/link`.
 
 - `/mybase` — the player's registered bases, a waiting request (or the last
   answer), and every base service they have paid time for, with the Security
-  Store link.
+  Store link. When rent is on, each rented base (up to 5) gets a **Pay rent**
+  button: it shows the price and a Confirm button, and only Confirm charges
+  (same rules as the Security Store; the prompt's message ID is the
+  idempotency key, so a double click charges once).
 - `/registerbase name size [note]` — sends a request exactly like the
   Security Store page: the position is where the server log last saw them
   (within 30 minutes), sizes 25/50/75/100/150 m, same limits. The owner is

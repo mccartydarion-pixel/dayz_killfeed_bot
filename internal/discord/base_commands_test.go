@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/bwmarrin/discordgo"
 )
 
 func TestMyBaseEmbed(t *testing.T) {
@@ -44,5 +46,46 @@ func TestMyBaseEmbedRent(t *testing.T) {
 	}
 	if !strings.Contains(rent, "Hut: rent paid until") || !strings.Contains(rent, "Shack: rent was due") || !strings.Contains(rent, "Cabin: paused") {
 		t.Fatalf("rent lines: %q", rent)
+	}
+}
+
+func TestRentButtons(t *testing.T) {
+	if MyBaseComponents(BaseCommandSummary{Rent: []BaseRentLine{{BaseID: 1, BaseName: "Hut"}}}) != nil {
+		t.Fatal("no price: no buttons")
+	}
+	sum := BaseCommandSummary{RentPrice: 400, RentDays: 7}
+	for i := 1; i <= 7; i++ {
+		sum.Rent = append(sum.Rent, BaseRentLine{BaseID: int64(i), BaseName: strings.Repeat("x", 90)})
+	}
+	rows := MyBaseComponents(sum)
+	buttons := rows[0].(discordgo.ActionsRow).Components
+	if len(rows) != 1 || len(buttons) != 5 {
+		t.Fatalf("at most 5 buttons: %d", len(buttons))
+	}
+	b := buttons[0].(discordgo.Button)
+	if b.CustomID != "baserent:ask:1" || len([]rune(b.Label)) > 80 || !IsBaseRentInteraction(b.CustomID) {
+		t.Fatalf("button: %+v", b)
+	}
+	text, confirm := RentConfirmMessage(9, RentQuote{BaseName: "Hill*top*", PricePoints: 12500, PeriodDays: 7})
+	if !strings.Contains(text, "12,500") || !strings.Contains(text, "7 more days") || strings.Contains(text, "*top*") {
+		t.Fatalf("confirm text: %q", text)
+	}
+	cb := confirm[0].(discordgo.ActionsRow).Components
+	if cb[0].(discordgo.Button).CustomID != "baserent:pay:9" || cb[1].(discordgo.Button).CustomID != "baserent:cancel" {
+		t.Fatalf("confirm buttons: %+v", cb)
+	}
+	for _, bad := range []string{"baserent:pay:", "baserent:pay:-3", "baserent:pay:x", "baserent:ask:5"} {
+		if _, ok := parseRentBaseID(bad, rentPayPrefix); ok {
+			t.Fatalf("parsed %q", bad)
+		}
+	}
+	if id, ok := parseRentBaseID("baserent:pay:42", rentPayPrefix); !ok || id != 42 {
+		t.Fatal("parse 42")
+	}
+	if plainLabel("\x00\x01 ", 10) != "base" {
+		t.Fatal("empty label")
+	}
+	if !strings.Contains(RentPaidMessage(RentPaid{BaseName: "Hut", PaidUntil: time.Unix(1_800_000_000, 0), Balance: 1200}), "1,200") {
+		t.Fatal("paid message")
 	}
 }

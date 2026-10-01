@@ -173,6 +173,32 @@ func (r *BaseRentRepository) AllBases(ctx context.Context, s SecurityScope, limi
 	return scanRentedBases(rows)
 }
 
+// payableBaseSQL finds a rented base the player may pay rent on: their own.
+const payableBaseSQL = `SELECT b.name FROM case_registered_bases b
+ WHERE b.id=$1 AND b.installation_id=$2 AND b.guild_id=$3 AND b.server_id=$4 AND b.owner_player_id=$5
+  AND base_rent_due_at(b.id) IS NOT NULL`
+
+// Quote is what one period of rent on a base costs the player, checking they
+// may pay it. Nothing is charged.
+func (r *BaseRentRepository) Quote(ctx context.Context, s SecurityScope, playerID, baseID int64) (baseName string, price int64, days int, err error) {
+	if !r.ready() || !s.valid() || playerID <= 0 || baseID <= 0 {
+		return "", 0, 0, ErrInvalidBaseRent
+	}
+	err = r.pool.QueryRow(ctx, `SELECT price_points,period_days FROM base_rent_settings
+ WHERE installation_id=$1 AND guild_id=$2 AND server_id=$3 AND enabled`, s.InstallationID, s.GuildID, s.ServerID).Scan(&price, &days)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", 0, 0, ErrBaseRentOff
+	}
+	if err != nil {
+		return "", 0, 0, err
+	}
+	err = r.pool.QueryRow(ctx, payableBaseSQL, baseID, s.InstallationID, s.GuildID, s.ServerID, playerID).Scan(&baseName)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", 0, 0, ErrBaseRentNotOwned
+	}
+	return baseName, price, days, err
+}
+
 // Pay charges the player one period of rent for their base and extends its
 // paid time (from now, or from when the current paid time ends). requestKey
 // makes it idempotent. The debit and the payment row are one transaction.
@@ -212,9 +238,7 @@ func (r *BaseRentRepository) Pay(ctx context.Context, s SecurityScope, playerID,
 		return out, err
 	}
 	var baseName string
-	err = tx.QueryRow(ctx, `SELECT b.name FROM case_registered_bases b
- WHERE b.id=$1 AND b.installation_id=$2 AND b.guild_id=$3 AND b.server_id=$4 AND b.owner_player_id=$5
-  AND base_rent_due_at(b.id) IS NOT NULL`, baseID, s.InstallationID, s.GuildID, s.ServerID, playerID).Scan(&baseName)
+	err = tx.QueryRow(ctx, payableBaseSQL, baseID, s.InstallationID, s.GuildID, s.ServerID, playerID).Scan(&baseName)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return out, ErrBaseRentNotOwned
 	}
