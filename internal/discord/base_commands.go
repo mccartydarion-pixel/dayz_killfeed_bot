@@ -34,6 +34,8 @@ type BaseRentLine struct {
 	BaseName string
 	DueAt    time.Time
 	Paused   bool
+	// OwnerName is set for a faction mate's base the player may pay for.
+	OwnerName string
 }
 
 // RentQuote is what one period of rent on a base costs, for the confirm step.
@@ -358,12 +360,16 @@ func MyBaseEmbed(sum BaseCommandSummary, storeURL string, now time.Time) *discor
 	if len(sum.Rent) > 0 {
 		lines := make([]string, 0, len(sum.Rent))
 		for _, r := range sum.Rent {
+			name := presentation.SafeName(r.BaseName, 64)
+			if r.OwnerName != "" {
+				name += " (" + presentation.SafeName(r.OwnerName, 40) + "'s, your faction)"
+			}
 			if r.Paused {
-				lines = append(lines, fmt.Sprintf("⏸️ %s: paused, rent overdue", presentation.SafeName(r.BaseName, 64)))
+				lines = append(lines, fmt.Sprintf("⏸️ %s: paused, rent overdue", name))
 			} else if r.DueAt.Before(now) {
-				lines = append(lines, fmt.Sprintf("⚠️ %s: rent was due <t:%d:R>; pay soon to avoid a pause", presentation.SafeName(r.BaseName, 64), r.DueAt.Unix()))
+				lines = append(lines, fmt.Sprintf("⚠️ %s: rent was due <t:%d:R>; pay soon to avoid a pause", name, r.DueAt.Unix()))
 			} else {
-				lines = append(lines, fmt.Sprintf("🏠 %s: rent paid until <t:%d:f>", presentation.SafeName(r.BaseName, 64), r.DueAt.Unix()))
+				lines = append(lines, fmt.Sprintf("🏠 %s: rent paid until <t:%d:f>", name, r.DueAt.Unix()))
 			}
 		}
 		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Rent", Value: strings.Join(lines, "\n")})

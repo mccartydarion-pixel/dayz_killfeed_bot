@@ -65,3 +65,11 @@ owner recorded (migration `0096_base_rent_gifts`, enforced by a constraint).
 It stacks with paid time, counts for the base's owner, shows in the owner's
 payment list marked as a gift and is not counted as rent income. Idempotency
 keys starting with `gift-` are reserved for gifts.
+
+## Faction pays rent
+
+Any active member of the base owner's faction can pay rent on that base, from
+their own Champion Points, on the Security Store page or with `/mybase` (the
+base is shown as their faction mate's). The payment counts for the base like
+the owner's own; the payer is recorded on the payment. The base owner gets a
+DM saying who paid. Former members and other players can't pay.

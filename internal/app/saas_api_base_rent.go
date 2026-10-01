@@ -242,7 +242,7 @@ func (a *App) handlePayPlayerBaseRent(w http.ResponseWriter, r *http.Request) {
 		writeSaaSError(w, codeConflict, "this server doesn't charge base rent")
 		return
 	case errors.Is(err, repository.ErrBaseRentNotOwned):
-		writeSaaSError(w, codeConflict, "that base isn't yours or doesn't pay rent")
+		writeSaaSError(w, codeConflict, "that base isn't yours or your faction's, or doesn't pay rent")
 		return
 	case err != nil:
 		slog.Error("component=base_rent", "msg", "pay failed", "err", err.Error())
@@ -251,11 +251,31 @@ func (a *App) handlePayPlayerBaseRent(w http.ResponseWriter, r *http.Request) {
 	}
 	slog.Info("component=base_rent", "event", "paid", "installation_id", s.InstallationID, "base_id", body.BaseID,
 		"payment_id", res.Payment.ID, "duplicate", res.Duplicate)
+	a.notifyRentPaidForOwner(res, s.ServerID)
 	status := http.StatusCreated
 	if res.Duplicate {
 		status = http.StatusOK
 	}
 	writeSaaSJSON(w, status, map[string]any{"payment": res.Payment, "remainingBalance": res.BalanceAfter, "duplicate": res.Duplicate})
+}
+
+// notifyRentPaidForOwner DMs a base owner when a faction mate paid their rent
+// (new payments only), in the background.
+func (a *App) notifyRentPaidForOwner(res repository.BaseRentPayResult, serverID int64) {
+	if res.Duplicate || res.OwnerID == 0 || res.OwnerDiscord == "" || a.Discord == nil || a.Discord.Session() == nil {
+		return
+	}
+	session := a.Discord.Session()
+	msg := discord.BaseRentPaidForYouMessage(res.PayerName, res.Payment.BaseName, a.serverName(serverID), res.Payment.PeriodDays, res.Payment.EndsAt)
+	go func() {
+		ch, err := session.UserChannelCreate(res.OwnerDiscord)
+		if err == nil {
+			_, err = session.ChannelMessageSendComplex(ch.ID, msg)
+		}
+		if err != nil {
+			slog.Warn("component=base_rent", "event", "paid_for_dm_failed", "payment_id", res.Payment.ID, "err", err.Error())
+		}
+	}()
 }
 
 // startBaseRentReminders sends rent reminders every 10 minutes: one a day

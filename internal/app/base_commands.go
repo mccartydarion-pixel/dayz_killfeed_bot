@@ -96,7 +96,14 @@ func (a *App) baseCommandSummary(ctx context.Context, guildRowID, serverID, play
 		return out, err
 	}
 	for _, b := range rented {
-		out.Rent = append(out.Rent, discord.BaseRentLine{BaseID: b.BaseID, BaseName: b.BaseName, DueAt: b.DueAt, Paused: b.Paused})
+		line := discord.BaseRentLine{BaseID: b.BaseID, BaseName: b.BaseName, DueAt: b.DueAt, Paused: b.Paused}
+		if b.Faction {
+			line.OwnerName = b.OwnerName
+			if line.OwnerName == "" {
+				line.OwnerName = "a faction mate"
+			}
+		}
+		out.Rent = append(out.Rent, line)
 	}
 	if len(rented) > 0 {
 		settings, err := rentRepo.GetSettings(ctx, rentScope)
@@ -193,6 +200,7 @@ func (a *App) baseCommandRentPay(ctx context.Context, guildRowID, serverID, play
 	}
 	slog.Info("component=base_rent", "event", "paid", "via", "discord", "installation_id", s.InstallationID, "base_id", baseID,
 		"payment_id", res.Payment.ID, "duplicate", res.Duplicate)
+	a.notifyRentPaidForOwner(res, serverID)
 	name := res.Payment.BaseName
 	if name == "" {
 		name, _, _, _ = repository.NewBaseRentRepository(a.DB.Pool).Quote(ctx,

@@ -55,6 +55,8 @@ type RentedBase struct {
 	GraceUntil time.Time `json:"graceUntil"`
 	Paused     bool      `json:"paused"`
 	Overdue    bool      `json:"overdue"`
+	// Faction is true for a faction mate's base the player may pay rent on.
+	Faction bool `json:"faction,omitempty"`
 }
 
 type BaseRentPayment struct {
@@ -77,6 +79,10 @@ type BaseRentPayResult struct {
 	Payment      BaseRentPayment
 	BalanceAfter int64
 	Duplicate    bool
+	// Set when a faction mate paid for someone else's base (new payments only).
+	OwnerID      int64
+	OwnerDiscord string
+	PayerName    string
 }
 
 func (r *BaseRentRepository) ready() bool { return r != nil && r.pool != nil }
@@ -150,16 +156,23 @@ func scanRentedBases(rows pgx.Rows) ([]RentedBase, error) {
 	return out, rows.Err()
 }
 
-// PlayerBases lists the rent state of the player's rented bases (empty when rent is off).
+// PlayerBases lists the rent state of the player's rented bases, then their
+// faction mates' (Faction set), which they may also pay. Empty when rent is off.
 func (r *BaseRentRepository) PlayerBases(ctx context.Context, s SecurityScope, playerID int64) ([]RentedBase, error) {
 	if !r.ready() || !s.valid() || playerID <= 0 {
 		return nil, ErrInvalidBaseRent
 	}
-	rows, err := r.pool.Query(ctx, rentedBaseSelect+` AND b.owner_player_id=$4 ORDER BY b.id`, s.InstallationID, s.GuildID, s.ServerID, playerID)
+	// $5 is the player for sameFactionSQL.
+	rows, err := r.pool.Query(ctx, rentedBaseSelect+` AND (b.owner_player_id=$4 OR `+sameFactionSQL+`)
+ ORDER BY (b.owner_player_id<>$4),b.id`, s.InstallationID, s.GuildID, s.ServerID, playerID, playerID)
 	if err != nil {
 		return nil, err
 	}
-	return scanRentedBases(rows)
+	bases, err := scanRentedBases(rows)
+	for i := range bases {
+		bases[i].Faction = bases[i].OwnerID != playerID
+	}
+	return bases, err
 }
 
 // AllBases lists every rented base on the server, soonest due first, for the owner.
@@ -177,9 +190,17 @@ func (r *BaseRentRepository) AllBases(ctx context.Context, s SecurityScope, limi
 	return scanRentedBases(rows)
 }
 
-// payableBaseSQL finds a rented base the player may pay rent on: their own.
-const payableBaseSQL = `SELECT b.name FROM case_registered_bases b
- WHERE b.id=$1 AND b.installation_id=$2 AND b.guild_id=$3 AND b.server_id=$4 AND b.owner_player_id=$5
+// sameFactionSQL is true when player $5 and the base owner are active members
+// of the same faction.
+const sameFactionSQL = `EXISTS (SELECT 1 FROM faction_members me
+  JOIN faction_members fo ON fo.guild_id=me.guild_id AND fo.faction_id=me.faction_id AND fo.active
+  WHERE me.guild_id=b.guild_id AND me.player_id=$5 AND me.active AND fo.player_id=b.owner_player_id)`
+
+// payableBaseSQL finds a rented base the player may pay rent on: their own,
+// or one owned by an active member of their faction.
+const payableBaseSQL = `SELECT b.name,b.owner_player_id FROM case_registered_bases b
+ WHERE b.id=$1 AND b.installation_id=$2 AND b.guild_id=$3 AND b.server_id=$4
+  AND (b.owner_player_id=$5 OR ` + sameFactionSQL + `)
   AND base_rent_due_at(b.id) IS NOT NULL`
 
 // Quote is what one period of rent on a base costs the player, checking they
@@ -196,7 +217,8 @@ func (r *BaseRentRepository) Quote(ctx context.Context, s SecurityScope, playerI
 	if err != nil {
 		return "", 0, 0, err
 	}
-	err = r.pool.QueryRow(ctx, payableBaseSQL, baseID, s.InstallationID, s.GuildID, s.ServerID, playerID).Scan(&baseName)
+	var ownerID int64
+	err = r.pool.QueryRow(ctx, payableBaseSQL, baseID, s.InstallationID, s.GuildID, s.ServerID, playerID).Scan(&baseName, &ownerID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", 0, 0, ErrBaseRentNotOwned
 	}
@@ -243,7 +265,8 @@ func (r *BaseRentRepository) Pay(ctx context.Context, s SecurityScope, playerID,
 		return out, err
 	}
 	var baseName string
-	err = tx.QueryRow(ctx, payableBaseSQL, baseID, s.InstallationID, s.GuildID, s.ServerID, playerID).Scan(&baseName)
+	var ownerID int64
+	err = tx.QueryRow(ctx, payableBaseSQL, baseID, s.InstallationID, s.GuildID, s.ServerID, playerID).Scan(&baseName, &ownerID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return out, ErrBaseRentNotOwned
 	}
@@ -271,6 +294,13 @@ func (r *BaseRentRepository) Pay(ctx context.Context, s SecurityScope, playerID,
 	}
 	out.Payment.BaseName = baseName
 	out.BalanceAfter = entry.BalanceAfter
+	if ownerID != playerID {
+		// A faction mate paid: say who, so the base owner can be told.
+		out.OwnerID = ownerID
+		_ = tx.QueryRow(ctx, `SELECT COALESCE((SELECT display_name FROM players WHERE guild_id=$1 AND id=$2),''),
+  COALESCE((SELECT discord_user_id FROM player_links WHERE guild_id=$1 AND player_id=$3 AND status='VERIFIED'),'')`,
+			s.GuildID, playerID, ownerID).Scan(&out.PayerName, &out.OwnerDiscord)
+	}
 	return out, tx.Commit(ctx)
 }
 

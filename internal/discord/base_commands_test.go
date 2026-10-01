@@ -89,3 +89,14 @@ func TestRentButtons(t *testing.T) {
 		t.Fatal("paid message")
 	}
 }
+
+func TestMyBaseEmbedFactionRent(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	e := MyBaseEmbed(BaseCommandSummary{Rent: []BaseRentLine{{BaseName: "Hall", OwnerName: "Boss", DueAt: now.Add(time.Hour)}}}, "", now)
+	for _, f := range e.Fields {
+		if f.Name == "Rent" && strings.Contains(f.Value, "Boss's, your faction") {
+			return
+		}
+	}
+	t.Fatalf("faction base not labelled: %+v", e.Fields)
+}

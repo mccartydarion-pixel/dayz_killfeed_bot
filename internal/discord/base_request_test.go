@@ -84,3 +84,11 @@ func TestBaseRentGiftMessage(t *testing.T) {
 		t.Fatalf("fields: %+v", e.Fields)
 	}
 }
+
+func TestBaseRentPaidForYouMessage(t *testing.T) {
+	m := BaseRentPaidForYouMessage("Mate", "Clan @here Hall", "Champions", 7, time.Unix(1_800_000_000, 0))
+	e := m.Embeds[0]
+	if !strings.Contains(e.Title, "Mate paid rent") || strings.Contains(e.Title, "@here") || !strings.Contains(e.Description, "7 more days") {
+		t.Fatalf("message: %q %q", e.Title, e.Description)
+	}
+}
