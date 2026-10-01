@@ -32,13 +32,14 @@ Server owner only (`UAV_MANAGE`):
 | --- | --- | --- | --- |
 | GET | `…/admin/case/base-rent` | | `{settings, bases, payments, graceDays}`: every rented base (soonest due first, with `paused`) and the newest payments. |
 | PUT | `…/admin/case/base-rent` | `{enabled, pricePoints, periodDays}` | Audited `BASE_RENT_SAVED`. |
+| PUT | `…/admin/case/base-rent/rent-free` | `{baseId, free, note?}` | Make one player-requested base rent-free, or charge it again (its clock restarts). 409 for bases not registered from a request. Audited `BASE_RENT_FREE_SAVED`. GET lists them as `rentFree`. |
 | POST | `…/admin/case/base-rent/gift` | `{baseId, days, note?, idempotencyKey}` | Free rent days (1-90) for one rented base; stacks like a payment, no Champion Points move. 201 new, 200 replay, 409 when the base doesn't pay rent. Audited `BASE_RENT_GIFTED`; the base owner gets a DM. |
 
 Player (verified DayZ link):
 
 | Method | Path | Body | Notes |
 | --- | --- | --- | --- |
-| GET | `…/security-marketplace/base-rent` | | `{enabled, pricePoints, periodDays, graceDays, bases}` (their rented bases with `dueAt`, `graceUntil`, `overdue`, `paused`). |
+| GET | `…/security-marketplace/base-rent` | | `{enabled, pricePoints, periodDays, graceDays, bases, history}`: their rented bases (and faction mates', `faction: true`) with `dueAt`, `graceUntil`, `overdue`, `paused`; `history` is the newest 20 payments and gifts on those bases with who paid (gifts show no staff name). |
 | POST | `…/security-marketplace/base-rent` | `{baseId, idempotencyKey}` | 201 new, 200 replay. 409 when rent is off, the base isn't theirs or doesn't pay rent, or they don't have enough points. |
 
 ## Code
@@ -83,3 +84,16 @@ owners. It is information only: nothing else happens to the players. The
 last send time is kept in `base_rent_digests` (migration
 `0097_base_rent_digests`); the check runs with the reminders every 10
 minutes.
+
+## Rent-free bases
+
+The owner can make a single player-requested base rent-free (a staff or
+event base) without switching rent off for everyone. It pays nothing, is
+never paused and gets no reminders. When it's charged again, its clock
+restarts from that moment, so it isn't overdue straight away (migration
+`0098_base_rent_exemptions`).
+
+The due date is the latest of: the last paid day, when the base was
+registered, when rent was switched on, and when rent resumed for that base.
+So switching rent off and back on also never leaves a base overdue straight
+away, even with old payments.

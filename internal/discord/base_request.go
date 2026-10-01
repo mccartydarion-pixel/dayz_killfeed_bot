@@ -143,3 +143,52 @@ func BaseRentPaidForYouMessage(payerName, baseName, serverName string, days int,
 	return &discordgo.MessageSend{Embeds: []*discordgo.MessageEmbed{embed},
 		AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}, Users: []string{}, Roles: []string{}}}
 }
+
+// NewBaseTransferMessage tells the server owner a player asked to hand a base
+// to a faction mate. Nothing changes until they approve.
+func NewBaseTransferMessage(fromName, toName, baseName, serverName, reviewURL string) *discordgo.MessageSend {
+	embed := &discordgo.MessageEmbed{
+		Author: &discordgo.MessageEmbedAuthor{Name: "CHAMPIONS® BASE REGISTRATION"},
+		Title:  "🔁 Base transfer request on " + caseFallback(caseSafeText(serverName, 100), "your server"),
+		Color:  presentation.InfoSteel,
+		Description: "**" + caseFallback(caseSafeText(fromName, 64), "A player") + "** wants to hand **" + caseFallback(caseSafeText(baseName, 64), "a base") +
+			"** to their faction mate **" + caseFallback(caseSafeText(toName, 64), "a player") + "**. Nothing changes until you approve it.",
+	}
+	if reviewURL != "" {
+		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Review", Value: reviewURL})
+	} else {
+		embed.Footer = &discordgo.MessageEmbedFooter{Text: "Approve or decline it on the anti-cheat Bases tab"}
+	}
+	presentation.StampEmbed(embed, time.Now())
+	return &discordgo.MessageSend{Embeds: []*discordgo.MessageEmbed{embed},
+		AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}, Users: []string{}, Roles: []string{}}}
+}
+
+// BaseTransferDecisionMessage tells a player the answer to a base transfer.
+// receiving is true for the faction mate the base would go to.
+func BaseTransferDecisionMessage(approved, receiving bool, baseName, fromName, toName, serverName, reason string) *discordgo.MessageSend {
+	name := caseFallback(caseSafeText(baseName, 64), "the base")
+	server := caseFallback(caseSafeText(serverName, 100), "your server")
+	embed := &discordgo.MessageEmbed{Author: &discordgo.MessageEmbedAuthor{Name: "CHAMPIONS® BASE REGISTRATION"}}
+	switch {
+	case approved && receiving:
+		embed.Title = "🔁 " + name + " is now yours"
+		embed.Color = presentation.SuccessGreen
+		embed.Description = caseFallback(caseSafeText(fromName, 64), "Your faction mate") + " handed it to you on " + server +
+			". Any rent already paid stays with the base. Base services you buy are your own."
+	case approved:
+		embed.Title = "🔁 " + name + " was handed over"
+		embed.Color = presentation.SuccessGreen
+		embed.Description = "The owner of " + server + " approved it. The base now belongs to " + caseFallback(caseSafeText(toName, 64), "your faction mate") + "."
+	default:
+		embed.Title = "❌ The transfer of " + name + " wasn't approved"
+		embed.Color = presentation.ErrorRed
+		embed.Description = "The owner of " + server + " declined it. Nothing changed."
+		if r := caseSafeText(reason, 300); r != "" {
+			embed.Fields = []*discordgo.MessageEmbedField{{Name: "Reason", Value: r}}
+		}
+	}
+	presentation.StampEmbed(embed, time.Now())
+	return &discordgo.MessageSend{Embeds: []*discordgo.MessageEmbed{embed},
+		AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}, Users: []string{}, Roles: []string{}}}
+}
