@@ -299,6 +299,7 @@ func (a *App) registerClientAdminRoutes() {
 	a.registerInviteRoutes(base)
 	a.registerRewardRoutes(base)
 	a.registerPlayerTimelineRoutes(base)
+	a.registerStaffActivityRoutes(base)
 	a.registerFightRoutes(base)
 }
 
