@@ -32,6 +32,7 @@ Server owner only (`UAV_MANAGE`):
 | --- | --- | --- | --- |
 | GET | `…/admin/case/base-rent` | | `{settings, bases, payments, graceDays}`: every rented base (soonest due first, with `paused`) and the newest payments. |
 | PUT | `…/admin/case/base-rent` | `{enabled, pricePoints, periodDays}` | Audited `BASE_RENT_SAVED`. |
+| POST | `…/admin/case/base-rent/gift` | `{baseId, days, note?, idempotencyKey}` | Free rent days (1-90) for one rented base; stacks like a payment, no Champion Points move. 201 new, 200 replay, 409 when the base doesn't pay rent. Audited `BASE_RENT_GIFTED`; the base owner gets a DM. |
 
 Player (verified DayZ link):
 
@@ -55,3 +56,12 @@ Player (verified DayZ link):
 and days), and charges only on **Confirm and pay**, through the same payment
 as the Security Store. The confirm prompt's message ID is the idempotency
 key, so clicking Confirm twice charges once.
+
+## Gifted rent
+
+The owner can give a rented base 1-90 free rent days (a giveaway, a new
+player, downtime). It's a payment row with price 0, no ledger entry and the
+owner recorded (migration `0096_base_rent_gifts`, enforced by a constraint).
+It stacks with paid time, counts for the base's owner, shows in the owner's
+payment list marked as a gift and is not counted as rent income. Idempotency
+keys starting with `gift-` are reserved for gifts.

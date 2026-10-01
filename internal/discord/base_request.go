@@ -108,3 +108,23 @@ func WithRentNotice(msg *discordgo.MessageSend, price int64, days, graceDays int
 			presentation.FormatThousands(price), days, graceDays)})
 	return msg
 }
+
+// BaseRentGiftMessage tells a base owner the server owner gave them free rent days.
+func BaseRentGiftMessage(baseName, serverName string, days int, paidUntil time.Time, note, storeURL string) *discordgo.MessageSend {
+	embed := &discordgo.MessageEmbed{
+		Author:      &discordgo.MessageEmbedAuthor{Name: "CHAMPIONS® BASE RENT"},
+		Title:       fmt.Sprintf("🎁 %d days of free rent for %s", days, caseFallback(caseSafeText(baseName, 64), "your base")),
+		Color:       presentation.SuccessGreen,
+		Description: "A gift from the owner of " + caseFallback(caseSafeText(serverName, 100), "your server") + ". Nothing was charged.",
+		Fields:      []*discordgo.MessageEmbedField{{Name: "Rent paid until", Value: fmt.Sprintf("<t:%d:f>", paidUntil.Unix()), Inline: true}},
+	}
+	if n := caseSafeText(note, 200); n != "" {
+		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Note", Value: n})
+	}
+	if storeURL != "" {
+		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Security Store", Value: storeURL})
+	}
+	presentation.StampEmbed(embed, time.Now())
+	return &discordgo.MessageSend{Embeds: []*discordgo.MessageEmbed{embed},
+		AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}, Users: []string{}, Roles: []string{}}}
+}

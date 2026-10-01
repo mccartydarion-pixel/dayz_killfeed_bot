@@ -73,3 +73,14 @@ func TestBaseRentMessages(t *testing.T) {
 		t.Fatal("no rent terms when rent has no price")
 	}
 }
+
+func TestBaseRentGiftMessage(t *testing.T) {
+	m := BaseRentGiftMessage("Hut @everyone", "Champions", 10, time.Unix(1_800_000_000, 0), "Thanks `all`", "https://site.example/store")
+	e := m.Embeds[0]
+	if !strings.Contains(e.Title, "10 days of free rent") || strings.Contains(e.Title, "@everyone") || len(m.AllowedMentions.Parse) != 0 {
+		t.Fatalf("title/mentions: %q", e.Title)
+	}
+	if len(e.Fields) != 3 || strings.Contains(e.Fields[1].Value, "`") {
+		t.Fatalf("fields: %+v", e.Fields)
+	}
+}

@@ -2744,6 +2744,11 @@ CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events
 		Name: "0095_base_rent",
 		SQL:  BaseRentSQL,
 	},
+	{
+		// Gifted rent days: price 0, no ledger entry, the giving owner recorded.
+		Name: "0096_base_rent_gifts",
+		SQL:  BaseRentGiftSQL,
+	},
 }
 
 // PvPDeathBackfillSQL gives the victim of every existing PvP kill a deaths row of type PVP, with

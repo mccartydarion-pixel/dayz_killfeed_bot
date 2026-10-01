@@ -104,6 +104,76 @@ func (a *App) handleSetBaseRent(w http.ResponseWriter, r *http.Request) {
 	writeSaaSJSON(w, http.StatusOK, map[string]any{"settings": settings})
 }
 
+type baseRentGiftRequest struct {
+	BaseID         int64  `json:"baseId"`
+	Days           int    `json:"days"`
+	Note           string `json:"note"`
+	IdempotencyKey string `json:"idempotencyKey"`
+}
+
+// handleGiftBaseRent is POST .../admin/case/base-rent/gift: free rent days for
+// one rented base. No Champion Points move. 201 new, 200 replay.
+func (a *App) handleGiftBaseRent(w http.ResponseWriter, r *http.Request) {
+	ac, s, ok := a.ownerRentScope(w, r, true)
+	if !ok {
+		return
+	}
+	var req baseRentGiftRequest
+	if err := readCaseBaseJSON(w, r, &req); err != nil {
+		writeSaaSError(w, codeInvalidRequest, "invalid rent gift")
+		return
+	}
+	if req.BaseID <= 0 || req.Days < 1 || req.Days > repository.BaseRentGiftMaxDays {
+		writeSaaSError(w, codeInvalidRequest, "choose a base and 1 to 90 days")
+		return
+	}
+	if !securityKeyRe.MatchString(req.IdempotencyKey) || ac.user == nil {
+		writeSaaSError(w, codeInvalidRequest, "idempotencyKey must be 8-64 characters of A-Z a-z 0-9 . _ : -")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), adminTimeout)
+	defer cancel()
+	res, err := repository.NewBaseRentRepository(a.DB.Pool).Gift(ctx, s, req.BaseID, req.Days, req.Note, ac.user.ID, "gift-"+req.IdempotencyKey)
+	switch {
+	case errors.Is(err, repository.ErrBaseRentNotOwned):
+		writeSaaSError(w, codeConflict, "that base doesn't pay rent")
+		return
+	case errors.Is(err, repository.ErrInvalidBaseRent):
+		writeSaaSError(w, codeInvalidRequest, "the note can be up to 200 characters")
+		return
+	case err != nil:
+		slog.Warn("component=base_rent", "event", "gift_failed", "err", err.Error())
+		writeSaaSError(w, codeInternalError, "the rent gift couldn't be given right now")
+		return
+	}
+	status := http.StatusOK
+	if !res.Duplicate {
+		status = http.StatusCreated
+		a.recordAudit(ctx, ac, "BASE_RENT_GIFTED", "base-rent", "", "success", nil,
+			map[string]any{"baseId": req.BaseID, "days": req.Days, "paymentId": res.Payment.ID})
+		a.notifyRentGift(res, s.ServerID)
+	}
+	writeSaaSJSON(w, status, map[string]any{"gift": res.Payment, "duplicate": res.Duplicate})
+}
+
+// notifyRentGift DMs the base owner in the background; a closed DM is only logged.
+func (a *App) notifyRentGift(res repository.RentGiftResult, serverID int64) {
+	if res.OwnerDiscord == "" || a.Discord == nil || a.Discord.Session() == nil {
+		return
+	}
+	session := a.Discord.Session()
+	msg := discord.BaseRentGiftMessage(res.Payment.BaseName, a.serverName(serverID), res.Payment.PeriodDays, res.Payment.EndsAt, res.Payment.Note, a.securityStoreURL())
+	go func() {
+		ch, err := session.UserChannelCreate(res.OwnerDiscord)
+		if err == nil {
+			_, err = session.ChannelMessageSendComplex(ch.ID, msg)
+		}
+		if err != nil {
+			slog.Warn("component=base_rent", "event", "gift_dm_failed", "payment_id", res.Payment.ID, "err", err.Error())
+		}
+	}()
+}
+
 type playerBaseRentResponse struct {
 	Enabled     bool                    `json:"enabled"`
 	PricePoints int64                   `json:"pricePoints,omitempty"`

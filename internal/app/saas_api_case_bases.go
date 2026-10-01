@@ -54,6 +54,7 @@ func (a *App) registerCaseBaseRoutes(base string){
  h("POST "+base+"/case/security-gifts",a.handleGiveSecurityGift)
  h("GET "+base+"/case/base-rent",a.handleGetBaseRent)
  h("PUT "+base+"/case/base-rent",a.handleSetBaseRent)
+ h("POST "+base+"/case/base-rent/gift",a.handleGiftBaseRent)
 }
 
 func (a *App) caseBaseActor(w http.ResponseWriter,r *http.Request)(adminActor,*repository.CaseBaseRegistrationRepository,bool){

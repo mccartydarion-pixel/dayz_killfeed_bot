@@ -108,3 +108,81 @@ func TestBaseRentPlayerPaysAndReminders(t *testing.T) {
 		t.Fatalf("reminders (once for this renter): %v", sent)
 	}
 }
+
+func TestBaseRentGiftOwnerOnly(t *testing.T) {
+	w := newClientAdminWorld(t)
+	ctx := context.Background()
+	pool := w.a.DB.Pool
+	admin := zoneActor(t, w, "rentgift-admin")
+	w.mapRole(admin, "rentgift-admin-role", "ADMINISTRATOR")
+	renter := w.seedPlayer("Gifted")
+	s := repository.SecurityScope{InstallationID: w.f.InstallationID, GuildID: w.guildID, ServerID: w.serverID}
+	reqs := repository.NewCaseBaseRequestRepository(pool)
+	q, err := reqs.Create(ctx, repository.BaseRequestScope(s), repository.BaseRequestInput{PlayerID: renter, Name: "Gift Hut", CenterX: 1, CenterZ: 1, Radius: 30, PositionSeenAt: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := reqs.Approve(ctx, repository.BaseRequestScope(s), q.ID, "chernarusplus", "", 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseID := *d.Request.BaseID
+	path := w.path("/case/base-rent/gift")
+	body := map[string]any{"baseId": baseID, "days": 10, "note": "Sorry for the downtime", "idempotencyKey": "rent-gift-0001"}
+	if rr := w.call(w.a.handleGiftBaseRent, http.MethodPost, path, w.f.OwnerDiscordID, body, nil); rr.Code != http.StatusConflict {
+		t.Fatalf("rent off: base doesn't pay rent: %d", rr.Code)
+	}
+	if _, err := repository.NewBaseRentRepository(pool).SetSettings(ctx, s, true, 300, 7, nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = repository.NewBaseRentRepository(pool).SetSettings(context.Background(), s, false, 300, 7, nil)
+	})
+	if rr := w.call(w.a.handleGiftBaseRent, http.MethodPost, path, admin, body, nil); rr.Code != http.StatusForbidden {
+		t.Fatalf("admin gift: %d", rr.Code)
+	}
+	for _, bad := range []map[string]any{
+		{"baseId": baseID, "days": 0, "idempotencyKey": "rent-gift-0002"},
+		{"baseId": baseID, "days": 91, "idempotencyKey": "rent-gift-0002"},
+		{"baseId": baseID, "days": 5, "idempotencyKey": "x"},
+		{"baseId": baseID, "days": 5, "idempotencyKey": "rent-gift-0002", "price": 3},
+	} {
+		if rr := w.call(w.a.handleGiftBaseRent, http.MethodPost, path, w.f.OwnerDiscordID, bad, nil); rr.Code != http.StatusBadRequest {
+			t.Fatalf("bad gift %v: %d", bad, rr.Code)
+		}
+	}
+	type res struct {
+		Gift      repository.BaseRentPayment `json:"gift"`
+		Duplicate bool                       `json:"duplicate"`
+	}
+	rr := w.call(w.a.handleGiftBaseRent, http.MethodPost, path, w.f.OwnerDiscordID, body, nil)
+	got := decodeBody[res](t, rr)
+	if rr.Code != http.StatusCreated || !got.Gift.Gift || got.Gift.PricePoints != 0 || got.Gift.PeriodDays != 10 || got.Gift.PlayerID != renter {
+		t.Fatalf("gift: %d %+v", rr.Code, got)
+	}
+	if again := w.call(w.a.handleGiftBaseRent, http.MethodPost, path, w.f.OwnerDiscordID, body, nil); again.Code != http.StatusOK || !decodeBody[res](t, again).Duplicate {
+		t.Fatalf("replay: %d", again.Code)
+	}
+	bases, err := repository.NewBaseRentRepository(pool).PlayerBases(ctx, s, renter)
+	if err != nil || len(bases) != 1 || bases[0].Overdue || bases[0].DueAt.Before(time.Now().Add(9*24*time.Hour)) {
+		t.Fatalf("gifted rent must count: %+v %v", bases, err)
+	}
+	view := decodeBody[struct {
+		Payments []repository.BaseRentPayment `json:"payments"`
+	}](t, w.call(w.a.handleGetBaseRent, http.MethodGet, w.path("/case/base-rent"), w.f.OwnerDiscordID, nil, nil))
+	if len(view.Payments) != 1 || !view.Payments[0].Gift || view.Payments[0].Note != "Sorry for the downtime" {
+		t.Fatalf("owner list: %+v", view.Payments)
+	}
+	sum, err := repository.NewBaseRentRepository(pool).Summary(ctx, s, time.Now().AddDate(0, 0, -7))
+	if err != nil || sum.Payments != 0 || sum.Points != 0 || sum.GiftedDays != 10 || sum.PaidUp != 1 {
+		t.Fatalf("gifts aren't income: %+v %v", sum, err)
+	}
+	// A player can't use a gift key to replay the owner's gift as their own payment.
+	if _, err := repository.NewBaseRentRepository(pool).Pay(ctx, s, renter, baseID, "gift-rent-gift-0001"); err == nil {
+		t.Fatal("gift- key accepted for a payment")
+	}
+	var audits int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM admin_audit_log WHERE installation_id=$1 AND action='BASE_RENT_GIFTED'`, w.f.InstallationID).Scan(&audits); err != nil || audits != 1 {
+		t.Fatalf("audits (once): %d %v", audits, err)
+	}
+}

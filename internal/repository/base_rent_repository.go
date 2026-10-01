@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -67,6 +68,9 @@ type BaseRentPayment struct {
 	StartsAt    time.Time `json:"startsAt"`
 	EndsAt      time.Time `json:"endsAt"`
 	CreatedAt   time.Time `json:"createdAt"`
+	// Gift is true for rent days the server owner gave for free.
+	Gift bool   `json:"gift,omitempty"`
+	Note string `json:"note,omitempty"`
 }
 
 type BaseRentPayResult struct {
@@ -204,7 +208,8 @@ func (r *BaseRentRepository) Quote(ctx context.Context, s SecurityScope, playerI
 // makes it idempotent. The debit and the payment row are one transaction.
 func (r *BaseRentRepository) Pay(ctx context.Context, s SecurityScope, playerID, baseID int64, requestKey string) (BaseRentPayResult, error) {
 	var out BaseRentPayResult
-	if !r.ready() || !s.valid() || playerID <= 0 || baseID <= 0 || len(requestKey) < 8 || len(requestKey) > 80 {
+	// "gift-" keys belong to the owner's rent gifts.
+	if !r.ready() || !s.valid() || playerID <= 0 || baseID <= 0 || len(requestKey) < 8 || len(requestKey) > 80 || strings.HasPrefix(requestKey, "gift-") {
 		return out, ErrInvalidBaseRent
 	}
 	tx, err := r.pool.Begin(ctx)
@@ -269,6 +274,74 @@ func (r *BaseRentRepository) Pay(ctx context.Context, s SecurityScope, playerID,
 	return out, tx.Commit(ctx)
 }
 
+// BaseRentGiftMaxDays bounds one rent gift.
+const BaseRentGiftMaxDays = 90
+
+// RentGiftResult is a gift and who to tell.
+type RentGiftResult struct {
+	Payment      BaseRentPayment
+	Duplicate    bool
+	OwnerDiscord string
+	OwnerName    string
+}
+
+// Gift gives a rented base free rent days: no Champion Points move. It stacks
+// like a payment, counts for the base's owner and is idempotent on requestKey.
+func (r *BaseRentRepository) Gift(ctx context.Context, s SecurityScope, baseID int64, days int, note string, giverUserID int64, requestKey string) (RentGiftResult, error) {
+	var out RentGiftResult
+	note = strings.TrimSpace(note)
+	if !r.ready() || !s.valid() || baseID <= 0 || days < 1 || days > BaseRentGiftMaxDays || giverUserID <= 0 ||
+		len([]rune(note)) > 200 || len(requestKey) < 8 || len(requestKey) > 80 {
+		return out, ErrInvalidBaseRent
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return out, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('base_rent:'||$1::BIGINT::TEXT,0))`, baseID); err != nil {
+		return out, err
+	}
+	var ownerID int64
+	err = tx.QueryRow(ctx, `SELECT b.name,b.owner_player_id,COALESCE(p.display_name,''),COALESCE(l.discord_user_id,'')
+ FROM case_registered_bases b
+ LEFT JOIN players p ON p.guild_id=b.guild_id AND p.id=b.owner_player_id
+ LEFT JOIN player_links l ON l.guild_id=b.guild_id AND l.player_id=b.owner_player_id AND l.status='VERIFIED'
+ WHERE b.id=$1 AND b.installation_id=$2 AND b.guild_id=$3 AND b.server_id=$4 AND base_rent_due_at(b.id) IS NOT NULL`,
+		baseID, s.InstallationID, s.GuildID, s.ServerID).Scan(&out.Payment.BaseName, &ownerID, &out.OwnerName, &out.OwnerDiscord)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return out, ErrBaseRentNotOwned
+	}
+	if err != nil {
+		return out, err
+	}
+	err = tx.QueryRow(ctx, `SELECT id,base_id,player_id,price_points,period_days,starts_at,ends_at,created_at,gift_note FROM base_rent_payments
+ WHERE installation_id=$1 AND player_id=$2 AND request_key=$3`, s.InstallationID, ownerID, requestKey).
+		Scan(&out.Payment.ID, &out.Payment.BaseID, &out.Payment.PlayerID, &out.Payment.PricePoints, &out.Payment.PeriodDays,
+			&out.Payment.StartsAt, &out.Payment.EndsAt, &out.Payment.CreatedAt, &out.Payment.Note)
+	if err == nil {
+		out.Payment.Gift, out.Duplicate = true, true
+		return out, tx.Commit(ctx)
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return out, err
+	}
+	err = tx.QueryRow(ctx, `WITH start AS (
+  SELECT GREATEST(NOW(),COALESCE((SELECT MAX(ends_at) FROM base_rent_payments WHERE base_id=$4),NOW())) AS at)
+ INSERT INTO base_rent_payments
+ (installation_id,guild_id,server_id,base_id,player_id,price_points,period_days,starts_at,ends_at,gifted_by_user_id,gift_note,request_key)
+ SELECT $1,$2,$3,$4,$5,0,$6,start.at,start.at+make_interval(days=>$6),$7,$8,$9 FROM start
+ RETURNING id,base_id,player_id,price_points,period_days,starts_at,ends_at,created_at`,
+		s.InstallationID, s.GuildID, s.ServerID, baseID, ownerID, days, giverUserID, note, requestKey).
+		Scan(&out.Payment.ID, &out.Payment.BaseID, &out.Payment.PlayerID, &out.Payment.PricePoints, &out.Payment.PeriodDays,
+			&out.Payment.StartsAt, &out.Payment.EndsAt, &out.Payment.CreatedAt)
+	if err != nil {
+		return out, err
+	}
+	out.Payment.Gift, out.Payment.Note = true, note
+	return out, tx.Commit(ctx)
+}
+
 // RecentPayments lists the newest rent payments on one server, for the owner.
 func (r *BaseRentRepository) RecentPayments(ctx context.Context, s SecurityScope, limit int) ([]BaseRentPayment, error) {
 	if !r.ready() || !s.valid() {
@@ -278,7 +351,7 @@ func (r *BaseRentRepository) RecentPayments(ctx context.Context, s SecurityScope
 		limit = 20
 	}
 	rows, err := r.pool.Query(ctx, `SELECT rp.id,rp.base_id,b.name,rp.player_id,COALESCE(p.display_name,''),rp.price_points,rp.period_days,
-  rp.starts_at,rp.ends_at,rp.created_at
+  rp.starts_at,rp.ends_at,rp.created_at,rp.ledger_entry_id IS NULL,rp.gift_note
  FROM base_rent_payments rp
  JOIN case_registered_bases b ON b.id=rp.base_id
  LEFT JOIN players p ON p.guild_id=rp.guild_id AND p.id=rp.player_id
@@ -291,7 +364,7 @@ func (r *BaseRentRepository) RecentPayments(ctx context.Context, s SecurityScope
 	out := make([]BaseRentPayment, 0)
 	for rows.Next() {
 		var p BaseRentPayment
-		if err := rows.Scan(&p.ID, &p.BaseID, &p.BaseName, &p.PlayerID, &p.PlayerName, &p.PricePoints, &p.PeriodDays, &p.StartsAt, &p.EndsAt, &p.CreatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.BaseID, &p.BaseName, &p.PlayerID, &p.PlayerName, &p.PricePoints, &p.PeriodDays, &p.StartsAt, &p.EndsAt, &p.CreatedAt, &p.Gift, &p.Note); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
