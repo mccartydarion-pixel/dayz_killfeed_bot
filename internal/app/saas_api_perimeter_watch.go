@@ -104,6 +104,7 @@ func (a *App) handleSetPerimeterWatch(w http.ResponseWriter, r *http.Request) {
 	}
 	a.recordAudit(ctx, ac, "PERIMETER_WATCH_SAVED", "perimeter-watch", "", "success", nil,
 		map[string]any{"enabled": settings.Enabled, "marginMeters": settings.MarginMeters, "cooldownSeconds": settings.CooldownSeconds})
+	a.refreshSecurityPanel(repository.SecurityScope{InstallationID: ac.scope.InstallationID, GuildID: ac.scope.GuildID, ServerID: *ac.scope.ServerID})
 	writeSaaSJSON(w, http.StatusOK, map[string]any{"settings": settings})
 }
 

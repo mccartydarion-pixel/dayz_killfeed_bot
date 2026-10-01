@@ -99,6 +99,7 @@ func (a *App) handleSetBaseBlackBox(w http.ResponseWriter, r *http.Request) {
 	}
 	a.recordAudit(ctx, ac, "BASE_BLACK_BOX_SAVED", "base-black-box", "", "success", nil,
 		map[string]any{"enabled": settings.Enabled, "retentionDays": settings.RetentionDays})
+	a.refreshSecurityPanel(repository.SecurityScope{InstallationID: ac.scope.InstallationID, GuildID: ac.scope.GuildID, ServerID: *ac.scope.ServerID})
 	writeSaaSJSON(w, http.StatusOK, map[string]any{"settings": settings})
 }
 

@@ -1744,6 +1744,8 @@ func (a *App) Run() error {
 				a.startSecurityExpiryWorker(ctx)
 				// Base Black Box history clean-up (each server's retention).
 				a.startBaseBlackBoxPruner(ctx)
+				// Security Store panel in Discord (refreshed every 10 minutes).
+				a.startSecurityPanelWorker(ctx)
 				if a.CaseDigestOutbox != nil && a.Config.CaseAccessEnabled {
 					go a.runCaseDigestWorker(ctx)
 				}
