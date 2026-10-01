@@ -2710,6 +2710,12 @@ CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events
 		Name: "0089_base_black_box",
 		SQL:  BaseBlackBoxSQL,
 	},
+	{
+		// Faction Security: raid and perimeter messages also go to the base owner's
+		// faction. Off by default, sellable. Additive; widens two service_id checks.
+		Name: "0090_faction_security",
+		SQL:  FactionSecuritySQL,
+	},
 }
 
 // PvPDeathBackfillSQL gives the victim of every existing PvP kill a deaths row of type PVP, with

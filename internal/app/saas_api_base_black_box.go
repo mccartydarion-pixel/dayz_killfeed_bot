@@ -107,10 +107,11 @@ func (a *App) handleSetBaseBlackBoxOffer(w http.ResponseWriter, r *http.Request)
 	a.setSecurityOffer(w, r, repository.ServiceBaseBlackBox, "BASE_BLACK_BOX_OFFER_SAVED")
 }
 
-// Why a player can't see their history right now.
+// Why a player can't use a base service (Black Box history, Faction
+// Security) right now.
 const (
-	blackBoxOff     = "OFF"      // the server owner hasn't turned it on
-	blackBoxNotPaid = "NOT_PAID" // it's on sale and the player has no paid time
+	serviceReasonOff     = "OFF"      // the server owner hasn't turned it on
+	serviceReasonNotPaid = "NOT_PAID" // it's on sale and the player has no paid time
 )
 
 type playerBlackBoxResponse struct {
@@ -149,7 +150,7 @@ func (a *App) handlePlayerBaseBlackBox(w http.ResponseWriter, r *http.Request) {
 	}
 	out := playerBlackBoxResponse{RetentionDays: settings.RetentionDays, Bases: []repository.BlackBoxBase{}, Events: []repository.BlackBoxEvent{}}
 	if !settings.Enabled {
-		out.Reason = blackBoxOff
+		out.Reason = serviceReasonOff
 		writeSaaSJSON(w, http.StatusOK, out)
 		return
 	}
@@ -167,7 +168,7 @@ func (a *App) handlePlayerBaseBlackBox(w http.ResponseWriter, r *http.Request) {
 	}
 	out.ActiveUntil = until
 	if offer.Enabled && until == nil {
-		out.Reason = blackBoxNotPaid
+		out.Reason = serviceReasonNotPaid
 		writeSaaSJSON(w, http.StatusOK, out)
 		return
 	}

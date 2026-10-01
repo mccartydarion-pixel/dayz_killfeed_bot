@@ -41,6 +41,7 @@ type PerimeterMatch struct {
 	ServerID           int64
 	BaseID             int64
 	BaseName           string
+	OwnerPlayerID      int64
 	OwnerDiscordUserID string
 	DistanceMeters     int
 	CooldownSeconds    int
@@ -115,7 +116,7 @@ func (r *PerimeterWatchRepository) MatchPerimeter(ctx context.Context, guildID, 
 WITH visitor_faction AS (
  SELECT faction_id FROM faction_members WHERE guild_id=$1 AND player_id=$3 AND active
 )
-SELECT b.installation_id,b.guild_id,b.server_id,b.id,b.name,COALESCE(pl.discord_user_id,''),
+SELECT b.installation_id,b.guild_id,b.server_id,b.id,b.name,b.owner_player_id,COALESCE(pl.discord_user_id,''),
  ROUND(SQRT((b.center_x-$4)*(b.center_x-$4)+(b.center_z-$5)*(b.center_z-$5)))::INT,s.cooldown_seconds
 FROM case_registered_bases b
 JOIN perimeter_watch_settings s
@@ -148,7 +149,7 @@ ORDER BY b.id`, guildID, serverID, visitorPlayerID, mapX, mapZ)
 	var out []PerimeterMatch
 	for rows.Next() {
 		var m PerimeterMatch
-		if err := rows.Scan(&m.InstallationID, &m.GuildID, &m.ServerID, &m.BaseID, &m.BaseName, &m.OwnerDiscordUserID,
+		if err := rows.Scan(&m.InstallationID, &m.GuildID, &m.ServerID, &m.BaseID, &m.BaseName, &m.OwnerPlayerID, &m.OwnerDiscordUserID,
 			&m.DistanceMeters, &m.CooldownSeconds); err != nil {
 			return nil, err
 		}

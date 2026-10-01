@@ -1997,6 +1997,7 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 			// their registered base. Off until the server owner turns it on.
 			raidAlarm := discord.NewBaseRaidAlarmPublisher(repository.NewBaseRaidAlarmRepository(a.DB.Pool), a.Discord.Session(), row.GuildID, row.ID)
 			raidAlarm.SetServerName(a.serverNameFunc())
+			raidAlarm.SetFactionSecurity(repository.NewFactionSecurityRepository(a.DB.Pool))
 			buildPublisher = buildPublisherFanout{buildFeed, raidAlarm, blackBox}
 			go func() {
 				defer func() {
@@ -2198,6 +2199,7 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 		// registered base. Off until the server owner turns it on.
 		perimeter := discord.NewPerimeterWatchPublisher(repository.NewPerimeterWatchRepository(a.DB.Pool), a.Discord.Session(), row.GuildID, row.ID)
 		perimeter.SetServerName(a.serverNameFunc())
+		perimeter.SetFactionSecurity(repository.NewFactionSecurityRepository(a.DB.Pool))
 		lq.SetLocationObserver(locationObserverFanout{perimeter, blackBox})
 		go func() {
 			defer func() {

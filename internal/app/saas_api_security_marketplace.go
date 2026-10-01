@@ -14,14 +14,16 @@ import (
 
 // The player and Client Hub paths share one service catalog, scoped to the
 // installation. Every service is unavailable except the Base Raid Alarm,
-// Perimeter Watch and Base Black Box, each when the server owner has it on and
-// is selling it for Champion Points.
+// Perimeter Watch, Base Black Box and Faction Security, each when the server
+// owner has it on and is selling it for Champion Points.
 func (a *App) registerSecurityMarketplaceRoutes() {
 	const base = "/api/saas/organizations/{organizationID}/installations/{installationID}/security-marketplace"
 	a.HTTPServer.Handle("GET "+base+"/catalog", a.handleSecurityMarketplaceCatalog)
 	a.HTTPServer.Handle("GET "+base+"/admin/catalog", a.handleSecurityMarketplaceAdminCatalog)
 	a.HTTPServer.Handle("POST "+base+"/purchases", a.handleSecurityMarketplacePurchase)
 	a.HTTPServer.Handle("GET "+base+"/black-box", a.handlePlayerBaseBlackBox)
+	a.HTTPServer.Handle("GET "+base+"/faction-security", a.handleGetPlayerFactionSecurity)
+	a.HTTPServer.Handle("PUT "+base+"/faction-security", a.handleSetPlayerFactionSecurity)
 }
 
 type securityMarketplaceCatalogResponse struct {
@@ -42,6 +44,9 @@ func (a *App) securityServiceOn(ctx context.Context, s repository.SecurityScope,
 		return err == nil && st.Enabled, err
 	case repository.ServiceBaseBlackBox:
 		st, err := repository.NewBaseBlackBoxRepository(a.DB.Pool).GetSettings(ctx, s.InstallationID, s.GuildID, s.ServerID)
+		return err == nil && st.Enabled, err
+	case repository.ServiceFactionSecurity:
+		st, err := repository.NewFactionSecurityRepository(a.DB.Pool).GetSettings(ctx, s.InstallationID, s.GuildID, s.ServerID)
 		return err == nil && st.Enabled, err
 	}
 	return false, nil
@@ -143,8 +148,8 @@ type securityPurchaseResponse struct {
 var securityKeyRe = regexp.MustCompile(`^[A-Za-z0-9._:-]{8,64}$`)
 
 // handleSecurityMarketplacePurchase is POST .../security-marketplace/purchases:
-// a verified player buys a sellable service (Base Raid Alarm, Perimeter Watch
-// or Base Black Box) at the owner's current price.
+// a verified player buys a sellable base service (Base Raid Alarm, Perimeter
+// Watch, Base Black Box or Faction Security) at the owner's current price.
 // 201 for a new purchase, 200 for a replay of the same idempotency key.
 func (a *App) handleSecurityMarketplacePurchase(w http.ResponseWriter, r *http.Request) {
 	er, ok := a.scopedContext(w, r, "")

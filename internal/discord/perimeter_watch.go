@@ -43,6 +43,15 @@ type PerimeterWatchPublisher struct {
 	serverName ServerNameFunc
 	queue      chan killfeed.LocationSample
 	dropped    atomic.Int64
+	faction    *factionSharer
+}
+
+// SetFactionSecurity also sends each alert to the base owner's faction when
+// Faction Security allows it.
+func (p *PerimeterWatchPublisher) SetFactionSecurity(store FactionShareStore) {
+	if p != nil && store != nil {
+		p.faction = &factionSharer{store: store, dm: p.dm}
+	}
 }
 
 func NewPerimeterWatchPublisher(store PerimeterStore, dm DMSender, guildRowID, serverID int64) *PerimeterWatchPublisher {
@@ -119,19 +128,27 @@ func (p *PerimeterWatchPublisher) handle(ctx context.Context, s killfeed.Locatio
 		if err := p.store.MarkDelivery(ctx, alertID, delivery); err != nil {
 			slog.Warn("component=perimeter_watch", "msg", "mark delivery failed", "alert_id", alertID, "err", err.Error())
 		}
+		if p.faction != nil {
+			msg := FactionPerimeterMessage(PerimeterWatchMessage(m.BaseName, p.server(), name, m.DistanceMeters, s.ObservedAt), m.BaseName)
+			p.faction.share(ctx, factionShare{route: perimeterRoute, source: repository.FactionSharePerimeterWatch, installationID: m.InstallationID,
+				guildID: m.GuildID, serverID: m.ServerID, base: m.BaseID, ownerPlayerID: m.OwnerPlayerID}, msg)
+		}
 		slog.Info("component=perimeter_watch", "event", "alert", "server_id", p.serverID, "base_id", m.BaseID, "alert_id", alertID, "delivery", delivery)
 	}
+}
+
+func (p *PerimeterWatchPublisher) server() string {
+	if p.serverName != nil {
+		return p.serverName(p.serverID)
+	}
+	return ""
 }
 
 func (p *PerimeterWatchPublisher) deliver(m repository.PerimeterMatch, visitor string, seenAt time.Time) string {
 	if m.OwnerDiscordUserID == "" || p.dm == nil {
 		return repository.BaseRaidDeliveryOwnerNotLinked
 	}
-	server := ""
-	if p.serverName != nil {
-		server = p.serverName(p.serverID)
-	}
-	msg := PerimeterWatchMessage(m.BaseName, server, visitor, m.DistanceMeters, seenAt)
+	msg := PerimeterWatchMessage(m.BaseName, p.server(), visitor, m.DistanceMeters, seenAt)
 	err := deliver(perimeterRoute, "", func() error {
 		ch, err := p.dm.UserChannelCreate(m.OwnerDiscordUserID)
 		if err != nil {
