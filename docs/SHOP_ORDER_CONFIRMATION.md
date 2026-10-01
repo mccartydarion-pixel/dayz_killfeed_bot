@@ -102,7 +102,7 @@ sweep at once and each row is closed exactly once. The 48-hour window is the def
 
 ## Discord
 
-Migration `0084_shop_order_confirmation_discord` adds the delivery state of the DM to
+Migration `0088_shop_order_confirmation_discord` adds the delivery state of the DM to
 `shop_order_confirmations`, the channel retry state to `shop_order_tickets`, and
 `shop_ticket_discord_setup` (per Discord server: Owner role, Staff role, Tickets category).
 

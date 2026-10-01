@@ -8,7 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// The Discord side of the buyer confirmation (migration 0084, docs/SHOP_ORDER_CONFIRMATION.md
+// The Discord side of the buyer confirmation (migration 0088, docs/SHOP_ORDER_CONFIRMATION.md
 // "Discord"): the delivered-order DM, the ticket channel and the per-server role setup. Work is
 // claimed with a lease (FOR UPDATE SKIP LOCKED plus a claimed-at time) so several bot instances
 // never send the same DM or create the same channel at once; a crashed claim is retried after the

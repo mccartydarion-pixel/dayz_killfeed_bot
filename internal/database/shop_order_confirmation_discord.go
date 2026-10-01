@@ -1,9 +1,9 @@
 package database
 
-// ShopOrderConfirmationDiscordSQL (migration 0084, docs/SHOP_ORDER_CONFIRMATION.md "Discord"): what
+// ShopOrderConfirmationDiscordSQL (migration 0088, docs/SHOP_ORDER_CONFIRMATION.md "Discord"): what
 // the Discord side of the buyer confirmation needs to remember.
 //
-// Additive and forward-only. It only adds columns with defaults to the two tables of migration 0083
+// Additive and forward-only. It only adds columns with defaults to the two tables of migration 0087
 // and one new table; no existing row is rewritten by hand.
 //
 //   - shop_order_confirmations.notify_*: the delivery of the "your order was delivered" DM.

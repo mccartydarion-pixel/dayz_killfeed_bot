@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// Migration 0084 against a real PostgreSQL: the delivered-order notice lease, the Discord buyer
+// Migration 0088 against a real PostgreSQL: the delivered-order notice lease, the Discord buyer
 // lookup, the ticket channel lease and the per-server ticket setup. Nothing contacts Discord.
 
 // link gives installation A's buyer a Discord account with the given link status and returns its id.

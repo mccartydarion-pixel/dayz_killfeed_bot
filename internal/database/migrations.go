@@ -2690,7 +2690,7 @@ CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events
 		SQL:  ShopOrderConfirmationsSQL,
 	},
 	{
-		Name: "0084_shop_order_confirmation_discord",
+		Name: "0088_shop_order_confirmation_discord",
 		SQL:  ShopOrderConfirmationDiscordSQL,
 	},
 }
