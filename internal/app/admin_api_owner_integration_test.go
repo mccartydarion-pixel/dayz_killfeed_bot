@@ -3,7 +3,9 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -11,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yourname/dayz-killfeed/internal/admin"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -259,5 +262,40 @@ func TestOwnerBanRefusesTheUserEverywhere(t *testing.T) {
 	rr = w.post(w.a.handleOwnerBanUser, "/api/admin/users/"+aid+"/ban", adminFounderID, map[string]string{"userID": aid}, map[string]any{"reason": "oops"})
 	if rr.Code != http.StatusConflict {
 		t.Fatalf("banning an admin must be 409, got %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+// The operations console: status is gated like every read, and the maintenance actions are
+// audited owner writes that report the service's outcome.
+func TestOwnerOpsStatusAndActions(t *testing.T) {
+	w := newOwnerWorld(t)
+	w.a.AdminService = admin.NewService(nil, nil)
+	refreshed := 0
+	w.a.AdminService.SetLeaderboardRefresh(func(context.Context) error { refreshed++; return nil })
+	w.a.AdminService.SetADMSourceScan(func(context.Context) (map[string]any, error) { return nil, errors.New("nitrado unreachable") })
+
+	if rr := w.get(w.a.handleAdminOpsStatus, "/api/admin/ops/status", w.a1.OwnerDiscordID, nil); rr.Code != http.StatusForbidden {
+		t.Fatalf("tenant owner must be 403 on ops status, got %d", rr.Code)
+	}
+	rr := w.get(w.a.handleAdminOpsStatus, "/api/admin/ops/status", adminFounderID, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("ops status: %d %s", rr.Code, rr.Body.String())
+	}
+	status := decodeBody[map[string]any](t, rr)
+	if status["generatedAt"] == nil || status["workerManager"] == nil || status["uptime"] == nil {
+		t.Fatalf("ops status shape: %v", status)
+	}
+
+	rr = w.post(w.a.handleAdminOpsLeaderboardRefresh, "/api/admin/ops/leaderboard-refresh", adminFounderID, nil, map[string]any{"reason": "panel looked stale"})
+	if rr.Code != http.StatusOK || refreshed != 1 {
+		t.Fatalf("leaderboard refresh: %d %s (refreshed=%d)", rr.Code, rr.Body.String(), refreshed)
+	}
+	rr = w.post(w.a.handleAdminOpsADMSourceScan, "/api/admin/ops/adm-source-scan", adminFounderID, nil, map[string]any{"reason": "kills missing"})
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("failed scan must be 500, got %d %s", rr.Code, rr.Body.String())
+	}
+	got := w.auditActions(t, "?targetType=platform")
+	if len(got) < 2 || got[0] != "ops.adm_source_scanned" || got[1] != "ops.leaderboard_refreshed" {
+		t.Fatalf("ops audit = %v", got)
 	}
 }

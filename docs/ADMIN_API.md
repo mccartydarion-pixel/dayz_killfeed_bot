@@ -354,6 +354,17 @@ The read model exposes the same state: `subscription.externallyBilled`,
 `subscription.ownerGrantUntil/ownerGrantReason` on organizations and installations,
 `installation.suspension` on the installation detail, and `members[].bannedAt`.
 
+## Operations console
+
+| Route | Body | Effect |
+| --- | --- | --- |
+| `GET /ops/status` | - | What the Discord `/admin status` and `/admin diagnostics` subcommands show: `runtime`, `health`, `workers`, `link_diagnostics`, `presence_diagnostics`, `pipeline_diagnostics`, plus `workerManager` (the ADM workers running per active game server). |
+| `POST /ops/leaderboard-refresh` | `reason` | The manual leaderboard refresh (`/admin leaderboard-refresh`). Audited as `ops.leaderboard_refreshed`. |
+| `POST /ops/adm-source-scan` | `reason` | The slow live scan of Nitrado ADM candidates (`/admin adm-source-scan`, ~30 s). Audited as `ops.adm_source_scanned`; the scan result is returned. |
+
+`GET /live-sync` (per-server watcher freshness, ADM session, boot authority, stored stats and
+latency) now goes through the same secret guard as every other admin response.
+
 ## Fields that are never returned
 
 By construction (every query names its columns; the response types have no such

@@ -649,4 +649,5 @@ func (a *App) registerAdminAPI() {
 	a.HTTPServer.Handle("GET /api/admin/live-sync", a.adminRoute(a.handleAdminLiveSync))
 	a.registerAdminBillingRoutes()
 	a.registerOwnerAPI()
+	a.registerOpsAPI()
 }
