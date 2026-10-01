@@ -43,6 +43,10 @@ const (
 	Economy           Key = "economy"            // economy wallets, the shop and the ECONOMY/SHOP feeds
 	CustomEmbeds      Key = "custom_embeds"      // Embed Designer templates (writes and runtime rendering)
 	UnlimitedFactions Key = "unlimited_factions" // no faction cap per installation
+	HotZones          Key = "hot_zones"          // heatmap-driven hot-zone events (they pay Champion Points)
+	Retention         Key = "retention"          // the retention dashboard and lapsed-player list
+	FightReplay       Key = "fight_replay"       // fight replays, for staff and (opt-in) players
+	FeedIdentity      Key = "feed_identity"      // feeds posted under the installation's own name and avatar
 )
 
 // PlanSurvivor is the catalog key of the Survivor (Normal) plan, the one plan whose
@@ -57,6 +61,7 @@ var allKeys = []Key{
 	Killfeed, Leaderboards, LivePlayers, WebsiteDashboard,
 	DiscordActivity, SpecialKills, AdvancedStats, MultipleServers, PrioritySupport,
 	RankedSeasons, Bounties, Heatmaps, Economy, CustomEmbeds, UnlimitedFactions,
+	HotZones, Retention, FightReplay, FeedIdentity,
 }
 
 // survivorKeys is the Survivor feature set: the core killfeed product on one server.
@@ -151,6 +156,14 @@ func Label(key Key) string {
 		return "Custom embeds"
 	case UnlimitedFactions:
 		return "Unlimited factions"
+	case HotZones:
+		return "Hot zones"
+	case Retention:
+		return "The retention dashboard"
+	case FightReplay:
+		return "Fight replay"
+	case FeedIdentity:
+		return "A custom feed identity"
 	case MultipleServers:
 		return "Multiple servers"
 	case PrioritySupport:
