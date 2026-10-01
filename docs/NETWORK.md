@@ -74,3 +74,9 @@ Responses are cached in-process for one minute.
   more than the data supports, and the longest-kill board in particular will show whatever the
   servers logged.
 - No per-player cross-server profile page and no server search beyond the platform filter.
+
+## Plan
+
+The network listing is part of every plan, as are lives (docs/LIVES.md) and the Champion Card
+(docs/CHAMPION_CARD.md). Hot zones, the retention dashboard, fight replay and the feed identity are
+Champion-only; each of their documents has a "Plan" section.

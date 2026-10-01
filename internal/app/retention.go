@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yourname/dayz-killfeed/internal/entitlements"
 	"github.com/yourname/dayz-killfeed/internal/permissions"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
@@ -101,6 +102,9 @@ func queryInt(w http.ResponseWriter, r *http.Request, name string, fallback, min
 func (a *App) handleRetention(w http.ResponseWriter, r *http.Request) {
 	ac, ok := a.requireCapability(w, r, permissions.CapRetentionView)
 	if !ok {
+		return
+	}
+	if !a.requirePlanFeature(w, r, ac.scope.OrganizationID, entitlements.Retention) {
 		return
 	}
 	days, ok := queryInt(w, r, "days", 30, 7, 180)
@@ -212,6 +216,9 @@ type lapsedPlayerDTO struct {
 func (a *App) handleRetentionLapsed(w http.ResponseWriter, r *http.Request) {
 	ac, ok := a.requireCapability(w, r, permissions.CapRetentionView)
 	if !ok {
+		return
+	}
+	if !a.requirePlanFeature(w, r, ac.scope.OrganizationID, entitlements.Retention) {
 		return
 	}
 	minDays, ok := queryInt(w, r, "minDays", 7, 1, 365)

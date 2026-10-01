@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/yourname/dayz-killfeed/internal/entitlements"
 	"github.com/yourname/dayz-killfeed/internal/fights"
 	"github.com/yourname/dayz-killfeed/internal/permissions"
 	"github.com/yourname/dayz-killfeed/internal/repository"
@@ -241,6 +242,9 @@ func (a *App) handleAdminFights(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !a.requirePlanFeature(w, r, ac.scope.OrganizationID, entitlements.FightReplay) {
+		return
+	}
 	hours, ok := queryInt(w, r, "hours", 24, 1, 168)
 	if !ok {
 		return
@@ -279,6 +283,9 @@ func (a *App) handleAdminFightReplay(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !a.requirePlanFeature(w, r, ac.scope.OrganizationID, entitlements.FightReplay) {
+		return
+	}
 	killID, ok := pathInt64(w, r, "killID")
 	if !ok {
 		return
@@ -307,10 +314,21 @@ func (a *App) handleAdminFightReplay(w http.ResponseWriter, r *http.Request) {
 }
 
 // publicReplayCutoff resolves the installation's public-replay setting: whether players may watch
-// at all, and the latest moment a fight may have ended to be shown.
-func (a *App) publicReplayCutoff(ctx context.Context, installationID int64) (enabled bool, cutoff time.Time, delayMinutes int, err error) {
+// at all, and the latest moment a fight may have ended to be shown. An organization whose plan
+// does not include fight replay reads as "not public", whatever it saved while it had the plan:
+// to its players the feature is simply off, and the setting comes back if it upgrades.
+func (a *App) publicReplayCutoff(ctx context.Context, organizationID, installationID int64) (enabled bool, cutoff time.Time, delayMinutes int, err error) {
 	if a.FeatureSettings == nil || a.Fights == nil {
 		return false, time.Time{}, 0, nil
+	}
+	if entitlements.Enforced() {
+		plan, err := a.organizationPlan(ctx, organizationID)
+		if err != nil {
+			return false, time.Time{}, 0, err
+		}
+		if !entitlements.Has(plan, entitlements.FightReplay) {
+			return false, time.Time{}, 0, nil
+		}
 	}
 	s, err := a.FeatureSettings.Get(ctx, installationID)
 	if err != nil {
@@ -333,7 +351,7 @@ func (a *App) handlePlayerFights(w http.ResponseWriter, r *http.Request) {
 		DelayMinutes int               `json:"delayMinutes"`
 		Items        []fightSummaryDTO `json:"items"`
 	}{Items: []fightSummaryDTO{}}
-	enabled, cutoff, delay, err := a.publicReplayCutoff(ctx, scope.InstallationID)
+	enabled, cutoff, delay, err := a.publicReplayCutoff(ctx, scope.OrganizationID, scope.InstallationID)
 	if err != nil {
 		playerFailed(w, "fights", err)
 		return
@@ -364,7 +382,7 @@ func (a *App) handlePlayerFightReplay(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	enabled, cutoff, _, err := a.publicReplayCutoff(ctx, scope.InstallationID)
+	enabled, cutoff, _, err := a.publicReplayCutoff(ctx, scope.OrganizationID, scope.InstallationID)
 	if err != nil {
 		playerFailed(w, "fight", err)
 		return

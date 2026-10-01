@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/yourname/dayz-killfeed/internal/discord"
+	"github.com/yourname/dayz-killfeed/internal/entitlements"
 	competitiveevents "github.com/yourname/dayz-killfeed/internal/events"
 	"github.com/yourname/dayz-killfeed/internal/hotzone"
 	"github.com/yourname/dayz-killfeed/internal/killfeed"
@@ -325,8 +326,13 @@ func (a *App) handleGetFeatureSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 // saveFeatureSection is the shared body of the four PUT routes: capability, rate limit, decode,
-// save (the repository validates), audit, respond with the full settings.
+// plan, save (the repository validates), audit, respond with the full settings.
+//
+// turnsOn names the Champion-only feature the body switches on, if any. Only switching a feature
+// ON needs the plan: a Survivor organization can always read its settings and switch one off, so
+// nothing is left stuck after a downgrade (the same rule as custom embeds).
 func saveFeatureSection[T any](a *App, w http.ResponseWriter, r *http.Request, capability permissions.Capability, action string,
+	turnsOn func(body T) (entitlements.Key, bool),
 	section func(repository.FeatureSettings) any, save func(ctx context.Context, installationID, userID int64, body T) (repository.FeatureSettings, error)) {
 	ac, ok := a.requireCapability(w, r, capability)
 	if !ok {
@@ -342,6 +348,11 @@ func saveFeatureSection[T any](a *App, w http.ResponseWriter, r *http.Request, c
 	body, ok := decodeJSONBody[T](w, r)
 	if !ok {
 		return
+	}
+	if turnsOn != nil {
+		if key, on := turnsOn(body); on && !a.requirePlanFeature(w, r, ac.scope.OrganizationID, key) {
+			return
+		}
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), adminTimeout)
 	defer cancel()
@@ -385,6 +396,7 @@ func (a *App) featureSettingsChanged(serverID *int64) {
 
 func (a *App) handlePutHotZoneSettings(w http.ResponseWriter, r *http.Request) {
 	saveFeatureSection(a, w, r, permissions.CapFeatureSettingsManage, "HOT_ZONE_SETTINGS_UPDATED",
+		func(b hotZoneSettingsDTO) (entitlements.Key, bool) { return entitlements.HotZones, b.Enabled },
 		func(s repository.FeatureSettings) any { return toFeatureSettingsDTO(s).HotZones },
 		func(ctx context.Context, installationID, userID int64, b hotZoneSettingsDTO) (repository.FeatureSettings, error) {
 			return a.FeatureSettings.SaveHotZones(ctx, installationID, userID, repository.HotZoneSettings{Enabled: b.Enabled, WindowMinutes: b.WindowMinutes,
@@ -395,6 +407,7 @@ func (a *App) handlePutHotZoneSettings(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handlePutFightReplaySettings(w http.ResponseWriter, r *http.Request) {
 	saveFeatureSection(a, w, r, permissions.CapFeatureSettingsManage, "FIGHT_REPLAY_SETTINGS_UPDATED",
+		func(b fightReplaySettingsDTO) (entitlements.Key, bool) { return entitlements.FightReplay, b.Public },
 		func(s repository.FeatureSettings) any { return toFeatureSettingsDTO(s).FightReplay },
 		func(ctx context.Context, installationID, userID int64, b fightReplaySettingsDTO) (repository.FeatureSettings, error) {
 			return a.FeatureSettings.SaveFightReplay(ctx, installationID, userID, repository.FightReplaySettings{Public: b.Public, DelayMinutes: b.DelayMinutes})
@@ -402,7 +415,7 @@ func (a *App) handlePutFightReplaySettings(w http.ResponseWriter, r *http.Reques
 }
 
 func (a *App) handlePutNetworkSettings(w http.ResponseWriter, r *http.Request) {
-	saveFeatureSection(a, w, r, permissions.CapNetworkManage, "NETWORK_SETTINGS_UPDATED",
+	saveFeatureSection(a, w, r, permissions.CapNetworkManage, "NETWORK_SETTINGS_UPDATED", nil, // the listing is part of every plan
 		func(s repository.FeatureSettings) any { return toFeatureSettingsDTO(s).Network },
 		func(ctx context.Context, installationID, userID int64, b networkSettingsDTO) (repository.FeatureSettings, error) {
 			return a.FeatureSettings.SaveNetwork(ctx, installationID, userID, repository.NetworkSettings{Listed: b.Listed, Description: b.Description, DiscordInviteURL: b.DiscordInviteURL})
@@ -411,6 +424,7 @@ func (a *App) handlePutNetworkSettings(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handlePutFeedIdentitySettings(w http.ResponseWriter, r *http.Request) {
 	saveFeatureSection(a, w, r, permissions.CapFeedIdentityManage, "FEED_IDENTITY_UPDATED",
+		func(b feedIdentitySettingsDTO) (entitlements.Key, bool) { return entitlements.FeedIdentity, b.Enabled },
 		func(s repository.FeatureSettings) any { return toFeatureSettingsDTO(s).FeedIdentity },
 		func(ctx context.Context, installationID, userID int64, b feedIdentitySettingsDTO) (repository.FeatureSettings, error) {
 			return a.FeatureSettings.SaveFeedIdentity(ctx, installationID, userID, repository.FeedIdentitySettings{Enabled: b.Enabled, Name: b.Name, AvatarURL: b.AvatarURL})
