@@ -13,8 +13,9 @@ import (
 )
 
 // The player and Client Hub paths share one service catalog, scoped to the
-// installation. Every service is unavailable except the Base Raid Alarm when
-// the server owner has the alarm on and is selling it for Champion Points.
+// installation. Every service is unavailable except the Base Raid Alarm and
+// Perimeter Watch, each when the server owner has it on and is selling it for
+// Champion Points.
 func (a *App) registerSecurityMarketplaceRoutes() {
 	const base = "/api/saas/organizations/{organizationID}/installations/{installationID}/security-marketplace"
 	a.HTTPServer.Handle("GET "+base+"/catalog", a.handleSecurityMarketplaceCatalog)
@@ -28,8 +29,23 @@ type securityMarketplaceCatalogResponse struct {
 	Items          []securitymarket.Availability `json:"items"`
 }
 
-// securityCatalog returns the catalog for one installation, with the Base
-// Raid Alarm opened when it is on sale, and the player's paid time if known.
+// securityServiceOn reports whether the feature behind a sellable service is
+// switched on, so a player never pays for something that isn't running.
+func (a *App) securityServiceOn(ctx context.Context, s repository.SecurityScope, serviceID string) (bool, error) {
+	switch serviceID {
+	case repository.ServiceBaseRaidAlarm:
+		st, err := repository.NewBaseRaidAlarmRepository(a.DB.Pool).GetSettings(ctx, s.InstallationID, s.GuildID, s.ServerID)
+		return err == nil && st.Enabled, err
+	case repository.ServicePerimeterWatch:
+		st, err := repository.NewPerimeterWatchRepository(a.DB.Pool).GetSettings(ctx, s.InstallationID, s.GuildID, s.ServerID)
+		return err == nil && st.Enabled, err
+	}
+	return false, nil
+}
+
+// securityCatalog returns the catalog for one installation, with each
+// sellable service opened when the owner has it switched on and on sale, and
+// the player's paid time if known.
 func (a *App) securityCatalog(ctx context.Context, scope repository.EconomyScope, playerID int64) []securitymarket.Availability {
 	items := securitymarket.UnverifiedCatalog()
 	if scope.ServerID <= 0 || a.DB == nil || a.DB.Pool == nil {
@@ -37,28 +53,29 @@ func (a *App) securityCatalog(ctx context.Context, scope repository.EconomyScope
 	}
 	s := repository.SecurityScope{InstallationID: scope.InstallationID, GuildID: scope.GuildID, ServerID: scope.ServerID}
 	sales := repository.NewSecurityServiceRepository(a.DB.Pool)
-	offer, err := sales.GetOffer(ctx, s, repository.ServiceBaseRaidAlarm)
-	if err != nil {
-		slog.Warn("component=security_market", "msg", "read offer failed", "err", err.Error())
-		return items
-	}
-	alarm, err := repository.NewBaseRaidAlarmRepository(a.DB.Pool).GetSettings(ctx, s.InstallationID, s.GuildID, s.ServerID)
-	if err != nil {
-		slog.Warn("component=security_market", "msg", "read raid alarm failed", "err", err.Error())
-		return items
-	}
 	for i := range items {
-		if items[i].Service.ID != repository.ServiceBaseRaidAlarm {
+		id := items[i].Service.ID
+		if !repository.SellableSecurityService(id) {
 			continue
 		}
-		if offer.Enabled && alarm.Enabled {
+		offer, err := sales.GetOffer(ctx, s, id)
+		if err != nil {
+			slog.Warn("component=security_market", "msg", "read offer failed", "service", id, "err", err.Error())
+			continue
+		}
+		on, err := a.securityServiceOn(ctx, s, id)
+		if err != nil {
+			slog.Warn("component=security_market", "msg", "read service switch failed", "service", id, "err", err.Error())
+			continue
+		}
+		if offer.Enabled && on {
 			items[i].Status, items[i].Reason, items[i].Purchasable = "AVAILABLE", "", true
 			items[i].PricePoints, items[i].DurationDays = offer.PricePoints, offer.DurationDays
 		} else {
 			items[i].Reason = "NOT_OFFERED"
 		}
 		if playerID > 0 {
-			if until, err := sales.ActiveUntil(ctx, s.InstallationID, playerID, repository.ServiceBaseRaidAlarm); err == nil {
+			if until, err := sales.ActiveUntil(ctx, s.InstallationID, playerID, id); err == nil {
 				items[i].ActiveUntil = until
 			}
 		}
@@ -122,7 +139,8 @@ type securityPurchaseResponse struct {
 var securityKeyRe = regexp.MustCompile(`^[A-Za-z0-9._:-]{8,64}$`)
 
 // handleSecurityMarketplacePurchase is POST .../security-marketplace/purchases:
-// a verified player buys the Base Raid Alarm at the owner's current price.
+// a verified player buys a sellable service (Base Raid Alarm or Perimeter
+// Watch) at the owner's current price.
 // 201 for a new purchase, 200 for a replay of the same idempotency key.
 func (a *App) handleSecurityMarketplacePurchase(w http.ResponseWriter, r *http.Request) {
 	er, ok := a.scopedContext(w, r, "")
@@ -136,7 +154,7 @@ func (a *App) handleSecurityMarketplacePurchase(w http.ResponseWriter, r *http.R
 	if !decodeFactionBody(w, r, &body) {
 		return
 	}
-	if body.ServiceID != repository.ServiceBaseRaidAlarm {
+	if !repository.SellableSecurityService(body.ServiceID) {
 		writeSaaSError(w, codeInvalidRequest, "this service can't be bought")
 		return
 	}
@@ -156,10 +174,10 @@ func (a *App) handleSecurityMarketplacePurchase(w http.ResponseWriter, r *http.R
 		return
 	}
 	s := repository.SecurityScope{InstallationID: er.scope.InstallationID, GuildID: er.scope.GuildID, ServerID: er.scope.ServerID}
-	// The alarm must be switched on, or the player would pay for nothing.
-	alarm, err := repository.NewBaseRaidAlarmRepository(a.DB.Pool).GetSettings(ctx, s.InstallationID, s.GuildID, s.ServerID)
-	if err != nil || !alarm.Enabled {
-		writeSaaSError(w, codeConflict, "the Base Raid Alarm isn't for sale on this server right now")
+	notForSale := "the " + repository.SecurityServiceLabel(body.ServiceID) + " isn't for sale on this server right now"
+	// The feature must be switched on, or the player would pay for nothing.
+	if on, err := a.securityServiceOn(ctx, s, body.ServiceID); err != nil || !on {
+		writeSaaSError(w, codeConflict, notForSale)
 		return
 	}
 	res, err := repository.NewSecurityServiceRepository(a.DB.Pool).Purchase(ctx, s, acct.AccountID, body.ServiceID, body.IdempotencyKey)
@@ -168,7 +186,7 @@ func (a *App) handleSecurityMarketplacePurchase(w http.ResponseWriter, r *http.R
 		writeSaaSError(w, codeInsufficientFunds, "you don't have enough Champion Points")
 		return
 	case errors.Is(err, repository.ErrSecurityOfferUnavailable):
-		writeSaaSError(w, codeConflict, "the Base Raid Alarm isn't for sale on this server right now")
+		writeSaaSError(w, codeConflict, notForSale)
 		return
 	case err != nil:
 		slog.Error("component=security_market", "msg", "purchase failed", "err", err.Error())

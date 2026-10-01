@@ -12,7 +12,7 @@ import (
 )
 
 // SecurityServiceRepository sells Security Marketplace services for Champion
-// Points. Only the Base Raid Alarm can be offered. A purchase debits the
+// Points. The Base Raid Alarm and Perimeter Watch can be offered. A purchase debits the
 // existing point ledger (TxSecurityPurchase) and records the paid time in the
 // same transaction; it never renews by itself.
 type SecurityServiceRepository struct{ pool *pgxpool.Pool }
@@ -22,8 +22,9 @@ func NewSecurityServiceRepository(pool *pgxpool.Pool) *SecurityServiceRepository
 }
 
 const (
-	ServiceBaseRaidAlarm = "BASE_RAID_ALARM"
-	TxSecurityPurchase   = "SECURITY_PURCHASE"
+	ServiceBaseRaidAlarm  = "BASE_RAID_ALARM"
+	ServicePerimeterWatch = "PERIMETER_MONITORING"
+	TxSecurityPurchase    = "SECURITY_PURCHASE"
 
 	SecurityMaxPricePoints  = 1_000_000_000
 	SecurityMaxDurationDays = 90
@@ -66,7 +67,20 @@ type SecurityPurchaseResult struct {
 	Duplicate    bool
 }
 
-func validSecurityService(id string) bool { return id == ServiceBaseRaidAlarm }
+func validSecurityService(id string) bool {
+	return id == ServiceBaseRaidAlarm || id == ServicePerimeterWatch
+}
+
+// SellableSecurityService reports whether a service can be offered for sale.
+func SellableSecurityService(id string) bool { return validSecurityService(id) }
+
+// SecurityServiceLabel is the player-facing name of a sellable service.
+func SecurityServiceLabel(id string) string {
+	if id == ServicePerimeterWatch {
+		return "Perimeter Watch"
+	}
+	return "Base Raid Alarm"
+}
 
 // GetOffer returns the owner's offer. No row means not for sale.
 func (r *SecurityServiceRepository) GetOffer(ctx context.Context, s SecurityScope, serviceID string) (SecurityOffer, error) {
@@ -156,7 +170,7 @@ func (r *SecurityServiceRepository) Purchase(ctx context.Context, s SecurityScop
 	entry, err := applyLedger(ctx, tx, LedgerParams{GuildID: s.GuildID, PlayerID: playerID, ServerID: s.ServerID,
 		Type: TxSecurityPurchase, Amount: price, CreatedBy: "SYSTEM",
 		ReferenceID: "security:" + strconv.FormatInt(s.InstallationID, 10) + ":" + requestKey,
-		Description: fmt.Sprintf("Base Raid Alarm · %d days", days)}, true)
+		Description: fmt.Sprintf("%s · %d days", SecurityServiceLabel(serviceID), days)}, true)
 	if err != nil {
 		return out, err
 	}
@@ -205,8 +219,8 @@ func (r *SecurityServiceRepository) ActiveUntil(ctx context.Context, installatio
 }
 
 // RecentSales lists the newest purchases on one server, for the owner.
-func (r *SecurityServiceRepository) RecentSales(ctx context.Context, s SecurityScope, limit int) ([]SecurityPurchase, int, error) {
-	if r == nil || r.pool == nil || !s.valid() {
+func (r *SecurityServiceRepository) RecentSales(ctx context.Context, s SecurityScope, serviceID string, limit int) ([]SecurityPurchase, int, error) {
+	if r == nil || r.pool == nil || !s.valid() || !validSecurityService(serviceID) {
 		return nil, 0, ErrSecurityInvalidRequest
 	}
 	if limit < 1 || limit > 50 {
@@ -214,15 +228,15 @@ func (r *SecurityServiceRepository) RecentSales(ctx context.Context, s SecurityS
 	}
 	var active int
 	if err := r.pool.QueryRow(ctx, `SELECT COUNT(DISTINCT player_id) FROM security_service_purchases
- WHERE installation_id=$1 AND guild_id=$2 AND server_id=$3 AND starts_at<=NOW() AND ends_at>NOW()`,
-		s.InstallationID, s.GuildID, s.ServerID).Scan(&active); err != nil {
+ WHERE installation_id=$1 AND guild_id=$2 AND server_id=$3 AND service_id=$4 AND starts_at<=NOW() AND ends_at>NOW()`,
+		s.InstallationID, s.GuildID, s.ServerID, serviceID).Scan(&active); err != nil {
 		return nil, 0, err
 	}
 	rows, err := r.pool.Query(ctx, `SELECT p.id,p.service_id,p.player_id,COALESCE(pl.display_name,''),p.price_points,p.duration_days,
   p.starts_at,p.ends_at,p.created_at
  FROM security_service_purchases p LEFT JOIN players pl ON pl.guild_id=p.guild_id AND pl.id=p.player_id
- WHERE p.installation_id=$1 AND p.guild_id=$2 AND p.server_id=$3
- ORDER BY p.created_at DESC,p.id DESC LIMIT $4`, s.InstallationID, s.GuildID, s.ServerID, limit)
+ WHERE p.installation_id=$1 AND p.guild_id=$2 AND p.server_id=$3 AND p.service_id=$5
+ ORDER BY p.created_at DESC,p.id DESC LIMIT $4`, s.InstallationID, s.GuildID, s.ServerID, limit, serviceID)
 	if err != nil {
 		return nil, 0, err
 	}

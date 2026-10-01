@@ -2685,6 +2685,17 @@ CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events
 		Name: "0084_network_discord_invite",
 		SQL:  `ALTER TABLE installation_feature_settings ADD COLUMN IF NOT EXISTS network_discord_invite_url TEXT NOT NULL DEFAULT '';`,
 	},
+	{
+		// C.A.S.E. staff verdicts on test-run findings. Additive only.
+		Name: "0085_case_shadow_verdicts",
+		SQL:  CASEShadowVerdictSQL,
+	},
+	{
+		// Perimeter Watch: owner switch (off by default), alert log, and letting the
+		// Security Marketplace sell it. Additive; widens two service_id checks.
+		Name: "0086_perimeter_watch",
+		SQL:  PerimeterWatchSQL,
+	},
 }
 
 // PvPDeathBackfillSQL gives the victim of every existing PvP kill a deaths row of type PVP, with

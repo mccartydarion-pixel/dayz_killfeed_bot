@@ -119,6 +119,7 @@ type LocationQueue struct {
 	// parser's hot path (that separation is LocationQueue's own reason to exist), just an additional
 	// step of the same already-async pipeline.
 	intrusion *IntrusionEngine
+	observer  LocationObserver
 
 	queue  chan locationCandidate
 	closed chan struct{}
@@ -153,6 +154,29 @@ func (q *LocationQueue) SetIntrusionEngine(engine *IntrusionEngine) {
 		return
 	}
 	q.intrusion = engine
+}
+
+// LocationSample is one durable player position, handed to a LocationObserver.
+type LocationSample struct {
+	GuildID, ServerID, PlayerID int64
+	Gamertag                    string
+	X, Z                        float64
+	ObservedAt                  time.Time
+}
+
+// LocationObserver receives each persisted batch of positions (Perimeter Watch).
+// It runs on the location worker goroutine and must not block.
+type LocationObserver interface {
+	ObserveLocations(samples []LocationSample)
+}
+
+// SetLocationObserver attaches an extra consumer of persisted positions. Must be
+// called before Run starts; safe to leave unset.
+func (q *LocationQueue) SetLocationObserver(o LocationObserver) {
+	if q == nil {
+		return
+	}
+	q.observer = o
 }
 
 // ServerID returns the game_servers row this queue is scoped to (0 if unset).
@@ -332,6 +356,21 @@ func (q *LocationQueue) persist(ctx context.Context, batch []locationCandidate) 
 				})
 			}
 			q.intrusion.Evaluate(ctx, q.serverID, locs)
+		}()
+	}
+	if q.observer != nil {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Warn("component=location", "msg", "location observer panic recovered", "panic", r)
+				}
+			}()
+			samples := make([]LocationSample, 0, len(records))
+			for _, rec := range records {
+				samples = append(samples, LocationSample{GuildID: rec.GuildID, ServerID: rec.ServerID, PlayerID: rec.PlayerID,
+					Gamertag: rec.Gamertag, X: rec.X, Z: rec.Z, ObservedAt: rec.ObservedAt})
+			}
+			q.observer.ObserveLocations(samples)
 		}()
 	}
 }
