@@ -80,6 +80,15 @@ func TestBaseRentFactionPays(t *testing.T) {
 	if own, _ := rent.PlayerBases(ctx, s, owner); len(own) != 1 || own[0].Overdue {
 		t.Fatalf("payment counts for the owner's base: %+v", own)
 	}
+	if hist, err := rent.PlayerPayments(ctx, s, owner, 10); err != nil || len(hist) != 1 || hist[0].PlayerName != "Mate" || hist[0].BaseName != "Clan Hall" || hist[0].Gift {
+		t.Fatalf("owner's history shows who paid: %+v %v", hist, err)
+	}
+	if hist, err := rent.PlayerPayments(ctx, s, mate, 10); err != nil || len(hist) != 1 {
+		t.Fatalf("mate's history: %+v %v", hist, err)
+	}
+	if hist, err := rent.PlayerPayments(ctx, s, outsider, 10); err != nil || len(hist) != 0 {
+		t.Fatalf("outsider sees no history: %+v %v", hist, err)
+	}
 	if _, err := rent.SetSettings(ctx, s, false, 250, 7, nil); err != nil {
 		t.Fatal(err)
 	}

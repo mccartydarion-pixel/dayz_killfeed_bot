@@ -572,3 +572,40 @@ func (r *BaseRentRepository) MarkDigest(ctx context.Context, installationID, ser
  ON CONFLICT (installation_id,server_id) DO UPDATE SET last_sent_at=NOW()`, installationID, serverID)
 	return err
 }
+
+// PlayerPayments lists the newest rent payments and gifts on the player's
+// bases and their faction mates' bases, with who paid.
+func (r *BaseRentRepository) PlayerPayments(ctx context.Context, s SecurityScope, playerID int64, limit int) ([]BaseRentPayment, error) {
+	if !r.ready() || !s.valid() || playerID <= 0 {
+		return nil, ErrInvalidBaseRent
+	}
+	if limit < 1 || limit > 50 {
+		limit = 20
+	}
+	// $5 is the player for sameFactionSQL.
+	rows, err := r.pool.Query(ctx, `SELECT rp.id,rp.base_id,b.name,rp.player_id,COALESCE(p.display_name,''),rp.price_points,rp.period_days,
+  rp.starts_at,rp.ends_at,rp.created_at,rp.ledger_entry_id IS NULL,rp.gift_note
+ FROM base_rent_payments rp
+ JOIN case_registered_bases b ON b.id=rp.base_id
+ LEFT JOIN players p ON p.guild_id=rp.guild_id AND p.id=rp.player_id
+ WHERE rp.installation_id=$1 AND rp.guild_id=$2 AND rp.server_id=$3
+  AND (b.owner_player_id=$4 OR `+sameFactionSQL+`)
+ ORDER BY rp.created_at DESC,rp.id DESC LIMIT $6`, s.InstallationID, s.GuildID, s.ServerID, playerID, playerID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]BaseRentPayment, 0)
+	for rows.Next() {
+		var p BaseRentPayment
+		if err := rows.Scan(&p.ID, &p.BaseID, &p.BaseName, &p.PlayerID, &p.PlayerName, &p.PricePoints, &p.PeriodDays, &p.StartsAt, &p.EndsAt, &p.CreatedAt, &p.Gift, &p.Note); err != nil {
+			return nil, err
+		}
+		if p.Gift {
+			// Players don't see which staff account gave it; the payment row holds the base owner.
+			p.PlayerName = ""
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}

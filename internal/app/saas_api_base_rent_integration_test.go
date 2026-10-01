@@ -90,6 +90,9 @@ func TestBaseRentPlayerPaysAndReminders(t *testing.T) {
 		t.Fatalf("pay: %+v", paid)
 	}
 	w.expect(w.do(http.MethodPost, path, renterDiscord, pay("rent-pay-04")), http.StatusOK, "replay")
+	if h := w.expect(w.do(http.MethodGet, path, renterDiscord, nil), http.StatusOK, "history").JSON(t)["history"].([]any); len(h) != 1 || h[0].(map[string]any)["playerName"] != "Renter" {
+		t.Fatalf("history: %+v", h)
+	}
 	w.expect(w.do(http.MethodPost, path, w.players[1], pay("rent-pay-05")), http.StatusConflict, "unlinked player")
 
 	// Reminders: the base becomes paused; one DM, never repeated.

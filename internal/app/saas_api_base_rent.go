@@ -182,6 +182,8 @@ type playerBaseRentResponse struct {
 	PeriodDays  int                     `json:"periodDays,omitempty"`
 	GraceDays   int                     `json:"graceDays"`
 	Bases       []repository.RentedBase `json:"bases"`
+	// History is the newest payments and gifts on their and their faction's bases.
+	History []repository.BaseRentPayment `json:"history"`
 }
 
 type playerBaseRentPayBody struct {
@@ -205,6 +207,10 @@ func (a *App) handleGetPlayerBaseRent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := playerBaseRentResponse{Enabled: settings.Enabled, GraceDays: repository.BaseRentGraceDays, Bases: []repository.RentedBase{}}
+	if out.History, err = repo.PlayerPayments(ctx, scope, playerID, 20); err != nil {
+		writeSaaSError(w, codeInternalError, "could not load your rent")
+		return
+	}
 	if settings.Enabled {
 		out.PricePoints, out.PeriodDays = settings.PricePoints, settings.PeriodDays
 		if out.Bases, err = repo.PlayerBases(ctx, scope, playerID); err != nil {

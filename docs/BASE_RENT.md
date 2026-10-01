@@ -38,7 +38,7 @@ Player (verified DayZ link):
 
 | Method | Path | Body | Notes |
 | --- | --- | --- | --- |
-| GET | `…/security-marketplace/base-rent` | | `{enabled, pricePoints, periodDays, graceDays, bases}` (their rented bases with `dueAt`, `graceUntil`, `overdue`, `paused`). |
+| GET | `…/security-marketplace/base-rent` | | `{enabled, pricePoints, periodDays, graceDays, bases, history}`: their rented bases (and faction mates', `faction: true`) with `dueAt`, `graceUntil`, `overdue`, `paused`; `history` is the newest 20 payments and gifts on those bases with who paid (gifts show no staff name). |
 | POST | `…/security-marketplace/base-rent` | `{baseId, idempotencyKey}` | 201 new, 200 replay. 409 when rent is off, the base isn't theirs or doesn't pay rent, or they don't have enough points. |
 
 ## Code
