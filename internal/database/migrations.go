@@ -2717,11 +2717,60 @@ CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events
 		SQL:  FactionSecuritySQL,
 	},
 	{
-		Name: "0091_shop_delivery_attempt_buyer_fulfilment",
+		// Base registration requests from players, approved or declined by the
+		// server owner. Additive (one table).
+		Name: "0091_case_base_requests",
+		SQL:  CaseBaseRequestSQL,
+	},
+	{
+		// Sentinel Pro bundle: widens the Security Marketplace service checks.
+		Name: "0092_sentinel_pro",
+		SQL:  SentinelProSQL,
+	},
+	{
+		// Security Store panel: the Discord channel and message the bot keeps
+		// up to date with what's on sale. Additive (one table).
+		Name: "0093_security_store_panel",
+		SQL:  SecurityStorePanelSQL,
+	},
+	{
+		// Gifted paid time: price 0, no ledger entry, the giving owner recorded.
+		Name: "0094_security_gifts",
+		SQL:  SecurityGiftSQL,
+	},
+	{
+		// Base rent for player-requested bases: settings, payments, reminders and
+		// the paused check. Additive.
+		Name: "0095_base_rent",
+		SQL:  BaseRentSQL,
+	},
+	{
+		// Gifted rent days: price 0, no ledger entry, the giving owner recorded.
+		Name: "0096_base_rent_gifts",
+		SQL:  BaseRentGiftSQL,
+	},
+	{
+		// When each server last got the daily paused-bases staff notice. Additive.
+		Name: "0097_base_rent_digests",
+		SQL:  BaseRentDigestSQL,
+	},
+	{
+		// Rent-free bases, and a due date that restarts when rent is switched
+		// back on or resumed for a base. Additive table plus a replaced function.
+		Name: "0098_base_rent_exemptions",
+		SQL:  BaseRentExemptionSQL,
+	},
+	{
+		// Base transfers to a faction mate, approved by the server owner. Additive.
+		Name: "0099_base_transfers",
+		SQL:  BaseTransferSQL,
+	},
+	{
+		Name: "0100_shop_delivery_attempt_buyer_fulfilment",
 		SQL:  ShopAttemptBuyerFulfilmentSQL,
 	},
 	{
-		Name: "0092_shop_auto_delivery",
+		Name: "0101_shop_auto_delivery",
 		SQL:  ShopAutoDeliverySQL,
 	},
 }

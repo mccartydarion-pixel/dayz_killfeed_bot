@@ -22,6 +22,8 @@ const (
 	AlertWarning  AlertSeverity = "WARNING"
 	AlertCritical AlertSeverity = "CRITICAL"
 	AlertResolved AlertSeverity = "RESOLVED"
+	// AlertInfo is a staff notice that needs a decision, not an outage.
+	AlertInfo AlertSeverity = "INFO"
 )
 
 // Alert kinds the publisher emits today. Each one has a real source; kinds
@@ -34,6 +36,10 @@ const (
 	AlertKindUAVIntrusion    = "UAV_INTRUSION"
 	AlertKindBaseRadar       = "BASE_RADAR_INTRUSION"
 	AlertKindZoneBanViolated = "ZONE_BAN_VIOLATION"
+	// AlertKindBaseRequest: a player asked for a base to be registered.
+	AlertKindBaseRequest = "BASE_REQUEST"
+	// AlertKindRentPaused: the daily list of bases paused for unpaid rent.
+	AlertKindRentPaused = "BASE_RENT_PAUSED"
 	// AlertKindCaseWatchDigest labels the paid C.A.S.E. Watch digest embed. It is NOT an
 	// operational kind: the ADMIN_ALERTS publisher refuses it (operationalAdminAlertKind), and the
 	// durable digest outbox sends it only to the private C.A.S.E. status channel.
@@ -179,7 +185,7 @@ func (p *AdminAlertPublisher) ObserveDownload(guildRowID int64, report killfeed.
 func operationalAdminAlertKind(kind string) bool {
  switch kind {
  case AlertKindADMStale, AlertKindNitradoFailure, AlertKindZoneIntrusion,
-  AlertKindUAVIntrusion, AlertKindBaseRadar, AlertKindZoneBanViolated:
+  AlertKindUAVIntrusion, AlertKindBaseRadar, AlertKindZoneBanViolated, AlertKindBaseRequest, AlertKindRentPaused:
   return true
  default:
   return false
@@ -259,6 +265,8 @@ func BuildAdminAlertEmbed(a AdminAlert, serverName string) *discordgo.MessageEmb
 		color = presentation.ErrorRed
 	case AlertResolved:
 		title, color = "✅ ALERT RESOLVED", presentation.SuccessGreen
+	case AlertInfo:
+		title, color = "📍 STAFF NOTICE", presentation.InfoSteel
 	}
 	embed := presentation.NewChampionEmbed(title, color)
 	desc := "**" + a.Headline + "**"
@@ -266,7 +274,7 @@ func BuildAdminAlertEmbed(a AdminAlert, serverName string) *discordgo.MessageEmb
 		desc += "\n" + a.Detail
 	}
 	embed.Description = desc
-	if a.Severity != AlertResolved {
+	if a.Severity != AlertResolved && a.Severity != AlertInfo {
 		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Severity", Value: string(a.Severity), Inline: true})
 	}
 	if strings.TrimSpace(serverName) != "" {

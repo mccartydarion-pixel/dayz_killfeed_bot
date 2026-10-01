@@ -14,8 +14,9 @@ import (
 
 // The player and Client Hub paths share one service catalog, scoped to the
 // installation. Every service is unavailable except the Base Raid Alarm,
-// Perimeter Watch, Base Black Box and Faction Security, each when the server
-// owner has it on and is selling it for Champion Points.
+// Perimeter Watch, Base Black Box, Faction Security and the Sentinel Pro
+// bundle of them, each when the server owner has it on and is selling it for
+// Champion Points.
 func (a *App) registerSecurityMarketplaceRoutes() {
 	const base = "/api/saas/organizations/{organizationID}/installations/{installationID}/security-marketplace"
 	a.HTTPServer.Handle("GET "+base+"/catalog", a.handleSecurityMarketplaceCatalog)
@@ -24,6 +25,14 @@ func (a *App) registerSecurityMarketplaceRoutes() {
 	a.HTTPServer.Handle("GET "+base+"/black-box", a.handlePlayerBaseBlackBox)
 	a.HTTPServer.Handle("GET "+base+"/faction-security", a.handleGetPlayerFactionSecurity)
 	a.HTTPServer.Handle("PUT "+base+"/faction-security", a.handleSetPlayerFactionSecurity)
+	a.HTTPServer.Handle("GET "+base+"/base-requests", a.handleGetPlayerBaseRequests)
+	a.HTTPServer.Handle("POST "+base+"/base-requests", a.handleCreatePlayerBaseRequest)
+	a.HTTPServer.Handle("POST "+base+"/base-requests/{requestID}/cancel", a.handleCancelPlayerBaseRequest)
+	a.HTTPServer.Handle("GET "+base+"/base-rent", a.handleGetPlayerBaseRent)
+	a.HTTPServer.Handle("POST "+base+"/base-rent", a.handlePayPlayerBaseRent)
+	a.HTTPServer.Handle("GET "+base+"/base-transfers", a.handleGetPlayerBaseTransfers)
+	a.HTTPServer.Handle("POST "+base+"/base-transfers", a.handleCreatePlayerBaseTransfer)
+	a.HTTPServer.Handle("POST "+base+"/base-transfers/{transferID}/cancel", a.handleCancelPlayerBaseTransfer)
 }
 
 type securityMarketplaceCatalogResponse struct {
@@ -48,8 +57,27 @@ func (a *App) securityServiceOn(ctx context.Context, s repository.SecurityScope,
 	case repository.ServiceFactionSecurity:
 		st, err := repository.NewFactionSecurityRepository(a.DB.Pool).GetSettings(ctx, s.InstallationID, s.GuildID, s.ServerID)
 		return err == nil && st.Enabled, err
+	case repository.ServiceSentinelPro:
+		on, err := a.sentinelProIncludes(ctx, s)
+		return err == nil && len(on) > 0, err
 	}
 	return false, nil
+}
+
+// sentinelProIncludes lists the bundle's services that are switched on, in
+// catalog order. The bundle can only be bought while at least one is.
+func (a *App) sentinelProIncludes(ctx context.Context, s repository.SecurityScope) ([]string, error) {
+	out := make([]string, 0, len(repository.SentinelProCovers))
+	for _, id := range repository.SentinelProCovers {
+		on, err := a.securityServiceOn(ctx, s, id)
+		if err != nil {
+			return nil, err
+		}
+		if on {
+			out = append(out, id)
+		}
+	}
+	return out, nil
 }
 
 // securityCatalog returns the catalog for one installation, with each
@@ -80,6 +108,11 @@ func (a *App) securityCatalog(ctx context.Context, scope repository.EconomyScope
 		if offer.Enabled && on {
 			items[i].Status, items[i].Reason, items[i].Purchasable = "AVAILABLE", "", true
 			items[i].PricePoints, items[i].DurationDays = offer.PricePoints, offer.DurationDays
+			if id == repository.ServiceSentinelPro {
+				if inc, err := a.sentinelProIncludes(ctx, s); err == nil {
+					items[i].Includes = inc
+				}
+			}
 		} else {
 			items[i].Reason = "NOT_OFFERED"
 		}

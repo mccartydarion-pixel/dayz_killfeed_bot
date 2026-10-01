@@ -81,7 +81,7 @@ boot is at least 10 minutes old (a newer boot's log file can take 9 minutes to b
 
 ## Fulfilment: the one ledger rule that changed
 
-Migration `0091_shop_delivery_attempt_buyer_fulfilment` adds `fulfilment_mode` to attempts.
+Migration `0100_shop_delivery_attempt_buyer_fulfilment` adds `fulfilment_mode` to attempts.
 
 - `OBSERVED` (default, the manual canary path): unchanged. Fulfilment needs a recorded sighting,
   pickup, second boot and no-respawn check.

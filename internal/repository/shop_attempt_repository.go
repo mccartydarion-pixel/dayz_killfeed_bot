@@ -164,11 +164,11 @@ type ShopAttemptCreate struct {
 	// which migration 0068 permits.
 	ArtifactPath string
 	// FulfilmentMode is "" or ShopFulfilmentObserved for the manual path, ShopFulfilmentBuyer for the
-	// delivery worker (migration 0091).
+	// delivery worker (migration 0100).
 	FulfilmentMode string
 }
 
-// Attempt fulfilment modes (migration 0091).
+// Attempt fulfilment modes (migration 0100).
 const (
 	ShopFulfilmentObserved = "OBSERVED"
 	ShopFulfilmentBuyer    = "BUYER"
@@ -474,7 +474,7 @@ const (
 // FulfillAttemptByBuyer is the delivery worker's fulfilment: in ONE transaction a BUYER-mode attempt
 // moves VERIFICATION_REQUIRED -> FULFILLED on the buyer's answer, and the delivery and the purchase
 // become FULFILLED. The database refuses it unless the buyer's confirmation holds exactly that answer
-// (migration 0091), so a worker can never fulfil an order the buyer did not answer. Lock order is the
+// (migration 0100), so a worker can never fulfil an order the buyer did not answer. Lock order is the
 // Shop's: the purchase row first.
 func (r *ShopAttemptRepository) FulfillAttemptByBuyer(ctx context.Context, org, inst int64, attemptID, answer string, answeredAt time.Time, actor string) (*ShopPurchase, error) {
 	if answer != BuyerAnswerReceived && answer != BuyerAnswerAutoCompleted {

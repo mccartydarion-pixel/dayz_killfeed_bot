@@ -83,7 +83,7 @@ VALUES($1,$2,$3,1,$4,$5,$6,'BandageDressing',1,4621.1,319.6,8397.2,'dayzps/confi
 	snapshot := func() string {
 		t.Helper()
 		var a, e string
-		// Migration 0091 adds three columns with defaults; they are left out so the comparison is of
+		// Migration 0100 adds three columns with defaults; they are left out so the comparison is of
 		// the values the historical rows already had (their defaults are asserted below).
 		if err := db.Pool.QueryRow(ctx, `SELECT COALESCE(string_agg((to_jsonb(x) - 'fulfilment_mode' - 'buyer_answer' - 'buyer_answered_at')::text, '|' ORDER BY x.id), '') FROM shop_delivery_attempts x`).Scan(&a); err != nil {
 			t.Fatal(err)
@@ -109,7 +109,7 @@ VALUES($1,$2,$3,1,$4,$5,$6,'BandageDressing',1,4621.1,319.6,8397.2,'dayzps/confi
 		t.Fatal(err)
 	}
 	if modes != "OBSERVED:true" {
-		t.Fatalf("historical attempts after 0091: %s, want the manual mode and no buyer answer", modes)
+		t.Fatalf("historical attempts after 0100: %s, want the manual mode and no buyer answer", modes)
 	}
 	var n int
 	var def string

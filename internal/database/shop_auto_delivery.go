@@ -1,6 +1,6 @@
 package database
 
-// ShopAttemptBuyerFulfilmentSQL (migration 0091, docs/SHOP_DELIVERY_WORKER_DESIGN.md "What delivered
+// ShopAttemptBuyerFulfilmentSQL (migration 0100, docs/SHOP_DELIVERY_WORKER_DESIGN.md "What delivered
 // means") adds the delivery worker's fulfilment path to the attempt ledger.
 //
 // Until now an attempt became FULFILLED only with evidence a person recorded in game: a sighting, a
@@ -70,7 +70,7 @@ CREATE TRIGGER trg_shop_delivery_attempt_buyer_guard BEFORE INSERT OR UPDATE ON 
     FOR EACH ROW EXECUTE FUNCTION shop_delivery_attempt_buyer_guard();
 `
 
-// ShopAutoDeliverySQL (migration 0092, docs/SHOP_DELIVERY_WORKER_DESIGN.md) is what the delivery
+// ShopAutoDeliverySQL (migration 0101, docs/SHOP_DELIVERY_WORKER_DESIGN.md) is what the delivery
 // worker needs outside the ledger. Everything defaults to off: no product is automatic, no
 // installation has automatic delivery enabled, and nothing here starts a worker.
 //

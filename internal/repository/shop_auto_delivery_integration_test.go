@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// Migrations 0091 and 0092 against a real PostgreSQL: the worker's fulfilment path in the ledger,
+// Migrations 0100 and 0101 against a real PostgreSQL: the worker's fulfilment path in the ledger,
 // the owner's switch and the pause, the lease, the write journal and the reads a pass decides on.
 // Nothing contacts a game server.
 

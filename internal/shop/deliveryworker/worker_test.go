@@ -190,7 +190,7 @@ func (l *fakeLedger) FulfillAttemptByBuyer(_ context.Context, org, inst int64, a
 	if a == nil || a.State != repository.AttemptVerificationRequired || a.FulfilmentMode != repository.ShopFulfilmentBuyer {
 		return nil, repository.ErrShopAttemptStale
 	}
-	// Migration 0091: the buyer's confirmation must hold exactly this answer.
+	// Migration 0100: the buyer's confirmation must hold exactly this answer.
 	purchase := l.orders.byID[a.DeliveryID].PurchaseID
 	if c, ok := l.buyers.confirmations[purchase]; !ok || c.State != answer || answeredAt.Before(*a.UnstageVerifiedAt) {
 		return nil, repository.ErrShopAttemptRejected

@@ -42,6 +42,23 @@ func (a *App) registerCaseBaseRoutes(base string){
  h("GET "+base+"/case/faction-security",a.handleGetFactionSecurity)
  h("PUT "+base+"/case/faction-security",a.handleSetFactionSecurity)
  h("PUT "+base+"/case/faction-security/offer",a.handleSetFactionSecurityOffer)
+ h("GET "+base+"/case/base-requests",a.handleGetBaseRequests)
+ h("POST "+base+"/case/base-requests/{requestID}/approve",a.handleApproveBaseRequest)
+ h("POST "+base+"/case/base-requests/{requestID}/decline",a.handleDeclineBaseRequest)
+ h("GET "+base+"/case/sentinel-pro",a.handleGetSentinelPro)
+ h("PUT "+base+"/case/sentinel-pro/offer",a.handleSetSentinelProOffer)
+ h("GET "+base+"/case/security-sales",a.handleGetSecuritySales)
+ h("GET "+base+"/case/security-panel",a.handleGetSecurityPanel)
+ h("PUT "+base+"/case/security-panel",a.handleSetSecurityPanel)
+ h("GET "+base+"/case/security-gifts",a.handleListSecurityGifts)
+ h("POST "+base+"/case/security-gifts",a.handleGiveSecurityGift)
+ h("GET "+base+"/case/base-rent",a.handleGetBaseRent)
+ h("PUT "+base+"/case/base-rent",a.handleSetBaseRent)
+ h("POST "+base+"/case/base-rent/gift",a.handleGiftBaseRent)
+ h("PUT "+base+"/case/base-rent/rent-free",a.handleSetBaseRentFree)
+ h("GET "+base+"/case/base-transfers",a.handleGetBaseTransfers)
+ h("POST "+base+"/case/base-transfers/{transferID}/approve",a.handleApproveBaseTransfer)
+ h("POST "+base+"/case/base-transfers/{transferID}/decline",a.handleDeclineBaseTransfer)
 }
 
 func (a *App) caseBaseActor(w http.ResponseWriter,r *http.Request)(adminActor,*repository.CaseBaseRegistrationRepository,bool){

@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// The delivery worker's own storage (migration 0092, docs/SHOP_DELIVERY_WORKER_DESIGN.md): the
+// The delivery worker's own storage (migration 0101, docs/SHOP_DELIVERY_WORKER_DESIGN.md): the
 // owner's switch and the pause, the lease, the write journal, and the reads the worker decides on
 // (which orders are deliverable, where, and what the server logs say about a boot). The attempt
 // ledger itself stays in ShopAttemptRepository.
@@ -334,7 +334,7 @@ SELECT e.x, e.z, e.y, e.observed_at, e.source_file
 	return p, err == nil, err
 }
 
-// Ticket origin for tickets the delivery worker opens (migration 0092).
+// Ticket origin for tickets the delivery worker opens (migration 0101).
 const TicketViaSystem = "SYSTEM"
 
 // ticketSystemOpener is stored as the opener of a SYSTEM ticket whose buyer has no verified Discord

@@ -143,7 +143,7 @@ JOIN base_raid_alarm_settings s
 JOIN players owner ON owner.guild_id=b.guild_id AND owner.id=b.owner_player_id
 LEFT JOIN player_links pl
  ON pl.guild_id=b.guild_id AND pl.player_id=b.owner_player_id AND pl.status='VERIFIED'
-WHERE b.guild_id=$1 AND b.server_id=$2 AND b.state<>'REVOKED'
+WHERE b.guild_id=$1 AND b.server_id=$2 AND b.state<>'REVOKED' AND NOT base_rent_paused(b.id)
  AND (b.center_x-$4)*(b.center_x-$4)+(b.center_z-$5)*(b.center_z-$5) <= b.radius*b.radius
  AND owner.dayz_player_id<>$3
  AND NOT EXISTS (
@@ -161,11 +161,11 @@ WHERE b.guild_id=$1 AND b.server_id=$2 AND b.state<>'REVOKED'
  AND (NOT EXISTS (
   SELECT 1 FROM security_service_offers o
   WHERE o.installation_id=b.installation_id AND o.server_id=b.server_id
-   AND o.service_id='BASE_RAID_ALARM' AND o.enabled)
+   AND o.service_id IN ('BASE_RAID_ALARM','SENTINEL_PRO') AND o.enabled)
   OR EXISTS (
   SELECT 1 FROM security_service_purchases sp
   WHERE sp.installation_id=b.installation_id AND sp.player_id=b.owner_player_id
-   AND sp.service_id='BASE_RAID_ALARM' AND sp.starts_at<=NOW() AND sp.ends_at>NOW()))
+   AND sp.service_id IN ('BASE_RAID_ALARM','SENTINEL_PRO') AND sp.starts_at<=NOW() AND sp.ends_at>NOW()))
 ORDER BY b.id`, guildID, serverID, raiderAdmID, mapX, mapZ)
 	if err != nil {
 		return nil, err

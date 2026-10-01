@@ -1392,6 +1392,7 @@ func (a *App) Run() error {
 	}
 	a.registerLifeCommands(ctx, session)
 	a.registerCardCommand(session)
+	a.registerBaseCommands(session)
 	if a.LinkService != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
 		linkHandler := discord.NewLinkCommandHandler(a.LinkService, a.Guilds)
 		if err := discord.RegisterLinkCommands(session, a.Config.DiscordGuildID); err != nil {
@@ -1751,6 +1752,10 @@ func (a *App) Run() error {
 				a.startSecurityExpiryWorker(ctx)
 				// Base Black Box history clean-up (each server's retention).
 				a.startBaseBlackBoxPruner(ctx)
+				// Security Store panel in Discord (refreshed every 10 minutes).
+				a.startSecurityPanelWorker(ctx)
+				// Base rent reminders (due soon / paused), one DM each.
+				a.startBaseRentReminders(ctx)
 				if a.CaseDigestOutbox != nil && a.Config.CaseAccessEnabled {
 					go a.runCaseDigestWorker(ctx)
 				}

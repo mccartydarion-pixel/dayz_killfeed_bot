@@ -99,6 +99,7 @@ func (a *App) handleSetBaseBlackBox(w http.ResponseWriter, r *http.Request) {
 	}
 	a.recordAudit(ctx, ac, "BASE_BLACK_BOX_SAVED", "base-black-box", "", "success", nil,
 		map[string]any{"enabled": settings.Enabled, "retentionDays": settings.RetentionDays})
+	a.refreshSecurityPanel(repository.SecurityScope{InstallationID: ac.scope.InstallationID, GuildID: ac.scope.GuildID, ServerID: *ac.scope.ServerID})
 	writeSaaSJSON(w, http.StatusOK, map[string]any{"settings": settings})
 }
 
@@ -156,7 +157,7 @@ func (a *App) handlePlayerBaseBlackBox(w http.ResponseWriter, r *http.Request) {
 	}
 	scope := repository.SecurityScope{InstallationID: er.scope.InstallationID, GuildID: er.scope.GuildID, ServerID: er.scope.ServerID}
 	sales := repository.NewSecurityServiceRepository(a.DB.Pool)
-	offer, err := sales.GetOffer(ctx, scope, repository.ServiceBaseBlackBox)
+	onSale, err := sales.OnSale(ctx, scope, repository.ServiceBaseBlackBox)
 	if err != nil {
 		writeSaaSError(w, codeInternalError, "could not load your base history")
 		return
@@ -167,7 +168,7 @@ func (a *App) handlePlayerBaseBlackBox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out.ActiveUntil = until
-	if offer.Enabled && until == nil {
+	if onSale && until == nil {
 		out.Reason = serviceReasonNotPaid
 		writeSaaSJSON(w, http.StatusOK, out)
 		return

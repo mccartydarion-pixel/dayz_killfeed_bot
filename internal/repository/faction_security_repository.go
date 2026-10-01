@@ -152,10 +152,10 @@ WHERE fm.guild_id=$2 AND fm.active AND fm.player_id<>$4
   WHERE s.installation_id=$1 AND s.guild_id=$2 AND s.server_id=$3 AND s.enabled)
  AND (NOT EXISTS (
   SELECT 1 FROM security_service_offers o
-  WHERE o.installation_id=$1 AND o.server_id=$3 AND o.service_id='FACTION_SECURITY' AND o.enabled)
+  WHERE o.installation_id=$1 AND o.server_id=$3 AND o.service_id IN ('FACTION_SECURITY','SENTINEL_PRO') AND o.enabled)
   OR EXISTS (
   SELECT 1 FROM security_service_purchases sp
-  WHERE sp.installation_id=$1 AND sp.player_id=$4 AND sp.service_id='FACTION_SECURITY'
+  WHERE sp.installation_id=$1 AND sp.player_id=$4 AND sp.service_id IN ('FACTION_SECURITY','SENTINEL_PRO')
    AND sp.starts_at<=NOW() AND sp.ends_at>NOW()))
 ORDER BY 1 LIMIT $5`, installationID, guildID, serverID, ownerPlayerID, FactionSecurityMaxRecipients)
 	if err != nil {
