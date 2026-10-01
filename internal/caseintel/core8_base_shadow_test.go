@@ -18,7 +18,7 @@ func TestShadowBaseBoostOnRetainedBuilds(t *testing.T) {
 	base := RegisteredBase{BaseID: "#7", Verified: true, OwnerPlayerID: 10, X: 1000, Z: 2000, Radius: 50,
 		RegisteredAt: time.Date(2026, 9, 30, 0, 0, 0, 0, time.UTC), AuthorizedPlayers: []int64{30}}
 	in := ShadowBaseInput{Scope: Core8Scope{1, 2, 3}, UTCOffsetMinutes: &minus4, Telemetry: shadowTelemetry(now), BuildActionsLogged: true,
-		Bases: []RegisteredBase{base},
+		Bases:  []RegisteredBase{base},
 		Builds: []ShadowBuildEvent{build(1, 10, 1005, 2005), build(2, 20, 1010, 2010), build(3, 30, 1000, 2000), build(4, 20, 3000, 3000)}}
 
 	r := ShadowBaseBoost(in)
