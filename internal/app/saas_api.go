@@ -116,6 +116,10 @@ func (a *App) requireSaaSServiceAuth(w http.ResponseWriter, r *http.Request) boo
 		writeSaaSError(w, codeUnauthorized, "missing or invalid service authentication")
 		return false
 	}
+	// A "view as customer" session (docs/OWNER_OPS.md) may only read.
+	if a.rejectImpersonatedWrite(w, r) {
+		return false
+	}
 	return true
 }
 
