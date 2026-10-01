@@ -2784,6 +2784,11 @@ CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events
 		Name: "0103_event_builder",
 		SQL:  EventBuilderSQL,
 	},
+	{
+		// Scheduled stats season rollovers and per-server Ranked resets. Additive.
+		Name: "0104_season_planner",
+		SQL:  SeasonPlannerSQL,
+	},
 }
 
 // PvPDeathBackfillSQL gives the victim of every existing PvP kill a deaths row of type PVP, with
