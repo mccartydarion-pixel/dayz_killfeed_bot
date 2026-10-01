@@ -17,3 +17,10 @@ now) and the 20 newest sales across all services.
 
 Champion Points spent here are the existing `SECURITY_PURCHASE` ledger entries;
 this view never moves points.
+
+## Base rent
+
+The same response carries `rent`: whether rent is on, rent paid in the period
+(`payments`, `points`, `payers`), rent days the owner gifted (`giftedDays`, not
+counted as income), and where every rented base stands right now (`rented`,
+`paidUp`, `overdue` = in the grace period, `paused`). See BASE_RENT.md.

@@ -30,6 +30,9 @@ func TestNewBaseRequestNotices(t *testing.T) {
 	if noLink := NewBaseRequestMessage("", "", "", 25, "").Embeds[0]; len(noLink.Fields) != 1 || noLink.Footer == nil {
 		t.Fatalf("no link: %+v", noLink)
 	}
+	if !operationalAdminAlertKind(AlertKindRentPaused) {
+		t.Fatal("rent digest must be allowed on the staff alerts route")
+	}
 	if !operationalAdminAlertKind(AlertKindBaseRequest) {
 		t.Fatal("base requests must be allowed on ADMIN_ALERTS")
 	}
@@ -71,5 +74,24 @@ func TestBaseRentMessages(t *testing.T) {
 	}
 	if same := WithRentNotice(BaseRequestDecisionMessage(true, "Hut", "", ""), 0, 7, 3).Embeds[0]; len(same.Fields) != 0 {
 		t.Fatal("no rent terms when rent has no price")
+	}
+}
+
+func TestBaseRentGiftMessage(t *testing.T) {
+	m := BaseRentGiftMessage("Hut @everyone", "Champions", 10, time.Unix(1_800_000_000, 0), "Thanks `all`", "https://site.example/store")
+	e := m.Embeds[0]
+	if !strings.Contains(e.Title, "10 days of free rent") || strings.Contains(e.Title, "@everyone") || len(m.AllowedMentions.Parse) != 0 {
+		t.Fatalf("title/mentions: %q", e.Title)
+	}
+	if len(e.Fields) != 3 || strings.Contains(e.Fields[1].Value, "`") {
+		t.Fatalf("fields: %+v", e.Fields)
+	}
+}
+
+func TestBaseRentPaidForYouMessage(t *testing.T) {
+	m := BaseRentPaidForYouMessage("Mate", "Clan @here Hall", "Champions", 7, time.Unix(1_800_000_000, 0))
+	e := m.Embeds[0]
+	if !strings.Contains(e.Title, "Mate paid rent") || strings.Contains(e.Title, "@here") || !strings.Contains(e.Description, "7 more days") {
+		t.Fatalf("message: %q %q", e.Title, e.Description)
 	}
 }

@@ -162,6 +162,13 @@ func TestBaseRentLifecycle(t *testing.T) {
 	if pays, err := rent.RecentPayments(ctx, s, 10); err != nil || len(pays) != 2 || pays[0].BaseName != "Rented" {
 		t.Fatalf("recent payments: %+v %v", pays, err)
 	}
+	if sum, err := rent.Summary(ctx, s, time.Now().AddDate(0, 0, -30)); err != nil || !sum.Enabled || sum.Payments != 2 || sum.Points != 800 ||
+		sum.Payers != 1 || sum.Rented != 1 || sum.PaidUp != 1 || sum.Paused != 0 || sum.GiftedDays != 0 {
+		t.Fatalf("rent summary: %+v %v", sum, err)
+	}
+	if sum, err := rent.Summary(ctx, s, time.Now().Add(time.Hour)); err != nil || sum.Payments != 0 || sum.Rented != 1 {
+		t.Fatalf("rent summary window: %+v %v", sum, err)
+	}
 	// Due soon: a reminder a day before.
 	if _, err := pool.Exec(ctx, `UPDATE base_rent_payments SET starts_at=NOW()-INTERVAL '6 days',ends_at=NOW()+INTERVAL '12 hours' WHERE base_id=$1 AND id=$2`, rentedID, next.Payment.ID); err != nil {
 		t.Fatal(err)
