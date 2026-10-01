@@ -208,6 +208,15 @@ type App struct {
 	ClientAdmin *repository.ClientAdminRepository
 	// PlatformOwner is the Owner Hub write model (docs/ADMIN_API.md "Owner controls").
 	PlatformOwner *repository.PlatformOwnerRepository
+	// PlatformOps stores the Owner Hub operations state (docs/OWNER_OPS.md): automation
+	// switches, fleet incidents, broadcasts and the daily briefing guard. The ownerOps* fields
+	// are the monitor's in-memory grace tracking and its test seams.
+	PlatformOps         *repository.PlatformOpsRepository
+	ownerOpsMu          sync.Mutex
+	ownerOpsSeen        map[string]time.Time
+	ownerOpsReady       func() bool
+	ownerOpsDM          func(discordUserID, text string) error
+	ownerOpsChannelPost func(channelID, text string) error
 	// FeatureFlags resolves the owner's per-installation overrides of the env rollout switches.
 	FeatureFlags *featureflags.Resolver
 	// Locations backs Champion Phase 3 (docs/PLAYER_INTELLIGENCE.md): the authoritative player
@@ -821,6 +830,8 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.Permissions = repository.NewPermissionsRepository(db.Pool)
 			app.AdminAudit = repository.NewAuditRepository(db.Pool)
 			app.PlatformOwner = repository.NewPlatformOwnerRepository(db.Pool)
+			app.PlatformOps = repository.NewPlatformOpsRepository(db.Pool)
+			go app.runOwnerOps(ctx)
 			app.FeatureFlags = featureflags.New(app.PlatformOwner, featureflags.DefaultTTL)
 			caseFlags = app.FeatureFlags
 			flagCtx, flagCancel := context.WithTimeout(ctx, 5*time.Second)

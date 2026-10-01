@@ -2780,33 +2780,39 @@ CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events
 		SQL:  CaseEvidenceOptinSQL,
 	},
 	{
+		// Owner Hub operations: automation switches, fleet incidents, broadcasts and the
+		// daily briefing guard (docs/OWNER_OPS.md). Additive only.
+		Name: "0103_owner_ops",
+		SQL:  OwnerOpsSQL,
+	},
+	{
 		// Owner-built events: template, announce flag and once-only announcement stamps. Additive.
-		Name: "0103_event_builder",
+		Name: "0104_event_builder",
 		SQL:  EventBuilderSQL,
 	},
 	{
 		// Scheduled stats season rollovers and per-server Ranked resets. Additive.
-		Name: "0104_season_planner",
+		Name: "0105_season_planner",
 		SQL:  SeasonPlannerSQL,
 	},
 	{
 		// Which Discord invite each member joined through, and when they left. Additive.
-		Name: "0105_invite_tracking",
+		Name: "0106_invite_tracking",
 		SQL:  InviteTrackingSQL,
 	},
 	{
 		// Automatic Champion Point reward rules. Additive.
-		Name: "0106_reward_rules",
+		Name: "0107_reward_rules",
 		SQL:  RewardRulesSQL,
 	},
 	{
 		// In-game name changes, recorded by a trigger from now on. Additive.
-		Name: "0107_player_name_history",
+		Name: "0108_player_name_history",
 		SQL:  PlayerNameHistorySQL,
 	},
 	{
 		// Supporter / VIP tiers and memberships. Additive.
-		Name: "0108_vip_tiers",
+		Name: "0109_vip_tiers",
 		SQL:  VIPTiersSQL,
 	},
 }

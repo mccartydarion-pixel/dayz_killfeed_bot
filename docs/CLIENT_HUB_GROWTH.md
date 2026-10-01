@@ -17,7 +17,7 @@ the admin audit log.
 | Zone & base map | existing `/zones` API | `ZONE_VIEW` / `ZONE_MANAGE` (`UAV_MANAGE` for UAV and Base Radar) | — |
 | Supporter & VIP tiers | `GET /vip`, `PUT /vip/tiers`, `DELETE /vip/tiers/{id}`, `POST /vip/members`, `POST /vip/members/{id}/revoke` | `VIP_VIEW` (Moderator) / `VIP_MANAGE` (Administrator) | Economy |
 
-Migrations `0103`–`0108` add tables and columns only; none of them rewrites
+Migrations `0104`–`0109` add tables and columns only; none of them rewrites
 existing rows.
 
 ## Event builder
@@ -73,7 +73,7 @@ The timeline shows sessions (connect/disconnect), kills, deaths, other deaths,
 warnings, purchases, staff point adjustments, faction joins and leaves, and name
 changes. It is sorted newest first, can be filtered by kind, and pages with
 `before`. It never includes map positions. Name changes are recorded by a trigger
-added in `0107`, so only changes from that migration onward appear. Session rows
+added in `0108`, so only changes from that migration onward appear. Session rows
 follow the location-event retention.
 
 ## Staff activity
