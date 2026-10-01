@@ -385,3 +385,51 @@ func mustJSON(t *testing.T, v any) string {
 	}
 	return string(b)
 }
+
+// The user directory lists every website account with its organizations and ban state.
+func TestOwnerUserDirectory(t *testing.T) {
+	w := newOwnerWorld(t)
+	rr := w.get(w.a.handleAdminListUsers, "/api/admin/users?search="+w.a1.OwnerDiscordID, adminFounderID, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("users: %d %s", rr.Code, rr.Body.String())
+	}
+	var page struct {
+		Items []struct {
+			ID            int64   `json:"id"`
+			DiscordID     string  `json:"discordId"`
+			BannedAt      *string `json:"bannedAt"`
+			Organizations []struct {
+				ID   int64  `json:"id"`
+				Role string `json:"role"`
+			} `json:"organizations"`
+		} `json:"items"`
+		Counts map[string]int64 `json:"counts"`
+	}
+	_ = json.Unmarshal(rr.Body.Bytes(), &page)
+	if len(page.Items) != 1 || page.Items[0].DiscordID != w.a1.OwnerDiscordID || page.Counts["total"] < 2 {
+		t.Fatalf("directory search: %s", rr.Body.String())
+	}
+	u := page.Items[0]
+	if len(u.Organizations) != 1 || u.Organizations[0].ID != w.a1.OrgID || u.Organizations[0].Role != "OWNER" {
+		t.Fatalf("organizations on the user row: %+v", u.Organizations)
+	}
+	uid := strconv.FormatInt(u.ID, 10)
+	if rr := w.post(w.a.handleOwnerBanUser, "/api/admin/users/"+uid+"/ban", adminFounderID, map[string]string{"userID": uid}, map[string]any{"reason": "test"}); rr.Code != http.StatusOK {
+		t.Fatalf("ban: %d", rr.Code)
+	}
+	rr = w.get(w.a.handleAdminGetUser, "/api/admin/users/"+uid, adminFounderID, map[string]string{"userID": uid})
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"banReason":"test"`) {
+		t.Fatalf("user detail after ban: %d %s", rr.Code, rr.Body.String())
+	}
+	rr = w.get(w.a.handleAdminListUsers, "/api/admin/users?banned=true&search="+w.a1.OwnerDiscordID, adminFounderID, nil)
+	if !strings.Contains(rr.Body.String(), `"discordId":"`+w.a1.OwnerDiscordID+`"`) {
+		t.Fatalf("banned filter must include the banned user: %s", rr.Body.String())
+	}
+	rr = w.get(w.a.handleAdminListUsers, "/api/admin/users?banned=false&search="+w.a1.OwnerDiscordID, adminFounderID, nil)
+	if strings.Contains(rr.Body.String(), `"discordId":"`+w.a1.OwnerDiscordID+`"`) {
+		t.Fatalf("not-banned filter must exclude the banned user: %s", rr.Body.String())
+	}
+	if rr := w.get(w.a.handleAdminGetUser, "/api/admin/users/999999999", adminFounderID, map[string]string{"userID": "999999999"}); rr.Code != http.StatusNotFound {
+		t.Fatalf("unknown user must be 404, got %d", rr.Code)
+	}
+}

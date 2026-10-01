@@ -39,6 +39,9 @@ type adminReader interface {
 	ListInstallations(ctx context.Context, f adminrepo.InstallationFilter) ([]adminrepo.InstallationSummary, int64, error)
 	GetInstallation(ctx context.Context, id int64) (*adminrepo.InstallationDetail, error)
 	InstallationHealth(ctx context.Context) (adminrepo.HealthSummary, []adminrepo.HealthInstallation, error)
+	ListUsers(ctx context.Context, f adminrepo.UserFilter) ([]adminrepo.UserRow, int64, error)
+	GetUser(ctx context.Context, id int64) (*adminrepo.UserRow, error)
+	CountUsers(ctx context.Context) (total, banned, active30d int64, err error)
 }
 
 // adminIdentity is the safe identity of an authorized platform admin.
@@ -651,4 +654,5 @@ func (a *App) registerAdminAPI() {
 	a.registerOwnerAPI()
 	a.registerOpsAPI()
 	a.registerFlagsAPI()
+	a.registerUsersAPI()
 }

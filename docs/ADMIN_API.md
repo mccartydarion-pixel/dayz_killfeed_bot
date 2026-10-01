@@ -379,6 +379,13 @@ worker starts, so a change takes effect on the installation's next worker restar
 | `GET /installations/{id}/flags` | - | Each flag's `default` (env answer for this installation), `override` (stored decision or null), `effective`, reason, updatedBy/At. |
 | `PUT /installations/{id}/flags/{flag}` | `reason`, `enabled: true\|false` | Sets the override (audited `installation.flag_set`); without `enabled` clears it (`installation.flag_cleared`). Unknown flag: `404`. |
 
+## Users
+
+| Route | Query | Returns |
+| --- | --- | --- |
+| `GET /users` | `search` (username / global name / Discord id), `banned=true\|false`, `cursor`, `limit` | Website accounts newest first: id, Discord id, username, global name, avatar, createdAt, lastLoginAt, bannedAt/banReason, trialUsed, organizations[{id,name,slug,role}]; plus `counts{total, banned, activeLast30d}`. |
+| `GET /users/{id}` | - | One account in the same shape; `404` when unknown. |
+
 ## Fields that are never returned
 
 By construction (every query names its columns; the response types have no such
