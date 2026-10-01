@@ -73,3 +73,13 @@ their own Champion Points, on the Security Store page or with `/mybase` (the
 base is shown as their faction mate's). The payment counts for the base like
 the owner's own; the payer is recorded on the payment. The base owner gets a
 DM saying who paid. Former members and other players can't pay.
+
+## Daily staff notice for paused bases
+
+At most once a day per server, when bases were paused for unpaid rent since
+the last notice, a `BASE_RENT_PAUSED` staff notice goes to the server's
+ADMIN_ALERTS route (when one is set) listing up to 10 of them with their
+owners. It is information only: nothing else happens to the players. The
+last send time is kept in `base_rent_digests` (migration
+`0097_base_rent_digests`); the check runs with the reminders every 10
+minutes.

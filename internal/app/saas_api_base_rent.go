@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/discord"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -302,6 +304,9 @@ func (a *App) startBaseRentReminders(ctx context.Context) {
 				return
 			case <-t.C:
 				a.sendBaseRentReminders(ctx, send)
+				if a.AdminAlerts != nil {
+					a.sendRentPauseDigests(ctx, a.AdminAlerts)
+				}
 			}
 		}
 	}()
@@ -332,4 +337,58 @@ func (a *App) sendBaseRentReminders(ctx context.Context, send func(string, *disc
 			slog.Warn("component=base_rent", "event", "mark_notice_failed", "base_id", n.BaseID, "err", err.Error())
 		}
 	}
+}
+
+// rentAlertPublisher is the part of the staff alert publisher the digest uses.
+type rentAlertPublisher interface{ Publish(discord.AdminAlert) }
+
+// sendRentPauseDigests posts, at most once a day per server, a staff notice
+// listing bases paused for unpaid rent since the last one. It is information
+// only: nothing happens to the players.
+func (a *App) sendRentPauseDigests(ctx context.Context, pub rentAlertPublisher) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("component=base_rent", "msg", "digest panic recovered", "panic", fmt.Sprint(r))
+		}
+	}()
+	if pub == nil {
+		return
+	}
+	repo := repository.NewBaseRentRepository(a.DB.Pool)
+	digests, err := repo.PausedDigests(ctx)
+	if err != nil {
+		slog.Warn("component=base_rent", "event", "digest_failed", "err", err.Error())
+		return
+	}
+	for _, d := range digests {
+		pub.Publish(rentPauseAlert(d))
+		if err := repo.MarkDigest(ctx, d.InstallationID, d.ServerID); err != nil {
+			slog.Warn("component=base_rent", "event", "mark_digest_failed", "server_id", d.ServerID, "err", err.Error())
+		}
+	}
+}
+
+// rentPauseAlert lists up to 10 newly paused bases with their owners.
+func rentPauseAlert(d repository.PausedDigest) discord.AdminAlert {
+	lines := make([]string, 0, 11)
+	for i, b := range d.Bases {
+		if i == 10 {
+			lines = append(lines, fmt.Sprintf("…and %d more", len(d.Bases)-10))
+			break
+		}
+		owner := b.OwnerName
+		if owner == "" {
+			owner = "unknown player"
+		}
+		lines = append(lines, "• **"+presentation.SafeName(b.BaseName, 64)+"** ("+presentation.SafeName(owner, 40)+")")
+	}
+	word := "bases were"
+	if len(d.Bases) == 1 {
+		word = "base was"
+	}
+	return discord.AdminAlert{GuildRowID: d.GuildID, ServerID: d.ServerID, Kind: discord.AlertKindRentPaused, Severity: discord.AlertInfo,
+		Headline: "BASES PAUSED FOR RENT",
+		Detail: fmt.Sprintf("%d %s paused for unpaid rent since the last notice. Their base services are off until rent is paid; the bases are kept and nothing else happens to the players.\n%s",
+			len(d.Bases), word, strings.Join(lines, "\n")),
+		Fields: [][2]string{{"Where to look", "Anti-cheat → Bases tab → Base rent"}}}
 }

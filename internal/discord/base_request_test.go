@@ -30,6 +30,9 @@ func TestNewBaseRequestNotices(t *testing.T) {
 	if noLink := NewBaseRequestMessage("", "", "", 25, "").Embeds[0]; len(noLink.Fields) != 1 || noLink.Footer == nil {
 		t.Fatalf("no link: %+v", noLink)
 	}
+	if !operationalAdminAlertKind(AlertKindRentPaused) {
+		t.Fatal("rent digest must be allowed on the staff alerts route")
+	}
 	if !operationalAdminAlertKind(AlertKindBaseRequest) {
 		t.Fatal("base requests must be allowed on ADMIN_ALERTS")
 	}

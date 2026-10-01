@@ -6,10 +6,12 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/yourname/dayz-killfeed/internal/discord"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -184,5 +186,78 @@ func TestBaseRentGiftOwnerOnly(t *testing.T) {
 	var audits int
 	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM admin_audit_log WHERE installation_id=$1 AND action='BASE_RENT_GIFTED'`, w.f.InstallationID).Scan(&audits); err != nil || audits != 1 {
 		t.Fatalf("audits (once): %d %v", audits, err)
+	}
+}
+
+type fakeRentAlerts struct{ alerts []discord.AdminAlert }
+
+func (f *fakeRentAlerts) Publish(a discord.AdminAlert) { f.alerts = append(f.alerts, a) }
+
+func TestBaseRentPauseDigest(t *testing.T) {
+	w := newFactionWorld(t)
+	ctx := context.Background()
+	pool := w.a.DB.Pool
+	renter := w.linkPlayer(w.a1, w.players[0], "Late Payer")
+	guild, server := w.gameContext(w.a1)
+	s := repository.SecurityScope{InstallationID: w.a1.InstallationID, GuildID: guild, ServerID: server}
+	reqs := repository.NewCaseBaseRequestRepository(pool)
+	q, err := reqs.Create(ctx, repository.BaseRequestScope(s), repository.BaseRequestInput{PlayerID: renter, Name: "Late Hut", CenterX: 1, CenterZ: 1, Radius: 30, PositionSeenAt: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := reqs.Approve(ctx, repository.BaseRequestScope(s), q.ID, "chernarusplus", "", 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseID := *d.Request.BaseID
+	rent := repository.NewBaseRentRepository(pool)
+	if _, err := rent.SetSettings(ctx, s, true, 300, 7, nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = rent.SetSettings(context.Background(), s, false, 300, 7, nil) })
+	mine := func(f *fakeRentAlerts) []discord.AdminAlert {
+		var out []discord.AdminAlert
+		for _, a := range f.alerts {
+			if a.ServerID == server && a.GuildRowID == guild {
+				out = append(out, a)
+			}
+		}
+		return out
+	}
+	none := &fakeRentAlerts{}
+	w.a.sendRentPauseDigests(ctx, none)
+	if len(mine(none)) != 0 {
+		t.Fatalf("nothing paused yet: %+v", none.alerts)
+	}
+	// Paused 12 hours ago (rent due 3.5 days ago).
+	if _, err := pool.Exec(ctx, `UPDATE base_rent_settings SET enabled_since=NOW()-INTERVAL '84 hours' WHERE installation_id=$1`, s.InstallationID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE case_registered_bases SET created_at=NOW()-INTERVAL '5 days' WHERE id=$1`, baseID); err != nil {
+		t.Fatal(err)
+	}
+	first := &fakeRentAlerts{}
+	w.a.sendRentPauseDigests(ctx, first)
+	got := mine(first)
+	if len(got) != 1 || got[0].Kind != discord.AlertKindRentPaused || got[0].Severity != discord.AlertInfo ||
+		!strings.Contains(got[0].Detail, "Late Hut") || !strings.Contains(got[0].Detail, "Late Payer") || !strings.Contains(got[0].Detail, "1 base was") {
+		t.Fatalf("digest: %+v", got)
+	}
+	again := &fakeRentAlerts{}
+	w.a.sendRentPauseDigests(ctx, again)
+	if len(mine(again)) != 0 {
+		t.Fatal("at most once a day")
+	}
+	// A day later with nothing newly paused: no notice (the clock moves 25 hours back for both).
+	if _, err := pool.Exec(ctx, `UPDATE base_rent_digests SET last_sent_at=NOW()-INTERVAL '25 hours' WHERE installation_id=$1`, s.InstallationID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE base_rent_settings SET enabled_since=NOW()-INTERVAL '109 hours' WHERE installation_id=$1`, s.InstallationID); err != nil {
+		t.Fatal(err)
+	}
+	later := &fakeRentAlerts{}
+	w.a.sendRentPauseDigests(ctx, later)
+	if len(mine(later)) != 0 {
+		t.Fatalf("already reported base listed again: %+v", mine(later))
 	}
 }

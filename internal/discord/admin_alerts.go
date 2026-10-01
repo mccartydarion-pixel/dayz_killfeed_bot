@@ -38,6 +38,8 @@ const (
 	AlertKindZoneBanViolated = "ZONE_BAN_VIOLATION"
 	// AlertKindBaseRequest: a player asked for a base to be registered.
 	AlertKindBaseRequest = "BASE_REQUEST"
+	// AlertKindRentPaused: the daily list of bases paused for unpaid rent.
+	AlertKindRentPaused = "BASE_RENT_PAUSED"
 	// AlertKindCaseWatchDigest labels the paid C.A.S.E. Watch digest embed. It is NOT an
 	// operational kind: the ADMIN_ALERTS publisher refuses it (operationalAdminAlertKind), and the
 	// durable digest outbox sends it only to the private C.A.S.E. status channel.
@@ -183,7 +185,7 @@ func (p *AdminAlertPublisher) ObserveDownload(guildRowID int64, report killfeed.
 func operationalAdminAlertKind(kind string) bool {
  switch kind {
  case AlertKindADMStale, AlertKindNitradoFailure, AlertKindZoneIntrusion,
-  AlertKindUAVIntrusion, AlertKindBaseRadar, AlertKindZoneBanViolated, AlertKindBaseRequest:
+  AlertKindUAVIntrusion, AlertKindBaseRadar, AlertKindZoneBanViolated, AlertKindBaseRequest, AlertKindRentPaused:
   return true
  default:
   return false

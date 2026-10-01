@@ -508,3 +508,67 @@ func (r *BaseRentRepository) Summary(ctx context.Context, s SecurityScope, since
 	}
 	return out, nil
 }
+
+// PausedDigest is one server's newly paused bases for the daily staff notice.
+type PausedDigest struct {
+	InstallationID int64
+	GuildID        int64
+	ServerID       int64
+	Bases          []PausedBase
+}
+
+// PausedBase is one base paused for unpaid rent.
+type PausedBase struct {
+	BaseID    int64
+	BaseName  string
+	OwnerName string
+	PausedAt  time.Time
+}
+
+// PausedDigests lists, per server, bases paused since that server's last
+// notice (or in the last day), for servers not told in the last ~24 hours.
+func (r *BaseRentRepository) PausedDigests(ctx context.Context) ([]PausedDigest, error) {
+	if !r.ready() {
+		return nil, ErrInvalidBaseRent
+	}
+	rows, err := r.pool.Query(ctx, `WITH paused AS (
+  SELECT b.installation_id,b.guild_id,b.server_id,b.id,b.name,COALESCE(p.display_name,'') AS owner,
+   base_rent_due_at(b.id)+make_interval(days=>$1) AS paused_at
+  FROM case_registered_bases b
+  LEFT JOIN players p ON p.guild_id=b.guild_id AND p.id=b.owner_player_id
+  WHERE base_rent_due_at(b.id)+make_interval(days=>$1) < NOW()
+ )
+ SELECT pa.installation_id,pa.guild_id,pa.server_id,pa.id,pa.name,pa.owner,pa.paused_at
+ FROM paused pa
+ LEFT JOIN base_rent_digests d ON d.installation_id=pa.installation_id AND d.server_id=pa.server_id
+ WHERE (d.last_sent_at IS NULL OR d.last_sent_at < NOW()-INTERVAL '23 hours 45 minutes')
+  AND pa.paused_at > COALESCE(d.last_sent_at, NOW()-INTERVAL '1 day')
+ ORDER BY pa.installation_id,pa.server_id,pa.paused_at,pa.id`, BaseRentGraceDays)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PausedDigest
+	for rows.Next() {
+		var inst, guild, server int64
+		var b PausedBase
+		if err := rows.Scan(&inst, &guild, &server, &b.BaseID, &b.BaseName, &b.OwnerName, &b.PausedAt); err != nil {
+			return nil, err
+		}
+		if n := len(out); n == 0 || out[n-1].InstallationID != inst || out[n-1].ServerID != server {
+			out = append(out, PausedDigest{InstallationID: inst, GuildID: guild, ServerID: server})
+		}
+		out[len(out)-1].Bases = append(out[len(out)-1].Bases, b)
+	}
+	return out, rows.Err()
+}
+
+// MarkDigest records that a server got its paused-bases notice now.
+func (r *BaseRentRepository) MarkDigest(ctx context.Context, installationID, serverID int64) error {
+	if !r.ready() || installationID <= 0 || serverID <= 0 {
+		return ErrInvalidBaseRent
+	}
+	_, err := r.pool.Exec(ctx, `INSERT INTO base_rent_digests(installation_id,server_id,last_sent_at) VALUES ($1,$2,NOW())
+ ON CONFLICT (installation_id,server_id) DO UPDATE SET last_sent_at=NOW()`, installationID, serverID)
+	return err
+}
