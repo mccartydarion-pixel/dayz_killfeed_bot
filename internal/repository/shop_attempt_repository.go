@@ -126,13 +126,18 @@ type ShopAttempt struct {
 	ReviewResolution, ReviewResolvedBy             *string
 	ReviewResolvedAt                               *time.Time
 	CreatedAt, UpdatedAt                           time.Time
+	// FulfilmentMode is OBSERVED (a person records the in-game evidence) or BUYER (the delivery
+	// worker: fulfilled only by the buyer's answer). BuyerAnswer is set when a BUYER attempt is fulfilled.
+	FulfilmentMode  string
+	BuyerAnswer     *string
+	BuyerAnsweredAt *time.Time
 }
 
 const attemptCols = `id, organization_id, installation_id, delivery_id, attempt, attempt_id, state, fingerprint, artifact_path, class_name, quantity,
  pos_x, pos_y, pos_z, drop_source_file, drop_source_offset, before_sha256, staged_sha256, unstaged_sha256, staged_at, staged_boot_file,
  restart_boot_file, restart_observed_at, unstage_verified_at, item_observed_by, item_observed_at, picked_up_by, pickup_observed_at,
  second_boot_file, second_boot_started_at, no_respawn_checked_at, verified_by, fulfilled_at, failure_reason,
- review_resolution, review_resolved_by, review_resolved_at, created_at, updated_at`
+ review_resolution, review_resolved_by, review_resolved_at, created_at, updated_at, fulfilment_mode, buyer_answer, buyer_answered_at`
 
 func scanAttempt(row pgx.Row) (ShopAttempt, error) {
 	var a ShopAttempt
@@ -140,7 +145,8 @@ func scanAttempt(row pgx.Row) (ShopAttempt, error) {
 		&a.ClassName, &a.Quantity, &a.PosX, &a.PosY, &a.PosZ, &a.DropSourceFile, &a.DropSourceOffset, &a.BeforeSHA256, &a.StagedSHA256,
 		&a.UnstagedSHA256, &a.StagedAt, &a.StagedBootFile, &a.RestartBootFile, &a.RestartObservedAt, &a.UnstageVerifiedAt, &a.ItemObservedBy,
 		&a.ItemObservedAt, &a.PickedUpBy, &a.PickupObservedAt, &a.SecondBootFile, &a.SecondBootStartedAt, &a.NoRespawnCheckedAt, &a.VerifiedBy,
-		&a.FulfilledAt, &a.FailureReason, &a.ReviewResolution, &a.ReviewResolvedBy, &a.ReviewResolvedAt, &a.CreatedAt, &a.UpdatedAt)
+		&a.FulfilledAt, &a.FailureReason, &a.ReviewResolution, &a.ReviewResolvedBy, &a.ReviewResolvedAt, &a.CreatedAt, &a.UpdatedAt,
+		&a.FulfilmentMode, &a.BuyerAnswer, &a.BuyerAnsweredAt)
 	return a, err
 }
 
@@ -157,7 +163,16 @@ type ShopAttemptCreate struct {
 	// legacy location (unchanged behaviour); the only other accepted value is the custom/ location,
 	// which migration 0068 permits.
 	ArtifactPath string
+	// FulfilmentMode is "" or ShopFulfilmentObserved for the manual path, ShopFulfilmentBuyer for the
+	// delivery worker (migration 0091).
+	FulfilmentMode string
 }
+
+// Attempt fulfilment modes (migration 0091).
+const (
+	ShopFulfilmentObserved = "OBSERVED"
+	ShopFulfilmentBuyer    = "BUYER"
+)
 
 // Attempt artifact locations the ledger accepts (migration 0054 + 0068).
 const (
@@ -248,13 +263,21 @@ func (r *ShopAttemptRepository) Create(ctx context.Context, in ShopAttemptCreate
 	default:
 		return out, ErrShopAttemptArtifactPath
 	}
+	mode := in.FulfilmentMode
+	switch mode {
+	case "":
+		mode = ShopFulfilmentObserved
+	case ShopFulfilmentObserved, ShopFulfilmentBuyer:
+	default:
+		return out, fmt.Errorf("%w: unknown fulfilment mode", ErrShopAttemptRejected)
+	}
 	err := r.inTx(ctx, actor, "plan created", func(tx pgx.Tx) error {
 		var err error
 		out, err = scanAttempt(tx.QueryRow(ctx, `INSERT INTO shop_delivery_attempts(organization_id, installation_id, delivery_id, attempt, attempt_id,
- fingerprint, artifact_path, class_name, quantity, pos_x, pos_y, pos_z, drop_source_file, drop_source_offset)
-VALUES($1,$2,$3,$4,$5,$6,$14,$7,$8,$9,$10,$11,$12,$13) RETURNING `+attemptCols,
+ fingerprint, artifact_path, class_name, quantity, pos_x, pos_y, pos_z, drop_source_file, drop_source_offset, fulfilment_mode)
+VALUES($1,$2,$3,$4,$5,$6,$14,$7,$8,$9,$10,$11,$12,$13,$15) RETURNING `+attemptCols,
 			in.OrganizationID, in.InstallationID, in.DeliveryID, in.Attempt, in.AttemptID, in.Fingerprint, in.ClassName, in.Quantity,
-			in.PosX, in.PosY, in.PosZ, in.DropSourceFile, in.DropSourceOffset, artifact))
+			in.PosX, in.PosY, in.PosZ, in.DropSourceFile, in.DropSourceOffset, artifact, mode))
 		return err
 	})
 	return out, err
@@ -430,6 +453,79 @@ WHERE purchase_id=$3 AND organization_id=$1 AND installation_id=$2 AND status='M
 	}
 	if _, err := tx.Exec(ctx, `UPDATE shop_purchases SET status='FULFILLED', fulfilled_at=NOW(), fulfilled_by_user_id=$4, updated_at=NOW()
 WHERE id=$3 AND organization_id=$1 AND installation_id=$2 AND status='PENDING_FULFILLMENT'`, org, inst, purchaseID, nullID(actorUserID)); err != nil {
+		return nil, err
+	}
+	p, err := getPurchase(ctx, tx, org, inst, purchaseID, 0, false)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, mapAttemptErr(err)
+	}
+	return p, nil
+}
+
+// Buyer answers that fulfil a worker attempt (they are the confirmation states of migration 0087).
+const (
+	BuyerAnswerReceived      = "RECEIVED"
+	BuyerAnswerAutoCompleted = "AUTO_COMPLETED"
+)
+
+// FulfillAttemptByBuyer is the delivery worker's fulfilment: in ONE transaction a BUYER-mode attempt
+// moves VERIFICATION_REQUIRED -> FULFILLED on the buyer's answer, and the delivery and the purchase
+// become FULFILLED. The database refuses it unless the buyer's confirmation holds exactly that answer
+// (migration 0091), so a worker can never fulfil an order the buyer did not answer. Lock order is the
+// Shop's: the purchase row first.
+func (r *ShopAttemptRepository) FulfillAttemptByBuyer(ctx context.Context, org, inst int64, attemptID, answer string, answeredAt time.Time, actor string) (*ShopPurchase, error) {
+	if answer != BuyerAnswerReceived && answer != BuyerAnswerAutoCompleted {
+		return nil, fmt.Errorf("%w: unknown buyer answer", ErrShopAttemptRejected)
+	}
+	if answeredAt.IsZero() {
+		return nil, ErrShopAttemptEvidence
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	if err := setActor(ctx, tx, actor, "buyer answer: "+answer); err != nil {
+		return nil, err
+	}
+	var purchaseID int64
+	err = tx.QueryRow(ctx, `SELECT sd.purchase_id FROM shop_delivery_attempts a JOIN shop_deliveries sd ON sd.id = a.delivery_id
+ WHERE a.attempt_id=$1 AND a.organization_id=$2 AND a.installation_id=$3`, attemptID, org, inst).Scan(&purchaseID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrShopAttemptNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	cur, err := getPurchase(ctx, tx, org, inst, purchaseID, 0, true)
+	if err != nil {
+		return nil, err
+	}
+	if cur.Status != ShopStatusPendingFulfillment {
+		return nil, ErrShopInvalidStatus
+	}
+	tag, err := tx.Exec(ctx, `UPDATE shop_delivery_attempts SET state='FULFILLED', buyer_answer=$4, buyer_answered_at=$5, verified_by=$6, fulfilled_at=NOW()
+WHERE attempt_id=$1 AND organization_id=$2 AND installation_id=$3 AND state='VERIFICATION_REQUIRED' AND fulfilment_mode='BUYER'`,
+		attemptID, org, inst, answer, answeredAt, strings.TrimSpace(actor))
+	if err != nil {
+		return nil, mapAttemptErr(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return nil, ErrShopAttemptStale
+	}
+	tag, err = tx.Exec(ctx, `UPDATE shop_deliveries SET status='FULFILLED', fulfilled_at=NOW(), updated_at=NOW()
+WHERE purchase_id=$3 AND organization_id=$1 AND installation_id=$2 AND status='MANUAL_READY'`, org, inst, purchaseID)
+	if err != nil {
+		return nil, mapAttemptErr(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return nil, ErrShopInvalidStatus
+	}
+	if _, err := tx.Exec(ctx, `UPDATE shop_purchases SET status='FULFILLED', fulfilled_at=NOW(), updated_at=NOW()
+WHERE id=$3 AND organization_id=$1 AND installation_id=$2 AND status='PENDING_FULFILLMENT'`, org, inst, purchaseID); err != nil {
 		return nil, err
 	}
 	p, err := getPurchase(ctx, tx, org, inst, purchaseID, 0, false)
