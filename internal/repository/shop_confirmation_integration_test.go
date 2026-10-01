@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// Migration 0083 against a real PostgreSQL: the buyer confirmation opened by the purchase trigger,
+// Migration 0087 against a real PostgreSQL: the buyer confirmation opened by the purchase trigger,
 // its answers, the deadline, and the support ticket. Nothing contacts a game server or Discord.
 
 type confirmationWorld struct {

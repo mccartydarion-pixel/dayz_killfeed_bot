@@ -1739,6 +1739,8 @@ func (a *App) Run() error {
 				// C.A.S.E. staff alerts: sends nothing until a detector is
 				// released and an owner turns staff alerts on.
 				a.startCaseStaffAlerts(ctx)
+				// Paid Base Raid Alarm expiry DMs (one per ended purchase).
+				a.startSecurityExpiryWorker(ctx)
 				if a.CaseDigestOutbox != nil && a.Config.CaseAccessEnabled {
 					go a.runCaseDigestWorker(ctx)
 				}

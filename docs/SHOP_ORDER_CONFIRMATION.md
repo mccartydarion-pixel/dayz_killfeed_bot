@@ -22,7 +22,7 @@ pages and the automatic delivery worker are separate changes.
   ticket channel.
 - It does not enable automatic delivery.
 
-## Data (migration `0083_shop_order_confirmations`)
+## Data (migration `0087_shop_order_confirmations`)
 
 Additive and forward-only. No existing row is read or rewritten.
 

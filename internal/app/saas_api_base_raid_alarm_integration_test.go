@@ -50,4 +50,25 @@ func TestBaseRaidAlarmSettingsOwnerOnlyAndOffByDefault(t *testing.T) {
 	if s := decodeBody[view](t, off).Settings; off.Code != http.StatusOK || s.Enabled || s.CooldownSeconds != 900 {
 		t.Fatalf("turn off: %d %+v", off.Code, s)
 	}
+
+	offerPath := w.path("/case/raid-alarm/offer")
+	if denied := w.call(w.a.handleSetBaseRaidAlarmOffer, http.MethodPut, offerPath, admin, map[string]any{"enabled": true, "pricePoints": 500, "durationDays": 7}, nil); denied.Code != http.StatusForbidden {
+		t.Fatalf("admin set an offer: %d", denied.Code)
+	}
+	for _, bad := range []map[string]any{{"enabled": true, "pricePoints": 0, "durationDays": 7}, {"enabled": true, "pricePoints": 500, "durationDays": 91}, {"enabled": true, "pricePoints": 500, "durationDays": 7, "autoRenew": true}} {
+		if res := w.call(w.a.handleSetBaseRaidAlarmOffer, http.MethodPut, offerPath, w.f.OwnerDiscordID, bad, nil); res.Code != http.StatusBadRequest {
+			t.Fatalf("bad offer %v accepted: %d", bad, res.Code)
+		}
+	}
+	if res := w.call(w.a.handleSetBaseRaidAlarmOffer, http.MethodPut, offerPath, w.f.OwnerDiscordID, map[string]any{"enabled": true, "pricePoints": 500, "durationDays": 7}, nil); res.Code != http.StatusOK {
+		t.Fatalf("set offer: %d %s", res.Code, res.Body.String())
+	}
+	view2 := decodeBody[struct {
+		Offer             repository.SecurityOffer      `json:"offer"`
+		Sales             []repository.SecurityPurchase `json:"sales"`
+		ActiveSubscribers int                           `json:"activeSubscribers"`
+	}](t, w.call(w.a.handleGetBaseRaidAlarm, http.MethodGet, path, w.f.OwnerDiscordID, nil, nil))
+	if !view2.Offer.Enabled || view2.Offer.PricePoints != 500 || view2.Offer.DurationDays != 7 || len(view2.Sales) != 0 || view2.ActiveSubscribers != 0 {
+		t.Fatalf("offer not shown to owner: %+v", view2)
+	}
 }

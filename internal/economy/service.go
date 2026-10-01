@@ -30,6 +30,9 @@ const (
 	// economy service never accepts them from Credit/Debit (only the shop's transaction may).
 	TypeShopPurchase = repository.TxShopPurchase
 	TypeShopRefund   = repository.TxShopRefund
+	// Security Marketplace purchases (Base Raid Alarm), written only by the
+	// security service repository through the same ledger path.
+	TypeSecurityPurchase = repository.TxSecurityPurchase
 )
 
 const (
@@ -301,6 +304,8 @@ func TypeLabel(t string) string {
 		return "Shop purchase"
 	case t == TypeShopRefund:
 		return "Shop refund"
+	case t == TypeSecurityPurchase:
+		return "Security purchase"
 	case strings.HasPrefix(t, "EVENT_"):
 		return "Event prize"
 	}

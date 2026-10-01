@@ -11,10 +11,17 @@ Off by default, per installation. Code: `internal/repository/network_repository.
 the server outside its own community:
 
 ```json
-{"listed": true, "description": "Hardcore PvP, weekly wipes"}
+{"listed": true, "description": "Hardcore PvP, weekly wipes", "discordInviteUrl": "https://discord.gg/deadzone"}
 ```
 
-`description` is at most 280 characters. The change is audited (`NETWORK_SETTINGS_UPDATED`) and
+`description` is at most 280 characters.
+
+`discordInviteUrl` is optional: the owner's own invite to the server's Discord, shown as a
+"Join Discord" link on the public listing. Only a Discord invite is accepted
+(`discord.gg/<code>`, `discord.com/invite/<code>`, with or without `https://`); it is stored as
+`https://discord.gg/<code>`, and anything else is a 400. The bot never creates an invite itself -
+the owner decides which one to publish, and should use one that does not expire. Sending an empty
+string removes the link. It is only ever returned for a listed installation. The change is audited (`NETWORK_SETTINGS_UPDATED`) and
 takes effect at once.
 
 Every network query starts from the set of listed installations. Nothing about an installation
@@ -41,6 +48,7 @@ Responses are cached in-process for one minute.
 ```json
 {"items": [{"installationId": 12, "name": "Chernarus PvP", "platform": "PLAYSTATION",
             "description": "Hardcore PvP, weekly wipes", "discordGuildName": "Deadzone",
+            "discordInviteUrl": "https://discord.gg/deadzone",
             "playersOnline": 14, "peak24h": 31, "activePlayers7d": 212, "kills7d": 1840,
             "totalKills": 51233, "trackedPlayers": 3120, "lastActivityAt": "…"}]}
 ```
