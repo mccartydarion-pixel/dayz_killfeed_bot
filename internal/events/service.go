@@ -19,11 +19,13 @@ const (
 	TypeFactionWarKills = "FACTION_WAR_KILLS"
 	TypeHeadshotHunt    = "HEADSHOT_HUNT"
 	TypeWeaponChallenge = "WEAPON_CHALLENGE"
-	StatusDraft         = "DRAFT"
-	StatusScheduled     = "SCHEDULED"
-	StatusActive        = "ACTIVE"
-	StatusEnded         = "ENDED"
-	StatusCancelled     = "CANCELLED"
+	// TypeHotZone scores kills made inside a circle on one server's map (docs/HOT_ZONES.md).
+	TypeHotZone     = "HOT_ZONE"
+	StatusDraft     = "DRAFT"
+	StatusScheduled = "SCHEDULED"
+	StatusActive    = "ACTIVE"
+	StatusEnded     = "ENDED"
+	StatusCancelled = "CANCELLED"
 )
 
 type MostKillsConfig struct {
@@ -41,6 +43,27 @@ type FactionKillsConfig struct {
 type WeaponChallengeConfig struct {
 	WeaponNames []string `json:"weapon_names"`
 }
+
+// HotZoneConfig is a circle on one server's map, in map metres. KillsObserved and Auto record why
+// an automatically opened hot zone opened.
+type HotZoneConfig struct {
+	ServerID      int64   `json:"server_id"`
+	CenterX       float64 `json:"center_x"`
+	CenterZ       float64 `json:"center_z"`
+	RadiusM       float64 `json:"radius_m"`
+	Auto          bool    `json:"auto,omitempty"`
+	KillsObserved int     `json:"kills_observed,omitempty"`
+}
+
+// Contains reports whether the map point lies inside the hot zone.
+func (c HotZoneConfig) Contains(p Point) bool {
+	dx, dz := p.X-c.CenterX, p.Z-c.CenterZ
+	return dx*dx+dz*dz <= c.RadiusM*c.RadiusM
+}
+
+// Point is a horizontal map position in metres (east, north).
+type Point struct{ X, Z float64 }
+
 type BountyConfig struct {
 	TargetPlayerID int64 `json:"target_player_id"`
 	RewardPoints   int   `json:"reward_points"`
@@ -61,6 +84,10 @@ type KillInput struct {
 	Headshot                               bool
 	Streak                                 int
 	EventTime                              time.Time
+	// ServerID and the positions are what a HOT_ZONE event scores on; a kill whose ADM line
+	// carried no position has nil positions and never scores there.
+	ServerID             int64
+	KillerPos, VictimPos *Point
 }
 type Qualification struct {
 	Qualifies           bool
@@ -178,6 +205,11 @@ func ValidateConfig(eventType string, config any) error {
 		if !ok || len(v.WeaponNames) == 0 {
 			return fmt.Errorf("weapon challenge requires at least one weapon")
 		}
+	case TypeHotZone:
+		v, ok := config.(HotZoneConfig)
+		if !ok || v.ServerID <= 0 || v.RadiusM <= 0 {
+			return fmt.Errorf("hot zone requires a server and a positive radius")
+		}
 	case TypeBounty:
 		v, ok := config.(BountyConfig)
 		if !ok || v.TargetPlayerID <= 0 || v.RewardPoints <= 0 {
@@ -257,6 +289,20 @@ func Qualify(event Event, kill KillInput) Qualification {
 			return Qualification{}
 		}
 		out.FactionID = *kill.KillerFactionID
+	case TypeHotZone:
+		// The fight is where the victim fell; the killer's position stands in only when the
+		// victim's was not logged. A long shot into the zone from outside it counts.
+		var c HotZoneConfig
+		if json.Unmarshal(event.Config, &c) != nil || c.RadiusM <= 0 || kill.ServerID == 0 || kill.ServerID != c.ServerID {
+			return Qualification{}
+		}
+		pos := kill.VictimPos
+		if pos == nil {
+			pos = kill.KillerPos
+		}
+		if pos == nil || !c.Contains(*pos) {
+			return Qualification{}
+		}
 	default:
 		return Qualification{}
 	}

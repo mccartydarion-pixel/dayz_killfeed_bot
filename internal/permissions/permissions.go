@@ -105,6 +105,18 @@ const (
 	// heatmap queries. Aggregate-only, no player identity in the response, so it sits at the same
 	// floor as the other "view aggregate operational data" capabilities.
 	CapHeatmapView Capability = "HEATMAP_VIEW"
+	// Opt-in feature settings (installation_feature_settings). Viewing them and reading the
+	// features' own admin data is a Moderator floor; changing hot-zone or fight-replay settings is
+	// an Administrator decision. Listing the server in the public cross-server network and
+	// changing the name feeds post under are Owner-only: both change what people outside the
+	// staff team see.
+	CapFeatureSettingsView   Capability = "FEATURE_SETTINGS_VIEW"
+	CapFeatureSettingsManage Capability = "FEATURE_SETTINGS_MANAGE"
+	CapNetworkManage         Capability = "NETWORK_MANAGE"
+	CapFeedIdentityManage    Capability = "FEED_IDENTITY_MANAGE"
+	// CapRetentionView is the retention dashboard (docs/RETENTION.md): aggregate activity plus a
+	// list of lapsed players by name, so it sits with the other player-data views.
+	CapRetentionView Capability = "RETENTION_VIEW"
 )
 
 // requiredLevel is the default minimum Level each capability needs (task's "DEFAULT ROLE
@@ -140,6 +152,11 @@ var requiredLevel = map[Capability]Level{
 	CapUAVManage:              LevelOwner,
 	CapIntrusionAck:           LevelModerator,
 	CapHeatmapView:            LevelModerator,
+	CapFeatureSettingsView:    LevelModerator,
+	CapFeatureSettingsManage:  LevelAdministrator,
+	CapNetworkManage:          LevelOwner,
+	CapFeedIdentityManage:     LevelOwner,
+	CapRetentionView:          LevelAdministrator,
 }
 
 // Allows reports whether actorLevel satisfies capability's required minimum Level. An unknown

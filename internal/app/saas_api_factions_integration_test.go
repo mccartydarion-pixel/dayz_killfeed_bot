@@ -101,6 +101,11 @@ func newFactionWorld(t *testing.T) *factionWorld {
 	a.ActivityRepository = repository.NewActivityRepository(a.DB.Pool)
 	a.SaaSPlayer = repository.NewPlayerServerRepository(a.DB.Pool)
 	a.registerPlayerRoutes()
+	a.Lives = repository.NewLifeRepository(a.DB.Pool)
+	a.registerLifeRoutes()
+	a.Cards = repository.NewCardRepository(a.DB.Pool)
+	a.Seasons = repository.NewSeasonRepository(a.DB.Pool)
+	a.registerCardRoutes()
 	// Platform-admin wiring (Champion Access Model Phase 2 Owner routes): additive, harmless to
 	// every other factionWorld-based test unless one explicitly acts as adminFounderID.
 	a.adminSaaS = adminrepo.New(a.DB.Pool)

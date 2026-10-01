@@ -20,20 +20,20 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/adminrepo"
 	"github.com/yourname/dayz-killfeed/internal/analytics"
 	"github.com/yourname/dayz-killfeed/internal/billing"
-	"github.com/yourname/dayz-killfeed/internal/casebilling"
 	"github.com/yourname/dayz-killfeed/internal/bounties"
+	"github.com/yourname/dayz-killfeed/internal/casebilling"
 	"github.com/yourname/dayz-killfeed/internal/config"
 	"github.com/yourname/dayz-killfeed/internal/database"
 	"github.com/yourname/dayz-killfeed/internal/discord"
 	"github.com/yourname/dayz-killfeed/internal/discord/panels"
 	"github.com/yourname/dayz-killfeed/internal/economy"
 	"github.com/yourname/dayz-killfeed/internal/embedrender"
-	"github.com/yourname/dayz-killfeed/internal/featureflags"
 	"github.com/yourname/dayz-killfeed/internal/embedtemplates"
 	"github.com/yourname/dayz-killfeed/internal/entitlements"
 	competitiveevents "github.com/yourname/dayz-killfeed/internal/events"
 	"github.com/yourname/dayz-killfeed/internal/factionassets"
 	"github.com/yourname/dayz-killfeed/internal/factionstats"
+	"github.com/yourname/dayz-killfeed/internal/featureflags"
 	"github.com/yourname/dayz-killfeed/internal/health"
 	"github.com/yourname/dayz-killfeed/internal/heatmap"
 	"github.com/yourname/dayz-killfeed/internal/killfeed"
@@ -203,6 +203,34 @@ type App struct {
 	Zones     *repository.ZoneRepository
 	ZoneCache *killfeed.ZoneCache
 	Intrusion *killfeed.IntrusionEngine
+	// Lives records one row per ended life and derives lives in progress (docs/LIVES.md); LifeRecap
+	// DMs the opt-in death recap. Both nil-safe.
+	Lives     *repository.LifeRepository
+	LifeRecap *discord.LifeRecapNotifier
+	// Cards reads Champion Card figures and stores share links (docs/CHAMPION_CARD.md);
+	// renderedCards caches rendered public cards.
+	Cards         *repository.CardRepository
+	renderedCards *renderedCardCache
+	cardCacheOnce sync.Once
+	// FeatureSettings stores each installation's opt-in feature settings (hot zones, public fight
+	// replay, network listing, feed identity). hotZoneKills is the heatmap aggregation hot zones
+	// are detected from; hotZoneChecked throttles that check per guild (docs/HOT_ZONES.md).
+	FeatureSettings *repository.FeatureSettingsRepository
+	hotZoneKills    hotZoneKillSource
+	hotZoneMu       sync.Mutex
+	hotZoneChecked  map[int64]time.Time
+	// Network reads the opt-in cross-server directory and leaderboards (docs/NETWORK.md);
+	// networkResponses caches its public responses.
+	Network          *repository.NetworkRepository
+	networkResponses *networkCache
+	networkCacheOnce sync.Once
+	// Fights reads kills and position samples for fight replays (docs/FIGHT_REPLAY.md).
+	Fights *repository.FightRepository
+	// Retention reads the retention dashboard from the daily/hourly activity rollups (docs/RETENTION.md).
+	Retention *repository.RetentionRepository
+	// FeedIdentity posts feed messages under an installation's own name and avatar
+	// (docs/FEED_IDENTITY.md). Nil-safe: without it every feed posts as the bot.
+	FeedIdentity *discord.FeedIdentity
 	// Heatmap backs Champion Phase 5 (docs/HEATMAPS.md): PvP kill/death, player-activity, and
 	// zone-intrusion heatmap queries aggregated from Phase 3/4's persisted data. Independent of
 	// the killfeed pipeline - a pure, cacheable read path, never wired into any worker goroutine.
@@ -216,7 +244,7 @@ type App struct {
 	GuildRoutePanels *repository.GuildRoutePanelRepository
 	// RouteSyncer keeps those guild-level routed artifacts in step with the
 	// installation routes. Nil-safe: without it routes are simply not synced.
-	RouteSyncer *discord.RouteSyncer
+	RouteSyncer       *discord.RouteSyncer
 	ServerRanksBoards []*discord.ServerRanksBoard
 	// adminSaaS is the cross-tenant, read-only platform-admin read model behind
 	// /api/admin (internal/adminrepo); adminChannelNames optionally overrides the
@@ -249,9 +277,9 @@ type App struct {
 	saasNitradoConnectLimiter *saasRateLimiter
 	// FactionHub is the web-first Faction Hub store (docs/FACTIONS.md); the four
 	// limiters throttle faction creation and join applications per acting user.
-	FactionHub                  *repository.FactionHubRepository
+	FactionHub *repository.FactionHubRepository
 	// factionRecruitAPI posts, edits and deletes faction recruitment cards (nil without Discord).
-	factionRecruitAPI recruitMessageAPI
+	factionRecruitAPI           recruitMessageAPI
 	saasFactionCreateLimiter    *saasRateLimiter
 	saasFactionCreateDayLimiter *saasRateLimiter
 	saasFactionApplyLimiter     *saasRateLimiter
@@ -268,12 +296,12 @@ type App struct {
 	saasShopAdminLimiter      *saasRateLimiter
 	saasBillingActionLimiter  *saasRateLimiter
 	saasPublicCatalogLimiter  *saasRateLimiter
-	caseWatchDigestLimiter *saasRateLimiter
+	caseWatchDigestLimiter    *saasRateLimiter
 	// Test seams; nil in production. Both callbacks fail closed by default.
-	caseWatchPrivacyCheck func(context.Context,string,string) error
-	caseWatchRequesterCheck func(context.Context,repository.AdminScope,int64)(bool,error)
-	caseWatchSender func(context.Context,string,*discordgo.MessageEmbed) (string,error)
-	caseWatchMessageLookup func(context.Context,string,string)(*discordgo.Message,string,error)
+	caseWatchPrivacyCheck   func(context.Context, string, string) error
+	caseWatchRequesterCheck func(context.Context, repository.AdminScope, int64) (bool, error)
+	caseWatchSender         func(context.Context, string, *discordgo.MessageEmbed) (string, error)
+	caseWatchMessageLookup  func(context.Context, string, string) (*discordgo.Message, string, error)
 	// saasAdminActionLimiter throttles the Client Admin Control Plane's higher-risk mutation
 	// routes (restart/stop/whitelist/banlist/permission changes/etc); saasAdminReadLimiter
 	// throttles its read routes (audit log, warnings list, permissions list).
@@ -734,12 +762,12 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 				// Store and route C.A.S.E. independently of the one-row base
 				// subscription. The checkout flag defaults false in every environment.
 				if err := app.Billing.ConfigureCaseAddons(repository.NewCaseAddonSubscriptionRepository(db.Pool), billing.CaseOptions{
-					Enabled: cfg.CaseBillingEnabled,
-					AccessEnabled: cfg.CaseAccessEnabled,
+					Enabled:         cfg.CaseBillingEnabled,
+					AccessEnabled:   cfg.CaseAccessEnabled,
 					VerifiedThrough: casebilling.Tier(cfg.CaseVerifiedThrough),
 					PriceIDs: map[casebilling.Tier]string{
-						casebilling.Watch: cfg.CaseWatchPriceID,
-						casebilling.Pro: cfg.CaseProPriceID,
+						casebilling.Watch:   cfg.CaseWatchPriceID,
+						casebilling.Pro:     cfg.CaseProPriceID,
 						casebilling.Command: cfg.CaseCommandPriceID,
 					},
 					StripeKeyMode: billing.ClassifyStripeKey(cfg.StripeSecretKey),
@@ -767,6 +795,14 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			flagCancel()
 			app.ClientAdmin = repository.NewClientAdminRepository(db.Pool)
 			app.Locations = repository.NewLocationRepository(db.Pool)
+			app.Lives = repository.NewLifeRepository(db.Pool)
+			app.Cards = repository.NewCardRepository(db.Pool)
+			app.FeatureSettings = repository.NewFeatureSettingsRepository(db.Pool)
+			app.Retention = repository.NewRetentionRepository(db.Pool)
+			app.Fights = repository.NewFightRepository(db.Pool)
+			app.Network = repository.NewNetworkRepository(db.Pool)
+			app.hotZoneKills = repository.NewHeatmapRepository(db.Pool)
+			app.FeedIdentity = discord.NewFeedIdentity(app.FeatureSettings)
 			go app.runLocationRetention(ctx)
 			app.LiveSync = repository.NewLiveSyncRepository(db.Pool)
 			go app.runLiveSyncRetention(ctx)
@@ -1333,6 +1369,8 @@ func (a *App) Run() error {
 			}
 		})
 	}
+	a.registerLifeCommands(ctx, session)
+	a.registerCardCommand(session)
 	if a.LinkService != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
 		linkHandler := discord.NewLinkCommandHandler(a.LinkService, a.Guilds)
 		if err := discord.RegisterLinkCommands(session, a.Config.DiscordGuildID); err != nil {
@@ -1737,7 +1775,7 @@ func (a *App) Run() error {
 				setupManager.SetRouteGate(a.RouteSyncer.HasRoute)
 				go a.RouteSyncer.Run(ctx)
 			}
-			store := &persistenceStoreAdapter{players: a.Players, kills: a.Kills, deaths: a.Deaths, seasons: a.Seasons, ranked: a.Ranked, factions: a.Factions, wars: a.Wars, events: a.Events, bounties: a.Bounties, bountySvc: a.BountyService, streaks: a.Streaks, anomalies: a.Anomalies, activity: a.ActivityRepository, servers: a.Servers, stats: a.Stats, analytics: a.AnalyticsRepository, factionStats: a.FactionHubStats, locations: a.Locations, zones: a.Zones, panelDirty: func() {
+			store := &persistenceStoreAdapter{players: a.Players, kills: a.Kills, deaths: a.Deaths, seasons: a.Seasons, ranked: a.Ranked, factions: a.Factions, wars: a.Wars, events: a.Events, bounties: a.Bounties, bountySvc: a.BountyService, streaks: a.Streaks, anomalies: a.Anomalies, activity: a.ActivityRepository, servers: a.Servers, stats: a.Stats, analytics: a.AnalyticsRepository, factionStats: a.FactionHubStats, locations: a.Locations, zones: a.Zones, lives: a.Lives, lifeRecap: a.LifeRecap, panelDirty: func() {
 				if a.LeaderboardScheduler != nil {
 					a.LeaderboardScheduler.MarkDirty()
 				}
@@ -1848,6 +1886,7 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 			return fmt.Errorf("reset stale activity session for server %d: %w", row.ID, err)
 		}
 	}
+	a.backfillDailyPresence(workerCtx, row)
 	engine := killfeed.NewEngine(client, row.ProviderServiceID, killfeed.NewADMParser())
 	engine.SetStateSink(a.State)
 	engine.SetDiagnostics(killfeed.NewRuntimeDiagnostics(row.ID))
@@ -1907,7 +1946,7 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 		// BUILD_FEED: ADM build/placement actions, present only when the server
 		// enables adminLogPlacement / adminLogBuildActions. Bounded queue + one
 		// goroutine; no route means nothing is sent.
-		buildFeed := discord.NewBuildFeedPublisher(a.Discord.Session(), a.ChannelRoutes, row.GuildID, row.ID)
+		buildFeed := discord.NewBuildFeedPublisher(a.feedSender(row.ID), a.ChannelRoutes, row.GuildID, row.ID)
 		buildFeed.SetServerName(a.serverNameFunc())
 		buildFeed.OnSeen(func() { a.buildActionsSeen.Add(1) })
 		var buildPublisher killfeed.BuildPublisher = buildFeed
@@ -1953,7 +1992,7 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 		// route (no legacy channel, no KILLFEED fallback). Aggregated and rate
 		// capped; all route lookups and Discord I/O happen on its own goroutine,
 		// so a Discord/DB failure can never stall ADM parsing or kill processing.
-		hitFeed := discord.NewHitfeedPublisher(a.Discord.Session(), a.ChannelRoutes, row.GuildID, row.ID)
+		hitFeed := discord.NewHitfeedPublisher(a.feedSender(row.ID), a.ChannelRoutes, row.GuildID, row.ID)
 		hitFeed.SetCustomizer(a.embedCustomizer(), a.serverNameFunc())
 		engine.SetHitPublisher(hitFeed)
 		go func() {
@@ -1972,7 +2011,7 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 		// fallback). Bounded queue + a single goroutine; route lookups and Discord
 		// I/O happen there, so a Discord/DB failure can never stall ADM parsing,
 		// presence tracking or persistence.
-		connectionsFeed := discord.NewConnectionsPublisher(a.Discord.Session(), a.ChannelRoutes, row.GuildID, row.ID)
+		connectionsFeed := discord.NewConnectionsPublisher(a.feedSender(row.ID), a.ChannelRoutes, row.GuildID, row.ID)
 		connectionsFeed.SetCustomizer(a.embedCustomizer(), a.serverNameFunc())
 		engine.SetConnectionPublisher(connectionsFeed)
 		go func() {
@@ -1993,7 +2032,7 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 		// legacy death feed behaves exactly as before. No KILLFEED fallback.
 		// Bounded queue + a single goroutine; Discord/DB failures cannot reach
 		// persistence, ADM parsing or the other feeds.
-		pveFeed = discord.NewPveFeedPublisher(a.Discord.Session(), a.ChannelRoutes, row.GuildID, row.ID)
+		pveFeed = discord.NewPveFeedPublisher(a.feedSender(row.ID), a.ChannelRoutes, row.GuildID, row.ID)
 		pveFeed.SetCustomizer(a.embedCustomizer(), a.serverNameFunc())
 		engine.SetPveDeathPublisher(pveFeed)
 	}
@@ -2001,12 +2040,12 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 	deathPublisher := discord.NewDeathfeedPublisher(a.Discord, setupStore, a.Config.DiscordGuildID)
 	engine.SetDeathPublisher(deathPublisher)
 
-	killFeed := discord.NewRotatingFeed(discord.NewFeedSession(a.Discord.Session()), setupStore, a.Config.DiscordGuildID, func(s *discord.GuildSetup) string { return s.KillfeedChannelID }, rotatingFeedInterval, rotatingFeedBatchSize)
+	killFeed := discord.NewRotatingFeed(a.feedSender(row.ID), setupStore, a.Config.DiscordGuildID, func(s *discord.GuildSetup) string { return s.KillfeedChannelID }, rotatingFeedInterval, rotatingFeedBatchSize)
 	killFeed.SetRouteChannelResolver(publisher.RouteChannelID)
 	killFeed.SetMode(feedDeliveryMode())
 	publisher.SetFeed(killFeed)
 	a.addRotatingFeed(killFeed)
-	deathFeed := discord.NewRotatingFeed(discord.NewFeedSession(a.Discord.Session()), setupStore, a.Config.DiscordGuildID, func(s *discord.GuildSetup) string { return s.DeathChannelID }, rotatingFeedInterval, rotatingFeedBatchSize)
+	deathFeed := discord.NewRotatingFeed(a.feedSender(row.ID), setupStore, a.Config.DiscordGuildID, func(s *discord.GuildSetup) string { return s.DeathChannelID }, rotatingFeedInterval, rotatingFeedBatchSize)
 	// Death and suicide cards resolve the installation's PVE_FEED route,
 	// separate from KILLFEED. The legacy death channel is the fallback only
 	// when that route does not exist or cannot be resolved.
@@ -2081,8 +2120,10 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 			defer ticker.Stop()
 			for {
 				select {
-				case <-workerCtx.Done(): return
-				case <-ticker.C: reconcile()
+				case <-workerCtx.Done():
+					return
+				case <-ticker.C:
+					reconcile()
 				}
 			}
 		}()
@@ -2197,6 +2238,12 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 	return err
 }
 
+// feedSender is the Discord sender a server's feeds post through: the bot's feed session, wrapped
+// so a server with a feed identity enabled posts under it (docs/FEED_IDENTITY.md).
+func (a *App) feedSender(serverID int64) discord.FeedIdentityAPI {
+	return a.FeedIdentity.Sender(discord.NewFeedSession(a.Discord.Session()), serverID)
+}
+
 func (a *App) runCompetitiveSchedulers(ctx context.Context, guildID int64) {
 	ticker := time.NewTicker(45 * time.Second)
 	defer ticker.Stop()
@@ -2223,6 +2270,7 @@ func (a *App) runCompetitiveSchedulers(ctx context.Context, guildID int64) {
 				}
 			}
 		}
+		a.hotZoneTick(ctx, guildID, now)
 		if a.BountyService != nil {
 			// One atomic UPDATE ... RETURNING per sweep (no goroutine per bounty);
 			// each expiry is reported once, after it committed.
@@ -2326,6 +2374,10 @@ type persistenceStoreAdapter struct {
 	// factionStats is told about every persisted kill and death (nil-safe): it invalidates cached
 	// faction figures and queues the killer for achievement evaluation. It never blocks the kill path.
 	factionStats *factionstats.Service
+	// lives closes a player's life when their death is persisted (docs/LIVES.md); lifeRecap then
+	// queues the opt-in recap DM. Both nil-safe.
+	lives     *repository.LifeRepository
+	lifeRecap *discord.LifeRecapNotifier
 }
 
 type admCheckpointStoreAdapter struct {
@@ -2553,6 +2605,8 @@ func (p *persistenceStoreAdapter) ProcessPersistedKill(ctx context.Context, kill
 	// Runs on every exit (including the bounty claim at the end): the kill is durable, so cached
 	// faction figures are stale and the killer's factions may have earned an achievement.
 	defer p.factionStats.NotifyCombat(record.GuildID, record.ServerID, record.KillerPlayerID)
+	// Before the streak early-returns below: the victim's life ends with this kill regardless.
+	p.recordLifeEndFromKill(ctx, killID, record, ev)
 	if p.streaks == nil {
 		return
 	}
@@ -2613,7 +2667,10 @@ func (p *persistenceStoreAdapter) ProcessPersistedKill(ctx context.Context, kill
 		if active, listErr := p.events.GetActiveEvents(ctx, record.GuildID); listErr == nil {
 			for _, stored := range active {
 				competitive := competitiveevents.Event{ID: stored.ID, GuildID: stored.GuildID, SeasonID: stored.SeasonID, Type: stored.Type, Name: stored.Name, Description: stored.Description, Status: stored.Status, StartsAt: stored.StartsAt, EndsAt: stored.EndsAt, Config: stored.Config}
-				input := competitiveevents.KillInput{KillID: killID, KillerPlayerID: record.KillerPlayerID, VictimPlayerID: record.VictimPlayerID, KillerFactionID: record.KillerFactionID, VictimFactionID: record.VictimFactionID, WarID: record.WarID, WeaponDisplay: record.WeaponDisplay, Distance: record.Distance, Headshot: record.Headshot, Streak: streak.Current, EventTime: at}
+				input := competitiveevents.KillInput{KillID: killID, KillerPlayerID: record.KillerPlayerID, VictimPlayerID: record.VictimPlayerID, KillerFactionID: record.KillerFactionID, VictimFactionID: record.VictimFactionID, WarID: record.WarID, WeaponDisplay: record.WeaponDisplay, Distance: record.Distance, Headshot: record.Headshot, Streak: streak.Current, EventTime: at, ServerID: record.ServerID}
+				if ev != nil {
+					input.KillerPos, input.VictimPos = killPoint(ev.Killer), killPoint(ev.Victim)
+				}
 				if score := competitiveevents.Qualify(competitive, input); score.Qualifies {
 					if len(eventBadges) < 2 {
 						eventBadges = append(eventBadges, "🔥 "+stored.Name)
@@ -2684,6 +2741,7 @@ func (p *persistenceStoreAdapter) ProcessPersistedKill(ctx context.Context, kill
 // renders without that section (nil-checked in BuildDeathEmbed).
 func (p *persistenceStoreAdapter) ProcessPersistedDeath(ctx context.Context, record repository.DeathRecord, ev *killfeed.Event) {
 	defer p.factionStats.NotifyCombat(record.GuildID, record.ServerID, 0) // a death changes deaths/K-D/streaks only
+	p.recordLifeEnd(ctx, record, ev)
 	if p.stats == nil || ev == nil || record.PlayerID == 0 {
 		return
 	}
