@@ -29,3 +29,7 @@ date, base, player, what was built, and whether it had a normal reason (a friend
 the friend list, a faction change, a wrong base circle) or is unexplained. Fix registrations as
 you go (radius, friends). Release needs few false findings at default settings, owner-approved
 thresholds, and separate owner approval.
+
+## Review buttons
+
+Each flagged finding on the dashboard card has **False alarm** and **Looks suspicious** buttons (optional short note). Verdicts are stored in `case_shadow_verdicts` (migration `0085_case_shadow_verdicts`), one per finding (changing your mind replaces it), and the card shows the score: reviewed, false alarms and percentage. API: `GET/PUT …/admin/case/shadow-verdicts` (`PLAYER_LOCATION_VIEW` for Suspicious Logins, `UAV_MANAGE` for Base Boosting), audited `CASE_SHADOW_VERDICT_SAVED`. Verdicts never release a detector, send an alert or act on a player.

@@ -11,7 +11,7 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
-// When a player's paid Base Raid Alarm runs out (with no more paid time after
+// When a player's paid Base Raid Alarm or Perimeter Watch runs out (with no more paid time after
 // it), they get one DM saying so. It never renews or charges by itself.
 
 type securityExpiryStore interface {
@@ -42,7 +42,7 @@ func (w *securityExpiryWorker) tick(ctx context.Context) {
 	}
 	for _, e := range due {
 		if e.DiscordUserID != "" && w.dm != nil {
-			if err := w.dm(e.DiscordUserID, securityExpiryMessage(w.server(e.ServerID), w.storeURL())); err != nil {
+			if err := w.dm(e.DiscordUserID, securityExpiryMessage(e.ServiceID, w.server(e.ServerID), w.storeURL())); err != nil {
 				slog.Warn("component=security_market", "msg", "expiry dm failed", "purchase_id", e.PurchaseID, "err", err.Error())
 			}
 		}
@@ -70,8 +70,12 @@ func (w *securityExpiryWorker) storeURL() string {
 	return base + "/dashboard/player/security-store"
 }
 
-func securityExpiryMessage(serverName, storeURL string) *discordgo.MessageSend {
-	text := "⏰ **Your Base Raid Alarm on " + caseSafeName(serverName) + " has ended.** You won't get raid messages for your base any more. Nothing was charged."
+func securityExpiryMessage(serviceID, serverName, storeURL string) *discordgo.MessageSend {
+	what := "raid messages"
+	if serviceID == repository.ServicePerimeterWatch {
+		what = "messages when someone comes near"
+	}
+	text := "⏰ **Your " + repository.SecurityServiceLabel(serviceID) + " on " + caseSafeName(serverName) + " has ended.** You won't get " + what + " for your base any more. Nothing was charged."
 	if storeURL != "" {
 		text += "\nWant it back? Buy it again in the Security Store: " + storeURL
 	} else {

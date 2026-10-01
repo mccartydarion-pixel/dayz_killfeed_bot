@@ -81,7 +81,7 @@ func TestSecurityServiceSalesAndRaidAlarmGate(t *testing.T) {
 	if until, err := sales.ActiveUntil(ctx, scope.InstallationID, buyer, ServiceBaseRaidAlarm); err != nil || until == nil || !until.Equal(second.Purchase.EndsAt) {
 		t.Fatalf("buyer paid time: %v %v", until, err)
 	}
-	sold, active, err := sales.RecentSales(ctx, scope, 10)
+	sold, active, err := sales.RecentSales(ctx, scope, ServiceBaseRaidAlarm, 10)
 	if err != nil || len(sold) != 2 || active != 1 || sold[0].PlayerName != "Buyer" {
 		t.Fatalf("recent sales: %+v %d %v", sold, active, err)
 	}

@@ -108,4 +108,18 @@ func TestSecurityMarketplaceRaidAlarmPurchase(t *testing.T) {
 	if err := w.a.DB.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM point_transactions WHERE guild_id=$1 AND player_id=$2 AND reason_type='SECURITY_PURCHASE'`, guild, buyer).Scan(&tx); err != nil || tx != 1 {
 		t.Fatalf("ledger rows: %d %v", tx, err)
 	}
+
+	// Perimeter Watch is sold the same way, and needs its own switch on.
+	if _, err := repository.NewSecurityServiceRepository(w.a.DB.Pool).SetOffer(ctx, scope, repository.ServicePerimeterWatch, true, 100, 7, nil); err != nil {
+		t.Fatal(err)
+	}
+	pw := map[string]any{"serviceId": "PERIMETER_MONITORING", "idempotencyKey": "perimeter-key-1"}
+	w.expect(w.do(http.MethodPost, path+"/purchases", buyerDiscord, pw), http.StatusConflict, "perimeter switched off: never sold")
+	if _, err := repository.NewPerimeterWatchRepository(w.a.DB.Pool).SetSettings(ctx, scope.InstallationID, guild, server, true, 100, 1800, nil); err != nil {
+		t.Fatal(err)
+	}
+	bought := w.expect(w.do(http.MethodPost, path+"/purchases", buyerDiscord, pw), http.StatusCreated, "perimeter purchase").JSON(t)
+	if bought["remainingBalance"].(float64) != 150 {
+		t.Fatalf("perimeter purchase: %+v", bought)
+	}
 }
