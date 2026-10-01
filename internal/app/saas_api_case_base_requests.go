@@ -3,12 +3,15 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/discord"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -118,34 +121,44 @@ func (a *App) handleCreatePlayerBaseRequest(w http.ResponseWriter, r *http.Reque
 	if a.saasShopPurchaseLimiter != nil && !enforceRateLimit(w, a.saasShopPurchaseLimiter, rateLimitKey(r)) {
 		return
 	}
+	req, code, msg := a.submitBaseRequest(ctx, s, playerID, body.Name, body.Radius, body.Note)
+	if code != "" {
+		writeSaaSError(w, code, msg)
+		return
+	}
+	writeSaaSJSON(w, http.StatusCreated, map[string]any{"request": req})
+}
+
+// submitBaseRequest creates a request at the player's last logged position
+// (the website and /registerbase share it). On failure it returns an error
+// code and a player-facing message.
+func (a *App) submitBaseRequest(ctx context.Context, s repository.BaseRequestScope, playerID int64, name string, radius float64, note string) (repository.CaseBaseRequest, string, string) {
+	if radius < repository.BaseRequestMinRadius || radius > repository.BaseRequestMaxRadius {
+		return repository.CaseBaseRequest{}, codeInvalidRequest, "the base size must be 10 to 150 m"
+	}
 	pos, err := a.latestBaseRequestPosition(ctx, s, playerID)
 	if err != nil {
-		writeSaaSError(w, codeInternalError, "could not read your position")
-		return
+		return repository.CaseBaseRequest{}, codeInternalError, "could not read your position"
 	}
 	if pos == nil || !pos.Fresh {
-		writeSaaSError(w, codeConflict, "the server hasn't logged your position in the last 30 minutes; go to your base in game, wait a minute and try again")
-		return
+		return repository.CaseBaseRequest{}, codeConflict, "the server hasn't logged your position in the last 30 minutes; go to your base in game, wait a minute and try again"
 	}
 	req, err := repository.NewCaseBaseRequestRepository(a.DB.Pool).Create(ctx, s, repository.BaseRequestInput{
-		PlayerID: playerID, Name: body.Name, Note: body.Note, CenterX: pos.X, CenterZ: pos.Z, Radius: body.Radius, PositionSeenAt: pos.ObservedAt})
+		PlayerID: playerID, Name: name, Note: note, CenterX: pos.X, CenterZ: pos.Z, Radius: radius, PositionSeenAt: pos.ObservedAt})
 	switch {
 	case errors.Is(err, repository.ErrBaseRequestOpen):
-		writeSaaSError(w, codeConflict, "you already have a base request waiting for the server owner")
-		return
+		return req, codeConflict, "you already have a base request waiting for the server owner"
 	case errors.Is(err, repository.ErrBaseRequestLimit):
-		writeSaaSError(w, codeConflict, "you already have the most bases allowed on this server")
-		return
+		return req, codeConflict, "you already have the most bases allowed on this server"
 	case errors.Is(err, repository.ErrInvalidBaseRequest):
-		writeSaaSError(w, codeInvalidRequest, "give your base a name (up to 64 characters); the note can be up to 300")
-		return
+		return req, codeInvalidRequest, "give your base a name (up to 64 characters); the note can be up to 300"
 	case err != nil:
 		slog.Warn("component=base_requests", "event", "create_failed", "err", err.Error())
-		writeSaaSError(w, codeInternalError, "your request couldn't be sent")
-		return
+		return req, codeInternalError, "your request couldn't be sent"
 	}
 	slog.Info("component=base_requests", "event", "requested", "installation_id", s.InstallationID, "request_id", req.ID)
-	writeSaaSJSON(w, http.StatusCreated, map[string]any{"request": req})
+	a.notifyNewBaseRequest(s, req)
+	return req, "", ""
 }
 
 // handleCancelPlayerBaseRequest is POST .../security-marketplace/base-requests/{requestID}/cancel.
@@ -305,8 +318,17 @@ func (a *App) notifyBaseRequestDecision(serverID int64, d repository.BaseRequest
 		return
 	}
 	session := a.Discord.Session()
-	server := a.serverNameFunc()(serverID)
+	server := a.serverName(serverID)
 	msg := discord.BaseRequestDecisionMessage(d.Request.Status == repository.BaseRequestApproved, d.Request.Name, server, d.Request.DeclineReason)
+	if d.Request.Status == repository.BaseRequestApproved && a.DB != nil && a.DB.Pool != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		rent, err := repository.NewBaseRentRepository(a.DB.Pool).GetSettings(ctx, repository.SecurityScope{
+			InstallationID: d.InstallationID, GuildID: d.GuildID, ServerID: serverID})
+		cancel()
+		if err == nil && rent.Enabled {
+			msg = discord.WithRentNotice(msg, rent.PricePoints, rent.PeriodDays, repository.BaseRentGraceDays)
+		}
+	}
 	go func(userID string, msg *discordgo.MessageSend) {
 		ch, err := session.UserChannelCreate(userID)
 		if err == nil {
@@ -316,4 +338,56 @@ func (a *App) notifyBaseRequestDecision(serverID int64, d repository.BaseRequest
 			slog.Warn("component=base_requests", "event", "dm_failed", "request_id", d.Request.ID, "err", err.Error())
 		}
 	}(d.DiscordUserID, msg)
+}
+
+// notifyNewBaseRequest posts a staff notice to the ADMIN_ALERTS channel (when
+// routed) and DMs the organization owner. Best effort and in the background:
+// a failure never affects the request.
+func (a *App) notifyNewBaseRequest(s repository.BaseRequestScope, req repository.CaseBaseRequest) {
+	if a.DB == nil || a.DB.Pool == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		ownerID, playerName, err := repository.NewCaseBaseRequestRepository(a.DB.Pool).RequestNotice(ctx, s, req.PlayerID)
+		if err != nil {
+			slog.Warn("component=base_requests", "event", "notice_lookup_failed", "request_id", req.ID, "err", err.Error())
+			return
+		}
+		if playerName == "" {
+			playerName = "A player"
+		}
+		if a.AdminAlerts != nil {
+			a.AdminAlerts.Publish(discord.AdminAlert{GuildRowID: s.GuildID, ServerID: s.ServerID, Kind: discord.AlertKindBaseRequest,
+				Severity: discord.AlertInfo, Headline: "NEW BASE REQUEST",
+				Detail: presentation.SafeName(playerName, 64) + " wants **" + presentation.SafeName(req.Name, 64) + "** registered. Approve or decline it on the anti-cheat Bases tab.",
+				Fields: [][2]string{{"Size", fmt.Sprintf("%.0f m", req.Radius)}}})
+		}
+		if ownerID == "" || a.Discord == nil || a.Discord.Session() == nil {
+			return
+		}
+		session := a.Discord.Session()
+		msg := discord.NewBaseRequestMessage(playerName, req.Name, a.serverName(s.ServerID), req.Radius, a.baseRequestsReviewURL())
+		ch, err := session.UserChannelCreate(ownerID)
+		if err == nil {
+			_, err = session.ChannelMessageSendComplex(ch.ID, msg)
+		}
+		if err != nil {
+			slog.Warn("component=base_requests", "event", "owner_dm_failed", "request_id", req.ID, "err", err.Error())
+		}
+	}()
+}
+
+// baseRequestsReviewURL is the dashboard link for reviewing requests, or ""
+// when the site address isn't configured as https.
+func (a *App) baseRequestsReviewURL() string {
+	if a.Config == nil {
+		return ""
+	}
+	base := strings.TrimRight(a.Config.SiteBaseURL, "/")
+	if !strings.HasPrefix(base, "https://") {
+		return ""
+	}
+	return base + "/dashboard/anti-cheat?tab=bases"
 }

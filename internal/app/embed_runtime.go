@@ -96,3 +96,11 @@ func (a *App) serverNameFunc() discord.ServerNameFunc {
 	})
 	return a.serverNames.name
 }
+
+// serverName returns a server's display name, or "" when names can't be looked up.
+func (a *App) serverName(serverID int64) string {
+	if f := a.serverNameFunc(); f != nil {
+		return f(serverID)
+	}
+	return ""
+}

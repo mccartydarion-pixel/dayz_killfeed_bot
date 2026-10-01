@@ -28,6 +28,8 @@ func (a *App) registerSecurityMarketplaceRoutes() {
 	a.HTTPServer.Handle("GET "+base+"/base-requests", a.handleGetPlayerBaseRequests)
 	a.HTTPServer.Handle("POST "+base+"/base-requests", a.handleCreatePlayerBaseRequest)
 	a.HTTPServer.Handle("POST "+base+"/base-requests/{requestID}/cancel", a.handleCancelPlayerBaseRequest)
+	a.HTTPServer.Handle("GET "+base+"/base-rent", a.handleGetPlayerBaseRent)
+	a.HTTPServer.Handle("POST "+base+"/base-rent", a.handlePayPlayerBaseRent)
 }
 
 type securityMarketplaceCatalogResponse struct {

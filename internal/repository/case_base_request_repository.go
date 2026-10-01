@@ -223,8 +223,10 @@ func (r *CaseBaseRequestRepository) ForOwner(ctx context.Context, s BaseRequestS
 
 // BaseRequestDecision is what the owner chose; it tells the caller whom to notify.
 type BaseRequestDecision struct {
-	Request       CaseBaseRequest
-	DiscordUserID string // the requester's verified link, "" if none
+	Request        CaseBaseRequest
+	DiscordUserID  string // the requester's verified link, "" if none
+	InstallationID int64
+	GuildID        int64
 }
 
 // Approve registers the base (as a draft, like an owner-created one) and marks
@@ -264,7 +266,7 @@ func (r *CaseBaseRequestRepository) Approve(ctx context.Context, s BaseRequestSc
 		return BaseRequestDecision{}, err
 	}
 	q.Status, q.BaseID = BaseRequestApproved, &baseID
-	out := BaseRequestDecision{Request: q}
+	out := BaseRequestDecision{Request: q, InstallationID: s.InstallationID, GuildID: s.GuildID}
 	if err := tx.QueryRow(ctx, `SELECT COALESCE((SELECT discord_user_id FROM player_links WHERE guild_id=$1 AND player_id=$2 AND status='VERIFIED'),'')`,
 		s.GuildID, q.PlayerID).Scan(&out.DiscordUserID); err != nil {
 		return BaseRequestDecision{}, err
@@ -292,7 +294,7 @@ func (r *CaseBaseRequestRepository) Decline(ctx context.Context, s BaseRequestSc
 		return BaseRequestDecision{}, err
 	}
 	q.Status, q.DeclineReason = BaseRequestDeclined, reason
-	out := BaseRequestDecision{Request: q}
+	out := BaseRequestDecision{Request: q, InstallationID: s.InstallationID, GuildID: s.GuildID}
 	if err := tx.QueryRow(ctx, `SELECT COALESCE((SELECT discord_user_id FROM player_links WHERE guild_id=$1 AND player_id=$2 AND status='VERIFIED'),'')`,
 		s.GuildID, q.PlayerID).Scan(&out.DiscordUserID); err != nil {
 		return BaseRequestDecision{}, err
@@ -351,4 +353,34 @@ func (r *CaseBaseRequestRepository) PlayerBases(ctx context.Context, s BaseReque
 		out = append(out, b)
 	}
 	return out, rows.Err()
+}
+
+// RequestNotice returns who to tell about a new request: the organization
+// owner's Discord account and the requesting player's name.
+func (r *CaseBaseRequestRepository) RequestNotice(ctx context.Context, s BaseRequestScope, playerID int64) (ownerDiscordID, playerName string, err error) {
+	if r == nil || r.pool == nil || !s.valid() || playerID <= 0 {
+		return "", "", ErrInvalidBaseRequest
+	}
+	err = r.pool.QueryRow(ctx, `SELECT
+  COALESCE((SELECT u.discord_user_id FROM installations i JOIN organizations o ON o.id=i.organization_id
+    JOIN app_users u ON u.id=o.owner_user_id WHERE i.id=$1),''),
+  COALESCE((SELECT display_name FROM players WHERE guild_id=$2 AND id=$3),'')`,
+		s.InstallationID, s.GuildID, playerID).Scan(&ownerDiscordID, &playerName)
+	return ownerDiscordID, playerName, err
+}
+
+// InstallationForServer finds the installation a guild's game server belongs
+// to (for Discord commands, which only know the guild and server).
+func (r *CaseBaseRequestRepository) InstallationForServer(ctx context.Context, guildID, serverID int64) (int64, error) {
+	if r == nil || r.pool == nil || guildID <= 0 || serverID <= 0 {
+		return 0, ErrInvalidBaseRequest
+	}
+	var id int64
+	err := r.pool.QueryRow(ctx, `SELECT i.id FROM installations i
+ JOIN discord_guild_connections c ON c.id=i.discord_guild_connection_id
+ WHERE i.game_server_id=$2 AND c.guild_id=$1 ORDER BY i.id LIMIT 1`, guildID, serverID).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, ErrBaseRequestNotFound
+	}
+	return id, err
 }

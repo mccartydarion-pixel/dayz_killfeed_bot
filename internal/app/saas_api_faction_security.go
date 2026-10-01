@@ -83,6 +83,7 @@ func (a *App) handleSetFactionSecurity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.recordAudit(ctx, ac, "FACTION_SECURITY_SAVED", "faction-security", "", "success", nil, map[string]any{"enabled": settings.Enabled})
+	a.refreshSecurityPanel(repository.SecurityScope{InstallationID: ac.scope.InstallationID, GuildID: ac.scope.GuildID, ServerID: *ac.scope.ServerID})
 	writeSaaSJSON(w, http.StatusOK, map[string]any{"settings": settings})
 }
 

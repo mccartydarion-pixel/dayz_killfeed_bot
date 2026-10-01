@@ -122,7 +122,7 @@ FROM case_registered_bases b
 JOIN perimeter_watch_settings s
  ON s.installation_id=b.installation_id AND s.guild_id=b.guild_id AND s.server_id=b.server_id AND s.enabled
 LEFT JOIN player_links pl ON pl.guild_id=b.guild_id AND pl.player_id=b.owner_player_id AND pl.status='VERIFIED'
-WHERE b.guild_id=$1 AND b.server_id=$2 AND b.state<>'REVOKED' AND b.owner_player_id<>$3
+WHERE b.guild_id=$1 AND b.server_id=$2 AND b.state<>'REVOKED' AND b.owner_player_id<>$3 AND NOT base_rent_paused(b.id)
  AND (b.center_x-$4)*(b.center_x-$4)+(b.center_z-$5)*(b.center_z-$5) <= (b.radius+s.margin_meters)*(b.radius+s.margin_meters)
  AND NOT EXISTS (
   SELECT 1 FROM faction_members ofm

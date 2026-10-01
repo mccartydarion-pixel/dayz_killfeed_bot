@@ -109,6 +109,7 @@ func (a *App) setSecurityOffer(w http.ResponseWriter, r *http.Request, serviceID
 	}
 	a.recordAudit(ctx, ac, auditAction, "security-offer:"+serviceID, "", "success", nil,
 		map[string]any{"enabled": offer.Enabled, "pricePoints": offer.PricePoints, "durationDays": offer.DurationDays})
+	a.refreshSecurityPanel(scope)
 	writeSaaSJSON(w, http.StatusOK, map[string]any{"offer": offer})
 }
 
@@ -157,5 +158,6 @@ func (a *App) handleSetBaseRaidAlarm(w http.ResponseWriter, r *http.Request) {
 	}
 	a.recordAudit(ctx, ac, "BASE_RAID_ALARM_SAVED", "base-raid-alarm", "", "success", nil,
 		map[string]any{"enabled": settings.Enabled, "cooldownSeconds": settings.CooldownSeconds})
+	a.refreshSecurityPanel(repository.SecurityScope{InstallationID: ac.scope.InstallationID, GuildID: ac.scope.GuildID, ServerID: *ac.scope.ServerID})
 	writeSaaSJSON(w, http.StatusOK, map[string]any{"settings": settings})
 }
