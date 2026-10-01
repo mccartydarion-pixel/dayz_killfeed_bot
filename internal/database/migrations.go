@@ -2700,6 +2700,10 @@ CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events
 		Name: "0087_shop_order_confirmations",
 		SQL:  ShopOrderConfirmationsSQL,
 	},
+	{
+		Name: "0088_shop_order_confirmation_discord",
+		SQL:  ShopOrderConfirmationDiscordSQL,
+	},
 }
 
 // PvPDeathBackfillSQL gives the victim of every existing PvP kill a deaths row of type PVP, with
