@@ -24,6 +24,9 @@ func (a *App) registerSecurityMarketplaceRoutes() {
 	a.HTTPServer.Handle("GET "+base+"/black-box", a.handlePlayerBaseBlackBox)
 	a.HTTPServer.Handle("GET "+base+"/faction-security", a.handleGetPlayerFactionSecurity)
 	a.HTTPServer.Handle("PUT "+base+"/faction-security", a.handleSetPlayerFactionSecurity)
+	a.HTTPServer.Handle("GET "+base+"/base-requests", a.handleGetPlayerBaseRequests)
+	a.HTTPServer.Handle("POST "+base+"/base-requests", a.handleCreatePlayerBaseRequest)
+	a.HTTPServer.Handle("POST "+base+"/base-requests/{requestID}/cancel", a.handleCancelPlayerBaseRequest)
 }
 
 type securityMarketplaceCatalogResponse struct {

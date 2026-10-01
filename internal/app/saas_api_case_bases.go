@@ -42,6 +42,9 @@ func (a *App) registerCaseBaseRoutes(base string){
  h("GET "+base+"/case/faction-security",a.handleGetFactionSecurity)
  h("PUT "+base+"/case/faction-security",a.handleSetFactionSecurity)
  h("PUT "+base+"/case/faction-security/offer",a.handleSetFactionSecurityOffer)
+ h("GET "+base+"/case/base-requests",a.handleGetBaseRequests)
+ h("POST "+base+"/case/base-requests/{requestID}/approve",a.handleApproveBaseRequest)
+ h("POST "+base+"/case/base-requests/{requestID}/decline",a.handleDeclineBaseRequest)
 }
 
 func (a *App) caseBaseActor(w http.ResponseWriter,r *http.Request)(adminActor,*repository.CaseBaseRegistrationRepository,bool){
