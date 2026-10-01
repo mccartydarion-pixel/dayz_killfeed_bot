@@ -2773,6 +2773,12 @@ CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events
 		Name: "0101_shop_auto_delivery",
 		SQL:  ShopAutoDeliverySQL,
 	},
+	{
+		// A server owner's own C.A.S.E. evidence switch, counted only when the
+		// platform allows self-serve. Additive.
+		Name: "0102_case_evidence_optins",
+		SQL:  CaseEvidenceOptinSQL,
+	},
 }
 
 // PvPDeathBackfillSQL gives the victim of every existing PvP kill a deaths row of type PVP, with
