@@ -287,6 +287,10 @@ func (a *App) registerClientAdminRoutes() {
 	a.registerPlayerIntelligenceRoutes(base)
 	a.registerZoneRoutes(base)
 	a.registerHeatmapRoutes(base)
+	a.registerFeatureSettingsRoutes(base)
+	a.registerHotZoneRoutes(base)
+	a.registerRetentionRoutes(base)
+	a.registerFightRoutes(base)
 }
 
 // clientAdminMeResponse is the current actor's resolved Champion bot permission Level and exact

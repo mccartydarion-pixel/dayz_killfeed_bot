@@ -239,6 +239,41 @@ func (r *EventRepository) FinalizeEvent(ctx context.Context, eventID int64, resu
 	return tx.Commit(ctx)
 }
 
+// CreateHotZone inserts an ACTIVE hot-zone event with its podium rewards in one statement, unless
+// the server already has a hot zone open or one that ended after cooldownSince - the check and the
+// insert are one statement, so two schedulers can never open two hot zones for one server. Returns
+// (nil, nil) when it did not open one.
+func (r *EventRepository) CreateHotZone(ctx context.Context, e CompetitiveEvent, serverID int64, first, second, third int, cooldownSince time.Time) (*CompetitiveEvent, error) {
+	var out CompetitiveEvent
+	err := r.pool.QueryRow(ctx, `
+INSERT INTO competitive_events(guild_id, season_id, event_type, name, description, status, starts_at, ends_at, created_by_discord_user_id, config,
+    winner_points, second_place_points, third_place_points)
+SELECT $1, NULLIF($2, 0), 'HOT_ZONE', $3, $4, 'ACTIVE', $5, $6, 'SYSTEM', $7, $8, $9, $10
+WHERE NOT EXISTS (
+    SELECT 1 FROM competitive_events x WHERE x.guild_id=$1 AND x.event_type='HOT_ZONE' AND x.config->>'server_id' = $11
+      AND (x.status IN ('ACTIVE','SCHEDULED') OR (x.status='ENDED' AND x.ends_at > $12)))
+RETURNING id, guild_id, COALESCE(season_id,0), event_type, name, COALESCE(description,''), status, starts_at, ends_at, config`,
+		e.GuildID, e.SeasonID, e.Name, e.Description, e.StartsAt, e.EndsAt, e.Config, first, second, third, fmt.Sprint(serverID), cooldownSince).
+		Scan(&out.ID, &out.GuildID, &out.SeasonID, &out.Type, &out.Name, &out.Description, &out.Status, &out.StartsAt, &out.EndsAt, &out.Config)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// HotZones returns one server's hot-zone events, newest first. activeOnly keeps only the open one.
+func (r *EventRepository) HotZones(ctx context.Context, guildID, serverID int64, activeOnly bool, limit int) ([]CompetitiveEvent, error) {
+	q := `SELECT id,guild_id,COALESCE(season_id,0),event_type,name,COALESCE(description,''),status,starts_at,ends_at,config FROM competitive_events
+WHERE guild_id=$1 AND event_type='HOT_ZONE' AND config->>'server_id' = $2`
+	if activeOnly {
+		q += ` AND status='ACTIVE'`
+	}
+	return r.list(ctx, q+` ORDER BY starts_at DESC NULLS LAST, id DESC LIMIT $3`, guildID, fmt.Sprint(serverID), limit)
+}
+
 func eventRewardReason(placement int) string {
 	switch placement {
 	case 1:
