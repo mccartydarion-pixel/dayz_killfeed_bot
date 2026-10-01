@@ -80,3 +80,13 @@ reach them. Each call is written to the admin audit log (`RETENTION_LAPSED_VIEWE
 
 Not built: an automatic win-back ping. The list tells staff who to reach; messaging them stays a
 human decision.
+
+## Plan
+
+The retention dashboard is Champion-only (entitlement `retention`). With `CHAMPION_PLAN_GATING_ENABLED` off (the default) nothing here applies. With it on, only the
+Survivor plan is restricted; Champion, the trial, retired plans and organizations without a
+subscription keep the feature (`internal/entitlements`).
+
+On Survivor `GET .../admin/retention` and `GET .../admin/retention/lapsed` answer
+`403 PLAN_FEATURE_REQUIRED`, checked after the capability. Collection is not gated: the rollups are
+written for every server, so the dashboard has its full history the moment an organization upgrades.

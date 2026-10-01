@@ -52,3 +52,15 @@ message (the one-minute identity cache is dropped on save).
 
 The bot needs **Manage Webhooks** in each feed channel. Without it nothing breaks; the feed keeps
 posting as the bot and `component=feed_identity event=webhook_unavailable` is logged.
+
+## Plan
+
+A feed identity is Champion-only (entitlement `feed_identity`). With `CHAMPION_PLAN_GATING_ENABLED` off (the default) nothing here applies. With it on, only the
+Survivor plan is restricted; Champion, the trial, retired plans and organizations without a
+subscription keep the feature (`internal/entitlements`).
+
+On Survivor `PUT .../admin/features/feed-identity` with `enabled: true` answers
+`403 PLAN_FEATURE_REQUIRED`; saving with `enabled: false` stays open. At runtime
+`FeatureSettingsRepository.FeedIdentityForServer` reports no identity, so feeds post as the Champion
+bot - within a minute of the plan changing, when the cached identity expires. The saved name and
+avatar are kept and apply again after an upgrade.

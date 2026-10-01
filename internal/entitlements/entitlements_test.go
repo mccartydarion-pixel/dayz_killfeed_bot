@@ -53,7 +53,8 @@ func TestNotEnforcedGrantsEverythingToEveryPlan(t *testing.T) {
 
 func TestEnforcedRestrictsOnlySurvivor(t *testing.T) {
 	withEnforced(t, true)
-	premiumOnly := []Key{RankedSeasons, Bounties, Heatmaps, Economy, CustomEmbeds, UnlimitedFactions, MultipleServers, PrioritySupport}
+	premiumOnly := []Key{RankedSeasons, Bounties, Heatmaps, Economy, CustomEmbeds, UnlimitedFactions, MultipleServers, PrioritySupport,
+		HotZones, Retention, FightReplay, FeedIdentity}
 	for _, k := range premiumOnly {
 		if Has(PlanSurvivor, k) {
 			t.Fatalf("Survivor must not include %s", k)

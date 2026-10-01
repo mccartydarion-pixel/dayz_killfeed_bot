@@ -72,3 +72,18 @@ Coordinates are map metres (east, north), the same axes as the heatmap.
 
 A hot zone announces roughly where people are fighting. That is the point, and it is why the
 feature is opt-in: a server that treats locations as secret should leave it off.
+
+## Plan
+
+Hot zones are Champion-only (entitlement `hot_zones`): they pay Champion Points, and the economy is
+Champion-only too. With `CHAMPION_PLAN_GATING_ENABLED` off (the default) nothing here applies. With it on, only the
+Survivor plan is restricted; Champion, the trial, retired plans and organizations without a
+subscription keep the feature (`internal/entitlements`).
+
+On Survivor:
+
+- `PUT .../admin/features/hot-zones` with `enabled: true` answers `403 PLAN_FEATURE_REQUIRED`.
+  Saving with `enabled: false`, and reading the settings and past hot zones, stay open.
+- No new hot zone opens, even if the installation enabled them while on Champion
+  (`FeatureSettingsRepository.HotZoneInstallations` leaves it out). A hot zone already open when the
+  plan changed runs to its end and pays out. The settings are kept and apply again after an upgrade.

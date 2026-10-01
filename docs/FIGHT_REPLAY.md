@@ -69,3 +69,19 @@ going on.
 
 Nothing posts replay links yet. Every kill card's kill has an id, and `fights/{killId}` resolves
 any kill of a fight to the whole fight, so the website can link a kill straight to its replay.
+
+## Plan
+
+Fight replay is Champion-only (entitlement `fight_replay`). With `CHAMPION_PLAN_GATING_ENABLED` off (the default) nothing here applies. With it on, only the
+Survivor plan is restricted; Champion, the trial, retired plans and organizations without a
+subscription keep the feature (`internal/entitlements`).
+
+On Survivor:
+
+- `GET .../admin/fights` and `GET .../admin/fights/{killId}` answer `403 PLAN_FEATURE_REQUIRED`,
+  checked after the capability.
+- `PUT .../admin/features/fight-replay` with `public: true` answers the same. Saving with
+  `public: false` stays open.
+- The player routes behave exactly as if replays were not public: the list is
+  `{"enabled": false, "items": []}` and a replay is a 404. Players are never shown a plan error.
+  The saved setting is kept and applies again after an upgrade.
