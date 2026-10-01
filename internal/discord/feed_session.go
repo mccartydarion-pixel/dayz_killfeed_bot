@@ -30,6 +30,24 @@ func (f *FeedSession) ChannelMessageDelete(channelID, messageID string, options 
 	return f.S.ChannelMessageDelete(channelID, messageID, options...)
 }
 
+// The webhook calls below let a FeedSession carry a feed identity (feed_identity.go).
+
+func (f *FeedSession) ChannelWebhooks(channelID string, options ...discordgo.RequestOption) ([]*discordgo.Webhook, error) {
+	return f.S.ChannelWebhooks(channelID, options...)
+}
+
+func (f *FeedSession) WebhookCreate(channelID, name, avatar string, options ...discordgo.RequestOption) (*discordgo.Webhook, error) {
+	return f.S.WebhookCreate(channelID, name, avatar, options...)
+}
+
+func (f *FeedSession) WebhookExecute(webhookID, token string, wait bool, data *discordgo.WebhookParams, options ...discordgo.RequestOption) (*discordgo.Message, error) {
+	return f.S.WebhookExecute(webhookID, token, wait, data, options...)
+}
+
+func (f *FeedSession) WebhookMessageDelete(webhookID, token, messageID string, options ...discordgo.RequestOption) error {
+	return f.S.WebhookMessageDelete(webhookID, token, messageID, options...)
+}
+
 func (f *FeedSession) ChannelMessageSendComplex(channelID string, data *discordgo.MessageSend, options ...discordgo.RequestOption) (*discordgo.Message, error) {
 	return f.S.ChannelMessageSendComplex(channelID, data, options...)
 }

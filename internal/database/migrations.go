@@ -2529,10 +2529,143 @@ UPDATE case_addon_subscriptions SET coverage_backfilled = FALSE
 		SQL:  FeatureFlagsSQL,
 	},
 	{
+		Name: "0077_player_lives_and_daily_activity",
+		SQL: `
+-- Lives and retention collection (docs/LIVES.md, docs/RETENTION.md). Additive.
+-- Neither can be backfilled: location events are deleted after the retention window and
+-- player_server_activity keeps only running totals, so both are collected from here on.
+--
+-- player_lives: one row per ended life, written when a "died" ADM line is durably persisted.
+-- playtime_seconds is observed playtime inside the life (the difference between two
+-- player_server_activity.total_observed_seconds marks); NULL means the life began before this table
+-- existed, so its playtime was never marked and is not guessed. tracked_distance_m sums the straight
+-- lines between the life's persisted location samples - a lower bound, never a path.
+CREATE TABLE IF NOT EXISTS player_lives (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    server_id BIGINT NOT NULL REFERENCES game_servers(id) ON DELETE CASCADE,
+    player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    season_id BIGINT REFERENCES seasons(id) ON DELETE SET NULL,
+    started_at TIMESTAMPTZ NOT NULL,
+    ended_at TIMESTAMPTZ NOT NULL,
+    playtime_seconds BIGINT CHECK (playtime_seconds IS NULL OR playtime_seconds >= 0),
+    playtime_mark BIGINT NOT NULL DEFAULT 0,
+    kills INTEGER NOT NULL DEFAULT 0,
+    headshots INTEGER NOT NULL DEFAULT 0,
+    longest_kill_m DOUBLE PRECISION,
+    tracked_distance_m DOUBLE PRECISION,
+    location_samples INTEGER NOT NULL DEFAULT 0,
+    cause TEXT NOT NULL CHECK (cause IN ('PVP','SUICIDE','OTHER')),
+    killer_player_id BIGINT REFERENCES players(id) ON DELETE SET NULL,
+    kill_id BIGINT REFERENCES kills(id) ON DELETE SET NULL,
+    weapon TEXT,
+    distance_m DOUBLE PRECISION,
+    death_fingerprint TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_player_lives_death UNIQUE (guild_id, death_fingerprint)
+);
+CREATE INDEX IF NOT EXISTS idx_player_lives_player ON player_lives(server_id, player_id, ended_at DESC);
+CREATE INDEX IF NOT EXISTS idx_player_lives_longest ON player_lives(guild_id, server_id, playtime_seconds DESC) WHERE playtime_seconds IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_player_lives_deadliest ON player_lives(guild_id, server_id, kills DESC);
+
+-- player_daily_activity: one row per player, server and UTC day the player was observed on.
+-- observed_seconds mirrors what player_server_activity adds to its running total; a row with zero
+-- seconds still proves presence that day. source BACKFILL rows are presence-only days recovered once
+-- from kills/deaths/location events and never carry seconds.
+CREATE TABLE IF NOT EXISTS player_daily_activity (
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    server_id BIGINT NOT NULL REFERENCES game_servers(id) ON DELETE CASCADE,
+    player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    day DATE NOT NULL,
+    observed_seconds BIGINT NOT NULL DEFAULT 0,
+    sessions INTEGER NOT NULL DEFAULT 0,
+    first_seen_at TIMESTAMPTZ NOT NULL,
+    last_seen_at TIMESTAMPTZ NOT NULL,
+    source TEXT NOT NULL DEFAULT 'OBSERVED' CHECK (source IN ('OBSERVED','BACKFILL')),
+    PRIMARY KEY (server_id, player_id, day)
+);
+CREATE INDEX IF NOT EXISTS idx_player_daily_activity_day ON player_daily_activity(server_id, day);
+
+-- server_hourly_activity: concurrency per server and hour, fed by the 30-second presence checkpoint.
+CREATE TABLE IF NOT EXISTS server_hourly_activity (
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    server_id BIGINT NOT NULL REFERENCES game_servers(id) ON DELETE CASCADE,
+    hour TIMESTAMPTZ NOT NULL,
+    peak_players INTEGER NOT NULL DEFAULT 0,
+    player_seconds BIGINT NOT NULL DEFAULT 0,
+    samples INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (server_id, hour)
+);
+`,
+	},
+	{
+		Name: "0078_player_recap_prefs",
+		SQL: `
+-- Death recap DMs (docs/LIVES.md). Opt-in per Discord user and guild: no row, or death_recap FALSE,
+-- means the bot never DMs that player. Only a VERIFIED link is ever resolved to a recipient.
+CREATE TABLE IF NOT EXISTS player_recap_prefs (
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    discord_user_id TEXT NOT NULL,
+    death_recap BOOLEAN NOT NULL DEFAULT FALSE,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (guild_id, discord_user_id)
+);
+`,
+	},
+	{
+		Name: "0079_player_card_shares",
+		SQL: `
+-- Champion Card share links (docs/CHAMPION_CARD.md). A player creates a link for their own card on
+-- one installation and can revoke it; the token is the only address of the public image. At most
+-- one active link per player and installation.
+CREATE TABLE IF NOT EXISTS player_card_shares (
+    token TEXT PRIMARY KEY,
+    installation_id BIGINT NOT NULL REFERENCES installations(id) ON DELETE CASCADE,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    server_id BIGINT NOT NULL REFERENCES game_servers(id) ON DELETE CASCADE,
+    player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    revoked_at TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_player_card_shares_active ON player_card_shares(installation_id, player_id) WHERE revoked_at IS NULL;
+`,
+	},
+	{
+		Name: "0080_installation_feature_settings",
+		SQL: `
+-- Opt-in feature settings, one row per installation (no row = every feature off, default tuning).
+-- Hot zones (docs/HOT_ZONES.md), public fight replay (docs/FIGHT_REPLAY.md), the cross-server
+-- network listing (docs/NETWORK.md) and the feed identity (docs/FEED_IDENTITY.md).
+CREATE TABLE IF NOT EXISTS installation_feature_settings (
+    installation_id BIGINT PRIMARY KEY REFERENCES installations(id) ON DELETE CASCADE,
+    hot_zones_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    hot_zone_window_minutes INTEGER NOT NULL DEFAULT 60 CHECK (hot_zone_window_minutes BETWEEN 15 AND 360),
+    hot_zone_min_kills INTEGER NOT NULL DEFAULT 6 CHECK (hot_zone_min_kills BETWEEN 2 AND 500),
+    hot_zone_radius_m INTEGER NOT NULL DEFAULT 500 CHECK (hot_zone_radius_m BETWEEN 100 AND 2000),
+    hot_zone_duration_minutes INTEGER NOT NULL DEFAULT 30 CHECK (hot_zone_duration_minutes BETWEEN 5 AND 240),
+    hot_zone_cooldown_minutes INTEGER NOT NULL DEFAULT 120 CHECK (hot_zone_cooldown_minutes BETWEEN 0 AND 1440),
+    hot_zone_first_points INTEGER NOT NULL DEFAULT 500 CHECK (hot_zone_first_points BETWEEN 0 AND 1000000),
+    hot_zone_second_points INTEGER NOT NULL DEFAULT 250 CHECK (hot_zone_second_points BETWEEN 0 AND 1000000),
+    hot_zone_third_points INTEGER NOT NULL DEFAULT 100 CHECK (hot_zone_third_points BETWEEN 0 AND 1000000),
+    fight_replay_public BOOLEAN NOT NULL DEFAULT FALSE,
+    fight_replay_delay_minutes INTEGER NOT NULL DEFAULT 60 CHECK (fight_replay_delay_minutes BETWEEN 0 AND 10080),
+    network_listed BOOLEAN NOT NULL DEFAULT FALSE,
+    network_description TEXT NOT NULL DEFAULT '',
+    feed_identity_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    feed_identity_name TEXT NOT NULL DEFAULT '',
+    feed_identity_avatar_url TEXT NOT NULL DEFAULT '',
+    updated_by_user_id BIGINT,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_installation_feature_settings_network ON installation_feature_settings(installation_id) WHERE network_listed;
+-- Hot-zone events are found by the server their config names.
+CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events(guild_id, ((config->>'server_id')), ends_at DESC) WHERE event_type = 'HOT_ZONE';
+`,
+	},
+	{
 		// A PvP kill is the victim's death, but only "died" lines ever wrote a deaths row, so every
 		// deaths figure left PvP deaths out (docs/DEATH_COUNTS.md). From here on the kill insert
-		// writes the victim's PVP death row; this gives every existing kill one. 0077-0080 are
-		// taken by an open branch (lives, card shares, feature settings).
+		// writes the victim's PVP death row; this gives every existing kill one.
 		Name: "0081_pvp_death_rows",
 		SQL:  PvPDeathBackfillSQL,
 	},

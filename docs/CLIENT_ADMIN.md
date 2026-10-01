@@ -71,6 +71,11 @@ permission mapping granting a Level at or below their own resolved Level - enfor
 | `UAV_MANAGE` | Owner | Phase 4 - required in addition to `ZONE_MANAGE` for any UAV/BASE_RADAR zone |
 | `INTRUSION_ACK` | Moderator | Phase 4 - acknowledge an active intrusion |
 | `HEATMAP_VIEW` | Moderator | Phase 5, `docs/HEATMAPS.md` - aggregate PvP/activity/intrusion heatmap queries |
+| `FEATURE_SETTINGS_VIEW` | Moderator | read the opt-in feature settings and the server's hot zones (`docs/HOT_ZONES.md`) |
+| `FEATURE_SETTINGS_MANAGE` | Administrator | change hot-zone and fight-replay settings (`docs/HOT_ZONES.md`, `docs/FIGHT_REPLAY.md`) |
+| `NETWORK_MANAGE` | Owner | list or unlist the server in the cross-server network (`docs/NETWORK.md`) |
+| `FEED_IDENTITY_MANAGE` | Owner | the name and avatar feeds post under (`docs/FEED_IDENTITY.md`) |
+| `RETENTION_VIEW` | Administrator | retention dashboard and lapsed-player list (`docs/RETENTION.md`) |
 
 ## Current Actor Client Admin Permissions (Phase 1 Part 2)
 
@@ -190,6 +195,17 @@ GET    /intrusions/history                      ZONE_VIEW                ?zoneId
 POST   /intrusions/{intrusionID}/acknowledge    INTRUSION_ACK
 
 GET    /heatmap                                 HEATMAP_VIEW              ?type=&from=&to=&resolution=&zoneId=  (Phase 5, docs/HEATMAPS.md)
+
+GET    /features                                FEATURE_SETTINGS_VIEW     every opt-in feature's settings
+PUT    /features/hot-zones                      FEATURE_SETTINGS_MANAGE   docs/HOT_ZONES.md
+PUT    /features/fight-replay                   FEATURE_SETTINGS_MANAGE   docs/FIGHT_REPLAY.md
+PUT    /features/network                        NETWORK_MANAGE            docs/NETWORK.md
+PUT    /features/feed-identity                  FEED_IDENTITY_MANAGE      docs/FEED_IDENTITY.md
+GET    /hot-zones                               FEATURE_SETTINGS_VIEW     recent hot zones with standings
+GET    /retention                               RETENTION_VIEW            ?days=&tz=  (docs/RETENTION.md)
+GET    /retention/lapsed                        RETENTION_VIEW            ?minDays=&maxDays=&limit=
+GET    /fights                                  PLAYER_LOCATION_VIEW      ?hours=&minKills=  (docs/FIGHT_REPLAY.md)
+GET    /fights/{killID}                         PLAYER_LOCATION_VIEW      the replay of the fight containing that kill
 ```
 
 Error codes added: `ADMIN_FORBIDDEN` (403, missing capability), `ADMIN_ESCALATION_DENIED` (403,
