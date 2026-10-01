@@ -11,6 +11,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/yourname/dayz-killfeed/internal/featureflags"
 )
 
 // PlatformAuditEntry is one platform-owner action (docs/ADMIN_API.md "Owner controls"). Unlike
@@ -286,4 +288,81 @@ func (r *PlatformOwnerRepository) UnbanUser(ctx context.Context, userID int64) (
 		return nil, fmt.Errorf("owner unban user: %w", err)
 	}
 	return &out, nil
+}
+
+// --- feature flags ------------------------------------------------------------------------------
+
+// ListFeatureFlagOverrides returns every stored override (featureflags.Store).
+func (r *PlatformOwnerRepository) ListOverrides(ctx context.Context) ([]featureflags.Override, error) {
+	rows, err := r.pool.Query(ctx, `SELECT installation_id, flag, enabled, reason, updated_by, updated_at FROM installation_feature_flags ORDER BY installation_id, flag`)
+	if err != nil {
+		return nil, fmt.Errorf("list feature flags: %w", err)
+	}
+	defer rows.Close()
+	out := []featureflags.Override{}
+	for rows.Next() {
+		var o featureflags.Override
+		if err := rows.Scan(&o.InstallationID, &o.Flag, &o.Enabled, &o.Reason, &o.UpdatedBy, &o.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, o)
+	}
+	return out, rows.Err()
+}
+
+// ServerInstallations maps every game server to the installation that runs it (featureflags.Store).
+func (r *PlatformOwnerRepository) ServerInstallations(ctx context.Context) (map[int64]int64, error) {
+	rows, err := r.pool.Query(ctx, `SELECT game_server_id, id FROM installations WHERE game_server_id IS NOT NULL`)
+	if err != nil {
+		return nil, fmt.Errorf("server installations: %w", err)
+	}
+	defer rows.Close()
+	out := map[int64]int64{}
+	for rows.Next() {
+		var server, inst int64
+		if err := rows.Scan(&server, &inst); err != nil {
+			return nil, err
+		}
+		out[server] = inst
+	}
+	return out, rows.Err()
+}
+
+// InstallationOverrides returns the stored overrides for one installation.
+func (r *PlatformOwnerRepository) InstallationOverrides(ctx context.Context, installationID int64) ([]featureflags.Override, error) {
+	rows, err := r.pool.Query(ctx, `SELECT installation_id, flag, enabled, reason, updated_by, updated_at FROM installation_feature_flags WHERE installation_id=$1 ORDER BY flag`, installationID)
+	if err != nil {
+		return nil, fmt.Errorf("installation feature flags: %w", err)
+	}
+	defer rows.Close()
+	out := []featureflags.Override{}
+	for rows.Next() {
+		var o featureflags.Override
+		if err := rows.Scan(&o.InstallationID, &o.Flag, &o.Enabled, &o.Reason, &o.UpdatedBy, &o.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, o)
+	}
+	return out, rows.Err()
+}
+
+// SetOverride stores one decision for an installation.
+func (r *PlatformOwnerRepository) SetOverride(ctx context.Context, o featureflags.Override) error {
+	_, err := r.pool.Exec(ctx, `
+INSERT INTO installation_feature_flags(installation_id, flag, enabled, reason, updated_by, updated_at)
+VALUES($1,$2,$3,$4,$5,NOW())
+ON CONFLICT(installation_id, flag) DO UPDATE SET enabled=EXCLUDED.enabled, reason=EXCLUDED.reason, updated_by=EXCLUDED.updated_by, updated_at=NOW()`,
+		o.InstallationID, o.Flag, o.Enabled, o.Reason, o.UpdatedBy)
+	if err != nil {
+		return fmt.Errorf("set feature flag: %w", err)
+	}
+	return nil
+}
+
+// ClearOverride removes the decision so the environment default applies again.
+func (r *PlatformOwnerRepository) ClearOverride(ctx context.Context, installationID int64, flag string) error {
+	if _, err := r.pool.Exec(ctx, `DELETE FROM installation_feature_flags WHERE installation_id=$1 AND flag=$2`, installationID, flag); err != nil {
+		return fmt.Errorf("clear feature flag: %w", err)
+	}
+	return nil
 }

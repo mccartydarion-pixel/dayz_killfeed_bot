@@ -28,6 +28,7 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/discord/panels"
 	"github.com/yourname/dayz-killfeed/internal/economy"
 	"github.com/yourname/dayz-killfeed/internal/embedrender"
+	"github.com/yourname/dayz-killfeed/internal/featureflags"
 	"github.com/yourname/dayz-killfeed/internal/embedtemplates"
 	"github.com/yourname/dayz-killfeed/internal/entitlements"
 	competitiveevents "github.com/yourname/dayz-killfeed/internal/events"
@@ -182,6 +183,8 @@ type App struct {
 	ClientAdmin *repository.ClientAdminRepository
 	// PlatformOwner is the Owner Hub write model (docs/ADMIN_API.md "Owner controls").
 	PlatformOwner *repository.PlatformOwnerRepository
+	// FeatureFlags resolves the owner's per-installation overrides of the env rollout switches.
+	FeatureFlags *featureflags.Resolver
 	// Locations backs Champion Phase 3 (docs/PLAYER_INTELLIGENCE.md): the authoritative player
 	// directory and persisted ADM location-event history.
 	Locations *repository.LocationRepository
@@ -699,7 +702,14 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.LinkService = linking.NewService(app.Links, app.ActivityRepository, app.Servers, app.Links)
 			app.SaaSUsers = repository.NewUserRepository(db.Pool)
 			app.SaaSOrganizations = repository.NewOrganizationRepository(db.Pool)
-			app.ShopCanaryGate = canaryops.NewGate(cfg.ShopCanaryExecution.Enabled, cfg.ShopCanaryExecution.InstallationIDs)
+			app.ShopCanaryGate = canaryops.NewGate(cfg.ShopCanaryExecution.Enabled, cfg.ShopCanaryExecution.InstallationIDs).WithOverride(func(installationID int64) (bool, bool) {
+				if app.FeatureFlags == nil {
+					return false, false
+				}
+				ov := app.FeatureFlags.Overrides(installationID)
+				v, ok := ov[featureflags.ShopCanary]
+				return v, ok
+			})
 			app.ShopCanary = canaryops.New(repository.NewShopAttemptRepository(db.Pool), repository.NewShopRepository(db.Pool), app.SaaSOrganizations, app.EconomyAccounts, app.ShopCanaryGate)
 			slog.Info("component=shop_canary", "execution_enabled", cfg.ShopCanaryExecution.Enabled, "installations", len(cfg.ShopCanaryExecution.InstallationIDs))
 			app.SaaSGuildConnections = repository.NewGuildConnectionRepository(db.Pool)
@@ -748,6 +758,13 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.Permissions = repository.NewPermissionsRepository(db.Pool)
 			app.AdminAudit = repository.NewAuditRepository(db.Pool)
 			app.PlatformOwner = repository.NewPlatformOwnerRepository(db.Pool)
+			app.FeatureFlags = featureflags.New(app.PlatformOwner, featureflags.DefaultTTL)
+			caseFlags = app.FeatureFlags
+			flagCtx, flagCancel := context.WithTimeout(ctx, 5*time.Second)
+			if err := app.FeatureFlags.Refresh(flagCtx); err != nil {
+				slog.Warn("component=featureflags", "msg", "initial load failed; env defaults apply until the next refresh", "err", err.Error())
+			}
+			flagCancel()
 			app.ClientAdmin = repository.NewClientAdminRepository(db.Pool)
 			app.Locations = repository.NewLocationRepository(db.Pool)
 			go app.runLocationRetention(ctx)
@@ -768,7 +785,9 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			if cfg.PlanGatingEnabled {
 				slog.Info("component=entitlements", "event", "plan_gating_enabled")
 			}
-			app.EmbedRenderer = embedrender.New(embedrender.Options{Source: embedRepo, Enabled: cfg.CustomEmbedsEnabled})
+			// The renderer is always wired; whether an installation's templates render is decided
+			// per installation (customEmbedsFor: owner override, else CHAMPION_CUSTOM_EMBEDS_ENABLED).
+			app.EmbedRenderer = embedrender.New(embedrender.Options{Source: embedRepo, Enabled: true, Gate: app.customEmbedsFor})
 			if cfg.CustomEmbedsEnabled {
 				slog.Info("component=embedrender", "event", "custom_embeds_enabled")
 			}

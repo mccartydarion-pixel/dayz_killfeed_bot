@@ -38,7 +38,7 @@ func TestEmbedActivationStatusMatrix(t *testing.T) {
 		{"unsupported route", on, "SERVER_STATUS", nil, repository.EmbedModeDefault, embedRuntimeDefault, "", false},
 	}
 	for _, c := range cases {
-		st := c.app.embedActivationStatus(c.route, c.stored, c.mode)
+		st := c.app.embedActivationStatus(0, c.route, c.stored, c.mode)
 		if st.Runtime != c.runtime || st.BlockedReason != c.reason || st.CanActivate != c.can {
 			t.Errorf("%s: got runtime=%s reason=%s can=%v (%+v)", c.name, st.Runtime, st.BlockedReason, st.CanActivate, st)
 		}
@@ -46,12 +46,12 @@ func TestEmbedActivationStatusMatrix(t *testing.T) {
 			t.Errorf("%s: templateSaved is reported separately", c.name)
 		}
 	}
-	if st := on.embedActivationStatus("SERVER_STATUS", nil, ""); st.ActivationUnavailable != embedReasonRouteUnsupported || st.RouteSupported {
+	if st := on.embedActivationStatus(0, "SERVER_STATUS", nil, ""); st.ActivationUnavailable != embedReasonRouteUnsupported || st.RouteSupported {
 		t.Fatalf("an unsupported route cannot be activated and says why: %+v", st)
 	}
 	invalid := validKillTemplate(true)
 	invalid.Config.Color = "not-a-color"
-	if st := on.embedActivationStatus("KILLFEED", invalid, repository.EmbedModeCustom); st.TemplateValid || st.BlockedReason != embedReasonTemplateInvalid {
+	if st := on.embedActivationStatus(0, "KILLFEED", invalid, repository.EmbedModeCustom); st.TemplateValid || st.BlockedReason != embedReasonTemplateInvalid {
 		t.Fatalf("an invalid stored template is never active: %+v", st)
 	}
 }
@@ -68,7 +68,7 @@ func TestCASEStoredTemplatesCannotActivateEvenWithGlobalRenderingEnabled(t *test
  on:=&App{EmbedRenderer:embedrender.New(embedrender.Options{Source:nilSource{},Enabled:true})}
  for _,route:=range []string{"CASE_STATUS","CASE_EVIDENCE","CASE_ALERTS"} {
   cfg:=embedtemplates.Config{Enabled:true,RouteKey:route,Color:"#D4AF37",Title:embedtemplates.Text{Enabled:true,Template:"C.A.S.E. design"}}
-  st:=on.embedActivationStatus(route,&embedtemplates.Stored{Config:cfg},repository.EmbedModeCustom)
+  st:=on.embedActivationStatus(0, route,&embedtemplates.Stored{Config:cfg},repository.EmbedModeCustom)
   if !st.TemplateSaved||!st.TemplateValid||st.RouteSupported||st.CanActivate||st.Runtime!=embedRuntimeBlocked||st.BlockedReason!=embedReasonRouteUnsupported {
    t.Fatalf("%s must stay blocked with valid saved design and global switch on: %+v",route,st)
   }

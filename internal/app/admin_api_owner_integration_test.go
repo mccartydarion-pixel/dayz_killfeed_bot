@@ -14,7 +14,9 @@ import (
 	"time"
 
 	"github.com/yourname/dayz-killfeed/internal/admin"
+	"github.com/yourname/dayz-killfeed/internal/featureflags"
 	"github.com/yourname/dayz-killfeed/internal/repository"
+	"github.com/yourname/dayz-killfeed/internal/shop/canaryops"
 )
 
 // ownerWorld adds the Owner Hub write model to the admin world.
@@ -298,4 +300,88 @@ func TestOwnerOpsStatusAndActions(t *testing.T) {
 	if len(got) < 2 || got[0] != "ops.adm_source_scanned" || got[1] != "ops.leaderboard_refreshed" {
 		t.Fatalf("ops audit = %v", got)
 	}
+}
+
+// Feature flags: an override changes what the consumers see, clearing it restores the
+// environment default, and every change is audited.
+func TestOwnerFeatureFlagsOverrideConsumers(t *testing.T) {
+	w := newOwnerWorld(t)
+	w.a.FeatureFlags = featureflags.New(w.a.PlatformOwner, time.Hour)
+	caseFlags = w.a.FeatureFlags
+	t.Cleanup(func() { caseFlags = nil })
+	w.a.ShopCanaryGate = canaryops.NewGate(false, nil).WithOverride(func(id int64) (bool, bool) {
+		v, ok := w.a.FeatureFlags.Overrides(id)[featureflags.ShopCanary]
+		return v, ok
+	})
+	inst := strconv.FormatInt(w.a1.InstallationID, 10)
+	pv := map[string]string{"installationID": inst}
+
+	rr := w.get(w.a.handleOwnerInstallationFlags, "/api/admin/installations/"+inst+"/flags", adminFounderID, pv)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("flags: %d %s", rr.Code, rr.Body.String())
+	}
+	var page struct {
+		Flags []struct {
+			Key       string `json:"key"`
+			Effective bool   `json:"effective"`
+			Override  *bool  `json:"override"`
+		} `json:"flags"`
+	}
+	_ = json.Unmarshal(rr.Body.Bytes(), &page)
+	if len(page.Flags) != len(featureflags.Catalog) {
+		t.Fatalf("catalog length: %d", len(page.Flags))
+	}
+	for _, f := range page.Flags {
+		if f.Override != nil || f.Effective {
+			t.Fatalf("fresh installation must have no overrides and env-off defaults: %+v", f)
+		}
+	}
+	if w.a.ShopCanaryGate.Allows(w.a1.InstallationID) {
+		t.Fatal("canary must be locked before the override")
+	}
+
+	put := func(flag string, body map[string]any) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPut, "/api/admin/installations/"+inst+"/flags/"+flag, strings.NewReader(mustJSON(t, body)))
+		req.Header.Set("Authorization", "Bearer test-secret")
+		req.Header.Set(actingUserHeader, adminFounderID)
+		req.SetPathValue("installationID", inst)
+		req.SetPathValue("flag", flag)
+		rec := httptest.NewRecorder()
+		w.a.adminRoute(w.a.handleOwnerSetInstallationFlag)(rec, req)
+		return rec
+	}
+	if rr := put("nope", map[string]any{"reason": "r", "enabled": true}); rr.Code != http.StatusNotFound {
+		t.Fatalf("unknown flag must be 404, got %d", rr.Code)
+	}
+	if rr := put(featureflags.ShopCanary, map[string]any{"reason": "pilot customer", "enabled": true}); rr.Code != http.StatusOK {
+		t.Fatalf("set flag: %d %s", rr.Code, rr.Body.String())
+	}
+	if !w.a.ShopCanaryGate.Allows(w.a1.InstallationID) {
+		t.Fatalf("canary gate must honour the override; overrides=%v resp=%s", w.a.FeatureFlags.Overrides(w.a1.InstallationID), rr.Body.String())
+	}
+	if w.a.ShopCanaryGate.Allows(w.b1.InstallationID) {
+		t.Fatal("the other tenant stays locked")
+	}
+	if !w.a.customEmbedsFor(w.a1.InstallationID) == false {
+		// no renderer in this world: custom embeds stay off whatever the flag says
+		t.Fatal("custom embeds need a renderer")
+	}
+	if rr := put(featureflags.ShopCanary, map[string]any{"reason": "pilot over"}); rr.Code != http.StatusOK {
+		t.Fatalf("clear flag: %d %s", rr.Code, rr.Body.String())
+	}
+	if w.a.ShopCanaryGate.Allows(w.a1.InstallationID) {
+		t.Fatal("clearing restores the environment default (locked)")
+	}
+	if got := w.auditActions(t, "?targetType=installation&targetId="+inst); strings.Join(got, ",") != "installation.flag_cleared,installation.flag_set" {
+		t.Fatalf("audit = %v", got)
+	}
+}
+
+func mustJSON(t *testing.T, v any) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }
