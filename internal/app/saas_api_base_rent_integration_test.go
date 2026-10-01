@@ -99,6 +99,13 @@ func TestBaseRentPlayerPaysAndReminders(t *testing.T) {
 	if _, err := pool.Exec(ctx, `UPDATE base_rent_payments SET starts_at=NOW()-INTERVAL '11 days',ends_at=NOW()-INTERVAL '4 days' WHERE base_id=$1`, baseID); err != nil {
 		t.Fatal(err)
 	}
+	// Rent and the base are older than the payment too.
+	if _, err := pool.Exec(ctx, `UPDATE base_rent_settings SET enabled_since=NOW()-INTERVAL '12 days' WHERE installation_id=$1`, s.InstallationID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE case_registered_bases SET created_at=NOW()-INTERVAL '12 days' WHERE id=$1`, baseID); err != nil {
+		t.Fatal(err)
+	}
 	var sent []string
 	send := func(userID string, _ *discordgo.MessageSend) error { sent = append(sent, userID); return nil }
 	w.a.sendBaseRentReminders(ctx, send)
@@ -262,5 +269,49 @@ func TestBaseRentPauseDigest(t *testing.T) {
 	w.a.sendRentPauseDigests(ctx, later)
 	if len(mine(later)) != 0 {
 		t.Fatalf("already reported base listed again: %+v", mine(later))
+	}
+}
+
+func TestBaseRentFreeOwnerOnly(t *testing.T) {
+	w := newClientAdminWorld(t)
+	ctx := context.Background()
+	pool := w.a.DB.Pool
+	admin := zoneActor(t, w, "rentfree-admin")
+	w.mapRole(admin, "rentfree-admin-role", "ADMINISTRATOR")
+	player := w.seedPlayer("Staffer")
+	s := repository.SecurityScope{InstallationID: w.f.InstallationID, GuildID: w.guildID, ServerID: w.serverID}
+	reqs := repository.NewCaseBaseRequestRepository(pool)
+	q, err := reqs.Create(ctx, repository.BaseRequestScope(s), repository.BaseRequestInput{PlayerID: player, Name: "Staff Hut", CenterX: 1, CenterZ: 1, Radius: 30, PositionSeenAt: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := reqs.Approve(ctx, repository.BaseRequestScope(s), q.ID, "chernarusplus", "", 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseID := *d.Request.BaseID
+	path := w.path("/case/base-rent/rent-free")
+	body := map[string]any{"baseId": baseID, "free": true, "note": "Staff base"}
+	if rr := w.call(w.a.handleSetBaseRentFree, http.MethodPut, path, admin, body, nil); rr.Code != http.StatusForbidden {
+		t.Fatalf("admin: %d", rr.Code)
+	}
+	if rr := w.call(w.a.handleSetBaseRentFree, http.MethodPut, path, w.f.OwnerDiscordID, map[string]any{"baseId": baseID + 99999, "free": true}, nil); rr.Code != http.StatusConflict {
+		t.Fatalf("unknown base: %d", rr.Code)
+	}
+	if rr := w.call(w.a.handleSetBaseRentFree, http.MethodPut, path, w.f.OwnerDiscordID, map[string]any{"baseId": baseID, "free": true, "x": 1}, nil); rr.Code != http.StatusBadRequest {
+		t.Fatalf("unknown field: %d", rr.Code)
+	}
+	if rr := w.call(w.a.handleSetBaseRentFree, http.MethodPut, path, w.f.OwnerDiscordID, body, nil); rr.Code != http.StatusOK {
+		t.Fatalf("set: %d %s", rr.Code, rr.Body.String())
+	}
+	view := decodeBody[struct {
+		RentFree []repository.RentFreeBase `json:"rentFree"`
+	}](t, w.call(w.a.handleGetBaseRent, http.MethodGet, w.path("/case/base-rent"), w.f.OwnerDiscordID, nil, nil))
+	if len(view.RentFree) != 1 || view.RentFree[0].Note != "Staff base" {
+		t.Fatalf("owner view: %+v", view.RentFree)
+	}
+	var audits int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM admin_audit_log WHERE installation_id=$1 AND action='BASE_RENT_FREE_SAVED'`, w.f.InstallationID).Scan(&audits); err != nil || audits != 1 {
+		t.Fatalf("audits: %d %v", audits, err)
 	}
 }

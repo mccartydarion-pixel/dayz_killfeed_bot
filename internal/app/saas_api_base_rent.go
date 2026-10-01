@@ -67,7 +67,12 @@ func (a *App) handleGetBaseRent(w http.ResponseWriter, r *http.Request) {
 		writeSaaSError(w, codeInternalError, "could not load base rent")
 		return
 	}
-	writeSaaSJSON(w, http.StatusOK, map[string]any{"settings": settings, "bases": bases, "payments": payments, "graceDays": repository.BaseRentGraceDays})
+	free, err := repo.RentFreeBases(ctx, s)
+	if err != nil {
+		writeSaaSError(w, codeInternalError, "could not load base rent")
+		return
+	}
+	writeSaaSJSON(w, http.StatusOK, map[string]any{"settings": settings, "bases": bases, "payments": payments, "rentFree": free, "graceDays": repository.BaseRentGraceDays})
 }
 
 // handleSetBaseRent is PUT .../admin/case/base-rent.
@@ -104,6 +109,48 @@ func (a *App) handleSetBaseRent(w http.ResponseWriter, r *http.Request) {
 	a.recordAudit(ctx, ac, "BASE_RENT_SAVED", "base-rent", "", "success", nil,
 		map[string]any{"enabled": settings.Enabled, "pricePoints": settings.PricePoints, "periodDays": settings.PeriodDays})
 	writeSaaSJSON(w, http.StatusOK, map[string]any{"settings": settings})
+}
+
+type baseRentFreeRequest struct {
+	BaseID int64  `json:"baseId"`
+	Free   bool   `json:"free"`
+	Note   string `json:"note"`
+}
+
+// handleSetBaseRentFree is PUT .../admin/case/base-rent/rent-free: make one
+// player-requested base rent-free, or charge it rent again (its clock
+// restarts now, so it isn't overdue straight away).
+func (a *App) handleSetBaseRentFree(w http.ResponseWriter, r *http.Request) {
+	ac, s, ok := a.ownerRentScope(w, r, true)
+	if !ok {
+		return
+	}
+	var req baseRentFreeRequest
+	if err := readCaseBaseJSON(w, r, &req); err != nil || req.BaseID <= 0 {
+		writeSaaSError(w, codeInvalidRequest, "choose a base")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), adminTimeout)
+	defer cancel()
+	var actor *int64
+	if ac.user != nil {
+		actor = &ac.user.ID
+	}
+	err := repository.NewBaseRentRepository(a.DB.Pool).SetRentFree(ctx, s, req.BaseID, req.Free, req.Note, actor)
+	switch {
+	case errors.Is(err, repository.ErrBaseRentNotOwned):
+		writeSaaSError(w, codeConflict, "only bases registered from a player's request pay rent")
+		return
+	case errors.Is(err, repository.ErrInvalidBaseRent):
+		writeSaaSError(w, codeInvalidRequest, "the note can be up to 200 characters")
+		return
+	case err != nil:
+		slog.Warn("component=base_rent", "event", "rent_free_failed", "err", err.Error())
+		writeSaaSError(w, codeInternalError, "could not save the base")
+		return
+	}
+	a.recordAudit(ctx, ac, "BASE_RENT_FREE_SAVED", "base-rent", "", "success", nil, map[string]any{"baseId": req.BaseID, "free": req.Free})
+	writeSaaSJSON(w, http.StatusOK, map[string]any{"baseId": req.BaseID, "free": req.Free})
 }
 
 type baseRentGiftRequest struct {

@@ -609,3 +609,66 @@ func (r *BaseRentRepository) PlayerPayments(ctx context.Context, s SecurityScope
 	}
 	return out, rows.Err()
 }
+
+// RentFreeBase is a player-requested base the owner made rent-free.
+type RentFreeBase struct {
+	BaseID    int64     `json:"baseId"`
+	BaseName  string    `json:"baseName"`
+	OwnerID   int64     `json:"ownerPlayerId"`
+	OwnerName string    `json:"ownerName,omitempty"`
+	Note      string    `json:"note,omitempty"`
+	Since     time.Time `json:"since"`
+}
+
+// requestedBaseSQL is true for a player-requested base in scope ($1-$4: base, installation, guild, server).
+const requestedBaseSQL = `EXISTS (SELECT 1 FROM case_registered_bases b
+ WHERE b.id=$1 AND b.installation_id=$2 AND b.guild_id=$3 AND b.server_id=$4 AND b.state<>'REVOKED'
+  AND EXISTS (SELECT 1 FROM case_base_requests rq WHERE rq.base_id=b.id AND rq.status='APPROVED'))`
+
+// SetRentFree makes a player-requested base rent-free, or charges it rent
+// again (its clock restarts now). Only bases registered from a request.
+func (r *BaseRentRepository) SetRentFree(ctx context.Context, s SecurityScope, baseID int64, free bool, note string, actorUserID *int64) error {
+	note = strings.TrimSpace(note)
+	if !r.ready() || !s.valid() || baseID <= 0 || len([]rune(note)) > 200 {
+		return ErrInvalidBaseRent
+	}
+	var ok bool
+	if err := r.pool.QueryRow(ctx, `SELECT `+requestedBaseSQL, baseID, s.InstallationID, s.GuildID, s.ServerID).Scan(&ok); err != nil {
+		return err
+	}
+	if !ok {
+		return ErrBaseRentNotOwned
+	}
+	_, err := r.pool.Exec(ctx, `INSERT INTO base_rent_exemptions(base_id,installation_id,exempt,note,changed_by_user_id,changed_at)
+ VALUES ($1,$2,$3,$4,$5,NOW())
+ ON CONFLICT (base_id) DO UPDATE SET exempt=EXCLUDED.exempt,note=EXCLUDED.note,changed_by_user_id=EXCLUDED.changed_by_user_id,
+  changed_at=CASE WHEN base_rent_exemptions.exempt=EXCLUDED.exempt THEN base_rent_exemptions.changed_at ELSE NOW() END`,
+		baseID, s.InstallationID, free, note, actorUserID)
+	return err
+}
+
+// RentFreeBases lists the server's rent-free bases.
+func (r *BaseRentRepository) RentFreeBases(ctx context.Context, s SecurityScope) ([]RentFreeBase, error) {
+	if !r.ready() || !s.valid() {
+		return nil, ErrInvalidBaseRent
+	}
+	rows, err := r.pool.Query(ctx, `SELECT b.id,b.name,b.owner_player_id,COALESCE(p.display_name,''),ex.note,ex.changed_at
+ FROM base_rent_exemptions ex
+ JOIN case_registered_bases b ON b.id=ex.base_id
+ LEFT JOIN players p ON p.guild_id=b.guild_id AND p.id=b.owner_player_id
+ WHERE ex.exempt AND b.installation_id=$1 AND b.guild_id=$2 AND b.server_id=$3 AND b.state<>'REVOKED'
+ ORDER BY b.name,b.id`, s.InstallationID, s.GuildID, s.ServerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]RentFreeBase, 0)
+	for rows.Next() {
+		var b RentFreeBase
+		if err := rows.Scan(&b.BaseID, &b.BaseName, &b.OwnerID, &b.OwnerName, &b.Note, &b.Since); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}

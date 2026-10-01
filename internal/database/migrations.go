@@ -2754,6 +2754,12 @@ CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events
 		Name: "0097_base_rent_digests",
 		SQL:  BaseRentDigestSQL,
 	},
+	{
+		// Rent-free bases, and a due date that restarts when rent is switched
+		// back on or resumed for a base. Additive table plus a replaced function.
+		Name: "0098_base_rent_exemptions",
+		SQL:  BaseRentExemptionSQL,
+	},
 }
 
 // PvPDeathBackfillSQL gives the victim of every existing PvP kill a deaths row of type PVP, with
