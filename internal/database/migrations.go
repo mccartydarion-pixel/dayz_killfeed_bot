@@ -2662,6 +2662,10 @@ CREATE INDEX IF NOT EXISTS idx_installation_feature_settings_network ON installa
 CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events(guild_id, ((config->>'server_id')), ends_at DESC) WHERE event_type = 'HOT_ZONE';
 `,
 	},
+	{
+		Name: "0081_shop_order_confirmations",
+		SQL:  ShopOrderConfirmationsSQL,
+	},
 }
 
 // RankedLedgerFoundationSQL creates server-scoped seasonal RP storage.

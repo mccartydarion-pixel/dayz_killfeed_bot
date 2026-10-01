@@ -85,6 +85,9 @@ type App struct {
 	EconomyAccounts *economy.Accounts
 	// Shop is the Champion Shop (catalog, purchases with Champion Points); see docs/SHOP.md.
 	Shop *shop.Service
+	// ShopConfirmations is the buyer confirmation of delivered orders and its support tickets; see
+	// docs/SHOP_ORDER_CONFIRMATION.md.
+	ShopConfirmations *shop.Confirmations
 	// ShopCanary is the Phase 2C.4 canary operator service (docs/SHOP_DELIVERY_PHASE2C4.md); its
 	// mutations are locked unless ShopCanaryGate is opened by CHAMPION_SHOP_CANARY_EXECUTION.
 	ShopCanary     *canaryops.Service
@@ -714,6 +717,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.EconomyService = economy.NewService(repository.NewEconomyRepository(db.Pool), nil)
 			app.EconomyAccounts = economy.NewAccounts(app.EconomyService, repository.NewEconomyRepository(db.Pool))
 			app.Shop = shop.NewService(repository.NewShopRepository(db.Pool), app.EconomyAccounts, app.EconomyService)
+			app.ShopConfirmations = shop.NewConfirmations(repository.NewShopConfirmationRepository(db.Pool), app.EconomyAccounts)
 			app.Points = repository.NewPointsRepository(db.Pool)
 			app.Seasons = repository.NewSeasonRepository(db.Pool)
 			app.SeasonService = seasons.NewService(app.Seasons)
@@ -1130,6 +1134,10 @@ func (a *App) Run() error {
 	// older than two hours and referenced by no asset row).
 	if a.FactionAssets != nil {
 		go a.FactionAssets.RunSweeper(ctx, time.Hour, 2*time.Hour)
+	}
+	// Delivered Shop orders the buyer never answered are completed once their deadline passes.
+	if a.ShopConfirmations != nil {
+		go a.runShopConfirmationSweeper(ctx)
 	}
 	// Faction Hub achievements: kills queue an evaluation (drained every 5 seconds, one evaluation
 	// per affected faction), and a reconcile - one minute after start, then daily - backfills
