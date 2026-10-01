@@ -2794,6 +2794,11 @@ CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events
 		Name: "0105_invite_tracking",
 		SQL:  InviteTrackingSQL,
 	},
+	{
+		// Automatic Champion Point reward rules. Additive.
+		Name: "0106_reward_rules",
+		SQL:  RewardRulesSQL,
+	},
 }
 
 // PvPDeathBackfillSQL gives the victim of every existing PvP kill a deaths row of type PVP, with

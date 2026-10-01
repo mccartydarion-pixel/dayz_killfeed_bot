@@ -59,3 +59,23 @@ CREATE TABLE IF NOT EXISTS discord_invite_joins (
 CREATE INDEX IF NOT EXISTS idx_discord_invite_joins_guild_joined ON discord_invite_joins(guild_id, joined_at DESC);
 CREATE INDEX IF NOT EXISTS idx_discord_invite_joins_member ON discord_invite_joins(guild_id, member_discord_id, joined_at DESC);
 `
+
+// RewardRulesSQL stores automatic Champion Point rewards an owner configures. Payouts are ordinary
+// SYSTEM_REWARD ledger rows whose source_key ("reward:...") makes each one pay at most once.
+const RewardRulesSQL = `
+CREATE TABLE IF NOT EXISTS reward_rules (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN ('RANK_REACHED','WEEKLY_ACTIVE','SEASON_TOP')),
+    tier TEXT NOT NULL DEFAULT '',
+    points BIGINT NOT NULL CHECK (points BETWEEN 1 AND 1000000),
+    min_hours INTEGER NOT NULL DEFAULT 0,
+    min_days INTEGER NOT NULL DEFAULT 0,
+    places INTEGER NOT NULL DEFAULT 0,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    created_by TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (guild_id, kind, tier)
+);
+`

@@ -76,6 +76,8 @@ type App struct {
 	// Invites stores Discord invite joins; InviteTracker attributes them (needs Manage Server).
 	Invites       *repository.InviteRepository
 	InviteTracker *discord.InviteTracker
+	// Rewards holds automatic Champion Point reward rules.
+	Rewards *repository.RewardRepository
 	Bounties     *repository.BountyRepository
 	// BountyService is the bounty application service (placement, the atomic claim
 	// for persisted kills, streak bounties, expiry). Its Discord notifier is
@@ -738,6 +740,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.Seasons = repository.NewSeasonRepository(db.Pool)
 			app.SeasonPlanner = repository.NewSeasonPlannerRepository(db.Pool)
 			app.Invites = repository.NewInviteRepository(db.Pool)
+			app.Rewards = repository.NewRewardRepository(db.Pool)
 			app.SeasonService = seasons.NewService(app.Seasons)
 			app.Factions = repository.NewFactionRepository(db.Pool)
 			app.Wars = repository.NewPostgresWarRepository(db.Pool)
@@ -2351,6 +2354,7 @@ func (a *App) runCompetitiveSchedulers(ctx context.Context, guildID int64) {
 		}
 		a.publishEventAnnouncements(ctx, guildID, now)
 		a.runSeasonPlanner(ctx, guildID, now)
+		a.runRewards(ctx, guildID, now)
 		if ended, err := a.Events.GetEndedUnfinalized(ctx, guildID, 25); err == nil {
 			for _, event := range ended {
 				if err := a.EventService.FinalizeEvent(ctx, guildID, event.ID, now); err != nil {
