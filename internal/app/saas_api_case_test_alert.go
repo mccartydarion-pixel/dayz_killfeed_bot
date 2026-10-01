@@ -29,20 +29,20 @@ type caseTestAlertResponse struct {
 	SentAt      string `json:"sentAt"`
 }
 
-// sendCaseTestAlert resolves the CASE_ALERTS channel for this installation,
-// requires it to be private to staff and reachable, and sends one test card.
-func sendCaseTestAlert(ctx context.Context, routes embedRouteLister, d embedDiscord, organizationID, installationID int64, guildID, serverName string, at time.Time) (caseTestAlertResponse, *designerError) {
-	var out caseTestAlertResponse
+// privateCaseAlertsChannel resolves the installation's CASE_ALERTS channel and
+// requires it to be reachable and private to staff. Real alerts and the test
+// alert both go through it.
+func privateCaseAlertsChannel(ctx context.Context, routes embedRouteLister, d embedDiscord, organizationID, installationID int64, guildID string) (EmbedDestination, *designerError) {
 	dest, derr := resolveEmbedDestination(ctx, routes, d, organizationID, installationID, guildID, caseAlertsRoute)
 	if derr != nil {
 		if derr.code == codeEmbedRouteNotConfigured {
 			derr.message = "no C.A.S.E. alerts channel is set up yet - run Repair Champion Discord Layout to create it"
 		}
-		return out, derr
+		return dest, derr
 	}
 	channels, err := d.ListAllGuildChannels(guildID)
 	if err != nil {
-		return out, &designerError{codeDiscordUnavailable, "could not reach Discord right now"}
+		return dest, &designerError{codeDiscordUnavailable, "could not reach Discord right now"}
 	}
 	byID := make(map[string]discord.RawGuildChannel, len(channels))
 	for _, ch := range channels {
@@ -52,7 +52,17 @@ func sendCaseTestAlert(ctx context.Context, routes embedRouteLister, d embedDisc
 	// Same rule the Discord layout uses for C.A.S.E. channels: the category
 	// must deny @everyone and neither it nor the channel may allow it back.
 	if ch.ParentID == "" || !parent.Private || parent.PublicViewOverride || ch.PublicViewOverride {
-		return out, &designerError{codeEmbedSendForbidden, "#" + dest.ChannelName + " is visible to everyone. Make the C.A.S.E. category private to staff before sending alerts there"}
+		return dest, &designerError{codeEmbedSendForbidden, "#" + dest.ChannelName + " is visible to everyone. Make the C.A.S.E. category private to staff before sending alerts there"}
+	}
+	return dest, nil
+}
+
+// sendCaseTestAlert sends one test card to the private CASE_ALERTS channel.
+func sendCaseTestAlert(ctx context.Context, routes embedRouteLister, d embedDiscord, organizationID, installationID int64, guildID, serverName string, at time.Time) (caseTestAlertResponse, *designerError) {
+	var out caseTestAlertResponse
+	dest, derr := privateCaseAlertsChannel(ctx, routes, d, organizationID, installationID, guildID)
+	if derr != nil {
+		return out, derr
 	}
 	messageID, err := d.SendMessage(dest.ChannelID, discord.CaseTestAlertMessage(serverName, at))
 	if err != nil {

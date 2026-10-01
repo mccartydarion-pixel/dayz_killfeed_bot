@@ -91,9 +91,11 @@ LIMIT $6`, guildID, serverID, from, to, resolution, limit)
 	return aggregateRows(rows)
 }
 
-// AggregateDeaths aggregates PvP deaths by the victim's position (task section 13). Only genuine
+// AggregateDeaths aggregates deaths by the dead player's position (task section 13). Only genuine
 // deaths rows are counted, so RESPAWN/UNCONSCIOUS/CONNECT/DISCONNECT location events (which never
-// have a corresponding deaths row) can never be miscounted as a death.
+// have a corresponding deaths row) can never be miscounted as a death. A PVP death row was written
+// from a kill line (docs/DEATH_COUNTS.md), so its position is the victim's KILL location row from
+// that line; every other death joins its own DEATH row.
 func (r *HeatmapRepository) AggregateDeaths(ctx context.Context, guildID, serverID int64, from, to time.Time, resolution int, limit int) ([]HeatmapCell, error) {
 	rows, err := r.pool.Query(ctx, `
 SELECT FLOOR(m.x / $5)::BIGINT, FLOOR(m.z / $5)::BIGINT, COUNT(*)
@@ -103,7 +105,8 @@ FROM (
   FROM deaths d
   JOIN player_location_events ple
     ON ple.server_id = d.server_id AND ple.source_file = d.source_file AND ple.source_offset = d.source_offset
-    AND ple.player_id = d.player_id AND ple.event_type = 'DEATH' AND ple.guild_id = d.guild_id
+    AND ple.player_id = d.player_id AND ple.guild_id = d.guild_id
+    AND ple.event_type = CASE WHEN d.death_type = 'PVP' THEN 'KILL' ELSE 'DEATH' END
   WHERE d.guild_id = $1 AND d.server_id = $2 AND d.source_file IS NOT NULL
     AND COALESCE(d.event_time, d.created_at) >= $3 AND COALESCE(d.event_time, d.created_at) < $4
   UNION ALL
@@ -112,7 +115,7 @@ FROM (
   FROM deaths d
   JOIN player_location_events ple
     ON ple.guild_id = d.guild_id AND ple.server_id = d.server_id AND ple.player_id = d.player_id
-    AND ple.event_type = 'DEATH' AND ple.observed_at = d.event_time
+    AND ple.event_type = CASE WHEN d.death_type = 'PVP' THEN 'KILL' ELSE 'DEATH' END AND ple.observed_at = d.event_time
   WHERE d.guild_id = $1 AND d.server_id = $2 AND d.source_file IS NULL
     AND d.event_time >= $3 AND d.event_time < $4
 ) m

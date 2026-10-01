@@ -1,6 +1,6 @@
 package database
 
-// ShopOrderConfirmationsSQL (migration 0081, docs/SHOP_ORDER_CONFIRMATION.md): the buyer's
+// ShopOrderConfirmationsSQL (migration 0083, docs/SHOP_ORDER_CONFIRMATION.md): the buyer's
 // confirmation of a delivered Shop order and the support tickets it can open.
 //
 // Additive and forward-only. No existing row is read or rewritten: the purchase and delivery status

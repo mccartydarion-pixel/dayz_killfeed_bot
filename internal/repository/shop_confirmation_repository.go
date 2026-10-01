@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// Buyer confirmation of a delivered Shop order and its support tickets (migration 0081,
+// Buyer confirmation of a delivered Shop order and its support tickets (migration 0083,
 // docs/SHOP_ORDER_CONFIRMATION.md). The confirmation row is opened by a database trigger when the
 // purchase becomes FULFILLED; this file only moves it forward. Every transition is a compare-and-set
 // on the current state, so of two concurrent answers (or an answer racing the deadline) exactly one
@@ -40,7 +40,7 @@ const (
 	TicketResolutionOther     = "OTHER"
 )
 
-// ShopConfirmationWindow mirrors the deadline_at default of migration 0081.
+// ShopConfirmationWindow mirrors the deadline_at default of migration 0083.
 const ShopConfirmationWindow = 48 * time.Hour
 
 var (

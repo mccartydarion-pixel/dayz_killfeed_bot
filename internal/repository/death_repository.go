@@ -8,7 +8,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Death type classifications. Only values the real ADM data supports.
+// Death type classifications. Only values the real ADM data supports. PVP rows are written with
+// the kill (KillRepository.InsertKillReturning); the others by InsertDeath (docs/DEATH_COUNTS.md).
 const (
 	DeathTypePVP     = "PVP"
 	DeathTypeSuicide = "SUICIDE"

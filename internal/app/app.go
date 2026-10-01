@@ -1723,6 +1723,9 @@ func (a *App) Run() error {
 				// legacy in-memory queue has NO premium authorizer in production.
 				a.AdminAlerts.SetServerNames(a.serverNameFunc())
 				go a.AdminAlerts.Run(ctx)
+				// C.A.S.E. staff alerts: sends nothing until a detector is
+				// released and an owner turns staff alerts on.
+				a.startCaseStaffAlerts(ctx)
 				if a.CaseDigestOutbox != nil && a.Config.CaseAccessEnabled {
 					go a.runCaseDigestWorker(ctx)
 				}
