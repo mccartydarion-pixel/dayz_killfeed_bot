@@ -366,3 +366,19 @@ func (r *CaseBaseRequestRepository) RequestNotice(ctx context.Context, s BaseReq
 		s.InstallationID, s.GuildID, playerID).Scan(&ownerDiscordID, &playerName)
 	return ownerDiscordID, playerName, err
 }
+
+// InstallationForServer finds the installation a guild's game server belongs
+// to (for Discord commands, which only know the guild and server).
+func (r *CaseBaseRequestRepository) InstallationForServer(ctx context.Context, guildID, serverID int64) (int64, error) {
+	if r == nil || r.pool == nil || guildID <= 0 || serverID <= 0 {
+		return 0, ErrInvalidBaseRequest
+	}
+	var id int64
+	err := r.pool.QueryRow(ctx, `SELECT i.id FROM installations i
+ JOIN discord_guild_connections c ON c.id=i.discord_guild_connection_id
+ WHERE i.game_server_id=$2 AND c.guild_id=$1 ORDER BY i.id LIMIT 1`, guildID, serverID).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, ErrBaseRequestNotFound
+	}
+	return id, err
+}

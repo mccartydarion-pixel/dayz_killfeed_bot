@@ -49,3 +49,15 @@ Server owner only (`UAV_MANAGE`):
 - `internal/repository/case_base_request_repository.go`
 - `internal/app/saas_api_case_base_requests.go`
 - `internal/discord/base_request.go` (decision DM)
+
+## Discord commands
+
+Both answer only the caller, privately, and need a verified `/link`.
+
+- `/mybase` — the player's registered bases, a waiting request (or the last
+  answer), and every base service they have paid time for, with the Security
+  Store link.
+- `/registerbase name size [note]` — sends a request exactly like the
+  Security Store page: the position is where the server log last saw them
+  (within 30 minutes), sizes 25/50/75/100/150 m, same limits. The owner is
+  told the same way.

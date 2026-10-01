@@ -1384,6 +1384,7 @@ func (a *App) Run() error {
 	}
 	a.registerLifeCommands(ctx, session)
 	a.registerCardCommand(session)
+	a.registerBaseCommands(session)
 	if a.LinkService != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
 		linkHandler := discord.NewLinkCommandHandler(a.LinkService, a.Guilds)
 		if err := discord.RegisterLinkCommands(session, a.Config.DiscordGuildID); err != nil {

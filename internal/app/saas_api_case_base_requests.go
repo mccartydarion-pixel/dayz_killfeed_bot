@@ -121,35 +121,44 @@ func (a *App) handleCreatePlayerBaseRequest(w http.ResponseWriter, r *http.Reque
 	if a.saasShopPurchaseLimiter != nil && !enforceRateLimit(w, a.saasShopPurchaseLimiter, rateLimitKey(r)) {
 		return
 	}
+	req, code, msg := a.submitBaseRequest(ctx, s, playerID, body.Name, body.Radius, body.Note)
+	if code != "" {
+		writeSaaSError(w, code, msg)
+		return
+	}
+	writeSaaSJSON(w, http.StatusCreated, map[string]any{"request": req})
+}
+
+// submitBaseRequest creates a request at the player's last logged position
+// (the website and /registerbase share it). On failure it returns an error
+// code and a player-facing message.
+func (a *App) submitBaseRequest(ctx context.Context, s repository.BaseRequestScope, playerID int64, name string, radius float64, note string) (repository.CaseBaseRequest, string, string) {
+	if radius < repository.BaseRequestMinRadius || radius > repository.BaseRequestMaxRadius {
+		return repository.CaseBaseRequest{}, codeInvalidRequest, "the base size must be 10 to 150 m"
+	}
 	pos, err := a.latestBaseRequestPosition(ctx, s, playerID)
 	if err != nil {
-		writeSaaSError(w, codeInternalError, "could not read your position")
-		return
+		return repository.CaseBaseRequest{}, codeInternalError, "could not read your position"
 	}
 	if pos == nil || !pos.Fresh {
-		writeSaaSError(w, codeConflict, "the server hasn't logged your position in the last 30 minutes; go to your base in game, wait a minute and try again")
-		return
+		return repository.CaseBaseRequest{}, codeConflict, "the server hasn't logged your position in the last 30 minutes; go to your base in game, wait a minute and try again"
 	}
 	req, err := repository.NewCaseBaseRequestRepository(a.DB.Pool).Create(ctx, s, repository.BaseRequestInput{
-		PlayerID: playerID, Name: body.Name, Note: body.Note, CenterX: pos.X, CenterZ: pos.Z, Radius: body.Radius, PositionSeenAt: pos.ObservedAt})
+		PlayerID: playerID, Name: name, Note: note, CenterX: pos.X, CenterZ: pos.Z, Radius: radius, PositionSeenAt: pos.ObservedAt})
 	switch {
 	case errors.Is(err, repository.ErrBaseRequestOpen):
-		writeSaaSError(w, codeConflict, "you already have a base request waiting for the server owner")
-		return
+		return req, codeConflict, "you already have a base request waiting for the server owner"
 	case errors.Is(err, repository.ErrBaseRequestLimit):
-		writeSaaSError(w, codeConflict, "you already have the most bases allowed on this server")
-		return
+		return req, codeConflict, "you already have the most bases allowed on this server"
 	case errors.Is(err, repository.ErrInvalidBaseRequest):
-		writeSaaSError(w, codeInvalidRequest, "give your base a name (up to 64 characters); the note can be up to 300")
-		return
+		return req, codeInvalidRequest, "give your base a name (up to 64 characters); the note can be up to 300"
 	case err != nil:
 		slog.Warn("component=base_requests", "event", "create_failed", "err", err.Error())
-		writeSaaSError(w, codeInternalError, "your request couldn't be sent")
-		return
+		return req, codeInternalError, "your request couldn't be sent"
 	}
 	slog.Info("component=base_requests", "event", "requested", "installation_id", s.InstallationID, "request_id", req.ID)
 	a.notifyNewBaseRequest(s, req)
-	writeSaaSJSON(w, http.StatusCreated, map[string]any{"request": req})
+	return req, "", ""
 }
 
 // handleCancelPlayerBaseRequest is POST .../security-marketplace/base-requests/{requestID}/cancel.
