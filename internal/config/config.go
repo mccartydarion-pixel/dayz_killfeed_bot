@@ -66,6 +66,12 @@ type Config struct {
 	// default on any problem).
 	CustomEmbedsEnabled bool
 
+	// PlanGatingEnabled (CHAMPION_PLAN_GATING_ENABLED, default false) is the rollout
+	// switch for plan tiers (internal/entitlements). Off: every plan gets every feature,
+	// as before. On: the Survivor plan loses the Champion-only features (ranked seasons,
+	// bounties, heatmaps, economy/shop, custom embeds, more than 5 factions).
+	PlanGatingEnabled bool
+
 	// ShopCanaryExecution is the Shop Phase 2C.4 canary execution lock (docs/SHOP_DELIVERY_PHASE2C4.md).
 	// It is its own switch: no other Shop, economy or delivery setting enables it. Mutating canary
 	// operations are allowed only when CHAMPION_SHOP_CANARY_EXECUTION is exactly "enabled" AND the
@@ -136,6 +142,7 @@ func Load() (*Config, error) {
 		WebsiteAPISecret:          strings.TrimSpace(os.Getenv("WEBSITE_API_SECRET")),
 		AdminDiscordIDs:           ParseAdminDiscordIDs(os.Getenv("CHAMPION_ADMIN_DISCORD_IDS")),
 		CustomEmbedsEnabled:       parseBoolWithDefault(os.Getenv("CHAMPION_CUSTOM_EMBEDS_ENABLED"), false),
+		PlanGatingEnabled:         parseBoolWithDefault(os.Getenv("CHAMPION_PLAN_GATING_ENABLED"), false),
 		ShopCanaryExecution:       ParseShopCanaryExecution(os.Getenv("CHAMPION_SHOP_CANARY_EXECUTION"), os.Getenv("CHAMPION_SHOP_CANARY_INSTALLATION_IDS")),
 		PublicBaseURL:             ParsePublicBaseURL(os.Getenv("CHAMPION_PUBLIC_BASE_URL"), os.Getenv("RAILWAY_PUBLIC_DOMAIN")),
 		SiteBaseURL:               strings.TrimRight(strings.TrimSpace(os.Getenv("CHAMPION_SITE_BASE_URL")), "/"),

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/yourname/dayz-killfeed/internal/entitlements"
 	"io"
 	"log/slog"
 	"net/http"
@@ -237,6 +238,12 @@ func (a *App) handleGetEmbedTemplate(w http.ResponseWriter, r *http.Request) {
 func (a *App) handlePutEmbedTemplate(w http.ResponseWriter, r *http.Request) {
 	orgID, instID, routeKey, userID, ok := a.embedTemplateContext(w, r, true, true)
 	if !ok {
+		return
+	}
+	// Saving a design is Champion-only. Reading, previewing, deleting and switching a
+	// route back to Default stay open so a downgraded server can still tidy up; the
+	// runtime shows the default cards on Survivor whatever is saved (ResolveTemplate).
+	if !a.requirePlanFeature(w, r, orgID, entitlements.CustomEmbeds) {
 		return
 	}
 	body := http.MaxBytesReader(w, r.Body, maxEmbedTemplateBody)

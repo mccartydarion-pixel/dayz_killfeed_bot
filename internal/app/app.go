@@ -29,6 +29,7 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/economy"
 	"github.com/yourname/dayz-killfeed/internal/embedrender"
 	"github.com/yourname/dayz-killfeed/internal/embedtemplates"
+	"github.com/yourname/dayz-killfeed/internal/entitlements"
 	competitiveevents "github.com/yourname/dayz-killfeed/internal/events"
 	"github.com/yourname/dayz-killfeed/internal/factionassets"
 	"github.com/yourname/dayz-killfeed/internal/factionstats"
@@ -760,6 +761,10 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.FactionHub = repository.NewFactionHubRepository(db.Pool)
 			app.FactionAssets = factionassets.NewService(repository.NewPostgresAssetStore(db.Pool), app.FactionHub)
 			app.FactionHubStats = factionstats.NewService(repository.NewHubStatsRepository(db.Pool), factionstats.Options{})
+			entitlements.SetEnforced(cfg.PlanGatingEnabled)
+			if cfg.PlanGatingEnabled {
+				slog.Info("component=entitlements", "event", "plan_gating_enabled")
+			}
 			app.EmbedRenderer = embedrender.New(embedrender.Options{Source: embedRepo, Enabled: cfg.CustomEmbedsEnabled})
 			if cfg.CustomEmbedsEnabled {
 				slog.Info("component=embedrender", "event", "custom_embeds_enabled")

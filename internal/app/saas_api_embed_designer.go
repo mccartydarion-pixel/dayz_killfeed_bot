@@ -17,6 +17,7 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/discord"
 	"github.com/yourname/dayz-killfeed/internal/embedrender"
 	"github.com/yourname/dayz-killfeed/internal/embedtemplates"
+	"github.com/yourname/dayz-killfeed/internal/entitlements"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -433,6 +434,10 @@ func (a *App) handlePreviewEmbedTemplate(w http.ResponseWriter, r *http.Request)
 func (a *App) handleTestEmbedTemplate(w http.ResponseWriter, r *http.Request) {
 	orgID, instID, routeKey, userID, ok := a.embedTemplateContext(w, r, true, true)
 	if !ok {
+		return
+	}
+	// Sending a custom design to Discord is Champion-only (see handlePutEmbedTemplate).
+	if !a.requirePlanFeature(w, r, orgID, entitlements.CustomEmbeds) {
 		return
 	}
 	req, ok := decodeEmbedDraft(w, r)

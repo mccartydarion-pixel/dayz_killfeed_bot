@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"github.com/yourname/dayz-killfeed/internal/entitlements"
 	"io"
 	"log/slog"
 	"net/http"
@@ -591,7 +592,21 @@ func (a *App) handleCreateFaction(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), factionTimeout)
 	defer cancel()
-	created, err := a.FactionHub.CreateFaction(ctx, fr.orgID, fr.instID, fr.user.ID, in)
+	limit := 0
+	if entitlements.Enforced() {
+		plan, perr := a.organizationPlan(ctx, fr.orgID)
+		if perr != nil {
+			slog.Warn("component=entitlements", "event", "plan_lookup_failed", "organization_id", fr.orgID, "err", perr.Error())
+			writeSaaSError(w, codeInternalError, "could not verify your plan")
+			return
+		}
+		limit = entitlements.FactionLimit(plan)
+	}
+	created, err := a.FactionHub.CreateFactionWithLimit(ctx, fr.orgID, fr.instID, fr.user.ID, in, limit)
+	if errors.Is(err, factionhub.ErrFactionLimitReached) {
+		writeSaaSError(w, codeFactionLimitReached, factionLimitMessage(limit))
+		return
+	}
 	if err != nil {
 		factionFailed(w, "create faction", err)
 		return
