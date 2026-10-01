@@ -77,7 +77,9 @@ func TestBaseCommandsPayRent(t *testing.T) {
 	if _, err := repository.NewBaseRentRepository(pool).SetSettings(ctx, rs, true, 300, 5, nil); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = repository.NewBaseRentRepository(pool).SetSettings(context.Background(), rs, false, 300, 5, nil) })
+	t.Cleanup(func() {
+		_, _ = repository.NewBaseRentRepository(pool).SetSettings(context.Background(), rs, false, 300, 5, nil)
+	})
 	sum, err := w.a.baseCommandSummary(ctx, guild, server, owner)
 	if err != nil || sum.RentPrice != 300 || sum.RentDays != 5 || len(sum.Rent) != 1 || sum.Rent[0].BaseID != baseID {
 		t.Fatalf("summary rent: %+v %v", sum, err)
