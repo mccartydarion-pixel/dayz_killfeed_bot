@@ -63,13 +63,34 @@ func (r *KillRepository) InsertKill(ctx context.Context, k KillRecord) error {
 	return err
 }
 
+// PvPDeathFingerprintPrefix marks the deaths row written for the victim of a kill: its fingerprint
+// is this prefix plus the kill's own fingerprint, so one kill can only ever produce one death row.
+const PvPDeathFingerprintPrefix = "pvp:"
+
+// InsertKillReturning persists a kill and, in the same statement, the victim's death.
+//
+// DayZ logs a death exactly once (PluginAdminLog.PlayerKilled): "killed by Player ..." when
+// another player did it, "died. Stats> ..." when nothing else did. Only the second kind reaches
+// the persistence worker as a death, so the kill row is the only record that a PvP victim died.
+// The PVP deaths row written here is what makes every `COUNT(*) FROM deaths` figure - K/D, faction
+// stats, the player API - include PvP deaths. A self-kill is not a PvP death and writes none. The
+// row is not published: death-feed publishing stays with the persistence worker's death path.
 func (r *KillRepository) InsertKillReturning(ctx context.Context, k KillRecord) (int64, error) {
 	const q = `
+	WITH k AS (
 	INSERT INTO kills (guild_id, server_id, session_id, event_fingerprint, killer_player_id, victim_player_id,
 	killer_faction_id, victim_faction_id, season_id, war_id, weapon_raw, weapon_display, distance, headshot, longshot, kill_style, event_time,
 	killing_spree, killer_streak_after, streak_ended, ended_streak_count, source_file, source_offset, source_local_time)
 	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
-	RETURNING id`
+	RETURNING id
+	), victim_death AS (
+	INSERT INTO deaths (guild_id, server_id, session_id, event_fingerprint, player_id, season_id, death_type, event_time,
+	source_file, source_offset, source_local_time)
+	SELECT $1, $2, $3, '` + PvPDeathFingerprintPrefix + `' || $4, $6, $9, '` + DeathTypePVP + `', $17, $22, $23, $24
+	FROM k WHERE $6::bigint IS NOT NULL AND $5::bigint IS DISTINCT FROM $6::bigint
+	ON CONFLICT (guild_id, event_fingerprint) DO NOTHING
+	)
+	SELECT id FROM k`
 
 	var id int64
 	err := r.pool.QueryRow(ctx, q, k.GuildID, nilIfZero(k.ServerID), k.SessionID, k.Fingerprint,

@@ -2167,7 +2167,7 @@ ON CONFLICT (installation_id, route_key) DO NOTHING;
 	{
 		// C.A.S.E. 2G.2: inert, source-linked shadow-evaluation ledger.
 		Name: "0056_case_shadow_evaluations",
-		SQL: CaseShadowLedgerSQL,
+		SQL:  CaseShadowLedgerSQL,
 	},
 	{
 		Name: "0056_case_addon_subscriptions",
@@ -2370,7 +2370,7 @@ ALTER TABLE case_watch_digest_outbox
 		// Inert C.A.S.E. core review/outbox schema; no production writer or sender.
 		// 0057-0062 are reserved in an independent older billing candidate.
 		Name: "0063_case_review_outbox_skeleton",
-		SQL: CASEReviewSkeletonSQL,
+		SQL:  CASEReviewSkeletonSQL,
 	},
 	{
 		Name: "0063_case_plan_changes",
@@ -2402,7 +2402,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_case_addon_current_server
 	{
 		// Inert C.A.S.E. build-action evidence; no detector or alert activation.
 		Name: "0064_case_build_evidence",
-		SQL: CASEBuildEvidenceSQL,
+		SQL:  CASEBuildEvidenceSQL,
 	},
 	{
 		Name: "0064_case_invoice_coverage",
@@ -2495,12 +2495,12 @@ UPDATE case_addon_subscriptions SET coverage_backfilled = FALSE
 	{
 		// Inert Core Eight Base Boost registration; no detector reader or notifier.
 		Name: "0070_case_base_registration",
-		SQL: CASEBaseRegistrationSQL,
+		SQL:  CASEBaseRegistrationSQL,
 	},
 	{
 		// Inert owner preferences; no detector reads or release flags.
 		Name: "0071_case_detector_settings",
-		SQL: CASEDetectorSettingsSQL,
+		SQL:  CASEDetectorSettingsSQL,
 	},
 	{
 		// Base Raid Alarm: owner switch (off by default) and alarm log. Additive only.
@@ -2528,7 +2528,35 @@ UPDATE case_addon_subscriptions SET coverage_backfilled = FALSE
 		Name: "0076_feature_flags",
 		SQL:  FeatureFlagsSQL,
 	},
+	{
+		// A PvP kill is the victim's death, but only "died" lines ever wrote a deaths row, so every
+		// deaths figure left PvP deaths out (docs/DEATH_COUNTS.md). From here on the kill insert
+		// writes the victim's PVP death row; this gives every existing kill one. 0077-0080 are
+		// taken by an open branch (lives, card shares, feature settings).
+		Name: "0081_pvp_death_rows",
+		SQL:  PvPDeathBackfillSQL,
+	},
 }
+
+// PvPDeathBackfillSQL gives the victim of every existing PvP kill a deaths row of type PVP, with
+// the kill's own time, season, server and ADM source. Idempotent: the row's fingerprint is derived
+// from the kill's, and (guild_id, event_fingerprint) is unique. A self-kill is not a PvP death. A
+// kill whose victim already has a death row within five seconds of it is skipped - nobody dies
+// twice in five seconds, so that row is the same death and must not be counted again.
+const PvPDeathBackfillSQL = `
+INSERT INTO deaths (guild_id, server_id, session_id, event_fingerprint, player_id, season_id, death_type, event_time, created_at,
+    source_file, source_offset, source_local_time)
+SELECT k.guild_id, k.server_id, k.session_id, 'pvp:' || k.event_fingerprint, k.victim_player_id, k.season_id, 'PVP', k.event_time, k.created_at,
+    k.source_file, k.source_offset, k.source_local_time
+FROM kills k
+WHERE k.victim_player_id IS NOT NULL AND k.killer_player_id IS DISTINCT FROM k.victim_player_id
+  AND NOT EXISTS (
+    SELECT 1 FROM deaths d
+    WHERE d.guild_id = k.guild_id AND d.player_id = k.victim_player_id
+      AND COALESCE(d.event_time, d.created_at) BETWEEN COALESCE(k.event_time, k.created_at) - INTERVAL '5 seconds'
+                                                   AND COALESCE(k.event_time, k.created_at) + INTERVAL '5 seconds')
+ON CONFLICT (guild_id, event_fingerprint) DO NOTHING;
+`
 
 // RankedLedgerFoundationSQL creates server-scoped seasonal RP storage.
 // No existing kills or economy rows are rewritten.

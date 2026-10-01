@@ -60,7 +60,8 @@ func TestTopByKDRuns(t *testing.T) {
 		}
 		return id
 	}
-	// sharpshooter: 4 kills, 1 death -> KD 4.00. bruiser: 2 kills, 2 deaths -> KD 1.00.
+	// A kill is the victim's death. sharpshooter: 4 kills, 1 other death + killed twice = 3 deaths
+	// -> KD 1.33. bruiser: 2 kills, 2 other deaths + killed four times = 6 deaths -> KD 0.33.
 	sharpshooter := newPlayer(fmt.Sprintf("Sharpshooter-%d", suffix))
 	bruiser := newPlayer(fmt.Sprintf("Bruiser-%d", suffix))
 
@@ -91,11 +92,11 @@ func TestTopByKDRuns(t *testing.T) {
 	if len(entries) != 2 {
 		t.Fatalf("expected 2 ranked players, got %d: %+v", len(entries), entries)
 	}
-	if entries[0].Value != "4.00" {
-		t.Fatalf("expected the 4.00 KD player ranked first, got %+v", entries[0])
+	if entries[0].Value != "1.33" {
+		t.Fatalf("expected the 1.33 KD player ranked first, got %+v", entries[0])
 	}
-	if entries[1].Value != "1.00" {
-		t.Fatalf("expected the 1.00 KD player ranked second, got %+v", entries[1])
+	if entries[1].Value != "0.33" {
+		t.Fatalf("expected the 0.33 KD player ranked second, got %+v", entries[1])
 	}
 }
 
@@ -185,7 +186,7 @@ func TestAutoLeaderboardV3Queries(t *testing.T) {
 	kill(bravo, delta, s2.ID, 20)
 	kill(bravo, delta, s1.ID, 30)
 	kill(charlie, delta, s2.ID, 300)
-	// Deaths: delta 4 (across seasons), charlie 1, bravo 1.
+	// Deaths: delta 4 non-PvP (across seasons) plus the seven kills above = 11, charlie 1, bravo 1.
 	death(delta, s1.ID)
 	death(delta, s1.ID)
 	death(delta, s2.ID)
@@ -230,12 +231,12 @@ func TestAutoLeaderboardV3Queries(t *testing.T) {
 	k, err := stats.TopByKills(ctx, guildID, 15)
 	check("kills", k, err, []row{{"Alpha", "3"}, {"Bravo", "3"}, {"Charlie", "1"}})
 	d, err := stats.TopByDeaths(ctx, guildID, 15)
-	check("deaths", d, err, []row{{"Delta", "4"}, {"Bravo", "1"}, {"Charlie", "1"}})
+	check("deaths", d, err, []row{{"Delta", "11"}, {"Bravo", "1"}, {"Charlie", "1"}})
 	st, err := stats.TopByBestStreak(ctx, guildID, 15)
 	check("streaks", st, err, []row{{"Alpha", "5"}, {"Charlie", "5"}, {"Bravo", "2"}})
 	l, err := stats.TopLongestKill(ctx, guildID, 15)
 	check("longest", l, err, []row{{"Alpha", "1104.2m"}, {"Bravo", "300.0m"}, {"Charlie", "300.0m"}})
 
 	top2, err := stats.TopByDeaths(ctx, guildID, 2)
-	check("deaths limit", top2, err, []row{{"Delta", "4"}, {"Bravo", "1"}})
+	check("deaths limit", top2, err, []row{{"Delta", "11"}, {"Bravo", "1"}})
 }
