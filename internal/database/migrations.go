@@ -2700,6 +2700,12 @@ CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events
 		Name: "0087_shop_order_confirmations",
 		SQL:  ShopOrderConfirmationsSQL,
 	},
+	{
+		// Base Black Box: per-base history of nearby players and dismantles, off by
+		// default and sellable. Additive; widens two service_id checks.
+		Name: "0088_base_black_box",
+		SQL:  BaseBlackBoxSQL,
+	},
 }
 
 // PvPDeathBackfillSQL gives the victim of every existing PvP kill a deaths row of type PVP, with

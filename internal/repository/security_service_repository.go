@@ -68,7 +68,7 @@ type SecurityPurchaseResult struct {
 }
 
 func validSecurityService(id string) bool {
-	return id == ServiceBaseRaidAlarm || id == ServicePerimeterWatch
+	return id == ServiceBaseRaidAlarm || id == ServicePerimeterWatch || id == ServiceBaseBlackBox
 }
 
 // SellableSecurityService reports whether a service can be offered for sale.
@@ -76,8 +76,11 @@ func SellableSecurityService(id string) bool { return validSecurityService(id) }
 
 // SecurityServiceLabel is the player-facing name of a sellable service.
 func SecurityServiceLabel(id string) string {
-	if id == ServicePerimeterWatch {
+	switch id {
+	case ServicePerimeterWatch:
 		return "Perimeter Watch"
+	case ServiceBaseBlackBox:
+		return "Base Black Box"
 	}
 	return "Base Raid Alarm"
 }

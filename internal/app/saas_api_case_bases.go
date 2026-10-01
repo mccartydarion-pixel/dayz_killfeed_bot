@@ -36,6 +36,9 @@ func (a *App) registerCaseBaseRoutes(base string){
  h("GET "+base+"/case/perimeter-watch",a.handleGetPerimeterWatch)
  h("PUT "+base+"/case/perimeter-watch",a.handleSetPerimeterWatch)
  h("PUT "+base+"/case/perimeter-watch/offer",a.handleSetPerimeterWatchOffer)
+ h("GET "+base+"/case/black-box",a.handleGetBaseBlackBox)
+ h("PUT "+base+"/case/black-box",a.handleSetBaseBlackBox)
+ h("PUT "+base+"/case/black-box/offer",a.handleSetBaseBlackBoxOffer)
 }
 
 func (a *App) caseBaseActor(w http.ResponseWriter,r *http.Request)(adminActor,*repository.CaseBaseRegistrationRepository,bool){

@@ -1728,6 +1728,8 @@ func (a *App) Run() error {
 				a.startCaseStaffAlerts(ctx)
 				// Paid Base Raid Alarm expiry DMs (one per ended purchase).
 				a.startSecurityExpiryWorker(ctx)
+				// Base Black Box history clean-up (each server's retention).
+				a.startBaseBlackBoxPruner(ctx)
 				if a.CaseDigestOutbox != nil && a.Config.CaseAccessEnabled {
 					go a.runCaseDigestWorker(ctx)
 				}
@@ -1955,6 +1957,20 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 		})
 	}
 
+	// Base Black Box: per-base history of nearby players and dismantles. Records
+	// nothing until the server owner turns it on; never messages or acts.
+	var blackBox *baseBlackBoxRecorder
+	if a.DB != nil && a.DB.Pool != nil {
+		blackBox = newBaseBlackBoxRecorder(repository.NewBaseBlackBoxRepository(a.DB.Pool), row.GuildID, row.ID)
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("component=servers", "msg", "base black box panic recovered", "server_id", row.ID, "panic", fmt.Sprint(r))
+				}
+			}()
+			blackBox.Run(workerCtx)
+		}()
+	}
 	if a.ChannelRoutes != nil && a.Discord != nil && a.Discord.Session() != nil {
 		// BUILD_FEED: ADM build/placement actions, present only when the server
 		// enables adminLogPlacement / adminLogBuildActions. Bounded queue + one
@@ -1968,7 +1984,7 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 			// their registered base. Off until the server owner turns it on.
 			raidAlarm := discord.NewBaseRaidAlarmPublisher(repository.NewBaseRaidAlarmRepository(a.DB.Pool), a.Discord.Session(), row.GuildID, row.ID)
 			raidAlarm.SetServerName(a.serverNameFunc())
-			buildPublisher = buildPublisherFanout{buildFeed, raidAlarm}
+			buildPublisher = buildPublisherFanout{buildFeed, raidAlarm, blackBox}
 			go func() {
 				defer func() {
 					if r := recover(); r != nil {
@@ -2169,7 +2185,7 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 		// registered base. Off until the server owner turns it on.
 		perimeter := discord.NewPerimeterWatchPublisher(repository.NewPerimeterWatchRepository(a.DB.Pool), a.Discord.Session(), row.GuildID, row.ID)
 		perimeter.SetServerName(a.serverNameFunc())
-		lq.SetLocationObserver(perimeter)
+		lq.SetLocationObserver(locationObserverFanout{perimeter, blackBox})
 		go func() {
 			defer func() {
 				if r := recover(); r != nil {
