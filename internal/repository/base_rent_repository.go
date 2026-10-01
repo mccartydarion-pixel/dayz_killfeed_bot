@@ -334,3 +334,50 @@ func (r *BaseRentRepository) MarkNotice(ctx context.Context, n RentNotice) error
 	_, err := r.pool.Exec(ctx, `INSERT INTO base_rent_notices(base_id,kind,due_at) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, n.BaseID, n.Kind, n.DueAt)
 	return err
 }
+
+// BaseRentSummary is a server's rent numbers for the owner's sales summary.
+type BaseRentSummary struct {
+	Enabled    bool  `json:"enabled"`
+	Payments   int   `json:"payments"`
+	Points     int64 `json:"points"`
+	Payers     int   `json:"payers"`
+	GiftedDays int   `json:"giftedDays"`
+	Rented     int   `json:"rented"`
+	PaidUp     int   `json:"paidUp"`
+	Overdue    int   `json:"overdue"`
+	Paused     int   `json:"paused"`
+}
+
+// Summary counts rent paid since the given time (Champion Points, payments,
+// paying players; gifted rent days separately) and where every rented base
+// stands right now.
+func (r *BaseRentRepository) Summary(ctx context.Context, s SecurityScope, since time.Time) (BaseRentSummary, error) {
+	var out BaseRentSummary
+	if !r.ready() || !s.valid() || since.IsZero() {
+		return out, ErrInvalidBaseRent
+	}
+	settings, err := r.GetSettings(ctx, s)
+	if err != nil {
+		return out, err
+	}
+	out.Enabled = settings.Enabled
+	if err := r.pool.QueryRow(ctx, `SELECT
+  COUNT(*) FILTER (WHERE ledger_entry_id IS NOT NULL),
+  COALESCE(SUM(price_points) FILTER (WHERE ledger_entry_id IS NOT NULL),0)::BIGINT,
+  COUNT(DISTINCT player_id) FILTER (WHERE ledger_entry_id IS NOT NULL),
+  COALESCE(SUM(period_days) FILTER (WHERE ledger_entry_id IS NULL),0)::INT
+ FROM base_rent_payments WHERE installation_id=$1 AND guild_id=$2 AND server_id=$3 AND created_at>=$4`,
+		s.InstallationID, s.GuildID, s.ServerID, since).Scan(&out.Payments, &out.Points, &out.Payers, &out.GiftedDays); err != nil {
+		return out, err
+	}
+	if err := r.pool.QueryRow(ctx, `SELECT COUNT(*),
+  COUNT(*) FILTER (WHERE due>NOW()),
+  COUNT(*) FILTER (WHERE due<=NOW() AND due+make_interval(days=>$4)>=NOW()),
+  COUNT(*) FILTER (WHERE due+make_interval(days=>$4)<NOW())
+ FROM (SELECT base_rent_due_at(b.id) AS due FROM case_registered_bases b
+  WHERE b.installation_id=$1 AND b.guild_id=$2 AND b.server_id=$3) t WHERE due IS NOT NULL`,
+		s.InstallationID, s.GuildID, s.ServerID, BaseRentGraceDays).Scan(&out.Rented, &out.PaidUp, &out.Overdue, &out.Paused); err != nil {
+		return out, err
+	}
+	return out, nil
+}

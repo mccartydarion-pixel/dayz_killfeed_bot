@@ -12,7 +12,8 @@ import (
 
 // handleGetSecuritySales is GET .../admin/case/security-sales?days=7|30|90:
 // the Security Store's sales, Champion Points earned and paying players per
-// base service, with whether each is on sale. Server owner only. Read-only.
+// base service, with whether each is on sale, plus base rent collected and
+// where rented bases stand. Server owner only. Read-only.
 func (a *App) handleGetSecuritySales(w http.ResponseWriter, r *http.Request) {
 	ac, _, ok := a.caseBaseActor(w, r)
 	if !ok {
@@ -66,6 +67,12 @@ func (a *App) handleGetSecuritySales(w http.ResponseWriter, r *http.Request) {
 		}
 		views = append(views, v)
 	}
+	rent, err := repository.NewBaseRentRepository(a.DB.Pool).Summary(ctx, scope, sum.Since)
+	if err != nil {
+		slog.Warn("component=base_rent", "event", "rent_summary_failed", "err", err.Error())
+		writeSaaSError(w, codeInternalError, "could not load Security Store sales")
+		return
+	}
 	writeSaaSJSON(w, http.StatusOK, map[string]any{"days": days, "since": sum.Since, "services": views,
-		"totalSales": sum.TotalSales, "totalPoints": sum.TotalPoints, "playersWithAny": sum.PlayersWithAny, "recent": sum.Recent})
+		"totalSales": sum.TotalSales, "totalPoints": sum.TotalPoints, "playersWithAny": sum.PlayersWithAny, "recent": sum.Recent, "rent": rent})
 }

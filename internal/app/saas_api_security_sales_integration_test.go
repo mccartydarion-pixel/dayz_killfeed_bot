@@ -34,9 +34,14 @@ func TestSecuritySalesOwnerOnly(t *testing.T) {
 		} `json:"services"`
 		TotalSales int   `json:"totalSales"`
 		Recent     []any `json:"recent"`
+		Rent       *struct {
+			Enabled bool  `json:"enabled"`
+			Points  int64 `json:"points"`
+			Rented  int   `json:"rented"`
+		} `json:"rent"`
 	}
 	got := decodeBody[view](t, w.call(w.a.handleGetSecuritySales, http.MethodGet, path+"?days=7", w.f.OwnerDiscordID, nil, nil))
-	if got.Days != 7 || len(got.Services) != 5 || got.TotalSales != 0 || got.Recent == nil {
+	if got.Days != 7 || len(got.Services) != 5 || got.TotalSales != 0 || got.Recent == nil || got.Rent == nil || got.Rent.Enabled || got.Rent.Points != 0 {
 		t.Fatalf("summary: %+v", got)
 	}
 	bundle := got.Services[4]
