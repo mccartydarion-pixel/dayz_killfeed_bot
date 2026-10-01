@@ -53,3 +53,23 @@ func NewBaseRequestMessage(playerName, baseName, serverName string, radius float
 	return &discordgo.MessageSend{Embeds: []*discordgo.MessageEmbed{embed},
 		AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}, Users: []string{}, Roles: []string{}}}
 }
+
+// SecurityGiftMessage tells a player the server owner gave them paid time.
+func SecurityGiftMessage(serviceLabel, serverName string, days int, endsAt time.Time, note, storeURL string) *discordgo.MessageSend {
+	embed := &discordgo.MessageEmbed{
+		Author:      &discordgo.MessageEmbedAuthor{Name: "CHAMPIONS® SECURITY STORE"},
+		Title:       fmt.Sprintf("🎁 You've been given %d days of %s", days, caseSafeText(serviceLabel, 40)),
+		Color:       presentation.SuccessGreen,
+		Description: "A gift from the owner of " + caseFallback(caseSafeText(serverName, 100), "your server") + ". Nothing was charged.",
+		Fields:      []*discordgo.MessageEmbedField{{Name: "Active until", Value: fmt.Sprintf("<t:%d:f>", endsAt.Unix()), Inline: true}},
+	}
+	if n := caseSafeText(note, 200); n != "" {
+		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Note", Value: n})
+	}
+	if storeURL != "" {
+		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Security Store", Value: storeURL})
+	}
+	presentation.StampEmbed(embed, time.Now())
+	return &discordgo.MessageSend{Embeds: []*discordgo.MessageEmbed{embed},
+		AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}, Users: []string{}, Roles: []string{}}}
+}

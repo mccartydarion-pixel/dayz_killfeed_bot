@@ -3,6 +3,7 @@ package discord
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestBaseRequestDecisionMessage(t *testing.T) {
@@ -40,5 +41,16 @@ func TestNewBaseRequestNotices(t *testing.T) {
 		if f.Name == "Severity" {
 			t.Fatal("a staff notice must not show a severity")
 		}
+	}
+}
+
+func TestSecurityGiftMessage(t *testing.T) {
+	m := SecurityGiftMessage("Sentinel Pro", "Champions", 7, time.Unix(1_800_000_000, 0), "For the event @here", "https://site.example/store")
+	e := m.Embeds[0]
+	if !strings.Contains(e.Title, "7 days of Sentinel Pro") || len(e.Fields) != 3 || strings.Contains(e.Fields[1].Value, "@here") || len(m.AllowedMentions.Parse) != 0 {
+		t.Fatalf("gift DM: %+v %+v", e, e.Fields)
+	}
+	if bare := SecurityGiftMessage("Base Raid Alarm", "", 1, time.Now(), "", "").Embeds[0]; len(bare.Fields) != 1 {
+		t.Fatalf("bare gift DM: %+v", bare.Fields)
 	}
 }

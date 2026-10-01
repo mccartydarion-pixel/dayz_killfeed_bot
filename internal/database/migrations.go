@@ -2733,6 +2733,11 @@ CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events
 		Name: "0093_security_store_panel",
 		SQL:  SecurityStorePanelSQL,
 	},
+	{
+		// Gifted paid time: price 0, no ledger entry, the giving owner recorded.
+		Name: "0094_security_gifts",
+		SQL:  SecurityGiftSQL,
+	},
 }
 
 // PvPDeathBackfillSQL gives the victim of every existing PvP kill a deaths row of type PVP, with
