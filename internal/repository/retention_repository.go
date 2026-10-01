@@ -261,3 +261,33 @@ ORDER BY 5 DESC, 2 LIMIT $4`, installationID, from, to, clampLimit(limit, 20, 10
 	}
 	return out, rows.Err()
 }
+
+// HourlyKills counts PvP kills on a server by weekday and hour in tz over the
+// last `days` days (event time, falling back to the persisted time).
+type HourlyKills struct {
+	Weekday, Hour, Kills int
+}
+
+func (r *RetentionRepository) KillsByHour(ctx context.Context, guildID, serverID int64, now time.Time, days int, tz string) ([]HourlyKills, error) {
+	rows, err := r.pool.Query(ctx, `
+SELECT EXTRACT(DOW FROM t AT TIME ZONE $5)::int, EXTRACT(HOUR FROM t AT TIME ZONE $5)::int, COUNT(*)::int
+FROM (SELECT COALESCE(event_time, created_at) AS t FROM kills
+      WHERE guild_id=$1 AND server_id=$2 AND killer_player_id IS NOT NULL AND victim_player_id IS NOT NULL
+        AND killer_player_id<>victim_player_id
+        AND COALESCE(event_time, created_at) > $3::timestamptz - make_interval(days => $4::int)
+        AND COALESCE(event_time, created_at) <= $3::timestamptz) k
+GROUP BY 1, 2`, guildID, serverID, now.UTC(), days, tz)
+	if err != nil {
+		return nil, mapTimeZoneError(err)
+	}
+	defer rows.Close()
+	out := []HourlyKills{}
+	for rows.Next() {
+		var h HourlyKills
+		if err := rows.Scan(&h.Weekday, &h.Hour, &h.Kills); err != nil {
+			return nil, mapTimeZoneError(err)
+		}
+		out = append(out, h)
+	}
+	return out, mapTimeZoneError(rows.Err())
+}

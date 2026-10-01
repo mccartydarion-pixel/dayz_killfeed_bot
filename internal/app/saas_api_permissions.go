@@ -293,6 +293,7 @@ func (a *App) registerClientAdminRoutes() {
 	a.registerFeatureSettingsRoutes(base)
 	a.registerHotZoneRoutes(base)
 	a.registerRetentionRoutes(base)
+	a.registerPlannerRoutes(base)
 	a.registerFightRoutes(base)
 }
 
