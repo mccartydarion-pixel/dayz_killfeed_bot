@@ -52,6 +52,7 @@ type CaseVerdictSummary struct {
 	FalseAlarms   int        `json:"falseAlarms"`
 	Suspicious    int        `json:"suspicious"`
 	FirstReviewAt *time.Time `json:"firstReviewAt,omitempty"`
+	DaysReviewing int        `json:"daysReviewing"`
 	LastReviewAt  *time.Time `json:"lastReviewAt,omitempty"`
 }
 
@@ -88,10 +89,11 @@ func (r *CaseShadowVerdictRepository) Summary(ctx context.Context, s CaseVerdict
 		limit = 200
 	}
 	if err := r.pool.QueryRow(ctx, `SELECT COUNT(*),COUNT(*) FILTER (WHERE verdict='FALSE_ALARM'),
-  COUNT(*) FILTER (WHERE verdict='SUSPICIOUS'),MIN(created_at),MAX(updated_at)
+  COUNT(*) FILTER (WHERE verdict='SUSPICIOUS'),MIN(created_at),MAX(updated_at),
+  COALESCE(EXTRACT(DAY FROM NOW()-MIN(created_at))::INT,0)
  FROM case_shadow_verdicts WHERE installation_id=$1 AND guild_id=$2 AND server_id=$3 AND detector_id=$4`,
 		s.InstallationID, s.GuildID, s.ServerID, detectorID).
-		Scan(&sum.Reviewed, &sum.FalseAlarms, &sum.Suspicious, &sum.FirstReviewAt, &sum.LastReviewAt); err != nil {
+		Scan(&sum.Reviewed, &sum.FalseAlarms, &sum.Suspicious, &sum.FirstReviewAt, &sum.LastReviewAt, &sum.DaysReviewing); err != nil {
 		return sum, nil, err
 	}
 	rows, err := r.pool.Query(ctx, `SELECT incident_key,player_id,verdict,note,updated_at FROM case_shadow_verdicts

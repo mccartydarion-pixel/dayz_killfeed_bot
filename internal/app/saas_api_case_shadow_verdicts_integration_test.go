@@ -64,7 +64,7 @@ func TestCaseShadowVerdictsReviewScore(t *testing.T) {
 	}
 	code, got := read(admin, "CASE-LOGIN-001")
 	if code != http.StatusOK || got.Summary.Reviewed != 2 || got.Summary.Suspicious != 2 || got.Summary.FalseAlarms != 0 ||
-		len(got.Items) != 2 || got.Items[0].Note != "console crash" || got.Summary.FirstReviewAt == nil {
+		len(got.Items) != 2 || got.Items[0].Note != "console crash" || got.Summary.FirstReviewAt == nil || got.Summary.DaysReviewing != 0 {
 		t.Fatalf("score: %d %+v", code, got)
 	}
 	if code, _ := read(admin, "CASE-BASE-001"); code != http.StatusForbidden {
