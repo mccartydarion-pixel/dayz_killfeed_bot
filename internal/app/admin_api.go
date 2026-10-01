@@ -655,4 +655,5 @@ func (a *App) registerAdminAPI() {
 	a.registerOpsAPI()
 	a.registerFlagsAPI()
 	a.registerUsersAPI()
+	a.registerOwnerOpsAPI()
 }

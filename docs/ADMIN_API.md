@@ -5,7 +5,8 @@ Owner Hub website (`/admin`: Overview, Customers, Subscriptions, Installations,
 Health) can show real data. Phase 1 was read-only; Phase 2 adds the **Owner
 controls** below - the only `POST` routes under `/api/admin`, each requiring a
 reason and written to `platform_audit_log` before the response is sent.
-Impersonation and credential access remain out of scope.
+Credential access remains out of scope. The operations pages, the fleet monitor, broadcasts and
+the read-only "view as customer" session are documented in [`OWNER_OPS.md`](OWNER_OPS.md).
 
 Machine-readable contract: [`admin-openapi.yaml`](admin-openapi.yaml). The customer
 API (`/api/saas/...`, [`SAAS_HTTP_API.md`](SAAS_HTTP_API.md)) is unchanged and stays

@@ -2779,6 +2779,12 @@ CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events
 		Name: "0102_case_evidence_optins",
 		SQL:  CaseEvidenceOptinSQL,
 	},
+	{
+		// Owner Hub operations: automation switches, fleet incidents, broadcasts and the
+		// daily briefing guard (docs/OWNER_OPS.md). Additive only.
+		Name: "0103_owner_ops",
+		SQL:  OwnerOpsSQL,
+	},
 }
 
 // PvPDeathBackfillSQL gives the victim of every existing PvP kill a deaths row of type PVP, with
