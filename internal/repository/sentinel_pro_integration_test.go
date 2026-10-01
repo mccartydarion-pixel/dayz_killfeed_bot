@@ -112,14 +112,31 @@ func TestSentinelProCoversEveryBaseService(t *testing.T) {
  FROM security_service_purchases WHERE id=$1`, bundle.Purchase.ID); err != nil {
 		t.Fatal(err)
 	}
-	if due, err := sales.DueExpiries(ctx, 50); err != nil || len(due) != 0 {
-		t.Fatalf("expiry DM while the bundle still covers it: %+v %v", due, err)
+	mine := func() []SecurityExpiry {
+		t.Helper()
+		due, err := sales.DueExpiries(ctx, 200)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []SecurityExpiry
+		for _, e := range due {
+			if e.InstallationID == fx.InstallationID {
+				out = append(out, e)
+			}
+		}
+		return out
+	}
+	if due := mine(); len(due) != 0 {
+		t.Fatalf("expiry DM while the bundle still covers it: %+v", due)
 	}
 	if _, err := pool.Exec(ctx, `UPDATE security_service_purchases SET starts_at=NOW()-INTERVAL '40 days',ends_at=NOW()-INTERVAL '10 days' WHERE id=$1`, bundle.Purchase.ID); err != nil {
 		t.Fatal(err)
 	}
-	due, err := sales.DueExpiries(ctx, 50)
-	if err != nil || len(due) != 1 || due[0].ServiceID != ServiceSentinelPro {
-		t.Fatalf("bundle expiry: %+v %v", due, err)
+	due := mine()
+	if len(due) != 1 || due[0].ServiceID != ServiceSentinelPro {
+		t.Fatalf("bundle expiry: %+v", due)
+	}
+	if err := sales.MarkExpiryNotified(ctx, due[0].PurchaseID); err != nil {
+		t.Fatal(err)
 	}
 }
