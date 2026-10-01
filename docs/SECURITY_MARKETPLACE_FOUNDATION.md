@@ -7,3 +7,7 @@ The existing SaaS service authentication and organization/installation scope pro
 The current Champion Points economy already uses one guild/player balance in `player_points` with `point_transactions` as its ledger. The existing Champion Shop debits through `applyLedger` inside its purchase transaction and scopes purchases to organization and installation. Marketplace checkout must reuse that ledger and the verified player link; it cannot create a wallet, invoke an independent debit, or treat an owner-defined price as evidence of product eligibility.
 
 Next safe steps: define a protected, installation-scoped capability read; add an owner configuration and purchase schema in isolated development; then implement a single atomic, idempotent purchase transaction with entitlement creation and tests for replay, insufficient funds and cross-installation access. Keep products unavailable until each capability and private notification path is verified. The Client Hub Marketplace Administration and Player Hub Security Store remain separate from the C.A.S.E. dashboard.
+
+## Update: Base Raid Alarm on sale
+
+The Base Raid Alarm is the first service that can be sold. A server owner switches the alarm on and offers it for Champion Points; see `docs/BASE_RAID_ALARM.md` ("Selling it to players"). Every other catalog entry is still unavailable.

@@ -2674,6 +2674,12 @@ CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events
 		Name: "0082_case_staff_alerts",
 		SQL:  CASEStaffAlertSQL,
 	},
+	{
+		// Security Marketplace: owner offer (off by default) and player purchases paid
+		// from the existing Champion Points ledger. Additive only.
+		Name: "0083_security_service_sales",
+		SQL:  SecurityServiceSQL,
+	},
 }
 
 // PvPDeathBackfillSQL gives the victim of every existing PvP kill a deaths row of type PVP, with

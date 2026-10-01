@@ -42,3 +42,26 @@ Every alarm is logged in `base_raid_alerts` with how it was delivered:
 - `internal/repository/base_raid_alarm_repository.go`: the match rules, cooldown and log
 - `internal/discord/base_raid_alarm.go`: the build-line consumer and DM
 - `internal/app/saas_api_base_raid_alarm.go`: the owner switch
+
+## Selling it to players (Security Marketplace)
+
+The owner can sell the alarm for **Champion Points** (the existing wallet, no new currency):
+
+- **Owner:** `PUT …/admin/case/raid-alarm/offer` `{enabled, pricePoints (1–1,000,000,000), durationDays (1–90)}`.
+  Owner only, audited `BASE_RAID_ALARM_OFFER_SAVED`. `GET …/admin/case/raid-alarm` also returns
+  `offer`, the 10 latest `sales` and `activeSubscribers`.
+- **Player:** `POST /api/saas/organizations/{org}/installations/{inst}/security-marketplace/purchases`
+  `{serviceId: "BASE_RAID_ALARM", idempotencyKey}`. Requires a verified DayZ link, the alarm switch
+  **on** and the offer **on**. One transaction does a `SECURITY_PURCHASE` debit on the point ledger and
+  records the paid time. Replaying the same key returns the original purchase and charges nothing.
+  Not enough points means nothing is charged. Buying again while active adds the days on the end.
+- **Catalog:** `GET …/security-marketplace/catalog` shows the alarm as `AVAILABLE` with `pricePoints`,
+  `durationDays` and the player's `activeUntil` while it is on sale. Every other service stays unavailable.
+
+**Who gets alarms:** while the offer is **on**, only base owners with paid time. With the offer **off**,
+the alarm is free for every registered base again (paid players keep it too). Turning the alarm switch
+**off** stops it for everyone, including players who paid, so the dashboard warns about that.
+
+**When paid time ends** it just stops, and the player gets one DM ("Your Base Raid Alarm … has ended").
+It never renews or charges by itself. Migration `0083_security_service_sales` adds
+`security_service_offers` and `security_service_purchases` (additive).
