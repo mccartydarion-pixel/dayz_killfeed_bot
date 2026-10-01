@@ -27,7 +27,7 @@ const (
 	// ServiceSentinelPro is the bundle: paid time for it counts as paid time
 	// for every base service it covers.
 	ServiceSentinelPro = "SENTINEL_PRO"
-	TxSecurityPurchase    = "SECURITY_PURCHASE"
+	TxSecurityPurchase = "SECURITY_PURCHASE"
 
 	SecurityMaxPricePoints  = 1_000_000_000
 	SecurityMaxDurationDays = 90
