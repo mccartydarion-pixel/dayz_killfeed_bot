@@ -2774,6 +2774,12 @@ CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events
 		SQL:  ShopAutoDeliverySQL,
 	},
 	{
+		// A server owner's own C.A.S.E. evidence switch, counted only when the
+		// platform allows self-serve. Additive.
+		Name: "0102_case_evidence_optins",
+		SQL:  CaseEvidenceOptinSQL,
+	},
+	{
 		// Owner Hub operations: automation switches, fleet incidents, broadcasts and the
 		// daily briefing guard (docs/OWNER_OPS.md). Additive only.
 		Name: "0103_owner_ops",

@@ -819,6 +819,9 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 				slog.Warn("component=featureflags", "msg", "initial load failed; env defaults apply until the next refresh", "err", err.Error())
 			}
 			flagCancel()
+			optinCtx, optinCancel := context.WithTimeout(ctx, 5*time.Second)
+			loadCaseEvidenceOptins(optinCtx, repository.NewCaseEvidenceOptinRepository(db.Pool))
+			optinCancel()
 			app.ClientAdmin = repository.NewClientAdminRepository(db.Pool)
 			app.Locations = repository.NewLocationRepository(db.Pool)
 			app.Lives = repository.NewLifeRepository(db.Pool)
@@ -2210,6 +2213,7 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 	if caseEvidenceEnabledForServer(row.ID) && a.DB != nil && a.DB.Pool != nil && a.Checkpoints != nil {
 		engine.SetEvidenceStore(repository.NewCaseEvidenceRepository(a.DB.Pool))
 		engine.SetBuildEvidenceEnabled(caseBuildEvidenceEnabledForServer(row.ID))
+		caseCollectorRunning.Store(row.ID, true)
 		slog.Info("component=case", "event", "evidence_collector_enabled", "server_id", row.ID)
 	}
 
