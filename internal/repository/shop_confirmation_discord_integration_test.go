@@ -194,7 +194,7 @@ func TestTicketChannelLease(t *testing.T) {
 		job.Ticket.OpenedByDiscordID != "buyer-discord" || len(job.Items) != 1 {
 		t.Fatalf("job = %+v", job)
 	}
-	if again := w.claimTicket(ticket.ID, now.Add(time.Minute), 0); again != nil {
+	if again := w.claimTicket(ticket.ID, now.Add(time.Minute), ticket.ID); again != nil {
 		t.Fatal("a leased ticket was claimed a second time")
 	}
 	if got := w.claimTicket(otherTicket.ID, now.Add(time.Minute), 0); got == nil {
