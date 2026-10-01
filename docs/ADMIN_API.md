@@ -365,6 +365,20 @@ The read model exposes the same state: `subscription.externallyBilled`,
 `GET /live-sync` (per-server watcher freshness, ADM session, boot authority, stored stats and
 latency) now goes through the same secret guard as every other admin response.
 
+## Feature flags
+
+Per-installation overrides of the environment rollout switches (internal/featureflags). A
+missing override means the environment default applies, exactly as before; an override
+wins. Consumers: custom embed rendering (`CHAMPION_CUSTOM_EMBEDS_ENABLED`), the shop canary
+gate (`CHAMPION_SHOP_CANARY_*`), C.A.S.E. evidence and build evidence (`CASE_*`; read when a
+worker starts, so a change takes effect on the installation's next worker restart).
+
+| Route | Body | Effect |
+| --- | --- | --- |
+| `GET /flags` | - | The catalog: key, label, description, env var, restartRequired, the env value on this deployment. |
+| `GET /installations/{id}/flags` | - | Each flag's `default` (env answer for this installation), `override` (stored decision or null), `effective`, reason, updatedBy/At. |
+| `PUT /installations/{id}/flags/{flag}` | `reason`, `enabled: true\|false` | Sets the override (audited `installation.flag_set`); without `enabled` clears it (`installation.flag_cleared`). Unknown flag: `404`. |
+
 ## Fields that are never returned
 
 By construction (every query names its columns; the response types have no such

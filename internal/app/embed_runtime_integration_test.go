@@ -62,7 +62,12 @@ func newRuntimeWorld(t *testing.T, ttl time.Duration) *runtimeWorld {
 	t.Helper()
 	ew := newEconomyWorld(t, "eco-A", "eco-B")
 	repo := repository.NewEmbedTemplateRepository(ew.a.DB.Pool)
-	r := embedrender.New(embedrender.Options{Source: repo, Enabled: true, TTL: ttl})
+	// The deployment switch (CHAMPION_CUSTOM_EMBEDS_ENABLED) is on for this world; the renderer
+	// itself is always wired and asks the app per installation.
+	if ew.a.Config != nil {
+		ew.a.Config.CustomEmbedsEnabled = true
+	}
+	r := embedrender.New(embedrender.Options{Source: repo, Enabled: true, TTL: ttl, Gate: ew.a.customEmbedsFor})
 	ew.a.EmbedTemplates = embedtemplates.NewService(repo)
 	ew.a.EmbedActivations = repo
 	ew.a.EmbedRenderer = r

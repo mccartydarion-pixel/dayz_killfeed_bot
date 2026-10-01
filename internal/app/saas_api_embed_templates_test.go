@@ -34,7 +34,7 @@ func TestEmbedTemplateRoutesMatchTheChannelRouteBlueprint(t *testing.T) {
 	}
 	for _, route := range []string{"CASE_STATUS", "CASE_EVIDENCE", "CASE_ALERTS"} {
 		if !embedtemplates.ValidRoute(route) {t.Fatalf("%s missing template contract", route)}
-		if (&App{}).runtimeRenderingFor(route) != "NOT_ENABLED" {
+		if (&App{}).runtimeRenderingFor(0, route) != "NOT_ENABLED" {
 			t.Fatalf("%s has no authorized live publisher", route)
 		}
 	}
@@ -53,16 +53,16 @@ func TestRuntimeRenderingStatusReflectsFlagAndRouteSupport(t *testing.T) {
 	on := &App{EmbedRenderer: embedrender.New(embedrender.Options{Source: nopSource{}, Enabled: true})}
 	disabled := &App{EmbedRenderer: embedrender.New(embedrender.Options{Source: nopSource{}, Enabled: false})}
 	for _, route := range embedrender.SupportedRoutes() {
-		if on.runtimeRenderingFor(route) != "ENABLED" {
+		if on.runtimeRenderingFor(0, route) != "ENABLED" {
 			t.Errorf("%s must report ENABLED when the flag is on", route)
 		}
-		if off.runtimeRenderingFor(route) != "NOT_ENABLED" || disabled.runtimeRenderingFor(route) != "NOT_ENABLED" {
+		if off.runtimeRenderingFor(0, route) != "NOT_ENABLED" || disabled.runtimeRenderingFor(0, route) != "NOT_ENABLED" {
 			t.Errorf("%s must report NOT_ENABLED when the flag is off", route)
 		}
 	}
 	// Persistent boards, diagnostic monitors and routes without a publisher stay NOT_ENABLED even with the flag on.
 	for _, route := range []string{"BOUNTY", "ADMIN_LOGS", "ADMIN_ALERTS", "BUILD_FEED", "SHOP", "HEATMAPS", "LINK_GAMERTAG", "STATS_LEADERBOARDS", "AUTO_LEADERBOARD"} {
-		if on.runtimeRenderingFor(route) != "NOT_ENABLED" {
+		if on.runtimeRenderingFor(0, route) != "NOT_ENABLED" {
 			t.Errorf("%s has no runtime template rendering and must say so", route)
 		}
 	}

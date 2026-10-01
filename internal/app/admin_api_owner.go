@@ -40,6 +40,8 @@ type ownerRequest struct {
 	Plan   string  `json:"plan,omitempty"`  // grant plan key
 	UserID int64   `json:"userId,omitempty"`
 	Note   *string `json:"note,omitempty"`
+	// Enabled is the feature-flag decision (nil clears the override).
+	Enabled *bool `json:"enabled,omitempty"`
 }
 
 func (a *App) readOwnerRequest(w http.ResponseWriter, r *http.Request) (ownerRequest, bool) {

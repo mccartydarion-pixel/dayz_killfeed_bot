@@ -650,4 +650,5 @@ func (a *App) registerAdminAPI() {
 	a.registerAdminBillingRoutes()
 	a.registerOwnerAPI()
 	a.registerOpsAPI()
+	a.registerFlagsAPI()
 }

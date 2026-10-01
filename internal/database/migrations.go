@@ -2523,6 +2523,11 @@ UPDATE case_addon_subscriptions SET coverage_backfilled = FALSE
 		Name: "0075_owner_controls",
 		SQL:  OwnerControlsSQL,
 	},
+	{
+		// Owner Hub feature flags: per-installation overrides of the env rollout switches.
+		Name: "0076_feature_flags",
+		SQL:  FeatureFlagsSQL,
+	},
 }
 
 // RankedLedgerFoundationSQL creates server-scoped seasonal RP storage.

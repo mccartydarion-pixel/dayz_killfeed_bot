@@ -411,7 +411,7 @@ func (a *App) handlePreviewEmbedTemplate(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	resp, _, derr := renderEmbedDraft(routeKey, req, a.runtimeRenderingFor(routeKey), embedDesignerNow())
+	resp, _, derr := renderEmbedDraft(routeKey, req, a.runtimeRenderingFor(instID, routeKey), embedDesignerNow())
 	if derr != nil {
 		writeDesignerError(w, derr)
 		return
@@ -463,7 +463,7 @@ func (a *App) handleTestEmbedTemplate(w http.ResponseWriter, r *http.Request) {
 		writeSaaSError(w, errCode, errMsg)
 		return
 	}
-	resp, derr := sendEmbedTest(ctx, a.SaaSChannelRoutes, a.saasDiscordVerifier, orgID, instID, guildID, routeKey, req, a.runtimeRenderingFor(routeKey), embedDesignerNow())
+	resp, derr := sendEmbedTest(ctx, a.SaaSChannelRoutes, a.saasDiscordVerifier, orgID, instID, guildID, routeKey, req, a.runtimeRenderingFor(instID, routeKey), embedDesignerNow())
 	if derr != nil {
 		writeDesignerError(w, derr)
 		return
