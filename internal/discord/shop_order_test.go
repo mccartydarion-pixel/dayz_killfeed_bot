@@ -311,7 +311,7 @@ func assertTicketPrivacy(t *testing.T, overwrites []*discordgo.PermissionOverwri
 
 func ticketJob() repository.ShopTicketChannelJob {
 	return repository.ShopTicketChannelJob{DiscordGuildID: "guild", GuildRowID: 5, Items: []repository.ShopNoticeItem{{Name: "BandageDressing", Quantity: 1}},
-		Ticket: repository.ShopOrderTicket{ID: 31, PurchaseID: 7, OpenedByDiscordID: "buyer", OpenedVia: repository.ConfirmationViaDiscord,
+		Ticket: repository.ShopOrderTicket{ID: 31, PurchaseID: 7, OpenedByDiscordID: "555000111", OpenedVia: repository.ConfirmationViaDiscord,
 			Reason: "it never arrived @everyone <@&999>", Status: repository.TicketOpen, OpenedAt: time.Unix(1791028800, 0)}}
 }
 
@@ -326,14 +326,14 @@ func TestCreateShopTicketChannelIsPrivateAndPingsOnlyTheParticipants(t *testing.
 	if made.Name != "ticket-31-order-7" || made.Type != discordgo.ChannelTypeGuildText || made.ParentID != "cat" {
 		t.Fatalf("channel = %+v", made)
 	}
-	assertTicketPrivacy(t, made.PermissionOverwrites, setup, "buyer")
+	assertTicketPrivacy(t, made.PermissionOverwrites, setup, "555000111")
 
 	msg := g.sent[0]
-	if g.sentTo[0] != channelID || msg.Content != "<@buyer> <@&staff-role> <@&owner-role>" {
+	if g.sentTo[0] != channelID || msg.Content != "<@555000111> <@&staff-role> <@&owner-role>" {
 		t.Fatalf("opening message to %q: %q", g.sentTo[0], msg.Content)
 	}
 	m := msg.AllowedMentions
-	if m == nil || len(m.Parse) != 0 || strings.Join(m.Users, ",") != "buyer" || strings.Join(m.Roles, ",") != "staff-role,owner-role" {
+	if m == nil || len(m.Parse) != 0 || strings.Join(m.Users, ",") != "555000111" || strings.Join(m.Roles, ",") != "staff-role,owner-role" {
 		t.Fatalf("allowed mentions = %+v; the buyer's text must not be able to ping anyone", m)
 	}
 	embed := msg.Embeds[0]
@@ -370,5 +370,24 @@ func TestShopTicketResolvedNotice(t *testing.T) {
 	}
 	if embed := BuildShopTicketResolved(repository.ShopOrderTicket{ID: 31}); len(embed.Fields) != 0 {
 		t.Fatalf("a ticket without a note has fields: %+v", embed.Fields)
+	}
+}
+
+func TestSystemTicketWithoutADiscordBuyer(t *testing.T) {
+	g := &fakeTicketGuild{}
+	setup := repository.ShopTicketDiscordSetup{OwnerRoleID: "owner-role", StaffRoleID: "staff-role", CategoryID: "cat"}
+	job := ticketJob()
+	job.Ticket.OpenedVia, job.Ticket.OpenedByDiscordID = repository.TicketViaSystem, "system"
+	if _, posted, err := CreateShopTicketChannel(g, job, setup, ""); err != nil || !posted {
+		t.Fatalf("posted=%v err=%v", posted, err)
+	}
+	// The placeholder opener is never sent to Discord as a member or a mention.
+	assertTicketPrivacy(t, g.created[0].PermissionOverwrites, setup, "")
+	msg := g.sent[0]
+	if strings.Contains(msg.Content, "system") || len(msg.AllowedMentions.Users) != 0 || msg.Content != "<@&staff-role> <@&owner-role>" {
+		t.Fatalf("content=%q mentions=%+v", msg.Content, msg.AllowedMentions)
+	}
+	if !strings.Contains(msg.Embeds[0].Description, "Automatic delivery") || msg.Embeds[0].Fields[2].Value != "automatic delivery" {
+		t.Fatalf("embed = %+v", msg.Embeds[0])
 	}
 }

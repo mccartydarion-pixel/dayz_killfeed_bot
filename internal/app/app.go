@@ -91,6 +91,10 @@ type App struct {
 	// shopConfirmationRepo and shopOrderDesk are the Discord side of that confirmation (the
 	// delivered-order DM and the ticket channels); the desk exists once Discord is connected.
 	shopConfirmationRepo *repository.ShopConfirmationRepository
+	// ShopAuto and shopAttempts back the automatic delivery routes (the owner's switch, the buyer's
+	// drop position, the staff review); the worker itself starts only behind config.ShopAutoDelivery.
+	ShopAuto     *repository.ShopAutoDeliveryRepository
+	shopAttempts *repository.ShopAttemptRepository
 	shopOrderDesk        atomic.Pointer[shopOrderDesk]
 	// ShopCanary is the Phase 2C.4 canary operator service (docs/SHOP_DELIVERY_PHASE2C4.md); its
 	// mutations are locked unless ShopCanaryGate is opened by CHAMPION_SHOP_CANARY_EXECUTION.
@@ -722,6 +726,8 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.EconomyAccounts = economy.NewAccounts(app.EconomyService, repository.NewEconomyRepository(db.Pool))
 			app.Shop = shop.NewService(repository.NewShopRepository(db.Pool), app.EconomyAccounts, app.EconomyService)
 			app.shopConfirmationRepo = repository.NewShopConfirmationRepository(db.Pool)
+			app.ShopAuto = repository.NewShopAutoDeliveryRepository(db.Pool)
+			app.shopAttempts = repository.NewShopAttemptRepository(db.Pool)
 			app.ShopConfirmations = shop.NewConfirmations(app.shopConfirmationRepo, app.EconomyAccounts)
 			app.Points = repository.NewPointsRepository(db.Pool)
 			app.Seasons = repository.NewSeasonRepository(db.Pool)
@@ -1144,6 +1150,8 @@ func (a *App) Run() error {
 	if a.ShopConfirmations != nil {
 		go a.runShopConfirmationSweeper(ctx)
 	}
+	// The Shop automatic delivery worker: off unless its own lock is opened (report or enabled).
+	a.startShopDeliveryWorker(ctx)
 	// Faction Hub achievements: kills queue an evaluation (drained every 5 seconds, one evaluation
 	// per affected faction), and a reconcile - one minute after start, then daily - backfills
 	// factions that already qualify and unlocks the time-based ones. Unlocking is silent.

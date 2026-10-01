@@ -83,7 +83,9 @@ VALUES($1,$2,$3,1,$4,$5,$6,'BandageDressing',1,4621.1,319.6,8397.2,'dayzps/confi
 	snapshot := func() string {
 		t.Helper()
 		var a, e string
-		if err := db.Pool.QueryRow(ctx, `SELECT COALESCE(string_agg(row_to_json(x)::text, '|' ORDER BY x.id), '') FROM shop_delivery_attempts x`).Scan(&a); err != nil {
+		// Migration 0100 adds three columns with defaults; they are left out so the comparison is of
+		// the values the historical rows already had (their defaults are asserted below).
+		if err := db.Pool.QueryRow(ctx, `SELECT COALESCE(string_agg((to_jsonb(x) - 'fulfilment_mode' - 'buyer_answer' - 'buyer_answered_at')::text, '|' ORDER BY x.id), '') FROM shop_delivery_attempts x`).Scan(&a); err != nil {
 			t.Fatal(err)
 		}
 		if err := db.Pool.QueryRow(ctx, `SELECT COALESCE(string_agg(row_to_json(x)::text, '|' ORDER BY x.id), '') FROM shop_delivery_attempt_events x`).Scan(&e); err != nil {
@@ -101,6 +103,13 @@ VALUES($1,$2,$3,1,$4,$5,$6,'BandageDressing',1,4621.1,319.6,8397.2,'dayzps/confi
 	}
 	if after := snapshot(); after != before {
 		t.Fatalf("historical ledger rows changed:\n%s\n%s", before, after)
+	}
+	var modes string
+	if err := db.Pool.QueryRow(ctx, `SELECT COALESCE(string_agg(DISTINCT fulfilment_mode || ':' || (buyer_answer IS NULL)::text, ','), '') FROM shop_delivery_attempts`).Scan(&modes); err != nil {
+		t.Fatal(err)
+	}
+	if modes != "OBSERVED:true" {
+		t.Fatalf("historical attempts after 0100: %s, want the manual mode and no buyer answer", modes)
 	}
 	var n int
 	var def string

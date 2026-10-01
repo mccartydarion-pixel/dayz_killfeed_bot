@@ -373,10 +373,25 @@ func shopTicketOverwrites(guildID, botID string, setup repository.ShopTicketDisc
 			out = append(out, &discordgo.PermissionOverwrite{ID: roleID, Type: discordgo.PermissionOverwriteTypeRole, Allow: shopTicketAccess})
 		}
 	}
-	if buyerDiscordID != "" && buyerDiscordID != botID {
+	if isSnowflake(buyerDiscordID) && buyerDiscordID != botID {
 		out = append(out, &discordgo.PermissionOverwrite{ID: buyerDiscordID, Type: discordgo.PermissionOverwriteTypeMember, Allow: shopTicketAccess})
 	}
 	return out
+}
+
+// isSnowflake reports whether id looks like a Discord id. A ticket opened by the delivery worker for
+// a buyer with no verified Discord account carries a placeholder instead, which must never be sent
+// to Discord as a user.
+func isSnowflake(id string) bool {
+	if len(id) < 5 || len(id) > 32 {
+		return false
+	}
+	for _, r := range id {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // ShopTicketChannelName is the ticket channel's name.
@@ -412,7 +427,7 @@ func BuildShopTicketOpening(job repository.ShopTicketChannelJob, setup repositor
 	t := job.Ticket
 	mentions := &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}}
 	var who []string
-	if t.OpenedByDiscordID != "" {
+	if isSnowflake(t.OpenedByDiscordID) {
 		who = append(who, "<@"+t.OpenedByDiscordID+">")
 		mentions.Users = []string{t.OpenedByDiscordID}
 	}
@@ -423,14 +438,18 @@ func BuildShopTicketOpening(job repository.ShopTicketChannelJob, setup repositor
 		}
 	}
 	reason := shopTruncate(t.Reason, 1000)
-	via := "the website"
-	if t.OpenedVia == repository.ConfirmationViaDiscord {
+	via, description := "the website", "The buyer reported an issue with a delivered Shop order. Sort it out together here; staff close the ticket on the website when it is settled."
+	switch t.OpenedVia {
+	case repository.ConfirmationViaDiscord:
 		via = "Discord"
+	case repository.TicketViaSystem:
+		via = "automatic delivery"
+		description = "Automatic delivery could not confirm this order and stopped. Staff: check in game whether the item is there, then record the result on the website. The buyer is in this channel."
 	}
 	embed := &discordgo.MessageEmbed{
 		Title:       fmt.Sprintf("🎫 Ticket #%d · order #%d", t.ID, t.PurchaseID),
 		Color:       shopOrderColorIssue,
-		Description: "The buyer reported an issue with a delivered Shop order. Sort it out together here; staff close the ticket on the website when it is settled.",
+		Description: description,
 		Fields: []*discordgo.MessageEmbedField{
 			{Name: "What went wrong", Value: reason},
 			{Name: "Order", Value: shopOrderItemLines(job.Items)},

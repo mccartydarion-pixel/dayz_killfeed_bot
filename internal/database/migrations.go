@@ -2765,6 +2765,14 @@ CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events
 		Name: "0099_base_transfers",
 		SQL:  BaseTransferSQL,
 	},
+	{
+		Name: "0100_shop_delivery_attempt_buyer_fulfilment",
+		SQL:  ShopAttemptBuyerFulfilmentSQL,
+	},
+	{
+		Name: "0101_shop_auto_delivery",
+		SQL:  ShopAutoDeliverySQL,
+	},
 }
 
 // PvPDeathBackfillSQL gives the victim of every existing PvP kill a deaths row of type PVP, with

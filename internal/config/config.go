@@ -78,6 +78,13 @@ type Config struct {
 	// installation is listed in CHAMPION_SHOP_CANARY_INSTALLATION_IDS. Default: locked.
 	ShopCanaryExecution ShopCanaryExecution
 
+	// ShopAutoDelivery is the automatic delivery worker's lock (docs/SHOP_DELIVERY_WORKER_DESIGN.md).
+	// It is its own switch, separate from the canary lock and from every other Shop setting.
+	// CHAMPION_SHOP_AUTO_DELIVERY must be exactly "report" (the worker only logs what it would do)
+	// or "enabled" (the worker delivers), AND the installation must be listed in
+	// CHAMPION_SHOP_AUTO_DELIVERY_INSTALLATION_IDS. Default: no worker runs at all.
+	ShopAutoDelivery ShopAutoDelivery
+
 	// PublicBaseURL is the public origin of this service (no trailing slash), used to build
 	// absolute URLs for publicly served assets such as faction logos
 	// (/assets/faction-logos/...). CHAMPION_PUBLIC_BASE_URL wins; otherwise it is derived from
@@ -114,12 +121,12 @@ type Config struct {
 	// server. Never includes anything the client asserts about itself.
 	BillingAllowedOrigins string
 	// C.A.S.E. is a distinct, default-disabled server-scoped add-on.
-	CaseBillingEnabled bool
-	CaseAccessEnabled bool
+	CaseBillingEnabled  bool
+	CaseAccessEnabled   bool
 	CaseVerifiedThrough string
-	CaseWatchPriceID string
-	CaseProPriceID string
-	CaseCommandPriceID string
+	CaseWatchPriceID    string
+	CaseProPriceID      string
+	CaseCommandPriceID  string
 }
 
 // Load reads configuration from environment variables and validates required fields.
@@ -144,8 +151,10 @@ func Load() (*Config, error) {
 		CustomEmbedsEnabled:       parseBoolWithDefault(os.Getenv("CHAMPION_CUSTOM_EMBEDS_ENABLED"), false),
 		PlanGatingEnabled:         parseBoolWithDefault(os.Getenv("CHAMPION_PLAN_GATING_ENABLED"), false),
 		ShopCanaryExecution:       ParseShopCanaryExecution(os.Getenv("CHAMPION_SHOP_CANARY_EXECUTION"), os.Getenv("CHAMPION_SHOP_CANARY_INSTALLATION_IDS")),
-		PublicBaseURL:             ParsePublicBaseURL(os.Getenv("CHAMPION_PUBLIC_BASE_URL"), os.Getenv("RAILWAY_PUBLIC_DOMAIN")),
-		SiteBaseURL:               strings.TrimRight(strings.TrimSpace(os.Getenv("CHAMPION_SITE_BASE_URL")), "/"),
+		ShopAutoDelivery: ParseShopAutoDelivery(os.Getenv("CHAMPION_SHOP_AUTO_DELIVERY"), os.Getenv("CHAMPION_SHOP_AUTO_DELIVERY_INSTALLATION_IDS"),
+			os.Getenv("CHAMPION_SHOP_AUTO_DELIVERY_MAX_STAGED")),
+		PublicBaseURL: ParsePublicBaseURL(os.Getenv("CHAMPION_PUBLIC_BASE_URL"), os.Getenv("RAILWAY_PUBLIC_DOMAIN")),
+		SiteBaseURL:   strings.TrimRight(strings.TrimSpace(os.Getenv("CHAMPION_SITE_BASE_URL")), "/"),
 
 		DiscordPresenceEnabled:         parseBoolWithDefault(os.Getenv("DISCORD_PRESENCE_ENABLED"), true),
 		DiscordPresenceRotationSeconds: parsePresenceRotationSeconds(os.Getenv("DISCORD_PRESENCE_ROTATION_SECONDS")),
@@ -157,12 +166,12 @@ func Load() (*Config, error) {
 		StripeWebhookSecret:   strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET")),
 		BillingPlansJSON:      os.Getenv("CHAMPION_BILLING_PLANS_JSON"),
 		BillingAllowedOrigins: os.Getenv("CHAMPION_BILLING_ALLOWED_ORIGINS"),
-		CaseBillingEnabled: parseBoolWithDefault(os.Getenv("CHAMPION_CASE_BILLING_ENABLED"), false),
-		CaseAccessEnabled: parseBoolWithDefault(os.Getenv("CHAMPION_CASE_ACCESS_ENABLED"), false),
-		CaseVerifiedThrough: strings.TrimSpace(os.Getenv("CHAMPION_CASE_VERIFIED_THROUGH")),
-		CaseWatchPriceID: strings.TrimSpace(os.Getenv("CHAMPION_CASE_WATCH_PRICE_ID")),
-		CaseProPriceID: strings.TrimSpace(os.Getenv("CHAMPION_CASE_PRO_PRICE_ID")),
-		CaseCommandPriceID: strings.TrimSpace(os.Getenv("CHAMPION_CASE_COMMAND_PRICE_ID")),
+		CaseBillingEnabled:    parseBoolWithDefault(os.Getenv("CHAMPION_CASE_BILLING_ENABLED"), false),
+		CaseAccessEnabled:     parseBoolWithDefault(os.Getenv("CHAMPION_CASE_ACCESS_ENABLED"), false),
+		CaseVerifiedThrough:   strings.TrimSpace(os.Getenv("CHAMPION_CASE_VERIFIED_THROUGH")),
+		CaseWatchPriceID:      strings.TrimSpace(os.Getenv("CHAMPION_CASE_WATCH_PRICE_ID")),
+		CaseProPriceID:        strings.TrimSpace(os.Getenv("CHAMPION_CASE_PRO_PRICE_ID")),
+		CaseCommandPriceID:    strings.TrimSpace(os.Getenv("CHAMPION_CASE_COMMAND_PRICE_ID")),
 
 		NitradoAPIBaseURL: strings.TrimSpace(os.Getenv("NITRADO_API_BASE_URL")),
 	}
@@ -353,6 +362,42 @@ func ParsePublicBaseURL(explicit, railwayDomain string) string {
 		return "https://" + d
 	}
 	return ""
+}
+
+// Automatic delivery worker modes.
+const (
+	ShopAutoDeliveryOff     = ""
+	ShopAutoDeliveryReport  = "report"
+	ShopAutoDeliveryEnabled = "enabled"
+)
+
+// ShopAutoDelivery is the parsed automatic delivery lock.
+type ShopAutoDelivery struct {
+	// Mode is ShopAutoDeliveryOff, ShopAutoDeliveryReport or ShopAutoDeliveryEnabled.
+	Mode            string
+	InstallationIDs []int64
+	// MaxStaged is the most orders in the Champion file at once (1 unless set to 2..5).
+	MaxStaged int
+}
+
+// ParseShopAutoDelivery turns the worker on only for the exact words "report" or "enabled" (not
+// "true", "1" or "yes": an accidental generic boolean never starts it) and only with at least one
+// valid installation id. Anything else is off. maxStaged outside 1..5 is 1.
+func ParseShopAutoDelivery(mode, ids, maxStaged string) ShopAutoDelivery {
+	mode = strings.TrimSpace(mode)
+	if mode != ShopAutoDeliveryReport && mode != ShopAutoDeliveryEnabled {
+		return ShopAutoDelivery{}
+	}
+	// The id list has the canary lock's rules: positive integers, duplicates dropped.
+	parsed := ParseShopCanaryExecution("enabled", ids)
+	if !parsed.Enabled {
+		return ShopAutoDelivery{}
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(maxStaged))
+	if err != nil || n < 1 || n > 5 {
+		n = 1
+	}
+	return ShopAutoDelivery{Mode: mode, InstallationIDs: parsed.InstallationIDs, MaxStaged: n}
 }
 
 // ShopCanaryExecution is the parsed canary execution lock.

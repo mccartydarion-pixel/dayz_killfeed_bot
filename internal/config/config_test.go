@@ -241,3 +241,53 @@ func TestStagingRefusesLiveStripeKey(t *testing.T) {
 		}
 	}
 }
+
+func TestShopAutoDeliveryIsOffByDefault(t *testing.T) {
+	for _, c := range []struct {
+		mode, ids, max string
+		want           string
+		staged         int
+	}{
+		{"", "", "", "", 0},
+		{"", "11", "", "", 0},
+		{"true", "11", "", "", 0}, // a generic boolean never starts the worker
+		{"1", "11", "", "", 0},
+		{"yes", "11", "", "", 0},
+		{"on", "11", "", "", 0},
+		{"ENABLED", "11", "", "", 0},
+		{"Report", "11", "", "", 0},
+		{"enabled", "", "", "", 0},
+		{"enabled", "x, -3, 0", "", "", 0},
+		{"report", "11", "", "report", 1},
+		{" enabled ", "11, 11, 12", "", "enabled", 1},
+		{"enabled", "11", "3", "enabled", 3},
+		{"enabled", "11", "0", "enabled", 1},
+		{"enabled", "11", "99", "enabled", 1},
+		{"enabled", "11", "many", "enabled", 1},
+	} {
+		got := ParseShopAutoDelivery(c.mode, c.ids, c.max)
+		if got.Mode != c.want || got.MaxStaged != c.staged {
+			t.Errorf("%q %q %q: %+v", c.mode, c.ids, c.max, got)
+		}
+	}
+	if g := ParseShopAutoDelivery("enabled", "11, 11, 12", ""); len(g.InstallationIDs) != 2 {
+		t.Fatalf("%+v", g)
+	}
+	// Neither the canary lock nor any other Shop setting starts the worker, and the worker's own
+	// variables never open the canary lock.
+	for _, k := range []string{"CHAMPION_SHOP_AUTOMATIC_DELIVERY", "CHAMPION_SHOP_ENABLED", "NITRADO_TOKEN"} {
+		t.Setenv(k, "true")
+	}
+	t.Setenv("CHAMPION_SHOP_CANARY_EXECUTION", "enabled")
+	t.Setenv("CHAMPION_SHOP_CANARY_INSTALLATION_IDS", "11")
+	t.Setenv("CHAMPION_SHOP_AUTO_DELIVERY", "")
+	t.Setenv("CHAMPION_SHOP_AUTO_DELIVERY_INSTALLATION_IDS", "11")
+	if got := ParseShopAutoDelivery(os.Getenv("CHAMPION_SHOP_AUTO_DELIVERY"), os.Getenv("CHAMPION_SHOP_AUTO_DELIVERY_INSTALLATION_IDS"), ""); got.Mode != ShopAutoDeliveryOff {
+		t.Fatalf("the canary lock started the worker: %+v", got)
+	}
+	t.Setenv("CHAMPION_SHOP_CANARY_EXECUTION", "")
+	t.Setenv("CHAMPION_SHOP_AUTO_DELIVERY", "enabled")
+	if got := ParseShopCanaryExecution(os.Getenv("CHAMPION_SHOP_CANARY_EXECUTION"), os.Getenv("CHAMPION_SHOP_CANARY_INSTALLATION_IDS")); got.Enabled {
+		t.Fatalf("the worker lock opened the canary: %+v", got)
+	}
+}
