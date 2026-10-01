@@ -84,6 +84,18 @@ func (f *fakeAdminReader) InstallationHealth(context.Context) (adminrepo.HealthS
 	f.hit()
 	return adminrepo.HealthSummary{ByStatus: map[string]int{}, ByHealth: map[string]int{}, ServersByStatus: map[string]int{}}, []adminrepo.HealthInstallation{}, f.err
 }
+func (f *fakeAdminReader) ListUsers(context.Context, adminrepo.UserFilter) ([]adminrepo.UserRow, int64, error) {
+	f.hit()
+	return []adminrepo.UserRow{}, 0, f.err
+}
+func (f *fakeAdminReader) GetUser(context.Context, int64) (*adminrepo.UserRow, error) {
+	f.hit()
+	return nil, f.err
+}
+func (f *fakeAdminReader) CountUsers(context.Context) (int64, int64, int64, error) {
+	f.hit()
+	return 0, 0, 0, f.err
+}
 
 func newAdminTestApp(admins ...string) (*App, *fakeAdminReader) {
 	fake := &fakeAdminReader{}

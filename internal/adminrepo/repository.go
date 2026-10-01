@@ -17,6 +17,7 @@ package adminrepo
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -1076,4 +1077,132 @@ FROM installations i JOIN discord_guild_connections dgc ON dgc.id = i.discord_gu
 		items = append(items, h)
 	}
 	return sum, items, nil
+}
+
+// --- users ------------------------------------------------------------------------------------
+
+// UserRow is one website account for the Owner Hub's user directory.
+type UserRow struct {
+	ID            int64                 `json:"id"`
+	DiscordID     string                `json:"discordId"`
+	Username      string                `json:"username"`
+	GlobalName    *string               `json:"globalName"`
+	Avatar        *string               `json:"avatar"`
+	CreatedAt     string                `json:"createdAt"`
+	LastLoginAt   *string               `json:"lastLoginAt"`
+	BannedAt      *string               `json:"bannedAt"`
+	BanReason     *string               `json:"banReason"`
+	Organizations []UserOrganizationRef `json:"organizations"`
+	TrialUsed     bool                  `json:"trialUsed"`
+}
+
+// UserOrganizationRef is one organization membership on a user row.
+type UserOrganizationRef struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+	Slug string `json:"slug"`
+	Role string `json:"role"`
+}
+
+// UserFilter narrows ListUsers. Banned: nil = any, true = banned only, false = not banned.
+type UserFilter struct {
+	Limit  int
+	Cursor int64
+	Search string
+	Banned *bool
+}
+
+const userSelect = `
+SELECT u.id, u.discord_user_id, u.discord_username, COALESCE(u.discord_global_name,''), COALESCE(u.avatar,''),
+       u.created_at, u.last_login_at, u.banned_at, COALESCE(u.ban_reason,''),
+       EXISTS (SELECT 1 FROM trial_grants tg WHERE tg.user_id = u.id),
+       COALESCE((SELECT json_agg(json_build_object('id', o.id, 'name', o.name, 'slug', o.slug, 'role', m.role) ORDER BY o.id)
+                 FROM organization_members m JOIN organizations o ON o.id = m.organization_id WHERE m.user_id = u.id), '[]'::json)
+FROM app_users u`
+
+func scanUser(row pgx.Row) (UserRow, error) {
+	var u UserRow
+	var created time.Time
+	var lastLogin, banned *time.Time
+	var globalName, avatar, banReason string
+	var orgs []byte
+	if err := row.Scan(&u.ID, &u.DiscordID, &u.Username, &globalName, &avatar, &created, &lastLogin, &banned, &banReason, &u.TrialUsed, &orgs); err != nil {
+		return u, err
+	}
+	u.CreatedAt = ts(created)
+	u.LastLoginAt, u.BannedAt = tsp(lastLogin), tsp(banned)
+	if globalName != "" {
+		u.GlobalName = &globalName
+	}
+	if avatar != "" {
+		u.Avatar = &avatar
+	}
+	if banReason != "" {
+		u.BanReason = &banReason
+	}
+	u.Organizations = []UserOrganizationRef{}
+	if len(orgs) > 0 {
+		_ = json.Unmarshal(orgs, &u.Organizations)
+	}
+	return u, nil
+}
+
+// ListUsers returns one page of website accounts, newest first, with their organizations.
+func (r *Repository) ListUsers(ctx context.Context, f UserFilter) ([]UserRow, int64, error) {
+	limit := NormalizeLimit(f.Limit)
+	var b qb
+	if f.Cursor > 0 {
+		b.where("u.id < " + b.arg(f.Cursor))
+	}
+	if f.Search != "" {
+		p := b.arg(likePattern(f.Search))
+		b.where(`(u.discord_username ILIKE ` + p + ` ESCAPE '\' OR COALESCE(u.discord_global_name,'') ILIKE ` + p + ` ESCAPE '\' OR u.discord_user_id ILIKE ` + p + ` ESCAPE '\')`)
+	}
+	if f.Banned != nil {
+		if *f.Banned {
+			b.where("u.banned_at IS NOT NULL")
+		} else {
+			b.where("u.banned_at IS NULL")
+		}
+	}
+	rows, err := r.pool.Query(ctx, userSelect+b.whereSQL()+" ORDER BY u.id DESC LIMIT "+b.arg(limit+1), b.args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list users: %w", err)
+	}
+	defer rows.Close()
+	out := []UserRow{}
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		out = append(out, u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	var next int64
+	if len(out) > limit {
+		out = out[:limit]
+		next = out[len(out)-1].ID
+	}
+	return out, next, nil
+}
+
+// GetUser returns one website account, or nil.
+func (r *Repository) GetUser(ctx context.Context, id int64) (*UserRow, error) {
+	u, err := scanUser(r.pool.QueryRow(ctx, userSelect+" WHERE u.id = $1", id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get user: %w", err)
+	}
+	return &u, nil
+}
+
+// CountUsers is the directory's headline numbers.
+func (r *Repository) CountUsers(ctx context.Context) (total, banned, active30d int64, err error) {
+	err = r.pool.QueryRow(ctx, `SELECT COUNT(*), COUNT(*) FILTER (WHERE banned_at IS NOT NULL), COUNT(*) FILTER (WHERE last_login_at > NOW() - INTERVAL '30 days') FROM app_users`).Scan(&total, &banned, &active30d)
+	return
 }
