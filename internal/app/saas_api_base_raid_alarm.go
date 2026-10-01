@@ -48,7 +48,7 @@ func (a *App) handleGetBaseRaidAlarm(w http.ResponseWriter, r *http.Request) {
 		writeSaaSError(w, codeInternalError, "could not load the raid alarm")
 		return
 	}
-	sold, active, err := sales.RecentSales(ctx, scope, 10)
+	sold, active, err := sales.RecentSales(ctx, scope, repository.ServiceBaseRaidAlarm, 10)
 	if err != nil {
 		slog.Warn("component=base_raid_alarm", "event", "recent_sales_failed", "err", err.Error())
 		writeSaaSError(w, codeInternalError, "could not load the raid alarm")
@@ -68,6 +68,11 @@ type baseRaidAlarmOfferRequest struct {
 // owner sells the alarm to players for Champion Points, or stops selling it
 // (then the alarm is free for every registered base again). Owner only.
 func (a *App) handleSetBaseRaidAlarmOffer(w http.ResponseWriter, r *http.Request) {
+	a.setSecurityOffer(w, r, repository.ServiceBaseRaidAlarm, "BASE_RAID_ALARM_OFFER_SAVED")
+}
+
+// setSecurityOffer stores the owner's sale offer for one sellable service.
+func (a *App) setSecurityOffer(w http.ResponseWriter, r *http.Request, serviceID, auditAction string) {
 	ac, _, ok := a.caseBaseActor(w, r)
 	if !ok {
 		return
@@ -77,7 +82,7 @@ func (a *App) handleSetBaseRaidAlarmOffer(w http.ResponseWriter, r *http.Request
 	}
 	var req baseRaidAlarmOfferRequest
 	if err := readCaseBaseJSON(w, r, &req); err != nil {
-		writeSaaSError(w, codeInvalidRequest, "invalid raid alarm offer")
+		writeSaaSError(w, codeInvalidRequest, "invalid offer")
 		return
 	}
 	if req.PricePoints < 1 || req.PricePoints > repository.SecurityMaxPricePoints {
@@ -95,14 +100,14 @@ func (a *App) handleSetBaseRaidAlarmOffer(w http.ResponseWriter, r *http.Request
 	ctx, cancel := context.WithTimeout(r.Context(), adminTimeout)
 	defer cancel()
 	scope := repository.SecurityScope{InstallationID: ac.scope.InstallationID, GuildID: ac.scope.GuildID, ServerID: *ac.scope.ServerID}
-	offer, err := repository.NewSecurityServiceRepository(a.DB.Pool).SetOffer(ctx, scope, repository.ServiceBaseRaidAlarm,
+	offer, err := repository.NewSecurityServiceRepository(a.DB.Pool).SetOffer(ctx, scope, serviceID,
 		req.Enabled, req.PricePoints, req.DurationDays, actor)
 	if err != nil {
 		slog.Warn("component=base_raid_alarm", "event", "set_offer_failed", "err", err.Error())
-		writeSaaSError(w, codeInvalidRequest, "could not save the raid alarm offer")
+		writeSaaSError(w, codeInvalidRequest, "could not save the offer")
 		return
 	}
-	a.recordAudit(ctx, ac, "BASE_RAID_ALARM_OFFER_SAVED", "base-raid-alarm", "", "success", nil,
+	a.recordAudit(ctx, ac, auditAction, "security-offer:"+serviceID, "", "success", nil,
 		map[string]any{"enabled": offer.Enabled, "pricePoints": offer.PricePoints, "durationDays": offer.DurationDays})
 	writeSaaSJSON(w, http.StatusOK, map[string]any{"offer": offer})
 }
