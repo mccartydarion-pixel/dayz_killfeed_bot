@@ -2,10 +2,13 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/yourname/dayz-killfeed/internal/linking"
 )
 
 type GameServer struct {
@@ -62,30 +65,66 @@ func (r *ServerRepository) ListActive(ctx context.Context) ([]GameServer, error)
 	}
 	return out, rows.Err()
 }
-func (r *ServerRepository) ConnectedServerID(ctx context.Context, guildID int64) (int64, error) {
-	rows, err := r.pool.Query(ctx, `SELECT id FROM game_servers WHERE guild_id=$1 AND active AND LOWER(status) IN ('connected','ready','active') ORDER BY id`, guildID)
+
+// ActiveServerIDs returns the IDs of every active game_servers row for one
+// guild: exactly the set ListActiveByGuild starts ADM workers for, so readers
+// of player_server_activity see precisely the servers whose activity is
+// ingested. game_servers.status is deliberately not filtered: it is a display
+// label written with different vocabularies (/server connect writes
+// CONNECTED, the SaaS dashboard writes Nitrado power state ONLINE/OFFLINE),
+// and teardown (Deactivate) always clears active.
+func (r *ServerRepository) ActiveServerIDs(ctx context.Context, guildID int64) ([]int64, error) {
+	rows, err := r.pool.Query(ctx, `SELECT id FROM game_servers WHERE guild_id=$1 AND active ORDER BY id`, guildID)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	defer rows.Close()
 	var ids []int64
 	for rows.Next() {
 		var id int64
 		if err := rows.Scan(&id); err != nil {
-			return 0, err
+			return nil, err
 		}
 		ids = append(ids, id)
 	}
-	if err := rows.Err(); err != nil {
+	return ids, rows.Err()
+}
+
+// ConnectedServerID resolves the one server that single-server views (admin
+// diagnostics) describe, by the same rule as the public online counter: the
+// guild's selected public server while it is active, otherwise the guild's
+// only active server. Errors wrap linking.ErrNoConnectedServer /
+// linking.ErrMultipleConnectedServers. Account linking does not use this; it
+// evaluates every active server (ActiveServerIDs).
+func (r *ServerRepository) ConnectedServerID(ctx context.Context, guildID int64) (int64, error) {
+	var selected int64
+	if err := r.pool.QueryRow(ctx, `SELECT COALESCE(selected_public_server_id,0) FROM guilds WHERE id=$1`, guildID).Scan(&selected); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return 0, err
 	}
-	switch len(ids) {
+	ids, err := r.ActiveServerIDs(ctx, guildID)
+	if err != nil {
+		return 0, err
+	}
+	return resolveSingleServer(guildID, selected, ids)
+}
+
+// resolveSingleServer is ConnectedServerID's selection rule over loaded rows
+// (split out so it is unit-testable without a database).
+func resolveSingleServer(guildID, selected int64, activeIDs []int64) (int64, error) {
+	if selected > 0 {
+		for _, id := range activeIDs {
+			if id == selected {
+				return id, nil
+			}
+		}
+	}
+	switch len(activeIDs) {
 	case 0:
-		return 0, fmt.Errorf("no connected server for guild %d", guildID)
+		return 0, fmt.Errorf("%w for guild %d", linking.ErrNoConnectedServer, guildID)
 	case 1:
-		return ids[0], nil
+		return activeIDs[0], nil
 	default:
-		return 0, fmt.Errorf("multiple connected servers for guild %d; explicit server selection required", guildID)
+		return 0, fmt.Errorf("%w for guild %d; select the public server with /server select", linking.ErrMultipleConnectedServers, guildID)
 	}
 }
 

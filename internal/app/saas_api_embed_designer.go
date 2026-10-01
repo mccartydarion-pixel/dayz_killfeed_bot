@@ -17,6 +17,7 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/discord"
 	"github.com/yourname/dayz-killfeed/internal/embedrender"
 	"github.com/yourname/dayz-killfeed/internal/embedtemplates"
+	"github.com/yourname/dayz-killfeed/internal/entitlements"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -222,6 +223,9 @@ func renderEmbedDraft(routeKey string, req EmbedDraftRequest, runtimeRendering s
 		}
 	}
 
+	if strings.HasPrefix(routeKey, "CASE_") {
+		resp.Warnings = append(resp.Warnings, "C.A.S.E. DESIGN PREVIEW ONLY: supplied values are synthetic/manual examples, not live ADM evidence, a reviewed finding or a player accusation. No C.A.S.E. event publisher is enabled.")
+	}
 	if !resp.CustomRenderingSupported {
 		resp.Warnings = append(resp.Warnings, "This route does not use custom templates in Discord yet - the preview shows the design only.")
 	} else if runtimeRendering != runtimeRenderingEnabled {
@@ -407,7 +411,7 @@ func (a *App) handlePreviewEmbedTemplate(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	resp, _, derr := renderEmbedDraft(routeKey, req, a.runtimeRenderingFor(routeKey), embedDesignerNow())
+	resp, _, derr := renderEmbedDraft(routeKey, req, a.runtimeRenderingFor(instID, routeKey), embedDesignerNow())
 	if derr != nil {
 		writeDesignerError(w, derr)
 		return
@@ -430,6 +434,10 @@ func (a *App) handlePreviewEmbedTemplate(w http.ResponseWriter, r *http.Request)
 func (a *App) handleTestEmbedTemplate(w http.ResponseWriter, r *http.Request) {
 	orgID, instID, routeKey, userID, ok := a.embedTemplateContext(w, r, true, true)
 	if !ok {
+		return
+	}
+	// Sending a custom design to Discord is Champion-only (see handlePutEmbedTemplate).
+	if !a.requirePlanFeature(w, r, orgID, entitlements.CustomEmbeds) {
 		return
 	}
 	req, ok := decodeEmbedDraft(w, r)
@@ -455,7 +463,7 @@ func (a *App) handleTestEmbedTemplate(w http.ResponseWriter, r *http.Request) {
 		writeSaaSError(w, errCode, errMsg)
 		return
 	}
-	resp, derr := sendEmbedTest(ctx, a.SaaSChannelRoutes, a.saasDiscordVerifier, orgID, instID, guildID, routeKey, req, a.runtimeRenderingFor(routeKey), embedDesignerNow())
+	resp, derr := sendEmbedTest(ctx, a.SaaSChannelRoutes, a.saasDiscordVerifier, orgID, instID, guildID, routeKey, req, a.runtimeRenderingFor(instID, routeKey), embedDesignerNow())
 	if derr != nil {
 		writeDesignerError(w, derr)
 		return

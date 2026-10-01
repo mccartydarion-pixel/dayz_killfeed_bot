@@ -2,7 +2,11 @@ package discord
 
 import (
 	"context"
+	"errors"
 	"fmt"
+
+	"github.com/bwmarrin/discordgo"
+	"github.com/yourname/dayz-killfeed/internal/linking"
 )
 
 // VerifiedRoleAssigner adds the guild's configured @Verified role to a member
@@ -38,12 +42,25 @@ func (a *VerifiedRoleAssigner) AssignVerifiedRole(ctx context.Context, discordUs
 		return fmt.Errorf("load guild setup: %w", err)
 	}
 	if setup == nil || setup.VerifiedRoleID == "" {
-		return fmt.Errorf("verified role not configured; run /setup verified-role")
+		return fmt.Errorf("%w; run /setup verified-role", linking.ErrRoleNotConfigured)
 	}
-	if err := a.client.Session().GuildMemberRoleAdd(a.guildID, discordUserID, setup.VerifiedRoleID); err != nil {
+	if err := deliver("VERIFIED_ROLE", "", func() error {
+		return a.client.Session().GuildMemberRoleAdd(a.guildID, discordUserID, setup.VerifiedRoleID)
+	}); err != nil {
+		if isUnknownMember(err) {
+			return fmt.Errorf("assign verified role: %w: %v", linking.ErrMemberNotInGuild, err)
+		}
 		return fmt.Errorf("assign verified role: %w", err)
 	}
 	return nil
+}
+
+// discordCodeUnknownMember is Discord's "Unknown Member" (the user left the guild).
+const discordCodeUnknownMember = 10007
+
+func isUnknownMember(err error) bool {
+	var restErr *discordgo.RESTError
+	return errors.As(err, &restErr) && restErr.Message != nil && restErr.Message.Code == discordCodeUnknownMember
 }
 
 // NotifyVerified DMs the player that their link finished verifying. Link
@@ -62,7 +79,10 @@ func (a *VerifiedRoleAssigner) NotifyVerified(ctx context.Context, discordUserID
 	if roleAssigned {
 		message += " Your Verified role has been assigned."
 	}
-	if _, err := a.client.Session().ChannelMessageSend(channel.ID, message); err != nil {
+	if err := deliver("VERIFICATION_DM", "", func() error {
+		_, err := a.client.Session().ChannelMessageSend(channel.ID, message)
+		return err
+	}); err != nil {
 		return fmt.Errorf("send verification DM: %w", err)
 	}
 	return nil

@@ -91,6 +91,48 @@ Any synced user (standard service-auth + acting-user chain; no organization cont
 
 Private (`isPublic:false`) plans never appear. With an empty catalog, `items` is `[]`.
 
+### 6a. Anonymous public pricing catalog (Phase 6.26I)
+
+```
+GET /api/saas/billing/public-plans
+```
+
+For anonymous website visitors. **Only** the website's server-to-server bearer
+(`Authorization: Bearer <WEBSITE_API_SECRET>`) is required - no acting user, no Discord login, no
+organization. The authenticated `GET /api/saas/billing/plans` above, checkout, subscription
+management and entitlements are unchanged (they still require a synced acting user).
+
+```json
+{ "version": 1,
+  "plans": [
+    { "key": "MEDIUM", "category": "BASE", "name": "Medium", "displayTier": "MEDIUM",
+      "description": "...", "features": ["..."],
+      "prices": [ {"interval":"MONTHLY","amountCents":999,"currency":"usd"},
+                  {"interval":"YEARLY","amountCents":9990,"currency":"usd"} ],
+      "availability": "AVAILABLE", "purchasable": true, "popular": true, "sortOrder": 2,
+      "perServer": false, "requiresBasePlan": false },
+    { "key": "CASE_WATCH", "category": "CASE_ADDON", "name": "C.A.S.E. Watch", "displayTier": "WATCH",
+      "description": "...", "features": ["..."],
+      "prices": [ {"interval":"MONTHLY","amountCents":499,"currency":"usd"} ],
+      "availability": "COMING_SOON", "purchasable": false, "popular": false, "sortOrder": 103,
+      "perServer": true, "requiresBasePlan": true } ] }
+```
+
+* Plans are sorted by `sortOrder`: public base plans (from `CHAMPION_BILLING_PLANS_JSON`) first, then
+  C.A.S.E. Watch and Pro. C.A.S.E. Command is omitted until its release gates pass.
+* `availability`: `AVAILABLE` (purchasable now), `UNAVAILABLE` (base plan listed but checkout is not
+  configured or no interval is priced), `COMING_SOON` (C.A.S.E. add-on whose sales flag, verified tier
+  or configured price is not open). `purchasable` is `true` only for `AVAILABLE`. With production's
+  C.A.S.E. flags off, Watch and Pro are always `COMING_SOON`.
+* `prices` only lists intervals that are actually sold; amounts are integer cents, currency lowercase.
+* Never included: Stripe price/product ids, customer or subscription ids, limits, trial settings,
+  private plans or any organization data.
+* Caching: `Cache-Control: public, max-age=300, stale-while-revalidate=600` and an `ETag`
+  (`If-None-Match` returns `304`). Rate limit: 120 requests per minute per caller.
+* Fail safe: without billing or with an empty base catalog the route returns `503 BILLING_UNAVAILABLE`
+  with `Cache-Control: no-store`; it never falls back to hard-coded prices. A missing or wrong
+  service bearer is `401`.
+
 ## 7. Current subscription
 
 ```
@@ -138,14 +180,25 @@ raw body is read (capped at 512 KiB) **before** any parsing, exactly as HMAC ver
 **Events handled**: `checkout.session.completed` (`mode=subscription` only), `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.paid`,
 `invoice.payment_failed`. Every other event type is acknowledged (`200`) and otherwise ignored - Stripe stops retrying it.
 
+**C.A.S.E. reversal events (Phase 6.26B)**: `charge.refunded`, `charge.refund.updated`, `charge.dispute.created|updated|closed|funds_reinstated`, `invoice.voided` and
+`invoice.marked_uncollectible` are reconciled **only** against C.A.S.E. add-on invoice coverage (see `CASE_PHASE6_BILLING.md`, "Phase 6.26B"). They reach an add-on only through the
+verified chain PaymentIntent -> InvoicePayment -> live invoice -> a stored C.A.S.E. subscription id with the same customer. Anything else - including a refund of a base
+LOW/MEDIUM/HIGH invoice - falls through to the base handler, which records it in `billing_webhook_events` and ignores it: base access and `billing_transactions` are unchanged.
+
 **Idempotency** (section 19 of the task): `billing_webhook_events` has `UNIQUE (provider, event_id)`. `HandleWebhook` does `INSERT ... ON CONFLICT DO NOTHING RETURNING id` **before any
 processing**; if no row comes back, the event was already handled and the handler returns `200` immediately, unchanged. This is a database constraint, not a read-then-write check, so it is safe
 under concurrent redelivery (Stripe retries aggressively on anything but a clean `2xx`) - proven under `-race` with 20 concurrent deliveries of the same event
 (`TestConcurrentWebhookDeliveryIsRaceFree`).
 
-**Organization attribution** (`Service.resolveOrgID`), in order: (1) the event's own `champion_organization_id` metadata (cheapest - no query), (2) a lookup by Stripe customer id
-(`idx_subscriptions_provider_customer`), (3) a lookup by Stripe subscription id (`idx_subscriptions_provider_subscription`). An event that resolves to no organization is logged
-(`billing_webhook_unattributed`) and acknowledged - it changes nothing and never guesses.
+**Organization attribution** (`Service.resolveOrgID`) requires a binding Champion itself authored: (1) the `champion_organization_id` metadata Champion sets server-side on its
+Checkout Session's subscription (for invoices, the copy Stripe places on `parent.subscription_details.metadata`), or (2) the Stripe subscription id already stored on that
+organization's row (`idx_subscriptions_provider_subscription`). **A Stripe customer id alone never attributes an event** (changed in Phase 6.19.1): a subscription created outside
+Champion - for example from the Stripe Dashboard - on an organization's customer would otherwise overwrite that organization's base subscription. The customer id is a consistency
+check only: when the organization has a saved customer that differs from the event's, the event is refused (`reason=customer_mismatch`), and metadata that conflicts with the stored
+subscription is refused too. `checkout.session.completed` additionally requires `client_reference_id`; its `champion_organization_id` metadata (when present) must name the same
+organization and its customer must match the saved one. An event that resolves to no organization is logged (`billing_webhook_unattributed`, with a `reason`) and acknowledged -
+it changes nothing and never guesses. A session created outside Champion (no `client_reference_id`, empty metadata) is never bound to an organization, even if it was paid: pay
+the Champion-created session instead, and cancel the foreign subscription in Stripe.
 
 **A closed browser tab / an abandoned checkout never corrupts anything** (task section 20): Champion's subscription state changes *only* when a webhook (or an explicit `Reconcile`, section 18)
 applies it. `Checkout` itself never writes `plan`/`status`.
@@ -466,7 +519,7 @@ Champion already subscribes to. One row per processed event:
 | `organization_id` | resolved the same way every other webhook event is (`Service.resolveOrgID`) |
 | `provider_invoice_id` | the invoice event's own `id` |
 | `provider_payment_intent_id`, `provider_subscription_id` | the invoice event's `payment_intent`/`subscription` |
-| `status` | `PAID` for `invoice.paid`, `FAILED` for `invoice.payment_failed` - **never** `OPEN`/`VOID`/`REFUNDED`: Champion does not subscribe to `invoice.voided` or a refund event, so those states are never fabricated (task Part D.17) |
+| `status` | `PAID` for `invoice.paid`, `FAILED` for `invoice.payment_failed` - **never** `OPEN`/`VOID`/`REFUNDED`: base billing never records `invoice.voided` or refund/dispute events here, so those states are never fabricated (task Part D.17); since Phase 6.26B those events reconcile only C.A.S.E. add-on coverage (section 9) |
 | `amount_cents` | `amount_paid` (paid) or `amount_due` (failed) - never re-derived from subscription/price state |
 | `currency`, `period_start`, `period_end` | the invoice event's own currency and first line item's period (Stripe invoices carry period per line, not one top-level period - `internal/billing/webhook.go`'s `webhookInvoice.period()`) |
 | `paid_at` / `failed_at` | stamped at processing time, whichever this event type is |

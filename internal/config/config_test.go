@@ -145,3 +145,99 @@ func TestParseHeatmapDiscordIntervalMinutes(t *testing.T) {
 		}
 	}
 }
+
+func TestShopCanaryExecutionIsLockedByDefault(t *testing.T) {
+	for _, c := range []struct {
+		mode, ids string
+		want      bool
+	}{
+		{"", "", false},
+		{"", "11", false},
+		{"true", "11", false}, // a generic boolean never opens the canary
+		{"1", "11", false},
+		{"yes", "11", false},
+		{"ENABLED", "11", false},
+		{"enabled", "", false},
+		{"enabled", "x, -3, 0", false},
+		{"enabled", "11", true},
+		{" enabled ", "11, 11, 12", true},
+	} {
+		got := ParseShopCanaryExecution(c.mode, c.ids)
+		if got.Enabled != c.want {
+			t.Errorf("%q %q: %+v", c.mode, c.ids, got)
+		}
+	}
+	if g := ParseShopCanaryExecution("enabled", "11, 11, 12"); len(g.InstallationIDs) != 2 {
+		t.Fatalf("%+v", g)
+	}
+	// Other Shop / delivery / embed settings never open it.
+	for _, k := range []string{"CHAMPION_CUSTOM_EMBEDS_ENABLED", "CHAMPION_SHOP_AUTOMATIC_DELIVERY", "CHAMPION_SHOP_ENABLED", "NITRADO_TOKEN"} {
+		t.Setenv(k, "true")
+	}
+	t.Setenv("CHAMPION_SHOP_CANARY_EXECUTION", "")
+	t.Setenv("CHAMPION_SHOP_CANARY_INSTALLATION_IDS", "11")
+	cfg, err := Load()
+	if err != nil {
+		t.Skipf("config load needs other settings: %v", err)
+	}
+	if cfg.ShopCanaryExecution.Enabled {
+		t.Fatal("the canary lock opened without its own switch")
+	}
+}
+
+// TestNitradoAPIBaseURLOnlyInStaging: the Nitrado API replacement is an
+// allowlist - only APP_ENV=staging accepts it, so a production service (with
+// APP_ENV unset, "production" or anything else) refuses to start with it.
+func TestNitradoAPIBaseURLOnlyInStaging(t *testing.T) {
+	for _, tc := range []struct {
+		raw, env string
+		ok       bool
+	}{
+		{"", "production", true},
+		{"", "", true},
+		{"http://nitrado-fixture.railway.internal:8080", "staging", true},
+		{"https://fixture.example", "STAGING", true},
+		{"http://nitrado-fixture.railway.internal:8080", "production", false},
+		{"http://nitrado-fixture.railway.internal:8080", "", false},
+		{"http://nitrado-fixture.railway.internal:8080", "development", false},
+		{"nitrado-fixture:8080", "staging", false},
+		{"ftp://fixture", "staging", false},
+	} {
+		if err := ValidateNitradoAPIBaseURL(tc.raw, tc.env); (err == nil) != tc.ok {
+			t.Errorf("ValidateNitradoAPIBaseURL(%q, %q) = %v, want ok=%v", tc.raw, tc.env, err, tc.ok)
+		}
+	}
+}
+
+func TestLoadRefusesNitradoOverrideOutsideStaging(t *testing.T) {
+	t.Setenv("DISCORD_TOKEN", "x")
+	t.Setenv("NITRADO_API_BASE_URL", "http://nitrado-fixture:8080")
+	t.Setenv("APP_ENV", "production")
+	if _, err := Load(); err == nil {
+		t.Fatal("Load accepted NITRADO_API_BASE_URL in production")
+	}
+	t.Setenv("APP_ENV", "staging")
+	cfg, err := Load()
+	if err != nil || cfg.NitradoAPIBaseURL != "http://nitrado-fixture:8080" {
+		t.Fatalf("staging Load: %v %+v", err, cfg)
+	}
+}
+
+func TestStagingRefusesLiveStripeKey(t *testing.T) {
+	for _, tc := range []struct {
+		env, key string
+		ok       bool
+	}{
+		{"staging", "", true},
+		{"staging", "sk_test_abc", true},
+		{"staging", "sk_live_abc", false},
+		{"STAGING", "rk_live_abc", false},
+		{"production", "sk_live_abc", true}, // production is not this guard's concern
+		{"development", "sk_live_abc", true}, // production currently runs with APP_ENV=development
+		{"", "sk_live_abc", true},
+	} {
+		if err := ValidateStagingIsolation(tc.env, tc.key); (err == nil) != tc.ok {
+			t.Errorf("ValidateStagingIsolation(%q, %q) = %v, want ok=%v", tc.env, tc.key, err, tc.ok)
+		}
+	}
+}

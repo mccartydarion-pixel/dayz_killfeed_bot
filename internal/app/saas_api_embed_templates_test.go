@@ -9,14 +9,15 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/embedtemplates"
 )
 
-// The route set a template can be stored for must be EXACTLY the channel-route
-// blueprint (single source of truth for route keys): a route added there without a
-// variable set here (or the reverse) fails this test.
+// The template registry matches text-channel route vocabulary. Some routes,
+// including C.A.S.E., can be designed before a real publisher is reviewed.
 func TestEmbedTemplateRoutesMatchTheChannelRouteBlueprint(t *testing.T) {
 	var blueprint, templ []string
 	for k := range championRouteKeys {
 		if k == "ONLINE_COUNTER" {
-			continue // a voice-channel counter, never a message: no template
+			// A voice counter is not a message route. C.A.S.E. routes
+			// support stored/previewed templates but no live publisher yet.
+			continue
 		}
 		blueprint = append(blueprint, k)
 	}
@@ -29,6 +30,12 @@ func TestEmbedTemplateRoutesMatchTheChannelRouteBlueprint(t *testing.T) {
 	for i := range blueprint {
 		if blueprint[i] != templ[i] {
 			t.Fatalf("blueprint %v vs templates %v", blueprint, templ)
+		}
+	}
+	for _, route := range []string{"CASE_STATUS", "CASE_EVIDENCE", "CASE_ALERTS"} {
+		if !embedtemplates.ValidRoute(route) {t.Fatalf("%s missing template contract", route)}
+		if (&App{}).runtimeRenderingFor(0, route) != "NOT_ENABLED" {
+			t.Fatalf("%s has no authorized live publisher", route)
 		}
 	}
 	// Every route the website's designer offers (lib/saas/embedTypes.ts) is accepted.
@@ -46,16 +53,16 @@ func TestRuntimeRenderingStatusReflectsFlagAndRouteSupport(t *testing.T) {
 	on := &App{EmbedRenderer: embedrender.New(embedrender.Options{Source: nopSource{}, Enabled: true})}
 	disabled := &App{EmbedRenderer: embedrender.New(embedrender.Options{Source: nopSource{}, Enabled: false})}
 	for _, route := range embedrender.SupportedRoutes() {
-		if on.runtimeRenderingFor(route) != "ENABLED" {
+		if on.runtimeRenderingFor(0, route) != "ENABLED" {
 			t.Errorf("%s must report ENABLED when the flag is on", route)
 		}
-		if off.runtimeRenderingFor(route) != "NOT_ENABLED" || disabled.runtimeRenderingFor(route) != "NOT_ENABLED" {
+		if off.runtimeRenderingFor(0, route) != "NOT_ENABLED" || disabled.runtimeRenderingFor(0, route) != "NOT_ENABLED" {
 			t.Errorf("%s must report NOT_ENABLED when the flag is off", route)
 		}
 	}
 	// Persistent boards, diagnostic monitors and routes without a publisher stay NOT_ENABLED even with the flag on.
 	for _, route := range []string{"BOUNTY", "ADMIN_LOGS", "ADMIN_ALERTS", "BUILD_FEED", "SHOP", "HEATMAPS", "LINK_GAMERTAG", "STATS_LEADERBOARDS", "AUTO_LEADERBOARD"} {
-		if on.runtimeRenderingFor(route) != "NOT_ENABLED" {
+		if on.runtimeRenderingFor(0, route) != "NOT_ENABLED" {
 			t.Errorf("%s has no runtime template rendering and must say so", route)
 		}
 	}

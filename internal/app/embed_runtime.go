@@ -6,17 +6,36 @@ import (
 	"time"
 
 	"github.com/yourname/dayz-killfeed/internal/discord"
+	"github.com/yourname/dayz-killfeed/internal/featureflags"
 )
 
-// embedCustomizer returns the renderer publishers use, or a nil INTERFACE when the
-// rollout flag is off (CHAMPION_CUSTOM_EMBEDS_ENABLED) or there is no database - so a
-// disabled deployment does no template work at all and every card is the Champion
-// default. (Returning the typed nil pointer would be a non-nil interface.)
+// embedCustomizer returns the renderer publishers use, or a nil INTERFACE when there is no
+// renderer (no database) - so such a deployment does no template work at all and every card
+// is the Champion default. (Returning the typed nil pointer would be a non-nil interface.)
+// Whether a given installation's templates actually render is decided per installation by
+// customEmbedsFor, which the renderer consults through its gate.
 func (a *App) embedCustomizer() discord.EmbedCustomizer {
 	if a.EmbedRenderer == nil || !a.EmbedRenderer.Enabled() {
 		return nil
 	}
 	return a.EmbedRenderer
+}
+
+// customEmbedsFor reports whether custom embed rendering is on for one installation: the
+// owner's per-installation override (Owner Hub "Feature flags") when there is one, else the
+// deployment default CHAMPION_CUSTOM_EMBEDS_ENABLED. instID 0 asks for the default.
+func (a *App) customEmbedsFor(instID int64) bool {
+	if a.EmbedRenderer == nil || !a.EmbedRenderer.Enabled() {
+		return false
+	}
+	def := true
+	if a.Config != nil {
+		def = a.Config.CustomEmbedsEnabled
+	}
+	if a.FeatureFlags == nil || instID <= 0 {
+		return def
+	}
+	return a.FeatureFlags.Enabled(instID, featureflags.CustomEmbeds, def)
 }
 
 // serverNameCache resolves a game server's display name for {{server_name}} with a

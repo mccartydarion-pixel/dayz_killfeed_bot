@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/yourname/dayz-killfeed/internal/entitlements"
 	"io"
 	"log/slog"
 	"net/http"
@@ -37,8 +38,8 @@ const (
 	runtimeRenderingOff     = "NOT_ENABLED"
 )
 
-func (a *App) runtimeRenderingFor(routeKey string) string {
-	if a.EmbedRenderer.Enabled() && embedrender.RouteSupported(routeKey) {
+func (a *App) runtimeRenderingFor(instID int64, routeKey string) string {
+	if a.customEmbedsFor(instID) && embedrender.RouteSupported(routeKey) {
 		return runtimeRenderingEnabled
 	}
 	return runtimeRenderingOff
@@ -98,9 +99,9 @@ func embedLimits() embedTemplateLimits {
 		AuthorName: embedtemplates.MaxAuthorName, TotalText: embedtemplates.MaxTotalText}
 }
 
-func (a *App) embedResponse(routeKey string, s *embedtemplates.Stored, mode string) EmbedTemplateResponse {
-	out := EmbedTemplateResponse{RouteKey: routeKey, Variables: embedtemplates.Variables(routeKey), VariableDefinitions: embedtemplates.VariableDefinitions(routeKey), RuntimeRendering: a.runtimeRenderingFor(routeKey),
-		Activation: a.embedActivationStatus(routeKey, s, mode)}
+func (a *App) embedResponse(instID int64, routeKey string, s *embedtemplates.Stored, mode string) EmbedTemplateResponse {
+	out := EmbedTemplateResponse{RouteKey: routeKey, Variables: embedtemplates.Variables(routeKey), VariableDefinitions: embedtemplates.VariableDefinitions(routeKey), RuntimeRendering: a.runtimeRenderingFor(instID, routeKey),
+		Activation: a.embedActivationStatus(instID, routeKey, s, mode)}
 	if s != nil {
 		cfg := s.Config
 		cfg.RouteKey = routeKey
@@ -189,7 +190,7 @@ func (a *App) handleListEmbedTemplates(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := EmbedTemplateListResponse{InstallationID: instID, Templates: []EmbedTemplateResponse{}, CustomizedRoutes: []string{},
 		Variables: embedtemplates.AllVariables(), VariableDefinitions: embedtemplates.AllVariableDefinitions(), Limits: embedLimits(), RuntimeRoutes: embedrender.SupportedRoutes(), RuntimeRendering: runtimeRenderingOff}
-	if a.EmbedRenderer.Enabled() {
+	if a.customEmbedsFor(instID) {
 		resp.RuntimeRendering = runtimeRenderingEnabled
 	}
 	modes, err := a.embedModes(ctx, orgID, instID)
@@ -200,12 +201,12 @@ func (a *App) handleListEmbedTemplates(w http.ResponseWriter, r *http.Request) {
 	byRoute := map[string]*embedtemplates.Stored{}
 	for i := range stored {
 		byRoute[stored[i].Config.RouteKey] = &stored[i]
-		resp.Templates = append(resp.Templates, a.embedResponse(stored[i].Config.RouteKey, &stored[i], modes[stored[i].Config.RouteKey]))
+		resp.Templates = append(resp.Templates, a.embedResponse(instID, stored[i].Config.RouteKey, &stored[i], modes[stored[i].Config.RouteKey]))
 		resp.CustomizedRoutes = append(resp.CustomizedRoutes, stored[i].Config.RouteKey)
 	}
 	resp.Activations = map[string]EmbedActivationDTO{}
 	for route := range embedtemplates.AllVariables() {
-		resp.Activations[route] = a.embedActivationStatus(route, byRoute[route], modes[route])
+		resp.Activations[route] = a.embedActivationStatus(instID, route, byRoute[route], modes[route])
 	}
 	writeSaaSJSON(w, http.StatusOK, resp)
 }
@@ -229,7 +230,7 @@ func (a *App) handleGetEmbedTemplate(w http.ResponseWriter, r *http.Request) {
 		a.embedFailed(w, "load", err)
 		return
 	}
-	writeSaaSJSON(w, http.StatusOK, a.embedResponse(routeKey, stored, modes[routeKey]))
+	writeSaaSJSON(w, http.StatusOK, a.embedResponse(instID, routeKey, stored, modes[routeKey]))
 }
 
 // handlePutEmbedTemplate is PUT .../embed-templates/{routeKey} (OWNER/ADMIN): validate,
@@ -237,6 +238,12 @@ func (a *App) handleGetEmbedTemplate(w http.ResponseWriter, r *http.Request) {
 func (a *App) handlePutEmbedTemplate(w http.ResponseWriter, r *http.Request) {
 	orgID, instID, routeKey, userID, ok := a.embedTemplateContext(w, r, true, true)
 	if !ok {
+		return
+	}
+	// Saving a design is Champion-only. Reading, previewing, deleting and switching a
+	// route back to Default stay open so a downgraded server can still tidy up; the
+	// runtime shows the default cards on Survivor whatever is saved (ResolveTemplate).
+	if !a.requirePlanFeature(w, r, orgID, entitlements.CustomEmbeds) {
 		return
 	}
 	body := http.MaxBytesReader(w, r.Body, maxEmbedTemplateBody)
@@ -287,7 +294,7 @@ func (a *App) handlePutEmbedTemplate(w http.ResponseWriter, r *http.Request) {
 		a.embedFailed(w, "load", merr)
 		return
 	}
-	writeSaaSJSON(w, http.StatusOK, a.embedResponse(routeKey, &stored, modes[routeKey]))
+	writeSaaSJSON(w, http.StatusOK, a.embedResponse(instID, routeKey, &stored, modes[routeKey]))
 }
 
 // handleDeleteEmbedTemplate is DELETE .../embed-templates/{routeKey} (OWNER/ADMIN):
@@ -307,5 +314,5 @@ func (a *App) handleDeleteEmbedTemplate(w http.ResponseWriter, r *http.Request) 
 	}
 	a.EmbedRenderer.Invalidate(instID, routeKey) // an in-process reset is visible on the next event
 	slog.Info("component=saas_api", "event", "embed_template_deleted", "organization_id", orgID, "installation_id", instID, "route_key", routeKey, "acting_user_id", userID, "existed", deleted)
-	writeSaaSJSON(w, http.StatusOK, a.embedResponse(routeKey, nil, repository.EmbedModeDefault)) // reset also returns the route to Champion Default
+	writeSaaSJSON(w, http.StatusOK, a.embedResponse(instID, routeKey, nil, repository.EmbedModeDefault)) // reset also returns the route to Champion Default
 }

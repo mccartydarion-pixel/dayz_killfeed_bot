@@ -47,6 +47,7 @@ func (a *App) registerBillingRoutes() {
 	}
 	h := a.HTTPServer.Handle
 	h("GET /api/saas/billing/plans", a.handleBillingPlans)
+	a.registerPublicCatalogRoute()
 	const base = "/api/saas/organizations/{organizationID}/billing"
 	h("GET "+base+"/subscription", a.handleBillingSubscription)
 	h("POST "+base+"/checkout", a.handleBillingCheckout)
@@ -54,6 +55,7 @@ func (a *App) registerBillingRoutes() {
 	h("POST "+base+"/plan", a.handleBillingChangePlan)
 	h("POST "+base+"/cancel", a.handleBillingCancel)
 	h("POST "+base+"/reactivate", a.handleBillingReactivate)
+	a.registerCaseBillingRoutes()
 	// Not behind requireSaaSServiceAuth: Stripe calls this directly and authenticates with its own
 	// HMAC signature (billing.VerifyWebhookEvent), never the website's bearer token.
 	h("POST /api/saas/billing/webhook", a.handleStripeWebhook)

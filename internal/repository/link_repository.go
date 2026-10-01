@@ -87,8 +87,72 @@ func (r *LinkRepository) ExpirePending(ctx context.Context) error {
 // after the ADM disconnect/reconnect challenge completes, or an admin's
 // manual approval - see LinkVerificationService.complete.
 func (r *LinkRepository) Verify(ctx context.Context, guildID int64, discordUserID string) error {
-	_, err := r.pool.Exec(ctx, `UPDATE player_links SET status=$1,verified_at=NOW(),updated_at=NOW() WHERE guild_id=$2 AND discord_user_id=$3 AND status=$4`, linking.StatusVerified, guildID, discordUserID, linking.StatusPending)
+	_, err := r.pool.Exec(ctx, `UPDATE player_links SET status=$1,verified_at=NOW(),updated_at=NOW(),role_sync_status=$5 WHERE guild_id=$2 AND discord_user_id=$3 AND status=$4`, linking.StatusVerified, guildID, discordUserID, linking.StatusPending, linking.RoleSyncPending)
 	return err
+}
+
+// MarkRoleSynced records the outcome of a Verified-role assignment for a
+// VERIFIED link. status is linking.RoleSyncAssigned, RoleSyncFailed or
+// RoleSyncMemberGone; a failure increments the attempt count. Idempotent: an
+// ASSIGNED link is never moved back to PENDING/FAILED.
+func (r *LinkRepository) MarkRoleSynced(ctx context.Context, guildID int64, discordUserID, status, errMsg string) error {
+	if len(errMsg) > 300 {
+		errMsg = errMsg[:300]
+	}
+	_, err := r.pool.Exec(ctx, `UPDATE player_links SET
+    role_sync_status=$3,
+    role_sync_attempts=role_sync_attempts+CASE WHEN $3 IN ($5,$6) THEN 1 ELSE 0 END,
+    role_sync_last_attempt_at=NOW(),
+    role_synced_at=CASE WHEN $3=$7 THEN NOW() ELSE role_synced_at END,
+    role_sync_error=NULLIF($4,''),
+    updated_at=NOW()
+WHERE guild_id=$1 AND discord_user_id=$2 AND status=$8 AND role_sync_status IS DISTINCT FROM $7`,
+		guildID, discordUserID, status, errMsg, linking.RoleSyncFailed, linking.RoleSyncMemberGone, linking.RoleSyncAssigned, linking.StatusVerified)
+	return err
+}
+
+// ListRoleSyncDue returns Discord user IDs of VERIFIED links whose role is
+// still PENDING or FAILED, with fewer than maxAttempts attempts and none in
+// the last retryAfter (a flat per-link backoff), oldest first.
+func (r *LinkRepository) ListRoleSyncDue(ctx context.Context, guildID int64, maxAttempts int, retryAfter time.Duration, limit int) ([]string, error) {
+	rows, err := r.pool.Query(ctx, `SELECT discord_user_id FROM player_links
+WHERE guild_id=$1 AND status=$2 AND role_sync_status IN ($3,$4) AND role_sync_attempts < $5
+  AND (role_sync_last_attempt_at IS NULL OR role_sync_last_attempt_at < NOW() - make_interval(secs => $6))
+ORDER BY role_sync_last_attempt_at NULLS FIRST, verified_at
+LIMIT $7`, guildID, linking.StatusVerified, linking.RoleSyncPending, linking.RoleSyncFailed, maxAttempts, retryAfter.Seconds(), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// RoleSyncCounts reports VERIFIED links by role sync status for health output
+// (status "" = untracked, verified before migration 0056).
+func (r *LinkRepository) RoleSyncCounts(ctx context.Context, guildID int64) (map[string]int, error) {
+	rows, err := r.pool.Query(ctx, `SELECT COALESCE(role_sync_status,''), COUNT(*) FROM player_links WHERE guild_id=$1 AND status=$2 GROUP BY 1`, guildID, linking.StatusVerified)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var status string
+		var n int
+		if err := rows.Scan(&status, &n); err != nil {
+			return nil, err
+		}
+		out[status] = n
+	}
+	return out, rows.Err()
 }
 
 // RecordChallengeDisconnect marks the first observed disconnect after a
@@ -131,8 +195,8 @@ RETURNING discord_user_id`,
 		return "", false, err
 	}
 
-	if _, err := tx.Exec(ctx, `UPDATE player_links SET status=$1,verified_at=NOW(),updated_at=NOW() WHERE guild_id=$2 AND discord_user_id=$3 AND status=$4`,
-		linking.StatusVerified, guildID, discordUserID, linking.StatusPending); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE player_links SET status=$1,verified_at=NOW(),updated_at=NOW(),role_sync_status=$5 WHERE guild_id=$2 AND discord_user_id=$3 AND status=$4`,
+		linking.StatusVerified, guildID, discordUserID, linking.StatusPending, linking.RoleSyncPending); err != nil {
 		return "", false, err
 	}
 

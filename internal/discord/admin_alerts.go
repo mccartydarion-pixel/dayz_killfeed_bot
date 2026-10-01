@@ -34,6 +34,10 @@ const (
 	AlertKindUAVIntrusion    = "UAV_INTRUSION"
 	AlertKindBaseRadar       = "BASE_RADAR_INTRUSION"
 	AlertKindZoneBanViolated = "ZONE_BAN_VIOLATION"
+	// AlertKindCaseWatchDigest labels the paid C.A.S.E. Watch digest embed. It is NOT an
+	// operational kind: the ADMIN_ALERTS publisher refuses it (operationalAdminAlertKind), and the
+	// durable digest outbox sends it only to the private C.A.S.E. status channel.
+	AlertKindCaseWatchDigest = "CASE_WATCH_DIGEST"
 )
 
 // AdminAlert is one operational condition for one server.
@@ -61,6 +65,9 @@ const (
 	adminAlertFooter         = "CHAMPION • STAFF INTELLIGENCE"
 )
 
+// A duplicated numeric server ID in another guild must have independent alert state.
+type alertScope struct { guildRowID, serverID int64 }
+
 type serverAlertState struct {
 	stale            bool
 	downloadFailures int
@@ -81,12 +88,12 @@ type AdminAlertPublisher struct {
 	now         func() time.Time
 
 	mu      sync.Mutex
-	servers map[int64]*serverAlertState
+	servers map[alertScope]*serverAlertState
 	dropped int
 }
 
 func NewAdminAlertPublisher(sender HitSender, resolver RouteResolver) *AdminAlertPublisher {
-	return &AdminAlertPublisher{sender: sender, resolver: resolver, queue: make(chan AdminAlert, adminAlertQueueSize), now: time.Now, servers: map[int64]*serverAlertState{}}
+	return &AdminAlertPublisher{sender: sender, resolver: resolver, queue: make(chan AdminAlert, adminAlertQueueSize), now: time.Now, servers: map[alertScope]*serverAlertState{}}
 }
 
 // SetServerNames adds the server's name to every alert.
@@ -96,11 +103,12 @@ func (p *AdminAlertPublisher) SetServerNames(f ServerNameFunc) {
 	}
 }
 
-func (p *AdminAlertPublisher) state(serverID int64) *serverAlertState {
-	st := p.servers[serverID]
+func (p *AdminAlertPublisher) state(guildRowID, serverID int64) *serverAlertState {
+	key := alertScope{guildRowID: guildRowID, serverID: serverID}
+	st := p.servers[key]
 	if st == nil {
 		st = &serverAlertState{}
-		p.servers[serverID] = st
+		p.servers[key] = st
 	}
 	return st
 }
@@ -113,7 +121,7 @@ func (p *AdminAlertPublisher) ObserveSnapshot(guildRowID, serverID int64, snap k
 	now := p.now()
 	stale := snap.OnlineCount > 0 && !snap.LastLogChange.IsZero() && now.Sub(snap.LastLogChange) > admStaleAfter
 	p.mu.Lock()
-	st := p.state(serverID)
+	st := p.state(guildRowID, serverID)
 	changed := stale != st.stale
 	st.stale = stale
 	p.mu.Unlock()
@@ -138,7 +146,7 @@ func (p *AdminAlertPublisher) ObserveDownload(guildRowID int64, report killfeed.
 	}
 	var alert *AdminAlert
 	p.mu.Lock()
-	st := p.state(report.ServerID)
+	st := p.state(guildRowID, report.ServerID)
 	switch report.Result {
 	case "failure":
 		st.downloadFailures++
@@ -166,9 +174,21 @@ func (p *AdminAlertPublisher) ObserveDownload(guildRowID int64, report killfeed.
 	}
 }
 
+// operationalAdminAlertKind is an explicit boundary: C.A.S.E. diagnostics,
+// preview cards, or future finding events cannot enter the operational route.
+func operationalAdminAlertKind(kind string) bool {
+ switch kind {
+ case AlertKindADMStale, AlertKindNitradoFailure, AlertKindZoneIntrusion,
+  AlertKindUAVIntrusion, AlertKindBaseRadar, AlertKindZoneBanViolated:
+  return true
+ default:
+  return false
+ }
+}
+
 // Publish enqueues an alert without blocking; a full queue drops it.
 func (p *AdminAlertPublisher) Publish(a AdminAlert) {
-	if p == nil {
+	if p == nil || !operationalAdminAlertKind(a.Kind) {
 		return
 	}
 	if a.At.IsZero() {
@@ -203,6 +223,7 @@ func (p *AdminAlertPublisher) Run(ctx context.Context) {
 }
 
 func (p *AdminAlertPublisher) send(ctx context.Context, a AdminAlert) {
+	if !operationalAdminAlertKind(a.Kind) { return }
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("component=admin_alerts", "msg", "send panic recovered", "panic", fmt.Sprint(r))
@@ -298,4 +319,21 @@ func IntrusionAdminAlert(ev killfeed.IntrusionEvent) (AdminAlert, bool) {
 		GuildRowID: ev.Zone.GuildID, ServerID: ev.Zone.ServerID, Kind: kind, Severity: severity, Headline: headline,
 		Detail: who + " entered " + zone + ".", Fields: fields, At: ev.At, SkipChannel: skip,
 	}, true
+}
+
+// BuildCaseWatchDigestEmbed is observational, never an accusation, score or
+// statement that no cheating occurred in a period without recorded evidence.
+func BuildCaseWatchDigestEmbed(a AdminAlert, serverName string) *discordgo.MessageEmbed {
+	embed:=presentation.NewChampionEmbed("C.A.S.E. WATCH • OBSERVATION DIGEST",presentation.InfoSteel)
+	embed.Description="Persisted ADM source observations from the selected server. Counts describe collected evidence only; they are not cheat alerts or gameplay verdicts."
+	if strings.TrimSpace(serverName)!="" {
+		embed.Fields=append(embed.Fields,&discordgo.MessageEmbedField{Name:"Server",Value:presentation.SafeName(serverName,60),Inline:true})
+	}
+	for _,field:=range a.Fields {
+		if strings.TrimSpace(field[0])=="" || strings.TrimSpace(field[1])=="" {continue}
+		embed.Fields=append(embed.Fields,&discordgo.MessageEmbedField{Name:presentation.SafeName(field[0],70),Value:presentation.SafeName(field[1],150),Inline:true})
+	}
+	embed.Footer=&discordgo.MessageEmbedFooter{Text:"C.A.S.E. • SOURCE OBSERVATION ONLY • NO ENFORCEMENT"}
+	presentation.StampEmbed(embed,a.At)
+	return embed
 }

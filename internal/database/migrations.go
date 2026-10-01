@@ -2153,7 +2153,383 @@ ON CONFLICT (installation_id, route_key) DO NOTHING;
 `,
 	},
 	{
-		Name: "0054_player_lives_and_daily_activity",
+		// Champion Shop Phase 2C.3 durable delivery-attempt ledger (docs/SHOP_DELIVERY_PHASE2C3.md).
+		// Additive; inert until something creates an attempt (automatic delivery stays disabled).
+		Name: "0054_shop_delivery_attempts",
+		SQL:  ShopDeliveryAttemptsSQL,
+	},
+	{
+		// Champion Shop Phase 2C.4 structured canary evidence (docs/SHOP_DELIVERY_PHASE2C4.md). Additive,
+		// append-only; depends on 0054. Inert until the canary execution gate is enabled.
+		Name: "0055_shop_delivery_attempt_evidence",
+		SQL:  ShopAttemptEvidenceSQL,
+	},
+	{
+		// C.A.S.E. 2G.2: inert, source-linked shadow-evaluation ledger.
+		Name: "0056_case_shadow_evaluations",
+		SQL:  CaseShadowLedgerSQL,
+	},
+	{
+		Name: "0056_case_addon_subscriptions",
+		SQL: `
+-- Phase 6.1: C.A.S.E. is an ADDITIVE per-server purchase, never a new base plan.
+-- An installation may be repointed to a different game server; the purchased
+-- game_server_id remains bound, and runtime access checks require equality.
+-- RESTRICT deletion of bound installation/server: paid Stripe subscriptions
+-- must be cancelled/reconciled before removing their local binding.
+CREATE TABLE IF NOT EXISTS case_addon_subscriptions (
+    id BIGSERIAL PRIMARY KEY,
+    organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE RESTRICT,
+    installation_id BIGINT NOT NULL,
+    game_server_id BIGINT NOT NULL REFERENCES game_servers(id) ON DELETE RESTRICT,
+    tier TEXT NOT NULL CHECK (tier IN ('CASE_WATCH','CASE_PRO','CASE_COMMAND')),
+    status TEXT NOT NULL DEFAULT 'PENDING'
+        CHECK (status IN ('PENDING','TRIAL','ACTIVE','PAST_DUE','CANCELED','SUSPENDED')),
+    provider TEXT CHECK (provider IS NULL OR provider = 'stripe'),
+    provider_customer_id TEXT,
+    provider_subscription_id TEXT,
+    provider_price_id TEXT,
+    current_period_start TIMESTAMPTZ,
+    current_period_end TIMESTAMPTZ,
+    trial_started_at TIMESTAMPTZ,
+    trial_ends_at TIMESTAMPTZ,
+    cancel_at_period_end BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT case_addon_installation_scope
+        FOREIGN KEY (installation_id, organization_id)
+        REFERENCES installations(id, organization_id) ON DELETE RESTRICT,
+    CONSTRAINT uq_case_addon_org_installation UNIQUE (organization_id, installation_id),
+    CONSTRAINT uq_case_addon_org_server UNIQUE (organization_id, game_server_id),
+    CONSTRAINT case_addon_period_order CHECK (
+        current_period_start IS NULL OR current_period_end IS NULL OR
+        current_period_start < current_period_end
+    ),
+    CONSTRAINT case_addon_trial_order CHECK (
+        trial_started_at IS NULL OR trial_ends_at IS NULL OR
+        trial_started_at < trial_ends_at
+    ),
+    CONSTRAINT case_addon_subscription_id_nonempty CHECK (
+        provider_subscription_id IS NULL OR LENGTH(BTRIM(provider_subscription_id)) > 0
+    ),
+    CONSTRAINT case_addon_active_provider CHECK (
+        status NOT IN ('ACTIVE','TRIAL') OR (
+            COALESCE(provider,'') = 'stripe' AND
+            NULLIF(BTRIM(COALESCE(provider_subscription_id,'')),'') IS NOT NULL AND
+            NULLIF(BTRIM(COALESCE(provider_price_id,'')),'') IS NOT NULL AND
+            current_period_end IS NOT NULL
+        )
+    )
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_case_addon_provider_subscription
+    ON case_addon_subscriptions(provider, provider_subscription_id)
+    WHERE provider_subscription_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_case_addon_org_status
+    ON case_addon_subscriptions(organization_id, status, installation_id);
+-- No backfill and no write/API route in this milestone. All packages start
+-- with zero rows; only the later verified add-on webhook may grant access.
+`,
+	},
+	{
+		Name: "0057_case_checkout_reconciliation",
+		SQL: `
+-- Phase 6.2: retain a single per-server pending checkout and its Stripe
+-- idempotency identity; do not create a new subscription when a retry races.
+ALTER TABLE case_addon_subscriptions
+    ADD COLUMN IF NOT EXISTS checkout_session_id TEXT;
+ALTER TABLE case_addon_subscriptions
+    ADD COLUMN IF NOT EXISTS checkout_url TEXT;
+ALTER TABLE case_addon_subscriptions
+    ADD COLUMN IF NOT EXISTS checkout_reserved_at TIMESTAMPTZ;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_case_checkout_session
+    ON case_addon_subscriptions(checkout_session_id)
+    WHERE checkout_session_id IS NOT NULL;
+-- Checkout and subscription webhooks are recorded only in the same
+-- transaction that successfully applies the event. An error rolls both back,
+-- so Stripe retries can never be silently ignored.
+CREATE TABLE IF NOT EXISTS case_addon_webhook_events (
+    provider TEXT NOT NULL CHECK (provider = 'stripe'),
+    event_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    addon_id BIGINT NOT NULL REFERENCES case_addon_subscriptions(id) ON DELETE RESTRICT,
+    received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (provider,event_id)
+);
+CREATE INDEX IF NOT EXISTS idx_case_addon_webhook_addon
+    ON case_addon_webhook_events(addon_id, received_at DESC);
+`,
+	},
+	{
+		Name: "0058_case_payment_confirmation",
+		SQL: `
+-- A Stripe subscription can appear ACTIVE before asynchronous payment
+-- succeeds. Preserve an independent invoice-paid proof for paid access.
+-- C.A.S.E. ACTIVE access is withheld until a signed invoice.paid webhook.
+ALTER TABLE case_addon_subscriptions
+    ADD COLUMN IF NOT EXISTS paid_through TIMESTAMPTZ;
+`,
+	},
+	{
+		Name: "0059_case_founder_trial_ledger",
+		SQL: `
+-- Additive, immutable one-time founder trial identity. No grants/backfill.
+-- Future code must write a grant only after verifying an eligible existing
+-- base customer and a real Stripe Pro trial on this exact bound game server.
+CREATE TABLE IF NOT EXISTS case_addon_trial_grants (
+    organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE RESTRICT,
+    game_server_id BIGINT NOT NULL REFERENCES game_servers(id) ON DELETE RESTRICT,
+    installation_id BIGINT NOT NULL,
+    addon_id BIGINT NOT NULL REFERENCES case_addon_subscriptions(id) ON DELETE RESTRICT,
+    provider_subscription_id TEXT NOT NULL CHECK (LENGTH(BTRIM(provider_subscription_id)) > 0),
+    tier TEXT NOT NULL DEFAULT 'CASE_PRO' CHECK (tier = 'CASE_PRO'),
+    trial_started_at TIMESTAMPTZ NOT NULL,
+    trial_ends_at TIMESTAMPTZ NOT NULL,
+    granted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT case_founder_trial_scope FOREIGN KEY (installation_id, organization_id)
+        REFERENCES installations(id, organization_id) ON DELETE RESTRICT,
+    CONSTRAINT case_founder_trial_duration CHECK (
+        trial_ends_at > trial_started_at AND
+        trial_ends_at <= trial_started_at + INTERVAL '7 days'
+    ),
+    PRIMARY KEY (organization_id, game_server_id),
+    CONSTRAINT uq_case_founder_trial_subscription UNIQUE (provider_subscription_id),
+    CONSTRAINT uq_case_founder_trial_addon UNIQUE (addon_id)
+);
+-- The unique (organization_id, game_server_id) key survives a change of
+-- installation or cancellation. A new trial for the same server is impossible.
+`,
+	},
+	{
+		Name: "0060_case_checkout_attempt",
+		SQL: `
+-- Recovery after a Stripe-confirmed expired Checkout Session must never
+-- reuse the old Stripe idempotency identity.
+ALTER TABLE case_addon_subscriptions
+    ADD COLUMN IF NOT EXISTS checkout_attempt BIGINT NOT NULL DEFAULT 1
+        CHECK (checkout_attempt > 0);
+`,
+	},
+	{
+		Name: "0061_case_watch_digest_outbox",
+		SQL: `
+-- Durable per-server paid staff digest. A pre-send claim can expire and be
+-- retried safely, but a SENDING row must NEVER be automatically resent:
+-- a crash or network error may occur after Discord accepted a message.
+CREATE TABLE IF NOT EXISTS case_watch_digest_outbox (
+    id BIGSERIAL PRIMARY KEY,
+    organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE RESTRICT,
+    installation_id BIGINT NOT NULL,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE RESTRICT,
+    game_server_id BIGINT NOT NULL REFERENCES game_servers(id) ON DELETE RESTRICT,
+    requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    window_start TIMESTAMPTZ NOT NULL,
+    window_end TIMESTAMPTZ NOT NULL,
+    source_lines BIGINT NOT NULL CHECK (source_lines >= 0),
+    hit_lines BIGINT NOT NULL CHECK (hit_lines >= 0),
+    kill_lines BIGINT NOT NULL CHECK (kill_lines >= 0),
+    collector_enabled BOOLEAN NOT NULL,
+    status TEXT NOT NULL DEFAULT 'READY'
+        CHECK (status IN ('READY','CLAIMED','SENDING','SENT','UNKNOWN','BLOCKED')),
+    attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts BETWEEN 0 AND 3),
+    claim_version INTEGER NOT NULL DEFAULT 0 CHECK (claim_version >= 0),
+    claim_expires_at TIMESTAMPTZ,
+    next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    discord_channel_id TEXT,
+    discord_message_id TEXT,
+    reason_code TEXT,
+    sent_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT case_digest_installation_scope FOREIGN KEY (installation_id,organization_id)
+        REFERENCES installations(id,organization_id) ON DELETE RESTRICT,
+    CONSTRAINT case_digest_window CHECK (window_start < window_end),
+    CONSTRAINT case_digest_sent_receipt CHECK (
+        status <> 'SENT' OR
+        (NULLIF(BTRIM(COALESCE(discord_message_id,'')),'') IS NOT NULL
+         AND NULLIF(BTRIM(COALESCE(discord_channel_id,'')),'') IS NOT NULL
+         AND sent_at IS NOT NULL)
+    )
+);
+CREATE INDEX IF NOT EXISTS idx_case_digest_claim
+    ON case_watch_digest_outbox(status,next_attempt_at,id)
+    WHERE status IN ('READY','CLAIMED');
+CREATE INDEX IF NOT EXISTS idx_case_digest_scope
+    ON case_watch_digest_outbox(organization_id,installation_id,game_server_id,requested_at DESC);
+`,
+	},
+	{
+		Name: "0062_case_watch_requester",
+		SQL: `
+-- Old rows from pre-release 0059 have NULL and are blocked by the worker.
+-- New paid messages must retain the authenticated requester, so a role
+-- revocation before delivery can be checked against fresh Discord roles.
+ALTER TABLE case_watch_digest_outbox
+    ADD COLUMN IF NOT EXISTS requested_by_user_id BIGINT REFERENCES app_users(id) ON DELETE RESTRICT;
+`,
+	},
+	{
+		// Inert C.A.S.E. core review/outbox schema; no production writer or sender.
+		// 0057-0062 are reserved in an independent older billing candidate.
+		Name: "0063_case_review_outbox_skeleton",
+		SQL:  CASEReviewSkeletonSQL,
+	},
+	{
+		Name: "0063_case_plan_changes",
+		SQL: `
+-- Phase 6.10: Watch <-> Pro changes and re-subscription after cancellation.
+-- paid_tier is the tier a signed invoice.paid actually covered through
+-- paid_through. tier/provider_price_id is what Stripe will bill next. An
+-- upgrade unlocks only when its proration invoice is paid; a downgrade keeps
+-- the already-paid tier until paid_through.
+ALTER TABLE case_addon_subscriptions
+    ADD COLUMN IF NOT EXISTS paid_tier TEXT
+        CHECK (paid_tier IS NULL OR paid_tier IN ('CASE_WATCH','CASE_PRO','CASE_COMMAND'));
+UPDATE case_addon_subscriptions SET paid_tier=tier
+    WHERE paid_through IS NOT NULL AND paid_tier IS NULL;
+ALTER TABLE case_addon_subscriptions DROP CONSTRAINT IF EXISTS case_addon_paid_tier_required;
+ALTER TABLE case_addon_subscriptions ADD CONSTRAINT case_addon_paid_tier_required
+    CHECK (paid_through IS NULL OR paid_tier IS NOT NULL);
+-- One CURRENT add-on per installation and per game server. A CANCELED row is
+-- retained as history (its Stripe subscription id stays unique) so the server
+-- can purchase again without deleting records or reusing an old identity.
+ALTER TABLE case_addon_subscriptions DROP CONSTRAINT IF EXISTS uq_case_addon_org_installation;
+ALTER TABLE case_addon_subscriptions DROP CONSTRAINT IF EXISTS uq_case_addon_org_server;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_case_addon_current_installation
+    ON case_addon_subscriptions(organization_id, installation_id) WHERE status <> 'CANCELED';
+CREATE UNIQUE INDEX IF NOT EXISTS uq_case_addon_current_server
+    ON case_addon_subscriptions(organization_id, game_server_id) WHERE status <> 'CANCELED';
+`,
+	},
+	{
+		// Inert C.A.S.E. build-action evidence; no detector or alert activation.
+		Name: "0064_case_build_evidence",
+		SQL:  CASEBuildEvidenceSQL,
+	},
+	{
+		Name: "0064_case_invoice_coverage",
+		SQL: `
+-- Phase 6.26B: invoice-level C.A.S.E. coverage so refunds, disputes and voids can revoke exactly
+-- the coverage they reverse. Additive; touches no base billing table.
+-- One row per paid C.A.S.E. invoice. Coverage in good standing (PAID, PARTIALLY_REFUNDED,
+-- DISPUTE_WON) grants its tier until period_end; REFUNDED, DISPUTED, DISPUTE_LOST and VOIDED grant
+-- nothing. paid_through/paid_tier on the add-on are recomputed from these rows.
+CREATE TABLE IF NOT EXISTS case_addon_invoice_coverage (
+    id BIGSERIAL PRIMARY KEY,
+    addon_id BIGINT NOT NULL REFERENCES case_addon_subscriptions(id) ON DELETE RESTRICT,
+    provider TEXT NOT NULL CHECK (provider = 'stripe'),
+    provider_invoice_id TEXT NOT NULL CHECK (LENGTH(BTRIM(provider_invoice_id)) > 0),
+    provider_subscription_id TEXT NOT NULL CHECK (LENGTH(BTRIM(provider_subscription_id)) > 0),
+    provider_payment_intent_id TEXT,
+    tier TEXT NOT NULL CHECK (tier IN ('CASE_WATCH','CASE_PRO','CASE_COMMAND')),
+    period_start TIMESTAMPTZ NOT NULL,
+    period_end TIMESTAMPTZ NOT NULL,
+    amount_paid_cents BIGINT NOT NULL DEFAULT 0 CHECK (amount_paid_cents >= 0),
+    amount_refunded_cents BIGINT NOT NULL DEFAULT 0 CHECK (amount_refunded_cents >= 0),
+    currency TEXT,
+    status TEXT NOT NULL DEFAULT 'PAID'
+        CHECK (status IN ('PAID','PARTIALLY_REFUNDED','REFUNDED','DISPUTED','DISPUTE_WON','DISPUTE_LOST','VOIDED')),
+    dispute_status TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_case_invoice_coverage UNIQUE (provider, provider_invoice_id),
+    CONSTRAINT case_invoice_coverage_period CHECK (period_start < period_end)
+);
+CREATE INDEX IF NOT EXISTS idx_case_invoice_coverage_addon
+    ON case_addon_invoice_coverage(addon_id, period_end DESC);
+-- Append-only audit history of every coverage change (never updated or deleted by the app).
+CREATE TABLE IF NOT EXISTS case_addon_coverage_events (
+    id BIGSERIAL PRIMARY KEY,
+    addon_id BIGINT NOT NULL REFERENCES case_addon_subscriptions(id) ON DELETE RESTRICT,
+    provider_invoice_id TEXT NOT NULL,
+    stripe_event_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    previous_status TEXT,
+    new_status TEXT NOT NULL,
+    amount_refunded_cents BIGINT,
+    dispute_status TEXT,
+    paid_through_before TIMESTAMPTZ,
+    paid_through_after TIMESTAMPTZ,
+    paid_tier_before TEXT,
+    paid_tier_after TEXT,
+    recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_case_coverage_events_addon
+    ON case_addon_coverage_events(addon_id, recorded_at DESC);
+ALTER TABLE case_addon_subscriptions
+    ADD COLUMN IF NOT EXISTS coverage_state TEXT NOT NULL DEFAULT 'OK'
+        CHECK (coverage_state IN ('OK','PARTIALLY_REFUNDED','REFUNDED','DISPUTED','DISPUTE_LOST'));
+-- New add-ons start with a complete (empty) ledger. Pre-existing paid rows were paid before the
+-- ledger existed: their invoices are reconstructed from Stripe before the first recalculation.
+ALTER TABLE case_addon_subscriptions
+    ADD COLUMN IF NOT EXISTS coverage_backfilled BOOLEAN NOT NULL DEFAULT TRUE;
+UPDATE case_addon_subscriptions SET coverage_backfilled = FALSE
+    WHERE paid_through IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM case_addon_invoice_coverage c WHERE c.addon_id = case_addon_subscriptions.id);
+`,
+	},
+	{
+		// P0 2026-09-26 Verified-role reconciliation (docs/ONLINE_COUNTER_AND_LINK_CHECK.md). Additive,
+		// nullable columns only; no row is rewritten. Existing VERIFIED links keep role_sync_status NULL
+		// (never reconciled automatically - their role state predates tracking); links verified from
+		// now on are PENDING until Discord confirms the role, so a failed assignment survives restarts.
+		Name: "0065_player_link_role_sync",
+		SQL:  PlayerLinkRoleSyncSQL,
+	},
+	{
+		// P0 2026-09-26 immediate killfeed journal (docs/incidents/2026-09-26-staging-infrastructure.md).
+		// New table only; no existing row is read or rewritten. Written only by feeds running
+		// KILLFEED_DELIVERY_MODE=immediate, so it stays empty under the production default.
+		Name: "0066_discord_feed_cards",
+		SQL:  DiscordFeedCardsSQL,
+	},
+	{
+		// Ranked RP storage only. No runtime awards or public rank source are wired.
+		Name: "0067_ranked_ledger_foundation",
+		SQL:  RankedLedgerFoundationSQL,
+	},
+	{
+		// Champion Shop: the attempt ledger's artifact_path may also be the custom/ location
+		// (docs/SHOP_CUSTOM_RELOCATION.md). Forward-only CHECK widening; no row is read or rewritten.
+		Name: "0068_shop_delivery_attempt_artifact_path",
+		SQL:  ShopAttemptArtifactPathSQL,
+	},
+	{
+		// Inert Core Eight Base Boost registration; no detector reader or notifier.
+		Name: "0070_case_base_registration",
+		SQL:  CASEBaseRegistrationSQL,
+	},
+	{
+		// Inert owner preferences; no detector reads or release flags.
+		Name: "0071_case_detector_settings",
+		SQL:  CASEDetectorSettingsSQL,
+	},
+	{
+		// Base Raid Alarm: owner switch (off by default) and alarm log. Additive only.
+		Name: "0072_base_raid_alarm",
+		SQL:  BaseRaidAlarmSQL,
+	},
+	{
+		// Faction Hub: real DayZ flag catalog; flag and armband exclusive per installation.
+		Name: "0073_faction_branding_exclusive",
+		SQL:  FactionBrandingExclusiveSQL,
+	},
+	{
+		// Faction Hub: one recruitment card per faction in the FACTION_RECRUITMENT channel.
+		Name: "0074_faction_recruitment",
+		SQL:  FactionRecruitmentSQL,
+	},
+	{
+		// Owner Hub controls: platform audit log, user bans, installation suspension,
+		// owner-granted plans. Additive only.
+		Name: "0075_owner_controls",
+		SQL:  OwnerControlsSQL,
+	},
+	{
+		// Owner Hub feature flags: per-installation overrides of the env rollout switches.
+		Name: "0076_feature_flags",
+		SQL:  FeatureFlagsSQL,
+	},
+	{
+		Name: "0077_player_lives_and_daily_activity",
 		SQL: `
 -- Lives and retention collection (docs/LIVES.md, docs/RETENTION.md). Additive.
 -- Neither can be backfilled: location events are deleted after the retention window and
@@ -2223,7 +2599,7 @@ CREATE TABLE IF NOT EXISTS server_hourly_activity (
 `,
 	},
 	{
-		Name: "0055_player_recap_prefs",
+		Name: "0078_player_recap_prefs",
 		SQL: `
 -- Death recap DMs (docs/LIVES.md). Opt-in per Discord user and guild: no row, or death_recap FALSE,
 -- means the bot never DMs that player. Only a VERIFIED link is ever resolved to a recipient.
@@ -2237,7 +2613,7 @@ CREATE TABLE IF NOT EXISTS player_recap_prefs (
 `,
 	},
 	{
-		Name: "0056_player_card_shares",
+		Name: "0079_player_card_shares",
 		SQL: `
 -- Champion Card share links (docs/CHAMPION_CARD.md). A player creates a link for their own card on
 -- one installation and can revoke it; the token is the only address of the public image. At most
@@ -2255,7 +2631,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_player_card_shares_active ON player_card_sh
 `,
 	},
 	{
-		Name: "0057_installation_feature_settings",
+		Name: "0080_installation_feature_settings",
 		SQL: `
 -- Opt-in feature settings, one row per installation (no row = every feature off, default tuning).
 -- Hot zones (docs/HOT_ZONES.md), public fight replay (docs/FIGHT_REPLAY.md), the cross-server
@@ -2287,6 +2663,113 @@ CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events
 `,
 	},
 }
+
+// RankedLedgerFoundationSQL creates server-scoped seasonal RP storage.
+// No existing kills or economy rows are rewritten.
+const RankedLedgerFoundationSQL = `
+CREATE TABLE IF NOT EXISTS ranked_seasons (
+    id BIGSERIAL PRIMARY KEY,
+    scope TEXT NOT NULL DEFAULT 'SERVER' CHECK (scope = 'SERVER'),
+    platform TEXT NOT NULL CHECK (platform IN ('PLAYSTATION','XBOX')),
+    server_id BIGINT NOT NULL REFERENCES game_servers(id) ON DELETE RESTRICT,
+    status TEXT NOT NULL DEFAULT 'DRAFT' CHECK (status IN ('DRAFT','ACTIVE','ARCHIVED')),
+    rp_per_kill BIGINT NOT NULL CHECK (rp_per_kill > 0),
+    thresholds BIGINT[] NOT NULL CHECK (array_length(thresholds,1)=7),
+    starts_at TIMESTAMPTZ NOT NULL,
+    ends_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CHECK (ends_at IS NULL OR ends_at > starts_at)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ranked_active_server ON ranked_seasons(server_id) WHERE status='ACTIVE' AND scope='SERVER';
+CREATE TABLE IF NOT EXISTS ranked_awards (
+    id BIGSERIAL PRIMARY KEY,
+    season_id BIGINT NOT NULL REFERENCES ranked_seasons(id) ON DELETE RESTRICT,
+    kill_id BIGINT NOT NULL REFERENCES kills(id) ON DELETE RESTRICT,
+    source_key TEXT NOT NULL CHECK (length(source_key)>0),
+    attacker_key TEXT NOT NULL CHECK (length(attacker_key)>0),
+    victim_key TEXT NOT NULL CHECK (length(victim_key)>0),
+    event_time TIMESTAMPTZ NOT NULL,
+    outcome TEXT NOT NULL CHECK (outcome IN ('AWARDED','COOLDOWN','OUT_OF_ORDER')),
+    amount BIGINT NOT NULL CHECK (amount>=0),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(season_id,kill_id),
+    UNIQUE(season_id,source_key),
+    CHECK ((outcome='AWARDED' AND amount>0) OR (outcome<>'AWARDED' AND amount=0))
+);
+CREATE INDEX IF NOT EXISTS idx_ranked_awards_standings ON ranked_awards(season_id,attacker_key) WHERE outcome='AWARDED';
+CREATE INDEX IF NOT EXISTS idx_ranked_awards_repeat ON ranked_awards(season_id,attacker_key,victim_key,event_time DESC) WHERE outcome='AWARDED';
+`
+
+// DiscordFeedCardsSQL (migration 0066) is the immediate-mode feed journal: each queued card is
+// recorded before it is posted, marked when Discord confirms it (message_id) and again when it
+// leaves the channel, so a restart - including a crash - neither loses queued cards nor leaves the
+// previous process's cards in the channel. feed_key is "<route>:<server id>".
+const DiscordFeedCardsSQL = `
+CREATE TABLE IF NOT EXISTS discord_feed_cards (
+    id BIGSERIAL PRIMARY KEY,
+    feed_key TEXT NOT NULL,
+    nonce TEXT NOT NULL,
+    embed JSONB NOT NULL,
+    detected_at TIMESTAMPTZ,
+    enqueued_at TIMESTAMPTZ NOT NULL,
+    channel_id TEXT,
+    message_id TEXT,
+    posted_at TIMESTAMPTZ,
+    removed_at TIMESTAMPTZ,
+    dropped_at TIMESTAMPTZ,
+    drop_reason TEXT,
+    UNIQUE (feed_key, nonce)
+);
+CREATE INDEX IF NOT EXISTS idx_discord_feed_cards_open ON discord_feed_cards(feed_key, id)
+    WHERE removed_at IS NULL AND dropped_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_discord_feed_cards_enqueued ON discord_feed_cards(enqueued_at);
+`
+
+// PlayerLinkRoleSyncSQL (migration 0065) records whether the Verified Discord role was actually
+// assigned for a VERIFIED link - distinct from the link itself being verified.
+const PlayerLinkRoleSyncSQL = `
+ALTER TABLE player_links ADD COLUMN IF NOT EXISTS role_sync_status TEXT;
+ALTER TABLE player_links ADD COLUMN IF NOT EXISTS role_sync_attempts INT NOT NULL DEFAULT 0;
+ALTER TABLE player_links ADD COLUMN IF NOT EXISTS role_sync_last_attempt_at TIMESTAMPTZ;
+ALTER TABLE player_links ADD COLUMN IF NOT EXISTS role_synced_at TIMESTAMPTZ;
+ALTER TABLE player_links ADD COLUMN IF NOT EXISTS role_sync_error TEXT;
+CREATE INDEX IF NOT EXISTS idx_player_links_role_pending ON player_links(guild_id, role_sync_last_attempt_at)
+    WHERE status = 'VERIFIED' AND role_sync_status IN ('PENDING', 'FAILED');
+`
+
+// CaseShadowLedgerSQL is additive. The composite FK ensures that an evidence
+// link belongs to the SAME guild and game server as the evaluation. A blocked
+// evaluation is diagnostic only; this schema does not store scores or sanctions.
+const CaseShadowLedgerSQL = `
+CREATE UNIQUE INDEX IF NOT EXISTS uq_case_evidence_scope_id
+ ON case_evidence_events(guild_id,server_id,id);
+CREATE TABLE IF NOT EXISTS case_shadow_evaluations (
+ id BIGSERIAL PRIMARY KEY,
+ guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+ server_id BIGINT NOT NULL REFERENCES game_servers(id) ON DELETE CASCADE,
+ detector_id TEXT NOT NULL CHECK (char_length(detector_id) BETWEEN 1 AND 80),
+ detector_version TEXT NOT NULL CHECK (char_length(detector_version) BETWEEN 1 AND 40),
+ fingerprint CHAR(64) NOT NULL,
+ status TEXT NOT NULL CHECK (status = 'BLOCKED'),
+ reason_codes TEXT[] NOT NULL CHECK (cardinality(reason_codes) > 0),
+ created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+ CONSTRAINT uq_case_shadow_fingerprint UNIQUE(guild_id,server_id,detector_id,detector_version,fingerprint),
+ CONSTRAINT uq_case_shadow_scope_id UNIQUE(guild_id,server_id,id)
+);
+CREATE TABLE IF NOT EXISTS case_shadow_evaluation_evidence (
+ guild_id BIGINT NOT NULL,
+ server_id BIGINT NOT NULL,
+ evaluation_id BIGINT NOT NULL,
+ evidence_id BIGINT NOT NULL,
+ PRIMARY KEY(evaluation_id,evidence_id),
+ FOREIGN KEY(guild_id,server_id,evaluation_id)
+  REFERENCES case_shadow_evaluations(guild_id,server_id,id) ON DELETE CASCADE,
+ FOREIGN KEY(guild_id,server_id,evidence_id)
+  REFERENCES case_evidence_events(guild_id,server_id,id) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_case_shadow_scope_recent
+ ON case_shadow_evaluations(guild_id,server_id,id DESC);
+`
 
 // LiveSyncCommandLineCleanupSQL (migration 0052, Champion Live Sync phase 2.1, docs/
 // CHAMPION_LIVE_SYNC.md section 7.8): parser cls-1.1 stored each RPT's command-line header with its IP
@@ -2369,8 +2852,9 @@ func (d *DB) Migrate(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	// Ensure the migrations bookkeeping table exists first.
-	if _, err := d.Pool.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`); err != nil {
+	// Ensure the migrations bookkeeping table exists first (under the migration lock, so two
+	// instances starting on an empty database do not race on CREATE TABLE).
+	if err := d.withMigrationLock(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`); err != nil {
 		return fmt.Errorf("create schema_migrations: %w", err)
 	}
 
@@ -2387,6 +2871,23 @@ func (d *DB) Migrate(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("begin migration %s: %w", m.Name, err)
 		}
+		// Two instances starting together (a rolling deploy with overlap, or a restart during a
+		// deploy) serialize here, and the loser re-checks inside the lock and skips the migration
+		// instead of failing on a duplicate object or schema_migrations key. The lock is released
+		// with the transaction.
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, migrationLockKey); err != nil {
+			_ = tx.Rollback(ctx)
+			return fmt.Errorf("lock migration %s: %w", m.Name, err)
+		}
+		var already bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE name=$1)`, m.Name).Scan(&already); err != nil {
+			_ = tx.Rollback(ctx)
+			return fmt.Errorf("recheck migration %s: %w", m.Name, err)
+		}
+		if already {
+			_ = tx.Rollback(ctx)
+			continue
+		}
 		if _, err := tx.Exec(ctx, m.SQL); err != nil {
 			_ = tx.Rollback(ctx)
 			return fmt.Errorf("apply migration %s: %w", m.Name, err)
@@ -2401,6 +2902,24 @@ func (d *DB) Migrate(ctx context.Context) error {
 		slog.Info("component=database", "msg", "migration applied", "name", m.Name)
 	}
 	return nil
+}
+
+// migrationLockKey is the transaction-level advisory lock that serializes concurrent Migrate calls.
+const migrationLockKey int64 = 0x43484d5047524154 // "CHMPGRAT"
+
+func (d *DB) withMigrationLock(ctx context.Context, sql string) error {
+	tx, err := d.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, migrationLockKey); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, sql); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (d *DB) isApplied(ctx context.Context, name string) (bool, error) {

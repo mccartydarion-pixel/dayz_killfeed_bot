@@ -85,10 +85,14 @@ func StateOf(sub *repository.Subscription, now time.Time) TrialState {
 		}
 	default:
 		// ACTIVE/PAST_DUE/CANCELED/SUSPENDED without a Stripe subscription id is not produced by
-		// the webhook path; treat it by status alone.
+		// the webhook path: it is an owner grant (Owner Hub "Grant plan") or a manual row; treat
+		// it by status alone, and let a dated grant lapse on its own.
 		st.TrialStatus = TrialConverted
 		st.SelectedPlan = sub.Plan
 		st.BillingRequired = sub.Status == repository.SubscriptionCanceled || sub.Status == repository.SubscriptionSuspended
+		if sub.OwnerGrantUntil != nil && !now.Before(*sub.OwnerGrantUntil) {
+			st.TrialStatus, st.BillingRequired = TrialExpired, true
+		}
 	}
 	return st
 }

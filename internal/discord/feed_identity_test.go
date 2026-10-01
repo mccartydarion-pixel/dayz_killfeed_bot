@@ -37,12 +37,26 @@ type fakeWebhookAPI struct {
 	executedWebhook string
 	sends           int
 	botDeletes      []string
+	botDeleteErr    error
+	nonces          []string
 	webhookDeletes  []string
 }
 
 func (a *fakeWebhookAPI) ChannelMessagesBulkDelete(_ string, messages []string, _ ...discordgo.RequestOption) error {
 	a.botDeletes = append(a.botDeletes, messages...)
 	return nil
+}
+func (a *fakeWebhookAPI) ChannelMessageDelete(_, messageID string, _ ...discordgo.RequestOption) error {
+	if a.botDeleteErr != nil {
+		return a.botDeleteErr
+	}
+	a.botDeletes = append(a.botDeletes, messageID)
+	return nil
+}
+func (a *fakeWebhookAPI) ChannelMessageSendNonce(_ string, data *discordgo.MessageSend, nonce string) (*discordgo.Message, error) {
+	a.nonces = append(a.nonces, nonce)
+	a.botSends = append(a.botSends, data)
+	return &discordgo.Message{ID: "bot-nonce"}, nil
 }
 func (a *fakeWebhookAPI) WebhookMessageDelete(_, _, messageID string, _ ...discordgo.RequestOption) error {
 	a.webhookDeletes = append(a.webhookDeletes, messageID)
@@ -214,6 +228,44 @@ func TestFeedIdentityDeletesItsOwnWebhookMessagesThroughTheWebhook(t *testing.T)
 	f.mu.Unlock()
 	if remembered > feedSentRemembered || order > feedSentRemembered {
 		t.Fatalf("sent memory grew to %d/%d", remembered, order)
+	}
+}
+
+func TestFeedIdentityNonceSendAndSingleDelete(t *testing.T) {
+	store := &fakeIdentityStore{identity: repository.FeedIdentitySettings{Enabled: true, Name: "X"}, ok: true}
+	api := &fakeWebhookAPI{uniqueIDs: true}
+	sender := NewFeedIdentity(store).Sender(api, 1)
+	ns, ok := sender.(nonceSender)
+	if !ok {
+		t.Fatal("the identity sender must keep the nonce send the immediate feed mode relies on")
+	}
+	single, ok := sender.(singleMessageDeleter)
+	if !ok {
+		t.Fatal("the identity sender must keep the single-message delete")
+	}
+	// Under an identity the card goes through the webhook and the nonce send is not used.
+	msg, err := ns.ChannelMessageSendNonce("chan", feedMessage(), "n-1")
+	if err != nil || len(api.webhookSends) != 1 || len(api.nonces) != 0 {
+		t.Fatalf("msg=%v err=%v webhook=%d nonces=%v", msg, err, len(api.webhookSends), api.nonces)
+	}
+	if err := single.ChannelMessageDelete("chan", msg.ID); err != nil || len(api.webhookDeletes) != 1 || len(api.botDeletes) != 0 {
+		t.Fatalf("delete of a webhook card: err=%v webhook=%v bot=%v", err, api.webhookDeletes, api.botDeletes)
+	}
+	// A failing webhook falls back to the nonce-enforced bot send, with the same nonce.
+	api.executeErr = errors.New("500")
+	if msg, err := ns.ChannelMessageSendNonce("chan", feedMessage(), "n-2"); err != nil || msg.ID != "bot-nonce" || len(api.nonces) != 1 || api.nonces[0] != "n-2" {
+		t.Fatalf("fallback: msg=%v err=%v nonces=%v", msg, err, api.nonces)
+	}
+	api.executeErr = nil
+	// A card from before a restart: the bot delete is refused, the channel webhook removes it.
+	api.botDeleteErr = errors.New("HTTP 403 Forbidden, Missing Permissions")
+	if err := single.ChannelMessageDelete("chan", "from-last-process"); err != nil || api.webhookDeletes[len(api.webhookDeletes)-1] != "from-last-process" {
+		t.Fatalf("recovery delete: err=%v webhook=%v", err, api.webhookDeletes)
+	}
+	// With no identity the refusal is reported as it is.
+	plain := NewFeedIdentity(&fakeIdentityStore{}).Sender(api, 2).(singleMessageDeleter)
+	if err := plain.ChannelMessageDelete("chan", "x"); err == nil {
+		t.Fatal("a refused delete with no identity was swallowed")
 	}
 }
 

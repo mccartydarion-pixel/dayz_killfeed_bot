@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/yourname/dayz-killfeed/internal/entitlements"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -72,7 +73,14 @@ func (a *App) economyContext(w http.ResponseWriter, r *http.Request, admin bool)
 	if admin {
 		code = codeEconomyForbidden
 	}
-	return a.scopedContext(w, r, code)
+	er, ok = a.scopedContext(w, r, code)
+	if !ok {
+		return er, false
+	}
+	if !a.requirePlanFeature(w, r, er.scope.OrganizationID, entitlements.Economy) {
+		return economyRequest{}, false
+	}
+	return er, true
 }
 
 // scopedContext is economyContext with the admin gate's error code chosen by the caller (the shop uses

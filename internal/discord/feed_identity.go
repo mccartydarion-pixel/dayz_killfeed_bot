@@ -33,9 +33,11 @@ type FeedIdentityStore interface {
 	FeedIdentityForServer(ctx context.Context, serverID int64) (repository.FeedIdentitySettings, bool, error)
 }
 
-// FeedIdentityAPI is the Discord surface the identity sender needs; *discordgo.Session satisfies it.
+// FeedIdentityAPI is the Discord surface the identity sender needs. *discordgo.Session and
+// *FeedSession both satisfy it; a FeedSession additionally brings the nonce-enforced send.
 type FeedIdentityAPI interface {
 	ChannelMessagesBulkDelete(channelID string, messages []string, options ...discordgo.RequestOption) error
+	ChannelMessageDelete(channelID, messageID string, options ...discordgo.RequestOption) error
 	ChannelMessageSendComplex(channelID string, data *discordgo.MessageSend, options ...discordgo.RequestOption) (*discordgo.Message, error)
 	ChannelWebhooks(channelID string, options ...discordgo.RequestOption) ([]*discordgo.Webhook, error)
 	WebhookCreate(channelID, name, avatar string, options ...discordgo.RequestOption) (*discordgo.Webhook, error)
@@ -217,14 +219,38 @@ func webhookCarries(data *discordgo.MessageSend) bool {
 }
 
 func (s *identitySender) ChannelMessageSendComplex(channelID string, data *discordgo.MessageSend, options ...discordgo.RequestOption) (*discordgo.Message, error) {
+	if msg, sent := s.viaWebhook(channelID, data); sent {
+		return msg, nil
+	}
+	return s.FeedIdentityAPI.ChannelMessageSendComplex(channelID, data, options...)
+}
+
+// ChannelMessageSendNonce is the idempotent send the immediate feed mode uses. Under an identity
+// the card goes through the webhook, which has no nonce: if the webhook send fails, the fallback is
+// the nonce-enforced bot send, so the only way to a duplicate card is a webhook request that
+// succeeded but reported failure.
+func (s *identitySender) ChannelMessageSendNonce(channelID string, data *discordgo.MessageSend, nonce string) (*discordgo.Message, error) {
+	if msg, sent := s.viaWebhook(channelID, data); sent {
+		return msg, nil
+	}
+	if ns, ok := s.FeedIdentityAPI.(nonceSender); ok {
+		return ns.ChannelMessageSendNonce(channelID, data, nonce)
+	}
+	return s.FeedIdentityAPI.ChannelMessageSendComplex(channelID, data)
+}
+
+// viaWebhook posts data under the server's identity. sent is false when there is no identity, the
+// message is not one a webhook can carry, or the webhook is unavailable or failed - the caller then
+// sends as the bot.
+func (s *identitySender) viaWebhook(channelID string, data *discordgo.MessageSend) (*discordgo.Message, bool) {
 	identity, ok := s.identities.identity(s.serverID)
 	if !ok || !webhookCarries(data) {
-		return s.FeedIdentityAPI.ChannelMessageSendComplex(channelID, data, options...)
+		return nil, false
 	}
 	hook, ok := s.identities.webhook(s.FeedIdentityAPI, channelID)
 	if !ok {
 		s.identities.fallbacks.Add(1)
-		return s.FeedIdentityAPI.ChannelMessageSendComplex(channelID, data, options...)
+		return nil, false
 	}
 	mentions := data.AllowedMentions
 	if mentions == nil {
@@ -235,7 +261,7 @@ func (s *identitySender) ChannelMessageSendComplex(channelID string, data *disco
 	})
 	if err != nil || msg == nil {
 		// The webhook may have been deleted or the identity rejected; look it up afresh next time
-		// and send this message as the bot so the feed never loses it.
+		// and let this message go out as the bot so the feed never loses it.
 		reason := "empty response"
 		if err != nil {
 			reason = err.Error()
@@ -243,11 +269,36 @@ func (s *identitySender) ChannelMessageSendComplex(channelID string, data *disco
 		slog.Warn("component=feed_identity", "event", "webhook_send_failed", "channel_id", channelID, "err", reason)
 		s.identities.forgetWebhook(channelID)
 		s.identities.fallbacks.Add(1)
-		return s.FeedIdentityAPI.ChannelMessageSendComplex(channelID, data, options...)
+		return nil, false
 	}
 	s.identities.viaWebhook.Add(1)
 	s.identities.remember(msg.ID, hook)
-	return msg, nil
+	return msg, true
+}
+
+// ChannelMessageDelete deletes one feed card. A card this process posted through a webhook is
+// deleted through it. A card the bot cannot delete as itself - one a webhook posted before a
+// restart, which the bot may only remove with Manage Messages - is retried through the channel's
+// Champion webhook.
+func (s *identitySender) ChannelMessageDelete(channelID, messageID string, options ...discordgo.RequestOption) error {
+	if hook, viaWebhook := s.identities.sentBy(messageID); viaWebhook {
+		return s.FeedIdentityAPI.WebhookMessageDelete(hook.id, hook.token, messageID)
+	}
+	err := s.FeedIdentityAPI.ChannelMessageDelete(channelID, messageID, options...)
+	if err == nil || isUnknownMessage(err) {
+		return err
+	}
+	if _, enabled := s.identities.identity(s.serverID); !enabled {
+		return err
+	}
+	hook, ok := s.identities.webhook(s.FeedIdentityAPI, channelID)
+	if !ok {
+		return err
+	}
+	if hookErr := s.FeedIdentityAPI.WebhookMessageDelete(hook.id, hook.token, messageID); hookErr == nil {
+		return nil
+	}
+	return err
 }
 
 // ChannelMessagesBulkDelete deletes a feed's previous batch. Messages this sender posted through

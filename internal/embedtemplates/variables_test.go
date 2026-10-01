@@ -3,7 +3,7 @@ package embedtemplates
 import "testing"
 
 var knownCategories = map[string]bool{CatPlayers: true, CatCombat: true, CatKillerStats: true, CatVictimStats: true, CatHeadToHead: true,
-	CatStreaks: true, CatEventStory: true, CatBounty: true, CatCompetitive: true, CatEconomy: true, CatActivity: true, CatServer: true}
+	CatStreaks: true, CatEventStory: true, CatBounty: true, CatCompetitive: true, CatEconomy: true, CatActivity: true, CatServer: true, CatCASE: true}
 
 var knownFormats = map[string]bool{"text": true, "integer": true, "decimal": true, "distance": true, "label": true, "points": true, "timestamp": true}
 
@@ -47,7 +47,7 @@ func TestPreviouslyApprovedVariablesRemain(t *testing.T) {
 		"ADMIN_ALERTS":    {"event", "player", "server_name", "timestamp"},
 		"ADMIN_LOGS":      {"event", "player", "server_name", "timestamp"},
 		"HEATMAPS":        {"server_name", "timestamp"}, "LINK_GAMERTAG": {"server_name", "timestamp"},
-		"STATS_LEADERBOARDS": {"server_name", "timestamp"}, "AUTO_LEADERBOARD": {"server_name", "timestamp"}, "SERVER_STATUS": {"server_name", "timestamp"},
+		"STATS_LEADERBOARDS": {"server_name", "timestamp"}, "AUTO_LEADERBOARD": {"server_name", "timestamp"}, "SERVER_RANKS": {"server_name", "timestamp"}, "SERVER_STATUS": {"server_name", "timestamp"},
 	}
 	for route, names := range before {
 		have := map[string]bool{}

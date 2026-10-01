@@ -282,11 +282,17 @@ func TestReaderIsReadOnly(t *testing.T) {
 			t.Fatalf("Reader exposes a non-read method %s", rt.Method(i).Name)
 		}
 	}
-	// internal/nitrado has no file-write call at all.
+	// internal/nitrado's only file-write calls are the three reviewed Gate A primitives
+	// (docs/SHOP_GATE_A_UPLOAD.md). They are not part of Reader, and only internal/shop/missionwrite
+	// may call them (missionwrite.TestWriteCapabilityIsIsolated). Any other write method fails here.
+	reviewedWrites := map[string]bool{"RequestUploadToken": true, "PostUpload": true, "Mkdir": true}
 	ct := reflect.TypeOf(&nitrado.Client{})
 	for i := 0; i < ct.NumMethod(); i++ {
 		// (Non-file control calls such as ban-list edits and restarts exist for Client Admin; they are
 		// simply not part of Reader. The guard here is about the FILE SERVER.)
+		if reviewedWrites[ct.Method(i).Name] {
+			continue
+		}
 		name := strings.ToLower(ct.Method(i).Name)
 		fileish := strings.Contains(name, "file") || strings.Contains(name, "dir") || strings.Contains(name, "mission")
 		if strings.Contains(name, "upload") {

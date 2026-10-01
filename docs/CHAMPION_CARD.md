@@ -3,7 +3,7 @@
 A 1200x630 PNG of one player's stats on one server - the Open Graph size, so a shared link unfurls
 as the card itself.
 
-Migration `0056_player_card_shares`. Code: `internal/playercard` (rendering),
+Migration `0079_player_card_shares`. Code: `internal/playercard` (rendering),
 `internal/repository/card_repository.go`, `internal/app/player_card.go`,
 `internal/discord/card_command.go`. New dependency: `golang.org/x/image` (font rendering with the
 embedded Go fonts; no font files to ship).

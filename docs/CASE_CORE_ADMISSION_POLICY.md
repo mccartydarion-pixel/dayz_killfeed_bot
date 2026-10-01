@@ -1,0 +1,9 @@
+# C.A.S.E. gate D: case-admission guard (offline only)
+
+The scope-frozen review schema, neutral queue, and synthetic transaction do **not** admit actual findings. This pure contract defines a required future boundary before a real case can be created: exact positive installation/guild/server scope, an independently registered detector/version in validated shadow mode, eligible evaluation, matching selected/accepted/latest retained ADM identity, coherent ingestion/source-change times, and a bounded set of valid same-source evidence addresses with no duplicate IDs, replays or offset/hash collisions. The current registry contains only blocked CASE-MOV-001, therefore **every current input remains BLOCKED**, even if a caller fabricates eligibility flags.
+
+The function takes synthetic/offline projections, makes no SQL queries, authenticates nobody, creates no case/audit/outbox row, and has no HTTP/runtime caller. Its `ADMISSION_CANDIDATE` status is a hypothetical future result only; it never authorizes production case creation or a Discord send. The real future transactional writer must re-read all source/evidence/installation rows and current detector validation from independently trusted storage, verify authorization and immutable fingerprint under a lock, and fail closed on stale/foreign evidence. A real source witness alone is not detector validation.
+
+Tests cover missing installation scope, unknown detector/version, tampered registry copies, blocked shadow status, prior boot, source-change timing, empty/truncated samples, missing/foreign/malformed evidence, duplicate IDs and same-offset source collisions. No live player content enters CI.
+
+Gate A (#114) remains open for authenticated actual retained-source matching; Gate B remains open because no existing cheat detector is validated. There is no live case admission, staff accusation, automatic alert or enforcement. Production merge requires separate approval because `main` auto-deploys.

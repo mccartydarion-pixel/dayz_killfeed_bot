@@ -4,8 +4,8 @@ A **life** is the stretch between two deaths of one player on one server. Lives 
 death logs into something players compare: how long they survived, what they did with the life, how
 it ended.
 
-Migrations `0054_player_lives_and_daily_activity` (table `player_lives`) and
-`0055_player_recap_prefs`. Code: `internal/repository/life_repository.go`,
+Migrations `0077_player_lives_and_daily_activity` (table `player_lives`) and
+`0078_player_recap_prefs`. Code: `internal/repository/life_repository.go`,
 `internal/app/lives.go`, `internal/discord/lives.go`.
 
 ## When a life ends

@@ -29,8 +29,11 @@ type PlayerListStats struct {
 	LastSnapshotID      string
 	LastSnapshotPlayers int
 	LastSnapshotAt      time.Time // when Champion processed it
-	PresenceAdded       int64     // players a complete snapshot proved online without a seen connect
-	PresenceRemoved     int64     // players a complete snapshot proved gone without a seen disconnect
+	// LastCompleteSnapshotAt is when Champion last reconciled presence against
+	// a COMPLETE player list - the moment the tracker was last proven exact.
+	LastCompleteSnapshotAt time.Time
+	PresenceAdded          int64 // players a complete snapshot proved online without a seen connect
+	PresenceRemoved        int64 // players a complete snapshot proved gone without a seen disconnect
 }
 
 // SetADMSessionStore attaches the current-session recorder (optional; nil-safe).
@@ -130,6 +133,9 @@ func (e *Engine) finishSnapshot(s *PlayerListSnapshot) {
 	e.playerListStats.LastSnapshotID = s.ID()
 	e.playerListStats.LastSnapshotPlayers = len(s.Entries)
 	e.playerListStats.LastSnapshotAt = time.Now()
+	if s.Complete {
+		e.playerListStats.LastCompleteSnapshotAt = e.playerListStats.LastSnapshotAt
+	}
 	e.presenceMu.Unlock()
 	slog.Info("component=livesync", "event", "player_list_snapshot", "server_id", e.serverID, "snapshot", s.ID(),
 		"declared", s.Declared, "entries", len(s.Entries), "complete", s.Complete)
@@ -137,7 +143,13 @@ func (e *Engine) finishSnapshot(s *PlayerListSnapshot) {
 		return
 	}
 	added, removed := e.players.ReconcileSnapshot(s.Entries)
+	becameKnown := e.setPresenceEvidence(PresenceSnapshotConfirmed, time.Now())
 	if added == 0 && removed == 0 {
+		if becameKnown {
+			// The count did not change, but it is now a confirmed fact
+			// and must be published.
+			e.firePlayersChanged()
+		}
 		return
 	}
 	e.presenceMu.Lock()

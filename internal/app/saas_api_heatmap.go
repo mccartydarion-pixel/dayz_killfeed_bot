@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"github.com/yourname/dayz-killfeed/internal/entitlements"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -68,6 +69,9 @@ func toHeatmapResponseDTO(r *heatmap.Result) heatmapResponseDTO {
 func (a *App) handleHeatmap(w http.ResponseWriter, r *http.Request) {
 	ac, ok := a.requireCapability(w, r, permissions.CapHeatmapView)
 	if !ok {
+		return
+	}
+	if !a.requirePlanFeature(w, r, ac.scope.OrganizationID, entitlements.Heatmaps) {
 		return
 	}
 	if a.Heatmap == nil {

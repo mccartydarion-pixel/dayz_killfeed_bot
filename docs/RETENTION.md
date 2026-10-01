@@ -3,7 +3,7 @@
 Who is playing, who came back and who stopped. Two parts: collection, which runs for every server
 from the moment this ships, and a read-only dashboard API.
 
-Migration `0054_player_lives_and_daily_activity`. Code: `internal/repository/activity_rollup.go`,
+Migration `0077_player_lives_and_daily_activity`. Code: `internal/repository/activity_rollup.go`,
 `internal/repository/retention_repository.go`, `internal/app/retention.go`.
 
 ## Collection

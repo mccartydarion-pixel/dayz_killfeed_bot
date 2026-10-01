@@ -38,6 +38,10 @@ type Config struct {
 
 	NitradoToken     string
 	NitradoServiceID string
+	// NitradoAPIBaseURL is NITRADO_API_BASE_URL: an isolated-staging-only
+	// replacement for the Nitrado API (internal/nitrado/nitradofixture).
+	// Load accepts it only with APP_ENV=staging.
+	NitradoAPIBaseURL string
 
 	KillfeedChannelID         string
 	DatabaseURL               string
@@ -62,11 +66,26 @@ type Config struct {
 	// default on any problem).
 	CustomEmbedsEnabled bool
 
+	// PlanGatingEnabled (CHAMPION_PLAN_GATING_ENABLED, default false) is the rollout
+	// switch for plan tiers (internal/entitlements). Off: every plan gets every feature,
+	// as before. On: the Survivor plan loses the Champion-only features (ranked seasons,
+	// bounties, heatmaps, economy/shop, custom embeds, more than 5 factions).
+	PlanGatingEnabled bool
+
+	// ShopCanaryExecution is the Shop Phase 2C.4 canary execution lock (docs/SHOP_DELIVERY_PHASE2C4.md).
+	// It is its own switch: no other Shop, economy or delivery setting enables it. Mutating canary
+	// operations are allowed only when CHAMPION_SHOP_CANARY_EXECUTION is exactly "enabled" AND the
+	// installation is listed in CHAMPION_SHOP_CANARY_INSTALLATION_IDS. Default: locked.
+	ShopCanaryExecution ShopCanaryExecution
+
 	// PublicBaseURL is the public origin of this service (no trailing slash), used to build
 	// absolute URLs for publicly served assets such as faction logos
 	// (/assets/faction-logos/...). CHAMPION_PUBLIC_BASE_URL wins; otherwise it is derived from
 	// Railway's RAILWAY_PUBLIC_DOMAIN; otherwise empty and the API returns root-relative URLs.
 	PublicBaseURL string
+	// SiteBaseURL is the public website origin (CHAMPION_SITE_BASE_URL, default
+	// https://championshp.vip), used for links in Discord cards.
+	SiteBaseURL string
 
 	// Discord bot presence/activity settings (see internal/discord/presence.go).
 	DiscordPresenceEnabled bool
@@ -94,6 +113,13 @@ type Config struct {
 	// billing.DefaultOrigin) a Checkout/Portal return URL may target, e.g. a local website dev
 	// server. Never includes anything the client asserts about itself.
 	BillingAllowedOrigins string
+	// C.A.S.E. is a distinct, default-disabled server-scoped add-on.
+	CaseBillingEnabled bool
+	CaseAccessEnabled bool
+	CaseVerifiedThrough string
+	CaseWatchPriceID string
+	CaseProPriceID string
+	CaseCommandPriceID string
 }
 
 // Load reads configuration from environment variables and validates required fields.
@@ -116,7 +142,10 @@ func Load() (*Config, error) {
 		WebsiteAPISecret:          strings.TrimSpace(os.Getenv("WEBSITE_API_SECRET")),
 		AdminDiscordIDs:           ParseAdminDiscordIDs(os.Getenv("CHAMPION_ADMIN_DISCORD_IDS")),
 		CustomEmbedsEnabled:       parseBoolWithDefault(os.Getenv("CHAMPION_CUSTOM_EMBEDS_ENABLED"), false),
+		PlanGatingEnabled:         parseBoolWithDefault(os.Getenv("CHAMPION_PLAN_GATING_ENABLED"), false),
+		ShopCanaryExecution:       ParseShopCanaryExecution(os.Getenv("CHAMPION_SHOP_CANARY_EXECUTION"), os.Getenv("CHAMPION_SHOP_CANARY_INSTALLATION_IDS")),
 		PublicBaseURL:             ParsePublicBaseURL(os.Getenv("CHAMPION_PUBLIC_BASE_URL"), os.Getenv("RAILWAY_PUBLIC_DOMAIN")),
+		SiteBaseURL:               strings.TrimRight(strings.TrimSpace(os.Getenv("CHAMPION_SITE_BASE_URL")), "/"),
 
 		DiscordPresenceEnabled:         parseBoolWithDefault(os.Getenv("DISCORD_PRESENCE_ENABLED"), true),
 		DiscordPresenceRotationSeconds: parsePresenceRotationSeconds(os.Getenv("DISCORD_PRESENCE_ROTATION_SECONDS")),
@@ -128,6 +157,20 @@ func Load() (*Config, error) {
 		StripeWebhookSecret:   strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET")),
 		BillingPlansJSON:      os.Getenv("CHAMPION_BILLING_PLANS_JSON"),
 		BillingAllowedOrigins: os.Getenv("CHAMPION_BILLING_ALLOWED_ORIGINS"),
+		CaseBillingEnabled: parseBoolWithDefault(os.Getenv("CHAMPION_CASE_BILLING_ENABLED"), false),
+		CaseAccessEnabled: parseBoolWithDefault(os.Getenv("CHAMPION_CASE_ACCESS_ENABLED"), false),
+		CaseVerifiedThrough: strings.TrimSpace(os.Getenv("CHAMPION_CASE_VERIFIED_THROUGH")),
+		CaseWatchPriceID: strings.TrimSpace(os.Getenv("CHAMPION_CASE_WATCH_PRICE_ID")),
+		CaseProPriceID: strings.TrimSpace(os.Getenv("CHAMPION_CASE_PRO_PRICE_ID")),
+		CaseCommandPriceID: strings.TrimSpace(os.Getenv("CHAMPION_CASE_COMMAND_PRICE_ID")),
+
+		NitradoAPIBaseURL: strings.TrimSpace(os.Getenv("NITRADO_API_BASE_URL")),
+	}
+	if err := ValidateNitradoAPIBaseURL(cfg.NitradoAPIBaseURL, cfg.AppEnv); err != nil {
+		return nil, err
+	}
+	if err := ValidateStagingIsolation(cfg.AppEnv, cfg.StripeSecretKey); err != nil {
+		return nil, err
 	}
 
 	if cfg.HTTPPort == "" {
@@ -142,6 +185,38 @@ func Load() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// ValidateNitradoAPIBaseURL allows a Nitrado API replacement only in an
+// environment that declares itself staging (an allowlist: a production
+// service with APP_ENV unset or anything else refuses to start), and only as
+// an absolute http(s) URL.
+func ValidateNitradoAPIBaseURL(raw, appEnv string) error {
+	if raw == "" {
+		return nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(appEnv), "staging") {
+		return fmt.Errorf("NITRADO_API_BASE_URL is only allowed with APP_ENV=staging")
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("NITRADO_API_BASE_URL must be an absolute http(s) URL")
+	}
+	return nil
+}
+
+// ValidateStagingIsolation refuses production-only credentials in a service
+// that declares APP_ENV=staging: a live Stripe key there could charge real
+// customers. (Discord and Nitrado isolation cannot be proven from a value;
+// see docs/incidents/2026-09-26-staging-infrastructure.md.)
+func ValidateStagingIsolation(appEnv, stripeSecretKey string) error {
+	if !strings.EqualFold(strings.TrimSpace(appEnv), "staging") {
+		return nil
+	}
+	if strings.HasPrefix(strings.TrimSpace(stripeSecretKey), "sk_live_") || strings.HasPrefix(strings.TrimSpace(stripeSecretKey), "rk_live_") {
+		return fmt.Errorf("APP_ENV=staging refuses a live Stripe key (STRIPE_SECRET_KEY); leave it unset or use a test key")
+	}
+	return nil
 }
 
 func getEnv(key, fallback string) string {
@@ -278,4 +353,33 @@ func ParsePublicBaseURL(explicit, railwayDomain string) string {
 		return "https://" + d
 	}
 	return ""
+}
+
+// ShopCanaryExecution is the parsed canary execution lock.
+type ShopCanaryExecution struct {
+	Enabled         bool
+	InstallationIDs []int64
+}
+
+// ParseShopCanaryExecution enables the lock only for the exact word "enabled" (not "true", "1" or
+// "yes": an accidental generic boolean never opens it) and only with at least one valid installation
+// id. Anything else is locked.
+func ParseShopCanaryExecution(mode, ids string) ShopCanaryExecution {
+	if strings.TrimSpace(mode) != "enabled" {
+		return ShopCanaryExecution{}
+	}
+	var out []int64
+	seen := map[int64]bool{}
+	for _, part := range strings.Split(ids, ",") {
+		id, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64)
+		if err != nil || id <= 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	if len(out) == 0 {
+		return ShopCanaryExecution{}
+	}
+	return ShopCanaryExecution{Enabled: true, InstallationIDs: out}
 }

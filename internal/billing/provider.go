@@ -73,6 +73,7 @@ type PortalSession struct {
 // SubscriptionState is Stripe's subscription state, normalized to exactly what Champion persists -
 // never the raw Stripe object.
 type SubscriptionState struct {
+	Metadata map[string]string // server-authored product kind and C.A.S.E. binding, never client supplied
 	SubscriptionID     string
 	CustomerID         string
 	PriceID            string
@@ -80,9 +81,11 @@ type SubscriptionState struct {
 	StripeInterval     string // "month"/"year"; map with MapInterval before storing
 	CurrentPeriodStart time.Time
 	CurrentPeriodEnd   time.Time
+	TrialStart         *time.Time
 	TrialEnd           *time.Time
 	CancelAtPeriodEnd  bool
 	CanceledAt         *time.Time
+	PendingUpdate      bool // Stripe holds a change until its invoice is paid (payment_behavior=pending_if_incomplete)
 }
 
 var (

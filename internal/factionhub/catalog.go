@@ -13,8 +13,32 @@ import (
 // and URL/CSS-free; values are never URLs. Add a key here (and to docs/FACTIONS.md) before the
 // website may offer it.
 
-// DayzFlags are the approved DayZ flag keys.
-var DayzFlags = []string{"BLACK", "BLUE", "GREEN", "RED"}
+// DayzFlags are the approved DayZ flag keys: the 33 flags the game ships (Chernarus, Livonia
+// and the ones both maps share), keyed by the in-game class name without its "Flag_" prefix,
+// upper-cased (Flag_BabyDeer -> BABYDEER). Kept sorted: inCatalog binary-searches.
+var DayzFlags = []string{
+	"ALTIS", "APA", "BABYDEER", "BEAR", "BOHEMIA", "BRAINZ", "CANNIBALS", "CDF", "CHEDAKI", "CHEL", "CHERNARUS", "CMC",
+	"CROOK", "DAYZ", "HUNTERZ", "LIVONIA", "LIVONIAARMY", "LIVONIAPOLICE", "NAPA", "NSAHRANI", "PIRATES", "REFUGE",
+	"REX", "ROOSTER", "RSTA", "SNAKE", "SSAHRANI", "TEC", "UEC", "WHITE", "WOLF", "ZAGORKY", "ZENIT",
+}
+
+// FlagClassName returns the DayZ item class name for an approved flag key ("CDF" -> "Flag_CDF").
+// The mixed-case spellings match the game's own class list so server files line up.
+func FlagClassName(key string) (string, bool) {
+	if !inCatalog(DayzFlags, key) {
+		return "", false
+	}
+	return "Flag_" + flagClassSpelling[key], true
+}
+
+var flagClassSpelling = map[string]string{
+	"ALTIS": "Altis", "APA": "APA", "BABYDEER": "BabyDeer", "BEAR": "Bear", "BOHEMIA": "Bohemia", "BRAINZ": "BrainZ",
+	"CANNIBALS": "Cannibals", "CDF": "CDF", "CHEDAKI": "Chedaki", "CHEL": "CHEL", "CHERNARUS": "Chernarus", "CMC": "CMC",
+	"CROOK": "Crook", "DAYZ": "DayZ", "HUNTERZ": "HunterZ", "LIVONIA": "Livonia", "LIVONIAARMY": "LivoniaArmy",
+	"LIVONIAPOLICE": "LivoniaPolice", "NAPA": "NAPA", "NSAHRANI": "NSahrani", "PIRATES": "Pirates", "REFUGE": "Refuge",
+	"REX": "Rex", "ROOSTER": "Rooster", "RSTA": "RSTA", "SNAKE": "Snake", "SSAHRANI": "SSahrani", "TEC": "TEC", "UEC": "UEC",
+	"WHITE": "White", "WOLF": "Wolf", "ZAGORKY": "Zagorky", "ZENIT": "Zenit",
+}
 
 // Armbands are the approved armband color keys.
 var Armbands = []string{"BLACK", "BLUE", "GREEN", "ORANGE", "PINK", "RED", "WHITE", "YELLOW"}
@@ -65,6 +89,28 @@ type Asset struct {
 
 // AssetTypeLogo is the only asset type in Phase 4.
 const AssetTypeLogo = "LOGO"
+
+// BrandingTakenError: the flag or armband is already claimed by another faction on the
+// installation. Flags and armbands are exclusive per server (first come, first served); the
+// holder is named so the picker can show who has it.
+type BrandingTakenError struct {
+	Field      string // "flagKey" or "armbandKey"
+	Key        string
+	HolderID   int64
+	HolderName string
+	HolderTag  string
+}
+
+func (e *BrandingTakenError) Error() string {
+	what := "flag"
+	if e.Field == "armbandKey" {
+		what = "armband"
+	}
+	if e.HolderTag == "" {
+		return "that " + what + " is already claimed by another faction on this server"
+	}
+	return "that " + what + " is already claimed by " + e.HolderName + " [" + e.HolderTag + "]"
+}
 
 // Phase 4 errors.
 var (

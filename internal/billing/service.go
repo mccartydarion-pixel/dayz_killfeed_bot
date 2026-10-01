@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yourname/dayz-killfeed/internal/casebilling"
 	"github.com/yourname/dayz-killfeed/internal/entitlements"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
@@ -47,6 +48,12 @@ type Service struct {
 	successPath    string // default returnPath when the caller doesn't send one
 	cancelPath     string
 	portalPath     string
+	// Phase 6 optional C.A.S.E. state never writes the organization base row.
+	caseStore CaseStore
+	casePrices map[casebilling.Tier]string
+	caseEnabled bool
+	caseAccessEnabled bool
+	caseVerifiedThrough casebilling.Tier
 }
 
 // Options configures a Service. Every path defaults to a sane value if empty, so a caller only
@@ -91,6 +98,10 @@ func (s *Service) Catalog() *Catalog { return s.catalog }
 
 // Plans returns the public plan catalog exactly as the pricing page should render it.
 func (s *Service) Plans() []Plan { return s.catalog.PublicPlans() }
+
+// CheckoutConfigured reports whether a base checkout could be created at all (a Stripe provider is
+// configured). It is the same precondition Checkout enforces first; it never calls Stripe.
+func (s *Service) CheckoutConfigured() bool { return s != nil && s.provider != nil }
 
 // --- subscription summary -----------------------------------------------------------------------
 
@@ -381,16 +392,20 @@ func (s *Service) Reconcile(ctx context.Context, organizationID int64) (*Summary
 }
 
 // applyState maps a normalized Stripe state into repository.ProviderState and persists it.
-// planKeyOverride wins when non-empty (a checkout/subscription-created event's own metadata, or an
-// explicit ChangePlan call); otherwise the plan key is reverse-resolved from the price id via the
-// catalog, and if that also fails the stored plan is left unchanged (repository.ApplyProviderState's
-// CASE ... WHEN ” THEN plan).
+// The plan key comes from the price Stripe is actually billing, reverse-resolved through the
+// catalog: that is the source of truth. planKeyOverride (a checkout/subscription event's
+// champion_plan_key metadata, or an explicit ChangePlan call) is only a fallback for a price the
+// catalog doesn't know. Metadata is written once at checkout and is NOT updated by a plan change,
+// so trusting it first let a customer.subscription.updated webhook put an upgraded organization
+// back on its original plan. If neither resolves, the stored plan is left unchanged
+// (repository.ApplyProviderState's CASE ... WHEN ” THEN plan).
 func (s *Service) applyState(ctx context.Context, organizationID int64, st *SubscriptionState, planKeyOverride string) (*repository.Subscription, error) {
-	plan := strings.ToUpper(strings.TrimSpace(planKeyOverride))
+	plan := ""
+	if p, _, ok := s.catalog.PlanForPrice(st.PriceID); ok {
+		plan = p.Key
+	}
 	if plan == "" {
-		if p, _, ok := s.catalog.PlanForPrice(st.PriceID); ok {
-			plan = p.Key
-		}
+		plan = strings.ToUpper(strings.TrimSpace(planKeyOverride))
 	}
 	ps := repository.ProviderState{
 		Provider: repository.ProviderStripe, ProviderCustomerID: st.CustomerID, ProviderSubscriptionID: st.SubscriptionID, ProviderPriceID: st.PriceID,

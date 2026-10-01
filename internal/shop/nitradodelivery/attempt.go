@@ -15,6 +15,7 @@ const (
 	AttemptFileStaged           = "FILE_STAGED"
 	AttemptAwaitingRestart      = "AWAITING_RESTART"
 	AttemptRestartObserved      = "RESTART_OBSERVED"
+	AttemptUnstageRequired      = "UNSTAGE_REQUIRED" // a start consumed the entry: remove it before the next start (Phase 2C.2)
 	AttemptVerificationRequired = "VERIFICATION_REQUIRED"
 	AttemptFulfilled            = "FULFILLED"
 	// Terminal side states.
@@ -28,7 +29,8 @@ var attemptTransitions = map[string][]string{
 	AttemptFilePrepared:         {AttemptFileStaged, AttemptAbandoned},
 	AttemptFileStaged:           {AttemptAwaitingRestart, AttemptUnstaged, AttemptFailedReview},
 	AttemptAwaitingRestart:      {AttemptRestartObserved, AttemptUnstaged, AttemptFailedReview},
-	AttemptRestartObserved:      {AttemptVerificationRequired, AttemptFailedReview},
+	AttemptRestartObserved:      {AttemptUnstageRequired, AttemptFailedReview},
+	AttemptUnstageRequired:      {AttemptVerificationRequired, AttemptFailedReview},
 	AttemptVerificationRequired: {AttemptFulfilled, AttemptFailedReview},
 }
 
@@ -125,8 +127,9 @@ func (l *MemoryLedger) Advance(deliveryID int64, attemptID, from, to string) (At
 }
 
 // Reconcile is what a restarted worker does for an attempt whose last known state is uncertain: it
-// never re-stages. Anything that may have reached a server start goes to review; anything provably
-// never written is abandoned; a staged-but-not-restarted file must be unstaged first.
+// never re-stages. Anything that may have reached a server start must be unstaged (while the entry is
+// still in the file) and then goes to verification; anything provably never written is abandoned; a
+// staged-but-not-restarted file must be unstaged first.
 func Reconcile(state string, fileStillContainsAttempt bool, restartSinceStaging bool) (next string, action string) {
 	switch state {
 	case AttemptPlanCreated, AttemptFilePrepared:
@@ -136,14 +139,20 @@ func Reconcile(state string, fileStillContainsAttempt bool, restartSinceStaging 
 		return AttemptAbandoned, "nothing was written: safe to plan a new attempt"
 	case AttemptFileStaged, AttemptAwaitingRestart:
 		if restartSinceStaging {
-			return AttemptVerificationRequired, "a server start happened while staged: unstage now, then verify with the player - never re-stage"
+			if fileStillContainsAttempt {
+				return AttemptUnstageRequired, "a server start happened while staged: unstage now, before the next start - never re-stage"
+			}
+			return AttemptVerificationRequired, "a server start happened and the entry is already gone: verify with the player - never re-stage"
 		}
 		if fileStillContainsAttempt {
 			return state, "still staged: either wait for the owner-confirmed restart or unstage (then UNSTAGED)"
 		}
 		return AttemptUnstaged, "the entry is gone and no start happened: nothing spawned"
-	case AttemptRestartObserved:
-		return AttemptVerificationRequired, "unstage if still present, then verify - a restart is not proof of delivery"
+	case AttemptRestartObserved, AttemptUnstageRequired:
+		if fileStillContainsAttempt {
+			return AttemptUnstageRequired, "unstage now and verify the file - a restart is not proof of delivery"
+		}
+		return AttemptVerificationRequired, "the entry is gone: verify with the player - a restart is not proof of delivery"
 	default:
 		return state, "no action"
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 	"sync"
@@ -44,7 +45,7 @@ func TestPlanIsValidatedAndImmutable(t *testing.T) {
 	p := mustPlan(t, in)
 	if p.DeliveryID() != 42 || p.PurchaseID() != 99 || p.InstallationID() != 2 || p.NitradoServiceID() != "1234567" || p.MapKey() != "chernarusplus" ||
 		p.Quantity() != 2 || p.ClassName() != "M4A1" || p.Position() != [3]float64{7500.25, 214.5, 8300.5} || p.RequiredAction() != RequiredActionOwnerConfirmedRestart ||
-		p.ArtifactPath() != "champion/champion_shop_delivery.json" || p.AttemptID() != "champion:d42:a1" {
+		p.ArtifactPath() != "custom/champion_shop_delivery.json" || p.AttemptID() != "champion:d42:a1" {
 		t.Fatalf("%+v", p)
 	}
 	// Mutating the inputs or a returned slice never changes the plan.
@@ -229,9 +230,13 @@ func TestRollbackPlanning(t *testing.T) {
 	if SHA256(before) != rb.BeforeSHA256 {
 		t.Fatal("digest")
 	}
-	// Every path stays inside the Champion directory - never a caller-supplied path.
+	// The artifact is in custom/, the backup in champion/backup/ (never custom/) - never a
+	// caller-supplied path.
+	if !strings.HasPrefix(rb.ArtifactPath, ArtifactDir+"/") || !strings.HasPrefix(rb.BackupName, BackupDir+"/") {
+		t.Fatalf("paths %q %q", rb.ArtifactPath, rb.BackupName)
+	}
 	for _, path := range []string{rb.ArtifactPath, rb.BackupName} {
-		if !strings.HasPrefix(path, ArtifactDir+"/") || strings.Contains(path, "..") {
+		if strings.Contains(path, "..") {
 			t.Fatalf("path %q", path)
 		}
 	}
@@ -287,6 +292,10 @@ func TestAttemptLedgerPreventsDuplicates(t *testing.T) {
 	if _, err := l.Advance(42, p1.AttemptID(), AttemptRestartObserved, AttemptFulfilled); !errors.Is(err, ErrAttemptTransition) {
 		t.Fatalf("restart -> fulfilled must be refused: %v", err)
 	}
+	// Verification never skips the unstage step (Phase 2C.2).
+	if _, err := l.Advance(42, p1.AttemptID(), AttemptRestartObserved, AttemptVerificationRequired); !errors.Is(err, ErrAttemptTransition) {
+		t.Fatalf("restart -> verification without unstaging must be refused: %v", err)
+	}
 	// A crashed worker never re-stages after a possible spawn.
 	in2 := fixture()
 	in2.Attempt = 2
@@ -314,7 +323,8 @@ func TestAttemptLedgerPreventsDuplicates(t *testing.T) {
 		t.Fatalf("a proven-unspawned attempt allows a retry: %v", err)
 	}
 	for _, s := range [][2]string{{AttemptPlanCreated, AttemptFilePrepared}, {AttemptFilePrepared, AttemptFileStaged}, {AttemptFileStaged, AttemptAwaitingRestart},
-		{AttemptAwaitingRestart, AttemptRestartObserved}, {AttemptRestartObserved, AttemptVerificationRequired}, {AttemptVerificationRequired, AttemptFulfilled}} {
+		{AttemptAwaitingRestart, AttemptRestartObserved}, {AttemptRestartObserved, AttemptUnstageRequired}, {AttemptUnstageRequired, AttemptVerificationRequired},
+		{AttemptVerificationRequired, AttemptFulfilled}} {
 		if _, err := l.Advance(77, a2.AttemptID(), s[0], s[1]); err != nil {
 			t.Fatal(err)
 		}
@@ -379,14 +389,39 @@ func TestReconcileAfterCrash(t *testing.T) {
 	}{
 		"never uploaded":              {AttemptFilePrepared, false, false, AttemptAbandoned},
 		"upload landed unrecorded":    {AttemptFilePrepared, true, false, AttemptFileStaged},
-		"staged, restart happened":    {AttemptFileStaged, true, true, AttemptVerificationRequired},
+		"staged, restart happened":    {AttemptFileStaged, true, true, AttemptUnstageRequired},
 		"awaiting, restart happened":  {AttemptAwaitingRestart, false, true, AttemptVerificationRequired},
 		"staged, removed, no restart": {AttemptFileStaged, false, false, AttemptUnstaged},
 		"still staged, no restart":    {AttemptAwaitingRestart, true, false, AttemptAwaitingRestart},
-		"restart observed":            {AttemptRestartObserved, false, true, AttemptVerificationRequired},
+		"restart observed, removed":   {AttemptRestartObserved, false, true, AttemptVerificationRequired},
+		"restart observed, in file":   {AttemptRestartObserved, true, true, AttemptUnstageRequired},
+		"unstage pending":             {AttemptUnstageRequired, true, true, AttemptUnstageRequired},
+		"unstage done":                {AttemptUnstageRequired, false, true, AttemptVerificationRequired},
 	} {
 		if got, action := Reconcile(c.state, c.inFile, c.start); got != c.want || action == "" {
 			t.Errorf("%s: %s (%s)", name, got, action)
+		}
+	}
+}
+
+// The in-memory prototype and the durable ledger (migration 0054) enforce the same state machine.
+func TestAttemptStatesMatchDurableLedger(t *testing.T) {
+	if len(attemptTransitions) != len(repository.ShopAttemptTransitions) {
+		t.Fatalf("state count: %d vs %d", len(attemptTransitions), len(repository.ShopAttemptTransitions))
+	}
+	for from, tos := range attemptTransitions {
+		got := repository.ShopAttemptTransitions[from]
+		if fmt.Sprint(got) != fmt.Sprint(tos) {
+			t.Errorf("%s: prototype %v, ledger %v", from, tos, got)
+		}
+	}
+	for _, s := range [][2]string{{AttemptPlanCreated, repository.AttemptPlanCreated}, {AttemptFilePrepared, repository.AttemptFilePrepared},
+		{AttemptFileStaged, repository.AttemptFileStaged}, {AttemptAwaitingRestart, repository.AttemptAwaitingRestart}, {AttemptRestartObserved, repository.AttemptRestartObserved},
+		{AttemptUnstageRequired, repository.AttemptUnstageRequired}, {AttemptVerificationRequired, repository.AttemptVerificationRequired},
+		{AttemptFulfilled, repository.AttemptFulfilled}, {AttemptAbandoned, repository.AttemptAbandoned}, {AttemptUnstaged, repository.AttemptUnstaged},
+		{AttemptFailedReview, repository.AttemptFailedReview}} {
+		if s[0] != s[1] {
+			t.Errorf("%s != %s", s[0], s[1])
 		}
 	}
 }

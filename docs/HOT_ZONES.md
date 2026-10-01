@@ -4,7 +4,7 @@ When the PvP heatmap shows a fight already happening, a short event opens there 
 inside the circle score, and the top three earn Champion Points. Staff configure it once; nobody
 has to run it.
 
-Off by default. Migration `0057_installation_feature_settings`. Code: `internal/hotzone` (the
+Off by default. Migration `0080_installation_feature_settings`. Code: `internal/hotzone` (the
 decision), `internal/events` (the `HOT_ZONE` event type), `internal/app/hot_zones.go`.
 
 ## How one opens

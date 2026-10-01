@@ -1342,6 +1342,7 @@ plans API returns an empty list and checkout refuses every plan key instead of f
 | Route | Who | Notes |
 |---|---|---|
 | `GET /api/saas/billing/plans` | any synced user | public plan catalog; no organization context, no Stripe price id |
+| `GET /api/saas/billing/public-plans` | service token only (no acting user) | the same public catalog in the website's `PublicCatalogV1` shape (`{ version: 1, plans: [{ key, category: "BASE", name, displayTier, description, features, prices: [{ interval, amountCents, currency }], availability: "AVAILABLE", purchasable, popular, sortOrder, perServer: false, requiresBasePlan: false }] }`) for the anonymous pricing page and homepage price teaser. Sends `Cache-Control: public, max-age=300` and an `ETag`; `If-None-Match` -> `304`. `503 BILLING_UNAVAILABLE` when billing is not configured. Never includes a Stripe price id. |
 | `GET .../organizations/{organizationID}/billing/subscription` | any member | plan, status, billing interval, trial/period, `cancelAtPeriodEnd`, entitlements, `canManageBilling` |
 | `POST .../billing/checkout` | OWNER/ADMIN | `{ planKey, interval, returnPath? }` -> `{ checkoutUrl }` |
 | `POST .../billing/portal` | OWNER/ADMIN | `{ returnPath? }` -> `{ portalUrl }`; `409 NO_BILLING_CUSTOMER` before any checkout |

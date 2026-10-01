@@ -136,6 +136,11 @@ const hubFactionCols = `f.id, f.organization_id, f.installation_id, f.game_serve
 const hubFactionFrom = `hub_factions f LEFT JOIN hub_faction_assets la ON la.id = f.logo_asset_id`
 
 func scanHubFaction(row interface{ Scan(...any) error }) (HubFaction, error) {
+	return scanHubFactionWith(row)
+}
+
+// scanHubFactionWith scans hubFactionCols followed by any extra columns the query appended.
+func scanHubFactionWith(row interface{ Scan(...any) error }, extra ...any) (HubFaction, error) {
 	var f HubFaction
 	var la struct {
 		id                                      *int64
@@ -143,9 +148,10 @@ func scanHubFaction(row interface{ Scan(...any) error }) (HubFaction, error) {
 		size, width, height                     *int
 		created                                 *time.Time
 	}
-	err := row.Scan(&f.ID, &f.OrganizationID, &f.InstallationID, &f.GameServerID, &f.Name, &f.Tag, &f.Slug, &f.Description, &f.RecruitmentStatus,
+	dest := []any{&f.ID, &f.OrganizationID, &f.InstallationID, &f.GameServerID, &f.Name, &f.Tag, &f.Slug, &f.Description, &f.RecruitmentStatus,
 		&f.LogoKey, &f.FlagKey, &f.ArmbandKey, &f.PrimaryColor, &f.SecondaryColor, &f.CreatedByUserID, &f.CreatedAt, &f.UpdatedAt, &f.MemberCount,
-		&la.id, &la.publicID, &la.storageKey, &la.contentType, &la.size, &la.width, &la.height, &la.name, &la.created)
+		&la.id, &la.publicID, &la.storageKey, &la.contentType, &la.size, &la.width, &la.height, &la.name, &la.created}
+	err := row.Scan(append(dest, extra...)...)
 	if err == nil && la.id != nil {
 		f.Logo = &factionhub.Asset{ID: *la.id, PublicID: *la.publicID, FactionID: f.ID, StorageKey: *la.storageKey, ContentType: *la.contentType,
 			SizeBytes: *la.size, Width: *la.width, Height: *la.height, OriginalFilename: *la.name, CreatedAt: *la.created}
@@ -202,8 +208,61 @@ func mapHubUnique(err error) error {
 		return factionhub.ErrAlreadyInFaction
 	case c == "uq_hub_applications_pending":
 		return factionhub.ErrAlreadyApplied
+	case c == "uq_hub_factions_installation_flag":
+		return &factionhub.BrandingTakenError{Field: "flagKey"}
+	case c == "uq_hub_factions_installation_armband":
+		return &factionhub.BrandingTakenError{Field: "armbandKey"}
 	}
 	return err
+}
+
+// hubBrandingFree checks that no OTHER faction on the installation already holds the flag or
+// armband being claimed, naming the holder when one does. The partial unique indexes are the
+// race guard; this check exists so the error can say who has it.
+func hubBrandingFree(ctx context.Context, q hubDB, installationID, factionID int64, field, key string) error {
+	if key == "" {
+		return nil
+	}
+	column := "flag_key"
+	if field == "armbandKey" {
+		column = "armband_key"
+	}
+	var holder HubBrandingClaim
+	err := q.QueryRow(ctx, `SELECT id, name, tag FROM hub_factions WHERE installation_id=$1 AND `+column+`=$2 AND id<>$3 LIMIT 1`, installationID, key, factionID).Scan(&holder.ID, &holder.Name, &holder.Tag)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("hub branding check: %w", err)
+	}
+	return &factionhub.BrandingTakenError{Field: field, Key: key, HolderID: holder.ID, HolderName: holder.Name, HolderTag: holder.Tag}
+}
+
+// HubBrandingClaim is one faction's hold on a flag and/or armband.
+type HubBrandingClaim struct {
+	ID                  int64
+	Name, Tag           string
+	FlagKey, ArmbandKey *string
+}
+
+// BrandingClaims lists every faction on the installation that holds a flag or an armband, so a
+// picker can show which keys are taken and by whom.
+func (r *FactionHubRepository) BrandingClaims(ctx context.Context, organizationID, installationID int64) ([]HubBrandingClaim, error) {
+	rows, err := r.pool.Query(ctx, `SELECT id, name, tag, flag_key, armband_key FROM hub_factions
+WHERE organization_id=$1 AND installation_id=$2 AND (flag_key IS NOT NULL OR armband_key IS NOT NULL) ORDER BY id`, organizationID, installationID)
+	if err != nil {
+		return nil, fmt.Errorf("hub branding claims: %w", err)
+	}
+	defer rows.Close()
+	var out []HubBrandingClaim
+	for rows.Next() {
+		var c HubBrandingClaim
+		if err := rows.Scan(&c.ID, &c.Name, &c.Tag, &c.FlagKey, &c.ArmbandKey); err != nil {
+			return nil, fmt.Errorf("hub branding claims scan: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }
 
 // hubInstallation checks the installation belongs to the organization and reports what a
@@ -562,11 +621,33 @@ LIMIT $4`, factionID, status, beforeID, limit+1)
 // transaction. The user must not already be in a faction on the installation; their
 // pending applications there are cancelled (they now lead a faction).
 func (r *FactionHubRepository) CreateFaction(ctx context.Context, organizationID, installationID, userID int64, in HubFactionInput) (*HubFaction, error) {
+	return r.CreateFactionWithLimit(ctx, organizationID, installationID, userID, in, 0)
+}
+
+// CreateFactionWithLimit is CreateFaction with a per-installation cap from the
+// organization's plan (entitlements.FactionLimit); maxFactions <= 0 means unlimited.
+// The cap is checked under an installation-wide advisory lock, so two people creating
+// factions at the same moment cannot both slip past it. That lock is taken before the
+// per-user lock and only by faction creation, so the lock order stays acyclic.
+func (r *FactionHubRepository) CreateFactionWithLimit(ctx context.Context, organizationID, installationID, userID int64, in HubFactionInput, maxFactions int) (*HubFaction, error) {
 	var out HubFaction
 	err := r.inTx(ctx, func(tx pgx.Tx) error {
 		gameServerID, err := hubWritableInstallation(ctx, tx, organizationID, installationID)
 		if err != nil {
 			return err
+		}
+		if maxFactions > 0 {
+			key := fmt.Sprintf("hub_faction_create:%d", installationID)
+			if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, key); err != nil {
+				return fmt.Errorf("hub lock faction create: %w", err)
+			}
+			var count int
+			if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM hub_factions WHERE organization_id=$1 AND installation_id=$2`, organizationID, installationID).Scan(&count); err != nil {
+				return fmt.Errorf("hub count factions: %w", err)
+			}
+			if count >= maxFactions {
+				return factionhub.ErrFactionLimitReached
+			}
 		}
 		if err := lockHubUser(ctx, tx, installationID, userID); err != nil {
 			return err
@@ -629,45 +710,7 @@ func (r *FactionHubRepository) UpdateFaction(ctx context.Context, organizationID
 		if !factionhub.CanEditFaction(role) {
 			return factionhub.ErrForbidden
 		}
-		primary, secondary := "", ""
-		flag, armband := "", ""
-		setFlag, setArmband := in.FlagKey != nil, in.ArmbandKey != nil
-		if setFlag {
-			flag = *in.FlagKey
-		}
-		if setArmband {
-			armband = *in.ArmbandKey
-		}
-		setPrimary, setSecondary := in.PrimaryColor != nil, in.SecondaryColor != nil
-		if setPrimary {
-			primary = *in.PrimaryColor
-		}
-		if setSecondary {
-			secondary = *in.SecondaryColor
-		}
-		if _, err := tx.Exec(ctx, `
-UPDATE hub_factions SET name=COALESCE($1,name), tag=COALESCE($2,tag), description=COALESCE($3,description), recruitment_status=COALESCE($4,recruitment_status),
-  primary_color   = CASE WHEN $5::boolean THEN NULLIF($6,'') ELSE primary_color END,
-  secondary_color = CASE WHEN $7::boolean THEN NULLIF($8,'') ELSE secondary_color END,
-  flag_key        = CASE WHEN $9::boolean THEN NULLIF($10,'') ELSE flag_key END,
-  armband_key     = CASE WHEN $11::boolean THEN NULLIF($12,'') ELSE armband_key END,
-  updated_at=NOW()
-WHERE id=$13 AND organization_id=$14 AND installation_id=$15`,
-			in.Name, in.Tag, in.Description, in.RecruitmentStatus, setPrimary, primary, setSecondary, secondary, setFlag, flag, setArmband, armband, factionID, organizationID, installationID); err != nil {
-			return mapHubUnique(fmt.Errorf("hub update faction: %w", err))
-		}
-		if s := in.Settings; s != nil {
-			if _, err := tx.Exec(ctx, `
-INSERT INTO hub_faction_settings(faction_id, minimum_hours, minimum_age, pvp_required, builder_needed, mic_required, custom_requirements, updated_at)
-VALUES($1,$2,$3,$4,$5,$6,$7,NOW())
-ON CONFLICT (faction_id) DO UPDATE SET minimum_hours=EXCLUDED.minimum_hours, minimum_age=EXCLUDED.minimum_age, pvp_required=EXCLUDED.pvp_required,
-  builder_needed=EXCLUDED.builder_needed, mic_required=EXCLUDED.mic_required, custom_requirements=EXCLUDED.custom_requirements, updated_at=NOW()`,
-				factionID, s.MinimumHours, s.MinimumAge, s.PvPRequired, s.BuilderNeeded, s.MicRequired, s.CustomRequirements); err != nil {
-				return fmt.Errorf("hub update settings: %w", err)
-			}
-		}
-		// The event says THAT the profile changed, never what changed.
-		if err := hubActivity(ctx, tx, factionID, ActivityFactionUpdated, 0, actorUserID, ""); err != nil {
+		if err := hubApplyUpdate(ctx, tx, organizationID, installationID, factionID, actorUserID, in); err != nil {
 			return err
 		}
 		out, err = hubFactionFull(ctx, tx, organizationID, installationID, factionID)
@@ -677,6 +720,57 @@ ON CONFLICT (faction_id) DO UPDATE SET minimum_hours=EXCLUDED.minimum_hours, min
 		return nil, err
 	}
 	return &out, nil
+}
+
+// hubApplyUpdate writes a validated profile update inside tx. The caller has locked the faction
+// row and decided who may do this (the leader, or a server moderator).
+func hubApplyUpdate(ctx context.Context, tx pgx.Tx, organizationID, installationID, factionID, actorUserID int64, in HubFactionUpdate) error {
+	primary, secondary := "", ""
+	flag, armband := "", ""
+	setFlag, setArmband := in.FlagKey != nil, in.ArmbandKey != nil
+	if setFlag {
+		flag = *in.FlagKey
+	}
+	if setArmband {
+		armband = *in.ArmbandKey
+	}
+	setPrimary, setSecondary := in.PrimaryColor != nil, in.SecondaryColor != nil
+	if setPrimary {
+		primary = *in.PrimaryColor
+	}
+	if setSecondary {
+		secondary = *in.SecondaryColor
+	}
+	// Flags and armbands are exclusive per installation: name the holder before the index would.
+	if err := hubBrandingFree(ctx, tx, installationID, factionID, "flagKey", flag); err != nil {
+		return err
+	}
+	if err := hubBrandingFree(ctx, tx, installationID, factionID, "armbandKey", armband); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+UPDATE hub_factions SET name=COALESCE($1,name), tag=COALESCE($2,tag), description=COALESCE($3,description), recruitment_status=COALESCE($4,recruitment_status),
+  primary_color   = CASE WHEN $5::boolean THEN NULLIF($6,'') ELSE primary_color END,
+  secondary_color = CASE WHEN $7::boolean THEN NULLIF($8,'') ELSE secondary_color END,
+  flag_key        = CASE WHEN $9::boolean THEN NULLIF($10,'') ELSE flag_key END,
+  armband_key     = CASE WHEN $11::boolean THEN NULLIF($12,'') ELSE armband_key END,
+  updated_at=NOW()
+WHERE id=$13 AND organization_id=$14 AND installation_id=$15`,
+		in.Name, in.Tag, in.Description, in.RecruitmentStatus, setPrimary, primary, setSecondary, secondary, setFlag, flag, setArmband, armband, factionID, organizationID, installationID); err != nil {
+		return mapHubUnique(fmt.Errorf("hub update faction: %w", err))
+	}
+	if s := in.Settings; s != nil {
+		if _, err := tx.Exec(ctx, `
+INSERT INTO hub_faction_settings(faction_id, minimum_hours, minimum_age, pvp_required, builder_needed, mic_required, custom_requirements, updated_at)
+VALUES($1,$2,$3,$4,$5,$6,$7,NOW())
+ON CONFLICT (faction_id) DO UPDATE SET minimum_hours=EXCLUDED.minimum_hours, minimum_age=EXCLUDED.minimum_age, pvp_required=EXCLUDED.pvp_required,
+  builder_needed=EXCLUDED.builder_needed, mic_required=EXCLUDED.mic_required, custom_requirements=EXCLUDED.custom_requirements, updated_at=NOW()`,
+			factionID, s.MinimumHours, s.MinimumAge, s.PvPRequired, s.BuilderNeeded, s.MicRequired, s.CustomRequirements); err != nil {
+			return fmt.Errorf("hub update settings: %w", err)
+		}
+	}
+	// The event says THAT the profile changed, never what changed.
+	return hubActivity(ctx, tx, factionID, ActivityFactionUpdated, 0, actorUserID, "")
 }
 
 // --- applications -------------------------------------------------------------------------
@@ -696,7 +790,9 @@ func (r *FactionHubRepository) Apply(ctx context.Context, organizationID, instal
 		if err != nil {
 			return err
 		}
-		if f.RecruitmentStatus != factionhub.RecruitmentOpen {
+		// OPEN factions take applications too (a player may prefer to introduce themselves);
+		// INVITE_ONLY factions take nothing else; CLOSED factions take nothing.
+		if f.RecruitmentStatus == factionhub.RecruitmentClosed {
 			return factionhub.ErrRecruitmentClosed
 		}
 		if already, err := hubInstallationMembership(ctx, tx, installationID, userID); err != nil {

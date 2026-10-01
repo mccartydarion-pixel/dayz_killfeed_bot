@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -34,9 +35,31 @@ type Client struct {
 	httpClient *http.Client
 }
 
+// apiBaseOverride replaces DefaultBaseURL for every client in this process
+// (see SetAPIBaseURLOverride). Empty means the real Nitrado API.
+var (
+	apiBaseMu       sync.RWMutex
+	apiBaseOverride string
+)
+
+// SetAPIBaseURLOverride points every client created afterwards with the
+// default base URL at u instead of the real Nitrado API. It exists only for
+// isolated staging (NITRADO_API_BASE_URL -> internal/nitrado/nitradofixture);
+// config.Load refuses it when APP_ENV=production. Empty restores the default.
+func SetAPIBaseURLOverride(u string) {
+	apiBaseMu.Lock()
+	defer apiBaseMu.Unlock()
+	apiBaseOverride = strings.TrimRight(strings.TrimSpace(u), "/")
+}
+
 func NewClient(baseURL, token string, hc *http.Client) *Client {
-	if baseURL == "" {
+	if baseURL == "" || baseURL == DefaultBaseURL {
 		baseURL = DefaultBaseURL
+		apiBaseMu.RLock()
+		if apiBaseOverride != "" {
+			baseURL = apiBaseOverride
+		}
+		apiBaseMu.RUnlock()
 	}
 	if hc == nil {
 		hc = &http.Client{Timeout: 15 * time.Second}
