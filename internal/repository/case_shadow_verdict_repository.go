@@ -33,7 +33,9 @@ func ShadowVerdictDetector(id string) bool { return id == "CASE-LOGIN-001" || id
 
 type CaseVerdictScope struct{ InstallationID, GuildID, ServerID int64 }
 
-func (s CaseVerdictScope) valid() bool { return s.InstallationID > 0 && s.GuildID > 0 && s.ServerID > 0 }
+func (s CaseVerdictScope) valid() bool {
+	return s.InstallationID > 0 && s.GuildID > 0 && s.ServerID > 0
+}
 
 type CaseShadowVerdict struct {
 	IncidentKey string    `json:"incidentKey"`
