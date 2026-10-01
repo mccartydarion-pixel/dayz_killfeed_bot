@@ -14,6 +14,7 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/ranked"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 	"github.com/yourname/dayz-killfeed/internal/rewards"
+	"github.com/yourname/dayz-killfeed/internal/vip"
 )
 
 // Rewards automation (docs/CLIENT_HUB_GROWTH.md): owners set Champion Point rewards for reaching
@@ -199,8 +200,21 @@ func (a *App) evaluateRewards(ctx context.Context, guildID int64, now time.Time)
 	return a.Rewards.Pay(ctx, guildID, grants)
 }
 
-// applyRewardMultipliers is where supporter tiers raise a reward (see vip.go); without any it
-// returns the grants unchanged.
-func (a *App) applyRewardMultipliers(_ context.Context, _ int64, grants []repository.RewardGrant) []repository.RewardGrant {
+// applyRewardMultipliers raises each reward by the player's active supporter tier multiplier
+// (vip.go). Without tiers, or if they cannot be read, rewards pay at face value.
+func (a *App) applyRewardMultipliers(ctx context.Context, guildID int64, grants []repository.RewardGrant) []repository.RewardGrant {
+	if a.VIP == nil || len(grants) == 0 {
+		return grants
+	}
+	multipliers, err := a.VIP.Multipliers(ctx, guildID)
+	if err != nil {
+		slog.Warn("component=rewards", "msg", "VIP multipliers unavailable; paying face value", "err", err.Error())
+		return grants
+	}
+	for i := range grants {
+		if m, ok := multipliers[grants[i].PlayerID]; ok {
+			grants[i].Amount = vip.Multiply(grants[i].Amount, m)
+		}
+	}
 	return grants
 }

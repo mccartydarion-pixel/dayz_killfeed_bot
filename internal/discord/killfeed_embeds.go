@@ -162,6 +162,9 @@ func secondaryBadges(ev *killfeed.Event, story presentation.StoryType, d float64
 	if ev.BountyTarget && story != presentation.StoryBountyClaimed {
 		add(badgeMostWanted)
 	}
+	if b := strings.TrimSpace(ev.SupporterBadge); b != "" {
+		add(presentation.SafeName(b, 24))
+	}
 	if headshot && story != presentation.StoryHeadshot {
 		add(badgeHeadshot)
 	}

@@ -2804,6 +2804,11 @@ CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events
 		Name: "0107_player_name_history",
 		SQL:  PlayerNameHistorySQL,
 	},
+	{
+		// Supporter / VIP tiers and memberships. Additive.
+		Name: "0108_vip_tiers",
+		SQL:  VIPTiersSQL,
+	},
 }
 
 // PvPDeathBackfillSQL gives the victim of every existing PvP kill a deaths row of type PVP, with

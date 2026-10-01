@@ -102,3 +102,39 @@ DROP TRIGGER IF EXISTS trg_players_name_history ON players;
 CREATE TRIGGER trg_players_name_history AFTER UPDATE OF display_name ON players
     FOR EACH ROW WHEN (OLD.display_name IS DISTINCT FROM NEW.display_name) EXECUTE FUNCTION players_record_name_change();
 `
+
+// VIPTiersSQL stores supporter / VIP tiers and who holds them. A membership is active while it is
+// neither revoked nor expired; one active membership per player. role_* columns record the last
+// Discord role sync so the Client Hub can say when Champion could not add or remove a role.
+const VIPTiersSQL = `
+CREATE TABLE IF NOT EXISTS vip_tiers (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    badge TEXT NOT NULL,
+    color TEXT NOT NULL DEFAULT '#E7B94A',
+    discord_role_id TEXT,
+    reward_multiplier NUMERIC(4,2) NOT NULL DEFAULT 1.00 CHECK (reward_multiplier BETWEEN 1.00 AND 3.00),
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (guild_id, name)
+);
+CREATE TABLE IF NOT EXISTS vip_members (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    tier_id BIGINT NOT NULL REFERENCES vip_tiers(id) ON DELETE CASCADE,
+    player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    discord_user_id TEXT,
+    note TEXT NOT NULL DEFAULT '',
+    granted_by TEXT NOT NULL DEFAULT '',
+    granted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ,
+    revoked_at TIMESTAMPTZ,
+    revoked_reason TEXT,
+    role_synced_at TIMESTAMPTZ,
+    role_error TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_vip_members_open ON vip_members(guild_id, player_id) WHERE revoked_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_vip_members_expiry ON vip_members(guild_id, expires_at) WHERE revoked_at IS NULL AND expires_at IS NOT NULL;
+`
