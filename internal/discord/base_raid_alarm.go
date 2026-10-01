@@ -58,6 +58,15 @@ type BaseRaidAlarmPublisher struct {
 	serverName ServerNameFunc
 	queue      chan baseRaidJob
 	dropped    atomic.Int64
+	faction    *factionSharer
+}
+
+// SetFactionSecurity also sends each alarm to the base owner's faction when
+// Faction Security allows it.
+func (p *BaseRaidAlarmPublisher) SetFactionSecurity(store FactionShareStore) {
+	if p != nil && store != nil {
+		p.faction = &factionSharer{store: store, dm: p.dm}
+	}
 }
 
 func NewBaseRaidAlarmPublisher(store BaseRaidStore, dm DMSender, guildRowID, serverID int64) *BaseRaidAlarmPublisher {
@@ -136,20 +145,28 @@ func (p *BaseRaidAlarmPublisher) handle(ctx context.Context, job baseRaidJob) {
 		if err := p.store.MarkDelivery(ctx, alertID, delivery); err != nil {
 			slog.Warn("component=base_raid_alarm", "msg", "mark delivery failed", "alert_id", alertID, "err", err.Error())
 		}
+		if p.faction != nil {
+			msg := FactionRaidMessage(BaseRaidAlarmMessage(m.BaseName, p.server(), job.event, time.Now()), m.BaseName)
+			p.faction.share(ctx, factionShare{route: baseRaidRoute, source: repository.FactionShareRaidAlarm, installationID: m.InstallationID,
+				guildID: m.GuildID, serverID: m.ServerID, base: m.BaseID, ownerPlayerID: m.OwnerPlayerID}, msg)
+		}
 		slog.Info("component=base_raid_alarm", "event", "alarm", "server_id", p.serverID, "base_id", m.BaseID,
 			"alert_id", alertID, "delivery", delivery)
 	}
+}
+
+func (p *BaseRaidAlarmPublisher) server() string {
+	if p.serverName != nil {
+		return p.serverName(p.serverID)
+	}
+	return ""
 }
 
 func (p *BaseRaidAlarmPublisher) deliver(m repository.BaseRaidMatch, ev repository.BaseRaidEvent) string {
 	if m.OwnerDiscordUserID == "" || p.dm == nil {
 		return repository.BaseRaidDeliveryOwnerNotLinked
 	}
-	server := ""
-	if p.serverName != nil {
-		server = p.serverName(p.serverID)
-	}
-	msg := BaseRaidAlarmMessage(m.BaseName, server, ev, time.Now())
+	msg := BaseRaidAlarmMessage(m.BaseName, p.server(), ev, time.Now())
 	err := deliver(baseRaidRoute, "", func() error {
 		ch, err := p.dm.UserChannelCreate(m.OwnerDiscordUserID)
 		if err != nil {

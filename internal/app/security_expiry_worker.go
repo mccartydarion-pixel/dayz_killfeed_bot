@@ -71,11 +71,16 @@ func (w *securityExpiryWorker) storeURL() string {
 }
 
 func securityExpiryMessage(serviceID, serverName, storeURL string) *discordgo.MessageSend {
-	what := "raid messages"
-	if serviceID == repository.ServicePerimeterWatch {
-		what = "messages when someone comes near"
+	what := "You won't get raid messages for your base any more."
+	switch serviceID {
+	case repository.ServicePerimeterWatch:
+		what = "You won't get messages when someone comes near your base any more."
+	case repository.ServiceBaseBlackBox:
+		what = "New visits to your base won't be added to its history any more."
+	case repository.ServiceFactionSecurity:
+		what = "Your faction won't get your base's alerts any more."
 	}
-	text := "⏰ **Your " + repository.SecurityServiceLabel(serviceID) + " on " + caseSafeName(serverName) + " has ended.** You won't get " + what + " for your base any more. Nothing was charged."
+	text := "⏰ **Your " + repository.SecurityServiceLabel(serviceID) + " on " + caseSafeName(serverName) + " has ended.** " + what + " Nothing was charged."
 	if storeURL != "" {
 		text += "\nWant it back? Buy it again in the Security Store: " + storeURL
 	} else {
