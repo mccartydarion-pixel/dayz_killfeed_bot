@@ -2177,6 +2177,21 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 	// share pq's blocking EnqueueAndWait semantics.
 	lq := killfeed.NewLocationQueue(store, row.GuildID, row.ID)
 	lq.SetIntrusionEngine(a.Intrusion)
+	if a.DB != nil && a.DB.Pool != nil && a.Discord != nil && a.Discord.Session() != nil {
+		// Perimeter Watch: DMs a base owner when someone else is seen near their
+		// registered base. Off until the server owner turns it on.
+		perimeter := discord.NewPerimeterWatchPublisher(repository.NewPerimeterWatchRepository(a.DB.Pool), a.Discord.Session(), row.GuildID, row.ID)
+		perimeter.SetServerName(a.serverNameFunc())
+		lq.SetLocationObserver(perimeter)
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("component=servers", "msg", "perimeter watch panic recovered", "server_id", row.ID, "panic", fmt.Sprint(r))
+				}
+			}()
+			perimeter.Run(workerCtx)
+		}()
+	}
 	engine.SetLocationQueue(lq)
 	// Live Sync phase 1: the selected ADM file is recorded as the server's current boot session,
 	// which current-session location queries trust (docs/CHAMPION_LIVE_SYNC.md).
