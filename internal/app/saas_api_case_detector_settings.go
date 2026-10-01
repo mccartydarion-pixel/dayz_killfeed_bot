@@ -19,6 +19,8 @@ func (a *App) registerCaseDetectorSettingRoutes(base string) {
  h("POST "+base+"/case/alerts/test",a.handleCaseSendTestAlert)
  h("GET "+base+"/case/alerts/settings",a.handleGetCaseStaffAlerts)
  h("PUT "+base+"/case/alerts/settings",a.handleSetCaseStaffAlerts)
+ h("GET "+base+"/case/setup",a.handleGetCaseSetup)
+ h("PUT "+base+"/case/setup/evidence",a.handleSetCaseEvidence)
 }
 
 func (a *App) caseDetectorSettingsActor(w http.ResponseWriter,r *http.Request)(adminActor,*repository.CaseDetectorSettingsRepository,bool){
