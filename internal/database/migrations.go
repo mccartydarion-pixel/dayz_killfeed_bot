@@ -2716,6 +2716,17 @@ CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events
 		Name: "0090_faction_security",
 		SQL:  FactionSecuritySQL,
 	},
+	{
+		// Base registration requests from players, approved or declined by the
+		// server owner. Additive (one table).
+		Name: "0091_case_base_requests",
+		SQL:  CaseBaseRequestSQL,
+	},
+	{
+		// Sentinel Pro bundle: widens the Security Marketplace service checks.
+		Name: "0092_sentinel_pro",
+		SQL:  SentinelProSQL,
+	},
 }
 
 // PvPDeathBackfillSQL gives the victim of every existing PvP kill a deaths row of type PVP, with

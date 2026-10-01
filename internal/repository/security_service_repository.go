@@ -24,7 +24,10 @@ func NewSecurityServiceRepository(pool *pgxpool.Pool) *SecurityServiceRepository
 const (
 	ServiceBaseRaidAlarm  = "BASE_RAID_ALARM"
 	ServicePerimeterWatch = "PERIMETER_MONITORING"
-	TxSecurityPurchase    = "SECURITY_PURCHASE"
+	// ServiceSentinelPro is the bundle: paid time for it counts as paid time
+	// for every base service it covers.
+	ServiceSentinelPro = "SENTINEL_PRO"
+	TxSecurityPurchase = "SECURITY_PURCHASE"
 
 	SecurityMaxPricePoints  = 1_000_000_000
 	SecurityMaxDurationDays = 90
@@ -68,7 +71,7 @@ type SecurityPurchaseResult struct {
 }
 
 func validSecurityService(id string) bool {
-	return id == ServiceBaseRaidAlarm || id == ServicePerimeterWatch || id == ServiceBaseBlackBox || id == ServiceFactionSecurity
+	return id == ServiceBaseRaidAlarm || id == ServicePerimeterWatch || id == ServiceBaseBlackBox || id == ServiceFactionSecurity || id == ServiceSentinelPro
 }
 
 // SellableSecurityService reports whether a service can be offered for sale.
@@ -83,8 +86,37 @@ func SecurityServiceLabel(id string) string {
 		return "Base Black Box"
 	case ServiceFactionSecurity:
 		return "Faction Security"
+	case ServiceSentinelPro:
+		return "Sentinel Pro"
 	}
 	return "Base Raid Alarm"
+}
+
+// SentinelProCovers lists the services the Sentinel Pro bundle includes.
+var SentinelProCovers = []string{ServiceBaseRaidAlarm, ServicePerimeterWatch, ServiceBaseBlackBox, ServiceFactionSecurity}
+
+// CoveringServices lists the services whose paid time counts for serviceID:
+// itself, plus the Sentinel Pro bundle for a covered service.
+func CoveringServices(serviceID string) []string {
+	for _, c := range SentinelProCovers {
+		if c == serviceID {
+			return []string{serviceID, ServiceSentinelPro}
+		}
+	}
+	return []string{serviceID}
+}
+
+// OnSale reports whether a service is sold on this server, directly or as
+// part of an enabled Sentinel Pro offer. While it is, only payers get it.
+func (r *SecurityServiceRepository) OnSale(ctx context.Context, s SecurityScope, serviceID string) (bool, error) {
+	if r == nil || r.pool == nil || !s.valid() || !validSecurityService(serviceID) {
+		return false, ErrSecurityInvalidRequest
+	}
+	var on bool
+	err := r.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM security_service_offers
+ WHERE installation_id=$1 AND guild_id=$2 AND server_id=$3 AND service_id = ANY($4) AND enabled)`,
+		s.InstallationID, s.GuildID, s.ServerID, CoveringServices(serviceID)).Scan(&on)
+	return on, err
 }
 
 // GetOffer returns the owner's offer. No row means not for sale.
@@ -216,10 +248,11 @@ func (r *SecurityServiceRepository) ActiveUntil(ctx context.Context, installatio
 	}
 	var until *time.Time
 	// Stacked purchases chain end to start, so the latest end is when the
-	// player's paid time runs out, as long as one of them has started.
+	// player's paid time runs out, as long as one of them has started. A
+	// Sentinel Pro purchase counts for every service it covers.
 	err := r.pool.QueryRow(ctx, `SELECT CASE WHEN bool_or(starts_at<=NOW()) THEN MAX(ends_at) END FROM security_service_purchases
- WHERE installation_id=$1 AND player_id=$2 AND service_id=$3 AND ends_at>NOW()`,
-		installationID, playerID, serviceID).Scan(&until)
+ WHERE installation_id=$1 AND player_id=$2 AND service_id = ANY($3) AND ends_at>NOW()`,
+		installationID, playerID, CoveringServices(serviceID)).Scan(&until)
 	return until, err
 }
 
@@ -268,7 +301,8 @@ type SecurityExpiry struct {
 }
 
 // DueExpiries lists ended purchases not yet announced, where the player has no
-// later paid time. Purchases followed by more paid time are marked without a DM.
+// later paid time. Purchases followed by more paid time (for the same service,
+// or a Sentinel Pro bundle covering it) are marked without a DM.
 func (r *SecurityServiceRepository) DueExpiries(ctx context.Context, limit int) ([]SecurityExpiry, error) {
 	if r == nil || r.pool == nil {
 		return nil, ErrSecurityInvalidRequest
@@ -279,7 +313,8 @@ func (r *SecurityServiceRepository) DueExpiries(ctx context.Context, limit int) 
 	if _, err := r.pool.Exec(ctx, `UPDATE security_service_purchases p SET expiry_notified_at=NOW()
  WHERE p.expiry_notified_at IS NULL AND p.ends_at<=NOW() AND EXISTS (
   SELECT 1 FROM security_service_purchases q WHERE q.installation_id=p.installation_id AND q.player_id=p.player_id
-   AND q.service_id=p.service_id AND q.ends_at>NOW())`); err != nil {
+   AND q.ends_at>NOW() AND (q.service_id=p.service_id OR (q.service_id='SENTINEL_PRO'
+    AND p.service_id IN ('BASE_RAID_ALARM','PERIMETER_MONITORING','BASE_BLACK_BOX','FACTION_SECURITY'))))`); err != nil {
 		return nil, err
 	}
 	rows, err := r.pool.Query(ctx, `SELECT p.id,p.player_id,COALESCE(l.discord_user_id,''),p.service_id,p.server_id,p.installation_id

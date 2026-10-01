@@ -161,11 +161,11 @@ WHERE b.guild_id=$1 AND b.server_id=$2 AND b.state<>'REVOKED'
  AND (NOT EXISTS (
   SELECT 1 FROM security_service_offers o
   WHERE o.installation_id=b.installation_id AND o.server_id=b.server_id
-   AND o.service_id='BASE_RAID_ALARM' AND o.enabled)
+   AND o.service_id IN ('BASE_RAID_ALARM','SENTINEL_PRO') AND o.enabled)
   OR EXISTS (
   SELECT 1 FROM security_service_purchases sp
   WHERE sp.installation_id=b.installation_id AND sp.player_id=b.owner_player_id
-   AND sp.service_id='BASE_RAID_ALARM' AND sp.starts_at<=NOW() AND sp.ends_at>NOW()))
+   AND sp.service_id IN ('BASE_RAID_ALARM','SENTINEL_PRO') AND sp.starts_at<=NOW() AND sp.ends_at>NOW()))
 ORDER BY b.id`, guildID, serverID, raiderAdmID, mapX, mapZ)
 	if err != nil {
 		return nil, err

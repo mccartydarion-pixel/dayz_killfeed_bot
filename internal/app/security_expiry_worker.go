@@ -79,6 +79,8 @@ func securityExpiryMessage(serviceID, serverName, storeURL string) *discordgo.Me
 		what = "New visits to your base won't be added to its history any more."
 	case repository.ServiceFactionSecurity:
 		what = "Your faction won't get your base's alerts any more."
+	case repository.ServiceSentinelPro:
+		what = "The base services it included have stopped, unless you bought them separately."
 	}
 	text := "⏰ **Your " + repository.SecurityServiceLabel(serviceID) + " on " + caseSafeName(serverName) + " has ended.** " + what + " Nothing was charged."
 	if storeURL != "" {

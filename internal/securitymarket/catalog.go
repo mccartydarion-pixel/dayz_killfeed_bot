@@ -20,6 +20,8 @@ type Availability struct {
 	PricePoints  int64      `json:"pricePoints,omitempty"`
 	DurationDays int        `json:"durationDays,omitempty"`
 	ActiveUntil  *time.Time `json:"activeUntil,omitempty"`
+	// Includes lists, for a bundle, the services it covers that are switched on.
+	Includes []string `json:"includes,omitempty"`
 }
 
 var definitions = []Service{

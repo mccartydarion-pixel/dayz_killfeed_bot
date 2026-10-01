@@ -136,11 +136,11 @@ WHERE b.guild_id=$1 AND b.server_id=$2 AND b.state<>'REVOKED' AND b.owner_player
  AND (NOT EXISTS (
   SELECT 1 FROM security_service_offers o
   WHERE o.installation_id=b.installation_id AND o.server_id=b.server_id
-   AND o.service_id='PERIMETER_MONITORING' AND o.enabled)
+   AND o.service_id IN ('PERIMETER_MONITORING','SENTINEL_PRO') AND o.enabled)
   OR EXISTS (
   SELECT 1 FROM security_service_purchases sp
   WHERE sp.installation_id=b.installation_id AND sp.player_id=b.owner_player_id
-   AND sp.service_id='PERIMETER_MONITORING' AND sp.starts_at<=NOW() AND sp.ends_at>NOW()))
+   AND sp.service_id IN ('PERIMETER_MONITORING','SENTINEL_PRO') AND sp.starts_at<=NOW() AND sp.ends_at>NOW()))
 ORDER BY b.id`, guildID, serverID, visitorPlayerID, mapX, mapZ)
 	if err != nil {
 		return nil, err
