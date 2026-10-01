@@ -95,3 +95,22 @@ func TestBaseRentPaidForYouMessage(t *testing.T) {
 		t.Fatalf("message: %q %q", e.Title, e.Description)
 	}
 }
+
+func TestBaseTransferMessages(t *testing.T) {
+	n := NewBaseTransferMessage("Alpha", "Bravo @everyone", "Hall", "Champions", "https://site.example/dashboard/anti-cheat?tab=bases")
+	if e := n.Embeds[0]; !strings.Contains(e.Description, "Alpha") || strings.Contains(e.Description, "@everyone") || len(e.Fields) != 1 {
+		t.Fatalf("new: %+v", e)
+	}
+	if e := NewBaseTransferMessage("A", "B", "C", "S", "").Embeds[0]; e.Footer == nil {
+		t.Fatal("no URL: footer hint")
+	}
+	if e := BaseTransferDecisionMessage(true, true, "Hall", "Alpha", "Bravo", "S", "").Embeds[0]; !strings.Contains(e.Title, "now yours") || !strings.Contains(e.Description, "Alpha") {
+		t.Fatalf("receiving: %+v", e)
+	}
+	if e := BaseTransferDecisionMessage(true, false, "Hall", "Alpha", "Bravo", "S", "").Embeds[0]; !strings.Contains(e.Description, "Bravo") {
+		t.Fatalf("giver: %+v", e)
+	}
+	if e := BaseTransferDecisionMessage(false, false, "Hall", "", "", "S", "Too soon").Embeds[0]; len(e.Fields) != 1 || e.Fields[0].Value != "Too soon" {
+		t.Fatalf("declined: %+v", e)
+	}
+}

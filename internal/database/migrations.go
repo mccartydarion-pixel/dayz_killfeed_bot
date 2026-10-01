@@ -2760,6 +2760,11 @@ CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events
 		Name: "0098_base_rent_exemptions",
 		SQL:  BaseRentExemptionSQL,
 	},
+	{
+		// Base transfers to a faction mate, approved by the server owner. Additive.
+		Name: "0099_base_transfers",
+		SQL:  BaseTransferSQL,
+	},
 }
 
 // PvPDeathBackfillSQL gives the victim of every existing PvP kill a deaths row of type PVP, with

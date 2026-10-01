@@ -56,6 +56,9 @@ func (a *App) registerCaseBaseRoutes(base string){
  h("PUT "+base+"/case/base-rent",a.handleSetBaseRent)
  h("POST "+base+"/case/base-rent/gift",a.handleGiftBaseRent)
  h("PUT "+base+"/case/base-rent/rent-free",a.handleSetBaseRentFree)
+ h("GET "+base+"/case/base-transfers",a.handleGetBaseTransfers)
+ h("POST "+base+"/case/base-transfers/{transferID}/approve",a.handleApproveBaseTransfer)
+ h("POST "+base+"/case/base-transfers/{transferID}/decline",a.handleDeclineBaseTransfer)
 }
 
 func (a *App) caseBaseActor(w http.ResponseWriter,r *http.Request)(adminActor,*repository.CaseBaseRegistrationRepository,bool){
