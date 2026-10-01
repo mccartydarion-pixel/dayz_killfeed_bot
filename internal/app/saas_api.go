@@ -146,6 +146,11 @@ func (a *App) resolveActingUser(w http.ResponseWriter, r *http.Request) *reposit
 		writeSaaSError(w, codeUnauthorized, "acting user has not synced")
 		return nil
 	}
+	if user.Banned() {
+		// Banned by the platform owner (Owner Hub): refused everywhere an acting user is resolved.
+		writeSaaSError(w, codeForbidden, "this account has been suspended by Champion")
+		return nil
+	}
 	return user
 }
 

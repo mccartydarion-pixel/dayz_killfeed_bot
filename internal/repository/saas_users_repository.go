@@ -19,7 +19,14 @@ type AppUser struct {
 	DiscordUsername, DiscordGlobalName, Avatar string
 	CreatedAt, UpdatedAt                       time.Time
 	LastLoginAt                                *time.Time
+	// BannedAt/BanReason are set by the platform owner (Owner Hub); a banned user is refused by
+	// every /api/saas route and Discord interaction that resolves an acting user.
+	BannedAt  *time.Time
+	BanReason string
 }
+
+// Banned reports whether the platform owner has banned this account.
+func (u *AppUser) Banned() bool { return u != nil && u.BannedAt != nil }
 
 // UserRepository persists website users keyed by their unique Discord ID.
 type UserRepository struct{ pool *pgxpool.Pool }
@@ -39,11 +46,11 @@ ON CONFLICT(discord_user_id) DO UPDATE SET
     avatar=EXCLUDED.avatar,
     last_login_at=NOW(),
     updated_at=NOW()
-RETURNING id, discord_user_id, discord_username, COALESCE(discord_global_name,''), COALESCE(avatar,''), created_at, updated_at, last_login_at`
+RETURNING id, discord_user_id, discord_username, COALESCE(discord_global_name,''), COALESCE(avatar,''), created_at, updated_at, last_login_at, banned_at, COALESCE(ban_reason,'')`
 
 	var out AppUser
 	err := r.pool.QueryRow(ctx, q, u.DiscordUserID, u.DiscordUsername, emptyToNil(u.DiscordGlobalName), emptyToNil(u.Avatar)).
-		Scan(&out.ID, &out.DiscordUserID, &out.DiscordUsername, &out.DiscordGlobalName, &out.Avatar, &out.CreatedAt, &out.UpdatedAt, &out.LastLoginAt)
+		Scan(&out.ID, &out.DiscordUserID, &out.DiscordUsername, &out.DiscordGlobalName, &out.Avatar, &out.CreatedAt, &out.UpdatedAt, &out.LastLoginAt, &out.BannedAt, &out.BanReason)
 	if err != nil {
 		return nil, fmt.Errorf("upsert discord user: %w", err)
 	}
@@ -59,10 +66,10 @@ func (r *UserRepository) EnsureDiscordUser(ctx context.Context, discordUserID, u
 INSERT INTO app_users(discord_user_id, discord_username, discord_global_name, avatar)
 VALUES($1,$2,$3,$4)
 ON CONFLICT(discord_user_id) DO UPDATE SET updated_at = app_users.updated_at
-RETURNING id, discord_user_id, discord_username, COALESCE(discord_global_name,''), COALESCE(avatar,''), created_at, updated_at, last_login_at`
+RETURNING id, discord_user_id, discord_username, COALESCE(discord_global_name,''), COALESCE(avatar,''), created_at, updated_at, last_login_at, banned_at, COALESCE(ban_reason,'')`
 	var out AppUser
 	err := r.pool.QueryRow(ctx, q, discordUserID, username, emptyToNil(globalName), emptyToNil(avatar)).
-		Scan(&out.ID, &out.DiscordUserID, &out.DiscordUsername, &out.DiscordGlobalName, &out.Avatar, &out.CreatedAt, &out.UpdatedAt, &out.LastLoginAt)
+		Scan(&out.ID, &out.DiscordUserID, &out.DiscordUsername, &out.DiscordGlobalName, &out.Avatar, &out.CreatedAt, &out.UpdatedAt, &out.LastLoginAt, &out.BannedAt, &out.BanReason)
 	if err != nil {
 		return nil, fmt.Errorf("ensure discord user: %w", err)
 	}
@@ -72,10 +79,10 @@ RETURNING id, discord_user_id, discord_username, COALESCE(discord_global_name,''
 // GetByDiscordID returns the app_users row for a Discord user ID, or nil if
 // this Discord account has never signed in to the website.
 func (r *UserRepository) GetByDiscordID(ctx context.Context, discordUserID string) (*AppUser, error) {
-	const q = `SELECT id, discord_user_id, discord_username, COALESCE(discord_global_name,''), COALESCE(avatar,''), created_at, updated_at, last_login_at FROM app_users WHERE discord_user_id=$1`
+	const q = `SELECT id, discord_user_id, discord_username, COALESCE(discord_global_name,''), COALESCE(avatar,''), created_at, updated_at, last_login_at, banned_at, COALESCE(ban_reason,'') FROM app_users WHERE discord_user_id=$1`
 	var out AppUser
 	err := r.pool.QueryRow(ctx, q, discordUserID).
-		Scan(&out.ID, &out.DiscordUserID, &out.DiscordUsername, &out.DiscordGlobalName, &out.Avatar, &out.CreatedAt, &out.UpdatedAt, &out.LastLoginAt)
+		Scan(&out.ID, &out.DiscordUserID, &out.DiscordUsername, &out.DiscordGlobalName, &out.Avatar, &out.CreatedAt, &out.UpdatedAt, &out.LastLoginAt, &out.BannedAt, &out.BanReason)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}

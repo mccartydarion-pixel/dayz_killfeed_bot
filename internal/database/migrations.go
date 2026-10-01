@@ -2517,6 +2517,12 @@ UPDATE case_addon_subscriptions SET coverage_backfilled = FALSE
 		Name: "0074_faction_recruitment",
 		SQL:  FactionRecruitmentSQL,
 	},
+	{
+		// Owner Hub controls: platform audit log, user bans, installation suspension,
+		// owner-granted plans. Additive only.
+		Name: "0075_owner_controls",
+		SQL:  OwnerControlsSQL,
+	},
 }
 
 // RankedLedgerFoundationSQL creates server-scoped seasonal RP storage.

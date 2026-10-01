@@ -123,6 +123,22 @@ type SubscriptionInfo struct {
 	Entitlements      []string `json:"entitlements"`
 	CreatedAt         *string  `json:"createdAt"`
 	UpdatedAt         *string  `json:"updatedAt"`
+	// ExternallyBilled: a live payment-provider subscription owns this row (owner trial/grant/revoke refuse it).
+	ExternallyBilled bool `json:"externallyBilled"`
+	// OwnerGrantUntil/OwnerGrantReason: set when the platform owner granted the plan (Owner Hub).
+	OwnerGrantUntil  *string `json:"ownerGrantUntil"`
+	OwnerGrantReason *string `json:"ownerGrantReason"`
+}
+
+// subscriptionInfo builds the DTO from the columns every subscription read selects.
+func subscriptionInfo(plan, status string, trial, period *time.Time, interval string, cancelAtPeriodEnd bool, sCreated, sUpdated *time.Time, stripeManaged bool, grantUntil *time.Time, grantReason string) *SubscriptionInfo {
+	info := &SubscriptionInfo{Plan: plan, Status: status, TrialEndsAt: tsp(trial), CurrentPeriodEnd: tsp(period),
+		BillingInterval: interval, CancelAtPeriodEnd: cancelAtPeriodEnd, Entitlements: entitlementKeys(plan), CreatedAt: tsp(sCreated), UpdatedAt: tsp(sUpdated),
+		ExternallyBilled: stripeManaged, OwnerGrantUntil: tsp(grantUntil)}
+	if grantReason != "" {
+		info.OwnerGrantReason = &grantReason
+	}
+	return info
 }
 
 // MemberRow is the website's AdminMember (`id` is a string there).
@@ -132,6 +148,8 @@ type MemberRow struct {
 	DiscordID   string `json:"discordId"`
 	Role        string `json:"role"`
 	JoinedAt    string `json:"joinedAt"`
+	// BannedAt is set when the platform owner banned this account (Owner Hub).
+	BannedAt *string `json:"bannedAt"`
 }
 
 type DiscordInfo struct {
@@ -262,6 +280,15 @@ type InstallationDetail struct {
 	GeneralSettings   *GeneralSettings  `json:"generalSettings"`
 	ChannelRoutes     []ChannelRoute    `json:"channelRoutes"`
 	NitradoConnection *NitradoStatus    `json:"nitradoConnection"`
+	// Suspension is set while the platform owner has the installation suspended (Owner Hub).
+	Suspension *SuspensionInfo `json:"suspension"`
+}
+
+// SuspensionInfo is the owner-suspension state of an installation.
+type SuspensionInfo struct {
+	SuspendedAt         string  `json:"suspendedAt"`
+	Reason              *string `json:"reason"`
+	StatusBeforeSuspend *string `json:"statusBeforeSuspend"`
 }
 
 // InstallationCounts / SubscriptionCounts use the real status vocabulary. Anything
@@ -643,6 +670,7 @@ SELECT o.id, o.name, o.slug, o.created_at,
        u.id, COALESCE(NULLIF(u.discord_global_name,''), u.discord_username), u.discord_user_id,
        (SELECT COUNT(*) FROM organization_members m WHERE m.organization_id = o.id),
        s.plan, s.status, s.trial_ends_at, s.current_period_end, COALESCE(s.billing_interval,''), COALESCE(s.cancel_at_period_end,false), s.created_at, s.updated_at,
+       COALESCE(s.provider_subscription_id,'')<>'', s.owner_grant_until, COALESCE(s.owner_grant_reason,''),
        (SELECT COUNT(*) FROM installations ic WHERE ic.organization_id = o.id),
        pi.id
 FROM organizations o
@@ -666,10 +694,13 @@ func scanOrg(row pgx.Row) (orgRec, error) {
 	var plan, status *string
 	var interval string
 	var cancelAtPeriodEnd bool
-	var trial, period, sCreated, sUpdated *time.Time
+	var trial, period, sCreated, sUpdated, grantUntil *time.Time
+	var stripeManaged bool
+	var grantReason string
 	err := row.Scan(&o.ID, &o.Name, &o.Slug, &created,
 		&owner.UserID, &owner.DisplayName, &owner.DiscordID,
 		&o.MemberCount, &plan, &status, &trial, &period, &interval, &cancelAtPeriodEnd, &sCreated, &sUpdated,
+		&stripeManaged, &grantUntil, &grantReason,
 		&o.InstallationCount, &rec.primaryID)
 	if err != nil {
 		return orgRec{}, err
@@ -678,8 +709,7 @@ func scanOrg(row pgx.Row) (orgRec, error) {
 	o.Owner = &owner.DisplayName
 	o.OwnerUser = &owner
 	if plan != nil && status != nil {
-		o.Subscription = &SubscriptionInfo{Plan: *plan, Status: *status, TrialEndsAt: tsp(trial), CurrentPeriodEnd: tsp(period),
-			BillingInterval: interval, CancelAtPeriodEnd: cancelAtPeriodEnd, Entitlements: entitlementKeys(*plan), CreatedAt: tsp(sCreated), UpdatedAt: tsp(sUpdated)}
+		o.Subscription = subscriptionInfo(*plan, *status, trial, period, interval, cancelAtPeriodEnd, sCreated, sUpdated, stripeManaged, grantUntil, grantReason)
 	}
 	o.Installations = []InstallationSummary{}
 	return rec, nil
@@ -769,7 +799,7 @@ func (r *Repository) GetOrganization(ctx context.Context, id int64) (*Organizati
 	o := rec.org
 	o.Members = []MemberRow{}
 	mrows, err := r.pool.Query(ctx, `
-SELECT u.id, COALESCE(NULLIF(u.discord_global_name,''), u.discord_username), u.discord_user_id, m.role, m.created_at
+SELECT u.id, COALESCE(NULLIF(u.discord_global_name,''), u.discord_username), u.discord_user_id, m.role, m.created_at, u.banned_at
 FROM organization_members m JOIN app_users u ON u.id = m.user_id
 WHERE m.organization_id = $1
 ORDER BY (m.role = 'OWNER') DESC, (m.role = 'ADMIN') DESC, m.id LIMIT $2`, id, maxDetailRows)
@@ -780,12 +810,14 @@ ORDER BY (m.role = 'OWNER') DESC, (m.role = 'ADMIN') DESC, m.id LIMIT $2`, id, m
 		var m MemberRow
 		var uid int64
 		var joined time.Time
-		if err := mrows.Scan(&uid, &m.DisplayName, &m.DiscordID, &m.Role, &joined); err != nil {
+		var banned *time.Time
+		if err := mrows.Scan(&uid, &m.DisplayName, &m.DiscordID, &m.Role, &joined, &banned); err != nil {
 			mrows.Close()
 			return nil, err
 		}
 		m.ID = strconv.FormatInt(uid, 10)
 		m.JoinedAt = ts(joined)
+		m.BannedAt = tsp(banned)
 		o.Members = append(o.Members, m)
 	}
 	mrows.Close()
@@ -887,20 +919,31 @@ func (r *Repository) GetInstallation(ctx context.Context, id int64) (*Installati
 
 	var instUpdated time.Time
 	var plan, status *string
-	var interval string
-	var cancelAtPeriodEnd bool
-	var trial, period, sCreated, sUpdated *time.Time
+	var interval, grantReason, suspendReason, statusBefore string
+	var cancelAtPeriodEnd, stripeManaged bool
+	var trial, period, sCreated, sUpdated, grantUntil, suspendedAt *time.Time
 	if err := r.pool.QueryRow(ctx, `
-SELECT o.slug, i.updated_at, s.plan, s.status, s.trial_ends_at, s.current_period_end, COALESCE(s.billing_interval,''), COALESCE(s.cancel_at_period_end,false), s.created_at, s.updated_at
+SELECT o.slug, i.updated_at, s.plan, s.status, s.trial_ends_at, s.current_period_end, COALESCE(s.billing_interval,''), COALESCE(s.cancel_at_period_end,false), s.created_at, s.updated_at,
+       COALESCE(s.provider_subscription_id,'')<>'', s.owner_grant_until, COALESCE(s.owner_grant_reason,''),
+       i.suspended_at, COALESCE(i.suspended_reason,''), COALESCE(i.status_before_suspend,'')
 FROM installations i JOIN organizations o ON o.id = i.organization_id
 LEFT JOIN subscriptions s ON s.organization_id = o.id WHERE i.id = $1`, id).
-		Scan(&d.OrganizationSlug, &instUpdated, &plan, &status, &trial, &period, &interval, &cancelAtPeriodEnd, &sCreated, &sUpdated); err != nil {
+		Scan(&d.OrganizationSlug, &instUpdated, &plan, &status, &trial, &period, &interval, &cancelAtPeriodEnd, &sCreated, &sUpdated,
+			&stripeManaged, &grantUntil, &grantReason, &suspendedAt, &suspendReason, &statusBefore); err != nil {
 		return nil, fmt.Errorf("installation organization: %w", err)
 	}
 	d.UpdatedAt = ts(instUpdated)
 	if plan != nil && status != nil {
-		d.Subscription = &SubscriptionInfo{Plan: *plan, Status: *status, TrialEndsAt: tsp(trial), CurrentPeriodEnd: tsp(period),
-			BillingInterval: interval, CancelAtPeriodEnd: cancelAtPeriodEnd, Entitlements: entitlementKeys(*plan), CreatedAt: tsp(sCreated), UpdatedAt: tsp(sUpdated)}
+		d.Subscription = subscriptionInfo(*plan, *status, trial, period, interval, cancelAtPeriodEnd, sCreated, sUpdated, stripeManaged, grantUntil, grantReason)
+	}
+	if suspendedAt != nil {
+		d.Suspension = &SuspensionInfo{SuspendedAt: ts(*suspendedAt)}
+		if suspendReason != "" {
+			d.Suspension.Reason = &suspendReason
+		}
+		if statusBefore != "" {
+			d.Suspension.StatusBeforeSuspend = &statusBefore
+		}
 	}
 
 	var sp SetupProgress

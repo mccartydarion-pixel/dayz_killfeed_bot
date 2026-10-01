@@ -1,11 +1,11 @@
-# Champion platform-admin (founder) API - Phase 1, read-only
+# Champion platform-admin (founder) API
 
 The one HTTP surface that reads **across organizations**. It exists so the
-Founder Hub website (`/admin`: Overview, Customers, Subscriptions, Installations,
-Health) can show real data. It is **read-only**: only `GET` routes exist, so any
-other method is answered `405` by the router. Mutations (plan changes, trial
-extensions, suspensions, deletions, impersonation, billing, credential access) are
-Phase 2 and require audit logging first.
+Owner Hub website (`/admin`: Overview, Customers, Subscriptions, Installations,
+Health) can show real data. Phase 1 was read-only; Phase 2 adds the **Owner
+controls** below - the only `POST` routes under `/api/admin`, each requiring a
+reason and written to `platform_audit_log` before the response is sent.
+Impersonation and credential access remain out of scope.
 
 Machine-readable contract: [`admin-openapi.yaml`](admin-openapi.yaml). The customer
 API (`/api/saas/...`, [`SAAS_HTTP_API.md`](SAAS_HTTP_API.md)) is unchanged and stays
@@ -321,6 +321,49 @@ invented uptime percentages.
 status `DEGRADED`, `DISCONNECTED` or `SUSPENDED`, never-checked first. Free-text error
 messages from components and workers are intentionally not exposed. `state`/`overall`
 use the runtime's `HEALTHY | DEGRADED | UNHEALTHY | UNKNOWN`.
+
+## Owner controls (Phase 2, writes)
+
+Every write below goes through the same `adminRoute` gate as a read, takes a JSON body
+with a required `reason` (max 500 characters), returns `409 CONFLICT` when the target is
+already in the requested state, and records one `platform_audit_log` row (actor, action,
+target, reason, sanitized before/after). Nothing here reads or writes a Stripe id.
+
+| Route | Body | Effect |
+| --- | --- | --- |
+| `POST /organizations/{id}/trial` | `days` (1-365) or `until` | Start or extend a trial (`TRIAL`/`TRIAL`). Refused (`409`) when the organization is billed through Stripe. |
+| `POST /organizations/{id}/grant` | `plan`, optional `days` (max 3650) or `until` | Activate a plan without Stripe (`ACTIVE`/`plan`), open-ended or dated; a dated grant lapses on its own (`billingRequired`). Refused when billed through Stripe. |
+| `POST /organizations/{id}/revoke` | - | End a trial or grant: `INACTIVE`/`NONE`, billing required. Refused when billed through Stripe. |
+| `POST /organizations/{id}/billing/cancel` | - | Stripe-backed: cancel at period end (`billing.Service.Cancel`). |
+| `POST /organizations/{id}/billing/reactivate` | - | Stripe-backed: undo a scheduled cancellation. |
+| `POST /organizations/{id}/billing/reconcile` | - | Stripe-backed: re-pull the subscription from Stripe and overwrite the row. |
+| `POST /installations/{id}/suspend` | - | Status `SUSPENDED` (previous status remembered), the game server deactivated and its worker stopped. Data is kept. |
+| `POST /installations/{id}/reinstate` | - | Previous status restored, game server reactivated, worker restarted. |
+| `POST /installations/{id}/restart-worker` | - | Stop and start the ADM worker (no tail-start). Refused while suspended. |
+| `POST /users/{id}/ban` | - | `banned_at` set; every `/api/saas` route that resolves the acting user answers `403` from then on. Allowlisted platform admins cannot be banned. |
+| `POST /users/{id}/unban` | - | Clears the ban. |
+| `GET /audit` | query `organizationId`, `targetType`, `targetId`, `action`, `cursor`, `limit` | The platform audit log, newest first, cursor-paginated like every other list. |
+
+Responses carry the sanitized target: `{"subscription": {plan, status, trialEndsAt,
+currentPeriodEnd, cancelAtPeriodEnd, externallyBilled, ownerGrantUntil, ownerGrantReason,
+billingRequired, trialStatus}}`, `{"installation": {id, organizationId, status, suspendedAt,
+suspendedReason, statusBeforeSuspend, workerRunning}}` or `{"user": {id, discordUserId,
+username, globalName, avatar, createdAt, lastLoginAt, bannedAt, banReason}}`.
+
+The read model exposes the same state: `subscription.externallyBilled`,
+`subscription.ownerGrantUntil/ownerGrantReason` on organizations and installations,
+`installation.suspension` on the installation detail, and `members[].bannedAt`.
+
+## Operations console
+
+| Route | Body | Effect |
+| --- | --- | --- |
+| `GET /ops/status` | - | What the Discord `/admin status` and `/admin diagnostics` subcommands show: `runtime`, `health`, `workers`, `link_diagnostics`, `presence_diagnostics`, `pipeline_diagnostics`, plus `workerManager` (the ADM workers running per active game server). |
+| `POST /ops/leaderboard-refresh` | `reason` | The manual leaderboard refresh (`/admin leaderboard-refresh`). Audited as `ops.leaderboard_refreshed`. |
+| `POST /ops/adm-source-scan` | `reason` | The slow live scan of Nitrado ADM candidates (`/admin adm-source-scan`, ~30 s). Audited as `ops.adm_source_scanned`; the scan result is returned. |
+
+`GET /live-sync` (per-server watcher freshness, ADM session, boot authority, stored stats and
+latency) now goes through the same secret guard as every other admin response.
 
 ## Fields that are never returned
 

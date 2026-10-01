@@ -180,6 +180,8 @@ type App struct {
 	Permissions *repository.PermissionsRepository
 	AdminAudit  *repository.AuditRepository
 	ClientAdmin *repository.ClientAdminRepository
+	// PlatformOwner is the Owner Hub write model (docs/ADMIN_API.md "Owner controls").
+	PlatformOwner *repository.PlatformOwnerRepository
 	// Locations backs Champion Phase 3 (docs/PLAYER_INTELLIGENCE.md): the authoritative player
 	// directory and persisted ADM location-event history.
 	Locations *repository.LocationRepository
@@ -745,6 +747,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.SaaSRetiredChannels = repository.NewRetiredChannelRepository(db.Pool)
 			app.Permissions = repository.NewPermissionsRepository(db.Pool)
 			app.AdminAudit = repository.NewAuditRepository(db.Pool)
+			app.PlatformOwner = repository.NewPlatformOwnerRepository(db.Pool)
 			app.ClientAdmin = repository.NewClientAdminRepository(db.Pool)
 			app.Locations = repository.NewLocationRepository(db.Pool)
 			go app.runLocationRetention(ctx)

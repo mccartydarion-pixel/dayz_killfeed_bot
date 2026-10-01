@@ -1,9 +1,10 @@
 // Package app: Champion platform-admin (founder) API.
 //
-// The one HTTP surface allowed to read across organizations. It is READ-ONLY
-// (only GET routes are registered, so any other method is a 405 from the mux),
-// lives under /api/admin (never /api/saas), and every route is wrapped by
-// adminRoute, which runs requirePlatformAdmin before the handler can execute.
+// The one HTTP surface allowed to read across organizations. Reads are GET;
+// the Owner Hub controls (admin_api_owner.go) are the only writes, each audited
+// to platform_audit_log. It lives under /api/admin (never /api/saas), and every
+// route is wrapped by adminRoute, which runs requirePlatformAdmin before the
+// handler can execute.
 // See docs/ADMIN_API.md.
 package app
 
@@ -632,8 +633,8 @@ func (a *App) handleAdminHealth(w http.ResponseWriter, r *http.Request, _ adminI
 	a.writeAdminJSON(w, http.StatusOK, resp)
 }
 
-// registerAdminAPI wires GET /api/admin/... . Only GET is registered: anything
-// else is answered 405 by the mux, so Phase 1 has no write surface at all.
+// registerAdminAPI wires /api/admin/... . Reads are GET; the only writes are the
+// Owner Hub controls in admin_api_owner.go (Phase 2), each audited.
 func (a *App) registerAdminAPI() {
 	if a.HTTPServer == nil {
 		return
@@ -647,4 +648,6 @@ func (a *App) registerAdminAPI() {
 	a.HTTPServer.Handle("GET /api/admin/health", a.adminRoute(a.handleAdminHealth))
 	a.HTTPServer.Handle("GET /api/admin/live-sync", a.adminRoute(a.handleAdminLiveSync))
 	a.registerAdminBillingRoutes()
+	a.registerOwnerAPI()
+	a.registerOpsAPI()
 }

@@ -194,7 +194,7 @@ func (a *App) handleAdminLiveSync(w http.ResponseWriter, r *http.Request, _ admi
 		out = append(out, dto)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ServerID < out[j].ServerID })
-	writeSaaSJSON(w, http.StatusOK, map[string]any{"generatedAt": time.Now().UTC().Format(time.RFC3339), "enabled": liveSyncWatchersEnabled(), "servers": out})
+	a.writeAdminJSON(w, http.StatusOK, map[string]any{"generatedAt": time.Now().UTC().Format(time.RFC3339), "enabled": liveSyncWatchersEnabled(), "servers": out})
 }
 
 // admSourceComponents classifies every running ADM engine's source health (Live Sync phase 2.1):
