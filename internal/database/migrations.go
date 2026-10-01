@@ -2662,6 +2662,11 @@ CREATE INDEX IF NOT EXISTS idx_installation_feature_settings_network ON installa
 CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events(guild_id, ((config->>'server_id')), ends_at DESC) WHERE event_type = 'HOT_ZONE';
 `,
 	},
+	{
+		// C.A.S.E. staff alerts: owner switch (off by default) and delivery queue. Additive only.
+		Name: "0081_case_staff_alerts",
+		SQL:  CASEStaffAlertSQL,
+	},
 }
 
 // RankedLedgerFoundationSQL creates server-scoped seasonal RP storage.
