@@ -67,7 +67,8 @@ counted.
 
 * **kills** - kills whose killer is a member's verified player at a time inside a period. **A kill of a fellow member of the same faction
   (a team kill) is not a counted kill** (and never counts toward headshots, longshots, streaks or bounties).
-* **deaths** - `deaths` rows of a member's player inside a period (a teammate's team-kill death is a death).
+* **deaths** - `deaths` rows of a member's player inside a period (a teammate's team-kill death is a death). Being killed by another player
+  writes a `PVP` deaths row with the kill, so PvP deaths are included (`docs/DEATH_COUNTS.md`).
 * **kdRatio** - `kills / max(deaths, 1)` rounded to two decimals: the project's existing convention (`StatsRepository`). With zero deaths the
   ratio is the kill count itself: no division by zero, no infinity, never NaN.
 * **headshots / longshots** - counted kills whose `headshot` / `longshot` flag is set.
