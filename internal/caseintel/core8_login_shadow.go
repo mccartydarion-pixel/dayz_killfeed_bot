@@ -7,6 +7,7 @@ import "time"
 type ShadowLoginInput struct {
 	Scope            Core8Scope
 	PlayerID         int64
+	PlayerName       string // shown on a staff alert; optional
 	Events           []Event
 	UTCOffsetMinutes *int
 	Telemetry        TelemetrySnapshot
@@ -34,6 +35,17 @@ const ShadowMaxSampleLag = 15 * time.Minute
 // ShadowSuspiciousLogins resolves trusted event times, derives restart
 // windows from boot boundaries and runs the Suspicious Logins evaluator.
 func ShadowSuspiciousLogins(in ShadowLoginInput) ShadowLoginReport {
+	return evaluateLoginWindow(in, SensitivityBalanced, nil)
+}
+
+// EvaluateLoginsForAlert runs Suspicious Logins exactly like the shadow run,
+// but with the owner's sensitivity and the module's released thresholds. It
+// can only return CanNotify once the module is released (core8_release.go).
+func EvaluateLoginsForAlert(in ShadowLoginInput, mode Sensitivity) Core8Result {
+	return evaluateLoginWindow(in, mode, ReleasedThresholds("CASE-LOGIN-001")).Result
+}
+
+func evaluateLoginWindow(in ShadowLoginInput, mode Sensitivity, thresholds *ValidatedThresholds) ShadowLoginReport {
 	times := ResolveSourceTimes(in.Events, in.UTCOffsetMinutes)
 	report := ShadowLoginReport{Mode: "SHADOW_OBSERVATION_ONLY", TimeBasis: "ADM_BOOT_STAMP_PLUS_LINE_CLOCK_UTC_VIA_LEARNED_OFFSET",
 		UntrustedEvents: map[string]int{}, WindowTruncated: in.WindowTruncated}
@@ -75,8 +87,8 @@ func ShadowSuspiciousLogins(in ShadowLoginInput) ShadowLoginReport {
 
 	params := DefaultCore8Params()
 	params.MaxSampleLag = ShadowMaxSampleLag
-	ctx := EvalContext{Scope: in.Scope, PlayerID: in.PlayerID, Enabled: true, Mode: SensitivityBalanced,
-		Thresholds: nil, Telemetry: snap, Params: params}
+	ctx := EvalContext{Scope: in.Scope, PlayerID: in.PlayerID, PlayerName: in.PlayerName, Enabled: true, Mode: mode,
+		Thresholds: thresholds, Telemetry: snap, Params: params}
 	report.Result = EvaluateSuspiciousLogins(ctx, LoginInput{Sessions: sessions, Restarts: restarts})
 	return report
 }

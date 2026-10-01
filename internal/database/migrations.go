@@ -2669,6 +2669,11 @@ CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events
 		Name: "0081_pvp_death_rows",
 		SQL:  PvPDeathBackfillSQL,
 	},
+	{
+		// C.A.S.E. staff alerts: owner switch (off by default) and delivery queue. Additive only.
+		Name: "0082_case_staff_alerts",
+		SQL:  CASEStaffAlertSQL,
+	},
 }
 
 // PvPDeathBackfillSQL gives the victim of every existing PvP kill a deaths row of type PVP, with
