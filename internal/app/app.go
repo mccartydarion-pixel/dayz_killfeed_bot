@@ -78,6 +78,8 @@ type App struct {
 	InviteTracker *discord.InviteTracker
 	// Rewards holds automatic Champion Point reward rules.
 	Rewards *repository.RewardRepository
+	// PlayerTimeline merges one player's history for staff.
+	PlayerTimeline *repository.PlayerTimelineRepository
 	Bounties     *repository.BountyRepository
 	// BountyService is the bounty application service (placement, the atomic claim
 	// for persisted kills, streak bounties, expiry). Its Discord notifier is
@@ -741,6 +743,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.SeasonPlanner = repository.NewSeasonPlannerRepository(db.Pool)
 			app.Invites = repository.NewInviteRepository(db.Pool)
 			app.Rewards = repository.NewRewardRepository(db.Pool)
+			app.PlayerTimeline = repository.NewPlayerTimelineRepository(db.Pool)
 			app.SeasonService = seasons.NewService(app.Seasons)
 			app.Factions = repository.NewFactionRepository(db.Pool)
 			app.Wars = repository.NewPostgresWarRepository(db.Pool)

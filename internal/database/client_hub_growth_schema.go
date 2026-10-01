@@ -79,3 +79,26 @@ CREATE TABLE IF NOT EXISTS reward_rules (
     UNIQUE (guild_id, kind, tier)
 );
 `
+
+// PlayerNameHistorySQL records every in-game name change from now on (a trigger on players), for
+// the staff player timeline. Earlier changes were never stored and are not reconstructed.
+const PlayerNameHistorySQL = `
+CREATE TABLE IF NOT EXISTS player_name_history (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    old_name TEXT NOT NULL,
+    new_name TEXT NOT NULL,
+    changed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_player_name_history_player ON player_name_history(player_id, changed_at DESC);
+CREATE OR REPLACE FUNCTION players_record_name_change() RETURNS trigger AS $fn$
+BEGIN
+    INSERT INTO player_name_history(guild_id, player_id, old_name, new_name) VALUES (NEW.guild_id, NEW.id, OLD.display_name, NEW.display_name);
+    RETURN NEW;
+END;
+$fn$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS trg_players_name_history ON players;
+CREATE TRIGGER trg_players_name_history AFTER UPDATE OF display_name ON players
+    FOR EACH ROW WHEN (OLD.display_name IS DISTINCT FROM NEW.display_name) EXECUTE FUNCTION players_record_name_change();
+`
