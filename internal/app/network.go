@@ -39,6 +39,7 @@ type networkServerDTO struct {
 	Platform         string  `json:"platform"`
 	Description      string  `json:"description"`
 	DiscordGuildName string  `json:"discordGuildName"`
+	DiscordInviteURL string  `json:"discordInviteUrl"` // "" when the owner shared none
 	PlayersOnline    int     `json:"playersOnline"`
 	Peak24h          int     `json:"peak24h"`
 	ActivePlayers7d  int     `json:"activePlayers7d"`
@@ -50,7 +51,7 @@ type networkServerDTO struct {
 
 func toNetworkServerDTO(s repository.NetworkServer) networkServerDTO {
 	return networkServerDTO{InstallationID: s.InstallationID, Name: s.Name, Platform: s.Platform, Description: s.Description, DiscordGuildName: s.DiscordName,
-		PlayersOnline: s.PlayersOnline, Peak24h: s.Peak24h, ActivePlayers7d: s.ActivePlayers7d, Kills7d: s.Kills7d, TotalKills: s.TotalKills,
+		DiscordInviteURL: s.DiscordInvite, PlayersOnline: s.PlayersOnline, Peak24h: s.Peak24h, ActivePlayers7d: s.ActivePlayers7d, Kills7d: s.Kills7d, TotalKills: s.TotalKills,
 		TrackedPlayers: s.TrackedPlayers, LastActivityAt: nullableTimeStr(s.LastActivityAt)}
 }
 

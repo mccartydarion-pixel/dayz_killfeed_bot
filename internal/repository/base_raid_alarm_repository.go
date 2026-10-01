@@ -122,7 +122,8 @@ func (r *BaseRaidAlarmRepository) SetSettings(ctx context.Context, installationI
 // MatchRaid finds the registered, non-withdrawn bases on this server whose
 // circle contains (mapX, mapZ), when the alarm is on for the server and the
 // player is not the owner, not in the owner's faction, and not covered by an
-// active friend-list grant (player or faction).
+// active friend-list grant (player or faction). When the owner sells the alarm
+// (security_service_offers), only bases whose owner has paid time match.
 func (r *BaseRaidAlarmRepository) MatchRaid(ctx context.Context, guildID, serverID int64, raiderAdmID string, mapX, mapZ float64) ([]BaseRaidMatch, error) {
 	if r == nil || r.pool == nil || guildID <= 0 || serverID <= 0 || raiderAdmID == "" {
 		return nil, errors.New("invalid base raid match")
@@ -156,6 +157,15 @@ WHERE b.guild_id=$1 AND b.server_id=$2 AND b.state<>'REVOKED'
    AND a.valid_from<=NOW() AND (a.valid_until IS NULL OR a.valid_until>NOW())
    AND (a.player_id IN (SELECT id FROM raider)
      OR a.faction_id IN (SELECT faction_id FROM raider_faction)))
+ -- When the owner sells the alarm, only base owners with paid time get it.
+ AND (NOT EXISTS (
+  SELECT 1 FROM security_service_offers o
+  WHERE o.installation_id=b.installation_id AND o.server_id=b.server_id
+   AND o.service_id='BASE_RAID_ALARM' AND o.enabled)
+  OR EXISTS (
+  SELECT 1 FROM security_service_purchases sp
+  WHERE sp.installation_id=b.installation_id AND sp.player_id=b.owner_player_id
+   AND sp.service_id='BASE_RAID_ALARM' AND sp.starts_at<=NOW() AND sp.ends_at>NOW()))
 ORDER BY b.id`, guildID, serverID, raiderAdmID, mapX, mapZ)
 	if err != nil {
 		return nil, err
