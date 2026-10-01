@@ -58,17 +58,22 @@ type Subscription struct {
 	TrialConsumed                                        bool
 	// IntendedPlan is the plan key picked while trialing (Onboarding V2). It is a preference only:
 	// it never grants anything and is never copied into Plan - Stripe webhooks set Plan.
-	IntendedPlan         string
+	IntendedPlan string
+	// OwnerGrantUntil/OwnerGrantReason are set when the platform owner granted this plan without
+	// Stripe (Owner Hub "Grant plan"); the grant lapses at OwnerGrantUntil (nil = open-ended) and
+	// a Stripe checkout always supersedes it.
+	OwnerGrantUntil      *time.Time
+	OwnerGrantReason     string
 	CreatedAt, UpdatedAt time.Time
 }
 
 const subscriptionCols = `id, organization_id, COALESCE(provider,''), COALESCE(provider_customer_id,''), COALESCE(provider_subscription_id,''), COALESCE(provider_price_id,''),
-plan, status, COALESCE(billing_interval,''), trial_ends_at, current_period_start, current_period_end, cancel_at_period_end, canceled_at, trial_consumed, COALESCE(intended_plan,''), created_at, updated_at`
+plan, status, COALESCE(billing_interval,''), trial_ends_at, current_period_start, current_period_end, cancel_at_period_end, canceled_at, trial_consumed, COALESCE(intended_plan,''), owner_grant_until, COALESCE(owner_grant_reason,''), created_at, updated_at`
 
 func scanSubscription(row pgx.Row) (Subscription, error) {
 	var s Subscription
 	err := row.Scan(&s.ID, &s.OrganizationID, &s.Provider, &s.ProviderCustomerID, &s.ProviderSubscriptionID, &s.ProviderPriceID,
-		&s.Plan, &s.Status, &s.BillingInterval, &s.TrialEndsAt, &s.CurrentPeriodStart, &s.CurrentPeriodEnd, &s.CancelAtPeriodEnd, &s.CanceledAt, &s.TrialConsumed, &s.IntendedPlan, &s.CreatedAt, &s.UpdatedAt)
+		&s.Plan, &s.Status, &s.BillingInterval, &s.TrialEndsAt, &s.CurrentPeriodStart, &s.CurrentPeriodEnd, &s.CancelAtPeriodEnd, &s.CanceledAt, &s.TrialConsumed, &s.IntendedPlan, &s.OwnerGrantUntil, &s.OwnerGrantReason, &s.CreatedAt, &s.UpdatedAt)
 	return s, err
 }
 
