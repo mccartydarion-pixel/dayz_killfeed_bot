@@ -223,8 +223,10 @@ func (r *CaseBaseRequestRepository) ForOwner(ctx context.Context, s BaseRequestS
 
 // BaseRequestDecision is what the owner chose; it tells the caller whom to notify.
 type BaseRequestDecision struct {
-	Request       CaseBaseRequest
-	DiscordUserID string // the requester's verified link, "" if none
+	Request        CaseBaseRequest
+	DiscordUserID  string // the requester's verified link, "" if none
+	InstallationID int64
+	GuildID        int64
 }
 
 // Approve registers the base (as a draft, like an owner-created one) and marks
@@ -264,7 +266,7 @@ func (r *CaseBaseRequestRepository) Approve(ctx context.Context, s BaseRequestSc
 		return BaseRequestDecision{}, err
 	}
 	q.Status, q.BaseID = BaseRequestApproved, &baseID
-	out := BaseRequestDecision{Request: q}
+	out := BaseRequestDecision{Request: q, InstallationID: s.InstallationID, GuildID: s.GuildID}
 	if err := tx.QueryRow(ctx, `SELECT COALESCE((SELECT discord_user_id FROM player_links WHERE guild_id=$1 AND player_id=$2 AND status='VERIFIED'),'')`,
 		s.GuildID, q.PlayerID).Scan(&out.DiscordUserID); err != nil {
 		return BaseRequestDecision{}, err
@@ -292,7 +294,7 @@ func (r *CaseBaseRequestRepository) Decline(ctx context.Context, s BaseRequestSc
 		return BaseRequestDecision{}, err
 	}
 	q.Status, q.DeclineReason = BaseRequestDeclined, reason
-	out := BaseRequestDecision{Request: q}
+	out := BaseRequestDecision{Request: q, InstallationID: s.InstallationID, GuildID: s.GuildID}
 	if err := tx.QueryRow(ctx, `SELECT COALESCE((SELECT discord_user_id FROM player_links WHERE guild_id=$1 AND player_id=$2 AND status='VERIFIED'),'')`,
 		s.GuildID, q.PlayerID).Scan(&out.DiscordUserID); err != nil {
 		return BaseRequestDecision{}, err

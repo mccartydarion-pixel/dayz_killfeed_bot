@@ -65,7 +65,7 @@ func (a *App) publishSecurityPanel(ctx context.Context, sender securityPanelSend
 	if err != nil {
 		return err
 	}
-	msg := discord.SecurityStorePanel(items, a.serverNameFunc()(p.ServerID), a.securityStoreURL(), time.Now())
+	msg := discord.SecurityStorePanel(items, a.serverName(p.ServerID), a.securityStoreURL(), time.Now())
 	messageID := ""
 	if p.MessageID != "" {
 		edit := &discordgo.MessageEdit{ID: p.MessageID, Channel: p.ChannelID, Embeds: &msg.Embeds, AllowedMentions: msg.AllowedMentions}

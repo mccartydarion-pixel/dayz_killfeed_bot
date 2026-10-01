@@ -1746,6 +1746,8 @@ func (a *App) Run() error {
 				a.startBaseBlackBoxPruner(ctx)
 				// Security Store panel in Discord (refreshed every 10 minutes).
 				a.startSecurityPanelWorker(ctx)
+				// Base rent reminders (due soon / paused), one DM each.
+				a.startBaseRentReminders(ctx)
 				if a.CaseDigestOutbox != nil && a.Config.CaseAccessEnabled {
 					go a.runCaseDigestWorker(ctx)
 				}

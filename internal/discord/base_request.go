@@ -73,3 +73,38 @@ func SecurityGiftMessage(serviceLabel, serverName string, days int, endsAt time.
 	return &discordgo.MessageSend{Embeds: []*discordgo.MessageEmbed{embed},
 		AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}, Users: []string{}, Roles: []string{}}}
 }
+
+// BaseRentNoticeMessage reminds a player that rent for their base is due soon
+// (dueSoon) or that the base is paused because rent is overdue.
+func BaseRentNoticeMessage(dueSoon bool, baseName, serverName string, dueAt time.Time, price int64, days int, storeURL string) *discordgo.MessageSend {
+	name := caseFallback(caseSafeText(baseName, 64), "your base")
+	server := caseFallback(caseSafeText(serverName, 100), "your server")
+	embed := &discordgo.MessageEmbed{Author: &discordgo.MessageEmbedAuthor{Name: "CHAMPIONS® BASE RENT"}}
+	if dueSoon {
+		embed.Title = "🏠 Rent for " + name + " is due " + fmt.Sprintf("<t:%d:R>", dueAt.Unix())
+		embed.Color = presentation.WarningAmber
+		embed.Description = fmt.Sprintf("Pay %s Champion Points for %d more days on %s to keep its base services running. Nothing is taken automatically.",
+			presentation.FormatThousands(price), days, server)
+	} else {
+		embed.Title = "⏸️ " + name + " is paused"
+		embed.Color = presentation.ErrorRed
+		embed.Description = "Rent on " + server + " is overdue, so this base's alerts, Perimeter Watch, Black Box and faction sharing have stopped. Pay the rent to turn them back on; your base is kept."
+	}
+	if storeURL != "" {
+		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Pay in the Security Store", Value: storeURL})
+	}
+	presentation.StampEmbed(embed, time.Now())
+	return &discordgo.MessageSend{Embeds: []*discordgo.MessageEmbed{embed},
+		AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}, Users: []string{}, Roles: []string{}}}
+}
+
+// WithRentNotice adds the server's rent terms to an approval DM.
+func WithRentNotice(msg *discordgo.MessageSend, price int64, days, graceDays int) *discordgo.MessageSend {
+	if msg == nil || len(msg.Embeds) == 0 || price <= 0 || days <= 0 {
+		return msg
+	}
+	msg.Embeds[0].Fields = append(msg.Embeds[0].Fields, &discordgo.MessageEmbedField{Name: "Rent",
+		Value: fmt.Sprintf("This server charges %s Champion Points every %d days for player bases. Pay it in the Security Store within %d days to keep your base services running.",
+			presentation.FormatThousands(price), days, graceDays)})
+	return msg
+}

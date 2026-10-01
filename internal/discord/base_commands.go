@@ -22,6 +22,14 @@ type BaseCommandSummary struct {
 	LastAnswer    string // plain words about the newest answered request
 	PaidUntil     []BasePaidTime
 	PositionFresh bool
+	Rent          []BaseRentLine
+}
+
+// BaseRentLine is one rented base's rent state for /mybase.
+type BaseRentLine struct {
+	BaseName string
+	DueAt    time.Time
+	Paused   bool
 }
 
 // BasePaidTime is one base service the player has paid time for.
@@ -172,6 +180,19 @@ func MyBaseEmbed(sum BaseCommandSummary, storeURL string, now time.Time) *discor
 		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Waiting for the server owner", Value: presentation.SafeName(sum.Pending, 64)})
 	} else if sum.LastAnswer != "" {
 		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Last request", Value: caseSafeText(sum.LastAnswer, 300)})
+	}
+	if len(sum.Rent) > 0 {
+		lines := make([]string, 0, len(sum.Rent))
+		for _, r := range sum.Rent {
+			if r.Paused {
+				lines = append(lines, fmt.Sprintf("⏸️ %s: paused, rent overdue", presentation.SafeName(r.BaseName, 64)))
+			} else if r.DueAt.Before(now) {
+				lines = append(lines, fmt.Sprintf("⚠️ %s: rent was due <t:%d:R>; pay soon to avoid a pause", presentation.SafeName(r.BaseName, 64), r.DueAt.Unix()))
+			} else {
+				lines = append(lines, fmt.Sprintf("🏠 %s: rent paid until <t:%d:f>", presentation.SafeName(r.BaseName, 64), r.DueAt.Unix()))
+			}
+		}
+		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Rent", Value: strings.Join(lines, "\n")})
 	}
 	paid := "None. See what's on sale in the Security Store."
 	if len(sum.PaidUntil) > 0 {

@@ -143,7 +143,7 @@ JOIN base_raid_alarm_settings s
 JOIN players owner ON owner.guild_id=b.guild_id AND owner.id=b.owner_player_id
 LEFT JOIN player_links pl
  ON pl.guild_id=b.guild_id AND pl.player_id=b.owner_player_id AND pl.status='VERIFIED'
-WHERE b.guild_id=$1 AND b.server_id=$2 AND b.state<>'REVOKED'
+WHERE b.guild_id=$1 AND b.server_id=$2 AND b.state<>'REVOKED' AND NOT base_rent_paused(b.id)
  AND (b.center_x-$4)*(b.center_x-$4)+(b.center_z-$5)*(b.center_z-$5) <= b.radius*b.radius
  AND owner.dayz_player_id<>$3
  AND NOT EXISTS (

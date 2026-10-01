@@ -318,8 +318,17 @@ func (a *App) notifyBaseRequestDecision(serverID int64, d repository.BaseRequest
 		return
 	}
 	session := a.Discord.Session()
-	server := a.serverNameFunc()(serverID)
+	server := a.serverName(serverID)
 	msg := discord.BaseRequestDecisionMessage(d.Request.Status == repository.BaseRequestApproved, d.Request.Name, server, d.Request.DeclineReason)
+	if d.Request.Status == repository.BaseRequestApproved && a.DB != nil && a.DB.Pool != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		rent, err := repository.NewBaseRentRepository(a.DB.Pool).GetSettings(ctx, repository.SecurityScope{
+			InstallationID: d.InstallationID, GuildID: d.GuildID, ServerID: serverID})
+		cancel()
+		if err == nil && rent.Enabled {
+			msg = discord.WithRentNotice(msg, rent.PricePoints, rent.PeriodDays, repository.BaseRentGraceDays)
+		}
+	}
 	go func(userID string, msg *discordgo.MessageSend) {
 		ch, err := session.UserChannelCreate(userID)
 		if err == nil {
@@ -359,7 +368,7 @@ func (a *App) notifyNewBaseRequest(s repository.BaseRequestScope, req repository
 			return
 		}
 		session := a.Discord.Session()
-		msg := discord.NewBaseRequestMessage(playerName, req.Name, a.serverNameFunc()(s.ServerID), req.Radius, a.baseRequestsReviewURL())
+		msg := discord.NewBaseRequestMessage(playerName, req.Name, a.serverName(s.ServerID), req.Radius, a.baseRequestsReviewURL())
 		ch, err := session.UserChannelCreate(ownerID)
 		if err == nil {
 			_, err = session.ChannelMessageSendComplex(ch.ID, msg)

@@ -2738,6 +2738,12 @@ CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events
 		Name: "0094_security_gifts",
 		SQL:  SecurityGiftSQL,
 	},
+	{
+		// Base rent for player-requested bases: settings, payments, reminders and
+		// the paused check. Additive.
+		Name: "0095_base_rent",
+		SQL:  BaseRentSQL,
+	},
 }
 
 // PvPDeathBackfillSQL gives the victim of every existing PvP kill a deaths row of type PVP, with

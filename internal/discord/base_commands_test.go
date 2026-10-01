@@ -28,3 +28,21 @@ func TestMyBaseEmbed(t *testing.T) {
 		t.Fatalf("sizes: %v", BaseCommandSizes)
 	}
 }
+
+func TestMyBaseEmbedRent(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	e := MyBaseEmbed(BaseCommandSummary{Bases: []string{"Hut"}, Rent: []BaseRentLine{
+		{BaseName: "Hut", DueAt: now.Add(48 * time.Hour)},
+		{BaseName: "Shack", DueAt: now.Add(-time.Hour)},
+		{BaseName: "Cabin", DueAt: now.Add(-96 * time.Hour), Paused: true},
+	}}, "", now)
+	var rent string
+	for _, f := range e.Fields {
+		if f.Name == "Rent" {
+			rent = f.Value
+		}
+	}
+	if !strings.Contains(rent, "Hut: rent paid until") || !strings.Contains(rent, "Shack: rent was due") || !strings.Contains(rent, "Cabin: paused") {
+		t.Fatalf("rent lines: %q", rent)
+	}
+}

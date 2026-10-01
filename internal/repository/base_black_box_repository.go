@@ -130,7 +130,7 @@ SELECT b.installation_id,b.guild_id,b.server_id,b.id,
 FROM case_registered_bases b
 JOIN base_black_box_settings s
  ON s.installation_id=b.installation_id AND s.guild_id=b.guild_id AND s.server_id=b.server_id AND s.enabled
-WHERE b.guild_id=$1 AND b.server_id=$2 AND b.state<>'REVOKED' AND b.owner_player_id<>$3
+WHERE b.guild_id=$1 AND b.server_id=$2 AND b.state<>'REVOKED' AND b.owner_player_id<>$3 AND NOT base_rent_paused(b.id)
  AND (b.center_x-$4)*(b.center_x-$4)+(b.center_z-$5)*(b.center_z-$5) <= (b.radius+$6)*(b.radius+$6)
  AND NOT EXISTS (
   SELECT 1 FROM faction_members ofm

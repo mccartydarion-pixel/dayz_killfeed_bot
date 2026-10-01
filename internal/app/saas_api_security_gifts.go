@@ -109,7 +109,7 @@ func (a *App) notifySecurityGift(discordUserID string, serverID int64, gift repo
 		return
 	}
 	session := a.Discord.Session()
-	msg := discord.SecurityGiftMessage(repository.SecurityServiceLabel(gift.ServiceID), a.serverNameFunc()(serverID), gift.DurationDays, gift.EndsAt, note, a.securityStoreURL())
+	msg := discord.SecurityGiftMessage(repository.SecurityServiceLabel(gift.ServiceID), a.serverName(serverID), gift.DurationDays, gift.EndsAt, note, a.securityStoreURL())
 	go func() {
 		ch, err := session.UserChannelCreate(discordUserID)
 		if err == nil {

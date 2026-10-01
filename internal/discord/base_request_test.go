@@ -54,3 +54,22 @@ func TestSecurityGiftMessage(t *testing.T) {
 		t.Fatalf("bare gift DM: %+v", bare.Fields)
 	}
 }
+
+func TestBaseRentMessages(t *testing.T) {
+	due := time.Unix(1_800_000_000, 0)
+	soon := BaseRentNoticeMessage(true, "Hut", "Champions", due, 1500, 7, "https://site.example/store").Embeds[0]
+	if !strings.Contains(soon.Title, "is due") || !strings.Contains(soon.Description, "1,500") || !strings.Contains(soon.Description, "Nothing is taken automatically") || len(soon.Fields) != 1 {
+		t.Fatalf("due soon: %+v", soon)
+	}
+	paused := BaseRentNoticeMessage(false, "Hut", "Champions", due, 1500, 7, "").Embeds[0]
+	if !strings.Contains(paused.Title, "paused") || !strings.Contains(paused.Description, "your base is kept") || len(paused.Fields) != 0 {
+		t.Fatalf("paused: %+v", paused)
+	}
+	approved := WithRentNotice(BaseRequestDecisionMessage(true, "Hut", "Champions", ""), 1500, 7, 3).Embeds[0]
+	if len(approved.Fields) != 1 || !strings.Contains(approved.Fields[0].Value, "every 7 days") || !strings.Contains(approved.Fields[0].Value, "within 3 days") {
+		t.Fatalf("approval with rent: %+v", approved.Fields)
+	}
+	if same := WithRentNotice(BaseRequestDecisionMessage(true, "Hut", "", ""), 0, 7, 3).Embeds[0]; len(same.Fields) != 0 {
+		t.Fatal("no rent terms when rent has no price")
+	}
+}

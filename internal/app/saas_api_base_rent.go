@@ -1,0 +1,245 @@
+package app
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"time"
+
+	"github.com/bwmarrin/discordgo"
+	"github.com/yourname/dayz-killfeed/internal/discord"
+	"github.com/yourname/dayz-killfeed/internal/repository"
+)
+
+// Base rent (docs/BASE_RENT.md). The server owner sets one rent price and
+// period for bases registered from players' requests (bases the owner adds
+// stay free). Players pay ahead from the Security Store; nothing is taken
+// automatically. 3 days after rent runs out the base is paused: its base
+// services stop until rent is paid. The base is kept.
+
+type baseRentSettingsRequest struct {
+	Enabled     bool  `json:"enabled"`
+	PricePoints int64 `json:"pricePoints"`
+	PeriodDays  int   `json:"periodDays"`
+}
+
+func (a *App) ownerRentScope(w http.ResponseWriter, r *http.Request, write bool) (adminActor, repository.SecurityScope, bool) {
+	ac, _, ok := a.caseBaseActor(w, r)
+	if !ok {
+		return ac, repository.SecurityScope{}, false
+	}
+	limiter := a.saasAdminReadLimiter
+	if write {
+		limiter = a.saasAdminActionLimiter
+	}
+	if !enforceRateLimit(w, limiter, rateLimitKey(r)) {
+		return ac, repository.SecurityScope{}, false
+	}
+	return ac, repository.SecurityScope{InstallationID: ac.scope.InstallationID, GuildID: ac.scope.GuildID, ServerID: *ac.scope.ServerID}, true
+}
+
+// handleGetBaseRent is GET .../admin/case/base-rent.
+func (a *App) handleGetBaseRent(w http.ResponseWriter, r *http.Request) {
+	_, s, ok := a.ownerRentScope(w, r, false)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), adminTimeout)
+	defer cancel()
+	repo := repository.NewBaseRentRepository(a.DB.Pool)
+	settings, err := repo.GetSettings(ctx, s)
+	if err != nil {
+		writeSaaSError(w, codeInternalError, "could not load base rent")
+		return
+	}
+	bases, err := repo.AllBases(ctx, s, 100)
+	if err != nil {
+		slog.Warn("component=base_rent", "event", "list_failed", "err", err.Error())
+		writeSaaSError(w, codeInternalError, "could not load base rent")
+		return
+	}
+	payments, err := repo.RecentPayments(ctx, s, 20)
+	if err != nil {
+		writeSaaSError(w, codeInternalError, "could not load base rent")
+		return
+	}
+	writeSaaSJSON(w, http.StatusOK, map[string]any{"settings": settings, "bases": bases, "payments": payments, "graceDays": repository.BaseRentGraceDays})
+}
+
+// handleSetBaseRent is PUT .../admin/case/base-rent.
+func (a *App) handleSetBaseRent(w http.ResponseWriter, r *http.Request) {
+	ac, s, ok := a.ownerRentScope(w, r, true)
+	if !ok {
+		return
+	}
+	var req baseRentSettingsRequest
+	if err := readCaseBaseJSON(w, r, &req); err != nil {
+		writeSaaSError(w, codeInvalidRequest, "invalid rent settings")
+		return
+	}
+	if req.PricePoints < 1 || req.PricePoints > repository.SecurityMaxPricePoints {
+		writeSaaSError(w, codeInvalidRequest, "rent must be between 1 and 1,000,000,000 Champion Points")
+		return
+	}
+	if req.PeriodDays < 1 || req.PeriodDays > repository.BaseRentMaxPeriod {
+		writeSaaSError(w, codeInvalidRequest, "the rent period must be 1 to 30 days")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), adminTimeout)
+	defer cancel()
+	var actor *int64
+	if ac.user != nil {
+		actor = &ac.user.ID
+	}
+	settings, err := repository.NewBaseRentRepository(a.DB.Pool).SetSettings(ctx, s, req.Enabled, req.PricePoints, req.PeriodDays, actor)
+	if err != nil {
+		slog.Warn("component=base_rent", "event", "set_failed", "err", err.Error())
+		writeSaaSError(w, codeInvalidRequest, "could not save rent settings")
+		return
+	}
+	a.recordAudit(ctx, ac, "BASE_RENT_SAVED", "base-rent", "", "success", nil,
+		map[string]any{"enabled": settings.Enabled, "pricePoints": settings.PricePoints, "periodDays": settings.PeriodDays})
+	writeSaaSJSON(w, http.StatusOK, map[string]any{"settings": settings})
+}
+
+type playerBaseRentResponse struct {
+	Enabled     bool                    `json:"enabled"`
+	PricePoints int64                   `json:"pricePoints,omitempty"`
+	PeriodDays  int                     `json:"periodDays,omitempty"`
+	GraceDays   int                     `json:"graceDays"`
+	Bases       []repository.RentedBase `json:"bases"`
+}
+
+type playerBaseRentPayBody struct {
+	BaseID         int64  `json:"baseId"`
+	IdempotencyKey string `json:"idempotencyKey"`
+}
+
+// handleGetPlayerBaseRent is GET .../security-marketplace/base-rent: the
+// signed-in player's rented bases and when rent is due.
+func (a *App) handleGetPlayerBaseRent(w http.ResponseWriter, r *http.Request) {
+	s, playerID, ctx, cancel, ok := a.playerBaseRequestContext(w, r)
+	if !ok {
+		return
+	}
+	defer cancel()
+	scope := repository.SecurityScope{InstallationID: s.InstallationID, GuildID: s.GuildID, ServerID: s.ServerID}
+	repo := repository.NewBaseRentRepository(a.DB.Pool)
+	settings, err := repo.GetSettings(ctx, scope)
+	if err != nil {
+		writeSaaSError(w, codeInternalError, "could not load your rent")
+		return
+	}
+	out := playerBaseRentResponse{Enabled: settings.Enabled, GraceDays: repository.BaseRentGraceDays, Bases: []repository.RentedBase{}}
+	if settings.Enabled {
+		out.PricePoints, out.PeriodDays = settings.PricePoints, settings.PeriodDays
+		if out.Bases, err = repo.PlayerBases(ctx, scope, playerID); err != nil {
+			writeSaaSError(w, codeInternalError, "could not load your rent")
+			return
+		}
+	}
+	writeSaaSJSON(w, http.StatusOK, out)
+}
+
+// handlePayPlayerBaseRent is POST .../security-marketplace/base-rent: pay one
+// period of rent for one of the player's bases. 201 new, 200 replay.
+func (a *App) handlePayPlayerBaseRent(w http.ResponseWriter, r *http.Request) {
+	var body playerBaseRentPayBody
+	if !decodeFactionBody(w, r, &body) {
+		return
+	}
+	if body.BaseID <= 0 || !securityKeyRe.MatchString(body.IdempotencyKey) {
+		writeSaaSError(w, codeInvalidRequest, "choose a base; idempotencyKey must be 8-64 characters of A-Z a-z 0-9 . _ : -")
+		return
+	}
+	s, playerID, ctx, cancel, ok := a.playerBaseRequestContext(w, r)
+	if !ok {
+		return
+	}
+	defer cancel()
+	if a.saasShopPurchaseLimiter != nil && !enforceRateLimit(w, a.saasShopPurchaseLimiter, rateLimitKey(r)) {
+		return
+	}
+	scope := repository.SecurityScope{InstallationID: s.InstallationID, GuildID: s.GuildID, ServerID: s.ServerID}
+	res, err := repository.NewBaseRentRepository(a.DB.Pool).Pay(ctx, scope, playerID, body.BaseID, body.IdempotencyKey)
+	switch {
+	case errors.Is(err, repository.ErrInsufficientFunds):
+		writeSaaSError(w, codeInsufficientFunds, "you don't have enough Champion Points")
+		return
+	case errors.Is(err, repository.ErrBaseRentOff):
+		writeSaaSError(w, codeConflict, "this server doesn't charge base rent")
+		return
+	case errors.Is(err, repository.ErrBaseRentNotOwned):
+		writeSaaSError(w, codeConflict, "that base isn't yours or doesn't pay rent")
+		return
+	case err != nil:
+		slog.Error("component=base_rent", "msg", "pay failed", "err", err.Error())
+		writeSaaSError(w, codeInternalError, "the rent couldn't be paid; nothing was charged")
+		return
+	}
+	slog.Info("component=base_rent", "event", "paid", "installation_id", s.InstallationID, "base_id", body.BaseID,
+		"payment_id", res.Payment.ID, "duplicate", res.Duplicate)
+	status := http.StatusCreated
+	if res.Duplicate {
+		status = http.StatusOK
+	}
+	writeSaaSJSON(w, status, map[string]any{"payment": res.Payment, "remainingBalance": res.BalanceAfter, "duplicate": res.Duplicate})
+}
+
+// startBaseRentReminders sends rent reminders every 10 minutes: one a day
+// before rent is due, and one when a base becomes paused.
+func (a *App) startBaseRentReminders(ctx context.Context) {
+	if a.DB == nil || a.DB.Pool == nil || a.Discord == nil || a.Discord.Session() == nil {
+		return
+	}
+	session := a.Discord.Session()
+	send := func(userID string, msg *discordgo.MessageSend) error {
+		ch, err := session.UserChannelCreate(userID)
+		if err != nil {
+			return err
+		}
+		_, err = session.ChannelMessageSendComplex(ch.ID, msg)
+		return err
+	}
+	go func() {
+		t := time.NewTicker(10 * time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				a.sendBaseRentReminders(ctx, send)
+			}
+		}
+	}()
+}
+
+func (a *App) sendBaseRentReminders(ctx context.Context, send func(string, *discordgo.MessageSend) error) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("component=base_rent", "msg", "reminder panic recovered", "panic", fmt.Sprint(r))
+		}
+	}()
+	repo := repository.NewBaseRentRepository(a.DB.Pool)
+	notices, err := repo.DueNotices(ctx, 100)
+	if err != nil {
+		slog.Warn("component=base_rent", "event", "notices_failed", "err", err.Error())
+		return
+	}
+	for _, n := range notices {
+		if n.DiscordUserID != "" && send != nil {
+			msg := discord.BaseRentNoticeMessage(n.Kind == repository.BaseRentNoticeDueSoon, n.BaseName, a.serverName(n.ServerID),
+				n.DueAt, n.PricePoints, n.PeriodDays, a.securityStoreURL())
+			if err := send(n.DiscordUserID, msg); err != nil {
+				slog.Warn("component=base_rent", "event", "reminder_dm_failed", "base_id", n.BaseID, "err", err.Error())
+			}
+		}
+		// One attempt only, so nobody is messaged twice.
+		if err := repo.MarkNotice(ctx, n); err != nil {
+			slog.Warn("component=base_rent", "event", "mark_notice_failed", "base_id", n.BaseID, "err", err.Error())
+		}
+	}
+}

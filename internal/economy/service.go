@@ -33,6 +33,9 @@ const (
 	// Security Marketplace purchases (Base Raid Alarm), written only by the
 	// security service repository through the same ledger path.
 	TypeSecurityPurchase = repository.TxSecurityPurchase
+	// Base rent, written only by the base rent repository through the same
+	// ledger path when a player pays ahead.
+	TypeBaseRent = repository.TxBaseRent
 )
 
 const (
@@ -306,6 +309,8 @@ func TypeLabel(t string) string {
 		return "Shop refund"
 	case t == TypeSecurityPurchase:
 		return "Security purchase"
+	case t == TypeBaseRent:
+		return "Base rent"
 	case strings.HasPrefix(t, "EVENT_"):
 		return "Event prize"
 	}

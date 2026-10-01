@@ -84,6 +84,14 @@ func (a *App) baseCommandSummary(ctx context.Context, guildRowID, serverID, play
 			break
 		}
 	}
+	rented, err := repository.NewBaseRentRepository(a.DB.Pool).PlayerBases(ctx,
+		repository.SecurityScope{InstallationID: s.InstallationID, GuildID: s.GuildID, ServerID: s.ServerID}, playerID)
+	if err != nil {
+		return out, err
+	}
+	for _, b := range rented {
+		out.Rent = append(out.Rent, discord.BaseRentLine{BaseName: b.BaseName, DueAt: b.DueAt, Paused: b.Paused})
+	}
 	sales := repository.NewSecurityServiceRepository(a.DB.Pool)
 	for _, id := range []string{repository.ServiceSentinelPro, repository.ServiceBaseRaidAlarm, repository.ServicePerimeterWatch,
 		repository.ServiceBaseBlackBox, repository.ServiceFactionSecurity} {
