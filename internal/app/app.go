@@ -2335,6 +2335,7 @@ func (a *App) runCompetitiveSchedulers(ctx context.Context, guildID int64) {
 				slog.Warn("component=events", "msg", "event scheduler tick failed", "err", err.Error())
 			}
 		}
+		a.publishEventAnnouncements(ctx, guildID, now)
 		if ended, err := a.Events.GetEndedUnfinalized(ctx, guildID, 25); err == nil {
 			for _, event := range ended {
 				if err := a.EventService.FinalizeEvent(ctx, guildID, event.ID, now); err != nil {

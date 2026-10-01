@@ -117,6 +117,18 @@ const (
 	// CapRetentionView is the retention dashboard (docs/RETENTION.md): aggregate activity plus a
 	// list of lapsed players by name, so it sits with the other player-data views.
 	CapRetentionView Capability = "RETENTION_VIEW"
+	// Client Hub growth tools (docs/CLIENT_HUB_GROWTH.md). Events: staff read, Administrators
+	// schedule. Invite attribution names who joined through whom: Administrator. Rewards pay
+	// Champion Points automatically, so changing the rules is Owner-only. Staff activity summarises
+	// what other staff did: Administrator. VIP tiers: staff read, Administrators assign.
+	CapEventsView        Capability = "EVENTS_VIEW"
+	CapEventsManage      Capability = "EVENTS_MANAGE"
+	CapInvitesView       Capability = "INVITES_VIEW"
+	CapRewardsView       Capability = "REWARDS_VIEW"
+	CapRewardsManage     Capability = "REWARDS_MANAGE"
+	CapStaffActivityView Capability = "STAFF_ACTIVITY_VIEW"
+	CapVIPView           Capability = "VIP_VIEW"
+	CapVIPManage         Capability = "VIP_MANAGE"
 )
 
 // requiredLevel is the default minimum Level each capability needs (task's "DEFAULT ROLE
@@ -157,6 +169,14 @@ var requiredLevel = map[Capability]Level{
 	CapNetworkManage:          LevelOwner,
 	CapFeedIdentityManage:     LevelOwner,
 	CapRetentionView:          LevelAdministrator,
+	CapEventsView:             LevelModerator,
+	CapEventsManage:           LevelAdministrator,
+	CapInvitesView:            LevelAdministrator,
+	CapRewardsView:            LevelAdministrator,
+	CapRewardsManage:          LevelOwner,
+	CapStaffActivityView:      LevelAdministrator,
+	CapVIPView:                LevelModerator,
+	CapVIPManage:              LevelAdministrator,
 }
 
 // Allows reports whether actorLevel satisfies capability's required minimum Level. An unknown
