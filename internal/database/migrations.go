@@ -2722,6 +2722,11 @@ CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events
 		Name: "0091_case_base_requests",
 		SQL:  CaseBaseRequestSQL,
 	},
+	{
+		// Sentinel Pro bundle: widens the Security Marketplace service checks.
+		Name: "0092_sentinel_pro",
+		SQL:  SentinelProSQL,
+	},
 }
 
 // PvPDeathBackfillSQL gives the victim of every existing PvP kill a deaths row of type PVP, with

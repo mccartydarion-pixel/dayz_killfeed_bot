@@ -102,7 +102,7 @@ func TestSecurityMarketplaceRaidAlarmPurchase(t *testing.T) {
 	if item := raidItem(); item["activeUntil"] == nil {
 		t.Fatalf("paid time not shown: %+v", item)
 	}
-	w.expect(w.do(http.MethodPost, path+"/purchases", buyerDiscord, map[string]any{"serviceId": "SENTINEL_PRO", "idempotencyKey": "other-key-1"}), http.StatusBadRequest, "other services can't be bought")
+	w.expect(w.do(http.MethodPost, path+"/purchases", buyerDiscord, map[string]any{"serviceId": "OFFLINE_PROTECTION", "idempotencyKey": "other-key-1"}), http.StatusBadRequest, "other services can't be bought")
 	w.expect(w.do(http.MethodPost, path+"/purchases", w.players[1], buy("unlinked-1")), http.StatusConflict, "unlinked player")
 	var tx int
 	if err := w.a.DB.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM point_transactions WHERE guild_id=$1 AND player_id=$2 AND reason_type='SECURITY_PURCHASE'`, guild, buyer).Scan(&tx); err != nil || tx != 1 {

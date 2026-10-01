@@ -143,14 +143,14 @@ func (a *App) playerFactionSecurity(w http.ResponseWriter, r *http.Request) (pla
 	}
 	scope := repository.SecurityScope{InstallationID: er.scope.InstallationID, GuildID: er.scope.GuildID, ServerID: er.scope.ServerID}
 	sales := repository.NewSecurityServiceRepository(a.DB.Pool)
-	offer, err := sales.GetOffer(ctx, scope, repository.ServiceFactionSecurity)
+	onSale, err := sales.OnSale(ctx, scope, repository.ServiceFactionSecurity)
 	if err != nil {
 		return failed()
 	}
 	if out.ActiveUntil, err = sales.ActiveUntil(ctx, scope.InstallationID, acct.AccountID, repository.ServiceFactionSecurity); err != nil {
 		return failed()
 	}
-	if offer.Enabled && out.ActiveUntil == nil {
+	if onSale && out.ActiveUntil == nil {
 		out.Reason = serviceReasonNotPaid
 		return out, er, acct.AccountID, true
 	}

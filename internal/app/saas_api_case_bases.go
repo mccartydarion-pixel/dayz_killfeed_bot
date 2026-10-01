@@ -45,6 +45,8 @@ func (a *App) registerCaseBaseRoutes(base string){
  h("GET "+base+"/case/base-requests",a.handleGetBaseRequests)
  h("POST "+base+"/case/base-requests/{requestID}/approve",a.handleApproveBaseRequest)
  h("POST "+base+"/case/base-requests/{requestID}/decline",a.handleDeclineBaseRequest)
+ h("GET "+base+"/case/sentinel-pro",a.handleGetSentinelPro)
+ h("PUT "+base+"/case/sentinel-pro/offer",a.handleSetSentinelProOffer)
 }
 
 func (a *App) caseBaseActor(w http.ResponseWriter,r *http.Request)(adminActor,*repository.CaseBaseRegistrationRepository,bool){
