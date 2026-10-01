@@ -3,12 +3,15 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/discord"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -145,6 +148,7 @@ func (a *App) handleCreatePlayerBaseRequest(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	slog.Info("component=base_requests", "event", "requested", "installation_id", s.InstallationID, "request_id", req.ID)
+	a.notifyNewBaseRequest(s, req)
 	writeSaaSJSON(w, http.StatusCreated, map[string]any{"request": req})
 }
 
@@ -316,4 +320,56 @@ func (a *App) notifyBaseRequestDecision(serverID int64, d repository.BaseRequest
 			slog.Warn("component=base_requests", "event", "dm_failed", "request_id", d.Request.ID, "err", err.Error())
 		}
 	}(d.DiscordUserID, msg)
+}
+
+// notifyNewBaseRequest posts a staff notice to the ADMIN_ALERTS channel (when
+// routed) and DMs the organization owner. Best effort and in the background:
+// a failure never affects the request.
+func (a *App) notifyNewBaseRequest(s repository.BaseRequestScope, req repository.CaseBaseRequest) {
+	if a.DB == nil || a.DB.Pool == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		ownerID, playerName, err := repository.NewCaseBaseRequestRepository(a.DB.Pool).RequestNotice(ctx, s, req.PlayerID)
+		if err != nil {
+			slog.Warn("component=base_requests", "event", "notice_lookup_failed", "request_id", req.ID, "err", err.Error())
+			return
+		}
+		if playerName == "" {
+			playerName = "A player"
+		}
+		if a.AdminAlerts != nil {
+			a.AdminAlerts.Publish(discord.AdminAlert{GuildRowID: s.GuildID, ServerID: s.ServerID, Kind: discord.AlertKindBaseRequest,
+				Severity: discord.AlertInfo, Headline: "NEW BASE REQUEST",
+				Detail: presentation.SafeName(playerName, 64) + " wants **" + presentation.SafeName(req.Name, 64) + "** registered. Approve or decline it on the anti-cheat Bases tab.",
+				Fields: [][2]string{{"Size", fmt.Sprintf("%.0f m", req.Radius)}}})
+		}
+		if ownerID == "" || a.Discord == nil || a.Discord.Session() == nil {
+			return
+		}
+		session := a.Discord.Session()
+		msg := discord.NewBaseRequestMessage(playerName, req.Name, a.serverNameFunc()(s.ServerID), req.Radius, a.baseRequestsReviewURL())
+		ch, err := session.UserChannelCreate(ownerID)
+		if err == nil {
+			_, err = session.ChannelMessageSendComplex(ch.ID, msg)
+		}
+		if err != nil {
+			slog.Warn("component=base_requests", "event", "owner_dm_failed", "request_id", req.ID, "err", err.Error())
+		}
+	}()
+}
+
+// baseRequestsReviewURL is the dashboard link for reviewing requests, or ""
+// when the site address isn't configured as https.
+func (a *App) baseRequestsReviewURL() string {
+	if a.Config == nil {
+		return ""
+	}
+	base := strings.TrimRight(a.Config.SiteBaseURL, "/")
+	if !strings.HasPrefix(base, "https://") {
+		return ""
+	}
+	return base + "/dashboard/anti-cheat?tab=bases"
 }

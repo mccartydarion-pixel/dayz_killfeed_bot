@@ -352,3 +352,17 @@ func (r *CaseBaseRequestRepository) PlayerBases(ctx context.Context, s BaseReque
 	}
 	return out, rows.Err()
 }
+
+// RequestNotice returns who to tell about a new request: the organization
+// owner's Discord account and the requesting player's name.
+func (r *CaseBaseRequestRepository) RequestNotice(ctx context.Context, s BaseRequestScope, playerID int64) (ownerDiscordID, playerName string, err error) {
+	if r == nil || r.pool == nil || !s.valid() || playerID <= 0 {
+		return "", "", ErrInvalidBaseRequest
+	}
+	err = r.pool.QueryRow(ctx, `SELECT
+  COALESCE((SELECT u.discord_user_id FROM installations i JOIN organizations o ON o.id=i.organization_id
+    JOIN app_users u ON u.id=o.owner_user_id WHERE i.id=$1),''),
+  COALESCE((SELECT display_name FROM players WHERE guild_id=$2 AND id=$3),'')`,
+		s.InstallationID, s.GuildID, playerID).Scan(&ownerDiscordID, &playerName)
+	return ownerDiscordID, playerName, err
+}

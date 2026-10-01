@@ -137,3 +137,18 @@ func TestCaseBaseRequestsLifecycle(t *testing.T) {
 		t.Fatalf("over the base limit: %v", err)
 	}
 }
+
+func TestCaseBaseRequestNotice(t *testing.T) {
+	zones, fx, seedPlayer := newZoneTestWorld(t)
+	repo := NewCaseBaseRequestRepository(zones.pool)
+	s := BaseRequestScope{InstallationID: fx.InstallationID, GuildID: fx.GuildRowID, ServerID: fx.ServerRowID}
+	player := seedPlayer("Builder")
+	owner, name, err := repo.RequestNotice(context.Background(), s, player)
+	if err != nil || owner == "" || name != "Builder" {
+		t.Fatalf("notice: %q %q %v", owner, name, err)
+	}
+	var want string
+	if err := zones.pool.QueryRow(context.Background(), `SELECT discord_user_id FROM app_users WHERE id=$1`, fx.OwnerUserID).Scan(&want); err != nil || owner != want {
+		t.Fatalf("owner discord id: %q want %q %v", owner, want, err)
+	}
+}

@@ -13,13 +13,16 @@ Nothing is registered until the server owner approves.
    player never types coordinates. It must be from the last 30 minutes.
 3. A player has at most one waiting request, and at most 3 bases and requests
    together on a server.
-4. The server owner sees waiting requests on the anti-cheat **Bases** tab, with
+4. When a request arrives, a staff notice is posted to the **ADMIN_ALERTS**
+   channel (if it's set up) and the organization owner gets a Discord DM
+   with a link to the Bases tab. Nothing is approved automatically.
+5. The server owner sees waiting requests on the anti-cheat **Bases** tab, with
    any other player's base the circle overlaps. They can:
    - **Approve**, choosing the map (pre-filled with the map most of the
      server's bases use) and adjusting the name or size. This registers the
      base as a draft, exactly like one the owner adds by hand.
    - **Decline**, with an optional reason.
-5. The player gets a Discord DM either way (if their account is linked) and
+6. The player gets a Discord DM either way (if their account is linked) and
    can cancel a waiting request.
 
 ## API

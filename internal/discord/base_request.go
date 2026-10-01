@@ -1,6 +1,7 @@
 package discord
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -26,6 +27,27 @@ func BaseRequestDecisionMessage(approved bool, baseName, serverName, reason stri
 			embed.Fields = []*discordgo.MessageEmbedField{{Name: "Reason", Value: r}}
 		}
 		embed.Footer = &discordgo.MessageEmbedFooter{Text: "You can send a new request from the Security Store"}
+	}
+	presentation.StampEmbed(embed, time.Now())
+	return &discordgo.MessageSend{Embeds: []*discordgo.MessageEmbed{embed},
+		AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}, Users: []string{}, Roles: []string{}}}
+}
+
+// NewBaseRequestMessage tells the server owner a player asked for a base to
+// be registered. Nothing is registered until they approve.
+func NewBaseRequestMessage(playerName, baseName, serverName string, radius float64, reviewURL string) *discordgo.MessageSend {
+	player := caseFallback(caseSafeText(playerName, 64), "A player")
+	embed := &discordgo.MessageEmbed{
+		Author:      &discordgo.MessageEmbedAuthor{Name: "CHAMPIONS® BASE REGISTRATION"},
+		Title:       "📍 New base request on " + caseFallback(caseSafeText(serverName, 100), "your server"),
+		Color:       presentation.InfoSteel,
+		Description: "**" + player + "** wants **" + caseFallback(caseSafeText(baseName, 64), "a base") + "** registered. Nothing is registered until you approve it.",
+		Fields:      []*discordgo.MessageEmbedField{{Name: "Size", Value: fmt.Sprintf("%.0f m around where they stood", radius), Inline: true}},
+	}
+	if reviewURL != "" {
+		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Review", Value: reviewURL, Inline: false})
+	} else {
+		embed.Footer = &discordgo.MessageEmbedFooter{Text: "Approve or decline it on the anti-cheat Bases tab"}
 	}
 	presentation.StampEmbed(embed, time.Now())
 	return &discordgo.MessageSend{Embeds: []*discordgo.MessageEmbed{embed},
