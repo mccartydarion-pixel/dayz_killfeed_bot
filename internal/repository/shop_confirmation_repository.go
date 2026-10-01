@@ -112,7 +112,7 @@ func (r *ShopConfirmationRepository) GetConfirmation(ctx context.Context, org, i
 
 func getConfirmation(ctx context.Context, q shopQuerier, org, inst, purchaseID, playerID int64, lock bool) (ShopOrderConfirmation, error) {
 	sql := `SELECT ` + confirmationCols + ` FROM shop_order_confirmations
- WHERE purchase_id=$3 AND organization_id=$1 AND installation_id=$2 AND ($4 = 0 OR player_id = $4)`
+ WHERE purchase_id=$3 AND organization_id=$1 AND installation_id=$2 AND ($4::bigint = 0 OR player_id = $4)`
 	if lock {
 		sql += ` FOR UPDATE`
 	}
@@ -216,7 +216,7 @@ func (r *ShopConfirmationRepository) ListTickets(ctx context.Context, org, inst 
 		limit = 25
 	}
 	rows, err := r.pool.Query(ctx, `SELECT `+ticketCols+` FROM shop_order_tickets
- WHERE organization_id=$1 AND installation_id=$2 AND ($3 = '' OR status = $3) AND ($4 = 0 OR id < $4)
+ WHERE organization_id=$1 AND installation_id=$2 AND ($3::text = '' OR status = $3) AND ($4::bigint = 0 OR id < $4)
  ORDER BY id DESC LIMIT $5`, org, inst, status, beforeID, limit)
 	if err != nil {
 		return nil, err
@@ -236,7 +236,7 @@ func (r *ShopConfirmationRepository) ListTickets(ctx context.Context, org, inst 
 // GetTicket reads one ticket. playerID > 0 scopes it to the buyer.
 func (r *ShopConfirmationRepository) GetTicket(ctx context.Context, org, inst, id, playerID int64) (ShopOrderTicket, error) {
 	return scanTicket(r.pool.QueryRow(ctx, `SELECT `+ticketCols+` FROM shop_order_tickets
- WHERE id=$3 AND organization_id=$1 AND installation_id=$2 AND ($4 = 0 OR player_id = $4)`, org, inst, id, playerID))
+ WHERE id=$3 AND organization_id=$1 AND installation_id=$2 AND ($4::bigint = 0 OR player_id = $4)`, org, inst, id, playerID))
 }
 
 // ResolveTicket closes an OPEN ticket (staff). A second resolve is ErrShopTicketState. It records the

@@ -88,6 +88,10 @@ type App struct {
 	// ShopConfirmations is the buyer confirmation of delivered orders and its support tickets; see
 	// docs/SHOP_ORDER_CONFIRMATION.md.
 	ShopConfirmations *shop.Confirmations
+	// shopConfirmationRepo and shopOrderDesk are the Discord side of that confirmation (the
+	// delivered-order DM and the ticket channels); the desk exists once Discord is connected.
+	shopConfirmationRepo *repository.ShopConfirmationRepository
+	shopOrderDesk        atomic.Pointer[shopOrderDesk]
 	// ShopCanary is the Phase 2C.4 canary operator service (docs/SHOP_DELIVERY_PHASE2C4.md); its
 	// mutations are locked unless ShopCanaryGate is opened by CHAMPION_SHOP_CANARY_EXECUTION.
 	ShopCanary     *canaryops.Service
@@ -717,7 +721,8 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.EconomyService = economy.NewService(repository.NewEconomyRepository(db.Pool), nil)
 			app.EconomyAccounts = economy.NewAccounts(app.EconomyService, repository.NewEconomyRepository(db.Pool))
 			app.Shop = shop.NewService(repository.NewShopRepository(db.Pool), app.EconomyAccounts, app.EconomyService)
-			app.ShopConfirmations = shop.NewConfirmations(repository.NewShopConfirmationRepository(db.Pool), app.EconomyAccounts)
+			app.shopConfirmationRepo = repository.NewShopConfirmationRepository(db.Pool)
+			app.ShopConfirmations = shop.NewConfirmations(app.shopConfirmationRepo, app.EconomyAccounts)
 			app.Points = repository.NewPointsRepository(db.Pool)
 			app.Seasons = repository.NewSeasonRepository(db.Pool)
 			app.SeasonService = seasons.NewService(app.Seasons)
@@ -1435,13 +1440,18 @@ func (a *App) Run() error {
 			switch {
 			case IsFactionRecruitInteraction(customID):
 				a.HandleFactionRecruitInteraction(s, i)
+			case discord.IsShopOrderInteraction(customID):
+				a.HandleShopOrderInteraction(s, i)
 			case strings.HasPrefix(customID, "champion_reset_"):
 				// Only the /setup reset buttons: every other button has its own handler above.
 				setupHandler.HandleResetConfirm(s, i)
 			}
 		case discordgo.InteractionModalSubmit:
-			if IsFactionRecruitInteraction(i.ModalSubmitData().CustomID) {
+			switch customID := i.ModalSubmitData().CustomID; {
+			case IsFactionRecruitInteraction(customID):
 				a.HandleFactionRecruitInteraction(s, i)
+			case discord.IsShopOrderInteraction(customID):
+				a.HandleShopOrderInteraction(s, i)
 			}
 		}
 	})
@@ -1450,6 +1460,9 @@ func (a *App) Run() error {
 	// reported before this point (see section 7/9 of the startup repair pass).
 	slog.Info("component=discord", "msg", "interaction handlers ready", "required_commands_ok", requiredCommandsOK)
 	state.SetHandlersReady(requiredCommandsOK)
+
+	// Delivered Shop orders: the buyer's DM with its two buttons, and the ticket channels.
+	a.startShopOrderDesk(ctx, session)
 
 	// --- Online players voice counter: renames the configured voice channel on
 	// debounced count changes. Shared across servers (one voice channel per guild

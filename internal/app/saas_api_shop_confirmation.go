@@ -217,6 +217,7 @@ func (a *App) handleShopReportIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	shopAudit("shop_order_issue_reported", er, "purchase_id", id, "ticket_id", t.ID, "via", repository.ConfirmationViaSite)
+	a.shopTicketOpened(t.ID)
 	writeSaaSJSON(w, http.StatusCreated, struct {
 		Confirmation shopConfirmationDTO `json:"confirmation"`
 		Ticket       shopTicketDTO       `json:"ticket"`
@@ -311,6 +312,7 @@ func (a *App) handleShopResolveTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	shopAudit("shop_order_ticket_resolved", er, "ticket_id", t.ID, "purchase_id", t.PurchaseID, "resolution", body.Resolution)
+	a.shopTicketResolved(t)
 	writeSaaSJSON(w, http.StatusOK, struct {
 		Ticket adminShopTicketDTO `json:"ticket"`
 	}{adminTicketDTO(t)})
