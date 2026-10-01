@@ -59,3 +59,7 @@ All of these must hold before Suspicious Logins can move from `BLOCKED` to `VALI
 - **Approval:** separate owner approval for the release change. Staff alerts then go through the existing `casealert` → `caseoutbox` path, private to staff, still with no enforcement.
 
 If the criteria are not met, adjust the parameters (`LoginReconnectGap`, `LoginBurstWindow`, `LoginMinReconnects`, `RestartGrace` in `caseintel.DefaultCore8Params`) and repeat the review.
+
+## Review buttons
+
+Each flagged finding on the dashboard card has **False alarm** and **Looks suspicious** buttons (optional short note). Verdicts are stored in `case_shadow_verdicts` (migration `0084_case_shadow_verdicts`), one per finding (changing your mind replaces it), and the card shows the score: reviewed, false alarms and percentage. API: `GET/PUT …/admin/case/shadow-verdicts` (`PLAYER_LOCATION_VIEW` for Suspicious Logins, `UAV_MANAGE` for Base Boosting), audited `CASE_SHADOW_VERDICT_SAVED`. Verdicts never release a detector, send an alert or act on a player.

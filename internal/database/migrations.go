@@ -2680,6 +2680,11 @@ CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events
 		Name: "0083_security_service_sales",
 		SQL:  SecurityServiceSQL,
 	},
+	{
+		// C.A.S.E. staff verdicts on test-run findings. Additive only.
+		Name: "0084_case_shadow_verdicts",
+		SQL:  CASEShadowVerdictSQL,
+	},
 }
 
 // PvPDeathBackfillSQL gives the victim of every existing PvP kill a deaths row of type PVP, with

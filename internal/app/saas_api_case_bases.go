@@ -28,6 +28,8 @@ func (a *App) registerCaseBaseRoutes(base string){
  h("POST "+base+"/case/bases/{baseID}/withdraw",a.handleCaseWithdrawBaseDraft)
  h("POST "+base+"/case/bases/{baseID}/grants/{grantID}/end",a.handleCaseEndBaseGrant)
  h("GET "+base+"/case/bases/shadow",a.handleCaseBaseShadow)
+ h("GET "+base+"/case/shadow-verdicts",a.handleGetCaseShadowVerdicts)
+ h("PUT "+base+"/case/shadow-verdicts",a.handleSaveCaseShadowVerdict)
  h("GET "+base+"/case/raid-alarm",a.handleGetBaseRaidAlarm)
  h("PUT "+base+"/case/raid-alarm",a.handleSetBaseRaidAlarm)
  h("PUT "+base+"/case/raid-alarm/offer",a.handleSetBaseRaidAlarmOffer)
