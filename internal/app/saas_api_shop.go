@@ -82,6 +82,7 @@ func (a *App) registerShopRoutes() {
 	h("POST "+base+"/purchases/{purchaseID}/refund", a.handleShopRefund)
 	a.registerShopDeliveryRoutes(base)
 	a.registerShopCanaryRoutes(base)
+	a.registerShopConfirmationRoutes(base)
 }
 
 func (a *App) shopContext(w http.ResponseWriter, r *http.Request, admin bool) (economyRequest, bool) {
