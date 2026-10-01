@@ -83,6 +83,7 @@ func (a *App) registerShopRoutes() {
 	a.registerShopDeliveryRoutes(base)
 	a.registerShopCanaryRoutes(base)
 	a.registerShopConfirmationRoutes(base)
+	a.registerShopAutoDeliveryRoutes(base)
 }
 
 func (a *App) shopContext(w http.ResponseWriter, r *http.Request, admin bool) (economyRequest, bool) {
@@ -140,6 +141,10 @@ func shopFailed(w http.ResponseWriter, what string, err error) {
 		writeSaaSError(w, codeInsufficientFunds, "not enough Champion Points for this purchase")
 	case errors.Is(err, repository.ErrShopIdempotencyConflict):
 		writeSaaSError(w, codeDuplicatePurchase, "this idempotency key was already used for a different purchase")
+	case errors.Is(err, repository.ErrShopAutoDeliveryNotFound):
+		writeSaaSError(w, codeNotFound, "installation not found")
+	case errors.Is(err, repository.ErrShopAttemptEvidence), errors.Is(err, repository.ErrShopReviewEvidenceRequired), errors.Is(err, repository.ErrShopAttemptRejected):
+		writeSaaSError(w, codeConflict, "the delivery attempt does not allow this")
 	case errors.Is(err, repository.ErrShopPurchaseNotFound):
 		writeSaaSError(w, codePurchaseNotFound, "purchase not found")
 	case errors.Is(err, repository.ErrShopInvalidStatus):
@@ -473,6 +478,15 @@ func (a *App) handleShopPurchase(w http.ResponseWriter, r *http.Request) {
 	req := shop.PurchaseRequest{ProductID: productID, Quantity: qty, IdempotencyKey: body.IdempotencyKey}
 	if body.Delivery != nil {
 		req.Delivery = &shop.DeliveryInput{X: body.Delivery.X, Z: body.Delivery.Z}
+	}
+	// An automatically delivered product is dropped at the buyer's own logged position: the order's
+	// coordinates must be that position (docs/SHOP_DELIVERY_WORKER_DESIGN.md). No effect otherwise.
+	var dropX, dropZ *float64
+	if body.Delivery != nil {
+		dropX, dropZ = body.Delivery.X, body.Delivery.Z
+	}
+	if !a.requireDropPosition(w, ctx, er, productID, dropX, dropZ) {
+		return
 	}
 	res, err := a.Shop.Purchase(ctx, er.scope, er.user.ID, er.user.DiscordUserID, req)
 	if err != nil {

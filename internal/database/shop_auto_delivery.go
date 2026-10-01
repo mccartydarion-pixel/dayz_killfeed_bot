@@ -75,7 +75,8 @@ CREATE TRIGGER trg_shop_delivery_attempt_buyer_guard BEFORE INSERT OR UPDATE ON 
 // installation has automatic delivery enabled, and nothing here starts a worker.
 //
 //   - shop_products.auto_delivery / class_name: the owner's per-product switch and the DayZ class the
-//     worker spawns. Only coordinate products can be automatic.
+//     worker spawns. The worker only ever picks coordinate deliveries, so the flag has no effect on
+//     a pickup product.
 //   - shop_auto_delivery_settings: the owner's per-installation switch, the pause (set by the worker
 //     when something is unclear, cleared only by a person), the configuration the worker last accepted
 //     and the lease that keeps two bot instances from working the same server.
@@ -90,7 +91,7 @@ ALTER TABLE shop_products
     ADD COLUMN IF NOT EXISTS class_name TEXT CHECK (class_name IS NULL OR class_name ~ '^[A-Za-z][A-Za-z0-9_]{1,63}$');
 ALTER TABLE shop_products DROP CONSTRAINT IF EXISTS shop_products_auto_delivery;
 ALTER TABLE shop_products ADD CONSTRAINT shop_products_auto_delivery
-    CHECK (NOT auto_delivery OR (class_name IS NOT NULL AND delivery_policy = 'MANUAL_COORDINATE'));
+    CHECK (NOT auto_delivery OR class_name IS NOT NULL);
 
 CREATE TABLE IF NOT EXISTS shop_auto_delivery_settings (
     installation_id BIGINT PRIMARY KEY,

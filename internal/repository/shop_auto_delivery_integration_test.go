@@ -449,10 +449,9 @@ func TestCandidatesAreOpenAutomaticOrdersAtALoggedPosition(t *testing.T) {
 		t.Fatal("an order with two item lines qualified")
 	}
 
-	// The database refuses an automatic product without a class name, or one that is not a coordinate product.
+	// The database refuses an automatic product without a class name, or with one that is not a class name.
 	for what, sql := range map[string]string{
 		"automatic without a class name": `UPDATE shop_products SET class_name=NULL WHERE id=$1`,
-		"automatic pickup product":       `UPDATE shop_products SET delivery_policy='MANUAL_PICKUP' WHERE id=$1`,
 		"a class name with a path":       `UPDATE shop_products SET class_name='dz/structures/castle.p3d' WHERE id=$1`,
 	} {
 		if _, err := w.db.Pool.Exec(w.ctx, sql, product); err == nil {

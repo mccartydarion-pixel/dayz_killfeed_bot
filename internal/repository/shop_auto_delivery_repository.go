@@ -374,3 +374,56 @@ RETURNING `+ticketCols, org, inst, purchaseID, reason, ticketSystemOpener))
 	return scanTicket(r.pool.QueryRow(ctx, `SELECT `+ticketCols+` FROM shop_order_tickets
  WHERE purchase_id=$3 AND organization_id=$1 AND installation_id=$2 AND status='OPEN'`, org, inst, purchaseID))
 }
+
+// ErrShopProductNotCoordinate: only a coordinate product can be delivered automatically.
+var ErrShopProductNotCoordinate = errors.New("only a coordinate-delivery product can be delivered automatically")
+
+// ShopProductAutoDelivery is a product's automatic-delivery setting.
+type ShopProductAutoDelivery struct {
+	ProductID      int64
+	AutoDelivery   bool
+	ClassName      string
+	DeliveryPolicy string
+}
+
+// ProductAutoDelivery reads a product's automatic-delivery setting.
+func (r *ShopAutoDeliveryRepository) ProductAutoDelivery(ctx context.Context, org, inst, productID int64) (ShopProductAutoDelivery, error) {
+	p := ShopProductAutoDelivery{ProductID: productID}
+	err := r.pool.QueryRow(ctx, `SELECT auto_delivery, COALESCE(class_name,''), delivery_policy FROM shop_products
+ WHERE id=$3 AND organization_id=$1 AND installation_id=$2`, org, inst, productID).Scan(&p.AutoDelivery, &p.ClassName, &p.DeliveryPolicy)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return p, ErrShopProductNotFound
+	}
+	return p, err
+}
+
+// SetProductAutoDelivery is the owner's per-product switch. className "" keeps no class name (and
+// is only valid with auto=false). Switching it on requires a coordinate product.
+func (r *ShopAutoDeliveryRepository) SetProductAutoDelivery(ctx context.Context, org, inst, productID int64, auto bool, className string) (ShopProductAutoDelivery, error) {
+	p := ShopProductAutoDelivery{ProductID: productID}
+	err := r.pool.QueryRow(ctx, `UPDATE shop_products SET auto_delivery=$4, class_name=NULLIF($5,''), updated_at=NOW()
+ WHERE id=$3 AND organization_id=$1 AND installation_id=$2 AND (NOT $4 OR delivery_policy='MANUAL_COORDINATE')
+ RETURNING auto_delivery, COALESCE(class_name,''), delivery_policy`, org, inst, productID, auto, className).Scan(&p.AutoDelivery, &p.ClassName, &p.DeliveryPolicy)
+	if errors.Is(err, pgx.ErrNoRows) {
+		if _, gerr := r.ProductAutoDelivery(ctx, org, inst, productID); gerr != nil {
+			return p, gerr
+		}
+		return p, ErrShopProductNotCoordinate
+	}
+	return p, err
+}
+
+// AttemptsForPurchase lists every delivery attempt of one purchase, oldest first.
+func (r *ShopAttemptRepository) AttemptsForPurchase(ctx context.Context, org, inst, purchaseID int64) ([]ShopAttempt, error) {
+	return r.list(ctx, `SELECT `+prefixed("a", attemptCols)+` FROM shop_delivery_attempts a JOIN shop_deliveries sd ON sd.id = a.delivery_id
+ WHERE sd.purchase_id=$3 AND a.organization_id=$1 AND a.installation_id=$2 ORDER BY a.id`, org, inst, purchaseID)
+}
+
+// prefixed qualifies a comma-separated column list with a table alias.
+func prefixed(alias, cols string) string {
+	parts := strings.Split(cols, ",")
+	for i, c := range parts {
+		parts[i] = alias + "." + strings.TrimSpace(c)
+	}
+	return strings.Join(parts, ", ")
+}
