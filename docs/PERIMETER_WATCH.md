@@ -38,7 +38,7 @@ kick or score — it only tells the owner.
 
 ## Code
 
-- `internal/database/perimeter_watch_schema.go` (migration `0085_perimeter_watch`)
+- `internal/database/perimeter_watch_schema.go` (migration `0086_perimeter_watch`)
 - `internal/repository/perimeter_watch_repository.go`
 - `internal/discord/perimeter_watch.go`
 - `internal/app/saas_api_perimeter_watch.go`

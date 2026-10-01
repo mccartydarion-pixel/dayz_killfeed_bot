@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -49,6 +50,9 @@ type FightReplaySettings struct {
 type NetworkSettings struct {
 	Listed      bool
 	Description string
+	// DiscordInviteURL is the owner's own invite to the server's Discord, shown on the public
+	// listing. Empty, or https://discord.gg/<code>.
+	DiscordInviteURL string
 }
 
 // FeedIdentitySettings is the name and avatar feed messages are posted under (docs/FEED_IDENTITY.md).
@@ -114,15 +118,44 @@ func (s FightReplaySettings) Validate() error {
 	return between("delayMinutes", s.DelayMinutes, 0, 10080)
 }
 
-// Normalize trims the description and Validate bounds it.
+// discordInvite matches the forms Discord hands out for an invite: discord.gg/<code>,
+// discord.com/invite/<code> and the older discordapp.com/invite/<code>, with or without a scheme
+// or "www.". Anything after the code (?event=..., a trailing slash) is dropped.
+var discordInvite = regexp.MustCompile(`(?i)^(?:https?://)?(?:www\.)?(?:discord\.gg(?:/invite)?|discord(?:app)?\.com/invite)/([A-Za-z0-9-]{2,64})/?(?:[?#].*)?$`)
+
+// NormalizeDiscordInvite rewrites any accepted invite form to https://discord.gg/<code>. ok is
+// false when raw is not a Discord invite; an empty raw is valid and stays empty.
+func NormalizeDiscordInvite(raw string) (normalized string, ok bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", true
+	}
+	m := discordInvite.FindStringSubmatch(raw)
+	if m == nil {
+		return "", false
+	}
+	return "https://discord.gg/" + m[1], true
+}
+
+// Normalize trims the description and rewrites the invite to its canonical form; an invite that
+// is not one is left as typed for Validate to reject.
 func (s NetworkSettings) Normalize() NetworkSettings {
 	s.Description = strings.TrimSpace(s.Description)
+	s.DiscordInviteURL = strings.TrimSpace(s.DiscordInviteURL)
+	if n, ok := NormalizeDiscordInvite(s.DiscordInviteURL); ok {
+		s.DiscordInviteURL = n
+	}
 	return s
 }
 
+// Validate bounds the description and accepts only a Discord invite as the link: the listing is
+// public, so it must never carry an arbitrary URL.
 func (s NetworkSettings) Validate() error {
 	if utf8.RuneCountInString(s.Description) > 280 {
 		return invalidSetting("description must be 280 characters or fewer")
+	}
+	if n, ok := NormalizeDiscordInvite(s.DiscordInviteURL); !ok || n != s.DiscordInviteURL {
+		return invalidSetting("discordInviteUrl must be a Discord invite link, like https://discord.gg/yourcode")
 	}
 	return nil
 }
@@ -163,7 +196,7 @@ func (s FeedIdentitySettings) Validate() error {
 
 const featureSettingsColumns = `installation_id, hot_zones_enabled, hot_zone_window_minutes, hot_zone_min_kills, hot_zone_radius_m,
     hot_zone_duration_minutes, hot_zone_cooldown_minutes, hot_zone_first_points, hot_zone_second_points, hot_zone_third_points,
-    fight_replay_public, fight_replay_delay_minutes, network_listed, network_description,
+    fight_replay_public, fight_replay_delay_minutes, network_listed, network_description, network_discord_invite_url,
     feed_identity_enabled, feed_identity_name, feed_identity_avatar_url, updated_at`
 
 func scanFeatureSettings(row pgx.Row) (FeatureSettings, error) {
@@ -171,7 +204,7 @@ func scanFeatureSettings(row pgx.Row) (FeatureSettings, error) {
 	var updated time.Time
 	err := row.Scan(&s.InstallationID, &s.HotZones.Enabled, &s.HotZones.WindowMinutes, &s.HotZones.MinKills, &s.HotZones.RadiusM,
 		&s.HotZones.DurationMinutes, &s.HotZones.CooldownMinutes, &s.HotZones.FirstPoints, &s.HotZones.SecondPoints, &s.HotZones.ThirdPoints,
-		&s.FightReplay.Public, &s.FightReplay.DelayMinutes, &s.Network.Listed, &s.Network.Description,
+		&s.FightReplay.Public, &s.FightReplay.DelayMinutes, &s.Network.Listed, &s.Network.Description, &s.Network.DiscordInviteURL,
 		&s.FeedIdentity.Enabled, &s.FeedIdentity.Name, &s.FeedIdentity.AvatarURL, &updated)
 	s.UpdatedAt = &updated
 	return s, err
@@ -222,7 +255,7 @@ func (r *FeatureSettingsRepository) SaveNetwork(ctx context.Context, installatio
 	if err := s.Validate(); err != nil {
 		return FeatureSettings{}, err
 	}
-	return r.save(ctx, installationID, userID, []string{"network_listed", "network_description"}, s.Listed, s.Description)
+	return r.save(ctx, installationID, userID, []string{"network_listed", "network_description", "network_discord_invite_url"}, s.Listed, s.Description, s.DiscordInviteURL)
 }
 
 func (r *FeatureSettingsRepository) SaveFeedIdentity(ctx context.Context, installationID, userID int64, s FeedIdentitySettings) (FeatureSettings, error) {

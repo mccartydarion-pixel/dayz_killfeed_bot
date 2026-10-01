@@ -101,7 +101,11 @@ VALUES($1,$2,$3,$4,$5,900000000,'OTHER',$6)`, a.guildID, a.serverID, soloA, now.
 		t.Fatal(err)
 	}
 
-	a.list(true, "Hardcore PvP "+tag)
+	// Server A shares an invite to its Discord; server B lists without one.
+	if _, err := a.a.FeatureSettings.SaveNetwork(context.Background(), a.f.InstallationID, 0,
+		repository.NetworkSettings{Listed: true, Description: "Hardcore PvP " + tag, DiscordInviteURL: "discord.gg/deadzone"}); err != nil {
+		t.Fatal(err)
+	}
 	b.list(true, "")
 	// Leave nothing listed behind: the directory and boards are shared with later runs.
 	t.Cleanup(func() {
@@ -128,6 +132,9 @@ VALUES($1,$2,$3,$4,$5,900000000,'OTHER',$6)`, a.guildID, a.serverID, soloA, now.
 	sa, sb := findServer(servers, a.f.InstallationID), findServer(servers, b.f.InstallationID)
 	if sa == nil || sb == nil || findServer(servers, hidden.f.InstallationID) != nil {
 		t.Fatalf("directory listed=%v/%v hidden=%v", sa != nil, sb != nil, findServer(servers, hidden.f.InstallationID) != nil)
+	}
+	if sa.DiscordInviteURL != "https://discord.gg/deadzone" || sb.DiscordInviteURL != "" {
+		t.Fatalf("invites: A = %q, B = %q", sa.DiscordInviteURL, sb.DiscordInviteURL)
 	}
 	if sa.Description != "Hardcore PvP "+tag || sa.Platform != "PLAYSTATION" || sa.TotalKills != 8 || sa.Kills7d != 8 || sa.ActivePlayers7d != 2 ||
 		sa.PlayersOnline != 1 || sa.TrackedPlayers != 1 || sa.LastActivityAt == nil || sb.TotalKills != 2 {
@@ -164,7 +171,7 @@ VALUES($1,$2,$3,$4,$5,900000000,'OTHER',$6)`, a.guildID, a.serverID, soloA, now.
 	}
 	rr = get(a.a.handleNetworkServer, "/x", pv(a.f.InstallationID))
 	detail := decodeBody[networkServerDetailDTO](t, rr)
-	if rr.Code != http.StatusOK || len(detail.TopKillers) != 2 || detail.TopKillers[0].PlayerName != solo || detail.TopKillers[0].Value != 4 ||
+	if rr.Code != http.StatusOK || detail.DiscordInviteURL != "https://discord.gg/deadzone" || len(detail.TopKillers) != 2 || detail.TopKillers[0].PlayerName != solo || detail.TopKillers[0].Value != 4 ||
 		detail.TopKillers[1].PlayerName != ghostOld || len(detail.LongestLives) != 1 || len(detail.LongestKills) == 0 {
 		t.Fatalf("server page: %d %+v", rr.Code, detail)
 	}

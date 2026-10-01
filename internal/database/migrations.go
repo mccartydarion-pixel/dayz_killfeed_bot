@@ -2681,14 +2681,19 @@ CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events
 		SQL:  SecurityServiceSQL,
 	},
 	{
+		// The owner's own Discord invite, shown on the public network listing (docs/NETWORK.md).
+		Name: "0084_network_discord_invite",
+		SQL:  `ALTER TABLE installation_feature_settings ADD COLUMN IF NOT EXISTS network_discord_invite_url TEXT NOT NULL DEFAULT '';`,
+	},
+	{
 		// C.A.S.E. staff verdicts on test-run findings. Additive only.
-		Name: "0084_case_shadow_verdicts",
+		Name: "0085_case_shadow_verdicts",
 		SQL:  CASEShadowVerdictSQL,
 	},
 	{
 		// Perimeter Watch: owner switch (off by default), alert log, and letting the
 		// Security Marketplace sell it. Additive; widens two service_id checks.
-		Name: "0085_perimeter_watch",
+		Name: "0086_perimeter_watch",
 		SQL:  PerimeterWatchSQL,
 	},
 }
