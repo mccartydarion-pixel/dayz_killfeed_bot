@@ -1144,6 +1144,8 @@ func (a *App) Run() error {
 	if a.ShopConfirmations != nil {
 		go a.runShopConfirmationSweeper(ctx)
 	}
+	// The Shop automatic delivery worker: off unless its own lock is opened (report or enabled).
+	a.startShopDeliveryWorker(ctx)
 	// Faction Hub achievements: kills queue an evaluation (drained every 5 seconds, one evaluation
 	// per affected faction), and a reconcile - one minute after start, then daily - backfills
 	// factions that already qualify and unlocks the time-based ones. Unlocking is silent.

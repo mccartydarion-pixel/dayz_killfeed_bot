@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/yourname/dayz-killfeed/internal/repository"
+	"github.com/yourname/dayz-killfeed/internal/shop/capability"
 	"github.com/yourname/dayz-killfeed/internal/shop/missionwrite"
 	nd "github.com/yourname/dayz-killfeed/internal/shop/nitradodelivery"
 )
@@ -764,4 +765,24 @@ func (p *pass) deliver(a repository.ShopAttempt, purchaseID int64) error {
 		return p.fail(a, "the server's log never showed that the restart finished: whether the item spawned is unknown", repository.ShopAttemptEvidence{})
 	}
 	return nil
+}
+
+// nitradoServer is a Server over the installation's Nitrado service.
+type nitradoServer struct {
+	remote  missionwrite.Remote
+	binding capability.Binding
+}
+
+// NewNitradoServer binds the guarded read/write primitives to one installation's service.
+func NewNitradoServer(remote missionwrite.Remote, inst repository.ShopAutoInstallation) Server {
+	return nitradoServer{remote: remote, binding: capability.Binding{OrganizationID: inst.OrganizationID, InstallationID: inst.InstallationID,
+		GameServerID: inst.GameServerID, NitradoServiceID: inst.NitradoServiceID}}
+}
+
+func (s nitradoServer) Inspect(ctx context.Context) (missionwrite.ArtifactState, error) {
+	return missionwrite.InspectArtifact(ctx, s.remote, s.binding)
+}
+
+func (s nitradoServer) Write(ctx context.Context, st missionwrite.ArtifactState, payload []byte) (missionwrite.ArtifactWrite, error) {
+	return missionwrite.WriteArtifact(ctx, s.remote, s.binding, st, payload)
 }

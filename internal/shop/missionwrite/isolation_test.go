@@ -11,15 +11,32 @@ import (
 	"testing"
 )
 
-// The write capability is isolated: only this package calls the Nitrado write primitives, only
-// cmd/shop-mission-write imports this package (never the bot, its startup, Live Sync or Shop
-// delivery), and only tests relax the https requirement.
+// The write capability is isolated: only this package calls the Nitrado write primitives, and only
+// tests relax the https requirement. Exactly two things may import this package:
+//
+//   - cmd/shop-mission-write, the operator's guarded tool (every gate);
+//   - internal/shop/deliveryworker, the automatic delivery worker approved in
+//     docs/SHOP_DELIVERY_WORKER_DESIGN.md. It may use ONLY the two artifact primitives
+//     (InspectArtifact, WriteArtifact) and the types and values they return: never Prepare, Execute,
+//     an Operation or the configuration gates. WriteArtifact can write one fixed file,
+//     custom/champion_shop_delivery.json, and nothing else.
+//
+// And the worker itself is reachable from exactly one file of the bot, internal/app/shop_delivery_worker.go,
+// which starts it only behind config.ShopAutoDelivery. Nothing else (startup, Live Sync, the Shop
+// service, an API handler) may import either package.
 func TestWriteCapabilityIsIsolated(t *testing.T) {
 	root, err := filepath.Abs(filepath.Join("..", "..", ".."))
 	if err != nil {
 		t.Fatal(err)
 	}
 	const self = "internal/shop/missionwrite"
+	const worker = "internal/shop/deliveryworker"
+	const workerEntry = "internal/app/shop_delivery_worker.go"
+	// What the worker may name from this package: the artifact primitives and what they return.
+	workerMay := map[string]bool{"InspectArtifact": true, "WriteArtifact": true, "ArtifactState": true, "ArtifactWrite": true, "Remote": true,
+		"SHA256": true, "StatusWrittenVerified": true, "StatusNotWritten": true, "StatusUncertain": true,
+		"ErrArtifactMissing": true, "ErrArtifactNotReferenced": true, "ErrBinding": true}
+	seenWorker, seenEntry := false, false
 	writes := map[string]bool{"RequestUploadToken": true, "PostUpload": true, "Mkdir": true}
 	seenCmd := false
 	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
@@ -42,11 +59,34 @@ func TestWriteCapabilityIsIsolated(t *testing.T) {
 		for _, im := range f.Imports {
 			ip, _ := strconv.Unquote(im.Path.Value)
 			if strings.HasSuffix(ip, "/"+self) {
-				if dir != "cmd/shop-mission-write" {
+				switch dir {
+				case "cmd/shop-mission-write":
+					seenCmd = true
+				case worker:
+					seenWorker = true
+					if im.Name != nil {
+						t.Errorf("%s imports missionwrite under another name, which hides what it uses", rel)
+					}
+				default:
 					t.Errorf("%s imports missionwrite", rel)
 				}
-				seenCmd = true
 			}
+			if strings.HasSuffix(ip, "/"+worker) {
+				if rel != workerEntry {
+					t.Errorf("%s imports the delivery worker; only %s may", rel, workerEntry)
+				}
+				seenEntry = true
+			}
+		}
+		if dir == worker {
+			ast.Inspect(f, func(n ast.Node) bool {
+				if sel, ok := n.(*ast.SelectorExpr); ok {
+					if id, ok := sel.X.(*ast.Ident); ok && id.Name == "missionwrite" && !workerMay[sel.Sel.Name] {
+						t.Errorf("%s uses missionwrite.%s; the worker may use only the artifact primitives", rel, sel.Sel.Name)
+					}
+				}
+				return true
+			})
 		}
 		ast.Inspect(f, func(n ast.Node) bool {
 			switch x := n.(type) {
@@ -70,6 +110,9 @@ func TestWriteCapabilityIsIsolated(t *testing.T) {
 	}
 	if !seenCmd {
 		t.Fatal("expected cmd/shop-mission-write to import this package")
+	}
+	if !seenWorker || !seenEntry {
+		t.Fatalf("expected the delivery worker to import this package (%v) and %s to import the worker (%v)", seenWorker, workerEntry, seenEntry)
 	}
 }
 
