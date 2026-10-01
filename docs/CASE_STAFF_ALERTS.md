@@ -62,7 +62,7 @@ the owner approves:
 | GET | `…/admin/case/alerts/settings` | | `{settings:{enabled,updatedAt}, releasedDetectors:[…], recent:[…10], enforcement:"DISABLED"}` |
 | PUT | `…/admin/case/alerts/settings` | `{enabled}` | Audited `CASE_STAFF_ALERTS_SAVED`. |
 
-Migration `0081_case_staff_alerts` adds `case_alert_settings` and `case_alert_deliveries` (additive only).
+Migration `0082_case_staff_alerts` adds `case_alert_settings` and `case_alert_deliveries` (additive only).
 
 ## Relation to the older review/outbox tables
 
