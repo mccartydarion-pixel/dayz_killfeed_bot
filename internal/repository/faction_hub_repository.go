@@ -621,11 +621,33 @@ LIMIT $4`, factionID, status, beforeID, limit+1)
 // transaction. The user must not already be in a faction on the installation; their
 // pending applications there are cancelled (they now lead a faction).
 func (r *FactionHubRepository) CreateFaction(ctx context.Context, organizationID, installationID, userID int64, in HubFactionInput) (*HubFaction, error) {
+	return r.CreateFactionWithLimit(ctx, organizationID, installationID, userID, in, 0)
+}
+
+// CreateFactionWithLimit is CreateFaction with a per-installation cap from the
+// organization's plan (entitlements.FactionLimit); maxFactions <= 0 means unlimited.
+// The cap is checked under an installation-wide advisory lock, so two people creating
+// factions at the same moment cannot both slip past it. That lock is taken before the
+// per-user lock and only by faction creation, so the lock order stays acyclic.
+func (r *FactionHubRepository) CreateFactionWithLimit(ctx context.Context, organizationID, installationID, userID int64, in HubFactionInput, maxFactions int) (*HubFaction, error) {
 	var out HubFaction
 	err := r.inTx(ctx, func(tx pgx.Tx) error {
 		gameServerID, err := hubWritableInstallation(ctx, tx, organizationID, installationID)
 		if err != nil {
 			return err
+		}
+		if maxFactions > 0 {
+			key := fmt.Sprintf("hub_faction_create:%d", installationID)
+			if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, key); err != nil {
+				return fmt.Errorf("hub lock faction create: %w", err)
+			}
+			var count int
+			if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM hub_factions WHERE organization_id=$1 AND installation_id=$2`, organizationID, installationID).Scan(&count); err != nil {
+				return fmt.Errorf("hub count factions: %w", err)
+			}
+			if count >= maxFactions {
+				return factionhub.ErrFactionLimitReached
+			}
 		}
 		if err := lockHubUser(ctx, tx, installationID, userID); err != nil {
 			return err

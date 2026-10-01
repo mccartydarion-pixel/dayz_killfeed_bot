@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/yourname/dayz-killfeed/internal/entitlements"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -160,14 +161,18 @@ ORDER BY cr.channel_id`
 // connection, and a server already claimed by an organization must be
 // claimed by the SAME organization that owns the installation and the
 // connection. A row failing any of those checks never resolves.
-// found=false with a nil error means no route is configured.
+// found=false with a nil error means no route is configured - or that the
+// organization's plan does not include what the route delivers
+// (entitlements.RouteAllowed), so a Survivor installation's Champion-only feeds
+// (bounties, heatmaps, economy, ranked board) stop exactly as if unrouted.
 func (r *ChannelRouteRepository) ResolveChannel(ctx context.Context, guildRowID, serverID int64, routeKey string) (string, bool, error) {
 	const q = `
-SELECT cr.channel_id
+SELECT cr.channel_id, COALESCE(s.plan, '')
 FROM installations i
 JOIN discord_guild_connections c ON c.id = i.discord_guild_connection_id
 JOIN game_servers gs ON gs.id = i.game_server_id
 JOIN installation_channel_routes cr ON cr.installation_id = i.id
+LEFT JOIN subscriptions s ON s.organization_id = i.organization_id
 WHERE c.guild_id = $1
   AND i.game_server_id = $2
   AND cr.route_key = $3
@@ -176,13 +181,16 @@ WHERE c.guild_id = $1
   AND (gs.organization_id IS NULL OR gs.organization_id = i.organization_id)
 ORDER BY i.id
 LIMIT 1`
-	var channelID string
-	err := r.pool.QueryRow(ctx, q, guildRowID, serverID, routeKey).Scan(&channelID)
+	var channelID, plan string
+	err := r.pool.QueryRow(ctx, q, guildRowID, serverID, routeKey).Scan(&channelID, &plan)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil
 	}
 	if err != nil {
 		return "", false, fmt.Errorf("resolve channel route: %w", err)
+	}
+	if !entitlements.RouteAllowed(plan, routeKey) {
+		return "", false, nil
 	}
 	return channelID, channelID != "", nil
 }

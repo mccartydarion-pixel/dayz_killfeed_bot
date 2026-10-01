@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/yourname/dayz-killfeed/internal/entitlements"
 	"github.com/yourname/dayz-killfeed/internal/permissions"
 	"github.com/yourname/dayz-killfeed/internal/ranked"
 	"github.com/yourname/dayz-killfeed/internal/repository"
@@ -57,6 +58,8 @@ func (a *App) handleResetServerRankedSeason(w http.ResponseWriter, r *http.Reque
 func (a *App) changeServerRankedSeason(w http.ResponseWriter, r *http.Request, reset bool) {
 	ac, ok := a.requireCapability(w, r, permissions.CapServerStatsReset)
 	if !ok { return }
+	// Starting or resetting a season is Champion-only; reading the current one stays open.
+	if !a.requirePlanFeature(w, r, ac.scope.OrganizationID, entitlements.RankedSeasons) { return }
 	if ac.scope.ServerID == nil || *ac.scope.ServerID <= 0 {
 		writeSaaSError(w, codeInvalidRequest, "no DayZ server selected")
 		return

@@ -85,6 +85,9 @@ var (
 	ErrNotPending        = errors.New("application is not pending")
 	ErrLeaderProtected   = errors.New("the faction leader cannot be changed or removed")
 	ErrInvalidTransition = errors.New("role change is not allowed for this member")
+
+	// ErrFactionLimitReached: the installation already has as many factions as its plan allows.
+	ErrFactionLimitReached = errors.New("faction limit reached for this installation's plan")
 )
 
 // ValidationError lists user-facing problems with a request body.

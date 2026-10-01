@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/yourname/dayz-killfeed/internal/entitlements"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -92,7 +93,14 @@ func (a *App) shopContext(w http.ResponseWriter, r *http.Request, admin bool) (e
 	if admin {
 		code = codeShopForbidden
 	}
-	return a.scopedContext(w, r, code)
+	er, ok := a.scopedContext(w, r, code)
+	if !ok {
+		return er, false
+	}
+	if !a.requirePlanFeature(w, r, er.scope.OrganizationID, entitlements.Economy) {
+		return economyRequest{}, false
+	}
+	return er, true
 }
 
 func shopAudit(event string, er economyRequest, attrs ...any) {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/yourname/dayz-killfeed/internal/entitlements"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -151,10 +152,11 @@ WHERE i.id = a.installation_id AND i.organization_id = $1 AND a.installation_id 
 // 0053); with Champion Default selected the runtime keeps the default card.
 func (r *EmbedTemplateRepository) ResolveTemplate(ctx context.Context, guildRowID, serverID int64, routeKey string) (int64, *embedtemplates.Config, error) {
 	const q = `
-SELECT i.id, t.config_json
+SELECT i.id, t.config_json, COALESCE(s.plan, '')
 FROM installations i
 JOIN discord_guild_connections c ON c.id = i.discord_guild_connection_id
 JOIN game_servers gs ON gs.id = i.game_server_id
+LEFT JOIN subscriptions s ON s.organization_id = i.organization_id
 LEFT JOIN installation_embed_activation a ON a.installation_id = i.id AND a.route_key = $3 AND a.mode = 'CUSTOM'
 LEFT JOIN installation_embed_templates t ON t.installation_id = i.id AND t.route_key = $3 AND a.installation_id IS NOT NULL
 WHERE c.guild_id = $1
@@ -166,14 +168,17 @@ ORDER BY i.id
 LIMIT 1`
 	var instID int64
 	var raw []byte
-	err := r.pool.QueryRow(ctx, q, guildRowID, serverID, routeKey).Scan(&instID, &raw)
+	var plan string
+	err := r.pool.QueryRow(ctx, q, guildRowID, serverID, routeKey).Scan(&instID, &raw, &plan)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, nil, nil
 	}
 	if err != nil {
 		return 0, nil, fmt.Errorf("resolve embed template: %w", err)
 	}
-	if raw == nil {
+	// A plan without custom embeds keeps the Champion default card; the saved template
+	// is kept untouched and comes back if the organization upgrades.
+	if raw == nil || !entitlements.Has(plan, entitlements.CustomEmbeds) {
 		return instID, nil, nil
 	}
 	var cfg embedtemplates.Config
