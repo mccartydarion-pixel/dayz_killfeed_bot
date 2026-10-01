@@ -1,8 +1,10 @@
 package securitymarket
 
+import "time"
+
 // Security services are player purchases, not C.A.S.E. anti-cheat detectors.
-// Catalog entries describe proposed products only. No service is purchasable
-// until a protected, installation-scoped capability verifier is wired in.
+// Only the Base Raid Alarm can be sold, and only when the server owner turns
+// the alarm on and offers it for Champion Points. The rest stay unavailable.
 type Service struct {
 	ID                 string `json:"id"`
 	Name               string `json:"name"`
@@ -14,6 +16,10 @@ type Availability struct {
 	Status      string  `json:"status"`
 	Reason      string  `json:"reason"`
 	Purchasable bool    `json:"purchasable"`
+	// Set only for a service the server owner is selling.
+	PricePoints  int64      `json:"pricePoints,omitempty"`
+	DurationDays int        `json:"durationDays,omitempty"`
+	ActiveUntil  *time.Time `json:"activeUntil,omitempty"`
 }
 
 var definitions = []Service{
@@ -34,8 +40,9 @@ func ProposedCatalog() []Service {
 	return out
 }
 
-// UnverifiedCatalog is the only current offer projection. In particular,
-// enabling a shop item or selecting a sensitivity does not verify telemetry.
+// UnverifiedCatalog marks every service unavailable. The app layer then opens
+// the Base Raid Alarm when the owner sells it (see saas_api_security_marketplace.go).
+// Enabling a shop item or selecting a sensitivity does not verify telemetry.
 func UnverifiedCatalog() []Availability {
 	out := make([]Availability, 0, len(definitions))
 	for _, service := range definitions {

@@ -30,6 +30,7 @@ func (a *App) registerCaseBaseRoutes(base string){
  h("GET "+base+"/case/bases/shadow",a.handleCaseBaseShadow)
  h("GET "+base+"/case/raid-alarm",a.handleGetBaseRaidAlarm)
  h("PUT "+base+"/case/raid-alarm",a.handleSetBaseRaidAlarm)
+ h("PUT "+base+"/case/raid-alarm/offer",a.handleSetBaseRaidAlarmOffer)
 }
 
 func (a *App) caseBaseActor(w http.ResponseWriter,r *http.Request)(adminActor,*repository.CaseBaseRegistrationRepository,bool){
