@@ -48,7 +48,7 @@ Player (verified DayZ link):
 
 ## Code
 
-- `internal/database/base_black_box_schema.go` (migration `0088_base_black_box`)
+- `internal/database/base_black_box_schema.go` (migration `0089_base_black_box`)
 - `internal/repository/base_black_box_repository.go`
 - `internal/app/base_black_box_recorder.go` (recorder, location fan-out, hourly clean-up)
 - `internal/app/saas_api_base_black_box.go`

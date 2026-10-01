@@ -2701,9 +2701,13 @@ CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events
 		SQL:  ShopOrderConfirmationsSQL,
 	},
 	{
+		Name: "0088_shop_order_confirmation_discord",
+		SQL:  ShopOrderConfirmationDiscordSQL,
+	},
+	{
 		// Base Black Box: per-base history of nearby players and dismantles, off by
 		// default and sellable. Additive; widens two service_id checks.
-		Name: "0088_base_black_box",
+		Name: "0089_base_black_box",
 		SQL:  BaseBlackBoxSQL,
 	},
 }
