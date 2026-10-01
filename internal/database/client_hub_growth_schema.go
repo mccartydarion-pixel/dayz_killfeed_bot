@@ -40,3 +40,22 @@ CREATE TABLE IF NOT EXISTS scheduled_season_actions (
 CREATE UNIQUE INDEX IF NOT EXISTS uq_scheduled_season_actions_open ON scheduled_season_actions(guild_id, kind, COALESCE(server_id, 0)) WHERE status IN ('PENDING','RUNNING');
 CREATE INDEX IF NOT EXISTS idx_scheduled_season_actions_due ON scheduled_season_actions(guild_id, run_at) WHERE status = 'PENDING';
 `
+
+// InviteTrackingSQL records which Discord invite each member joined through (code and inviter
+// only; no message content) and when they left, so the Client Hub can show which invites bring
+// players who stay, link and play.
+const InviteTrackingSQL = `
+CREATE TABLE IF NOT EXISTS discord_invite_joins (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    member_discord_id TEXT NOT NULL,
+    invite_code TEXT,
+    inviter_discord_id TEXT,
+    inviter_name TEXT,
+    joined_at TIMESTAMPTZ NOT NULL,
+    left_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_discord_invite_joins_guild_joined ON discord_invite_joins(guild_id, joined_at DESC);
+CREATE INDEX IF NOT EXISTS idx_discord_invite_joins_member ON discord_invite_joins(guild_id, member_discord_id, joined_at DESC);
+`

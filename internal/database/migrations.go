@@ -2789,6 +2789,11 @@ CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events
 		Name: "0104_season_planner",
 		SQL:  SeasonPlannerSQL,
 	},
+	{
+		// Which Discord invite each member joined through, and when they left. Additive.
+		Name: "0105_invite_tracking",
+		SQL:  InviteTrackingSQL,
+	},
 }
 
 // PvPDeathBackfillSQL gives the victim of every existing PvP kill a deaths row of type PVP, with

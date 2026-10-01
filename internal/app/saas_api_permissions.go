@@ -296,6 +296,7 @@ func (a *App) registerClientAdminRoutes() {
 	a.registerPlannerRoutes(base)
 	a.registerEventBuilderRoutes(base)
 	a.registerSeasonPlannerRoutes(base)
+	a.registerInviteRoutes(base)
 	a.registerFightRoutes(base)
 }
 

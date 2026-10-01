@@ -73,6 +73,9 @@ type App struct {
 	EventService *competitiveevents.Service
 	// SeasonPlanner holds owner-scheduled stats season rollovers and Ranked resets.
 	SeasonPlanner *repository.SeasonPlannerRepository
+	// Invites stores Discord invite joins; InviteTracker attributes them (needs Manage Server).
+	Invites       *repository.InviteRepository
+	InviteTracker *discord.InviteTracker
 	Bounties     *repository.BountyRepository
 	// BountyService is the bounty application service (placement, the atomic claim
 	// for persisted kills, streak bounties, expiry). Its Discord notifier is
@@ -734,6 +737,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.Points = repository.NewPointsRepository(db.Pool)
 			app.Seasons = repository.NewSeasonRepository(db.Pool)
 			app.SeasonPlanner = repository.NewSeasonPlannerRepository(db.Pool)
+			app.Invites = repository.NewInviteRepository(db.Pool)
 			app.SeasonService = seasons.NewService(app.Seasons)
 			app.Factions = repository.NewFactionRepository(db.Pool)
 			app.Wars = repository.NewPostgresWarRepository(db.Pool)
@@ -1441,6 +1445,13 @@ func (a *App) Run() error {
 		})
 	}
 	a.Discord.AddMemberJoinHandler(welcomeHandler.HandleMemberJoin)
+	if a.Invites != nil {
+		a.InviteTracker = discord.NewInviteTracker(session, a.Invites)
+		a.Discord.AddInviteTracking(ctx, a.InviteTracker)
+		if a.Config.DiscordGuildID != "" {
+			go a.InviteTracker.Snapshot(a.Config.DiscordGuildID)
+		}
+	}
 
 	a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		switch i.Type {
