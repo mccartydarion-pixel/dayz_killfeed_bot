@@ -284,14 +284,18 @@ func TestFeatureSettingsDefaultsValidationAndPermissions(t *testing.T) {
 		resp["feedIdentity"].(map[string]any)["name"] != "Deadzone Feed" {
 		t.Fatalf("save feed identity: %d %v", code, resp)
 	}
-	if code, _ := w.put(w.a.handlePutNetworkSettings, "/features/network", owner, networkSettingsDTO{Listed: true, Description: "Hardcore PvP, weekly wipes"}); code != http.StatusOK {
-		t.Fatalf("save network: %d", code)
+	if code, _ := w.put(w.a.handlePutNetworkSettings, "/features/network", owner, networkSettingsDTO{Listed: true, Description: "Hardcore PvP, weekly wipes", DiscordInviteURL: "https://example.com/join"}); code != http.StatusBadRequest {
+		t.Fatalf("a link that is not a Discord invite: %d, want 400", code)
+	}
+	if code, resp := w.put(w.a.handlePutNetworkSettings, "/features/network", owner, networkSettingsDTO{Listed: true, Description: "Hardcore PvP, weekly wipes", DiscordInviteURL: " discord.com/invite/deadzone "}); code != http.StatusOK ||
+		resp["network"].(map[string]any)["discordInviteUrl"] != "https://discord.gg/deadzone" {
+		t.Fatalf("save network: %d %v", code, resp)
 	}
 	if code, _ := w.put(w.a.handlePutFightReplaySettings, "/features/fight-replay", owner, fightReplaySettingsDTO{Public: true, DelayMinutes: 30}); code != http.StatusOK {
 		t.Fatalf("save fight replay: %d", code)
 	}
 	saved := decodeBody[featureSettingsDTO](t, w.call(w.a.handleGetFeatureSettings, http.MethodGet, w.path("/features"), owner, nil, nil))
-	if !saved.FeedIdentity.Enabled || saved.FeedIdentity.Name != "Deadzone Feed" || !saved.Network.Listed || saved.Network.Description != "Hardcore PvP, weekly wipes" ||
+	if !saved.FeedIdentity.Enabled || saved.FeedIdentity.Name != "Deadzone Feed" || !saved.Network.Listed || saved.Network.Description != "Hardcore PvP, weekly wipes" || saved.Network.DiscordInviteURL != "https://discord.gg/deadzone" ||
 		!saved.FightReplay.Public || saved.FightReplay.DelayMinutes != 30 || saved.HotZones.Enabled || saved.HotZones.MinKills != 6 || saved.UpdatedAt == nil {
 		t.Fatalf("saved = %+v", saved)
 	}

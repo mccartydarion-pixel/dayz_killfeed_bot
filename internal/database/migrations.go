@@ -2680,6 +2680,11 @@ CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events
 		Name: "0083_security_service_sales",
 		SQL:  SecurityServiceSQL,
 	},
+	{
+		// The owner's own Discord invite, shown on the public network listing (docs/NETWORK.md).
+		Name: "0084_network_discord_invite",
+		SQL:  `ALTER TABLE installation_feature_settings ADD COLUMN IF NOT EXISTS network_discord_invite_url TEXT NOT NULL DEFAULT '';`,
+	},
 }
 
 // PvPDeathBackfillSQL gives the victim of every existing PvP kill a deaths row of type PVP, with

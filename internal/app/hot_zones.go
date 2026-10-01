@@ -272,8 +272,9 @@ type fightReplaySettingsDTO struct {
 }
 
 type networkSettingsDTO struct {
-	Listed      bool   `json:"listed"`
-	Description string `json:"description"`
+	Listed           bool   `json:"listed"`
+	Description      string `json:"description"`
+	DiscordInviteURL string `json:"discordInviteUrl"`
 }
 
 type feedIdentitySettingsDTO struct {
@@ -296,7 +297,7 @@ func toFeatureSettingsDTO(s repository.FeatureSettings) featureSettingsDTO {
 		HotZones: hotZoneSettingsDTO{Enabled: hz.Enabled, WindowMinutes: hz.WindowMinutes, MinKills: hz.MinKills, RadiusMeters: hz.RadiusM,
 			DurationMinutes: hz.DurationMinutes, CooldownMinutes: hz.CooldownMinutes, FirstPoints: hz.FirstPoints, SecondPoints: hz.SecondPoints, ThirdPoints: hz.ThirdPoints},
 		FightReplay:  fightReplaySettingsDTO{Public: s.FightReplay.Public, DelayMinutes: s.FightReplay.DelayMinutes},
-		Network:      networkSettingsDTO{Listed: s.Network.Listed, Description: s.Network.Description},
+		Network:      networkSettingsDTO{Listed: s.Network.Listed, Description: s.Network.Description, DiscordInviteURL: s.Network.DiscordInviteURL},
 		FeedIdentity: feedIdentitySettingsDTO{Enabled: s.FeedIdentity.Enabled, Name: s.FeedIdentity.Name, AvatarURL: s.FeedIdentity.AvatarURL},
 		UpdatedAt:    nullableTimeStr(s.UpdatedAt),
 	}
@@ -404,7 +405,7 @@ func (a *App) handlePutNetworkSettings(w http.ResponseWriter, r *http.Request) {
 	saveFeatureSection(a, w, r, permissions.CapNetworkManage, "NETWORK_SETTINGS_UPDATED",
 		func(s repository.FeatureSettings) any { return toFeatureSettingsDTO(s).Network },
 		func(ctx context.Context, installationID, userID int64, b networkSettingsDTO) (repository.FeatureSettings, error) {
-			return a.FeatureSettings.SaveNetwork(ctx, installationID, userID, repository.NetworkSettings{Listed: b.Listed, Description: b.Description})
+			return a.FeatureSettings.SaveNetwork(ctx, installationID, userID, repository.NetworkSettings{Listed: b.Listed, Description: b.Description, DiscordInviteURL: b.DiscordInviteURL})
 		})
 }
 

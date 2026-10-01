@@ -26,7 +26,7 @@ func NewNetworkRepository(pool *pgxpool.Pool) *NetworkRepository {
 // listedServers is the opted-in installations with a server selected: the root of every query here.
 const listedServers = `
 SELECT i.id AS installation_id, gs.id AS server_id, gs.guild_id, COALESCE(NULLIF(gs.display_name, ''), 'DayZ Server') AS server_name,
-       gs.platform, s.network_description, COALESCE(c.guild_name, '') AS guild_name
+       gs.platform, s.network_description, COALESCE(c.guild_name, '') AS guild_name, s.network_discord_invite_url
 FROM installation_feature_settings s
 JOIN installations i ON i.id = s.installation_id AND i.game_server_id IS NOT NULL
 JOIN game_servers gs ON gs.id = i.game_server_id
@@ -42,7 +42,8 @@ type NetworkServer struct {
 	Platform        string
 	Description     string
 	DiscordName     string
-	PlayersOnline   int // connected and observed in the last five minutes
+	DiscordInvite   string // the owner's own invite link, empty when they shared none
+	PlayersOnline   int    // connected and observed in the last five minutes
 	Peak24h         int
 	ActivePlayers7d int
 	Kills7d         int
@@ -59,13 +60,14 @@ SELECT l.installation_id, l.server_id, l.guild_id, l.server_name, l.platform, l.
   (SELECT COUNT(*) FROM kills k WHERE k.guild_id=l.guild_id AND k.server_id=l.server_id AND k.created_at > $1::timestamptz - interval '7 days')::int,
   (SELECT COUNT(*) FROM kills k WHERE k.guild_id=l.guild_id AND k.server_id=l.server_id)::int,
   (SELECT COUNT(*) FROM player_server_activity a WHERE a.server_id=l.server_id)::int,
-  (SELECT MAX(last_seen_at) FROM player_server_activity a WHERE a.server_id=l.server_id)
+  (SELECT MAX(last_seen_at) FROM player_server_activity a WHERE a.server_id=l.server_id),
+  l.network_discord_invite_url
 FROM (` + listedServers + `) l`
 
 func scanNetworkServer(row pgx.Row) (NetworkServer, error) {
 	var s NetworkServer
 	err := row.Scan(&s.InstallationID, &s.ServerID, &s.GuildID, &s.Name, &s.Platform, &s.Description, &s.DiscordName,
-		&s.PlayersOnline, &s.Peak24h, &s.ActivePlayers7d, &s.Kills7d, &s.TotalKills, &s.TrackedPlayers, &s.LastActivityAt)
+		&s.PlayersOnline, &s.Peak24h, &s.ActivePlayers7d, &s.Kills7d, &s.TotalKills, &s.TrackedPlayers, &s.LastActivityAt, &s.DiscordInvite)
 	return s, err
 }
 
