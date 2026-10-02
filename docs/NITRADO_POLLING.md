@@ -103,10 +103,17 @@ one count toward it.
      byte, so an empty read at the end of the file never comes up.
    - Every 20th read is a verifying read again.
 3. **Disabled:**
-   - Any mismatch switches tail reads off for that service until restart
+   - Any mismatch switches tail reads off for that service until the bot restarts
      (`event=tail_read_disabled`, with `source=livesync` or `source=adm`), and full downloads
      continue.
    - A failed partial read falls back to a full download and returns the service to verifying.
+
+Trust survives restarts. Each service's match count and trusted flag are saved in
+`nitrado_tail_trust` (migration `0110`) and restored at startup (`event=tail_trust_restored`).
+
+- A restored trusted service verifies its first read again before it goes back to tail-only reads.
+- Saved trust is dropped after 7 days unless a passed recheck refreshes it.
+- A disabled service is saved as untrusted, so it starts verifying again after a restart.
 
 Full downloads are always used for the first read of a file, a checkpoint of 0, a listing smaller
 than the checkpoint (replaced or truncated), and for ADM a log rotation or a checkpoint the reader

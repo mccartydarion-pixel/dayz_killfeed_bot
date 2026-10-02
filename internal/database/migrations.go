@@ -2815,7 +2815,23 @@ CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events
 		Name: "0109_vip_tiers",
 		SQL:  VIPTiersSQL,
 	},
+	{
+		// Verified Nitrado tail-read trust, kept across restarts. Additive.
+		Name: "0110_nitrado_tail_trust",
+		SQL:  NitradoTailTrustSQL,
+	},
 }
+
+// NitradoTailTrustSQL keeps which Nitrado services have proven that partial (seek) reads match
+// full downloads (docs/NITRADO_POLLING.md), so a restart does not repeat the verification.
+const NitradoTailTrustSQL = `
+CREATE TABLE IF NOT EXISTS nitrado_tail_trust (
+    service_id TEXT PRIMARY KEY,
+    matches INT NOT NULL DEFAULT 0,
+    trusted BOOLEAN NOT NULL DEFAULT FALSE,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+`
 
 // PvPDeathBackfillSQL gives the victim of every existing PvP kill a deaths row of type PVP, with
 // the kill's own time, season, server and ADM source. Idempotent: the row's fingerprint is derived
