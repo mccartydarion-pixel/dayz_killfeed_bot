@@ -119,6 +119,12 @@ Full downloads are always used for the first read of a file, a checkpoint of 0, 
 than the checkpoint (replaced or truncated), and for ADM a log rotation or a checkpoint the reader
 did not itself write in this process.
 
+A failed partial read logs `event=partial_read_failed` with the method and a reason (status, error
+kind, Nitrado's message, or the network error). It is logged at most once per service and method
+every 30 minutes and never includes a URL, since signed download URLs carry credentials. When every
+method has failed three times in a row, `event=partial_reads_paused` is logged and the service
+uses full downloads for 10 minutes before trying again.
+
 Request count is unchanged: a partial read is a token request plus a fetch, just like a download.
 What drops is the bytes per read, from the whole file to the new lines.
 

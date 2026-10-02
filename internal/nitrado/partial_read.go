@@ -101,7 +101,9 @@ func (c *capabilityCache) get(serviceID string) capabilityState {
 	return capabilityState{capability: CapabilityUnknown}
 }
 
-func (c *capabilityCache) record(serviceID string, capability Capability, success bool) {
+// record notes one attempt's outcome. It reports whether this failure just switched the service to
+// FULL_ONLY (partial reads paused for probeCooldown).
+func (c *capabilityCache) record(serviceID string, capability Capability, success bool) (pausedNow bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	s, ok := c.byKey[serviceID]
@@ -113,15 +115,17 @@ func (c *capabilityCache) record(serviceID string, capability Capability, succes
 	if success {
 		s.capability = capability
 		s.consecutiveFailures = 0
-		return
+		return false
 	}
 	s.consecutiveFailures++
 	// A capability that was working and now fails a few times in a row is demoted back to unknown
 	// (re-probe the chain) rather than immediately to FULL_ONLY - a single transient failure must
 	// not throw away a real, previously-proven capability.
 	if s.consecutiveFailures >= 3 {
+		pausedNow = s.capability != CapabilityFullOnly
 		s.capability = CapabilityFullOnly
 	}
+	return pausedNow
 }
 
 // shouldSkipProbe reports whether serviceID was already marked FULL_ONLY within probeCooldown -
@@ -197,10 +201,11 @@ func (c *Client) ReadLogFrom(ctx context.Context, serviceID, path string, offset
 			continue
 		}
 		if err != nil {
-			if !errors.Is(err, errUnsupported) {
-				slog.Debug("component=nitrado", "event", "partial_read_attempt_failed", "method", string(method), "err", err.Error())
+			logPartialFailure(serviceID, method, err)
+			if globalCapabilityCache.record(serviceID, method, false) {
+				slog.Warn("component=nitrado", "event", "partial_reads_paused", "service_id", serviceID,
+					"retry_after_minutes", int(probeCooldown.Minutes()), "reason", "every partial-read method failed")
 			}
-			globalCapabilityCache.record(serviceID, method, false)
 			continue
 		}
 		globalCapabilityCache.record(serviceID, method, true)
