@@ -874,10 +874,17 @@ func (a *App) announcePerkPurchase(ctx context.Context, p repository.PerkPurchas
 // layout skips it instead of getting an empty channel.
 func (a *App) installationRouteProducers(ctx context.Context, installationID int64) map[string]routeProducer {
 	out := a.channelRouteProducers()
-	if a.Perks == nil || out[routing.RoutePerkStore].Health != HealthActive {
+	if out[routing.RoutePerkStore].Health != HealthActive {
 		return out
 	}
-	if open, err := a.Perks.StoreOpenForInstallation(ctx, installationID); err == nil && !open {
+	open := false
+	if a.Perks != nil {
+		var err error
+		if open, err = a.Perks.StoreOpenForInstallation(ctx, installationID); err != nil {
+			return out // unknown: leave an existing channel alone rather than report it switched off
+		}
+	}
+	if !open {
 		out[routing.RoutePerkStore] = routeProducer{HealthDisabled, "the perk store is closed - open it under Growth, Donations"}
 	}
 	return out
