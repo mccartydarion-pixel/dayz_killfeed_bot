@@ -46,11 +46,22 @@ func (a *App) workerManagerSnapshot() map[string]any {
 	servers := make([]map[string]any, 0, len(rows))
 	running := 0
 	for _, s := range rows {
-		isRunning := a.WorkerManager.Running(s.ID)
-		if isRunning {
+		st := a.WorkerManager.Status(s.ID)
+		if st.Running {
 			running++
 		}
-		servers = append(servers, map[string]any{"serverId": s.ID, "guildId": s.GuildID, "displayName": s.DisplayName, "platform": s.Platform, "status": s.Status, "running": isRunning})
+		entry := map[string]any{"serverId": s.ID, "guildId": s.GuildID, "displayName": s.DisplayName, "platform": s.Platform, "status": s.Status, "running": st.Running}
+		if st.Restarts > 0 || st.Restarting {
+			// Supervised restarts (servers.WorkerManager): the worker failed and
+			// is being brought back with backoff.
+			entry["restarting"] = st.Restarting
+			entry["restarts"] = st.Restarts
+			entry["lastError"] = st.LastError
+			if !st.NextRestartAt.IsZero() {
+				entry["nextRestartAt"] = st.NextRestartAt.UTC().Format(time.RFC3339)
+			}
+		}
+		servers = append(servers, entry)
 	}
 	out["servers"] = servers
 	out["running"] = running
