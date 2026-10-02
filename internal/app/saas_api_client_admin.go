@@ -50,6 +50,10 @@ func (a *App) registerClientAdminCapabilityRoutes(base string) {
 	h("POST "+base+"/banlist", a.handleAddBanlist)
 	h("DELETE "+base+"/banlist/{identifier}", a.handleRemoveBanlist)
 
+	h("GET "+base+"/priority", a.handleListPriority)
+	h("POST "+base+"/priority", a.handleAddPriority)
+	h("DELETE "+base+"/priority/{name}", a.handleRemovePriority)
+
 	h("POST "+base+"/stats/player/{playerID}/reset-streak", a.handleResetPlayerStreak)
 	h("POST "+base+"/stats/reset-season", a.handleResetEveryoneStats)
 	h("POST "+base+"/ranked/server-season", a.handleStartServerRankedSeason)

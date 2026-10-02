@@ -84,6 +84,12 @@ func (c *Client) BaseURL() string {
 func (c *Client) do(ctx context.Context, method string, path string, body io.Reader) (*http.Response, error) {
 	const maxAttempts = 3
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		// A retry must send the body again, not what is left of it after the first attempt.
+		if seeker, ok := body.(io.Seeker); ok && attempt > 1 {
+			if _, err := seeker.Seek(0, io.SeekStart); err != nil {
+				return nil, fmt.Errorf("rewind request body: %w", err)
+			}
+		}
 		req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
 		if err != nil {
 			return nil, fmt.Errorf("create request: %w", err)
