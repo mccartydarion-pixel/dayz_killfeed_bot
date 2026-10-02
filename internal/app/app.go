@@ -1308,6 +1308,14 @@ func (a *App) Run() error {
 		slog.Warn("component=startup", "msg", "guild setup store: in-memory (not durable across restarts)")
 	}
 	session := a.Discord.Session()
+	// Slash commands are queued here and sent in one request once every
+	// handler below is installed: creating them one by one hit Discord's
+	// rate limit and left commands unanswered for ~80 s after each deploy.
+	appID, _ := discord.ApplicationID(session)
+	if appID == "" {
+		appID = a.Config.DiscordApplicationID
+	}
+	commands := discord.NewCommandBatch(appID)
 	api := discord.NewSessionAPI(session)
 	a.factionRecruitAPI = api
 	setupManager := discord.NewSetupManager(api, setupStore, a.Discord.BotID())
@@ -1324,10 +1332,10 @@ func (a *App) Run() error {
 	welcomeHandler := discord.NewPersistentWelcomeHandler(setupStore, a.WelcomeRepository, a.Guilds)
 	if a.WelcomeRepository != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
 		welcomeCommands := discord.NewWelcomeCommandHandler(a.WelcomeRepository, a.Guilds, setupStore)
-		if err := discord.RegisterWelcomeCommands(session, a.Config.DiscordGuildID); err != nil {
+		if err := discord.RegisterWelcomeCommands(commands, a.Config.DiscordGuildID); err != nil {
 			slog.Warn("component=discord", "msg", "failed to register welcome commands", "err", err.Error())
 		} else {
-			slog.Info("component=discord", "msg", "welcome commands registered")
+			slog.Info("component=discord", "msg", "welcome commands queued")
 		}
 		a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			if i.Type == discordgo.InteractionApplicationCommand && i.ApplicationCommandData().Name == "welcome" {
@@ -1337,7 +1345,7 @@ func (a *App) Run() error {
 	}
 	if a.AnalyticsRepository != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
 		analyticsHandler := discord.NewAnalyticsCommandHandler(a.AnalyticsRepository, a.Guilds)
-		if err := discord.RegisterAnalyticsCommands(session, a.Config.DiscordGuildID, a.Config.DiscordApplicationID); err != nil {
+		if err := discord.RegisterAnalyticsCommands(commands, a.Config.DiscordGuildID, a.Config.DiscordApplicationID); err != nil {
 			slog.Warn("component=discord", "msg", "failed to register analytics commands", "err", err.Error())
 		}
 		a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -1348,10 +1356,10 @@ func (a *App) Run() error {
 	}
 	if a.AdminService != nil && a.Config.DiscordGuildID != "" {
 		adminHandler := discord.NewAdminCommandHandler(a.AdminService, a.LinkService, a.Guilds)
-		if err := discord.RegisterAdminCommands(session, a.Config.DiscordGuildID); err != nil {
+		if err := discord.RegisterAdminCommands(commands, a.Config.DiscordGuildID); err != nil {
 			slog.Warn("component=discord", "msg", "failed to register admin commands", "err", err.Error())
 		} else {
-			slog.Info("component=discord", "msg", "admin commands registered")
+			slog.Info("component=discord", "msg", "admin commands queued")
 		}
 		a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			if i.Type == discordgo.InteractionApplicationCommand && i.ApplicationCommandData().Name == "admin" {
@@ -1361,11 +1369,11 @@ func (a *App) Run() error {
 	}
 	if a.Servers != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
 		serverHandler := discord.NewServerCommandHandler(a.Servers, a.Guilds, a.CredentialCipher, a)
-		if err := discord.RegisterServerCommands(session, a.Config.DiscordGuildID); err != nil {
+		if err := discord.RegisterServerCommands(commands, a.Config.DiscordGuildID); err != nil {
 			slog.Error("component=discord", "msg", "failed to register server commands", "err", err.Error())
 			requiredCommandsOK = false
 		} else {
-			slog.Info("component=discord", "msg", "server commands registered")
+			slog.Info("component=discord", "msg", "server commands queued")
 		}
 		a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			switch i.Type {
@@ -1388,7 +1396,7 @@ func (a *App) Run() error {
 		if a.Ranked != nil && a.Servers != nil {
 			seasonHandler.SetRankedStatus(rankedSeasonStatus{servers: a.Servers, ranked: a.Ranked})
 		}
-		if err := discord.RegisterSeasonCommands(session, a.Config.DiscordGuildID); err != nil {
+		if err := discord.RegisterSeasonCommands(commands, a.Config.DiscordGuildID); err != nil {
 			slog.Warn("component=discord", "msg", "failed to register season commands", "err", err.Error())
 		}
 		a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -1399,7 +1407,7 @@ func (a *App) Run() error {
 	}
 	if a.EventService != nil && a.Events != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
 		eventHandler := discord.NewEventCommandHandler(a.EventService, a.Events, a.Guilds)
-		if err := discord.RegisterEventCommands(session, a.Config.DiscordGuildID); err != nil {
+		if err := discord.RegisterEventCommands(commands, a.Config.DiscordGuildID); err != nil {
 			slog.Warn("component=discord", "msg", "failed to register event commands", "err", err.Error())
 		}
 		a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -1410,7 +1418,7 @@ func (a *App) Run() error {
 	}
 	if a.Bounties != nil && a.Players != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
 		bountyHandler := discord.NewBountyCommandHandler(a.Bounties, a.BountyService, a.Players, a.Guilds)
-		if err := discord.RegisterBountyCommands(session, a.Config.DiscordGuildID); err != nil {
+		if err := discord.RegisterBountyCommands(commands, a.Config.DiscordGuildID); err != nil {
 			slog.Warn("component=discord", "msg", "failed to register bounty commands", "err", err.Error())
 		}
 		a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -1421,10 +1429,10 @@ func (a *App) Run() error {
 	}
 	if a.EconomyService != nil && a.Players != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
 		economyHandler := discord.NewEconomyCommandHandler(a.EconomyService, a.Players, a.Guilds, linkedPlayerLookup{a.LinkService})
-		if err := discord.RegisterEconomyCommands(session, a.Config.DiscordGuildID); err != nil {
+		if err := discord.RegisterEconomyCommands(commands, a.Config.DiscordGuildID); err != nil {
 			slog.Warn("component=discord", "msg", "failed to register economy commands", "err", err.Error())
 		} else {
-			slog.Info("component=discord", "msg", "economy commands registered")
+			slog.Info("component=discord", "msg", "economy commands queued")
 		}
 		a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			if i.Type == discordgo.InteractionApplicationCommand && i.ApplicationCommandData().Name == "economy" {
@@ -1434,7 +1442,7 @@ func (a *App) Run() error {
 	}
 	if a.Points != nil && a.Players != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
 		pointsHandler := discord.NewPointsCommandHandler(a.Points, a.Players, a.Guilds)
-		if err := discord.RegisterPointsCommands(session, a.Config.DiscordGuildID); err != nil {
+		if err := discord.RegisterPointsCommands(commands, a.Config.DiscordGuildID); err != nil {
 			slog.Warn("component=discord", "msg", "failed to register points command", "err", err.Error())
 		}
 		a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -1445,7 +1453,7 @@ func (a *App) Run() error {
 	}
 	if a.Wars != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
 		warHandler := discord.NewWarCommandHandler(a.Wars, a.Guilds, a.Seasons, a.Factions, a.Links, a.FactionStats, a.FactionPresentation, a.Players)
-		if err := discord.RegisterWarCommands(session, a.Config.DiscordGuildID); err != nil {
+		if err := discord.RegisterWarCommands(commands, a.Config.DiscordGuildID); err != nil {
 			slog.Warn("component=discord", "msg", "failed to register faction war commands", "err", err.Error())
 		}
 		a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -1455,21 +1463,21 @@ func (a *App) Run() error {
 		})
 	}
 	if a.Config.DiscordGuildID != "" {
-		if err := discord.RegisterSetupCommand(session, a.Config.DiscordGuildID); err != nil {
-			slog.Error("component=discord", "msg", "failed to register /setup command", "err", err.Error())
+		if err := discord.RegisterSetupCommand(commands, a.Config.DiscordGuildID); err != nil {
+			slog.Error("component=discord", "msg", "failed to queue /setup command", "err", err.Error())
 			requiredCommandsOK = false
 		} else {
-			slog.Info("component=discord", "msg", "setup commands registered")
+			slog.Info("component=discord", "msg", "setup commands queued")
 		}
 	}
 
 	// Stats and leaderboard commands require the database + a guild record.
 	if a.Stats != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
 		statsHandler := discord.NewStatsCommandHandler(a.Stats, a.Guilds, a.Config.DiscordGuildID)
-		if err := discord.RegisterStatsCommands(session, a.Config.DiscordGuildID); err != nil {
+		if err := discord.RegisterStatsCommands(commands, a.Config.DiscordGuildID); err != nil {
 			slog.Warn("component=discord", "msg", "failed to register stats commands", "err", err.Error())
 		} else {
-			slog.Info("component=discord", "msg", "stats commands registered")
+			slog.Info("component=discord", "msg", "stats commands queued")
 		}
 		a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			if i.Type != discordgo.InteractionApplicationCommand {
@@ -1483,16 +1491,16 @@ func (a *App) Run() error {
 			}
 		})
 	}
-	a.registerLifeCommands(ctx, session)
-	a.registerCardCommand(session)
-	a.registerBaseCommands(session)
+	a.registerLifeCommands(ctx, session, commands)
+	a.registerCardCommand(session, commands)
+	a.registerBaseCommands(session, commands)
 	if a.LinkService != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
 		linkHandler := discord.NewLinkCommandHandler(a.LinkService, a.Guilds)
-		if err := discord.RegisterLinkCommands(session, a.Config.DiscordGuildID); err != nil {
+		if err := discord.RegisterLinkCommands(commands, a.Config.DiscordGuildID); err != nil {
 			slog.Error("component=discord", "msg", "failed to register link commands", "err", err.Error())
 			requiredCommandsOK = false
 		} else {
-			slog.Info("component=discord", "msg", "link commands registered")
+			slog.Info("component=discord", "msg", "link commands queued")
 		}
 		a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			if i.Type == discordgo.InteractionMessageComponent {
@@ -1567,6 +1575,17 @@ func (a *App) Run() error {
 			}
 		}
 	})
+
+	// Every handler is installed, so the commands can go live in one request.
+	if a.Config.DiscordGuildID != "" && session != nil {
+		started := time.Now()
+		if n, err := commands.Flush(session, a.Config.DiscordGuildID); err != nil {
+			slog.Error("component=discord", "msg", "failed to register slash commands", "err", err.Error())
+			requiredCommandsOK = false
+		} else {
+			slog.Info("component=discord", "msg", "slash commands registered", "count", n, "duration_ms", time.Since(started).Milliseconds())
+		}
+	}
 
 	// All interaction handlers are now installed; readiness must not be
 	// reported before this point (see section 7/9 of the startup repair pass).

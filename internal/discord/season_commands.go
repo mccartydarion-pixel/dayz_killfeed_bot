@@ -47,7 +47,7 @@ func NewSeasonCommandHandler(seasons SeasonCommandStore, guilds GuildStore) *Sea
 	return &SeasonCommandHandler{seasons: seasons, guilds: guilds}
 }
 
-func RegisterSeasonCommands(session *discordgo.Session, guildID string) error {
+func RegisterSeasonCommands(session CommandRegistrar, guildID string) error {
 	applicationID, err := ApplicationID(session)
 	if err != nil {
 		return err

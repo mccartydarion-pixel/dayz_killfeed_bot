@@ -18,7 +18,7 @@ type PointsCommandHandler struct {
 func NewPointsCommandHandler(points *repository.PointsRepository, players *repository.PlayerRepository, guilds GuildStore) *PointsCommandHandler {
 	return &PointsCommandHandler{points: points, players: players, guilds: guilds}
 }
-func RegisterPointsCommands(session *discordgo.Session, guildID string) error {
+func RegisterPointsCommands(session CommandRegistrar, guildID string) error {
 	applicationID, err := ApplicationID(session)
 	if err != nil {
 		return err

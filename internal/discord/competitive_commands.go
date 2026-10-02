@@ -44,7 +44,7 @@ func (h *EventCommandHandler) leaderboardForGuild(ctx context.Context, guildID, 
 	}
 	return h.events.Leaderboard(ctx, eventID, limit)
 }
-func RegisterEventCommands(session *discordgo.Session, guildID string) error {
+func RegisterEventCommands(session CommandRegistrar, guildID string) error {
 	applicationID, err := ApplicationID(session)
 	if err != nil {
 		return err
@@ -178,7 +178,7 @@ type BountyCommandHandler struct {
 func NewBountyCommandHandler(b *repository.BountyRepository, svc *bounties.Service, p *repository.PlayerRepository, g GuildStore) *BountyCommandHandler {
 	return &BountyCommandHandler{bounties: b, service: svc, players: p, guilds: g}
 }
-func RegisterBountyCommands(session *discordgo.Session, guildID string) error {
+func RegisterBountyCommands(session CommandRegistrar, guildID string) error {
 	applicationID, err := ApplicationID(session)
 	if err != nil {
 		return err

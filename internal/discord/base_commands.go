@@ -94,7 +94,7 @@ func NewBaseCommandHandler(guilds GuildStore,
 var BaseCommandSizes = []int{25, 50, 75, 100, 150}
 
 // RegisterBaseCommands registers /mybase and /registerbase.
-func RegisterBaseCommands(session *discordgo.Session, guildID string) error {
+func RegisterBaseCommands(session CommandRegistrar, guildID string) error {
 	applicationID, err := ApplicationID(session)
 	if err != nil {
 		return err
@@ -147,6 +147,7 @@ func (h *BaseCommandHandler) resolve(ctx context.Context, s *discordgo.Session, 
 
 // HandleMyBase processes /mybase.
 func (h *BaseCommandHandler) HandleMyBase(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	deferEphemeral(s, i)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	guildRowID, serverID, playerID, ok := h.resolve(ctx, s, i)
@@ -162,11 +163,8 @@ func (h *BaseCommandHandler) HandleMyBase(s *discordgo.Session, i *discordgo.Int
 	if h.rentPay != nil {
 		components = MyBaseComponents(sum)
 	}
-	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral, Embeds: []*discordgo.MessageEmbed{MyBaseEmbed(sum, h.storeURL, time.Now())},
-			Components: components, AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}}},
-	})
+	respondPrivate(s, i, &discordgo.InteractionResponseData{Embeds: []*discordgo.MessageEmbed{MyBaseEmbed(sum, h.storeURL, time.Now())},
+		Components: components, AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}}})
 }
 
 // Pay rent buttons. "ask" shows the price and a confirm button; "pay" charges;
@@ -268,6 +266,7 @@ func (h *BaseCommandHandler) HandleRentComponent(s *discordgo.Session, i *discor
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if baseID, ok := parseRentBaseID(customID, rentAskPrefix); ok {
+		deferEphemeral(s, i)
 		guildRowID, serverID, playerID, ok := h.resolve(ctx, s, i)
 		if !ok {
 			return
@@ -278,11 +277,8 @@ func (h *BaseCommandHandler) HandleRentComponent(s *discordgo.Session, i *discor
 			return
 		}
 		text, components := RentConfirmMessage(baseID, q)
-		_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseChannelMessageWithSource,
-			Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral, Content: text, Components: components,
-				AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}}},
-		})
+		respondPrivate(s, i, &discordgo.InteractionResponseData{Content: text, Components: components,
+			AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}}})
 		return
 	}
 	baseID, ok := parseRentBaseID(customID, rentPayPrefix)
@@ -306,6 +302,7 @@ func (h *BaseCommandHandler) HandleRentComponent(s *discordgo.Session, i *discor
 
 // HandleRegisterBase processes /registerbase.
 func (h *BaseCommandHandler) HandleRegisterBase(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	deferEphemeral(s, i)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	guildRowID, serverID, playerID, ok := h.resolve(ctx, s, i)
@@ -391,9 +388,6 @@ func MyBaseEmbed(sum BaseCommandSummary, storeURL string, now time.Time) *discor
 }
 
 func respondEphemeralEmbed(s *discordgo.Session, i *discordgo.InteractionCreate, embed *discordgo.MessageEmbed) {
-	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral, Embeds: []*discordgo.MessageEmbed{embed},
-			AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}}},
-	})
+	respondPrivate(s, i, &discordgo.InteractionResponseData{Embeds: []*discordgo.MessageEmbed{embed},
+		AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}}})
 }

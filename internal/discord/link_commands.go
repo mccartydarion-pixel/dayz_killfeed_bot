@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/linking"
@@ -19,7 +20,7 @@ func NewLinkCommandHandler(service *linking.LinkVerificationService, guilds Guil
 	return &LinkCommandHandler{service: service, guilds: guilds}
 }
 
-func RegisterLinkCommands(session *discordgo.Session, guildID string) error {
+func RegisterLinkCommands(session CommandRegistrar, guildID string) error {
 	applicationID, err := ApplicationID(session)
 	if err != nil {
 		return err
@@ -59,7 +60,10 @@ func (h *LinkCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interacti
 				username = strings.TrimSpace(opt.StringValue())
 			}
 		}
-		link, err := h.service.Request(context.Background(), guildID, i.Member.User.ID, username)
+		deferEphemeral(s, i) // matches the name against every server's players
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		link, err := h.service.Request(ctx, guildID, i.Member.User.ID, username)
+		cancel()
 		if err != nil {
 			respondEphemeral(s, i, linkErrorMessage(err))
 			return

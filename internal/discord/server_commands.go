@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -39,13 +40,25 @@ type ServerCommandHandler struct {
 	guilds  GuildStore
 	cipher  *security.AESGCM
 	runtime ServerRuntime
+
+	// Autocomplete runs on every keystroke and cannot reply "thinking...",
+	// so it reuses a guild's Nitrado service list for a minute.
+	suggestMu sync.Mutex
+	suggest   map[string]cachedServices
 }
+
+type cachedServices struct {
+	services []nitrado.Service
+	at       time.Time
+}
+
+const serviceSuggestTTL = time.Minute
 
 func NewServerCommandHandler(s *repository.ServerRepository, g GuildStore, cipher *security.AESGCM, runtime ServerRuntime) *ServerCommandHandler {
 	return &ServerCommandHandler{servers: s, guilds: g, cipher: cipher, runtime: runtime}
 }
 
-func RegisterServerCommands(s *discordgo.Session, guildID string) error {
+func RegisterServerCommands(s CommandRegistrar, guildID string) error {
 	applicationID, err := ApplicationID(s)
 	if err != nil {
 		return err
@@ -223,6 +236,7 @@ func (h *ServerCommandHandler) handleModalSubmit(s *discordgo.Session, i *discor
 // handleServices lists the real, DayZ-filtered services on the guild's
 // connected Nitrado account.
 func (h *ServerCommandHandler) handleServices(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	deferEphemeral(s, i)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	services, err := h.dayZServices(ctx, i.GuildID)
@@ -252,6 +266,7 @@ func (h *ServerCommandHandler) handleSelect(s *discordgo.Session, i *discordgo.I
 		respondEphemeral(s, i, "Provide a service ID (use the autocomplete list).")
 		return
 	}
+	deferEphemeral(s, i)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -300,7 +315,8 @@ func (h *ServerCommandHandler) handleSelect(s *discordgo.Session, i *discordgo.I
 		respondEphemeral(s, i, fmt.Sprintf("✅ **%s** saved, but the killfeed runtime is not available (database required).", row.DisplayName))
 		return
 	}
-	if err := h.runtime.ConnectServer(ctx, row.ID); err != nil {
+	// The worker outlives this command: it must not inherit the command's timeout.
+	if err := h.runtime.ConnectServer(context.WithoutCancel(ctx), row.ID); err != nil {
 		respondEphemeral(s, i, fmt.Sprintf("✅ **%s** saved, but the killfeed worker could not start: %s\nTry `/server repair`.", row.DisplayName, err.Error()))
 		return
 	}
@@ -347,6 +363,7 @@ func (h *ServerCommandHandler) handleRepair(s *discordgo.Session, i *discordgo.I
 		respondEphemeral(s, i, "Provide a service ID.")
 		return
 	}
+	deferEphemeral(s, i)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -386,7 +403,8 @@ func (h *ServerCommandHandler) handleRepair(s *discordgo.Session, i *discordgo.I
 		respondEphemeral(s, i, fmt.Sprintf("✅ **%s** re-validated, but the killfeed runtime is not available (database required).", row.DisplayName))
 		return
 	}
-	if err := h.runtime.RepairServer(ctx, row.ID); err != nil {
+	// The worker outlives this command: it must not inherit the command's timeout.
+	if err := h.runtime.RepairServer(context.WithoutCancel(ctx), row.ID); err != nil {
 		respondEphemeral(s, i, fmt.Sprintf("❌ Re-validated, but the worker could not be reattached: %s", err.Error()))
 		return
 	}
@@ -428,7 +446,7 @@ func (h *ServerCommandHandler) handleAutocomplete(s *discordgo.Session, i *disco
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 
-	services, err := h.dayZServices(ctx, i.GuildID)
+	services, err := h.suggestedServices(ctx, i.GuildID)
 	if err != nil {
 		respondAutocomplete(s, i, nil)
 		return
@@ -446,6 +464,27 @@ func (h *ServerCommandHandler) handleAutocomplete(s *discordgo.Session, i *disco
 		}
 	}
 	respondAutocomplete(s, i, choices)
+}
+
+// suggestedServices is dayZServices for autocomplete, cached per guild.
+func (h *ServerCommandHandler) suggestedServices(ctx context.Context, discordGuildID string) ([]nitrado.Service, error) {
+	h.suggestMu.Lock()
+	cached, ok := h.suggest[discordGuildID]
+	h.suggestMu.Unlock()
+	if ok && time.Since(cached.at) < serviceSuggestTTL {
+		return cached.services, nil
+	}
+	services, err := h.dayZServices(ctx, discordGuildID)
+	if err != nil {
+		return nil, err
+	}
+	h.suggestMu.Lock()
+	if h.suggest == nil {
+		h.suggest = map[string]cachedServices{}
+	}
+	h.suggest[discordGuildID] = cachedServices{services: services, at: time.Now()}
+	h.suggestMu.Unlock()
+	return services, nil
 }
 
 // dayZServices resolves the guild's stored Nitrado connection, decrypts the

@@ -36,7 +36,7 @@ func NewCardCommandHandler(guilds GuildStore,
 }
 
 // RegisterCardCommand registers /card.
-func RegisterCardCommand(session *discordgo.Session, guildID string) error {
+func RegisterCardCommand(session CommandRegistrar, guildID string) error {
 	applicationID, err := ApplicationID(session)
 	if err != nil {
 		return err
