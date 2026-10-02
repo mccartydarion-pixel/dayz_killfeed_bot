@@ -178,6 +178,8 @@ type dirLister struct {
 	initial   map[string]bool
 	lastErr   string
 	lastOKAt  time.Time
+	// mounts measures which mount shows a log's new bytes first (mount_compare.go).
+	mounts *mountCompare
 }
 
 // discoverDirs finds the log directories from the ADM files Nitrado lists (no path is guessed):
@@ -252,15 +254,19 @@ func (l *dirLister) refresh(ctx context.Context) bool {
 		slog.Info("component=livesync", "event", "directories_discovered", "server_id", s.cfg.ServerID, "count", len(dirs))
 	}
 	anyOK := false
+	failed := false
+	var pass []nitrado.LogFile
 	for _, d := range dirs {
 		opCtx, cancel := context.WithTimeout(ctx, s.cfg.OpTimeout)
 		files, err := s.remote.ListDir(opCtx, s.cfg.ServiceID, d)
 		cancel()
 		if err != nil {
 			l.setErr("list_failed: " + errorClass(err))
+			failed = true
 			continue
 		}
 		anyOK = true
+		pass = append(pass, files...)
 		now := s.cfg.Now()
 		l.mu.Lock()
 		_, hadSnapshot := l.snaps[d]
@@ -277,6 +283,17 @@ func (l *dirLister) refresh(ctx context.Context) bool {
 		l.lastOKAt = now
 		l.lastErr = ""
 		l.mu.Unlock()
+	}
+	// Only a pass that listed every directory compares the mounts: a failed listing would look
+	// like a mount that fell behind.
+	if !failed && anyOK {
+		if l.mounts == nil {
+			l.mounts = newMountCompare()
+		}
+		for _, lead := range l.mounts.observe(s.cfg.Now(), pass) {
+			slog.Info("component=livesync", "event", "mount_lead", "server_id", s.cfg.ServerID, "family", ClassifySource(lead.ID).Family,
+				"file", lead.ID, "leader", lead.Leader, "size", lead.Size, "lag_ms", lead.Lag.Milliseconds(), "list_every_ms", s.cfg.ListEvery.Milliseconds())
+		}
 	}
 	return anyOK
 }
