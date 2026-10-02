@@ -858,13 +858,14 @@ func (e *Engine) Start(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-timer.C:
+			started := time.Now()
 			err := e.PollOnce(ctx)
 			if err != nil {
 				slog.Warn("component=killfeed", "msg", "poll failed", "err", err.Error())
 				e.apiFailures++
 			}
 			e.firePollCycle(err)
-			timer.Reset(e.nextInterval())
+			timer.Reset(e.nextDelay(time.Since(started)))
 		}
 	}
 }
@@ -875,6 +876,25 @@ func (e *Engine) nextInterval() time.Duration {
 		return e.pollingInterval(time.Now())
 	}
 	return discoveryBackoff(e.discoverFails)
+}
+
+// minPollGap is the shortest pause between two selected-log polls, so a slow poll is never
+// followed immediately by another one.
+const minPollGap = 250 * time.Millisecond
+
+// nextDelay is how long to wait after a cycle that took elapsed. While polling the selected log,
+// the poll interval is measured from the start of one poll to the start of the next, so a 2s
+// interval really polls every 2s instead of every 2s plus however long the poll took. Discovery
+// backoff is still a full wait after each attempt.
+func (e *Engine) nextDelay(elapsed time.Duration) time.Duration {
+	next := e.nextInterval()
+	if e.state != StatePolling {
+		return next
+	}
+	if next -= elapsed; next < minPollGap {
+		next = minPollGap
+	}
+	return next
 }
 
 // busyWindow is how recently the selected log must have changed for the server to count as busy.

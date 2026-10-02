@@ -1,6 +1,11 @@
 package nitrado
 
-import "testing"
+import (
+	"context"
+	"sync"
+	"testing"
+	"time"
+)
 
 func TestTailMatchesToleratesGrowthBetweenReads(t *testing.T) {
 	full := []byte("abcdef")
@@ -53,5 +58,62 @@ func TestTailTrustLifecycle(t *testing.T) {
 	}
 	if tailOnly, verify := TailPlan(svc); tailOnly || verify {
 		t.Fatal("disabled services only do full downloads")
+	}
+}
+
+type memTrustStore struct {
+	mu    sync.Mutex
+	saved map[string]TailTrustState
+	wrote chan string
+}
+
+func (m *memTrustStore) LoadTailTrust(context.Context) (map[string]TailTrustState, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := map[string]TailTrustState{}
+	for k, v := range m.saved {
+		out[k] = v
+	}
+	return out, nil
+}
+
+func (m *memTrustStore) SaveTailTrust(_ context.Context, id string, s TailTrustState) error {
+	m.mu.Lock()
+	m.saved[id] = s
+	m.mu.Unlock()
+	m.wrote <- id
+	return nil
+}
+
+func TestTailTrustSurvivesRestart(t *testing.T) {
+	svc := "trust-restart"
+	store := &memTrustStore{saved: map[string]TailTrustState{svc: {Matches: TailTrustAfter, Trusted: true}}, wrote: make(chan string, 16)}
+	t.Cleanup(func() {
+		tailTrust.mu.Lock()
+		tailTrust.store = nil
+		delete(tailTrust.services, svc)
+		tailTrust.mu.Unlock()
+	})
+	RestoreTailTrust(context.Background(), store)
+	if !TailTrust()[svc].Trusted {
+		t.Fatal("saved trust is restored")
+	}
+	if tailOnly, verify := TailPlan(svc); tailOnly || !verify {
+		t.Fatal("the first read after a restart verifies again")
+	}
+	if tailOnly, _ := TailPlan(svc); !tailOnly {
+		t.Fatal("then reads are tail only")
+	}
+	TailVerified(svc, false, 5, "SEEK", "test")
+	select {
+	case <-store.wrote:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a mismatch is saved")
+	}
+	store.mu.Lock()
+	got := store.saved[svc]
+	store.mu.Unlock()
+	if got.Trusted || got.Matches != 0 || got.Disabled {
+		t.Fatalf("a disabled service restarts as verifying: %+v", got)
 	}
 }

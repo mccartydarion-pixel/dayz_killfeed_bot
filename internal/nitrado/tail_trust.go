@@ -5,6 +5,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"time"
 )
 
 // Verified tail reads (docs/NITRADO_POLLING.md, "Tail reads"). Reading only the bytes after a
@@ -16,6 +17,9 @@ import (
 //     TailTrustAfter matches that covered new bytes make the service trusted.
 //   - trusted: callers read the tail only; every TailRecheckEvery-th read is a verifying read.
 //   - disabled: one mismatch turns tail reads off for the service until restart.
+//
+// Trust and match counts are saved through a TailTrustStore when one is set, so a restart does
+// not repeat the verification. A restored trusted service verifies its first read again.
 
 const (
 	TailTrustAfter   = 3
@@ -41,7 +45,62 @@ type TailTrustState struct {
 var tailTrust = struct {
 	mu       sync.Mutex
 	services map[string]*TailTrustState
+	store    TailTrustStore
 }{services: map[string]*TailTrustState{}}
+
+// TailTrustStore persists tail-read trust per service. Disabled is never stored: after a restart
+// a disabled service starts verifying again.
+type TailTrustStore interface {
+	LoadTailTrust(ctx context.Context) (map[string]TailTrustState, error)
+	SaveTailTrust(ctx context.Context, serviceID string, s TailTrustState) error
+}
+
+// RestoreTailTrust loads saved trust and keeps saving changes to store from now on.
+func RestoreTailTrust(ctx context.Context, store TailTrustStore) {
+	if store == nil {
+		return
+	}
+	saved, err := store.LoadTailTrust(ctx)
+	tailTrust.mu.Lock()
+	defer tailTrust.mu.Unlock()
+	tailTrust.store = store
+	if err != nil {
+		slog.Warn("component=nitrado", "event", "tail_trust_load_failed", "err", err.Error())
+		return
+	}
+	restored := 0
+	for id, st := range saved {
+		if _, seen := tailTrust.services[id]; seen {
+			continue
+		}
+		st.Disabled = false
+		st.reads = 0
+		if st.Trusted {
+			st.reads = TailRecheckEvery - 1 // the first read after a restart verifies again
+			restored++
+		}
+		cp := st
+		tailTrust.services[id] = &cp
+	}
+	if restored > 0 {
+		slog.Info("component=nitrado", "event", "tail_trust_restored", "trusted_services", restored)
+	}
+}
+
+// saveTailState writes s in the background. Callers hold tailTrust.mu.
+func saveTailState(serviceID string, s TailTrustState) {
+	store := tailTrust.store
+	if store == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := store.SaveTailTrust(ctx, serviceID, s); err != nil {
+			slog.Warn("component=nitrado", "event", "tail_trust_save_failed", "service_id", serviceID, "err", err.Error())
+		}
+	}()
+}
 
 func tailState(serviceID string) *TailTrustState {
 	s := tailTrust.services[serviceID]
@@ -82,11 +141,16 @@ func TailVerified(serviceID string, match bool, newBytes int, method, source str
 		return
 	}
 	if !match {
-		s.Disabled, s.Trusted = true, false
+		s.Disabled, s.Trusted, s.Matches = true, false, 0
+		saveTailState(serviceID, TailTrustState{})
 		slog.Warn("component=nitrado", "event", "tail_read_disabled", "service_id", serviceID, "source", source, "reason", "partial read did not match the full download")
 		return
 	}
-	if newBytes <= 0 || s.Trusted {
+	if newBytes <= 0 {
+		return
+	}
+	if s.Trusted {
+		saveTailState(serviceID, *s) // a passed recheck keeps the saved trust fresh
 		return
 	}
 	s.Matches++
@@ -94,6 +158,7 @@ func TailVerified(serviceID string, match bool, newBytes int, method, source str
 		s.Trusted = true
 		slog.Info("component=nitrado", "event", "tail_read_trusted", "service_id", serviceID, "source", source, "method", method, "matches", s.Matches)
 	}
+	saveTailState(serviceID, *s)
 }
 
 // TailFailed records a tail read that could not be done; a trusted service goes back to verifying.
@@ -103,6 +168,7 @@ func TailFailed(serviceID string) {
 	s := tailState(serviceID)
 	if s.Trusted {
 		s.Trusted, s.Matches, s.reads = false, 0, 0
+		saveTailState(serviceID, *s)
 	}
 }
 

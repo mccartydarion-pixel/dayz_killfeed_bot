@@ -58,6 +58,11 @@ Some calls always skip the cache and ask Nitrado:
 | Log changed in the last 5 minutes, and the budget is known with at least half left | fast rate (`NITRADO_POLL_INTERVAL_FAST`, default `3s`; `off` disables it) |
 | Otherwise | base rate (`NITRADO_POLL_INTERVAL`, default `10s`) |
 
+The interval runs from the start of one poll to the start of the next, so a 2s interval polls every
+2s rather than every 2s plus the poll's own time (about 0.5–0.9s in production). After a slow poll
+the bot still waits at least 250 ms. The discovery backoff is unchanged: it is a full wait after
+each attempt.
+
 The fast rate is only used after Nitrado's headers have been seen. If Nitrado never sends them, the
 bot polls exactly as before.
 
@@ -98,10 +103,17 @@ one count toward it.
      byte, so an empty read at the end of the file never comes up.
    - Every 20th read is a verifying read again.
 3. **Disabled:**
-   - Any mismatch switches tail reads off for that service until restart
+   - Any mismatch switches tail reads off for that service until the bot restarts
      (`event=tail_read_disabled`, with `source=livesync` or `source=adm`), and full downloads
      continue.
    - A failed partial read falls back to a full download and returns the service to verifying.
+
+Trust survives restarts. Each service's match count and trusted flag are saved in
+`nitrado_tail_trust` (migration `0110`) and restored at startup (`event=tail_trust_restored`).
+
+- A restored trusted service verifies its first read again before it goes back to tail-only reads.
+- Saved trust is dropped after 7 days unless a passed recheck refreshes it.
+- A disabled service is saved as untrusted, so it starts verifying again after a restart.
 
 Full downloads are always used for the first read of a file, a checkpoint of 0, a listing smaller
 than the checkpoint (replaced or truncated), and for ADM a log rotation or a checkpoint the reader
