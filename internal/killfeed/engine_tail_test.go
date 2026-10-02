@@ -13,15 +13,18 @@ import (
 type tailLogSource struct {
 	fakeLogSource
 	tailCalls int
+	pastEnd   int // reads that asked for bytes past the end of the file
 	corrupt   bool
 }
 
-func (f *tailLogSource) ReadLogFrom(_ context.Context, _ string, _ string, offset int64, _ nitrado.DeltaMode) (*nitrado.PartialReadResult, bool) {
+// ReadLogRange behaves like Nitrado's seek: asking for bytes past the end of the file fails.
+func (f *tailLogSource) ReadLogRange(_ context.Context, _ string, _ string, offset, length int64) (*nitrado.PartialReadResult, bool) {
 	f.tailCalls++
-	if offset < 0 || offset > int64(len(f.content)) {
+	if offset < 0 || offset+length > int64(len(f.content)) {
+		f.pastEnd++
 		return nil, false
 	}
-	data := append([]byte(nil), f.content[offset:]...)
+	data := append([]byte(nil), f.content[offset:offset+length]...)
 	if len(data) > 100 {
 		data = data[:100]
 	}
@@ -82,6 +85,9 @@ func TestADMVerifiedTailReadsAfterTrust(t *testing.T) {
 	}
 	if fake.reads-fullBefore > 1 {
 		t.Fatalf("a trusted service must stop downloading the whole ADM (one periodic recheck allowed), got %d", fake.reads-fullBefore)
+	}
+	if fake.pastEnd != 0 {
+		t.Fatalf("%d partial reads asked for bytes past the end of the file", fake.pastEnd)
 	}
 }
 

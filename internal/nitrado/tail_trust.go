@@ -27,9 +27,9 @@ const (
 	tailMaxChunks    = 64 // x maxChunkBytes = 16 MiB per read
 )
 
-// TailReader is the partial-read surface (*Client implements it).
+// TailReader is the partial-read surface (*Client implements it): up to length bytes from offset.
 type TailReader interface {
-	ReadLogFrom(ctx context.Context, serviceID, path string, offset int64, mode DeltaMode) (*PartialReadResult, bool)
+	ReadLogRange(ctx context.Context, serviceID, path string, offset, length int64) (*PartialReadResult, bool)
 }
 
 var _ TailReader = (*Client)(nil)
@@ -183,8 +183,11 @@ func TailTrust() map[string]TailTrustState {
 	return out
 }
 
-// ReadTail reads path from offset in bounded chunks, up to until (exclusive) when until > 0, or to
-// the end of the file. ok=false if any chunk fails or the file is more than 16 MiB behind.
+// ReadTail reads path from offset in bounded chunks up to until (exclusive), the file size the
+// caller already knows (from the listing or a full download). Each request asks only for bytes
+// that exist: Nitrado's seek answered 500 when asked past the end of the file. With until <= 0
+// (size unknown) it reads full-size chunks to the end. ok=false if any chunk fails or the file is
+// more than 16 MiB behind.
 func ReadTail(ctx context.Context, tr TailReader, serviceID, path string, offset, until int64) ([]byte, string, bool) {
 	var out []byte
 	method := ""
@@ -192,7 +195,11 @@ func ReadTail(ctx context.Context, tr TailReader, serviceID, path string, offset
 		if until > 0 && offset >= until {
 			return out, method, true
 		}
-		res, ok := tr.ReadLogFrom(ctx, serviceID, path, offset, DeltaModeAuto)
+		length := int64(maxChunkBytes)
+		if until > 0 && until-offset < length {
+			length = until - offset
+		}
+		res, ok := tr.ReadLogRange(ctx, serviceID, path, offset, length)
 		if !ok || res == nil || res.StartOffset != offset {
 			return nil, "", false
 		}

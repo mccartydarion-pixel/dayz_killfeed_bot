@@ -637,3 +637,45 @@ func TestParseContentRange(t *testing.T) {
 		}
 	}
 }
+
+// Tail reads use seek only, with the exact length asked for: Nitrado ignores offset/count and Range
+// on download URLs, and its seek answered 500 when asked past the end of the file.
+func TestReadLogRangeSeeksExactLengthOnly(t *testing.T) {
+	resetCapabilityCache(t)
+	const full = "0123456789abcdefghij"
+	var lengths []string
+	var other int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "file_server/seek"):
+			lengths = append(lengths, r.URL.Query().Get("length"))
+			if r.URL.Query().Get("length") == "999" {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"data":{"token":{"url":"%s/signed-seek"}}}`, "http://"+r.Host)
+		case r.URL.Path == "/signed-seek":
+			_, _ = w.Write([]byte(full[15:]))
+		default:
+			other++
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer srv.Close()
+	client := NewClient(srv.URL, "token", srv.Client())
+
+	result, ok := client.ReadLogRange(context.Background(), "svc-range", "/cfg/x.RPT", 15, 5)
+	if !ok || string(result.Data) != "fghij" {
+		t.Fatalf("range read = %v %+v", ok, result)
+	}
+	if _, ok := client.ReadLogRange(context.Background(), "svc-range", "/cfg/x.RPT", 15, 999); ok {
+		t.Fatal("a failed seek must fail the read")
+	}
+	if len(lengths) != 2 || lengths[0] != "5" || lengths[1] != "999" {
+		t.Fatalf("seek lengths = %v", lengths)
+	}
+	if other != 0 {
+		t.Fatalf("a range read must never fall back to the download URL (offset/count or Range), got %d other calls", other)
+	}
+}
