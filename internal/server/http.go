@@ -70,16 +70,28 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	}
 	go func() {
 		<-ctx.Done()
-		_ = s.Shutdown(context.Background())
+		// ctx is already done here, so derive the drain deadline from a fresh
+		// context: in-flight requests get shutdownTimeout to finish, then the
+		// listener is closed regardless.
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		_ = s.Shutdown(shutdownCtx)
 	}()
 	return s.httpServer.ListenAndServe()
 }
 
-// Shutdown gracefully stops the HTTP server.
+// shutdownTimeout bounds how long a graceful Shutdown waits for in-flight
+// requests before the server is closed anyway.
+const shutdownTimeout = 10 * time.Second
+
+// Shutdown gracefully stops the HTTP server. It waits at most shutdownTimeout
+// for in-flight requests even when ctx has no deadline of its own.
 func (s *Server) Shutdown(ctx context.Context) error {
 	if s == nil || s.httpServer == nil {
 		return nil
 	}
+	ctx, cancel := context.WithTimeout(ctx, shutdownTimeout)
+	defer cancel()
 	return s.httpServer.Shutdown(ctx)
 }
 
