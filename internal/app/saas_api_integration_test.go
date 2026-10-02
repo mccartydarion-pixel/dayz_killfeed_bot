@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -35,6 +36,7 @@ type fakeDiscordVerifier struct {
 	// verifyCalls counts live Verify calls, so tests can assert the
 	// zero-network-call eligible-guilds path never invokes it (section 7).
 	verifyCalls int
+	verifyMu    sync.Mutex
 
 	// channels backs ListGuildChannels/ListAllGuildChannels/Create* - an
 	// in-memory per-guild channel store standing in for a real Discord
@@ -88,7 +90,10 @@ func (f *fakeDiscordVerifier) HasGuildCached(guildID string) bool {
 }
 
 func (f *fakeDiscordVerifier) Verify(guildID, channelID string) discord.Verification {
+	// The layout status check verifies several channels at once.
+	f.verifyMu.Lock()
 	f.verifyCalls++
+	f.verifyMu.Unlock()
 	v := discord.Verification{GuildFound: f.guildFound[guildID]}
 	if channelID == "" {
 		return v

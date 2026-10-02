@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/discord"
@@ -740,6 +741,16 @@ func inspectChannelLayout(d channelLayoutDiscord, guildID string, existingRoutes
 		existing[r.RouteKey] = r
 	}
 	var out []ChannelDestinationReport
+	// A text destination's live checks (can the bot send, has it posted) cost several Discord
+	// requests each. They are collected here and run together below: one after another, a full
+	// layout took longer than the website waits for an answer.
+	type liveCheck struct {
+		index     int
+		channelID string
+		active    bool
+		plain     bool // no starter embed: decides the wording of a failed check
+	}
+	var live []liveCheck
 	for _, p := range planChannelLayout(producers) {
 		dest := p.Destination
 		rep := ChannelDestinationReport{Key: dest.Key, Label: dest.Label, Category: dest.Category, ChannelName: dest.ChannelName, Health: p.Health, Detail: p.Detail, Routes: p.Routes, Voice: dest.Voice}
@@ -773,10 +784,9 @@ func inspectChannelLayout(d channelLayoutDiscord, guildID string, existingRoutes
 		if exists && dest.Voice {
 			rep.Checks.BotCanSend, rep.Checks.VisibleContent = true, true
 		} else if exists {
-			v := d.Verify(guildID, route.ChannelID)
-			rep.Checks.BotCanSend = v.ChannelFound && len(v.Missing) == 0
-			has, err := d.ChannelHasBotMessage(route.ChannelID)
-			rep.Checks.VisibleContent = err == nil && has
+			live = append(live, liveCheck{index: len(out), channelID: route.ChannelID, active: p.Health == HealthActive, plain: dest.Starter == nil})
+			out = append(out, rep)
+			continue
 		}
 		if p.Health == HealthActive && !rep.Checks.passed() {
 			rep.Health = HealthBroken
@@ -788,8 +798,33 @@ func inspectChannelLayout(d channelLayoutDiscord, guildID string, existingRoutes
 		}
 		out = append(out, rep)
 	}
+
+	var wg sync.WaitGroup
+	slots := make(chan struct{}, layoutCheckConcurrency)
+	for _, check := range live {
+		wg.Add(1)
+		go func(check liveCheck) {
+			defer wg.Done()
+			slots <- struct{}{}
+			defer func() { <-slots }()
+			// Each goroutine writes only its own report, so no lock is needed.
+			rep := &out[check.index]
+			v := d.Verify(guildID, check.channelID)
+			rep.Checks.BotCanSend = v.ChannelFound && len(v.Missing) == 0
+			has, err := d.ChannelHasBotMessage(check.channelID)
+			rep.Checks.VisibleContent = err == nil && has
+			if check.active && !rep.Checks.passed() {
+				rep.Health = HealthBroken
+				rep.Detail = brokenDetail(*rep.Checks, check.plain)
+			}
+		}(check)
+	}
+	wg.Wait()
 	return out, nil
 }
+
+// layoutCheckConcurrency bounds how many destinations are checked against Discord at once.
+const layoutCheckConcurrency = 6
 
 func destinationByKey(key string) championDestination {
 	for _, d := range championDestinations {

@@ -383,7 +383,13 @@ func (a *App) handleAdminEconomyAccounts(w http.ResponseWriter, r *http.Request)
 		economyFailed(w, "admin economy search", err)
 		return
 	}
-	writeSaaSJSON(w, http.StatusOK, map[string]any{"items": rows})
+	// The same wire shape as the economy admin search (accountId, gamertag, ...): the rows are a
+	// domain type with no JSON tags, so writing them directly would emit Go field names.
+	items := make([]adminEconomyAccountDTO, 0, len(rows))
+	for _, acc := range rows {
+		items = append(items, adminAccountDTO(acc))
+	}
+	writeSaaSJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
 // --- server name / feed location / maintenance mode -----------------------------------------------
