@@ -104,7 +104,7 @@ func (a *App) runChannelLayout(ctx context.Context, organizationID, installation
 		InstallationID: installationID,
 		GuildID:        discordGuildID,
 		Existing:       existingRoutes,
-		Producers:      a.channelRouteProducers(),
+		Producers:      a.installationRouteProducers(ctx, installationID),
 		Preserve:       preserve,
 		SyncPanels:     a.syncRoutedPanelsNow,
 	})
@@ -318,7 +318,7 @@ func (a *App) handleChannelLayoutStatus(w http.ResponseWriter, r *http.Request) 
 		writeSaaSError(w, codeInternalError, "could not load channel routes")
 		return
 	}
-	destinations, err := inspectChannelLayout(a.saasDiscordVerifier, guildID, routes, a.channelRouteProducers())
+	destinations, err := inspectChannelLayout(a.saasDiscordVerifier, guildID, routes, a.installationRouteProducers(ctx, installationID))
 	if err != nil {
 		slog.Warn("component=saas_api", "msg", "inspect channel layout failed", "err", err.Error())
 		writeSaaSError(w, codeDiscordUnavailable, "could not inspect Discord channels")

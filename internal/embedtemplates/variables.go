@@ -166,6 +166,9 @@ var routeVariableDefinitions = map[string][]VariableDefinition{
 	// Faction recruitment cards are designed by faction leaders on the website (their colours,
 	// logo and copy), so the channel carries no owner template variables beyond the basics.
 	"FACTION_RECRUITMENT": {serverName(), timestamp()},
+	// Perk store shout-outs are written by Champion (who bought what, and the month's top
+	// supporters), so the channel carries no owner template variables beyond the basics.
+	"DONATION_PERKS": {serverName(), timestamp()},
 	// C.A.S.E. templates can be saved and previewed, but no live C.A.S.E.
 	// publisher exists. The fields describe the contract for separately
 	// reviewed future aggregate/status and finding events. None is fetched

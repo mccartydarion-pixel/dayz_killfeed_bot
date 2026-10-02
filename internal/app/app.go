@@ -85,7 +85,11 @@ type App struct {
 	// VIP holds supporter tiers; VIPRoles adds/removes their Discord roles.
 	VIP      *repository.VIPRepository
 	VIPRoles vipRoleAPI
-	Bounties     *repository.BountyRepository
+	// Perks is the perk store (docs/PERK_STORE.md); perkAnnouncer replaces the Discord shout-out in tests.
+	Perks         *repository.PerkStoreRepository
+	perkAnnouncer func(repository.PerkPurchase, *discordgo.MessageEmbed)
+	perkInline    bool // tests: make the donations channel before answering, not in the background
+	Bounties      *repository.BountyRepository
 	// BountyService is the bounty application service (placement, the atomic claim
 	// for persisted kills, streak bounties, expiry). Its Discord notifier is
 	// optional: bounties are correct without any route or Discord connection.
@@ -107,9 +111,9 @@ type App struct {
 	shopConfirmationRepo *repository.ShopConfirmationRepository
 	// ShopAuto and shopAttempts back the automatic delivery routes (the owner's switch, the buyer's
 	// drop position, the staff review); the worker itself starts only behind config.ShopAutoDelivery.
-	ShopAuto     *repository.ShopAutoDeliveryRepository
-	shopAttempts *repository.ShopAttemptRepository
-	shopOrderDesk        atomic.Pointer[shopOrderDesk]
+	ShopAuto      *repository.ShopAutoDeliveryRepository
+	shopAttempts  *repository.ShopAttemptRepository
+	shopOrderDesk atomic.Pointer[shopOrderDesk]
 	// ShopCanary is the Phase 2C.4 canary operator service (docs/SHOP_DELIVERY_PHASE2C4.md); its
 	// mutations are locked unless ShopCanaryGate is opened by CHAMPION_SHOP_CANARY_EXECUTION.
 	ShopCanary     *canaryops.Service
@@ -760,6 +764,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.PlayerTimeline = repository.NewPlayerTimelineRepository(db.Pool)
 			app.StaffActivity = repository.NewStaffActivityRepository(db.Pool)
 			app.VIP = repository.NewVIPRepository(db.Pool)
+			app.Perks = repository.NewPerkStoreRepository(db.Pool)
 			restoreCtx, restoreCancel := context.WithTimeout(ctx, 5*time.Second)
 			nitrado.RestoreTailTrust(restoreCtx, repository.NewTailTrustRepository(db.Pool))
 			restoreCancel()
@@ -2381,6 +2386,7 @@ func (a *App) runCompetitiveSchedulers(ctx context.Context, guildID int64) {
 		}
 		a.publishEventAnnouncements(ctx, guildID, now)
 		a.runSeasonPlanner(ctx, guildID, now)
+		a.runPerkStore(ctx, guildID, now)
 		a.runVIPExpiry(ctx, guildID, now)
 		a.runRewards(ctx, guildID, now)
 		if ended, err := a.Events.GetEndedUnfinalized(ctx, guildID, 25); err == nil {
