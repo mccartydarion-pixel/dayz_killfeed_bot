@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/jackc/pgx/v5"
 	"github.com/yourname/dayz-killfeed/internal/admin"
 	"github.com/yourname/dayz-killfeed/internal/adminrepo"
 	"github.com/yourname/dayz-killfeed/internal/analytics"
@@ -85,7 +87,7 @@ type App struct {
 	// VIP holds supporter tiers; VIPRoles adds/removes their Discord roles.
 	VIP      *repository.VIPRepository
 	VIPRoles vipRoleAPI
-	Bounties     *repository.BountyRepository
+	Bounties *repository.BountyRepository
 	// BountyService is the bounty application service (placement, the atomic claim
 	// for persisted kills, streak bounties, expiry). Its Discord notifier is
 	// optional: bounties are correct without any route or Discord connection.
@@ -107,9 +109,9 @@ type App struct {
 	shopConfirmationRepo *repository.ShopConfirmationRepository
 	// ShopAuto and shopAttempts back the automatic delivery routes (the owner's switch, the buyer's
 	// drop position, the staff review); the worker itself starts only behind config.ShopAutoDelivery.
-	ShopAuto     *repository.ShopAutoDeliveryRepository
-	shopAttempts *repository.ShopAttemptRepository
-	shopOrderDesk        atomic.Pointer[shopOrderDesk]
+	ShopAuto      *repository.ShopAutoDeliveryRepository
+	shopAttempts  *repository.ShopAttemptRepository
+	shopOrderDesk atomic.Pointer[shopOrderDesk]
 	// ShopCanary is the Phase 2C.4 canary operator service (docs/SHOP_DELIVERY_PHASE2C4.md); its
 	// mutations are locked unless ShopCanaryGate is opened by CHAMPION_SHOP_CANARY_EXECUTION.
 	ShopCanary     *canaryops.Service
@@ -587,7 +589,9 @@ func selectPublicCounterServer(selectedID int64, active []repository.GameServer)
 	return active[0].ID, true
 }
 
-// DisconnectServer implements discord.ServerRuntime: stops the worker, if any.
+// DisconnectServer implements discord.ServerRuntime: stops the worker, if any,
+// and returns only once its goroutine has exited (bounded by the manager's stop
+// timeout), so a DisconnectServer+RepairServer sequence really restarts it.
 func (a *App) DisconnectServer(serverID int64) {
 	if a.WorkerManager != nil {
 		a.WorkerManager.Stop(serverID)
@@ -617,6 +621,20 @@ func (a *App) addPersistQueue(pq *killfeed.PersistenceQueue) {
 	a.persistQueuesMu.Unlock()
 }
 
+// removePersistQueue forgets a worker's queue once the worker has stopped, so a
+// restarted server never leaves a dead queue in the health report.
+func (a *App) removePersistQueue(pq *killfeed.PersistenceQueue) {
+	if a == nil || pq == nil {
+		return
+	}
+	a.persistQueuesMu.Lock()
+	a.persistQueues = slices.DeleteFunc(a.persistQueues, func(q *killfeed.PersistenceQueue) bool { return q == pq })
+	a.persistQueuesMu.Unlock()
+	if a.HealthRegistry != nil {
+		a.HealthRegistry.Remove(fmt.Sprintf("persistence_queue_%d", pq.ServerID()))
+	}
+}
+
 // allPersistQueues returns a snapshot copy of the currently known persistence
 // queues (one per running server worker).
 func (a *App) allPersistQueues() []*killfeed.PersistenceQueue {
@@ -638,6 +656,15 @@ func (a *App) addLocationQueue(lq *killfeed.LocationQueue) {
 	a.locationQueuesMu.Unlock()
 }
 
+func (a *App) removeLocationQueue(lq *killfeed.LocationQueue) {
+	if a == nil || lq == nil {
+		return
+	}
+	a.locationQueuesMu.Lock()
+	a.locationQueues = slices.DeleteFunc(a.locationQueues, func(q *killfeed.LocationQueue) bool { return q == lq })
+	a.locationQueuesMu.Unlock()
+}
+
 func (a *App) allLocationQueues() []*killfeed.LocationQueue {
 	a.locationQueuesMu.Lock()
 	defer a.locationQueuesMu.Unlock()
@@ -649,6 +676,18 @@ func (a *App) allLocationQueues() []*killfeed.LocationQueue {
 func (a *App) addRotatingFeed(f *discord.RotatingFeed) {
 	a.rotatingFeedsMu.Lock()
 	a.rotatingFeeds = append(a.rotatingFeeds, f)
+	a.rotatingFeedsMu.Unlock()
+}
+
+// removeRotatingFeeds forgets a stopped worker's feeds. Callers must only do
+// this after the feeds' Run has returned (WaitDone), so the shutdown flush in
+// App.shutdown never loses a feed that still has cards to post.
+func (a *App) removeRotatingFeeds(feeds ...*discord.RotatingFeed) {
+	if len(feeds) == 0 {
+		return
+	}
+	a.rotatingFeedsMu.Lock()
+	a.rotatingFeeds = slices.DeleteFunc(a.rotatingFeeds, func(f *discord.RotatingFeed) bool { return slices.Contains(feeds, f) })
 	a.rotatingFeedsMu.Unlock()
 }
 
@@ -1125,6 +1164,7 @@ func stateHealthComponents(snap map[string]any) []health.Component {
 func (a *App) refreshHealth(ctx context.Context) {
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
+	reportedQueues := make(map[string]bool)
 	update := func() {
 		if a.HealthRegistry == nil || a.State == nil {
 			return
@@ -1149,12 +1189,23 @@ func (a *App) refreshHealth(ctx context.Context) {
 			st, reason := a.ADMHealth.Evaluate(operations.ADMHealthSnapshot{LastPollSuccessAt: poll, LastChangeAt: change, OnlinePlayers: online, CurrentFile: file}, time.Now())
 			a.HealthRegistry.Set(health.Component{Name: "adm_stall", State: st, Message: reason, Critical: st == health.Unhealthy})
 		}
+		// Queues belong to running workers only (runServerWorker's exit path
+		// removes them); a component reported last tick for a queue that has
+		// since gone is removed, so a stopped server never reports a dead queue.
+		seen := make(map[string]bool)
 		for _, pq := range a.allPersistQueues() {
 			depth, capacity, highWater, dropped, oldest := pq.QueueHealth()
 			name := fmt.Sprintf("persistence_queue_%d", pq.ServerID())
+			seen[name] = true
 			q := health.EvaluateQueue(health.QueueHealth{Name: name, Depth: depth, Capacity: capacity, HighWaterMark: highWater, Dropped: uint64(dropped), OldestAge: oldest})
 			a.HealthRegistry.Set(health.Component{Name: name, State: q.State, Message: fmt.Sprintf("queue %d/%d high-water %d oldest %s", depth, capacity, highWater, oldest.Round(time.Second)), Critical: true})
 		}
+		for name := range reportedQueues {
+			if !seen[name] {
+				a.HealthRegistry.Remove(name)
+			}
+		}
+		reportedQueues = seen
 	}
 	update()
 	for {
@@ -1888,6 +1939,22 @@ func (a *App) Run() error {
 				}
 				return a.runServerWorker(workerCtx, row, store, setupStore, onlineCounter)
 			})
+			// A failed worker is restarted under supervision (jittered backoff)
+			// unless its game_servers row was deactivated in the meantime - an
+			// intentional disconnect/suspend must not be undone by the supervisor.
+			a.WorkerManager.SetRestartGate(func(gateCtx context.Context, workerServerID int64) bool {
+				lookupCtx, cancelLookup := context.WithTimeout(gateCtx, 5*time.Second)
+				defer cancelLookup()
+				row, err := a.Servers.GetByID(lookupCtx, workerServerID)
+				if err != nil {
+					if errors.Is(err, pgx.ErrNoRows) {
+						return false
+					}
+					slog.Warn("component=servers", "msg", "restart gate could not read game_servers; allowing restart", "server_id", workerServerID, "err", err.Error())
+					return true
+				}
+				return row.Active
+			})
 
 			for _, row := range activeServers {
 				if err := a.WorkerManager.Start(ctx, row.ID); err != nil {
@@ -1957,7 +2024,24 @@ func feedDeliveryMode() string {
 
 func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServer, store *persistenceStoreAdapter, setupStore discord.SetupStore, onlineCounter *discord.VoiceChannelCounter) error {
 	workerName := fmt.Sprintf("adm_worker_%d", row.ID)
+	// Every goroutine this worker spawns runs under its own cancel so that an
+	// early error return (or a panic unwinding through here) tears them down
+	// too, not only a cancellation from WorkerManager.
+	workerCtx, cancelWorker := context.WithCancel(workerCtx)
+	// Per-worker registrations, undone below so a restarted server never leaves
+	// a dead queue or feed in health reports or the shutdown drain.
+	var ownedFeeds []*discord.RotatingFeed
+	var ownedPQ *killfeed.PersistenceQueue
+	var ownedLQ *killfeed.LocationQueue
 	defer func() {
+		cancelWorker()
+		for _, f := range ownedFeeds {
+			f.WaitDone() // registered only after Run started, so this returns
+		}
+		a.removeRotatingFeeds(ownedFeeds...)
+		a.removePersistQueue(ownedPQ)
+		a.removeLocationQueue(ownedLQ)
+		caseCollectorRunning.Delete(row.ID)
 		if a.Workers != nil {
 			a.Workers.Stop(workerName)
 		}
@@ -2147,7 +2231,6 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 	killFeed.SetRouteChannelResolver(publisher.RouteChannelID)
 	killFeed.SetMode(feedDeliveryMode())
 	publisher.SetFeed(killFeed)
-	a.addRotatingFeed(killFeed)
 	deathFeed := discord.NewRotatingFeed(a.feedSender(row.ID), setupStore, a.Config.DiscordGuildID, func(s *discord.GuildSetup) string { return s.DeathChannelID }, rotatingFeedInterval, rotatingFeedBatchSize)
 	// Death and suicide cards resolve the installation's PVE_FEED route,
 	// separate from KILLFEED. The legacy death channel is the fallback only
@@ -2170,7 +2253,6 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 	deathFeed.SetRoute("DEATH_FEED")
 	deathFeed.SetMode(feedDeliveryMode())
 	deathPublisher.SetFeed(deathFeed)
-	a.addRotatingFeed(deathFeed)
 	if pveFeed != nil {
 		pveFeed.SetFeed(deathFeed)
 		go func() {
@@ -2208,6 +2290,11 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 		}()
 		deathFeed.Run(workerCtx)
 	}()
+	// Registered only now that both Run loops are started: the worker's exit
+	// path waits on them (WaitDone) before dropping them from the registry.
+	ownedFeeds = append(ownedFeeds, killFeed, deathFeed)
+	a.addRotatingFeed(killFeed)
+	a.addRotatingFeed(deathFeed)
 
 	if store.ranked != nil {
 		go func() {
@@ -2238,6 +2325,7 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 		pq.SetLinkChallengeObserver(a.LinkService)
 	}
 	engine.SetPersistence(pq)
+	ownedPQ = pq
 	a.addPersistQueue(pq)
 	// C.A.S.E. Phase 2B is opt-in until source-addressed evidence and replay
 	// verification are proven in production. It writes no detector verdicts.
@@ -2277,6 +2365,7 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 	if a.Locations != nil {
 		engine.SetADMSessionStore(a.Locations)
 	}
+	ownedLQ = lq
 	a.addLocationQueue(lq)
 
 	// Presence changes only nudge the online counter loop (online_counter.go),
@@ -2442,7 +2531,9 @@ func (a *App) shutdown() {
 		slog.Info("component=shutdown", "msg", "rotating feeds flushed", "count", len(feeds))
 	}
 	if a.HTTPServer != nil {
-		if err := a.HTTPServer.Shutdown(context.Background()); err != nil {
+		httpCtx, cancelHTTP := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancelHTTP()
+		if err := a.HTTPServer.Shutdown(httpCtx); err != nil {
 			slog.Error("component=shutdown", "msg", "HTTP server shutdown failed", "err", err.Error())
 		} else {
 			slog.Info("component=shutdown", "msg", "HTTP server stopped")
