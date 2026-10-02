@@ -76,6 +76,11 @@ func (a *App) legacySetupStore() discord.SetupStore {
 // customer-owned routes (repair, /setup); without it (one-click setup) every
 // route is mapped to Champion's channel.
 func (a *App) runChannelLayout(ctx context.Context, organizationID, installationID int64, discordGuildID string, preserve bool) (AutoSetupChannelsResponse, error) {
+	return a.runChannelLayoutIn(ctx, organizationID, installationID, discordGuildID, preserve, nil)
+}
+
+// runChannelLayoutIn is runChannelLayout as one installation of a guild-wide run (run may be nil).
+func (a *App) runChannelLayoutIn(ctx context.Context, organizationID, installationID int64, discordGuildID string, preserve bool, run *layoutRun) (AutoSetupChannelsResponse, error) {
 	settings, err := a.SaaSInstallations.GetSettings(ctx, organizationID, installationID)
 	if err != nil {
 		return AutoSetupChannelsResponse{}, fmt.Errorf("load channel settings: %w", err)
@@ -107,6 +112,7 @@ func (a *App) runChannelLayout(ctx context.Context, organizationID, installation
 		Producers:      a.channelRouteProducers(),
 		Preserve:       preserve,
 		SyncPanels:     a.syncRoutedPanelsNow,
+		Run:            run,
 	})
 	if errors.Is(err, errKillfeedUnavailable) {
 		return AutoSetupChannelsResponse{Configured: false, Reason: "KILLFEED_UNAVAILABLE"}, err
@@ -546,8 +552,11 @@ func (a *App) DiscordSetupLayout(ctx context.Context, discordGuildID string) (di
 	if len(refs) == 0 {
 		return out, discord.ErrNoInstallation
 	}
+	// Every installation of the guild shares the same channels: their live checks and the panel
+	// sync are done once for the whole run.
+	run := newLayoutRun()
 	for _, ref := range refs {
-		resp, err := a.runChannelLayout(ctx, ref.OrganizationID, ref.InstallationID, discordGuildID, true)
+		resp, err := a.runChannelLayoutIn(ctx, ref.OrganizationID, ref.InstallationID, discordGuildID, true, run)
 		if errors.Is(err, errMissingManageChannels) {
 			return out, discord.ErrMissingManageChannels
 		}
