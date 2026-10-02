@@ -61,13 +61,17 @@ func isObsoleteLeaderboardMessage(m *discordgo.Message, botID string, keep map[s
 // recorded current board(s) in keep, player messages, the Player Stats panel
 // and every other panel are never deleted. Best-effort: failures are logged
 // and retried on the next refresh.
-func sweepObsoleteLeaderboards(api ChannelHistoryAPI, channels []string, keep map[string]bool) (deleted int) {
+//
+// A channel Discord no longer knows (deleted, or the bot was removed from it)
+// is reported in gone rather than warned about on every refresh: the caller
+// forgets it so the sweep stops asking.
+func sweepObsoleteLeaderboards(api ChannelHistoryAPI, channels []string, keep map[string]bool) (deleted int, gone []string) {
 	if api == nil {
-		return 0
+		return 0, nil
 	}
 	botID := api.BotUserID()
 	if botID == "" {
-		return 0
+		return 0, nil
 	}
 	seen := make(map[string]bool, len(channels))
 	for _, channelID := range channels {
@@ -77,6 +81,11 @@ func sweepObsoleteLeaderboards(api ChannelHistoryAPI, channels []string, keep ma
 		seen[channelID] = true
 		msgs, err := api.ChannelMessages(channelID, leaderboardSweepScanLimit)
 		if err != nil {
+			if isUnknownMessage(err) {
+				slog.Info("component=discord", "event", "leaderboard_sweep_channel_gone", "channel_id", channelID)
+				gone = append(gone, channelID)
+				continue
+			}
 			slog.Warn("component=discord", "event", "leaderboard_sweep_list_failed", "channel_id", channelID, "err", err.Error())
 			continue
 		}
@@ -92,5 +101,5 @@ func sweepObsoleteLeaderboards(api ChannelHistoryAPI, channels []string, keep ma
 			slog.Info("component=discord", "event", "leaderboard_obsolete_board_removed", "channel_id", channelID, "message_id", m.ID, "title", m.Embeds[0].Title)
 		}
 	}
-	return deleted
+	return deleted, gone
 }
