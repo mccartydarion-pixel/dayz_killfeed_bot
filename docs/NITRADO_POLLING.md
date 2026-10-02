@@ -81,6 +81,22 @@ ledger), so measuring sends nothing extra. All three appear under `timing` and `
 The game writing the ADM line → Nitrado's file changing is not visible: ADM lines carry only the
 server's local time of day.
 
+## Which mount is fresher (`internal/livesync/mount_compare.go`)
+
+Nitrado exposes each log under two mounts, `noftp` and `ftproot`. The killfeed reads `noftp`. The
+Live Sync lister already lists both mounts every 20 seconds, so comparing them sends nothing extra.
+
+For every file present in both mounts, the lister logs `event=mount_lead` each time the file grows:
+
+| Field | Meaning |
+| --- | --- |
+| `leader` | The mount that showed the new bytes first (`noftp`, `ftproot`), or `tie` when both showed them in the same pass |
+| `lag_ms` | How long the other mount took to reach the same size. Resolution is one listing pass (`list_every_ms`) |
+| `family`, `file`, `size` | Which log, and the size the leader showed |
+
+This only measures. Nothing reads it to choose a mount. A pass in which any directory failed to
+list is skipped, so a failed listing never looks like a mount that fell behind.
+
 ## Verified tail reads (`internal/nitrado/tail_trust.go`)
 
 Live Sync (RPT, restart, script and crash logs) and the killfeed ADM reader both used to download
