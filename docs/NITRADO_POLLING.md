@@ -119,6 +119,17 @@ Full downloads are always used for the first read of a file, a checkpoint of 0, 
 than the checkpoint (replaced or truncated), and for ADM a log rotation or a checkpoint the reader
 did not itself write in this process.
 
+Tail reads use Nitrado's `file_server/seek` only, and each request asks for exactly the bytes the
+file is known to hold (up to the listing's size, or the full download's length when verifying).
+Production showed why (2026-10-02, one service):
+
+- the download URL ignores `offset`/`count` and a `Range` header, and returns the whole file, so
+  neither is a partial read;
+- `seek` answered HTTP 500 ("temporary Nitrado failure") when asked for 256 KiB from a checkpoint a
+  few KiB from the end of the file.
+
+Live Sync only tail-reads when the directory listing gave the file's size.
+
 A failed partial read logs `event=partial_read_failed` with the method and a reason (status, error
 kind, Nitrado's message, or the network error). It is logged at most once per service and method
 every 30 minutes and never includes a URL, since signed download URLs carry credentials. When every

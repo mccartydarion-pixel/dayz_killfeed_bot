@@ -171,10 +171,24 @@ func ParseDeltaMode(raw string) DeltaMode {
 // unavailable; the caller's only correct response is to fall back to ReadLog (task section 13) -
 // this function never returns a partial/best-effort result on failure.
 func (c *Client) ReadLogFrom(ctx context.Context, serviceID, path string, offset int64, mode DeltaMode) (*PartialReadResult, bool) {
+	return c.readLogFrom(ctx, serviceID, path, offset, maxChunkBytes, mode)
+}
+
+// ReadLogRange reads up to length bytes of path from offset with Nitrado's seek endpoint only.
+// Verified tail reads use it: the download URL ignores offset/count and Range (both return the
+// whole file), so seek is the only real partial read, and asking it for bytes past the end of the
+// file got HTTP 500 in production - callers pass exactly the bytes the file is known to hold.
+func (c *Client) ReadLogRange(ctx context.Context, serviceID, path string, offset, length int64) (*PartialReadResult, bool) {
+	if length <= 0 || length > maxChunkBytes {
+		length = maxChunkBytes
+	}
+	return c.readLogFrom(ctx, serviceID, path, offset, length, DeltaModeSeek)
+}
+
+func (c *Client) readLogFrom(ctx context.Context, serviceID, path string, offset, length int64, mode DeltaMode) (*PartialReadResult, bool) {
 	if mode == DeltaModeOff || c == nil || serviceID == "" || path == "" || offset < 0 {
 		return nil, false
 	}
-	length := int64(maxChunkBytes)
 
 	state := globalCapabilityCache.get(serviceID)
 	order := deltaOrder(mode, state.capability)

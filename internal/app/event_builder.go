@@ -231,7 +231,7 @@ func (a *App) publishEventAnnouncements(ctx context.Context, guildID int64, now 
 	for _, p := range pending {
 		card := discord.EventAnnouncementCard{Kind: p.Kind, Name: p.Event.Name, Description: p.Event.Description, Type: p.Event.Type, Config: p.Event.Config,
 			StartsAt: p.Event.StartsAt, EndsAt: p.Event.EndsAt, Prizes: [3]int{p.FirstPoints, p.SecondPoints, p.ThirdPoints}}
-		if err := a.CompletionPublisher.Announce(ctx, discord.BuildEventAnnouncementEmbed(card)); err != nil {
+		if err := a.CompletionPublisher.AnnounceEvent(ctx, discord.BuildEventAnnouncementEmbed(card)); err != nil {
 			slog.Warn("component=events", "msg", "event announcement failed", "event_id", p.Event.ID, "err", err.Error())
 			continue
 		}

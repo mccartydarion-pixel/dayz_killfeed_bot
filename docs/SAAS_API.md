@@ -693,7 +693,8 @@ legacy four-field surface) still work exactly as before.
 | | `💀・bounties` | `BOUNTY`, `BOUNTY_TRACKING` |
 | | `🟢・connections` | `CONNECTIONS` |
 | | `🗺️・heatmaps` | `HEATMAPS` (PvP heatmap summary) |
-| `🏆 CHAMPION • HUB` | `📡・server-status` | `SERVER_STATUS` (+ season/war/event results) |
+| `🏆 CHAMPION • HUB` | `📡・server-status` | `SERVER_STATUS` (+ season/war results) |
+| | `🏁・events` | `EVENTS`: event builder "upcoming" and "started" cards, and event results |
 | | `📊・leaderboards` | `AUTO_LEADERBOARD`, `STATS_LEADERBOARDS` |
 | | `🔗・player-link` | `LINK_GAMERTAG` |
 | | `💰・economy` | `ECONOMY`, `SHOP` |
@@ -711,7 +712,9 @@ channel is only the fallback for guilds without routes.
 `/setup run|repair` command all run the same planner
 (`championDestinations`). `/setup` applies it, with repair semantics, to
 every installation connected to the guild; a guild with no installation is
-told to connect on the website. The legacy `SetupManager` never creates a
+told to connect on the website. The installations share one run: each channel
+is verified and read once (six at a time), and the guild-wide panels sync
+once, again only if a later installation created or re-routed a channel. The legacy `SetupManager` never creates a
 channel any more - it only re-posts a missing legacy panel inside a legacy
 channel that still exists, for guilds whose feature is not routed.
 
@@ -731,6 +734,7 @@ instantiated in the process (routing disabled, service absent) is reported
 | `BOUNTY_TRACKING` | `BountyTracker` lifecycle feed | ACTIVE |
 | `CONNECTIONS` | `ConnectionsPublisher` - bounded, batched | ACTIVE |
 | `HEATMAPS` | `HeatmapBoard` persistent PvP summary from the Phase 5 aggregates (`docs/HEATMAPS.md`) | ACTIVE |
+| `EVENTS` | `LiveCompletionPublisher` - event builder cards (upcoming when scheduled, started when live) and event results. Falls back to the `SERVER_STATUS` channel on installations set up before this channel existed | ACTIVE |
 | `SERVER_STATUS` | `ServerStatusBoard` - one persistent message per routed channel, edited in place: Champion's ADM link (CONNECTED / LOCATING LOG / DEGRADED / WAITING FOR FIRST POLL), ADM log freshness and the tracked online count. No uptime, latency or game-server power state (not measured) | ACTIVE |
 | `ONLINE_COUNTER` | `VoiceChannelCounter` - a display-only voice channel renamed to the online count; created/reused by setup (recognized by its name prefix, never duplicated) | ACTIVE |
 | `AUTO_LEADERBOARD` | `LeaderboardScheduler` persistent leaderboard | ACTIVE |

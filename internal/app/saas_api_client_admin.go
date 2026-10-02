@@ -50,6 +50,10 @@ func (a *App) registerClientAdminCapabilityRoutes(base string) {
 	h("POST "+base+"/banlist", a.handleAddBanlist)
 	h("DELETE "+base+"/banlist/{identifier}", a.handleRemoveBanlist)
 
+	h("GET "+base+"/priority", a.handleListPriority)
+	h("POST "+base+"/priority", a.handleAddPriority)
+	h("DELETE "+base+"/priority/{name}", a.handleRemovePriority)
+
 	h("POST "+base+"/stats/player/{playerID}/reset-streak", a.handleResetPlayerStreak)
 	h("POST "+base+"/stats/reset-season", a.handleResetEveryoneStats)
 	h("POST "+base+"/ranked/server-season", a.handleStartServerRankedSeason)
@@ -379,7 +383,13 @@ func (a *App) handleAdminEconomyAccounts(w http.ResponseWriter, r *http.Request)
 		economyFailed(w, "admin economy search", err)
 		return
 	}
-	writeSaaSJSON(w, http.StatusOK, map[string]any{"items": rows})
+	// The same wire shape as the economy admin search (accountId, gamertag, ...): the rows are a
+	// domain type with no JSON tags, so writing them directly would emit Go field names.
+	items := make([]adminEconomyAccountDTO, 0, len(rows))
+	for _, acc := range rows {
+		items = append(items, adminAccountDTO(acc))
+	}
+	writeSaaSJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
 // --- server name / feed location / maintenance mode -----------------------------------------------

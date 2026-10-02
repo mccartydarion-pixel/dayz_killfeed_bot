@@ -84,6 +84,12 @@ func (c *Client) BaseURL() string {
 func (c *Client) do(ctx context.Context, method string, path string, body io.Reader) (*http.Response, error) {
 	const maxAttempts = 3
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		// A retry must send the body again, not what is left of it after the first attempt.
+		if seeker, ok := body.(io.Seeker); ok && attempt > 1 {
+			if _, err := seeker.Seek(0, io.SeekStart); err != nil {
+				return nil, fmt.Errorf("rewind request body: %w", err)
+			}
+		}
 		req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
 		if err != nil {
 			return nil, fmt.Errorf("create request: %w", err)
@@ -119,12 +125,21 @@ func (c *Client) do(ctx context.Context, method string, path string, body io.Rea
 	return nil, fmt.Errorf("request retry exhausted")
 }
 
+// maxRetryAfter caps how long a Retry-After header is honoured: a worker must
+// never sleep for minutes on one 429 because the API asked for it.
+const maxRetryAfter = 60 * time.Second
+
 func retryAfter(value string) time.Duration {
 	seconds, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
 	if err != nil || seconds < 0 {
 		return 0
 	}
-	return time.Duration(seconds * float64(time.Second))
+	delay := time.Duration(seconds * float64(time.Second))
+	if delay > maxRetryAfter {
+		slog.Warn("component=nitrado", "event", "retry_after_clamped", "retry_after_s", seconds, "clamped_to_s", maxRetryAfter.Seconds())
+		return maxRetryAfter
+	}
+	return delay
 }
 
 // RequestError wraps API request failures in a useful form.

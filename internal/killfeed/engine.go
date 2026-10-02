@@ -1543,7 +1543,7 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 	e.emitDownloadReport(report)
 	// Verification runs after the new lines are processed, so it never delays a kill post.
 	if verifyTail && int64(len(content)) > oldOffset {
-		tail, method, ok := nitrado.ReadTail(ctx, tailReader, e.serviceID, current.Path, oldOffset-1, 0)
+		tail, method, ok := nitrado.ReadTail(ctx, tailReader, e.serviceID, current.Path, oldOffset-1, int64(len(content)))
 		if ok {
 			match, newBytes := nitrado.TailMatches(content, oldOffset-1, tail)
 			nitrado.TailVerified(e.serviceID, match, newBytes, method, "adm")
