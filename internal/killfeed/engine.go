@@ -1366,6 +1366,7 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 		})
 	}
 	slog.Debug("component=adm", "event", "metadata_checked", "changed", changed, "file", current.Name, "size", current.Size)
+	pollTimings.observeMetadata(e.serviceID, current.Modified, changed, e.pollingInterval(time.Now()))
 	if !changed {
 		e.probeStaleSource(ctx, current)
 		e.reportPoll()

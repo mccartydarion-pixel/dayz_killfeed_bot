@@ -61,6 +61,21 @@ Some calls always skip the cache and ask Nitrado:
 The fast rate is only used after Nitrado's headers have been seen. If Nitrado never sends them, the
 bot polls exactly as before.
 
+## Measuring a kill's trip to Discord (`internal/killfeed/poll_timing.go`)
+
+These come from data the bot already has (Nitrado's modified time and the Discord delivery
+ledger), so measuring sends nothing extra. All three appear under `timing` and `delivery` in
+`GET /api/admin/nitrado-usage`, and each server logs an `event=adm_timing` line every 5 minutes.
+
+| Part | Field | What it tells you |
+| --- | --- | --- |
+| Nitrado writes the log | `timing[].writeGap` (p50/p90/max) | Time between two consecutive modified times seen for a server's log. If this stays well above the poll interval, Nitrado writes in batches, and polling faster cannot help. It can only resolve gaps down to the poll interval in effect. |
+| Bot notices the write | `timing[].detectLag` | Our clock when a change is noticed minus Nitrado's modified time. The modified time has 1-second resolution, and clock differences between Nitrado and us show up here too. Lags over 10 minutes (backlogs) are dropped. |
+| Bot posts to Discord | `delivery[]` | Noticed → posted per feed, from the existing delivery ledger. |
+
+The game writing the ADM line → Nitrado's file changing is not visible: ADM lines carry only the
+server's local time of day.
+
 ## Not changed
 
 **Delta reads** (`NITRADO_DELTA_READ_MODE`) are still off. They would read only the new bytes of a
