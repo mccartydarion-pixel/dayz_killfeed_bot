@@ -1434,13 +1434,13 @@ var championAllRouteKeys = []string{
 	"KILLFEED", "PVE_FEED", "LINK_GAMERTAG", "STATS_LEADERBOARDS", "AUTO_LEADERBOARD",
 	"HITFEED", "BOUNTY", "BOUNTY_TRACKING", "HEATMAPS", "ECONOMY", "SHOP",
 	"CONNECTIONS", "BUILD_FEED", "ADMIN_ALERTS", "ADMIN_LOGS", "SERVER_STATUS", "ONLINE_COUNTER",
-	"CASE_STATUS", "CASE_EVIDENCE", "CASE_ALERTS", "FACTION_RECRUITMENT",
+	"CASE_STATUS", "CASE_EVIDENCE", "CASE_ALERTS", "FACTION_RECRUITMENT", "EVENTS",
 }
 
 // championActiveDestinationCount is how many channels auto-setup creates
 // with the audited producers (every destination: ten text channels and the
 // online-players voice counter).
-const championActiveDestinationCount = 16
+const championActiveDestinationCount = 17
 
 func listChannelRoutes(t *testing.T, a *App, orgID, installationID int64, actingDiscordID string) *httptest.ResponseRecorder {
 	t.Helper()

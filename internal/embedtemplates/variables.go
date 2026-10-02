@@ -162,6 +162,7 @@ var routeVariableDefinitions = map[string][]VariableDefinition{
 	"AUTO_LEADERBOARD":   {serverName(), timestamp()},
 	"SERVER_RANKS":       {serverName(), timestamp()},
 	"SERVER_STATUS":      {serverName(), timestamp()},
+	"EVENTS":             {serverName(), timestamp()},
 	// Faction recruitment cards are designed by faction leaders on the website (their colours,
 	// logo and copy), so the channel carries no owner template variables beyond the basics.
 	"FACTION_RECRUITMENT": {serverName(), timestamp()},

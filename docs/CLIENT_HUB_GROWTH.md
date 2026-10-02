@@ -27,8 +27,11 @@ Streak Master, Weapon Challenge, Faction Showdown). Each one maps to an event ty
 the scorer already supports. An event can be scheduled up to 60 days ahead and run
 for 15 minutes to 14 days, with prizes of up to 1,000,000 points each. Event
 configs are decoded strictly, so an unknown field is rejected. When `announce` is
-set, Champion posts an "upcoming" card and a "started" card, each exactly once. The
-existing event engine still handles scoring, finishing and prize payout.
+set (the builder's default), Champion posts an "upcoming" card and a "started" card,
+each exactly once, to the `🏁・events` channel (route `EVENTS`), and the results go
+there when the event ends. Channel setup creates the channel; an installation set up
+before it existed keeps getting event cards in Server Status until setup runs again.
+The existing event engine still handles scoring, finishing and prize payout.
 
 ## Wipe & season planner
 

@@ -40,6 +40,9 @@ const (
 	RouteAdminAlerts       = "ADMIN_ALERTS"
 	RouteAdminLogs         = "ADMIN_LOGS"
 	RouteServerStatus      = "SERVER_STATUS"
+	// RouteEvents is where owner-built events are announced: the "upcoming" card when one is
+	// scheduled, the "started" card when it goes live, and the results when it ends.
+	RouteEvents = "EVENTS"
 	// RouteFactionRecruitment is where faction leaders publish their recruitment card
 	// (one embed per faction with a Join / Apply button; docs/FACTIONS.md "Recruitment").
 	RouteFactionRecruitment = "FACTION_RECRUITMENT"
