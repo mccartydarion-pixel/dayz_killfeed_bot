@@ -60,3 +60,12 @@ func (p *LiveCompletionPublisher) Announce(ctx context.Context, embed *discordgo
 	}
 	return p.send(ctx, embed)
 }
+
+// AnnounceEvent posts an event's "upcoming" or "started" card to the EVENTS channel, falling back
+// to where Announce posts when the installation has no events channel yet.
+func (p *LiveCompletionPublisher) AnnounceEvent(ctx context.Context, embed *discordgo.MessageEmbed) error {
+	if p == nil {
+		return fmt.Errorf("announcement publisher unavailable")
+	}
+	return p.sendEvent(ctx, embed)
+}

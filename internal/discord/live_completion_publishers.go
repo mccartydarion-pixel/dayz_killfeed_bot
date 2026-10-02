@@ -54,15 +54,20 @@ type LiveCompletionPublisher struct {
 	servers GuildServersFunc
 }
 
-// SetRouting sends announcements to the guild's SERVER_STATUS route first;
-// the legacy GuildSetup channels remain the fallback.
+// routeKeyEvents mirrors routing.RouteEvents: the dedicated events channel.
+const routeKeyEvents = "EVENTS"
+
+// SetRouting sends announcements to the guild's SERVER_STATUS route first
+// (event cards and results to its EVENTS route before that); the legacy
+// GuildSetup channels remain the fallback.
 func (p *LiveCompletionPublisher) SetRouting(routes RouteResolver, servers GuildServersFunc) {
 	if p != nil {
 		p.routes, p.servers = routes, servers
 	}
 }
 
-func (p *LiveCompletionPublisher) routedChannel(ctx context.Context) string {
+// routedChannel is the first routed channel among routeKeys, in order, on any of the guild's servers.
+func (p *LiveCompletionPublisher) routedChannel(ctx context.Context, routeKeys ...string) string {
 	if p.routes == nil || p.servers == nil {
 		return ""
 	}
@@ -70,9 +75,11 @@ func (p *LiveCompletionPublisher) routedChannel(ctx context.Context) string {
 	if err != nil {
 		return ""
 	}
-	for _, serverID := range serverIDs {
-		if ch, found, err := p.routes.Resolve(ctx, guildRowID, serverID, routeKeyServerStatus); err == nil && found && ch != "" {
-			return ch
+	for _, key := range routeKeys {
+		for _, serverID := range serverIDs {
+			if ch, found, err := p.routes.Resolve(ctx, guildRowID, serverID, key); err == nil && found && ch != "" {
+				return ch
+			}
 		}
 	}
 	return ""
@@ -112,10 +119,20 @@ func (p *LiveCompletionPublisher) channel() string {
 	return s.LeaderboardsChannelID
 }
 func (p *LiveCompletionPublisher) send(ctx context.Context, embed *discordgo.MessageEmbed) error {
+	return p.sendVia(ctx, embed, routeKeyServerStatus)
+}
+
+// sendEvent posts to the EVENTS channel, falling back to where other announcements go, so an
+// installation set up before the events channel existed keeps receiving event cards.
+func (p *LiveCompletionPublisher) sendEvent(ctx context.Context, embed *discordgo.MessageEmbed) error {
+	return p.sendVia(ctx, embed, routeKeyEvents, routeKeyServerStatus)
+}
+
+func (p *LiveCompletionPublisher) sendVia(ctx context.Context, embed *discordgo.MessageEmbed, routeKeys ...string) error {
 	if p.api == nil {
 		return fmt.Errorf("discord API unavailable")
 	}
-	channel := p.routedChannel(ctx)
+	channel := p.routedChannel(ctx, routeKeys...)
 	if channel == "" {
 		channel = p.channel()
 	}
@@ -236,7 +253,7 @@ func (p *LiveCompletionPublisher) PublishPendingEventCompletion(ctx context.Cont
 		if err != nil {
 			return err
 		}
-		return p.send(ctx, embed)
+		return p.sendEvent(ctx, embed)
 	})
 	return err
 }

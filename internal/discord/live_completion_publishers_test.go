@@ -330,3 +330,25 @@ func TestNewLiveCompletionPublisherNilRepositoriesAreSafe(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestEventCardsPreferTheEventsChannel(t *testing.T) {
+	if routeKeyEvents != "EVENTS" {
+		t.Fatalf("routeKeyEvents must equal routing.RouteEvents")
+	}
+	ctx := context.Background()
+	routes := newKeyedResolver()
+	p := &LiveCompletionPublisher{}
+	p.SetRouting(routes, func(context.Context) (int64, []int64, error) { return 7, []int64{1, 2}, nil })
+
+	routes.set(7, 1, routeKeyServerStatus, "chan-status")
+	if got := p.routedChannel(ctx, routeKeyEvents, routeKeyServerStatus); got != "chan-status" {
+		t.Fatalf("without an events channel, event cards fall back to server status: %q", got)
+	}
+	routes.set(7, 2, routeKeyEvents, "chan-events")
+	if got := p.routedChannel(ctx, routeKeyEvents, routeKeyServerStatus); got != "chan-events" {
+		t.Fatalf("event cards go to the events channel on any server: %q", got)
+	}
+	if got := p.routedChannel(ctx, routeKeyServerStatus); got != "chan-status" {
+		t.Fatalf("other announcements stay on server status: %q", got)
+	}
+}

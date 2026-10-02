@@ -129,6 +129,11 @@ var championDestinations = []championDestination{
 		Routes: []string{"SERVER_STATUS"}, Anchors: []string{"SERVER_STATUS"},
 	},
 	{
+		Key: "EVENTS", Label: "Events", Category: categoryHub, ChannelName: "🏁・events",
+		Routes: []string{"EVENTS"}, Anchors: []string{"EVENTS"},
+		Starter: &starterCard{"🏁 SERVER EVENTS", "Server events are announced here: an **upcoming** card when an event is scheduled, a **started** card when it goes live, and the **results** when it ends."},
+	},
+	{
 		Key: "LEADERBOARDS", Label: "Leaderboards", Category: categoryHub, ChannelName: "📊・leaderboards",
 		Routes: []string{"AUTO_LEADERBOARD", "STATS_LEADERBOARDS"}, Anchors: []string{"AUTO_LEADERBOARD", "STATS_LEADERBOARDS"},
 	},
@@ -187,33 +192,34 @@ type routeProducer struct {
 // channelRouteProducers downgrades these to BROKEN when the producer is not
 // instantiated in this process.
 var routeProducerAudit = map[string]routeProducer{
-	"KILLFEED":           {HealthActive, "KillfeedPublisher (per server worker)"},
-	"PVE_FEED":           {HealthActive, "PveFeedPublisher (per server worker)"},
-	"HITFEED":            {HealthActive, "HitfeedPublisher (per server worker)"},
-	"BOUNTY":             {HealthActive, "BountyBoard persistent board"},
-	"BOUNTY_TRACKING":    {HealthActive, "BountyTracker lifecycle feed"},
-	"CONNECTIONS":        {HealthActive, "ConnectionsPublisher (per server worker)"},
-	"HEATMAPS":           {HealthActive, "HeatmapBoard PvP heatmap summary (Phase 5 aggregates)"},
-	"SERVER_STATUS":      {HealthActive, "ServerStatusBoard persistent server status (per-server ADM state)"},
+	"KILLFEED":            {HealthActive, "KillfeedPublisher (per server worker)"},
+	"PVE_FEED":            {HealthActive, "PveFeedPublisher (per server worker)"},
+	"HITFEED":             {HealthActive, "HitfeedPublisher (per server worker)"},
+	"BOUNTY":              {HealthActive, "BountyBoard persistent board"},
+	"BOUNTY_TRACKING":     {HealthActive, "BountyTracker lifecycle feed"},
+	"CONNECTIONS":         {HealthActive, "ConnectionsPublisher (per server worker)"},
+	"HEATMAPS":            {HealthActive, "HeatmapBoard PvP heatmap summary (Phase 5 aggregates)"},
+	"SERVER_STATUS":       {HealthActive, "ServerStatusBoard persistent server status (per-server ADM state)"},
+	"EVENTS":              {HealthActive, "Event builder announcements (upcoming, started, results) via LiveCompletionPublisher"},
 	"FACTION_RECRUITMENT": {HealthActive, "FactionRecruitment cards published by faction leaders from the website"},
-	"ONLINE_COUNTER":     {HealthActive, "VoiceChannelCounter online-player count"},
-	"AUTO_LEADERBOARD":   {HealthActive, "LeaderboardScheduler persistent leaderboard"},
-	"SERVER_RANKS":       {HealthActive, "ServerRanksBoard persistent per-server panel"},
-	"STATS_LEADERBOARDS": {HealthActive, "RouteSyncer player stats panel"},
-	"LINK_GAMERTAG":      {HealthActive, "RouteSyncer link panel"},
-	"ECONOMY":            {HealthActive, "EconomyFeed"},
-	"SHOP":               {HealthActive, "shop purchases/refunds, published by EconomyFeed on the ECONOMY route"},
-	"ADMIN_LOGS":         {HealthActive, "ADMMonitorPublisher ADM health (per server worker)"},
-	"ADMIN_ALERTS":       {HealthActive, "AdminAlertPublisher: ADM stale, Nitrado download failures, zone/UAV/base radar intrusions"},
+	"ONLINE_COUNTER":      {HealthActive, "VoiceChannelCounter online-player count"},
+	"AUTO_LEADERBOARD":    {HealthActive, "LeaderboardScheduler persistent leaderboard"},
+	"SERVER_RANKS":        {HealthActive, "ServerRanksBoard persistent per-server panel"},
+	"STATS_LEADERBOARDS":  {HealthActive, "RouteSyncer player stats panel"},
+	"LINK_GAMERTAG":       {HealthActive, "RouteSyncer link panel"},
+	"ECONOMY":             {HealthActive, "EconomyFeed"},
+	"SHOP":                {HealthActive, "shop purchases/refunds, published by EconomyFeed on the ECONOMY route"},
+	"ADMIN_LOGS":          {HealthActive, "ADMMonitorPublisher ADM health (per server worker)"},
+	"ADMIN_ALERTS":        {HealthActive, "AdminAlertPublisher: ADM stale, Nitrado download failures, zone/UAV/base radar intrusions"},
 	// BUILD_FEED's publisher runs per server, but its source only exists when
 	// the server logs build actions; channelRouteProducers reports it ACTIVE
 	// once one has actually been parsed.
 	"BUILD_FEED": {HealthBlocked, detailSourceBlocked + ": no build/placement line parsed yet - enable adminLogPlacement / adminLogBuildActions in the server config"},
 	// Setup itself posts these fixed informational cards. These are NOT live
 	// detector, evidence, or Discord finding publishers.
-	"CASE_STATUS": {HealthActive, "Setup-managed informational card; staff-requested paid Watch observation digests (privacy re-verified before every send); live diagnostics remain in the authorized dashboard"},
+	"CASE_STATUS":   {HealthActive, "Setup-managed informational card; staff-requested paid Watch observation digests (privacy re-verified before every send); live diagnostics remain in the authorized dashboard"},
 	"CASE_EVIDENCE": {HealthActive, "Setup-managed staff guidance only; no private evidence is published"},
-	"CASE_ALERTS": {HealthActive, "Setup-managed disabled-alert notice only; no C.A.S.E. finding publisher"},
+	"CASE_ALERTS":   {HealthActive, "Setup-managed disabled-alert notice only; no C.A.S.E. finding publisher"},
 }
 
 // championRouteKeys is the fixed set of valid route_key values - never an
@@ -255,6 +261,9 @@ func (a *App) channelRouteProducers() map[string]routeProducer {
 	}
 	if a.HeatmapBoard == nil {
 		broken("heatmap publisher is not running", "HEATMAPS")
+	}
+	if a.CompletionPublisher == nil || a.ChannelRoutes == nil {
+		broken("event announcements are not running", "EVENTS")
 	}
 	if a.AdminAlerts == nil {
 		broken("admin alert publisher is not running", "ADMIN_ALERTS")
