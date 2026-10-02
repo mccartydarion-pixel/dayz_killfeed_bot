@@ -154,6 +154,7 @@ func (h *PublicPanelHandler) handleLink(s *discordgo.Session, i *discordgo.Inter
 		respondEphemeral(s, i, "Account linking is unavailable until the database is connected.")
 		return
 	}
+	deferEphemeral(s, i) // matches the name against every server's players
 	guildID, err := h.guildRowID(i.GuildID)
 	if err != nil {
 		respondEphemeral(s, i, "Run `/setup` before linking your account.")

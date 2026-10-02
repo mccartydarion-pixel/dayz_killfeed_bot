@@ -54,7 +54,7 @@ func NewEconomyCommandHandler(svc *economy.Service, players *repository.PlayerRe
 	return &EconomyCommandHandler{economy: svc, players: players, guilds: guilds, links: links}
 }
 
-func RegisterEconomyCommands(session *discordgo.Session, guildID string) error {
+func RegisterEconomyCommands(session CommandRegistrar, guildID string) error {
 	applicationID, err := ApplicationID(session)
 	if err != nil {
 		return err

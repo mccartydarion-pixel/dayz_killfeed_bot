@@ -40,7 +40,7 @@ func NewAdminCommandHandler(s *admin.Service, extras ...any) *AdminCommandHandle
 	}
 	return h
 }
-func RegisterAdminCommands(session *discordgo.Session, guildID string) error {
+func RegisterAdminCommands(session CommandRegistrar, guildID string) error {
 	applicationID, err := ApplicationID(session)
 	if err != nil {
 		return err
@@ -67,37 +67,22 @@ func (h *AdminCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interact
 		h.handleVerifyLink(s, i)
 		return
 	}
-	data := h.service.Status(context.Background())
-	if len(i.ApplicationCommandData().Options) > 0 && i.ApplicationCommandData().Options[0].Name == "checkpoint" {
-		runtime, _ := data["runtime"].(map[string]any)
-		respondEphemeral(s, i, fmt.Sprintf("📍 **CHECKPOINT**\nLoaded: %v\nOffset: %v", runtime["checkpoint_loaded"], runtime["checkpoint_offset"]))
-		return
+	// Each subcommand builds only the diagnostics it shows: the link, presence
+	// and pipeline sections query the database and Discord, so they reply
+	// "thinking..." first.
+	sub := ""
+	if len(i.ApplicationCommandData().Options) > 0 {
+		sub = i.ApplicationCommandData().Options[0].Name
 	}
-	if len(i.ApplicationCommandData().Options) > 0 && i.ApplicationCommandData().Options[0].Name == "resync" {
+	switch sub {
+	case "resync":
 		respondEphemeral(s, i, "🏆 **RESYNC REQUESTED**\nSafe runtime refresh is scheduled; history and checkpoints are unchanged.")
 		return
-	}
-	if i.ApplicationCommandData().Options[0].Name == "workers" {
-		respondEphemeral(s, i, fmt.Sprintf("⚙️ **CHAMPION WORKERS**\n%v", data["workers"]))
-		return
-	}
-	if i.ApplicationCommandData().Options[0].Name == "link-diagnostics" {
-		respondLinkDiagnostics(s, i, data["link_diagnostics"])
-		return
-	}
-	if i.ApplicationCommandData().Options[0].Name == "presence-diagnostics" {
-		respondPresenceDiagnostics(s, i, data["presence_diagnostics"])
-		return
-	}
-	if i.ApplicationCommandData().Options[0].Name == "pipeline-diagnostics" {
-		respondPipelineDiagnostics(s, i, data["pipeline_diagnostics"])
-		return
-	}
-	if i.ApplicationCommandData().Options[0].Name == "pipeline-reset-diagnostics" {
+	case "pipeline-reset-diagnostics":
 		respondEphemeral(s, i, "Pipeline diagnostics reset is available after the next runtime snapshot.")
 		return
-	}
-	if i.ApplicationCommandData().Options[0].Name == "leaderboard-refresh" {
+	case "leaderboard-refresh":
+		deferEphemeral(s, i)
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		if err := h.service.RefreshLeaderboard(ctx); err != nil {
@@ -105,6 +90,31 @@ func (h *AdminCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interact
 			return
 		}
 		respondEphemeral(s, i, "✅ Leaderboard refreshed.")
+		return
+	case "link-diagnostics", "presence-diagnostics", "pipeline-diagnostics":
+		deferEphemeral(s, i)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		section := strings.ReplaceAll(sub, "-", "_")
+		data := h.service.StatusWith(ctx, section)
+		switch sub {
+		case "link-diagnostics":
+			respondLinkDiagnostics(s, i, data[section])
+		case "presence-diagnostics":
+			respondPresenceDiagnostics(s, i, data[section])
+		default:
+			respondPipelineDiagnostics(s, i, data[section])
+		}
+		return
+	}
+	data := h.service.StatusWith(context.Background())
+	switch sub {
+	case "checkpoint":
+		runtime, _ := data["runtime"].(map[string]any)
+		respondEphemeral(s, i, fmt.Sprintf("📍 **CHECKPOINT**\nLoaded: %v\nOffset: %v", runtime["checkpoint_loaded"], runtime["checkpoint_offset"]))
+		return
+	case "workers":
+		respondEphemeral(s, i, fmt.Sprintf("⚙️ **CHAMPION WORKERS**\n%v", data["workers"]))
 		return
 	}
 	runtime, _ := data["runtime"].(map[string]any)
@@ -200,7 +210,7 @@ func respondPipelineDiagnostics(s *discordgo.Session, i *discordgo.InteractionCr
 			embed.Fields = append(embed.Fields, presentation.StatusField(strings.ToUpper(field), fmt.Sprint(value), false))
 		}
 	}
-	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{Type: discordgo.InteractionResponseChannelMessageWithSource, Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral, Embeds: []*discordgo.MessageEmbed{embed}}})
+	respondPrivate(s, i, &discordgo.InteractionResponseData{Embeds: []*discordgo.MessageEmbed{embed}})
 }
 
 func respondPresenceDiagnostics(s *discordgo.Session, i *discordgo.InteractionCreate, raw any) {
@@ -214,7 +224,7 @@ func respondPresenceDiagnostics(s *discordgo.Session, i *discordgo.InteractionCr
 	for _, field := range [][2]string{{"SELECTED SERVER", "selected_server_id"}, {"SELECTED SERVER RESOLVED", "selected_server_id_resolved"}, {"WORKER", "selected_server_worker_found"}, {"TRACKER COUNT", "tracker_count"}, {"TRACKED ENTRIES", "tracked_entries"}, {"LAST PRESENCE EVENT", "last_presence_event"}, {"LAST CONNECT", "last_connect_at"}, {"LAST DISCONNECT", "last_disconnect_at"}, {"LAST PERSISTENCE", "last_persistence_result"}, {"VOICE COUNTER PUBLISHED", "last_voice_publish_count"}, {"VOICE PUBLISH RESULT", "last_voice_publish_result"}, {"DISCORD VOICE CHANNEL", "discord_voice_channel"}, {"DISCORD VOICE COUNTER", "discord_voice_counter"}, {"CLASSIFICATION", "classification"}} {
 		add(field[0], field[1])
 	}
-	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{Type: discordgo.InteractionResponseChannelMessageWithSource, Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral, Embeds: []*discordgo.MessageEmbed{embed}}})
+	respondPrivate(s, i, &discordgo.InteractionResponseData{Embeds: []*discordgo.MessageEmbed{embed}})
 }
 
 func respondLinkDiagnostics(s *discordgo.Session, i *discordgo.InteractionCreate, raw any) {
@@ -233,5 +243,5 @@ func respondLinkDiagnostics(s *discordgo.Session, i *discordgo.InteractionCreate
 	add("LAST CONNECT PERSISTED", "last_player_connect_persisted")
 	add("LAST DISCONNECT", "last_player_disconnect")
 	add("PRESENCE EVENT", "last_presence_event")
-	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{Type: discordgo.InteractionResponseChannelMessageWithSource, Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral, Embeds: []*discordgo.MessageEmbed{embed}}})
+	respondPrivate(s, i, &discordgo.InteractionResponseData{Embeds: []*discordgo.MessageEmbed{embed}})
 }

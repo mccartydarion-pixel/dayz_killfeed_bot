@@ -19,7 +19,7 @@ type WelcomeCommandHandler struct {
 func NewWelcomeCommandHandler(r *repository.WelcomeRepository, g GuildStore, _ SetupStore) *WelcomeCommandHandler {
 	return &WelcomeCommandHandler{repo: r, guilds: g}
 }
-func RegisterWelcomeCommands(s *discordgo.Session, guildID string) error {
+func RegisterWelcomeCommands(s CommandRegistrar, guildID string) error {
 	appID, err := ApplicationID(s)
 	if err != nil {
 		return err
@@ -66,6 +66,7 @@ func (h *WelcomeCommandHandler) Handle(s *discordgo.Session, i *discordgo.Intera
 		return
 	}
 	if name == "status" {
+		deferEphemeral(s, i) // reads the channel and permissions from Discord
 		respondEphemeral(s, i, h.welcomeStatus(s, i.GuildID, *cfg, configErr))
 		return
 	}
@@ -183,6 +184,7 @@ func (h *WelcomeCommandHandler) welcomeStatus(s *discordgo.Session, guildID stri
 }
 
 func (h *WelcomeCommandHandler) sendWelcomeTest(s *discordgo.Session, i *discordgo.InteractionCreate, cfg repository.WelcomeConfig) {
+	deferEphemeral(s, i) // reads the channel from Discord and posts the test
 	channel := inspectWelcomeChannel(s, i.GuildID, cfg.ChannelID)
 	if !channel.exists {
 		respondEphemeral(s, i, "❌ TEST WELCOME FAILED\nWelcome channel was not found.\nError class: "+channel.errClass)

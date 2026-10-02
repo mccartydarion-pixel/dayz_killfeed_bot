@@ -13,6 +13,7 @@ import (
 // Client wraps the Discord session.
 type Client struct {
 	session *discordgo.Session
+	timer   *interactionTimer
 }
 
 // New creates a Discord session using the minimally required intents for Phase 1.
@@ -29,7 +30,9 @@ func New(token string, membersIntent ...bool) (*Client, error) {
 	if len(membersIntent) > 0 && membersIntent[0] {
 		session.Identify.Intents |= discordgo.IntentsGuildMembers
 	}
-	return &Client{session: session}, nil
+	timer := newInteractionTimer()
+	session.Client.Transport = &timingTransport{base: session.Client.Transport, timer: timer}
+	return &Client{session: session, timer: timer}, nil
 }
 
 // Start connects the bot and registers the /server command.
@@ -125,7 +128,11 @@ func (c *Client) AddHandler(fn func(*discordgo.Session, *discordgo.InteractionCr
 	if c == nil || c.session == nil {
 		return
 	}
-	c.session.AddHandler(fn)
+	timer := c.timer
+	c.session.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+		timer.track(i)
+		fn(s, i)
+	})
 }
 
 // AddMemberJoinHandler registers a GuildMemberAdd listener.
@@ -314,9 +321,16 @@ func (c *Client) Session() *discordgo.Session {
 	return c.session
 }
 
-func ApplicationID(s *discordgo.Session) (string, error) {
-	if s == nil || s.State == nil || s.State.User == nil || s.State.User.ID == "" {
-		return "", fmt.Errorf("discord application ID is not available")
+func ApplicationID(r CommandRegistrar) (string, error) {
+	switch v := r.(type) {
+	case *CommandBatch:
+		if v != nil && v.appID != "" {
+			return v.appID, nil
+		}
+	case *discordgo.Session:
+		if v != nil && v.State != nil && v.State.User != nil && v.State.User.ID != "" {
+			return v.State.User.ID, nil
+		}
 	}
-	return s.State.User.ID, nil
+	return "", fmt.Errorf("discord application ID is not available")
 }

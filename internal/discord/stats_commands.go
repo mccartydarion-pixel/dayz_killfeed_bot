@@ -33,7 +33,7 @@ func NewStatsCommandHandler(stats StatsReader, guilds GuildStore, guildID string
 }
 
 // RegisterStatsCommands registers /stats and /leaderboard.
-func RegisterStatsCommands(session *discordgo.Session, guildID string) error {
+func RegisterStatsCommands(session CommandRegistrar, guildID string) error {
 	applicationID, err := ApplicationID(session)
 	if err != nil {
 		return err
@@ -169,5 +169,5 @@ func (h *StatsCommandHandler) HandleLeaderboard(s *discordgo.Session, i *discord
 }
 
 func respondLeaderboardEmbed(s *discordgo.Session, i *discordgo.InteractionCreate, embed *discordgo.MessageEmbed) {
-	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{Type: discordgo.InteractionResponseChannelMessageWithSource, Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral, Embeds: []*discordgo.MessageEmbed{embed}}})
+	respondPrivate(s, i, &discordgo.InteractionResponseData{Embeds: []*discordgo.MessageEmbed{embed}})
 }

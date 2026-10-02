@@ -16,7 +16,7 @@ import (
 const adminPerms = discordgo.PermissionAdministrator | discordgo.PermissionManageServer
 
 // RegisterSetupCommand registers the admin-only /setup command with subcommands.
-func RegisterSetupCommand(session *discordgo.Session, guildID string) error {
+func RegisterSetupCommand(session CommandRegistrar, guildID string) error {
 	applicationID, err := ApplicationID(session)
 	if err != nil {
 		return err
@@ -354,10 +354,7 @@ func writeLine(b *strings.Builder, label, id string) {
 }
 
 func respondEphemeral(s *discordgo.Session, i *discordgo.InteractionCreate, content string) {
-	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral, Content: content},
-	})
+	respondPrivate(s, i, &discordgo.InteractionResponseData{Content: content})
 }
 
 // RespondEphemeral is the exported ephemeral response helper for app-level routing.

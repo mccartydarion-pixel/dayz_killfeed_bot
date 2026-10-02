@@ -59,6 +59,21 @@ func (s *Service) RefreshLeaderboard(ctx context.Context) error {
 	return s.leaderboardRefresh(ctx)
 }
 func (s *Service) Status(ctx context.Context) map[string]any {
+	return s.StatusWith(ctx, "link_diagnostics", "presence_diagnostics", "pipeline_diagnostics")
+}
+
+// StatusWith is Status with only the named diagnostic sections
+// ("link_diagnostics", "presence_diagnostics", "pipeline_diagnostics"); those
+// query the database and Discord, the rest is in memory.
+func (s *Service) StatusWith(ctx context.Context, sections ...string) map[string]any {
+	want := func(name string) bool {
+		for _, section := range sections {
+			if section == name {
+				return true
+			}
+		}
+		return false
+	}
 	out := map[string]any{"uptime": time.Since(s.started).String()}
 	if s.state != nil {
 		out["runtime"] = s.state.Snapshot()
@@ -69,13 +84,13 @@ func (s *Service) Status(ctx context.Context) map[string]any {
 	if s.workers != nil {
 		out["workers"] = s.workers.Snapshot(30 * time.Second)
 	}
-	if s.linkDiagnostics != nil {
+	if s.linkDiagnostics != nil && want("link_diagnostics") {
 		out["link_diagnostics"] = s.linkDiagnostics(ctx)
 	}
-	if s.presenceDiagnostics != nil {
+	if s.presenceDiagnostics != nil && want("presence_diagnostics") {
 		out["presence_diagnostics"] = s.presenceDiagnostics(ctx)
 	}
-	if s.pipelineDiagnostics != nil {
+	if s.pipelineDiagnostics != nil && want("pipeline_diagnostics") {
 		out["pipeline_diagnostics"] = s.pipelineDiagnostics(ctx)
 	}
 	return out

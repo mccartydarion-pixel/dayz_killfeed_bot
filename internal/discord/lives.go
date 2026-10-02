@@ -187,7 +187,7 @@ func NewLifeCommandHandler(lives LifeStore, guilds GuildStore,
 }
 
 // RegisterLifeCommands registers /life.
-func RegisterLifeCommands(session *discordgo.Session, guildID string) error {
+func RegisterLifeCommands(session CommandRegistrar, guildID string) error {
 	applicationID, err := ApplicationID(session)
 	if err != nil {
 		return err
@@ -237,6 +237,7 @@ func (h *LifeCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interacti
 		respondEphemeral(s, i, "Choose `/life me`, `/life top` or `/life recap`.")
 		return
 	}
+	deferEphemeral(s, i)
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	_, guildRowID, err := h.guilds.GetGuild(ctx, i.GuildID)

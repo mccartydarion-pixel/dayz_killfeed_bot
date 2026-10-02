@@ -12,16 +12,16 @@ import (
 )
 
 // registerBaseCommands registers /mybase and /registerbase (docs/BASE_REQUESTS.md).
-func (a *App) registerBaseCommands(session *discordgo.Session) {
+func (a *App) registerBaseCommands(session *discordgo.Session, commands discord.CommandRegistrar) {
 	if a.DB == nil || a.DB.Pool == nil || a.Guilds == nil || a.Discord == nil || session == nil || a.Config == nil || a.Config.DiscordGuildID == "" {
 		return
 	}
 	handler := discord.NewBaseCommandHandler(a.Guilds, a.linkedPlayer, a.publicServerID, a.baseCommandSummary, a.baseCommandRequest, a.securityStoreURL())
 	handler.SetRentPayment(a.baseCommandRentQuote, a.baseCommandRentPay)
-	if err := discord.RegisterBaseCommands(session, a.Config.DiscordGuildID); err != nil {
+	if err := discord.RegisterBaseCommands(commands, a.Config.DiscordGuildID); err != nil {
 		slog.Warn("component=discord", "msg", "failed to register base commands", "err", err.Error())
 	} else {
-		slog.Info("component=discord", "msg", "base commands registered")
+		slog.Info("component=discord", "msg", "base commands queued")
 	}
 	a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		if i.Type == discordgo.InteractionMessageComponent && discord.IsBaseRentInteraction(i.MessageComponentData().CustomID) {
