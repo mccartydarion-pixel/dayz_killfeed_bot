@@ -99,12 +99,13 @@ type DirEntry struct {
 	Size  int64
 }
 
-// ListEntries lists one directory (files and directories, no recursion). A read.
+// ListEntries lists one directory (files and directories, no recursion). A read. It always asks
+// Nitrado (never the short listing cache): write flows use it to verify what is really there.
 func (c *Client) ListEntries(ctx context.Context, serviceID, dir string) ([]DirEntry, error) {
 	if serviceID == "" || dir == "" {
 		return nil, fmt.Errorf("service ID and directory are required")
 	}
-	entries, err := c.listFileServerDir(ctx, serviceID, dir)
+	entries, err := c.fetchFileServerDir(ctx, serviceID, dir)
 	if err != nil {
 		return nil, err
 	}
@@ -125,6 +126,8 @@ func (c *Client) ListEntries(ctx context.Context, serviceID, dir string) ([]DirE
 // RequestUploadToken is step 1. dir is the full file-server directory, name the file name only.
 // Any failure here means nothing was written.
 func (c *Client) RequestUploadToken(ctx context.Context, serviceID, dir, name string) (UploadTarget, error) {
+	c.forgetListings() // a refused token request can still have created the file
+	defer c.forgetListings()
 	if serviceID == "" || dir == "" || name == "" || strings.ContainsAny(name, "/\\\x00") {
 		return UploadTarget{}, &WriteError{Phase: PhaseToken, Kind: KindUnknown, Detail: "invalid arguments"}
 	}
@@ -187,6 +190,7 @@ func (c *Client) DownloadHost(ctx context.Context, serviceID, path string) (stri
 // token header would travel with them). A nil error means the file server answered 2xx; it is not
 // proof - callers read the file back. A non-nil error does not prove nothing was written either.
 func (c *Client) PostUpload(ctx context.Context, t UploadTarget, data []byte) error {
+	defer c.forgetListings()
 	if !t.Valid() {
 		return &WriteError{Phase: PhaseTransfer, Kind: KindUnknown, Detail: "invalid upload target"}
 	}
@@ -223,6 +227,7 @@ func (c *Client) PostUpload(ctx context.Context, t UploadTarget, data []byte) er
 
 // Mkdir creates ONE directory (name) inside an existing parent. Not recursive.
 func (c *Client) Mkdir(ctx context.Context, serviceID, parent, name string) error {
+	defer c.forgetListings()
 	if serviceID == "" || parent == "" || name == "" || strings.ContainsAny(name, "/\\\x00") || name == "." || name == ".." {
 		return &WriteError{Phase: PhaseMkdir, Kind: KindUnknown, Detail: "invalid arguments"}
 	}
@@ -252,6 +257,7 @@ func (c *Client) postFormOnce(ctx context.Context, endpoint string, form url.Val
 		return nil, 0, err
 	}
 	defer resp.Body.Close()
+	rateLimits.observe(c.tokenKey, operationLabel(endpoint), resp)
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return nil, resp.StatusCode, err

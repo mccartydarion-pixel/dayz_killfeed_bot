@@ -32,7 +32,13 @@ const (
 type Client struct {
 	baseURL    string
 	token      string
+	tokenKey   string // TokenKey(token): what rate-limit telemetry is recorded under
 	httpClient *http.Client
+
+	// listCache briefly remembers directory listings (see cachedList), so the several checks one
+	// poll tick makes against the same directory cost one request.
+	listMu    sync.Mutex
+	listCache map[string]cachedList
 }
 
 // apiBaseOverride replaces DefaultBaseURL for every client in this process
@@ -64,7 +70,7 @@ func NewClient(baseURL, token string, hc *http.Client) *Client {
 	if hc == nil {
 		hc = &http.Client{Timeout: 15 * time.Second}
 	}
-	return &Client{baseURL: strings.TrimRight(baseURL, "/"), token: token, httpClient: hc}
+	return &Client{baseURL: strings.TrimRight(baseURL, "/"), token: token, tokenKey: TokenKey(token), httpClient: hc}
 }
 
 // BaseURL returns the configured API base URL (safe to log; not a credential).
@@ -92,6 +98,7 @@ func (c *Client) do(ctx context.Context, method string, path string, body io.Rea
 		if err != nil {
 			return nil, &RequestError{Op: "request", Kind: KindTemporary, Message: err.Error(), StatusCode: 0}
 		}
+		rateLimits.observe(c.tokenKey, operationLabel(path), resp)
 		if resp.StatusCode != http.StatusTooManyRequests || attempt == maxAttempts {
 			return resp, nil
 		}
@@ -100,7 +107,7 @@ func (c *Client) do(ctx context.Context, method string, path string, body io.Rea
 		if delay <= 0 {
 			delay = time.Duration(attempt*attempt)*250*time.Millisecond + time.Duration((attempt*37)%100)*time.Millisecond
 		}
-		slog.Warn("component=nitrado", "event", "rate_limited", "operation", "adm_metadata", "retry_after_ms", delay.Milliseconds(), "attempt", attempt)
+		slog.Warn("component=nitrado", "event", "rate_limited", "operation", operationLabel(path), "retry_after_ms", delay.Milliseconds(), "attempt", attempt)
 		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():

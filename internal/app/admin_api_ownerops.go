@@ -1344,6 +1344,7 @@ func (a *App) registerOwnerOpsAPI() {
 	h("GET /api/admin/funnel", a.adminRoute(a.handleAdminFunnel))
 	h("GET /api/admin/revenue", a.adminRoute(a.handleAdminRevenue))
 	h("GET /api/admin/briefing", a.adminRoute(a.handleAdminBriefing))
+	h("GET /api/admin/nitrado-usage", a.adminRoute(a.handleAdminNitradoUsage))
 	h("GET /api/admin/automation", a.adminRoute(a.handleAdminGetAutomation))
 	h("PUT /api/admin/automation", a.adminRoute(a.handleAdminPutAutomation))
 	h("GET /api/admin/incidents", a.adminRoute(a.handleAdminIncidents))
