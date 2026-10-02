@@ -27,6 +27,7 @@ type layoutGuildFake struct {
 	listErr       error
 	failCreate    string // a text channel name whose creation fails
 	// Live checks run concurrently, so these count atomically.
+	listCalls   int
 	verifyCalls atomic.Int32
 	hasCalls    atomic.Int32
 }
@@ -36,6 +37,7 @@ func newLayoutGuildFake(seed ...discord.RawGuildChannel) *layoutGuildFake {
 }
 
 func (f *layoutGuildFake) ListAllGuildChannels(string) ([]discord.RawGuildChannel, error) {
+	f.listCalls++
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
@@ -676,5 +678,85 @@ func TestSharedLayoutRunChecksEachChannelOnce(t *testing.T) {
 		if d.Health != before.Health || d.ChannelID != before.ChannelID {
 			t.Fatalf("%s: reused checks changed the report: %+v vs %+v", d.Key, d, before)
 		}
+	}
+}
+
+// /setup repair writes every installation's routes first, syncs the guild-wide panels once, then
+// verifies each installation against the shared checks.
+func TestDeferredLayoutRunSyncsPanelsOnce(t *testing.T) {
+	g := newLayoutGuildFake()
+	w := &layoutRoutesFake{routes: map[string]string{}}
+	// Settle the guild first, as an earlier setup would have.
+	runLayout(t, g, w, auditProducers(), panelsPosted(g, w))
+	g.listCalls = 0
+	verifies, has := g.verifyCalls.Load(), g.hasCalls.Load()
+
+	syncs := 0
+	posted := panelsPosted(g, w)
+	sync := func(ctx context.Context) { syncs++; posted(ctx) }
+	run := newLayoutRun()
+	run.deferSync = true
+	var drafts []*layoutDraft
+	for inst := int64(2); inst <= 4; inst++ {
+		draft, err := prepareChannelLayout(context.Background(), g, w, channelLayoutInput{OrganizationID: 1, InstallationID: inst, GuildID: "g", Existing: w.existing(), Producers: auditProducers(), Preserve: true, SyncPanels: sync, Run: run})
+		if err != nil {
+			t.Fatal(err)
+		}
+		drafts = append(drafts, draft)
+	}
+	sync(context.Background())
+	run.synced()
+	var results []*channelLayoutResult
+	for _, draft := range drafts {
+		results = append(results, draft.finish(context.Background(), g))
+	}
+	if syncs != 1 {
+		t.Fatalf("panels synced %d times, want once for the whole run", syncs)
+	}
+	if g.listCalls != 1 {
+		t.Fatalf("guild channels listed %d times, want once", g.listCalls)
+	}
+	channels := 0
+	for _, d := range results[0].Destinations {
+		if d.Checks != nil && !destinationByKey(d.Key).Voice {
+			channels++
+		}
+	}
+	if got := int(g.verifyCalls.Load() - verifies); got != channels {
+		t.Fatalf("verified %d channels, want each of the %d once", got, channels)
+	}
+	if got := int(g.hasCalls.Load() - has); got > 2*channels {
+		t.Fatalf("read channel content %d times for %d channels", got, channels)
+	}
+	for _, res := range results[1:] {
+		for _, d := range res.Destinations {
+			if before := report(results[0], d.Key); d.Health != before.Health || d.ChannelID != before.ChannelID {
+				t.Fatalf("%s differs between installations: %+v vs %+v", d.Key, d, before)
+			}
+		}
+	}
+}
+
+// A category or channel created by one installation is listed afresh by the next, never taken
+// from the run's cached list.
+func TestLayoutRunRelistsAfterCreating(t *testing.T) {
+	g := newLayoutGuildFake()
+	w := &layoutRoutesFake{routes: map[string]string{}}
+	run := newLayoutRun()
+	run.deferSync = true
+	for inst := int64(2); inst <= 3; inst++ {
+		if _, err := prepareChannelLayout(context.Background(), g, w, channelLayoutInput{OrganizationID: 1, InstallationID: inst, GuildID: "g", Existing: w.existing(), Producers: auditProducers(), Preserve: true, Run: run}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if g.listCalls != 2 {
+		t.Fatalf("listed %d times; the installation after one that created channels must list again", g.listCalls)
+	}
+	creates := g.createCalls
+	if _, err := prepareChannelLayout(context.Background(), g, w, channelLayoutInput{OrganizationID: 1, InstallationID: 4, GuildID: "g", Existing: w.existing(), Producers: auditProducers(), Preserve: true, Run: run}); err != nil {
+		t.Fatal(err)
+	}
+	if g.createCalls != creates {
+		t.Fatalf("a later installation created %d duplicate channels", g.createCalls-creates)
 	}
 }
