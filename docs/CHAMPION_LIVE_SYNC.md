@@ -205,7 +205,7 @@ Reads are **full downloads** parsed from the checkpoint: Nitrado ignores offset/
 * A trailing partial line is never consumed; a bare time-of-day line carries no observation and is not stored; a file smaller than its checkpoint (truncated or replaced) restarts from byte 0.
 * **Rotation:** when a newer boot's file is listed, the old file gets one final drain read (retried on its own schedule if it fails) and is retired (`active = false`); the new file is attached from byte 0.
 * **Resume:** a restarted Champion loads `live_sync_sources` and continues from each checkpoint (`TestResumeFromDurableCheckpoint`).
-* **Retention:** high-volume categories (`UNKNOWN`, model/engine/localization/config/CE/query noise, headers) 3 days; everything else 30 days. A live RPT is ≈ 4,100 lines per boot, 87% of them start-up noise (measured on the 05:51:41 boot).
+* **Retention:** high-volume categories (`UNKNOWN`, model/engine/localization/config/CE/query noise, headers) 3 days; everything else 14 days by default (`CHAMPION_RETENTION_DAYS_LIVE_SYNC_RECORDS`; was 30 until the query-hygiene pass, docs/PERFORMANCE.md section 17 - nothing reads a record older than the newest few hundred or the last six hours). A live RPT is ≈ 4,100 lines per boot, 87% of them start-up noise (measured on the 05:51:41 boot).
 
 ### 7.4 LIVE versus BACKFILL (never "new" just because it was read late)
 

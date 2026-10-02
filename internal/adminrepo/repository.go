@@ -1079,6 +1079,51 @@ FROM installations i JOIN discord_guild_connections dgc ON dgc.id = i.discord_gu
 	return sum, items, nil
 }
 
+// TableSize is the on-disk footprint of one table (docs/ADMIN_API.md, health `performance`).
+type TableSize struct {
+	Table      string `json:"table"`
+	TotalBytes int64  `json:"totalBytes"` // heap + TOAST + every index (pg_total_relation_size)
+	TableBytes int64  `json:"tableBytes"` // heap + TOAST (pg_table_size)
+	IndexBytes int64  `json:"indexBytes"` // pg_indexes_size
+	// RowsEstimate is the planner's row estimate from the last ANALYZE/VACUUM, null when the
+	// table has never been analysed. Never a COUNT(*).
+	RowsEstimate *int64 `json:"rowsEstimate"`
+}
+
+// MaxTableSizes bounds TableSizes.
+const MaxTableSizes = 15
+
+// TableSizes returns the largest tables of the connected schema, biggest first, at most limit
+// (capped at MaxTableSizes). One catalog read: no table is scanned and no row content is seen.
+func (r *Repository) TableSizes(ctx context.Context, limit int) ([]TableSize, error) {
+	if limit <= 0 || limit > MaxTableSizes {
+		limit = MaxTableSizes
+	}
+	rows, err := r.pool.Query(ctx, `
+SELECT c.relname, pg_total_relation_size(c.oid), pg_table_size(c.oid), pg_indexes_size(c.oid), c.reltuples::float8
+FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = current_schema() AND c.relkind IN ('r', 'p')
+ORDER BY pg_total_relation_size(c.oid) DESC, c.relname LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("table sizes: %w", err)
+	}
+	defer rows.Close()
+	out := []TableSize{}
+	for rows.Next() {
+		var t TableSize
+		var tuples float64
+		if err := rows.Scan(&t.Table, &t.TotalBytes, &t.TableBytes, &t.IndexBytes, &tuples); err != nil {
+			return nil, err
+		}
+		if tuples >= 0 {
+			n := int64(tuples)
+			t.RowsEstimate = &n
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
 // --- users ------------------------------------------------------------------------------------
 
 // UserRow is one website account for the Owner Hub's user directory.

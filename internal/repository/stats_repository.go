@@ -139,23 +139,34 @@ LIMIT $2`
 
 // TopByKD returns players ranked by K/D, requiring a minimum kill count so that
 // a 1/0 player doesn't top the board. minKills is configurable by callers.
+// Ties: K/D DESC, kills DESC, display_name ASC, player id ASC.
+//
+// Kills and deaths are each counted once, grouped by player (the same shape as
+// TopByBestStreak), instead of three correlated COUNT(*) subqueries per player
+// row - two of which counted the same kills - evaluated before the LIMIT. The
+// aggregates are referenced through their derived tables (kc, dc) rather than
+// bare SELECT-list aliases, because with a table also named "kills" in scope
+// Postgres cannot resolve a bare "kills" in ORDER BY (confirmed live).
+// Semantics are unchanged: a player with no kills row still ranks when minKills
+// allows it, and a kill with no killer never counts.
 func (r *StatsRepository) TopByKD(ctx context.Context, guildID int64, limit, minKills int) ([]LeaderboardEntry, error) {
-	// The kills/deaths aliases are wrapped in a derived table (ranked) rather
-	// than referenced directly in ORDER BY: with a table also named "kills"
-	// in scope via the correlated subqueries, Postgres cannot reliably
-	// resolve a bare "kills" in ORDER BY against the SELECT-list alias
-	// ("column \"kills\" does not exist", confirmed live). A derived table's
-	// output columns are unambiguous in the outer query.
 	const q = `
-SELECT display_name, kills, deaths FROM (
-  SELECT p.display_name,
-         (SELECT COUNT(*) FROM kills k WHERE k.guild_id=$1 AND k.killer_player_id=p.id) AS kills,
-         (SELECT COUNT(*) FROM deaths d WHERE d.guild_id=$1 AND d.player_id=p.id) AS deaths
+SELECT ranked.display_name, ranked.kills, ranked.deaths FROM (
+  SELECT p.display_name, p.id AS player_id, COALESCE(kc.n, 0) AS kills, COALESCE(dc.n, 0) AS deaths
   FROM players p
-  WHERE p.guild_id=$1
-    AND (SELECT COUNT(*) FROM kills k WHERE k.guild_id=$1 AND k.killer_player_id=p.id) >= $3
+  LEFT JOIN (
+    SELECT killer_player_id, COUNT(*) AS n
+    FROM kills WHERE guild_id=$1 AND killer_player_id IS NOT NULL
+    GROUP BY killer_player_id
+  ) kc ON kc.killer_player_id=p.id
+  LEFT JOIN (
+    SELECT player_id, COUNT(*) AS n
+    FROM deaths WHERE guild_id=$1
+    GROUP BY player_id
+  ) dc ON dc.player_id=p.id
+  WHERE p.guild_id=$1 AND COALESCE(kc.n, 0) >= $3
 ) ranked
-ORDER BY (kills::float / GREATEST(deaths,1)) DESC, kills DESC, display_name ASC
+ORDER BY (ranked.kills::float / GREATEST(ranked.deaths,1)) DESC, ranked.kills DESC, ranked.display_name ASC, ranked.player_id ASC
 LIMIT $2`
 
 	rows, err := r.pool.Query(ctx, q, guildID, limit, minKills)

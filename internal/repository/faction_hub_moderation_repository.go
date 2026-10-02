@@ -2,7 +2,6 @@ package repository
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -56,13 +55,35 @@ ORDER BY f.id DESC LIMIT $3`, organizationID, installationID, limit)
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	if len(out) == 0 {
+		return out, nil
+	}
+	// One query for every listed faction's leader (one row per faction, the lowest member id
+	// when a faction somehow has two) instead of one QueryRow per faction.
+	ids := make([]int64, len(out))
+	index := make(map[int64]int, len(out))
 	for i := range out {
-		leader, err := scanHubMember(r.pool.QueryRow(ctx, `SELECT `+hubMemberCols+` `+hubMemberFrom+` WHERE m.faction_id=$1 AND m.role_key='LEADER' LIMIT 1`, out[i].ID))
-		if err == nil {
-			out[i].Leader = &leader
-		} else if !errors.Is(err, pgx.ErrNoRows) {
+		ids[i] = out[i].ID
+		index[out[i].ID] = i
+	}
+	lrows, err := r.pool.Query(ctx, `SELECT DISTINCT ON (m.faction_id) `+hubMemberCols+` `+hubMemberFrom+`
+ WHERE m.faction_id = ANY($1) AND m.role_key='LEADER' ORDER BY m.faction_id, m.id`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("hub moderation leader: %w", err)
+	}
+	defer lrows.Close()
+	for lrows.Next() {
+		leader, err := scanHubMember(lrows)
+		if err != nil {
 			return nil, fmt.Errorf("hub moderation leader: %w", err)
 		}
+		if i, ok := index[leader.FactionID]; ok {
+			l := leader
+			out[i].Leader = &l
+		}
+	}
+	if err := lrows.Err(); err != nil {
+		return nil, fmt.Errorf("hub moderation leader: %w", err)
 	}
 	return out, nil
 }

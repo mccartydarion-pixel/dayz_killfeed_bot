@@ -784,3 +784,33 @@ func (w *world) mustOrgID(name string) int64 {
 	w.must(w.pool.QueryRow(w.ctx, `SELECT id FROM organizations WHERE name=$1`, name).Scan(&id))
 	return id
 }
+
+// TableSizes is a catalog read: biggest first, bounded, every size non-negative and consistent
+// (total = table + indexes), and it never fails on a table that has not been analysed.
+func TestAdminTableSizesFromCatalog(t *testing.T) {
+	w := newWorld(t)
+	repo := New(w.pool)
+	sizes, err := repo.TableSizes(w.ctx, 0)
+	w.must(err)
+	if len(sizes) == 0 || len(sizes) > MaxTableSizes {
+		t.Fatalf("got %d tables", len(sizes))
+	}
+	seen := map[string]bool{}
+	for i, s := range sizes {
+		if s.Table == "" || seen[s.Table] || s.TotalBytes < 0 || s.TableBytes < 0 || s.IndexBytes < 0 || s.TotalBytes != s.TableBytes+s.IndexBytes {
+			t.Fatalf("row %d: %+v", i, s)
+		}
+		if i > 0 && s.TotalBytes > sizes[i-1].TotalBytes {
+			t.Fatalf("not sorted biggest first: %+v before %+v", sizes[i-1], s)
+		}
+		if s.RowsEstimate != nil && *s.RowsEstimate < 0 {
+			t.Fatalf("negative estimate: %+v", s)
+		}
+		seen[s.Table] = true
+	}
+	two, err := repo.TableSizes(w.ctx, 2)
+	w.must(err)
+	if len(two) != 2 || two[0].Table != sizes[0].Table {
+		t.Fatalf("limit 2: %+v", two)
+	}
+}

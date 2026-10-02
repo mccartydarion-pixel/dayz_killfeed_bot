@@ -42,6 +42,7 @@ type adminReader interface {
 	ListUsers(ctx context.Context, f adminrepo.UserFilter) ([]adminrepo.UserRow, int64, error)
 	GetUser(ctx context.Context, id int64) (*adminrepo.UserRow, error)
 	CountUsers(ctx context.Context) (total, banned, active30d int64, err error)
+	TableSizes(ctx context.Context, limit int) ([]adminrepo.TableSize, error)
 }
 
 // adminIdentity is the safe identity of an authorized platform admin.
@@ -528,6 +529,11 @@ type adminEmbedRender struct {
 type adminPerformance struct {
 	Database adminDatabasePerformance `json:"database"`
 	Routing  adminRoutingPerformance  `json:"routing"`
+	// TableSizes: the largest tables on disk, biggest first (at most
+	// adminrepo.MaxTableSizes), from the catalog only - never a table scan,
+	// never row content. Empty when the read fails; the health response
+	// itself never fails because of it.
+	TableSizes []adminrepo.TableSize `json:"tableSizes"`
 }
 
 type adminDatabasePerformance struct {
@@ -633,6 +639,12 @@ func (a *App) handleAdminHealth(w http.ResponseWriter, r *http.Request, _ adminI
 	resp.Summary, resp.Installations = summary, items
 	resp.EmbedRender = adminEmbedRender{Enabled: a.EmbedRenderer.Enabled(), Stats: a.EmbedRenderer.Stats()}
 	resp.Performance = a.performanceSnapshot()
+	resp.Performance.TableSizes = []adminrepo.TableSize{}
+	if sizes, err := a.adminSaaS.TableSizes(ctx, adminrepo.MaxTableSizes); err != nil {
+		slog.Warn("component=admin_api", "event", "table_sizes_failed", "err", err.Error())
+	} else if sizes != nil {
+		resp.Performance.TableSizes = sizes
+	}
 	a.writeAdminJSON(w, http.StatusOK, resp)
 }
 
