@@ -23,9 +23,12 @@ func TestJSONHandlerEmitsRailwayKeys(t *testing.T) {
 		t.Fatal("time key missing")
 	}
 	// The codebase logs the component as the slog message and the human text
-	// under a "msg" attribute; slog keeps the last duplicate, so msg is the text.
-	if rec["msg"] != "something happened" {
-		t.Fatalf("msg = %v", rec["msg"])
+	// under a "msg" attribute; the handler makes the text the one msg key.
+	if rec["msg"] != "something happened" || rec["component"] != "test" {
+		t.Fatalf("msg = %v, component = %v", rec["msg"], rec["component"])
+	}
+	if n := strings.Count(buf.String(), `"msg":`); n != 1 {
+		t.Fatalf("want exactly one msg key (Railway shows the first), got %d: %s", n, buf.String())
 	}
 	if rec["server_id"] != float64(7) {
 		t.Fatalf("server_id = %v", rec["server_id"])
@@ -54,5 +57,32 @@ func TestLogLevelAndTextEscapeHatch(t *testing.T) {
 	}
 	if got := ParseLevel(" WARNING "); got != slog.LevelWarn {
 		t.Fatalf("ParseLevel = %v", got)
+	}
+}
+
+func TestComponentConventionBecomesOneMessage(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(NewHandler("", "", &buf)).With("server_id", 3)
+	log.Info("component=discord", "event", "route_fallback", "route_key", "KILLFEED")
+	var rec map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &rec); err != nil {
+		t.Fatal(err)
+	}
+	if rec["msg"] != "route_fallback" || rec["event"] != "route_fallback" || rec["component"] != "discord" || rec["route_key"] != "KILLFEED" || rec["server_id"] != float64(3) {
+		t.Fatalf("event record: %v", rec)
+	}
+	buf.Reset()
+	log.Info("component=discord")
+	rec = nil
+	_ = json.Unmarshal(buf.Bytes(), &rec)
+	if rec["msg"] != "component=discord" || rec["component"] != "discord" {
+		t.Fatalf("bare component record: %v", rec)
+	}
+	buf.Reset()
+	log.Info("plain message", "k", "v")
+	rec = nil
+	_ = json.Unmarshal(buf.Bytes(), &rec)
+	if rec["msg"] != "plain message" || rec["component"] != nil {
+		t.Fatalf("plain record changed: %v", rec)
 	}
 }
