@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestClientRetriesRateLimitedRequestWithBoundedRecovery(t *testing.T) {
@@ -25,5 +26,25 @@ func TestClientRetriesRateLimitedRequestWithBoundedRecovery(t *testing.T) {
 	}
 	if calls.Load() != 2 {
 		t.Fatalf("expected exactly one bounded retry, got %d calls", calls.Load())
+	}
+}
+
+func TestRetryAfterClampsLongWaits(t *testing.T) {
+	cases := map[string]time.Duration{
+		"":      0,
+		"abc":   0,
+		"-5":    0,
+		"0.5":   500 * time.Millisecond,
+		"30":    30 * time.Second,
+		"60":    60 * time.Second,
+		"61":    60 * time.Second,
+		"3600":  60 * time.Second,
+		"1e9":   60 * time.Second,
+		" 120 ": 60 * time.Second,
+	}
+	for header, want := range cases {
+		if got := retryAfter(header); got != want {
+			t.Fatalf("retryAfter(%q) = %s, want %s", header, got, want)
+		}
 	}
 }
