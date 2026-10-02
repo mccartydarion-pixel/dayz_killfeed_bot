@@ -219,7 +219,15 @@ func (s *LeaderboardScheduler) sweep(channels []string, keep map[string]bool) {
 	if !ok {
 		return
 	}
-	sweepObsoleteLeaderboards(history, channels, keep)
+	_, gone := sweepObsoleteLeaderboards(history, channels, keep)
+	for _, channelID := range gone {
+		// The legacy leaderboard channel from guild_settings no longer exists:
+		// stop including it in every sweep. Routed channels are re-resolved
+		// from the routes on the next refresh and are not touched here.
+		if channelID == s.panel.ChannelID() {
+			s.panel.ForgetChannel()
+		}
+	}
 }
 
 // loadSnapshot loads EVERY category before anything is rendered, so the

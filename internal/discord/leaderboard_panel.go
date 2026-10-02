@@ -59,7 +59,23 @@ func (p *LeaderboardPanel) ChannelID() string {
 	if p == nil {
 		return ""
 	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	return p.channelID
+}
+
+// ForgetChannel drops the legacy channel after Discord reported it gone, so the
+// scheduler's sweep stops listing it. The panel then publishes nowhere until a
+// routed channel takes over, which is already the case once routes exist.
+func (p *LeaderboardPanel) ForgetChannel() {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.channelID = ""
+	p.messageID = ""
+	p.lastHash = ""
+	p.mu.Unlock()
 }
 
 // Reset forgets the current message so the next Update posts a fresh one. Used
@@ -82,8 +98,11 @@ var errNoMultiEmbed = errors.New("discord api does not support multi-embed messa
 // message carrying every embed, so all categories change together. It returns
 // the resulting message ID so callers can persist it in GuildSetup.
 func (p *LeaderboardPanel) Update(snapshot LeaderboardSnapshot) (string, bool, error) {
-	if p == nil || p.editor == nil || p.channelID == "" {
-		return p.messageID, false, nil
+	if p == nil || p.editor == nil {
+		return "", false, nil
+	}
+	if p.ChannelID() == "" {
+		return p.MessageID(), false, nil
 	}
 	api, ok := p.editor.(MultiEmbedMessageAPI)
 	if !ok {

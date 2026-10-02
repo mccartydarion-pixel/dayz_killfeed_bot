@@ -121,13 +121,53 @@ func TestSweepDeletesOnlyTheBotsObsoleteBoards(t *testing.T) {
 	h.fakeDiscord.seed("lb", "slash-reply")
 	h.put("lb", "slash-reply", sweepBotID, "🏆 SEASON LEADERBOARD", discordgo.MessageTypeChatInputCommand, true)
 
-	if n := sweepObsoleteLeaderboards(h, []string{"lb", "lb", ""}, map[string]bool{"current": true}); n != 3 {
+	if n, _ := sweepObsoleteLeaderboards(h, []string{"lb", "lb", ""}, map[string]bool{"current": true}); n != 3 {
 		t.Fatalf("expected 3 obsolete boards removed, got %d", n)
 	}
 	want := []string{"chat", "current", "player-post", "slash-reply", "stats-panel"}
 	if got := h.liveIDs("lb"); !equalStrings(got, want) {
 		t.Fatalf("live after sweep = %v, want %v", got, want)
 	}
+}
+
+// goneChannelHistory answers Unknown Channel for one channel id, as Discord does
+// for a channel that was deleted after the bot recorded it.
+type goneChannelHistory struct {
+	*historyDiscord
+	gone string
+}
+
+func (g goneChannelHistory) ChannelMessages(channelID string, limit int) ([]*discordgo.Message, error) {
+	if channelID == g.gone {
+		return nil, unknownChannelErr()
+	}
+	return g.historyDiscord.ChannelMessages(channelID, limit)
+}
+
+// The reported production log: the legacy guild_settings leaderboard channel
+// was deleted, and every refresh warned leaderboard_sweep_list_failed for it.
+func TestSweepReportsDeletedChannelAsGone(t *testing.T) {
+	h := newHistoryDiscord()
+	h.seedMessage("lb", "old", sweepBotID, "🏆 SEASON LEADERBOARD")
+	n, gone := sweepObsoleteLeaderboards(goneChannelHistory{h, "legacy-deleted"}, []string{"lb", "legacy-deleted"}, nil)
+	if n != 1 {
+		t.Fatalf("the live channel must still be swept, got %d", n)
+	}
+	if !equalStrings(gone, []string{"legacy-deleted"}) {
+		t.Fatalf("gone = %v, want the deleted channel only", gone)
+	}
+}
+
+func TestSchedulerForgetsDeletedLegacyChannel(t *testing.T) {
+	h := newHistoryDiscord()
+	panel := NewLeaderboardPanel(goneChannelHistory{h, "legacy-deleted"}, "legacy-deleted", "", DefaultLeaderboardConfig())
+	s := NewLeaderboardScheduler(panel, nil, 1, DefaultLeaderboardConfig(), nil)
+	s.sweep([]string{"lb", panel.ChannelID()}, nil)
+	if panel.ChannelID() != "" {
+		t.Fatalf("legacy channel still %q after Discord reported it gone", panel.ChannelID())
+	}
+	// A second sweep no longer asks Discord about the deleted channel.
+	s.sweep([]string{"lb", panel.ChannelID()}, nil)
 }
 
 type noBotHistory struct{ *historyDiscord }
@@ -137,7 +177,7 @@ func (noBotHistory) BotUserID() string { return "" }
 func TestSweepIsANoOpWithoutBotIdentity(t *testing.T) {
 	h := newHistoryDiscord()
 	h.seedMessage("lb", "old", sweepBotID, "🏆 SEASON LEADERBOARD")
-	if n := sweepObsoleteLeaderboards(noBotHistory{h}, []string{"lb"}, nil); n != 0 || len(h.liveIDs("lb")) != 1 {
+	if n, _ := sweepObsoleteLeaderboards(noBotHistory{h}, []string{"lb"}, nil); n != 0 || len(h.liveIDs("lb")) != 1 {
 		t.Fatal("without the bot's own id nothing may be deleted")
 	}
 }
