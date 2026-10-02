@@ -27,8 +27,10 @@ import (
 //   - each family reads when the listing shows growth AND, independently, on a direct-read probe
 //     interval, because Nitrado listing metadata can lag the file by many minutes (observed 25+
 //     minutes on 2026-09-24). New bytes are therefore found even when the listing is stale.
-//   - reads are full downloads parsed from the checkpoint: Nitrado ignores offset/count on the
-//     signed download URL (verified 2026-09-24), so no partial read is trusted.
+//   - reads are full downloads parsed from the checkpoint until a service's partial (seek) reads
+//     have matched full downloads byte for byte (tail.go); then only the bytes after the
+//     checkpoint are read. Nitrado ignores offset/count on the signed download URL (verified
+//     2026-09-24), so nothing partial is trusted without that comparison.
 //
 // Nothing here fabricates an observation: a record exists only for a complete line DayZ or Nitrado
 // wrote, times come only from the line (or the offset restart.log states), and a boot session is
@@ -345,6 +347,8 @@ type familyWatcher struct {
 	// draining: retired sources whose final bytes could not be read at rotation; retried on
 	// their own schedule until one read succeeds.
 	draining []*sourceRuntime
+	// fullReads / tailReads count how this family's reads were done (tail.go).
+	fullReads, tailReads int64
 }
 
 type sourceRuntime struct {
@@ -357,6 +361,9 @@ type sourceRuntime struct {
 	listingModified     time.Time
 	nextRead            time.Time
 	fails               int
+	// lastByte is the byte just before the checkpoint, as last read: a tail read must start with it.
+	lastByte     byte
+	haveLastByte bool
 }
 
 func newFamilyWatcher(s *Supervisor, p FamilyPolicy, stored []SourceState) *familyWatcher {
@@ -485,28 +492,70 @@ func (w *familyWatcher) rotate(ctx context.Context, newer listed, now time.Time)
 func (w *familyWatcher) read(ctx context.Context, rt *sourceRuntime, why string) (ok bool) {
 	s := w.sup
 	current := rt == w.active
-	opCtx, cancel := context.WithTimeout(ctx, s.cfg.OpTimeout)
-	data, err := s.remote.ReadLog(opCtx, s.cfg.ServiceID, rt.state.RemotePath)
-	cancel()
-	now := s.cfg.Now()
-	if err != nil {
-		w.fail(rt, now, "read_failed: "+errorClass(err))
-		return false
-	}
 	st := rt.state // the working copy; rt.state changes only after a successful commit
-	size := int64(len(data))
+
+	// content is the file from st.Checkpoint onward; size is the whole file's size. A trusted
+	// service reads only the tail (tail.go); otherwise the whole file is downloaded as before.
+	var content []byte
+	var size int64
+	tailOnly, verify := false, false
+	tr, canTail := s.remote.(TailReader)
+	if canTail && st.Checkpoint > 0 && rt.haveLastByte && !rt.firstReadIsBackfill && (rt.listingSize == 0 || rt.listingSize >= st.Checkpoint) {
+		tailOnly, verify = tailTrust.plan(s.cfg.ServiceID)
+	}
+	if tailOnly {
+		// Start one byte early: a quiet file still returns that byte, and it must equal the last
+		// byte already read, so a replaced file is never stitched onto the old checkpoint.
+		opCtx, cancel := context.WithTimeout(ctx, s.cfg.OpTimeout)
+		tail, _, ok := readTail(opCtx, tr, s.cfg.ServiceID, st.RemotePath, st.Checkpoint-1)
+		cancel()
+		if ok && len(tail) > 0 && tail[0] == rt.lastByte {
+			content, size = tail[1:], st.Checkpoint+int64(len(tail)-1)
+			w.tailReads++
+		} else {
+			tailTrust.failed(s.cfg.ServiceID)
+			tailOnly = false
+		}
+	}
+	truncated := false
+	var full []byte
+	if !tailOnly {
+		opCtx, cancel := context.WithTimeout(ctx, s.cfg.OpTimeout)
+		data, err := s.remote.ReadLog(opCtx, s.cfg.ServiceID, st.RemotePath)
+		cancel()
+		if err != nil {
+			w.fail(rt, s.cfg.Now(), "read_failed: "+errorClass(err))
+			return false
+		}
+		w.fullReads++
+		full = data
+		size = int64(len(data))
+		if verify && size >= st.Checkpoint {
+			opCtx, cancel := context.WithTimeout(ctx, s.cfg.OpTimeout)
+			tail, method, ok := readTail(opCtx, tr, s.cfg.ServiceID, st.RemotePath, st.Checkpoint-1)
+			cancel()
+			if ok {
+				tailTrust.verified(s.cfg.ServiceID, tailMatches(data, st.Checkpoint-1, tail), int(size-st.Checkpoint), method)
+			}
+		}
+		truncated = size < st.Checkpoint
+		if truncated {
+			// Replaced or truncated in place: the old checkpoint no longer addresses these bytes.
+			slog.Warn("component=livesync", "event", "source_truncated", "server_id", s.cfg.ServerID, "family", w.policy.Family,
+				"file", st.SourceFile, "checkpoint", st.Checkpoint, "size", size)
+			st.Checkpoint, st.BackfillUntil = 0, 0
+		}
+		content = data[st.Checkpoint:]
+	}
+	now := s.cfg.Now()
 	prevRead, prevSize := st.LastReadAt, st.ReadSize
-	truncated := size < st.Checkpoint
 	if truncated {
-		// Replaced or truncated in place: the old checkpoint no longer addresses these bytes.
-		slog.Warn("component=livesync", "event", "source_truncated", "server_id", s.cfg.ServerID, "family", w.policy.Family,
-			"file", st.SourceFile, "checkpoint", st.Checkpoint, "size", size)
-		st.Checkpoint, st.BackfillUntil, prevSize = 0, 0, 0
+		prevSize = 0
 	}
 	if rt.firstReadIsBackfill {
 		st.BackfillUntil = size
 	}
-	res, consumed := w.parse(data[st.Checkpoint:], st)
+	res, consumed := w.parse(content, st)
 	recs := make([]StoredRecord, 0, len(res.Records))
 	var eventLags []time.Duration
 	var windows []time.Duration
@@ -537,7 +586,7 @@ func (w *familyWatcher) read(ctx context.Context, rt *sourceRuntime, why string)
 	if size > prevSize {
 		st.LastGrowthAt = &now
 	}
-	opCtx, cancel = context.WithTimeout(ctx, s.cfg.OpTimeout)
+	opCtx, cancel := context.WithTimeout(ctx, s.cfg.OpTimeout)
 	inserted, err := s.store.CommitSource(opCtx, s.cfg.GuildID, s.cfg.ServerID, st, recs)
 	cancel()
 	committed := s.cfg.Now()
@@ -546,6 +595,14 @@ func (w *familyWatcher) read(ctx context.Context, rt *sourceRuntime, why string)
 		return false
 	}
 	st.Records += int64(inserted)
+	switch {
+	case st.Checkpoint == 0:
+		rt.haveLastByte = false
+	case full != nil && st.Checkpoint <= int64(len(full)):
+		rt.lastByte, rt.haveLastByte = full[st.Checkpoint-1], true
+	case consumed > 0:
+		rt.lastByte, rt.haveLastByte = content[consumed-1], true
+	}
 	rt.state = st
 	rt.firstReadIsBackfill = false
 	rt.fails = 0
