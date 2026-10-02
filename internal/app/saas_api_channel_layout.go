@@ -81,30 +81,50 @@ func (a *App) runChannelLayout(ctx context.Context, organizationID, installation
 
 // runChannelLayoutIn is runChannelLayout as one installation of a guild-wide run (run may be nil).
 func (a *App) runChannelLayoutIn(ctx context.Context, organizationID, installationID int64, discordGuildID string, preserve bool, run *layoutRun) (AutoSetupChannelsResponse, error) {
+	pending, resp, err := a.prepareInstallationLayout(ctx, organizationID, installationID, discordGuildID, preserve, run)
+	if err != nil {
+		return resp, err
+	}
+	return a.finishInstallationLayout(ctx, pending)
+}
+
+// pendingLayout is one installation's layout between its route writes and its verification.
+type pendingLayout struct {
+	organizationID, installationID int64
+	discordGuildID                 string
+	preserve                       bool
+	settings                       *repository.InstallationSettings
+	inst                           *repository.Installation
+	existingRoutes                 []repository.ChannelRoute
+	draft                          *layoutDraft
+}
+
+// prepareInstallationLayout loads the installation and writes its channels and routes.
+func (a *App) prepareInstallationLayout(ctx context.Context, organizationID, installationID int64, discordGuildID string, preserve bool, run *layoutRun) (*pendingLayout, AutoSetupChannelsResponse, error) {
 	settings, err := a.SaaSInstallations.GetSettings(ctx, organizationID, installationID)
 	if err != nil {
-		return AutoSetupChannelsResponse{}, fmt.Errorf("load channel settings: %w", err)
+		return nil, AutoSetupChannelsResponse{}, fmt.Errorf("load channel settings: %w", err)
 	}
 	if settings == nil {
-		return AutoSetupChannelsResponse{}, fmt.Errorf("installation not found")
+		return nil, AutoSetupChannelsResponse{}, fmt.Errorf("installation not found")
 	}
 	inst, err := a.SaaSInstallations.GetScoped(ctx, organizationID, installationID)
 	if err != nil || inst == nil {
-		return AutoSetupChannelsResponse{}, fmt.Errorf("load installation: %v", err)
+		return nil, AutoSetupChannelsResponse{}, fmt.Errorf("load installation: %v", err)
 	}
 	existingRoutes, err := a.SaaSChannelRoutes.ListForInstallation(ctx, organizationID, installationID)
 	if err != nil {
-		return AutoSetupChannelsResponse{}, fmt.Errorf("load channel routes: %w", err)
+		return nil, AutoSetupChannelsResponse{}, fmt.Errorf("load channel routes: %w", err)
 	}
-	perms, err := a.saasDiscordVerifier.GuildPermissions(discordGuildID)
+	perms, err := run.guildPermissions(func() (int64, error) { return a.saasDiscordVerifier.GuildPermissions(discordGuildID) })
 	if err != nil {
-		return AutoSetupChannelsResponse{}, fmt.Errorf("guild permissions: %w", err)
+		return nil, AutoSetupChannelsResponse{}, fmt.Errorf("guild permissions: %w", err)
 	}
 	if perms&discordgo.PermissionManageChannels == 0 {
-		return AutoSetupChannelsResponse{Configured: false, Reason: "MISSING_MANAGE_CHANNELS"}, errMissingManageChannels
+		return nil, AutoSetupChannelsResponse{Configured: false, Reason: "MISSING_MANAGE_CHANNELS"}, errMissingManageChannels
 	}
 
-	layout, err := applyChannelLayout(ctx, a.saasDiscordVerifier, a.SaaSChannelRoutes, channelLayoutInput{
+	draft, err := prepareChannelLayout(ctx, a.saasDiscordVerifier, a.SaaSChannelRoutes, channelLayoutInput{
 		OrganizationID: organizationID,
 		InstallationID: installationID,
 		GuildID:        discordGuildID,
@@ -115,11 +135,20 @@ func (a *App) runChannelLayoutIn(ctx context.Context, organizationID, installati
 		Run:            run,
 	})
 	if errors.Is(err, errKillfeedUnavailable) {
-		return AutoSetupChannelsResponse{Configured: false, Reason: "KILLFEED_UNAVAILABLE"}, err
+		return nil, AutoSetupChannelsResponse{Configured: false, Reason: "KILLFEED_UNAVAILABLE"}, err
 	}
 	if err != nil {
-		return AutoSetupChannelsResponse{}, err
+		return nil, AutoSetupChannelsResponse{}, err
 	}
+	return &pendingLayout{organizationID: organizationID, installationID: installationID, discordGuildID: discordGuildID, preserve: preserve,
+		settings: settings, inst: inst, existingRoutes: existingRoutes, draft: draft}, AutoSetupChannelsResponse{}, nil
+}
+
+// finishInstallationLayout verifies the installation's channels and saves the outcome.
+func (a *App) finishInstallationLayout(ctx context.Context, p *pendingLayout) (AutoSetupChannelsResponse, error) {
+	organizationID, installationID, discordGuildID, preserve := p.organizationID, p.installationID, p.discordGuildID, p.preserve
+	settings, inst, existingRoutes := p.settings, p.inst, p.existingRoutes
+	layout := p.draft.finish(ctx, a.saasDiscordVerifier)
 	routes := layout.Routes
 
 	resp := AutoSetupChannelsResponse{Configured: true, Routes: routes, Destinations: layout.Destinations}
@@ -552,14 +581,26 @@ func (a *App) DiscordSetupLayout(ctx context.Context, discordGuildID string) (di
 	if len(refs) == 0 {
 		return out, discord.ErrNoInstallation
 	}
-	// Every installation of the guild shares the same channels: their live checks and the panel
-	// sync are done once for the whole run.
+	// Every installation of the guild shares the same channels. Each one's channels and routes are
+	// written first, then the guild-wide panels sync once for all of them, then each installation
+	// is verified; every channel's live checks run once for the whole run.
 	run := newLayoutRun()
+	run.deferSync = true
+	pending := make([]*pendingLayout, 0, len(refs))
 	for _, ref := range refs {
-		resp, err := a.runChannelLayoutIn(ctx, ref.OrganizationID, ref.InstallationID, discordGuildID, true, run)
+		p, _, err := a.prepareInstallationLayout(ctx, ref.OrganizationID, ref.InstallationID, discordGuildID, true, run)
 		if errors.Is(err, errMissingManageChannels) {
 			return out, discord.ErrMissingManageChannels
 		}
+		if err != nil {
+			return out, err
+		}
+		pending = append(pending, p)
+	}
+	a.syncRoutedPanelsNow(ctx)
+	run.synced()
+	for _, p := range pending {
+		resp, err := a.finishInstallationLayout(ctx, p)
 		if err != nil {
 			return out, err
 		}

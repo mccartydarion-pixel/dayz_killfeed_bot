@@ -712,9 +712,12 @@ channel is only the fallback for guilds without routes.
 `/setup run|repair` command all run the same planner
 (`championDestinations`). `/setup` applies it, with repair semantics, to
 every installation connected to the guild; a guild with no installation is
-told to connect on the website. The installations share one run: each channel
-is verified and read once (six at a time), and the guild-wide panels sync
-once, again only if a later installation created or re-routed a channel. The legacy `SetupManager` never creates a
+told to connect on the website. The installations share one run: every
+installation's channels and routes are written first, then the guild-wide panels
+sync once, then each installation is verified. Each channel is verified and read
+once (six at a time), and the guild's channel list and the bot's permissions are
+read once, except that an installation that created a channel or category makes
+the next one list the guild again. The legacy `SetupManager` never creates a
 channel any more - it only re-posts a missing legacy panel inside a legacy
 channel that still exists, for guilds whose feature is not routed.
 

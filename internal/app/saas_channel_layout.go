@@ -439,12 +439,22 @@ type channelLayoutInput struct {
 
 // layoutRun is shared by the installations of one guild-wide /setup run. They point at the same
 // Discord channels, so each channel's live checks (can the bot send, has it posted) run once per
-// run, and the guild-wide panel sync runs once unless a later installation changed its routes.
-// One run used to repeat all of that per installation: 11 installations took about two minutes.
+// run, and the guild's channel list and permissions are read once. With deferSync the caller
+// writes every installation's routes first (prepareChannelLayout), syncs the guild-wide panels
+// once, then finishes each installation; otherwise the sync runs once unless a later installation
+// changed its routes. One run used to repeat all of that per installation: 11 installations took
+// about two minutes.
 type layoutRun struct {
 	mu           sync.Mutex
 	checks       map[string]channelLiveCheck // by channel ID, taken after the latest panel sync
+	preSync      map[string]bool             // by channel ID: had bot content before the panel sync
 	panelsSynced bool
+	deferSync    bool // the caller syncs panels once after every installation's routes are written
+
+	channels     []discord.RawGuildChannel // the guild's channels, valid while haveChannels
+	haveChannels bool
+	perms        int64
+	havePerms    bool
 }
 
 type channelLiveCheck struct {
@@ -453,7 +463,88 @@ type channelLiveCheck struct {
 	err        error
 }
 
-func newLayoutRun() *layoutRun { return &layoutRun{checks: map[string]channelLiveCheck{}} }
+func newLayoutRun() *layoutRun {
+	return &layoutRun{checks: map[string]channelLiveCheck{}, preSync: map[string]bool{}}
+}
+
+// guildChannels lists the guild's channels once per run (every call outside a run).
+func (r *layoutRun) guildChannels(list func() ([]discord.RawGuildChannel, error)) ([]discord.RawGuildChannel, error) {
+	if r != nil {
+		r.mu.Lock()
+		if r.haveChannels {
+			out := append([]discord.RawGuildChannel(nil), r.channels...)
+			r.mu.Unlock()
+			return out, nil
+		}
+		r.mu.Unlock()
+	}
+	channels, err := list()
+	if err == nil && r != nil {
+		r.mu.Lock()
+		r.channels, r.haveChannels = append([]discord.RawGuildChannel(nil), channels...), true
+		r.mu.Unlock()
+	}
+	return channels, err
+}
+
+// forgetChannels makes the next installation list the guild again: this one created a category or
+// channel, whose Discord-side details (privacy, parent) only a fresh listing has.
+func (r *layoutRun) forgetChannels() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.channels, r.haveChannels = nil, false
+	r.mu.Unlock()
+}
+
+// guildPermissions reads the bot's guild permissions once per run.
+func (r *layoutRun) guildPermissions(read func() (int64, error)) (int64, error) {
+	if r != nil {
+		r.mu.Lock()
+		if r.havePerms {
+			perms := r.perms
+			r.mu.Unlock()
+			return perms, nil
+		}
+		r.mu.Unlock()
+	}
+	perms, err := read()
+	if err == nil && r != nil {
+		r.mu.Lock()
+		r.perms, r.havePerms = perms, true
+		r.mu.Unlock()
+	}
+	return perms, err
+}
+
+func (r *layoutRun) preSyncHas(channelID string) (has, ok bool) {
+	if r == nil {
+		return false, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	has, ok = r.preSync[channelID]
+	return has, ok
+}
+
+func (r *layoutRun) storePreSync(channelID string, has bool) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.preSync[channelID] = has
+}
+
+func (r *layoutRun) syncDeferred() bool {
+	if r == nil {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.deferSync
+}
 
 func (r *layoutRun) cached(channelID string) (channelLiveCheck, bool) {
 	if r == nil {
@@ -545,6 +636,27 @@ var errKillfeedUnavailable = fmt.Errorf("killfeed producer unavailable")
 // neither exists, so repeat runs never duplicate. Nothing is ever deleted in
 // Discord.
 func applyChannelLayout(ctx context.Context, d channelLayoutDiscord, w channelRouteWriter, in channelLayoutInput) (*channelLayoutResult, error) {
+	draft, err := prepareChannelLayout(ctx, d, w, in)
+	if err != nil {
+		return nil, err
+	}
+	return draft.finish(ctx, d), nil
+}
+
+// layoutDraft is one installation's layout after its channels and routes are written (steps
+// 1-3) and its panel channels read, waiting for the panel sync and verification.
+type layoutDraft struct {
+	in              channelLayoutInput
+	result          *channelLayoutResult
+	byID            map[string]discord.RawGuildChannel
+	finalChannel    map[string]bool
+	customerChannel map[string]bool
+	panelWasBlank   map[string]bool
+	changed         bool
+}
+
+// prepareChannelLayout runs applyChannelLayout up to the panel sync.
+func prepareChannelLayout(ctx context.Context, d channelLayoutDiscord, w channelRouteWriter, in channelLayoutInput) (*layoutDraft, error) {
 	plans := planChannelLayout(in.Producers)
 	for _, p := range plans {
 		if p.Destination.Key == "COMBAT_FEED" && p.Health != HealthActive {
@@ -552,7 +664,7 @@ func applyChannelLayout(ctx context.Context, d channelLayoutDiscord, w channelRo
 		}
 	}
 
-	channels, err := d.ListAllGuildChannels(in.GuildID)
+	channels, err := in.Run.guildChannels(func() ([]discord.RawGuildChannel, error) { return d.ListAllGuildChannels(in.GuildID) })
 	if err != nil {
 		return nil, fmt.Errorf("list guild channels: %w", err)
 	}
@@ -613,6 +725,12 @@ func applyChannelLayout(ctx context.Context, d channelLayoutDiscord, w channelRo
 		}
 	}
 	categories := map[string]discord.RawGuildChannel{}
+	createdAny := false // a category or channel this installation created
+	defer func() {
+		if createdAny {
+			in.Run.forgetChannels()
+		}
+	}()
 	for _, cat := range championCategories {
 		if !needed[cat.Key] {
 			continue
@@ -620,6 +738,9 @@ func applyChannelLayout(ctx context.Context, d channelLayoutDiscord, w channelRo
 		resolved, err := resolveLayoutCategory(d, in.GuildID, channels, cat, categoryHint[cat.Key])
 		if err != nil {
 			return nil, fmt.Errorf("category %s: %w", cat.Key, err)
+		}
+		if _, known := byID[resolved.ID]; !known {
+			createdAny = true
 		}
 		categories[cat.Key] = resolved
 	}
@@ -673,7 +794,7 @@ func applyChannelLayout(ctx context.Context, d channelLayoutDiscord, w channelRo
 			}
 			report.Created = created
 			if created {
-				changed = true
+				changed, createdAny = true, true
 				sum.Created = append(sum.Created, ch.Name)
 				channels = append(channels, ch)
 				byID[ch.ID] = ch
@@ -755,7 +876,14 @@ func applyChannelLayout(ctx context.Context, d channelLayoutDiscord, w channelRo
 			panelHas[j] = c.has
 			return
 		}
+		if has, ok := in.Run.preSyncHas(channelID); ok {
+			panelHas[j] = has
+			return
+		}
 		panelHas[j], panelErr[j] = d.ChannelHasBotMessage(channelID)
+		if panelErr[j] == nil {
+			in.Run.storePreSync(channelID, panelHas[j])
+		}
 	})
 	panelWasBlank := map[string]bool{}
 	for j, i := range panelChecks {
@@ -763,7 +891,16 @@ func applyChannelLayout(ctx context.Context, d channelLayoutDiscord, w channelRo
 			panelWasBlank[result.Destinations[i].Key] = true
 		}
 	}
-	if in.SyncPanels != nil && in.Run.needsPanelSync(changed) {
+	return &layoutDraft{in: in, result: result, byID: byID, finalChannel: finalChannel, customerChannel: customerChannel, panelWasBlank: panelWasBlank, changed: changed}, nil
+}
+
+// finish syncs the panels (unless the run's caller syncs them once for every installation),
+// verifies each channel and lists the retirable ones.
+func (dr *layoutDraft) finish(ctx context.Context, d channelLayoutDiscord) *channelLayoutResult {
+	in, result := dr.in, dr.result
+	sum := &result.Summary
+	byID, finalChannel, customerChannel, panelWasBlank := dr.byID, dr.finalChannel, dr.customerChannel, dr.panelWasBlank
+	if in.SyncPanels != nil && !in.Run.syncDeferred() && in.Run.needsPanelSync(dr.changed) {
 		in.SyncPanels(ctx)
 		in.Run.synced()
 	}
@@ -840,7 +977,7 @@ func applyChannelLayout(ctx context.Context, d channelLayoutDiscord, w channelRo
 	//    never deleted.
 	result.Retirable = retirableRouteChannels(in.Existing, finalChannel, byID)
 	sum.Retirable = len(result.Retirable)
-	return result, nil
+	return result
 }
 
 // retirableRouteChannels lists channels that Champion-managed routes used to
