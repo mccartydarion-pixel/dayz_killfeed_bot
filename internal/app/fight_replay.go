@@ -99,6 +99,9 @@ type fightReplayDTO struct {
 	Bounds          *fightBoundsDTO  `json:"bounds"`
 	// Truncated is true when the replay hit the sample cap and later samples were left out.
 	Truncated bool `json:"truncated"`
+	// MapKey is the server's configured DayZ map ("" when unset), so the website can draw the
+	// replay on that map. Fights don't record their own map; the configured one is the best guess.
+	MapKey string `json:"mapKey"`
 }
 
 func point(x, z *float64) *fights.Point {
@@ -309,6 +312,7 @@ func (a *App) handleAdminFightReplay(w http.ResponseWriter, r *http.Request) {
 		writeSaaSError(w, codeNotFound, "fight not found")
 		return
 	}
+	replay.MapKey = a.replayMapKey(ctx, ac.scope.OrganizationID, ac.scope.InstallationID)
 	a.recordAudit(ctx, ac, "FIGHT_REPLAY_VIEWED", "fight:"+strconv.FormatInt(replay.ID, 10), "", "SUCCESS", nil, nil)
 	writeSaaSJSON(w, http.StatusOK, replay)
 }
@@ -400,5 +404,20 @@ func (a *App) handlePlayerFightReplay(w http.ResponseWriter, r *http.Request) {
 		writeSaaSError(w, codeNotFound, "fight not found")
 		return
 	}
+	replay.MapKey = a.replayMapKey(ctx, scope.OrganizationID, scope.InstallationID)
 	writeSaaSJSON(w, http.StatusOK, replay)
+}
+
+// replayMapKey is the installation's configured DayZ map (the shop delivery map), or "" when it
+// is unset, no longer supported, or cannot be read. It only decorates the replay, so a failure
+// never fails the request.
+func (a *App) replayMapKey(ctx context.Context, organizationID, installationID int64) string {
+	if a.Shop == nil {
+		return ""
+	}
+	s, err := a.Shop.DeliverySettings(ctx, repository.EconomyScope{OrganizationID: organizationID, InstallationID: installationID})
+	if err != nil || s.Map == nil {
+		return ""
+	}
+	return s.Map.Key
 }

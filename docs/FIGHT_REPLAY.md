@@ -31,12 +31,15 @@ Grouping is pure and deterministic. Self-kills are not PvP and are never part of
                   "headshot": true, "killerX": 5000, "killerZ": 5000, "victimX": 5040, "victimZ": 5000}],
   "tracks": [{"playerId": 7, "points": [{"t": 60, "x": 4000, "z": 4000, "type": "OTHER_ADM"}]}],
   "bounds": {"minX": 4000, "minZ": 4000, "maxX": 5300, "maxZ": 5200},
-  "truncated": false
+  "truncated": false, "mapKey": "chernarusplus"
 }
 ```
 
 `t` is seconds from `replayStart`. Coordinates are map metres (east, north). `type` is the ADM
 event the sample came from (`HIT`, `KILL`, `OTHER_ADM` for a player-list sample, ...).
+`mapKey` is the server's configured map (the shop delivery map), or `""` when none is set. Fights
+don't record their own map, so this is the current setting, and the website draws the replay on
+that map's satellite tiles.
 
 These are **samples, not a path**: a point exists only where ADM logged the player. Draw them as
 points, or as straight segments clearly presented as such; there is nothing between two samples.
