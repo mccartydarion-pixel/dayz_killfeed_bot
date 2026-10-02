@@ -47,7 +47,13 @@ type ShopAutoDeliverySettings struct {
 	PausedAt     *time.Time
 	PausedReason string
 	UpdatedAt    *time.Time
+	// MarkerClass is the static object spawned beside each delivered order ("" = no marker).
+	MarkerClass string
 }
+
+// ShopDefaultMarkerClass is the marker an installation has until its owner changes it (it is also
+// the column default of migration 0114).
+const ShopDefaultMarkerClass = "StaticObj_Roadblock_Wood_Small"
 
 // Settings reads the installation's switch and pause (all off when it has no row yet).
 func (r *ShopAutoDeliveryRepository) Settings(ctx context.Context, org, inst int64) (ShopAutoDeliverySettings, error) {
@@ -60,10 +66,10 @@ func (r *ShopAutoDeliveryRepository) Settings(ctx context.Context, org, inst int
 	if !found {
 		return s, ErrShopAutoDeliveryNotFound
 	}
-	err = r.pool.QueryRow(ctx, `SELECT enabled, paused_at, COALESCE(paused_reason,''), updated_at FROM shop_auto_delivery_settings
- WHERE installation_id=$2 AND organization_id=$1`, org, inst).Scan(&s.Enabled, &s.PausedAt, &s.PausedReason, &s.UpdatedAt)
+	err = r.pool.QueryRow(ctx, `SELECT enabled, paused_at, COALESCE(paused_reason,''), updated_at, COALESCE(marker_class,'') FROM shop_auto_delivery_settings
+ WHERE installation_id=$2 AND organization_id=$1`, org, inst).Scan(&s.Enabled, &s.PausedAt, &s.PausedReason, &s.UpdatedAt, &s.MarkerClass)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return ShopAutoDeliverySettings{}, nil
+		return ShopAutoDeliverySettings{MarkerClass: ShopDefaultMarkerClass}, nil
 	}
 	return s, err
 }
@@ -74,6 +80,15 @@ func (r *ShopAutoDeliveryRepository) SetEnabled(ctx context.Context, org, inst i
 VALUES($2,$1,$3,$4)
 ON CONFLICT (installation_id) DO UPDATE SET enabled=EXCLUDED.enabled, updated_by_user_id=EXCLUDED.updated_by_user_id, updated_at=NOW()`,
 		org, inst, enabled, nullID(actorUserID))
+}
+
+// SetMarker is the owner's choice of marker: a DayZ class name, or "" for none. It applies to orders
+// planned from now on; an order already staged keeps the marker it was staged with.
+func (r *ShopAutoDeliveryRepository) SetMarker(ctx context.Context, org, inst int64, markerClass string, actorUserID int64) error {
+	return execShop(ctx, r.pool, `INSERT INTO shop_auto_delivery_settings(installation_id, organization_id, marker_class, updated_by_user_id)
+VALUES($2,$1,NULLIF($3,''),$4)
+ON CONFLICT (installation_id) DO UPDATE SET marker_class=EXCLUDED.marker_class, updated_by_user_id=EXCLUDED.updated_by_user_id, updated_at=NOW()`,
+		org, inst, markerClass, nullID(actorUserID))
 }
 
 // Pause stops automatic delivery for the installation with a reason. The first reason is kept: a
@@ -117,6 +132,8 @@ type ShopAutoInstallation struct {
 	ConfigSHA256, MissionPath string
 	// UTCOffsetMinutes is the server clock's offset from UTC, learned by Live Sync (nil = unknown).
 	UTCOffsetMinutes *int
+	// MarkerClass is the marker to stage beside each newly planned order ("" = none).
+	MarkerClass string
 }
 
 // ClaimInstallations leases the installations that are enabled, not paused, READY and in allowed,
@@ -129,10 +146,11 @@ WITH claimed AS (
                                   WHERE enabled AND paused_at IS NULL AND installation_id = ANY($4)
                                     AND (lease_until IS NULL OR lease_until <= $1 OR lease_owner = $2)
                                   ORDER BY installation_id FOR UPDATE SKIP LOCKED)
-    RETURNING s.installation_id, s.organization_id, COALESCE(s.config_sha256,'') AS config_sha256, COALESCE(s.mission_path,'') AS mission_path
+    RETURNING s.installation_id, s.organization_id, COALESCE(s.config_sha256,'') AS config_sha256, COALESCE(s.mission_path,'') AS mission_path,
+              COALESCE(s.marker_class,'') AS marker_class
 )
 SELECT cl.organization_id, cl.installation_id, gs.id, dc.guild_id, gs.provider_service_id, COALESCE(ds.map_key,''),
-       cl.config_sha256, cl.mission_path, ck.utc_offset_minutes
+       cl.config_sha256, cl.mission_path, ck.utc_offset_minutes, cl.marker_class
   FROM claimed cl
   JOIN installations i ON i.id = cl.installation_id AND i.organization_id = cl.organization_id AND i.status = 'READY'
   JOIN game_servers gs ON gs.id = i.game_server_id
@@ -148,7 +166,7 @@ SELECT cl.organization_id, cl.installation_id, gs.id, dc.guild_id, gs.provider_s
 	for rows.Next() {
 		var a ShopAutoInstallation
 		if err := rows.Scan(&a.OrganizationID, &a.InstallationID, &a.GameServerID, &a.GuildRowID, &a.NitradoServiceID, &a.MapKey,
-			&a.ConfigSHA256, &a.MissionPath, &a.UTCOffsetMinutes); err != nil {
+			&a.ConfigSHA256, &a.MissionPath, &a.UTCOffsetMinutes, &a.MarkerClass); err != nil {
 			return nil, err
 		}
 		out = append(out, a)

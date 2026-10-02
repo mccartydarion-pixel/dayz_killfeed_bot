@@ -96,6 +96,34 @@ func TestShopAutoDeliverySwitchesAreAllOffByDefault(t *testing.T) {
 		t.Fatalf("an unlisted installation: %v", s)
 	}
 
+	// The marker beside each delivered order: a default, changeable, removable, never a path.
+	if s := w.autoState(w.a1); s["markerClass"] != repository.ShopDefaultMarkerClass {
+		t.Fatalf("default marker: %v", s)
+	}
+	setMarker := func(actor string, marker any) *apiResult {
+		return w.do(http.MethodPut, w.shopPath(w.a1, "/admin/auto-delivery"), actor, map[string]any{"markerClass": marker})
+	}
+	for _, bad := range []string{"dz/structures/roadblock.p3d", "Road Cone", "1Cone"} {
+		if r := setMarker(w.admin, bad); r.Status != http.StatusBadRequest {
+			t.Fatalf("marker %q: HTTP %d", bad, r.Status)
+		}
+	}
+	if r := setMarker(player, "Land_RoadCone"); r.Status != http.StatusForbidden {
+		t.Fatalf("a player changed the marker: HTTP %d", r.Status)
+	}
+	changed := w.expect(setMarker(w.admin, " Land_RoadCone "), http.StatusOK, "set marker").JSON(t)["autoDelivery"].(map[string]any)
+	if changed["markerClass"] != "Land_RoadCone" || changed["enabled"] != true {
+		t.Fatalf("marker change must not touch the switch: %v", changed)
+	}
+	if none := w.expect(setMarker(w.admin, ""), http.StatusOK, "no marker").JSON(t)["autoDelivery"].(map[string]any); none["markerClass"] != "" {
+		t.Fatalf("no marker: %v", none)
+	}
+	// The switch alone leaves the marker as it is.
+	w.expect(w.do(http.MethodPut, w.shopPath(w.a1, "/admin/auto-delivery"), w.admin, map[string]any{"enabled": true}), http.StatusOK, "enable again")
+	if s := w.autoState(w.a1); s["markerClass"] != "" {
+		t.Fatalf("the switch changed the marker: %v", s)
+	}
+
 	// A pause (set by the worker) stops delivery until a person resumes it.
 	if err := w.a.ShopAuto.Pause(context.Background(), w.a1.OrgID, w.a1.InstallationID, "cfggameplay.json changed"); err != nil {
 		t.Fatal(err)

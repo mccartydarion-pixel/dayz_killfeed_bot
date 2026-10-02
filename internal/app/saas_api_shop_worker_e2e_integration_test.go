@@ -135,7 +135,13 @@ VALUES($1,$2,$3,'RPT','DayZServer_x64.RPT',$4,$5,'PARSED','LIVE',$6,$6,'{}'::jso
 	if len(rep.Staged) != 1 || rep.Staged[0] != attemptID || srv.writes != 1 {
 		t.Fatalf("stage pass: %+v", rep)
 	}
-	wantFile := string(nd.SpawnerFile{Objects: nd.AttemptEntries(attemptID, "BandageDressing", 2, [3]float64{7000.5, 210.4, 9000.5})}.Render())
+	// The installation's default marker is staged beside the item.
+	if s := w.autoState(f); s["markerClass"] != repository.ShopDefaultMarkerClass {
+		t.Fatalf("default marker: %v", s)
+	}
+	dropPoint := [3]float64{7000.5, 210.4, 9000.5}
+	wantFile := string(nd.SpawnerFile{Objects: append(nd.AttemptEntries(attemptID, "BandageDressing", 2, dropPoint),
+		nd.MarkerEntry(attemptID, repository.ShopDefaultMarkerClass, dropPoint))}.Render())
 	if string(srv.content) != wantFile {
 		t.Fatalf("staged file:\n%s\nwant:\n%s", srv.content, wantFile)
 	}

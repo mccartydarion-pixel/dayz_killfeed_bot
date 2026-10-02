@@ -111,8 +111,9 @@ func New(cfg Config, ledger Ledger, store Store, deliveries Deliveries, buyers B
 	if cfg.MaxStaged <= 0 {
 		cfg.MaxStaged = DefaultMaxStaged
 	}
-	if cfg.MaxStaged > nd.MaxStagedObjects/nd.MaxUnitsPerOrder {
-		cfg.MaxStaged = nd.MaxStagedObjects / nd.MaxUnitsPerOrder
+	// Each order is at most MaxUnitsPerOrder items plus one marker.
+	if cfg.MaxStaged > nd.MaxStagedObjects/(nd.MaxUnitsPerOrder+1) {
+		cfg.MaxStaged = nd.MaxStagedObjects / (nd.MaxUnitsPerOrder + 1)
 	}
 	if strings.TrimSpace(cfg.Name) == "" {
 		cfg.Name = "default"
@@ -193,7 +194,13 @@ func inFile(state string) bool {
 func entriesOf(attempts []repository.ShopAttempt) []nd.SpawnerObject {
 	var out []nd.SpawnerObject
 	for _, a := range attempts {
-		out = append(out, nd.AttemptEntries(a.AttemptID, a.ClassName, a.Quantity, [3]float64{a.PosX, a.PosY, a.PosZ})...)
+		pos := [3]float64{a.PosX, a.PosY, a.PosZ}
+		out = append(out, nd.AttemptEntries(a.AttemptID, a.ClassName, a.Quantity, pos)...)
+		// The marker recorded on the attempt (never the installation's current setting): the file an
+		// attempt staged must stay reproducible even if the owner changes the marker meanwhile.
+		if a.MarkerClass != nil && *a.MarkerClass != "" {
+			out = append(out, nd.MarkerEntry(a.AttemptID, *a.MarkerClass, pos))
+		}
 	}
 	return out
 }
@@ -604,10 +611,16 @@ func (p *pass) plan(c repository.ShopAutoCandidate) (repository.ShopAttempt, err
 		return none, err
 	}
 	pos := plan.Position()
+	// A marker class that is not a plain class name is dropped, never staged: a name with a path
+	// would make the spawner create a model instead of an object.
+	marker := inst.MarkerClass
+	if marker != "" && nd.ValidateClassName(marker) != nil {
+		marker = ""
+	}
 	a, err := w.ledger.Create(p.ctx, repository.ShopAttemptCreate{OrganizationID: inst.OrganizationID, InstallationID: inst.InstallationID, DeliveryID: c.DeliveryID,
 		Attempt: n, AttemptID: plan.AttemptID(), Fingerprint: plan.Fingerprint(), ClassName: plan.ClassName(), Quantity: plan.Quantity(),
 		PosX: pos[0], PosY: pos[1], PosZ: pos[2], DropSourceFile: c.DropSourceFile, DropSourceOffset: c.DropSourceOffset,
-		ArtifactPath: repository.ShopAttemptCustomArtifactPath, FulfilmentMode: repository.ShopFulfilmentBuyer}, w.actor())
+		ArtifactPath: repository.ShopAttemptCustomArtifactPath, FulfilmentMode: repository.ShopFulfilmentBuyer, MarkerClass: marker}, w.actor())
 	if err != nil {
 		return none, err
 	}

@@ -149,3 +149,34 @@ END $$;
 ALTER TABLE shop_order_tickets ADD CONSTRAINT shop_order_tickets_opened_via_allowed
     CHECK (opened_via IN ('SITE','DISCORD','SYSTEM'));
 `
+
+// ShopAttemptMarkerSQL (migration 0113) lets a delivery attempt carry a marker: one static object the
+// worker spawns beside the delivered item so the buyer can find the spot (the owner's choice, for
+// example StaticObj_Roadblock_Wood_Small). The marker class is recorded on the attempt when it is
+// created and never changes, so the exact file an attempt stages can always be rebuilt from the
+// ledger. NULL (every existing attempt, and the manual path) means no marker.
+const ShopAttemptMarkerSQL = `
+ALTER TABLE shop_delivery_attempts
+    ADD COLUMN IF NOT EXISTS marker_class TEXT CHECK (marker_class IS NULL OR marker_class ~ '^[A-Za-z][A-Za-z0-9_]{1,63}$');
+
+CREATE OR REPLACE FUNCTION shop_delivery_attempt_marker_guard() RETURNS trigger LANGUAGE plpgsql AS $fn$
+BEGIN
+    IF NEW.marker_class IS DISTINCT FROM OLD.marker_class THEN
+        RAISE EXCEPTION 'a shop attempt identity is immutable' USING ERRCODE = 'SA422';
+    END IF;
+    RETURN NEW;
+END
+$fn$;
+DROP TRIGGER IF EXISTS trg_shop_delivery_attempt_marker_guard ON shop_delivery_attempts;
+CREATE TRIGGER trg_shop_delivery_attempt_marker_guard BEFORE UPDATE ON shop_delivery_attempts
+    FOR EACH ROW EXECUTE FUNCTION shop_delivery_attempt_marker_guard();
+`
+
+// ShopAutoDeliveryMarkerSQL (migration 0114) is the owner's marker setting per installation: the
+// class of the static object spawned beside each automatically delivered order, or NULL for none.
+// It defaults to the small wooden roadblock, for existing installations too.
+const ShopAutoDeliveryMarkerSQL = `
+ALTER TABLE shop_auto_delivery_settings
+    ADD COLUMN IF NOT EXISTS marker_class TEXT DEFAULT 'StaticObj_Roadblock_Wood_Small'
+        CHECK (marker_class IS NULL OR marker_class ~ '^[A-Za-z][A-Za-z0-9_]{1,63}$');
+`

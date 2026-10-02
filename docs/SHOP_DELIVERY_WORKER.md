@@ -104,6 +104,28 @@ The buyer's own last logged position (owner decision 1).
 - The worker takes the altitude from the same log line (`player_location_events`).
 - When any switch is off, the same product is bought the old way: typed coordinates, manual queue.
 
+## The marker beside a delivered order
+
+So the buyer can find the spot, the worker stages one static object beside each order: the marker.
+
+- **Setting.** One marker class per installation, `StaticObj_Roadblock_Wood_Small` by default
+  (migration `0114_shop_auto_delivery_marker`). The owner changes or removes it with
+  `PUT …/shop/admin/auto-delivery {"markerClass": "…"}`; an empty string means no marker.
+- **Position.** Half a metre east of the item, at the same height: beside it, never on it, so it
+  cannot keep the buyer from picking the item up.
+- **Lifetime.** The marker is in the file together with the item and is removed with it. A static
+  object is not saved by the game, so it disappears at the next restart after the removal.
+- **In the ledger.** The marker class is recorded on the attempt when it is created (migration
+  `0113_shop_delivery_attempt_marker`) and never changes. The file an attempt staged can therefore
+  always be rebuilt from the ledger, even if the owner changes the marker while an order is staged.
+- **Limits.** One marker per order. With markers the file holds at most four orders at once
+  (ten items and one marker each, fifty objects in total).
+- **A marker that is not a plain class name is never staged.** The order is delivered without one.
+
+Not verified on a real server yet: that `StaticObj_Roadblock_Wood_Small` spawns through the object
+spawner on console, and how it sits on the ground. Stage 2 (one supervised order) is where that is
+checked. Everyone nearby can see the marker, not only the buyer.
+
 ## When it pauses
 
 A pause stops delivery for that installation and logs `event=paused` with the reason. New orders
