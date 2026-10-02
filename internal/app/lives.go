@@ -138,17 +138,17 @@ func (a *App) linkedPlayer(ctx context.Context, guildRowID int64, discordUserID 
 
 // registerLifeCommands registers /life and starts the recap notifier. Called once from Run, before
 // the server workers (and their persistence adapter) are created.
-func (a *App) registerLifeCommands(ctx context.Context, session *discordgo.Session) {
+func (a *App) registerLifeCommands(ctx context.Context, session *discordgo.Session, commands discord.CommandRegistrar) {
 	if a.Lives == nil || a.Guilds == nil || a.Discord == nil || session == nil || a.Config.DiscordGuildID == "" {
 		return
 	}
 	a.LifeRecap = discord.NewLifeRecapNotifier(session, a.Lives, a.serverNameFunc())
 	go a.LifeRecap.Run(ctx)
 	handler := discord.NewLifeCommandHandler(a.Lives, a.Guilds, a.linkedPlayer, a.publicServerID)
-	if err := discord.RegisterLifeCommands(session, a.Config.DiscordGuildID); err != nil {
+	if err := discord.RegisterLifeCommands(commands, a.Config.DiscordGuildID); err != nil {
 		slog.Warn("component=discord", "msg", "failed to register life command", "err", err.Error())
 	} else {
-		slog.Info("component=discord", "msg", "life command registered")
+		slog.Info("component=discord", "msg", "life command queued")
 	}
 	a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		if i.Type == discordgo.InteractionApplicationCommand && i.ApplicationCommandData().Name == "life" {

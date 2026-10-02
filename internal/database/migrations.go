@@ -2821,9 +2821,14 @@ CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events
 		SQL:  NitradoTailTrustSQL,
 	},
 	{
+		// The perk store: offers, purchases and charges. Additive.
+		Name: "0111_perk_store",
+		SQL:  PerkStoreSQL,
+	},
+	{
 		// Indexes for case-insensitive name lookups, the per-server kill time window and the
 		// retention sweeps (docs/PERFORMANCE.md "Query hygiene"). Additive.
-		Name: "0111_query_hygiene_indexes",
+		Name: "0112_query_hygiene_indexes",
 		SQL:  QueryHygieneIndexesSQL,
 	},
 }

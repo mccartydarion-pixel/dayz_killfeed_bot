@@ -42,7 +42,7 @@ func NewWarCommandHandler(wars *repository.PostgresWarRepository, guilds GuildSt
 	}
 	return h
 }
-func RegisterWarCommands(session *discordgo.Session, guildID string) error {
+func RegisterWarCommands(session CommandRegistrar, guildID string) error {
 	applicationID, err := ApplicationID(session)
 	if err != nil {
 		return err

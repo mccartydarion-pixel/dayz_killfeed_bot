@@ -362,7 +362,7 @@ func (c *renderedCardCache) drop(token string) {
 }
 
 // registerCardCommand registers /card: post your own Champion Card in the channel.
-func (a *App) registerCardCommand(session *discordgo.Session) {
+func (a *App) registerCardCommand(session *discordgo.Session, commands discord.CommandRegistrar) {
 	if a.Cards == nil || a.Guilds == nil || a.Discord == nil || session == nil || a.Config.DiscordGuildID == "" {
 		return
 	}
@@ -378,10 +378,10 @@ func (a *App) registerCardCommand(session *discordgo.Session) {
 		return playercard.Render(*card)
 	}
 	handler := discord.NewCardCommandHandler(a.Guilds, a.linkedPlayer, a.publicServerID, render)
-	if err := discord.RegisterCardCommand(session, a.Config.DiscordGuildID); err != nil {
+	if err := discord.RegisterCardCommand(commands, a.Config.DiscordGuildID); err != nil {
 		slog.Warn("component=discord", "msg", "failed to register card command", "err", err.Error())
 	} else {
-		slog.Info("component=discord", "msg", "card command registered")
+		slog.Info("component=discord", "msg", "card command queued")
 	}
 	a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		if i.Type == discordgo.InteractionApplicationCommand && i.ApplicationCommandData().Name == "card" {

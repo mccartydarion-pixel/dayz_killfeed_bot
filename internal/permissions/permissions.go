@@ -66,24 +66,24 @@ func ParseLevel(raw string) (Level, bool) {
 type Capability string
 
 const (
-	CapPermissionsView    Capability = "PERMISSIONS_VIEW"
-	CapPermissionsManage  Capability = "PERMISSIONS_MANAGE"
-	CapEconomyView        Capability = "ECONOMY_VIEW"
-	CapWarningsView       Capability = "WARNINGS_VIEW"
-	CapWarningsClear      Capability = "WARNINGS_CLEAR"
-	CapFactionModerate    Capability = "FACTION_MODERATE"
-	CapFactionDissolve    Capability = "FACTION_DISSOLVE"
-	CapBountyManage       Capability = "BOUNTY_MANAGE"
-	CapPlayerStatsReset   Capability = "PLAYER_STATS_RESET"
-	CapServerStatsReset   Capability = "SERVER_STATS_RESET"
-	CapServerRestart      Capability = "SERVER_RESTART"
-	CapServerStop         Capability = "SERVER_STOP"
-	CapServerAutostart    Capability = "SERVER_AUTOSTART"
-	CapServerNameEdit     Capability = "SERVER_NAME_EDIT"
-	CapWhitelistManage    Capability = "WHITELIST_MANAGE"
-	CapBanlistManage      Capability = "BANLIST_MANAGE"
+	CapPermissionsView   Capability = "PERMISSIONS_VIEW"
+	CapPermissionsManage Capability = "PERMISSIONS_MANAGE"
+	CapEconomyView       Capability = "ECONOMY_VIEW"
+	CapWarningsView      Capability = "WARNINGS_VIEW"
+	CapWarningsClear     Capability = "WARNINGS_CLEAR"
+	CapFactionModerate   Capability = "FACTION_MODERATE"
+	CapFactionDissolve   Capability = "FACTION_DISSOLVE"
+	CapBountyManage      Capability = "BOUNTY_MANAGE"
+	CapPlayerStatsReset  Capability = "PLAYER_STATS_RESET"
+	CapServerStatsReset  Capability = "SERVER_STATS_RESET"
+	CapServerRestart     Capability = "SERVER_RESTART"
+	CapServerStop        Capability = "SERVER_STOP"
+	CapServerAutostart   Capability = "SERVER_AUTOSTART"
+	CapServerNameEdit    Capability = "SERVER_NAME_EDIT"
+	CapWhitelistManage   Capability = "WHITELIST_MANAGE"
+	CapBanlistManage     Capability = "BANLIST_MANAGE"
 	// The Nitrado priority list ("Prioritized players"): who skips the queue when the server is full.
-	CapPriorityManage Capability = "PRIORITY_MANAGE"
+	CapPriorityManage     Capability = "PRIORITY_MANAGE"
 	CapPlayerLastOnline   Capability = "PLAYER_LAST_ONLINE_VIEW"
 	CapFeedLocationManage Capability = "FEED_LOCATION_MANAGE"
 	CapMaintenanceMode    Capability = "MAINTENANCE_MODE"
@@ -131,6 +131,10 @@ const (
 	CapStaffActivityView Capability = "STAFF_ACTIVITY_VIEW"
 	CapVIPView           Capability = "VIP_VIEW"
 	CapVIPManage         Capability = "VIP_MANAGE"
+	// The perk store (docs/PERK_STORE.md): viewing orders and handing out custom perks, and
+	// changing offers, the store switch and refunds (points move, so Owner only).
+	CapPerksView   Capability = "PERKS_VIEW"
+	CapPerksManage Capability = "PERKS_MANAGE"
 )
 
 // requiredLevel is the default minimum Level each capability needs (task's "DEFAULT ROLE
@@ -180,6 +184,8 @@ var requiredLevel = map[Capability]Level{
 	CapStaffActivityView:      LevelAdministrator,
 	CapVIPView:                LevelModerator,
 	CapVIPManage:              LevelAdministrator,
+	CapPerksView:              LevelAdministrator,
+	CapPerksManage:            LevelOwner,
 }
 
 // Allows reports whether actorLevel satisfies capability's required minimum Level. An unknown

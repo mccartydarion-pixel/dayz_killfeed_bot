@@ -418,10 +418,47 @@ the in-memory (non-durable) `Deduplicator` cache was lost on restart. `TestColdS
 and `TestCheckForNewerLogPreservesCheckpointAndDedupe` (`internal/killfeed`) cover this; both still
 pass unchanged.
 
-## 17. Query hygiene and data growth
+## 17. Slash commands, buttons and forms
+
+Discord shows "The application did not respond" if the bot does not answer an interaction within
+3 s.
+
+- **Registration.** Every `Register*` function queues its commands in a `discord.CommandBatch`.
+  After every handler is installed, `Run` sends the whole set in one
+  `ApplicationCommandBulkOverwrite` request. Creating the ~21 commands one at a time used to hit
+  Discord's limit of about 5 creates per 20 s. Every deploy then waited ~80 s, and the commands
+  registered last (`/setup`, `/link`, every button and form) were unanswered for that long. The
+  overwrite also removes guild commands the bot no longer registers. An empty batch sends nothing.
+  Log line: `slash commands registered count=… duration_ms=…`.
+- **Timing log.** `internal/discord/interaction_timing.go` times every interaction where its HTTP
+  requests leave the bot, so no handler has to opt in. It writes two log lines:
+  - `interaction answered interaction="/server select" answer_ms=… gateway_ms=…` when the bot first
+    answers. This line is a warning at 2 s or more.
+  - `interaction completed … total_ms=…` when a deferred reply is filled in.
+
+  Interaction tokens are only used as map keys and are never logged. Numbers in button custom IDs
+  are masked.
+- **Reply first.** Slow handlers call `deferEphemeral` first, which shows a private "thinking…".
+  `respondEphemeral`, `respondEphemeralEmbed` and `respondLeaderboardEmbed` then edit that reply
+  instead of answering twice. Deferred handlers:
+  - `/server services`, `/server select` and `/server repair` (they call Nitrado);
+  - `/admin leaderboard-refresh` and `/admin link-, presence- and pipeline-diagnostics`;
+  - `/mybase`, `/registerbase` and the Pay rent button;
+  - `/life`;
+  - `/welcome status` and `/welcome test`;
+  - `/link` and the link panel form.
+- **Other handler changes.**
+  - `/server` autocomplete reuses each guild's Nitrado service list for a minute.
+  - `/admin` builds only the diagnostics section its subcommand shows (`admin.Service.StatusWith`).
+  - The faction recruit Join button answers before it edits the recruit card.
+- **Worker context.** `/server select` and `/server repair` start the killfeed worker with
+  `context.WithoutCancel`. Before this, the worker inherited the command's 20 s timeout and stopped
+  when the command returned.
+
+## 18. Query hygiene and data growth
 
 A second, code-grounded pass over the read paths and the tables that only grow. Migration
-`0111_query_hygiene_indexes` (`internal/database/query_hygiene_schema.go`), additive only.
+`0112_query_hygiene_indexes` (`internal/database/query_hygiene_schema.go`), additive only.
 
 ### Queries
 

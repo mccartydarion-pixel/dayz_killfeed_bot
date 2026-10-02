@@ -495,11 +495,12 @@ func (a *App) HandleFactionRecruitInteraction(s *discordgo.Session, i *discordgo
 			reply(recruitFailureText(err, f, site))
 			return
 		}
-		a.refreshFactionRecruit(ctx, f.OrganizationID, f.InstallationID, f.ID)
+		// Answer first: updating the recruit card is a rate-limited Discord edit.
+		reply(fmt.Sprintf("⚔️ Welcome to **%s** [%s]! You're in as %s. Manage your faction life at %s/dashboard/player/factions/mine", f.Name, f.Tag, titleCase(member.RoleKey), site))
 		if a.FactionHubStats != nil {
 			a.FactionHubStats.Invalidate(f.OrganizationID, f.InstallationID, f.ID)
 		}
-		reply(fmt.Sprintf("⚔️ Welcome to **%s** [%s]! You're in as %s. Manage your faction life at %s/dashboard/player/factions/mine", f.Name, f.Tag, titleCase(member.RoleKey), site))
+		a.refreshFactionRecruit(ctx, f.OrganizationID, f.InstallationID, f.ID)
 	case "apply":
 		// Ask for a short message first; the application is created on modal submit.
 		_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{Type: discordgo.InteractionResponseModal, Data: &discordgo.InteractionResponseData{

@@ -157,6 +157,11 @@ var championDestinations = []championDestination{
 		Starter: &starterCard{"💰 CHAMPION ECONOMY", "Champion Points and shop activity will appear here."},
 	},
 	{
+		Key: "DONATION_PERKS", Label: "Donations & Perks", Category: categoryHub, ChannelName: "💎・donations-perks",
+		Routes: []string{"DONATION_PERKS"}, Anchors: []string{"DONATION_PERKS"},
+		Starter: &starterCard{"💎 DONATIONS & PERKS", "Supporters who pick up a perk in the Player Hub are thanked here, with this month's top supporters."},
+	},
+	{
 		Key: "ONLINE_COUNTER", Label: "Players Online", Category: categoryHub, ChannelName: discord.OnlineCounterName(0, 0),
 		Routes: []string{"ONLINE_COUNTER"}, Anchors: []string{"ONLINE_COUNTER"}, Voice: true,
 	},
@@ -210,6 +215,7 @@ var routeProducerAudit = map[string]routeProducer{
 	"LINK_GAMERTAG":       {HealthActive, "RouteSyncer link panel"},
 	"ECONOMY":             {HealthActive, "EconomyFeed"},
 	"SHOP":                {HealthActive, "shop purchases/refunds, published by EconomyFeed on the ECONOMY route"},
+	"DONATION_PERKS":      {HealthActive, "perk store purchase shout-outs with the month's top supporters"},
 	"ADMIN_LOGS":          {HealthActive, "ADMMonitorPublisher ADM health (per server worker)"},
 	"ADMIN_ALERTS":        {HealthActive, "AdminAlertPublisher: ADM stale, Nitrado download failures, zone/UAV/base radar intrusions"},
 	// BUILD_FEED's publisher runs per server, but its source only exists when
@@ -289,6 +295,9 @@ func (a *App) channelRouteProducers() map[string]routeProducer {
 	}
 	if a.EconomyService == nil {
 		broken("economy service is not running", "ECONOMY", "SHOP")
+	}
+	if a.Perks == nil || a.ChannelRoutes == nil {
+		broken("the perk store is not running", "DONATION_PERKS")
 	}
 	return out
 }
