@@ -246,12 +246,15 @@ func PveCause(ev *Event) (cause DeathCause, ok bool) {
 
 // Engine orchestrates log discovery, selection, incremental polling, and parsing.
 type Engine struct {
-	parser          Parser
-	tracker         *Tracker
-	client          LogSource
-	sink            StateSink
-	serviceID       string
-	pollInterval    time.Duration
+	parser       Parser
+	tracker      *Tracker
+	client       LogSource
+	sink         StateSink
+	serviceID    string
+	pollInterval time.Duration
+	// fastInterval is the poll rate while the server is busy and the token has headroom (see
+	// pollingInterval); 0 disables it. NITRADO_POLL_INTERVAL_FAST, default 3s.
+	fastInterval    time.Duration
 	lastPoll        time.Time
 	lastLogChange   time.Time
 	bytesProcessed  int64
@@ -452,6 +455,7 @@ func NewEngine(client LogSource, serviceID string, parser Parser) *Engine {
 		client:       client,
 		serviceID:    serviceID,
 		pollInterval: interval,
+		fastInterval: envFastPollInterval(interval),
 		tracker:      NewTracker(serviceID),
 		state:        StateDiscovery,
 		dedupe:       NewDeduplicator(90*time.Second, 8192),
@@ -863,9 +867,43 @@ func (e *Engine) Start(ctx context.Context) error {
 // nextInterval returns how long to wait before the next cycle based on state.
 func (e *Engine) nextInterval() time.Duration {
 	if e.state == StatePolling {
-		return e.pollInterval
+		return e.pollingInterval(time.Now())
 	}
 	return discoveryBackoff(e.discoverFails)
+}
+
+// busyWindow is how recently the selected log must have changed for the server to count as busy.
+const busyWindow = 5 * time.Minute
+
+// lowBudgetInterval is the slowest a selected log is polled while its token's budget is low.
+const lowBudgetInterval = 30 * time.Second
+
+// pollingInterval picks the selected-log poll rate (docs/NITRADO_POLLING.md):
+//   - the token's Nitrado budget is low (under 20% left)  -> max(3x base, 30s) until it resets;
+//   - the log changed in the last 5 minutes and the budget is known and at least half left -> fast;
+//   - otherwise -> the base interval (NITRADO_POLL_INTERVAL).
+//
+// The fast rate is only used once Nitrado's own rate-limit headers have been seen, so an unknown
+// budget is never spent faster than before.
+func (e *Engine) pollingInterval(now time.Time) time.Duration {
+	base := e.pollInterval
+	src, ok := e.client.(interface{ RateBudget() nitrado.Budget })
+	if !ok {
+		return base
+	}
+	budget := src.RateBudget()
+	if budget.Low(now) {
+		slow := 3 * base
+		if slow < lowBudgetInterval {
+			slow = lowBudgetInterval
+		}
+		return slow
+	}
+	if e.fastInterval > 0 && e.fastInterval < base && budget.Known && budget.Healthy(now) &&
+		!e.lastLogChange.IsZero() && now.Sub(e.lastLogChange) <= busyWindow {
+		return e.fastInterval
+	}
+	return base
 }
 
 // PollOnce executes one cycle of the state machine. In DISCOVERY it scans for a
@@ -2139,7 +2177,7 @@ func (e *Engine) reportPoll() {
 	if e.sink == nil {
 		return
 	}
-	e.sink.SetPollStats(e.lastPoll, e.lastLogChange, e.pollInterval, e.bytesProcessed, e.linesDiscovered)
+	e.sink.SetPollStats(e.lastPoll, e.lastLogChange, e.pollingInterval(time.Now()), e.bytesProcessed, e.linesDiscovered)
 	// The selected log is "active" if it changed within roughly two poll cycles.
 	active := !e.lastLogChange.IsZero() && time.Since(e.lastLogChange) <= 2*e.pollInterval
 	e.sink.SetSelectedLogActive(active)
@@ -2156,6 +2194,20 @@ func (e *Engine) reportPoll() {
 		"discord_kills_published":  e.metrics.DiscordKillsPublished,
 		"discord_publish_errors":   e.metrics.DiscordPublishErrors,
 	}, e.metrics.LastKillTime)
+}
+
+// envFastPollInterval reads NITRADO_POLL_INTERVAL_FAST (default 3s; "off" or "0" disables). It is
+// never below 1s and only used when faster than the base interval.
+func envFastPollInterval(base time.Duration) time.Duration {
+	raw := stringsFromEnv("NITRADO_POLL_INTERVAL_FAST")
+	if raw == "off" || raw == "0" {
+		return 0
+	}
+	fast := envPollInterval("NITRADO_POLL_INTERVAL_FAST", 3*time.Second)
+	if fast >= base {
+		return 0
+	}
+	return fast
 }
 
 func envPollInterval(name string, fallback time.Duration) time.Duration {

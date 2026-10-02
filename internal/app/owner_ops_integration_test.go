@@ -159,7 +159,7 @@ func TestOwnerOpsRoutesAreAdminOnly(t *testing.T) {
 	a := w.a
 	for name, h := range map[string]adminHandler{"config-check": a.handleAdminConfigCheck, "fleet": a.handleAdminFleet, "customer-health": a.handleAdminCustomerHealth,
 		"funnel": a.handleAdminFunnel, "revenue": a.handleAdminRevenue, "briefing": a.handleAdminBriefing, "automation": a.handleAdminGetAutomation,
-		"incidents": a.handleAdminIncidents, "broadcasts": a.handleAdminBroadcasts} {
+		"incidents": a.handleAdminIncidents, "broadcasts": a.handleAdminBroadcasts, "nitrado-usage": a.handleAdminNitradoUsage} {
 		if rr := w.get(h, "/api/admin/"+name, w.a1.OwnerDiscordID, nil); rr.Code != http.StatusForbidden {
 			t.Fatalf("%s: a tenant owner must be 403, got %d", name, rr.Code)
 		}

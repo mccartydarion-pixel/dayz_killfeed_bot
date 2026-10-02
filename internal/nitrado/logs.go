@@ -385,6 +385,17 @@ func (d *discovery) walk(ctx context.Context, dir string, depth int) *RequestErr
 // It logs decode diagnostics so we can distinguish an empty directory from a
 // struct/schema mismatch (HTTP 200 but entries_found=0 due to wrong nesting).
 func (c *Client) listFileServerDir(ctx context.Context, serviceID, dir string) ([]fileServerListEntry, error) {
+	if entries, ok := c.cachedListing(serviceID, dir); ok {
+		return entries, nil
+	}
+	entries, err := c.fetchFileServerDir(ctx, serviceID, dir)
+	if err == nil {
+		c.storeListing(serviceID, dir, entries)
+	}
+	return entries, err
+}
+
+func (c *Client) fetchFileServerDir(ctx context.Context, serviceID, dir string) ([]fileServerListEntry, error) {
 	endpoint := "/services/" + url.PathEscape(serviceID) + "/gameservers/file_server/list"
 	if dir != "" && dir != "/" {
 		endpoint += "?dir=" + url.QueryEscape(dir)
@@ -788,6 +799,7 @@ func (c *Client) readDirectURL(ctx context.Context, rawURL string) ([]byte, erro
 		if err != nil {
 			return nil, fmt.Errorf("read remote log: %w", err)
 		}
+		rateLimits.observeDownload(c.tokenKey, resp.StatusCode)
 		if resp.StatusCode == http.StatusOK {
 			defer resp.Body.Close()
 			return io.ReadAll(resp.Body)
