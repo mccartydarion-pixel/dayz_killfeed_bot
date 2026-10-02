@@ -424,6 +424,83 @@ type channelLayoutInput struct {
 	// SyncPanels posts/restores persistent panels for the just-written
 	// routes before verification. Optional.
 	SyncPanels func(ctx context.Context)
+	// Run is shared by every installation of one guild-wide /setup run. Optional.
+	Run *layoutRun
+}
+
+// layoutRun is shared by the installations of one guild-wide /setup run. They point at the same
+// Discord channels, so each channel's live checks (can the bot send, has it posted) run once per
+// run, and the guild-wide panel sync runs once unless a later installation changed its routes.
+// One run used to repeat all of that per installation: 11 installations took about two minutes.
+type layoutRun struct {
+	mu           sync.Mutex
+	checks       map[string]channelLiveCheck // by channel ID, taken after the latest panel sync
+	panelsSynced bool
+}
+
+type channelLiveCheck struct {
+	botCanSend bool
+	has        bool
+	err        error
+}
+
+func newLayoutRun() *layoutRun { return &layoutRun{checks: map[string]channelLiveCheck{}} }
+
+func (r *layoutRun) cached(channelID string) (channelLiveCheck, bool) {
+	if r == nil {
+		return channelLiveCheck{}, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	c, ok := r.checks[channelID]
+	return c, ok
+}
+
+func (r *layoutRun) store(channelID string, c channelLiveCheck) {
+	if r == nil || c.err != nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.checks[channelID] = c
+}
+
+// needsPanelSync reports whether this installation must run the guild-wide panel sync: always
+// outside a shared run, otherwise only the first time or when this installation changed routes.
+func (r *layoutRun) needsPanelSync(changed bool) bool {
+	if r == nil {
+		return true
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return !r.panelsSynced || changed
+}
+
+// synced records a panel sync: checks taken before it may be stale (a panel may now exist).
+func (r *layoutRun) synced() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.panelsSynced = true
+	r.checks = map[string]channelLiveCheck{}
+}
+
+// forEachLimited runs fn(i) for i in [0, n) with at most layoutCheckConcurrency at once.
+func forEachLimited(n int, fn func(i int)) {
+	var wg sync.WaitGroup
+	slots := make(chan struct{}, layoutCheckConcurrency)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			slots <- struct{}{}
+			defer func() { <-slots }()
+			fn(i)
+		}(i)
+	}
+	wg.Wait()
 }
 
 // LayoutSummary condenses one setup/repair run for the website and /setup.
@@ -541,6 +618,7 @@ func applyChannelLayout(ctx context.Context, d channelLayoutDiscord, w channelRo
 	// 3. Channels, then routes.
 	result := &channelLayoutResult{Categories: categories, Routes: map[string]ChannelRouteInfo{}}
 	sum := &result.Summary
+	changed := false // a channel created or a route written or removed by this installation
 	finalChannel := map[string]bool{}
 	customerChannel := map[string]bool{} // destination keys served by a customer channel
 	for _, p := range plans {
@@ -555,6 +633,7 @@ func applyChannelLayout(ctx context.Context, d channelLayoutDiscord, w channelRo
 					if err := w.DeleteRoute(ctx, in.OrganizationID, in.InstallationID, key); err != nil {
 						return nil, fmt.Errorf("unmap route %s: %w", key, err)
 					}
+					changed = true
 				}
 			}
 			if p.Health == HealthBlocked || p.Health == HealthDisabled || p.Health == HealthNotRequired {
@@ -585,6 +664,7 @@ func applyChannelLayout(ctx context.Context, d channelLayoutDiscord, w channelRo
 			}
 			report.Created = created
 			if created {
+				changed = true
 				sum.Created = append(sum.Created, ch.Name)
 				channels = append(channels, ch)
 				byID[ch.ID] = ch
@@ -630,6 +710,7 @@ func applyChannelLayout(ctx context.Context, d channelLayoutDiscord, w channelRo
 				if err := w.UpsertRoute(ctx, in.OrganizationID, in.InstallationID, key, ch.ID, true); err != nil {
 					return nil, fmt.Errorf("map route %s: %w", key, err)
 				}
+				changed = true
 			}
 			result.Routes[key] = ChannelRouteInfo{ChannelID: ch.ID, ChannelName: ch.Name, ManagedByChampion: true}
 		}
@@ -643,60 +724,105 @@ func applyChannelLayout(ctx context.Context, d channelLayoutDiscord, w channelRo
 			if err := w.DeleteRoute(ctx, in.OrganizationID, in.InstallationID, key); err != nil {
 				return nil, fmt.Errorf("unmap route %s: %w", key, err)
 			}
+			changed = true
 		}
 	}
 
 	// 4. Persistent panels first, so verification sees them. Which panel
 	//    channels had no Champion content before is remembered, to report
-	//    what the sync repaired.
-	panelWasBlank := map[string]bool{}
-	for _, rep := range result.Destinations {
+	//    what the sync repaired. The reads run together, a few at a time.
+	var panelChecks []int
+	for i, rep := range result.Destinations {
 		dest := destinationByKey(rep.Key)
 		if rep.Checks != nil && dest.Starter == nil && !dest.Voice && !customerChannel[rep.Key] {
-			if has, err := d.ChannelHasBotMessage(rep.ChannelID); err == nil && !has {
-				panelWasBlank[rep.Key] = true
-			}
+			panelChecks = append(panelChecks, i)
 		}
 	}
-	if in.SyncPanels != nil {
+	panelHas := make([]bool, len(panelChecks))
+	panelErr := make([]error, len(panelChecks))
+	forEachLimited(len(panelChecks), func(j int) {
+		channelID := result.Destinations[panelChecks[j]].ChannelID
+		if c, ok := in.Run.cached(channelID); ok {
+			panelHas[j] = c.has
+			return
+		}
+		panelHas[j], panelErr[j] = d.ChannelHasBotMessage(channelID)
+	})
+	panelWasBlank := map[string]bool{}
+	for j, i := range panelChecks {
+		if panelErr[j] == nil && !panelHas[j] {
+			panelWasBlank[result.Destinations[i].Key] = true
+		}
+	}
+	if in.SyncPanels != nil && in.Run.needsPanelSync(changed) {
 		in.SyncPanels(ctx)
+		in.Run.synced()
 	}
 
 	// 5. Verify, posting one starter card where a Champion feed channel is
-	//    blank. Customer channels are only read.
+	//    blank. Customer channels are only read. The Discord reads run
+	//    together, a few at a time (once per channel per /setup run); the
+	//    results are applied in layout order.
+	var liveChecks []int
 	for i := range result.Destinations {
 		rep := &result.Destinations[i]
 		if rep.Checks == nil {
 			continue
 		}
-		dest := destinationByKey(rep.Key)
-		if dest.Voice {
+		if destinationByKey(rep.Key).Voice {
 			// A counter's content is its name, kept by the counter itself;
 			// the bot only needs the channel to exist.
 			rep.Checks.BotCanSend, rep.Checks.VisibleContent = rep.Checks.ChannelExists, rep.Checks.ChannelExists
-		} else {
-			v := d.Verify(in.GuildID, rep.ChannelID)
-			rep.Checks.BotCanSend = v.ChannelFound && len(v.Missing) == 0
-			has, err := d.ChannelHasBotMessage(rep.ChannelID)
-			if err != nil {
-				slog.Warn("component=saas_api", "msg", "read channel content failed", "destination", rep.Key, "err", err.Error())
+			continue
+		}
+		liveChecks = append(liveChecks, i)
+	}
+	live := make([]channelLiveCheck, len(liveChecks))
+	fromRun := make([]bool, len(liveChecks))
+	forEachLimited(len(liveChecks), func(j int) {
+		channelID := result.Destinations[liveChecks[j]].ChannelID
+		if c, ok := in.Run.cached(channelID); ok {
+			live[j], fromRun[j] = c, true
+			return
+		}
+		v := d.Verify(in.GuildID, channelID)
+		has, err := d.ChannelHasBotMessage(channelID)
+		live[j] = channelLiveCheck{botCanSend: v.ChannelFound && len(v.Missing) == 0, has: has, err: err}
+	})
+	for j, i := range liveChecks {
+		rep := &result.Destinations[i]
+		dest := destinationByKey(rep.Key)
+		c := live[j]
+		rep.Checks.BotCanSend = c.botCanSend
+		if c.err != nil {
+			slog.Warn("component=saas_api", "msg", "read channel content failed", "destination", rep.Key, "err", c.err.Error())
+		}
+		// A result shared from an earlier installation of this run already
+		// had its starter card sent if it needed one.
+		if !fromRun[j] && c.err == nil && !c.has && dest.Starter != nil && c.botCanSend && !customerChannel[rep.Key] {
+			if serr := d.SendChannelEmbed(rep.ChannelID, starterEmbed(*dest.Starter)); serr != nil {
+				slog.Warn("component=saas_api", "msg", "starter card failed", "destination", rep.Key, "err", serr.Error())
+			} else {
+				c.has, rep.StarterSent = true, true
+				sum.StartersSent = append(sum.StartersSent, rep.Key)
 			}
-			if err == nil && !has && dest.Starter != nil && rep.Checks.BotCanSend && !customerChannel[rep.Key] {
-				if serr := d.SendChannelEmbed(rep.ChannelID, starterEmbed(*dest.Starter)); serr != nil {
-					slog.Warn("component=saas_api", "msg", "starter card failed", "destination", rep.Key, "err", serr.Error())
-				} else {
-					has, rep.StarterSent = true, true
-					sum.StartersSent = append(sum.StartersSent, rep.Key)
-				}
-			}
-			rep.Checks.VisibleContent = has
-			if has && panelWasBlank[rep.Key] {
-				sum.PanelsRepaired = append(sum.PanelsRepaired, rep.Key)
-			}
+		}
+		if !fromRun[j] {
+			in.Run.store(rep.ChannelID, c)
+		}
+		rep.Checks.VisibleContent = c.has
+		if c.has && panelWasBlank[rep.Key] {
+			sum.PanelsRepaired = append(sum.PanelsRepaired, rep.Key)
+		}
+	}
+	for i := range result.Destinations {
+		rep := &result.Destinations[i]
+		if rep.Checks == nil {
+			continue
 		}
 		if !rep.Checks.passed() {
 			rep.Health = HealthBroken
-			rep.Detail = brokenDetail(*rep.Checks, dest.Starter == nil)
+			rep.Detail = brokenDetail(*rep.Checks, destinationByKey(rep.Key).Starter == nil)
 			sum.Broken = append(sum.Broken, rep.Key)
 		}
 	}
