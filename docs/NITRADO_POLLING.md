@@ -58,6 +58,11 @@ Some calls always skip the cache and ask Nitrado:
 | Log changed in the last 5 minutes, and the budget is known with at least half left | fast rate (`NITRADO_POLL_INTERVAL_FAST`, default `3s`; `off` disables it) |
 | Otherwise | base rate (`NITRADO_POLL_INTERVAL`, default `10s`) |
 
+The interval runs from the start of one poll to the start of the next, so a 2s interval polls every
+2s rather than every 2s plus the poll's own time (about 0.5–0.9s in production). After a slow poll
+the bot still waits at least 250 ms. The discovery backoff is unchanged: it is a full wait after
+each attempt.
+
 The fast rate is only used after Nitrado's headers have been seen. If Nitrado never sends them, the
 bot polls exactly as before.
 

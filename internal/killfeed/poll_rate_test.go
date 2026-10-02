@@ -46,3 +46,17 @@ func TestPollingIntervalAdaptsToActivityAndBudget(t *testing.T) {
 		t.Fatalf("fast disabled: %v", got)
 	}
 }
+
+func TestNextDelayCountsFromPollStart(t *testing.T) {
+	e := &Engine{pollInterval: 2 * time.Second, state: StatePolling}
+	if got := e.nextDelay(700 * time.Millisecond); got != 1300*time.Millisecond {
+		t.Fatalf("poll time is taken off the wait: %v", got)
+	}
+	if got := e.nextDelay(5 * time.Second); got != minPollGap {
+		t.Fatalf("a slow poll still leaves the minimum gap: %v", got)
+	}
+	e.state = StateDiscovery
+	if got, want := e.nextDelay(time.Second), discoveryBackoff(0); got != want {
+		t.Fatalf("discovery backoff is a full wait: %v want %v", got, want)
+	}
+}
