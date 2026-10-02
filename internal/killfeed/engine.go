@@ -391,6 +391,11 @@ type Engine struct {
 	// nitrado.DeltaModeOff (see NewEngine) - the full-download path (ReadLog) is completely
 	// unaffected unless an operator explicitly sets NITRADO_DELTA_READ_MODE.
 	deltaMode nitrado.DeltaMode
+	// admLast* remember the byte just before the checkpoint (file, offset, value), so a verified
+	// tail read (nitrado/tail_trust.go) can prove it continues exactly where the last read ended.
+	admLastPath   string
+	admLastOffset int64
+	admLastByte   byte
 	// deltaBytesReceived/fullReadBytesAvoided are cumulative, process-lifetime counters for the
 	// admin performance snapshot (task section 30) - never reset, never used for any decision.
 	deltaBytesReceived   int64
@@ -1403,6 +1408,22 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 			return nil
 		}
 	}
+	// Verified tail reads (docs/NITRADO_POLLING.md): once partial reads have matched full
+	// downloads for this Nitrado service, read only the new bytes. Never for a first read, a
+	// rotation, or when the checkpoint is not the one the last read ended at.
+	verifyTail := false
+	tailReader, canTail := e.client.(nitrado.TailReader)
+	if e.deltaMode == nitrado.DeltaModeOff && canTail && !rotation && oldOffset > 0 && current.Size > oldOffset &&
+		e.admLastPath == current.Path && e.admLastOffset == oldOffset {
+		tailOnly, verify := nitrado.TailPlan(e.serviceID)
+		verifyTail = verify
+		if tailOnly {
+			if handled := e.tryVerifiedTail(ctx, tailReader, current, oldOffset, previousFile, rotation, downloadStarted); handled {
+				e.reportPoll()
+				return nil
+			}
+		}
+	}
 
 	slog.Info("component=adm", "event", "download_started", "server_id", e.serverID, "file", current.Name, "remote_size", current.Size)
 	if e.diagnostics != nil {
@@ -1478,6 +1499,7 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 	e.lastLogChange = e.lastPoll
 	e.tracker.UpdateCheckpoint(e.serviceID, current.Path, int64(len(content)), current.Modified, newOffset)
 	checkpointOK := e.saveDurableCheckpoint(ctx, current, newOffset)
+	e.rememberLastByte(current.Path, newOffset, content, 0)
 	e.noteSourceGrowth(bytesConsumed)
 	if e.diagnostics != nil {
 		e.diagnostics.Update(func(s *RuntimeDiagnosticSnapshot) {
@@ -1499,6 +1521,14 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 	}
 	report := DownloadReport{ServerID: e.serverID, File: current.Name, PreviousFile: previousFile, RemoteSize: current.Size, DownloadedBytes: int64(len(content)), PreviousOffset: oldOffset, NewOffset: newOffset, NewBytes: int64(len(content)) - oldOffset, EventsParsed: eventsParsed, Duration: downloadDuration, Result: result, Rotation: rotation, CheckpointCurrent: checkpointOK, At: time.Now()}
 	e.emitDownloadReport(report)
+	// Verification runs after the new lines are processed, so it never delays a kill post.
+	if verifyTail && int64(len(content)) > oldOffset {
+		tail, method, ok := nitrado.ReadTail(ctx, tailReader, e.serviceID, current.Path, oldOffset-1, 0)
+		if ok {
+			match, newBytes := nitrado.TailMatches(content, oldOffset-1, tail)
+			nitrado.TailVerified(e.serviceID, match, newBytes, method, "adm")
+		}
+	}
 	e.rotationPending = false
 	slog.Info("component=adm", "event", "download_complete", "server_id", e.serverID, "file", current.Name, "remote_size", current.Size, "downloaded_bytes", len(content), "previous_offset", oldOffset, "new_offset", newOffset, "new_bytes", int64(len(content))-oldOffset, "events_parsed", eventsParsed, "duration_ms", downloadDuration.Milliseconds(), "result", result, "timestamp", report.At.UTC().Format(time.RFC3339))
 
@@ -1545,8 +1575,25 @@ func (e *Engine) tryDeltaPoll(ctx context.Context, current *nitrado.LogFile, old
 	if !ok {
 		return false
 	}
+	return e.applyTail(ctx, current, oldOffset, targetSize, result.Data, result.Method, previousFile, rotation, downloadStarted)
+}
+
+// tryVerifiedTail reads oldOffset-1..current.Size from a trusted service. The first byte must be
+// the one the last read ended with, so a replaced file is never stitched onto this checkpoint.
+// handled=false: nothing was consumed; the caller does a full download.
+func (e *Engine) tryVerifiedTail(ctx context.Context, tr nitrado.TailReader, current *nitrado.LogFile, oldOffset int64, previousFile string, rotation bool, downloadStarted time.Time) bool {
+	data, method, ok := nitrado.ReadTail(ctx, tr, e.serviceID, current.Path, oldOffset-1, current.Size)
+	if !ok || len(data) == 0 || data[0] != e.admLastByte {
+		nitrado.TailFailed(e.serviceID)
+		return false
+	}
+	return e.applyTail(ctx, current, oldOffset, oldOffset+int64(len(data)-1), data[1:], method, previousFile, rotation, downloadStarted)
+}
+
+// applyTail processes bytes oldOffset..targetSize through the same tracker/parser/checkpoint
+// machinery as a full read.
+func (e *Engine) applyTail(ctx context.Context, current *nitrado.LogFile, oldOffset, targetSize int64, tail []byte, method, previousFile string, rotation bool, downloadStarted time.Time) (handled bool) {
 	downloadDuration := time.Since(downloadStarted)
-	tail := result.Data
 	saved := targetSize - int64(len(tail))
 	if saved < 0 {
 		saved = 0
@@ -1554,7 +1601,7 @@ func (e *Engine) tryDeltaPoll(ctx context.Context, current *nitrado.LogFile, old
 	e.deltaBytesReceived += int64(len(tail))
 	e.fullReadBytesAvoided += saved
 	slog.Debug("component=adm", "event", "partial_read_complete", "server_id", e.serverID, "file", current.Name,
-		"download_mode", result.Method, "requested_offset", oldOffset, "requested_bytes", targetSize-oldOffset,
+		"download_mode", method, "requested_offset", oldOffset, "requested_bytes", targetSize-oldOffset,
 		"received_bytes", len(tail), "remote_size", targetSize, "saved_bytes", saved, "duration_ms", downloadDuration.Milliseconds())
 
 	e.tracker.LineBuffer = string(tail)
@@ -1570,7 +1617,7 @@ func (e *Engine) tryDeltaPoll(ctx context.Context, current *nitrado.LogFile, old
 			e.tracker.LineBuffer = string(tail[newOffset-oldOffset:])
 			e.tracker.UpdateCheckpoint(e.serviceID, current.Path, targetSize, current.Modified, newOffset)
 			checkpointOK := e.saveDurableCheckpoint(ctx, current, newOffset)
-			report := DownloadReport{ServerID: e.serverID, File: current.Name, PreviousFile: previousFile, RemoteSize: targetSize, DownloadedBytes: int64(len(tail)), PreviousOffset: oldOffset, NewOffset: newOffset, NewBytes: newOffset - oldOffset, EventsParsed: eventsParsed, Duration: downloadDuration, Result: "persistence_failed", Rotation: rotation, CheckpointCurrent: checkpointOK, At: time.Now(), Mode: result.Method}
+			report := DownloadReport{ServerID: e.serverID, File: current.Name, PreviousFile: previousFile, RemoteSize: targetSize, DownloadedBytes: int64(len(tail)), PreviousOffset: oldOffset, NewOffset: newOffset, NewBytes: newOffset - oldOffset, EventsParsed: eventsParsed, Duration: downloadDuration, Result: "persistence_failed", Rotation: rotation, CheckpointCurrent: checkpointOK, At: time.Now(), Mode: method}
 			e.emitDownloadReport(report)
 			e.rotationPending = false
 			return true
@@ -1587,6 +1634,7 @@ func (e *Engine) tryDeltaPoll(ctx context.Context, current *nitrado.LogFile, old
 	e.lastLogChange = e.lastPoll
 	e.tracker.UpdateCheckpoint(e.serviceID, current.Path, targetSize, current.Modified, newOffset)
 	checkpointOK := e.saveDurableCheckpoint(ctx, current, newOffset)
+	e.rememberLastByte(current.Path, newOffset, tail, oldOffset)
 	e.noteSourceGrowth(bytesConsumed)
 	if e.diagnostics != nil {
 		e.diagnostics.Update(func(s *RuntimeDiagnosticSnapshot) {
@@ -1606,11 +1654,28 @@ func (e *Engine) tryDeltaPoll(ctx context.Context, current *nitrado.LogFile, old
 	if !checkpointOK {
 		resultStr = "checkpoint_failed"
 	}
-	report := DownloadReport{ServerID: e.serverID, File: current.Name, PreviousFile: previousFile, RemoteSize: targetSize, DownloadedBytes: int64(len(tail)), PreviousOffset: oldOffset, NewOffset: newOffset, NewBytes: bytesConsumed, EventsParsed: eventsParsed, Duration: downloadDuration, Result: resultStr, Rotation: rotation, CheckpointCurrent: checkpointOK, At: time.Now(), Mode: result.Method}
+	report := DownloadReport{ServerID: e.serverID, File: current.Name, PreviousFile: previousFile, RemoteSize: targetSize, DownloadedBytes: int64(len(tail)), PreviousOffset: oldOffset, NewOffset: newOffset, NewBytes: bytesConsumed, EventsParsed: eventsParsed, Duration: downloadDuration, Result: resultStr, Rotation: rotation, CheckpointCurrent: checkpointOK, At: time.Now(), Mode: method}
 	e.emitDownloadReport(report)
 	e.rotationPending = false
-	slog.Info("component=adm", "event", "download_complete", "server_id", e.serverID, "file", current.Name, "download_mode", result.Method, "remote_size", targetSize, "downloaded_bytes", len(tail), "previous_offset", oldOffset, "new_offset", newOffset, "new_bytes", bytesConsumed, "events_parsed", eventsParsed, "duration_ms", downloadDuration.Milliseconds(), "result", resultStr, "timestamp", report.At.UTC().Format(time.RFC3339))
+	slog.Info("component=adm", "event", "download_complete", "server_id", e.serverID, "file", current.Name, "download_mode", method, "remote_size", targetSize, "downloaded_bytes", len(tail), "previous_offset", oldOffset, "new_offset", newOffset, "new_bytes", bytesConsumed, "events_parsed", eventsParsed, "duration_ms", downloadDuration.Milliseconds(), "result", resultStr, "timestamp", report.At.UTC().Format(time.RFC3339))
 	return true
+}
+
+// rememberLastByte records the byte at newOffset-1 for the next verified tail read. data holds the
+// file from dataStart onward. If that byte is not in data, the old record stays valid only when
+// the checkpoint did not move.
+func (e *Engine) rememberLastByte(path string, newOffset int64, data []byte, dataStart int64) {
+	i := newOffset - 1 - dataStart
+	switch {
+	case newOffset <= 0:
+		e.admLastPath, e.admLastOffset = "", 0
+	case i >= 0 && i < int64(len(data)):
+		e.admLastPath, e.admLastOffset, e.admLastByte = path, newOffset, data[i]
+	case e.admLastPath == path && e.admLastOffset == newOffset:
+		// unchanged checkpoint: keep the byte already known
+	default:
+		e.admLastPath, e.admLastOffset = "", 0
+	}
 }
 
 func (e *Engine) saveDurableCheckpoint(ctx context.Context, current *nitrado.LogFile, offset int64) bool {

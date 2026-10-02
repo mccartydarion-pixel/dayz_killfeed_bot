@@ -12,11 +12,14 @@ import (
 type tailRemote struct {
 	*fakeRemote
 	corrupt   bool
+	growFirst string // appended to the file right before each partial read (the log keeps writing)
 	tailCalls atomic.Int64
 }
 
 func (t *tailRemote) ReadLogFrom(_ context.Context, _ string, p string, offset int64, _ nitrado.DeltaMode) (*nitrado.PartialReadResult, bool) {
-	t.tailCalls.Add(1)
+	if n := t.tailCalls.Add(1); t.growFirst != "" && n%2 == 1 {
+		t.appendTo(p, t.growFirst)
+	}
 	t.mu.Lock()
 	c := append([]byte(nil), t.files[p]...)
 	t.mu.Unlock()
@@ -52,11 +55,7 @@ func TestTailReadsReplaceFullDownloadsOnceVerified(t *testing.T) {
 		want := i
 		waitFor(t, "countdown arrives", func() bool { return countdowns(store) == want })
 	}
-	waitFor(t, "service trusted", func() bool {
-		tailTrust.mu.Lock()
-		defer tailTrust.mu.Unlock()
-		return tailTrust.state("svc-tail-ok").trusted
-	})
+	waitFor(t, "service trusted", func() bool { return nitrado.TailTrust()["svc-tail-ok"].Trusted })
 	before := remote.readCount(rptA)
 	for i := 9; i <= 12; i++ {
 		remote.appendTo(rptA, " 5:22:00.000 [Server] :: termination in: 4\n")
@@ -86,17 +85,30 @@ func TestBrokenPartialReadsAreDisabledAndNothingIsLost(t *testing.T) {
 		want := i
 		waitFor(t, "countdown arrives through full reads", func() bool { return countdowns(store) == want })
 	}
-	tailTrust.mu.Lock()
-	st := *tailTrust.state("svc-tail-bad")
-	tailTrust.mu.Unlock()
-	if !st.disabled || st.trusted {
+	st := nitrado.TailTrust()["svc-tail-bad"]
+	if !st.Disabled || st.Trusted {
 		t.Fatalf("a mismatching partial read must disable tail reads: %+v", st)
 	}
 }
 
-func TestTailMatches(t *testing.T) {
-	full := []byte("abcdef")
-	if !tailMatches(full, 2, []byte("cdef")) || tailMatches(full, 2, []byte("cdeX")) || tailMatches(full, 9, nil) {
-		t.Fatal("tailMatches")
+// RPT logs are written constantly: the file often grows between the full download and the partial
+// read. That is not a mismatch and must not disable tail reads.
+func TestGrowthBetweenReadsIsNotAMismatch(t *testing.T) {
+	remote, store := &tailRemote{fakeRemote: newFakeRemote(), growFirst: " 5:30:00.000 Localization not present: STR_X\n"}, newMemStore()
+	remote.set(admA, "AdminLog started on 2026-09-24 at 04:15:07\n")
+	remote.set(rptA, rptHeader+" 4:15:07.592 Localization not present: STR_DATE_FORMAT_SHORT\n")
+	cfg := testConfig()
+	cfg.ServiceID = "svc-tail-growing"
+	sup := NewSupervisor(cfg, remote, store, nil)
+	stop := startSupervisor(t, sup)
+	defer stop()
+	for i := 1; i <= 5; i++ {
+		remote.appendTo(rptA, " 5:21:14.888 [Server] :: termination in: 5\n")
+		want := i
+		waitFor(t, "countdown arrives", func() bool { return countdowns(store) == want })
+	}
+	waitFor(t, "trusted despite growth", func() bool { return nitrado.TailTrust()["svc-tail-growing"].Trusted })
+	if nitrado.TailTrust()["svc-tail-growing"].Disabled {
+		t.Fatal("growth between reads must never disable tail reads")
 	}
 }

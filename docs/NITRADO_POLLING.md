@@ -76,17 +76,21 @@ ledger), so measuring sends nothing extra. All three appear under `timing` and `
 The game writing the ADM line → Nitrado's file changing is not visible: ADM lines carry only the
 server's local time of day.
 
-## Live Sync tail reads (`internal/livesync/tail.go`)
+## Verified tail reads (`internal/nitrado/tail_trust.go`)
 
-Live Sync (RPT, restart, script and crash logs) used to download each whole file every 30–120 s
-probe, and whenever the listing showed growth. It now reads only the bytes after its checkpoint once
-that is proven safe for the Nitrado service:
+Live Sync (RPT, restart, script and crash logs) and the killfeed ADM reader both used to download
+each whole file on every change. They now read only the bytes after their checkpoint once that is
+proven safe. Trust is kept per Nitrado service and shared by both readers, so matches from either
+one count toward it.
 
 1. **Verifying:**
    - Every read is the usual full download, plus a partial read (`file_server/seek`) from one byte
      before the checkpoint.
-   - The two must match byte for byte.
+   - The overlapping bytes must match byte for byte. A file can grow between the two reads, so only
+     the bytes both reads cover are compared; extra bytes on one side are not a mismatch.
    - After 3 matches that covered new bytes, the service is trusted (`event=tail_read_trusted`).
+   - For ADM, the partial read runs after the kills from the full download are posted, so verifying
+     never delays the feed.
 2. **Trusted:**
    - Reads are partial only.
    - The first returned byte must equal the last byte already read, so a replaced file is never
@@ -95,19 +99,19 @@ that is proven safe for the Nitrado service:
    - Every 20th read is a verifying read again.
 3. **Disabled:**
    - Any mismatch switches tail reads off for that service until restart
-     (`event=tail_read_disabled`), and full downloads continue.
+     (`event=tail_read_disabled`, with `source=livesync` or `source=adm`), and full downloads
+     continue.
    - A failed partial read falls back to a full download and returns the service to verifying.
 
-The first read of a file, a checkpoint of 0, and a listing smaller than the checkpoint (replaced or
-truncated) always use a full download.
+Full downloads are always used for the first read of a file, a checkpoint of 0, a listing smaller
+than the checkpoint (replaced or truncated), and for ADM a log rotation or a checkpoint the reader
+did not itself write in this process.
 
 Request count is unchanged: a partial read is a token request plus a fetch, just like a download.
 What drops is the bytes per read, from the whole file to the new lines.
 
 ## Not changed
 
-**ADM delta reads** (`NITRADO_DELTA_READ_MODE`) are still off for the killfeed engine. The Live
-Sync verification above can show that seek works on a service before turning them on. They would read only the new bytes of a
-changed log instead of downloading the whole file again. They have never been checked against a
-live Nitrado service: see `docs/NITRADO_DELTA_READS.md` and `cmd/nitrado-delta-probe`. Run the probe
-against a real server before turning them on.
+**ADM delta reads** (`NITRADO_DELTA_READ_MODE`) are a separate, older switch and stay off. When
+they are on, they take priority over the verified tail reads above. See
+`docs/NITRADO_DELTA_READS.md` and `cmd/nitrado-delta-probe`.
