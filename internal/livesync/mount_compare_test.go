@@ -65,3 +65,35 @@ func TestMountCompareTieAndMissingMount(t *testing.T) {
 		t.Fatal("a path outside both mounts has no mount")
 	}
 }
+
+func TestSummarizeMounts(t *testing.T) {
+	mod := time.Date(2026, 10, 2, 19, 30, 0, 0, time.UTC)
+	files := []nitrado.LogFile{
+		// The live boot's logs are listed by noftp only.
+		{Path: "/games/x/noftp/dayzps/config/DayZServer_PS4_x64_2026-10-02_15-32-05.ADM", Size: 900, Modified: mod},
+		{Path: "/games/x/noftp/dayzps/config/DayZServer_PS4_x64_2026-10-02_15-32-05.RPT", Size: 4000, Modified: mod},
+		// An older boot is in both.
+		{Path: "/games/x/noftp/dayzps/config/DayZServer_PS4_x64_2026-10-02_14-23-52.RPT", Size: 500},
+		{Path: "/games/x/ftproot/dayzps/config/DayZServer_PS4_x64_2026-10-02_14-23-52.RPT", Size: 500},
+		// And one file only ftproot has.
+		{Path: "/games/x/ftproot/dayzps/config/server.log", Size: 7},
+		{Path: "/games/x/elsewhere/ignored.ADM", Size: 1},
+	}
+	got := summarizeMounts(files)
+	if got.Both != 1 || got.NoftpOnly != 2 || got.FtprootOnly != 1 {
+		t.Fatalf("counts: %+v", got)
+	}
+	if len(got.Newest) != 2 {
+		t.Fatalf("newest: %+v", got.Newest)
+	}
+	adm, rpt := got.Newest[0], got.Newest[1]
+	if adm.Family != FamilyADM || adm.Noftp != 900 || adm.Ftproot != -1 || !adm.NoftpModified.Equal(mod) {
+		t.Fatalf("the live ADM is in noftp only: %+v", adm)
+	}
+	if rpt.Family != FamilyRPT || rpt.ID != "dayzps/config/DayZServer_PS4_x64_2026-10-02_15-32-05.RPT" || rpt.Noftp != 4000 || rpt.Ftproot != -1 {
+		t.Fatalf("the newest RPT is the live boot's: %+v", rpt)
+	}
+	if s := summarizeMounts(nil); s.Both != 0 || len(s.Newest) != 0 {
+		t.Fatalf("empty: %+v", s)
+	}
+}

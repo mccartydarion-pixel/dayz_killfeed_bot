@@ -179,7 +179,8 @@ type dirLister struct {
 	lastErr   string
 	lastOKAt  time.Time
 	// mounts measures which mount shows a log's new bytes first (mount_compare.go).
-	mounts *mountCompare
+	mounts       *mountCompare
+	mountSummary time.Time // when event=mount_summary was last logged
 }
 
 // discoverDirs finds the log directories from the ADM files Nitrado lists (no path is guessed):
@@ -293,6 +294,15 @@ func (l *dirLister) refresh(ctx context.Context) bool {
 		for _, lead := range l.mounts.observe(s.cfg.Now(), pass) {
 			slog.Info("component=livesync", "event", "mount_lead", "server_id", s.cfg.ServerID, "family", ClassifySource(lead.ID).Family,
 				"file", lead.ID, "leader", lead.Leader, "size", lead.Size, "lag_ms", lead.Lag.Milliseconds(), "list_every_ms", s.cfg.ListEvery.Milliseconds())
+		}
+		if now := s.cfg.Now(); now.Sub(l.mountSummary) >= mountSummaryEvery {
+			l.mountSummary = now
+			sum := summarizeMounts(pass)
+			for _, n := range sum.Newest {
+				slog.Info("component=livesync", "event", "mount_summary", "server_id", s.cfg.ServerID, "family", n.Family, "file", n.ID,
+					"noftp_size", n.Noftp, "ftproot_size", n.Ftproot, "noftp_age_s", ageSeconds(now, n.NoftpModified), "ftproot_age_s", ageSeconds(now, n.FtprootMod),
+					"files_in_both", sum.Both, "noftp_only", sum.NoftpOnly, "ftproot_only", sum.FtprootOnly)
+			}
 		}
 	}
 	return anyOK
@@ -887,4 +897,15 @@ func (s *Supervisor) endSession(bootLocal time.Time, reason, evidence string) {
 	s.mu.Unlock()
 	slog.Info("component=livesync", "event", "adm_session_ended", "server_id", s.cfg.ServerID, "reason", reason, "evidence", evidence,
 		"boot_local", bootLocal.Format("2006-01-02T15:04:05"))
+}
+
+// mountSummaryEvery is how often the lister logs what each mount lists (mount_compare.go).
+const mountSummaryEvery = time.Minute
+
+// ageSeconds is how long ago t was, in whole seconds; -1 for no time.
+func ageSeconds(now, t time.Time) int64 {
+	if t.IsZero() {
+		return -1
+	}
+	return int64(now.Sub(t).Seconds())
 }

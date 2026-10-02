@@ -110,3 +110,77 @@ func (m *mountCompare) observe(now time.Time, files []nitrado.LogFile) []mountLe
 	}
 	return out
 }
+
+// mountSummary says what the two mounts list in one pass: how many files each has alone and how
+// many they share, and for the newest file of each family the size each mount reports (-1 when
+// that mount does not list it). It answers the question mount_lead cannot: whether the log being
+// written right now is in both mounts at all.
+type mountSummary struct {
+	Both, NoftpOnly, FtprootOnly int
+	Newest                       []mountNewest
+}
+
+type mountNewest struct {
+	Family        string
+	ID            string
+	Noftp         int64
+	Ftproot       int64
+	NoftpModified time.Time
+	FtprootMod    time.Time
+}
+
+func summarizeMounts(files []nitrado.LogFile) mountSummary {
+	type pair struct {
+		size map[string]int64
+		mod  map[string]time.Time
+		info SourceInfo
+	}
+	byID := map[string]*pair{}
+	for _, f := range files {
+		mount := mountOf(f.Path)
+		if mount == "" {
+			continue
+		}
+		info := ClassifySource(f.Path)
+		p := byID[info.CanonicalID]
+		if p == nil {
+			p = &pair{size: map[string]int64{}, mod: map[string]time.Time{}, info: info}
+			byID[info.CanonicalID] = p
+		}
+		p.size[mount], p.mod[mount] = f.Size, f.Modified
+	}
+	var out mountSummary
+	newest := map[string]*pair{}
+	for _, p := range byID {
+		_, n := p.size[mountNoftp]
+		_, f := p.size[mountFtproot]
+		switch {
+		case n && f:
+			out.Both++
+		case n:
+			out.NoftpOnly++
+		default:
+			out.FtprootOnly++
+		}
+		if p.info.Family == FamilyADM || p.info.Family == FamilyRPT {
+			if cur := newest[p.info.Family]; cur == nil || newerThan(p.info, cur.info) {
+				newest[p.info.Family] = p
+			}
+		}
+	}
+	for _, family := range []string{FamilyADM, FamilyRPT} {
+		p := newest[family]
+		if p == nil {
+			continue
+		}
+		n := mountNewest{Family: family, ID: p.info.CanonicalID, Noftp: -1, Ftproot: -1}
+		if size, ok := p.size[mountNoftp]; ok {
+			n.Noftp, n.NoftpModified = size, p.mod[mountNoftp]
+		}
+		if size, ok := p.size[mountFtproot]; ok {
+			n.Ftproot, n.FtprootMod = size, p.mod[mountFtproot]
+		}
+		out.Newest = append(out.Newest, n)
+	}
+	return out
+}
