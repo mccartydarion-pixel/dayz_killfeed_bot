@@ -14,19 +14,22 @@ type tailRemote struct {
 	corrupt   bool
 	growFirst string // appended to the file right before each partial read (the log keeps writing)
 	tailCalls atomic.Int64
+	pastEnd   atomic.Int64 // reads that asked for bytes past the end of the file
 }
 
-func (t *tailRemote) ReadLogFrom(_ context.Context, _ string, p string, offset int64, _ nitrado.DeltaMode) (*nitrado.PartialReadResult, bool) {
+// ReadLogRange behaves like Nitrado's seek: asking for bytes past the end of the file fails.
+func (t *tailRemote) ReadLogRange(_ context.Context, _ string, p string, offset, length int64) (*nitrado.PartialReadResult, bool) {
 	if n := t.tailCalls.Add(1); t.growFirst != "" && n%2 == 1 {
 		t.appendTo(p, t.growFirst)
 	}
 	t.mu.Lock()
 	c := append([]byte(nil), t.files[p]...)
 	t.mu.Unlock()
-	if offset > int64(len(c)) {
+	if offset > int64(len(c)) || offset+length > int64(len(c)) {
+		t.pastEnd.Add(1)
 		return nil, false
 	}
-	data := c[offset:]
+	data := c[offset : offset+length]
 	if len(data) > 64 {
 		data = data[:64] // force several chunks
 	}
@@ -67,6 +70,9 @@ func TestTailReadsReplaceFullDownloadsOnceVerified(t *testing.T) {
 	}
 	if remote.tailCalls.Load() == 0 {
 		t.Fatal("tail reads were never used")
+	}
+	if n := remote.pastEnd.Load(); n != 0 {
+		t.Fatalf("%d partial reads asked for bytes past the end of the file", n)
 	}
 }
 

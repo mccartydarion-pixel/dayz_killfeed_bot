@@ -117,3 +117,31 @@ func TestTailTrustSurvivesRestart(t *testing.T) {
 		t.Fatalf("a disabled service restarts as verifying: %+v", got)
 	}
 }
+
+type lengthRecorder struct {
+	file    []byte
+	lengths []int64
+}
+
+func (l *lengthRecorder) ReadLogRange(_ context.Context, _ string, _ string, offset, length int64) (*PartialReadResult, bool) {
+	l.lengths = append(l.lengths, length)
+	if offset+length > int64(len(l.file)) {
+		return nil, false
+	}
+	if length > 4 {
+		length = 4 // short reads force several chunks
+	}
+	data := l.file[offset : offset+length]
+	return &PartialReadResult{Data: data, StartOffset: offset, EndOffset: offset + int64(len(data)), Method: "SEEK_SUPPORTED"}, true
+}
+
+func TestReadTailNeverAsksPastTheKnownSize(t *testing.T) {
+	r := &lengthRecorder{file: []byte("0123456789")}
+	data, _, ok := ReadTail(context.Background(), r, "svc", "/x", 3, 10)
+	if !ok || string(data) != "3456789" {
+		t.Fatalf("tail = %v %q", ok, data)
+	}
+	if want := []int64{7, 3}; len(r.lengths) != 2 || r.lengths[0] != want[0] || r.lengths[1] != want[1] {
+		t.Fatalf("requested lengths = %v, want %v", r.lengths, want)
+	}
+}
