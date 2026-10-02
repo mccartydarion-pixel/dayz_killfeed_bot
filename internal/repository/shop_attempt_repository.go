@@ -131,13 +131,15 @@ type ShopAttempt struct {
 	FulfilmentMode  string
 	BuyerAnswer     *string
 	BuyerAnsweredAt *time.Time
+	// MarkerClass is the static object staged beside the item so the buyer can find it (nil = none).
+	MarkerClass *string
 }
 
 const attemptCols = `id, organization_id, installation_id, delivery_id, attempt, attempt_id, state, fingerprint, artifact_path, class_name, quantity,
  pos_x, pos_y, pos_z, drop_source_file, drop_source_offset, before_sha256, staged_sha256, unstaged_sha256, staged_at, staged_boot_file,
  restart_boot_file, restart_observed_at, unstage_verified_at, item_observed_by, item_observed_at, picked_up_by, pickup_observed_at,
  second_boot_file, second_boot_started_at, no_respawn_checked_at, verified_by, fulfilled_at, failure_reason,
- review_resolution, review_resolved_by, review_resolved_at, created_at, updated_at, fulfilment_mode, buyer_answer, buyer_answered_at`
+ review_resolution, review_resolved_by, review_resolved_at, created_at, updated_at, fulfilment_mode, buyer_answer, buyer_answered_at, marker_class`
 
 func scanAttempt(row pgx.Row) (ShopAttempt, error) {
 	var a ShopAttempt
@@ -146,7 +148,7 @@ func scanAttempt(row pgx.Row) (ShopAttempt, error) {
 		&a.UnstagedSHA256, &a.StagedAt, &a.StagedBootFile, &a.RestartBootFile, &a.RestartObservedAt, &a.UnstageVerifiedAt, &a.ItemObservedBy,
 		&a.ItemObservedAt, &a.PickedUpBy, &a.PickupObservedAt, &a.SecondBootFile, &a.SecondBootStartedAt, &a.NoRespawnCheckedAt, &a.VerifiedBy,
 		&a.FulfilledAt, &a.FailureReason, &a.ReviewResolution, &a.ReviewResolvedBy, &a.ReviewResolvedAt, &a.CreatedAt, &a.UpdatedAt,
-		&a.FulfilmentMode, &a.BuyerAnswer, &a.BuyerAnsweredAt)
+		&a.FulfilmentMode, &a.BuyerAnswer, &a.BuyerAnsweredAt, &a.MarkerClass)
 	return a, err
 }
 
@@ -166,6 +168,9 @@ type ShopAttemptCreate struct {
 	// FulfilmentMode is "" or ShopFulfilmentObserved for the manual path, ShopFulfilmentBuyer for the
 	// delivery worker (migration 0100).
 	FulfilmentMode string
+	// MarkerClass is the marker staged beside the item ("" = none). It is fixed for the attempt's life
+	// (migration 0113).
+	MarkerClass string
 }
 
 // Attempt fulfilment modes (migration 0100).
@@ -274,10 +279,10 @@ func (r *ShopAttemptRepository) Create(ctx context.Context, in ShopAttemptCreate
 	err := r.inTx(ctx, actor, "plan created", func(tx pgx.Tx) error {
 		var err error
 		out, err = scanAttempt(tx.QueryRow(ctx, `INSERT INTO shop_delivery_attempts(organization_id, installation_id, delivery_id, attempt, attempt_id,
- fingerprint, artifact_path, class_name, quantity, pos_x, pos_y, pos_z, drop_source_file, drop_source_offset, fulfilment_mode)
-VALUES($1,$2,$3,$4,$5,$6,$14,$7,$8,$9,$10,$11,$12,$13,$15) RETURNING `+attemptCols,
+ fingerprint, artifact_path, class_name, quantity, pos_x, pos_y, pos_z, drop_source_file, drop_source_offset, fulfilment_mode, marker_class)
+VALUES($1,$2,$3,$4,$5,$6,$14,$7,$8,$9,$10,$11,$12,$13,$15,NULLIF($16,'')) RETURNING `+attemptCols,
 			in.OrganizationID, in.InstallationID, in.DeliveryID, in.Attempt, in.AttemptID, in.Fingerprint, in.ClassName, in.Quantity,
-			in.PosX, in.PosY, in.PosZ, in.DropSourceFile, in.DropSourceOffset, artifact, mode))
+			in.PosX, in.PosY, in.PosZ, in.DropSourceFile, in.DropSourceOffset, artifact, mode, in.MarkerClass))
 		return err
 	})
 	return out, err

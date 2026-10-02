@@ -88,6 +88,18 @@ func AttemptEntries(attemptID, className string, quantity int, pos [3]float64) [
 	return out
 }
 
+// MarkerOffset is how far east of the item its marker is placed, in metres: beside it, never on it,
+// so the marker cannot keep the buyer from picking the item up.
+const MarkerOffset = 0.5
+
+// MarkerEntry is the marker one attempt stages beside its item: a static object the buyer can spot
+// from a distance. It is tagged with the attempt id like the item's own entries, so it is staged and
+// removed together with them. The spawner does not save a static object, so it is gone at the first
+// restart after the entry is removed.
+func MarkerEntry(attemptID, markerClass string, pos [3]float64) SpawnerObject {
+	return SpawnerObject{Name: markerClass, Pos: [3]float64{pos[0] + MarkerOffset, pos[1], pos[2]}, Scale: 1, CustomString: attemptID + ":m1"}
+}
+
 // SingleAttemptFiles are the exact bytes of the Champion spawner file with only this attempt staged,
 // and with nothing staged (the empty file): what a verified read-back must hash to while staged and
 // after the unstage.

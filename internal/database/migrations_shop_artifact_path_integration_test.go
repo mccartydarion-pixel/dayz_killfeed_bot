@@ -83,9 +83,9 @@ VALUES($1,$2,$3,1,$4,$5,$6,'BandageDressing',1,4621.1,319.6,8397.2,'dayzps/confi
 	snapshot := func() string {
 		t.Helper()
 		var a, e string
-		// Migration 0100 adds three columns with defaults; they are left out so the comparison is of
+		// Migrations 0100 and 0113 add columns with defaults; they are left out so the comparison is of
 		// the values the historical rows already had (their defaults are asserted below).
-		if err := db.Pool.QueryRow(ctx, `SELECT COALESCE(string_agg((to_jsonb(x) - 'fulfilment_mode' - 'buyer_answer' - 'buyer_answered_at')::text, '|' ORDER BY x.id), '') FROM shop_delivery_attempts x`).Scan(&a); err != nil {
+		if err := db.Pool.QueryRow(ctx, `SELECT COALESCE(string_agg((to_jsonb(x) - 'fulfilment_mode' - 'buyer_answer' - 'buyer_answered_at' - 'marker_class')::text, '|' ORDER BY x.id), '') FROM shop_delivery_attempts x`).Scan(&a); err != nil {
 			t.Fatal(err)
 		}
 		if err := db.Pool.QueryRow(ctx, `SELECT COALESCE(string_agg(row_to_json(x)::text, '|' ORDER BY x.id), '') FROM shop_delivery_attempt_events x`).Scan(&e); err != nil {

@@ -552,3 +552,76 @@ func TestSystemTicketForAnOrderTheWorkerCouldNotConfirm(t *testing.T) {
 	_, err = w.conf.OpenSystemTicket(w.ctx, w.b.OrgID, w.b.InstallationID, o.purchase, "x")
 	wantIs(t, "another tenant's order", err, ErrShopTicketNotFound)
 }
+
+func TestMarkerIsRecordedOnTheAttemptAndNeverChanges(t *testing.T) {
+	w := newAutoWorld(t)
+	org, inst := w.a.OrgID, w.a.InstallationID
+
+	// The setting: a default for every installation, changeable, removable.
+	s, err := w.auto.Settings(w.ctx, org, inst)
+	must(t, err)
+	if s.MarkerClass != ShopDefaultMarkerClass {
+		t.Fatalf("default marker = %q", s.MarkerClass)
+	}
+	w.ready(w.a)
+	claimed, err := w.auto.ClaimInstallations(w.ctx, time.Now(), "w1", 4*time.Minute, []int64{inst})
+	must(t, err)
+	if len(claimed) != 1 || claimed[0].MarkerClass != ShopDefaultMarkerClass {
+		t.Fatalf("claimed installation marker: %+v", claimed)
+	}
+	must(t, w.auto.ReleaseLease(w.ctx, inst, "w1"))
+	must(t, w.auto.SetMarker(w.ctx, org, inst, "", w.a.OwnerUserID))
+	if s, _ := w.auto.Settings(w.ctx, org, inst); s.MarkerClass != "" || !s.Enabled {
+		t.Fatalf("after removing the marker: %+v", s)
+	}
+	must(t, w.auto.SetMarker(w.ctx, org, inst, "Land_RoadCone", w.a.OwnerUserID))
+	if s, _ := w.auto.Settings(w.ctx, org, inst); s.MarkerClass != "Land_RoadCone" {
+		t.Fatalf("after changing the marker: %+v", s)
+	}
+	if err := w.auto.SetMarker(w.ctx, org, inst, "dz/structures/roadblock.p3d", w.a.OwnerUserID); err == nil {
+		t.Fatal("a path was accepted as a marker class")
+	}
+
+	// The attempt: the marker is stored at creation and is part of its immutable identity.
+	create := func(o *order, marker string) (ShopAttempt, error) {
+		return w.attempts.Create(w.ctx, ShopAttemptCreate{OrganizationID: o.f.OrgID, InstallationID: o.f.InstallationID, DeliveryID: o.delivery, Attempt: 1,
+			AttemptID: fmt.Sprintf("champion:d%d:a1", o.delivery), Fingerprint: strings.Repeat("ab", 32), ClassName: "BandageDressing", Quantity: 1,
+			PosX: 4621.1, PosY: 319.6, PosZ: 8397.2, DropSourceFile: autoBoot, DropSourceOffset: 853, ArtifactPath: ShopAttemptCustomArtifactPath,
+			FulfilmentMode: ShopFulfilmentBuyer, MarkerClass: marker}, "worker:test")
+	}
+	with, err := create(w.order(w.a), "StaticObj_Roadblock_Wood_Small")
+	must(t, err)
+	if with.MarkerClass == nil || *with.MarkerClass != "StaticObj_Roadblock_Wood_Small" {
+		t.Fatalf("marker on the attempt: %v", with.MarkerClass)
+	}
+	without, err := create(w.order(w.a), "")
+	must(t, err)
+	if without.MarkerClass != nil {
+		t.Fatalf("an attempt without a marker has %v", *without.MarkerClass)
+	}
+	if _, err := create(w.order(w.a), "dz/structures/roadblock.p3d"); err == nil {
+		t.Fatal("a path was accepted as an attempt marker")
+	}
+	for what, sql := range map[string]string{
+		"changing the marker": `UPDATE shop_delivery_attempts SET marker_class='Land_RoadCone' WHERE attempt_id=$1`,
+		"removing the marker": `UPDATE shop_delivery_attempts SET marker_class=NULL WHERE attempt_id=$1`,
+	} {
+		tx, err := w.db.Pool.Begin(w.ctx)
+		must(t, err)
+		_, err = tx.Exec(w.ctx, `SELECT set_config('champion.actor', 'test', true)`)
+		must(t, err)
+		if _, err = tx.Exec(w.ctx, sql, with.AttemptID); err == nil {
+			err = tx.Commit(w.ctx)
+		}
+		_ = tx.Rollback(w.ctx)
+		if err == nil {
+			t.Fatalf("%s was accepted by the database", what)
+		}
+	}
+	// A normal transition keeps it.
+	next, err := w.attempts.Transition(w.ctx, org, inst, with.AttemptID, AttemptPlanCreated, AttemptFilePrepared, "worker:test", ShopAttemptEvidence{})
+	must(t, err)
+	if next.MarkerClass == nil || *next.MarkerClass != "StaticObj_Roadblock_Wood_Small" {
+		t.Fatalf("marker after a transition: %v", next.MarkerClass)
+	}
+}

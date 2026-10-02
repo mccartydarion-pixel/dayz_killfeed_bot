@@ -2831,6 +2831,14 @@ CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events
 		Name: "0112_query_hygiene_indexes",
 		SQL:  QueryHygieneIndexesSQL,
 	},
+	{
+		Name: "0113_shop_delivery_attempt_marker",
+		SQL:  ShopAttemptMarkerSQL,
+	},
+	{
+		Name: "0114_shop_auto_delivery_marker",
+		SQL:  ShopAutoDeliveryMarkerSQL,
+	},
 }
 
 // NitradoTailTrustSQL keeps which Nitrado services have proven that partial (seek) reads match

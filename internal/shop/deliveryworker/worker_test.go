@@ -119,6 +119,9 @@ func (l *fakeLedger) Create(_ context.Context, in repository.ShopAttemptCreate, 
 		AttemptID: in.AttemptID, State: repository.AttemptPlanCreated, Fingerprint: in.Fingerprint, ArtifactPath: in.ArtifactPath, ClassName: in.ClassName,
 		Quantity: in.Quantity, PosX: in.PosX, PosY: in.PosY, PosZ: in.PosZ, DropSourceFile: in.DropSourceFile, DropSourceOffset: in.DropSourceOffset,
 		FulfilmentMode: in.FulfilmentMode}
+	if in.MarkerClass != "" {
+		a.MarkerClass = &in.MarkerClass
+	}
 	l.attempts[a.AttemptID] = a
 	l.order = append(l.order, a.AttemptID)
 	return *a, nil
@@ -798,8 +801,63 @@ func TestOneOrderAtATimeUntilBatchingIsApproved(t *testing.T) {
 	if rep := wd.pass(); len(rep.Unstaged) != 2 || !wd.fileIsEmpty() || len(wd.srv.writes) != 3 {
 		t.Fatalf("%+v writes=%d", rep, len(wd.srv.writes))
 	}
-	if New(Config{MaxStaged: 999}, nil, nil, nil, nil).cfg.MaxStaged != nd.MaxStagedObjects/nd.MaxUnitsPerOrder {
+	if New(Config{MaxStaged: 999}, nil, nil, nil, nil).cfg.MaxStaged != nd.MaxStagedObjects/(nd.MaxUnitsPerOrder+1) {
 		t.Fatal("MaxStaged is not capped by the file's object limit")
+	}
+}
+
+func TestAMarkerIsStagedBesideTheItemAndRemovedWithIt(t *testing.T) {
+	const marker = "StaticObj_Roadblock_Wood_Small"
+	wd := newWorld(t, Config{Name: "t"})
+	wd.inst.MarkerClass = marker
+	wd.order(1, "BandageDressing", 2)
+	if rep := wd.pass(); len(rep.Staged) != 1 {
+		t.Fatalf("stage pass: %+v", rep)
+	}
+	a := wd.ledger.attempts["champion:d1:a1"]
+	if a.MarkerClass == nil || *a.MarkerClass != marker {
+		t.Fatalf("the attempt did not record its marker: %+v", a.MarkerClass)
+	}
+	file, err := nd.ParseSpawnerFile(wd.srv.content)
+	if err != nil || len(file.Objects) != 3 {
+		t.Fatalf("file has %d objects (%v): %s", len(file.Objects), err, wd.srv.content)
+	}
+	var found *nd.SpawnerObject
+	for i, o := range file.Objects {
+		if o.Name == marker {
+			found = &file.Objects[i]
+		} else if o.Name != "BandageDressing" || o.Pos != [3]float64{4621.1, 319.6, 8397.2} {
+			t.Fatalf("item entry %+v", o)
+		}
+	}
+	// Beside the item (half a metre east, same height), tagged with the attempt, never on top of it.
+	if found == nil || found.Pos != [3]float64{4621.1 + nd.MarkerOffset, 319.6, 8397.2} || found.CustomString != "champion:d1:a1:m1" || found.Scale != 1 {
+		t.Fatalf("marker entry %+v", found)
+	}
+
+	// The owner changes the marker while the order is staged: the staged file still matches the
+	// ledger (the attempt keeps the marker it was staged with), so nothing pauses.
+	wd.inst.MarkerClass = "Land_RoadCone"
+	wd.at("2026-10-01 08:40:00")
+	if rep := wd.pass(); rep.Paused != "" || wd.state("champion:d1:a1") != repository.AttemptAwaitingRestart {
+		t.Fatalf("after a marker change: %+v", rep)
+	}
+	// The restart: the item and its marker leave the file together.
+	wd.srv.boots = append(wd.srv.boots, bootB)
+	wd.at("2026-10-01 09:17:00")
+	if rep := wd.pass(); len(rep.Unstaged) != 1 || !wd.fileIsEmpty() {
+		t.Fatalf("unstage pass: %+v file=%s", rep, wd.srv.content)
+	}
+
+	// A marker that is not a plain class name is never staged; the order is still delivered.
+	wd = newWorld(t, Config{Name: "t"})
+	wd.inst.MarkerClass = "dz/structures/roadblock.p3d"
+	wd.order(1, "BandageDressing", 1)
+	if rep := wd.pass(); len(rep.Staged) != 1 || wd.ledger.attempts["champion:d1:a1"].MarkerClass != nil {
+		t.Fatalf("invalid marker: %+v marker=%v", rep, wd.ledger.attempts["champion:d1:a1"].MarkerClass)
+	}
+	if file, _ := nd.ParseSpawnerFile(wd.srv.content); len(file.Objects) != 1 {
+		t.Fatalf("file: %s", wd.srv.content)
 	}
 }
 

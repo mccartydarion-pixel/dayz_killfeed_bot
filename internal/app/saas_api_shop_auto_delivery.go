@@ -20,7 +20,7 @@ import (
 //
 //	Staff (organization OWNER/ADMIN):
 //	  GET  .../shop/admin/auto-delivery                          the installation's switch, pause and worker mode
-//	  PUT  .../shop/admin/auto-delivery                          {"enabled": true|false}
+//	  PUT  .../shop/admin/auto-delivery                          {"enabled": true|false} and/or {"markerClass": "..."} ("" = no marker)
 //	  POST .../shop/admin/auto-delivery/resume                   clear a pause (a person's decision)
 //	  GET  .../shop/admin/products/{productID}/auto-delivery     the product's switch and class name
 //	  PUT  .../shop/admin/products/{productID}/auto-delivery     {"autoDelivery": true|false, "className": "..."}
@@ -92,12 +92,15 @@ type shopAutoDeliveryDTO struct {
 	Worker string `json:"worker"`
 	// Delivering is true only when every switch is on: orders of automatic products are delivered.
 	Delivering bool `json:"delivering"`
+	// MarkerClass is the static object spawned beside each delivered order so the buyer can find it
+	// ("" = no marker).
+	MarkerClass string `json:"markerClass"`
 }
 
 func (a *App) autoDeliveryDTO(installationID int64, s repository.ShopAutoDeliverySettings) shopAutoDeliveryDTO {
 	mode := a.shopWorkerMode(installationID)
 	return shopAutoDeliveryDTO{Enabled: s.Enabled, Paused: s.PausedAt != nil, PausedReason: s.PausedReason, PausedAt: s.PausedAt, Worker: mode,
-		Delivering: s.Enabled && s.PausedAt == nil && mode == config.ShopAutoDeliveryEnabled}
+		Delivering: s.Enabled && s.PausedAt == nil && mode == config.ShopAutoDeliveryEnabled, MarkerClass: s.MarkerClass}
 }
 
 func (a *App) writeAutoDelivery(w http.ResponseWriter, ctx context.Context, er economyRequest) {
@@ -127,22 +130,40 @@ func (a *App) handleShopAutoDeliverySet(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var body struct {
-		Enabled *bool `json:"enabled"`
+		Enabled     *bool   `json:"enabled"`
+		MarkerClass *string `json:"markerClass"`
 	}
 	if !decodeFactionBody(w, r, &body) {
 		return
 	}
-	if body.Enabled == nil {
-		writeSaaSError(w, codeInvalidRequest, "enabled must be true or false")
+	if body.Enabled == nil && body.MarkerClass == nil {
+		writeSaaSError(w, codeInvalidRequest, "send enabled (true or false) or markerClass")
 		return
+	}
+	marker := ""
+	if body.MarkerClass != nil {
+		marker = strings.TrimSpace(*body.MarkerClass)
+		if marker != "" && nitradodelivery.ValidateClassName(marker) != nil {
+			writeSaaSError(w, codeInvalidRequest, "markerClass must be a DayZ class name: letters, digits and underscores, starting with a letter (or empty for no marker)")
+			return
+		}
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), economyTimeout)
 	defer cancel()
-	if err := a.ShopAuto.SetEnabled(ctx, er.scope.OrganizationID, er.scope.InstallationID, *body.Enabled, er.user.ID); err != nil {
-		shopFailed(w, "set automatic delivery", err)
-		return
+	if body.Enabled != nil {
+		if err := a.ShopAuto.SetEnabled(ctx, er.scope.OrganizationID, er.scope.InstallationID, *body.Enabled, er.user.ID); err != nil {
+			shopFailed(w, "set automatic delivery", err)
+			return
+		}
+		shopAudit("shop_auto_delivery_switched", er, "enabled", *body.Enabled)
 	}
-	shopAudit("shop_auto_delivery_switched", er, "enabled", *body.Enabled)
+	if body.MarkerClass != nil {
+		if err := a.ShopAuto.SetMarker(ctx, er.scope.OrganizationID, er.scope.InstallationID, marker, er.user.ID); err != nil {
+			shopFailed(w, "set delivery marker", err)
+			return
+		}
+		shopAudit("shop_auto_delivery_marker_set", er, "marker_class", marker)
+	}
 	a.writeAutoDelivery(w, ctx, er)
 }
 
