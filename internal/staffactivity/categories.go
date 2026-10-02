@@ -16,7 +16,7 @@ var Categories = []Category{
 	{"MODERATION", "Moderation", []string{"WARNING_%", "PLAYER_%", "BOUNTY_%", "CASE_%", "INTRUSION_%", "ZONE_BAN_%"}},
 	{"ACCESS", "Staff & access", []string{"PERMISSION%", "WHITELIST_%", "BANLIST_%"}},
 	{"SERVER", "Server control", []string{"SERVER_%", "MAINTENANCE_%", "FEED_%"}},
-	{"ECONOMY", "Economy & rewards", []string{"ECONOMY_%", "SHOP_%", "POINTS_%", "REWARD_%", "VIP_%", "BASE_RENT_%", "SECURITY_GIFT_%"}},
+	{"ECONOMY", "Economy & rewards", []string{"ECONOMY_%", "SHOP_%", "POINTS_%", "REWARD_%", "VIP_%", "PERK_%", "BASE_RENT_%", "SECURITY_GIFT_%"}},
 	{"COMMUNITY", "Events, seasons & factions", []string{"EVENT_%", "SEASON_%", "FACTION_%"}},
 	{"ZONES", "Zones & bases", []string{"ZONE_%", "PERIMETER_%", "BASE_%", "SECURITY_%"}},
 }

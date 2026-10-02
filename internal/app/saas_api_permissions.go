@@ -301,6 +301,7 @@ func (a *App) registerClientAdminRoutes() {
 	a.registerPlayerTimelineRoutes(base)
 	a.registerStaffActivityRoutes(base)
 	a.registerVIPRoutes(base)
+	a.registerPerkStoreAdminRoutes(base)
 	a.registerFightRoutes(base)
 }
 

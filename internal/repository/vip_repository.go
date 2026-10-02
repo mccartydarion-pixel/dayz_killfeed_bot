@@ -249,3 +249,35 @@ WHERE m.guild_id=$1 AND t.reward_multiplier > 1 AND `+vipActive, guildID)
 	}
 	return out, rows.Err()
 }
+
+// GrantOrExtend gives a player a tier until expiresAt (nil = no end), or, when they already hold
+// that same tier, moves its end later (a membership with no end stays that way). created reports
+// whether a new membership was made. Holding a different tier is ErrVIPAlreadyMember.
+func (r *VIPRepository) GrantOrExtend(ctx context.Context, guildID, tierID, playerID int64, expiresAt *time.Time, note, by string) (m VIPMember, created bool, err error) {
+	var id, heldTier int64
+	err = r.pool.QueryRow(ctx, `SELECT m.id,m.tier_id FROM vip_members m WHERE m.guild_id=$1 AND m.player_id=$2 AND `+vipActive, guildID, playerID).Scan(&id, &heldTier)
+	if errors.Is(err, pgx.ErrNoRows) {
+		m, err = r.Grant(ctx, guildID, tierID, playerID, expiresAt, note, by)
+		return m, err == nil, err
+	}
+	if err != nil {
+		return VIPMember{}, false, err
+	}
+	if heldTier != tierID {
+		return VIPMember{}, false, ErrVIPAlreadyMember
+	}
+	if _, err = r.pool.Exec(ctx, `UPDATE vip_members SET expires_at=CASE WHEN expires_at IS NULL OR $2::TIMESTAMPTZ IS NULL THEN NULL ELSE GREATEST(expires_at,$2) END WHERE id=$1`, id, expiresAt); err != nil {
+		return VIPMember{}, false, err
+	}
+	m, err = scanVIPMember(r.pool.QueryRow(ctx, `SELECT `+vipMemberCols+vipMemberFrom+` WHERE m.id=$1`, id))
+	return m, false, err
+}
+
+// RevokeIfActive ends a membership by id when it is still open; ok=false when it had already ended.
+func (r *VIPRepository) RevokeIfActive(ctx context.Context, guildID, memberID int64, reason string) (VIPMember, bool, error) {
+	m, err := r.Revoke(ctx, guildID, memberID, reason)
+	if errors.Is(err, ErrVIPMemberNotFound) {
+		return VIPMember{}, false, nil
+	}
+	return m, err == nil, err
+}

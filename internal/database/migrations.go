@@ -2820,6 +2820,11 @@ CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events
 		Name: "0110_nitrado_tail_trust",
 		SQL:  NitradoTailTrustSQL,
 	},
+	{
+		// The perk store: offers, purchases and charges. Additive.
+		Name: "0111_perk_store",
+		SQL:  PerkStoreSQL,
+	},
 }
 
 // NitradoTailTrustSQL keeps which Nitrado services have proven that partial (seek) reads match

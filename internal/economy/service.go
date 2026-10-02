@@ -36,6 +36,12 @@ const (
 	// Base rent, written only by the base rent repository through the same
 	// ledger path when a player pays ahead.
 	TypeBaseRent = repository.TxBaseRent
+	// Perk store payments, written only by the perk store repository through the same ledger
+	// path: what a player paid or got back, and what the owner received or gave back.
+	TypePerkPurchase   = repository.TxPerkPurchase
+	TypePerkRefund     = repository.TxPerkRefund
+	TypePerkSale       = repository.TxPerkSale
+	TypePerkSaleRefund = repository.TxPerkSaleRefund
 )
 
 const (
@@ -311,6 +317,14 @@ func TypeLabel(t string) string {
 		return "Security purchase"
 	case t == TypeBaseRent:
 		return "Base rent"
+	case t == TypePerkPurchase:
+		return "Perk purchase"
+	case t == TypePerkRefund:
+		return "Perk refund"
+	case t == TypePerkSale:
+		return "Perk store sale"
+	case t == TypePerkSaleRefund:
+		return "Perk store refund"
 	case strings.HasPrefix(t, "EVENT_"):
 		return "Event prize"
 	}
