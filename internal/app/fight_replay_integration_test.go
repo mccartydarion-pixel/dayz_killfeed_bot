@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/yourname/dayz-killfeed/internal/repository"
+	"github.com/yourname/dayz-killfeed/internal/shop"
 )
 
 // Fight replay over a real PostgreSQL (docs/FIGHT_REPLAY.md).
@@ -37,6 +38,7 @@ func TestFightReplayForStaffAndDelayedPublicAccess(t *testing.T) {
 	owner := w.f.OwnerDiscordID
 	now := time.Now().UTC()
 	ace, bob, cat, dan := w.player("Ace"), w.player("Bob"), w.player("Cat"), w.player("Dan")
+	w.a.Shop = shop.NewService(repository.NewShopRepository(w.a.DB.Pool), w.a.EconomyAccounts, nil)
 
 	// Fight A, two hours ago: three kills in 80 seconds around (5000, 5000).
 	a0 := now.Add(-2 * time.Hour)
@@ -86,6 +88,9 @@ func TestFightReplayForStaffAndDelayedPublicAccess(t *testing.T) {
 	replay := decodeBody[fightReplayDTO](t, rr)
 	if replay.ID != a1 || replay.Kills != 3 || len(replay.KillEvents) != 3 || replay.DurationSeconds != 300+80+30 || replay.Truncated {
 		t.Fatalf("replay = id %d kills %d events %d duration %v", replay.ID, replay.Kills, len(replay.KillEvents), replay.DurationSeconds)
+	}
+	if replay.MapKey != "" {
+		t.Fatalf("no map is configured, yet the replay names %q", replay.MapKey)
 	}
 	first := replay.KillEvents[0]
 	if first.T != 300 || first.KillerID != ace || first.VictimID != bob || first.Weapon != "SVAL" || !first.Headshot ||
@@ -163,11 +168,19 @@ func TestFightReplayForStaffAndDelayedPublicAccess(t *testing.T) {
 	if rr := w.call(w.a.handlePlayerFightReplay, http.MethodGet, "/x", fan.DiscordUserID, nil, pv(c1)); rr.Code != http.StatusNotFound {
 		t.Fatalf("a fight inside the delay was served to a player: %d", rr.Code)
 	}
+	// Once the server's map is set, replays carry it so the website can draw the satellite map.
+	if _, err := w.a.DB.Pool.Exec(ctx, `INSERT INTO shop_delivery_settings (installation_id, organization_id, map_key) VALUES ($1, $2, 'chernarusplus')
+ON CONFLICT (installation_id) DO UPDATE SET map_key = EXCLUDED.map_key`, w.f.InstallationID, w.f.OrgID); err != nil {
+		t.Fatal(err)
+	}
 	rr = w.call(w.a.handlePlayerFightReplay, http.MethodGet, "/x", fan.DiscordUserID, nil, pv(a2))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("public replay: %d %s", rr.Code, rr.Body.String())
 	}
 	public := decodeBody[fightReplayDTO](t, rr)
+	if public.MapKey != "chernarusplus" {
+		t.Fatalf("public replay map = %q, want the configured chernarusplus", public.MapKey)
+	}
 	// The public lead-in is two minutes: the first kill is at t=120 and the -4 min sample is gone.
 	if public.ID != a1 || public.KillEvents[0].T != 120 || public.DurationSeconds != 120+80+30 {
 		t.Fatalf("public replay = id %d first kill t=%v duration %v", public.ID, public.KillEvents[0].T, public.DurationSeconds)
