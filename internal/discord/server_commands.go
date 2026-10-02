@@ -66,9 +66,11 @@ func RegisterServerCommands(s CommandRegistrar, guildID string) error {
 	serviceIDOption := []*discordgo.ApplicationCommandOption{
 		{Name: "service_id", Description: "DayZ service ID", Type: discordgo.ApplicationCommandOptionString, Required: true, Autocomplete: true},
 	}
+	manageServer := int64(discordgo.PermissionManageServer) // hides it from normal members, like /setup
 	cmd := &discordgo.ApplicationCommand{
-		Name:        "server",
-		Description: "Connect and manage DayZ game servers",
+		Name:                     "server",
+		Description:              "Connect and manage DayZ game servers",
+		DefaultMemberPermissions: &manageServer,
 		Options: []*discordgo.ApplicationCommandOption{
 			{Name: "connect", Description: "Securely connect a Nitrado API token", Type: discordgo.ApplicationCommandOptionSubCommand},
 			{Name: "services", Description: "List DayZ services on the connected Nitrado account", Type: discordgo.ApplicationCommandOptionSubCommand},
@@ -92,9 +94,18 @@ func (h *ServerCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interac
 
 	switch i.Type {
 	case discordgo.InteractionApplicationCommandAutocomplete:
+		// Suggestions list the guild's Nitrado services: admins only.
+		if !isAdmin(s, i) {
+			respondAutocomplete(s, i, nil)
+			return
+		}
 		h.handleAutocomplete(s, i)
 		return
 	case discordgo.InteractionModalSubmit:
+		if !isAdmin(s, i) {
+			respondEphemeral(s, i, "⛔ You need Administrator or Manage Server permission to manage servers.")
+			return
+		}
 		h.handleModalSubmit(s, i)
 		return
 	case discordgo.InteractionApplicationCommand:

@@ -9,6 +9,7 @@
 package logger
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"os"
@@ -25,9 +26,63 @@ func New() *slog.Logger {
 func NewHandler(levelName, format string, w io.Writer) slog.Handler {
 	opts := &slog.HandlerOptions{Level: ParseLevel(levelName), ReplaceAttr: replaceAttr}
 	if strings.EqualFold(strings.TrimSpace(format), "text") {
-		return slog.NewTextHandler(w, opts)
+		return componentHandler{slog.NewTextHandler(w, opts)}
 	}
-	return slog.NewJSONHandler(w, opts)
+	return componentHandler{slog.NewJSONHandler(w, opts)}
+}
+
+// componentHandler rewrites the codebase's logging convention,
+//
+//	slog.Info("component=discord", "msg", "slash commands registered", ...)
+//
+// into a record whose message is the text and whose `component` key is the
+// component: {"msg":"slash commands registered","component":"discord",...}.
+// Left alone, JSON output carries two `msg` keys, and Railway shows the first
+// one ("component=discord"), hiding the text. Without a "msg" attribute, an
+// "event" attribute's value becomes the message (and stays as `event`).
+type componentHandler struct{ next slog.Handler }
+
+func (h componentHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return h.next.Enabled(ctx, level)
+}
+
+func (h componentHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return componentHandler{h.next.WithAttrs(attrs)}
+}
+
+func (h componentHandler) WithGroup(name string) slog.Handler {
+	return componentHandler{h.next.WithGroup(name)}
+}
+
+func (h componentHandler) Handle(ctx context.Context, r slog.Record) error {
+	component, ok := strings.CutPrefix(r.Message, "component=")
+	if !ok {
+		return h.next.Handle(ctx, r)
+	}
+	message, event := "", ""
+	attrs := make([]slog.Attr, 0, r.NumAttrs()+1)
+	attrs = append(attrs, slog.String("component", component))
+	r.Attrs(func(a slog.Attr) bool {
+		switch {
+		case a.Key == slog.MessageKey && message == "":
+			message = a.Value.String()
+			return true
+		case a.Key == "event" && event == "":
+			event = a.Value.String()
+		}
+		attrs = append(attrs, a)
+		return true
+	})
+	switch {
+	case message != "":
+	case event != "":
+		message = event
+	default:
+		message = r.Message
+	}
+	out := slog.NewRecord(r.Time, r.Level, message, r.PC)
+	out.AddAttrs(attrs...)
+	return h.next.Handle(ctx, out)
 }
 
 // ParseLevel maps a LOG_LEVEL value to a slog level; anything unrecognised

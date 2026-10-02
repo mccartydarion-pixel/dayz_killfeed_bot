@@ -107,7 +107,7 @@ docker run --rm -p 8080:8080 --env-file .env dayz-killfeed
 ## Current Phase 4.9 functionality
 
 - typed configuration with startup validation (`PORT` preferred for Railway, `HTTP_PORT` local fallback)
-- structured JSON logging via `slog` with `time`/`level`/`msg` keys for Railway's log parser (`LOG_LEVEL=debug` enables checkpoint debug logs; `LOG_FORMAT=text` switches to the human-readable format)
+- structured JSON logging via `slog` with `time`/`level`/`msg` keys for Railway's log parser (a `component=x` record becomes `component: x` with its `msg` attribute as the one message, so Railway shows the text) (`LOG_LEVEL=debug` enables checkpoint debug logs; `LOG_FORMAT=text` switches to the human-readable format)
 - Nitrado REST client with retries and error handling
 - Nitrado service discovery, DayZ service matching, and configured-service verification
 - sanitized recursive inspection of the live service payload for file/log capability fields
