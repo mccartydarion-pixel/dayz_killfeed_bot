@@ -308,6 +308,27 @@ func TestQueryHygieneIndexesServeTheirQueries(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _, _ = db.Pool.Exec(ctx, `DELETE FROM guilds WHERE id=$1`, guildID) })
+	// Seed enough rows, with real statistics, that each expression index is the selective
+	// choice. On an empty table every index on the guild_id prefix costs the same and the
+	// planner's pick between them is arbitrary (CI chose idx_kills_guild_lower_weapon for the
+	// time-window query), which says nothing about applicability.
+	if _, err := conn.Exec(ctx, `INSERT INTO players(guild_id, dayz_player_id, display_name, last_seen_at)
+		SELECT $1, 'hygiene-explain-' || g, 'Player ' || g, NOW() FROM generate_series(1, 400) AS g`, guildID); err != nil {
+		t.Fatal(err)
+	}
+	var serverID int64
+	if err := conn.QueryRow(ctx, `INSERT INTO game_servers(guild_id, provider, provider_service_id, game, platform, status, display_name)
+		VALUES($1, 'qa-fixture', $2, 'dayz', 'PLAYSTATION', 'ACTIVE', 'hygiene explain') RETURNING id`, guildID, fmt.Sprintf("hygiene-explain-%d", guildID)).Scan(&serverID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(ctx, `INSERT INTO kills(guild_id, server_id, session_id, event_fingerprint, weapon_display, created_at)
+		SELECT $1, $2, 'hygiene-explain', 'hygiene-explain-' || g, 'Weapon ' || (g % 40), NOW() - (g || ' minutes')::interval
+		FROM generate_series(1, 1200) AS g`, guildID, serverID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(ctx, `ANALYZE players; ANALYZE kills`); err != nil {
+		t.Fatal(err)
+	}
 	for _, c := range []struct {
 		name, sql string
 		args      []any
@@ -315,7 +336,7 @@ func TestQueryHygieneIndexesServeTheirQueries(t *testing.T) {
 		{"idx_players_guild_lower_name", `SELECT id FROM players p WHERE p.guild_id=$1 AND LOWER(p.display_name)=LOWER($2)`, []any{guildID, "Someone"}},
 		{"idx_kills_guild_lower_weapon", `SELECT COUNT(*) FROM kills k WHERE guild_id=$1 AND LOWER(weapon_display)=LOWER($2)`, []any{guildID, "M4"}},
 		{"idx_kills_server_event_window", `SELECT id FROM kills k WHERE k.guild_id=$1 AND k.server_id=$2 AND COALESCE(k.event_time, k.created_at) >= $3 AND COALESCE(k.event_time, k.created_at) < $4`,
-			[]any{guildID, int64(1), time.Now().Add(-time.Hour), time.Now()}},
+			[]any{guildID, serverID, time.Now().Add(-time.Hour), time.Now()}},
 	} {
 		rows, err := conn.Query(ctx, "EXPLAIN "+c.sql, c.args...)
 		if err != nil {
