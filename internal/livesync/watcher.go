@@ -501,19 +501,19 @@ func (w *familyWatcher) read(ctx context.Context, rt *sourceRuntime, why string)
 	tailOnly, verify := false, false
 	tr, canTail := s.remote.(TailReader)
 	if canTail && st.Checkpoint > 0 && rt.haveLastByte && !rt.firstReadIsBackfill && (rt.listingSize == 0 || rt.listingSize >= st.Checkpoint) {
-		tailOnly, verify = tailTrust.plan(s.cfg.ServiceID)
+		tailOnly, verify = nitrado.TailPlan(s.cfg.ServiceID)
 	}
 	if tailOnly {
 		// Start one byte early: a quiet file still returns that byte, and it must equal the last
 		// byte already read, so a replaced file is never stitched onto the old checkpoint.
 		opCtx, cancel := context.WithTimeout(ctx, s.cfg.OpTimeout)
-		tail, _, ok := readTail(opCtx, tr, s.cfg.ServiceID, st.RemotePath, st.Checkpoint-1)
+		tail, _, ok := nitrado.ReadTail(opCtx, tr, s.cfg.ServiceID, st.RemotePath, st.Checkpoint-1, 0)
 		cancel()
 		if ok && len(tail) > 0 && tail[0] == rt.lastByte {
 			content, size = tail[1:], st.Checkpoint+int64(len(tail)-1)
 			w.tailReads++
 		} else {
-			tailTrust.failed(s.cfg.ServiceID)
+			nitrado.TailFailed(s.cfg.ServiceID)
 			tailOnly = false
 		}
 	}
@@ -532,10 +532,11 @@ func (w *familyWatcher) read(ctx context.Context, rt *sourceRuntime, why string)
 		size = int64(len(data))
 		if verify && size >= st.Checkpoint {
 			opCtx, cancel := context.WithTimeout(ctx, s.cfg.OpTimeout)
-			tail, method, ok := readTail(opCtx, tr, s.cfg.ServiceID, st.RemotePath, st.Checkpoint-1)
+			tail, method, ok := nitrado.ReadTail(opCtx, tr, s.cfg.ServiceID, st.RemotePath, st.Checkpoint-1, 0)
 			cancel()
 			if ok {
-				tailTrust.verified(s.cfg.ServiceID, tailMatches(data, st.Checkpoint-1, tail), int(size-st.Checkpoint), method)
+				match, newBytes := nitrado.TailMatches(data, st.Checkpoint-1, tail)
+				nitrado.TailVerified(s.cfg.ServiceID, match, newBytes, method, "livesync")
 			}
 		}
 		truncated = size < st.Checkpoint
