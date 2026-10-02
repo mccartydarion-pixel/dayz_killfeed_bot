@@ -96,6 +96,11 @@ func (f *fakeAdminReader) CountUsers(context.Context) (int64, int64, int64, erro
 	f.hit()
 	return 0, 0, 0, f.err
 }
+func (f *fakeAdminReader) TableSizes(context.Context, int) ([]adminrepo.TableSize, error) {
+	f.hit()
+	rows := int64(1234)
+	return []adminrepo.TableSize{{Table: "kills", TotalBytes: 4096, TableBytes: 2048, IndexBytes: 2048, RowsEstimate: &rows}}, f.err
+}
 
 func newAdminTestApp(admins ...string) (*App, *fakeAdminReader) {
 	fake := &fakeAdminReader{}
@@ -366,10 +371,18 @@ func TestAdminAPIOverviewAndHealthShapes(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &h); err != nil || rr.Code != 200 {
 		t.Fatalf("health: %d %s", rr.Code, rr.Body.String())
 	}
-	for _, k := range []string{"backendStatus", "installations", "generatedAt", "backend", "database", "discord", "summary"} {
+	for _, k := range []string{"backendStatus", "installations", "generatedAt", "backend", "database", "discord", "summary", "performance"} {
 		if _, ok := h[k]; !ok {
 			t.Errorf("health.%s missing", k)
 		}
+	}
+	perf, _ := h["performance"].(map[string]any)
+	sizes, _ := perf["tableSizes"].([]any)
+	if len(sizes) != 1 {
+		t.Fatalf("health.performance.tableSizes must carry the reader's table sizes, got %s", rr.Body.String())
+	}
+	if row, _ := sizes[0].(map[string]any); row["table"] != "kills" || row["totalBytes"] != float64(4096) || row["rowsEstimate"] != float64(1234) {
+		t.Fatalf("unexpected table size row %v", sizes[0])
 	}
 	if strings.Contains(strings.ToLower(rr.Body.String()), "uptimepercent") {
 		t.Fatal("no invented uptime percentages")
@@ -624,7 +637,7 @@ func TestPerformanceSnapshotNilSafe(t *testing.T) {
 	a := &App{}
 	got := a.performanceSnapshot()
 	want := adminPerformance{}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("expected a zero-value snapshot with no DB/ChannelRoutes, got %+v", got)
 	}
 }

@@ -858,6 +858,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			go app.runLocationRetention(ctx)
 			app.LiveSync = repository.NewLiveSyncRepository(db.Pool)
 			go app.runLiveSyncRetention(ctx)
+			go app.runDataRetention(ctx)
 			app.Zones = repository.NewZoneRepository(db.Pool)
 			app.ZoneCache = killfeed.NewZoneCache(app.Zones)
 			app.Intrusion = killfeed.NewIntrusionEngine(app.Zones, app.ZoneCache, intrusionRoleChecker{app: app}, intrusionPublisher{app: app})

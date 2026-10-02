@@ -22,13 +22,15 @@ type DB struct {
 	tracer *queryTracer
 }
 
-// Pool tuning defaults (Champion Performance Phase 1, docs/PERFORMANCE.md
-// "Connection pool"). Unchanged from the values this package shipped with
-// before they became configurable - overriding them is opt-in, never a
-// silent behavior change.
+// Pool tuning defaults (docs/PERFORMANCE.md "Connection pool"). MaxConns was
+// 10 and MinConns 1 until the query-hygiene pass raised them to 25 and 2: one
+// process runs a worker per game server plus the HTTP API, the Discord
+// handlers and the hourly sweeps, and 10 connections left acquires waiting
+// (poolEmptyAcquireCount in the admin health snapshot). DATABASE_MAX_CONNS /
+// DATABASE_MIN_CONNS still override them.
 const (
-	DefaultMaxConns             = 10
-	DefaultMinConns             = 1
+	DefaultMaxConns             = 25
+	DefaultMinConns             = 2
 	DefaultMaxConnLifetime      = 30 * time.Minute
 	DefaultMaxConnIdleTime      = 5 * time.Minute
 	DefaultHealthCheckPeriod    = time.Minute
@@ -42,9 +44,8 @@ const (
 // Pool size and the slow-query log threshold are tunable via environment
 // variables (DATABASE_MAX_CONNS, DATABASE_MIN_CONNS,
 // DATABASE_MAX_CONN_LIFETIME, DATABASE_MAX_CONN_IDLE_TIME,
-// DATABASE_HEALTH_CHECK_PERIOD, SLOW_QUERY_THRESHOLD_MS) - every one of them
-// defaults to exactly what this package hardcoded before, so an operator who
-// sets none of them sees no behavior change.
+// DATABASE_HEALTH_CHECK_PERIOD, SLOW_QUERY_THRESHOLD_MS); the defaults are the
+// constants above.
 func Connect(ctx context.Context, databaseURL string) (*DB, error) {
 	if databaseURL == "" {
 		return nil, fmt.Errorf("DATABASE_URL is not configured")

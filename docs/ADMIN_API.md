@@ -315,13 +315,27 @@ invented uptime percentages.
   "database": { "ok": true },
   "discord": { "configured": true, "ready": true },
   "summary": { "total": 14, "byStatus": { "READY": 8 }, "byHealth": { "HEALTHY": 8 }, "serversByStatus": { "ACTIVE": 12 },
-      "botNotInstalled": 0, "permissionsUnverified": 2, "readyNeverChecked": 1 } }
+      "botNotInstalled": 0, "permissionsUnverified": 2, "readyNeverChecked": 1 },
+  "embedRender": { "enabled": false, "templateCustomRender": 0, "templateDefaultRender": 120, "templateFallbackRender": 0, "templateRenderError": 0 },
+  "performance": {
+      "database": { "poolTotalConns": 3, "poolIdleConns": 2, "poolMaxConns": 25, "poolAcquiredConns": 1, "poolAcquireCount": 1042,
+          "poolEmptyAcquireCount": 0, "poolAcquireDurationMs": 12, "queryTotal": 8841, "querySlow": 0, "queryAvgDurationMs": 0.31 },
+      "routing": { "cacheHits": 512, "cacheMisses": 9, "cacheHitRate": 0.9826, "cacheEntries": 9 },
+      "tableSizes": [ { "table": "kills", "totalBytes": 734003200, "tableBytes": 402653184, "indexBytes": 331350016, "rowsEstimate": 1830211 } ] } }
 ```
 
 `installations` (the website's list) holds at most 50 installations needing attention:
 status `DEGRADED`, `DISCONNECTED` or `SUSPENDED`, never-checked first. Free-text error
 messages from components and workers are intentionally not exposed. `state`/`overall`
 use the runtime's `HEALTHY | DEGRADED | UNHEALTHY | UNKNOWN`.
+
+`performance` is the in-process counter snapshot (docs/PERFORMANCE.md section 11) plus
+`tableSizes`: the 15 largest tables on disk, biggest first, read from `pg_class` only -
+`totalBytes` = `tableBytes` (heap + TOAST) + `indexBytes`; `rowsEstimate` is the planner's
+estimate from the last ANALYZE, `null` when there has been none, never a `COUNT(*)`. No
+table is scanned and no row content is read; when the catalog read fails the list is
+empty and the response still succeeds. The Owner Hub can chart it to watch data growth
+(docs/PERFORMANCE.md section 17).
 
 ## Owner controls (Phase 2, writes)
 

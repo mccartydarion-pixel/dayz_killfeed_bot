@@ -260,9 +260,8 @@ no behavior change. `DB.ExtendedPoolStats()` exposes `pgxpool.Stat()`'s fuller s
 empty-acquire count, cumulative acquire wait duration) - the specific signal that indicates the pool
 itself is undersized (a pool can look "full of idle connections" while every acquire still waits, if
 `MaxConns` is simply too low for peak concurrency), which the pre-existing `PoolStats()` (total/idle
-only) could not show. No production pool-exhaustion evidence was available to justify changing the
-actual default size, so it was left at 10 - the goal here was making it tunable and observable, not
-guessing at a new number.
+only) could not show. Phase 1 left the default at 10 pending evidence; the query-hygiene pass
+(section 17) raised the defaults to `MaxConns=25`, `MinConns=2` - the env overrides are unchanged.
 
 ### Claim/worker contention
 
@@ -303,13 +302,19 @@ customer-facing surface) now includes a `performance` object:
 ```json
 "performance": {
   "database": {
-    "poolTotalConns": 3, "poolIdleConns": 2, "poolMaxConns": 10, "poolAcquiredConns": 1,
+    "poolTotalConns": 3, "poolIdleConns": 2, "poolMaxConns": 25, "poolAcquiredConns": 1,
     "poolAcquireCount": 1042, "poolEmptyAcquireCount": 0, "poolAcquireDurationMs": 12,
     "queryTotal": 8841, "querySlow": 0, "queryAvgDurationMs": 0.31
   },
-  "routing": { "cacheHits": 512, "cacheMisses": 9, "cacheHitRate": 0.9826, "cacheEntries": 9 }
+  "routing": { "cacheHits": 512, "cacheMisses": 9, "cacheHitRate": 0.9826, "cacheEntries": 9 },
+  "tableSizes": [ { "table": "kills", "totalBytes": 734003200, "tableBytes": 402653184, "indexBytes": 331350016, "rowsEstimate": 1830211 } ]
 }
 ```
+
+`tableSizes` (section 17) is the 15 largest tables on disk, biggest first, from `pg_class` only:
+`totalBytes` = `tableBytes` (heap + TOAST) + `indexBytes`; `rowsEstimate` is the planner's estimate
+from the last ANALYZE (`null` when there has been none), never a `COUNT(*)`. No table is scanned
+and no row content is read.
 
 Counts are cumulative since process start (not a rate) - an operator derives a rate from two reads a
 known interval apart. Deliberately **not** added to `GET /api/runtime/status` (the documented,
@@ -412,3 +417,82 @@ own `UNIQUE(guild_id, event_fingerprint)` constraint is the backstop against a d
 the in-memory (non-durable) `Deduplicator` cache was lost on restart. `TestColdStartMismatchedCheckpointBaselinesCurrentADM`
 and `TestCheckForNewerLogPreservesCheckpointAndDedupe` (`internal/killfeed`) cover this; both still
 pass unchanged.
+
+## 17. Query hygiene and data growth
+
+A second, code-grounded pass over the read paths and the tables that only grow. Migration
+`0111_query_hygiene_indexes` (`internal/database/query_hygiene_schema.go`), additive only.
+
+### Queries
+
+- **`TopByKD`** (`internal/repository/stats_repository.go`) ran three correlated `COUNT(*)`
+  subqueries per player row - the kills count twice - before the `LIMIT`. It now joins two
+  pre-aggregated derived tables (kills and deaths grouped by player once, the shape
+  `TopByBestStreak` already used). Results, ordering and tie breaks are unchanged; a player with
+  no kills row still ranks when `minKills` allows it, and a kill without a killer counts for
+  nobody. `TestTopByKDMatchesLegacySemantics` runs the old query text next to the new method on
+  seeded ties, zero-kill players and every `minKills`/`limit` combination and requires identical
+  rows.
+- **Case-insensitive name lookups** (`LOWER(p.display_name) = LOWER($n)` in the stats, player,
+  link and analytics repositories) could not use `idx_players_guild_name`. New expression index
+  `idx_players_guild_lower_name ON players (guild_id, LOWER(display_name))`, plus
+  `idx_kills_guild_lower_weapon ON kills (guild_id, LOWER(weapon_display))` for the weapon
+  statistics lookup, the one other `LOWER(column) = LOWER($n)` filter in `internal/repository`
+  (`factions.tag` already had a `LOWER` unique index). `TestQueryHygieneIndexesServeTheirQueries`
+  proves with `EXPLAIN` that the planner picks them for the predicates as the repositories write
+  them.
+- **Per-server kill time window** (`COALESCE(k.event_time, k.created_at) >= $from AND < $to` in
+  the fight replay, heatmaps, kills-by-hour and network boards) was not sargable. New expression
+  index `idx_kills_server_event_window ON kills (guild_id, server_id, (COALESCE(event_time,
+  created_at)))`. A `created_at` range with a margin was rejected: `event_time` is `NULL` for every
+  ADM-sourced kill today (`Event.Timestamp` is never set - docs/CHAMPION_LIVE_SYNC.md A2/A8),
+  and where a row does carry it, it is the log line's own clock, which after an outage, a restart
+  or a backfill read sits hours or days before `created_at`, so no fixed margin is correct. The
+  expression index serves the predicate exactly as written for `NULL` and non-`NULL` rows alike.
+- **N+1 lists.** `ListFactionsForModeration` issued one `QueryRow` per faction for its leader;
+  it now reads every listed faction's leader in one `DISTINCT ON (faction_id) ... WHERE faction_id
+  = ANY($1)` query. `ListOwnerEvents` issued one query per ACTIVE/ENDED event for its top three;
+  it now ranks every event's scores in one `ROW_NUMBER() OVER (PARTITION BY event_id ORDER BY
+  score DESC, kills DESC, id)` query and keeps rows ranked 1-3. Output is identical
+  (`TestListFactionsForModerationLeadersFromOneQuery`, `TestListOwnerEventsTopThreePerEventFromOneQuery`).
+- **Pool size.** `DefaultMaxConns` 10 -> 25, `DefaultMinConns` 1 -> 2 (`internal/database`). One
+  process runs a worker per game server, the HTTP API, the Discord handlers and the hourly sweeps.
+  `DATABASE_MAX_CONNS` / `DATABASE_MIN_CONNS` still override.
+
+### Data growth
+
+Production grows about 0.24 GB/week with one server attached. The append-only tables, from the
+`INSERT INTO` sites in `internal/repository`, `internal/livesync` and `internal/killfeed`:
+
+| Table | Written per | Read for | Retention |
+| --- | --- | --- | --- |
+| `case_evidence_events` | every ADM hit/kill/connect/build line (wide rows, positions) | C.A.S.E. cases, shadow review, admissibility | **none - kept** (evidence) |
+| `player_location_events` | every ADM line with a position | heatmaps, fights, lives, retention backfill | 30 days (`CHAMPION_LOCATION_RETENTION_DAYS`, pre-existing) |
+| `live_sync_records` | every RPT/script/crash/restart line | diagnostics API: newest records, last 6 hours | noise 3 days; rest **14 days** (`CHAMPION_RETENTION_DAYS_LIVE_SYNC_RECORDS`; was 30) |
+| `kills`, `deaths` | every kill / death | everything | none - kept |
+| `combat_anomaly_flags` | every PvP kill | the same pair's last 10 minutes only | **14 days** (`CHAMPION_RETENTION_DAYS_COMBAT_ANOMALY_FLAGS`, new) |
+| `base_black_box_events` | base-area movement | the owner's black box | per-server setting (pre-existing) |
+| `platform_audit_log`, `admin_audit_log` | staff / owner actions | audits | none - kept |
+| `player_daily_activity`, `server_hourly_activity` | one row per player-day / server-hour | retention dashboard | none - small, kept |
+| `nitrado_tail_trust` | one row per Nitrado service, updated in place | tail-read trust | n/a |
+| `shop_delivery_attempt_evidence`, `shop_delivery_attempt_events` | per delivery attempt | delivery evidence | none - low volume, kept |
+
+So the unbounded drivers are `case_evidence_events` (by far the widest rows, one per hit line) and
+`kills`/`deaths` plus their indexes; the pruned tables reach a steady state after their window.
+`case_evidence_events` feeds cases and was deliberately not pruned here; any window for it is a
+C.A.S.E. policy decision (docs/CASE_PHASE2B.md: "retention is not silently applied").
+
+**Data retention worker** (`internal/app/data_retention_worker.go`,
+`internal/repository/data_retention_repository.go`): once at start-up and then hourly, for each
+table in its compile-time list, `DELETE ... WHERE id IN (SELECT id ... WHERE <time> < cutoff ORDER BY
+<time> LIMIT 5000)` until a batch deletes nothing (at most 200 batches per sweep), logging
+`component=retention event=rows_deleted table=... count=... retention_days=...`. The default
+window is 14 days; `CHAMPION_RETENTION_DAYS_<TABLE>` (table name upper-cased) overrides it and
+fails closed to the default on anything unparsable or non-positive. Only plain lower-case
+identifiers from the list are ever interpolated (`TestDataRetentionPrunesOnlyOldRowsInBatches`).
+The live-sync sweep (`internal/app/live_sync.go`) keeps its category-aware query and reads the same
+`CHAMPION_RETENTION_DAYS_LIVE_SYNC_RECORDS`; `0111` adds `idx_live_sync_records_detected` and
+`idx_combat_anomaly_flags_created` so neither sweep scans its table.
+
+**Table sizes** in `GET /api/admin/health` -> `performance.tableSizes` (section 11, docs/ADMIN_API.md)
+show where the bytes are, from the catalog, so the Owner Hub can watch the trend.

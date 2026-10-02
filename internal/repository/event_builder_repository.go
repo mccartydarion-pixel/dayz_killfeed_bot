@@ -70,28 +70,45 @@ LIMIT $2`, guildID, clampLimit(limit, 50, 200))
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	// The top three of every ACTIVE or ENDED event in one query (ranked per event) instead of
+	// one query per event. Order within an event is the same: score, kills, score id.
+	var scored []int64
+	index := map[int64]int{}
 	for i := range out {
 		if out[i].Status != "ACTIVE" && out[i].Status != "ENDED" {
 			continue
 		}
-		lrows, err := r.pool.Query(ctx, `
-SELECT COALESCE(p.display_name, f.name, 'Unknown'), s.score, s.kills
-FROM event_scores s LEFT JOIN players p ON p.id=s.player_id LEFT JOIN factions f ON f.id=s.faction_id
-WHERE s.event_id=$1 ORDER BY s.score DESC, s.kills DESC, s.id LIMIT 3`, out[i].ID)
-		if err != nil {
+		scored = append(scored, out[i].ID)
+		index[out[i].ID] = i
+	}
+	if len(scored) == 0 {
+		return out, nil
+	}
+	lrows, err := r.pool.Query(ctx, `
+SELECT t.event_id, COALESCE(p.display_name, f.name, 'Unknown'), t.score, t.kills
+FROM (
+  SELECT s.id, s.event_id, s.player_id, s.faction_id, s.score, s.kills,
+         ROW_NUMBER() OVER (PARTITION BY s.event_id ORDER BY s.score DESC, s.kills DESC, s.id) AS rn
+  FROM event_scores s WHERE s.event_id = ANY($1)
+) t
+LEFT JOIN players p ON p.id=t.player_id LEFT JOIN factions f ON f.id=t.faction_id
+WHERE t.rn <= 3
+ORDER BY t.event_id, t.rn`, scored)
+	if err != nil {
+		return nil, err
+	}
+	defer lrows.Close()
+	for lrows.Next() {
+		var eventID int64
+		var l EventLeader
+		if err := lrows.Scan(&eventID, &l.Name, &l.Score, &l.Kills); err != nil {
 			return nil, err
 		}
-		for lrows.Next() {
-			var l EventLeader
-			if err := lrows.Scan(&l.Name, &l.Score, &l.Kills); err != nil {
-				lrows.Close()
-				return nil, err
-			}
+		if i, ok := index[eventID]; ok {
 			out[i].Leaders = append(out[i].Leaders, l)
 		}
-		lrows.Close()
 	}
-	return out, nil
+	return out, lrows.Err()
 }
 
 // EventAnnouncement is a pending "upcoming" or "started" card.

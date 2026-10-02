@@ -2820,6 +2820,12 @@ CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events
 		Name: "0110_nitrado_tail_trust",
 		SQL:  NitradoTailTrustSQL,
 	},
+	{
+		// Indexes for case-insensitive name lookups, the per-server kill time window and the
+		// retention sweeps (docs/PERFORMANCE.md "Query hygiene"). Additive.
+		Name: "0111_query_hygiene_indexes",
+		SQL:  QueryHygieneIndexesSQL,
+	},
 }
 
 // NitradoTailTrustSQL keeps which Nitrado services have proven that partial (seek) reads match
