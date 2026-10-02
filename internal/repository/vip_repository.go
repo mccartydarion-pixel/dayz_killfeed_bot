@@ -102,6 +102,8 @@ type VIPMember struct {
 	RevokedReason string     `json:"revokedReason,omitempty"`
 	Active        bool       `json:"active"`
 	RoleError     string     `json:"roleError,omitempty"`
+	// NoticeError is why the player was not told by direct message ("" = they were). Not stored.
+	NoticeError string `json:"noticeError,omitempty"`
 }
 
 const vipMemberCols = `m.id,m.tier_id,t.name,m.player_id,p.display_name,COALESCE(m.discord_user_id,''),COALESCE(t.discord_role_id,''),g.discord_guild_id,
@@ -280,4 +282,31 @@ func (r *VIPRepository) RevokeIfActive(ctx context.Context, guildID, memberID in
 		return VIPMember{}, false, nil
 	}
 	return m, err == nil, err
+}
+
+// PlayerTier is the supporter tier a player holds, as the Player Hub and the grant notice show it.
+type PlayerTier struct {
+	TierID           int64      `json:"tierId"`
+	Name             string     `json:"name"`
+	Badge            string     `json:"badge"`
+	Color            string     `json:"color"`
+	RewardMultiplier float64    `json:"rewardMultiplier"`
+	DiscordRole      bool       `json:"discordRole"`
+	GrantedAt        time.Time  `json:"grantedAt"`
+	ExpiresAt        *time.Time `json:"expiresAt"`
+}
+
+// ActiveForPlayer returns the tier a player holds right now, or nil when they hold none.
+func (r *VIPRepository) ActiveForPlayer(ctx context.Context, guildID, playerID int64) (*PlayerTier, error) {
+	var t PlayerTier
+	err := r.pool.QueryRow(ctx, `SELECT t.id,t.name,t.badge,t.color,t.reward_multiplier,COALESCE(t.discord_role_id,'')<>'',m.granted_at,m.expires_at
+FROM vip_members m JOIN vip_tiers t ON t.id=m.tier_id WHERE m.guild_id=$1 AND m.player_id=$2 AND `+vipActive+` LIMIT 1`, guildID, playerID).
+		Scan(&t.TierID, &t.Name, &t.Badge, &t.Color, &t.RewardMultiplier, &t.DiscordRole, &t.GrantedAt, &t.ExpiresAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
 }

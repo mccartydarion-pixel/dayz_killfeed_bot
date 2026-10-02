@@ -663,10 +663,12 @@ func (a *App) applyPerks(ctx context.Context, p repository.PerkPurchase) {
 				slog.Warn("component=perk_store", "msg", "tier grant failed", "purchase_id", p.ID, "err", err.Error())
 				problems = append(problems, "The supporter tier could not be granted.")
 			default:
+				a.syncVIPRole(ctx, m, true)
 				if created {
 					memberID = &m.ID
+					// A new tier is worth a message; a renewal that only moves its end is not.
+					a.notifyVIPGranted(ctx, p.GuildID, p.ServerID, m)
 				}
-				a.syncVIPRole(ctx, m, true)
 			}
 		}
 	}
