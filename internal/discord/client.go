@@ -24,7 +24,8 @@ func New(token string, membersIntent ...bool) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	session.Identify.Intents = discordgo.IntentsGuildMessages | discordgo.IntentsGuilds
+	// GuildInvites (not privileged) feeds invite tracking: INVITE_CREATE keeps the use counts current.
+	session.Identify.Intents = discordgo.IntentsGuildMessages | discordgo.IntentsGuilds | discordgo.IntentsGuildInvites
 	if len(membersIntent) > 0 && membersIntent[0] {
 		session.Identify.Intents |= discordgo.IntentsGuildMembers
 	}
@@ -133,6 +134,41 @@ func (c *Client) AddMemberJoinHandler(fn func(*discordgo.Session, *discordgo.Gui
 		return
 	}
 	c.session.AddHandler(fn)
+}
+
+// AddInviteTracking feeds the invite tracker from the gateway: a snapshot when the bot sees a
+// guild, new invites as they are created, and member joins/leaves. Joins are handled off the
+// gateway goroutine because attributing one is a REST call.
+func (c *Client) AddInviteTracking(ctx context.Context, t *InviteTracker) {
+	if c == nil || c.session == nil || t == nil {
+		return
+	}
+	c.session.AddHandler(func(_ *discordgo.Session, g *discordgo.GuildCreate) {
+		if g != nil && g.Guild != nil {
+			go t.Snapshot(g.ID)
+		}
+	})
+	c.session.AddHandler(func(_ *discordgo.Session, e *discordgo.InviteCreate) { t.InviteCreated(e) })
+	c.session.AddHandler(func(_ *discordgo.Session, m *discordgo.GuildMemberAdd) {
+		if m == nil || m.Member == nil || m.User == nil {
+			return
+		}
+		go func() {
+			jctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+			defer cancel()
+			t.MemberJoined(jctx, m.GuildID, m.User.ID, m.User.Bot)
+		}()
+	})
+	c.session.AddHandler(func(_ *discordgo.Session, m *discordgo.GuildMemberRemove) {
+		if m == nil || m.Member == nil || m.User == nil {
+			return
+		}
+		go func() {
+			lctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			t.MemberLeft(lctx, m.GuildID, m.User.ID)
+		}()
+	})
 }
 
 // HasGuildCached reports whether guildID is present in this session's local

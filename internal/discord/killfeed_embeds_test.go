@@ -456,3 +456,22 @@ func fieldsText(e *discordgo.MessageEmbed) string {
 	}
 	return b.String()
 }
+
+func TestSupporterBadgeShowsOnTheKillersCard(t *testing.T) {
+	ev := killEv("V", "K", "M4-A1", 40.0, "Torso")
+	ev.SupporterBadge = "💎 **VIP**"
+	p := BuildPresentation(ev)
+	found := false
+	for _, b := range p.Badges {
+		if strings.Contains(b, "VIP") && !strings.Contains(b, "**VIP**") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("supporter badge missing or not escaped: %v", p.Badges)
+	}
+	ev.SupporterBadge = ""
+	if len(BuildPresentation(ev).Badges) != 0 {
+		t.Fatal("no supporter tier, no badge")
+	}
+}

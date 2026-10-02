@@ -71,6 +71,20 @@ type App struct {
 	Achievements *repository.AchievementRepository
 	Events       *repository.EventRepository
 	EventService *competitiveevents.Service
+	// SeasonPlanner holds owner-scheduled stats season rollovers and Ranked resets.
+	SeasonPlanner *repository.SeasonPlannerRepository
+	// Invites stores Discord invite joins; InviteTracker attributes them (needs Manage Server).
+	Invites       *repository.InviteRepository
+	InviteTracker *discord.InviteTracker
+	// Rewards holds automatic Champion Point reward rules.
+	Rewards *repository.RewardRepository
+	// PlayerTimeline merges one player's history for staff.
+	PlayerTimeline *repository.PlayerTimelineRepository
+	// StaffActivity reads the admin audit log as a who-did-what view.
+	StaffActivity *repository.StaffActivityRepository
+	// VIP holds supporter tiers; VIPRoles adds/removes their Discord roles.
+	VIP      *repository.VIPRepository
+	VIPRoles vipRoleAPI
 	Bounties     *repository.BountyRepository
 	// BountyService is the bounty application service (placement, the atomic claim
 	// for persisted kills, streak bounties, expiry). Its Discord notifier is
@@ -740,6 +754,12 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.ShopConfirmations = shop.NewConfirmations(app.shopConfirmationRepo, app.EconomyAccounts)
 			app.Points = repository.NewPointsRepository(db.Pool)
 			app.Seasons = repository.NewSeasonRepository(db.Pool)
+			app.SeasonPlanner = repository.NewSeasonPlannerRepository(db.Pool)
+			app.Invites = repository.NewInviteRepository(db.Pool)
+			app.Rewards = repository.NewRewardRepository(db.Pool)
+			app.PlayerTimeline = repository.NewPlayerTimelineRepository(db.Pool)
+			app.StaffActivity = repository.NewStaffActivityRepository(db.Pool)
+			app.VIP = repository.NewVIPRepository(db.Pool)
 			app.SeasonService = seasons.NewService(app.Seasons)
 			app.Factions = repository.NewFactionRepository(db.Pool)
 			app.Wars = repository.NewPostgresWarRepository(db.Pool)
@@ -1449,6 +1469,16 @@ func (a *App) Run() error {
 		})
 	}
 	a.Discord.AddMemberJoinHandler(welcomeHandler.HandleMemberJoin)
+	if a.VIP != nil && session != nil {
+		a.VIPRoles = session
+	}
+	if a.Invites != nil {
+		a.InviteTracker = discord.NewInviteTracker(session, a.Invites)
+		a.Discord.AddInviteTracking(ctx, a.InviteTracker)
+		if a.Config.DiscordGuildID != "" {
+			go a.InviteTracker.Snapshot(a.Config.DiscordGuildID)
+		}
+	}
 
 	a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		switch i.Type {
@@ -1830,7 +1860,7 @@ func (a *App) Run() error {
 				setupManager.SetRouteGate(a.RouteSyncer.HasRoute)
 				go a.RouteSyncer.Run(ctx)
 			}
-			store := &persistenceStoreAdapter{players: a.Players, kills: a.Kills, deaths: a.Deaths, seasons: a.Seasons, ranked: a.Ranked, factions: a.Factions, wars: a.Wars, events: a.Events, bounties: a.Bounties, bountySvc: a.BountyService, streaks: a.Streaks, anomalies: a.Anomalies, activity: a.ActivityRepository, servers: a.Servers, stats: a.Stats, analytics: a.AnalyticsRepository, factionStats: a.FactionHubStats, locations: a.Locations, zones: a.Zones, lives: a.Lives, lifeRecap: a.LifeRecap, panelDirty: func() {
+			store := &persistenceStoreAdapter{players: a.Players, kills: a.Kills, deaths: a.Deaths, seasons: a.Seasons, ranked: a.Ranked, factions: a.Factions, wars: a.Wars, events: a.Events, vip: a.VIP, bounties: a.Bounties, bountySvc: a.BountyService, streaks: a.Streaks, anomalies: a.Anomalies, activity: a.ActivityRepository, servers: a.Servers, stats: a.Stats, analytics: a.AnalyticsRepository, factionStats: a.FactionHubStats, locations: a.Locations, zones: a.Zones, lives: a.Lives, lifeRecap: a.LifeRecap, panelDirty: func() {
 				if a.LeaderboardScheduler != nil {
 					a.LeaderboardScheduler.MarkDirty()
 				}
@@ -2346,6 +2376,10 @@ func (a *App) runCompetitiveSchedulers(ctx context.Context, guildID int64) {
 				slog.Warn("component=events", "msg", "event scheduler tick failed", "err", err.Error())
 			}
 		}
+		a.publishEventAnnouncements(ctx, guildID, now)
+		a.runSeasonPlanner(ctx, guildID, now)
+		a.runVIPExpiry(ctx, guildID, now)
+		a.runRewards(ctx, guildID, now)
 		if ended, err := a.Events.GetEndedUnfinalized(ctx, guildID, 25); err == nil {
 			for _, event := range ended {
 				if err := a.EventService.FinalizeEvent(ctx, guildID, event.ID, now); err != nil {
@@ -2440,6 +2474,7 @@ type persistenceStoreAdapter struct {
 	seasons   *repository.SeasonRepository
 	ranked    *repository.RankedRepository
 	factions  *repository.FactionRepository
+	vip       *repository.VIPRepository
 	wars      *repository.PostgresWarRepository
 	events    *repository.EventRepository
 	bounties  *repository.BountyRepository
@@ -2770,6 +2805,11 @@ func (p *persistenceStoreAdapter) ProcessPersistedKill(ctx context.Context, kill
 		}
 		if ev != nil {
 			ev.ActiveEventBadges = eventBadges
+		}
+	}
+	if p.vip != nil && ev != nil && record.KillerPlayerID > 0 && record.KillerPlayerID != record.VictimPlayerID {
+		if badge, vipErr := p.vip.ActiveBadge(ctx, record.GuildID, record.KillerPlayerID); vipErr == nil {
+			ev.SupporterBadge = badge
 		}
 	}
 	if ev != nil && record.WarID != nil {

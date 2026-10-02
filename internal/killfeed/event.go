@@ -151,6 +151,8 @@ type Event struct {
 	BountyPoints      int64
 	ActiveEventBadges []string
 	WarBadge          string
+	// SupporterBadge is the killer's supporter / VIP tier badge ("" = none).
+	SupporterBadge string
 	SeasonName        string
 
 	// Stat fields below are populated post-persistence (see
