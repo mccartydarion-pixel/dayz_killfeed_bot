@@ -58,6 +58,7 @@ permission mapping granting a Level at or below their own resolved Level - enfor
 | `SERVER_AUTOSTART` | Administrator | DB columns shipped; monitor loop deferred, see below |
 | `SERVER_NAME_EDIT` | Administrator | Champion display name only, never a Nitrado rename |
 | `WHITELIST_MANAGE` | Gatekeeper | |
+| `PRIORITY_MANAGE` | Administrator | Nitrado priority list; takes effect at the next server restart |
 | `BANLIST_MANAGE` | Moderator | |
 | `PLAYER_LAST_ONLINE_VIEW` | Moderator | |
 | `FEED_LOCATION_MANAGE` | Moderator | per-route `show_location` toggle |
@@ -166,6 +167,10 @@ GET    /banlist                                BANLIST_MANAGE
 POST   /banlist                                BANLIST_MANAGE       body: (same shape as whitelist)
 DELETE /banlist/{identifier}                   BANLIST_MANAGE
 
+GET    /priority                               PRIORITY_MANAGE      -> {"supported":bool,"items":["..."],"limit":500}
+POST   /priority                               PRIORITY_MANAGE      body: {"name":"...","reason":"..."}
+DELETE /priority/{name}                        PRIORITY_MANAGE
+
 POST   /stats/player/{playerID}/reset-streak   PLAYER_STATS_RESET
 POST   /stats/reset-season                     SERVER_STATS_RESET   body: {"name":"Season 2","confirm":"RESET EVERYONE"}
 
@@ -225,7 +230,7 @@ same standard `docs/NITRADO_DELTA_READS.md` applied to the seek/offset-count end
 | whitelist add/remove | **NITRADO API** | `POST`/`DELETE /services/{id}/gameservers/games/whitelist` (`identifier`) |
 | banlist add/remove | **NITRADO API** | `POST`/`DELETE /services/{id}/gameservers/games/banlist` (`identifier`) |
 | start (already-installed, currently-stopped server) | **UNVERIFIED** | No distinct endpoint found in the SDK separate from `restart`; `autoStart`'s design assumes `restart` also starts a stopped server (common in game panels) but this was not verified live - see Deferred |
-| priority queue | **FILE-BASED, DEFERRED** | Community docs describe a `priority.txt` file on the server install, not a dedicated API endpoint; this codebase has zero Nitrado file-**write** capability (only reads - `internal/nitrado` is read-only), and the task's own "never replace entire config blindly" instruction rules out guessing at an unverified file format |
+| priority queue | **NITRADO API (settings write)** | One setting, `settings.general.priority`, one name per line: read from `GET /services/{id}/gameservers`, replaced with `POST /services/{id}/gameservers/settings` (`category=general`, `key=priority`, `value`). Not in Nitrado's PHP SDK; the call shape is the one behind the web panel's "Prioritized players" field and the one community clients use. Champion reads before every write and refuses to write when the setting is absent (`internal/nitrado/priority.go`). Not yet exercised against a live service |
 | ban list *duration* | **DEFERRED** | Nitrado's banlist API takes only `identifier`, no duration/expiry - Champion's own `installation_access_entries.expires_at` records the intent, but nothing currently enforces an automatic un-ban when it passes (see Deferred) |
 | base damage / container damage / third-person / raid toggles | **UNSUPPORTED/DEFERRED** | No endpoint for any of these appears anywhere in Nitrado's official SDK; these are almost certainly DayZ `serverDZ.cfg`-style file settings, which would need the same unverified file-write capability as priority |
 | generic `setConfig` (arbitrary allowlisted config writes) | **PARTIALLY DEFERRED** | Implemented for Champion-side settings that already exist in `server_configs`/`installation_channel_routes` (feed toggles, maintenance mode, location visibility) via their own dedicated endpoints above; a general DayZ-server-config-file writer is deferred with config writes generally |
@@ -328,7 +333,7 @@ Given the size of the original request (roughly fifteen distinct subsystems), th
 full permission/audit foundation plus every capability with a real, verifiable backing mechanism,
 and deferred the rest rather than ship unverified or fabricated plumbing:
 
-- **Priority list enforcement, base/container damage, third-person, raid, generic DayZ config
+- **Base/container damage, third-person, raid, generic DayZ config
   writes** - no documented Nitrado API endpoint exists for any of these (see the audit table
   above); building blind file-patch logic against an unverified format was judged a correctness
   risk this phase's own standard rules out, matching `docs/NITRADO_DELTA_READS.md`'s precedent.
