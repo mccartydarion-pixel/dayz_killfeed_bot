@@ -87,6 +87,8 @@ type App struct {
 	// VIP holds supporter tiers; VIPRoles adds/removes their Discord roles.
 	VIP      *repository.VIPRepository
 	VIPRoles vipRoleAPI
+	// VIPNotices sends a player the direct message that says they received a tier.
+	VIPNotices vipDMAPI
 	// Perks is the perk store (docs/PERK_STORE.md); perkAnnouncer replaces the Discord shout-out in tests.
 	Perks         *repository.PerkStoreRepository
 	perkAnnouncer func(repository.PerkPurchase, *discordgo.MessageEmbed)
@@ -1539,6 +1541,7 @@ func (a *App) Run() error {
 	a.Discord.AddMemberJoinHandler(welcomeHandler.HandleMemberJoin)
 	if a.VIP != nil && session != nil {
 		a.VIPRoles = session
+		a.VIPNotices = session
 	}
 	if a.Invites != nil {
 		a.InviteTracker = discord.NewInviteTracker(session, a.Invites)

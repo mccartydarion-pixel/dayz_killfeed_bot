@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/yourname/dayz-killfeed/internal/economy"
 	"github.com/yourname/dayz-killfeed/internal/entitlements"
 	"github.com/yourname/dayz-killfeed/internal/permissions"
 	"github.com/yourname/dayz-killfeed/internal/repository"
@@ -24,6 +26,12 @@ import (
 type vipRoleAPI interface {
 	GuildMemberRoleAdd(guildID, userID, roleID string, options ...discordgo.RequestOption) error
 	GuildMemberRoleRemove(guildID, userID, roleID string, options ...discordgo.RequestOption) error
+}
+
+// vipDMAPI is the Discord calls a tier notice makes (a *discordgo.Session in production).
+type vipDMAPI interface {
+	UserChannelCreate(recipientID string, options ...discordgo.RequestOption) (*discordgo.Channel, error)
+	ChannelMessageSendComplex(channelID string, data *discordgo.MessageSend, options ...discordgo.RequestOption) (*discordgo.Message, error)
 }
 
 func (a *App) registerVIPRoutes(adminBase string) {
@@ -199,6 +207,11 @@ func (a *App) handleGrantVIP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	member.RoleError = a.syncVIPRole(ctx, member, true)
+	serverID := int64(0)
+	if ac.scope.ServerID != nil {
+		serverID = *ac.scope.ServerID
+	}
+	member.NoticeError = a.notifyVIPGranted(ctx, ac.scope.GuildID, serverID, member)
 	a.recordAudit(ctx, ac, "VIP_GRANT", playerTarget(member.PlayerID), member.TierName, "success", nil, map[string]any{"tierId": member.TierID, "expiresAt": member.ExpiresAt})
 	writeSaaSJSON(w, http.StatusOK, member)
 }
@@ -276,4 +289,103 @@ func (a *App) runVIPExpiry(ctx context.Context, guildID int64, now time.Time) {
 	for _, m := range expired {
 		a.syncVIPRole(ctx, m, false)
 	}
+}
+
+// buildVIPNotice is the direct message a player gets when they receive a tier.
+func buildVIPNotice(t repository.PlayerTier, serverName, hubURL string) *discordgo.MessageSend {
+	where := "the server"
+	if name := strings.TrimSpace(serverName); name != "" {
+		where = name
+	}
+	embed := &discordgo.MessageEmbed{
+		Author:      &discordgo.MessageEmbedAuthor{Name: "CHAMPIONS® SUPPORTER TIERS"},
+		Title:       "💎 You received the " + t.Name + " tier",
+		Description: "From " + where + ". Thank you for supporting the server!",
+		Color:       0xE7B94A,
+	}
+	if len(t.Color) == 7 {
+		if c, err := strconv.ParseInt(t.Color[1:], 16, 32); err == nil {
+			embed.Color = int(c)
+		}
+	}
+	perks := []string{"Killfeed badge: " + t.Badge}
+	if t.DiscordRole {
+		perks = append(perks, "A Discord role in the server")
+	}
+	if t.RewardMultiplier > 1 {
+		perks = append(perks, "×"+strconv.FormatFloat(t.RewardMultiplier, 'f', -1, 64)+" Champion Points on automatic rewards")
+	}
+	embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "What you get", Value: "• " + strings.Join(perks, "\n• ")})
+	until := "No end date"
+	if t.ExpiresAt != nil {
+		until = fmt.Sprintf("<t:%d:f>", t.ExpiresAt.Unix())
+	}
+	embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Yours until", Value: until, Inline: true})
+	if hubURL != "" {
+		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "See it in the Player Hub", Value: hubURL})
+	}
+	return &discordgo.MessageSend{Embeds: []*discordgo.MessageEmbed{embed},
+		AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}, Users: []string{}, Roles: []string{}}}
+}
+
+// notifyVIPGranted tells the player by direct message that they received a tier. It returns the
+// staff-facing reason the message was not sent ("" when it was). A tier is never undone over it.
+func (a *App) notifyVIPGranted(ctx context.Context, guildID, serverID int64, m repository.VIPMember) string {
+	if m.DiscordUserID == "" {
+		return "No direct message: this player has no verified Discord link."
+	}
+	if a.VIPNotices == nil || a.VIP == nil {
+		return "No direct message: Discord is unavailable."
+	}
+	tier, err := a.VIP.ActiveForPlayer(ctx, guildID, m.PlayerID)
+	if err != nil || tier == nil {
+		return "No direct message: the tier could not be read back."
+	}
+	serverName := ""
+	if serverID > 0 {
+		serverName = a.serverName(serverID)
+	}
+	ch, err := a.VIPNotices.UserChannelCreate(m.DiscordUserID)
+	if err == nil {
+		_, err = a.VIPNotices.ChannelMessageSendComplex(ch.ID, buildVIPNotice(*tier, serverName, a.siteURL()+"/dashboard/player"))
+	}
+	if err != nil {
+		slog.Warn("component=vip", "event", "grant_dm_failed", "member_id", m.ID, "err", err.Error())
+		return "No direct message: the player does not accept direct messages from this server."
+	}
+	return ""
+}
+
+// handleMyVIP is GET .../vip/me: the supporter tier the signed-in player holds, for the Player Hub.
+func (a *App) handleMyVIP(w http.ResponseWriter, r *http.Request) {
+	er, ok := a.scopedContext(w, r, "")
+	if !ok {
+		return
+	}
+	out := map[string]any{"linked": false, "tier": nil}
+	if a.VIP == nil {
+		writeSaaSJSON(w, http.StatusOK, out)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), economyTimeout)
+	defer cancel()
+	acct, err := a.EconomyAccounts.Me(ctx, er.scope, er.user.DiscordUserID)
+	if errors.Is(err, economy.ErrIdentityRequired) {
+		writeSaaSJSON(w, http.StatusOK, out)
+		return
+	}
+	if err != nil {
+		economyFailed(w, "load supporter tier", err)
+		return
+	}
+	tier, err := a.VIP.ActiveForPlayer(ctx, er.scope.GuildID, acct.AccountID)
+	if err != nil {
+		writeSaaSError(w, codeInternalError, "could not load your supporter tier")
+		return
+	}
+	out["linked"] = true
+	if tier != nil {
+		out["tier"] = tier
+	}
+	writeSaaSJSON(w, http.StatusOK, out)
 }
