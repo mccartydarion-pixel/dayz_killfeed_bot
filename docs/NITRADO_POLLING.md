@@ -81,21 +81,20 @@ ledger), so measuring sends nothing extra. All three appear under `timing` and `
 The game writing the ADM line → Nitrado's file changing is not visible: ADM lines carry only the
 server's local time of day.
 
-## Which mount is fresher (`internal/livesync/mount_compare.go`)
+## Where the delay comes from (measured 2026-10-02)
 
-Nitrado exposes each log under two mounts, `noftp` and `ftproot`. The killfeed reads `noftp`. The
-Live Sync lister already lists both mounts every 20 seconds, so comparing them sends nothing extra.
+Two temporary log lines (bot PRs #232 and #233, since removed) compared the `noftp` and `ftproot`
+copies of each log, and the lister's growth times, on the Champions server:
 
-For every file present in both mounts, the lister logs `event=mount_lead` each time the file grows:
+- `ftproot` is never ahead of `noftp`. Older files show the same size and modified time in both;
+  a new boot's files appear in `noftp` first and in `ftproot` later. The killfeed reads `noftp`.
+- The game's logs reach the file API in steps of about 5 minutes: the RPT, which the game writes
+  continuously, grew in the listing only every ~5 minutes, and ADM write gaps were exactly 300 s.
+- A new boot's files first appeared about 8.5 minutes after the boot (twice, 19:32 and 20:40 UTC).
+  `restart.log`, which Nitrado writes itself, was seen within 9 seconds.
 
-| Field | Meaning |
-| --- | --- |
-| `leader` | The mount that showed the new bytes first (`noftp`, `ftproot`), or `tie` when both showed them in the same pass |
-| `lag_ms` | How long the other mount took to reach the same size. Resolution is one listing pass (`list_every_ms`) |
-| `family`, `file`, `size` | Which log, and the size the leader showed |
-
-This only measures. Nothing reads it to choose a mount. A pass in which any directory failed to
-list is skipped, so a failed listing never looks like a mount that fell behind.
+So the 3-5 minutes between a kill and the bot seeing it are on Nitrado's side. Polling faster or
+switching mounts does not shorten it.
 
 ## Verified tail reads (`internal/nitrado/tail_trust.go`)
 
