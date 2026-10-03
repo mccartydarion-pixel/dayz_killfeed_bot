@@ -2844,6 +2844,12 @@ CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events
 		Name: "0115_ranked_rp_boosts",
 		SQL:  RankedRPBoostsSQL,
 	},
+	{
+		// Optional ranked bonuses (bounty, underdog, revenge, daily first kill), rank-up and weekly
+		// recap announcements. Additive.
+		Name: "0116_ranked_bonuses",
+		SQL:  RankedBonusesSQL,
+	},
 }
 
 // NitradoTailTrustSQL keeps which Nitrado services have proven that partial (seek) reads match

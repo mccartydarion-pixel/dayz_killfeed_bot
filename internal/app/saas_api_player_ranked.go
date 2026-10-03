@@ -39,5 +39,7 @@ func (a *App) handlePlayerServerRanked(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil { playerFailed(w, "player Ranked progress", err); return }
-	writeSaaSJSON(w, http.StatusOK, map[string]any{"installationId": installationID, "status": "ACTIVE", "progress": p, "boost": boost})
+	// The bonuses that are on and who is wanted now; like double RP, never in the way of the progress.
+	bonuses, wanted := a.playerRankedBonuses(ctx, scope.GuildID, scope.ServerID)
+	writeSaaSJSON(w, http.StatusOK, map[string]any{"installationId": installationID, "status": "ACTIVE", "progress": p, "boost": boost, "bonuses": bonuses, "wanted": wanted})
 }

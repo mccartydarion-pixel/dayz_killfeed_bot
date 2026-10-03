@@ -58,6 +58,19 @@ func (t Thresholds) Progress(rp int64) (tier Tier, next Tier, remaining int64, e
 	return Master, "", 0, nil
 }
 
+// Level orders tiers: 0 for Unranked, 1 for Rookie, up to 7 for Master (-1 when unknown).
+func (t Tier) Level() int {
+	if t == Unranked {
+		return 0
+	}
+	for i, tier := range orderedTiers {
+		if tier == t {
+			return i + 1
+		}
+	}
+	return -1
+}
+
 // EligibleRepeat reports whether the same attacker can earn RP from the same
 // victim again. The caller must use the server's player IDs, event time,
 // and a durable local award ledger. Kills remain ordinary combat events when
