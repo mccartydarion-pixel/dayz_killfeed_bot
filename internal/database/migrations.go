@@ -2839,6 +2839,11 @@ CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events
 		Name: "0114_shop_auto_delivery_marker",
 		SQL:  ShopAutoDeliveryMarkerSQL,
 	},
+	{
+		// Double RP windows and the multiplier each ranked award was earned under. Additive.
+		Name: "0115_ranked_rp_boosts",
+		SQL:  RankedRPBoostsSQL,
+	},
 }
 
 // NitradoTailTrustSQL keeps which Nitrado services have proven that partial (seek) reads match

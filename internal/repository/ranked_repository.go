@@ -25,6 +25,8 @@ type RankedAward struct {
 	KillID   int64
 	Outcome  string
 	Amount   int64
+	// Multiplier is the double RP multiplier the award was earned under (1 = none).
+	Multiplier int64
 }
 
 type ServerStanding struct {
@@ -102,7 +104,7 @@ func (r *RankedRepository) RecordServerKill(ctx context.Context, seasonID, killI
 	// Archived seasons reject new awards, but a replay of an already decided
 	// kill must still return its immutable outcome after the reset.
 	result = RankedAward{SeasonID: seasonID, KillID: killID}
-	err = tx.QueryRow(ctx, `SELECT outcome,amount FROM ranked_awards WHERE season_id=$1 AND kill_id=$2`, seasonID, killID).Scan(&result.Outcome, &result.Amount)
+	err = tx.QueryRow(ctx, `SELECT outcome,amount,multiplier FROM ranked_awards WHERE season_id=$1 AND kill_id=$2`, seasonID, killID).Scan(&result.Outcome, &result.Amount, &result.Multiplier)
 	if err == nil {
 		return result, nil
 	}
@@ -144,7 +146,7 @@ FOR SHARE OF s`, seasonID, killID).Scan(&serverID, &guildID, &killerID, &victimI
 	}
 
 	result = RankedAward{SeasonID: seasonID, KillID: killID}
-	err = tx.QueryRow(ctx, `SELECT outcome,amount FROM ranked_awards WHERE season_id=$1 AND kill_id=$2`, seasonID, killID).Scan(&result.Outcome, &result.Amount)
+	err = tx.QueryRow(ctx, `SELECT outcome,amount,multiplier FROM ranked_awards WHERE season_id=$1 AND kill_id=$2`, seasonID, killID).Scan(&result.Outcome, &result.Amount, &result.Multiplier)
 	if err == nil {
 		return result, nil
 	}
@@ -159,13 +161,18 @@ ORDER BY event_time DESC LIMIT 1`, seasonID, attacker, victim).Scan(&previous)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return RankedAward{}, fmt.Errorf("read ranked cooldown: %w", err)
 	}
-	result.Outcome, result.Amount = "AWARDED", rp
+	// Double RP follows when the kill happened, not when it was processed.
+	multiplier, merr := rpBoostMultiplierAt(ctx, tx, serverID, eventTime)
+	if merr != nil {
+		return RankedAward{}, fmt.Errorf("read double RP: %w", merr)
+	}
+	result.Outcome, result.Amount, result.Multiplier = "AWARDED", rp*multiplier, multiplier
 	if err == nil {
 		switch {
 		case eventTime.Before(previous):
-			result.Outcome, result.Amount = "OUT_OF_ORDER", 0
+			result.Outcome, result.Amount, result.Multiplier = "OUT_OF_ORDER", 0, 1
 		case !ranked.EligibleRepeat(eventTime, previous):
-			result.Outcome, result.Amount = "COOLDOWN", 0
+			result.Outcome, result.Amount, result.Multiplier = "COOLDOWN", 0, 1
 		}
 	}
 	// The source key is local to this physical server. The global ledger will
@@ -173,9 +180,9 @@ ORDER BY event_time DESC LIMIT 1`, seasonID, attacker, victim).Scan(&previous)
 	sourceKey := fmt.Sprintf("%d:%s", serverID, fingerprint)
 	var inserted int64
 	err = tx.QueryRow(ctx, `INSERT INTO ranked_awards
-(season_id,kill_id,source_key,attacker_key,victim_key,event_time,outcome,amount)
-VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING RETURNING id`,
-		seasonID, killID, sourceKey, attacker, victim, eventTime, result.Outcome, result.Amount).Scan(&inserted)
+(season_id,kill_id,source_key,attacker_key,victim_key,event_time,outcome,amount,multiplier)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING RETURNING id`,
+		seasonID, killID, sourceKey, attacker, victim, eventTime, result.Outcome, result.Amount, result.Multiplier).Scan(&inserted)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return RankedAward{}, ErrDuplicate
 	}

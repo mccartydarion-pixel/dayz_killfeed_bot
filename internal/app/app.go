@@ -93,7 +93,9 @@ type App struct {
 	Perks         *repository.PerkStoreRepository
 	perkAnnouncer func(repository.PerkPurchase, *discordgo.MessageEmbed)
 	perkInline    bool // tests: make the donations channel before answering, not in the background
-	Bounties      *repository.BountyRepository
+	// rpBoostAnnouncer replaces the double RP Discord card in tests.
+	rpBoostAnnouncer func(serverID int64, embed *discordgo.MessageEmbed)
+	Bounties         *repository.BountyRepository
 	// BountyService is the bounty application service (placement, the atomic claim
 	// for persisted kills, streak bounties, expiry). Its Discord notifier is
 	// optional: bounties are correct without any route or Discord connection.
@@ -2499,6 +2501,7 @@ func (a *App) runCompetitiveSchedulers(ctx context.Context, guildID int64) {
 		a.publishEventAnnouncements(ctx, guildID, now)
 		a.runSeasonPlanner(ctx, guildID, now)
 		a.runPerkStore(ctx, guildID, now)
+		a.runRPBoostAnnouncements(ctx, guildID, now)
 		a.runVIPExpiry(ctx, guildID, now)
 		a.runRewards(ctx, guildID, now)
 		if ended, err := a.Events.GetEndedUnfinalized(ctx, guildID, 25); err == nil {

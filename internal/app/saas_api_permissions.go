@@ -302,6 +302,7 @@ func (a *App) registerClientAdminRoutes() {
 	a.registerStaffActivityRoutes(base)
 	a.registerVIPRoutes(base)
 	a.registerPerkStoreAdminRoutes(base)
+	a.registerRPBoostRoutes(base)
 	a.registerFightRoutes(base)
 }
 
