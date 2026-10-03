@@ -2855,6 +2855,11 @@ CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events
 		Name: "0117_guild_features_channel",
 		SQL:  GuildFeaturesChannelSQL,
 	},
+	{
+		// Automation switches and the state of each automation (feature upgrades). Additive.
+		Name: "0118_feature_upgrades",
+		SQL:  FeatureUpgradesSQL,
+	},
 }
 
 // NitradoTailTrustSQL keeps which Nitrado services have proven that partial (seek) reads match

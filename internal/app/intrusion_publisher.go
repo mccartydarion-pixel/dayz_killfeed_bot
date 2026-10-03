@@ -51,6 +51,7 @@ func (p intrusionPublisher) PublishIntrusionEvent(ev killfeed.IntrusionEvent) {
 	if alert, ok := discord.IntrusionAdminAlert(ev); ok {
 		p.app.AdminAlerts.Publish(alert)
 	}
+	p.app.notifyZoneAlertPlayer(ev)
 	if ev.Suppressed || ev.Zone.AlertChannelID == nil || *ev.Zone.AlertChannelID == "" {
 		return
 	}

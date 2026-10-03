@@ -151,6 +151,7 @@ func killfeedVars(ev *killfeed.Event, serverName string) map[string]string {
 		m["bounty_claimed"] = "BOUNTY CLAIMED"
 	}
 	setIf(m, "season_name", ev.SeasonName)
+	setIf(m, "ranked_rp", ev.RankedTag)
 	setIf(m, "war_badge", ev.WarBadge)
 	var badges []string
 	for _, b := range ev.ActiveEventBadges {

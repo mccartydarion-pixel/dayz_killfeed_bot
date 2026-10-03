@@ -6,6 +6,7 @@
 package heatmap
 
 import (
+	"fmt"
 	"context"
 	"sync"
 	"time"
@@ -72,6 +73,44 @@ type Request struct {
 	// filtering is explicitly optional and was not built this phase to avoid delaying the core
 	// implementation) - Validate rejects it for any other type rather than silently ignoring it.
 	ZoneID *int64
+	// Hours keeps only what happened between these hours of the day (an upgrade, docs/HEATMAPS.md
+	// "Time of day"); nil = all day.
+	Hours *HourWindow
+}
+
+// HourWindow is a time of day: FromHour up to (not including) ToHour, in Location. A window
+// that wraps midnight (22 to 2) is allowed.
+type HourWindow struct {
+	FromHour, ToHour int
+	Location         *time.Location
+}
+
+// Windows splits [from, to) into the stretches that fall inside the hour window, day by day.
+func (h HourWindow) Windows(from, to time.Time) [][2]time.Time {
+	loc := h.Location
+	if loc == nil {
+		loc = time.UTC
+	}
+	var out [][2]time.Time
+	day := time.Date(from.In(loc).Year(), from.In(loc).Month(), from.In(loc).Day()-1, 0, 0, 0, 0, loc)
+	for !day.After(to) {
+		start := time.Date(day.Year(), day.Month(), day.Day(), h.FromHour, 0, 0, 0, loc)
+		end := time.Date(day.Year(), day.Month(), day.Day(), h.ToHour, 0, 0, 0, loc)
+		if h.ToHour <= h.FromHour {
+			end = end.AddDate(0, 0, 1)
+		}
+		if start.Before(from) {
+			start = from
+		}
+		if end.After(to) {
+			end = to
+		}
+		if end.After(start) {
+			out = append(out, [2]time.Time{start.UTC(), end.UTC()})
+		}
+		day = day.AddDate(0, 0, 1)
+	}
+	return out
 }
 
 // Validate applies every request-shape rule the task specifies (sections 6, 9, 10). Business-rule
@@ -95,6 +134,9 @@ func (req Request) Validate() error {
 	}
 	if req.ZoneID != nil && req.Type != TypeZoneIntrusions {
 		return &ValidationError{Message: "zoneId is only supported for type=ZONE_INTRUSIONS"}
+	}
+	if h := req.Hours; h != nil && (h.FromHour < 0 || h.FromHour > 23 || h.ToHour < 0 || h.ToHour > 23 || h.FromHour == h.ToHour) {
+		return &ValidationError{Message: "fromHour and toHour must be different hours from 0 to 23"}
 	}
 	return nil
 }
@@ -168,7 +210,7 @@ func (s *Service) Query(ctx context.Context, req Request) (*Result, error) {
 	}
 
 	start := time.Now()
-	cells, err := s.aggregate(ctx, req)
+	cells, err := s.aggregateHours(ctx, req)
 	latency := time.Since(start)
 	if err != nil {
 		s.metrics.recordRequest(req.Type, 0, 0, latency, err)
@@ -185,6 +227,40 @@ func (s *Service) Query(ctx context.Context, req Request) (*Result, error) {
 		s.cache.set(key, result)
 	}
 	return result, nil
+}
+
+// aggregateHours is aggregate over the request's hour window: one query per day's stretch, with
+// the cells added together.
+func (s *Service) aggregateHours(ctx context.Context, req Request) ([]repository.HeatmapCell, error) {
+	if req.Hours == nil {
+		return s.aggregate(ctx, req)
+	}
+	type cellKey struct{ x, z int64 }
+	sum := map[cellKey]int64{}
+	var order []cellKey
+	for _, w := range req.Hours.Windows(req.From, req.To) {
+		part := req
+		part.From, part.To = w[0], w[1]
+		cells, err := s.aggregate(ctx, part)
+		if err != nil {
+			return nil, err
+		}
+		for _, c := range cells {
+			k := cellKey{c.CellX, c.CellZ}
+			if _, ok := sum[k]; !ok {
+				order = append(order, k)
+			}
+			sum[k] += c.Count
+		}
+		if len(sum) > MaxCells {
+			break
+		}
+	}
+	out := make([]repository.HeatmapCell, 0, len(order))
+	for _, k := range order {
+		out = append(out, repository.HeatmapCell{CellX: k.x, CellZ: k.z, Count: sum[k]})
+	}
+	return out, nil
 }
 
 // aggregate dispatches to the one Store method matching req.Type. limit is MaxCells+1: the store
@@ -247,6 +323,7 @@ type cacheKey struct {
 	FromUnixNano, ToUnixNano          int64
 	Resolution                        int
 	ZoneID                            int64 // 0 = none
+	Hours                             string
 }
 
 func cacheKeyFor(req Request) cacheKey {
@@ -257,7 +334,7 @@ func cacheKeyFor(req Request) cacheKey {
 	return cacheKey{
 		GuildID: req.GuildID, ServerID: req.ServerID, InstallationID: req.InstallationID,
 		Type: req.Type, FromUnixNano: req.From.UnixNano(), ToUnixNano: req.To.UnixNano(),
-		Resolution: req.Resolution, ZoneID: zoneID,
+		Resolution: req.Resolution, ZoneID: zoneID, Hours: hoursKey(req.Hours),
 	}
 }
 
@@ -329,4 +406,15 @@ func (c *Cache) Len() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return len(c.entries)
+}
+
+func hoursKey(h *HourWindow) string {
+	if h == nil {
+		return ""
+	}
+	loc := "UTC"
+	if h.Location != nil {
+		loc = h.Location.String()
+	}
+	return fmt.Sprintf("%d-%d@%s", h.FromHour, h.ToHour, loc)
 }

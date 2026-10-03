@@ -248,6 +248,42 @@ func (r *BaseBlackBoxRepository) Recent(ctx context.Context, installationID, gui
 	return r.events(ctx, `WHERE e.installation_id=$1 AND e.guild_id=$2 AND e.server_id=$3`, limit, installationID, guildID, serverID)
 }
 
+// TeamHistory lists the history of the bases the player or an active member of their faction owns
+// on this server, so a faction mate who got a raid alarm can see what happened.
+func (r *BaseBlackBoxRepository) TeamHistory(ctx context.Context, installationID, guildID, serverID, playerID int64, limit int) ([]BlackBoxBase, []BlackBoxEvent, error) {
+	if !r.ready() || installationID <= 0 || guildID <= 0 || serverID <= 0 || playerID <= 0 {
+		return nil, nil, ErrInvalidBlackBox
+	}
+	if limit < 1 || limit > 500 {
+		limit = 200
+	}
+	const team = `(SELECT $4::BIGINT UNION SELECT m2.player_id FROM faction_members m1
+ JOIN faction_members m2 ON m2.faction_id=m1.faction_id AND m2.guild_id=m1.guild_id AND m2.active
+ WHERE m1.guild_id=$2 AND m1.player_id=$4 AND m1.active)`
+	rows, err := r.pool.Query(ctx, `SELECT b.id,b.name FROM case_registered_bases b
+ WHERE b.installation_id=$1 AND b.guild_id=$2 AND b.server_id=$3 AND b.owner_player_id IN `+team+` AND b.state<>'REVOKED' ORDER BY b.id`,
+		installationID, guildID, serverID, playerID)
+	if err != nil {
+		return nil, nil, err
+	}
+	bases := make([]BlackBoxBase, 0)
+	for rows.Next() {
+		var b BlackBoxBase
+		if err := rows.Scan(&b.ID, &b.Name); err != nil {
+			rows.Close()
+			return nil, nil, err
+		}
+		bases = append(bases, b)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	events, err := r.events(ctx, `WHERE e.installation_id=$1 AND e.guild_id=$2 AND e.server_id=$3 AND b.owner_player_id IN `+team+` AND b.state<>'REVOKED'`,
+		limit, installationID, guildID, serverID, playerID)
+	return bases, events, err
+}
+
 // OwnerHistory lists the history of the bases one player owns on this server.
 func (r *BaseBlackBoxRepository) OwnerHistory(ctx context.Context, installationID, guildID, serverID, ownerPlayerID int64, limit int) ([]BlackBoxBase, []BlackBoxEvent, error) {
 	if !r.ready() || installationID <= 0 || guildID <= 0 || serverID <= 0 || ownerPlayerID <= 0 {

@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"time"
 	"context"
 	"fmt"
 
@@ -95,6 +96,20 @@ GROUP BY p.id, p.display_name
 ORDER BY kills DESC, p.display_name ASC, p.id ASC
 LIMIT $2`
 	return r.queryLeaderboard(ctx, q, guildID, limit)
+}
+
+// TopByKillsSince is TopByKills counting only kills since `since` (the weekly board).
+func (r *StatsRepository) TopByKillsSince(ctx context.Context, guildID int64, since time.Time, limit int) ([]LeaderboardEntry, error) {
+	const q = `
+SELECT p.display_name, COUNT(k.id) AS kills
+FROM players p
+JOIN kills k ON k.killer_player_id=p.id AND k.guild_id=p.guild_id
+WHERE p.guild_id=$1 AND COALESCE(k.event_time, k.created_at) >= $3
+  AND k.victim_player_id IS NOT NULL AND k.victim_player_id<>k.killer_player_id
+GROUP BY p.id, p.display_name
+ORDER BY kills DESC, p.display_name ASC, p.id ASC
+LIMIT $2`
+	return r.queryLeaderboard(ctx, q, guildID, limit, since)
 }
 
 // TopByDeaths returns the players with the most ALL-TIME deaths in the guild,
@@ -253,8 +268,8 @@ func (r *StatsRepository) GetPlayerSeasonBestStreak(ctx context.Context, guildID
 	return streak, err
 }
 
-func (r *StatsRepository) queryLeaderboard(ctx context.Context, q string, guildID int64, limit int) ([]LeaderboardEntry, error) {
-	rows, err := r.pool.Query(ctx, q, guildID, limit)
+func (r *StatsRepository) queryLeaderboard(ctx context.Context, q string, guildID int64, limit int, extra ...any) ([]LeaderboardEntry, error) {
+	rows, err := r.pool.Query(ctx, q, append([]any{guildID, limit}, extra...)...)
 	if err != nil {
 		return nil, err
 	}

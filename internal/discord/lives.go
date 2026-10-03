@@ -441,8 +441,17 @@ func (n *LifeRecapNotifier) deliver(ctx context.Context, l repository.Life) {
 		slog.Debug("component=lives", "event", "recap_dm_unavailable", "err", err.Error())
 		return
 	}
+	embed := BuildLifeRecapEmbed(l, name)
+	if reader, ok := n.lives.(lifeBestReader); ok && l.PlaytimeSeconds != nil {
+		bestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		best, err := reader.LongestOtherLife(bestCtx, l.GuildID, l.ServerID, l.PlayerID, l.ID)
+		cancel()
+		if err == nil {
+			embed = withPersonalBest(embed, *l.PlaytimeSeconds, best)
+		}
+	}
 	if _, err := n.session.ChannelMessageSendComplex(channel.ID, &discordgo.MessageSend{
-		Embeds:          []*discordgo.MessageEmbed{BuildLifeRecapEmbed(l, name)},
+		Embeds:          []*discordgo.MessageEmbed{embed},
 		AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}},
 	}); err != nil {
 		// Closed DMs are the player's choice, not a fault.
@@ -450,4 +459,20 @@ func (n *LifeRecapNotifier) deliver(ctx context.Context, l repository.Life) {
 		return
 	}
 	n.sent.Add(1)
+}
+
+// lifeBestReader is the optional store method the recap uses to compare a life with the player's best.
+type lifeBestReader interface {
+	LongestOtherLife(ctx context.Context, guildID, serverID, playerID, lifeID int64) (*int64, error)
+}
+
+// withPersonalBest adds how the life compares with the player's longest one.
+func withPersonalBest(embed *discordgo.MessageEmbed, played int64, best *int64) *discordgo.MessageEmbed {
+	switch {
+	case best == nil || played > *best:
+		presentation.AppendFields(embed, presentation.MetricField("PERSONAL BEST", "🏆 Your longest life yet!", false))
+	default:
+		presentation.AppendFields(embed, presentation.MetricField("PERSONAL BEST", FormatLifeDuration(*best)+" (this one: "+FormatLifeDuration(played)+")", false))
+	}
+	return embed
 }

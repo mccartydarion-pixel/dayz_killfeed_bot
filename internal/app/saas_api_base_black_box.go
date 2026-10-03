@@ -173,7 +173,8 @@ func (a *App) handlePlayerBaseBlackBox(w http.ResponseWriter, r *http.Request) {
 		writeSaaSJSON(w, http.StatusOK, out)
 		return
 	}
-	bases, events, err := repo.OwnerHistory(ctx, scope.InstallationID, scope.GuildID, scope.ServerID, acct.AccountID, 200)
+	// The player's own bases and their faction mates' (a raid alarm reaches the whole faction).
+	bases, events, err := repo.TeamHistory(ctx, scope.InstallationID, scope.GuildID, scope.ServerID, acct.AccountID, 200)
 	if err != nil {
 		slog.Warn("component=base_black_box", "event", "owner_history_failed", "err", err.Error())
 		writeSaaSError(w, codeInternalError, "could not load your base history")

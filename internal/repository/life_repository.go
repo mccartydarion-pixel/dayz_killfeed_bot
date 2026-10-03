@@ -409,16 +409,31 @@ func (r *LifeRepository) DeathRecapEnabled(ctx context.Context, guildID int64, d
 }
 
 // DeathRecapRecipient returns the Discord user to DM about playerID's death: the holder of the
-// player's VERIFIED link, and only if they opted in. ok is false otherwise.
+// player's VERIFIED link, if they opted in - or, when the server switched life recaps on for
+// everyone (the lifeStoryDms automation, docs/FEATURE_UPGRADES.md), if they never turned them off.
+// ok is false otherwise.
 func (r *LifeRepository) DeathRecapRecipient(ctx context.Context, guildID, playerID int64) (discordUserID string, ok bool, err error) {
 	err = r.pool.QueryRow(ctx, `
 SELECT pl.discord_user_id FROM player_links pl
-JOIN player_recap_prefs pr ON pr.guild_id = pl.guild_id AND pr.discord_user_id = pl.discord_user_id AND pr.death_recap
-WHERE pl.guild_id=$1 AND pl.player_id=$2 AND pl.status='VERIFIED'`, guildID, playerID).Scan(&discordUserID)
+LEFT JOIN player_recap_prefs pr ON pr.guild_id = pl.guild_id AND pr.discord_user_id = pl.discord_user_id
+WHERE pl.guild_id=$1 AND pl.player_id=$2 AND pl.status='VERIFIED'
+  AND (pr.death_recap OR (pr.discord_user_id IS NULL AND EXISTS(
+    SELECT 1 FROM upgrade_settings u JOIN game_servers gs ON gs.id=u.server_id
+    WHERE gs.guild_id=$1 AND COALESCE((u.settings->>'lifeStoryDms')::BOOLEAN,FALSE))))
+LIMIT 1`, guildID, playerID).Scan(&discordUserID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil
 	}
 	return discordUserID, err == nil, err
+}
+
+// LongestOtherLife is the player's longest finished life on the server other than lifeID, nil
+// when they have none with a recorded playtime.
+func (r *LifeRepository) LongestOtherLife(ctx context.Context, guildID, serverID, playerID, lifeID int64) (*int64, error) {
+	var best *int64
+	err := r.pool.QueryRow(ctx, `SELECT MAX(playtime_seconds) FROM player_lives
+WHERE guild_id=$1 AND server_id=$2 AND player_id=$3 AND id<>$4 AND ended_at IS NOT NULL`, guildID, serverID, playerID, lifeID).Scan(&best)
+	return best, err
 }
 
 func clampLimit(limit, fallback, max int) int {

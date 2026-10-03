@@ -59,6 +59,24 @@ type BaseRaidAlarmPublisher struct {
 	queue      chan baseRaidJob
 	dropped    atomic.Int64
 	faction    *factionSharer
+	// blackBoxURL is the Player Hub page with the base's Black Box history; the alarm links to it.
+	blackBoxURL string
+}
+
+// SetBlackBoxURL makes every alarm link to the Black Box history at url.
+func (p *BaseRaidAlarmPublisher) SetBlackBoxURL(url string) {
+	if p != nil {
+		p.blackBoxURL = url
+	}
+}
+
+// withBlackBoxLink adds the "see what happened" link to an alarm.
+func withBlackBoxLink(msg *discordgo.MessageSend, url string) *discordgo.MessageSend {
+	if url == "" || msg == nil || len(msg.Embeds) == 0 {
+		return msg
+	}
+	msg.Embeds[0].Fields = append(msg.Embeds[0].Fields, &discordgo.MessageEmbedField{Name: "🎥 Black Box", Value: "See who came by and when: " + url})
+	return msg
 }
 
 // SetFactionSecurity also sends each alarm to the base owner's faction when
@@ -146,7 +164,7 @@ func (p *BaseRaidAlarmPublisher) handle(ctx context.Context, job baseRaidJob) {
 			slog.Warn("component=base_raid_alarm", "msg", "mark delivery failed", "alert_id", alertID, "err", err.Error())
 		}
 		if p.faction != nil {
-			msg := FactionRaidMessage(BaseRaidAlarmMessage(m.BaseName, p.server(), job.event, time.Now()), m.BaseName)
+			msg := FactionRaidMessage(withBlackBoxLink(BaseRaidAlarmMessage(m.BaseName, p.server(), job.event, time.Now()), p.blackBoxURL), m.BaseName)
 			p.faction.share(ctx, factionShare{route: baseRaidRoute, source: repository.FactionShareRaidAlarm, installationID: m.InstallationID,
 				guildID: m.GuildID, serverID: m.ServerID, base: m.BaseID, ownerPlayerID: m.OwnerPlayerID}, msg)
 		}
@@ -166,7 +184,7 @@ func (p *BaseRaidAlarmPublisher) deliver(m repository.BaseRaidMatch, ev reposito
 	if m.OwnerDiscordUserID == "" || p.dm == nil {
 		return repository.BaseRaidDeliveryOwnerNotLinked
 	}
-	msg := BaseRaidAlarmMessage(m.BaseName, p.server(), ev, time.Now())
+	msg := withBlackBoxLink(BaseRaidAlarmMessage(m.BaseName, p.server(), ev, time.Now()), p.blackBoxURL)
 	err := deliver(baseRaidRoute, "", func() error {
 		ch, err := p.dm.UserChannelCreate(m.OwnerDiscordUserID)
 		if err != nil {

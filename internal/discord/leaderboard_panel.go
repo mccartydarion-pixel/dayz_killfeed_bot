@@ -166,6 +166,13 @@ type LeaderboardSnapshot struct {
 	TopLongest   []repository.LeaderboardEntry
 	GeneratedAt  time.Time
 	ServerName   string
+	// TopKillsWeek is this week's kills (Monday 00:00 UTC on); shown only when WeekEnabled.
+	TopKillsWeek []repository.LeaderboardEntry
+	WeekEnabled  bool
+	// KillMoves and LongestMoves are each listed player's movement since the day before
+	// ("▲2", "▼1", "🆕"), by display name; empty when not tracked.
+	KillMoves    map[string]string
+	LongestMoves map[string]string
 }
 
 // Auto Leaderboard V3 product copy.
@@ -176,7 +183,21 @@ const (
 	AutoBoardRanksTitle   = "🎖️ Current Top 15 Ranks 🎖️"
 	AutoBoardDeathsTitle  = "💀 All Time Top 15 Deaths 💀"
 	AutoBoardLongestTitle = "🔭 All Time Top 15 Longest Kills 🔭"
+	AutoBoardWeekTitle    = "📅 This Week's Top 15 Kills 📅"
 )
+
+// withMoves adds each player's movement to their board value.
+func withMoves(entries []presentation.BoardEntry, moves map[string]string) []presentation.BoardEntry {
+	if len(moves) == 0 {
+		return entries
+	}
+	for i, e := range entries {
+		if m := moves[e.Name]; m != "" {
+			entries[i].Value = e.Value + " " + m
+		}
+	}
+	return entries
+}
 
 // autoBoardNameCaps are the player-name caps tried in turn until the whole
 // package fits Discord's combined 6000-character message limit. Real gamer
@@ -225,9 +246,14 @@ func BuildAutoLeaderboardEmbeds(s LeaderboardSnapshot, cfg LeaderboardConfig) []
 func buildAutoLeaderboardEmbeds(s LeaderboardSnapshot, cfg LeaderboardConfig, nameCap int) []*discordgo.MessageEmbed {
 	embeds := []*discordgo.MessageEmbed{
 		autoLeaderboardHeader(s),
-		autoBoardEmbed(AutoBoardKillsTitle, presentation.ChampionGold, boardEntries(s.TopKills, presentation.FormatBoardKills), cfg.TopKillsLimit, nameCap),
-		autoBoardEmbed(AutoBoardStreaksTitle, presentation.EventGold, boardEntries(s.TopStreaks, presentation.FormatBoardStreak), cfg.TopStreaksLimit, nameCap),
+		autoBoardEmbed(AutoBoardKillsTitle, presentation.ChampionGold, withMoves(boardEntries(s.TopKills, presentation.FormatBoardKills), s.KillMoves), cfg.TopKillsLimit, nameCap),
 	}
+	if s.WeekEnabled {
+		week := autoBoardEmbed(AutoBoardWeekTitle, presentation.ChampionGold, boardEntries(s.TopKillsWeek, presentation.FormatBoardKills), cfg.TopKillsLimit, nameCap)
+		week.Description = "Resets every Monday 00:00 UTC"
+		embeds = append(embeds, week)
+	}
+	embeds = append(embeds, autoBoardEmbed(AutoBoardStreaksTitle, presentation.EventGold, boardEntries(s.TopStreaks, presentation.FormatBoardStreak), cfg.TopStreaksLimit, nameCap))
 	if s.RanksEnabled {
 		ranks := make([]presentation.BoardEntry, 0, len(s.CurrentRanks))
 		for _, r := range s.CurrentRanks {
@@ -241,7 +267,7 @@ func buildAutoLeaderboardEmbeds(s LeaderboardSnapshot, cfg LeaderboardConfig, na
 	}
 	return append(embeds,
 		autoBoardEmbed(AutoBoardDeathsTitle, presentation.CombatRed, boardEntries(s.TopDeaths, presentation.FormatBoardDeaths), cfg.TopDeathsLimit, nameCap),
-		autoBoardEmbed(AutoBoardLongestTitle, presentation.InfoSteel, boardEntries(s.TopLongest, presentation.FormatBoardDistance), cfg.TopLongestLimit, nameCap),
+		autoBoardEmbed(AutoBoardLongestTitle, presentation.InfoSteel, withMoves(boardEntries(s.TopLongest, presentation.FormatBoardDistance), s.LongestMoves), cfg.TopLongestLimit, nameCap),
 	)
 }
 

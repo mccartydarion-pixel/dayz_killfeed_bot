@@ -102,7 +102,7 @@ only values the event actually carries are provided; a value that is unknown is 
 
 | Route | Variables provided |
 |---|---|
-| `KILLFEED` | `killer` `victim` `weapon` `distance` (`86.4m`) `ammo` `streak` (when > 0) `special_kill` (the default card's own hero label, only for a special kill) `bounty_amount` (only when the kill claimed a bounty) `server_name` `timestamp` |
+| `KILLFEED` | `killer` `victim` `weapon` `distance` (`86.4m`) `ammo` `streak` (when > 0) `special_kill` (the default card's own hero label, only for a special kill) `bounty_amount` (only when the kill claimed a bounty) `ranked_rp` (only when the server shows ranked tags and the kill earned RP) `server_name` `timestamp` |
 | `HITFEED` | `attacker` (= `killer`) `victim` `weapon` `ammo` `distance` `hit_zone` `damage` (only when **every** hit in the encounter carried one) `hits` `server_name` |
 | `PVE_FEED` | `victim` `cause` (the parser-proven cause: today only `suicide`) `server_name` `timestamp` |
 | `BOUNTY_TRACKING` | `status` (`placed` `increased` `claimed` `expired` `cancelled`) `target` (= `victim`) `amount`; claims only: `hunter` (= `killer`) `total` `count` `weapon` `distance`; `server_name` |
