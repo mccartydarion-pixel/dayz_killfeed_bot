@@ -27,6 +27,9 @@ type RankedAward struct {
 	Amount   int64
 	// Multiplier is the double RP multiplier the award was earned under (1 = none).
 	Multiplier int64
+	// BonusRP is the part of Amount that came from bonuses (docs/RANKED_BONUSES.md).
+	BonusRP int64
+	Bonuses []RankedBonus
 }
 
 type ServerStanding struct {
@@ -104,7 +107,7 @@ func (r *RankedRepository) RecordServerKill(ctx context.Context, seasonID, killI
 	// Archived seasons reject new awards, but a replay of an already decided
 	// kill must still return its immutable outcome after the reset.
 	result = RankedAward{SeasonID: seasonID, KillID: killID}
-	err = tx.QueryRow(ctx, `SELECT outcome,amount,multiplier FROM ranked_awards WHERE season_id=$1 AND kill_id=$2`, seasonID, killID).Scan(&result.Outcome, &result.Amount, &result.Multiplier)
+	err = tx.QueryRow(ctx, `SELECT outcome,amount,multiplier,bonus_rp,bonuses FROM ranked_awards WHERE season_id=$1 AND kill_id=$2`, seasonID, killID).Scan(&result.Outcome, &result.Amount, &result.Multiplier, &result.BonusRP, &result.Bonuses)
 	if err == nil {
 		return result, nil
 	}
@@ -115,8 +118,9 @@ func (r *RankedRepository) RecordServerKill(ctx context.Context, seasonID, killI
 	var serverID, guildID, killerID, victimID, rp int64
 	var fingerprint string
 	var eventTime time.Time
+	var thresholdValues []int64
 	err = tx.QueryRow(ctx, `
-SELECT s.server_id,k.guild_id,k.killer_player_id,k.victim_player_id,s.rp_per_kill,k.event_fingerprint,ev.happened_at
+SELECT s.server_id,k.guild_id,k.killer_player_id,k.victim_player_id,s.rp_per_kill,k.event_fingerprint,ev.happened_at,s.thresholds
 FROM ranked_seasons s JOIN game_servers gs ON gs.id=s.server_id
 JOIN kills k ON k.id=$2 AND k.server_id=s.server_id AND k.guild_id=gs.guild_id
 LEFT JOIN live_sync_server_clock c ON c.server_id=s.server_id
@@ -126,27 +130,33 @@ WHERE s.id=$1 AND s.scope='SERVER' AND s.status='ACTIVE' AND s.platform=gs.platf
   AND k.killer_player_id IS NOT NULL AND k.victim_player_id IS NOT NULL
   AND k.killer_player_id<>k.victim_player_id AND ev.happened_at IS NOT NULL
   AND ev.happened_at>=s.starts_at AND (s.ends_at IS NULL OR ev.happened_at<s.ends_at)
-FOR SHARE OF s`, seasonID, killID).Scan(&serverID, &guildID, &killerID, &victimID, &rp, &fingerprint, &eventTime)
+FOR SHARE OF s`, seasonID, killID).Scan(&serverID, &guildID, &killerID, &victimID, &rp, &fingerprint, &eventTime, &thresholdValues)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return result, ErrRankedIneligible
 	}
 	if err != nil {
 		return result, fmt.Errorf("load ranked kill: %w", err)
 	}
-	_ = guildID // checked by the query; identities below are guild-scoped player row IDs.
+	// guildID is checked by the query; identities below are guild-scoped player row IDs.
 
 	// Serialize this attacker/victim pair for the season across workers. The
 	// transaction lock is held through the insert, so concurrent repeat kills
 	// cannot both pass the cooldown query.
 	attacker := strconv.FormatInt(killerID, 10)
 	victim := strconv.FormatInt(victimID, 10)
+	// The killer's lock comes first (always in this order): once-a-day and once-an-hour bonuses are
+	// decided per killer, across victims.
+	killerLock := fmt.Sprintf("ranked:%d:killer:%s", seasonID, attacker)
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, killerLock); err != nil {
+		return result, fmt.Errorf("lock ranked killer: %w", err)
+	}
 	lockKey := fmt.Sprintf("ranked:%d:%s:%s", seasonID, attacker, victim)
 	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, lockKey); err != nil {
 		return result, fmt.Errorf("lock ranked pair: %w", err)
 	}
 
 	result = RankedAward{SeasonID: seasonID, KillID: killID}
-	err = tx.QueryRow(ctx, `SELECT outcome,amount,multiplier FROM ranked_awards WHERE season_id=$1 AND kill_id=$2`, seasonID, killID).Scan(&result.Outcome, &result.Amount, &result.Multiplier)
+	err = tx.QueryRow(ctx, `SELECT outcome,amount,multiplier,bonus_rp,bonuses FROM ranked_awards WHERE season_id=$1 AND kill_id=$2`, seasonID, killID).Scan(&result.Outcome, &result.Amount, &result.Multiplier, &result.BonusRP, &result.Bonuses)
 	if err == nil {
 		return result, nil
 	}
@@ -175,14 +185,34 @@ ORDER BY event_time DESC LIMIT 1`, seasonID, attacker, victim).Scan(&previous)
 			result.Outcome, result.Amount, result.Multiplier = "COOLDOWN", 0, 1
 		}
 	}
+	result.Bonuses = []RankedBonus{}
+	if result.Outcome == "AWARDED" {
+		settings, serr := loadBonusSettings(ctx, tx, serverID)
+		if serr != nil {
+			return RankedAward{}, fmt.Errorf("read ranked bonus settings: %w", serr)
+		}
+		if settings.AnyKillBonus() && len(thresholdValues) == 7 {
+			var thresholds ranked.Thresholds
+			copy(thresholds[:], thresholdValues)
+			bonuses, berr := scoreBonuses(ctx, tx, settings, bonusContext{seasonID: seasonID, serverID: serverID, guildID: guildID,
+				rpPerKill: rp, thresholds: thresholds, killer: attacker, victim: victim, at: eventTime})
+			if berr != nil {
+				return RankedAward{}, fmt.Errorf("score ranked bonuses: %w", berr)
+			}
+			for _, b := range bonuses {
+				result.BonusRP += b.RP
+			}
+			result.Bonuses, result.Amount = bonuses, result.Amount+result.BonusRP
+		}
+	}
 	// The source key is local to this physical server. The global ledger will
 	// require a separately verified cross-guild physical-source identity.
 	sourceKey := fmt.Sprintf("%d:%s", serverID, fingerprint)
 	var inserted int64
 	err = tx.QueryRow(ctx, `INSERT INTO ranked_awards
-(season_id,kill_id,source_key,attacker_key,victim_key,event_time,outcome,amount,multiplier)
-VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING RETURNING id`,
-		seasonID, killID, sourceKey, attacker, victim, eventTime, result.Outcome, result.Amount, result.Multiplier).Scan(&inserted)
+(season_id,kill_id,source_key,attacker_key,victim_key,event_time,outcome,amount,multiplier,bonus_rp,bonuses)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT DO NOTHING RETURNING id`,
+		seasonID, killID, sourceKey, attacker, victim, eventTime, result.Outcome, result.Amount, result.Multiplier, result.BonusRP, result.Bonuses).Scan(&inserted)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return RankedAward{}, ErrDuplicate
 	}
