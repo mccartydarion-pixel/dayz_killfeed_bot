@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
@@ -30,11 +31,13 @@ func (a *App) handlePlayerServerRanked(w http.ResponseWriter, r *http.Request) {
 	observed, err := a.SaaSPlayer.HasObservedActivity(ctx, scope.GuildID, scope.ServerID, scope.PlayerID)
 	if err != nil { playerFailed(w, "check player installation association", err); return }
 	if !observed { writeSaaSError(w, codeNotFound, "installation not found"); return }
+	// Double RP shows beside the progress; failing to read it never hides the progress.
+	boost, _ := a.Ranked.CurrentRPBoost(ctx, scope.ServerID, time.Now().UTC())
 	p, err := a.Ranked.ServerPlayerProgress(ctx, scope.GuildID, scope.ServerID, scope.PlayerID)
 	if errors.Is(err, repository.ErrRankedIneligible) {
-		writeSaaSJSON(w, http.StatusOK, map[string]any{"installationId": installationID, "status": "NOT_STARTED"})
+		writeSaaSJSON(w, http.StatusOK, map[string]any{"installationId": installationID, "status": "NOT_STARTED", "boost": boost})
 		return
 	}
 	if err != nil { playerFailed(w, "player Ranked progress", err); return }
-	writeSaaSJSON(w, http.StatusOK, map[string]any{"installationId": installationID, "status": "ACTIVE", "progress": p})
+	writeSaaSJSON(w, http.StatusOK, map[string]any{"installationId": installationID, "status": "ACTIVE", "progress": p, "boost": boost})
 }
