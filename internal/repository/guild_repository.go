@@ -220,6 +220,28 @@ func (r *GuildRepository) ClearPanelMessageIDs(ctx context.Context, discordGuild
 	return nil
 }
 
+// FeaturesChannel returns the channel /features created for a guild, or "" when there is none.
+func (r *GuildRepository) FeaturesChannel(ctx context.Context, discordGuildID string) (string, error) {
+	var channelID string
+	err := r.pool.QueryRow(ctx, `SELECT COALESCE(features_channel_id,'') FROM guilds WHERE discord_guild_id=$1`, discordGuildID).Scan(&channelID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("get features channel: %w", err)
+	}
+	return channelID, nil
+}
+
+// SetFeaturesChannel records the channel /features created; "" forgets it.
+func (r *GuildRepository) SetFeaturesChannel(ctx context.Context, discordGuildID, channelID string) error {
+	_, err := r.pool.Exec(ctx, `UPDATE guilds SET features_channel_id=NULLIF($2,''), updated_at=NOW() WHERE discord_guild_id=$1`, discordGuildID, channelID)
+	if err != nil {
+		return fmt.Errorf("set features channel: %w", err)
+	}
+	return nil
+}
+
 func (r *GuildRepository) SetSelectedPublicServer(ctx context.Context, discordGuildID string, serverID int64) error {
 	_, err := r.pool.Exec(ctx, `UPDATE guilds SET selected_public_server_id=$2, updated_at=NOW() WHERE discord_guild_id=$1`, discordGuildID, serverID)
 	if err != nil {
