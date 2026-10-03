@@ -2850,6 +2850,11 @@ CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events
 		Name: "0116_ranked_bonuses",
 		SQL:  RankedBonusesSQL,
 	},
+	{
+		// The channel /features created, so the next /features removes only that one. Additive.
+		Name: "0117_guild_features_channel",
+		SQL:  GuildFeaturesChannelSQL,
+	},
 }
 
 // NitradoTailTrustSQL keeps which Nitrado services have proven that partial (seek) reads match
