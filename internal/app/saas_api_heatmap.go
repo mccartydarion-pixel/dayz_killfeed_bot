@@ -135,13 +135,34 @@ func (a *App) handleHeatmap(w http.ResponseWriter, r *http.Request) {
 		zoneID = &v
 	}
 
+	// Time of day: fromHour/toHour (0-23) in tz (IANA, default UTC).
+	var hours *heatmap.HourWindow
+	if rawFrom, rawTo := strings.TrimSpace(q.Get("fromHour")), strings.TrimSpace(q.Get("toHour")); rawFrom != "" || rawTo != "" {
+		fh, err1 := strconv.Atoi(rawFrom)
+		th, err2 := strconv.Atoi(rawTo)
+		if err1 != nil || err2 != nil {
+			writeSaaSError(w, codeInvalidRequest, "fromHour and toHour must both be hours from 0 to 23")
+			return
+		}
+		loc := time.UTC
+		if tz := strings.TrimSpace(q.Get("tz")); tz != "" {
+			l, err := time.LoadLocation(tz)
+			if err != nil || !timeZoneName.MatchString(tz) {
+				writeSaaSError(w, codeInvalidRequest, "tz must be an IANA time zone name")
+				return
+			}
+			loc = l
+		}
+		hours = &heatmap.HourWindow{FromHour: fh, ToHour: th, Location: loc}
+	}
+
 	if !enforceRateLimit(w, a.saasAdminReadLimiter, rateLimitKey(r)) {
 		return
 	}
 
 	req := heatmap.Request{
 		GuildID: ac.scope.GuildID, InstallationID: ac.scope.InstallationID,
-		Type: heatmapType, From: from, To: to, Resolution: resolution, ZoneID: zoneID,
+		Type: heatmapType, From: from, To: to, Resolution: resolution, ZoneID: zoneID, Hours: hours,
 	}
 	if heatmapType != heatmap.TypeZoneIntrusions {
 		if ac.scope.ServerID == nil {

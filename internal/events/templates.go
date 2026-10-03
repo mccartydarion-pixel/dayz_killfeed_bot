@@ -37,6 +37,12 @@ func Templates() []Template {
 		{Key: "STREAK_MASTER", Name: "Streak Master", Description: "Highest kill streak of 3 or more wins.", Type: TypeKillStreak, Config: raw(KillStreakConfig{MinimumStreak: 3}), DurationHours: 4, FirstPoints: 1500, SecondPoints: 750, ThirdPoints: 300},
 		{Key: "WEAPON_CHALLENGE", Name: "Weapon Challenge", Description: "Most kills with the weapons you choose.", Type: TypeWeaponChallenge, Config: raw(WeaponChallengeConfig{}), DurationHours: 2, FirstPoints: 1000, SecondPoints: 500, ThirdPoints: 250, NeedsWeapons: true},
 		{Key: "FACTION_SHOWDOWN", Name: "Faction Showdown", Description: "The faction with the most kills on enemy factions wins.", Type: TypeFactionKills, Config: raw(FactionKillsConfig{EnemyFactionsOnly: true}), DurationHours: 24, FirstPoints: 2000, SecondPoints: 1000, ThirdPoints: 500},
+		// Short, punchy formats for a quiet evening (added with the event templates upgrade).
+		{Key: "POWER_HOUR", Name: "Power Hour", Description: "One hour, most PvP kills wins.", Type: TypeMostKills, Config: raw(MostKillsConfig{}), DurationHours: 1, FirstPoints: 750, SecondPoints: 400, ThirdPoints: 200},
+		{Key: "HEADSHOT_HOUR", Name: "Headshot Hour", Description: "One hour, most headshot kills wins.", Type: TypeHeadshotHunt, Config: raw(struct{}{}), DurationHours: 1, FirstPoints: 750, SecondPoints: 400, ThirdPoints: 200},
+		{Key: "SNIPER_SUNDAY", Name: "Sniper Sunday", Description: "Longest single kill of 300 m or more wins. Schedule it for a Sunday.", Type: TypeLongestKill, Config: raw(LongestKillConfig{MinimumDistance: 300}), DurationHours: 12, FirstPoints: 1500, SecondPoints: 750, ThirdPoints: 400},
+		{Key: "STREAK_SPRINT", Name: "Streak Sprint", Description: "Two hours, highest kill streak of 3 or more wins.", Type: TypeKillStreak, Config: raw(KillStreakConfig{MinimumStreak: 3}), DurationHours: 2, FirstPoints: 1000, SecondPoints: 500, ThirdPoints: 250},
+		{Key: "WEEKEND_MARATHON", Name: "Weekend Marathon", Description: "All weekend, most PvP kills wins.", Type: TypeMostKills, Config: raw(MostKillsConfig{}), DurationHours: 48, FirstPoints: 3000, SecondPoints: 1500, ThirdPoints: 750},
 	}
 }
 

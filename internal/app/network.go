@@ -31,6 +31,7 @@ func (a *App) registerNetworkRoutes() {
 	h("GET /api/saas/network/servers", a.handleNetworkServers)
 	h("GET /api/saas/network/servers/{installationID}", a.handleNetworkServer)
 	h("GET /api/saas/network/leaderboard", a.handleNetworkLeaderboard)
+	h("GET /api/saas/network/spotlight", a.handleNetworkSpotlight)
 }
 
 type networkServerDTO struct {

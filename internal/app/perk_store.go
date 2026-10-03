@@ -477,6 +477,8 @@ type perkPurchaseBody struct {
 	OfferID           int64  `json:"offerId"`
 	RecipientPlayerID int64  `json:"recipientPlayerId"` // 0 = for myself
 	IdempotencyKey    string `json:"idempotencyKey"`
+	// GiftMessage is an optional note for the recipient of a gift (up to 200 characters).
+	GiftMessage string `json:"giftMessage,omitempty"`
 }
 
 // handlePerkPurchase is POST .../perks/purchases: a linked player buys an offer for themselves or
@@ -538,6 +540,7 @@ func (a *App) handlePerkPurchase(w http.ResponseWriter, r *http.Request) {
 			"offer_id", res.Purchase.OfferID, "price_points", res.Purchase.PricePoints, "gift", res.Purchase.Gift)
 		a.applyPerks(ctx, res.Purchase)
 		a.announcePerkPurchase(ctx, res.Purchase)
+		a.sendGiftNotice(ctx, res.Purchase, cleanGiftMessage(body.GiftMessage))
 		if p, err := a.Perks.GetPurchase(ctx, scope.GuildID, res.Purchase.ID); err == nil {
 			res.Purchase = p
 		}

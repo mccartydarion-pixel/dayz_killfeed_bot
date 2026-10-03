@@ -108,6 +108,37 @@ type Service struct {
 	// economyNotifier receives one economy event per bounty payout, after the
 	// claim (and its ledger transactions) committed. Optional.
 	economyNotifier economy.Notifier
+	// placerNotifier hears about each bounty that was claimed (with the hunter's name) or ran out,
+	// after it committed, so the person who placed it can be told. Optional.
+	placerNotifier func(b repository.Bounty, outcome, hunter string)
+}
+
+// Placer outcomes.
+const (
+	PlacerClaimed = "CLAIMED"
+	PlacerExpired = "EXPIRED"
+)
+
+// SetPlacerNotifier sets who hears about claimed and expired bounties (nil = nobody).
+func (s *Service) SetPlacerNotifier(f func(b repository.Bounty, outcome, hunter string)) {
+	s.mu.Lock()
+	s.placerNotifier = f
+	s.mu.Unlock()
+}
+
+func (s *Service) notifyPlacer(b repository.Bounty, outcome, hunter string) {
+	s.mu.RLock()
+	f := s.placerNotifier
+	s.mu.RUnlock()
+	if f == nil || b.CreatedByDiscordUserID == "" {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("component=bounty", "msg", "placer notifier panic recovered", "panic", fmt.Sprint(r))
+		}
+	}()
+	f(b, outcome, hunter)
 }
 
 func NewService(store Store, notifier Notifier) *Service {
@@ -266,6 +297,7 @@ func (s *Service) Sweep(ctx context.Context, now time.Time) (int, error) {
 	}
 	for _, b := range expired {
 		s.notify(Event{Kind: EventExpired, GuildID: b.GuildID, ServerID: b.ServerID, Target: s.nameOf(ctx, b.GuildID, b.TargetPlayerID), Amount: b.RewardPoints})
+		s.notifyPlacer(b, PlacerExpired, "")
 	}
 	return len(expired), nil
 }
@@ -309,6 +341,9 @@ func (s *Service) ClaimForKill(ctx context.Context, in KillInput) (ClaimResult, 
 		Target: in.TargetName, Hunter: in.HunterName, Amount: total, Count: len(claimed),
 		Weapon: in.Weapon, Distance: in.Distance,
 	})
+	for _, b := range claimed {
+		s.notifyPlacer(b, PlacerClaimed, in.HunterName)
+	}
 	// One economy transaction was committed per bounty (auditable: each bounty is
 	// its own ledger reference); report each one, in payout order, so the shown
 	// balance is the hunter's balance right after that payout.

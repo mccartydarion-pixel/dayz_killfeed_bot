@@ -153,6 +153,9 @@ type Event struct {
 	WarBadge          string
 	// SupporterBadge is the killer's supporter / VIP tier badge ("" = none).
 	SupporterBadge string
+	// RankedTag is the RP this kill earned with its bonus icons ("+250 RP ⚡💀"), "" when the
+	// server does not show it or the kill earned no RP.
+	RankedTag string
 	SeasonName        string
 
 	// Stat fields below are populated post-persistence (see

@@ -93,6 +93,7 @@ var routeVariableDefinitions = map[string][]VariableDefinition{
 		v("bounty_target", "Bounty Target", CatBounty, "Set when the victim had an active bounty.", "MOST WANTED", "label", "Event.BountyTarget", "Only when the victim had an active bounty.", true),
 		v("bounty_claimed", "Bounty Claimed", CatBounty, "Set when this kill claimed a bounty.", "BOUNTY CLAIMED", "label", "Event.BountyClaimed", "Only when this kill claimed a bounty.", true),
 		v("season_name", "Season", CatCompetitive, "The active season.", "Season 3", "text", "Event.SeasonName", "Present while a season is active.", true),
+		v("ranked_rp", "Ranked RP", CatCompetitive, "The RP this kill earned, with icons for double RP and bonuses.", "+250 RP ⚡💀", "text", "Event.RankedTag", "Only when the server shows ranked tags and the kill earned RP.", true),
 		v("war_badge", "War Badge", CatCompetitive, "The faction war this kill counted for.", "WAR KILL", "label", "Event.WarBadge", "Only for kills in an active faction war.", true),
 		v("event_badges", "Event Badges", CatCompetitive, "Active competitive events this kill counted for, joined by •.", "Double Kill • NWAF Event", "text", "Event.ActiveEventBadges", "Only when the kill counted for an active event.", true),
 		serverName(), timestamp(),

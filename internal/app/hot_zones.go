@@ -132,6 +132,7 @@ func (a *App) registerHotZoneRoutes(adminBase string) {
 	h := a.HTTPServer.Handle
 	h("GET "+adminBase+"/hot-zones", a.handleAdminHotZones)
 	h("GET /api/saas/player/servers/{installationID}/hot-zone", a.handlePlayerHotZone)
+	a.registerRivalRoutes()
 }
 
 type hotZoneDTO struct {
@@ -227,7 +228,10 @@ func (a *App) handlePlayerHotZone(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	resp := struct {
 		HotZone *hotZoneDTO `json:"hotZone"`
+		// Forecast is when the server is usually busiest (docs/HOT_ZONES.md "Forecast").
+		Forecast *hotZoneForecast `json:"forecast"`
 	}{}
+	resp.Forecast = a.hotZoneForecastFor(ctx, scope.GuildID, scope.ServerID, time.Now().UTC())
 	if a.Events == nil {
 		writeSaaSJSON(w, http.StatusOK, resp)
 		return

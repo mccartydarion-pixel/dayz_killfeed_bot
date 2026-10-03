@@ -67,6 +67,13 @@ type App struct {
 	Deaths       *repository.DeathRepository
 	Stats        *repository.StatsRepository
 	Ranked       *repository.RankedRepository
+	// Upgrades holds the automation switches and state (docs/FEATURE_UPGRADES.md).
+	Upgrades *repository.UpgradeRepository
+	upgradeRuns upgradeThrottle
+	rankedTagsCache rankedTagCache
+	forecasts       forecastCache
+	// routePanels keeps one edited message per routed panel; nil when channel routing is off.
+	routePanels *discord.RoutePanels
 	Sessions     *repository.SessionRepository
 	Checkpoints  *repository.CheckpointRepository
 	Streaks      *repository.StreakRepository
@@ -782,6 +789,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.Deaths = repository.NewDeathRepository(db.Pool)
 			app.Stats = repository.NewStatsRepository(db.Pool)
 			app.Ranked = repository.NewRankedRepository(db.Pool)
+			app.Upgrades = repository.NewUpgradeRepository(db.Pool)
 			app.Sessions = repository.NewSessionRepository(db.Pool)
 			app.Checkpoints = repository.NewCheckpointRepository(db.Pool)
 			app.Streaks = repository.NewStreakRepository(db.Pool)
@@ -792,6 +800,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.AnnouncementService = discord.NewCompletionAnnouncementService(app.Announcements)
 			app.Bounties = repository.NewBountyRepository(db.Pool)
 			app.BountyService = bounties.NewService(app.Bounties, nil)
+			app.BountyService.SetPlacerNotifier(app.notifyBountyPlacer)
 			app.EconomyService = economy.NewService(repository.NewEconomyRepository(db.Pool), nil)
 			app.EconomyAccounts = economy.NewAccounts(app.EconomyService, repository.NewEconomyRepository(db.Pool))
 			app.Shop = shop.NewService(repository.NewShopRepository(db.Pool), app.EconomyAccounts, app.EconomyService)
@@ -1823,6 +1832,7 @@ func (a *App) Run() error {
 			var routePanels *discord.RoutePanels
 			if routingEnabled {
 				routePanels = discord.NewRoutePanels(api, discord.NewRoutePanelStore(a.GuildRoutePanels))
+				a.routePanels = routePanels
 			}
 			if routingEnabled && a.Ranked != nil {
 				for _, serverRow := range activeServers {
@@ -1920,6 +1930,9 @@ func (a *App) Run() error {
 						a.LeaderboardScheduler.SetRankSource(discord.ServerSeasonRankReader{Servers: a.Servers, Ranked: a.Ranked})
 					}
 					a.LeaderboardScheduler.SetServerNames(guildServers, a.serverNameFunc())
+					if a.Upgrades != nil {
+						a.LeaderboardScheduler.SetMovementStore(a.Upgrades)
+					}
 					if routingEnabled {
 						a.LeaderboardScheduler.SetRouting(a.ChannelRoutes, guildServers, routePanels,
 							discord.NewLegacyLeaderboardRetirer(api, setupStore, a.Config.DiscordGuildID))
@@ -1945,7 +1958,7 @@ func (a *App) Run() error {
 				setupManager.SetRouteGate(a.RouteSyncer.HasRoute)
 				go a.RouteSyncer.Run(ctx)
 			}
-			store := &persistenceStoreAdapter{players: a.Players, kills: a.Kills, deaths: a.Deaths, seasons: a.Seasons, ranked: a.Ranked, factions: a.Factions, wars: a.Wars, events: a.Events, vip: a.VIP, bounties: a.Bounties, bountySvc: a.BountyService, streaks: a.Streaks, anomalies: a.Anomalies, activity: a.ActivityRepository, servers: a.Servers, stats: a.Stats, analytics: a.AnalyticsRepository, factionStats: a.FactionHubStats, locations: a.Locations, zones: a.Zones, lives: a.Lives, lifeRecap: a.LifeRecap, panelDirty: func() {
+			store := &persistenceStoreAdapter{players: a.Players, kills: a.Kills, deaths: a.Deaths, seasons: a.Seasons, ranked: a.Ranked, factions: a.Factions, wars: a.Wars, events: a.Events, vip: a.VIP, bounties: a.Bounties, bountySvc: a.BountyService, streaks: a.Streaks, anomalies: a.Anomalies, activity: a.ActivityRepository, servers: a.Servers, stats: a.Stats, analytics: a.AnalyticsRepository, factionStats: a.FactionHubStats, locations: a.Locations, zones: a.Zones, lives: a.Lives, lifeRecap: a.LifeRecap, rankedTags: a.killfeedRankedTagsOn, panelDirty: func() {
 				if a.LeaderboardScheduler != nil {
 					a.LeaderboardScheduler.MarkDirty()
 				}
@@ -2173,6 +2186,7 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 			raidAlarm := discord.NewBaseRaidAlarmPublisher(repository.NewBaseRaidAlarmRepository(a.DB.Pool), a.Discord.Session(), row.GuildID, row.ID)
 			raidAlarm.SetServerName(a.serverNameFunc())
 			raidAlarm.SetFactionSecurity(repository.NewFactionSecurityRepository(a.DB.Pool))
+			raidAlarm.SetBlackBoxURL(a.siteURL() + "/dashboard/player/security-store#black-box")
 			buildPublisher = buildPublisherFanout{buildFeed, raidAlarm, blackBox}
 			go func() {
 				defer func() {
@@ -2504,6 +2518,7 @@ func (a *App) runCompetitiveSchedulers(ctx context.Context, guildID int64) {
 		a.runPerkStore(ctx, guildID, now)
 		a.runRPBoostAnnouncements(ctx, guildID, now)
 		a.runRankedBonusAnnouncements(ctx, guildID, now)
+		a.runUpgrades(ctx, guildID, now)
 		a.runVIPExpiry(ctx, guildID, now)
 		a.runRewards(ctx, guildID, now)
 		if ended, err := a.Events.GetEndedUnfinalized(ctx, guildID, 25); err == nil {
@@ -2621,6 +2636,8 @@ type persistenceStoreAdapter struct {
 	// nil-safe throughout, matching locations above.
 	zones      *repository.ZoneRepository
 	panelDirty func()
+	// rankedTags reports whether the server shows ranked RP on kill cards (an automation); nil = never.
+	rankedTags func(ctx context.Context, serverID int64) bool
 	// factionStats is told about every persisted kill and death (nil-safe): it invalidates cached
 	// faction figures and queues the killer for achievement evaluation. It never blocks the kill path.
 	factionStats *factionstats.Service
@@ -2848,8 +2865,12 @@ func (p *persistenceStoreAdapter) ResolveStreakContext(ctx context.Context, guil
 
 func (p *persistenceStoreAdapter) ProcessPersistedKill(ctx context.Context, killID int64, record repository.KillRecord, ev *killfeed.Event) {
 	if p.ranked != nil && record.ServerID > 0 {
-		if _, err := p.ranked.AwardActiveServerKill(ctx, record.ServerID, killID); err != nil && !errors.Is(err, repository.ErrRankedIneligible) {
+		award, err := p.ranked.AwardActiveServerKill(ctx, record.ServerID, killID)
+		if err != nil && !errors.Is(err, repository.ErrRankedIneligible) {
 			slog.Warn("component=ranked", "event", "award_failed_retry_scheduled", "server_id", record.ServerID, "kill_id", killID, "err", err.Error())
+		}
+		if err == nil && ev != nil && p.rankedTags != nil && p.rankedTags(ctx, record.ServerID) {
+			ev.RankedTag = rankedTag(award)
 		}
 	}
 	// Runs on every exit (including the bounty claim at the end): the kill is durable, so cached

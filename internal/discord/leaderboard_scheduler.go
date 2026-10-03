@@ -1,6 +1,7 @@
 package discord
 
 import (
+	"fmt"
 	"context"
 	"errors"
 	"log/slog"
@@ -24,6 +25,7 @@ type LeaderboardScheduler struct {
 	panel       *LeaderboardPanel
 	stats       AutoLeaderboardReader
 	ranks       RankReader
+	movement    BoardMovementStore
 	serverIDs   GuildServersFunc
 	serverNames ServerNameFunc
 	guildRowID  int64
@@ -61,6 +63,61 @@ type AutoLeaderboardReader interface {
 // Without an active season the Ranks embed remains inactive.
 type RankReader interface {
 	TopCurrentRanks(ctx context.Context, guildID int64, limit int) ([]RankEntry, error)
+}
+
+// WeeklyKillsReader is the optional reader of this week's kills board.
+type WeeklyKillsReader interface {
+	TopByKillsSince(ctx context.Context, guildID int64, since time.Time, limit int) ([]repository.LeaderboardEntry, error)
+}
+
+// BoardMovementStore keeps each board's positions per day, so the board can show who moved.
+type BoardMovementStore interface {
+	// PreviousPositions is the board's most recent recorded positions from before day.
+	PreviousPositions(ctx context.Context, guildID int64, board string, day time.Time) (map[string]int, error)
+	// RecordPositions stores the board's positions for day (the first record of a day is kept).
+	RecordPositions(ctx context.Context, guildID int64, board string, day time.Time, positions map[string]int) error
+}
+
+// SetMovementStore makes the kills and longest-kill boards show movement since the day before.
+func (s *LeaderboardScheduler) SetMovementStore(m BoardMovementStore) {
+	if s != nil {
+		s.movement = m
+	}
+}
+
+// boardMoves compares positions now with before: "▲n", "▼n" or "🆕" by display name.
+func boardMoves(entries []repository.LeaderboardEntry, before map[string]int) (moves map[string]string, now map[string]int) {
+	moves, now = map[string]string{}, map[string]int{}
+	for i, e := range entries {
+		now[e.DisplayName] = i + 1
+		if len(before) == 0 {
+			continue
+		}
+		prev, ok := before[e.DisplayName]
+		switch {
+		case !ok:
+			moves[e.DisplayName] = "🆕"
+		case prev > i+1:
+			moves[e.DisplayName] = fmt.Sprintf("▲%d", prev-(i+1))
+		case prev < i+1:
+			moves[e.DisplayName] = fmt.Sprintf("▼%d", (i+1)-prev)
+		}
+	}
+	return moves, now
+}
+
+func (s *LeaderboardScheduler) applyMovement(ctx context.Context, board string, entries []repository.LeaderboardEntry, now time.Time) map[string]string {
+	if s.movement == nil {
+		return nil
+	}
+	day := now.UTC().Truncate(24 * time.Hour)
+	before, err := s.movement.PreviousPositions(ctx, s.guildRowID, board, day)
+	if err != nil {
+		return nil
+	}
+	moves, positions := boardMoves(entries, before)
+	_ = s.movement.RecordPositions(ctx, s.guildRowID, board, day, positions)
+	return moves
 }
 
 // SetRankSource activates the Current Ranks board with an authoritative
@@ -264,6 +321,15 @@ func (s *LeaderboardScheduler) loadSnapshot(ctx context.Context) (LeaderboardSna
 	}
 	snap.ServerName = s.serverName(ctx)
 	snap.GeneratedAt = time.Now()
+	if weekly, ok := s.stats.(WeeklyKillsReader); ok {
+		week, err := weekly.TopByKillsSince(ctx, s.guildRowID, weekStartUTC(snap.GeneratedAt), boardLimit(s.cfg.TopKillsLimit))
+		if err != nil {
+			return LeaderboardSnapshot{}, err
+		}
+		snap.TopKillsWeek, snap.WeekEnabled = week, true
+	}
+	snap.KillMoves = s.applyMovement(ctx, "KILLS", snap.TopKills, snap.GeneratedAt)
+	snap.LongestMoves = s.applyMovement(ctx, "LONGEST", snap.TopLongest, snap.GeneratedAt)
 	return snap, nil
 }
 
@@ -322,4 +388,10 @@ func (s *LeaderboardScheduler) Run(ctx context.Context) {
 			return
 		}
 	}
+}
+
+// weekStartUTC is the Monday 00:00 UTC that starts t's week.
+func weekStartUTC(t time.Time) time.Time {
+	day := t.UTC().Truncate(24 * time.Hour)
+	return day.AddDate(0, 0, -((int(day.Weekday()) + 6) % 7))
 }

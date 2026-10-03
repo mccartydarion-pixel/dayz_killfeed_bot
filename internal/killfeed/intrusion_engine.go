@@ -60,6 +60,10 @@ type IntrusionEvent struct {
 	IntrusionID int64
 	At          time.Time
 	Suppressed  bool
+	// Alertable is true when nothing but a missing alert channel kept this from alerting (the
+	// player is not authorized and the zone's cooldown has passed), so a direct-message alert
+	// (the zone's alert player, docs/FEATURE_UPGRADES.md) may still go out.
+	Alertable bool
 }
 
 // IntrusionPublisher is the consumer for intrusion engine events. Like HitPublisher/
@@ -305,7 +309,8 @@ func (e *IntrusionEngine) handleEntry(ctx context.Context, zone repository.Zone,
 	case repository.ZoneTypeBaseRadar:
 		kind = AlertBaseRadarIntrusion
 	}
-	e.publisher.PublishIntrusionEvent(IntrusionEvent{Kind: kind, Zone: zone, PlayerID: rec.PlayerID, Gamertag: rec.Gamertag, IntrusionID: intrusion.ID, At: now, Suppressed: !shouldAlert})
+	alertable := !authorized && !withinCooldown
+	e.publisher.PublishIntrusionEvent(IntrusionEvent{Kind: kind, Zone: zone, PlayerID: rec.PlayerID, Gamertag: rec.Gamertag, IntrusionID: intrusion.ID, At: now, Suppressed: !shouldAlert, Alertable: alertable})
 	if banned {
 		e.publisher.PublishIntrusionEvent(IntrusionEvent{Kind: AlertZoneBanViolation, Zone: zone, PlayerID: rec.PlayerID, Gamertag: rec.Gamertag, IntrusionID: intrusion.ID, At: now, Suppressed: !shouldAlert})
 	}
