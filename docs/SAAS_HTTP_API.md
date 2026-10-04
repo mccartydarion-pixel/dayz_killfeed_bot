@@ -235,6 +235,19 @@ cannot post without them). `Embed Links` and `Read Message History` are
 reduced presentation). If the guild or channel isn't reachable at all, every
 capability is `FAIL`.
 
+### Live map (`docs/LIVE_MAP.md`)
+
+| Route | Auth | Purpose |
+|---|---|---|
+| `GET /api/saas/network/servers/{installationID}/map?sinceKillId=&window=5..180` | service bearer only | Public map state: recent kills (behind `liveMap.delaySeconds`), 500 m pressure grid, open hot zone, server clock. `404 NOT_FOUND` when the installation is missing, has no server, or `liveMap.public` is off. Cached 5 s per (installation, window). |
+| `GET /api/saas/player/servers/{installationID}/map/faction` | service + acting user, verified linked player of the server | The acting player's own hub faction members (latest position, 2 h trail), their bases and raid alerts of the last hour. Only members' positions are ever returned. `enabled:false` when `liveMap.factionLayer` is off. |
+| `GET .../admin/map/live` | `PLAYER_LAST_LOCATION_VIEW` | Every connected player's latest position with faction tag, enabled zones, active intrusions (+ zone centre). Audited `LIVE_MAP_VIEWED` once per actor per 10 min. |
+| `GET .../admin/map/history?from=&to=` | `PLAYER_LOCATION_VIEW` | Kills (<= 500) and every player's track (<= 20,000 points, newest kept, `truncated`) in a window of at most 6 h (default the last hour), intrusion history. Audited `LIVE_MAP_HISTORY_VIEWED`. |
+| `PUT .../admin/features/live-map` `{public, delaySeconds, factionLayer}` | `FEATURE_SETTINGS_MANAGE` | Saves the `liveMap` section of `GET .../admin/features` (`delaySeconds` 0..3600). Audited `LIVE_MAP_SETTINGS_UPDATED`. |
+
+Exact response shapes, with examples, are in [docs/LIVE_MAP.md](LIVE_MAP.md); the machine-readable
+version is in [saas-openapi.yaml](saas-openapi.yaml).
+
 ## Response DTOs
 
 None of these ever include a Nitrado ciphertext/IV/auth tag, a Discord

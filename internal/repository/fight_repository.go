@@ -26,6 +26,7 @@ type FightKill struct {
 	Weapon     string
 	Distance   *float64
 	Headshot   bool
+	Longshot   bool
 	KillerX    *float64
 	KillerZ    *float64
 	VictimX    *float64
@@ -44,9 +45,19 @@ const fightKillLocation = `LEFT JOIN LATERAL (
 
 // Kills returns the server's PvP kills in [from, to), oldest first. A self-kill is not PvP.
 func (r *FightRepository) Kills(ctx context.Context, guildID, serverID int64, from, to time.Time, limit int) ([]FightKill, error) {
+	return r.kills(ctx, guildID, serverID, from, to, limit, "ORDER BY 2, k.id")
+}
+
+// RecentKills is Kills newest first: the live map's feed (docs/LIVE_MAP.md) wants the latest
+// kills of the window, not the earliest.
+func (r *FightRepository) RecentKills(ctx context.Context, guildID, serverID int64, from, to time.Time, limit int) ([]FightKill, error) {
+	return r.kills(ctx, guildID, serverID, from, to, limit, "ORDER BY 2 DESC, k.id DESC")
+}
+
+func (r *FightRepository) kills(ctx context.Context, guildID, serverID int64, from, to time.Time, limit int, order string) ([]FightKill, error) {
 	q := `
 SELECT k.id, COALESCE(k.event_time, k.created_at), k.killer_player_id, k.victim_player_id, COALESCE(kp.display_name, ''), COALESCE(vp.display_name, ''),
-       COALESCE(k.weapon_display, k.weapon_raw, ''), k.distance, k.headshot, kl.x, kl.z, vl.x, vl.z
+       COALESCE(k.weapon_display, k.weapon_raw, ''), k.distance, k.headshot, k.longshot, kl.x, kl.z, vl.x, vl.z
 FROM kills k
 LEFT JOIN players kp ON kp.id = k.killer_player_id
 LEFT JOIN players vp ON vp.id = k.victim_player_id
@@ -54,7 +65,7 @@ LEFT JOIN players vp ON vp.id = k.victim_player_id
 ` + fmt.Sprintf(fightKillLocation, "k.victim_player_id", "vl") + `
 WHERE k.guild_id=$1 AND k.server_id=$2 AND COALESCE(k.event_time, k.created_at) >= $3 AND COALESCE(k.event_time, k.created_at) < $4
   AND k.killer_player_id IS NOT NULL AND k.victim_player_id IS NOT NULL AND k.killer_player_id <> k.victim_player_id
-ORDER BY 2, k.id LIMIT $5`
+` + order + ` LIMIT $5`
 	rows, err := r.pool.Query(ctx, q, guildID, serverID, from, to, limit)
 	if err != nil {
 		return nil, err
@@ -63,7 +74,7 @@ ORDER BY 2, k.id LIMIT $5`
 	out := []FightKill{}
 	for rows.Next() {
 		var k FightKill
-		if err := rows.Scan(&k.ID, &k.At, &k.KillerID, &k.VictimID, &k.KillerName, &k.VictimName, &k.Weapon, &k.Distance, &k.Headshot,
+		if err := rows.Scan(&k.ID, &k.At, &k.KillerID, &k.VictimID, &k.KillerName, &k.VictimName, &k.Weapon, &k.Distance, &k.Headshot, &k.Longshot,
 			&k.KillerX, &k.KillerZ, &k.VictimX, &k.VictimZ); err != nil {
 			return nil, err
 		}

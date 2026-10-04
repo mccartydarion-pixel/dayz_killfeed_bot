@@ -277,6 +277,16 @@ type App struct {
 	networkCacheOnce sync.Once
 	// Fights reads kills and position samples for fight replays (docs/FIGHT_REPLAY.md).
 	Fights *repository.FightRepository
+	// LiveMap reads the live map (docs/LIVE_MAP.md). liveMapPublic caches the public responses,
+	// liveMapNitradoCache the per-installation Nitrado clock facts and scheduled tasks, and
+	// liveMapAudited throttles the staff view's audit rows; saasLiveMapLimiter throttles the
+	// player faction layer per acting user.
+	LiveMap             *repository.LiveMapRepository
+	liveMapMu           sync.Mutex
+	liveMapPublic       map[string]liveMapCacheEntry
+	liveMapNitradoCache map[int64]liveMapNitradoFacts
+	liveMapAudited      map[string]time.Time
+	saasLiveMapLimiter  *saasRateLimiter
 	// Retention reads the retention dashboard from the daily/hourly activity rollups (docs/RETENTION.md).
 	Retention *repository.RetentionRepository
 	// FeedIdentity posts feed messages under an installation's own name and avatar
@@ -910,6 +920,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.Retention = repository.NewRetentionRepository(db.Pool)
 			app.Fights = repository.NewFightRepository(db.Pool)
 			app.Network = repository.NewNetworkRepository(db.Pool)
+			app.LiveMap = repository.NewLiveMapRepository(db.Pool)
 			app.hotZoneKills = repository.NewHeatmapRepository(db.Pool)
 			app.FeedIdentity = discord.NewFeedIdentity(app.FeatureSettings)
 			go app.runLocationRetention(ctx)

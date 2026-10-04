@@ -1,10 +1,15 @@
 package nitradofixture
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/yourname/dayz-killfeed/internal/livemap"
+	"github.com/yourname/dayz-killfeed/internal/nitrado"
 )
 
 func TestFixtureControlRequiresTokenAndWritesAreRefused(t *testing.T) {
@@ -44,5 +49,32 @@ func TestFixtureControlRequiresTokenAndWritesAreRefused(t *testing.T) {
 	}
 	if fx.Snapshot().RefusedWrites != 4 {
 		t.Fatalf("refused writes %d, want 4", fx.Snapshot().RefusedWrites)
+	}
+}
+
+// The live map reads the scheduled restart and the in-game clock settings from the fixture the
+// way it does from Nitrado (docs/LIVE_MAP.md).
+func TestFixtureServesScheduledTasksAndClockSettings(t *testing.T) {
+	fx := New(90000001, "")
+	srv := httptest.NewServer(fx)
+	defer srv.Close()
+	c := nitrado.NewClient(srv.URL, "fixture", srv.Client())
+	tasks, err := c.ListScheduledTasks(context.Background(), "90000001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 2 || tasks[0].ActionMethod != "restart" || tasks[1].ActionMethod != "backup" {
+		t.Fatalf("tasks = %+v", tasks)
+	}
+	next, ok := livemap.NextRestart([]livemap.Task{{ActionMethod: tasks[0].ActionMethod, NextRun: tasks[0].NextRun}}, time.Now())
+	if !ok || next.Sub(time.Now()) > restartEvery || next.Before(time.Now()) {
+		t.Fatalf("next restart = %v ok=%v", next, ok)
+	}
+	facts, err := c.GameserverFacts(context.Background(), "90000001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if facts.ServerTime != "SystemTime" || facts.ServerTimeAcceleration != "12" || facts.ServerNightTimeAcceleration != "1" {
+		t.Fatalf("facts = %+v", facts)
 	}
 }
