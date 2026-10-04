@@ -1,6 +1,7 @@
 package discord
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
@@ -37,6 +38,42 @@ type PanelContent struct {
 	Embed      *discordgo.MessageEmbed
 	Embeds     []*discordgo.MessageEmbed
 	Components []discordgo.MessageComponent
+	// Files are attached to the message (an embed shows one with "attachment://<name>"). An edit
+	// replaces the message's previous attachments with these.
+	Files []PanelFile
+}
+
+// PanelFile is one attachment of a panel. The bytes are kept (not a reader) so a send that follows
+// a failed edit can attach them again.
+type PanelFile struct {
+	Name, ContentType string
+	Data              []byte
+}
+
+func (c PanelContent) discordFiles() []*discordgo.File {
+	out := make([]*discordgo.File, 0, len(c.Files))
+	for _, f := range c.Files {
+		out = append(out, &discordgo.File{Name: f.Name, ContentType: f.ContentType, Reader: bytes.NewReader(f.Data)})
+	}
+	return out
+}
+
+// panelEmbeds is the content's embeds as one list.
+func (c PanelContent) panelEmbeds() []*discordgo.MessageEmbed {
+	if len(c.Embeds) > 0 {
+		return c.Embeds
+	}
+	if c.Embed != nil {
+		return []*discordgo.MessageEmbed{c.Embed}
+	}
+	return nil
+}
+
+// FileMessageAPI sends and edits a panel message that carries attachments. *SessionAPI implements
+// it; on an API without it a panel's Files are left off.
+type FileMessageAPI interface {
+	ChannelMessageSendWithFiles(channelID string, embeds []*discordgo.MessageEmbed, components []discordgo.MessageComponent, files []*discordgo.File) (*discordgo.Message, error)
+	ChannelMessageEditWithFiles(channelID, messageID string, embeds []*discordgo.MessageEmbed, components []discordgo.MessageComponent, files []*discordgo.File) (*discordgo.Message, error)
 }
 
 // MultiEmbedMessageAPI sends and edits ONE message carrying several embeds.
@@ -49,6 +86,11 @@ type MultiEmbedMessageAPI interface {
 
 // sendPanel posts content as one message (multi-embed when Embeds is set).
 func (p *RoutePanels) sendPanel(channelID string, content PanelContent) (*discordgo.Message, error) {
+	if len(content.Files) > 0 {
+		if api, ok := p.api.(FileMessageAPI); ok {
+			return api.ChannelMessageSendWithFiles(channelID, content.panelEmbeds(), content.Components, content.discordFiles())
+		}
+	}
 	if len(content.Embeds) > 0 {
 		api, ok := p.api.(MultiEmbedMessageAPI)
 		if !ok {
@@ -61,6 +103,11 @@ func (p *RoutePanels) sendPanel(channelID string, content PanelContent) (*discor
 
 // editPanel replaces an existing panel message's content in one edit.
 func (p *RoutePanels) editPanel(channelID, messageID string, content PanelContent) (*discordgo.Message, error) {
+	if len(content.Files) > 0 {
+		if api, ok := p.api.(FileMessageAPI); ok {
+			return api.ChannelMessageEditWithFiles(channelID, messageID, content.panelEmbeds(), content.Components, content.discordFiles())
+		}
+	}
 	if len(content.Embeds) > 0 {
 		api, ok := p.api.(MultiEmbedMessageAPI)
 		if !ok {

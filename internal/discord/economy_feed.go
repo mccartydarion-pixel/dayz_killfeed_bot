@@ -240,6 +240,17 @@ func (f *EconomyFeed) send(channel string, embeds []*discordgo.MessageEmbed) {
 	}
 }
 
+// rewardReason is a reward's reason as one safe line: no mentions, links or markdown, at most 120
+// characters.
+func rewardReason(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	s = strings.NewReplacer("@", "@​", "<", "‹", ">", "›", "[", "(", "]", ")", "`", "'", "*", "", "_", " ", "~", "", "|", "").Replace(s)
+	if r := []rune(s); len(r) > 120 {
+		s = string(r[:119]) + "…"
+	}
+	return strings.TrimSpace(s)
+}
+
 // buildEconomyEmbed renders one card:
 //
 //	💰 BOUNTY REWARD            ➕ ADMIN CREDIT             ➖ ADMIN DEBIT
@@ -259,7 +270,11 @@ func buildEconomyEmbed(e economy.Event) *discordgo.MessageEmbed {
 		color = presentation.SuccessGreen
 	case economy.TypeSystemReward:
 		b.WriteString("🎁 **REWARD**")
-		fmt.Fprintf(&b, "\n%s earned %s\nBalance: %s pts", name, amount, formatAmount(e.BalanceAfter))
+		fmt.Fprintf(&b, "\n%s earned %s", name, amount)
+		if reason := rewardReason(e.Reason); reason != "" {
+			fmt.Fprintf(&b, "\nFor: %s", reason)
+		}
+		fmt.Fprintf(&b, "\nBalance: %s pts", formatAmount(e.BalanceAfter))
 		color = presentation.SuccessGreen
 	case economy.TypeAdminCredit:
 		b.WriteString("➕ **ADMIN CREDIT**")

@@ -54,6 +54,7 @@ func (a *App) registerLiveMapRoutes(adminBase string) {
 	h("GET /api/saas/player/servers/{installationID}/map/faction", a.handlePlayerFactionMap)
 	h("GET "+adminBase+"/map/live", a.handleAdminLiveMap)
 	h("GET "+adminBase+"/map/history", a.handleAdminMapHistory)
+	a.registerUAVRoutes(adminBase)
 }
 
 // --- DTOs ----------------------------------------------------------------------------------------

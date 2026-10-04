@@ -2877,6 +2877,12 @@ ALTER TABLE installation_feature_settings ADD COLUMN IF NOT EXISTS live_map_fact
 		Name: "0120_progression",
 		SQL:  ProgressionSQL,
 	},
+	{
+		// A UAV players buy with Champion Points: every player's position on their live map for the
+		// time bought (docs/LIVE_MAP.md "UAV"). Off until the owner turns it on. Additive.
+		Name: "0121_live_map_uav",
+		SQL:  LiveMapUAVSQL,
+	},
 }
 
 // NitradoTailTrustSQL keeps which Nitrado services have proven that partial (seek) reads match

@@ -389,3 +389,16 @@ func buildTerritoryCard(z progression.Zone, from, to repository.TerritoryFaction
 	}
 	return &discordgo.MessageEmbed{Author: territoryAuthor(), Color: territoryColor, Title: "🏴 " + z.Name + " captured", Description: desc}
 }
+
+// heatmapMapOf is the DayZ map a server runs, for the heatmap picture: the installation's map, else
+// Chernarus (the live map's fallback).
+func (a *App) heatmapMapOf(ctx context.Context, serverID int64) (string, float64, bool) {
+	key := ""
+	if a.Territory != nil {
+		if ts, err := a.Territory.Server(ctx, serverID); err == nil {
+			key = ts.MapKey
+		}
+	}
+	m := liveMapMap(key)
+	return m.Key, float64(m.Size), m.Size > 0
+}

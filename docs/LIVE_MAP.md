@@ -214,3 +214,27 @@ intrusion history entered in the window (at most 500). Every request is audited 
 | Fixture: `/services/{id}/tasks`, `settings.config.serverTime*` | `internal/nitrado/nitradofixture` |
 | Migration | `0119_live_map_settings` |
 | Tests | `internal/livemap/livemap_test.go`, `internal/app/live_map_test.go`, `internal/app/live_map_integration_test.go`, `internal/nitrado/scheduled_tasks_test.go` |
+
+## UAV
+
+Players buy a UAV with Champion Points from the live map. While it runs, their map shows every
+connected player (migration `0121_live_map_uav`). Off until the owner turns it on in Customize →
+Network → UAV (`GET/PUT .../admin/map/uav`, feature settings capabilities).
+
+- Two tiers. **Basic** sends a dot per player: position and age only. **Precision** adds the
+  gamertag, hub faction tag, the weapon of their latest kill this life (the server logs do not say
+  what a player holds, so this is the closest true thing), time alive and kills this life, and a
+  heading from their previous position.
+- Sold in blocks (default 15 minutes; basic 250, precision 600 points a block; up to 8 blocks a
+  purchase). More time of the same tier starts when the running one ends. The points go to the
+  owner's linked character (`UAV_PURCHASE` / `UAV_SALE`), the way the perk store pays.
+- Shared with the buyer's hub faction (the faction at purchase time; each viewer's current faction
+  must match) unless the owner turns sharing off. A precision UAV wins over a basic one.
+- Optional delay (0 to 600 seconds, default 0): positions are the latest at or before now minus the
+  delay. Only connected players with a position from the current boot are shown.
+- Player routes: `GET /api/saas/player/servers/{id}/map/uav` (the offer, the UAV covering the player
+  and, while it runs, the players) and `POST` the same path with `{tier, blocks, idempotencyKey}`.
+- **Ghost** (owner switch, default off, 400 points a block): its buyer is left out of every other
+  player's UAV, basic and precision, for the time bought. It is the buyer's own (never shared) and
+  only sold while the UAV is. It never hides the player from staff views, from their own faction's
+  layer or from the public kill pins (a death is a public kill).
