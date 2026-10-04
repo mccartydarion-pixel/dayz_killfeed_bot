@@ -42,6 +42,10 @@ const (
 	TypePerkRefund     = repository.TxPerkRefund
 	TypePerkSale       = repository.TxPerkSale
 	TypePerkSaleRefund = repository.TxPerkSaleRefund
+	// Battle pass premium payments, written only by the battle pass repository: what a player
+	// paid and what the owner received.
+	TypePassPurchase = repository.TxPassPurchase
+	TypePassSale     = repository.TxPassSale
 )
 
 const (
@@ -325,6 +329,10 @@ func TypeLabel(t string) string {
 		return "Perk store sale"
 	case t == TypePerkSaleRefund:
 		return "Perk store refund"
+	case t == TypePassPurchase:
+		return "Battle pass premium"
+	case t == TypePassSale:
+		return "Battle pass sale"
 	case strings.HasPrefix(t, "EVENT_"):
 		return "Event prize"
 	}
