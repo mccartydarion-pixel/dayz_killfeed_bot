@@ -158,6 +158,9 @@ The upload, read-back, plan-ID and journal machinery above is reused unchanged.
 
 * No production write in development or CI.
 * The write capability is isolated from the bot.
+  (Since map rotation, docs/MAP_ROTATION.md: one more package, `internal/maprotation/mapswitch`,
+  may call the upload-token and transfer primitives, for two fixed mission files only. The
+  isolation test names it explicitly and lets exactly one file of the bot import it.)
 * Dry run is the default.
 * Execution needs a plan-bound, single-use owner authorization.
 * No retry, no redirect; the token goes only to https `*.nitrado.net`.

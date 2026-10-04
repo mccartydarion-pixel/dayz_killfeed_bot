@@ -15,7 +15,9 @@ import (
 
 // File-server WRITE primitives (Champion Shop Gate A tool, docs/SHOP_GATE_A_UPLOAD.md). They are
 // called ONLY by internal/shop/missionwrite, which wraps every write in an owner-authorized, fully
-// re-verified single operation; the bot's startup, Live Sync and Shop delivery never call them
+// re-verified single operation, and by internal/maprotation/mapswitch, the map rotation switch
+// (docs/MAP_ROTATION.md: two fixed mission files, backup, read-back and rollback; upload token and
+// transfer only, never mkdir). The bot's startup, Live Sync and Shop delivery never call them
 // (enforced by missionwrite's import test).
 //
 // Protocol, from Nitrado's official PHP SDK (github.com/nitrado/NitrAPI-PHP,

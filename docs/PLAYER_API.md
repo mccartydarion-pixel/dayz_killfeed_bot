@@ -177,3 +177,11 @@ shows only its own) and `TestPlayerStatsNoObservedActivityOnThisServerReturns404
 optional "if scope would expand too much") was not implemented this phase, to keep this already
 large phase reviewable. The player association/stats model above (section 2) is exactly what that
 endpoint would reuse when built.
+
+## 9. Map vote
+
+`GET` / `POST /api/saas/player/servers/{installationId}/map/vote` (docs/MAP_ROTATION.md) are the one
+exception to the association rule in section 2: any signed-in website user may read the vote of an
+installation (the link is posted publicly in the server's Discord), and the response says whether
+they are `linked`. Voting needs a verified link for the installation's guild (`403 NOT_LINKED`
+otherwise); it does not need observed activity on the server.

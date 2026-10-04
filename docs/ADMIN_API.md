@@ -386,7 +386,8 @@ Per-installation overrides of the environment rollout switches (internal/feature
 missing override means the environment default applies, exactly as before; an override
 wins. Consumers: custom embed rendering (`CHAMPION_CUSTOM_EMBEDS_ENABLED`), the shop canary
 gate (`CHAMPION_SHOP_CANARY_*`), C.A.S.E. evidence and build evidence (`CASE_*`; read when a
-worker starts, so a change takes effect on the installation's next worker restart).
+worker starts, so a change takes effect on the installation's next worker restart) and map
+rotation (`map_rotation`, default `CHAMPION_MAP_ROTATION_ENABLED` = off, docs/MAP_ROTATION.md).
 
 | Route | Body | Effect |
 | --- | --- | --- |

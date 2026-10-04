@@ -718,6 +718,8 @@ func (a *App) flagEnvSwitch(key string) bool {
 		return on("CASE_EVIDENCE_ENABLED")
 	case featureflags.CaseBuildEvidence:
 		return on("CASE_EVIDENCE_ENABLED") && on("CASE_BUILD_EVIDENCE_ENABLED")
+	case featureflags.MapRotation:
+		return a.Config != nil && a.Config.MapRotationEnabled
 	}
 	return false
 }

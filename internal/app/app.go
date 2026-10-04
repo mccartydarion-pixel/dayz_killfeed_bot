@@ -77,6 +77,14 @@ type App struct {
 	Territory  *repository.TerritoryRepository
 	// UAV is the live map UAV players buy (docs/LIVE_MAP.md "UAV").
 	UAV *repository.UAVRepository
+	// MapRotation is map rotation with a player vote (docs/MAP_ROTATION.md). The three function
+	// fields are the worker's doors to the outside (Nitrado, Discord, staff alerts); they are nil in
+	// production, where the defaults apply, and set by tests.
+	MapRotation          *repository.MapRotationRepository
+	mapRotationRemoteFor func(ctx context.Context, t repository.MapRotationTarget) (mapRotationRemote, error)
+	mapRotationPost      func(t repository.MapRotationTarget, channelID string, msg *discordgo.MessageSend) error
+	mapRotationAlert     func(alert discord.AdminAlert)
+	mapRotationRestarts  mapRotationRestartCache
 	upgradeRuns upgradeThrottle
 	rankedTagsCache rankedTagCache
 	forecasts       forecastCache
@@ -813,6 +821,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.BattlePass = repository.NewBattlePassRepository(db.Pool)
 			app.Territory = repository.NewTerritoryRepository(db.Pool)
 			app.UAV = repository.NewUAVRepository(db.Pool)
+			app.MapRotation = repository.NewMapRotationRepository(db.Pool)
 			app.Sessions = repository.NewSessionRepository(db.Pool)
 			app.Checkpoints = repository.NewCheckpointRepository(db.Pool)
 			app.Streaks = repository.NewStreakRepository(db.Pool)
@@ -1283,6 +1292,9 @@ func (a *App) Run() error {
 	}
 	// The Shop automatic delivery worker: off unless its own lock is opened (report or enabled).
 	a.startShopDeliveryWorker(ctx)
+	// Map rotation with a player vote: it does nothing for an installation unless the map_rotation
+	// feature flag, the plan and the owner's own switch are all on (docs/MAP_ROTATION.md).
+	a.startMapRotationWorker(ctx)
 	// Faction Hub achievements: kills queue an evaluation (drained every 5 seconds, one evaluation
 	// per affected faction), and a reconcile - one minute after start, then daily - backfills
 	// factions that already qualify and unlocks the time-based ones. Unlocking is silent.

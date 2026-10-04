@@ -48,6 +48,7 @@ const (
 	FightReplay       Key = "fight_replay"       // fight replays, for staff and (opt-in) players
 	FeedIdentity      Key = "feed_identity"      // feeds posted under the installation's own name and avatar
 	PerkStore         Key = "perk_store"         // the perk store: the Donate tab, its control hub and the donations channel
+	MapRotation       Key = "map_rotation"       // map rotation with a player vote (docs/MAP_ROTATION.md)
 )
 
 // PlanSurvivor is the catalog key of the Survivor (Normal) plan, the one plan whose
@@ -62,7 +63,7 @@ var allKeys = []Key{
 	Killfeed, Leaderboards, LivePlayers, WebsiteDashboard,
 	DiscordActivity, SpecialKills, AdvancedStats, MultipleServers, PrioritySupport,
 	RankedSeasons, Bounties, Heatmaps, Economy, CustomEmbeds, UnlimitedFactions,
-	HotZones, Retention, FightReplay, FeedIdentity, PerkStore,
+	HotZones, Retention, FightReplay, FeedIdentity, PerkStore, MapRotation,
 }
 
 // survivorKeys is the Survivor feature set: the core killfeed product on one server.
@@ -169,6 +170,8 @@ func Label(key Key) string {
 		return "A custom feed identity"
 	case PerkStore:
 		return "The perk store"
+	case MapRotation:
+		return "Map rotation"
 	case MultipleServers:
 		return "Multiple servers"
 	case PrioritySupport:

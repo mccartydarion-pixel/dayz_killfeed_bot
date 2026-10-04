@@ -47,6 +47,8 @@ func (a *App) flagDefault(inst *repository.InstallationSuspension, key string) b
 		return inst.GameServerID != nil && caseEvidenceEnvForServer(*inst.GameServerID)
 	case featureflags.CaseBuildEvidence:
 		return inst.GameServerID != nil && caseEvidenceEnvForServer(*inst.GameServerID) && caseBuildEvidenceEnvForServer(*inst.GameServerID)
+	case featureflags.MapRotation:
+		return a.Config != nil && a.Config.MapRotationEnabled
 	}
 	return false
 }
@@ -91,6 +93,8 @@ func (a *App) handleOwnerFlagCatalog(w http.ResponseWriter, r *http.Request, _ a
 			env = strings.TrimSpace(os.Getenv("CASE_EVIDENCE_ENABLED")) + " [" + strings.TrimSpace(os.Getenv("CASE_EVIDENCE_SERVER_IDS")) + "]"
 		case featureflags.CaseBuildEvidence:
 			env = strings.TrimSpace(os.Getenv("CASE_BUILD_EVIDENCE_ENABLED")) + " [" + strings.TrimSpace(os.Getenv("CASE_BUILD_EVIDENCE_SERVER_IDS")) + "]"
+		case featureflags.MapRotation:
+			env = os.Getenv("CHAMPION_MAP_ROTATION_ENABLED")
 		}
 		items = append(items, map[string]any{"key": def.Key, "label": def.Label, "description": def.Description, "envVar": def.EnvVar, "restartRequired": def.RestartRequired, "envValue": strings.TrimSpace(env)})
 	}

@@ -20,6 +20,9 @@ const (
 	ShopCanary        = "shop_canary"
 	CaseEvidence      = "case_evidence"
 	CaseBuildEvidence = "case_build_evidence"
+	// MapRotation lets an installation use map rotation with a player vote (docs/MAP_ROTATION.md).
+	// Default off: without it nothing of the feature runs and no server file is ever written.
+	MapRotation = "map_rotation"
 )
 
 // Definition describes one flag for the Owner Hub.
@@ -40,6 +43,7 @@ var Catalog = []Definition{
 	{Key: ShopCanary, Label: "Shop canary execution", Description: "Allow real shop fulfilment operations (Pay-to-win canary) for this installation.", EnvVar: "CHAMPION_SHOP_CANARY_EXECUTION / _INSTALLATION_IDS"},
 	{Key: CaseEvidence, Label: "C.A.S.E. evidence", Description: "Collect anti-cheat evidence (sessions, movement, detectors) for this installation's server. High write volume.", EnvVar: "CASE_EVIDENCE_ENABLED / _SERVER_IDS", RestartRequired: true},
 	{Key: CaseBuildEvidence, Label: "C.A.S.E. build evidence", Description: "Also collect build-action evidence. Requires C.A.S.E. evidence.", EnvVar: "CASE_BUILD_EVIDENCE_ENABLED / _SERVER_IDS", RestartRequired: true},
+	{Key: MapRotation, Label: "Map rotation", Description: "Let this installation's owner set up map rotation with a player vote. When it runs, Champion writes cfggameplay.json and cfgplayerspawnpoints.xml on the game server.", EnvVar: "CHAMPION_MAP_ROTATION_ENABLED"},
 }
 
 // Known reports whether key is a catalog flag.
