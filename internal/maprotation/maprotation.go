@@ -80,7 +80,8 @@ func validateName(name, ext string, extErr error) error {
 // ValidateMapFile checks an owner-supplied map file name: a base name only, ending in .json.
 func ValidateMapFile(name string) error { return validateName(name, ".json", ErrMapExt) }
 
-// ValidateSpawnFile checks an owner-supplied spawn file name: a base name only, ending in .xml.
+// ValidateSpawnFile checks the name of the spawn file an owner uploaded on the website: a base name
+// only, ending in .xml. The name is kept for display; the contents are stored in Champion.
 func ValidateSpawnFile(name string) error { return validateName(name, ".xml", ErrSpawnExt) }
 
 // Map is one configured map.

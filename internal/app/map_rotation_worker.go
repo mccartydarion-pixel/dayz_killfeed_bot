@@ -303,7 +303,9 @@ func (a *App) mapRotationResume(ctx context.Context, t repository.MapRotationTar
 }
 
 // mapRotationSwitch writes the files for one map and records what happened. The PENDING row is
-// written first, so a crash at any point leaves a record that the next tick picks up.
+// written first, so a crash at any point leaves a record that the next tick picks up. That row
+// also holds the map's spawn contents as stored at that moment; a map without any fails here,
+// before anything is sent to the server, and staff are told like for any failed switch.
 func (a *App) mapRotationSwitch(ctx context.Context, t repository.MapRotationTarget, snap repository.MapRotationSnapshot, mapID int64, name, mapFile, spawnFile, decidedBy, bootFile string, now time.Time) error {
 	// The three switches, once more, immediately before anything can be written.
 	if !snap.Settings.Enabled || !a.mapRotationAllowed(ctx, t) {
@@ -338,8 +340,16 @@ func (a *App) mapRotationSwitch(ctx context.Context, t repository.MapRotationTar
 	if snap.Settings.CurrentMapFile != nil {
 		owned = append(owned, *snap.Settings.CurrentMapFile)
 	}
-	req := mapswitch.Request{ServiceID: t.NitradoServiceID, MapFile: mapFile, SpawnFile: spawnFile, Owned: owned}
+	// The spawn contents are the copy the switch took when it began (BeginSwitch), so a resumed
+	// switch writes what its first attempt wrote, whatever was uploaded since.
+	req := mapswitch.Request{ServiceID: t.NitradoServiceID, MapName: name, MapFile: mapFile, SpawnFile: spawnFile, Spawns: sw.SpawnXML, Owned: owned}
 	if sw.BackupSaved {
+		if len(sw.SpawnXML) == 0 {
+			// Only a switch that began before spawn files were stored in Champion can be here: an
+			// earlier attempt may have written a file and there is nothing to finish it with.
+			return finish(mapswitch.Result{Status: mapswitch.StatusFailed, NeedsAttention: true,
+				Message: "The switch was interrupted while the server's files were being written and could not be finished. Check cfggameplay.json and cfgplayerspawnpoints.xml before the next restart; Champion keeps a backup of both."})
+		}
 		req.Prior = &mapswitch.Backup{Gameplay: sw.PrevGameplay, Spawns: sw.PrevSpawns}
 	}
 	res := mapswitch.Apply(ctx, remote, req, func(ctx context.Context, b mapswitch.Backup) error {

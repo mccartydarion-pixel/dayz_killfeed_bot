@@ -57,6 +57,7 @@ const (
 	wantGameplay = "{\n\t\"version\": 123,\n\t\"WorldsData\":\n\t{\n\t\t\"objectSpawnersArr\": [\n\t\t\t\"custom/champion_shop_delivery.json\",\n\t\t\t\"custom/arena2.json\"\n\t\t],\n\t\t\"x\": 1.50\n\t}\n}\n"
 	spawns1      = "<playerspawnpoints><fresh><generator_posbubbles><pos x=\"100\" z=\"100\"/></generator_posbubbles></fresh></playerspawnpoints>\n"
 	spawns2      = "<playerspawnpoints><fresh><generator_posbubbles><pos x=\"2000\" z=\"2000\"/><pos x=\"2010\" z=\"2020\"/></generator_posbubbles></fresh></playerspawnpoints>\n"
+	staleSpawns  = "<playerspawnpoints><fresh><generator_posbubbles><pos x=\"9\" z=\"9\"/></generator_posbubbles></fresh></playerspawnpoints>\n"
 )
 
 func newStandIn(t *testing.T) *standIn {
@@ -65,13 +66,14 @@ func newStandIn(t *testing.T) *standIn {
 	t.Cleanup(func() { nitrado.AllowInsecureUploadURL = prev })
 	s := &standIn{t: t, tokens: map[string]string{}, dirs: map[string]bool{}, sizes: map[string]int64{}, transferMode: map[int]string{}, reads: map[string]int{}, changeOnRead: map[string]int{},
 		files: map[string][]byte{
-			missionDir + "/cfggameplay.json":           []byte(liveGameplay),
-			missionDir + "/cfgplayerspawnpoints.xml":   []byte(spawns1),
-			missionDir + "/db/types.xml":               []byte("<types/>"),
-			customDir + "/arena1.json":                 []byte(`{"Objects":[{"name":"one"}]}`),
-			customDir + "/arena1_spawns.xml":           []byte(spawns1),
-			customDir + "/arena2.json":                 []byte(`{"Objects":[{"name":"two"}]}`),
-			customDir + "/arena2_spawns.xml":           []byte(spawns2),
+			missionDir + "/cfggameplay.json":         []byte(liveGameplay),
+			missionDir + "/cfgplayerspawnpoints.xml": []byte(spawns1),
+			missionDir + "/db/types.xml":             []byte("<types/>"),
+			customDir + "/arena1.json":               []byte(`{"Objects":[{"name":"one"}]}`),
+			customDir + "/arena2.json":               []byte(`{"Objects":[{"name":"two"}]}`),
+			// A spawn file left in custom/ from before spawn files were uploaded on the website.
+			// It is never read: the switch writes Request.Spawns.
+			customDir + "/arena2_spawns.xml":           []byte(staleSpawns),
 			customDir + "/champion_shop_delivery.json": []byte(`{"Objects":[]}`),
 		}}
 	for p := range s.files {
@@ -247,7 +249,7 @@ func (b *backups) save(_ context.Context, bk Backup) error {
 }
 
 func request() Request {
-	return Request{ServiceID: svcID, MapFile: "arena2.json", SpawnFile: "arena2_spawns.xml", Owned: []string{"arena1.json", "arena2.json"}}
+	return Request{ServiceID: svcID, MapName: "Arena 2", MapFile: "arena2.json", SpawnFile: "arena2_spawns.xml", Spawns: []byte(spawns2), Owned: []string{"arena1.json", "arena2.json"}}
 }
 
 // unchangedOnServer asserts the two live files are exactly what they were.
@@ -285,6 +287,18 @@ func TestApplyWritesBothFilesVerifiesAndIsIdempotent(t *testing.T) {
 	if strings.Join(s.uploads, " ") != missionDir+"/cfggameplay.json "+missionDir+"/cfgplayerspawnpoints.xml" || len(s.otherPOST) != 0 {
 		t.Fatalf("uploads: %v, other writes: %v", s.uploads, s.otherPOST)
 	}
+	// Exactly three files were downloaded: the two live files and the map file. The spawn points
+	// came from the request; the file of the same name in custom/ was never read.
+	s.mu.Lock()
+	read := make([]string, 0, len(s.reads))
+	for p := range s.reads {
+		read = append(read, p)
+	}
+	s.mu.Unlock()
+	sort.Strings(read)
+	if strings.Join(read, " ") != missionDir+"/cfggameplay.json "+missionDir+"/cfgplayerspawnpoints.xml "+customDir+"/arena2.json" {
+		t.Fatalf("files downloaded: %v", read)
+	}
 	// The owner's files and every other file are untouched.
 	if s.file(customDir+"/arena2.json") != `{"Objects":[{"name":"two"}]}` || s.file(missionDir+"/db/types.xml") != "<types/>" {
 		t.Fatal("another file changed")
@@ -306,25 +320,26 @@ func TestApplyWritesBothFilesVerifiesAndIsIdempotent(t *testing.T) {
 
 func TestApplyWritesNothingWhenValidationFails(t *testing.T) {
 	cases := map[string]func(s *standIn, r *Request, b *backups){
-		"map file missing":   func(s *standIn, _ *Request, _ *backups) { s.remove(customDir + "/arena2.json") },
-		"spawn file missing": func(s *standIn, _ *Request, _ *backups) { s.remove(customDir + "/arena2_spawns.xml") },
-		"map file empty":     func(s *standIn, _ *Request, _ *backups) { s.set(customDir+"/arena2.json", "") },
-		"spawn file empty":   func(s *standIn, _ *Request, _ *backups) { s.set(customDir+"/arena2_spawns.xml", "") },
-		"map file not JSON":  func(s *standIn, _ *Request, _ *backups) { s.set(customDir+"/arena2.json", "{oops") },
-		"spawn file malformed": func(s *standIn, _ *Request, _ *backups) {
-			s.set(customDir+"/arena2_spawns.xml", "<playerspawnpoints><fresh>")
+		"map file missing":  func(s *standIn, _ *Request, _ *backups) { s.remove(customDir + "/arena2.json") },
+		"no spawns stored":  func(_ *standIn, r *Request, _ *backups) { r.Spawns = nil },
+		"map file empty":    func(s *standIn, _ *Request, _ *backups) { s.set(customDir+"/arena2.json", "") },
+		"spawns empty":      func(_ *standIn, r *Request, _ *backups) { r.Spawns = []byte{} },
+		"map file not JSON": func(s *standIn, _ *Request, _ *backups) { s.set(customDir+"/arena2.json", "{oops") },
+		"spawns malformed": func(_ *standIn, r *Request, _ *backups) {
+			r.Spawns = []byte("<playerspawnpoints><fresh>")
 		},
-		"spawn file wrong root": func(s *standIn, _ *Request, _ *backups) {
-			s.set(customDir+"/arena2_spawns.xml", "<types><pos x=\"1\" z=\"1\"/></types>")
+		"spawns wrong root": func(_ *standIn, r *Request, _ *backups) {
+			r.Spawns = []byte("<types><pos x=\"1\" z=\"1\"/></types>")
 		},
-		"spawn file no position": func(s *standIn, _ *Request, _ *backups) {
-			s.set(customDir+"/arena2_spawns.xml", "<playerspawnpoints></playerspawnpoints>")
+		"spawns no position": func(_ *standIn, r *Request, _ *backups) {
+			r.Spawns = []byte("<playerspawnpoints></playerspawnpoints>")
 		},
 		"map file too large": func(s *standIn, _ *Request, _ *backups) {
 			s.sizes[customDir+"/arena2.json"] = maprotation.MaxMapFileBytes + 1
 		},
-		"spawn file too large": func(s *standIn, _ *Request, _ *backups) {
-			s.sizes[customDir+"/arena2_spawns.xml"] = maprotation.MaxSpawnBytes + 1
+		"spawns too large": func(_ *standIn, r *Request, _ *backups) {
+			// Valid in shape, one byte over the limit.
+			r.Spawns = []byte(strings.TrimSuffix(spawns2, "\n") + strings.Repeat(" ", maprotation.MaxSpawnBytes+1-len(spawns2)+1))
 		},
 		"cfggameplay malformed":    func(s *standIn, _ *Request, _ *backups) { s.set(missionDir+"/cfggameplay.json", `{"WorldsData": {`) },
 		"cfggameplay no worlds":    func(s *standIn, _ *Request, _ *backups) { s.set(missionDir+"/cfggameplay.json", `{"version": 1}`) },
@@ -358,6 +373,15 @@ func TestApplyWritesNothingWhenValidationFails(t *testing.T) {
 			}
 			if !strings.Contains(res.Message, "Nothing was changed") && !strings.Contains(res.Message, "nothing was changed") && !strings.Contains(res.Message, "not started") {
 				t.Fatalf("the reason is not plain: %q", res.Message)
+			}
+			if strings.HasPrefix(name, "spawns") || name == "no spawns stored" {
+				// Stored spawn contents are refused before the server is asked anything.
+				if len(s.reads) != 0 {
+					t.Fatalf("files were downloaded: %v", s.reads)
+				}
+				if len(req.Spawns) > 0 && strings.Contains(res.Message, string(req.Spawns)) {
+					t.Fatalf("file contents in the message: %q", res.Message)
+				}
 			}
 		})
 	}
@@ -467,6 +491,30 @@ func TestApplyResumesAfterACrash(t *testing.T) {
 		t.Fatalf("resume with failure: %+v", res)
 	}
 	s.unchangedOnServer(t)
+}
+
+// A map whose owner never uploaded a spawn file: the reason says what to do, and names the map.
+func TestApplyWithoutStoredSpawnsSaysWhatToDo(t *testing.T) {
+	s := newStandIn(t)
+	req := request()
+	req.Spawns = nil
+	res := Apply(context.Background(), s.client(), req, (&backups{}).save)
+	if res.Status != StatusFailed || res.NeedsAttention || res.Writes != 0 ||
+		res.Message != "Upload a spawn file for Arena 2 on the Map rotation page. Nothing was changed." {
+		t.Fatalf("result: %+v", res)
+	}
+	if len(s.uploads) != 0 || s.transfers != 0 {
+		t.Fatalf("a write was attempted: %v", s.uploads)
+	}
+	s.unchangedOnServer(t)
+	// Exactly at the size limit is allowed.
+	req.Spawns = []byte(strings.TrimSuffix(spawns2, "\n") + strings.Repeat(" ", maprotation.MaxSpawnBytes-len(spawns2)+1))
+	if len(req.Spawns) != maprotation.MaxSpawnBytes {
+		t.Fatalf("test data: %d bytes", len(req.Spawns))
+	}
+	if res := Apply(context.Background(), s.client(), req, (&backups{}).save); res.Status != StatusApplied {
+		t.Fatalf("a spawn file of exactly the limit: %+v", res)
+	}
 }
 
 // Switching to a map whose files are already live but whose entry is one of several own entries.

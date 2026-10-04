@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -112,14 +113,18 @@ func (a *App) mapRotationAvailable(ctx context.Context, organizationID, installa
 
 // --- DTOs (the contract in docs/MAP_ROTATION.md) -----------------------------------------------------
 
+// mapEntryDTO is one map. spawnFile is the name of the spawn file the owner uploaded; its contents
+// are stored in Champion and are never returned, only whether they are there and how large.
 type mapEntryDTO struct {
-	ID        int64   `json:"id"`
-	Name      string  `json:"name"`
-	MapFile   string  `json:"mapFile"`
-	SpawnFile string  `json:"spawnFile"`
-	ImageURL  *string `json:"imageUrl"`
-	Enabled   bool    `json:"enabled"`
-	Position  int     `json:"position"`
+	ID            int64   `json:"id"`
+	Name          string  `json:"name"`
+	MapFile       string  `json:"mapFile"`
+	SpawnFile     string  `json:"spawnFile"`
+	SpawnUploaded bool    `json:"spawnUploaded"`
+	SpawnBytes    int     `json:"spawnBytes"`
+	ImageURL      *string `json:"imageUrl"`
+	Enabled       bool    `json:"enabled"`
+	Position      int     `json:"position"`
 }
 
 type mapVoteOptionDTO struct {
@@ -270,9 +275,12 @@ func toMapRotationAdminDTO(snap repository.MapRotationSnapshot, reason string, n
 		out.Reason = &reason
 	}
 	for _, m := range snap.Maps {
-		out.Maps = append(out.Maps, mapEntryDTO{ID: m.ID, Name: m.Name, MapFile: m.MapFile, SpawnFile: m.SpawnFile, ImageURL: m.ImageURL, Enabled: m.Enabled, Position: m.Position})
-		if m.CheckedAt != nil && m.MapFileFound != nil && m.SpawnFileFound != nil {
-			out.FilesCheck = append(out.FilesCheck, mapFilesCheckDTO{MapID: m.ID, MapFileFound: *m.MapFileFound, SpawnFileFound: *m.SpawnFileFound, CheckedAt: rfc3339(*m.CheckedAt)})
+		out.Maps = append(out.Maps, mapEntryDTO{ID: m.ID, Name: m.Name, MapFile: m.MapFile, SpawnFile: m.SpawnFile, SpawnUploaded: m.SpawnBytes > 0, SpawnBytes: m.SpawnBytes,
+			ImageURL: m.ImageURL, Enabled: m.Enabled, Position: m.Position})
+		// spawnFileFound: the spawn contents are stored in Champion (as they are now, not as they
+		// were at the check).
+		if m.CheckedAt != nil && m.MapFileFound != nil {
+			out.FilesCheck = append(out.FilesCheck, mapFilesCheckDTO{MapID: m.ID, MapFileFound: *m.MapFileFound, SpawnFileFound: m.SpawnBytes > 0, CheckedAt: rfc3339(*m.CheckedAt)})
 		}
 	}
 	if s.CurrentMapName != nil {
@@ -375,12 +383,25 @@ func (a *App) handleAdminMapRotation(w http.ResponseWriter, r *http.Request) {
 }
 
 type mapRotationMapBody struct {
-	ID        *int64  `json:"id"`
-	Name      string  `json:"name"`
-	MapFile   string  `json:"mapFile"`
-	SpawnFile string  `json:"spawnFile"`
-	ImageURL  *string `json:"imageUrl"`
-	Enabled   bool    `json:"enabled"`
+	ID        *int64 `json:"id"`
+	Name      string `json:"name"`
+	MapFile   string `json:"mapFile"`
+	SpawnFile string `json:"spawnFile"`
+	// SpawnXML is the text of the uploaded spawn file. Left out, the contents already stored for
+	// the map are kept.
+	SpawnXML *string `json:"spawnXml"`
+	ImageURL *string `json:"imageUrl"`
+	Enabled  bool    `json:"enabled"`
+}
+
+// mapRotationMaxBody bounds a save: every map may bring a spawn file of maprotation.MaxSpawnBytes.
+// As a JSON string a file is larger than on disk (every quote, tab and line break takes two
+// bytes), so half as much again is allowed for that, plus the settings and the other fields.
+const mapRotationMaxBody = maprotation.MaxMaps*(maprotation.MaxSpawnBytes+maprotation.MaxSpawnBytes/2) + 64<<10
+
+// mapLabel names a map in a validation message: "Map 2 (Dust)".
+func mapLabel(index int, name string) string {
+	return fmt.Sprintf("Map %d (%s)", index+1, name)
 }
 
 type mapRotationBody struct {
@@ -441,6 +462,19 @@ func validateMapRotationBody(b mapRotationBody) (repository.MapRotationInput, st
 		if err := maprotation.ValidateSpawnFile(mi.SpawnFile); err != nil {
 			return in, label + ": spawnFile: " + err.Error()
 		}
+		if m.SpawnXML != nil {
+			named := mapLabel(i, mi.Name)
+			switch {
+			case len(*m.SpawnXML) == 0:
+				return in, named + ": the spawn file is empty"
+			case len(*m.SpawnXML) > maprotation.MaxSpawnBytes:
+				return in, named + ": the spawn file is too large (at most 1 MB)"
+			}
+			mi.SpawnXML = []byte(*m.SpawnXML)
+			if err := maprotation.ValidateSpawnXML(mi.SpawnXML); err != nil {
+				return in, named + ": " + err.Error()
+			}
+		}
 		if m.ImageURL != nil {
 			if raw := strings.TrimSpace(*m.ImageURL); raw != "" {
 				u, err := url.Parse(raw)
@@ -471,8 +505,15 @@ func (a *App) handleSaveMapRotation(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	body, ok := decodeJSONBody[mapRotationBody](w, r)
-	if !ok {
+	r.Body = http.MaxBytesReader(w, r.Body, mapRotationMaxBody)
+	var body mapRotationBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeSaaSError(w, codeValidationError, "the request is too large: a spawn file is at most 1 MB")
+			return
+		}
+		writeSaaSError(w, codeInvalidRequest, "invalid request body")
 		return
 	}
 	in, problem := validateMapRotationBody(body)
@@ -514,6 +555,11 @@ func (a *App) handleSaveMapRotation(w http.ResponseWriter, r *http.Request) {
 		writeSaaSError(w, codeValidationError, "one of the maps has an id that is not part of this server's rotation")
 		return
 	}
+	var noSpawns *repository.MapRotationSpawnMissingError
+	if errors.As(err, &noSpawns) {
+		writeSaaSError(w, codeValidationError, mapLabel(noSpawns.Index, noSpawns.Name)+": upload a spawn file")
+		return
+	}
 	if err != nil {
 		slog.Warn("component=map_rotation", "event", "save_failed", "installation_id", ac.scope.InstallationID, "err", err.Error())
 		writeSaaSError(w, codeInternalError, "could not save map rotation")
@@ -529,8 +575,9 @@ func (a *App) handleSaveMapRotation(w http.ResponseWriter, r *http.Request) {
 	writeSaaSJSON(w, http.StatusOK, toMapRotationAdminDTO(after, "", now))
 }
 
-// handleCheckMapRotation reads the server's custom folder and reports which configured files are
-// there. It only lists a folder; nothing is downloaded and nothing is written.
+// handleCheckMapRotation lists the server's custom folder and reports which configured map files
+// are there. It only lists a folder; nothing is downloaded and nothing is written. The spawn files
+// are not on the server: for them the check reports whether the contents are stored in Champion.
 func (a *App) handleCheckMapRotation(w http.ResponseWriter, r *http.Request) {
 	ac, _, ok := a.mapRotationAdmin(w, r, true)
 	if !ok {
@@ -567,8 +614,7 @@ func (a *App) handleCheckMapRotation(w http.ResponseWriter, r *http.Request) {
 	checks := map[int64]repository.MapFileCheck{}
 	for _, m := range snap.Maps {
 		_, mapOK := files[m.MapFile]
-		_, spawnOK := files[m.SpawnFile]
-		checks[m.ID] = repository.MapFileCheck{MapFileFound: mapOK, SpawnFileFound: spawnOK}
+		checks[m.ID] = repository.MapFileCheck{MapFileFound: mapOK, SpawnFileFound: m.SpawnBytes > 0}
 	}
 	if err := a.MapRotation.SaveFileChecks(ctx, ac.scope.InstallationID, checks, now); err != nil {
 		writeSaaSError(w, codeInternalError, "could not save the file check")

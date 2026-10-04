@@ -2890,6 +2890,13 @@ ALTER TABLE installation_feature_settings ADD COLUMN IF NOT EXISTS live_map_fact
 		Name: "0122_map_rotation",
 		SQL:  MapRotationSQL,
 	},
+	{
+		// Map rotation: a map's spawn points are uploaded on the website and stored here, instead
+		// of being read from the server's custom folder at a switch (docs/MAP_ROTATION.md).
+		// Additive: two nullable columns.
+		Name: "0123_map_rotation_spawn_upload",
+		SQL:  MapRotationSpawnUploadSQL,
+	},
 }
 
 // NitradoTailTrustSQL keeps which Nitrado services have proven that partial (seek) reads match
