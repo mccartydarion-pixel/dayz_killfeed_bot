@@ -65,14 +65,34 @@ type FeedIdentitySettings struct {
 	AvatarURL string
 }
 
-// LiveMapSettings controls the live map (docs/LIVE_MAP.md). Public opens the kills-and-pressure
-// map to anyone (on by default - it shows only what the public kill feed already shows);
-// DelaySeconds holds kills back from the public map for that long; FactionLayer lets verified
-// players see their own faction members' positions.
+// Live map visibility: LISTED shows the public map only while the server is listed on the network
+// (the default), PUBLIC always, OFF never.
+const (
+	LiveMapListed = "LISTED"
+	LiveMapPublic = "PUBLIC"
+	LiveMapOff    = "OFF"
+)
+
+// LiveMapSettings controls the live map (docs/LIVE_MAP.md). Visibility decides who can open the
+// kills-and-pressure map; Public is the result for this installation (read only). DelaySeconds
+// holds kills back from the public map for that long (two minutes by default); FactionLayer lets
+// verified players see their own faction members' positions.
 type LiveMapSettings struct {
+	Visibility   string
 	Public       bool
 	DelaySeconds int
 	FactionLayer bool
+}
+
+// liveMapIsPublic is whether the public map is open, given the visibility and the network listing.
+func liveMapIsPublic(visibility string, listed bool) bool {
+	switch visibility {
+	case LiveMapPublic:
+		return true
+	case LiveMapOff:
+		return false
+	}
+	return listed
 }
 
 // FeatureSettings is one installation's full set.
@@ -94,7 +114,7 @@ func DefaultFeatureSettings(installationID int64) FeatureSettings {
 		HotZones: HotZoneSettings{WindowMinutes: 60, MinKills: 6, RadiusM: 500, DurationMinutes: 30, CooldownMinutes: 120,
 			FirstPoints: 500, SecondPoints: 250, ThirdPoints: 100},
 		FightReplay: FightReplaySettings{DelayMinutes: 60},
-		LiveMap:     LiveMapSettings{Public: true, FactionLayer: true},
+		LiveMap:     LiveMapSettings{Visibility: LiveMapListed, DelaySeconds: 120, FactionLayer: true},
 	}
 }
 
@@ -134,6 +154,11 @@ func (s FightReplaySettings) Validate() error {
 }
 
 func (s LiveMapSettings) Validate() error {
+	switch s.Visibility {
+	case LiveMapListed, LiveMapPublic, LiveMapOff:
+	default:
+		return invalidSetting("visibility must be LISTED, PUBLIC or OFF")
+	}
 	return between("delaySeconds", s.DelaySeconds, 0, 3600)
 }
 
@@ -216,7 +241,7 @@ func (s FeedIdentitySettings) Validate() error {
 const featureSettingsColumns = `installation_id, hot_zones_enabled, hot_zone_window_minutes, hot_zone_min_kills, hot_zone_radius_m,
     hot_zone_duration_minutes, hot_zone_cooldown_minutes, hot_zone_first_points, hot_zone_second_points, hot_zone_third_points,
     fight_replay_public, fight_replay_delay_minutes, network_listed, network_description, network_discord_invite_url,
-    feed_identity_enabled, feed_identity_name, feed_identity_avatar_url, live_map_public, live_map_delay_seconds, live_map_faction_layer, updated_at`
+    feed_identity_enabled, feed_identity_name, feed_identity_avatar_url, live_map_visibility, live_map_delay_seconds, live_map_faction_layer, updated_at`
 
 func scanFeatureSettings(row pgx.Row) (FeatureSettings, error) {
 	var s FeatureSettings
@@ -224,7 +249,8 @@ func scanFeatureSettings(row pgx.Row) (FeatureSettings, error) {
 	err := row.Scan(&s.InstallationID, &s.HotZones.Enabled, &s.HotZones.WindowMinutes, &s.HotZones.MinKills, &s.HotZones.RadiusM,
 		&s.HotZones.DurationMinutes, &s.HotZones.CooldownMinutes, &s.HotZones.FirstPoints, &s.HotZones.SecondPoints, &s.HotZones.ThirdPoints,
 		&s.FightReplay.Public, &s.FightReplay.DelayMinutes, &s.Network.Listed, &s.Network.Description, &s.Network.DiscordInviteURL,
-		&s.FeedIdentity.Enabled, &s.FeedIdentity.Name, &s.FeedIdentity.AvatarURL, &s.LiveMap.Public, &s.LiveMap.DelaySeconds, &s.LiveMap.FactionLayer, &updated)
+		&s.FeedIdentity.Enabled, &s.FeedIdentity.Name, &s.FeedIdentity.AvatarURL, &s.LiveMap.Visibility, &s.LiveMap.DelaySeconds, &s.LiveMap.FactionLayer, &updated)
+	s.LiveMap.Public = liveMapIsPublic(s.LiveMap.Visibility, s.Network.Listed)
 	s.UpdatedAt = &updated
 	return s, err
 }
@@ -289,7 +315,7 @@ func (r *FeatureSettingsRepository) SaveLiveMap(ctx context.Context, installatio
 	if err := s.Validate(); err != nil {
 		return FeatureSettings{}, err
 	}
-	return r.save(ctx, installationID, userID, []string{"live_map_public", "live_map_delay_seconds", "live_map_faction_layer"}, s.Public, s.DelaySeconds, s.FactionLayer)
+	return r.save(ctx, installationID, userID, []string{"live_map_visibility", "live_map_delay_seconds", "live_map_faction_layer"}, s.Visibility, s.DelaySeconds, s.FactionLayer)
 }
 
 // HotZoneInstallation is one installation with hot zones enabled and a server selected.

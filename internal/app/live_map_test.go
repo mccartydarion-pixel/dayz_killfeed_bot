@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yourname/dayz-killfeed/internal/livemap"
 	"github.com/yourname/dayz-killfeed/internal/nitrado"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
@@ -53,5 +54,32 @@ func TestLiveMapTasksKeepsRestartFields(t *testing.T) {
 	tasks := liveMapTasks([]nitrado.ScheduledTask{{ID: 1, ActionMethod: "restart", NextRun: "2026-10-04 00:00:00"}, {ID: 2, ActionMethod: "backup"}})
 	if len(tasks) != 2 || tasks[0].ActionMethod != "restart" || tasks[0].NextRun != "2026-10-04 00:00:00" || tasks[1].ActionMethod != "backup" {
 		t.Fatalf("tasks = %+v", tasks)
+	}
+}
+
+func TestPublicKillsHideTheKillerAndResendRecent(t *testing.T) {
+	x, z := 100.0, 200.0
+	k := publicLiveMapKill(repository.FightKill{ID: 1, KillerX: &x, KillerZ: &z, VictimX: &x, VictimZ: &z})
+	if k.KillerX != nil || k.KillerZ != nil || k.VictimX == nil {
+		t.Fatalf("public kill: %+v", k)
+	}
+	// Newest first by time, but ids out of order (a late kill has a lower id).
+	kills := []liveMapKillDTO{{ID: 7}, {ID: 9}, {ID: 4}, {ID: 8}, {ID: 2}}
+	if maxKillID(kills) != 9 {
+		t.Fatal("cursor is the highest id")
+	}
+	got := killsSince(kills, 8, 3)
+	if len(got) != 3 || got[0].ID != 7 || got[1].ID != 9 || got[2].ID != 4 {
+		t.Fatalf("since: newer ids plus the three most recent: %+v", got)
+	}
+}
+
+func TestPublicPressureNeedsTwoEvents(t *testing.T) {
+	cells := publicPressure([]livemap.Cell{{Count: 1, Intensity: 0.25}, {Count: 4, Intensity: 1}, {Count: 2, Intensity: 0.5}})
+	if len(cells) != 2 || cells[0].Count != 4 || cells[0].Intensity != 1 || cells[1].Intensity != 0.5 {
+		t.Fatalf("cells: %+v", cells)
+	}
+	if len(publicPressure([]livemap.Cell{{Count: 1}})) != 0 {
+		t.Fatal("a single event is never shown")
 	}
 }

@@ -184,28 +184,35 @@ func TestPublicLiveMapShowsKillsAndPressureBehindTheDelay(t *testing.T) {
 	lw.withLiveMapNitrado(t)
 	ctx := context.Background()
 
+	// By default the map follows the network listing, and this server is not listed.
+	if rr, _ := lw.publicMap(t, "", lw.f.InstallationID); rr.Code != http.StatusNotFound {
+		t.Fatalf("an unlisted server's map is public by default: %d %s", rr.Code, rr.Body.String())
+	}
+	if code, _ := lw.put(lw.a.handlePutLiveMapSettings, "/features/live-map", lw.f.OwnerDiscordID, liveMapSettingsDTO{Visibility: "PUBLIC", DelaySeconds: 0, FactionLayer: true}); code != http.StatusOK {
+		t.Fatalf("make public: %d", code)
+	}
 	rr, m := lw.publicMap(t, "?window=60", lw.f.InstallationID)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("public map: %d %s", rr.Code, rr.Body.String())
 	}
-	if m.InstallationID != lw.f.InstallationID || m.Platform != "PLAYSTATION" || !m.Public || m.DelaySeconds != 0 || m.Map.Key != "chernarusplus" || m.Map.Size != 15360 || m.Map.Guessed {
+	if m.InstallationID != lw.f.InstallationID || m.Platform != "PLAYSTATION" || !m.Public || m.Listed || m.DelaySeconds != 0 || m.Map.Key != "chernarusplus" || m.Map.Size != 15360 || m.Map.Guessed {
 		t.Fatalf("header = %+v", m)
 	}
 	if m.PlayersOnline != 2 || m.LastActivityAt == nil {
 		t.Fatalf("occupancy = %d / %v", m.PlayersOnline, m.LastActivityAt)
 	}
-	// Kills: newest first, within the hour, with their positions, and the cursor is the newest id.
+	// Kills: newest first, within the hour, with where the victim died - never the living killer's
+	// position - and the cursor is the highest id.
 	if len(m.Kills) != 4 || m.Kills[0].KillerName != "Ghost" || m.Kills[0].VictimName != "Stranger" || m.Kills[1].KillerName != "Stranger" || m.Kills[2].KillerName != "Mate" || m.Kills[3].KillerName != "Deelo" ||
-		m.Kills[0].KillerX == nil || *m.Kills[0].KillerX != 4700 || m.Kills[0].KillerZ == nil || *m.Kills[0].KillerZ != 10350 || m.Kills[0].VictimX != nil || m.Kills[0].Weapon != "KA-M" ||
-		m.Kills[0].Headshot || m.Kills[0].Longshot || m.LastKillID != m.Kills[0].ID {
+		m.Kills[0].KillerX != nil || m.Kills[0].KillerZ != nil || m.Kills[0].Weapon != "KA-M" ||
+		m.Kills[0].Headshot || m.Kills[0].Longshot || m.LastKillID != maxKillID(m.Kills) {
 		t.Fatalf("kills = %+v lastKillId=%d", m.Kills, m.LastKillID)
 	}
-	// Pressure: the busy cell around (4750, 10250) holds the two recent kills plus two hits; the
-	// far kill and the stranger's hit are one each; the kill fifty minutes ago is outside the
-	// thirty-minute window.
-	if m.Pressure.Resolution != 500 || m.Pressure.WindowMinutes != 30 || len(m.Pressure.Cells) != 3 || m.Pressure.Cells[0].CenterX != 4750 || m.Pressure.Cells[0].CenterZ != 10250 ||
-		m.Pressure.Cells[0].Count != 4 || m.Pressure.Cells[0].Intensity != 1 || m.Pressure.Cells[1].Count != 1 || m.Pressure.Cells[1].CenterX != 1250 || m.Pressure.Cells[1].CenterZ != 2250 ||
-		m.Pressure.Cells[1].Intensity != 0.25 || m.Pressure.Cells[2].CenterX != 9250 {
+	// Pressure: the busy cell around (4750, 10250) holds the two recent kills plus two hits. The
+	// far kill and the stranger's hit are one event each, too few to show (one event would place a
+	// single player); the kill fifty minutes ago is outside the thirty-minute window.
+	if m.Pressure.Resolution != 500 || m.Pressure.WindowMinutes != 30 || len(m.Pressure.Cells) != 1 || m.Pressure.Cells[0].CenterX != 4750 || m.Pressure.Cells[0].CenterZ != 10250 ||
+		m.Pressure.Cells[0].Count != 4 || m.Pressure.Cells[0].Intensity != 1 {
 		t.Fatalf("pressure = %+v", m.Pressure)
 	}
 	// Clock: the stamped line (server-local 90 s ago) advanced by the real seconds since, the
@@ -227,8 +234,9 @@ func TestPublicLiveMapShowsKillsAndPressureBehindTheDelay(t *testing.T) {
 		t.Fatalf("a hot zone appeared from nowhere: %+v", m.HotZone)
 	}
 
-	// sinceKillId returns only what the client does not have yet.
-	if _, since := lw.publicMap(t, "?sinceKillId="+strconv.FormatInt(m.Kills[1].ID, 10), lw.f.InstallationID); len(since.Kills) != 1 || since.Kills[0].ID != m.Kills[0].ID {
+	// sinceKillId sends what the client does not have, plus the most recent few again (ids follow
+	// ingest order, so a late kill can have a lower id; the client dedupes).
+	if _, since := lw.publicMap(t, "?sinceKillId="+strconv.FormatInt(m.LastKillID, 10), lw.f.InstallationID); len(since.Kills) != len(m.Kills) || since.Kills[0].ID != m.Kills[0].ID {
 		t.Fatalf("since = %+v", since.Kills)
 	}
 	for _, q := range []string{"?window=4", "?window=181", "?sinceKillId=-1", "?sinceKillId=abc"} {
@@ -241,12 +249,12 @@ func TestPublicLiveMapShowsKillsAndPressureBehindTheDelay(t *testing.T) {
 	}
 
 	// A two-minute delay hides the kill thirty seconds ago (the cache is dropped by the save).
-	if code, resp := lw.put(lw.a.handlePutLiveMapSettings, "/features/live-map", lw.f.OwnerDiscordID, liveMapSettingsDTO{Public: true, DelaySeconds: 120, FactionLayer: true}); code != http.StatusOK ||
+	if code, resp := lw.put(lw.a.handlePutLiveMapSettings, "/features/live-map", lw.f.OwnerDiscordID, liveMapSettingsDTO{Visibility: "PUBLIC", DelaySeconds: 120, FactionLayer: true}); code != http.StatusOK ||
 		resp["liveMap"].(map[string]any)["delaySeconds"] != float64(120) {
 		t.Fatalf("save live map settings: %d %v", code, resp)
 	}
 	_, delayed := lw.publicMap(t, "", lw.f.InstallationID)
-	if delayed.DelaySeconds != 120 || len(delayed.Kills) != 3 || delayed.Kills[0].KillerName != "Stranger" || delayed.LastKillID != delayed.Kills[0].ID {
+	if delayed.DelaySeconds != 120 || len(delayed.Kills) != 3 || delayed.Kills[0].KillerName != "Stranger" || delayed.LastKillID != maxKillID(delayed.Kills) {
 		t.Fatalf("delayed kills = %+v", delayed.Kills)
 	}
 	for _, k := range delayed.Kills {
@@ -254,24 +262,56 @@ func TestPublicLiveMapShowsKillsAndPressureBehindTheDelay(t *testing.T) {
 			t.Fatalf("a kill newer than the delay leaked: %+v", k)
 		}
 	}
-	if code, _ := lw.put(lw.a.handlePutLiveMapSettings, "/features/live-map", lw.f.OwnerDiscordID, liveMapSettingsDTO{Public: true, DelaySeconds: 3601}); code != http.StatusBadRequest {
+	if code, _ := lw.put(lw.a.handlePutLiveMapSettings, "/features/live-map", lw.f.OwnerDiscordID, liveMapSettingsDTO{Visibility: "PUBLIC", DelaySeconds: 3601}); code != http.StatusBadRequest {
 		t.Fatalf("delay above an hour accepted: %d", code)
 	}
 	features := decodeBody[featureSettingsDTO](t, lw.call(lw.a.handleGetFeatureSettings, http.MethodGet, lw.path("/features"), lw.f.OwnerDiscordID, nil, nil))
-	if !features.LiveMap.Public || features.LiveMap.DelaySeconds != 120 || !features.LiveMap.FactionLayer {
+	if !features.LiveMap.Public || features.LiveMap.Visibility != "PUBLIC" || features.LiveMap.DelaySeconds != 120 || !features.LiveMap.FactionLayer {
 		t.Fatalf("features.liveMap = %+v", features.LiveMap)
 	}
 	var audits int
-	if err := lw.a.DB.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM admin_audit_log WHERE installation_id=$1 AND action='LIVE_MAP_SETTINGS_UPDATED'`, lw.f.InstallationID).Scan(&audits); err != nil || audits != 1 {
+	if err := lw.a.DB.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM admin_audit_log WHERE installation_id=$1 AND action='LIVE_MAP_SETTINGS_UPDATED'`, lw.f.InstallationID).Scan(&audits); err != nil || audits != 2 {
 		t.Fatalf("settings audit rows = %d err=%v", audits, err)
 	}
 
 	// Switched off, the installation has no public map at all.
-	if code, _ := lw.put(lw.a.handlePutLiveMapSettings, "/features/live-map", lw.f.OwnerDiscordID, liveMapSettingsDTO{Public: false, FactionLayer: true}); code != http.StatusOK {
+	if code, _ := lw.put(lw.a.handlePutLiveMapSettings, "/features/live-map", lw.f.OwnerDiscordID, liveMapSettingsDTO{Visibility: "OFF", FactionLayer: true}); code != http.StatusOK {
 		t.Fatalf("switch off: %d", code)
 	}
 	if rr, _ := lw.publicMap(t, "", lw.f.InstallationID); rr.Code != http.StatusNotFound {
 		t.Fatalf("a private map answered: %d %s", rr.Code, rr.Body.String())
+	}
+	if code, _ := lw.put(lw.a.handlePutLiveMapSettings, "/features/live-map", lw.f.OwnerDiscordID, liveMapSettingsDTO{Visibility: "BOGUS", FactionLayer: true}); code != http.StatusBadRequest {
+		t.Fatalf("unknown visibility accepted: %d", code)
+	}
+
+	// Following the listing: once the server is listed, the map opens and says so.
+	if code, _ := lw.put(lw.a.handlePutLiveMapSettings, "/features/live-map", lw.f.OwnerDiscordID, liveMapSettingsDTO{Visibility: "LISTED", DelaySeconds: 120, FactionLayer: true}); code != http.StatusOK {
+		t.Fatalf("follow listing: %d", code)
+	}
+	if _, err := lw.a.DB.Pool.Exec(ctx, `UPDATE installation_feature_settings SET network_listed=TRUE WHERE installation_id=$1`, lw.f.InstallationID); err != nil {
+		t.Fatal(err)
+	}
+	lw.a.invalidateLiveMapCache()
+	if rr, listed := lw.publicMap(t, "", lw.f.InstallationID); rr.Code != http.StatusOK || !listed.Listed {
+		t.Fatalf("listed server's map: %d %s", rr.Code, rr.Body.String())
+	}
+
+	// No open game-log session (the boot ended, or none was recorded): the map still answers,
+	// without a boot time.
+	if _, err := lw.a.DB.Pool.Exec(ctx, `UPDATE server_adm_sessions SET ended_at=NOW() WHERE server_id=$1`, lw.serverID); err != nil {
+		t.Fatal(err)
+	}
+	lw.a.invalidateLiveMapCache()
+	if rr, noSession := lw.publicMap(t, "", lw.f.InstallationID); rr.Code != http.StatusOK || noSession.Clock.BootedAt != nil {
+		t.Fatalf("map without a session: %d %s", rr.Code, rr.Body.String())
+	}
+	if _, err := lw.a.DB.Pool.Exec(ctx, `DELETE FROM server_adm_sessions WHERE server_id=$1`, lw.serverID); err != nil {
+		t.Fatal(err)
+	}
+	lw.a.invalidateLiveMapCache()
+	if rr, _ := lw.publicMap(t, "", lw.f.InstallationID); rr.Code != http.StatusOK {
+		t.Fatalf("map with no session ever recorded: %d %s", rr.Code, rr.Body.String())
 	}
 	// Bearer only: no service secret, no map.
 	req := withPathValues(saasRequest(http.MethodGet, "/x", nil), map[string]string{"installationID": strconv.FormatInt(lw.f.InstallationID, 10)})
@@ -328,6 +368,18 @@ func TestFactionMapShowsOnlyOwnMembers(t *testing.T) {
 		t.Fatalf("stranger data in the faction response: %s", body)
 	}
 
+	// A member whose DayZ link was revoked no longer shows: the membership row keeps their old
+	// player id, but only a verified link counts.
+	if _, err := lw.a.DB.Pool.Exec(context.Background(), `UPDATE player_links SET status='REVOKED' WHERE guild_id=$1 AND player_id=$2`, lw.guildID, lw.mate); err != nil {
+		t.Fatal(err)
+	}
+	if rr, revoked := lw.factionMap(t, lw.deeloID); rr.Code != http.StatusOK || len(revoked.Members) != 1 || revoked.Members[0].PlayerID != lw.deelo {
+		t.Fatalf("revoked member still shown: %d %+v", rr.Code, revoked.Members)
+	}
+	if _, err := lw.a.DB.Pool.Exec(context.Background(), `UPDATE player_links SET status='VERIFIED' WHERE guild_id=$1 AND player_id=$2`, lw.guildID, lw.mate); err != nil {
+		t.Fatal(err)
+	}
+
 	// A verified player in no faction sees only themselves.
 	loner := syncUser(t, lw.a, fmt.Sprintf("lm-loner-%d", standoutSeq.Add(1)), "Stranger")
 	if _, err := lw.a.DB.Pool.Exec(context.Background(), `INSERT INTO player_links(guild_id, player_id, discord_user_id, status) VALUES($1,$2,$3,'VERIFIED')`, lw.guildID, lw.stranger, loner.DiscordUserID); err != nil {
@@ -349,7 +401,7 @@ func TestFactionMapShowsOnlyOwnMembers(t *testing.T) {
 	}
 
 	// The layer switched off: enabled=false and nothing else.
-	if code, _ := lw.put(lw.a.handlePutLiveMapSettings, "/features/live-map", lw.f.OwnerDiscordID, liveMapSettingsDTO{Public: true, FactionLayer: false}); code != http.StatusOK {
+	if code, _ := lw.put(lw.a.handlePutLiveMapSettings, "/features/live-map", lw.f.OwnerDiscordID, liveMapSettingsDTO{Visibility: "LISTED", DelaySeconds: 120, FactionLayer: false}); code != http.StatusOK {
 		t.Fatalf("switch the layer off: %d", code)
 	}
 	rr, off := lw.factionMap(t, lw.deeloID)

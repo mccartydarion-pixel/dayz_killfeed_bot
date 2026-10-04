@@ -26,6 +26,7 @@ type LiveMapInstallation struct {
 	Name, Platform                                    string
 	ProviderServiceID                                 string
 	MapKey                                            string // shop_delivery_settings.map_key, "" when unset
+	Listed                                            bool   // listed on the public network
 	Settings                                          LiveMapSettings
 }
 
@@ -34,20 +35,21 @@ func (r *LiveMapRepository) Installation(ctx context.Context, installationID int
 	var in LiveMapInstallation
 	err := r.pool.QueryRow(ctx, `
 SELECT i.id, i.organization_id, c.guild_id, gs.id, COALESCE(NULLIF(gs.display_name, ''), 'DayZ Server'), COALESCE(gs.platform, ''), COALESCE(gs.provider_service_id, ''),
-       COALESCE(sd.map_key, ''), COALESCE(s.live_map_public, TRUE), COALESCE(s.live_map_delay_seconds, 0), COALESCE(s.live_map_faction_layer, TRUE)
+       COALESCE(sd.map_key, ''), COALESCE(s.network_listed, FALSE), COALESCE(s.live_map_visibility, 'LISTED'), COALESCE(s.live_map_delay_seconds, 120), COALESCE(s.live_map_faction_layer, TRUE)
 FROM installations i
 JOIN discord_guild_connections c ON c.id = i.discord_guild_connection_id
 JOIN game_servers gs ON gs.id = i.game_server_id
 LEFT JOIN installation_feature_settings s ON s.installation_id = i.id
 LEFT JOIN shop_delivery_settings sd ON sd.installation_id = i.id
 WHERE i.id = $1`, installationID).Scan(&in.InstallationID, &in.OrganizationID, &in.GuildID, &in.ServerID, &in.Name, &in.Platform, &in.ProviderServiceID,
-		&in.MapKey, &in.Settings.Public, &in.Settings.DelaySeconds, &in.Settings.FactionLayer)
+		&in.MapKey, &in.Listed, &in.Settings.Visibility, &in.Settings.DelaySeconds, &in.Settings.FactionLayer)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
+	in.Settings.Public = liveMapIsPublic(in.Settings.Visibility, in.Listed)
 	return &in, nil
 }
 
@@ -75,6 +77,8 @@ func (r *LiveMapRepository) Status(ctx context.Context, guildID, serverID int64,
 	var st LiveMapStatus
 	var session ADMSession
 	var admFile *string
+	// Every session column is NULL when there is no open session (the LEFT JOIN found nothing).
+	var selectedAt *time.Time
 	err := r.pool.QueryRow(ctx, `
 SELECT (SELECT COUNT(*) FROM player_server_activity a WHERE a.guild_id=$1 AND a.server_id=$2 AND a.currently_connected)::int,
        (SELECT MAX(a.last_seen_at) FROM player_server_activity a WHERE a.guild_id=$1 AND a.server_id=$2),
@@ -82,12 +86,12 @@ SELECT (SELECT COUNT(*) FROM player_server_activity a WHERE a.guild_id=$1 AND a.
        s.adm_file, s.session_local_start, s.selected_at
 FROM (SELECT 1) one
 LEFT JOIN server_adm_sessions s ON s.server_id=$2 AND s.guild_id=$1 AND s.ended_at IS NULL`, guildID, serverID).
-		Scan(&st.PlayersOnline, &st.LastActivityAt, &st.UTCOffsetMinutes, &admFile, &session.LocalStart, &session.SelectedAt)
+		Scan(&st.PlayersOnline, &st.LastActivityAt, &st.UTCOffsetMinutes, &admFile, &session.LocalStart, &selectedAt)
 	if err != nil {
 		return st, err
 	}
-	if admFile != nil {
-		session.ADMFile = *admFile
+	if admFile != nil && selectedAt != nil {
+		session.ADMFile, session.SelectedAt = *admFile, *selectedAt
 		st.Session = &session
 	}
 	file := ""
@@ -257,6 +261,8 @@ JOIN hub_factions f ON f.id = m.faction_id
 JOIN players p ON p.id = m.player_id
 LEFT JOIN player_server_activity a ON a.guild_id=$3 AND a.server_id=$4 AND a.player_id=p.id
 WHERE m.installation_id=$1 AND m.faction_id=$2 AND m.player_id IS NOT NULL
+  AND EXISTS (SELECT 1 FROM app_users vu JOIN player_links vl ON vl.discord_user_id = vu.discord_user_id AND vl.guild_id = $3
+    WHERE vu.id = m.user_id AND vl.player_id = m.player_id AND vl.status = 'VERIFIED')
 ORDER BY LOWER(p.display_name), p.id`, installationID, factionID, guildID, serverID)
 	if err != nil {
 		return nil, err
@@ -273,7 +279,8 @@ func (r *LiveMapRepository) Player(ctx context.Context, installationID, guildID,
 SELECT p.id, p.display_name, COALESCE(a.currently_connected, FALSE), f.tag
 FROM players p
 LEFT JOIN player_server_activity a ON a.guild_id=$2 AND a.server_id=$3 AND a.player_id=p.id
-LEFT JOIN hub_faction_members m ON m.installation_id=$1 AND m.player_id=p.id
+LEFT JOIN hub_faction_members m ON m.installation_id=$1 AND m.player_id=p.id AND EXISTS (SELECT 1 FROM app_users vu JOIN player_links vl ON vl.discord_user_id = vu.discord_user_id
+    WHERE vu.id = m.user_id AND vl.player_id = m.player_id AND vl.status = 'VERIFIED')
 LEFT JOIN hub_factions f ON f.id = m.faction_id
 WHERE p.id=$4 AND p.guild_id=$2`, installationID, guildID, serverID, playerID).Scan(&p.PlayerID, &p.Gamertag, &p.Online, &p.FactionTag)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -292,7 +299,8 @@ func (r *LiveMapRepository) OnlinePlayers(ctx context.Context, installationID, g
 SELECT p.id, p.display_name, TRUE, f.tag
 FROM player_server_activity a
 JOIN players p ON p.id = a.player_id
-LEFT JOIN hub_faction_members m ON m.installation_id=$1 AND m.player_id=p.id
+LEFT JOIN hub_faction_members m ON m.installation_id=$1 AND m.player_id=p.id AND EXISTS (SELECT 1 FROM app_users vu JOIN player_links vl ON vl.discord_user_id = vu.discord_user_id
+    WHERE vu.id = m.user_id AND vl.player_id = m.player_id AND vl.status = 'VERIFIED')
 LEFT JOIN hub_factions f ON f.id = m.faction_id
 WHERE a.guild_id=$2 AND a.server_id=$3 AND a.currently_connected
 ORDER BY LOWER(p.display_name), p.id LIMIT 500`, installationID, guildID, serverID)

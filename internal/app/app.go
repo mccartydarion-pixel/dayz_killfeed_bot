@@ -1,6 +1,7 @@
 package app
 
 import (
+	"golang.org/x/sync/singleflight"
 	"context"
 	"errors"
 	"fmt"
@@ -284,6 +285,7 @@ type App struct {
 	LiveMap             *repository.LiveMapRepository
 	liveMapMu           sync.Mutex
 	liveMapPublic       map[string]liveMapCacheEntry
+	liveMapBuilds       singleflight.Group
 	liveMapNitradoCache map[int64]liveMapNitradoFacts
 	liveMapAudited      map[string]time.Time
 	saasLiveMapLimiter  *saasRateLimiter

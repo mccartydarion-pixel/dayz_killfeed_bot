@@ -290,6 +290,9 @@ type feedIdentitySettingsDTO struct {
 }
 
 type liveMapSettingsDTO struct {
+	// Visibility is LISTED (only while listed on the network), PUBLIC or OFF.
+	Visibility string `json:"visibility"`
+	// Public is whether the map is open right now (read only; ignored when saving).
 	Public       bool `json:"public"`
 	DelaySeconds int  `json:"delaySeconds"`
 	FactionLayer bool `json:"factionLayer"`
@@ -312,7 +315,7 @@ func toFeatureSettingsDTO(s repository.FeatureSettings) featureSettingsDTO {
 		FightReplay:  fightReplaySettingsDTO{Public: s.FightReplay.Public, DelayMinutes: s.FightReplay.DelayMinutes},
 		Network:      networkSettingsDTO{Listed: s.Network.Listed, Description: s.Network.Description, DiscordInviteURL: s.Network.DiscordInviteURL},
 		FeedIdentity: feedIdentitySettingsDTO{Enabled: s.FeedIdentity.Enabled, Name: s.FeedIdentity.Name, AvatarURL: s.FeedIdentity.AvatarURL},
-		LiveMap:      liveMapSettingsDTO{Public: s.LiveMap.Public, DelaySeconds: s.LiveMap.DelaySeconds, FactionLayer: s.LiveMap.FactionLayer},
+		LiveMap:      liveMapSettingsDTO{Visibility: s.LiveMap.Visibility, Public: s.LiveMap.Public, DelaySeconds: s.LiveMap.DelaySeconds, FactionLayer: s.LiveMap.FactionLayer},
 		UpdatedAt:    nullableTimeStr(s.UpdatedAt),
 	}
 }
@@ -449,6 +452,6 @@ func (a *App) handlePutLiveMapSettings(w http.ResponseWriter, r *http.Request) {
 	saveFeatureSection(a, w, r, permissions.CapFeatureSettingsManage, "LIVE_MAP_SETTINGS_UPDATED", nil, // the live map is part of every plan
 		func(s repository.FeatureSettings) any { return toFeatureSettingsDTO(s).LiveMap },
 		func(ctx context.Context, installationID, userID int64, b liveMapSettingsDTO) (repository.FeatureSettings, error) {
-			return a.FeatureSettings.SaveLiveMap(ctx, installationID, userID, repository.LiveMapSettings{Public: b.Public, DelaySeconds: b.DelaySeconds, FactionLayer: b.FactionLayer})
+			return a.FeatureSettings.SaveLiveMap(ctx, installationID, userID, repository.LiveMapSettings{Visibility: b.Visibility, DelaySeconds: b.DelaySeconds, FactionLayer: b.FactionLayer})
 		})
 }

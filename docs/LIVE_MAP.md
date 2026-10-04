@@ -8,7 +8,7 @@ audience sees exactly what it is allowed to see.
 
 | Route | Who | Shows | Positions? |
 |---|---|---|---|
-| `GET /api/saas/network/servers/{installationID}/map` | anyone (service bearer only, no acting user) | recent kills, a pressure grid, the open hot zone, the server clock | **never** - only kill coordinates, already public in the kill feed |
+| `GET /api/saas/network/servers/{installationID}/map` | anyone (service bearer only, no acting user) | recent kills, a pressure grid, the open hot zone, the server clock | **never** - only where victims died, behind the delay |
 | `GET /api/saas/player/servers/{installationID}/map/faction` | a verified linked player of the server | the player's own hub faction members, their bases and raids | only the faction's own members |
 | `GET …/admin/map/live` | staff with `PLAYER_LAST_LOCATION_VIEW` | every connected player's latest position, zones, active intrusions | yes, audited |
 | `GET …/admin/map/history?from=&to=` | staff with `PLAYER_LOCATION_VIEW` | kills and every player's track in a window | yes, audited |
@@ -22,18 +22,19 @@ Three columns on `installation_feature_settings` (migration `0119_live_map_setti
 (`FEATURE_SETTINGS_MANAGE`, audited as `LIVE_MAP_SETTINGS_UPDATED`):
 
 ```json
-{ "public": true, "delaySeconds": 0, "factionLayer": true }
+{ "visibility": "LISTED", "public": false, "delaySeconds": 120, "factionLayer": true }
 ```
 
 | Field | Default | Meaning |
 |---|---|---|
-| `public` | `true` | The public map answers at all. Off: the public route is a plain `404 NOT_FOUND`, indistinguishable from an installation that does not exist. |
-| `delaySeconds` | `0` (0..3600) | How far behind real time the public map runs. A kill is only shown once it is at least this old; the pressure grid is computed at the same delayed instant. |
+| `visibility` | `LISTED` | Who can open the public map: `LISTED` only while the server is listed on the network (`network_listed`), `PUBLIC` always, `OFF` never. When it is not open the public route is a plain `404 NOT_FOUND`, indistinguishable from an installation that does not exist. |
+| `public` | (read only) | Whether the public map is open right now, from `visibility` and the listing. Ignored when saving. |
+| `delaySeconds` | `120` (0..3600) | How far behind real time the public map runs. A kill is only shown once it is at least this old; the pressure grid is computed at the same delayed instant. |
 | `factionLayer` | `true` | Verified players get the faction layer. Off: the faction route answers `enabled:false` with empty members/bases/alerts. |
 
-The public map is on by default because it shows nothing the server's public kill feed does not
-already show. It is not part of any plan gate and not tied to the cross-server network listing
-(`network_listed`): an unlisted server can still have a public map.
+The map follows the network listing by default, so a server that never chose to be public does
+not get a public page, and it runs two minutes behind so it cannot be used to find a fight while
+it is happening. It is not part of any plan gate.
 
 ## 1. Public map state
 
@@ -47,7 +48,7 @@ polling clients cost nothing extra. Saving the settings drops the cache.
 {
   "installationId": 12, "name": "DayZ Server", "platform": "PLAYSTATION",
   "map": { "key": "chernarusplus", "name": "Chernarus", "size": 15360, "guessed": false },
-  "public": true, "delaySeconds": 0, "generatedAt": "2026-10-04T01:25:36Z",
+  "public": true, "listed": true, "delaySeconds": 120, "generatedAt": "2026-10-04T01:25:36Z",
   "playersOnline": 2, "lastActivityAt": "2026-10-04T01:05:36Z",
   "clock": {
     "serverLocalTime": "03:25:36", "utcOffsetMinutes": 120, "bootedAt": "2026-10-04T00:25:36Z",
@@ -58,7 +59,7 @@ polling clients cost nothing extra. Saving the settings drops the cache.
   "hotZone": null,
   "kills": [ { "id": 48, "at": "2026-10-04T01:25:06Z", "killerName": "Ghost", "victimName": "Stranger", "weapon": "KA-M",
                "distanceMeters": null, "headshot": false, "longshot": false,
-               "killerX": 4700, "killerZ": 10350, "victimX": null, "victimZ": null } ],
+               "killerX": null, "killerZ": null, "victimX": 4720, "victimZ": 10340 } ],
   "lastKillId": 48
 }
 ```
@@ -82,13 +83,18 @@ polling clients cost nothing extra. Saving the settings drops the cache.
 - Nitrado is read at most once per 5 minutes per installation (facts and tasks together, cached in
   process) and a failure only makes both fields `null`; it never fails the request.
 - `pressure` is the KILL and HIT location rows of the last 30 minutes (ending at `now - delay`)
-  in 500 m cells, busiest first, at most 400 cells, `intensity = count / max`. It is the same
-  aggregate the heatmap shows, only fresher - no identity, no position of a living player.
+  in 500 m cells, busiest first, at most 400 cells, `intensity = count / max`. A cell needs at
+  least two events to be shown, so one wounded player cannot be placed by their own hits. It is
+  the same aggregate the heatmap shows, only fresher - no identity, no position of a living player.
 - `hotZone` is the open hot zone exactly as `GET /api/saas/player/servers/{id}/hot-zone` returns it.
 - `kills` are newest first, at most 100, within `window` minutes, only kills with
-  `at <= now - delaySeconds`, with the positions the ADM line carried (nullable). With
-  `sinceKillId` only kills with a greater id are returned; `lastKillId` is always the newest
-  visible id (0 when there is none) so a client can poll with it.
+  `at <= now - delaySeconds`, with where the victim died (nullable). `killerX`/`killerZ` are
+  always `null` on the public route: the killer is alive. With `sinceKillId` the kills with a
+  greater id are returned, plus the five most recent again - ids follow ingest order, not event
+  time, so behind a delay a late kill can have a lower id; clients dedupe by id. `lastKillId` is
+  the highest visible id (0 when there is none) so a client can poll with it.
+- `listed` is whether the server is listed on the network (the website lets search engines index
+  only listed servers' maps).
 
 `404 NOT_FOUND` when the installation does not exist, has no game server, or `public` is off.
 `400 INVALID_REQUEST` for a bad `window` or `sinceKillId`.
@@ -180,9 +186,12 @@ intrusion history entered in the window (at most 500). Every request is audited 
 
 ## Privacy rules
 
-- **Public = kills and pressure only.** The public route carries kill positions (already shown by
-  the kill feed), an aggregate grid and a clock. It never carries a player's current or last known
-  position, a player id, or anything about a player who has not killed or died.
+- **Public = deaths and pressure only.** The public route carries where victims died (behind the
+  delay), an aggregate grid of cells with two or more events and a clock. It never carries the
+  killer's position, a player's current or last known position, a player id, or anything about a
+  player who has not killed or died.
+- **Faction layer = verified members.** A hub faction membership keeps the player id from when the
+  member joined; a member only shows while their DayZ link to that player is still VERIFIED.
 - **Faction layer = own members only.** Positions are read for the resolved member ids and
   nothing else; a non-member's position cannot be returned by construction (and the integration
   test asserts it).

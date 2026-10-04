@@ -112,7 +112,10 @@ type liveMapPublicDTO struct {
 	Platform       string             `json:"platform"`
 	Map            liveMapMapDTO      `json:"map"`
 	Public         bool               `json:"public"`
-	DelaySeconds   int                `json:"delaySeconds"`
+	// Listed is whether the server is listed on the network (the website lets search engines
+	// index only listed servers' maps).
+	Listed       bool `json:"listed"`
+	DelaySeconds int  `json:"delaySeconds"`
 	GeneratedAt    string             `json:"generatedAt"`
 	PlayersOnline  int                `json:"playersOnline"`
 	LastActivityAt *string            `json:"lastActivityAt"`
@@ -264,6 +267,14 @@ func toLiveMapPosition(p repository.LiveMapPosition, now time.Time) *liveMapPosi
 	return &liveMapPositionDTO{X: p.X, Z: p.Z, ObservedAt: rfc3339(p.ObservedAt), AgeSeconds: age, EventType: p.EventType}
 }
 
+// publicLiveMapKill is a kill as the public map shows it: where the victim died, never where the
+// killer - who is still alive - was standing.
+func publicLiveMapKill(k repository.FightKill) liveMapKillDTO {
+	d := toLiveMapKill(k)
+	d.KillerX, d.KillerZ = nil, nil
+	return d
+}
+
 // filterLiveMapKills keeps the kills at or before cutoff (the public delay) with an id above
 // sinceID, newest first, at most limit. Pure, so the delay rule is unit-tested on its own.
 func filterLiveMapKills(kills []repository.FightKill, cutoff time.Time, sinceID int64, limit int) []liveMapKillDTO {
@@ -279,7 +290,7 @@ func filterLiveMapKills(kills []repository.FightKill, cutoff time.Time, sinceID 
 		if k.At.After(cutoff) || k.ID <= sinceID {
 			continue
 		}
-		out = append(out, toLiveMapKill(k))
+		out = append(out, publicLiveMapKill(k))
 		if len(out) >= limit {
 			break
 		}
@@ -443,7 +454,7 @@ func (a *App) buildPublicLiveMap(ctx context.Context, installationID int64, wind
 	if err != nil {
 		return nil, err
 	}
-	out := &liveMapPublicDTO{InstallationID: inst.InstallationID, Name: inst.Name, Platform: inst.Platform, Map: liveMapMap(inst.MapKey), Public: true,
+	out := &liveMapPublicDTO{InstallationID: inst.InstallationID, Name: inst.Name, Platform: inst.Platform, Map: liveMapMap(inst.MapKey), Public: true, Listed: inst.Listed,
 		DelaySeconds: inst.Settings.DelaySeconds, GeneratedAt: rfc3339(now), PlayersOnline: st.PlayersOnline, LastActivityAt: nullableTimeStr(st.LastActivityAt),
 		Kills: []liveMapKillDTO{}, Pressure: liveMapPressureDTO{Resolution: int(liveMapPressureRes), WindowMinutes: int(liveMapPressureWindow.Minutes()), Cells: []liveMapCellDTO{}}}
 	out.Clock = a.liveMapClock(ctx, *inst, st, now)
@@ -454,9 +465,7 @@ func (a *App) buildPublicLiveMap(ctx context.Context, installationID int64, wind
 			return nil, err
 		}
 		out.Kills = filterLiveMapKills(kills, cutoff, 0, liveMapKillLimit)
-		if len(out.Kills) > 0 {
-			out.LastKillID = out.Kills[0].ID
-		}
+		out.LastKillID = maxKillID(out.Kills)
 	}
 	points, err := a.LiveMap.PressurePoints(ctx, inst.GuildID, inst.ServerID, cutoff.Add(-liveMapPressureWindow), cutoff.Add(time.Microsecond), liveMapPressurePoints)
 	if err != nil {
@@ -466,7 +475,7 @@ func (a *App) buildPublicLiveMap(ctx context.Context, installationID int64, wind
 	for _, p := range points {
 		pts = append(pts, livemap.Point{X: p.X, Z: p.Z, At: p.At})
 	}
-	for _, c := range livemap.Pressure(pts, cutoff, liveMapPressureWindow, liveMapPressureRes, liveMapPressureCells) {
+	for _, c := range publicPressure(livemap.Pressure(pts, cutoff, liveMapPressureWindow, liveMapPressureRes, liveMapPressureCells)) {
 		out.Pressure.Cells = append(out.Pressure.Cells, liveMapCellDTO{CenterX: c.CenterX, CenterZ: c.CenterZ, Count: c.Count, Intensity: c.Intensity})
 	}
 	if a.Events != nil {
@@ -520,7 +529,9 @@ func (a *App) handlePublicLiveMap(w http.ResponseWriter, r *http.Request) {
 	entry, hit := a.liveMapPublic[key]
 	a.liveMapMu.Unlock()
 	if !hit || time.Since(entry.at) >= liveMapCacheTTL {
-		v, err := a.buildPublicLiveMap(ctx, installationID, window)
+		// Pollers that miss together share one build instead of each running the queries.
+		built, err, _ := a.liveMapBuilds.Do(key, func() (any, error) { return a.buildPublicLiveMap(context.WithoutCancel(ctx), installationID, window) })
+		v, _ := built.(*liveMapPublicDTO)
 		if err != nil {
 			slog.Warn("component=live_map", "event", "public_map_failed", "installation_id", installationID, "err", err.Error())
 			writeSaaSError(w, codeInternalError, "could not load the map")
@@ -543,13 +554,7 @@ func (a *App) handlePublicLiveMap(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := *entry.value
 	if sinceKillID > 0 {
-		kills := make([]liveMapKillDTO, 0, len(resp.Kills))
-		for _, k := range resp.Kills {
-			if k.ID > sinceKillID {
-				kills = append(kills, k)
-			}
-		}
-		resp.Kills = kills
+		resp.Kills = killsSince(resp.Kills, sinceKillID, liveMapRecentResend)
 	}
 	writeSaaSJSON(w, http.StatusOK, resp)
 }
@@ -751,13 +756,18 @@ func (a *App) handleAdminLiveMap(w http.ResponseWriter, r *http.Request) {
 		resp.Players = append(resp.Players, dto)
 	}
 	if a.Zones != nil {
-		zones, err := a.Zones.ActiveZonesForServer(ctx, serverID)
+		all, err := a.Zones.ActiveZonesForServer(ctx, serverID)
 		if err != nil {
 			fail(err)
 			return
 		}
-		for _, z := range zones {
-			resp.Zones = append(resp.Zones, toZoneDTO(z))
+		// Zones belong to an installation; only this installation's are shown.
+		zones := make([]repository.Zone, 0, len(all))
+		for _, z := range all {
+			if z.InstallationID == ac.scope.InstallationID {
+				zones = append(zones, z)
+				resp.Zones = append(resp.Zones, toZoneDTO(z))
+			}
 		}
 		intrusions, err := a.Zones.ListActiveForInstallation(ctx, ac.scope.InstallationID, repository.ActiveIntrusionFilter{})
 		if err != nil {
@@ -896,4 +906,55 @@ func (a *App) handleAdminMapHistory(w http.ResponseWriter, r *http.Request) {
 	a.recordAudit(ctx, ac, "LIVE_MAP_HISTORY_VIEWED", "installation", "", "SUCCESS", nil,
 		map[string]any{"from": resp.From, "to": resp.To, "minutes": int(math.Round(to.Sub(from).Minutes()))})
 	writeSaaSJSON(w, http.StatusOK, resp)
+}
+
+// liveMapRecentResend: with sinceKillId, kills from the last few minutes are sent again even when
+// their id is not above the cursor. Kill ids follow ingest order, not event time, so behind a delay
+// a lower-id kill can reach the map after a higher one; resending the recent ones (the client
+// dedupes by id) means none is skipped.
+const liveMapRecentResend = 5
+
+// killsSince is the kills a client that already has everything up to sinceID still needs: newer
+// ids, plus the most recent `recent` kills again.
+func killsSince(kills []liveMapKillDTO, sinceID int64, recent int) []liveMapKillDTO {
+	out := make([]liveMapKillDTO, 0, len(kills))
+	for i, k := range kills {
+		if k.ID > sinceID || i < recent {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+// maxKillID is the highest kill id (the cursor clients send back as sinceKillId).
+func maxKillID(kills []liveMapKillDTO) int64 {
+	var max int64
+	for _, k := range kills {
+		if k.ID > max {
+			max = k.ID
+		}
+	}
+	return max
+}
+
+// liveMapPressureMinCount: a public pressure cell needs this many events, so a single wounded
+// player cannot be placed on the map by their own hits.
+const liveMapPressureMinCount = 2
+
+// publicPressure drops the cells with too few events and rescales the rest.
+func publicPressure(cells []livemap.Cell) []livemap.Cell {
+	out := make([]livemap.Cell, 0, len(cells))
+	max := 0.0
+	for _, c := range cells {
+		if c.Count >= liveMapPressureMinCount {
+			out = append(out, c)
+			if float64(c.Count) > max {
+				max = float64(c.Count)
+			}
+		}
+	}
+	for i := range out {
+		out[i].Intensity = float64(out[i].Count) / max
+	}
+	return out
 }

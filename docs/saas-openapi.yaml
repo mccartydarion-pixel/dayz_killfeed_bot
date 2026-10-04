@@ -92,10 +92,11 @@ components:
     LiveMapSettings:
       type: object
       description: "The liveMap section of GET .../admin/features (docs/LIVE_MAP.md)."
-      required: [public, delaySeconds, factionLayer]
+      required: [visibility, delaySeconds, factionLayer]
       properties:
-        public: { type: boolean, description: "The public map answers at all (default true)." }
-        delaySeconds: { type: integer, minimum: 0, maximum: 3600, description: "How far behind real time the public map runs." }
+        visibility: { type: string, enum: [LISTED, PUBLIC, OFF], description: "Who can open the public map: LISTED only while listed on the network (default), PUBLIC always, OFF never." }
+        public: { type: boolean, readOnly: true, description: "Whether the public map is open right now (ignored when saving)." }
+        delaySeconds: { type: integer, minimum: 0, maximum: 3600, description: "How far behind real time the public map runs (default 120)." }
         factionLayer: { type: boolean, description: "Verified players get the faction layer (default true)." }
     LiveMapMap:
       type: object
@@ -115,7 +116,7 @@ components:
         distanceMeters: { type: number, nullable: true }
         headshot: { type: boolean }
         longshot: { type: boolean }
-        killerX: { type: number, nullable: true }
+        killerX: { type: number, nullable: true, description: "Always null on the public route (the killer is alive); set in staff history." }
         killerZ: { type: number, nullable: true }
         victimX: { type: number, nullable: true }
         victimZ: { type: number, nullable: true }
@@ -155,6 +156,7 @@ components:
         platform: { type: string }
         map: { $ref: "#/components/schemas/LiveMapMap" }
         public: { type: boolean }
+        listed: { type: boolean, description: "Listed on the network." }
         delaySeconds: { type: integer }
         generatedAt: { type: string, format: date-time }
         playersOnline: { type: integer }
@@ -188,7 +190,7 @@ components:
                   intensity: { type: number, description: "count / max, so the busiest cell is 1." }
         hotZone: { type: object, nullable: true, description: "The open hot zone as GET /api/saas/player/servers/{installationID}/hot-zone returns it." }
         kills: { type: array, items: { $ref: "#/components/schemas/LiveMapKill" }, description: "Newest first, at most 100, only at <= now - delaySeconds." }
-        lastKillId: { type: integer, format: int64, description: "The newest visible kill id (0 when none)." }
+        lastKillId: { type: integer, format: int64, description: "The highest visible kill id (0 when none). With sinceKillId, kills with a greater id plus the five most recent are returned." }
     LiveMapFactionLayer:
       type: object
       properties:
