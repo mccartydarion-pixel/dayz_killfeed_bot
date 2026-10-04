@@ -33,7 +33,7 @@ multi-tenant work (`0012_phase48_multitenant_servers_credentials`) and were
 
 | SaaS concept | Table | Notes |
 |---|---|---|
-| DayZ/Nitrado server connection | `game_servers` (existing) | Added `organization_id` (nullable FK to `organizations`, `ON DELETE SET NULL`). The guild-scoped bot runtime (`ServerRepository`) is untouched; SaaS-scoped access goes through `SaaSServerRepository` (`internal/repository/saas_server_connections_repository.go`). |
+| DayZ/Nitrado server connection | `game_servers` (existing) | Added `organization_id` (nullable FK to `organizations`, `ON DELETE SET NULL`). The guild-scoped bot runtime (`ServerRepository`) is untouched; SaaS-scoped access goes through `SaaSServerRepository` (`internal/repository/saas_server_connections_repository.go`). Migration 0124 adds `display_name_custom` and `provider_display_name`: `display_name` follows the Nitrado name unless the owner typed one (`docs/SERVER_NAME_SYNC.md`). |
 | Encrypted Nitrado credential envelope | `nitrado_connections` (existing) | Added `organization_id` (nullable FK, `ON DELETE SET NULL`). `credential_nonce` is the AES-GCM IV; the auth tag is embedded in `credential_ciphertext` (standard Go `crypto/cipher` `AEAD.Seal` output); the algorithm is a fixed constant (`AES-256-GCM`, `repository.CredentialAlgorithm`), not a column, since only one is supported. Guild-scoped access is unchanged (`ServerRepository.SaveConnection`/`GetConnection`); SaaS-scoped access goes through `CredentialRepository` (`internal/repository/saas_credentials_repository.go`). |
 
 Everything else below is new, added in `0024_saas_foundation`.

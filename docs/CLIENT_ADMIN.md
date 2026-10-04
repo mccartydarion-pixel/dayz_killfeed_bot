@@ -56,7 +56,7 @@ permission mapping granting a Level at or below their own resolved Level - enfor
 | `SERVER_RESTART` | Moderator | MEDIUM RISK, typed confirmation `"RESTART"`, 1/5min |
 | `SERVER_STOP` | Administrator | HIGH RISK, typed confirmation `"STOP"`, 1/min |
 | `SERVER_AUTOSTART` | Administrator | DB columns shipped; monitor loop deferred, see below |
-| `SERVER_NAME_EDIT` | Administrator | Champion display name only, never a Nitrado rename |
+| `SERVER_NAME_EDIT` | Administrator | Champion display name only, never a Nitrado rename. A typed name is custom and is not replaced when the Nitrado name changes (`docs/SERVER_NAME_SYNC.md`) |
 | `WHITELIST_MANAGE` | Gatekeeper | |
 | `PRIORITY_MANAGE` | Administrator | Nitrado priority list; takes effect at the next server restart |
 | `BANLIST_MANAGE` | Moderator | |
@@ -153,7 +153,7 @@ POST   /hub-factions/{factionID}/dissolve      FACTION_DISSOLVE     body: {"conf
 GET    /players/{playerID}/last-online         PLAYER_LAST_ONLINE_VIEW
 GET    /economy/accounts?q=                    ECONOMY_VIEW
 
-PUT    /server/name                            SERVER_NAME_EDIT     body: {"name":"..."}
+PUT    /server/name                            SERVER_NAME_EDIT     body: {"name":"..."}  ("" = follow the Nitrado name again)
 PUT    /feeds/{routeKey}/location              FEED_LOCATION_MANAGE body: {"showLocation":bool}
 PUT    /maintenance-mode                       MAINTENANCE_MODE     body: {"enabled":bool}
 

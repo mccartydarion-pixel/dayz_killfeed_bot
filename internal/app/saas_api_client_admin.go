@@ -407,8 +407,11 @@ func (a *App) handleSetServerName(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// An empty name gives the name back to Nitrado: the server shows its Nitrado name again and
+	// follows it (docs/SERVER_NAME_SYNC.md). It is refused, as before, while no Nitrado name is
+	// known for the server.
 	name := strings.TrimSpace(req.Name)
-	if name == "" || len(name) > 100 {
+	if len(name) > nitrado.MaxServerNameLen {
 		writeSaaSError(w, codeInvalidRequest, "name must be 1-100 characters")
 		return
 	}
@@ -421,13 +424,19 @@ func (a *App) handleSetServerName(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), adminTimeout)
 	defer cancel()
-	if err := a.ClientAdmin.SetServerDisplayName(ctx, ac.scope.GuildID, *ac.scope.ServerID, name); err != nil {
+	state, err := a.ClientAdmin.SetServerDisplayName(ctx, ac.scope.GuildID, *ac.scope.ServerID, name)
+	if errors.Is(err, repository.ErrNoProviderName) {
+		writeSaaSError(w, codeInvalidRequest, "name must be 1-100 characters")
+		return
+	}
+	if err != nil {
 		slog.Warn("component=saas_api", "msg", "set server name failed", "err", err.Error())
 		writeSaaSError(w, codeInternalError, "could not update server name")
 		return
 	}
-	a.recordAudit(ctx, ac, "SERVER_NAME_EDIT", "", "", "success", nil, map[string]string{"name": name})
-	writeSaaSJSON(w, http.StatusOK, map[string]string{"name": name})
+	a.forgetServerName(*ac.scope.ServerID)
+	a.recordAudit(ctx, ac, "SERVER_NAME_EDIT", "", "", "success", nil, map[string]any{"name": state.DisplayName, "custom": state.Custom})
+	writeSaaSJSON(w, http.StatusOK, map[string]any{"name": state.DisplayName, "displayNameCustom": state.Custom, "providerName": optionalString(state.ProviderName)})
 }
 
 type setFeedLocationRequest struct {

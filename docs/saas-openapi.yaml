@@ -361,6 +361,8 @@ components:
         game: { type: string }
         platform: { $ref: "#/components/schemas/ConsolePlatform" }
         status: { type: string, enum: [ONLINE, OFFLINE] }
+        displayNameCustom: { type: boolean, description: "The owner typed displayName in Champion; it no longer follows the Nitrado name (docs/SERVER_NAME_SYNC.md)." }
+        providerName: { type: string, nullable: true, description: "The last name read from Nitrado; null until the first read." }
 
     InstallationSummary:
       type: object
@@ -4116,11 +4118,11 @@ paths:
 
   /api/saas/organizations/{organizationID}/installations/{installationID}/admin/server/name:
     put:
-      summary: Set the server's Champion-facing display name (SERVER_NAME_EDIT). Never renames the underlying Nitrado server.
+      summary: Set the server's Champion-facing display name (SERVER_NAME_EDIT). Never renames the underlying Nitrado server. A typed name is custom and is kept when the Nitrado name changes; the current Nitrado name, or an empty name, makes the server follow Nitrado again (docs/SERVER_NAME_SYNC.md).
       parameters: [{ $ref: "#/components/parameters/ActingUser" }, { $ref: "#/components/parameters/organizationID" }, { $ref: "#/components/parameters/installationID" }]
-      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [name], properties: { name: { type: string, minLength: 1, maxLength: 100 } } } } } }
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [name], properties: { name: { type: string, maxLength: 100, description: "Empty resets to the Nitrado name; 400 while no Nitrado name is known." } } } } } }
       responses:
-        "200": { description: "{ name: string }" }
+        "200": { description: "{ name: string, displayNameCustom: boolean, providerName: string | null }" }
         "400": { $ref: "#/components/responses/InvalidRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }

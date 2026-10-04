@@ -21,6 +21,12 @@ type GameServer struct {
 	// SaaS onboarding flow claims this server - existing guild-scoped
 	// methods on ServerRepository never set or select it.
 	OrganizationID *int64
+	// ProviderName is the server's name on Nitrado (provider_display_name). On an upsert it is
+	// what the connect flow just read ("" = Nitrado reported none; the stored one is kept).
+	// DisplayNameCustom is true when the owner typed DisplayName in Champion; the upserts and the
+	// name sync then leave DisplayName alone. Both are only read back by SaaSServerRepository.
+	ProviderName      string
+	DisplayNameCustom bool
 }
 type NitradoConnection struct {
 	ID, GuildID                                   int64
@@ -44,9 +50,12 @@ type ServerConfig struct {
 type ServerRepository struct{ pool *pgxpool.Pool }
 
 func NewServerRepository(pool *pgxpool.Pool) *ServerRepository { return &ServerRepository{pool: pool} }
+
+// UpsertGameServer creates or reconnects a server. On a reconnect a name the owner typed in
+// Champion (display_name_custom) is kept, and an empty name never replaces a stored one.
 func (r *ServerRepository) UpsertGameServer(ctx context.Context, s GameServer) (*GameServer, error) {
 	var out GameServer
-	err := r.pool.QueryRow(ctx, `INSERT INTO game_servers(guild_id,provider,provider_service_id,game,platform,display_name,status,active) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(guild_id,provider,provider_service_id) DO UPDATE SET display_name=EXCLUDED.display_name,status=EXCLUDED.status,active=EXCLUDED.active,updated_at=NOW() RETURNING id,guild_id,provider,provider_service_id,game,platform,COALESCE(display_name,''),status,active,created_at,updated_at`, s.GuildID, s.Provider, s.ProviderServiceID, s.Game, s.Platform, s.DisplayName, s.Status, s.Active).Scan(&out.ID, &out.GuildID, &out.Provider, &out.ProviderServiceID, &out.Game, &out.Platform, &out.DisplayName, &out.Status, &out.Active, &out.CreatedAt, &out.UpdatedAt)
+	err := r.pool.QueryRow(ctx, `INSERT INTO game_servers(guild_id,provider,provider_service_id,game,platform,display_name,status,active,provider_display_name) VALUES($1,$2,$3,$4,$5,$6,$7,$8,NULLIF($9,'')) ON CONFLICT(guild_id,provider,provider_service_id) DO UPDATE SET display_name=CASE WHEN game_servers.display_name_custom THEN game_servers.display_name ELSE COALESCE(NULLIF(EXCLUDED.display_name,''),game_servers.display_name) END,provider_display_name=COALESCE(EXCLUDED.provider_display_name,game_servers.provider_display_name),status=EXCLUDED.status,active=EXCLUDED.active,updated_at=NOW() RETURNING id,guild_id,provider,provider_service_id,game,platform,COALESCE(display_name,''),status,active,created_at,updated_at`, s.GuildID, s.Provider, s.ProviderServiceID, s.Game, s.Platform, s.DisplayName, s.Status, s.Active, s.ProviderName).Scan(&out.ID, &out.GuildID, &out.Provider, &out.ProviderServiceID, &out.Game, &out.Platform, &out.DisplayName, &out.Status, &out.Active, &out.CreatedAt, &out.UpdatedAt)
 	return &out, err
 }
 func (r *ServerRepository) ListActive(ctx context.Context) ([]GameServer, error) {

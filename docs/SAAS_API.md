@@ -1702,6 +1702,10 @@ re-select it via `#16`.
 | `game` | string |
 | `platform` | `"PLAYSTATION"` \| `"XBOX"` |
 | `status` | `"ONLINE"` \| `"OFFLINE"` |
+| `displayNameCustom` | boolean - the owner typed the name in Champion; it no longer follows Nitrado |
+| `providerName` | string \| null - the last name read from Nitrado |
+
+The name follows the server's Nitrado name unless it is custom (`docs/SERVER_NAME_SYNC.md`).
 
 #### `DayZServerValidation` (response of `#17`)
 | field | type |

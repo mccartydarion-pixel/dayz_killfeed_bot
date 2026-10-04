@@ -235,7 +235,7 @@ func (s *Server) gameserverJSON() map[string]any {
 		"query":         map[string]any{"server_name": "Champion staging fixture", "map": "chernarusplus", "version": "fixture", "player_current": s.players, "player_max": s.slots},
 		// The DayZ settings Champion reads (never a password): the in-game clock runs twelve
 		// times faster than real time from the host's clock at boot (docs/LIVE_MAP.md).
-		"settings": map[string]any{"config": map[string]any{"mission": "dayzOffline.chernarusplus", "adminLogPlayerList": "1",
+		"settings": map[string]any{"config": map[string]any{"hostname": "Champion staging fixture", "mission": "dayzOffline.chernarusplus", "adminLogPlayerList": "1",
 			"serverTime": "SystemTime", "serverTimeAcceleration": "12", "serverNightTimeAcceleration": "1"}}}
 }
 

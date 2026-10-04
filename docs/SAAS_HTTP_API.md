@@ -313,7 +313,8 @@ credential (section 18) - see `TestNoSensitiveFieldsInAPIResponses` in
 
 #### `DayZServerSummary`
 ```ts
-{ id: number, displayName?: string, game: string, platform: string, status: string }
+{ id: number, displayName?: string, game: string, platform: string, status: string,
+  displayNameCustom: boolean, providerName: string | null } // docs/SERVER_NAME_SYNC.md
 ```
 
 #### `DiscordGuildSummary`

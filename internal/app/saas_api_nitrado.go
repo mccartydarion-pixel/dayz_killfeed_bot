@@ -378,16 +378,16 @@ func (a *App) handleSelectDayZServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	name := matched.Details.Name
-	if name == "" {
-		name = matched.Details.ServerName
-	}
+	// The same name the periodic sync will read (nitrado.ServerName), so the first sync after
+	// connecting does not change it.
+	name := client.ResolveServerName(ctx, *matched)
 	server, err := a.SaaSServers.UpsertForInstallation(ctx, organizationID, loaded.mustGuildRowID(), repository.GameServer{
 		Provider:          "NITRADO",
 		ProviderServiceID: matched.ID,
 		Game:              "DayZ",
 		Platform:          string(platform),
 		DisplayName:       name,
+		ProviderName:      name,
 		Status:            nitradoServiceStatus(matched.Status),
 		Active:            true,
 	})
