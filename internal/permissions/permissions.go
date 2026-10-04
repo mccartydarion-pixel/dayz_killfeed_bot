@@ -135,6 +135,9 @@ const (
 	// changing offers, the store switch and refunds (points move, so Owner only).
 	CapPerksView   Capability = "PERKS_VIEW"
 	CapPerksManage Capability = "PERKS_MANAGE"
+	// Map rotation with a player vote (docs/MAP_ROTATION.md). It changes which map the server
+	// loads by writing two files on the game server, so it is Owner only.
+	CapMapRotationManage Capability = "MAP_ROTATION_MANAGE"
 )
 
 // requiredLevel is the default minimum Level each capability needs (task's "DEFAULT ROLE
@@ -186,6 +189,7 @@ var requiredLevel = map[Capability]Level{
 	CapVIPManage:              LevelAdministrator,
 	CapPerksView:              LevelAdministrator,
 	CapPerksManage:            LevelOwner,
+	CapMapRotationManage:      LevelOwner,
 }
 
 // Allows reports whether actorLevel satisfies capability's required minimum Level. An unknown

@@ -56,6 +56,7 @@ Discord bot presence (all optional - these are the defaults if unset):
 - `HEATMAP_DISCORD_INTERVAL_MINUTES` - how often the Discord PvP heatmap summary refreshes. Clamped to 5-1440 minutes; missing or invalid values fall back to 30.
   - `static`: always shows **Competing in Competitive DayZ**.
   - `dynamic`: rotates through Competing in Competitive DayZ, live player/server counts (only when a server is actually connected - never a fabricated 0), Playing Champions® Killfeed, Watching Live PvP Activity, and Competing in DayZ Leaderboards. The bot's Discord status (online/idle/dnd) also reflects overall application health, debounced so a brief blip never flaps it.
+- `CHAMPION_MAP_ROTATION_ENABLED` - default of the `map_rotation` feature flag (map rotation with a player vote, `docs/MAP_ROTATION.md`). Default `false`: only installations switched on in the Owner Hub can use it.
 
 Important notes:
 

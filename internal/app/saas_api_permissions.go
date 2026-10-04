@@ -310,6 +310,7 @@ func (a *App) registerClientAdminRoutes() {
 	a.registerUpgradeRoutes(base)
 	a.registerFightRoutes(base)
 	a.registerLiveMapRoutes(base)
+	a.registerMapRotationRoutes(base)
 	a.registerProgressionRoutes(base)
 }
 

@@ -85,6 +85,11 @@ type Config struct {
 	// CHAMPION_SHOP_AUTO_DELIVERY_INSTALLATION_IDS. Default: no worker runs at all.
 	ShopAutoDelivery ShopAutoDelivery
 
+	// MapRotationEnabled is CHAMPION_MAP_ROTATION_ENABLED (default false): the global default of the
+	// map_rotation feature flag (docs/MAP_ROTATION.md). Off, only an installation the platform owner
+	// switched on in the Owner Hub can use map rotation.
+	MapRotationEnabled bool
+
 	// PublicBaseURL is the public origin of this service (no trailing slash), used to build
 	// absolute URLs for publicly served assets such as faction logos
 	// (/assets/faction-logos/...). CHAMPION_PUBLIC_BASE_URL wins; otherwise it is derived from
@@ -150,6 +155,7 @@ func Load() (*Config, error) {
 		AdminDiscordIDs:           ParseAdminDiscordIDs(os.Getenv("CHAMPION_ADMIN_DISCORD_IDS")),
 		CustomEmbedsEnabled:       parseBoolWithDefault(os.Getenv("CHAMPION_CUSTOM_EMBEDS_ENABLED"), false),
 		PlanGatingEnabled:         parseBoolWithDefault(os.Getenv("CHAMPION_PLAN_GATING_ENABLED"), false),
+		MapRotationEnabled:        parseBoolWithDefault(os.Getenv("CHAMPION_MAP_ROTATION_ENABLED"), false),
 		ShopCanaryExecution:       ParseShopCanaryExecution(os.Getenv("CHAMPION_SHOP_CANARY_EXECUTION"), os.Getenv("CHAMPION_SHOP_CANARY_INSTALLATION_IDS")),
 		ShopAutoDelivery: ParseShopAutoDelivery(os.Getenv("CHAMPION_SHOP_AUTO_DELIVERY"), os.Getenv("CHAMPION_SHOP_AUTO_DELIVERY_INSTALLATION_IDS"),
 			os.Getenv("CHAMPION_SHOP_AUTO_DELIVERY_MAX_STAGED")),

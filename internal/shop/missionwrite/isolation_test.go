@@ -24,6 +24,13 @@ import (
 // And the worker itself is reachable from exactly one file of the bot, internal/app/shop_delivery_worker.go,
 // which starts it only behind config.ShopAutoDelivery. Nothing else (startup, Live Sync, the Shop
 // service, an API handler) may import either package.
+//
+// One more package may call the Nitrado write primitives, and only the two it needs
+// (RequestUploadToken and PostUpload, never Mkdir): internal/maprotation/mapswitch, the map
+// rotation switch approved in docs/MAP_ROTATION.md. It writes two fixed mission files
+// (cfggameplay.json and cfgplayerspawnpoints.xml) and nothing else, and it is reachable from
+// exactly one file of the bot, internal/app/map_rotation_worker.go, which runs it only behind the
+// map_rotation feature flag, the plan and the owner's own switch. It does not import missionwrite.
 func TestWriteCapabilityIsIsolated(t *testing.T) {
 	root, err := filepath.Abs(filepath.Join("..", "..", ".."))
 	if err != nil {
@@ -32,6 +39,10 @@ func TestWriteCapabilityIsIsolated(t *testing.T) {
 	const self = "internal/shop/missionwrite"
 	const worker = "internal/shop/deliveryworker"
 	const workerEntry = "internal/app/shop_delivery_worker.go"
+	const mapSwitch = "internal/maprotation/mapswitch"
+	const mapSwitchEntry = "internal/app/map_rotation_worker.go"
+	mapSwitchWrites := map[string]bool{"RequestUploadToken": true, "PostUpload": true}
+	seenMapSwitchEntry := false
 	// What the worker may name from this package: the artifact primitives and what they return.
 	workerMay := map[string]bool{"InspectArtifact": true, "WriteArtifact": true, "ArtifactState": true, "ArtifactWrite": true, "Remote": true,
 		"SHA256": true, "StatusWrittenVerified": true, "StatusNotWritten": true, "StatusUncertain": true,
@@ -77,6 +88,15 @@ func TestWriteCapabilityIsIsolated(t *testing.T) {
 				}
 				seenEntry = true
 			}
+			if strings.HasSuffix(ip, "/"+mapSwitch) {
+				if rel != mapSwitchEntry {
+					t.Errorf("%s imports the map switch; only %s may", rel, mapSwitchEntry)
+				}
+				seenMapSwitchEntry = true
+			}
+			if dir == mapSwitch && strings.HasSuffix(ip, "/"+self) {
+				t.Errorf("%s imports missionwrite; the map switch has its own two-file write", rel)
+			}
 		}
 		if dir == worker {
 			ast.Inspect(f, func(n ast.Node) bool {
@@ -91,7 +111,8 @@ func TestWriteCapabilityIsIsolated(t *testing.T) {
 		ast.Inspect(f, func(n ast.Node) bool {
 			switch x := n.(type) {
 			case *ast.CallExpr:
-				if sel, ok := x.Fun.(*ast.SelectorExpr); ok && writes[sel.Sel.Name] && !isOS(sel) && dir != self && dir != "internal/nitrado" {
+				if sel, ok := x.Fun.(*ast.SelectorExpr); ok && writes[sel.Sel.Name] && !isOS(sel) && dir != self && dir != "internal/nitrado" &&
+					!(dir == mapSwitch && mapSwitchWrites[sel.Sel.Name]) {
 					t.Errorf("%s calls %s", rel, sel.Sel.Name)
 				}
 			case *ast.AssignStmt:
@@ -110,6 +131,9 @@ func TestWriteCapabilityIsIsolated(t *testing.T) {
 	}
 	if !seenCmd {
 		t.Fatal("expected cmd/shop-mission-write to import this package")
+	}
+	if !seenMapSwitchEntry {
+		t.Fatalf("expected %s to import the map switch", mapSwitchEntry)
 	}
 	if !seenWorker || !seenEntry {
 		t.Fatalf("expected the delivery worker to import this package (%v) and %s to import the worker (%v)", seenWorker, workerEntry, seenEntry)

@@ -76,6 +76,7 @@ permission mapping granting a Level at or below their own resolved Level - enfor
 | `FEATURE_SETTINGS_MANAGE` | Administrator | change hot-zone and fight-replay settings (`docs/HOT_ZONES.md`, `docs/FIGHT_REPLAY.md`) |
 | `NETWORK_MANAGE` | Owner | list or unlist the server in the cross-server network (`docs/NETWORK.md`) |
 | `FEED_IDENTITY_MANAGE` | Owner | the name and avatar feeds post under (`docs/FEED_IDENTITY.md`) |
+| `MAP_ROTATION_MANAGE` | Owner | map rotation with a player vote: settings, the file check and the staff choice of the next map (`docs/MAP_ROTATION.md`) |
 | `RETENTION_VIEW` | Administrator | retention dashboard and lapsed-player list (`docs/RETENTION.md`) |
 
 ## Current Actor Client Admin Permissions (Phase 1 Part 2)

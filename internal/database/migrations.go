@@ -2883,6 +2883,13 @@ ALTER TABLE installation_feature_settings ADD COLUMN IF NOT EXISTS live_map_fact
 		Name: "0121_live_map_uav",
 		SQL:  LiveMapUAVSQL,
 	},
+	{
+		// Map rotation with a player vote (docs/MAP_ROTATION.md): settings, maps, votes, ballots and
+		// the switch log. Off until an owner turns it on, behind the map_rotation feature flag.
+		// Additive.
+		Name: "0122_map_rotation",
+		SQL:  MapRotationSQL,
+	},
 }
 
 // NitradoTailTrustSQL keeps which Nitrado services have proven that partial (seek) reads match
