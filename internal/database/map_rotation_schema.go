@@ -119,3 +119,14 @@ CREATE TABLE IF NOT EXISTS map_rotation_switches (
 CREATE UNIQUE INDEX IF NOT EXISTS uq_map_rotation_switches_pending ON map_rotation_switches(installation_id) WHERE status = 'PENDING';
 CREATE INDEX IF NOT EXISTS idx_map_rotation_switches_installation ON map_rotation_switches(installation_id, id DESC);
 `
+
+// MapRotationSpawnUploadSQL moves a map's spawn points from a file in the server's custom folder to
+// contents the owner uploads on the website (docs/MAP_ROTATION.md). map_rotation_maps.spawn_xml is
+// the uploaded file (spawn_file stays, as the uploaded file's name); map_rotation_switches.spawn_xml
+// is the copy a switch takes when it begins, so an interrupted switch finishes with the contents it
+// started with. A map saved before this migration has no contents until its owner uploads them.
+// Additive.
+const MapRotationSpawnUploadSQL = `
+ALTER TABLE map_rotation_maps ADD COLUMN IF NOT EXISTS spawn_xml BYTEA;
+ALTER TABLE map_rotation_switches ADD COLUMN IF NOT EXISTS spawn_xml BYTEA;
+`

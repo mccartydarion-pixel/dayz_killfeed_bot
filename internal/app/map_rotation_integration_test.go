@@ -3,11 +3,13 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"path"
 	"strconv"
 	"strings"
@@ -18,6 +20,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/discord"
 	"github.com/yourname/dayz-killfeed/internal/entitlements"
+	"github.com/yourname/dayz-killfeed/internal/maprotation"
 	"github.com/yourname/dayz-killfeed/internal/nitrado"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
@@ -34,14 +37,16 @@ const (
 	mrSpawnsC = "<playerspawnpoints><fresh><generator_posbubbles><pos x=\"300\" z=\"300\"/></generator_posbubbles></fresh></playerspawnpoints>"
 )
 
-// fakeMapRemote is an in-memory Nitrado file server implementing mapRotationRemote.
+// fakeMapRemote is an in-memory Nitrado file server implementing mapRotationRemote. The custom
+// folder holds only the map files: spawn files are uploaded on the website and stored in Champion.
 type fakeMapRemote struct {
 	mu          sync.Mutex
 	files       map[string][]byte
 	tasks       []nitrado.ScheduledTask
 	pending     string // destination of the last upload token
 	uploads     []string
-	refuseAt    int // >0: exactly the n-th upload is refused
+	reads       []string // every file downloaded, in order
+	refuseAt    int      // >0: exactly the n-th upload is refused
 	uploadCount int
 }
 
@@ -50,11 +55,8 @@ func newFakeMapRemote() *fakeMapRemote {
 		mrMission + "/cfggameplay.json":         []byte("{\n\t\"version\": 1,\n\t\"WorldsData\": {\n\t\t\"objectSpawnersArr\": [\n\t\t\t\"custom/shop.json\"\n\t\t],\n\t\t\"x\": 1.50\n\t}\n}\n"),
 		mrMission + "/cfgplayerspawnpoints.xml": []byte(mrSpawnsA),
 		mrCustom + "/arena_a.json":              []byte(`{"Objects":[]}`),
-		mrCustom + "/arena_a.xml":               []byte(mrSpawnsA),
 		mrCustom + "/arena_b.json":              []byte(`{"Objects":[]}`),
-		mrCustom + "/arena_b.xml":               []byte(mrSpawnsB),
 		mrCustom + "/arena_c.json":              []byte(`{"Objects":[]}`),
-		mrCustom + "/arena_c.xml":               []byte(mrSpawnsC),
 	}}
 }
 
@@ -80,6 +82,7 @@ func (f *fakeMapRemote) ListEntries(_ context.Context, _, dir string) ([]nitrado
 func (f *fakeMapRemote) ReadLog(_ context.Context, _, p string) ([]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.reads = append(f.reads, p)
 	b, ok := f.files[p]
 	if !ok {
 		return nil, errors.New("not found")
@@ -183,10 +186,34 @@ func (w *mapRotationWorld) reboot(at time.Time) {
 
 func threeMaps() []map[string]any {
 	return []map[string]any{
-		{"name": "Arena A", "mapFile": "arena_a.json", "spawnFile": "arena_a.xml", "imageUrl": "https://cdn.example.com/a.png", "enabled": true},
-		{"name": "Arena B", "mapFile": "arena_b.json", "spawnFile": "arena_b.xml", "imageUrl": nil, "enabled": true},
-		{"name": "Arena C", "mapFile": "arena_c.json", "spawnFile": "arena_c.xml", "imageUrl": nil, "enabled": true},
+		{"name": "Arena A", "mapFile": "arena_a.json", "spawnFile": "arena_a.xml", "spawnXml": mrSpawnsA, "imageUrl": "https://cdn.example.com/a.png", "enabled": true},
+		{"name": "Arena B", "mapFile": "arena_b.json", "spawnFile": "arena_b.xml", "spawnXml": mrSpawnsB, "imageUrl": nil, "enabled": true},
+		{"name": "Arena C", "mapFile": "arena_c.json", "spawnFile": "arena_c.xml", "spawnXml": mrSpawnsC, "imageUrl": nil, "enabled": true},
 	}
+}
+
+// storedSpawns is what Champion holds for a map ("" when nothing is stored).
+func (w *mapRotationWorld) storedSpawns(mapID float64) string {
+	w.t.Helper()
+	var b []byte
+	if err := w.a.DB.Pool.QueryRow(context.Background(), `SELECT spawn_xml FROM map_rotation_maps WHERE id=$1 AND installation_id=$2`, int64(mapID), w.f.InstallationID).Scan(&b); err != nil {
+		w.t.Fatal(err)
+	}
+	return string(b)
+}
+
+// dropSpawns leaves a map as one saved before spawn files were uploaded on the website.
+func (w *mapRotationWorld) dropSpawns(mapID float64) {
+	w.t.Helper()
+	if _, err := w.a.DB.Pool.Exec(context.Background(), `UPDATE map_rotation_maps SET spawn_xml=NULL WHERE id=$1 AND installation_id=$2`, int64(mapID), w.f.InstallationID); err != nil {
+		w.t.Fatal(err)
+	}
+}
+
+func errMessage(body map[string]any) string {
+	e, _ := body["error"].(map[string]any)
+	m, _ := e["message"].(string)
+	return m
 }
 
 func rotationBody(maps []map[string]any, change func(b map[string]any)) map[string]any {
@@ -267,23 +294,29 @@ func TestMapRotationAdminContract(t *testing.T) {
 		six[i]["mapFile"] = fmt.Sprintf("m%d.json", i)
 	}
 	for name, body := range map[string]map[string]any{
-		"six maps":            rotationBody(six, nil),
-		"everyRestarts 4":     rotationBody(threeMaps(), func(b map[string]any) { b["everyRestarts"] = 4 }),
-		"order":               rotationBody(threeMaps(), func(b map[string]any) { b["order"] = "SHUFFLE" }),
-		"vote minutes 4":      rotationBody(threeMaps(), func(b map[string]any) { b["voteMinutesBeforeRestart"] = 4 }),
-		"vote minutes 121":    rotationBody(threeMaps(), func(b map[string]any) { b["voteMinutesBeforeRestart"] = 121 }),
-		"maps missing":        rotationBody(nil, func(b map[string]any) { delete(b, "maps") }),
-		"one enabled map":     rotationBody(threeMaps()[:1], nil),
-		"path in map file":    rotationBody(append(threeMaps()[:2], map[string]any{"name": "X", "mapFile": "../x.json", "spawnFile": "x.xml", "enabled": true}), nil),
-		"folder in map file":  rotationBody(append(threeMaps()[:2], map[string]any{"name": "X", "mapFile": "custom/x.json", "spawnFile": "x.xml", "enabled": true}), nil),
-		"wrong map extension": rotationBody(append(threeMaps()[:2], map[string]any{"name": "X", "mapFile": "x.xml", "spawnFile": "x.xml", "enabled": true}), nil),
-		"wrong spawn ext":     rotationBody(append(threeMaps()[:2], map[string]any{"name": "X", "mapFile": "x.json", "spawnFile": "x.json", "enabled": true}), nil),
-		"http image":          rotationBody(append(threeMaps()[:2], map[string]any{"name": "X", "mapFile": "x.json", "spawnFile": "x.xml", "imageUrl": "http://cdn.example.com/x.png", "enabled": true}), nil),
-		"long image":          rotationBody(append(threeMaps()[:2], map[string]any{"name": "X", "mapFile": "x.json", "spawnFile": "x.xml", "imageUrl": "https://cdn.example.com/" + strings.Repeat("x", 500), "enabled": true}), nil),
-		"empty name":          rotationBody(append(threeMaps()[:2], map[string]any{"name": " ", "mapFile": "x.json", "spawnFile": "x.xml", "enabled": true}), nil),
-		"long name":           rotationBody(append(threeMaps()[:2], map[string]any{"name": strings.Repeat("n", 61), "mapFile": "x.json", "spawnFile": "x.xml", "enabled": true}), nil),
-		"unknown map id":      rotationBody(append(threeMaps()[:2], map[string]any{"id": 999999999, "name": "X", "mapFile": "x.json", "spawnFile": "x.xml", "enabled": true}), nil),
-		"unknown channel":     rotationBody(threeMaps(), func(b map[string]any) { b["announceChannelId"] = "123456789012345678" }),
+		"six maps":                rotationBody(six, nil),
+		"everyRestarts 4":         rotationBody(threeMaps(), func(b map[string]any) { b["everyRestarts"] = 4 }),
+		"order":                   rotationBody(threeMaps(), func(b map[string]any) { b["order"] = "SHUFFLE" }),
+		"vote minutes 4":          rotationBody(threeMaps(), func(b map[string]any) { b["voteMinutesBeforeRestart"] = 4 }),
+		"vote minutes 121":        rotationBody(threeMaps(), func(b map[string]any) { b["voteMinutesBeforeRestart"] = 121 }),
+		"maps missing":            rotationBody(nil, func(b map[string]any) { delete(b, "maps") }),
+		"one enabled map":         rotationBody(threeMaps()[:1], nil),
+		"path in map file":        rotationBody(append(threeMaps()[:2], map[string]any{"name": "X", "mapFile": "../x.json", "spawnFile": "x.xml", "enabled": true}), nil),
+		"folder in map file":      rotationBody(append(threeMaps()[:2], map[string]any{"name": "X", "mapFile": "custom/x.json", "spawnFile": "x.xml", "enabled": true}), nil),
+		"wrong map extension":     rotationBody(append(threeMaps()[:2], map[string]any{"name": "X", "mapFile": "x.xml", "spawnFile": "x.xml", "enabled": true}), nil),
+		"wrong spawn ext":         rotationBody(append(threeMaps()[:2], map[string]any{"name": "X", "mapFile": "x.json", "spawnFile": "x.json", "enabled": true}), nil),
+		"http image":              rotationBody(append(threeMaps()[:2], map[string]any{"name": "X", "mapFile": "x.json", "spawnFile": "x.xml", "imageUrl": "http://cdn.example.com/x.png", "enabled": true}), nil),
+		"long image":              rotationBody(append(threeMaps()[:2], map[string]any{"name": "X", "mapFile": "x.json", "spawnFile": "x.xml", "imageUrl": "https://cdn.example.com/" + strings.Repeat("x", 500), "enabled": true}), nil),
+		"empty name":              rotationBody(append(threeMaps()[:2], map[string]any{"name": " ", "mapFile": "x.json", "spawnFile": "x.xml", "enabled": true}), nil),
+		"long name":               rotationBody(append(threeMaps()[:2], map[string]any{"name": strings.Repeat("n", 61), "mapFile": "x.json", "spawnFile": "x.xml", "enabled": true}), nil),
+		"unknown map id":          rotationBody(append(threeMaps()[:2], map[string]any{"id": 999999999, "name": "X", "mapFile": "x.json", "spawnFile": "x.xml", "enabled": true}), nil),
+		"unknown channel":         rotationBody(threeMaps(), func(b map[string]any) { b["announceChannelId"] = "123456789012345678" }),
+		"no spawn upload":         rotationBody(append(threeMaps()[:2], map[string]any{"name": "X", "mapFile": "x.json", "spawnFile": "x.xml", "enabled": true}), nil),
+		"empty spawn upload":      rotationBody(append(threeMaps()[:2], map[string]any{"name": "X", "mapFile": "x.json", "spawnFile": "x.xml", "spawnXml": "", "enabled": true}), nil),
+		"spawn upload not XML":    rotationBody(append(threeMaps()[:2], map[string]any{"name": "X", "mapFile": "x.json", "spawnFile": "x.xml", "spawnXml": "<playerspawnpoints><fresh>", "enabled": true}), nil),
+		"spawn upload wrong root": rotationBody(append(threeMaps()[:2], map[string]any{"name": "X", "mapFile": "x.json", "spawnFile": "x.xml", "spawnXml": "<types><pos x=\"1\" z=\"1\"/></types>", "enabled": true}), nil),
+		"spawn upload too large":  rotationBody(append(threeMaps()[:2], map[string]any{"name": "X", "mapFile": "x.json", "spawnFile": "x.xml", "spawnXml": mrSpawnsA + strings.Repeat(" ", maprotation.MaxSpawnBytes), "enabled": true}), nil),
+		"request too large":       rotationBody(append(threeMaps()[:2], map[string]any{"name": "X", "mapFile": "x.json", "spawnFile": "x.xml", "spawnXml": mrSpawnsA + strings.Repeat(" ", mapRotationMaxBody), "enabled": true}), nil),
 	} {
 		if code, resp := w.admin(http.MethodPut, a.handleSaveMapRotation, "/map/rotation", owner, body); code != http.StatusBadRequest || errCode(resp) != codeValidationError {
 			t.Fatalf("%s: %d %v", name, code, resp)
@@ -291,6 +324,12 @@ func TestMapRotationAdminContract(t *testing.T) {
 	}
 	if _, view = w.admin(http.MethodGet, a.handleAdminMapRotation, "/map/rotation", owner, nil); len(view["maps"].([]any)) != 0 || view["enabled"] != false {
 		t.Fatalf("a refused save stored something: %v", view)
+	}
+	// A map without a spawn upload is named in plain words.
+	_, resp := w.admin(http.MethodPut, a.handleSaveMapRotation, "/map/rotation", owner,
+		rotationBody(append(threeMaps()[:1], map[string]any{"name": "Dust", "mapFile": "dust.json", "spawnFile": "dust.xml", "enabled": true}), nil))
+	if errMessage(resp) != "Map 2 (Dust): upload a spawn file" {
+		t.Fatalf("missing spawn upload: %v", resp)
 	}
 
 	// A valid save, with a channel of this Discord server.
@@ -317,6 +356,23 @@ func TestMapRotationAdminContract(t *testing.T) {
 	if m := maps[0].(map[string]any); m["name"] != "Arena A" || m["mapFile"] != "arena_a.json" || m["spawnFile"] != "arena_a.xml" || m["imageUrl"] != "https://cdn.example.com/a.png" || maps[1].(map[string]any)["imageUrl"] != nil {
 		t.Fatalf("map fields: %v", m)
 	}
+	// The spawn file is stored in Champion: the view says so and how large, and never returns it.
+	for i, want := range []string{mrSpawnsA, mrSpawnsB, mrSpawnsC} {
+		m := maps[i].(map[string]any)
+		if m["spawnUploaded"] != true || m["spawnBytes"].(float64) != float64(len(want)) || w.storedSpawns(ids[i]) != want {
+			t.Fatalf("stored spawns of map %d: %v", i, m)
+		}
+		if _, has := m["spawnXml"]; has || len(m) != 9 {
+			t.Fatalf("a map entry has the contract's nine fields and no contents: %v", m)
+		}
+	}
+	if raw := w.call(a.handleAdminMapRotation, http.MethodGet, w.path("/map/rotation"), owner, nil, nil).Body.String(); strings.Contains(raw, "generator_posbubbles") {
+		t.Fatal("the view returned spawn contents")
+	}
+	var audited int
+	if err := a.DB.Pool.QueryRow(context.Background(), `SELECT COUNT(*) FROM admin_audit_log WHERE action='MAP_ROTATION_SAVE' AND (COALESCE(before_state::text,'') || COALESCE(after_state::text,'')) LIKE '%generator_posbubbles%'`).Scan(&audited); err != nil || audited != 0 {
+		t.Fatal("the audit log holds spawn contents")
+	}
 	if n := view["next"].(map[string]any); n["restartsUntilSwitch"].(float64) != 2 {
 		t.Fatalf("restarts until the switch: %v", n)
 	}
@@ -330,6 +386,40 @@ func TestMapRotationAdminContract(t *testing.T) {
 	maps = view["maps"].([]any)
 	if code != http.StatusOK || len(maps) != 2 || maps[0].(map[string]any)["id"] != ids[2] || maps[1].(map[string]any)["name"] != "Arena A+" || maps[1].(map[string]any)["position"].(float64) != 1 {
 		t.Fatalf("reorder: %d %v", code, maps)
+	}
+	// spawnXml left out: the stored contents are kept (and the removed map's are gone with it).
+	if w.storedSpawns(ids[2]) != mrSpawnsC || w.storedSpawns(ids[0]) != mrSpawnsA || maps[0].(map[string]any)["spawnUploaded"] != true || maps[0].(map[string]any)["spawnBytes"].(float64) != float64(len(mrSpawnsC)) {
+		t.Fatalf("a save without spawnXml changed the stored spawns: %v", maps)
+	}
+	// spawnXml sent: it replaces what was stored, for that map only.
+	replaced := []map[string]any{reordered[0], {"id": ids[0], "name": "Arena A+", "mapFile": "arena_a.json", "spawnFile": "arena_a_v2.xml", "spawnXml": mrSpawnsB + "\n", "imageUrl": nil, "enabled": true}}
+	code, view = w.admin(http.MethodPut, a.handleSaveMapRotation, "/map/rotation", owner, rotationBody(replaced, func(b map[string]any) { b["announceChannelId"] = ch.ID; b["voteEnabled"] = false }))
+	if m := view["maps"].([]any)[1].(map[string]any); code != http.StatusOK || m["spawnFile"] != "arena_a_v2.xml" || m["spawnBytes"].(float64) != float64(len(mrSpawnsB)+1) ||
+		w.storedSpawns(ids[0]) != mrSpawnsB+"\n" || w.storedSpawns(ids[2]) != mrSpawnsC {
+		t.Fatalf("replacing a spawn file: %d %v", code, view["maps"])
+	}
+	// A map saved before spawn files were uploaded has nothing stored: the view says so, and a
+	// save must bring the file. Nothing is saved until it does.
+	w.dropSpawns(ids[2])
+	_, view = w.admin(http.MethodGet, a.handleAdminMapRotation, "/map/rotation", owner, nil)
+	if m := view["maps"].([]any)[0].(map[string]any); m["spawnUploaded"] != false || m["spawnBytes"].(float64) != 0 || m["spawnFile"] != "arena_c.xml" {
+		t.Fatalf("a map without stored spawns: %v", m)
+	}
+	code, resp = w.admin(http.MethodPut, a.handleSaveMapRotation, "/map/rotation", owner, rotationBody(reordered, func(b map[string]any) {
+		b["announceChannelId"] = ch.ID
+		b["voteEnabled"] = false
+		b["everyRestarts"] = 3
+	}))
+	if code != http.StatusBadRequest || errCode(resp) != codeValidationError || errMessage(resp) != "Map 1 (Arena C): upload a spawn file" {
+		t.Fatalf("an old map saved without a spawn file: %d %v", code, resp)
+	}
+	if _, view = w.admin(http.MethodGet, a.handleAdminMapRotation, "/map/rotation", owner, nil); view["everyRestarts"].(float64) == 3 || w.storedSpawns(ids[0]) != mrSpawnsB+"\n" {
+		t.Fatalf("a refused save stored something: %v", view)
+	}
+	withC := []map[string]any{{"id": ids[2], "name": "Arena C", "mapFile": "arena_c.json", "spawnFile": "arena_c.xml", "spawnXml": mrSpawnsC, "imageUrl": nil, "enabled": true}, reordered[1]}
+	code, view = w.admin(http.MethodPut, a.handleSaveMapRotation, "/map/rotation", owner, rotationBody(withC, func(b map[string]any) { b["announceChannelId"] = ch.ID; b["voteEnabled"] = false }))
+	if code != http.StatusOK || w.storedSpawns(ids[2]) != mrSpawnsC || w.storedSpawns(ids[0]) != mrSpawnsB+"\n" {
+		t.Fatalf("uploading the missing spawn file: %d %v", code, view)
 	}
 	// A sequence without a vote is known in advance.
 	if n := view["next"].(map[string]any); n["mapId"] != ids[2] || n["decidedBy"] != "ROTATION" {
@@ -349,8 +439,11 @@ func TestMapRotationAdminContract(t *testing.T) {
 		t.Fatalf("staff next cleared: %d %v", code, view["next"])
 	}
 
-	// The file check lists the custom folder and writes nothing.
-	delete(w.remote.files, mrCustom+"/arena_c.xml")
+	// The file check lists the custom folder for the map files and writes nothing. For the spawn
+	// file it reports whether the contents are stored in Champion: nothing on Nitrado is looked up
+	// (there is no spawn file in the custom folder at all here).
+	delete(w.remote.files, mrCustom+"/arena_a.json")
+	w.dropSpawns(ids[2])
 	code, view = w.admin(http.MethodPost, a.handleCheckMapRotation, "/map/rotation/check", owner, nil)
 	checks := view["filesCheck"].([]any)
 	if code != http.StatusOK || len(checks) != 2 {
@@ -358,13 +451,61 @@ func TestMapRotationAdminContract(t *testing.T) {
 	}
 	for _, raw := range checks {
 		c := raw.(map[string]any)
-		wantSpawn := c["mapId"] != ids[2]
-		if c["mapFileFound"] != true || c["spawnFileFound"] != wantSpawn || c["checkedAt"] == nil {
+		if c["mapFileFound"] != (c["mapId"] != ids[0]) || c["spawnFileFound"] != (c["mapId"] != ids[2]) || c["checkedAt"] == nil {
 			t.Fatalf("check row: %v", c)
 		}
 	}
-	if len(w.remote.uploads) != 0 {
-		t.Fatal("the file check wrote to the server")
+	if len(w.remote.uploads) != 0 || len(w.remote.reads) != 0 {
+		t.Fatalf("the file check wrote to the server or downloaded a file: %v %v", w.remote.uploads, w.remote.reads)
+	}
+	// Uploading the spawn file shows at once, without another check.
+	code, view = w.admin(http.MethodPut, a.handleSaveMapRotation, "/map/rotation", owner, rotationBody(withC, func(b map[string]any) { b["announceChannelId"] = ch.ID; b["voteEnabled"] = false }))
+	for _, raw := range view["filesCheck"].([]any) {
+		if c := raw.(map[string]any); code != http.StatusOK || c["spawnFileFound"] != true {
+			t.Fatalf("check row after the upload: %d %v", code, c)
+		}
+	}
+	w.remote.files[mrCustom+"/arena_a.json"] = []byte(`{"Objects":[]}`)
+
+	// Five maps, each with a spawn file of the maximum size, fit in one save.
+	line := "\t\t\t<pos x=\"7500.5\" z=\"7500.5\" />\r\n"
+	full := "<playerspawnpoints>\r\n" + strings.Repeat(line, (maprotation.MaxSpawnBytes-48)/len(line)) + "</playerspawnpoints>"
+	full += strings.Repeat("\n", maprotation.MaxSpawnBytes-len(full))
+	five := []map[string]any{}
+	for i := 0; i < maprotation.MaxMaps; i++ {
+		five = append(five, map[string]any{"name": fmt.Sprintf("Big %d", i), "mapFile": fmt.Sprintf("big%d.json", i), "spawnFile": "big.xml", "spawnXml": full, "enabled": false})
+	}
+	// The body is written as a browser writes it (JSON.stringify leaves < and > as they are).
+	var fiveBody bytes.Buffer
+	enc := json.NewEncoder(&fiveBody)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(rotationBody(five, func(b map[string]any) { b["enabled"] = false })); err != nil {
+		t.Fatal(err)
+	}
+	if fiveBody.Len() <= maprotation.MaxMaps*maprotation.MaxSpawnBytes || fiveBody.Len() > mapRotationMaxBody {
+		t.Fatalf("test data: a body of %d bytes (limit %d)", fiveBody.Len(), mapRotationMaxBody)
+	}
+	fiveReq := httptest.NewRequest(http.MethodPut, w.path("/map/rotation"), &fiveBody)
+	fiveReq.Header.Set("Authorization", "Bearer test-secret")
+	rr := httptest.NewRecorder()
+	a.handleSaveMapRotation(rr, withPathValues(withActingUser(fiveReq, owner), w.pathValues()))
+	code, view = rr.Code, map[string]any{}
+	_ = json.Unmarshal(rr.Body.Bytes(), &view)
+	if code != http.StatusOK || len(view["maps"].([]any)) != 5 || view["maps"].([]any)[4].(map[string]any)["spawnBytes"].(float64) != float64(maprotation.MaxSpawnBytes) {
+		t.Fatalf("five maps at the maximum size: %d %v", code, errMessage(view))
+	}
+	code, view = w.admin(http.MethodPut, a.handleSaveMapRotation, "/map/rotation", owner, rotationBody(append(withC[:1:1], map[string]any{"name": "Arena A+", "mapFile": "arena_a.json", "spawnFile": "arena_a.xml", "spawnXml": mrSpawnsA, "enabled": true}), func(b map[string]any) { b["announceChannelId"] = ch.ID; b["voteEnabled"] = false }))
+	if code != http.StatusBadRequest {
+		// Arena C's id went with the five-map save, so this is refused; put the two maps back as new.
+		t.Fatalf("a removed map's id: %d", code)
+	}
+	back := []map[string]any{threeMaps()[2], threeMaps()[0]}
+	if code, view = w.admin(http.MethodPut, a.handleSaveMapRotation, "/map/rotation", owner, rotationBody(back, func(b map[string]any) { b["announceChannelId"] = ch.ID; b["voteEnabled"] = false })); code != http.StatusOK {
+		t.Fatalf("restore the two maps: %d %v", code, view)
+	}
+	reordered = []map[string]any{
+		{"id": view["maps"].([]any)[0].(map[string]any)["id"], "name": "Arena C", "mapFile": "arena_c.json", "spawnFile": "arena_c.xml", "imageUrl": nil, "enabled": true},
+		{"id": view["maps"].([]any)[1].(map[string]any)["id"], "name": "Arena A", "mapFile": "arena_a.json", "spawnFile": "arena_a.xml", "imageUrl": nil, "enabled": true},
 	}
 
 	// Plan: Survivor does not include map rotation once plans are enforced.
@@ -508,6 +649,12 @@ func TestMapRotationVoteSwitchAndRollback(t *testing.T) {
 	if code, body := w.player(http.MethodPost, a.handleCastMapVote, w.deeloID, map[string]any{"mapId": idB}); code != http.StatusConflict || errCode(body) != codeVoteClosed {
 		t.Fatalf("vote after closing: %d %v", code, body)
 	}
+	// Only the two live files and the map file were ever downloaded.
+	for _, p := range w.remote.reads {
+		if p != mrMission+"/cfggameplay.json" && p != mrMission+"/cfgplayerspawnpoints.xml" && p != mrCustom+"/arena_c.json" {
+			t.Fatalf("the switch downloaded %s", p)
+		}
+	}
 	// More ticks in the same period change nothing (idempotent).
 	w.tick(now.Add(31 * time.Minute))
 	w.tick(now.Add(45 * time.Minute))
@@ -627,20 +774,35 @@ func TestMapRotationInterruptedSwitch(t *testing.T) {
 	if err := a.MapRotation.SaveSwitchBackup(ctx, sw.ID, []byte("other"), []byte("other"), now); !errors.Is(err, repository.ErrMapSwitchNotPending) {
 		t.Fatalf("a saved backup must never be replaced: %v", err)
 	}
-	if again, created, _ := a.MapRotation.BeginSwitch(ctx, w.f.InstallationID, idB, "Arena B", "arena_b.json", "arena_b.xml", "ROTATION", "", now); created || again.ID != sw.ID || again.Attempts != 2 {
-		t.Fatalf("a second switch was started: %+v", again)
+	again, created, _ := a.MapRotation.BeginSwitch(ctx, w.f.InstallationID, idB, "Arena B", "arena_b.json", "arena_b.xml", "ROTATION", "", now)
+	if created || again.ID != sw.ID || again.Attempts != 2 {
+		t.Fatalf("a second switch was started: attempts %d", again.Attempts)
 	}
 	w.remote.files[mrMission+"/cfggameplay.json"] = []byte(strings.Replace(original, "\"custom/shop.json\"", "\"custom/shop.json\",\n\t\t\t\"custom/arena_b.json\"", 1))
+	// The switch took its copy of Arena B's spawn file when it began. The owner uploads another one
+	// before the switch is finished: the resumed switch still writes what the first attempt had.
+	if string(sw.SpawnXML) != mrSpawnsB || string(again.SpawnXML) != mrSpawnsB {
+		t.Fatal("the switch did not take a copy of the map's spawn file when it began")
+	}
+	maps := threeMaps()
+	for i, raw := range view["maps"].([]any) {
+		maps[i]["id"] = raw.(map[string]any)["id"]
+		delete(maps[i], "spawnXml")
+	}
+	maps[1]["spawnXml"] = mrSpawnsC
+	if code, body := w.admin(http.MethodPut, a.handleSaveMapRotation, "/map/rotation", w.f.OwnerDiscordID, rotationBody(maps, func(b map[string]any) { b["voteEnabled"] = false })); code != http.StatusOK || w.storedSpawns(float64(idB)) != mrSpawnsC {
+		t.Fatalf("upload during the switch: %d %v", code, body)
+	}
 
 	w.tick(now.Add(time.Minute))
 	if strings.Join(w.remote.uploads, " ") != mrMission+"/cfgplayerspawnpoints.xml" || w.remote.content(mrMission+"/cfgplayerspawnpoints.xml") != mrSpawnsB {
 		t.Fatalf("the interrupted switch was not finished by writing only the missing file: %v", w.remote.uploads)
 	}
 	var status string
-	var backup []byte
-	_ = a.DB.Pool.QueryRow(ctx, `SELECT status, prev_gameplay FROM map_rotation_switches WHERE id=$1`, sw.ID).Scan(&status, &backup)
-	if status != repository.MapSwitchApplied || string(backup) != original {
-		t.Fatalf("resumed switch: %s", status)
+	var backup, copyLeft []byte
+	_ = a.DB.Pool.QueryRow(ctx, `SELECT status, prev_gameplay, spawn_xml FROM map_rotation_switches WHERE id=$1`, sw.ID).Scan(&status, &backup, &copyLeft)
+	if status != repository.MapSwitchApplied || string(backup) != original || copyLeft != nil {
+		t.Fatalf("resumed switch: %s (the copy of the spawn file is dropped when the switch finishes: %d bytes left)", status, len(copyLeft))
 	}
 
 	// An old one: closed as failed, nothing written, rotation stopped, staff told.
@@ -667,6 +829,84 @@ func TestMapRotationInterruptedSwitch(t *testing.T) {
 	// Saving the settings starts it again.
 	if code, _ := w.admin(http.MethodPut, a.handleSaveMapRotation, "/map/rotation", w.f.OwnerDiscordID, rotationBody(threeMaps(), func(b map[string]any) { b["voteEnabled"] = false })); code != http.StatusOK {
 		t.Fatal("save")
+	}
+}
+
+// A map with no spawn file stored (saved before spawn files were uploaded on the website): the
+// switch fails before anything is sent to the server, with a reason the owner can act on, and
+// staff are told. Once the file is uploaded the next period's switch goes through.
+func TestMapRotationSwitchWithoutStoredSpawns(t *testing.T) {
+	w := newMapRotationWorld(t)
+	a := w.a
+	ctx := context.Background()
+	owner := w.f.OwnerDiscordID
+	w.flag(true)
+	code, view := w.admin(http.MethodPut, a.handleSaveMapRotation, "/map/rotation", owner, rotationBody(threeMaps(), func(b map[string]any) { b["voteEnabled"] = false }))
+	if code != http.StatusOK {
+		t.Fatalf("save: %d %v", code, view)
+	}
+	idA, idB := view["maps"].([]any)[0].(map[string]any)["id"].(float64), view["maps"].([]any)[1].(map[string]any)["id"].(float64)
+	w.dropSpawns(idA)
+	gameplay, spawns := w.remote.content(mrMission+"/cfggameplay.json"), w.remote.content(mrMission+"/cfgplayerspawnpoints.xml")
+	// An old spawn file still lying in the custom folder is not used.
+	w.remote.files[mrCustom+"/arena_a.xml"] = []byte(mrSpawnsC)
+
+	now := time.Now().UTC().Truncate(time.Second)
+	w.tick(now)                       // baseline
+	w.tick(now.Add(31 * time.Minute)) // the rotation decides Arena A and tries to switch
+	_, view = w.admin(http.MethodGet, a.handleAdminMapRotation, "/map/rotation", owner, nil)
+	last, _ := view["lastSwitch"].(map[string]any)
+	if last == nil || last["ok"] != false || last["message"] != "Upload a spawn file for Arena A on the Map rotation page. Nothing was changed." {
+		t.Fatalf("switch without stored spawns: %v", view["lastSwitch"])
+	}
+	if len(w.remote.uploads) != 0 || len(w.remote.reads) != 0 || w.remote.content(mrMission+"/cfggameplay.json") != gameplay || w.remote.content(mrMission+"/cfgplayerspawnpoints.xml") != spawns {
+		t.Fatalf("the server was touched: uploads %v reads %v", w.remote.uploads, w.remote.reads)
+	}
+	var status string
+	if err := a.DB.Pool.QueryRow(ctx, `SELECT status FROM map_rotation_switches WHERE installation_id=$1 ORDER BY id DESC LIMIT 1`, w.f.InstallationID).Scan(&status); err != nil || status != repository.MapSwitchFailed {
+		t.Fatalf("switch log: %s %v", status, err)
+	}
+	if len(w.alerts) != 1 || w.alerts[0].Kind != discord.AlertKindMapRotation || w.alerts[0].Severity != discord.AlertWarning || !strings.Contains(w.alerts[0].Detail, "Upload a spawn file for Arena A") {
+		t.Fatalf("staff alert: %+v", w.alerts)
+	}
+
+	// The owner uploads the file; the next period switches to Arena A with the uploaded contents.
+	maps := threeMaps()
+	for i, raw := range view["maps"].([]any) {
+		maps[i]["id"] = raw.(map[string]any)["id"]
+		delete(maps[i], "spawnXml")
+	}
+	maps[0]["spawnXml"] = mrSpawnsB
+	if code, body := w.admin(http.MethodPut, a.handleSaveMapRotation, "/map/rotation", owner, rotationBody(maps, func(b map[string]any) { b["voteEnabled"] = false })); code != http.StatusOK {
+		t.Fatalf("upload: %d %v", code, body)
+	}
+	boot2 := now.Add(time.Hour)
+	w.reboot(boot2)
+	w.tick(boot2.Add(time.Minute))
+	w.tick(boot2.Add(32 * time.Minute))
+	if !strings.Contains(w.remote.content(mrMission+"/cfggameplay.json"), `"custom/arena_a.json"`) || w.remote.content(mrMission+"/cfgplayerspawnpoints.xml") != mrSpawnsB {
+		t.Fatalf("switch after the upload: uploads %v", w.remote.uploads)
+	}
+
+	// A switch that began before spawn files were stored, had written a file and was interrupted:
+	// there is nothing to finish it with, so nothing more is written and a person must look.
+	boot3 := boot2.Add(2 * time.Hour)
+	w.reboot(boot3)
+	w.tick(boot3.Add(time.Minute))
+	w.dropSpawns(idB)
+	sw, created, err := a.MapRotation.BeginSwitch(ctx, w.f.InstallationID, int64(idB), "Arena B", "arena_b.json", "arena_b.xml", "ROTATION", "", boot3.Add(2*time.Minute))
+	if err != nil || !created || len(sw.SpawnXML) != 0 {
+		t.Fatalf("begin: %v", err)
+	}
+	if err := a.MapRotation.SaveSwitchBackup(ctx, sw.ID, []byte(gameplay), []byte(spawns), boot3.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	uploads := len(w.remote.uploads)
+	w.tick(boot3.Add(3 * time.Minute))
+	_, view = w.admin(http.MethodGet, a.handleAdminMapRotation, "/map/rotation", owner, nil)
+	last = view["lastSwitch"].(map[string]any)
+	if len(w.remote.uploads) != uploads || last["ok"] != false || !strings.Contains(last["message"].(string), "rotation is stopped") || w.alerts[len(w.alerts)-1].Severity != discord.AlertCritical {
+		t.Fatalf("interrupted switch without a copy of the spawn file: %v", last)
 	}
 }
 

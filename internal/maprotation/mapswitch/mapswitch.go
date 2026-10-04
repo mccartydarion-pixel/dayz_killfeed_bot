@@ -6,11 +6,14 @@
 // One Apply writes at most two files, both in the mission folder and both by fixed name:
 //
 //   - cfggameplay.json: only the text of WorldsData.objectSpawnersArr changes (maprotation.EditSpawners);
-//   - cfgplayerspawnpoints.xml: replaced by the chosen map's spawn file from custom/.
+//   - cfgplayerspawnpoints.xml: replaced by the chosen map's spawn contents, which the owner
+//     uploaded on the website and the caller hands over in the Request (they are not read from
+//     the server).
 //
 // It never creates a folder, never deletes and never writes anywhere else. The rules it follows:
 //
-//   - everything is downloaded and validated before the first write; any doubt means no write;
+//   - the spawn contents are validated, and the two live files and the map file are downloaded and
+//     validated, before the first write; any doubt means no write;
 //   - the previous contents of both files are handed to the caller's saveBackup (a database row)
 //     before the first write, and Apply refuses to write if that fails;
 //   - a write is attempted once and is judged only by reading the file back;
@@ -26,6 +29,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/yourname/dayz-killfeed/internal/maprotation"
@@ -56,9 +60,13 @@ type Backup struct {
 // Request is one switch.
 type Request struct {
 	ServiceID string
-	MapFile   string   // the chosen map's file in custom/
-	SpawnFile string   // the chosen map's spawn file in custom/
-	Owned     []string // the map files of every configured map of this installation
+	MapName   string // the chosen map's name, used only in messages
+	MapFile   string // the chosen map's file in custom/
+	SpawnFile string // the name of the spawn file the owner uploaded, used only in messages
+	// Spawns is the new content of cfgplayerspawnpoints.xml: the chosen map's stored spawn file.
+	// Empty means the owner has not uploaded one, and nothing is written.
+	Spawns []byte
+	Owned  []string // the map files of every configured map of this installation
 	// Prior is the backup saved by an earlier, interrupted Apply of this same switch. When set it
 	// is kept (never replaced) and used for any restore.
 	Prior *Backup
@@ -151,6 +159,22 @@ func Apply(ctx context.Context, rm Remote, req Request, saveBackup func(context.
 	if maprotation.ValidateMapFile(req.MapFile) != nil || maprotation.ValidateSpawnFile(req.SpawnFile) != nil {
 		return failed("The map's file names are not allowed. Nothing was changed.")
 	}
+	// The spawn contents come from Champion's database. They were checked when they were uploaded
+	// and are checked again here, before anything is read from or sent to the server.
+	newSpawns := req.Spawns
+	switch {
+	case len(newSpawns) == 0:
+		name := strings.TrimSpace(req.MapName)
+		if name == "" {
+			name = "this map"
+		}
+		return failed("Upload a spawn file for " + name + " on the Map rotation page. Nothing was changed.")
+	case len(newSpawns) > maprotation.MaxSpawnBytes:
+		return failed("The spawn file (" + req.SpawnFile + ") is too large. Nothing was changed.")
+	}
+	if err := maprotation.ValidateSpawnXML(newSpawns); err != nil {
+		return failed("The spawn file (" + req.SpawnFile + ") is not a valid spawn point file: " + err.Error() + ". Nothing was changed.")
+	}
 	paths, err := maprotation.Locate(ctx, rm, req.ServiceID)
 	if err != nil {
 		if errors.Is(err, maprotation.ErrServerLookup) {
@@ -185,14 +209,13 @@ func Apply(ctx context.Context, rm Remote, req Request, saveBackup func(context.
 		check(mission, maprotation.GameplayFile, maprotation.MaxGameplayBytes, "The server's cfggameplay.json"),
 		check(mission, maprotation.SpawnPointsFile, maprotation.MaxSpawnBytes, "The server's cfgplayerspawnpoints.xml"),
 		check(custom, req.MapFile, maprotation.MaxMapFileBytes, "The map file in the custom folder"),
-		check(custom, req.SpawnFile, maprotation.MaxSpawnBytes, "The spawn file in the custom folder"),
 	} {
 		if problem != "" {
 			return failed(problem + " Nothing was changed.")
 		}
 	}
 
-	// 2. Download all four and validate.
+	// 2. Download the three files (the two live files and the map file) and validate.
 	read := func(dir, name string, max int) ([]byte, bool) {
 		full, err := paths.File(dir, name)
 		if err != nil {
@@ -204,15 +227,11 @@ func Apply(ctx context.Context, rm Remote, req Request, saveBackup func(context.
 	liveGameplay, ok1 := read(paths.MissionDir, maprotation.GameplayFile, maprotation.MaxGameplayBytes)
 	liveSpawns, ok2 := read(paths.MissionDir, maprotation.SpawnPointsFile, maprotation.MaxSpawnBytes)
 	mapBytes, ok3 := read(paths.CustomDir, req.MapFile, maprotation.MaxMapFileBytes)
-	newSpawns, ok4 := read(paths.CustomDir, req.SpawnFile, maprotation.MaxSpawnBytes)
-	if !ok1 || !ok2 || !ok3 || !ok4 {
+	if !ok1 || !ok2 || !ok3 {
 		return failed("One of the files could not be downloaded from the server. Nothing was changed.")
 	}
 	if err := maprotation.ValidateMapJSON(mapBytes); err != nil {
 		return failed("The map file (" + req.MapFile + ") is not a valid JSON file. Nothing was changed.")
-	}
-	if err := maprotation.ValidateSpawnXML(newSpawns); err != nil {
-		return failed("The spawn file (" + req.SpawnFile + ") is not a valid spawn point file: " + err.Error() + ". Nothing was changed.")
 	}
 	edit, err := maprotation.EditSpawners(liveGameplay, req.Owned, req.MapFile)
 	if err != nil {

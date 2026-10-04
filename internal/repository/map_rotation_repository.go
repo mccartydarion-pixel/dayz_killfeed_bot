@@ -19,6 +19,17 @@ var (
 	ErrMapSwitchNotPending   = errors.New("the switch is not pending")
 )
 
+// MapRotationSpawnMissingError: a save left out the spawn contents of a map that has none stored.
+// Index is the map's place in the save (0-based).
+type MapRotationSpawnMissingError struct {
+	Index int
+	Name  string
+}
+
+func (e *MapRotationSpawnMissingError) Error() string {
+	return "a map has no spawn file stored and none was sent"
+}
+
 // Switch statuses.
 const (
 	MapSwitchPending    = "PENDING"
@@ -35,7 +46,8 @@ type MapRotationMap struct {
 	ID             int64
 	Name           string
 	MapFile        string
-	SpawnFile      string
+	SpawnFile      string // the name of the uploaded spawn file, for display
+	SpawnBytes     int    // size of the stored spawn contents, 0 when none are stored
 	ImageURL       *string
 	Enabled        bool
 	Position       int
@@ -105,11 +117,14 @@ type MapRotationSwitch struct {
 	Status       string
 	Message      string
 	Attempts     int
-	PrevGameplay []byte // loaded only by PendingSwitch
+	PrevGameplay []byte // loaded only by PendingSwitch and BeginSwitch
 	PrevSpawns   []byte
-	BackupSaved  bool
-	CreatedAt    time.Time
-	FinishedAt   *time.Time
+	// SpawnXML is the map's spawn contents as they were when the switch began (loaded only by
+	// PendingSwitch and BeginSwitch; empty when the map had none, and after the switch finished).
+	SpawnXML    []byte
+	BackupSaved bool
+	CreatedAt   time.Time
+	FinishedAt  *time.Time
 }
 
 // MapRotationSnapshot is everything the API shows.
@@ -126,8 +141,11 @@ type MapRotationMapInput struct {
 	Name      string
 	MapFile   string
 	SpawnFile string
-	ImageURL  *string
-	Enabled   bool
+	// SpawnXML is the uploaded spawn file. nil keeps the contents already stored for the map; a map
+	// with none stored must bring them.
+	SpawnXML []byte
+	ImageURL *string
+	Enabled  bool
 }
 
 // MapRotationInput is a save. The caller has validated it.
@@ -181,7 +199,7 @@ func loadMapRotationSettings(ctx context.Context, q mapRotationQuerier, installa
 }
 
 func loadMapRotationMaps(ctx context.Context, q mapRotationQuerier, installationID int64) ([]MapRotationMap, error) {
-	rows, err := q.Query(ctx, `SELECT id, name, map_file, spawn_file, image_url, enabled, position, map_file_found, spawn_file_found, checked_at
+	rows, err := q.Query(ctx, `SELECT id, name, map_file, spawn_file, COALESCE(octet_length(spawn_xml), 0)::int, image_url, enabled, position, map_file_found, spawn_file_found, checked_at
 FROM map_rotation_maps WHERE installation_id=$1 ORDER BY position, id`, installationID)
 	if err != nil {
 		return nil, err
@@ -190,7 +208,7 @@ FROM map_rotation_maps WHERE installation_id=$1 ORDER BY position, id`, installa
 	out := []MapRotationMap{}
 	for rows.Next() {
 		var m MapRotationMap
-		if err := rows.Scan(&m.ID, &m.Name, &m.MapFile, &m.SpawnFile, &m.ImageURL, &m.Enabled, &m.Position, &m.MapFileFound, &m.SpawnFileFound, &m.CheckedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.Name, &m.MapFile, &m.SpawnFile, &m.SpawnBytes, &m.ImageURL, &m.Enabled, &m.Position, &m.MapFileFound, &m.SpawnFileFound, &m.CheckedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, m)
@@ -262,7 +280,9 @@ const ensureMapRotationRow = `INSERT INTO map_rotation_settings(installation_id)
 
 // Save stores the owner's settings and the list of maps (list order = rotation order). A map with
 // an ID is updated, one without is created, and a stored map that is not listed is removed. Saving
-// also clears a stop caused by failed switches.
+// also clears a stop caused by failed switches. A map's spawn contents are replaced when the save
+// brings them and kept otherwise; a map that would end up with none refuses the whole save with a
+// *MapRotationSpawnMissingError.
 func (r *MapRotationRepository) Save(ctx context.Context, installationID int64, in MapRotationInput, actor string, now time.Time) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -293,17 +313,25 @@ func (r *MapRotationRepository) Save(ctx context.Context, installationID int64, 
 				return ErrMapRotationUnknownMap
 			}
 			keep[m.ID] = true
-			sameFiles := old.MapFile == m.MapFile && old.SpawnFile == m.SpawnFile
+			if len(m.SpawnXML) == 0 && old.SpawnBytes == 0 {
+				return &MapRotationSpawnMissingError{Index: i, Name: m.Name}
+			}
+			// The file check is about the map file on the server; it stands while that name does.
+			sameFiles := old.MapFile == m.MapFile
 			if _, err := tx.Exec(ctx, `UPDATE map_rotation_maps SET name=$3, map_file=$4, spawn_file=$5, image_url=$6, enabled=$7, position=$8,
-    map_file_found = CASE WHEN $9::boolean THEN map_file_found END, spawn_file_found = CASE WHEN $9::boolean THEN spawn_file_found END, checked_at = CASE WHEN $9::boolean THEN checked_at END
-WHERE id=$1 AND installation_id=$2`, m.ID, installationID, m.Name, m.MapFile, m.SpawnFile, m.ImageURL, m.Enabled, i, sameFiles); err != nil {
+    map_file_found = CASE WHEN $9::boolean THEN map_file_found END, spawn_file_found = CASE WHEN $9::boolean THEN spawn_file_found END, checked_at = CASE WHEN $9::boolean THEN checked_at END,
+    spawn_xml = COALESCE($10::bytea, spawn_xml)
+WHERE id=$1 AND installation_id=$2`, m.ID, installationID, m.Name, m.MapFile, m.SpawnFile, m.ImageURL, m.Enabled, i, sameFiles, spawnParam(m.SpawnXML)); err != nil {
 				return err
 			}
 			continue
 		}
+		if len(m.SpawnXML) == 0 {
+			return &MapRotationSpawnMissingError{Index: i, Name: m.Name}
+		}
 		var id int64
-		if err := tx.QueryRow(ctx, `INSERT INTO map_rotation_maps(installation_id, name, map_file, spawn_file, image_url, enabled, position) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-			installationID, m.Name, m.MapFile, m.SpawnFile, m.ImageURL, m.Enabled, i).Scan(&id); err != nil {
+		if err := tx.QueryRow(ctx, `INSERT INTO map_rotation_maps(installation_id, name, map_file, spawn_file, image_url, enabled, position, spawn_xml) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+			installationID, m.Name, m.MapFile, m.SpawnFile, m.ImageURL, m.Enabled, i, m.SpawnXML).Scan(&id); err != nil {
 			return err
 		}
 		keep[id] = true
@@ -346,6 +374,14 @@ WHERE s.installation_id=$1`,
 	return tx.Commit(ctx)
 }
 
+// spawnParam is the spawn contents as a query argument: NULL (keep what is stored) when empty.
+func spawnParam(b []byte) any {
+	if len(b) == 0 {
+		return nil
+	}
+	return b
+}
+
 // SetStaffNext stores (or, with nil, clears) the map a staff member picked for the next switch.
 func (r *MapRotationRepository) SetStaffNext(ctx context.Context, installationID int64, mapID *int64) error {
 	if mapID != nil {
@@ -374,7 +410,8 @@ WHERE installation_id=$1`, installationID)
 	return err
 }
 
-// MapFileCheck is whether a map's two files were found in the server's custom folder.
+// MapFileCheck is whether a map's map file was found in the server's custom folder and whether its
+// spawn contents are stored in Champion.
 type MapFileCheck struct{ MapFileFound, SpawnFileFound bool }
 
 func (r *MapRotationRepository) SaveFileChecks(ctx context.Context, installationID int64, checks map[int64]MapFileCheck, now time.Time) error {
@@ -623,11 +660,11 @@ func (r *MapRotationRepository) VoteCounts(ctx context.Context, voteID int64) (m
 	return out, rows.Err()
 }
 
-const mapSwitchColumns = `id, map_id, map_name, map_file, spawn_file, decided_by, status, message, attempts, prev_gameplay, prev_spawns, backup_saved_at IS NOT NULL, created_at, finished_at`
+const mapSwitchColumns = `id, map_id, map_name, map_file, spawn_file, decided_by, status, message, attempts, prev_gameplay, prev_spawns, backup_saved_at IS NOT NULL, created_at, finished_at, spawn_xml`
 
 func scanMapSwitch(row pgx.Row) (*MapRotationSwitch, error) {
 	var sw MapRotationSwitch
-	err := row.Scan(&sw.ID, &sw.MapID, &sw.MapName, &sw.MapFile, &sw.SpawnFile, &sw.DecidedBy, &sw.Status, &sw.Message, &sw.Attempts, &sw.PrevGameplay, &sw.PrevSpawns, &sw.BackupSaved, &sw.CreatedAt, &sw.FinishedAt)
+	err := row.Scan(&sw.ID, &sw.MapID, &sw.MapName, &sw.MapFile, &sw.SpawnFile, &sw.DecidedBy, &sw.Status, &sw.Message, &sw.Attempts, &sw.PrevGameplay, &sw.PrevSpawns, &sw.BackupSaved, &sw.CreatedAt, &sw.FinishedAt, &sw.SpawnXML)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -637,7 +674,8 @@ func scanMapSwitch(row pgx.Row) (*MapRotationSwitch, error) {
 	return &sw, nil
 }
 
-// PendingSwitch is the installation's switch in flight (with its backup), nil when there is none.
+// PendingSwitch is the installation's switch in flight (with its backup and its copy of the map's
+// spawn contents), nil when there is none.
 func (r *MapRotationRepository) PendingSwitch(ctx context.Context, installationID int64) (*MapRotationSwitch, error) {
 	return scanMapSwitch(r.pool.QueryRow(ctx, `SELECT `+mapSwitchColumns+` FROM map_rotation_switches WHERE installation_id=$1 AND status='PENDING'`, installationID))
 }
@@ -645,9 +683,13 @@ func (r *MapRotationRepository) PendingSwitch(ctx context.Context, installationI
 // BeginSwitch records a PENDING switch before anything is written. If one is already in flight it
 // is returned instead (created=false) with its attempt count raised: a retry continues a switch,
 // it never starts a second one. Backups older than the newest five switches are dropped.
+//
+// A new switch takes a copy of the map's stored spawn contents in the same statement, and that copy
+// is what every attempt of the switch writes: a spawn file uploaded while the switch is in flight
+// does not change it. The copy is empty when the map has no contents stored.
 func (r *MapRotationRepository) BeginSwitch(ctx context.Context, installationID int64, mapID int64, mapName, mapFile, spawnFile, decidedBy, bootFile string, now time.Time) (*MapRotationSwitch, bool, error) {
-	sw, err := scanMapSwitch(r.pool.QueryRow(ctx, `INSERT INTO map_rotation_switches(installation_id, map_id, map_name, map_file, spawn_file, decided_by, boot_file, created_at)
-VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (installation_id) WHERE status = 'PENDING' DO NOTHING RETURNING `+mapSwitchColumns,
+	sw, err := scanMapSwitch(r.pool.QueryRow(ctx, `INSERT INTO map_rotation_switches(installation_id, map_id, map_name, map_file, spawn_file, decided_by, boot_file, created_at, spawn_xml)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8, (SELECT m.spawn_xml FROM map_rotation_maps m WHERE m.id=$2 AND m.installation_id=$1)) ON CONFLICT (installation_id) WHERE status = 'PENDING' DO NOTHING RETURNING `+mapSwitchColumns,
 		installationID, mapID, mapName, mapFile, spawnFile, decidedBy, bootFile, now))
 	if err != nil {
 		return nil, false, err
@@ -684,14 +726,15 @@ func (r *MapRotationRepository) SaveSwitchBackup(ctx context.Context, switchID i
 
 // FinishSwitch closes a PENDING switch as APPLIED, FAILED or ROLLED_BACK and ends the period's
 // work. halt (non-empty) stops the rotation until the owner saves the settings again; the
-// rotation also stops by itself after MapRotationMaxFailures failures in a row.
+// rotation also stops by itself after MapRotationMaxFailures failures in a row. The switch's copy
+// of the spawn contents is dropped: it is only needed while the switch is in flight.
 func (r *MapRotationRepository) FinishSwitch(ctx context.Context, installationID, switchID int64, status, message, halt string, now time.Time) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	tag, err := tx.Exec(ctx, `UPDATE map_rotation_switches SET status=$3, message=$4, finished_at=$5 WHERE id=$2 AND installation_id=$1 AND status='PENDING'`,
+	tag, err := tx.Exec(ctx, `UPDATE map_rotation_switches SET status=$3, message=$4, finished_at=$5, spawn_xml=NULL WHERE id=$2 AND installation_id=$1 AND status='PENDING'`,
 		installationID, switchID, status, message, now)
 	if err != nil {
 		return err
