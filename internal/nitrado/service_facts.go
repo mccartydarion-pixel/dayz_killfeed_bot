@@ -46,8 +46,8 @@ type GameserverFacts struct {
 	LogFileCount                                               int
 	QueryMap                                                   string
 	QueryVersion                                               string
-	// Whitelisted DayZ settings (serverDZ.cfg as Nitrado manages it). Never password, admin-password,
-	// rcon-password or hostname.
+	// Whitelisted DayZ settings (serverDZ.cfg as Nitrado manages it). Never password, admin-password
+	// or rcon-password. The hostname is read separately, by GameserverName (server_name.go).
 	EnableCfgGameplayFile string
 	Mission               string
 	ExpertMode            string

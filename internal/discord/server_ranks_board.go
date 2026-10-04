@@ -30,6 +30,23 @@ type ServerRanksBoard struct {
 	guildID  int64
 	serverID int64
 	name     string
+	nameFn   ServerNameFunc
+}
+
+// SetServerNameFunc makes the panel show the server's current name on each refresh (an owner
+// rename or a Nitrado name change) instead of the name the board was created with. A nil
+// function, or one that returns "", keeps that name. Call it before Run.
+func (b *ServerRanksBoard) SetServerNameFunc(f ServerNameFunc) {
+	if b != nil {
+		b.nameFn = f
+	}
+}
+
+func (b *ServerRanksBoard) serverName() string {
+	if name := serverNameOf(b.nameFn, b.serverID); name != "" {
+		return name
+	}
+	return b.name
 }
 
 // ServerRanksInactiveEmbed is the honest notice shown while a server has no
@@ -84,9 +101,9 @@ func (b *ServerRanksBoard) SyncOnce(ctx context.Context) {
 	var embed *discordgo.MessageEmbed
 	switch {
 	case err == nil:
-		embed = BuildServerRanksEmbed(ServerRanksSnapshot{ServerName: b.name, UpdatedAt: time.Now().UTC(), Standings: rows})
+		embed = BuildServerRanksEmbed(ServerRanksSnapshot{ServerName: b.serverName(), UpdatedAt: time.Now().UTC(), Standings: rows})
 	case errors.Is(err, repository.ErrRankedIneligible):
-		embed = ServerRanksInactiveEmbed(b.name)
+		embed = ServerRanksInactiveEmbed(b.serverName())
 	default:
 		slog.Warn("component=ranked", "event", "standings_failed", "server_id", b.serverID, "err", err.Error())
 		return // query failure: preserve last good panel

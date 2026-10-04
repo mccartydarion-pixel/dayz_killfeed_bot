@@ -2897,6 +2897,13 @@ ALTER TABLE installation_feature_settings ADD COLUMN IF NOT EXISTS live_map_fact
 		Name: "0123_map_rotation_spawn_upload",
 		SQL:  MapRotationSpawnUploadSQL,
 	},
+	{
+		// A game server's name follows its Nitrado name unless the owner typed one in Champion
+		// (docs/SERVER_NAME_SYNC.md). Two columns, and existing servers whose current name came
+		// from an audited rename are marked custom. Additive.
+		Name: "0124_server_name_sync",
+		SQL:  ServerNameSyncSQL,
+	},
 }
 
 // NitradoTailTrustSQL keeps which Nitrado services have proven that partial (seek) reads match

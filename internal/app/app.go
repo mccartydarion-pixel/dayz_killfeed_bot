@@ -1295,6 +1295,9 @@ func (a *App) Run() error {
 	// Map rotation with a player vote: it does nothing for an installation unless the map_rotation
 	// feature flag, the plan and the owner's own switch are all on (docs/MAP_ROTATION.md).
 	a.startMapRotationWorker(ctx)
+	// A server's name follows its Nitrado name unless the owner typed one in Champion: one read
+	// per server about every twenty minutes (docs/SERVER_NAME_SYNC.md).
+	a.startServerNameSync(ctx)
 	// Faction Hub achievements: kills queue an evaluation (drained every 5 seconds, one evaluation
 	// per affected faction), and a reconcile - one minute after start, then daily - backfills
 	// factions that already qualify and unlocks the time-based ones. Unlocking is silent.
@@ -1873,6 +1876,7 @@ func (a *App) Run() error {
 			if routingEnabled && a.Ranked != nil {
 				for _, serverRow := range activeServers {
 					board := discord.NewServerRanksBoard(a.ChannelRoutes, routePanels, a.Ranked, guildRowID, serverRow.ID, serverRow.DisplayName)
+					board.SetServerNameFunc(a.serverNameFunc())
 					a.ServerRanksBoards = append(a.ServerRanksBoards, board)
 					go board.Run(ctx)
 				}
@@ -2254,6 +2258,7 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 		publisher.SetRouting(a.ChannelRoutes, row.GuildID, row.ID)
 	}
 	publisher.SetCustomizer(a.embedCustomizer(), row.DisplayName)
+	publisher.SetServerNameFunc(a.serverNameFunc())
 	engine.SetKillPublisher(publisher)
 
 	if a.ChannelRoutes != nil && a.Discord != nil && a.Discord.Session() != nil {

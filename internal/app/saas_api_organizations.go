@@ -236,6 +236,11 @@ type DayZServerSummary struct {
 	Game        string `json:"game"`
 	Platform    string `json:"platform"`
 	Status      string `json:"status"`
+	// DisplayNameCustom: the owner typed displayName in Champion, so it no longer follows the
+	// Nitrado name. ProviderName: the last name read from Nitrado, null until the first read
+	// (docs/SERVER_NAME_SYNC.md).
+	DisplayNameCustom bool    `json:"displayNameCustom"`
+	ProviderName      *string `json:"providerName"`
 }
 
 func toDayZServerSummary(s repository.GameServer) DayZServerSummary {
@@ -251,6 +256,9 @@ func toDayZServerSummary(s repository.GameServer) DayZServerSummary {
 		Game:        s.Game,
 		Platform:    s.Platform,
 		Status:      s.Status,
+
+		DisplayNameCustom: s.DisplayNameCustom,
+		ProviderName:      optionalString(s.ProviderName),
 	}
 }
 

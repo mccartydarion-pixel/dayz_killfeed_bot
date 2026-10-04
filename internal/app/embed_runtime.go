@@ -78,6 +78,20 @@ func (c *serverNameCache) name(serverID int64) string {
 	return name
 }
 
+// forget drops serverID's cached name, so the next card or panel refresh reads the new one.
+func (c *serverNameCache) forget(serverID int64) {
+	c.mu.Lock()
+	delete(c.entries, serverID)
+	c.mu.Unlock()
+}
+
+// forgetServerName is called after a server's display name changed (owner rename, Nitrado sync).
+func (a *App) forgetServerName(serverID int64) {
+	if a.serverNameFunc() != nil {
+		a.serverNames.forget(serverID)
+	}
+}
+
 // serverNameFunc is the ServerNameFunc publishers use (nil when there is no server
 // repository).
 func (a *App) serverNameFunc() discord.ServerNameFunc {

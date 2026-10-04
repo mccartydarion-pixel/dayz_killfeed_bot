@@ -124,18 +124,49 @@ RETURNING `+warningCols, guildID, warningID, clearedByUserID))
 
 // --- server display name / feed location / maintenance mode ----------------------------------
 
-// SetServerDisplayName updates a game server's Champion-facing display name (task's
-// "setServerName" - explicitly NOT a Nitrado server rename, just the name Champion shows in its
-// own feeds/panels).
-func (r *ClientAdminRepository) SetServerDisplayName(ctx context.Context, guildID, serverID int64, name string) error {
-	tag, err := r.pool.Exec(ctx, `UPDATE game_servers SET display_name=$1,updated_at=NOW() WHERE id=$2 AND guild_id=$3`, name, serverID, guildID)
-	if err != nil {
-		return err
+// ServerNameState is a server's name as Champion shows it, whether the owner typed it in Champion
+// (Custom) and the last name read from Nitrado ("" until the first read).
+type ServerNameState struct {
+	DisplayName  string
+	Custom       bool
+	ProviderName string
+}
+
+// ErrNoProviderName is returned by SetServerDisplayName when the owner cleared the name but
+// Champion has not read a Nitrado name to go back to.
+var ErrNoProviderName = errors.New("no Nitrado name is known for this server")
+
+// SetServerDisplayName sets the name Champion shows for a game server (never a Nitrado rename).
+//
+// A typed name is the owner's custom name: the Nitrado name sync leaves it alone. Typing exactly
+// the current Nitrado name, or clearing the name (""), gives the name back to the sync - the
+// server then shows its Nitrado name and follows it again (docs/SERVER_NAME_SYNC.md).
+func (r *ClientAdminRepository) SetServerDisplayName(ctx context.Context, guildID, serverID int64, name string) (ServerNameState, error) {
+	var st ServerNameState
+	var err error
+	if name == "" {
+		err = r.pool.QueryRow(ctx, `UPDATE game_servers SET display_name=provider_display_name, display_name_custom=FALSE, updated_at=NOW()
+WHERE id=$1 AND guild_id=$2 AND COALESCE(provider_display_name,'')<>''
+RETURNING COALESCE(display_name,''), display_name_custom, COALESCE(provider_display_name,'')`, serverID, guildID).Scan(&st.DisplayName, &st.Custom, &st.ProviderName)
+		if errors.Is(err, pgx.ErrNoRows) {
+			var exists bool
+			if err := r.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM game_servers WHERE id=$1 AND guild_id=$2)`, serverID, guildID).Scan(&exists); err != nil {
+				return ServerNameState{}, err
+			}
+			if exists {
+				return ServerNameState{}, ErrNoProviderName
+			}
+			return ServerNameState{}, ErrInstallationScopeNotFound
+		}
+		return st, err
 	}
-	if tag.RowsAffected() == 0 {
-		return ErrInstallationScopeNotFound
+	err = r.pool.QueryRow(ctx, `UPDATE game_servers SET display_name=$1, display_name_custom=($1::text IS DISTINCT FROM provider_display_name), updated_at=NOW()
+WHERE id=$2 AND guild_id=$3
+RETURNING COALESCE(display_name,''), display_name_custom, COALESCE(provider_display_name,'')`, name, serverID, guildID).Scan(&st.DisplayName, &st.Custom, &st.ProviderName)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ServerNameState{}, ErrInstallationScopeNotFound
 	}
-	return nil
+	return st, err
 }
 
 // SetFeedShowLocation toggles whether a channel route's embeds include location fields (task's

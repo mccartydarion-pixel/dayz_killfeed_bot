@@ -281,7 +281,7 @@ func (h *ServerCommandHandler) handleSelect(s *discordgo.Session, i *discordgo.I
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	services, err := h.dayZServices(ctx, i.GuildID)
+	services, client, err := h.dayZServicesAndClient(ctx, i.GuildID)
 	if err != nil {
 		respondEphemeral(s, i, "❌ "+err.Error())
 		return
@@ -304,13 +304,21 @@ func (h *ServerCommandHandler) handleSelect(s *discordgo.Session, i *discordgo.I
 		return
 	}
 
+	// The name the periodic sync will read (nitrado.ServerName): the DayZ hostname setting when the
+	// gameserver read is possible, else the service list's name.
+	providerName := client.ResolveServerName(ctx, *matched)
+	connectedName := providerName
+	if connectedName == "" {
+		connectedName = displayNameFromService(*matched)
+	}
 	row, err := h.servers.UpsertGameServer(ctx, repository.GameServer{
 		GuildID:           guildRowID,
 		Provider:          "NITRADO",
 		ProviderServiceID: matched.ID,
 		Game:              matched.Game,
 		Platform:          platformFromService(*matched),
-		DisplayName:       displayNameFromService(*matched),
+		DisplayName:       connectedName,
+		ProviderName:      providerName,
 		Status:            "CONNECTED",
 		Active:            true,
 	})
@@ -502,27 +510,35 @@ func (h *ServerCommandHandler) suggestedServices(ctx context.Context, discordGui
 // token, and returns the live, DayZ-filtered service list. The plaintext
 // token never leaves this function.
 func (h *ServerCommandHandler) dayZServices(ctx context.Context, discordGuildID string) ([]nitrado.Service, error) {
+	services, _, err := h.dayZServicesAndClient(ctx, discordGuildID)
+	return services, err
+}
+
+// dayZServicesAndClient is dayZServices plus the client the list was read with, for the one
+// follow-up read /server select makes (the selected server's name). The client holds the token;
+// it is never logged or returned to Discord.
+func (h *ServerCommandHandler) dayZServicesAndClient(ctx context.Context, discordGuildID string) ([]nitrado.Service, *nitrado.Client, error) {
 	_, guildRowID, err := h.guilds.GetGuild(ctx, discordGuildID)
 	if err != nil || guildRowID == 0 {
-		return nil, fmt.Errorf("run `/setup` first")
+		return nil, nil, fmt.Errorf("run `/setup` first")
 	}
 	if h.cipher == nil {
-		return nil, fmt.Errorf("credential encryption is not configured")
+		return nil, nil, fmt.Errorf("credential encryption is not configured")
 	}
 	conn, err := h.servers.GetConnection(ctx, guildRowID)
 	if err != nil || conn == nil {
-		return nil, fmt.Errorf("no Nitrado connection; run `/server connect` first")
+		return nil, nil, fmt.Errorf("no Nitrado connection; run `/server connect` first")
 	}
 	plaintext, err := h.cipher.Decrypt(conn.Ciphertext, conn.Nonce, conn.KeyVersion)
 	if err != nil {
-		return nil, fmt.Errorf("stored Nitrado token could not be decrypted; run `/server connect` again")
+		return nil, nil, fmt.Errorf("stored Nitrado token could not be decrypted; run `/server connect` again")
 	}
 	client := nitrado.NewClient(nitrado.DefaultBaseURL, string(plaintext), nil)
 	services, err := client.GetServices(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("Nitrado request failed: %s", classifyNitradoErr(err))
+		return nil, nil, fmt.Errorf("Nitrado request failed: %s", classifyNitradoErr(err))
 	}
-	return nitrado.FindDayZServices(services), nil
+	return nitrado.FindDayZServices(services), client, nil
 }
 
 func (h *ServerCommandHandler) editResponse(s *discordgo.Session, i *discordgo.InteractionCreate, content string) {
@@ -580,11 +596,10 @@ func classifyNitradoErr(err error) string {
 
 // displayNameFromService picks the best available human-readable server name.
 func displayNameFromService(svc nitrado.Service) string {
-	if svc.Details.ServerName != "" {
-		return svc.Details.ServerName
-	}
-	if svc.Details.Name != "" {
-		return svc.Details.Name
+	// One precedence for every caller (nitrado.ServerName); the listings read no gameserver
+	// details, so only the service list's own fields take part here.
+	if name := nitrado.ServerName(nitrado.GameserverName{}, svc); name != "" {
+		return name
 	}
 	if svc.Game != "" {
 		return svc.Game
