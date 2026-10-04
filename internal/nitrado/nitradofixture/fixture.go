@@ -41,12 +41,16 @@ type Server struct {
 	admName        string
 	adm            bytes.Buffer
 	modified       time.Time
+	booted         time.Time
 	players        int
 	seq            int
 	started        bool
 	refusedWrites  int
 	requestsByPath map[string]int
 }
+
+// restartEvery is the synthetic scheduled-restart interval (GET /services/:id/tasks).
+const restartEvery = 4 * time.Hour
 
 // New returns a fixture for serviceID. controlToken, when non-empty, is
 // required (X-Fixture-Token header) on every /_fixture control call.
@@ -63,6 +67,7 @@ func (s *Server) rotateLocked() {
 	s.adm.Reset()
 	fmt.Fprintf(&s.adm, "AdminLog started on %s at %s\n", now.Format("2006-01-02"), now.Format("15:04:05"))
 	s.modified = now
+	s.booted = now
 }
 
 func (s *Server) appendLocked(line string) {
@@ -177,6 +182,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"status": "success", "data": map[string]any{"service": s.serviceJSON()}})
 	case "/services/" + id + "/gameservers":
 		writeJSON(w, 200, map[string]any{"status": "success", "data": map[string]any{"gameserver": s.gameserverJSON()}})
+	case "/services/" + id + "/tasks":
+		writeJSON(w, 200, map[string]any{"status": "success", "data": map[string]any{"tasks": s.tasksJSON()}})
 	case "/services/" + id + "/gameservers/file_server/list":
 		s.list(w, r.URL.Query().Get("dir"))
 	case "/services/" + id + "/gameservers/file_server/download":
@@ -225,7 +232,30 @@ func (s *Server) gameserverJSON() map[string]any {
 	}
 	return map[string]any{"service_id": s.serviceID, "game": "dayzps", "game_human": "DayZ (PS4)", "status": status, "type": "gameserver", "slots": s.slots,
 		"game_specific": map[string]any{"path": gamePath, "path_available": true, "log_files": []string{}, "features": map[string]any{"has_file_browser": true}},
-		"query":         map[string]any{"server_name": "Champion staging fixture", "map": "chernarusplus", "version": "fixture", "player_current": s.players, "player_max": s.slots}}
+		"query":         map[string]any{"server_name": "Champion staging fixture", "map": "chernarusplus", "version": "fixture", "player_current": s.players, "player_max": s.slots},
+		// The DayZ settings Champion reads (never a password): the in-game clock runs twelve
+		// times faster than real time from the host's clock at boot (docs/LIVE_MAP.md).
+		"settings": map[string]any{"config": map[string]any{"mission": "dayzOffline.chernarusplus", "adminLogPlayerList": "1",
+			"serverTime": "SystemTime", "serverTimeAcceleration": "12", "serverNightTimeAcceleration": "1"}}}
+}
+
+// tasksJSON is the synthetic scheduled-task list: one restart every restartEvery from the boot,
+// plus a backup task Champion must ignore, in the shape of GET /services/:id/tasks.
+func (s *Server) tasksJSON() []any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.now().UTC()
+	next := s.booted.Add(restartEvery)
+	for !next.After(now) {
+		next = next.Add(restartEvery)
+	}
+	const layout = "2006-01-02 15:04:05"
+	return []any{
+		map[string]any{"id": 1, "service_id": s.serviceID, "minute": "0", "hour": "*/4", "day": "*", "month": "*", "weekday": "*",
+			"next_run": next.Format(layout), "last_run": s.booted.Format(layout), "method": "restart", "action_method": "restart", "action_data": nil},
+		map[string]any{"id": 2, "service_id": s.serviceID, "minute": "30", "hour": "3", "day": "*", "month": "*", "weekday": "*",
+			"next_run": next.Add(30 * time.Minute).Format(layout), "last_run": nil, "method": "backup", "action_method": "backup", "action_data": nil},
+	}
 }
 
 func (s *Server) isADM(file string) bool {

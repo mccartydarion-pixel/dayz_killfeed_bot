@@ -52,6 +52,12 @@ type GameserverFacts struct {
 	Mission               string
 	ExpertMode            string
 	AdminLogPlayerList    string
+	// In-game clock settings (serverDZ.cfg serverTime / serverTimeAcceleration /
+	// serverNightTimeAcceleration), empty when Nitrado does not expose them. The live map
+	// estimates the in-game time of day from them (docs/LIVE_MAP.md).
+	ServerTime                  string
+	ServerTimeAcceleration      string
+	ServerNightTimeAcceleration string
 }
 
 // TokenFacts are the non-sensitive facts of GET /token: the scopes only.
@@ -128,9 +134,12 @@ func (c *Client) GameserverFacts(ctx context.Context, serviceID string) (Gameser
 				} `json:"query"`
 				Settings struct {
 					Config struct {
-						EnableCfgGameplayFile string `json:"enableCfgGameplayFile"`
-						Mission               string `json:"mission"`
-						AdminLogPlayerList    string `json:"adminLogPlayerList"`
+						EnableCfgGameplayFile       string `json:"enableCfgGameplayFile"`
+						Mission                     string `json:"mission"`
+						AdminLogPlayerList          string `json:"adminLogPlayerList"`
+						ServerTime                  string `json:"serverTime"`
+						ServerTimeAcceleration      string `json:"serverTimeAcceleration"`
+						ServerNightTimeAcceleration string `json:"serverNightTimeAcceleration"`
 					} `json:"config"`
 					General struct {
 						ExpertMode string `json:"expertMode"`
@@ -151,7 +160,52 @@ func (c *Client) GameserverFacts(ctx context.Context, serviceID string) (Gameser
 		LogFileCount: len(g.GameSpecific.LogFiles), QueryMap: g.Query.Map, QueryVersion: g.Query.Version,
 		EnableCfgGameplayFile: g.Settings.Config.EnableCfgGameplayFile, Mission: g.Settings.Config.Mission,
 		ExpertMode: g.Settings.General.ExpertMode, AdminLogPlayerList: g.Settings.Config.AdminLogPlayerList,
+		ServerTime: g.Settings.Config.ServerTime, ServerTimeAcceleration: g.Settings.Config.ServerTimeAcceleration,
+		ServerNightTimeAcceleration: g.Settings.Config.ServerNightTimeAcceleration,
 	}, nil
+}
+
+// ScheduledTask is one entry of GET /services/:id/tasks (Nitrado's scheduled restarts, backups
+// and the like), whitelisted fields only. NextRun is Nitrado's own timestamp text, left for the
+// caller to parse defensively (its form is not pinned by the API documentation).
+type ScheduledTask struct {
+	ID           int64
+	ActionMethod string // e.g. "restart"
+	NextRun      string
+	LastRun      string
+	Minute, Hour string
+	Day, Month   string
+	Weekday      string
+}
+
+// ListScheduledTasks reads GET /services/:id/tasks. A body without a tasks list decodes as no
+// tasks rather than an error; any non-200 is an error.
+func (c *Client) ListScheduledTasks(ctx context.Context, serviceID string) ([]ScheduledTask, error) {
+	var wire struct {
+		Data struct {
+			Tasks []struct {
+				ID           json.Number `json:"id"`
+				ActionMethod string      `json:"action_method"`
+				NextRun      string      `json:"next_run"`
+				LastRun      string      `json:"last_run"`
+				Minute       string      `json:"minute"`
+				Hour         string      `json:"hour"`
+				Day          string      `json:"day"`
+				Month        string      `json:"month"`
+				Weekday      string      `json:"weekday"`
+			} `json:"tasks"`
+		} `json:"data"`
+	}
+	if err := c.getJSON(ctx, "/services/"+url.PathEscape(serviceID)+"/tasks", "scheduled tasks", &wire); err != nil {
+		return nil, err
+	}
+	out := make([]ScheduledTask, 0, len(wire.Data.Tasks))
+	for _, t := range wire.Data.Tasks {
+		id, _ := t.ID.Int64()
+		out = append(out, ScheduledTask{ID: id, ActionMethod: t.ActionMethod, NextRun: t.NextRun, LastRun: t.LastRun,
+			Minute: t.Minute, Hour: t.Hour, Day: t.Day, Month: t.Month, Weekday: t.Weekday})
+	}
+	return out, nil
 }
 
 // TokenFacts reads GET /token (scopes only; never the token, its id or its owner).

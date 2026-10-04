@@ -2860,6 +2860,17 @@ CREATE INDEX IF NOT EXISTS idx_competitive_events_hot_zone ON competitive_events
 		Name: "0118_feature_upgrades",
 		SQL:  FeatureUpgradesSQL,
 	},
+	{
+		// Live map (docs/LIVE_MAP.md): who can see the public kill/pressure map (LISTED: only while
+		// the server is listed on the network - the default; PUBLIC; OFF), how far behind real time
+		// it runs, and whether verified players get the faction layer. Additive.
+		Name: "0119_live_map_settings",
+		SQL: `
+ALTER TABLE installation_feature_settings ADD COLUMN IF NOT EXISTS live_map_visibility TEXT NOT NULL DEFAULT 'LISTED' CHECK (live_map_visibility IN ('LISTED','PUBLIC','OFF'));
+ALTER TABLE installation_feature_settings ADD COLUMN IF NOT EXISTS live_map_delay_seconds INTEGER NOT NULL DEFAULT 120 CHECK (live_map_delay_seconds BETWEEN 0 AND 3600);
+ALTER TABLE installation_feature_settings ADD COLUMN IF NOT EXISTS live_map_faction_layer BOOLEAN NOT NULL DEFAULT TRUE;
+`,
+	},
 }
 
 // NitradoTailTrustSQL keeps which Nitrado services have proven that partial (seek) reads match

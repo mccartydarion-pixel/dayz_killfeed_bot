@@ -275,6 +275,9 @@ func (a *App) registerClientAdminRoutes() {
 	if a.saasServerStopLimiter == nil {
 		a.saasServerStopLimiter = newSaaSRateLimiter(time.Minute, 1)
 	}
+	if a.saasLiveMapLimiter == nil {
+		a.saasLiveMapLimiter = newSaaSRateLimiter(time.Minute, 60)
+	}
 	const base = "/api/saas/organizations/{organizationID}/installations/{installationID}/admin"
 	h := a.HTTPServer.Handle
 	h("GET "+base+"/me", a.handleClientAdminMe)
@@ -306,6 +309,7 @@ func (a *App) registerClientAdminRoutes() {
 	a.registerRankedBonusRoutes(base)
 	a.registerUpgradeRoutes(base)
 	a.registerFightRoutes(base)
+	a.registerLiveMapRoutes(base)
 }
 
 // clientAdminMeResponse is the current actor's resolved Champion bot permission Level and exact
