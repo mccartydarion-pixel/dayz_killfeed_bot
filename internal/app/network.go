@@ -30,6 +30,7 @@ func (a *App) registerNetworkRoutes() {
 	h := a.HTTPServer.Handle
 	h("GET /api/saas/network/servers", a.handleNetworkServers)
 	h("GET /api/saas/network/servers/{installationID}", a.handleNetworkServer)
+	h("GET /api/saas/network/servers/{installationID}/map", a.handlePublicLiveMap)
 	h("GET /api/saas/network/leaderboard", a.handleNetworkLeaderboard)
 	h("GET /api/saas/network/spotlight", a.handleNetworkSpotlight)
 }

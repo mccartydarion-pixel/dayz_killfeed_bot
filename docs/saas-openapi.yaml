@@ -89,6 +89,167 @@ components:
       description: Opaque; pass the previous page's nextCursor. Invalid is 400.
       schema: { type: string }
   schemas:
+    LiveMapSettings:
+      type: object
+      description: "The liveMap section of GET .../admin/features (docs/LIVE_MAP.md)."
+      required: [public, delaySeconds, factionLayer]
+      properties:
+        public: { type: boolean, description: "The public map answers at all (default true)." }
+        delaySeconds: { type: integer, minimum: 0, maximum: 3600, description: "How far behind real time the public map runs." }
+        factionLayer: { type: boolean, description: "Verified players get the faction layer (default true)." }
+    LiveMapMap:
+      type: object
+      properties:
+        key: { type: string, example: chernarusplus }
+        name: { type: string, example: Chernarus }
+        size: { type: integer, description: "Edge length of the square terrain in metres." }
+        guessed: { type: boolean, description: "True when no supported map is configured and Chernarus was assumed." }
+    LiveMapKill:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        at: { type: string, format: date-time }
+        killerName: { type: string }
+        victimName: { type: string }
+        weapon: { type: string }
+        distanceMeters: { type: number, nullable: true }
+        headshot: { type: boolean }
+        longshot: { type: boolean }
+        killerX: { type: number, nullable: true }
+        killerZ: { type: number, nullable: true }
+        victimX: { type: number, nullable: true }
+        victimZ: { type: number, nullable: true }
+    LiveMapPosition:
+      type: object
+      nullable: true
+      properties:
+        x: { type: number }
+        z: { type: number }
+        observedAt: { type: string, format: date-time }
+        ageSeconds: { type: integer, format: int64 }
+        eventType: { type: string }
+    LiveMapIntrusion:
+      description: "zoneIntrusionDTO (see /admin/intrusions/active) plus the zone's centre."
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        zoneId: { type: integer, format: int64 }
+        zoneName: { type: string }
+        zoneType: { type: string }
+        playerId: { type: integer, format: int64 }
+        gamertag: { type: string }
+        status: { type: string }
+        banned: { type: boolean }
+        enteredAt: { type: string, format: date-time }
+        exitedAt: { type: string, format: date-time, nullable: true }
+        acknowledgedAt: { type: string, format: date-time, nullable: true }
+        alertCount: { type: integer }
+        presenceStatus: { type: string, description: "Only on the live view." }
+        centerX: { type: number }
+        centerZ: { type: number }
+    LiveMapPublic:
+      type: object
+      properties:
+        installationId: { type: integer, format: int64 }
+        name: { type: string }
+        platform: { type: string }
+        map: { $ref: "#/components/schemas/LiveMapMap" }
+        public: { type: boolean }
+        delaySeconds: { type: integer }
+        generatedAt: { type: string, format: date-time }
+        playersOnline: { type: integer }
+        lastActivityAt: { type: string, format: date-time, nullable: true }
+        clock:
+          type: object
+          properties:
+            serverLocalTime: { type: string, nullable: true, example: "21:14:08", description: "Latest ADM wall clock advanced by the real seconds since it was read; null when stale." }
+            utcOffsetMinutes: { type: integer, nullable: true }
+            bootedAt: { type: string, format: date-time, nullable: true }
+            nextRestartAt: { type: string, format: date-time, nullable: true, description: "Earliest future Nitrado restart task; best effort." }
+            inGame:
+              type: object
+              nullable: true
+              properties:
+                time: { type: string, example: "21:14" }
+                estimated: { type: boolean }
+        pressure:
+          type: object
+          properties:
+            resolution: { type: integer, example: 500 }
+            windowMinutes: { type: integer, example: 30 }
+            cells:
+              type: array
+              items:
+                type: object
+                properties:
+                  centerX: { type: number }
+                  centerZ: { type: number }
+                  count: { type: integer }
+                  intensity: { type: number, description: "count / max, so the busiest cell is 1." }
+        hotZone: { type: object, nullable: true, description: "The open hot zone as GET /api/saas/player/servers/{installationID}/hot-zone returns it." }
+        kills: { type: array, items: { $ref: "#/components/schemas/LiveMapKill" }, description: "Newest first, at most 100, only at <= now - delaySeconds." }
+        lastKillId: { type: integer, format: int64, description: "The newest visible kill id (0 when none)." }
+    LiveMapFactionLayer:
+      type: object
+      properties:
+        enabled: { type: boolean }
+        faction:
+          type: object
+          nullable: true
+          properties:
+            id: { type: integer, format: int64 }
+            name: { type: string }
+            tag: { type: string }
+            primaryColor: { type: string, nullable: true }
+            secondaryColor: { type: string, nullable: true }
+        self:
+          type: object
+          properties:
+            playerId: { type: integer, format: int64 }
+            gamertag: { type: string }
+        members:
+          type: array
+          items:
+            type: object
+            properties:
+              playerId: { type: integer, format: int64 }
+              gamertag: { type: string }
+              isSelf: { type: boolean }
+              online: { type: boolean }
+              lastKnown: { $ref: "#/components/schemas/LiveMapPosition" }
+              trail:
+                type: array
+                description: "Up to the 6 positions before lastKnown from the last 2 hours, oldest first."
+                items:
+                  type: object
+                  properties:
+                    x: { type: number }
+                    z: { type: number }
+                    observedAt: { type: string, format: date-time }
+        bases:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: integer, format: int64 }
+              name: { type: string }
+              centerX: { type: number }
+              centerZ: { type: number }
+              radius: { type: number }
+              ownerPlayerId: { type: integer, format: int64 }
+        alerts:
+          type: array
+          description: "Raid alerts on those bases in the last 60 minutes, newest first, at most 20."
+          items:
+            type: object
+            properties:
+              baseId: { type: integer, format: int64 }
+              baseName: { type: string }
+              kind: { type: string, example: RAID }
+              part: { type: string }
+              target: { type: string }
+              raiderName: { type: string }
+              at: { type: string, format: date-time }
     ApiError:
       type: object
       required: [error]
@@ -4482,3 +4643,153 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { description: zoneId does not belong to this installation. }
+
+  # --- Live map (docs/LIVE_MAP.md) -----------------------------------------------------------------
+
+  /api/saas/network/servers/{installationID}/map:
+    get:
+      summary: >-
+        Public live map state (service bearer only, no acting user): recent kills behind the
+        installation's delay, a 500 m pressure grid of the last 30 minutes, the open hot zone and
+        the server clock. Never a player position. Not gated on the network listing. Cached 5 s
+        per (installation, window); sinceKillId is applied after the cache.
+      security: [ { serviceAuth: [] } ]
+      parameters:
+        - { $ref: "#/components/parameters/installationID" }
+        - { name: window, in: query, schema: { type: integer, minimum: 5, maximum: 180, default: 60 }, description: "Minutes of kills to return." }
+        - { name: sinceKillId, in: query, schema: { type: integer, format: int64, minimum: 0 }, description: "Only kills with a greater id." }
+      responses:
+        "200":
+          description: The map state.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LiveMapPublic" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: "The installation does not exist, has no game server, or its live map is not public." }
+
+  /api/saas/player/servers/{installationID}/map/faction:
+    get:
+      summary: >-
+        Faction layer for a verified linked player of the server: the acting player's own hub
+        faction members with their latest position and trail, the members' bases and the raid
+        alerts of the last hour. Only members' positions are ever returned. Rate-limited per
+        acting user (60/min).
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/installationID" }
+      responses:
+        "200":
+          description: "The faction layer (enabled=false with empty members/bases/alerts when the installation switched it off)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LiveMapFactionLayer" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: "Installation not found, or the player was never observed on its server." }
+        "409": { description: "PLAYER_IDENTITY_REQUIRED - no verified DayZ link." }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/map/live:
+    get:
+      summary: >-
+        Staff live map (PLAYER_LAST_LOCATION_VIEW): every connected player's latest position and
+        faction tag, the enabled zones and the active intrusions with their zone centre. Audited
+        LIVE_MAP_VIEWED once per actor per 10 minutes.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+      responses:
+        "200":
+          description: The live view.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  generatedAt: { type: string, format: date-time }
+                  players:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        playerId: { type: integer, format: int64 }
+                        gamertag: { type: string }
+                        online: { type: boolean }
+                        factionTag: { type: string, nullable: true }
+                        lastKnown: { $ref: "#/components/schemas/LiveMapPosition" }
+                  zones: { type: array, items: { type: object, description: "zoneDTO (see /admin/zones)" } }
+                  intrusions: { type: array, items: { $ref: "#/components/schemas/LiveMapIntrusion" } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/map/history:
+    get:
+      summary: >-
+        Staff map history (PLAYER_LOCATION_VIEW): the kills and every player's track in a window of
+        at most 6 hours (default the last hour), plus the intrusion history. At most 500 kills and
+        20,000 track points (the oldest are dropped, truncated=true). Audited LIVE_MAP_HISTORY_VIEWED.
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+        - { name: from, in: query, schema: { type: string, format: date-time }, description: "Default: one hour before to." }
+        - { name: to, in: query, schema: { type: string, format: date-time }, description: "Default: now." }
+      responses:
+        "200":
+          description: The history.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  from: { type: string, format: date-time }
+                  to: { type: string, format: date-time }
+                  map: { $ref: "#/components/schemas/LiveMapMap" }
+                  kills:
+                    type: array
+                    items:
+                      allOf:
+                        - { $ref: "#/components/schemas/LiveMapKill" }
+                        - type: object
+                          properties:
+                            killerId: { type: integer, format: int64 }
+                            victimId: { type: integer, format: int64 }
+                  tracks:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        playerId: { type: integer, format: int64 }
+                        gamertag: { type: string }
+                        points:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              t: { type: string, format: date-time }
+                              x: { type: number }
+                              z: { type: number }
+                              type: { type: string, description: "CONNECT, DISCONNECT, HIT, KILL, DEATH, RESPAWN, UNCONSCIOUS, OTHER_ADM or PLAYER_LIST" }
+                  intrusions: { type: array, items: { $ref: "#/components/schemas/LiveMapIntrusion" } }
+                  truncated: { type: boolean }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/saas/organizations/{organizationID}/installations/{installationID}/admin/features/live-map:
+    put:
+      summary: "Save the live map settings (FEATURE_SETTINGS_MANAGE). Audited LIVE_MAP_SETTINGS_UPDATED. Returns the full feature settings."
+      parameters:
+        - { $ref: "#/components/parameters/ActingUser" }
+        - { $ref: "#/components/parameters/organizationID" }
+        - { $ref: "#/components/parameters/installationID" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LiveMapSettings" }
+      responses:
+        "200": { description: "The full feature settings (hotZones, fightReplay, network, feedIdentity, liveMap, updatedAt).", content: { application/json: { schema: { type: object } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
