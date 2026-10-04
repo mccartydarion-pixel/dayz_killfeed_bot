@@ -70,6 +70,10 @@ type App struct {
 	Ranked       *repository.RankedRepository
 	// Upgrades holds the automation switches and state (docs/FEATURE_UPGRADES.md).
 	Upgrades *repository.UpgradeRepository
+	// Challenges, BattlePass and Territory are progression (docs/PROGRESSION.md).
+	Challenges *repository.ChallengeRepository
+	BattlePass *repository.BattlePassRepository
+	Territory  *repository.TerritoryRepository
 	upgradeRuns upgradeThrottle
 	rankedTagsCache rankedTagCache
 	forecasts       forecastCache
@@ -802,6 +806,9 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.Stats = repository.NewStatsRepository(db.Pool)
 			app.Ranked = repository.NewRankedRepository(db.Pool)
 			app.Upgrades = repository.NewUpgradeRepository(db.Pool)
+			app.Challenges = repository.NewChallengeRepository(db.Pool)
+			app.BattlePass = repository.NewBattlePassRepository(db.Pool)
+			app.Territory = repository.NewTerritoryRepository(db.Pool)
 			app.Sessions = repository.NewSessionRepository(db.Pool)
 			app.Checkpoints = repository.NewCheckpointRepository(db.Pool)
 			app.Streaks = repository.NewStreakRepository(db.Pool)
@@ -2532,6 +2539,7 @@ func (a *App) runCompetitiveSchedulers(ctx context.Context, guildID int64) {
 		a.runRPBoostAnnouncements(ctx, guildID, now)
 		a.runRankedBonusAnnouncements(ctx, guildID, now)
 		a.runUpgrades(ctx, guildID, now)
+		a.runProgression(ctx, guildID, now)
 		a.runVIPExpiry(ctx, guildID, now)
 		a.runRewards(ctx, guildID, now)
 		if ended, err := a.Events.GetEndedUnfinalized(ctx, guildID, 25); err == nil {

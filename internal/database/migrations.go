@@ -2871,6 +2871,12 @@ ALTER TABLE installation_feature_settings ADD COLUMN IF NOT EXISTS live_map_dela
 ALTER TABLE installation_feature_settings ADD COLUMN IF NOT EXISTS live_map_faction_layer BOOLEAN NOT NULL DEFAULT TRUE;
 `,
 	},
+	{
+		// Daily and weekly challenges, the battle pass and territory control
+		// (docs/PROGRESSION.md). Everything is off until switched on. Additive.
+		Name: "0120_progression",
+		SQL:  ProgressionSQL,
+	},
 }
 
 // NitradoTailTrustSQL keeps which Nitrado services have proven that partial (seek) reads match

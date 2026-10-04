@@ -124,6 +124,9 @@ type liveMapPublicDTO struct {
 	HotZone        *hotZoneDTO        `json:"hotZone"`
 	Kills          []liveMapKillDTO   `json:"kills"`
 	LastKillID     int64              `json:"lastKillId"`
+	// Territory is the zones and who holds them, when the server runs territory control
+	// (docs/PROGRESSION.md); absent otherwise.
+	Territory []territoryZoneDTO `json:"territory,omitempty"`
 }
 
 type liveMapPositionDTO struct {
@@ -458,6 +461,7 @@ func (a *App) buildPublicLiveMap(ctx context.Context, installationID int64, wind
 		DelaySeconds: inst.Settings.DelaySeconds, GeneratedAt: rfc3339(now), PlayersOnline: st.PlayersOnline, LastActivityAt: nullableTimeStr(st.LastActivityAt),
 		Kills: []liveMapKillDTO{}, Pressure: liveMapPressureDTO{Resolution: int(liveMapPressureRes), WindowMinutes: int(liveMapPressureWindow.Minutes()), Cells: []liveMapCellDTO{}}}
 	out.Clock = a.liveMapClock(ctx, *inst, st, now)
+	out.Territory = a.publicTerritory(ctx, inst.ServerID, now)
 
 	if a.Fights != nil {
 		kills, err := a.Fights.RecentKills(ctx, inst.GuildID, inst.ServerID, cutoff.Add(-time.Duration(windowMinutes)*time.Minute), cutoff.Add(time.Microsecond), liveMapKillLimit)
