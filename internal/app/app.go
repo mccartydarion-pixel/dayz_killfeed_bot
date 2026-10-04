@@ -39,6 +39,7 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/featureflags"
 	"github.com/yourname/dayz-killfeed/internal/health"
 	"github.com/yourname/dayz-killfeed/internal/heatmap"
+	"github.com/yourname/dayz-killfeed/internal/heatmapimage"
 	"github.com/yourname/dayz-killfeed/internal/killfeed"
 	"github.com/yourname/dayz-killfeed/internal/linking"
 	"github.com/yourname/dayz-killfeed/internal/livesync"
@@ -74,6 +75,8 @@ type App struct {
 	Challenges *repository.ChallengeRepository
 	BattlePass *repository.BattlePassRepository
 	Territory  *repository.TerritoryRepository
+	// UAV is the live map UAV players buy (docs/LIVE_MAP.md "UAV").
+	UAV *repository.UAVRepository
 	upgradeRuns upgradeThrottle
 	rankedTagsCache rankedTagCache
 	forecasts       forecastCache
@@ -809,6 +812,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.Challenges = repository.NewChallengeRepository(db.Pool)
 			app.BattlePass = repository.NewBattlePassRepository(db.Pool)
 			app.Territory = repository.NewTerritoryRepository(db.Pool)
+			app.UAV = repository.NewUAVRepository(db.Pool)
 			app.Sessions = repository.NewSessionRepository(db.Pool)
 			app.Checkpoints = repository.NewCheckpointRepository(db.Pool)
 			app.Streaks = repository.NewStreakRepository(db.Pool)
@@ -1929,6 +1933,7 @@ func (a *App) Run() error {
 				}
 				a.HeatmapBoard = discord.NewHeatmapBoard(a.ChannelRoutes, guildServers, routePanels, a.Heatmap, interval)
 				a.HeatmapBoard.SetServerNames(a.serverNameFunc())
+				a.HeatmapBoard.SetPicture(&heatmapimage.Tiles{BaseURL: a.siteURL()}, a.heatmapMapOf)
 				go a.HeatmapBoard.Run(ctx)
 			}
 			if a.Stats != nil {

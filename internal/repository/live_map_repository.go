@@ -185,6 +185,32 @@ ORDER BY e.player_id, e.observed_at DESC, e.id DESC`, serverID, playerIDs, since
 	return out, rows.Err()
 }
 
+// LatestPositionsAt is LatestPositions as of `until`: each player's newest row observed at or before
+// it (the UAV's delay).
+func (r *LiveMapRepository) LatestPositionsAt(ctx context.Context, serverID int64, playerIDs []int64, since, until time.Time, admFile string) (map[int64]LiveMapPosition, error) {
+	out := map[int64]LiveMapPosition{}
+	if len(playerIDs) == 0 {
+		return out, nil
+	}
+	rows, err := r.pool.Query(ctx, `
+SELECT DISTINCT ON (e.player_id) e.player_id, e.x, e.z, e.observed_at, e.event_type
+FROM player_location_events e
+WHERE e.server_id=$1 AND e.player_id = ANY($2)`+sessionFilter+` AND e.observed_at <= $5
+ORDER BY e.player_id, e.observed_at DESC, e.id DESC`, serverID, playerIDs, since, admFile, until)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var p LiveMapPosition
+		if err := rows.Scan(&p.PlayerID, &p.X, &p.Z, &p.ObservedAt, &p.EventType); err != nil {
+			return nil, err
+		}
+		out[p.PlayerID] = p
+	}
+	return out, rows.Err()
+}
+
 // Trails returns, per player, up to perPlayer positions before the latest one (the latest
 // itself excluded), oldest first, observed since `since` under the same boot rule as
 // LatestPositions. One statement for every player.

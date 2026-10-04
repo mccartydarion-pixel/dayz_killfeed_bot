@@ -12,6 +12,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/heatmap"
+	"github.com/yourname/dayz-killfeed/internal/heatmapimage"
 	"github.com/yourname/dayz-killfeed/internal/presentation"
 )
 
@@ -44,6 +45,8 @@ type HeatmapBoard struct {
 	panels      *RoutePanels
 	heatmaps    HeatmapQuerier
 	serverNames ServerNameFunc
+	tiles       *heatmapimage.Tiles
+	mapOf       MapOfServer
 	interval    time.Duration
 	now         func() time.Time
 	trigger     chan struct{}
@@ -55,6 +58,44 @@ type HeatmapBoard struct {
 
 func NewHeatmapBoard(resolver RouteResolver, servers GuildServersFunc, panels *RoutePanels, heatmaps HeatmapQuerier, interval time.Duration) *HeatmapBoard {
 	return &HeatmapBoard{resolver: resolver, servers: servers, panels: panels, heatmaps: heatmaps, interval: interval, now: time.Now, trigger: make(chan struct{}, 1)}
+}
+
+// MapOfServer returns a server's DayZ map key and edge in metres (ok=false when unknown).
+type MapOfServer func(ctx context.Context, serverID int64) (mapKey string, sizeMetres float64, ok bool)
+
+// SetPicture turns on the map picture (docs/HEATMAPS.md "Picture"): tiles draws the background
+// and mapOf says which map each server runs.
+func (b *HeatmapBoard) SetPicture(tiles *heatmapimage.Tiles, mapOf MapOfServer) {
+	if b != nil {
+		b.tiles, b.mapOf = tiles, mapOf
+	}
+}
+
+const heatmapPictureName = "heatmap.png"
+
+// attachPicture draws the first server's cells on its map and shows the picture in the card. A
+// failure leaves the card as text.
+func (b *HeatmapBoard) attachPicture(ctx context.Context, content *PanelContent, serverIDs []int64, sections []heatmapSection) {
+	if b.mapOf == nil || len(serverIDs) == 0 || len(sections) == 0 || content.Embed == nil {
+		return
+	}
+	mapKey, size, ok := b.mapOf(ctx, serverIDs[0])
+	if !ok {
+		return
+	}
+	var points []heatmapimage.Point
+	if r := sections[0].Result; r != nil {
+		for _, c := range r.Cells {
+			points = append(points, heatmapimage.Point{X: c.CenterX, Z: c.CenterZ, Count: c.Count})
+		}
+	}
+	png, err := heatmapimage.Render(b.tiles.Background(ctx, mapKey), size, points)
+	if err != nil {
+		slog.Warn("component=heatmap_board", "event", "heatmap_picture_failed", "err", err.Error())
+		return
+	}
+	content.Files = []PanelFile{{Name: heatmapPictureName, ContentType: "image/png", Data: png}}
+	content.Embed.Image = &discordgo.MessageEmbedImage{URL: "attachment://" + heatmapPictureName}
 }
 
 // SetServerNames labels each server's section when several servers share
@@ -159,7 +200,9 @@ func (b *HeatmapBoard) sync(ctx context.Context, force bool) {
 			}
 			sections = append(sections, heatmapSection{ServerName: name, Result: res})
 		}
-		return PanelContent{Embed: BuildHeatmapSummaryEmbed(sections, heatmapWindow, heatmapResolution, to)}, nil
+		content := PanelContent{Embed: BuildHeatmapSummaryEmbed(sections, heatmapWindow, heatmapResolution, to)}
+		b.attachPicture(ctx, &content, byChannel[channelID], sections)
+		return content, nil
 	}
 	if _, err := b.panels.SyncEach(ctx, guildRowID, routeKeyHeatmaps, order, contentFor, lookupErrs == 0); err != nil {
 		slog.Warn("component=heatmap_board", "event", "heatmap_board_sync_failed", "err", err.Error())

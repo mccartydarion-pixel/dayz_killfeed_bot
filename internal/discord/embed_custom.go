@@ -254,6 +254,7 @@ func economyVars(e economy.Event, serverName string) map[string]string {
 	if e.Type == economy.TypeBountyClaim || e.Type == economy.TypeSystemReward {
 		m["balance"] = formatAmount(e.BalanceAfter)
 	}
+	setIf(m, "reason", rewardReason(e.Reason))
 	setIf(m, "server_name", serverName)
 	return m
 }

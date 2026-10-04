@@ -133,6 +133,7 @@ var routeVariableDefinitions = map[string][]VariableDefinition{
 		v("amount", "Amount", CatEconomy, "Champion Points moved (a number - write {{amount}} pts).", "250", "points", "economy event amount", always, false),
 		v("balance", "Balance", CatEconomy, "The player's Champion Points balance afterwards (a number).", "1,250", "points", "economy event balance", "Only for rewards (bounty payouts, system rewards).", true),
 		v("transaction_type", "Transaction Type", CatEconomy, "What kind of transaction it was.", "Bounty reward", "label", "economy event type", always, false),
+		v("reason", "Reason", CatEconomy, "Why the reward was earned.", "Daily play reward (3 days in a row)", "text", "economy event reason", "Only for system rewards.", true),
 		serverName(),
 	},
 	"CONNECTIONS": {

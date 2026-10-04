@@ -88,6 +88,25 @@ func (a *SessionAPI) ChannelMessageEditEmbeds(channelID, messageID string, embed
 	return a.S.ChannelMessageEditComplex(edit)
 }
 
+// ChannelMessageSendWithFiles posts embeds with attachments in one message.
+func (a *SessionAPI) ChannelMessageSendWithFiles(channelID string, embeds []*discordgo.MessageEmbed, components []discordgo.MessageComponent, files []*discordgo.File) (*discordgo.Message, error) {
+	return a.S.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{Embeds: embeds, Components: components, Files: files})
+}
+
+// ChannelMessageEditWithFiles replaces a message's embeds and attachments: the old attachments are
+// dropped, not kept beside the new ones.
+func (a *SessionAPI) ChannelMessageEditWithFiles(channelID, messageID string, embeds []*discordgo.MessageEmbed, components []discordgo.MessageComponent, files []*discordgo.File) (*discordgo.Message, error) {
+	edit := discordgo.NewMessageEdit(channelID, messageID)
+	edit.Embeds = &embeds
+	if components != nil {
+		edit.Components = &components
+	}
+	none := []*discordgo.MessageAttachment{}
+	edit.Attachments = &none
+	edit.Files = files
+	return a.S.ChannelMessageEditComplex(edit)
+}
+
 // ChannelMessages lists up to limit recent messages in a channel (newest
 // first). Used only to find the bot's own obsolete leaderboard boards.
 func (a *SessionAPI) ChannelMessages(channelID string, limit int) ([]*discordgo.Message, error) {

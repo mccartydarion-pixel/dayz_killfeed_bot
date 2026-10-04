@@ -46,6 +46,9 @@ const (
 	// paid and what the owner received.
 	TypePassPurchase = repository.TxPassPurchase
 	TypePassSale     = repository.TxPassSale
+	// Live map UAV payments, written only by the UAV repository.
+	TypeUAVPurchase = repository.TxUAVPurchase
+	TypeUAVSale     = repository.TxUAVSale
 )
 
 const (
@@ -77,6 +80,9 @@ type Event struct {
 	Credit       bool  // true = points added, false = points removed
 	BalanceAfter int64
 	Item         string // shop events only: the public product name
+	// Reason is why a SYSTEM_REWARD was earned ("Daily play reward", "Challenge: Get 3 kills"),
+	// written by the system, never by an admin. Empty for every other type.
+	Reason string
 }
 
 // Notifier receives committed transactions. It must not block and cannot fail the
@@ -245,7 +251,11 @@ func (s *Service) apply(ctx context.Context, req Request, debit bool) (Result, e
 	res := Result{TransactionID: entry.ID, Balance: entry.BalanceAfter, Duplicate: entry.Duplicate, Amount: entry.Amount, CreatedAt: entry.CreatedAt}
 	if !entry.Duplicate {
 		// Only after the commit; a failing notifier can neither undo nor repeat it.
-		s.notify(Event{Type: req.Type, GuildID: req.GuildID, ServerID: req.ServerID, PlayerName: name, Amount: req.Amount, Credit: !debit, BalanceAfter: entry.BalanceAfter})
+		e := Event{Type: req.Type, GuildID: req.GuildID, ServerID: req.ServerID, PlayerName: name, Amount: req.Amount, Credit: !debit, BalanceAfter: entry.BalanceAfter}
+		if req.Type == TypeSystemReward {
+			e.Reason = params.Description
+		}
+		s.notify(e)
 	}
 	return res, nil
 }
@@ -333,6 +343,10 @@ func TypeLabel(t string) string {
 		return "Battle pass premium"
 	case t == TypePassSale:
 		return "Battle pass sale"
+	case t == TypeUAVPurchase:
+		return "UAV"
+	case t == TypeUAVSale:
+		return "UAV sale"
 	case strings.HasPrefix(t, "EVENT_"):
 		return "Event prize"
 	}

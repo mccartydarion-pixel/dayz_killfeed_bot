@@ -297,3 +297,14 @@ in `internal/heatmap`, `internal/repository/heatmap_repository.go`, and
 - **Discord summaries for deaths, activity and intrusions** - see "Discord heatmap summary".
 - **`heatmap_*` metrics in `GET /api/admin/health`** - the counters exist (`Service.Metrics`) but
   are not yet wired into the admin health snapshot, matching Phase 3/4's own precedent.
+
+## Picture
+
+The Discord heatmap card carries a 768 px picture of the map (`internal/heatmapimage`): the satellite
+map, darkened, with a dot for every busy cell, sized and coloured gold to crimson by its kill count,
+and the three busiest numbered to match the card's "Hot Zones" list. The tiles are the website's own
+(`<site>/maps/<map>/2/<x>_<y>.webp`, 16 tiles), fetched once per map and cached for the life of the
+process; when they cannot be fetched the picture is a dark 1 km grid. The panel message is edited in
+place and its attachment replaced (`PanelContent.Files`). When several servers share the channel, the
+picture is the first server's. Living players' positions are never drawn: they are what the live
+map UAV sells.
