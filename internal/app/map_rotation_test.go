@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -66,7 +67,9 @@ const maprotationMaxSpawnBytes = maprotation.MaxSpawnBytes
 
 // A save may carry five spawn files of the maximum size, and not much more.
 func TestMapRotationBodyLimit(t *testing.T) {
-	if mapRotationMaxBody < maprotation.MaxMaps*maprotation.MaxSpawnBytes+64<<10 || mapRotationMaxBody > 2*maprotation.MaxMaps*maprotation.MaxSpawnBytes {
+	// ... and five pictures of the maximum size as base64.
+	floor := maprotation.MaxMaps*(maprotation.MaxSpawnBytes+base64.StdEncoding.EncodedLen(MaxMapImageBytes)) + 64<<10
+	if mapRotationMaxBody < floor || mapRotationMaxBody > 2*maprotation.MaxMaps*(maprotation.MaxSpawnBytes+MaxMapImageBytes) {
 		t.Fatalf("body limit: %d bytes", mapRotationMaxBody)
 	}
 }
@@ -212,8 +215,8 @@ func TestMapRotationAdminViewShape(t *testing.T) {
 		t.Fatalf("vote: %v", vote)
 	}
 	m1, m2 := v["maps"].([]any)[0].(map[string]any), v["maps"].([]any)[1].(map[string]any)
-	if len(m1) != 9 || m1["imageUrl"] != nil {
-		t.Fatalf("a map entry has exactly the contract's nine fields: %v", m1)
+	if len(m1) != 12 || m1["imageUrl"] != nil {
+		t.Fatalf("a map entry has exactly the contract's twelve fields: %v", m1)
 	}
 	if m1["spawnUploaded"] != false || m1["spawnBytes"].(float64) != 0 || m1["spawnFile"] != "a.xml" || m2["spawnUploaded"] != true || m2["spawnBytes"].(float64) != 2048 {
 		t.Fatalf("spawn fields: %v %v", m1, m2)

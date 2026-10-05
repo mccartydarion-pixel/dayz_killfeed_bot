@@ -5,12 +5,14 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -400,8 +402,8 @@ func TestMapRotationAdminContract(t *testing.T) {
 		if m["spawnUploaded"] != true || m["spawnBytes"].(float64) != float64(len(want)) || w.storedSpawns(ids[i]) != want {
 			t.Fatalf("stored spawns of map %d: %v", i, m)
 		}
-		if _, has := m["spawnXml"]; has || len(m) != 9 {
-			t.Fatalf("a map entry has the contract's nine fields and no contents: %v", m)
+		if _, has := m["spawnXml"]; has || len(m) != 12 {
+			t.Fatalf("a map entry has the contract's twelve fields and no contents: %v", m)
 		}
 	}
 	if raw := w.call(a.handleAdminMapRotation, http.MethodGet, w.path("/map/rotation"), owner, nil, nil).Body.String(); strings.Contains(raw, "generator_posbubbles") {
@@ -574,6 +576,171 @@ func TestMapRotationAdminContract(t *testing.T) {
 	setOrgPlan(t, a, w.f.OrgID, "PREMIUM")
 	if code, view = w.admin(http.MethodGet, a.handleAdminMapRotation, "/map/rotation", owner, nil); view["available"] != true {
 		t.Fatalf("Champion view: %d %v", code, view)
+	}
+}
+
+// mapImage asks the public route for a map's picture.
+func (w *mapRotationWorld) mapImage(installationID int64, mapID float64) *httptest.ResponseRecorder {
+	w.t.Helper()
+	return w.call(w.a.handlePublicMapImage, http.MethodGet, "/api/saas/network/servers/x/map-images/y", "", nil,
+		map[string]string{"installationID": strconv.FormatInt(installationID, 10), "mapID": strconv.FormatInt(int64(mapID), 10)})
+}
+
+// A map's picture is uploaded with the save, kept by saves that do not bring one, replaced,
+// removed, shown by version in every view, served by the public route and gone with its map.
+func TestMapRotationMapImages(t *testing.T) {
+	w := newMapRotationWorld(t)
+	owner := w.f.OwnerDiscordID
+	a := w.a
+	inst := w.f.InstallationID
+	w.flag(true)
+	png, jpeg := mapTestPNG(2000), mapTestJPEG(900)
+	save := func(maps []map[string]any) (int, map[string]any) {
+		t.Helper()
+		return w.admin(http.MethodPut, a.handleSaveMapRotation, "/map/rotation", owner, rotationBody(maps, nil))
+	}
+	entry := func(view map[string]any, i int) map[string]any { return view["maps"].([]any)[i].(map[string]any) }
+
+	// Refused uploads save nothing and name the map.
+	for name, data := range map[string][]byte{
+		"too large": mapTestPNG(MaxMapImageBytes + 1),
+		"svg":       []byte(`<svg xmlns="http://www.w3.org/2000/svg"/>`),
+		"gif":       []byte("GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00"),
+	} {
+		maps := threeMaps()
+		maps[1]["imageData"] = base64.StdEncoding.EncodeToString(data)
+		if code, body := save(maps); code != http.StatusBadRequest || errCode(body) != codeValidationError || !strings.HasPrefix(errMessage(body), "Map 2 (Arena B): the picture ") {
+			t.Fatalf("%s: %d %v", name, code, body)
+		}
+	}
+
+	maps := threeMaps()
+	maps[0]["imageData"] = base64.StdEncoding.EncodeToString(png)
+	code, view := save(maps)
+	if code != http.StatusOK {
+		t.Fatalf("save with a picture: %d %v", code, view)
+	}
+	idA, idB := entry(view, 0)["id"].(float64), entry(view, 1)["id"].(float64)
+	if m := entry(view, 0); m["imageUploaded"] != true || m["imageBytes"].(float64) != float64(len(png)) || m["imageVersion"] != imageVersionOf(png) || m["imageUrl"] != "https://cdn.example.com/a.png" {
+		t.Fatalf("map with a picture: %v", m)
+	}
+	if m := entry(view, 1); m["imageUploaded"] != false || m["imageBytes"].(float64) != 0 || m["imageVersion"] != nil {
+		t.Fatalf("map without a picture: %v", m)
+	}
+	if raw := w.call(a.handleAdminMapRotation, http.MethodGet, w.path("/map/rotation"), owner, nil, nil).Body.String(); strings.Contains(raw, "imageData") || strings.Contains(raw, base64.StdEncoding.EncodeToString(png)[:40]) {
+		t.Fatal("the view returned the picture")
+	}
+
+	// Served as stored.
+	rr := w.mapImage(inst, idA)
+	if rr.Code != http.StatusOK || !bytes.Equal(rr.Body.Bytes(), png) || rr.Header().Get("Content-Type") != "image/png" || rr.Header().Get("ETag") != `"`+imageVersionOf(png)+`"` ||
+		rr.Header().Get("X-Content-Type-Options") != "nosniff" || rr.Header().Get("Cache-Control") != "public, max-age=31536000, immutable" {
+		t.Fatalf("served picture: %d %v", rr.Code, rr.Header())
+	}
+	if rr := w.mapImage(inst, idB); rr.Code != http.StatusNotFound {
+		t.Fatalf("a map without a picture: %d", rr.Code)
+	}
+	if rr := w.mapImage(inst+987654, idA); rr.Code != http.StatusNotFound {
+		t.Fatalf("the picture under another installation: %d", rr.Code)
+	}
+
+	// A vote's options carry the version of the picture the map has now.
+	w.tick(time.Now().UTC().Truncate(time.Second))
+	optionVersions := func() []any {
+		t.Helper()
+		code, pv := w.player(http.MethodGet, a.handlePlayerMapVote, w.deeloID, nil)
+		vote, _ := pv["vote"].(map[string]any)
+		if code != http.StatusOK || vote == nil {
+			t.Fatalf("player view: %d %v", code, pv)
+		}
+		out := []any{}
+		for _, o := range vote["options"].([]any) {
+			v, has := o.(map[string]any)["imageVersion"]
+			if !has {
+				t.Fatalf("an option has no imageVersion: %v", o)
+			}
+			out = append(out, v)
+		}
+		return out
+	}
+	if got := optionVersions(); len(got) < 2 || !slices.Contains(got, any(imageVersionOf(png))) || slices.Contains(got, any(imageVersionOf(jpeg))) {
+		t.Fatalf("option versions: %v", got)
+	}
+	_, view = w.admin(http.MethodGet, a.handleAdminMapRotation, "/map/rotation", owner, nil)
+	if vote, _ := view["vote"].(map[string]any); vote == nil || len(vote["options"].([]any)) == 0 {
+		t.Fatalf("admin vote: %v", view["vote"])
+	} else {
+		for _, o := range vote["options"].([]any) {
+			if _, has := o.(map[string]any)["imageVersion"]; !has {
+				t.Fatalf("an admin option has no imageVersion: %v", o)
+			}
+		}
+	}
+
+	// A save without imageData keeps the picture.
+	stored := func() []map[string]any {
+		_, view := w.admin(http.MethodGet, a.handleAdminMapRotation, "/map/rotation", owner, nil)
+		out := []map[string]any{}
+		for _, raw := range view["maps"].([]any) {
+			m := raw.(map[string]any)
+			out = append(out, map[string]any{"id": m["id"], "name": m["name"], "mapFile": m["mapFile"], "spawnFile": m["spawnFile"], "imageUrl": m["imageUrl"], "enabled": m["enabled"]})
+		}
+		return out
+	}
+	if code, view = save(stored()); code != http.StatusOK || entry(view, 0)["imageVersion"] != imageVersionOf(png) || entry(view, 0)["imageBytes"].(float64) != float64(len(png)) {
+		t.Fatalf("a save without imageData: %d %v", code, view["maps"])
+	}
+	// A new picture replaces it, for that map only; another map gets its own.
+	maps = stored()
+	maps[0]["imageData"] = base64.StdEncoding.EncodeToString(jpeg)
+	maps[0]["removeImage"] = true // a picture sent in the same save wins
+	maps[1]["imageData"] = base64.StdEncoding.EncodeToString(mapTestWebP(500))
+	if code, view = save(maps); code != http.StatusOK || entry(view, 0)["imageVersion"] != imageVersionOf(jpeg) || entry(view, 1)["imageUploaded"] != true || entry(view, 2)["imageUploaded"] != false {
+		t.Fatalf("replace: %d %v", code, view["maps"])
+	}
+	if rr := w.mapImage(inst, idA); rr.Code != http.StatusOK || !bytes.Equal(rr.Body.Bytes(), jpeg) || rr.Header().Get("Content-Type") != "image/jpeg" || rr.Header().Get("ETag") != `"`+imageVersionOf(jpeg)+`"` {
+		t.Fatalf("replaced picture: %d %v", rr.Code, rr.Header())
+	}
+	if rr := w.mapImage(inst, idB); rr.Code != http.StatusOK || rr.Header().Get("Content-Type") != "image/webp" {
+		t.Fatalf("second picture: %d", rr.Code)
+	}
+	if got := optionVersions(); !slices.Contains(got, any(imageVersionOf(jpeg))) || slices.Contains(got, any(imageVersionOf(png))) {
+		t.Fatalf("option versions after the replacement: %v", got)
+	}
+
+	// The picture does not depend on the feature flag or on the rotation being on.
+	w.flag(false)
+	if rr := w.mapImage(inst, idA); rr.Code != http.StatusOK {
+		t.Fatalf("with the flag off: %d", rr.Code)
+	}
+	w.flag(true)
+
+	// removeImage clears it; imageUrl stays.
+	maps = stored()
+	maps[0]["removeImage"] = true
+	if code, view = save(maps); code != http.StatusOK || entry(view, 0)["imageUploaded"] != false || entry(view, 0)["imageVersion"] != nil || entry(view, 0)["imageBytes"].(float64) != 0 ||
+		entry(view, 0)["imageUrl"] != "https://cdn.example.com/a.png" || entry(view, 1)["imageUploaded"] != true {
+		t.Fatalf("removeImage: %d %v", code, view["maps"])
+	}
+	if rr := w.mapImage(inst, idA); rr.Code != http.StatusNotFound {
+		t.Fatalf("a removed picture: %d", rr.Code)
+	}
+	var left int
+	if err := a.DB.Pool.QueryRow(context.Background(), `SELECT COUNT(*) FROM map_rotation_maps WHERE id=$1 AND (image_data IS NOT NULL OR image_type IS NOT NULL OR image_version IS NOT NULL)`, int64(idA)).Scan(&left); err != nil || left != 0 {
+		t.Fatalf("columns after removeImage: %d %v", left, err)
+	}
+
+	// A map removed from the list loses its picture with its row.
+	maps = stored()
+	if code, view = save(append(maps[:1:1], maps[2])); code != http.StatusOK || len(view["maps"].([]any)) != 2 {
+		t.Fatalf("remove a map: %d %v", code, view)
+	}
+	if rr := w.mapImage(inst, idB); rr.Code != http.StatusNotFound {
+		t.Fatalf("the picture of a removed map: %d", rr.Code)
+	}
+	var audited int
+	if err := a.DB.Pool.QueryRow(context.Background(), `SELECT COUNT(*) FROM admin_audit_log WHERE action='MAP_ROTATION_SAVE' AND (COALESCE(before_state::text,'') || COALESCE(after_state::text,'')) LIKE '%imageData%'`).Scan(&audited); err != nil || audited != 0 {
+		t.Fatal("the audit log holds a picture")
 	}
 }
 

@@ -2,12 +2,16 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -128,6 +132,11 @@ type mapEntryDTO struct {
 	SpawnUploaded bool    `json:"spawnUploaded"`
 	SpawnBytes    int     `json:"spawnBytes"`
 	ImageURL      *string `json:"imageUrl"`
+	// The uploaded picture: whether one is stored, how large, and its version (null when none).
+	// The bytes are never returned here; the public map-images route serves them.
+	ImageUploaded bool    `json:"imageUploaded"`
+	ImageBytes    int     `json:"imageBytes"`
+	ImageVersion  *string `json:"imageVersion"`
 	Enabled       bool    `json:"enabled"`
 	Position      int     `json:"position"`
 }
@@ -136,7 +145,10 @@ type mapVoteOptionDTO struct {
 	MapID    int64   `json:"mapId"`
 	Name     string  `json:"name"`
 	ImageURL *string `json:"imageUrl"`
-	Votes    int     `json:"votes"`
+	// ImageVersion is non-null only while a picture is stored for the map (read when the view is
+	// built, so a picture uploaded during a vote shows at once).
+	ImageVersion *string `json:"imageVersion"`
+	Votes        int     `json:"votes"`
 }
 
 type mapVoteDTO struct {
@@ -231,7 +243,7 @@ func toMapVoteDTO(v *repository.MapRotationVote) *mapVoteDTO {
 	}
 	out := &mapVoteDTO{ID: v.ID, Status: v.Status, OpensAt: rfc3339(v.OpensAt), ClosesAt: rfc3339(v.ClosesAt), Options: make([]mapVoteOptionDTO, 0, len(v.Options)), TotalVotes: v.TotalVotes}
 	for _, o := range v.Options {
-		out.Options = append(out.Options, mapVoteOptionDTO{MapID: o.MapID, Name: o.Name, ImageURL: o.ImageURL, Votes: o.Votes})
+		out.Options = append(out.Options, mapVoteOptionDTO{MapID: o.MapID, Name: o.Name, ImageURL: o.ImageURL, ImageVersion: o.ImageVersion, Votes: o.Votes})
 	}
 	return out
 }
@@ -286,7 +298,7 @@ func toMapRotationAdminDTO(snap repository.MapRotationSnapshot, reason string, n
 	}
 	for _, m := range snap.Maps {
 		out.Maps = append(out.Maps, mapEntryDTO{ID: m.ID, Name: m.Name, MapFile: m.MapFile, SpawnFile: m.SpawnFile, SpawnUploaded: m.SpawnBytes > 0, SpawnBytes: m.SpawnBytes,
-			ImageURL: m.ImageURL, Enabled: m.Enabled, Position: m.Position})
+			ImageURL: m.ImageURL, ImageUploaded: m.ImageBytes > 0, ImageBytes: m.ImageBytes, ImageVersion: m.ImageVersion, Enabled: m.Enabled, Position: m.Position})
 		// spawnFileFound: the spawn contents are stored in Champion (as they are now, not as they
 		// were at the check).
 		if m.CheckedAt != nil && m.MapFileFound != nil {
@@ -405,13 +417,53 @@ type mapRotationMapBody struct {
 	// the map are kept.
 	SpawnXML *string `json:"spawnXml"`
 	ImageURL *string `json:"imageUrl"`
-	Enabled  bool    `json:"enabled"`
+	// ImageData is an uploaded picture in standard base64 (JPEG, PNG or WebP, at most
+	// MaxMapImageBytes decoded). Left out or empty, the picture already stored is kept.
+	ImageData *string `json:"imageData"`
+	// RemoveImage clears the stored picture (a picture sent in the same save wins).
+	RemoveImage bool `json:"removeImage"`
+	Enabled     bool `json:"enabled"`
 }
 
-// mapRotationMaxBody bounds a save: every map may bring a spawn file of maprotation.MaxSpawnBytes.
-// As a JSON string a file is larger than on disk (every quote, tab and line break takes two
-// bytes), so half as much again is allowed for that, plus the settings and the other fields.
-const mapRotationMaxBody = maprotation.MaxMaps*(maprotation.MaxSpawnBytes+maprotation.MaxSpawnBytes/2) + 64<<10
+// MaxMapImageBytes is the largest picture a map may have, decoded.
+const MaxMapImageBytes = 400 << 10
+
+// mapImageBase64Max is MaxMapImageBytes as standard base64 text.
+const mapImageBase64Max = (MaxMapImageBytes + 2) / 3 * 4
+
+// mapRotationMaxBody bounds a save: every map may bring a spawn file of maprotation.MaxSpawnBytes
+// and a picture of MaxMapImageBytes. As a JSON string a file is larger than on disk (every quote,
+// tab and line break takes two bytes), so half as much again is allowed for that; a picture comes
+// as base64. Plus the settings and the other fields.
+const mapRotationMaxBody = maprotation.MaxMaps*(maprotation.MaxSpawnBytes+maprotation.MaxSpawnBytes/2+mapImageBase64Max) + 64<<10
+
+// checkMapImage decodes an uploaded picture and returns its bytes, content type and version, or
+// what is wrong with it in plain words. Only JPEG, PNG and WebP are pictures here: the type comes
+// from the bytes themselves, never from what the sender says.
+func checkMapImage(encoded string) (data []byte, contentType, version, problem string) {
+	if len(encoded) > mapImageBase64Max {
+		return nil, "", "", "the picture is too large (at most 400 KB)"
+	}
+	data, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil || len(data) == 0 {
+		return nil, "", "", "the picture could not be read; upload it again"
+	}
+	if len(data) > MaxMapImageBytes {
+		return nil, "", "", "the picture is too large (at most 400 KB)"
+	}
+	contentType = http.DetectContentType(data)
+	switch contentType {
+	case "image/jpeg", "image/png":
+	case "image/webp":
+		if len(data) < 12 || string(data[:4]) != "RIFF" || string(data[8:12]) != "WEBP" {
+			return nil, "", "", "the picture must be a JPEG, PNG or WebP image"
+		}
+	default:
+		return nil, "", "", "the picture must be a JPEG, PNG or WebP image"
+	}
+	sum := sha256.Sum256(data)
+	return data, contentType, hex.EncodeToString(sum[:])[:16], ""
+}
 
 // mapLabel names a map in a validation message: "Map 2 (Dust)".
 func mapLabel(index int, name string) string {
@@ -499,6 +551,13 @@ func validateMapRotationBody(b mapRotationBody) (repository.MapRotationInput, st
 				mi.ImageURL = &raw
 			}
 		}
+		mi.RemoveImage = m.RemoveImage
+		if m.ImageData != nil && *m.ImageData != "" {
+			var problem string
+			if mi.ImageData, mi.ImageType, mi.ImageVersion, problem = checkMapImage(*m.ImageData); problem != "" {
+				return in, mapLabel(i, mi.Name) + ": " + problem
+			}
+		}
 		key := strings.ToLower(mi.MapFile + "|" + mi.SpawnFile)
 		if pairs[key] {
 			return in, label + ": another map already uses the same two files"
@@ -525,7 +584,7 @@ func (a *App) handleSaveMapRotation(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
-			writeSaaSError(w, codeValidationError, "the request is too large: a spawn file is at most 1 MB")
+			writeSaaSError(w, codeValidationError, "the request is too large: a spawn file is at most 1 MB and a picture at most 400 KB")
 			return
 		}
 		writeSaaSError(w, codeInvalidRequest, "invalid request body")
@@ -745,6 +804,53 @@ func (a *App) mapRotationPlayerView(ctx context.Context, scope repository.Player
 		}
 	}
 	return out, nil
+}
+
+// handlePublicMapImage is GET /api/saas/network/servers/{installationID}/map-images/{mapID}
+// (bearer only, like the public live map): the picture stored for a map, as bytes. It does not
+// depend on the rotation being on or on the plan - a picture that was uploaded can be shown. A
+// missing installation, map or picture, and a map of another installation, are the same 404. The
+// version in the ETag changes with the bytes, so the answer may be cached for good.
+func (a *App) handlePublicMapImage(w http.ResponseWriter, r *http.Request) {
+	if !a.requireSaaSServiceAuth(w, r) {
+		return
+	}
+	load := a.mapRotationImageFor
+	if load == nil {
+		if a.MapRotation == nil {
+			writeSaaSError(w, codeInternalError, "map rotation is unavailable")
+			return
+		}
+		load = a.MapRotation.MapImage
+	}
+	installationID, ok := pathInt64(w, r, "installationID")
+	if !ok {
+		return
+	}
+	mapID, ok := pathInt64(w, r, "mapID")
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), networkTimeout)
+	defer cancel()
+	img, err := load(ctx, installationID, mapID)
+	if err != nil {
+		slog.Warn("component=map_rotation", "event", "image_load_failed", "installation_id", installationID, "map_id", mapID, "err", err.Error())
+		writeSaaSError(w, codeInternalError, "could not load the picture")
+		return
+	}
+	if img == nil || len(img.Data) == 0 {
+		writeSaaSError(w, codeNotFound, "picture not found")
+		return
+	}
+	h := w.Header()
+	h.Set("Content-Type", img.ContentType)
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("Cache-Control", "public, max-age=31536000, immutable")
+	h.Set("ETag", `"`+img.Version+`"`)
+	h.Set("Content-Length", strconv.Itoa(len(img.Data)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(img.Data)
 }
 
 // handlePlayerMapVote is GET .../player/servers/{installationID}/map/vote.

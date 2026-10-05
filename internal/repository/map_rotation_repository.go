@@ -49,6 +49,8 @@ type MapRotationMap struct {
 	SpawnFile      string // the name of the uploaded spawn file, for display
 	SpawnBytes     int    // size of the stored spawn contents, 0 when none are stored
 	ImageURL       *string
+	ImageBytes     int     // size of the stored picture, 0 when none is stored
+	ImageVersion   *string // the stored picture's version (nil when none is stored)
 	Enabled        bool
 	Position       int
 	MapFileFound   *bool
@@ -95,8 +97,11 @@ type MapRotationVoteOption struct {
 	MapID    int64
 	Name     string
 	ImageURL *string
-	Position int
-	Votes    int
+	// ImageVersion is the version of the picture stored for the map now (read from the map's row
+	// when the vote is loaded, not kept with the option); nil when none is stored.
+	ImageVersion *string
+	Position     int
+	Votes        int
 }
 
 type MapRotationVote struct {
@@ -168,7 +173,20 @@ type MapRotationMapInput struct {
 	// with none stored must bring them.
 	SpawnXML []byte
 	ImageURL *string
-	Enabled  bool
+	// ImageData is an uploaded picture with its content type and version. nil keeps the picture
+	// already stored for the map; RemoveImage clears it (a picture sent in the same save wins).
+	ImageData    []byte
+	ImageType    string
+	ImageVersion string
+	RemoveImage  bool
+	Enabled      bool
+}
+
+// MapImage is a map's stored picture as it is served.
+type MapImage struct {
+	Data        []byte
+	ContentType string
+	Version     string
 }
 
 // MapRotationInput is a save. The caller has validated it.
@@ -225,7 +243,7 @@ func loadMapRotationSettings(ctx context.Context, q mapRotationQuerier, installa
 }
 
 func loadMapRotationMaps(ctx context.Context, q mapRotationQuerier, installationID int64) ([]MapRotationMap, error) {
-	rows, err := q.Query(ctx, `SELECT id, name, map_file, spawn_file, COALESCE(octet_length(spawn_xml), 0)::int, image_url, enabled, position, map_file_found, spawn_file_found, checked_at
+	rows, err := q.Query(ctx, `SELECT id, name, map_file, spawn_file, COALESCE(octet_length(spawn_xml), 0)::int, image_url, COALESCE(octet_length(image_data), 0)::int, image_version, enabled, position, map_file_found, spawn_file_found, checked_at
 FROM map_rotation_maps WHERE installation_id=$1 ORDER BY position, id`, installationID)
 	if err != nil {
 		return nil, err
@@ -234,8 +252,11 @@ FROM map_rotation_maps WHERE installation_id=$1 ORDER BY position, id`, installa
 	out := []MapRotationMap{}
 	for rows.Next() {
 		var m MapRotationMap
-		if err := rows.Scan(&m.ID, &m.Name, &m.MapFile, &m.SpawnFile, &m.SpawnBytes, &m.ImageURL, &m.Enabled, &m.Position, &m.MapFileFound, &m.SpawnFileFound, &m.CheckedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.Name, &m.MapFile, &m.SpawnFile, &m.SpawnBytes, &m.ImageURL, &m.ImageBytes, &m.ImageVersion, &m.Enabled, &m.Position, &m.MapFileFound, &m.SpawnFileFound, &m.CheckedAt); err != nil {
 			return nil, err
+		}
+		if m.ImageBytes == 0 {
+			m.ImageVersion = nil
 		}
 		out = append(out, m)
 	}
@@ -252,7 +273,8 @@ func loadMapRotationVote(ctx context.Context, q mapRotationQuerier, where string
 	if err != nil {
 		return nil, err
 	}
-	rows, err := q.Query(ctx, `SELECT o.map_id, o.name, o.image_url, o.position, (SELECT COUNT(*) FROM map_rotation_ballots b WHERE b.vote_id=o.vote_id AND b.map_id=o.map_id)::int
+	rows, err := q.Query(ctx, `SELECT o.map_id, o.name, o.image_url, o.position, (SELECT COUNT(*) FROM map_rotation_ballots b WHERE b.vote_id=o.vote_id AND b.map_id=o.map_id)::int,
+    (SELECT m.image_version FROM map_rotation_maps m WHERE m.id=o.map_id AND m.image_data IS NOT NULL)
 FROM map_rotation_vote_options o WHERE o.vote_id=$1 ORDER BY o.position, o.map_id`, v.ID)
 	if err != nil {
 		return nil, err
@@ -261,7 +283,7 @@ FROM map_rotation_vote_options o WHERE o.vote_id=$1 ORDER BY o.position, o.map_i
 	v.Options = []MapRotationVoteOption{}
 	for rows.Next() {
 		var o MapRotationVoteOption
-		if err := rows.Scan(&o.MapID, &o.Name, &o.ImageURL, &o.Position, &o.Votes); err != nil {
+		if err := rows.Scan(&o.MapID, &o.Name, &o.ImageURL, &o.Position, &o.Votes, &o.ImageVersion); err != nil {
 			return nil, err
 		}
 		v.TotalVotes += o.Votes
@@ -300,6 +322,24 @@ FROM map_rotation_switches WHERE installation_id=$1 AND status<>'PENDING' ORDER 
 		return snap, err
 	}
 	return snap, nil
+}
+
+// MapImage returns the picture stored for a map of the installation, or nil when the map does not
+// exist, belongs to another installation or has no picture.
+func (r *MapRotationRepository) MapImage(ctx context.Context, installationID, mapID int64) (*MapImage, error) {
+	var img MapImage
+	err := r.pool.QueryRow(ctx, `SELECT image_data, COALESCE(image_type, ''), COALESCE(image_version, '') FROM map_rotation_maps
+WHERE id=$1 AND installation_id=$2 AND image_data IS NOT NULL`, mapID, installationID).Scan(&img.Data, &img.ContentType, &img.Version)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if len(img.Data) == 0 || img.ContentType == "" || img.Version == "" {
+		return nil, nil
+	}
+	return &img, nil
 }
 
 const ensureMapRotationRow = `INSERT INTO map_rotation_settings(installation_id) VALUES($1) ON CONFLICT (installation_id) DO NOTHING`
@@ -346,8 +386,12 @@ func (r *MapRotationRepository) Save(ctx context.Context, installationID int64, 
 			sameFiles := old.MapFile == m.MapFile
 			if _, err := tx.Exec(ctx, `UPDATE map_rotation_maps SET name=$3, map_file=$4, spawn_file=$5, image_url=$6, enabled=$7, position=$8,
     map_file_found = CASE WHEN $9::boolean THEN map_file_found END, spawn_file_found = CASE WHEN $9::boolean THEN spawn_file_found END, checked_at = CASE WHEN $9::boolean THEN checked_at END,
-    spawn_xml = COALESCE($10::bytea, spawn_xml)
-WHERE id=$1 AND installation_id=$2`, m.ID, installationID, m.Name, m.MapFile, m.SpawnFile, m.ImageURL, m.Enabled, i, sameFiles, spawnParam(m.SpawnXML)); err != nil {
+    spawn_xml = COALESCE($10::bytea, spawn_xml),
+    image_data = CASE WHEN $11::bytea IS NOT NULL THEN $11::bytea WHEN $14::boolean THEN NULL ELSE image_data END,
+    image_type = CASE WHEN $11::bytea IS NOT NULL THEN $12::text WHEN $14::boolean THEN NULL ELSE image_type END,
+    image_version = CASE WHEN $11::bytea IS NOT NULL THEN $13::text WHEN $14::boolean THEN NULL ELSE image_version END
+WHERE id=$1 AND installation_id=$2`, m.ID, installationID, m.Name, m.MapFile, m.SpawnFile, m.ImageURL, m.Enabled, i, sameFiles, spawnParam(m.SpawnXML),
+				spawnParam(m.ImageData), m.ImageType, m.ImageVersion, m.RemoveImage); err != nil {
 				return err
 			}
 			continue
@@ -356,8 +400,9 @@ WHERE id=$1 AND installation_id=$2`, m.ID, installationID, m.Name, m.MapFile, m.
 			return &MapRotationSpawnMissingError{Index: i, Name: m.Name}
 		}
 		var id int64
-		if err := tx.QueryRow(ctx, `INSERT INTO map_rotation_maps(installation_id, name, map_file, spawn_file, image_url, enabled, position, spawn_xml) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-			installationID, m.Name, m.MapFile, m.SpawnFile, m.ImageURL, m.Enabled, i, m.SpawnXML).Scan(&id); err != nil {
+		if err := tx.QueryRow(ctx, `INSERT INTO map_rotation_maps(installation_id, name, map_file, spawn_file, image_url, enabled, position, spawn_xml, image_data, image_type, image_version)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::bytea, CASE WHEN $9::bytea IS NOT NULL THEN $10::text END, CASE WHEN $9::bytea IS NOT NULL THEN $11::text END) RETURNING id`,
+			installationID, m.Name, m.MapFile, m.SpawnFile, m.ImageURL, m.Enabled, i, m.SpawnXML, spawnParam(m.ImageData), m.ImageType, m.ImageVersion).Scan(&id); err != nil {
 			return err
 		}
 		keep[id] = true

@@ -146,3 +146,14 @@ ALTER TABLE map_rotation_switches ADD COLUMN IF NOT EXISTS wipe_state_at TIMESTA
 ALTER TABLE map_rotation_switches ADD COLUMN IF NOT EXISTS wipe_note TEXT NOT NULL DEFAULT '';
 ALTER TABLE map_rotation_switches ADD COLUMN IF NOT EXISTS characters_cleared BOOLEAN;
 `
+
+// MapRotationMapImagesSQL stores a map's picture in Champion (docs/MAP_ROTATION.md): the owner
+// uploads it on the website and the website serves it from its own address, because a pasted link
+// (image_url, which stays) stops loading when its host expires it or is blocked. image_data is the
+// picture, image_type its content type (image/jpeg, image/png or image/webp) and image_version the
+// first 16 hex characters of the SHA-256 of the bytes. All NULL when no picture is stored. Additive.
+const MapRotationMapImagesSQL = `
+ALTER TABLE map_rotation_maps ADD COLUMN IF NOT EXISTS image_data BYTEA;
+ALTER TABLE map_rotation_maps ADD COLUMN IF NOT EXISTS image_type TEXT;
+ALTER TABLE map_rotation_maps ADD COLUMN IF NOT EXISTS image_version TEXT;
+`
