@@ -440,3 +440,68 @@ func TestPlayerConnectPersistsServerActivity(t *testing.T) {
 		t.Fatalf("unexpected activity scope: %+v", got)
 	}
 }
+
+// At shutdown the queue's consumer stops with its context. An event handed to it after that (the
+// engine was in the middle of a batch) is never answered; the engine must be told at once instead
+// of waiting out the whole persistence timeout, which held the worker's shutdown for 30 seconds.
+func TestEnqueueAndWaitReturnsAtOnceWhenQueueHasStopped(t *testing.T) {
+	store := newFakePersistenceStore()
+	pq := NewPersistenceQueue(store, 1, "sess")
+	ctx, cancel := context.WithCancel(context.Background())
+	go pq.Run(ctx)
+	first := &Event{Type: EventPlayerKill, TimeOfDay: "10:00:00", Killer: &PlayerRef{Name: "K", ID: "k"}, Victim: &PlayerRef{Name: "V1", ID: "v1"}}
+	if err := pq.EnqueueAndWait(context.Background(), first); err != nil {
+		t.Fatalf("running queue: %v", err)
+	}
+	cancel()
+	<-pq.done
+
+	waitCtx, cancelWait := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelWait()
+	started := time.Now()
+	second := &Event{Type: EventPlayerKill, TimeOfDay: "10:00:01", Killer: &PlayerRef{Name: "K", ID: "k"}, Victim: &PlayerRef{Name: "V2", ID: "v2"}}
+	err := pq.EnqueueAndWait(waitCtx, second)
+	if !errors.Is(err, errPersistenceStopped) {
+		t.Fatalf("stopped queue: err = %v, want errPersistenceStopped", err)
+	}
+	if took := time.Since(started); took > time.Second {
+		t.Fatalf("waited %v for a queue that had already stopped", took)
+	}
+	if len(store.kills) != 1 {
+		t.Fatalf("stored kills = %d, want only the one handled before the stop", len(store.kills))
+	}
+}
+
+// The same when the consumer stops while the engine is already waiting for its answer.
+func TestEnqueueAndWaitReturnsWhenQueueStopsWhileWaiting(t *testing.T) {
+	release := make(chan struct{})
+	pq := NewPersistenceQueue(&hangingPersistenceStore{release: release}, 1, "sess")
+	ctx, cancel := context.WithCancel(context.Background())
+	go pq.Run(ctx)
+	hung := &Event{Type: EventPlayerKill, TimeOfDay: "10:00:00", Killer: &PlayerRef{Name: "K", ID: "k"}, Victim: &PlayerRef{Name: "V1", ID: "v1"}}
+	go func() { _ = pq.EnqueueAndWait(context.Background(), hung) }() // occupies the consumer
+	time.Sleep(50 * time.Millisecond)
+
+	result := make(chan error, 1)
+	waiting := &Event{Type: EventPlayerKill, TimeOfDay: "10:00:01", Killer: &PlayerRef{Name: "K", ID: "k"}, Victim: &PlayerRef{Name: "V2", ID: "v2"}}
+	go func() {
+		waitCtx, cancelWait := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancelWait()
+		result <- pq.EnqueueAndWait(waitCtx, waiting)
+	}()
+	time.Sleep(50 * time.Millisecond)
+	cancel()       // shutdown
+	close(release) // the hung database call returns; the consumer then sees the cancelled context
+	select {
+	case err := <-result:
+		if err == nil {
+			// The consumer may legitimately have taken the event before it saw the cancellation.
+			return
+		}
+		if !errors.Is(err, errPersistenceStopped) {
+			t.Fatalf("err = %v, want errPersistenceStopped", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("still waiting 3s after the queue stopped")
+	}
+}

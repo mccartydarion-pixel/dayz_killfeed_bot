@@ -106,6 +106,7 @@ func (e *Engine) processProbeTail(ctx context.Context, current *nitrado.LogFile,
 		return
 	}
 	e.tracker.LineBuffer = string(content[startOffset:])
+	e.markBatchRead()
 	lineChunks := e.tracker.DrainCompleteLinesWithOffsets(startOffset)
 	safeOffset := startOffset
 	eventsParsed := 0

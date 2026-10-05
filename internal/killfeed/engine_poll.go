@@ -212,6 +212,7 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 	}
 
 	e.tracker.LineBuffer = string(content[readOffset:])
+	e.markBatchRead()
 	lineChunks := e.tracker.DrainCompleteLinesWithOffsets(readOffset)
 	eventsParsed := 0
 	newOffset := oldOffset
@@ -348,6 +349,7 @@ func (e *Engine) applyTail(ctx context.Context, current *nitrado.LogFile, oldOff
 		"received_bytes", len(tail), "remote_size", targetSize, "saved_bytes", saved, "duration_ms", downloadDuration.Milliseconds())
 
 	e.tracker.LineBuffer = string(tail)
+	e.markBatchRead()
 	lineChunks := e.tracker.DrainCompleteLinesWithOffsets(oldOffset)
 	eventsParsed := 0
 	newOffset := oldOffset

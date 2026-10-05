@@ -15,7 +15,7 @@ import (
 func (e *Engine) discoverOnce(ctx context.Context) error {
 	logs, err := e.client.ListLogs(ctx, e.serviceID)
 	if err != nil {
-		e.noteTransportFailure(safeDownloadErrorClass(err))
+		e.noteTransportError(err)
 		var reqErr *nitrado.RequestError
 		if !errors.As(err, &reqErr) && strings.Contains(err.Error(), "no log files discovered") {
 			e.discoverFails++
@@ -381,7 +381,7 @@ func (e *Engine) currentMeta(ctx context.Context) (*nitrado.LogFile, error) {
 // re-enters discovery only after the file is confirmed repeatedly unreachable.
 func (e *Engine) handleSelectedFailure(ctx context.Context, err error) error {
 	e.consecFailures++
-	e.noteTransportFailure(safeDownloadErrorClass(err))
+	e.noteTransportError(err)
 
 	var reqErr *nitrado.RequestError
 	isNotFound := errors.As(err, &reqErr) && reqErr.Kind == nitrado.KindNotFound
@@ -515,6 +515,7 @@ func (e *Engine) drainRotationTail(ctx context.Context) {
 		return
 	}
 	e.tracker.LineBuffer = string(content[readOffset:])
+	e.markBatchRead()
 	chunks := e.tracker.DrainCompleteLinesWithOffsets(readOffset)
 	safeOffset := readOffset
 	parsed := 0

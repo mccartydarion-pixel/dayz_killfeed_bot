@@ -44,6 +44,9 @@ func (a *App) handleAdminNitradoUsage(w http.ResponseWriter, _ *http.Request, _ 
 		"tokens":   nitrado.RateLimitUsage(),
 		"timing":   killfeed.PollTimings(),
 		"delivery": deliveries(),
+		// Per server and feed: game log -> bot read -> queued -> Discord accepted, p50/p90/p99/max
+		// over the last hour and 24 hours (docs/PERFORMANCE.md section 19).
+		"feedLatency": killfeed.FeedLatency.Snapshot(),
 	})
 }
 

@@ -94,6 +94,15 @@ Field | Notes
 
 A `server_id` belonging to a different guild returns `404 unknown_server`.
 
+### `feedLatency` (kill-to-Discord latency)
+
+A per-server response carries `feedLatency[]` once this process has delivered a kill or death card
+for the server: one entry per feed (`KILLFEED`, `DEATH_FEED`) with the card count and, per stage
+from the game's log line to Discord accepting the post, `samples`, `p50Ms`, `p90Ms`, `p99Ms` and
+`maxMs` over the last hour and the last 24 hours. Numbers only. The field is absent before the
+first card and the statistics start again from zero at a restart. Every field is explained in
+docs/PERFORMANCE.md section 19.
+
 ### `build` (deployment identity)
 
 Every successful response carries `build`, so a deployment can be checked

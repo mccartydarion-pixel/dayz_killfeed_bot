@@ -1,7 +1,13 @@
 package killfeed
 
 import (
+	"context"
+	"errors"
+	"net"
+	"net/http"
 	"time"
+
+	"github.com/yourname/dayz-killfeed/internal/nitrado"
 )
 
 // Champion Live Sync phase 2.1: ADM worker liveness and source health, kept separate so a quiet
@@ -52,6 +58,26 @@ type ADMSourceHealth struct {
 func (e *Engine) noteTransportFailure(class string) {
 	e.transportStreak++
 	e.lastTransportClass = class
+	e.lastFailureOverload = false
+}
+
+// noteTransportError is noteTransportFailure for an error from a Nitrado call. It also remembers
+// whether the failure means Nitrado is overloaded or unreachable, which is what the poll backoff
+// (failureBackoff) reacts to.
+func (e *Engine) noteTransportError(err error) {
+	e.noteTransportFailure(safeDownloadErrorClass(err))
+	e.lastFailureOverload = overloadFailure(err)
+}
+
+// overloadFailure reports whether err is a 429, a 5xx, a timeout or a network failure - from the
+// API or from a signed download - as opposed to a missing file or a refused token.
+func overloadFailure(err error) bool {
+	var reqErr *nitrado.RequestError
+	if errors.As(err, &reqErr) {
+		return reqErr.Kind == nitrado.KindTemporary || reqErr.StatusCode == http.StatusTooManyRequests || reqErr.StatusCode >= http.StatusInternalServerError
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) || errors.Is(err, context.DeadlineExceeded)
 }
 
 func (e *Engine) noteTransportSuccess() { e.transportStreak = 0 }
@@ -68,6 +94,7 @@ func (e *Engine) firePollCycle(err error) {
 	snap.NewestListedFile, snap.NewestListedSince = e.bootStats.LastNewBootFile, e.bootStats.LastNewBootSeenAt
 	e.sourceHealth = snap
 	e.presenceMu.Unlock()
+	FeedLatency.LogIfDue(e.serverID)
 	if e.onPollCycle != nil {
 		e.onPollCycle(PollOutcome{At: now, Err: err, TransportStreak: e.transportStreak, LastErrorClass: e.lastTransportClass})
 	}

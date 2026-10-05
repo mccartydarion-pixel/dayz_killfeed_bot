@@ -91,6 +91,8 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 	engine := killfeed.NewEngine(client, row.ProviderServiceID, killfeed.NewADMParser())
 	engine.SetStateSink(a.State)
 	engine.SetDiagnostics(killfeed.NewRuntimeDiagnostics(row.ID))
+	// Latency measurement only: lets the engine state a log line's own time in UTC.
+	engine.SetServerUTCOffset(a.serverUTCOffsetSource(workerCtx, row))
 	a.registerPresenceEngine(row.ID, engine)
 	if a.Checkpoints != nil {
 		engine.SetDurableCheckpoint(&admCheckpointStoreAdapter{repo: a.Checkpoints}, row.GuildID, row.ID)
@@ -282,6 +284,8 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 		})
 	}
 	deathFeed.SetRoute("DEATH_FEED")
+	killFeed.SetLatencyServerID(row.ID)
+	deathFeed.SetLatencyServerID(row.ID)
 	deathFeed.SetMode(feedDeliveryMode())
 	deathPublisher.SetFeed(deathFeed)
 	if pveFeed != nil {

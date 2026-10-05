@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/yourname/dayz-killfeed/internal/discord"
+	"github.com/yourname/dayz-killfeed/internal/killfeed"
 	"log/slog"
 	"net/http"
 	"os"
@@ -45,6 +46,10 @@ type RuntimeStatusResponse struct {
 	// Leadership says whether THIS process runs the singleton background workers (the boards,
 	// reminders and schedulers that must run once when several processes share the database).
 	Leadership *RuntimeLeadership `json:"leadership,omitempty"`
+	// FeedLatency is how long this server's kill and death cards took from the game log to
+	// Discord, per stage, over the last hour and 24 hours (docs/PERFORMANCE.md section 19).
+	// Absent until this process has delivered a card for the server. Numbers only.
+	FeedLatency []killfeed.FeedLatencySnapshot `json:"feedLatency,omitempty"`
 }
 
 // RuntimeBuild is the deployment identity block of GET /api/runtime/status.
@@ -226,6 +231,7 @@ func (a *App) runtimeStatusHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	health := a.runtimeHealth(serverID, binding)
 	resp.Health = &health
+	resp.FeedLatency = killfeed.FeedLatency.SnapshotServer(serverID)
 
 	if presence, found := a.livePresenceSnapshot(serverID); found {
 		online := presence.OnlineCount

@@ -184,6 +184,11 @@ func (q *PersistenceQueue) EnqueueAndWait(ctx context.Context, ev *Event) error 
 	if q == nil || ev == nil {
 		return errors.New("persistence queue unavailable")
 	}
+	select {
+	case <-q.done:
+		return errPersistenceStopped
+	default:
+	}
 	ack := make(chan error, 1)
 	if !q.enqueue(ev, ack) {
 		return errors.New("persistence queue full")
@@ -191,10 +196,25 @@ func (q *PersistenceQueue) EnqueueAndWait(ctx context.Context, ev *Event) error 
 	select {
 	case err := <-ack:
 		return err
+	case <-q.done:
+		// The consumer stopped (shutdown). Nobody will answer an event it did not take, so waiting
+		// for ctx would hold the engine - and with it the worker's shutdown - for the whole
+		// persistence timeout. It may have answered this event just before stopping.
+		select {
+		case err := <-ack:
+			return err
+		default:
+		}
+		return errPersistenceStopped
 	case <-ctx.Done():
 		return ctx.Err()
 	}
 }
+
+// errPersistenceStopped is returned for an event the stopped queue never processed. The caller
+// treats it like any persistence failure: the checkpoint stays before the event, so the next
+// process reads it again.
+var errPersistenceStopped = errors.New("persistence queue stopped")
 
 func (q *PersistenceQueue) enqueue(ev *Event, ack chan error) bool {
 	if q == nil || ev == nil {

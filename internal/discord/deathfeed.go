@@ -122,7 +122,7 @@ func (p *DeathfeedPublisher) PublishDeath(ev *killfeed.Event) error {
 	// death channel as fallback); see RotatingFeed. Without one configured,
 	// fall back to an immediate send to the legacy channel.
 	if p.feed != nil {
-		p.feed.EnqueueDetected(embed, ev.DetectedAt)
+		p.feed.EnqueueTimed(embed, killfeed.TimingOf(ev))
 		slog.Debug("component=discord", "msg", "death feed queued", "type", string(ev.Type))
 		return nil
 	}

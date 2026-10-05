@@ -171,7 +171,7 @@ func ParseDeltaMode(raw string) DeltaMode {
 // unavailable; the caller's only correct response is to fall back to ReadLog (task section 13) -
 // this function never returns a partial/best-effort result on failure.
 func (c *Client) ReadLogFrom(ctx context.Context, serviceID, path string, offset int64, mode DeltaMode) (*PartialReadResult, bool) {
-	return c.readLogFrom(ctx, serviceID, path, offset, maxChunkBytes, mode)
+	return c.readLogFrom(ctx, serviceID, path, offset, maxChunkBytes, mode, false)
 }
 
 // ReadLogRange reads up to length bytes of path from offset with Nitrado's seek endpoint only.
@@ -182,10 +182,14 @@ func (c *Client) ReadLogRange(ctx context.Context, serviceID, path string, offse
 	if length <= 0 || length > maxChunkBytes {
 		length = maxChunkBytes
 	}
-	return c.readLogFrom(ctx, serviceID, path, offset, length, DeltaModeSeek)
+	return c.readLogFrom(ctx, serviceID, path, offset, length, DeltaModeSeek, false)
 }
 
-func (c *Client) readLogFrom(ctx context.Context, serviceID, path string, offset, length int64, mode DeltaMode) (*PartialReadResult, bool) {
+// readLogFrom tries the mechanisms mode allows. exact means the caller asked for bytes it knows
+// the file holds (ReadDelta): a mechanism that then answers with MORE than length did not honour
+// the request - a server that ignores the offset returns the file from byte 0, which is always
+// longer than what is left after the offset - so its bytes are refused like any other failure.
+func (c *Client) readLogFrom(ctx context.Context, serviceID, path string, offset, length int64, mode DeltaMode, exact bool) (*PartialReadResult, bool) {
 	if mode == DeltaModeOff || c == nil || serviceID == "" || path == "" || offset < 0 {
 		return nil, false
 	}
@@ -214,6 +218,9 @@ func (c *Client) readLogFrom(ctx context.Context, serviceID, path string, offset
 		default:
 			continue
 		}
+		if err == nil && exact && int64(len(result.Data)) > length {
+			err = fmt.Errorf("%w: got %d bytes for a %d-byte request at offset %d - the requested range was not honoured", errUnsupported, len(result.Data), length, offset)
+		}
 		if err != nil {
 			logPartialFailure(serviceID, method, err)
 			if globalCapabilityCache.record(serviceID, method, false) {
@@ -238,7 +245,8 @@ const maxChunksPerPoll = 64
 // one succeeded, and the accumulated bytes are returned in the exact order they arrived. targetSize
 // is the remote size CAPTURED at the start of this poll cycle (task section 19): ReadDelta reads up
 // to that size and stops, even if the remote file keeps growing during the read - new growth is
-// picked up on the next poll, not chased within this one.
+// picked up on the next poll, not chased within this one. Every chunk request is for bytes inside
+// that size, and a chunk answered with more bytes than requested fails the whole call.
 //
 // ok=false on ANY chunk failure - the whole call fails as a unit, never a partial/best-effort
 // result (task section 13's "fall back to full read on unexpected failure" applies to the whole
@@ -250,7 +258,14 @@ func (c *Client) ReadDelta(ctx context.Context, serviceID, path string, fromOffs
 	combined := &PartialReadResult{RequestedOffset: fromOffset, StartOffset: fromOffset, RemoteSize: targetSize}
 	offset := fromOffset
 	for chunks := 0; offset < targetSize && chunks < maxChunksPerPoll; chunks++ {
-		result, ok := c.ReadLogFrom(ctx, serviceID, path, offset, mode)
+		// Ask for exactly what the listing says is there, never past the end of the file: Nitrado's
+		// seek answered HTTP 500 for a request reaching beyond it (docs/NITRADO_POLLING.md), and an
+		// exact request is what makes an ignored offset detectable (see readLogFrom).
+		length := targetSize - offset
+		if length > maxChunkBytes {
+			length = maxChunkBytes
+		}
+		result, ok := c.readLogFrom(ctx, serviceID, path, offset, length, mode, true)
 		if !ok {
 			return nil, false
 		}
