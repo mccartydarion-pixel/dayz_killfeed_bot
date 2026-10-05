@@ -130,17 +130,14 @@ func (h *AdminCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interact
 // between discovery rounds to observe real content growth, which exceeds
 // Discord's initial interaction ack window.
 func (h *AdminCommandHandler) handleADMSourceScan(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral},
-	}); err != nil {
+	if !deferEphemeral(s, i) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	result, err := h.service.RunADMSourceScan(ctx)
 	embed := buildADMSourceScanEmbed(result, err)
-	_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Embeds: &[]*discordgo.MessageEmbed{embed}})
+	_ = editDeferred(s, i, &discordgo.WebhookEdit{Embeds: &[]*discordgo.MessageEmbed{embed}})
 }
 
 // handleVerifyLink is the admin fallback for completing a pending /link

@@ -38,6 +38,7 @@ var migrations = slices.Concat(
 	migrations0036to0048,
 	migrations0049to0064,
 	migrations0065to0125,
+	migrations0126onward,
 )
 
 // NitradoTailTrustSQL keeps which Nitrado services have proven that partial (seek) reads match

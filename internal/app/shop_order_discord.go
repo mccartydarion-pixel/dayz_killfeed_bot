@@ -260,6 +260,10 @@ const (
 	shopOrderTextNeedsReason = "Please describe what went wrong so the staff can help."
 )
 
+// modalLookupBudget bounds the database work a button may do before opening a
+// form. Discord allows 3 s for the first answer and a form cannot be deferred.
+const modalLookupBudget = 1500 * time.Millisecond
+
 // HandleShopOrderInteraction handles the two order buttons and the issue form, in a DM or a server.
 func (a *App) HandleShopOrderInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if i == nil || a.ShopConfirmations == nil || a.shopConfirmationRepo == nil {
@@ -281,10 +285,7 @@ func (a *App) HandleShopOrderInteraction(s *discordgo.Session, i *discordgo.Inte
 	default:
 		return
 	}
-	reply := func(text string) {
-		_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{Type: discordgo.InteractionResponseChannelMessageWithSource,
-			Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral, Content: text}})
-	}
+	reply := func(text string) { discord.RespondEphemeral(s, i, text) }
 	// show replaces the message the button sits on with the order's current state.
 	show := func(c repository.ShopOrderConfirmation, ticketID int64) {
 		embed, components := discord.BuildShopOrderStateMessage(c, ticketID, a.siteURL())
@@ -292,15 +293,20 @@ func (a *App) HandleShopOrderInteraction(s *discordgo.Session, i *discordgo.Inte
 			reply(embed.Description)
 			return
 		}
-		_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{Type: discordgo.InteractionResponseUpdateMessage,
-			Data: &discordgo.InteractionResponseData{Embeds: []*discordgo.MessageEmbed{embed}, Components: components}})
+		discord.RespondUpdate(s, i, &discordgo.InteractionResponseData{Embeds: []*discordgo.MessageEmbed{embed}, Components: components})
 	}
 	action, purchaseID, ok := discord.ParseShopOrderCustomID(customID)
 	if !ok {
 		reply(shopOrderTextInvalid)
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), economyTimeout)
+	timeout := economyTimeout
+	if action == discord.ShopOrderActionIssue && i.Type == discordgo.InteractionMessageComponent {
+		// This press opens a form, which Discord only accepts as the first
+		// answer and cannot defer: the order lookup gets a short budget.
+		timeout = modalLookupBudget
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	order, err := a.shopConfirmationRepo.OrderForDiscordBuyer(ctx, purchaseID, user.ID)
 	if err != nil {
@@ -366,8 +372,7 @@ func (a *App) HandleShopOrderInteraction(s *discordgo.Session, i *discordgo.Inte
 			show(c, 0)
 			return
 		}
-		_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{Type: discordgo.InteractionResponseModal,
-			Data: discord.BuildShopOrderIssueModal(purchaseID, shop.MaxIssueReasonRunes)})
+		_ = discord.RespondModal(s, i, discord.BuildShopOrderIssueModal(purchaseID, shop.MaxIssueReasonRunes))
 	case action == discord.ShopOrderActionIssueModal && i.Type == discordgo.InteractionModalSubmit:
 		done, ticket, err := a.ShopConfirmations.ReportIssue(ctx, scope, user.ID, purchaseID, repository.ConfirmationViaDiscord, discord.ShopOrderModalReason(i.ModalSubmitData()))
 		if err != nil {

@@ -151,28 +151,25 @@ func (h *ServerCommandHandler) handleConnect(s *discordgo.Session, i *discordgo.
 		respondEphemeral(s, i, "❌ Server connection is unavailable: credential encryption is not configured on this deployment.")
 		return
 	}
-	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseModal,
-		Data: &discordgo.InteractionResponseData{
-			CustomID: serverConnectModalID,
-			Title:    "Connect Nitrado Server",
-			Components: []discordgo.MessageComponent{
-				discordgo.ActionsRow{Components: []discordgo.MessageComponent{
-					discordgo.TextInput{
-						CustomID:    serverConnectTokenID,
-						Label:       "Nitrado API Token",
-						Style:       discordgo.TextInputShort,
-						Placeholder: "Paste your Nitrado API token",
-						Required:    true,
-						MinLength:   10,
-						MaxLength:   512,
-					},
-				}},
-			},
+	err := respondModalData(s, i, &discordgo.InteractionResponseData{
+		CustomID: serverConnectModalID,
+		Title:    "Connect Nitrado Server",
+		Components: []discordgo.MessageComponent{
+			discordgo.ActionsRow{Components: []discordgo.MessageComponent{
+				discordgo.TextInput{
+					CustomID:    serverConnectTokenID,
+					Label:       "Nitrado API Token",
+					Style:       discordgo.TextInputShort,
+					Placeholder: "Paste your Nitrado API token",
+					Required:    true,
+					MinLength:   10,
+					MaxLength:   512,
+				},
+			}},
 		},
 	})
 	if err != nil {
-		slog.Warn("component=discord", "msg", "server connect modal failed", "err", err.Error())
+		slog.Warn("component=discord", "msg", "server connect modal failed")
 	}
 }
 
@@ -197,11 +194,8 @@ func (h *ServerCommandHandler) handleModalSubmit(s *discordgo.Session, i *discor
 		return
 	}
 
-	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral},
-	}); err != nil {
-		slog.Warn("component=discord", "msg", "server connect defer failed", "err", err.Error())
+	if !deferEphemeral(s, i) {
+		slog.Warn("component=discord", "msg", "server connect defer failed")
 		return
 	}
 
@@ -462,10 +456,7 @@ func (h *ServerCommandHandler) handleAutocomplete(s *discordgo.Session, i *disco
 		return
 	}
 	sub := data.Options[0]
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
-
-	services, err := h.suggestedServices(ctx, i.GuildID)
+	services, err := h.suggestedServicesWithin(i.GuildID, autocompleteBudget)
 	if err != nil {
 		respondAutocomplete(s, i, nil)
 		return
@@ -483,6 +474,35 @@ func (h *ServerCommandHandler) handleAutocomplete(s *discordgo.Session, i *disco
 		}
 	}
 	respondAutocomplete(s, i, choices)
+}
+
+// autocompleteBudget is how long suggestions may wait for Nitrado. Discord
+// cannot defer autocomplete, so past this the list is answered empty.
+const autocompleteBudget = 1500 * time.Millisecond
+
+// suggestedServicesWithin is suggestedServices with a wait limit. A lookup
+// that outlasts the wait keeps running (bounded at 8 s) and fills the cache,
+// so the next keystroke is answered from it.
+func (h *ServerCommandHandler) suggestedServicesWithin(discordGuildID string, wait time.Duration) ([]nitrado.Service, error) {
+	type result struct {
+		services []nitrado.Service
+		err      error
+	}
+	done := make(chan result, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		services, err := h.suggestedServices(ctx, discordGuildID)
+		done <- result{services, err}
+	}()
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case r := <-done:
+		return r.services, r.err
+	case <-timer.C:
+		return nil, context.DeadlineExceeded
+	}
 }
 
 // suggestedServices is dayZServices for autocomplete, cached per guild.
@@ -542,16 +562,9 @@ func (h *ServerCommandHandler) dayZServicesAndClient(ctx context.Context, discor
 }
 
 func (h *ServerCommandHandler) editResponse(s *discordgo.Session, i *discordgo.InteractionCreate, content string) {
-	if _, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &content}); err != nil {
+	if err := editDeferred(s, i, &discordgo.WebhookEdit{Content: &content}); err != nil {
 		slog.Warn("component=discord", "msg", "server command response edit failed", "err", err.Error())
 	}
-}
-
-func respondAutocomplete(s *discordgo.Session, i *discordgo.InteractionCreate, choices []*discordgo.ApplicationCommandOptionChoice) {
-	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionApplicationCommandAutocompleteResult,
-		Data: &discordgo.InteractionResponseData{Choices: choices},
-	})
 }
 
 // modalValue extracts a TextInput's submitted value by custom ID.

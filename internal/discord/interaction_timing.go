@@ -22,11 +22,16 @@ import (
 // close to Discord's 3 s "The application did not respond".
 const slowAnswer = 2 * time.Second
 
+// lateAnswer is past which an acknowledgement is counted as late: Discord has
+// very likely already shown "The application did not respond".
+const lateAnswer = 2500 * time.Millisecond
+
 // interactionTTL is how long Discord accepts edits to an interaction reply.
 const interactionTTL = 15 * time.Minute
 
 type timedInteraction struct {
 	label     string
+	finished  bool
 	received  time.Time
 	created   time.Time
 	answered  bool
@@ -37,6 +42,7 @@ type interactionTimer struct {
 	mu      sync.Mutex
 	byID    map[string]*timedInteraction
 	byToken map[string]*timedInteraction
+	stats   map[string]*interactionStat
 	now     func() time.Time
 	log     func(level slog.Level, args ...any)
 }
@@ -45,6 +51,7 @@ func newInteractionTimer() *interactionTimer {
 	return &interactionTimer{
 		byID:    map[string]*timedInteraction{},
 		byToken: map[string]*timedInteraction{},
+		stats:   map[string]*interactionStat{},
 		now:     time.Now,
 		log: func(level slog.Level, args ...any) {
 			slog.Log(context.Background(), level, "component=discord", args...)
@@ -110,16 +117,25 @@ func (t *interactionTimer) observe(method, path string, status int, err error) {
 		entry.completed = true
 	}
 	label, received, created := entry.label, entry.received, entry.created
+	elapsed := now.Sub(received)
+	if kind == "answer" {
+		stat := t.statLocked(label)
+		stat.ack.add(elapsed)
+		if elapsed > lateAnswer {
+			stat.lateAcks++
+		}
+	}
 	t.mu.Unlock()
 
-	elapsed := now.Sub(received)
 	msg := "interaction completed"
 	if kind == "answer" {
 		msg = "interaction answered"
 	}
 	args := []any{"msg", msg, "interaction", label, "status", status}
 	if err != nil {
-		args = append(args, "err", err.Error())
+		// Not err.Error(): a transport error quotes the request URL, which
+		// contains the interaction token.
+		args = append(args, "err", "request_failed")
 	}
 	if kind == "answer" {
 		args = append(args, "answer_ms", elapsed.Milliseconds())

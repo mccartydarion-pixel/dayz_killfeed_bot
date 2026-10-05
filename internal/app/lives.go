@@ -150,11 +150,7 @@ func (a *App) registerLifeCommands(ctx context.Context, session *discordgo.Sessi
 	} else {
 		slog.Info("component=discord", "msg", "life command queued")
 	}
-	a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
-		if i.Type == discordgo.InteractionApplicationCommand && i.ApplicationCommandData().Name == "life" {
-			handler.Handle(s, i)
-		}
-	})
+	a.Discord.Interactions().Command("life", discord.AckPrivate, handler.Handle)
 }
 
 // --- player-facing API ---------------------------------------------------------------------------

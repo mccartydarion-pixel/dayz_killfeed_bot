@@ -245,11 +245,17 @@ func updateRentPrompt(s *discordgo.Session, i *discordgo.InteractionCreate, cont
 	if components == nil {
 		components = []discordgo.MessageComponent{}
 	}
-	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseUpdateMessage,
-		Data: &discordgo.InteractionResponseData{Content: content, Components: components, Embeds: []*discordgo.MessageEmbed{},
-			AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}}},
-	})
+	respondUpdate(s, i, &discordgo.InteractionResponseData{Content: content, Components: components, Embeds: []*discordgo.MessageEmbed{},
+		AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}}})
+}
+
+// RegisterRent routes the Pay rent buttons. Asking for the price answers with
+// a new private prompt; Confirm and Cancel replace that prompt.
+func (h *BaseCommandHandler) RegisterRent(routes *InteractionRouter) {
+	routes.ComponentPrefix("baserent:", AckPrivate, h.HandleRentComponent)
+	routes.ComponentPrefix(rentAskPrefix, AckPrivate, h.HandleRentComponent)
+	routes.ComponentPrefix(rentPayPrefix, AckUpdate, h.HandleRentComponent)
+	routes.Component(rentCancelID, AckUpdate, h.HandleRentComponent)
 }
 
 // HandleRentComponent processes the Pay rent buttons.

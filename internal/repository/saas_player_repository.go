@@ -144,13 +144,16 @@ SELECT EXISTS(SELECT 1 FROM player_server_activity WHERE guild_id=$1 AND server_
 // installation's OWN server (never the guild's other servers) - a genuinely new query, since the
 // existing Discord-facing GetPlayerProfile is guild-wide only (docs/PLAYER_API.md "Scoping").
 func (r *PlayerServerRepository) KillStats(ctx context.Context, guildID, serverID, playerID int64) (kills, deaths, headshots, longshots int, longestMeters float64, err error) {
+	// The player's kills are read once (the four kill figures used to be four scans of the same rows).
 	const q = `
-SELECT
-  (SELECT COUNT(*) FROM kills WHERE guild_id=$1 AND server_id=$2 AND killer_player_id=$3),
-  (SELECT COUNT(*) FROM deaths WHERE guild_id=$1 AND server_id=$2 AND player_id=$3),
-  (SELECT COUNT(*) FROM kills WHERE guild_id=$1 AND server_id=$2 AND killer_player_id=$3 AND headshot),
-  (SELECT COUNT(*) FROM kills WHERE guild_id=$1 AND server_id=$2 AND killer_player_id=$3 AND longshot),
-  (SELECT COALESCE(MAX(distance),0) FROM kills WHERE guild_id=$1 AND server_id=$2 AND killer_player_id=$3)`
+SELECT k.kills,
+       (SELECT COUNT(*) FROM deaths WHERE guild_id=$1 AND server_id=$2 AND player_id=$3),
+       k.headshots, k.longshots, k.longest
+FROM (SELECT COUNT(*) AS kills,
+             COUNT(*) FILTER (WHERE headshot) AS headshots,
+             COUNT(*) FILTER (WHERE longshot) AS longshots,
+             COALESCE(MAX(distance),0) AS longest
+      FROM kills WHERE guild_id=$1 AND server_id=$2 AND killer_player_id=$3) k`
 	err = r.pool.QueryRow(ctx, q, guildID, serverID, playerID).Scan(&kills, &deaths, &headshots, &longshots, &longestMeters)
 	return
 }

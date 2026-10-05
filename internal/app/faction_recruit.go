@@ -13,6 +13,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 
 	"github.com/yourname/dayz-killfeed/internal/billing"
+	"github.com/yourname/dayz-killfeed/internal/discord"
 	"github.com/yourname/dayz-killfeed/internal/factionhub"
 	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/repository"
@@ -451,11 +452,7 @@ func (a *App) HandleFactionRecruitInteraction(s *discordgo.Session, i *discordgo
 	if i == nil || i.GuildID == "" || i.Member == nil || i.Member.User == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), factionTimeout)
-	defer cancel()
-	reply := func(text string) {
-		_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{Type: discordgo.InteractionResponseChannelMessageWithSource, Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral, Content: text}})
-	}
+	reply := func(text string) { discord.RespondEphemeral(s, i, text) }
 	var customID string
 	switch i.Type {
 	case discordgo.InteractionMessageComponent:
@@ -466,17 +463,33 @@ func (a *App) HandleFactionRecruitInteraction(s *discordgo.Session, i *discordgo
 		return
 	}
 	action, rawID := splitRecruitCustomID(customID)
+	timeout := factionTimeout
+	if action == "apply" {
+		// Apply opens a form, which Discord only accepts as the first answer
+		// and cannot defer: the lookups before it get a short budget.
+		timeout = modalLookupBudget
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 	factionID, err := strconv.ParseInt(rawID, 10, 64)
 	if err != nil || factionID <= 0 || a.FactionHub == nil || a.Guilds == nil || a.SaaSUsers == nil {
 		reply("This button is no longer valid.")
 		return
 	}
 	_, guildRowID, err := a.Guilds.GetGuild(ctx, i.GuildID)
+	if ctx.Err() != nil {
+		reply("Something went wrong on our side. Try again in a moment.")
+		return
+	}
 	if err != nil || guildRowID == 0 {
 		reply("Champion isn't set up on this server yet.")
 		return
 	}
 	f, err := a.FactionHub.FactionForGuild(ctx, guildRowID, factionID)
+	if ctx.Err() != nil {
+		reply("Something went wrong on our side. Try again in a moment.")
+		return
+	}
 	if err != nil {
 		reply("That faction no longer exists.")
 		return
@@ -503,13 +516,13 @@ func (a *App) HandleFactionRecruitInteraction(s *discordgo.Session, i *discordgo
 		a.refreshFactionRecruit(ctx, f.OrganizationID, f.InstallationID, f.ID)
 	case "apply":
 		// Ask for a short message first; the application is created on modal submit.
-		_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{Type: discordgo.InteractionResponseModal, Data: &discordgo.InteractionResponseData{
+		_ = discord.RespondModal(s, i, &discordgo.InteractionResponseData{
 			CustomID: factionRecruitApplyModal + rawID,
 			Title:    "Apply to " + f.Name,
 			Components: []discordgo.MessageComponent{discordgo.ActionsRow{Components: []discordgo.MessageComponent{
 				discordgo.TextInput{CustomID: "message", Label: "Tell the leader about yourself (optional)", Style: discordgo.TextInputParagraph, Placeholder: "Hours played, timezone, how you like to play…", Required: false, MaxLength: factionRecruitMessageMax},
 			}}},
-		}})
+		})
 	case "applymodal":
 		message := ""
 		for _, row := range i.ModalSubmitData().Components {

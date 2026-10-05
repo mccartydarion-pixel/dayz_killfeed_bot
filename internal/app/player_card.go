@@ -383,9 +383,6 @@ func (a *App) registerCardCommand(session *discordgo.Session, commands discord.C
 	} else {
 		slog.Info("component=discord", "msg", "card command queued")
 	}
-	a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
-		if i.Type == discordgo.InteractionApplicationCommand && i.ApplicationCommandData().Name == "card" {
-			handler.Handle(s, i)
-		}
-	})
+	// The card is posted for the channel to see, so a slow /card defers publicly.
+	a.Discord.Interactions().Command("card", discord.AckPublic, handler.Handle)
 }

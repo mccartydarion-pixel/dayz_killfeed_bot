@@ -74,6 +74,19 @@ func NewPublicPanelHandler(links *linking.LinkVerificationService, stats Profile
 	return &PublicPanelHandler{links: links, stats: stats, guilds: guilds}
 }
 
+// Register routes the public panel buttons and forms. The two buttons that
+// open a form answer at once (a form cannot be deferred); the rest read the
+// database and answer privately.
+func (h *PublicPanelHandler) Register(routes *InteractionRouter) {
+	routes.Component(linkPanelOpenID, AckSelf, h.HandleComponent)
+	routes.Component(statsPanelSearchID, AckSelf, h.HandleComponent)
+	routes.Component(statsPanelMeID, AckPrivate, h.HandleComponent)
+	routes.Component(economyBalanceID, AckPrivate, h.HandleComponent)
+	routes.Component(economyHistoryID, AckPrivate, h.HandleComponent)
+	routes.Modal(linkPanelModalID, AckPrivate, h.HandleModal)
+	routes.Modal(statsSearchModalID, AckPrivate, h.HandleModal)
+}
+
 func (h *PublicPanelHandler) HandleComponent(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if h == nil || i == nil || i.GuildID == "" || i.Member == nil || i.Member.User == nil {
 		return
@@ -214,11 +227,11 @@ func (h *PublicPanelHandler) handleSearch(s *discordgo.Session, i *discordgo.Int
 }
 
 func respondModal(s *discordgo.Session, i *discordgo.InteractionCreate, customID, title, inputID, label, placeholder string) {
-	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{Type: discordgo.InteractionResponseModal, Data: &discordgo.InteractionResponseData{
+	_ = respondModalData(s, i, &discordgo.InteractionResponseData{
 		CustomID: customID, Title: title, Components: []discordgo.MessageComponent{discordgo.ActionsRow{Components: []discordgo.MessageComponent{
 			discordgo.TextInput{CustomID: inputID, Label: label, Style: discordgo.TextInputShort, Placeholder: placeholder, Required: true, MaxLength: 64},
 		}}},
-	}})
+	})
 }
 
 func linkErrorMessage(err error) string {
