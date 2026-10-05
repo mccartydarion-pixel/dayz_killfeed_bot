@@ -461,6 +461,7 @@ func (a *App) buildPublicLiveMap(ctx context.Context, installationID int64, wind
 	out := &liveMapPublicDTO{InstallationID: inst.InstallationID, Name: inst.Name, Platform: inst.Platform, Map: liveMapMap(inst.MapKey), Public: true, Listed: inst.Listed,
 		DelaySeconds: inst.Settings.DelaySeconds, GeneratedAt: rfc3339(now), PlayersOnline: st.PlayersOnline, LastActivityAt: nullableTimeStr(st.LastActivityAt),
 		Kills: []liveMapKillDTO{}, Pressure: liveMapPressureDTO{Resolution: int(liveMapPressureRes), WindowMinutes: int(liveMapPressureWindow.Minutes()), Cells: []liveMapCellDTO{}}}
+	out.PlayersOnline = a.liveMapPlayersOnline(inst.ServerID, st.PlayersOnline, now)
 	out.Clock = a.liveMapClock(ctx, *inst, st, now)
 	out.Territory = a.publicTerritory(ctx, inst.ServerID, now)
 
@@ -962,4 +963,27 @@ func publicPressure(cells []livemap.Cell) []livemap.Cell {
 		out[i].Intensity = float64(out[i].Count) / max
 	}
 	return out
+}
+
+// liveMapOnlineCounterMaxAge is how old the online counter's reading may be and still be shown
+// on the map instead of the count taken from the server log.
+const liveMapOnlineCounterMaxAge = 5 * time.Minute
+
+// liveMapPlayersOnline is the number of players shown on the map. The server log only knows a
+// player is connected once it has written a line about them, which a quiet server may not do for
+// a long time after a restart, so for the server the online counter watches, its reading (the one
+// the Discord counter shows, normally Nitrado's own count) wins while it is fresh.
+func (a *App) liveMapPlayersOnline(serverID int64, fromLog int, now time.Time) int {
+	st := a.OnlineCounterStatus()
+	return pickLiveMapPlayersOnline(st, serverID, fromLog, now)
+}
+
+func pickLiveMapPlayersOnline(st onlineCounterStatus, serverID int64, fromLog int, now time.Time) int {
+	if st.ServerID != serverID || !st.Reading.Known || st.EvaluatedAt.IsZero() || now.Sub(st.EvaluatedAt) > liveMapOnlineCounterMaxAge {
+		return fromLog
+	}
+	if st.Reading.Count < 0 {
+		return fromLog
+	}
+	return st.Reading.Count
 }
