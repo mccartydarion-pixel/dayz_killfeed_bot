@@ -1,9 +1,9 @@
 # Base Raid Alarm
 
 The Base Raid Alarm sends a base owner a Discord DM when another player starts
-taking their base apart. It is **off** until the server owner turns it on, and
-nothing is sold: the Security Marketplace entry `BASE_RAID_ALARM` stays
-"Coming soon" and no Champion Points move.
+taking their base apart. It is **off** until the server owner turns it on. The
+owner can also sell it to players for Champion Points through the Security
+Marketplace (`BASE_RAID_ALARM`); see "Selling it to players" below.
 
 ## How it decides
 
@@ -56,7 +56,9 @@ The owner can sell the alarm for **Champion Points** (the existing wallet, no ne
   records the paid time. Replaying the same key returns the original purchase and charges nothing.
   Not enough points means nothing is charged. Buying again while active adds the days on the end.
 - **Catalog:** `GET …/security-marketplace/catalog` shows the alarm as `AVAILABLE` with `pricePoints`,
-  `durationDays` and the player's `activeUntil` while it is on sale. Every other service stays unavailable.
+  `durationDays` and the player's `activeUntil` while it is on sale. The other sellable services (Perimeter Watch,
+  Base Black Box, Faction Security, Sentinel Pro) are listed the same way once their owner switch and offer are on;
+  the rest of the catalog stays unavailable.
 
 **Who gets alarms:** while the offer is **on**, only base owners with paid time. With the offer **off**,
 the alarm is free for every registered base again (paid players keep it too). Turning the alarm switch

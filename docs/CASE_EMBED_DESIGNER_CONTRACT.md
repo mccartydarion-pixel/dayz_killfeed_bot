@@ -1,4 +1,4 @@
-# C.A.S.E. Embed Designer contract — draft
+# C.A.S.E. Embed Designer contract
 
 This change makes the installation-scoped `CASE_STATUS`, `CASE_EVIDENCE`, and `CASE_ALERTS` routes valid **stored, validated and previewable** Embed Designer templates. Colors, title, description, fields, media, and approved placeholders follow the same existing template model and sanitizing render path as the other routes.
 

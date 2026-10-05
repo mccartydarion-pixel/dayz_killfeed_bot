@@ -3,7 +3,8 @@
 Phase 1 turns the existing Champion Points tables into a durable economy
 foundation: one append-only ledger, one materialized spendable balance, atomic
 credit/debit, idempotent payouts, admin adjustments, and an `ECONOMY` lifecycle
-feed. **No casino and no shop exist yet** - nothing can be bought.
+feed. **No casino exists, and Phase 1 itself had no shop** - the Champion Shop was added later on
+this ledger (`docs/SHOP.md`).
 
 > The website-facing layer (installation-scoped balance and history API, admin lookup, grant/debit, reconciliation) is documented in [`docs/ECONOMY.md`](ECONOMY.md). Migration `0035` also blocks direct `DELETE` of ledger rows.
 
@@ -207,7 +208,7 @@ Balance: 340,000 pts
 
 ## Known limitations / not built
 
-* No purchases: no shop or transfers between players.
+* No transfers between players. (Purchases were added later: `docs/SHOP.md`.)
 * Bounty amounts themselves are still 32-bit (`bounties.reward_points`); the ledger
   and balance are 64-bit.
 * Balances are guild-wide; there is no per-server balance.

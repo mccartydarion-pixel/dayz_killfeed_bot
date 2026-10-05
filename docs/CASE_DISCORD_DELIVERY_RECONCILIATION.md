@@ -37,7 +37,7 @@ None sends a message to real Discord.
 
 ## Phase 6.10 — one-shot QA Discord transport probe
 
-A dedicated `cmd/case-discord-qa` program is available on the draft branch.
+A dedicated `cmd/case-discord-qa` program is in the repository (see `docs/TOOLS.md`).
 It is **not part of the server startup**, is read-only by default, and never
 uses Stripe, Nitrado, live evidence, the C.A.S.E. database or live player
 records. Its synthetic message has a **different title/reference** from a

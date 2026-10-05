@@ -4,7 +4,7 @@
 // reads the file back and reports WRITTEN_VERIFIED, NOT_WRITTEN or UNCERTAIN. It never prints the
 // Nitrado token, an upload token, a signed URL or the account's physical path.
 //
-// Active operations: gate-c-create-custom and gate-d-relocate-reference (docs/SHOP_CUSTOM_RELOCATION.md),
+// Active operations: gate-c-create-custom and gate-d-relocate-reference (docs/archive/SHOP_CUSTOM_RELOCATION.md),
 // gate-e-stage and gate-g-unstage with -attempt (docs/SHOP_CANARY_STAGING.md)
 // and gate-b-rollback. Gate A and Gate B (the legacy champion/ location) are completed and refused.
 //
@@ -44,7 +44,7 @@ const (
 func main() { os.Exit(run()) }
 
 func run() int {
-	op := flag.String("operation", "", "the one operation: gate-a-create-empty : gate-a-create-empty, gate-b-reference or gate-b-rollback (gate-e-stage and gate-g-unstage are not active)")
+	op := flag.String("operation", "", "the one operation: gate-c-create-custom, gate-d-relocate-reference, gate-e-stage or gate-g-unstage (both need -attempt), or gate-b-rollback (gate-a-create-empty and gate-b-reference are completed and refused)")
 	service := flag.String("service", "", "Nitrado service ID")
 	org := flag.Int64("org", 0, "organization ID")
 	inst := flag.Int64("installation", 0, "installation ID")

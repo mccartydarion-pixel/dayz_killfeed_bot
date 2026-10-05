@@ -389,8 +389,9 @@ facts. Index `(guild_id, player_id, id DESC)` serves history. The 0030 backfill 
 
 ## installation_embed_templates (migration 0031)
 
-Custom embed templates (Embed Designer Phase 2 - **storage only**: no Discord publisher reads
-this table; custom template runtime rendering is not enabled). One row per customized
+Custom embed templates (Embed Designer Phase 2 added storage only. Since Phase 4 the Discord
+publishers read this table for eligible routes when `CHAMPION_CUSTOM_EMBEDS_ENABLED` is on -
+default off; see `docs/EMBED_RUNTIME.md`). One row per customized
 `(installation, route)`; a route without a row uses the Champion default, and defaults are never
 copied into the table.
 

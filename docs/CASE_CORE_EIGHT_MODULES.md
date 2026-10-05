@@ -4,7 +4,7 @@ Owner-selected replacement scope for the client-facing C.A.S.E. detector list. T
 
 | Module | Intended observation | Current evidence gap / exit study |
 | --- | --- | --- |
-| Base Boost Detection | Unauthorized building inside or around another player's base | A build-action parser and staff feed exist, but those lines are not retained as C.A.S.E. evidence and real ADM wording has not been verified. Need verified source-addressed actions, ownership, geometry and guest/faction/raid permissions. Connect/hit/kill positions alone cannot establish building. |
+| Base Boost Detection | Unauthorized building inside or around another player's base | A build-action parser and staff feed exist. Build lines are retained as C.A.S.E. evidence only for servers on the default-off build-evidence allowlist (`CASE_BUILD_EVIDENCE_ENABLED` / `CASE_BUILD_EVIDENCE_SERVER_IDS`), and real ADM wording has not been verified. Need verified source-addressed actions, ownership, geometry and guest/faction/raid permissions. Connect/hit/kill positions alone cannot establish building. |
 | Skywalk Detection | Unexplained movement above valid terrain/structures | Need continuous server-authoritative positions and map/structure geometry, plus vehicle, fall and desync counterexamples. |
 | Dupe Detection | Duplicated item creation | Need authoritative item identity and inventory transaction provenance; a reconnect or kill is insufficient. |
 | PC Detection (Xbox) | Unapproved PC client participation on an Xbox server | Need trusted platform attestation available to the server. An Xbox account name, behavior or network address does not prove client platform. PlayStation installations should show this as unavailable. |

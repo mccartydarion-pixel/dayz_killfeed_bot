@@ -1,7 +1,8 @@
 # Shop automatic delivery worker: design
 
-**Status: proposal. Nothing here is built.** Automatic delivery stays disabled until the owner
-approves this design and, later, each rollout stage.
+**Status: design, with stage 0 built.** What exists in the code is described in
+`SHOP_DELIVERY_WORKER.md`. Automatic delivery stays off by default (`CHAMPION_SHOP_AUTO_DELIVERY`
+unset) until the owner approves each rollout stage.
 
 The worker does by itself what the canary (attempt `champion:d1:a1`, fulfilled 2026-09-30) did by
 hand: it puts a bought item into the Champion spawner file, waits for a server restart, removes it

@@ -1,90 +1,50 @@
-# DayZ Killfeed
+# Champion bot (DayZ killfeed)
 
-A Phase 1 foundation for a DayZ killfeed backend built for Nitrado-hosted PlayStation DayZ servers. The project is designed for Railway deployment, PostgreSQL-ready persistence, and a modular future killfeed pipeline.
+The backend of Champion: a Discord bot and HTTP API for DayZ console servers hosted on Nitrado.
+It is one Go program (`cmd/server`) that:
 
-## Purpose
+- reads each connected server's admin log from Nitrado and turns it into kills, deaths, hits,
+  connections, positions and build actions;
+- posts and maintains the Discord side: killfeed and other feeds, leaderboards, bounties, ranked
+  seasons, panels, slash commands and the `/setup` channel layout;
+- stores everything in PostgreSQL (the bot owns the database schema and its migrations);
+- serves the HTTP APIs the Champion website uses: the customer API (`/api/saas/...`), the Owner
+  Hub API (`/api/admin/...`) and a runtime status API.
 
-This project is the starting point for a reliable DayZ killfeed system that will eventually:
+It runs many Discord servers and game servers in one process, each with its own isolated worker
+and its own encrypted Nitrado credential.
 
-- discover Nitrado game servers
-- connect to the appropriate DayZ server
-- acquire and process log data incrementally
-- normalize events into a killfeed model
-- publish events to Discord
-- persist state and world data in PostgreSQL
+**Documentation: [docs/README.md](docs/README.md)** is the index of every document, grouped by
+area. The helper programs in `cmd/` are described in [docs/TOOLS.md](docs/TOOLS.md).
 
 ## Requirements
 
-- Go 1.25+
-- PostgreSQL-ready architecture
-- Discord bot integration
-- Nitrado API integration
-- Structured logging with `log/slog`
-- Railway-friendly config and runtime behavior
+- Go 1.25 or newer
+- PostgreSQL (16 is what CI uses)
+- A Discord bot token
 
-## Environment variables
+## Configuration
 
-Copy `.env.example` to `.env` for local development, then fill in values as needed.
-
-```env
-APP_ENV=development
-HTTP_PORT=8080
-PORT=8080
-
-DISCORD_TOKEN=
-DISCORD_APPLICATION_ID=
-DISCORD_GUILD_ID=
-
-NITRADO_TOKEN=
-NITRADO_SERVICE_ID=
-
-KILLFEED_CHANNEL_ID=
-
-DATABASE_URL=
-CREDENTIAL_ENCRYPTION_KEY=
-
-DISCORD_PRESENCE_ENABLED=true
-DISCORD_PRESENCE_ROTATION_SECONDS=45
-DISCORD_PRESENCE_MODE=dynamic
-```
-
-Discord bot presence (all optional - these are the defaults if unset):
-
-- `DISCORD_PRESENCE_ENABLED` - set to `false` to disable the bot's Discord activity/status entirely.
-- `DISCORD_PRESENCE_ROTATION_SECONDS` - how often the presence rotates in dynamic mode. Clamped to 30-300 seconds; missing or invalid values fall back to 45.
-- `DISCORD_PRESENCE_MODE` - `static` or `dynamic`.
-- `HEATMAP_DISCORD_INTERVAL_MINUTES` - how often the Discord PvP heatmap summary refreshes. Clamped to 5-1440 minutes; missing or invalid values fall back to 30.
-  - `static`: always shows **Competing in Competitive DayZ**.
-  - `dynamic`: rotates through Competing in Competitive DayZ, live player/server counts (only when a server is actually connected - never a fabricated 0), Playing Champions® Killfeed, Watching Live PvP Activity, and Competing in DayZ Leaderboards. The bot's Discord status (online/idle/dnd) also reflects overall application health, debounced so a brief blip never flaps it.
-- `CHAMPION_MAP_ROTATION_ENABLED` - default of the `map_rotation` feature flag (map rotation with a player vote, `docs/MAP_ROTATION.md`). Default `false`: only installations switched on in the Owner Hub can use it.
-
-Important notes:
-
-- `PORT` is preferred for Railway deployment.
-- `HTTP_PORT` is used as a local fallback.
-- `DATABASE_URL` is optional during Phase 1 and should be configured in production via Railway Variables.
-- `CREDENTIAL_ENCRYPTION_KEY` is required for `/server connect`. It must be a stable 32-byte
-    value or base64-encoded 32-byte value. Generate one once, store it as a deployment secret,
-    and do not rotate it casually because existing encrypted Nitrado credentials depend on it.
-- Secrets must never be committed to the repository.
-
-PowerShell example for generating a base64 key:
-
-```powershell
-[Convert]::ToBase64String([byte[]](1..32 | ForEach-Object { Get-Random -Maximum 256 }))
-```
-
-Set the resulting value as `CREDENTIAL_ENCRYPTION_KEY` in Railway or the deployment
-environment, then redeploy the bot. `/server connect` will be enabled after startup.
-
-## Local development
+All configuration is environment variables. [`.env.example`](.env.example) lists every variable
+the bot reads, with a comment and its default. For local development:
 
 ```bash
-go mod tidy
 cp .env.example .env
-# edit .env with your values
-./dayz-killfeed
+# edit .env
 ```
+
+The bot loads `.env` at start-up if the file exists. In production the same variables are set in
+the hosting platform (Railway), never in a file.
+
+- Only `DISCORD_TOKEN` is required to start.
+- `DATABASE_URL` is needed for almost everything beyond starting up.
+- `CREDENTIAL_ENCRYPTION_KEY` is required for `/server connect`. Generate it once, store it as a
+  deployment secret and do not change it: the stored Nitrado credentials are encrypted with it.
+- `PORT` is used when set (Railway sets it); `HTTP_PORT` is the local fallback. The server binds
+  `0.0.0.0`.
+- Feature switches are off by default. A blank value always means "default" or "off".
+
+Never commit a real token, key, password or id. `.env` is ignored by git.
 
 ## Run
 
@@ -92,63 +52,75 @@ cp .env.example .env
 go run ./cmd/server
 ```
 
-## Build
+Database migrations run automatically at start-up (`internal/database/migrations.go`).
+
+Useful endpoints once it is running:
+
+| Endpoint | What it is |
+| --- | --- |
+| `GET /health` | Liveness. Makes no external call. |
+| `GET /ready` | Readiness, including worker health. |
+| `GET /api/v1/status` | Sanitized live runtime state. |
+
+## Docker
 
 ```bash
+docker build -t champion-bot .
+docker run --rm -p 8080:8080 --env-file .env champion-bot
+```
+
+`Dockerfile` builds only `cmd/server`. `Dockerfile.nitrado-fixture` builds the synthetic Nitrado
+API used for isolated staging (see [docs/TOOLS.md](docs/TOOLS.md)); never deploy it next to
+production.
+
+## Tests
+
+The normal suite needs nothing but Go:
+
+```bash
+gofmt -l .        # must print nothing
 go build ./...
-```
-
-## Docker usage
-
-```bash
-docker build -t dayz-killfeed .
-docker run --rm -p 8080:8080 --env-file .env dayz-killfeed
-```
-
-## Current Phase 4.9 functionality
-
-- typed configuration with startup validation (`PORT` preferred for Railway, `HTTP_PORT` local fallback)
-- structured JSON logging via `slog` with `time`/`level`/`msg` keys for Railway's log parser (a `component=x` record becomes `component: x` with its `msg` attribute as the one message, so Railway shows the text) (`LOG_LEVEL=debug` enables checkpoint debug logs; `LOG_FORMAT=text` switches to the human-readable format)
-- Nitrado REST client with retries and error handling
-- Nitrado service discovery, DayZ service matching, and configured-service verification
-- sanitized recursive inspection of the live service payload for file/log capability fields
-- conservative log candidate discovery (filename, path, size, modified, inferred type)
-- Discord bot connection with guild, killfeed channel, and permission validation
-- HTTP server with `/health` (no external calls) and `/api/v1/status` (live sanitized runtime state)
-- killfeed polling engine with incremental reads, offset tracking, duplicate prevention,
-  partial-line buffering, truncation and rotation detection
-- graceful shutdown using `signal.NotifyContext`
-- Railway-aware `PORT` and `0.0.0.0` binding behavior
-- multi-server runtime with one isolated worker, parser, tracker, persistence queue,
-    and guild-scoped Nitrado credential per active `game_servers` row
-- secure `/server connect`, `/server services`, `/server select`, `/server disconnect`,
-    `/server repair`, and `/server status` onboarding flow
-- guild-scoped competitive commands, persistent welcomer configuration, and pending-only
-    account linking with destructive-action confirmation
-- `/ready` readiness endpoint and worker health reporting
-
-## Validation
-
-The normal suite is self-contained:
-
-```bash
-go test ./...
 go vet ./...
-go build ./...
+go test ./...
 ```
 
-PostgreSQL integration tests are explicit and never use an unspecified database:
+The integration tests need a **disposable** PostgreSQL database. They migrate it and write to it,
+so never point them at a real one. They only run when all of this is set:
 
 ```bash
-$env:TEST_DATABASE_URL = "postgres://.../dayz_killfeed_test"
-$env:ALLOW_INTEGRATION_DB_TESTS = "true"
-go test -tags=integration ./...
+export TEST_DATABASE_URL="postgres://user:password@localhost:5432/champion_test?sslmode=disable"
+export ALLOW_INTEGRATION_DB_TESTS=true
+go test -tags integration -p 1 -count=1 ./...
 ```
 
-Live Discord and Nitrado verification still requires real credentials and a dedicated
-test guild/service. The application reports those dependencies through `/ready` and
-`/api/v1/status`; they are not fabricated as passing in local CI.
+`-p 1` matters: every package migrates and writes the same database. With `REQUIRE_INTEGRATION_DB=1`
+a missing database is a failure instead of a skip.
 
-## Notes
+CI (`.github/workflows/backend-ci.yml`) runs exactly these steps on every pull request and on
+`main`, plus race tests for `internal/discord`, `internal/killfeed` and `internal/app`, against a
+throwaway PostgreSQL 16.
 
-This project intentionally avoids inventing undocumented Nitrado endpoints or DayZ log syntax. The architecture is designed to support future log streaming, PostgreSQL-backed persistence, and multi-server scaling without relying on local state.
+Checks against real Discord, Nitrado or Stripe are not part of the test suite. They need real
+credentials and a dedicated test server; the operator tools for them are in
+[docs/TOOLS.md](docs/TOOLS.md).
+
+## Layout
+
+| Path | What is there |
+| --- | --- |
+| `cmd/server` | The bot. |
+| `cmd/*` (everything else) | Operator and test helpers, see [docs/TOOLS.md](docs/TOOLS.md). None of them is part of the bot. |
+| `internal/app` | Start-up, workers and every HTTP handler. |
+| `internal/killfeed`, `internal/nitrado`, `internal/livesync` | Reading and parsing the server logs. |
+| `internal/discord`, `internal/presentation` | Discord publishers, commands and card design. |
+| `internal/repository`, `internal/database` | SQL and migrations. |
+| `internal/config` | Environment variables. |
+| `docs/` | Documentation; start at [docs/README.md](docs/README.md). |
+
+## Principles the code keeps to
+
+- Nothing is invented: the bot only reports what the server log or an official Nitrado endpoint
+  actually says.
+- Every customer's data is scoped to its own organization, installation and game server.
+- Anything that writes to a game server, charges money or messages players is off until an owner
+  switches it on.

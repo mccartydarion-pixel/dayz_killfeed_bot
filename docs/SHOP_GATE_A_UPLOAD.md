@@ -2,9 +2,11 @@
 
 This is a single-file, owner-authorized Nitrado write for the Shop canary.
 
-**Only Gate A is active:** create the empty Champion spawner file, `champion/champion_shop_delivery.json`. Gate E (stage) and Gate G (unstage) are reserved names that the code refuses.
+> **Status now:** this document was written for Gate A. Gate A and Gate B (the legacy `champion/` location) are completed and the tool refuses them. The operations the tool accepts today are `gate-c-create-custom` and `gate-d-relocate-reference` (`docs/archive/SHOP_CUSTOM_RELOCATION.md`), `gate-e-stage` and `gate-g-unstage` (`docs/SHOP_CANARY_STAGING.md`) and `gate-b-rollback`. The protocol, journal, plan IDs and exit codes below still apply to all of them. See `docs/TOOLS.md`.
 
-**Nothing here runs in the bot.** The capability is a command-line tool, `cmd/shop-mission-write`, that an operator runs with the owner's approval. Bot startup, Live Sync, Shop delivery and the canary operator API never import it (enforced by `TestWriteCapabilityIsIsolated`).
+**When written, only Gate A was active:** create the empty Champion spawner file, `champion/champion_shop_delivery.json`. Gate E (stage) and Gate G (unstage) were reserved names that the code refused.
+
+**The gates never run in the bot.** They are a command-line tool, `cmd/shop-mission-write`, that an operator runs with the owner's approval. Bot startup, Live Sync, the Shop service and the canary operator API never import it (enforced by `TestWriteCapabilityIsIsolated`). The one exception added later is the automatic delivery worker, which may use only the two artifact primitives of this package (`docs/SHOP_DELIVERY_WORKER.md`).
 
 **Nothing in this change has written to a production server.**
 
@@ -137,9 +139,9 @@ It works over an in-memory file tree, with failure switches. The tests drive the
 | After `UNCERTAIN`: refused after a restart, and the plan ID stays dead even after the owner's resolution | `TestUncertainAuthorizationNeverReusableAfterRestart` |
 | Failure side effects: mkdir refused, mkdir error with the folder created, mkdir ok then token refused, token refused but a file appeared, transfer refused; the folder state is in the outcome and the journal | `TestFailureSideEffectsAreReported` |
 
-## 4. Gate E and Gate G (not active)
+## 4. Gate E and Gate G (activated later)
 
-`missionwrite.OpStageItem` and `OpUnstageItem` are reserved and refused. Activating them is a separate, owner-approved change. It must add, per operation:
+When this was written `missionwrite.OpStageItem` and `OpUnstageItem` were reserved and refused. They have since been activated (`internal/shop/missionwrite/gateeg.go`); how they work today is in `docs/SHOP_CANARY_STAGING.md`. The requirements set out here were, per operation:
 
 * **Gate E:**
   * payload = `canary.PreviewSingleItem` for the real delivery;

@@ -7,9 +7,10 @@ fields. This document records the audit of that runtime, the shared resolver
 the publishers migrate onto, and how far the migration has got.
 
 **Migrated to runtime routes: `KILLFEED`, `LINK_GAMERTAG`, `STATS_LEADERBOARDS`,
-`AUTO_LEADERBOARD`, `ADMIN_LOGS`. Built and runtime routed: `HITFEED`, `CONNECTIONS`, `PVE_FEED` (explicit suicides only - see its section), `BOUNTY` and `BOUNTY_TRACKING` (see `docs/BOUNTY_SYSTEM.md`), `ECONOMY` (see `docs/ECONOMY_SYSTEM.md`).** Every other route either has no publisher at
-all (marked *Not implemented* below - nothing was built for them) or has no
-text-channel feed to route. See the table below and "Migrated features".
+`AUTO_LEADERBOARD`, `ADMIN_LOGS`. Built and runtime routed: `HITFEED`, `CONNECTIONS`, `PVE_FEED` (explicit suicides only - see its section), `BOUNTY` and `BOUNTY_TRACKING` (see `docs/BOUNTY_SYSTEM.md`), `ECONOMY` (see `docs/ECONOMY_SYSTEM.md`).** The table under "All routes" is the per-route record. Routes added after this audit are not in
+that table (for example `SERVER_RANKS`, `EVENTS`, `FACTION_RECRUITMENT`, `DONATION_PERKS` and the
+setup-only `CASE_*` cards); the code's own list of every route key and its producer is
+`routeProducerAudit` in `internal/app/saas_channel_layout.go`. See also "Migrated features".
 
 ## KILLFEED event path (audited)
 

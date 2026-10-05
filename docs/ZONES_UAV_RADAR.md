@@ -6,7 +6,9 @@ intrusion engine that watches them, built directly on top of Phase 3's persisted
 detection were explicitly deferred in Phase 3 ("Do NOT build zones, UAV, or heatmaps yet") pending
 a real, persisted location data source - that source now exists (`player_location_events`), and
 this phase is the first consumer of it. **Heatmaps, Auto Payments, the priority queue, and Auto
-Start remain deliberately unbuilt** (reserved for later phases).
+Start were deliberately not built in this phase.** Heatmaps were built next (`docs/HEATMAPS.md`), and
+the Nitrado priority list is now used by the perk store (`docs/PERK_STORE.md`); Auto Payments and
+Auto Start are still not built.
 
 ## Why this was safe to build now
 
@@ -261,7 +263,9 @@ Billing, shop, the existing Economy ledger, OAuth, Owner Hub, Stripe, the Nitrad
 the existing permission Level/capability hierarchy (only additive `requiredLevel` entries) are all
 untouched by this phase - none of this phase's code lives in any of those files or packages.
 
-## Deferred (still, deliberately)
+## Deferred in this phase
 
-Heatmap aggregation, Auto Payments, the priority queue, generic file writes, and Auto Start remain
-unbuilt - reserved for later phases, exactly as instructed.
+Heatmap aggregation, Auto Payments, the priority queue, generic file writes, and Auto Start were
+not built in this phase. Since then: heatmap aggregation exists (`docs/HEATMAPS.md`) and the perk
+store manages the Nitrado priority list (`docs/PERK_STORE.md`). Auto Payments and Auto Start are
+still not built.

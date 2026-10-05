@@ -326,4 +326,4 @@ Event → detection therefore **includes** Nitrado's own delay in exposing the b
 3. **Still open from phase 2's list:** DB presence (`player_server_activity`) reconciled from complete ADM snapshots; per-installation request budgets across many servers.
 4. **Samples still needed:** persistence errors and non-VM fatal crashes (no real sample yet; they parse as UNKNOWN until one exists). `server.log` (ftproot only) is listed but its format has not been sampled, so it is not ingested.
 5. **Kills and deaths recorded before phase 2** have no source identity and cannot appear on kill/death heatmaps.
-6. **Automatic Shop spawning remains disabled** (docs/SHOP_DELIVERY_PHASE2B.md).
+6. **Automatic Shop spawning remains disabled** (docs/archive/SHOP_DELIVERY_PHASE2B.md).

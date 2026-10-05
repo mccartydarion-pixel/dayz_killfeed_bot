@@ -37,7 +37,7 @@ Capabilities:
 
 Important: Boost Detection refers to unauthorized base construction and boosting, NOT kill farming or statistical boosting.
 
-Existing build lines are parsed for a staff build feed only when the server enables placement/build logging. They can be retained as source-addressed C.A.S.E. evidence only under a separate, default-off per-server build-evidence allowlist; no real ADM build-line sample has been verified. Base ownership, authorization and zone registration are separate evidence requirements. See [Base Boost feasibility](CASE_CORE_BASE_BOOST_FEASIBILITY.md). Only claim an event was observed if the underlying telemetry supports it.
+Existing build lines are parsed for a staff build feed only when the server enables placement/build logging. They can be retained as source-addressed C.A.S.E. evidence only under a separate, default-off per-server build-evidence allowlist; no real ADM build-line sample has been verified. Base ownership, authorization and zone registration are separate evidence requirements. See [Base Boost feasibility](archive/CASE_CORE_BASE_BOOST_FEASIBILITY.md). Only claim an event was observed if the underlying telemetry supports it.
 
 ### 02. SKYWALK DETECTION
 

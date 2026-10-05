@@ -1,5 +1,5 @@
 // Command shop-canary-prepare computes the Champion Shop Phase 2C.2 canary preparation
-// (docs/SHOP_DELIVERY_PHASE2C2.md) for one Nitrado service. It is READ-ONLY: it runs Phase 2C.1
+// (docs/archive/SHOP_DELIVERY_PHASE2C2.md) for one Nitrado service. It is READ-ONLY: it runs Phase 2C.1
 // discovery (GET requests and signed downloads only), downloads cfggameplay.json, and prints the
 // proposed patch (hashes and exact diff), the upload sequence and the gates. It never uploads,
 // never requests an upload token and never restarts anything. It prints no token, signed URL,

@@ -3,6 +3,10 @@
 An installation-scoped product catalog that players buy with **Champion Points**, plus admin management, manual fulfillment and refunds. The website is the Shop UI; the Go backend is
 authoritative for prices, stock, purchase limits, the Points debit, idempotency and audit. **No Discord Shop UI, no transfers, no cart, no automatic delivery** exist in this phase.
 
+> **Later additions (not part of Phase 1):** delivery records and coordinates (`docs/SHOP_DELIVERY.md`), the buyer's
+> order confirmation and support tickets (`docs/SHOP_ORDER_CONFIRMATION.md`), and an automatic in-game delivery
+> worker that is off unless an operator and the owner switch it on (`docs/SHOP_DELIVERY_WORKER.md`).
+
 ## 1. Audit result
 
 | Concern | Found on `main` | Decision |
@@ -194,5 +198,5 @@ UI notes: show `stockState` (never an exact count) and disable Buy for `OUT_OF_S
 
 ## 12. Not built
 
-Cart / multi-item orders, unpaid checkout sessions (payment is immediate), automatic delivery (role or in-game - Delivery Engine 2.0 is staff delivery only, see `docs/SHOP_DELIVERY.md`),
+Cart / multi-item orders, unpaid checkout sessions (payment is immediate), automatic role delivery (in-game automatic delivery was added later and is off by default, see `docs/SHOP_DELIVERY_WORKER.md`),
 Discord Shop UI or SHOP embeds, product images, coupons/discounts, player-to-player transfers.
