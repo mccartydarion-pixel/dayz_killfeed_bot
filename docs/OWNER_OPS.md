@@ -99,7 +99,7 @@ For every set-up installation with an active server it derives the incidents its
 | Kind | Opens when | Healed by |
 | --- | --- | --- |
 | `WORKER_DOWN` | no log worker is running | restarting the worker |
-| `FEED_STALLED` | the worker completes no poll cycle | restarting the worker |
+| `FEED_STALLED` | the worker completes no poll cycle, **or the feed is silent** (below) | restarting the worker |
 | `NITRADO_ACCESS` | Nitrado keeps refusing the saved token (authentication or permission) | the customer reconnecting Nitrado |
 | `DISCORD_ACCESS` | the bot is no longer in the Discord server | the customer adding it again |
 
@@ -116,6 +116,53 @@ With `alertsEnabled`, the platform admins are DMed once when an incident opens a
 resolves. With `customerNoticesEnabled`, the organization's owner is DMed once for the kinds only
 they can fix, with a link to their dashboard, and once more when it is fixed. Nobody is told
 something resolved unless they were told it broke.
+
+### Silent feeds
+
+A worker can run, poll and still deliver nothing. Those cases are raised as `FEED_STALLED` too,
+so the platform owner hears about a dead feed before the customer asks. The incident's detail
+says which case it is. Code: `ownerops.SilentFeed`, fed by the feed watch
+(`internal/app/feed_watch.go`), which samples every worker each 30 seconds and keeps its clocks
+in memory only.
+
+| Case | Opens when |
+| --- | --- |
+| Players online, log silent | at least one player has been online without a gap for **20 minutes** and not one new log line was read in those 20 minutes, on a server that has been seen writing player lists (such a server writes one every five minutes, so silence cannot be a quiet evening). On a server never seen writing a player list the wait is **60 minutes**, because a lone idle player really can produce no line; the detail then says the server may only be idle with its player list log off |
+| Log unreadable | every read of the server log has failed for **15 minutes** with a Nitrado error that is not a refused token (a refused token is `NITRADO_ACCESS`) |
+
+It never opens:
+
+- for a suspended installation, one whose setup is unfinished, or a deactivated server (nothing
+  is expected of them);
+- for an empty server, or while the player count is unknown;
+- while Nitrado says the game server is stopped;
+- during the first minutes after a bot restart: the monitor concludes nothing for three minutes,
+  and every clock above starts again when the process starts, so the earliest a silent feed can
+  open after a deploy is 15 minutes (unreadable), 20 minutes (silent, once a player list has been
+  read since the restart) or 60 minutes (silent from the very start), plus the grace period.
+
+Like every incident it then needs the four-minute grace period, opens once per installation,
+resolves by itself when a log line arrives (or the players leave, or the reads work again), and
+follows the same switches: `alertsEnabled` DMs the admins once on opening and once on resolving,
+`selfHealEnabled` restarts the worker (at most three times, ten minutes apart). No customer is
+messaged for it.
+
+The player count is the online counter's reading (Nitrado's live count) for the server it
+watches, else the worker's own count once a player list or a server restart proved it
+(docs/ONLINE_COUNTER_AND_LINK_CHECK.md). One failed count read neither starts nor resets the
+20/60 minutes.
+
+Known limit: on a server with the player list log switched off, one player idling for an hour
+with nobody connecting, fighting or building opens the incident although nothing is broken. The
+same setting leaves that customer's live map empty; their own status page tells them how to
+switch it on (docs/SERVER_STATUS.md, `positionLogging`).
+
+### Deploy self-check alert
+
+Not an incident (it belongs to the bot process, not to an installation), but it uses the same
+admin DMs and the same `alertsEnabled` switch: if a newly started bot process is not healthy five
+minutes after it started, the platform admins get one DM saying what is wrong, and one more if it
+recovers within the hour. See docs/DEPLOY.md.
 
 `GET /api/admin/incidents?status=OPEN|RESOLVED`, `POST /api/admin/incidents/{id}/resolve` closes
 one by hand (if the problem is still there a new incident opens after the grace period).

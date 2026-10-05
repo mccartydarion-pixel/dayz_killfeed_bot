@@ -50,6 +50,9 @@ type RuntimeStatusResponse struct {
 	// Discord, per stage, over the last hour and 24 hours (docs/PERFORMANCE.md section 19).
 	// Absent until this process has delivered a card for the server. Numbers only.
 	FeedLatency []killfeed.FeedLatencySnapshot `json:"feedLatency,omitempty"`
+	// Deploy is the start-up self-check: its verdict, and whether migrations, leadership, the
+	// Discord gateway and the server workers are in place right now (docs/DEPLOY.md).
+	Deploy *RuntimeDeploy `json:"deploy,omitempty"`
 }
 
 // RuntimeBuild is the deployment identity block of GET /api/runtime/status.
@@ -190,7 +193,7 @@ func (a *App) runtimeStatusHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := RuntimeStatusResponse{OK: true, GuildID: requestedGuildID, Build: a.runtimeBuild(), Leadership: a.runtimeLeadership()}
+	resp := RuntimeStatusResponse{OK: true, GuildID: requestedGuildID, Build: a.runtimeBuild(), Leadership: a.runtimeLeadership(), Deploy: a.runtimeDeploy(time.Now())}
 
 	serverID := guild.SelectedPublicServerID
 	if raw := strings.TrimSpace(r.URL.Query().Get("server_id")); raw != "" {

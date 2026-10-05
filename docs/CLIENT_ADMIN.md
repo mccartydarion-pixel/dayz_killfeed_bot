@@ -77,6 +77,7 @@ permission mapping granting a Level at or below their own resolved Level - enfor
 | `NETWORK_MANAGE` | Owner | list or unlist the server in the cross-server network (`docs/NETWORK.md`) |
 | `FEED_IDENTITY_MANAGE` | Owner | the name and avatar feeds post under (`docs/FEED_IDENTITY.md`) |
 | `MAP_ROTATION_MANAGE` | Owner | map rotation with a player vote: settings, the file check and the staff choice of the next map (`docs/MAP_ROTATION.md`) |
+| `SERVER_STATUS_VIEW` | Administrator | the owner-facing server status: is the feed working, Nitrado and Discord reachability, position logging (`docs/SERVER_STATUS.md`) |
 | `RETENTION_VIEW` | Administrator | retention dashboard and lapsed-player list (`docs/RETENTION.md`) |
 
 ## Current Actor Client Admin Permissions (Phase 1 Part 2)

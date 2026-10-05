@@ -66,6 +66,9 @@ func (a *App) Run() error {
 		"KILLFEED_CHANNEL_ID_configured", a.Config.KillfeedChannelID != "",
 	)
 
+	// expectedWorkers is how many server workers this start-up set out to run (the deploy self-check).
+	expectedWorkers := 0
+
 	// --- Nitrado authentication and service verification ---
 	logSourceVerified := false
 	authenticated, serviceVerified, serviceGame, serviceType, serviceStatus := a.verifyNitrado(ctx)
@@ -712,6 +715,7 @@ func (a *App) Run() error {
 				return row.Active
 			})
 
+			expectedWorkers = len(activeServers)
 			for _, row := range activeServers {
 				if err := a.WorkerManager.Start(ctx, row.ID); err != nil {
 					slog.Error("component=servers", "msg", "failed to start server worker", "server_id", row.ID, "err", err.Error())
@@ -744,6 +748,10 @@ func (a *App) Run() error {
 	if logSourceVerified {
 		slog.Info("component=killfeed", "msg", "live gameplay log source verified")
 	}
+
+	// Start-up is done: from here the process serves. The self-check logs one line once the
+	// leader lock, the Discord gateway and every server worker are in place (docs/DEPLOY.md).
+	a.markReady(ctx, expectedWorkers)
 
 	if err := a.HTTPServer.ListenAndServe(ctx); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("start HTTP server: %w", err)
