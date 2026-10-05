@@ -48,6 +48,8 @@ the rename endpoint applies.
 `internal/app/server_name_sync.go`, started from `App.Run`.
 
 - First pass 2-7 minutes after start, then every 20 minutes plus up to 5 minutes of jitter.
+- Runs in one process only: the one holding the leader lock (docs/MULTI_PROCESS.md). A process that
+  takes the lock over starts with the same 2-7 minute delay.
 - Targets: active `game_servers` rows with provider `NITRADO` and a service ID. A server whose
   installations are all suspended is skipped.
 - Credential: the organization's Nitrado credential, else the guild's own connection. A server

@@ -348,7 +348,9 @@ func (a *App) startBaseRentReminders(ctx context.Context) {
 		_, err = session.ChannelMessageSendComplex(ch.ID, msg)
 		return err
 	}
-	go func() {
+	// One process only (singleton_leader.go): a reminder is sent before it is marked, so two
+	// processes would both send it.
+	go a.singleton(ctx, "base_rent_reminders", func(ctx context.Context) {
 		t := time.NewTicker(10 * time.Minute)
 		defer t.Stop()
 		for {
@@ -362,7 +364,7 @@ func (a *App) startBaseRentReminders(ctx context.Context) {
 				}
 			}
 		}
-	}()
+	})
 }
 
 func (a *App) sendBaseRentReminders(ctx context.Context, send func(string, *discordgo.MessageSend) error) {

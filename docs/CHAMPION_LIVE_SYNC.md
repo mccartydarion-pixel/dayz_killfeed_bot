@@ -216,13 +216,38 @@ The same principle now applies to locations: every `locationDTO` carries `occurr
 ### 7.5 Freshness and diagnostics per family
 
 `GET /api/admin/live-sync` (platform admin) returns, per running server:
-* per family: `state` (`FRESH` = last successful read within 2× its probe interval; `LAGGING`; `FAILING` = three consecutive failures; `NO_SOURCE`), current canonical file, checkpoint, read and listed size, `listingBehindBytes`, last read / growth / failure time, safe error class, counts (reads, records, live, backfill, unknown, rotations) and a latency summary;
+* per family: `state` (`FRESH` = last successful read within 2× its probe interval; `LAGGING`; `FAILING` = three consecutive failures; `NO_SOURCE`), current canonical file, checkpoint, read and listed size, `listingBehindBytes`, last read / growth / failure time, safe error class, `gaveUp` / `gaveUpAt` / `gaveUpReason` / `nextRetryAt` (section 7.5.1), counts (reads, records, live, backfill, unknown, rotations) and a latency summary;
 * the directory lister's last successful listing and error;
 * the learned UTC offset and the recent session-end evidence;
 * the recorded ADM session (file, start, `endedAt`, reason, evidence);
 * stored-record statistics for the last 6 hours per family, and ADM latency from stored location rows.
 
-`component=livesync` logs `source_attached`, `source_read`, `source_rotated`, `source_truncated`, `source_read_failed`, `adm_session_ended`, `server_clock_learned` and, every 5 minutes, one `source_health` line per family. No token, signed URL, physical path or raw line is logged or returned.
+`component=livesync` logs `source_attached`, `source_read`, `source_rotated`, `source_truncated`, `source_read_failed`, `source_gave_up`, `source_gave_up_retry_failed`, `source_recovered`, `adm_session_ended`, `server_clock_learned` and, every 5 minutes, one `source_health` line per family (with `gave_up=<reason>` while a file is given up). No token, signed URL, physical path or raw line is logged or returned.
+
+#### 7.5.1 A file that can never be read
+
+Observed 2026-09-30 to 2026-10-05: Nitrado answered 500 for one old crash log on every read, and the crash watcher retried it every 10 minutes for days.
+
+Every failed read or commit of a file backs off: the family's probe interval doubled per consecutive failure, capped at 10 minutes (crash: 2, 4, 8, 10, 10 … minutes; script: 1, 2, 4, 8, 10 …; RPT and restart.log: 30 s, 1, 2, 4, 8, 10 …). `source_read_failed` is logged for the first failure and every tenth. This applies to every family and is unchanged.
+
+On top of that a file is **given up** when all of these hold:
+
+* its family is **script** or **crash** (`FamilyPolicy.GiveUpHistorical`);
+* it has failed **12 times in a row** (`Config.GiveUpAfter`; about 1 h 35 min after the first failure for a crash log, 1 h 25 min for a script log);
+* it is **historical**: its name carries a boot stamp, and the directory listing shows a file of any family (ADM, RPT, script, crash) stamped more than two minutes later. DayZ writes a new set of files for every boot, so a file of an earlier boot no longer grows.
+
+A given-up file is read once every **6 hours** (`Config.GiveUpRetryEvery`) instead of every 10 minutes. Giving up is logged once at warn (`source_gave_up`, with the file, the failure count and the error class); the 6-hourly retries that fail log `source_gave_up_retry_failed` at info. The family's health keeps `state: FAILING` and adds `gaveUp: true`, `gaveUpAt`, `gaveUpReason` (`gave up on <file> after <N> failures: <error class>`) and `nextRetryAt`. The first read that succeeds clears all of it (`source_recovered`) and the file is read on its normal schedule again; nothing is lost, because the checkpoint never moved.
+
+What is **never** given up, however long it fails:
+
+* **RPT** and **restart.log**. Their records end boot sessions and restart.log states the server clock; they stay on the capped 10-minute retry.
+* a script or crash file of the **newest listed boot** - it may still be written. It is given up at its next failure once a later boot's files are listed.
+* anything while no directory listing has succeeded (nothing can be called historical then).
+* the ADM. It is not read by these watchers at all; the kill pipeline (`internal/killfeed`) is untouched.
+
+Giving up is **per file**. Other families of the same server are unaffected, and when a newer file of the same family is listed the watcher moves to it as on any rotation - without reading the given-up file again. The old file keeps its 6-hourly retry (at most four such files per family are kept), so a file Nitrado serves again later is still drained.
+
+The give-up state is held in memory only (no column was added to `live_sync_sources`). After a process restart the file is tried again from the normal backoff and is given up again after 12 failures.
 
 ### 7.6 Kill/death heatmaps (finding A8)
 

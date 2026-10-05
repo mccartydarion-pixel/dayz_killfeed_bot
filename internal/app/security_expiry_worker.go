@@ -122,7 +122,9 @@ func (a *App) startSecurityExpiryWorker(ctx context.Context) {
 			_, err = session.ChannelMessageSendComplex(ch.ID, msg)
 			return err
 		}}
-	go func() {
+	// One process only (singleton_leader.go): the DM is sent before the purchase is marked, so
+	// two processes would both send it.
+	go a.singleton(ctx, "security_expiry", func(ctx context.Context) {
 		t := time.NewTicker(5 * time.Minute)
 		defer t.Stop()
 		for {
@@ -133,5 +135,5 @@ func (a *App) startSecurityExpiryWorker(ctx context.Context) {
 				w.tick(ctx)
 			}
 		}
-	}()
+	})
 }

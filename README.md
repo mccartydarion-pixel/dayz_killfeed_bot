@@ -57,6 +57,7 @@ Discord bot presence (all optional - these are the defaults if unset):
   - `static`: always shows **Competing in Competitive DayZ**.
   - `dynamic`: rotates through Competing in Competitive DayZ, live player/server counts (only when a server is actually connected - never a fabricated 0), Playing Champions® Killfeed, Watching Live PvP Activity, and Competing in DayZ Leaderboards. The bot's Discord status (online/idle/dnd) also reflects overall application health, debounced so a brief blip never flaps it.
 - `CHAMPION_MAP_ROTATION_ENABLED` - default of the `map_rotation` feature flag (map rotation with a player vote, `docs/MAP_ROTATION.md`). Default `false`: only installations switched on in the Owner Hub can use it.
+- `SINGLETON_LEADER_LOCK` - leave unset. The background workers that must run once (boards, reminders, schedulers, the Nitrado name sync) run only in the process holding a PostgreSQL advisory lock, so a deploy overlap does not duplicate them (`docs/MULTI_PROCESS.md`). `off` disables the lock; use it only with a single process whose database connection cannot hold a session lock (a pooler in transaction mode).
 
 Important notes:
 

@@ -128,7 +128,8 @@ func (a *App) startSecurityPanelWorker(ctx context.Context) {
 		return
 	}
 	session := a.Discord.Session()
-	go func() {
+	// One process only (singleton_leader.go): two would both post a panel that has no message yet.
+	go a.singleton(ctx, "security_store_panel", func(ctx context.Context) {
 		t := time.NewTicker(securityPanelRefreshEvery)
 		defer t.Stop()
 		for {
@@ -139,7 +140,7 @@ func (a *App) startSecurityPanelWorker(ctx context.Context) {
 				a.refreshAllSecurityPanels(ctx, session)
 			}
 		}
-	}()
+	})
 }
 
 func (a *App) refreshAllSecurityPanels(ctx context.Context, sender securityPanelSender) {
