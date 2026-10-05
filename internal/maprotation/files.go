@@ -91,6 +91,9 @@ type Paths struct {
 	root       string
 	MissionDir string
 	CustomDir  string
+	// missionMounts is the mission folder as it appears under each of the service's mounts
+	// ("ftproot", "noftp"). The config files and the saved world can sit under different mounts.
+	missionMounts []string
 }
 
 // File returns the full path of a file directly inside dir (the mission or the custom folder).
@@ -100,6 +103,31 @@ func (p Paths) File(dir, name string) (string, error) {
 		return "", capability.ErrUnsafePath
 	}
 	return capability.SafePath(p.root, dir+"/"+name)
+}
+
+// PlayersDBCandidates returns every place the saved-characters file can be: storage_1/players.db
+// in the mission folder under each mount, the mount that holds the config files first. Each entry
+// is the mission folder, its storage folder and the file's full path, all built from fixed names.
+func (p Paths) PlayersDBCandidates() [][3]string {
+	dirs := append([]string{p.MissionDir}, p.missionMounts...)
+	seen := map[string]bool{}
+	var out [][3]string
+	for _, mission := range dirs {
+		if mission == "" || seen[mission] {
+			continue
+		}
+		seen[mission] = true
+		dir, err := capability.SafePath(p.root, mission+"/"+StorageDir)
+		if err != nil {
+			continue
+		}
+		file, err := capability.SafePath(p.root, dir+"/"+PlayersDBFile)
+		if err != nil {
+			continue
+		}
+		out = append(out, [3]string{mission, dir, file})
+	}
+	return out
 }
 
 // PlayersDB returns the mission's storage folder and the full path of the saved-characters file
@@ -146,7 +174,13 @@ func Locate(ctx context.Context, rd Reader, serviceID string) (Paths, error) {
 				if err != nil {
 					return Paths{}, ErrMissionDir
 				}
-				return Paths{root: root, MissionDir: dir, CustomDir: custom}, nil
+				var mounts []string
+				for _, m := range []string{"ftproot", "noftp"} {
+					if d, err := capability.SafePath(root, root+"/"+m+"/"+gs.Game+"_missions/"+gs.Mission); err == nil {
+						mounts = append(mounts, d)
+					}
+				}
+				return Paths{root: root, MissionDir: dir, CustomDir: custom, missionMounts: mounts}, nil
 			}
 		}
 	}

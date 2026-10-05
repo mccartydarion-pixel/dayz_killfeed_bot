@@ -25,6 +25,7 @@ package charwipe
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"path"
 	"strings"
 	"time"
@@ -225,6 +226,36 @@ func (r *run) status(ctx context.Context) (string, error) {
 // starting: Nitrado says the server is up or on its way up.
 func starting(status string) bool { return status == "started" || status == "restarting" }
 
+// logNotFound records, by name only, what each mount's mission folder and storage folder hold, so
+// a server whose saved characters live somewhere unexpected can be diagnosed from the log.
+func (r *run) logNotFound(ctx context.Context, paths maprotation.Paths) {
+	names := func(dir string) string {
+		cctx, cancel := r.call(ctx)
+		defer cancel()
+		entries, err := r.rm.ListEntries(cctx, r.svc, dir)
+		if err != nil {
+			return "unreadable"
+		}
+		out := make([]string, 0, len(entries))
+		for i, e := range entries {
+			if i == 40 {
+				out = append(out, "...")
+				break
+			}
+			if e.IsDir {
+				out = append(out, e.Name+"/")
+			} else {
+				out = append(out, e.Name)
+			}
+		}
+		return strings.Join(out, " ")
+	}
+	for _, cand := range paths.PlayersDBCandidates() {
+		mount := path.Base(path.Dir(path.Dir(cand[0])))
+		slog.Info("component=map_rotation", "event", "wipe_file_not_found", "mount", mount, "mission_entries", names(cand[0]), "storage_entries", names(cand[1]))
+	}
+}
+
 // listed reports whether players.db is a file in the storage folder.
 func (r *run) listed(ctx context.Context, storageDir string) (bool, error) {
 	cctx, cancel := r.call(ctx)
@@ -312,11 +343,20 @@ func Run(ctx context.Context, rm Remote, serviceID string, save SaveFunc, opt Op
 		}
 		return Outcome{Reason: ReasonNotFound}
 	}
-	storageDir, file, err := paths.PlayersDB()
-	if err != nil || checkTarget(paths.MissionDir, file) != nil {
-		return Outcome{Reason: ReasonNotFound}
+	// The saved world can sit under a different mount than the config files, so every mount's
+	// mission folder is looked in; the first that holds the file is the one used throughout.
+	var missionDir, storageDir, file string
+	for _, cand := range paths.PlayersDBCandidates() {
+		if checkTarget(cand[0], cand[2]) != nil {
+			continue
+		}
+		if found, err := r.listed(ctx, cand[1]); err == nil && found {
+			missionDir, storageDir, file = cand[0], cand[1], cand[2]
+			break
+		}
 	}
-	if found, err := r.listed(ctx, storageDir); err != nil || !found {
+	if file == "" {
+		r.logNotFound(ctx, paths)
 		return Outcome{Reason: ReasonNotFound}
 	}
 	// The status is what every later step is judged by: if it cannot be read now, nothing starts.
@@ -343,7 +383,7 @@ func Run(ctx context.Context, rm Remote, serviceID string, save SaveFunc, opt Op
 	} else {
 		// 3. Delete the one file, once, and judge it by listing the folder again.
 		dctx, dcancel := r.call(wctx)
-		_ = deletePlayersDB(dctx, rm, serviceID, paths.MissionDir, file)
+		_ = deletePlayersDB(dctx, rm, serviceID, missionDir, file)
 		dcancel()
 		switch found, err := r.listed(wctx, storageDir); {
 		case err != nil:
