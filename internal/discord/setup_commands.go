@@ -162,11 +162,8 @@ func (h *SetupHandler) handleSetup(s *discordgo.Session, i *discordgo.Interactio
 	}
 	slog.Info("component=setup", "action", action, "stage", "received", "guild_id", i.GuildID)
 
-	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral},
-	}); err != nil {
-		slog.Warn("component=setup", "action", action, "stage", "deferred", "error_class", "discord_unavailable", "err", err.Error())
+	if !deferEphemeral(s, i) {
+		slog.Warn("component=setup", "action", action, "stage", "deferred", "error_class", "discord_unavailable")
 		return
 	}
 	slog.Info("component=setup", "action", action, "stage", "deferred", "guild_id", i.GuildID)
@@ -218,14 +215,14 @@ func setupErrorKind(err error) string {
 func (h *SetupHandler) editEphemeralEmbed(s *discordgo.Session, i *discordgo.InteractionCreate, embed *discordgo.MessageEmbed) {
 	empty := ""
 	embeds := []*discordgo.MessageEmbed{embed}
-	if _, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &empty, Embeds: &embeds}); err != nil {
+	if err := editDeferred(s, i, &discordgo.WebhookEdit{Content: &empty, Embeds: &embeds}); err != nil {
 		slog.Warn("component=setup", "msg", "response edit failed", "err", err.Error())
 	}
 }
 
 // editEphemeral edits a previously deferred ephemeral interaction response.
 func (h *SetupHandler) editEphemeral(s *discordgo.Session, i *discordgo.InteractionCreate, content string) {
-	if _, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &content}); err != nil {
+	if err := editDeferred(s, i, &discordgo.WebhookEdit{Content: &content}); err != nil {
 		slog.Warn("component=setup", "msg", "response edit failed", "err", err.Error())
 	}
 }
@@ -286,22 +283,15 @@ func (h *SetupHandler) handleStatus(s *discordgo.Session, i *discordgo.Interacti
 // handleReset requires an explicit confirmation button click before any deletion.
 // Without a confirmed interaction, nothing is removed.
 func (h *SetupHandler) handleReset(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Flags:   discordgo.MessageFlagsEphemeral,
-			Content: "⚠️ **Reset Champion Killfeed?**\nThis will remove the bot-created Champion Killfeed configuration.",
-			Components: []discordgo.MessageComponent{
-				discordgo.ActionsRow{Components: []discordgo.MessageComponent{
-					discordgo.Button{Label: "Confirm", Style: discordgo.DangerButton, CustomID: "champion_reset_confirm"},
-					discordgo.Button{Label: "Cancel", Style: discordgo.SecondaryButton, CustomID: "champion_reset_cancel"},
-				}},
-			},
+	respondPrivate(s, i, &discordgo.InteractionResponseData{
+		Content: "⚠️ **Reset Champion Killfeed?**\nThis will remove the bot-created Champion Killfeed configuration.",
+		Components: []discordgo.MessageComponent{
+			discordgo.ActionsRow{Components: []discordgo.MessageComponent{
+				discordgo.Button{Label: "Confirm", Style: discordgo.DangerButton, CustomID: "champion_reset_confirm"},
+				discordgo.Button{Label: "Cancel", Style: discordgo.SecondaryButton, CustomID: "champion_reset_cancel"},
+			}},
 		},
 	})
-	if err != nil {
-		slog.Warn("component=discord", "msg", "reset confirmation prompt failed", "err", err.Error())
-	}
 }
 
 // HandleResetConfirm processes the reset confirmation button. Only a confirmed
@@ -335,7 +325,10 @@ func isAdmin(s *discordgo.Session, i *discordgo.InteractionCreate) bool {
 	if i.Member != nil && i.Member.Permissions&adminPerms != 0 {
 		return true
 	}
-	if i.Member == nil || i.GuildID == "" || s == nil {
+	// Discord sends the member's permissions in this channel with every guild
+	// interaction, so a member who has any is simply not an admin. Only when
+	// they are missing altogether is Discord asked (which can take requests).
+	if i.Member == nil || i.Member.User == nil || i.Member.Permissions != 0 || i.GuildID == "" || s == nil {
 		return false
 	}
 	perms, err := s.UserChannelPermissions(i.Member.User.ID, i.ChannelID)

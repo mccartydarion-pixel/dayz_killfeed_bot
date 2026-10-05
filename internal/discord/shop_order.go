@@ -19,9 +19,11 @@ import (
 
 // Button and form ids. The number after the last colon is the purchase id.
 const (
-	ShopOrderPrefix       = "champion:shoporder:"
-	shopOrderReceivedID   = ShopOrderPrefix + "received:"
-	shopOrderIssueID      = ShopOrderPrefix + "issue:"
+	ShopOrderPrefix     = "champion:shoporder:"
+	shopOrderReceivedID = ShopOrderPrefix + "received:"
+	shopOrderIssueID    = ShopOrderPrefix + "issue:"
+	// ShopOrderIssuePrefix is the "Issue with order" button, which opens a form.
+	ShopOrderIssuePrefix  = shopOrderIssueID
 	shopOrderIssueModalID = ShopOrderPrefix + "issuemodal:"
 	// ShopOrderReasonInputID is the text input of the issue form.
 	ShopOrderReasonInputID = "reason"

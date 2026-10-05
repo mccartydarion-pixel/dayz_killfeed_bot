@@ -272,17 +272,11 @@ ORDER BY e.source_offset DESC, e.id DESC LIMIT 1`, guildID, serverID, playerID))
 // conflicting truth unless necessary") - always derived from player_location_events at query
 // time, never a separately-maintained column.
 func (r *LocationRepository) LatestLocation(ctx context.Context, guildID, serverID, playerID int64) (*LocationEvent, error) {
-	e, err := scanLocationEvent(r.pool.QueryRow(ctx, `
-SELECT `+locationEventCols+` FROM player_location_events e
-WHERE guild_id=$1 AND server_id=$2 AND player_id=$3
-ORDER BY observed_at DESC, id DESC LIMIT 1`, guildID, serverID, playerID))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
-	}
+	latest, err := r.LatestLocations(ctx, guildID, serverID, []int64{playerID})
 	if err != nil {
 		return nil, err
 	}
-	return &e, nil
+	return latest[playerID], nil
 }
 
 // LocationHistoryFilter narrows a location-history query (task section 7).
@@ -396,6 +390,11 @@ type PlayerDirectoryFilter struct {
 // kills/deaths/player_links/faction_members/player_warnings, never the economy repository).
 // Sorted newest-player-id first (simple, stable keyset cursor - matches this codebase's existing
 // admin cursor convention, admin_api.go's encodeAdminCursor/decodeAdminCursor).
+//
+// The kill, death and warning counts are counted per listed player (correlated subqueries in the
+// select list, which Postgres evaluates for the page's rows only) instead of grouping every kill
+// and death of the server for each page: the same numbers, without reading the whole server's
+// history to show fifty players.
 func (r *LocationRepository) ListPlayerDirectory(ctx context.Context, guildID, serverID int64, f PlayerDirectoryFilter) ([]PlayerDirectoryEntry, error) {
 	limit := f.Limit
 	if limit <= 0 || limit > 200 {
@@ -405,18 +404,16 @@ func (r *LocationRepository) ListPlayerDirectory(ctx context.Context, guildID, s
 SELECT p.id, p.display_name,
        pl.discord_user_id, u.discord_username,
        COALESCE(a.currently_connected,false), a.last_seen_at, a.first_seen_at, a.current_session_started_at,
-       COALESCE(k.n,0), COALESCE(d.n,0),
+       (SELECT COUNT(*) FROM kills k WHERE k.guild_id=$1 AND k.server_id=$2 AND k.killer_player_id=p.id),
+       (SELECT COUNT(*) FROM deaths d WHERE d.guild_id=$1 AND d.server_id=$2 AND d.player_id=p.id),
        fm.faction_id, f.name,
-       COALESCE(w.n,0)
+       (SELECT COUNT(*) FROM player_warnings w WHERE w.guild_id=$1 AND w.cleared=false AND w.player_id=p.id)
 FROM players p
 LEFT JOIN player_links pl ON pl.guild_id=p.guild_id AND pl.player_id=p.id AND pl.status='VERIFIED'
 LEFT JOIN app_users u ON u.discord_user_id=pl.discord_user_id
 LEFT JOIN player_server_activity a ON a.guild_id=p.guild_id AND a.server_id=$2 AND a.player_id=p.id
-LEFT JOIN (SELECT killer_player_id, COUNT(*) n FROM kills WHERE guild_id=$1 AND server_id=$2 GROUP BY killer_player_id) k ON k.killer_player_id=p.id
-LEFT JOIN (SELECT player_id, COUNT(*) n FROM deaths WHERE guild_id=$1 AND server_id=$2 GROUP BY player_id) d ON d.player_id=p.id
 LEFT JOIN faction_members fm ON fm.guild_id=p.guild_id AND fm.player_id=p.id AND fm.active
 LEFT JOIN factions f ON f.id=fm.faction_id
-LEFT JOIN (SELECT player_id, COUNT(*) n FROM player_warnings WHERE guild_id=$1 AND cleared=false GROUP BY player_id) w ON w.player_id=p.id
 WHERE p.guild_id=$1`
 	args := []any{guildID, serverID}
 	if f.Query != "" {
@@ -473,15 +470,98 @@ WHERE p.guild_id=$1`
 	// Latest location is attached per row after the main query (task section 1's field list
 	// includes it, but it's a per-player derived lookup, not something worth an expensive
 	// LATERAL join on every directory page for players a caller may not even scroll to).
+	// It is two statements for the whole page, not two per player: a page of 200 online players
+	// used to make 400 round trips. A failed lookup leaves the locations unset, as before.
+	ids := make([]int64, len(out))
 	for i := range out {
-		if loc, err := r.CurrentLocation(ctx, guildID, serverID, out[i].PlayerID); err == nil {
-			out[i].CurrentLocation = loc
+		ids[i] = out[i].PlayerID
+	}
+	if current, err := r.CurrentLocations(ctx, guildID, serverID, ids); err == nil {
+		for i := range out {
+			out[i].CurrentLocation = current[out[i].PlayerID]
 		}
-		if loc, err := r.LatestLocation(ctx, guildID, serverID, out[i].PlayerID); err == nil {
-			out[i].LastKnownLocation = loc
+	}
+	if latest, err := r.LatestLocations(ctx, guildID, serverID, ids); err == nil {
+		for i := range out {
+			out[i].LastKnownLocation = latest[out[i].PlayerID]
 		}
 	}
 	return out, nil
+}
+
+// CurrentLocations is CurrentLocation for many players in one statement: the same rule, applied
+// per player. Players whose current position is unknown are absent from the map.
+func (r *LocationRepository) CurrentLocations(ctx context.Context, guildID, serverID int64, playerIDs []int64) (map[int64]*LocationEvent, error) {
+	out := map[int64]*LocationEvent{}
+	if len(playerIDs) == 0 {
+		return out, nil
+	}
+	rows, err := r.pool.Query(ctx, `
+WITH s AS (SELECT adm_file FROM server_adm_sessions WHERE server_id=$2 AND guild_id=$1 AND ended_at IS NULL)
+SELECT `+locationEventCols+`
+FROM unnest($3::bigint[]) AS ids(player_id)
+CROSS JOIN LATERAL (
+  SELECT ev.* FROM player_location_events ev JOIN s ON ev.source_file = s.adm_file
+  WHERE ev.guild_id=$1 AND ev.server_id=$2 AND ev.player_id=ids.player_id
+    AND (SELECT COALESCE(bool_or(a.currently_connected), false) FROM player_server_activity a
+         WHERE a.guild_id=$1 AND a.server_id=$2 AND a.player_id=ids.player_id)
+    AND ev.source_offset >= COALESCE((SELECT MAX(c.source_offset) FROM player_location_events c JOIN s cs ON c.source_file = cs.adm_file
+                                      WHERE c.server_id=$2 AND c.player_id=ids.player_id AND c.event_type='CONNECT'), 0)
+  ORDER BY ev.source_offset DESC, ev.id DESC LIMIT 1
+) e`, guildID, serverID, playerIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		e, err := scanLocationEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		e.CurrentSession = true
+		out[e.PlayerID] = &e
+	}
+	return out, rows.Err()
+}
+
+// LatestLocations is LatestLocation for many players in one statement. Players without any
+// location event on the server are absent from the map.
+//
+// The newest row is found in two index steps: the newest observed_at for (server, player) read
+// off the (player_id, observed_at DESC) index, then the highest id at that instant. It is the row
+// "ORDER BY observed_at DESC, id DESC LIMIT 1" returns. Written as that ORDER BY, Postgres read
+// and sorted every location row the player has (several milliseconds for a regular player, per
+// player). The inner step does not repeat guild_id on purpose: a server belongs to one guild, the
+// outer step still checks it, and the extra filter made the planner expect no match and fall
+// back to reading everything.
+func (r *LocationRepository) LatestLocations(ctx context.Context, guildID, serverID int64, playerIDs []int64) (map[int64]*LocationEvent, error) {
+	out := map[int64]*LocationEvent{}
+	if len(playerIDs) == 0 {
+		return out, nil
+	}
+	rows, err := r.pool.Query(ctx, `
+SELECT `+locationEventCols+`
+FROM unnest($3::bigint[]) AS ids(player_id)
+CROSS JOIN LATERAL (
+  SELECT ev.* FROM player_location_events ev
+  WHERE ev.guild_id=$1 AND ev.server_id=$2 AND ev.player_id=ids.player_id
+    AND ev.observed_at = (SELECT m.observed_at FROM player_location_events m
+                          WHERE m.server_id=$2 AND m.player_id=ids.player_id
+                          ORDER BY m.observed_at DESC LIMIT 1)
+  ORDER BY ev.id DESC LIMIT 1
+) e`, guildID, serverID, playerIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		e, err := scanLocationEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[e.PlayerID] = &e
+	}
+	return out, rows.Err()
 }
 
 // OnlinePlayers returns every currently-connected player on a server plus their latest known

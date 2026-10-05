@@ -14,6 +14,7 @@ import (
 type Client struct {
 	session *discordgo.Session
 	timer   *interactionTimer
+	router  *InteractionRouter
 }
 
 // New creates a Discord session using the minimally required intents for Phase 1.
@@ -32,7 +33,10 @@ func New(token string, membersIntent ...bool) (*Client, error) {
 	}
 	timer := newInteractionTimer()
 	session.Client.Transport = &timingTransport{base: session.Client.Transport, timer: timer}
-	return &Client{session: session, timer: timer}, nil
+	router := newInteractionRouter(timer)
+	// The one interaction listener: everything else is a route on the router.
+	session.AddHandler(router.Dispatch)
+	return &Client{session: session, timer: timer, router: router}, nil
 }
 
 // Start connects the bot and registers the /server command.
@@ -123,16 +127,14 @@ func (c *Client) BotID() string {
 	return c.session.State.User.ID
 }
 
-// AddHandler registers an event handler on the underlying session.
-func (c *Client) AddHandler(fn func(*discordgo.Session, *discordgo.InteractionCreate)) {
-	if c == nil || c.session == nil {
-		return
+// Interactions returns the router every slash command, button, form and
+// autocomplete handler is registered on. Calls on a nil router are not
+// possible: a Client always has one.
+func (c *Client) Interactions() *InteractionRouter {
+	if c == nil {
+		return nil
 	}
-	timer := c.timer
-	c.session.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
-		timer.track(i)
-		fn(s, i)
-	})
+	return c.router
 }
 
 // AddMemberJoinHandler registers a GuildMemberAdd listener.

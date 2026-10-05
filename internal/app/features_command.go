@@ -3,7 +3,6 @@ package app
 import (
 	"log/slog"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/discord"
 )
 
@@ -19,9 +18,5 @@ func (a *App) registerFeaturesCommand(commands discord.CommandRegistrar) {
 	} else {
 		slog.Info("component=discord", "msg", "features command queued")
 	}
-	a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
-		if i.Type == discordgo.InteractionApplicationCommand && i.ApplicationCommandData().Name == "features" {
-			handler.Handle(s, i)
-		}
-	})
+	a.Discord.Interactions().Command("features", discord.AckPrivate, handler.Handle)
 }
