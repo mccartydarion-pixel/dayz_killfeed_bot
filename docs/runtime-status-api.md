@@ -106,6 +106,22 @@ Field | Notes
 `killfeedDeliveryMode` | `rotating` (default, `KILLFEED_DELIVERY_MODE` unset) or `immediate`
 `nitradoSource` | `nitrado`, or `fixture` when `NITRADO_API_BASE_URL` points at the staging Nitrado fixture (accepted only with `APP_ENV=staging`)
 
+### `leadership` (which process runs the singleton workers)
+
+Every successful response carries `leadership` for the process that answered
+(docs/MULTI_PROCESS.md):
+
+Field | Notes
+--- | ---
+`enabled` | `false` when there is no election (no database, or `SINGLETON_LEADER_LOCK=off`); the process then always runs the singleton workers
+`leader` | `true` when this process holds the leader lock and runs the singleton workers
+`since` | when this process became leader (`leader: true`), or stopped being / started without being leader (`leader: false`); `null` when there is no election
+`acquisitions` | how often this process became leader since it started (more than 1 means it lost the lock and took it back)
+`lastError` | the latest failure to take or keep the lock; omitted when there is none. Another process holding the lock is not an error
+
+With two processes behind one address the answer describes whichever process
+served the request.
+
 Delivery ledger fields for journaled feeds: `replayed` (cards restored after a
 restart), `dropped` (backlog overflow, or too old to replay after a restart),
 `journal_failures` (feed-journal writes that failed; delivery continued).

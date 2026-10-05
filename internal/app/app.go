@@ -41,6 +41,7 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/heatmap"
 	"github.com/yourname/dayz-killfeed/internal/heatmapimage"
 	"github.com/yourname/dayz-killfeed/internal/killfeed"
+	"github.com/yourname/dayz-killfeed/internal/leader"
 	"github.com/yourname/dayz-killfeed/internal/linking"
 	"github.com/yourname/dayz-killfeed/internal/livesync"
 	"github.com/yourname/dayz-killfeed/internal/nitrado"
@@ -421,6 +422,11 @@ type App struct {
 	presenceTrackers      map[int64]*killfeed.PlayerTracker
 	presenceEngines       map[int64]*killfeed.Engine
 	cancel                context.CancelFunc
+
+	// Leader elects the one process that runs the singleton background workers when several
+	// processes share the database (singleton_leader.go). Nil always leads.
+	Leader     *leader.Elector
+	stopLeader func()
 }
 
 // registerPresenceTracker exposes a running ServerWorker's live PlayerTracker
@@ -819,6 +825,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			total, idle, _ := db.PoolStats()
 			state.SetDatabase(true, total, idle)
 			app.DB = db
+			app.startLeaderElection()
 			app.Guilds = repository.NewGuildRepository(db.Pool)
 			app.Players = repository.NewPlayerRepository(db.Pool)
 			app.Kills = repository.NewKillRepository(db.Pool)
@@ -932,7 +939,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.AdminAudit = repository.NewAuditRepository(db.Pool)
 			app.PlatformOwner = repository.NewPlatformOwnerRepository(db.Pool)
 			app.PlatformOps = repository.NewPlatformOpsRepository(db.Pool)
-			go app.runOwnerOps(ctx)
+			go app.singleton(ctx, "owner_ops", app.runOwnerOps)
 			// Platform owner access: an organization owned by an account on
 			// CHAMPION_ADMIN_DISCORD_IDS has every plan feature and its feature switches
 			// default to on. Loaded before anything asks a plan or flag question.
@@ -1248,6 +1255,7 @@ func (a *App) refreshHealth(ctx context.Context) {
 		for _, c := range a.admSourceComponents(time.Now()) {
 			a.HealthRegistry.Set(c)
 		}
+		a.HealthRegistry.Set(leaderHealthComponent(a.Leader.Status()))
 		if a.ADMHealth != nil {
 			var poll, change time.Time
 			if v, ok := snap["last_poll"].(string); ok {
@@ -1396,7 +1404,7 @@ func (a *App) Run() error {
 		verifiedRole := discord.NewVerifiedRoleAssigner(a.Discord, setupStore, a.Config.DiscordGuildID)
 		a.LinkService.SetRoleAssigner(verifiedRole)
 		a.LinkService.SetNotifier(verifiedRole)
-		go a.runRoleReconciler(ctx)
+		go a.singleton(ctx, "verified_role_reconciler", a.runRoleReconciler)
 	}
 	setupHandler := discord.NewSetupHandler(setupManager, a.Guilds, a.WelcomeRepository)
 	// /setup runs the same Channel System V2 layout engine as the website's
@@ -1684,6 +1692,12 @@ func (a *App) Run() error {
 		}
 	}
 	go a.runOnlineCounter(ctx, onlineCounter)
+	// Every process evaluates the count (its API answers from it); only the leader renames the
+	// channel. A new leader publishes at once instead of waiting for the next poll.
+	go a.singleton(ctx, "online_counter_publish", func(leaderCtx context.Context) {
+		a.pokeOnlineCounter()
+		<-leaderCtx.Done()
+	})
 	if a.AdminService != nil {
 		a.AdminService.SetPipelineDiagnostics(func(diagCtx context.Context) map[string]any {
 			out := map[string]any{"worker": "NOT FOUND", "classification": "UNKNOWN"}
@@ -1898,7 +1912,7 @@ func (a *App) Run() error {
 					board := discord.NewServerRanksBoard(a.ChannelRoutes, routePanels, a.Ranked, guildRowID, serverRow.ID, serverRow.DisplayName)
 					board.SetServerNameFunc(a.serverNameFunc())
 					a.ServerRanksBoards = append(a.ServerRanksBoards, board)
-					go board.Run(ctx)
+					go a.singleton(ctx, fmt.Sprintf("server_ranks_board_%d", serverRow.ID), board.Run)
 				}
 			}
 			if routingEnabled && a.EconomyService != nil {
@@ -1923,7 +1937,7 @@ func (a *App) Run() error {
 				a.BountyBoard = discord.NewBountyBoard(a.ChannelRoutes, guildServers, routePanels, a.Bounties)
 				a.BountyService.SetNotifier(discord.BountyEvents{Tracker: bountyTracker, Board: a.BountyBoard})
 				go bountyTracker.Run(ctx)
-				go a.BountyBoard.Run(ctx)
+				go a.singleton(ctx, "bounty_board", a.BountyBoard.Run)
 			}
 			if routingEnabled {
 				a.guildServers = guildServers
@@ -1933,7 +1947,7 @@ func (a *App) Run() error {
 				// channel, from what the server workers observe.
 				a.ServerStatusBoard = discord.NewServerStatusBoard(a.ChannelRoutes, guildServers, routePanels)
 				a.ServerStatusBoard.SetServerNames(a.serverNameFunc())
-				go a.ServerStatusBoard.Run(ctx)
+				go a.singleton(ctx, "server_status_board", a.ServerStatusBoard.Run)
 				a.syncOnlineCounterRoute(ctx)
 			}
 			if routingEnabled {
@@ -1970,7 +1984,7 @@ func (a *App) Run() error {
 				a.HeatmapBoard = discord.NewHeatmapBoard(a.ChannelRoutes, guildServers, routePanels, a.Heatmap, interval)
 				a.HeatmapBoard.SetServerNames(a.serverNameFunc())
 				a.HeatmapBoard.SetPicture(&heatmapimage.Tiles{BaseURL: a.siteURL()}, a.heatmapMapOf)
-				go a.HeatmapBoard.Run(ctx)
+				go a.singleton(ctx, "heatmap_board", a.HeatmapBoard.Run)
 			}
 			if a.Stats != nil {
 				legacyLeaderboardChannel, legacyLeaderboardMessage := "", ""
@@ -1998,7 +2012,7 @@ func (a *App) Run() error {
 						a.LeaderboardScheduler.SetRouting(a.ChannelRoutes, guildServers, routePanels,
 							discord.NewLegacyLeaderboardRetirer(api, setupStore, a.Config.DiscordGuildID))
 					}
-					go a.LeaderboardScheduler.Run(ctx)
+					go a.singleton(ctx, "leaderboard_scheduler", a.LeaderboardScheduler.Run)
 					if a.AdminService != nil {
 						a.AdminService.SetLeaderboardRefresh(func(refreshCtx context.Context) error {
 							return a.LeaderboardScheduler.RefreshOnce(refreshCtx)
@@ -2017,7 +2031,7 @@ func (a *App) Run() error {
 					}
 				})
 				setupManager.SetRouteGate(a.RouteSyncer.HasRoute)
-				go a.RouteSyncer.Run(ctx)
+				go a.singleton(ctx, "route_syncer", a.RouteSyncer.Run)
 			}
 			store := &persistenceStoreAdapter{players: a.Players, kills: a.Kills, deaths: a.Deaths, seasons: a.Seasons, ranked: a.Ranked, factions: a.Factions, wars: a.Wars, events: a.Events, vip: a.VIP, bounties: a.Bounties, bountySvc: a.BountyService, streaks: a.Streaks, anomalies: a.Anomalies, activity: a.ActivityRepository, servers: a.Servers, stats: a.Stats, analytics: a.AnalyticsRepository, factionStats: a.FactionHubStats, locations: a.Locations, zones: a.Zones, lives: a.Lives, lifeRecap: a.LifeRecap, rankedTags: a.killfeedRankedTagsOn, panelDirty: func() {
 				if a.LeaderboardScheduler != nil {
@@ -2070,7 +2084,9 @@ func (a *App) Run() error {
 			}
 
 			if a.EventService != nil || a.CompletionPublisher != nil {
-				go a.runCompetitiveSchedulers(ctx, guildRowID)
+				go a.singleton(ctx, "competitive_schedulers", func(leaderCtx context.Context) {
+					a.runCompetitiveSchedulers(leaderCtx, guildRowID)
+				})
 			}
 		} else {
 			slog.Warn("component=database", "msg", "no guild record yet; run /setup to enable persistence")
@@ -2618,6 +2634,11 @@ func (a *App) runCompetitiveSchedulers(ctx context.Context, guildID int64) {
 func (a *App) shutdown() {
 	if a.cancel != nil {
 		a.cancel()
+	}
+	// Give the leader lock up first, so a process standing by takes the singleton work over while
+	// this one is still flushing. The singleton workers here already stopped with Run's context.
+	if a.stopLeader != nil {
+		a.stopLeader()
 	}
 	if a.WorkerManager != nil {
 		a.WorkerManager.StopAll()

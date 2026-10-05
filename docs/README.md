@@ -40,6 +40,7 @@ How to read these documents:
 | [BOUNTY_SYSTEM.md](BOUNTY_SYSTEM.md) | Bounties: placing, claiming, the board and the tracking feed. |
 | [DEATH_COUNTS.md](DEATH_COUNTS.md) | Exactly what counts as a death in every statistic. |
 | [ONLINE_COUNTER_AND_LINK_CHECK.md](ONLINE_COUNTER_AND_LINK_CHECK.md) | The online-player counter, player presence and gamertag linking rules. |
+| [MULTI_PROCESS.md](MULTI_PROCESS.md) | What happens when two bot processes run at once: which workers run only on the leader and what is still unsafe. |
 | [SERVER_NAME_SYNC.md](SERVER_NAME_SYNC.md) | How a server's displayed name follows Nitrado unless the owner set one. |
 | [FEATURES_CHANNEL.md](FEATURES_CHANNEL.md) | The `/features` channel that lists new features for players. |
 | [FEED_IDENTITY.md](FEED_IDENTITY.md) | Posting feeds under a server's own name and avatar. |

@@ -351,6 +351,11 @@ func (a *App) evaluateOnlineCounter(ctx context.Context, counter *discord.VoiceC
 		return
 	}
 	a.bindCounterChannel(ctx, counter)
+	if !a.isSingletonLeader() {
+		// Another process renames the channel. This one keeps its reading current for its own
+		// API and health output, and takes over the renaming if it becomes the leader.
+		return
+	}
 	if counter.LastName() == "" {
 		// First publish to this channel: its current name is not known yet
 		// (fresh process, new route) - read it so an identical name is never
