@@ -82,6 +82,17 @@ func CompactStats(kills, deaths int64, kd float64) string {
 	return fmt.Sprintf("**%s K** • **%s D** • **%s K/D**", FormatThousands(kills), FormatThousands(deaths), FormatKD(kd))
 }
 
+// CompactPvPStats is the second line of the stat strip, for a player whose deaths are not all
+// PvP: "PvP **250 D** • **5.14 K/D**". The first line stays every death and the overall K/D.
+func CompactPvPStats(pvpDeaths int64, pvpKD float64) string {
+	return fmt.Sprintf("PvP **%s D** • **%s K/D**", FormatThousands(pvpDeaths), FormatKD(pvpKD))
+}
+
+// DeathSplit is a death count split by cause: "PvP 250 • PvE 60".
+func DeathSplit(pvpDeaths, pveDeaths int64) string {
+	return "PvP " + FormatThousands(pvpDeaths) + " • PvE " + FormatThousands(pveDeaths)
+}
+
 // TitleCase turns a classifier label like "CLOSE QUARTERS" into "Close Quarters".
 func TitleCase(s string) string {
 	words := strings.Fields(strings.ToLower(s))

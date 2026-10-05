@@ -53,7 +53,8 @@ func previewKill() *killfeed.Event {
 		Type: killfeed.EventPlayerKill, Timestamp: previewAt,
 		Killer: &killfeed.PlayerRef{Name: "Sample_Raven"}, Victim: &killfeed.PlayerRef{Name: "Fictional_Fox"},
 		Weapon: "M4-A1", Ammo: "5.56x45", Distance: previewFloat(42.3),
-		KillerStats: &killfeed.CombatRecord{Kills: 1284, Deaths: 310}, VictimStats: &killfeed.CombatRecord{Kills: 96, Deaths: 142},
+		KillerStats:  &killfeed.CombatRecord{Kills: 1284, Deaths: 310, PvPDeaths: 262, DeathSplitKnown: true}, // also died 48 times to the world: a PvP line
+		VictimStats:  &killfeed.CombatRecord{Kills: 96, Deaths: 142, PvPDeaths: 142, DeathSplitKnown: true},   // only ever killed by players: no second line
 		KillerStreak: previewInt(3), Encounters: &killfeed.HeadToHead{KillerWins: 4, VictimWins: 1},
 		SeasonName: "Season 3",
 	}
@@ -99,7 +100,7 @@ func designPreviewCards() []designPreviewCard {
 
 	add("death", "Death card", "Feeds", BuildDeathEmbed(&killfeed.Event{
 		Type: killfeed.EventPlayerDeath, Timestamp: previewAt, Player: &killfeed.PlayerRef{Name: "Fictional_Fox"},
-		Cause: killfeed.DeathCauseInfected, PlayerStats: &killfeed.CombatRecord{Kills: 96, Deaths: 143}, SeasonName: "Season 3",
+		Cause: killfeed.DeathCauseInfected, PlayerStats: &killfeed.CombatRecord{Kills: 96, Deaths: 143, PvPDeaths: 120, DeathSplitKnown: true}, SeasonName: "Season 3",
 	}))
 	add("death-suicide", "Death card: a suicide", "Feeds", BuildDeathEmbed(&killfeed.Event{
 		Type: killfeed.EventSuicideAction, Timestamp: previewAt, Player: &killfeed.PlayerRef{Name: "Made_Up_Moose"},

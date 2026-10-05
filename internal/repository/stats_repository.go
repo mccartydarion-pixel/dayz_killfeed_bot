@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/yourname/dayz-killfeed/internal/deathstats"
 )
 
 // LeaderboardEntry is one ranked row.
@@ -32,21 +33,29 @@ func NewStatsRepository(pool *pgxpool.Pool) *StatsRepository {
 	return &StatsRepository{pool: pool}
 }
 
+// profileDeathsJoin counts a profile's deaths once: all of them and the PvP ones among them (the
+// shared definition in internal/deathstats), so the two figures come from the same rows.
+const profileDeathsJoin = `CROSS JOIN LATERAL (
+  SELECT COUNT(*) AS deaths, ` + deathstats.PvPCountD + ` AS pvp_deaths
+  FROM deaths d WHERE d.guild_id=$1 AND d.player_id=p.id
+) dc`
+
 // GetPlayerProfile returns a player's persistent stats for one guild by display
 // name (case-insensitive). Returns nil if not found.
 func (r *StatsRepository) GetPlayerProfile(ctx context.Context, guildID int64, displayName string) (*PlayerProfile, error) {
 	const q = `
 SELECT p.display_name,
        (SELECT COUNT(*) FROM kills k WHERE k.guild_id=$1 AND k.killer_player_id=p.id) AS kills,
-       (SELECT COUNT(*) FROM deaths d WHERE d.guild_id=$1 AND d.player_id=p.id) AS deaths,
+       dc.deaths, dc.pvp_deaths,
        (SELECT MAX(k.distance) FROM kills k WHERE k.guild_id=$1 AND k.killer_player_id=p.id) AS longest,
        p.last_seen_at
 FROM players p
+` + profileDeathsJoin + `
 WHERE p.guild_id=$1 AND LOWER(p.display_name)=LOWER($2)`
 
 	var prof PlayerProfile
 	err := r.pool.QueryRow(ctx, q, guildID, displayName).Scan(
-		&prof.DisplayName, &prof.Kills, &prof.Deaths, &prof.LongestKill, &prof.LastSeen,
+		&prof.DisplayName, &prof.Kills, &prof.Deaths, &prof.PvPDeaths, &prof.LongestKill, &prof.LastSeen,
 	)
 	if err != nil {
 		if err.Error() == "no rows in result set" {
@@ -64,15 +73,16 @@ func (r *StatsRepository) GetPlayerProfileByPlayerID(ctx context.Context, guildI
 	const q = `
 SELECT p.display_name,
        (SELECT COUNT(*) FROM kills k WHERE k.guild_id=$1 AND k.killer_player_id=p.id) AS kills,
-       (SELECT COUNT(*) FROM deaths d WHERE d.guild_id=$1 AND d.player_id=p.id) AS deaths,
+       dc.deaths, dc.pvp_deaths,
        (SELECT MAX(k.distance) FROM kills k WHERE k.guild_id=$1 AND k.killer_player_id=p.id) AS longest,
        p.last_seen_at
 FROM players p
+` + profileDeathsJoin + `
 WHERE p.guild_id=$1 AND p.id=$2`
 
 	var prof PlayerProfile
 	err := r.pool.QueryRow(ctx, q, guildID, playerID).Scan(
-		&prof.DisplayName, &prof.Kills, &prof.Deaths, &prof.LongestKill, &prof.LastSeen,
+		&prof.DisplayName, &prof.Kills, &prof.Deaths, &prof.PvPDeaths, &prof.LongestKill, &prof.LastSeen,
 	)
 	if err != nil {
 		if err.Error() == "no rows in result set" {
@@ -176,7 +186,19 @@ LIMIT $2`
 // Semantics are unchanged: a player with no kills row still ranks when minKills
 // allows it, and a kill with no killer never counts.
 func (r *StatsRepository) TopByKD(ctx context.Context, guildID int64, limit, minKills int) ([]LeaderboardEntry, error) {
-	const q = `
+	return r.topByKD(ctx, guildID, limit, minKills, "")
+}
+
+// TopByPvPKD is TopByKD with PvP K/D as the criterion: kills per death caused by another player
+// (internal/deathstats), so deaths to the environment, infected or suicide do not lower it. Same
+// minimum-kills gate, same zero rule (no PvP deaths = the kill count) and the same tie-breaks.
+func (r *StatsRepository) TopByPvPKD(ctx context.Context, guildID int64, limit, minKills int) ([]LeaderboardEntry, error) {
+	return r.topByKD(ctx, guildID, limit, minKills, " AND "+deathstats.PvPPredicate)
+}
+
+// topByKD ranks by kills per counted death; deathFilter narrows which deaths rows count.
+func (r *StatsRepository) topByKD(ctx context.Context, guildID int64, limit, minKills int, deathFilter string) ([]LeaderboardEntry, error) {
+	q := `
 SELECT ranked.display_name, ranked.kills, ranked.deaths FROM (
   SELECT p.display_name, p.id AS player_id, COALESCE(kc.n, 0) AS kills, COALESCE(dc.n, 0) AS deaths
   FROM players p
@@ -187,7 +209,7 @@ SELECT ranked.display_name, ranked.kills, ranked.deaths FROM (
   ) kc ON kc.killer_player_id=p.id
   LEFT JOIN (
     SELECT player_id, COUNT(*) AS n
-    FROM deaths WHERE guild_id=$1
+    FROM deaths WHERE guild_id=$1` + deathFilter + `
     GROUP BY player_id
   ) dc ON dc.player_id=p.id
   WHERE p.guild_id=$1 AND COALESCE(kc.n, 0) >= $3

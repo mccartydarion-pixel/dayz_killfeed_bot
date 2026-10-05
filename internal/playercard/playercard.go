@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yourname/dayz-killfeed/internal/deathstats"
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/gofont/gobold"
 	"golang.org/x/image/font/gofont/goregular"
@@ -36,8 +37,11 @@ type Card struct {
 	FactionTag  string
 	SeasonName  string
 
-	Kills             int
-	Deaths            int
+	Kills  int
+	Deaths int // every death
+	// PvPDeaths are the deaths caused by another player (internal/deathstats); nil = the split is
+	// not known, and the card then shows deaths and K/D alone, as it always has.
+	PvPDeaths         *int
 	Headshots         int
 	LongestKillMeters float64
 	PlaytimeSeconds   int64
@@ -56,6 +60,22 @@ func (c Card) KD() float64 {
 		return float64(c.Kills)
 	}
 	return float64(c.Kills) / float64(c.Deaths)
+}
+
+// PvEDeaths are the deaths not caused by another player; ok is false when the split is not known.
+func (c Card) PvEDeaths() (n int, ok bool) {
+	if c.PvPDeaths == nil {
+		return 0, false
+	}
+	return int(deathstats.PvE(int64(c.Deaths), int64(*c.PvPDeaths))), true
+}
+
+// PvPKD is kills per PvP death, by the same zero rule as KD; ok is false when the split is not known.
+func (c Card) PvPKD() (kd float64, ok bool) {
+	if c.PvPDeaths == nil {
+		return 0, false
+	}
+	return deathstats.KD(int64(c.Kills), int64(*c.PvPDeaths)), true
 }
 
 var (
@@ -239,6 +259,8 @@ type tile struct {
 	label string
 	value string
 	gold  bool
+	// note is a small caption under the figure: the PvP/PvE split of the tile's figure.
+	note string
 }
 
 // Tiles is the stat grid, row by row. Exposed so the JSON card and the image never disagree.
@@ -246,6 +268,16 @@ func (c Card) Tiles() [][2]string {
 	out := make([][2]string, 0, 8)
 	for _, t := range c.tiles() {
 		out = append(out, [2]string{t.label, t.value})
+	}
+	return out
+}
+
+// TileNotes is the small caption of each tile, in the order of Tiles ("" for a tile without one).
+// Only the deaths and K/D tiles carry one, and only when the PvP/PvE split is known.
+func (c Card) TileNotes() []string {
+	out := make([]string, 0, 8)
+	for _, t := range c.tiles() {
+		out = append(out, t.note)
 	}
 	return out
 }
@@ -262,15 +294,21 @@ func (c Card) tiles() []tile {
 	if c.Rank != nil && *c.Rank > 0 {
 		rank = "#" + thousands(*c.Rank)
 	}
+	var deathsNote, kdNote string
+	if pve, ok := c.PvEDeaths(); ok {
+		pvpKD, _ := c.PvPKD()
+		deathsNote = "PVP " + thousands(*c.PvPDeaths) + " / PVE " + thousands(pve)
+		kdNote = "PVP " + fmt.Sprintf("%.2f", pvpKD)
+	}
 	return []tile{
-		{"KILLS", thousands(c.Kills), true},
-		{"DEATHS", thousands(c.Deaths), false},
-		{"K/D", fmt.Sprintf("%.2f", c.KD()), false},
-		{"HEADSHOTS", thousands(c.Headshots), false},
-		{"LONGEST KILL", longestKill, false},
-		{"PLAYTIME", FormatDuration(c.PlaytimeSeconds), false},
-		{"LONGEST LIFE", longestLife, false},
-		{"SERVER RANK", rank, true},
+		{label: "KILLS", value: thousands(c.Kills), gold: true},
+		{label: "DEATHS", value: thousands(c.Deaths), note: deathsNote},
+		{label: "K/D", value: fmt.Sprintf("%.2f", c.KD()), note: kdNote},
+		{label: "HEADSHOTS", value: thousands(c.Headshots)},
+		{label: "LONGEST KILL", value: longestKill},
+		{label: "PLAYTIME", value: FormatDuration(c.PlaytimeSeconds)},
+		{label: "LONGEST LIFE", value: longestLife},
+		{label: "SERVER RANK", value: rank, gold: true},
 	}
 }
 
@@ -314,14 +352,15 @@ func Render(c Card) ([]byte, error) {
 	}
 
 	const (
-		gridTop = 284
+		gridTop = 276
 		tileW   = 258
-		tileH   = 124
+		tileH   = 132 // room under the figure for a tile's caption
 		gap     = 16
+		rowGap  = 14
 	)
 	for i, t := range c.tiles() {
 		x := left + (i%4)*(tileW+gap)
-		y := gridTop + (i/4)*(tileH+gap)
+		y := gridTop + (i/4)*(tileH+rowGap)
 		cv.roundRect(x, y, tileW, tileH, 14, colTile)
 		cv.text(x+22, y+38, true, 19, colMuted, -1, t.label)
 		col := colWhite
@@ -330,6 +369,11 @@ func Render(c Card) ([]byte, error) {
 		}
 		valueSize, value := cv.fit(true, []float64{52, 44, 36}, tileW-44, t.value)
 		cv.text(x+22, y+98, true, valueSize, col, -1, value)
+		if t.note != "" {
+			// Under the figure, in the strip the tile leaves below it.
+			noteSize, note := cv.fit(false, []float64{17, 15, 13}, tileW-44, t.note)
+			cv.text(x+22, y+120, false, noteSize, colMuted, -1, note)
+		}
 	}
 
 	footer := "EVERY KILL TELLS A STORY"

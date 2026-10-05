@@ -11,7 +11,11 @@ embedded Go fonts; no font files to ship).
 ## What it shows
 
 Player name, server name, Faction Hub faction and tag, active season, and eight tiles: kills,
-deaths, K/D, headshots, longest kill, playtime, longest life, server rank by kills.
+deaths, K/D, headshots, longest kill, playtime, longest life, server rank by kills. The deaths tile
+is every death and the K/D tile is the overall K/D; under each figure a small caption gives the
+split (`PVP 160 / PVE 51`, `PVP 8.03`): deaths caused by another player, every other death, and
+kills per PvP death (docs/DEATH_COUNTS.md). In the JSON the caption is the tile's `note`, and the
+numbers are `pvpDeaths`, `pveDeaths` and `pvpKd`.
 
 Every figure is scoped to the installation's own server and counted exactly as the player stats API
 counts it (docs/PLAYER_API.md). A value that was never measured (no recorded life, no kills to rank)
@@ -37,9 +41,9 @@ Card JSON:
 ```json
 {
   "playerName": "Ace", "serverName": "Chernarus PvP", "factionName": null, "factionTag": null, "seasonName": "Season 3",
-  "kills": 3, "deaths": 1, "kd": 3, "headshots": 1, "longestKillMeters": 80, "playtimeSeconds": 3600,
+  "kills": 3, "deaths": 1, "kd": 3, "pvpDeaths": 1, "pveDeaths": 0, "pvpKd": 3, "headshots": 1, "longestKillMeters": 80, "playtimeSeconds": 3600,
   "longestLifeSeconds": null, "rank": 2, "rankedPlayers": 2,
-  "tiles": [{"label": "KILLS", "value": "3"}],
+  "tiles": [{"label": "KILLS", "value": "3"}, {"label": "DEATHS", "value": "1", "note": "PVP 1 / PVE 0"}],
   "image": {"width": 1200, "height": 630},
   "share": {"token": "…", "imageUrl": "https://<PUBLIC_BASE_URL>/cards/<token>.png", "createdAt": "…"}
 }

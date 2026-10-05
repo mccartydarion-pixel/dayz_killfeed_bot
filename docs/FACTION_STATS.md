@@ -71,6 +71,9 @@ counted.
   writes a `PVP` deaths row with the kill, so PvP deaths are included (`docs/DEATH_COUNTS.md`).
 * **kdRatio** - `kills / max(deaths, 1)` rounded to two decimals: the project's existing convention (`StatsRepository`). With zero deaths the
   ratio is the kill count itself: no division by zero, no infinity, never NaN.
+* **pvpDeaths / pveDeaths / pvpKdRatio** - the counted deaths split by cause (`docs/DEATH_COUNTS.md`): `pvpDeaths` are the `PVP` rows (killed by
+  another player, a teammate included), `pveDeaths` are every other counted death, and the two add up to `deaths`. `pvpKdRatio` is
+  `kills / max(pvpDeaths, 1)`, two decimals, by the same zero rule as `kdRatio`. `deaths` and `kdRatio` keep their meaning.
 * **headshots / longshots** - counted kills whose `headshot` / `longshot` flag is set.
 * **bountiesClaimed / bountyValueClaimed** - claimed `bounties` rows whose claim kill is a counted kill of that member; stacked bounties claimed by one
   kill are each counted. Unclaimed, expired and other-server bounties are not.
@@ -181,6 +184,8 @@ nothing aggregates across installations. Errors use the standard envelope.
 interface FactionStatsSummary {
   kills: number; deaths: number;
   kdRatio: number;                 // kills / max(deaths,1), 2 decimals; deaths=0 -> equals kills
+  pvpDeaths: number; pveDeaths: number;   // pvpDeaths + pveDeaths = deaths
+  pvpKdRatio: number;              // kills / max(pvpDeaths,1), 2 decimals
   headshots: number; longshots: number;
   currentKillStreak: number;       // largest ongoing streak among CURRENT members
   bestKillStreak: number;          // best single-member streak (per membership period)
@@ -206,6 +211,7 @@ interface FactionMemberContribution {
   identity: "LINKED" | "UNLINKED"; statsEligible: boolean;   // UNLINKED => all figures 0
   joinedAt: string;                // start of the current (or latest) membership period
   kills: number; deaths: number; kdRatio: number; headshots: number; longshots: number;
+  pvpDeaths: number; pveDeaths: number; pvpKdRatio: number;
   currentKillStreak: number; bestKillStreak: number;
   bountiesClaimed: number; bountyValueClaimed: number;
 }

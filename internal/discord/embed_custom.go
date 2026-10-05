@@ -109,9 +109,11 @@ func killfeedVars(ev *killfeed.Event, serverName string) map[string]string {
 	// (ProcessPersistedKill) - read here, never re-queried.
 	if s := ev.KillerStats; s != nil {
 		m["killer_kills"], m["killer_deaths"], m["killer_kd"] = presentation.FormatThousands(s.Kills), presentation.FormatThousands(s.Deaths), presentation.FormatKD(s.KD())
+		setDeathSplitVars(m, "killer", s)
 	}
 	if s := ev.VictimStats; s != nil {
 		m["victim_kills"], m["victim_deaths"], m["victim_kd"] = presentation.FormatThousands(s.Kills), presentation.FormatThousands(s.Deaths), presentation.FormatKD(s.KD())
+		setDeathSplitVars(m, "victim", s)
 	}
 	if ev.KillerStreak != nil && *ev.KillerStreak > 0 {
 		streak := strconv.Itoa(*ev.KillerStreak)
@@ -257,4 +259,17 @@ func economyVars(e economy.Event, serverName string) map[string]string {
 	setIf(m, "reason", rewardReason(e.Reason))
 	setIf(m, "server_name", serverName)
 	return m
+}
+
+// setDeathSplitVars adds {{<who>_pvp_deaths}}, {{<who>_pve_deaths}} and {{<who>_pvp_kd}} (who is
+// "killer" or "victim"). They are new names beside {{<who>_deaths}} and {{<who>_kd}}, which keep
+// their meaning - every death and the overall K/D - so a saved template renders as it always has.
+// Absent when the record does not carry the split.
+func setDeathSplitVars(m map[string]string, who string, s *killfeed.CombatRecord) {
+	if !s.DeathSplitKnown {
+		return
+	}
+	m[who+"_pvp_deaths"] = presentation.FormatThousands(s.PvPDeaths)
+	m[who+"_pve_deaths"] = presentation.FormatThousands(s.PvEDeaths())
+	m[who+"_pvp_kd"] = presentation.FormatKD(s.PvPKD())
 }

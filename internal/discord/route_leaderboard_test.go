@@ -19,6 +19,9 @@ func (emptyStats) TopByKills(context.Context, int64, int) ([]repository.Leaderbo
 func (emptyStats) TopByKD(context.Context, int64, int, int) ([]repository.LeaderboardEntry, error) {
 	return nil, nil
 }
+func (emptyStats) TopByPvPKD(context.Context, int64, int, int) ([]repository.LeaderboardEntry, error) {
+	return nil, nil
+}
 func (emptyStats) TopByBestStreak(context.Context, int64, int) ([]repository.LeaderboardEntry, error) {
 	return nil, nil
 }

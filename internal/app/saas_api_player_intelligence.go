@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yourname/dayz-killfeed/internal/deathstats"
 	"github.com/yourname/dayz-killfeed/internal/permissions"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
@@ -90,23 +91,26 @@ func toLocationDTO(e *repository.LocationEvent) *locationDTO {
 // --- player directory (task sections 1-2) -----------------------------------------------------
 
 type playerDirectoryEntryDTO struct {
-	PlayerID                int64        `json:"playerId"`
-	Gamertag                string       `json:"gamertag"`
-	DiscordUserID           *string      `json:"discordUserId,omitempty"`
-	DiscordDisplayName      *string      `json:"discordDisplayName,omitempty"`
-	Linked                  bool         `json:"linked"`
-	Online                  bool         `json:"online"`
-	LastSeenAt              *string      `json:"lastSeenAt,omitempty"`
-	LastConnectedAt         *string      `json:"lastConnectedAt,omitempty"`
-	LastDisconnectedAt      *string      `json:"lastDisconnectedAt,omitempty"`
-	CurrentSessionStartedAt *string      `json:"currentSessionStartedAt,omitempty"`
-	Kills                   int64        `json:"kills"`
-	Deaths                  int64        `json:"deaths"`
-	FactionID               *int64       `json:"factionId,omitempty"`
-	FactionName             *string      `json:"factionName,omitempty"`
-	WarningCount            int64        `json:"warningCount"`
-	CurrentLocation         *locationDTO `json:"currentLocation,omitempty"`
-	LocationFreshness       *string      `json:"locationFreshness,omitempty"`
+	PlayerID                int64   `json:"playerId"`
+	Gamertag                string  `json:"gamertag"`
+	DiscordUserID           *string `json:"discordUserId,omitempty"`
+	DiscordDisplayName      *string `json:"discordDisplayName,omitempty"`
+	Linked                  bool    `json:"linked"`
+	Online                  bool    `json:"online"`
+	LastSeenAt              *string `json:"lastSeenAt,omitempty"`
+	LastConnectedAt         *string `json:"lastConnectedAt,omitempty"`
+	LastDisconnectedAt      *string `json:"lastDisconnectedAt,omitempty"`
+	CurrentSessionStartedAt *string `json:"currentSessionStartedAt,omitempty"`
+	Kills                   int64   `json:"kills"`
+	Deaths                  int64   `json:"deaths"` // every death
+	// pvpDeaths + pveDeaths = deaths (internal/deathstats).
+	PvPDeaths         int64        `json:"pvpDeaths"`
+	PvEDeaths         int64        `json:"pveDeaths"`
+	FactionID         *int64       `json:"factionId,omitempty"`
+	FactionName       *string      `json:"factionName,omitempty"`
+	WarningCount      int64        `json:"warningCount"`
+	CurrentLocation   *locationDTO `json:"currentLocation,omitempty"`
+	LocationFreshness *string      `json:"locationFreshness,omitempty"`
 	// CurrentLocationStatus is CURRENT when currentLocation is a current-session observation and
 	// UNKNOWN otherwise; lastKnownLocation is the newest observation ever (possibly historical).
 	CurrentLocationStatus string       `json:"currentLocationStatus"`
@@ -119,7 +123,7 @@ func toPlayerDirectoryEntryDTO(e repository.PlayerDirectoryEntry) playerDirector
 		Linked: e.Linked, Online: e.Online,
 		LastSeenAt: nullableTimeStr(&e.LastSeenAt), LastConnectedAt: nullableTimeStr(e.LastConnectedAt), LastDisconnectedAt: nullableTimeStr(e.LastDisconnectedAt),
 		CurrentSessionStartedAt: nullableTimeStr(e.CurrentSessionStartedAt),
-		Kills:                   e.Kills, Deaths: e.Deaths, FactionID: e.FactionID, FactionName: e.FactionName, WarningCount: e.WarningCount,
+		Kills:                   e.Kills, Deaths: e.Deaths, PvPDeaths: e.PvPDeaths, PvEDeaths: deathstats.PvE(e.Deaths, e.PvPDeaths), FactionID: e.FactionID, FactionName: e.FactionName, WarningCount: e.WarningCount,
 	}
 	dto.CurrentLocationStatus = "UNKNOWN"
 	if loc := toLocationDTO(e.CurrentLocation); loc != nil {

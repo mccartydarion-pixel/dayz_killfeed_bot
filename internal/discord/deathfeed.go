@@ -53,7 +53,7 @@ func BuildDeathEmbed(ev *killfeed.Event) *discordgo.MessageEmbed {
 		presentation.AppendFields(embed, presentation.MetricField("Final hit", presentation.EscapeMarkdown(presentation.TitleCase(presentation.CleanName(ev.HitZone, 40))), true))
 	}
 	if ev.PlayerStats != nil {
-		presentation.AppendFields(embed, presentation.MetricField("Player stats", presentation.CompactStats(ev.PlayerStats.Kills, ev.PlayerStats.Deaths, ev.PlayerStats.KD()), false))
+		presentation.AppendFields(embed, presentation.MetricField("Player stats", compactCombatStats(ev.PlayerStats), false))
 	}
 	presentation.StampEmbed(embed, ev.Timestamp)
 	return presentation.FitEmbed(embed)

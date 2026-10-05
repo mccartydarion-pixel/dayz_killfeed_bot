@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yourname/dayz-killfeed/internal/deathstats"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -76,9 +77,13 @@ const (
 
 // LeaderboardStats are one faction's figures for every metric, named exactly like the faction profile's summary.
 type LeaderboardStats struct {
-	Kills                int64   `json:"kills"`
-	Deaths               int64   `json:"deaths"`
-	KDRatio              float64 `json:"kdRatio"`
+	Kills   int64   `json:"kills"`
+	Deaths  int64   `json:"deaths"`
+	KDRatio float64 `json:"kdRatio"`
+	// PvPDeaths + PvEDeaths = Deaths; PvPKDRatio is kills per PvP death (internal/deathstats).
+	PvPDeaths            int64   `json:"pvpDeaths"`
+	PvEDeaths            int64   `json:"pveDeaths"`
+	PvPKDRatio           float64 `json:"pvpKdRatio"`
 	Headshots            int64   `json:"headshots"`
 	Longshots            int64   `json:"longshots"`
 	BestKillStreak       int     `json:"bestKillStreak"`
@@ -158,7 +163,8 @@ func DecodeLeaderboardCursor(s string) (*LeaderboardCursor, bool) {
 }
 
 func statsOf(r repository.HubLeaderboardRow) LeaderboardStats {
-	return LeaderboardStats{Kills: r.Kills, Deaths: r.Deaths, KDRatio: KDRatio(r.Kills, r.Deaths), Headshots: r.Headshots, Longshots: r.Longshots,
+	return LeaderboardStats{Kills: r.Kills, Deaths: r.Deaths, KDRatio: KDRatio(r.Kills, r.Deaths),
+		PvPDeaths: r.PvPDeaths, PvEDeaths: deathstats.PvE(r.Deaths, r.PvPDeaths), PvPKDRatio: KDRatio(r.Kills, r.PvPDeaths), Headshots: r.Headshots, Longshots: r.Longshots,
 		BestKillStreak: r.BestStreak, BountiesClaimed: r.Bounties, BountyValueClaimed: r.BountyValue, AchievementsUnlocked: r.Achievements}
 }
 

@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/yourname/dayz-killfeed/internal/deathstats"
 )
 
 // PlayerServerRepository backs the player-facing SaaS API (docs/PLAYER_API.md): given a Discord-
@@ -216,18 +217,38 @@ SELECT EXISTS(SELECT 1 FROM player_server_activity WHERE guild_id=$1 AND server_
 // installation's OWN server (never the guild's other servers) - a genuinely new query, since the
 // existing Discord-facing GetPlayerProfile is guild-wide only (docs/PLAYER_API.md "Scoping").
 func (r *PlayerServerRepository) KillStats(ctx context.Context, guildID, serverID, playerID int64) (kills, deaths, headshots, longshots int, longestMeters float64, err error) {
+	s, err := r.CombatStats(ctx, guildID, serverID, playerID)
+	return s.Kills, s.Deaths, s.Headshots, s.Longshots, s.LongestMeters, err
+}
+
+// PlayerCombatStats is one player's combat figures on one installation's server. Deaths is every
+// death; PvPDeaths are the ones caused by another player (internal/deathstats).
+type PlayerCombatStats struct {
+	Kills, Deaths, PvPDeaths, Headshots, Longshots int
+	LongestMeters                                  float64
+}
+
+// PvEDeaths are the deaths not caused by another player.
+func (s PlayerCombatStats) PvEDeaths() int {
+	return int(deathstats.PvE(int64(s.Deaths), int64(s.PvPDeaths)))
+}
+
+// CombatStats is KillStats with the deaths split into PvP and PvE. Both death figures come from one
+// read of the same rows, so they always add up.
+func (r *PlayerServerRepository) CombatStats(ctx context.Context, guildID, serverID, playerID int64) (PlayerCombatStats, error) {
 	// The player's kills are read once (the four kill figures used to be four scans of the same rows).
 	const q = `
-SELECT k.kills,
-       (SELECT COUNT(*) FROM deaths WHERE guild_id=$1 AND server_id=$2 AND player_id=$3),
-       k.headshots, k.longshots, k.longest
+SELECT k.kills, d.deaths, d.pvp_deaths, k.headshots, k.longshots, k.longest
 FROM (SELECT COUNT(*) AS kills,
              COUNT(*) FILTER (WHERE headshot) AS headshots,
              COUNT(*) FILTER (WHERE longshot) AS longshots,
              COALESCE(MAX(distance),0) AS longest
-      FROM kills WHERE guild_id=$1 AND server_id=$2 AND killer_player_id=$3) k`
-	err = r.pool.QueryRow(ctx, q, guildID, serverID, playerID).Scan(&kills, &deaths, &headshots, &longshots, &longestMeters)
-	return
+      FROM kills WHERE guild_id=$1 AND server_id=$2 AND killer_player_id=$3) k,
+     (SELECT COUNT(*) AS deaths, ` + deathstats.PvPCount + ` AS pvp_deaths
+      FROM deaths WHERE guild_id=$1 AND server_id=$2 AND player_id=$3) d`
+	var s PlayerCombatStats
+	err := r.pool.QueryRow(ctx, q, guildID, serverID, playerID).Scan(&s.Kills, &s.Deaths, &s.PvPDeaths, &s.Headshots, &s.Longshots, &s.LongestMeters)
+	return s, err
 }
 
 // BountyStats aggregates claimed bounties for one player, scoped to one installation's server. A

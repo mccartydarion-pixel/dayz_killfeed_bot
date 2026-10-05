@@ -51,7 +51,7 @@ func (a *App) buildCard(ctx context.Context, installationID, guildID, serverID, 
 		return nil, err
 	}
 	card := &playercard.Card{
-		PlayerName: stats.PlayerName, ServerName: stats.ServerName, Kills: stats.Kills, Deaths: stats.Deaths, Headshots: stats.Headshots,
+		PlayerName: stats.PlayerName, ServerName: stats.ServerName, Kills: stats.Kills, Deaths: stats.Deaths, PvPDeaths: &stats.PvPDeaths, Headshots: stats.Headshots,
 		LongestKillMeters: stats.LongestKillMeters, PlaytimeSeconds: stats.PlaytimeSeconds, LongestLifeSeconds: stats.LongestLifeSeconds,
 		Rank: stats.Rank, RankedPlayers: stats.RankedPlayers, GeneratedAt: time.Now().UTC(),
 	}
@@ -69,14 +69,18 @@ func (a *App) buildCard(ctx context.Context, installationID, guildID, serverID, 
 }
 
 type cardDTO struct {
-	PlayerName         string        `json:"playerName"`
-	ServerName         string        `json:"serverName"`
-	FactionName        *string       `json:"factionName"`
-	FactionTag         *string       `json:"factionTag"`
-	SeasonName         *string       `json:"seasonName"`
-	Kills              int           `json:"kills"`
-	Deaths             int           `json:"deaths"`
-	KD                 float64       `json:"kd"`
+	PlayerName  string  `json:"playerName"`
+	ServerName  string  `json:"serverName"`
+	FactionName *string `json:"factionName"`
+	FactionTag  *string `json:"factionTag"`
+	SeasonName  *string `json:"seasonName"`
+	Kills       int     `json:"kills"`
+	Deaths      int     `json:"deaths"` // every death
+	KD          float64 `json:"kd"`     // overall: kills / deaths
+	// pvpDeaths + pveDeaths = deaths; pvpKd is kills / pvpDeaths (internal/deathstats).
+	PvPDeaths          *int          `json:"pvpDeaths,omitempty"`
+	PvEDeaths          *int          `json:"pveDeaths,omitempty"`
+	PvPKD              *float64      `json:"pvpKd,omitempty"`
 	Headshots          int           `json:"headshots"`
 	LongestKillMeters  float64       `json:"longestKillMeters"`
 	PlaytimeSeconds    int64         `json:"playtimeSeconds"`
@@ -91,6 +95,8 @@ type cardDTO struct {
 type cardTileDTO struct {
 	Label string `json:"label"`
 	Value string `json:"value"`
+	// Note is the tile's small caption on the image (the PvP/PvE split); absent when it has none.
+	Note string `json:"note,omitempty"`
 }
 
 type cardImageDTO struct {
@@ -118,8 +124,13 @@ func (a *App) toCardDTO(c playercard.Card) cardDTO {
 		LongestKillMeters: c.LongestKillMeters, PlaytimeSeconds: c.PlaytimeSeconds, LongestLifeSeconds: c.LongestLifeSeconds,
 		Rank: c.Rank, RankedPlayers: c.RankedPlayers, Image: cardImageDTO{Width: playercard.Width, Height: playercard.Height},
 	}
-	for _, t := range c.Tiles() {
-		d.Tiles = append(d.Tiles, cardTileDTO{Label: t[0], Value: t[1]})
+	if pve, ok := c.PvEDeaths(); ok {
+		pvpKD, _ := c.PvPKD()
+		d.PvPDeaths, d.PvEDeaths, d.PvPKD = c.PvPDeaths, &pve, &pvpKD
+	}
+	notes := c.TileNotes()
+	for i, t := range c.Tiles() {
+		d.Tiles = append(d.Tiles, cardTileDTO{Label: t[0], Value: t[1], Note: notes[i]})
 	}
 	return d
 }
