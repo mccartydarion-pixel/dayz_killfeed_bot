@@ -15,7 +15,7 @@ import (
 )
 
 // economyWorld is the bounty world plus the real economy service and ECONOMY feed,
-// wired exactly as app.go wires them (feed -> economy service and bounty claims).
+// wired exactly as app_run.go wires them (feed -> economy service and bounty claims).
 type economyWorld struct {
 	*bountyWorld
 	svc  *economy.Service

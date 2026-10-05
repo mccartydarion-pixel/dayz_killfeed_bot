@@ -48,7 +48,7 @@ func (f *deltaLogSource) ReadDelta(ctx context.Context, serviceID, path string, 
 // oracleParser recognizes any non-empty line as one PLAYER_HIT event, carrying the exact line text
 // in Weapon so a test can compare recognized events by identity/order without depending on the real
 // ADM grammar - deliberately dependency-free (never touches persistence/publisher, both nil in these
-// tests - see engine.go's processLine: a PLAYER_HIT event is never persisted or published, so
+// tests - see engine_process.go's processLine: a PLAYER_HIT event is never persisted or published, so
 // processLine's only side effects are dedupe/counters, safe with no other engine wiring).
 type oracleParser struct{}
 
@@ -301,7 +301,7 @@ func (m *memCheckpointStore) SaveADMCheckpoint(ctx context.Context, guildID, ser
 //
 // engine1 deliberately has NO checkpoint store attached before its first poll: attaching an empty
 // store to a brand-new engine is itself the "first-ever-connect" case, which correctly triggers the
-// cold-start-at-tail protection (engine.go's startAtTail/cold_start_baseline_required branch) and
+// cold-start-at-tail protection (engine_discovery.go's startAtTail/cold_start_baseline_required branch) and
 // skips existing content - that is desired behavior (section 22), not what this test exercises. So
 // engine1 stands in for "the process that already has an established, in-memory tracked offset" and
 // its resulting checkpoint is persisted directly into the store, exactly as saveDurableCheckpoint
