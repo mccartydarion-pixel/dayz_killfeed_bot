@@ -121,8 +121,7 @@ func (a *App) registerOpsAPI() {
 	if a.HTTPServer == nil {
 		return
 	}
-	h := a.HTTPServer.Handle
-	h("GET /api/admin/ops/status", a.adminRoute(a.handleAdminOpsStatus))
-	h("POST /api/admin/ops/leaderboard-refresh", a.adminRoute(a.handleAdminOpsLeaderboardRefresh))
-	h("POST /api/admin/ops/adm-source-scan", a.adminRoute(a.handleAdminOpsADMSourceScan))
+	a.adminHandle("GET /api/admin/ops/status", a.handleAdminOpsStatus)
+	a.adminHandle("POST /api/admin/ops/leaderboard-refresh", a.handleAdminOpsLeaderboardRefresh)
+	a.adminHandle("POST /api/admin/ops/adm-source-scan", a.handleAdminOpsADMSourceScan)
 }

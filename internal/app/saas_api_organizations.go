@@ -113,6 +113,9 @@ func (a *App) handleCreateOrganization(w http.ResponseWriter, r *http.Request) {
 		writeSaaSError(w, codeInternalError, "could not create organization")
 		return
 	}
+	if a.Config != nil && a.Config.IsPlatformAdmin(user.DiscordUserID) {
+		a.refreshOwnerAccess(ctx) // a platform owner's new organization is unlocked at once
+	}
 	// Onboarding V2: the creator's one no-card 14-day trial starts here if they
 	// have not used it yet (docs/BILLING.md "No-card trial"); a creator who
 	// already had a trial gets an INACTIVE row - billing required, never a

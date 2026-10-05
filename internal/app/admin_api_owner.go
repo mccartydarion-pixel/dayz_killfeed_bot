@@ -157,7 +157,7 @@ func ownerSubscription(sub *repository.Subscription) ownerSubscriptionDTO {
 	if sub == nil {
 		return ownerSubscriptionDTO{Plan: repository.PlanNone, Status: repository.SubscriptionInactive, BillingRequired: true, TrialStatus: billing.TrialNotStarted}
 	}
-	st := billing.StateOf(sub, time.Now())
+	st := billing.StateFor(sub.OrganizationID, sub, time.Now())
 	return ownerSubscriptionDTO{
 		Plan: sub.Plan, Status: sub.Status, TrialEndsAt: nullableTimeStr(sub.TrialEndsAt), CurrentPeriodEnd: nullableTimeStr(sub.CurrentPeriodEnd),
 		CancelAtPeriodEnd: sub.CancelAtPeriodEnd, ExternallyBilled: sub.ProviderSubscriptionID != "",
@@ -659,17 +659,16 @@ func (a *App) registerOwnerAPI() {
 	if a.HTTPServer == nil {
 		return
 	}
-	h := a.HTTPServer.Handle
-	h("POST /api/admin/organizations/{organizationID}/trial", a.adminRoute(a.handleOwnerSetTrial))
-	h("POST /api/admin/organizations/{organizationID}/grant", a.adminRoute(a.handleOwnerGrantPlan))
-	h("POST /api/admin/organizations/{organizationID}/revoke", a.adminRoute(a.handleOwnerRevokeAccess))
-	h("POST /api/admin/organizations/{organizationID}/billing/cancel", a.adminRoute(a.handleOwnerBillingCancel))
-	h("POST /api/admin/organizations/{organizationID}/billing/reactivate", a.adminRoute(a.handleOwnerBillingReactivate))
-	h("POST /api/admin/organizations/{organizationID}/billing/reconcile", a.adminRoute(a.handleOwnerBillingReconcile))
-	h("POST /api/admin/installations/{installationID}/suspend", a.adminRoute(a.handleOwnerSuspendInstallation))
-	h("POST /api/admin/installations/{installationID}/reinstate", a.adminRoute(a.handleOwnerReinstateInstallation))
-	h("POST /api/admin/installations/{installationID}/restart-worker", a.adminRoute(a.handleOwnerRestartWorker))
-	h("POST /api/admin/users/{userID}/ban", a.adminRoute(a.handleOwnerBanUser))
-	h("POST /api/admin/users/{userID}/unban", a.adminRoute(a.handleOwnerUnbanUser))
-	h("GET /api/admin/audit", a.adminRoute(a.handleOwnerAudit))
+	a.adminHandle("POST /api/admin/organizations/{organizationID}/trial", a.handleOwnerSetTrial)
+	a.adminHandle("POST /api/admin/organizations/{organizationID}/grant", a.handleOwnerGrantPlan)
+	a.adminHandle("POST /api/admin/organizations/{organizationID}/revoke", a.handleOwnerRevokeAccess)
+	a.adminHandle("POST /api/admin/organizations/{organizationID}/billing/cancel", a.handleOwnerBillingCancel)
+	a.adminHandle("POST /api/admin/organizations/{organizationID}/billing/reactivate", a.handleOwnerBillingReactivate)
+	a.adminHandle("POST /api/admin/organizations/{organizationID}/billing/reconcile", a.handleOwnerBillingReconcile)
+	a.adminHandle("POST /api/admin/installations/{installationID}/suspend", a.handleOwnerSuspendInstallation)
+	a.adminHandle("POST /api/admin/installations/{installationID}/reinstate", a.handleOwnerReinstateInstallation)
+	a.adminHandle("POST /api/admin/installations/{installationID}/restart-worker", a.handleOwnerRestartWorker)
+	a.adminHandle("POST /api/admin/users/{userID}/ban", a.handleOwnerBanUser)
+	a.adminHandle("POST /api/admin/users/{userID}/unban", a.handleOwnerUnbanUser)
+	a.adminHandle("GET /api/admin/audit", a.handleOwnerAudit)
 }

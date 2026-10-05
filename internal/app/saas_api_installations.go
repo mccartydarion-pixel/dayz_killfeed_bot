@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yourname/dayz-killfeed/internal/entitlements"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -83,6 +84,9 @@ func (a *App) handleCreateInstallation(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("component=saas_api", "msg", "create installation failed", "err", err.Error())
 		writeSaaSError(w, codeInternalError, "could not create installation")
 		return
+	}
+	if entitlements.OwnerOrganization(organizationID) {
+		a.refreshOwnerAccess(ctx) // so the new installation's feature switches default to on at once
 	}
 	writeSaaSJSON(w, http.StatusCreated, a.buildInstallationSummary(ctx, organizationID, *inst))
 }

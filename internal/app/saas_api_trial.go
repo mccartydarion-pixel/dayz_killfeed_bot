@@ -48,6 +48,8 @@ type TrialStateDTO struct {
 	Started               bool    `json:"started"`
 	InstallationLimit     int     `json:"installationLimit"`
 	InstallationCount     int     `json:"installationCount"`
+	// PlatformOwnerAccess: a platform owner owns the organization; billing is never required.
+	PlatformOwnerAccess bool `json:"platformOwnerAccess"`
 }
 
 func (a *App) trialStateDTO(ctx context.Context, orgID int64, sub *repository.Subscription, st billing.TrialState) TrialStateDTO {
@@ -55,7 +57,8 @@ func (a *App) trialStateDTO(ctx context.Context, orgID int64, sub *repository.Su
 		TrialStatus: st.TrialStatus, SubscriptionStatus: optStr(st.SubscriptionStatus), SelectedPlan: optStr(st.SelectedPlan),
 		TrialStartedAt: nullableTimeStr(st.TrialStartedAt), TrialEndsAt: nullableTimeStr(st.TrialEndsAt), DaysRemaining: st.DaysRemaining,
 		BillingRequired: st.BillingRequired, PaymentMethodRequired: st.PaymentMethodRequired, Started: st.Started,
-		InstallationLimit: billing.InstallationLimit(sub, a.billingCatalog()),
+		InstallationLimit:   billing.InstallationLimitFor(orgID, sub, a.billingCatalog()),
+		PlatformOwnerAccess: st.PlatformOwnerAccess,
 	}
 	if a.SaaSInstallations != nil {
 		if n, err := a.SaaSInstallations.CountByOrganization(ctx, orgID); err == nil {
@@ -101,7 +104,7 @@ func (a *App) handleGetTrial(w http.ResponseWriter, r *http.Request) {
 		writeSaaSError(w, codeInternalError, "could not load trial state")
 		return
 	}
-	writeSaaSJSON(w, http.StatusOK, a.trialStateDTO(ctx, orgID, sub, billing.StateOf(sub, time.Now())))
+	writeSaaSJSON(w, http.StatusOK, a.trialStateDTO(ctx, orgID, sub, billing.StateFor(orgID, sub, time.Now())))
 }
 
 type startTrialRequest struct {
@@ -173,7 +176,7 @@ func (a *App) installationCapacity(ctx context.Context, w http.ResponseWriter, o
 		writeSaaSError(w, codeInternalError, "could not verify subscription")
 		return 0, false
 	}
-	st := billing.StateOf(sub, time.Now())
+	st := billing.StateFor(orgID, sub, time.Now())
 	if st.BillingRequired {
 		msg := "activate a paid plan to set up a service"
 		switch st.TrialStatus {
@@ -187,7 +190,7 @@ func (a *App) installationCapacity(ctx context.Context, w http.ResponseWriter, o
 		writeSaaSError(w, codeBillingRequired, msg)
 		return 0, false
 	}
-	return billing.InstallationLimit(sub, a.billingCatalog()), true
+	return billing.InstallationLimitFor(orgID, sub, a.billingCatalog()), true
 }
 
 func installationLimitMessage(limit int) string {

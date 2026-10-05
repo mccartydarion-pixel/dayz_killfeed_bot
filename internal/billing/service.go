@@ -123,6 +123,9 @@ type Summary struct {
 	TrialStatus        string
 	TrialDaysRemaining int
 	BillingRequired    bool
+	// PlatformOwnerAccess: a platform owner owns the organization. Entitlements is then every
+	// feature and BillingRequired is false, whatever Plan and Status say.
+	PlatformOwnerAccess bool
 }
 
 // Summary loads organizationID's subscription and folds in its entitlements and onboarding state.
@@ -135,21 +138,22 @@ func (s *Service) Summary(ctx context.Context, organizationID int64) (*Summary, 
 		return nil, err
 	}
 	if sub == nil {
-		st := StateOf(nil, time.Now())
-		return &Summary{Plan: repository.PlanNone, Status: repository.SubscriptionInactive, Entitlements: entitlementStrings(repository.PlanNone),
-			TrialStatus: st.TrialStatus, BillingRequired: st.BillingRequired}, nil
+		st := StateFor(organizationID, nil, time.Now())
+		return &Summary{Plan: repository.PlanNone, Status: repository.SubscriptionInactive, Entitlements: entitlementStrings(organizationID, repository.PlanNone),
+			TrialStatus: st.TrialStatus, BillingRequired: st.BillingRequired, PlatformOwnerAccess: st.PlatformOwnerAccess}, nil
 	}
 	return summaryOf(sub), nil
 }
 
 func summaryOf(sub *repository.Subscription) *Summary {
-	st := StateOf(sub, time.Now())
+	st := StateFor(sub.OrganizationID, sub, time.Now())
 	return &Summary{
 		Plan: sub.Plan, Status: sub.Status, BillingInterval: sub.BillingInterval,
 		TrialEndsAt: sub.TrialEndsAt, CurrentPeriodStart: sub.CurrentPeriodStart, CurrentPeriodEnd: sub.CurrentPeriodEnd,
-		CancelAtPeriodEnd: sub.CancelAtPeriodEnd, Entitlements: entitlementStrings(sub.Plan),
+		CancelAtPeriodEnd: sub.CancelAtPeriodEnd, Entitlements: entitlementStrings(sub.OrganizationID, sub.Plan),
 		HasBillingCustomer: sub.ProviderCustomerID != "", HasActiveSubscription: sub.ProviderSubscriptionID != "",
 		IntendedPlan: sub.IntendedPlan, TrialStatus: st.TrialStatus, TrialDaysRemaining: st.DaysRemaining, BillingRequired: st.BillingRequired,
+		PlatformOwnerAccess: st.PlatformOwnerAccess,
 	}
 }
 
@@ -426,8 +430,8 @@ func zeroToNil(t time.Time) *time.Time {
 // entitlementStrings adapts internal/entitlements.Resolve to the []string the API/website expects
 // (docs/SAAS_SCHEMA.md "Entitlements": Resolve is the one place feature-by-plan logic lives -
 // billing never re-implements it).
-func entitlementStrings(plan string) []string {
-	keys := entitlements.Resolve(plan)
+func entitlementStrings(organizationID int64, plan string) []string {
+	keys := entitlements.Resolve(entitlements.ForOrganization(organizationID, plan))
 	out := make([]string, len(keys))
 	for i, k := range keys {
 		out[i] = string(k)

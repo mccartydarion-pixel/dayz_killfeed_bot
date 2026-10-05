@@ -26,7 +26,9 @@ components:
       name: X-Champion-Acting-User
       in: header
       required: true
-      description: Discord user id of the acting person; must be on CHAMPION_ADMIN_DISCORD_IDS.
+      description: >
+        Discord user id of the acting person; a platform owner (on CHAMPION_ADMIN_DISCORD_IDS)
+        or platform staff (on the staff list). Staff may call every GET and no other method.
       schema: { type: string }
     Limit:
       name: limit
@@ -69,6 +71,20 @@ components:
       description: Unknown id.
       content: { application/json: { schema: { $ref: "#/components/schemas/ApiError" } } }
   schemas:
+    StaffList:
+      type: object
+      required: [staff]
+      properties:
+        staff:
+          type: array
+          items:
+            type: object
+            required: [discordId, note, addedBy, addedAt]
+            properties:
+              discordId: { type: string }
+              note: { type: string }
+              addedBy: { type: string, description: Discord id of the owner who added the member }
+              addedAt: { type: string, format: date-time }
     ApiError:
       type: object
       required: [error]
@@ -362,6 +378,72 @@ components:
             permissionsUnverified: { type: integer }
             readyNeverChecked: { type: integer }
 paths:
+  /api/admin/me:
+    get:
+      summary: The caller's platform role (owner and staff)
+      parameters: [ { $ref: "#/components/parameters/ActingAdmin" } ]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [role, discordId]
+                properties:
+                  role: { type: string, enum: [OWNER, STAFF] }
+                  discordId: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/admin/staff:
+    get:
+      summary: The platform staff list (owner and staff)
+      parameters: [ { $ref: "#/components/parameters/ActingAdmin" } ]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/StaffList" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      summary: Add a staff member, or update the note of one already on the list (owner only)
+      parameters: [ { $ref: "#/components/parameters/ActingAdmin" } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [discordId, reason]
+              properties:
+                discordId: { type: string, pattern: "^[0-9]{15,20}$" }
+                note: { type: string, maxLength: 120 }
+                reason: { type: string, maxLength: 500 }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/StaffList" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { description: The id is a platform owner, who already has full access }
+  /api/admin/staff/{discordId}:
+    delete:
+      summary: Remove a staff member (owner only)
+      parameters:
+        - { $ref: "#/components/parameters/ActingAdmin" }
+        - { name: discordId, in: path, required: true, schema: { type: string, pattern: "^[0-9]{15,20}$" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, maxLength: 500 }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/StaffList" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
   /api/admin/overview:
     get:
       summary: Platform-wide counts

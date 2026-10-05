@@ -2904,6 +2904,12 @@ ALTER TABLE installation_feature_settings ADD COLUMN IF NOT EXISTS live_map_fact
 		Name: "0124_server_name_sync",
 		SQL:  ServerNameSyncSQL,
 	},
+	{
+		// Platform staff: Discord accounts that may read the Owner Hub and change nothing
+		// (docs/ADMIN_API.md "Roles"). One new table. Additive.
+		Name: "0125_platform_staff",
+		SQL:  PlatformStaffSQL,
+	},
 }
 
 // NitradoTailTrustSQL keeps which Nitrado services have proven that partial (seek) reads match

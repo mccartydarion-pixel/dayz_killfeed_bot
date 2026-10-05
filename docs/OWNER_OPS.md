@@ -9,8 +9,8 @@ Code: `internal/ownerops` (the decisions, pure functions), `internal/app/admin_a
 (storage and cross-tenant facts). Migration `0103_owner_ops`.
 
 Every route is under `/api/admin` and goes through `adminRoute` (docs/ADMIN_API.md): service
-secret, acting user, platform-admin allowlist. Every write needs a `reason` and is recorded in
-`platform_audit_log`.
+secret, acting user, platform owner or platform staff. Staff can read every page here and change
+nothing; every write is owner only, needs a `reason` and is recorded in `platform_audit_log`.
 
 ## What is on, and what is off
 

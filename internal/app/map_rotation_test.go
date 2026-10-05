@@ -37,7 +37,7 @@ func TestMapRotationIsOffByDefaultAtEveryLevel(t *testing.T) {
 	prev := entitlements.Enforced()
 	defer entitlements.SetEnforced(prev)
 	entitlements.SetEnforced(true)
-	if entitlements.Has(entitlements.PlanSurvivor, entitlements.MapRotation) || !entitlements.Has("PREMIUM", entitlements.MapRotation) {
+	if entitlements.Has(entitlements.ForOrganization(7, entitlements.PlanSurvivor), entitlements.MapRotation) || !entitlements.Has(entitlements.ForOrganization(7, "PREMIUM"), entitlements.MapRotation) {
 		t.Fatal("map rotation is a Champion plan feature")
 	}
 	// 3. The owner's switch: a server nobody configured is not enabled.

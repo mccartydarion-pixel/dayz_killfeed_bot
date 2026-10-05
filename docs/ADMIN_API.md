@@ -14,20 +14,85 @@ strictly tenant-scoped.
 
 ## Authentication and authorization
 
-Every `/api/admin/*` request must pass **both** checks, in this order, in one place
-(`requirePlatformAdmin`, `internal/app/admin_api.go`; every route is registered
-through `adminRoute`, which calls it, so a handler cannot run without it):
+Every `/api/admin/*` request must pass these checks, in this order, in one place
+(`requirePlatformAdmin` and `adminRoute`, `internal/app/admin_api.go`; every route is
+registered through `adminHandle`, which wraps it in `adminRoute`, so a handler cannot run
+without them):
 
 | # | Check | Failure |
 |---|---|---|
 | 1 | `Authorization: Bearer <secret>` equals the bot's `WEBSITE_API_SECRET` (the same internal service secret every `/api/saas` route uses; constant-time compare). No secret configured = nothing authenticates. | `401 UNAUTHORIZED` |
 | 2 | `X-Champion-Acting-User: <discord user id>` present (the website sets it from its verified session; browsers can never reach these routes because the secret is server-side only) | `401 UNAUTHORIZED` |
-| 3 | that Discord user id is on the **platform-admin allowlist** | `403 FORBIDDEN` |
+| 3 | that Discord user id is a **platform owner** (on the allowlist) or **platform staff** (on the staff list) | `403 FORBIDDEN`, message `platform admin access required` |
+| 4 | the request is a read (`GET`), or the caller is a platform owner | `403 FORBIDDEN`, message `platform staff can view but not change this` |
+
+## Roles
+
+There are two kinds of privileged person, and only two.
+
+| Role | Who | May do |
+|---|---|---|
+| `OWNER` | A Discord account on `CHAMPION_ADMIN_DISCORD_IDS`. This env var is the only source of owners. | Everything under `/api/admin`. |
+| `STAFF` | A Discord account on the staff list (table `platform_staff`, migration `0125_platform_staff`), which an owner manages from the Owner Hub. | Every read under `/api/admin`. No write. |
+
+* **View only is enforced in one place.** `adminRoute` lets a staff identity through for
+  `GET` (and the `HEAD` the router answers for a `GET` route) and refuses every other
+  method before the handler runs. A handler never has to remember the rule, and a write
+  route added later is owner-only from the moment it is registered. No `GET` route under
+  `/api/admin` changes anything or returns a secret.
+* **Proved by a test that walks the routes.** `adminHandle` records every pattern it
+  registers; `TestEveryAdminWriteRouteRefusesPlatformStaff` sends each one as staff and
+  requires `403` with the message above for every non-`GET` route, and
+  `TestAdminRoutesAreRegisteredOnlyThroughAdminHandle` fails if any `/api/admin` route is
+  registered another way.
+* **An owner never depends on the staff list.** The allowlist is checked first and does
+  not touch the database. Being on both lists is still `OWNER`. If the staff list cannot
+  be read, owners keep working and everybody else is refused.
+* **Staff get nothing else.** Being staff grants no access to `/api/saas`, cannot start a
+  "view as customer" session (that is a `POST`), and unlocks nothing on any
+  organization. Staff access ends on the first request after removal.
+
+### `GET /api/admin/me`
+
+Who the caller is to the platform. Owner and staff: `200`
+
+```json
+{ "role": "OWNER", "discordId": "111111111111111111" }
+```
+
+`role` is `OWNER` or `STAFF`. Anyone else: `403 FORBIDDEN`.
+
+### The staff list
+
+| Route | Who | Body | Returns |
+|---|---|---|---|
+| `GET /api/admin/staff` | owner, staff | - | the list |
+| `POST /api/admin/staff` | owner | `discordId`, optional `note`, `reason` | `200` with the list |
+| `DELETE /api/admin/staff/{discordId}` | owner | `reason` | `200` with the list |
+
+Every one of them answers with the whole list in the same shape, oldest first:
+
+```json
+{ "staff": [ { "discordId": "222222222222222222", "note": "Support", "addedBy": "111111111111111111", "addedAt": "2026-10-04T09:30:00Z" } ] }
+```
+
+* `discordId` must be a Discord user id: digits only, 15 to 20 long. Otherwise `400`.
+* `note` is optional, at most 120 characters. Longer: `400`.
+* `reason` is required and validated like every other owner action (max 500 characters).
+* Adding someone who is already staff updates the note and keeps `addedBy` and `addedAt`.
+* Adding a platform owner's id is refused with `409 CONFLICT` and the message
+  `this account is a platform owner and already has full access; it cannot be added as staff`.
+* Removing an id that is not on the list is `404 NOT_FOUND`.
+* Each change writes one `platform_audit_log` row with the owner's reason: action
+  `staff.added`, `staff.note_updated` or `staff.removed`, `target_type` `platform_staff`,
+  and the member (`discordId`, `note`, `addedBy`, `addedAt`) in the before/after state.
+  `target_id` is left empty because a Discord id does not fit a JSON number safely; filter
+  the audit log with `targetType=platform_staff`.
 
 The website also sends `X-Champion-Admin: true`. The backend **ignores** it - a header
 a caller controls can never grant access; only the allowlist does.
 
-### The platform-admin allowlist
+### The platform-owner allowlist
 
 `CHAMPION_ADMIN_DISCORD_IDS` on the bot service: a comma-separated list of Discord
 user ids, e.g. `CHAMPION_ADMIN_DISCORD_IDS=111111111111111111,222222222222222222`.
@@ -44,6 +109,8 @@ backend re-checks it independently.)
   `POST /api/saas/users/sync` row. Being on the allowlist grants **no** access to
   `/api/saas` (customer routes still require organization membership).
 * Rotate by changing the env var and redeploying.
+* Being on the allowlist also gives **platform owner access** to the organizations that
+  account owns: see "Platform owner access" below.
 
 Audit of what was (not) reusable: `internal/admin` is the runtime diagnostics service
 behind the Discord `/admin` command, which authorizes by Discord guild permission
@@ -337,9 +404,64 @@ table is scanned and no row content is read; when the catalog read fails the lis
 empty and the response still succeeds. The Owner Hub can chart it to watch data growth
 (docs/PERFORMANCE.md section 17).
 
+## Platform owner access
+
+For an organization **owned by a platform owner**, every plan feature is unlocked and every
+feature switch is on, with no plan check and no per-server switch needed.
+
+**Which organizations.** The organization's owner (`organizations.owner_user_id`) is an
+account whose Discord id is on `CHAMPION_ADMIN_DISCORD_IDS`. A platform owner who is only
+an `ADMIN` or `MEMBER` of somebody else's organization does **not** unlock that
+organization. Platform staff unlock nothing. No customer organization gets anything it did
+not have before.
+
+**How it is resolved.** `internal/owneraccess` keeps the set of such organizations and
+their installations in memory and reloads it in the background every 60 seconds, so hot
+paths (a feed route per event, an embed per card) add no query. Creating an organization
+or an installation as a platform owner reloads it at once. Taking an id off the allowlist
+needs a redeploy anyway, after which the organization is an ordinary customer again.
+
+**Plan features.** `internal/entitlements` answers every question about a `Plan`, and a
+`Plan` can only be built with `entitlements.ForOrganization(organizationID, planKey)`. For
+a platform owner's organization that plan has every feature, whatever the plan key and
+whether or not `CHAMPION_PLAN_GATING_ENABLED` is on. Because `Has`, `Resolve`,
+`RouteAllowed` and `FactionLimit` no longer accept a plan string, a gate cannot be written
+without saying whose plan it is; a test fails on `ForOrganization` with a literal id.
+This covers the HTTP plan gate (`PLAN_FEATURE_REQUIRED`), the faction cap, fight replay,
+the shop order buttons, map rotation, feed channel routes, custom embed templates, hot
+zones and the feed identity, and the entitlement lists the billing and admin APIs return.
+
+**Billing state.** The organization's subscription row is left alone and reported as it
+is (plan, status, trial dates). What is overridden is the lock-out: `billingRequired` is
+`false` and the installation capacity is 1000, so an expired trial, a canceled or
+suspended subscription or a missing row never blocks the owner's own organization from
+setting up a service. The subscription and trial responses carry
+`platformOwnerAccess: true` for such an organization, and the admin read model's
+`subscription.platformOwnerAccess` says the same. Not covered: the separately billed
+C.A.S.E. add-on (`internal/casebilling`), which keeps its own access rules.
+
+**Feature switches.** For an installation of such an organization, a flag marked
+`ownerDefaultOn` is on when it has no override. An explicit override still wins, so the
+owner can switch a feature **off** for their own server from the Owner Hub.
+
+| Flag | On by owner access | Why |
+|---|---|---|
+| `custom_embeds` | yes | Only lets the installation's own saved templates render. Still needs the embed renderer to exist on the deployment. |
+| `map_rotation` | yes | Only makes the Map rotation page usable. Nothing is written to a game server until the owner saves a rotation and enables it there. |
+| `shop_canary` | no | Lets real shop deliveries change files on the game server, and the canary needs its own preparation. |
+| `case_evidence` | no | Starts collecting evidence by itself with high write volume, and only takes effect after a worker restart. |
+| `case_build_evidence` | no | Depends on `case_evidence`, adds more writes, and needs a worker restart. |
+
+The three "no" flags behave for an owner's installation exactly as for anyone else: the
+environment default, or an override set in the Owner Hub.
+
+**What it never does.** A suspended installation stays suspended. Nothing is enabled on a
+game server by itself. Platform owner access is not a subscription: no Stripe object and
+no subscription row is created or changed.
+
 ## Owner controls (Phase 2, writes)
 
-Every write below goes through the same `adminRoute` gate as a read, takes a JSON body
+Every write below is owner only (see "Roles"), goes through the same `adminRoute` gate as a read, takes a JSON body
 with a required `reason` (max 500 characters), returns `409 CONFLICT` when the target is
 already in the requested state, and records one `platform_audit_log` row (actor, action,
 target, reason, sanitized before/after). Nothing here reads or writes a Stripe id.
@@ -391,9 +513,16 @@ rotation (`map_rotation`, default `CHAMPION_MAP_ROTATION_ENABLED` = off, docs/MA
 
 | Route | Body | Effect |
 | --- | --- | --- |
-| `GET /flags` | - | The catalog: key, label, description, env var, restartRequired, the env value on this deployment. |
-| `GET /installations/{id}/flags` | - | Each flag's `default` (env answer for this installation), `override` (stored decision or null), `effective`, reason, updatedBy/At. |
+| `GET /flags` | - | The catalog: key, label, description, env var, restartRequired, the env value on this deployment, `ownerDefaultOn` and (when it is false) `ownerDefaultNote` saying why. |
+| `GET /installations/{id}/flags` | - | Each flag's `default` (env answer for this installation), `override` (stored decision or null), `effective`, `source`, `sourceLabel`, `ownerAccess`, reason, updatedBy/At. |
 | `PUT /installations/{id}/flags/{flag}` | `reason`, `enabled: true\|false` | Sets the override (audited `installation.flag_set`); without `enabled` clears it (`installation.flag_cleared`). Unknown flag: `404`. |
+
+`source` says where `effective` comes from: `override` (the stored decision),
+`owner_access` (no override, and the installation belongs to a platform owner's own
+organization, see "Platform owner access") or `default` (the environment). `sourceLabel`
+is the same in plain words for the page to show. `ownerAccess` is `true` whenever owner
+access applies to that flag for that installation, also while an override hides it, so
+the page can say what clearing the override would do.
 
 ## Users
 
@@ -418,8 +547,10 @@ containing any configured secret is withheld with a `500` instead of being sent)
 ## Access logging
 
 Each admin read logs one line (`component=admin_api event=admin_read`) with
-`acting_admin_discord_id`, `route` (the route pattern, not the URL with its query),
-and `organization_id` / `installation_id` when the path has them. A rejected
+`acting_admin_discord_id`, `role` (`OWNER` or `STAFF`), `route` (the route pattern, not
+the URL with its query), and `organization_id` / `installation_id` when the path has
+them. A write logs the same line as `event=admin_write`. A write refused because the
+caller is staff logs `event=admin_write_denied` with the id, role and route. A rejected
 platform-admin check logs `event=admin_denied` with the presented id and the route.
 Never logged: the `Authorization` header or any token, query strings (search text),
 request or response bodies.
@@ -449,5 +580,6 @@ Where the website's types cannot be met authoritatively:
 
 1. Bot service: `WEBSITE_API_SECRET` (already set for the runtime/SaaS APIs) and
    `CHAMPION_ADMIN_DISCORD_IDS=<founder discord ids>`.
-2. Website: `CHAMPION_SAAS_API_URL` / `CHAMPION_SAAS_API_SECRET` (already used), and
-   keep `session.user.isAdmin` in step with the same ids.
+2. Website: `CHAMPION_SAAS_API_URL` / `CHAMPION_SAAS_API_SECRET` (already used). Ask
+   `GET /api/admin/me` for the role instead of keeping a second copy of the ids.
+3. Platform staff need no configuration: an owner adds them in the Owner Hub.

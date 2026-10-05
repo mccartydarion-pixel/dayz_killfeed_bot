@@ -68,6 +68,6 @@ func (a *App) registerUsersAPI() {
 	if a.HTTPServer == nil {
 		return
 	}
-	a.HTTPServer.Handle("GET /api/admin/users", a.adminRoute(a.handleAdminListUsers))
-	a.HTTPServer.Handle("GET /api/admin/users/{userID}", a.adminRoute(a.handleAdminGetUser))
+	a.adminHandle("GET /api/admin/users", a.handleAdminListUsers)
+	a.adminHandle("GET /api/admin/users/{userID}", a.handleAdminGetUser)
 }

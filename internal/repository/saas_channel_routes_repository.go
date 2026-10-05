@@ -167,7 +167,7 @@ ORDER BY cr.channel_id`
 // (bounties, heatmaps, economy, ranked board) stop exactly as if unrouted.
 func (r *ChannelRouteRepository) ResolveChannel(ctx context.Context, guildRowID, serverID int64, routeKey string) (string, bool, error) {
 	const q = `
-SELECT cr.channel_id, COALESCE(s.plan, '')
+SELECT cr.channel_id, COALESCE(s.plan, ''), i.organization_id
 FROM installations i
 JOIN discord_guild_connections c ON c.id = i.discord_guild_connection_id
 JOIN game_servers gs ON gs.id = i.game_server_id
@@ -182,14 +182,15 @@ WHERE c.guild_id = $1
 ORDER BY i.id
 LIMIT 1`
 	var channelID, plan string
-	err := r.pool.QueryRow(ctx, q, guildRowID, serverID, routeKey).Scan(&channelID, &plan)
+	var orgID int64
+	err := r.pool.QueryRow(ctx, q, guildRowID, serverID, routeKey).Scan(&channelID, &plan, &orgID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil
 	}
 	if err != nil {
 		return "", false, fmt.Errorf("resolve channel route: %w", err)
 	}
-	if !entitlements.RouteAllowed(plan, routeKey) {
+	if !entitlements.RouteAllowed(entitlements.ForOrganization(orgID, plan), routeKey) {
 		return "", false, nil
 	}
 	return channelID, channelID != "", nil

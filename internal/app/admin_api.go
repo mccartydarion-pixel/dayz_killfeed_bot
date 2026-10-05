@@ -3,8 +3,9 @@
 // The one HTTP surface allowed to read across organizations. Reads are GET;
 // the Owner Hub controls (admin_api_owner.go) are the only writes, each audited
 // to platform_audit_log. It lives under /api/admin (never /api/saas), and every
-// route is wrapped by adminRoute, which runs requirePlatformAdmin before the
-// handler can execute.
+// route is registered through adminHandle and so wrapped by adminRoute, which runs
+// requirePlatformAdmin before the handler can execute and lets only a platform
+// owner past anything that is not a read (platform staff are view only).
 // See docs/ADMIN_API.md.
 package app
 
@@ -45,23 +46,67 @@ type adminReader interface {
 	TableSizes(ctx context.Context, limit int) ([]adminrepo.TableSize, error)
 }
 
-// adminIdentity is the safe identity of an authorized platform admin.
-type adminIdentity struct{ DiscordID string }
+// Platform roles (docs/ADMIN_API.md "Roles"). OWNER is a Discord account on
+// CHAMPION_ADMIN_DISCORD_IDS: full access. STAFF is an account on the platform_staff list the
+// owner manages from the Owner Hub: it may read everything under /api/admin and change nothing.
+const (
+	adminRoleOwner = "OWNER"
+	adminRoleStaff = "STAFF"
+)
+
+// adminStaffWriteDenied is what platform staff are told on any /api/admin write.
+const adminStaffWriteDenied = "platform staff can view but not change this"
+
+// adminIdentity is the safe identity of an authorized platform admin and its role.
+type adminIdentity struct {
+	DiscordID string
+	Role      string
+}
+
+// IsOwner reports whether the identity is a platform owner (the only role that may write).
+func (i adminIdentity) IsOwner() bool { return i.Role == adminRoleOwner }
 
 type adminHandler func(w http.ResponseWriter, r *http.Request, admin adminIdentity)
 
-// requirePlatformAdmin is the single authorization gate for /api/admin. It
+// platformStaffStore is the staff list (implemented by *repository.PlatformOwnerRepository);
+// an interface so the role gate is unit-testable.
+type platformStaffStore interface {
+	ListPlatformStaff(ctx context.Context) ([]repository.PlatformStaffMember, error)
+	GetPlatformStaff(ctx context.Context, discordID string) (*repository.PlatformStaffMember, error)
+	UpsertPlatformStaff(ctx context.Context, discordID, note, addedBy string) (*repository.PlatformStaffMember, repository.PlatformStaffMember, error)
+	RemovePlatformStaff(ctx context.Context, discordID string) (repository.PlatformStaffMember, error)
+}
+
+// staffStore returns the staff list, or nil when there is none (no database): then nobody is
+// staff.
+func (a *App) staffStore() platformStaffStore {
+	if a.platformStaff != nil {
+		return a.platformStaff
+	}
+	if a.PlatformOwner != nil {
+		return a.PlatformOwner
+	}
+	return nil
+}
+
+// requirePlatformAdmin is the single authentication gate for /api/admin. It
 // checks, in order:
 //
 //  1. the internal service secret (the same WEBSITE_API_SECRET bearer every
 //     /api/saas route requires)          -> 401 when missing or wrong;
 //  2. an acting Discord user id            -> 401 when absent;
-//  3. that id on the CHAMPION_ADMIN_DISCORD_IDS allowlist -> 403 otherwise.
+//  3. that id on the CHAMPION_ADMIN_DISCORD_IDS allowlist -> role OWNER;
+//  4. otherwise that id on the platform_staff list        -> role STAFF;
+//  5. otherwise 403.
 //
-// Organization roles (OWNER/ADMIN/MEMBER) and Discord guild permissions are
-// deliberately never consulted: neither makes anyone a platform admin, and an
-// empty allowlist means nobody is (fail closed). It has already written the
-// response when it returns ok=false.
+// The owner check comes first and never touches the database, so an owner can never be
+// locked out (or demoted) by the staff list. Organization roles (OWNER/ADMIN/MEMBER) and
+// Discord guild permissions are deliberately never consulted: neither makes anyone a
+// platform admin, and an empty allowlist with an empty staff list means nobody is (fail
+// closed). A staff list that cannot be read also denies. It has already written the response
+// when it returns ok=false.
+//
+// It only says who the caller is. What a role may do is decided by adminRoute.
 func (a *App) requirePlatformAdmin(w http.ResponseWriter, r *http.Request) (adminIdentity, bool) {
 	if !a.requireSaaSServiceAuth(w, r) {
 		return adminIdentity{}, false
@@ -71,17 +116,40 @@ func (a *App) requirePlatformAdmin(w http.ResponseWriter, r *http.Request) (admi
 		writeSaaSError(w, codeUnauthorized, "missing acting user")
 		return adminIdentity{}, false
 	}
-	if a.Config == nil || !a.Config.IsPlatformAdmin(id) {
-		slog.Warn("component=admin_api", "event", "admin_denied", "acting_admin_discord_id", clipForLog(id, 40), "route", adminRouteLabel(r))
-		writeSaaSError(w, codeForbidden, "platform admin access required")
-		return adminIdentity{}, false
+	if a.Config != nil && a.Config.IsPlatformAdmin(id) {
+		return adminIdentity{DiscordID: id, Role: adminRoleOwner}, true
 	}
-	return adminIdentity{DiscordID: id}, true
+	if store := a.staffStore(); store != nil && isDiscordSnowflake(id) {
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		member, err := store.GetPlatformStaff(ctx, id)
+		cancel()
+		if err != nil {
+			slog.Error("component=admin_api", "event", "admin_staff_lookup_failed", "route", adminRouteLabel(r), "err", err.Error())
+			writeSaaSError(w, codeInternalError, "could not verify platform access")
+			return adminIdentity{}, false
+		}
+		if member != nil {
+			return adminIdentity{DiscordID: id, Role: adminRoleStaff}, true
+		}
+	}
+	slog.Warn("component=admin_api", "event", "admin_denied", "acting_admin_discord_id", clipForLog(id, 40), "route", adminRouteLabel(r))
+	writeSaaSError(w, codeForbidden, "platform admin access required")
+	return adminIdentity{}, false
 }
 
-// adminRoute wraps a handler so it cannot run without requirePlatformAdmin and
-// so every admin read is logged (event, admin, route, tenant ids - never
-// headers, query text or response bodies).
+// adminRequestIsRead reports whether the request is a read. Under /api/admin a read is a GET
+// (or the HEAD the mux answers for a GET pattern) and nothing else: no GET route changes
+// anything or returns a secret, and adminHandle refuses to register one that says it does.
+func adminRequestIsRead(r *http.Request) bool {
+	return r.Method == http.MethodGet || r.Method == http.MethodHead
+}
+
+// adminRoute wraps a handler so it cannot run without requirePlatformAdmin, so that only a
+// platform owner can reach anything that is not a read, and so every admin request is logged
+// (event, admin, role, route, tenant ids - never headers, query text or response bodies).
+//
+// The staff rule lives here and only here: a handler never has to remember it, and a new
+// write route is owner-only the moment it is registered.
 func (a *App) adminRoute(h adminHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
@@ -94,11 +162,21 @@ func (a *App) adminRoute(h adminHandler) http.HandlerFunc {
 		if !ok {
 			return
 		}
+		read := adminRequestIsRead(r)
+		if !read && !admin.IsOwner() {
+			slog.Warn("component=admin_api", "event", "admin_write_denied", "acting_admin_discord_id", admin.DiscordID, "role", admin.Role, "route", adminRouteLabel(r))
+			writeSaaSError(w, codeForbidden, adminStaffWriteDenied)
+			return
+		}
 		if a.adminSaaS == nil {
 			writeSaaSError(w, codeInternalError, "admin data source unavailable")
 			return
 		}
-		attrs := []any{"event", "admin_read", "acting_admin_discord_id", admin.DiscordID, "route", adminRouteLabel(r)}
+		event := "admin_read"
+		if !read {
+			event = "admin_write"
+		}
+		attrs := []any{"event", event, "acting_admin_discord_id", admin.DiscordID, "role", admin.Role, "route", adminRouteLabel(r)}
 		if v := r.PathValue("organizationID"); v != "" {
 			attrs = append(attrs, "organization_id", clipForLog(v, 20))
 		}
@@ -107,6 +185,21 @@ func (a *App) adminRoute(h adminHandler) http.HandlerFunc {
 		}
 		slog.Info("component=admin_api", attrs...)
 		h(w, r, admin)
+	}
+}
+
+// adminHandle is the ONLY way a route gets onto /api/admin: it wraps the handler in adminRoute
+// and records the pattern, so the role rule cannot be skipped and the registered routes can be
+// listed (the tests walk them and prove every non-GET one refuses platform staff). The pattern
+// must be "METHOD /api/admin/...".
+func (a *App) adminHandle(pattern string, h adminHandler) {
+	method, path, ok := strings.Cut(pattern, " ")
+	if !ok || method == "" || !strings.HasPrefix(path, "/api/admin/") {
+		panic("adminHandle: pattern must be \"METHOD /api/admin/...\", got " + strconv.Quote(pattern))
+	}
+	a.adminRoutes = append(a.adminRoutes, pattern)
+	if a.HTTPServer != nil {
+		a.HTTPServer.Handle(pattern, a.adminRoute(h))
 	}
 }
 
@@ -654,18 +747,19 @@ func (a *App) registerAdminAPI() {
 	if a.HTTPServer == nil {
 		return
 	}
-	a.HTTPServer.Handle("GET /api/admin/overview", a.adminRoute(a.handleAdminOverview))
-	a.HTTPServer.Handle("GET /api/admin/organizations", a.adminRoute(a.handleAdminListOrganizations))
-	a.HTTPServer.Handle("GET /api/admin/organizations/{organizationID}", a.adminRoute(a.handleAdminGetOrganization))
-	a.HTTPServer.Handle("GET /api/admin/subscriptions", a.adminRoute(a.handleAdminListSubscriptions))
-	a.HTTPServer.Handle("GET /api/admin/installations", a.adminRoute(a.handleAdminListInstallations))
-	a.HTTPServer.Handle("GET /api/admin/installations/{installationID}", a.adminRoute(a.handleAdminGetInstallation))
-	a.HTTPServer.Handle("GET /api/admin/health", a.adminRoute(a.handleAdminHealth))
-	a.HTTPServer.Handle("GET /api/admin/live-sync", a.adminRoute(a.handleAdminLiveSync))
+	a.adminHandle("GET /api/admin/overview", a.handleAdminOverview)
+	a.adminHandle("GET /api/admin/organizations", a.handleAdminListOrganizations)
+	a.adminHandle("GET /api/admin/organizations/{organizationID}", a.handleAdminGetOrganization)
+	a.adminHandle("GET /api/admin/subscriptions", a.handleAdminListSubscriptions)
+	a.adminHandle("GET /api/admin/installations", a.handleAdminListInstallations)
+	a.adminHandle("GET /api/admin/installations/{installationID}", a.handleAdminGetInstallation)
+	a.adminHandle("GET /api/admin/health", a.handleAdminHealth)
+	a.adminHandle("GET /api/admin/live-sync", a.handleAdminLiveSync)
 	a.registerAdminBillingRoutes()
 	a.registerOwnerAPI()
 	a.registerOpsAPI()
 	a.registerFlagsAPI()
 	a.registerUsersAPI()
 	a.registerOwnerOpsAPI()
+	a.registerStaffAPI()
 }

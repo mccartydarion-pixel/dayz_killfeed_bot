@@ -334,7 +334,7 @@ func (r *FeatureSettingsRepository) HotZoneInstallations(ctx context.Context, gu
 	rows, err := r.pool.Query(ctx, `
 SELECT i.id, c.guild_id, i.game_server_id, COALESCE(gs.display_name, ''),
        s.hot_zone_window_minutes, s.hot_zone_min_kills, s.hot_zone_radius_m, s.hot_zone_duration_minutes, s.hot_zone_cooldown_minutes,
-       s.hot_zone_first_points, s.hot_zone_second_points, s.hot_zone_third_points, COALESCE(sub.plan, '')
+       s.hot_zone_first_points, s.hot_zone_second_points, s.hot_zone_third_points, COALESCE(sub.plan, ''), i.organization_id
 FROM installation_feature_settings s
 JOIN installations i ON i.id = s.installation_id AND i.game_server_id IS NOT NULL
 JOIN discord_guild_connections c ON c.id = i.discord_guild_connection_id
@@ -350,11 +350,12 @@ ORDER BY i.id`, guildID)
 	for rows.Next() {
 		h := HotZoneInstallation{Settings: HotZoneSettings{Enabled: true}}
 		var plan string
+		var orgID int64
 		if err := rows.Scan(&h.InstallationID, &h.GuildID, &h.ServerID, &h.ServerName, &h.Settings.WindowMinutes, &h.Settings.MinKills, &h.Settings.RadiusM,
-			&h.Settings.DurationMinutes, &h.Settings.CooldownMinutes, &h.Settings.FirstPoints, &h.Settings.SecondPoints, &h.Settings.ThirdPoints, &plan); err != nil {
+			&h.Settings.DurationMinutes, &h.Settings.CooldownMinutes, &h.Settings.FirstPoints, &h.Settings.SecondPoints, &h.Settings.ThirdPoints, &plan, &orgID); err != nil {
 			return nil, err
 		}
-		if !entitlements.Has(plan, entitlements.HotZones) {
+		if !entitlements.Has(entitlements.ForOrganization(orgID, plan), entitlements.HotZones) {
 			continue
 		}
 		out = append(out, h)
@@ -369,19 +370,20 @@ ORDER BY i.id`, guildID)
 func (r *FeatureSettingsRepository) FeedIdentityForServer(ctx context.Context, serverID int64) (FeedIdentitySettings, bool, error) {
 	var s FeedIdentitySettings
 	var plan string
+	var orgID int64
 	err := r.pool.QueryRow(ctx, `
-SELECT s.feed_identity_name, s.feed_identity_avatar_url, COALESCE(sub.plan, '') FROM installation_feature_settings s
+SELECT s.feed_identity_name, s.feed_identity_avatar_url, COALESCE(sub.plan, ''), i.organization_id FROM installation_feature_settings s
 JOIN installations i ON i.id = s.installation_id
 LEFT JOIN subscriptions sub ON sub.organization_id = i.organization_id
 WHERE i.game_server_id = $1 AND s.feed_identity_enabled AND s.feed_identity_name <> ''
-ORDER BY i.id LIMIT 1`, serverID).Scan(&s.Name, &s.AvatarURL, &plan)
+ORDER BY i.id LIMIT 1`, serverID).Scan(&s.Name, &s.AvatarURL, &plan, &orgID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return FeedIdentitySettings{}, false, nil
 	}
 	if err != nil {
 		return FeedIdentitySettings{}, false, err
 	}
-	if !entitlements.Has(plan, entitlements.FeedIdentity) {
+	if !entitlements.Has(entitlements.ForOrganization(orgID, plan), entitlements.FeedIdentity) {
 		return FeedIdentitySettings{}, false, nil
 	}
 	s.Enabled = true
