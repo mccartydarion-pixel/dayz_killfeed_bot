@@ -106,3 +106,33 @@ func (c *Client) accessListAction(ctx context.Context, serviceID, list, method, 
 	}
 	return nil
 }
+
+// DeleteFile deletes one file through the file server:
+//
+//	DELETE /services/{id}/gameservers/file_server/delete?path=<full path>
+//
+// (Nitrado's official PHP SDK, FileServer.php deleteFile.) Like the action endpoints above it has
+// NOT been exercised against a live Nitrado service: until an operator confirms it on a real
+// server it is unverified, and its caller judges the result only by listing the folder again.
+//
+// It is called ONLY by internal/maprotation/charwipe, which may delete exactly one file,
+// <mission folder>/storage_1/players.db, and refuses every other path before this is reached
+// (docs/MAP_ROTATION.md; enforced by the isolation test in internal/shop/missionwrite). This
+// method deletes whatever path it is given, so nothing else may call it.
+func (c *Client) DeleteFile(ctx context.Context, serviceID, path string) error {
+	if serviceID == "" || path == "" {
+		return fmt.Errorf("service ID and path are required")
+	}
+	c.forgetListings()
+	defer c.forgetListings()
+	q := url.Values{"path": {path}}
+	resp, err := c.do(ctx, http.MethodDelete, "/services/"+url.PathEscape(serviceID)+"/gameservers/file_server/delete?"+q.Encode(), nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return classifyStatus("file_server_delete", resp.StatusCode, KindNotFound)
+	}
+	return nil
+}

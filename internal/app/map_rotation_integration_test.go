@@ -21,6 +21,7 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/discord"
 	"github.com/yourname/dayz-killfeed/internal/entitlements"
 	"github.com/yourname/dayz-killfeed/internal/maprotation"
+	"github.com/yourname/dayz-killfeed/internal/maprotation/charwipe"
 	"github.com/yourname/dayz-killfeed/internal/nitrado"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
@@ -48,6 +49,9 @@ type fakeMapRemote struct {
 	reads       []string // every file downloaded, in order
 	refuseAt    int      // >0: exactly the n-th upload is refused
 	uploadCount int
+	serverCalls []string // stop, restart and delete calls, in order
+	status      string   // Nitrado's word for the server ("" = started)
+	restartDead bool     // Restart is accepted and the server stays stopped
 }
 
 func newFakeMapRemote() *fakeMapRemote {
@@ -61,7 +65,13 @@ func newFakeMapRemote() *fakeMapRemote {
 }
 
 func (f *fakeMapRemote) GameserverFacts(context.Context, string) (nitrado.GameserverFacts, error) {
-	return nitrado.GameserverFacts{Game: "dayzps", Status: "started", GamePath: mrRoot + "/noftp/dayzps", Mission: "dayzOffline.chernarusplus"}, nil
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	status := f.status
+	if status == "" {
+		status = "started"
+	}
+	return nitrado.GameserverFacts{Game: "dayzps", Status: status, GamePath: mrRoot + "/noftp/dayzps", Mission: "dayzOffline.chernarusplus"}, nil
 }
 
 func (f *fakeMapRemote) ListEntries(_ context.Context, _, dir string) ([]nitrado.DirEntry, error) {
@@ -110,6 +120,34 @@ func (f *fakeMapRemote) PostUpload(_ context.Context, _ nitrado.UploadTarget, da
 		return errors.New("refused")
 	}
 	f.files[f.pending] = append([]byte{}, data...)
+	return nil
+}
+
+// Stop, Restart and DeleteFile are what clearing the saved characters calls ("fresh characters on
+// every map switch"). A stop and a start take effect at once.
+func (f *fakeMapRemote) Stop(context.Context, string, string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.serverCalls = append(f.serverCalls, "stop")
+	f.status = "stopped"
+	return nil
+}
+
+func (f *fakeMapRemote) Restart(context.Context, string, string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.serverCalls = append(f.serverCalls, "restart")
+	if !f.restartDead {
+		f.status = "restarting"
+	}
+	return nil
+}
+
+func (f *fakeMapRemote) DeleteFile(_ context.Context, _, p string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.serverCalls = append(f.serverCalls, "delete "+p)
+	delete(f.files, p)
 	return nil
 }
 
@@ -236,13 +274,13 @@ func TestMapRotationAdminContract(t *testing.T) {
 		t.Fatalf("default view: %d %v", code, view)
 	}
 	for _, key := range []string{"available", "reason", "enabled", "everyRestarts", "order", "voteEnabled", "voteMinutesBeforeRestart", "pingEveryone", "announceChannelId",
-		"maps", "current", "next", "vote", "lastSwitch", "filesCheck"} {
+		"wipeCharacters", "maps", "current", "next", "vote", "lastSwitch", "filesCheck"} {
 		if _, ok := view[key]; !ok {
 			t.Fatalf("the view has no %q", key)
 		}
 	}
 	if view["everyRestarts"].(float64) != 1 || view["order"] != "SEQUENCE" || view["voteMinutesBeforeRestart"].(float64) != 30 || len(view["maps"].([]any)) != 0 ||
-		view["vote"] != nil || view["lastSwitch"] != nil || len(view["filesCheck"].([]any)) != 0 {
+		view["vote"] != nil || view["lastSwitch"] != nil || len(view["filesCheck"].([]any)) != 0 || view["wipeCharacters"] != false {
 		t.Fatalf("defaults: %v", view)
 	}
 	cur, next := view["current"].(map[string]any), view["next"].(map[string]any)
@@ -960,5 +998,330 @@ func TestMapRotationFollowsTheRestartSchedule(t *testing.T) {
 	// (Arena A's spawn points are already the live ones here, so only cfggameplay.json is written.)
 	if next := view["next"].(map[string]any); len(w.remote.uploads) != 1 || !strings.Contains(w.remote.content(mrMission+"/cfggameplay.json"), "custom/arena_a.json") || next["decidedBy"] != "ROTATION" || next["name"] != "Arena A" || view["lastSwitch"].(map[string]any)["ok"] != true {
 		t.Fatalf("switch at the closing time: uploads %v %v", w.remote.uploads, view)
+	}
+}
+
+// --- fresh characters on every map switch -------------------------------------------------------------
+
+const (
+	mrStorage   = mrMission + "/storage_1"
+	mrPlayersDB = mrStorage + "/players.db"
+)
+
+// wipeWorld is a rotation without a vote on a server that has saved characters and a base, with
+// the waits of the clearing cut to nothing and the clearing run inside the tick.
+func wipeWorld(t *testing.T, change func(b map[string]any)) (*mapRotationWorld, map[string]any) {
+	w := newMapRotationWorld(t)
+	w.flag(true)
+	clock := time.Now()
+	w.a.mapRotationWipeCfg = mapRotationWipeConfig{inline: true, opts: charwipe.Options{
+		Now: func() time.Time { return clock }, Sleep: func(_ context.Context, d time.Duration) { clock = clock.Add(d) }}}
+	w.remote.files[mrPlayersDB] = []byte("characters")
+	w.remote.files[mrStorage+"/vehicles.bin"] = []byte("vehicles and bases")
+	code, view := w.admin(http.MethodPut, w.a.handleSaveMapRotation, "/map/rotation", w.f.OwnerDiscordID, rotationBody(threeMaps(), func(b map[string]any) {
+		b["voteEnabled"] = false
+		b["wipeCharacters"] = true
+		if change != nil {
+			change(b)
+		}
+	}))
+	if code != http.StatusOK {
+		t.Fatalf("save: %d %v", code, view)
+	}
+	return w, view
+}
+
+func (w *mapRotationWorld) lastSwitch() map[string]any {
+	w.t.Helper()
+	_, view := w.admin(http.MethodGet, w.a.handleAdminMapRotation, "/map/rotation", w.f.OwnerDiscordID, nil)
+	last, _ := view["lastSwitch"].(map[string]any)
+	if last == nil {
+		w.t.Fatalf("no last switch: %v", view)
+	}
+	return last
+}
+
+func (w *mapRotationWorld) isActive() bool {
+	active, _ := w.a.MapRotation.ActiveInstallations(context.Background())
+	for _, t := range active {
+		if t.InstallationID == w.f.InstallationID {
+			return true
+		}
+	}
+	return false
+}
+
+// The option end to end: off by default, saved and returned; after a switch the server is stopped,
+// players.db (and nothing else) is deleted and the server is started; the boots that follow count
+// as one restart; and a server without the file is left running.
+func TestMapRotationFreshCharacters(t *testing.T) {
+	w, view := wipeWorld(t, func(b map[string]any) { b["everyRestarts"] = 2 })
+	a := w.a
+	ctx := context.Background()
+	if view["wipeCharacters"] != true {
+		t.Fatalf("the option was not saved: %v", view["wipeCharacters"])
+	}
+	// Left out of a save it is off.
+	if _, v := w.admin(http.MethodPut, a.handleSaveMapRotation, "/map/rotation", w.f.OwnerDiscordID, rotationBody(nil, func(b map[string]any) {
+		b["enabled"], b["maps"] = false, view["maps"]
+		for _, m := range view["maps"].([]any) {
+			delete(m.(map[string]any), "spawnXml")
+		}
+	})); v["wipeCharacters"] != false {
+		t.Fatalf("left out, the option must be off: %v", v)
+	}
+	maps := threeMaps()
+	for i, raw := range view["maps"].([]any) {
+		maps[i]["id"] = raw.(map[string]any)["id"]
+		delete(maps[i], "spawnXml")
+	}
+	save := func(change func(b map[string]any)) {
+		t.Helper()
+		if code, body := w.admin(http.MethodPut, a.handleSaveMapRotation, "/map/rotation", w.f.OwnerDiscordID, rotationBody(maps, func(b map[string]any) {
+			b["voteEnabled"], b["wipeCharacters"], b["everyRestarts"] = false, true, 2
+			if change != nil {
+				change(b)
+			}
+		})); code != http.StatusOK {
+			t.Fatalf("save: %d %v", code, body)
+		}
+	}
+	save(nil)
+
+	// every 2 restarts: one restart is counted first, then the period before the switch.
+	start := time.Now().UTC().Truncate(time.Second).Add(-3 * time.Hour)
+	w.tick(start) // baseline
+	boot1 := start.Add(time.Hour)
+	w.reboot(boot1)
+	w.tick(boot1.Add(time.Minute))
+	if len(w.remote.serverCalls) != 0 {
+		t.Fatalf("nothing is stopped before a switch: %v", w.remote.serverCalls)
+	}
+	w.tick(boot1.Add(31 * time.Minute)) // the rotation decides Arena A, writes the files, clears the characters
+
+	if got := strings.Join(w.remote.serverCalls, ", "); got != "stop, delete "+mrPlayersDB+", restart" {
+		t.Fatalf("server calls: %s", got)
+	}
+	if _, there := w.remote.files[mrPlayersDB]; there {
+		t.Fatal("players.db is still there")
+	}
+	if w.remote.content(mrStorage+"/vehicles.bin") != "vehicles and bases" || !strings.Contains(w.remote.content(mrMission+"/cfggameplay.json"), `"custom/arena_a.json"`) {
+		t.Fatal("something other than players.db was touched, or the map's files were not written first")
+	}
+	last := w.lastSwitch()
+	if last["ok"] != true || last["charactersCleared"] != true || last["message"] != "Both files were written and verified. Saved characters were cleared, so everyone spawns fresh." {
+		t.Fatalf("last switch: %v", last)
+	}
+	if len(w.alerts) != 0 || !w.isActive() {
+		t.Fatalf("a clean clearing alerts nobody and the rotation goes on: %+v", w.alerts)
+	}
+	var wipeState string
+	var wipeRestart, leaseUntil *time.Time
+	if err := a.DB.Pool.QueryRow(ctx, `SELECT w.wipe_state, s.wipe_restart_at, s.lease_until FROM map_rotation_switches w JOIN map_rotation_settings s USING (installation_id)
+WHERE w.installation_id=$1 ORDER BY w.id DESC LIMIT 1`, w.f.InstallationID).Scan(&wipeState, &wipeRestart, &leaseUntil); err != nil {
+		t.Fatal(err)
+	}
+	if wipeState != repository.MapWipeDone || wipeRestart == nil || leaseUntil != nil {
+		t.Fatalf("after the clearing: state %s, restart recorded %v, lease released %v", wipeState, wipeRestart != nil, leaseUntil == nil)
+	}
+
+	// Restart counting. Champion's own restart boots the server at +2 minutes: the map is active.
+	// The scheduled restart follows at +6 minutes: the same restart, not counted.
+	count := func() (n int, current string) {
+		t.Helper()
+		var name *string
+		if err := a.DB.Pool.QueryRow(ctx, `SELECT restarts_since_switch, current_map_name FROM map_rotation_settings WHERE installation_id=$1`, w.f.InstallationID).Scan(&n, &name); err != nil {
+			t.Fatal(err)
+		}
+		if name != nil {
+			current = *name
+		}
+		return n, current
+	}
+	wr := *wipeRestart
+	w.reboot(wr.Add(2 * time.Minute))
+	w.tick(wr.Add(3 * time.Minute))
+	if n, cur := count(); n != 0 || cur != "Arena A" {
+		t.Fatalf("after Champion's own restart: count %d, current %q", n, cur)
+	}
+	w.reboot(wr.Add(6 * time.Minute))
+	w.tick(wr.Add(7 * time.Minute))
+	w.tick(wr.Add(8 * time.Minute))
+	if n, cur := count(); n != 0 || cur != "Arena A" {
+		t.Fatalf("the scheduled restart inside the window was counted: count %d, current %q", n, cur)
+	}
+	var lastBoot, bootNow string
+	_ = a.DB.Pool.QueryRow(ctx, `SELECT s.last_boot_file, b.adm_file FROM map_rotation_settings s, server_adm_sessions b WHERE s.installation_id=$1 AND b.server_id=$2`, w.f.InstallationID, w.serverID).Scan(&lastBoot, &bootNow)
+	if lastBoot == "" || lastBoot != bootNow {
+		t.Fatalf("the boot inside the window must still be remembered: %q vs %q", lastBoot, bootNow)
+	}
+	// A boot at +25 minutes is an ordinary restart.
+	boot4 := wr.Add(25 * time.Minute)
+	w.reboot(boot4)
+	w.tick(boot4.Add(time.Minute))
+	if n, _ := count(); n != 1 {
+		t.Fatalf("a restart after the window: count %d, want 1", n)
+	}
+
+	// The next switch finds no players.db (nobody has joined): the server is not stopped, the
+	// switch stays applied, the rotation goes on and staff are told.
+	calls := len(w.remote.serverCalls)
+	w.tick(boot4.Add(32 * time.Minute))
+	last = w.lastSwitch()
+	if len(w.remote.serverCalls) != calls {
+		t.Fatalf("a server without the file must not be stopped: %v", w.remote.serverCalls[calls:])
+	}
+	if last["ok"] != true || last["charactersCleared"] != false || last["name"] != "Arena B" ||
+		last["message"] != "Both files were written and verified. Saved characters could not be cleared: the saved-characters file was not found." {
+		t.Fatalf("last switch without the file: %v", last)
+	}
+	if len(w.alerts) != 1 || w.alerts[0].Severity != discord.AlertWarning || w.alerts[0].Headline != "Saved characters not cleared" || !w.isActive() {
+		t.Fatalf("alerts %+v, active %v", w.alerts, w.isActive())
+	}
+
+	// With the option off nothing is ever stopped or deleted.
+	save(func(b map[string]any) { b["wipeCharacters"], b["everyRestarts"] = false, 1 })
+	w.remote.files[mrPlayersDB] = []byte("characters")
+	boot5 := boot4.Add(2 * time.Hour)
+	w.reboot(boot5)
+	w.tick(boot5.Add(time.Minute))
+	w.tick(boot5.Add(32 * time.Minute))
+	last = w.lastSwitch()
+	if len(w.remote.serverCalls) != calls || last["name"] != "Arena C" || last["ok"] != true || last["charactersCleared"] != nil || last["message"] != "Both files were written and verified." {
+		t.Fatalf("option off: calls %v, last %v", w.remote.serverCalls[calls:], last)
+	}
+	if _, there := w.remote.files[mrPlayersDB]; !there {
+		t.Fatal("players.db was deleted with the option off")
+	}
+}
+
+// The server was stopped and does not start: the rotation stops and staff get a critical alert.
+// And after a crash in the middle, the next tick starts the server without stopping or deleting
+// again, even when the rotation was switched off in the meantime.
+func TestMapRotationFreshCharactersServerDownAndCrash(t *testing.T) {
+	w, view := wipeWorld(t, nil)
+	a := w.a
+	ctx := context.Background()
+	idB := int64(view["maps"].([]any)[1].(map[string]any)["id"].(float64))
+	w.remote.restartDead = true
+	start := time.Now().UTC().Truncate(time.Second).Add(-time.Hour)
+	w.tick(start)
+	w.tick(start.Add(31 * time.Minute))
+
+	last := w.lastSwitch()
+	msg, _ := last["message"].(string)
+	if last["ok"] != true || last["charactersCleared"] != true || !strings.Contains(msg, charwipe.ServerDownMessage) || !strings.Contains(msg, "rotation is stopped") {
+		t.Fatalf("last switch: %v", last)
+	}
+	if w.remote.serverCalls[0] != "stop" || w.remote.serverCalls[1] != "delete "+mrPlayersDB || len(w.remote.serverCalls) != 5 || w.remote.serverCalls[4] != "restart" {
+		t.Fatalf("the server is asked to start three times: %v", w.remote.serverCalls)
+	}
+	if len(w.alerts) != 1 || w.alerts[0].Severity != discord.AlertCritical || !strings.Contains(w.alerts[0].Detail, "Start it in Nitrado") || w.isActive() {
+		t.Fatalf("alerts %+v, still active %v", w.alerts, w.isActive())
+	}
+	var halted string
+	_ = a.DB.Pool.QueryRow(ctx, `SELECT halted_reason FROM map_rotation_settings WHERE installation_id=$1`, w.f.InstallationID).Scan(&halted)
+	if halted != charwipe.ServerDownMessage {
+		t.Fatalf("halted reason: %q", halted)
+	}
+
+	// --- a crash right after the stop was requested -------------------------------------------
+	maps := threeMaps()
+	for i, raw := range view["maps"].([]any) {
+		maps[i]["id"] = raw.(map[string]any)["id"]
+		delete(maps[i], "spawnXml")
+	}
+	save := func(enabled bool) {
+		t.Helper()
+		if code, body := w.admin(http.MethodPut, a.handleSaveMapRotation, "/map/rotation", w.f.OwnerDiscordID, rotationBody(maps, func(b map[string]any) {
+			b["voteEnabled"], b["wipeCharacters"], b["enabled"] = false, true, enabled
+		})); code != http.StatusOK {
+			t.Fatalf("save: %d %v", code, body)
+		}
+	}
+	crash := func(states ...string) int64 {
+		t.Helper()
+		now := time.Now().UTC()
+		sw, created, err := a.MapRotation.BeginSwitch(ctx, w.f.InstallationID, idB, "Arena B", "arena_b.json", "arena_b.xml", "ROTATION", "", now)
+		if err != nil || !created || sw.WipeState != repository.MapWipeNone {
+			t.Fatalf("begin: %v %+v", err, sw)
+		}
+		for _, state := range states {
+			if err := a.MapRotation.SetWipeState(ctx, w.f.InstallationID, sw.ID, state, now); err != nil {
+				t.Fatalf("state %s: %v", state, err)
+			}
+		}
+		return sw.ID
+	}
+	switchRow := func(id int64) (status, state, message string, cleared *bool) {
+		t.Helper()
+		if err := a.DB.Pool.QueryRow(ctx, `SELECT status, wipe_state, message, characters_cleared FROM map_rotation_switches WHERE id=$1`, id).Scan(&status, &state, &message, &cleared); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	save(true) // clears the stop
+	w.remote.restartDead = false
+	w.remote.files[mrPlayersDB] = []byte("characters")
+	id := crash(repository.MapWipeStopRequested)
+	// The server is stopped at most once per switch.
+	if err := a.MapRotation.SetWipeState(ctx, w.f.InstallationID, id, repository.MapWipeStopRequested, time.Now().UTC()); !errors.Is(err, repository.ErrMapSwitchNotPending) {
+		t.Fatalf("a second stop of the same switch must be refused: %v", err)
+	}
+	w.remote.status = "stopped"
+	save(false) // the owner switches the rotation off while the server is down
+	calls, alerts := len(w.remote.serverCalls), len(w.alerts)
+
+	// The ordinary pass does nothing for it (the rotation is off, and the switch is not its to finish).
+	w.tick(time.Now().UTC())
+	if status, state, _, _ := switchRow(id); status != repository.MapSwitchPending || state != repository.MapWipeStopRequested || len(w.remote.serverCalls) != calls {
+		t.Fatalf("the ordinary pass touched an interrupted clearing: %s %s %v", status, state, w.remote.serverCalls[calls:])
+	}
+	a.mapRotationWipeRecover(ctx, time.Now().UTC())
+	if got := strings.Join(w.remote.serverCalls[calls:], ", "); got != "restart" || w.remote.status != "restarting" {
+		t.Fatalf("recovery must only start the server: %q, status %s", got, w.remote.status)
+	}
+	status, state, message, cleared := switchRow(id)
+	if status != repository.MapSwitchApplied || state != repository.MapWipeFailed || cleared == nil || *cleared ||
+		message != "The map's files were written and verified. Saved characters could not be cleared: "+charwipe.ReasonInterrupted+"." {
+		t.Fatalf("recovered switch: %s %s %q", status, state, message)
+	}
+	if _, there := w.remote.files[mrPlayersDB]; !there {
+		t.Fatal("recovery deleted the file")
+	}
+	if len(w.alerts) != alerts+1 || w.alerts[alerts].Severity != discord.AlertWarning {
+		t.Fatalf("recovery alert: %+v", w.alerts[alerts:])
+	}
+	var leaseUntil *time.Time
+	_ = a.DB.Pool.QueryRow(ctx, `SELECT lease_until FROM map_rotation_settings WHERE installation_id=$1`, w.f.InstallationID).Scan(&leaseUntil)
+	if leaseUntil != nil {
+		t.Fatal("recovery kept the lease")
+	}
+
+	// --- a crash after the file was verified deleted ------------------------------------------
+	id = crash(repository.MapWipeStopRequested, repository.MapWipeDeleted)
+	w.remote.status = "stopped"
+	calls, alerts = len(w.remote.serverCalls), len(w.alerts)
+	a.mapRotationWipeRecover(ctx, time.Now().UTC())
+	status, state, message, cleared = switchRow(id)
+	if got := strings.Join(w.remote.serverCalls[calls:], ", "); got != "restart" || status != repository.MapSwitchApplied || state != repository.MapWipeDone || cleared == nil || !*cleared ||
+		message != "The map's files were written and verified. Saved characters were cleared, so everyone spawns fresh." || len(w.alerts) != alerts {
+		t.Fatalf("crash after the delete: calls %q, %s %s %q", got, status, state, message)
+	}
+
+	// --- a crash after the restart was requested, and the server never comes up ------------------
+	id = crash(repository.MapWipeStopRequested, repository.MapWipeDeleted, repository.MapWipeStartRequested)
+	w.remote.status, w.remote.restartDead = "stopped", true
+	alerts = len(w.alerts)
+	a.mapRotationWipeRecover(ctx, time.Now().UTC())
+	status, state, message, _ = switchRow(id)
+	_ = a.DB.Pool.QueryRow(ctx, `SELECT halted_reason FROM map_rotation_settings WHERE installation_id=$1`, w.f.InstallationID).Scan(&halted)
+	if status != repository.MapSwitchApplied || state != repository.MapWipeFailed || !strings.Contains(message, charwipe.ServerDownMessage) || halted != charwipe.ServerDownMessage ||
+		len(w.alerts) != alerts+1 || w.alerts[alerts].Severity != discord.AlertCritical {
+		t.Fatalf("recovery with the server down: %s %s %q halted %q alerts %+v", status, state, message, halted, w.alerts[alerts:])
+	}
+	// Nothing is left to recover.
+	if left, err := a.MapRotation.WipesInProgress(ctx); err != nil || len(left) != 0 {
+		t.Fatalf("clearings still in progress: %v %v", left, err)
 	}
 }

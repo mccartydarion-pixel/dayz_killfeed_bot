@@ -31,6 +31,12 @@ import (
 // (cfggameplay.json and cfgplayerspawnpoints.xml) and nothing else, and it is reachable from
 // exactly one file of the bot, internal/app/map_rotation_worker.go, which runs it only behind the
 // map_rotation feature flag, the plan and the owner's own switch. It does not import missionwrite.
+//
+// And one package may call the Nitrado delete call (DeleteFile), which nothing else in Champion may:
+// internal/maprotation/charwipe, "fresh characters on every map switch" in docs/MAP_ROTATION.md. It
+// deletes one fixed file, <mission folder>/storage_1/players.db, and refuses every other path. It
+// may not call the write primitives, it does not import missionwrite or the map switch, and it too
+// is reachable only from internal/app/map_rotation_worker.go.
 func TestWriteCapabilityIsIsolated(t *testing.T) {
 	root, err := filepath.Abs(filepath.Join("..", "..", ".."))
 	if err != nil {
@@ -43,6 +49,9 @@ func TestWriteCapabilityIsIsolated(t *testing.T) {
 	const mapSwitchEntry = "internal/app/map_rotation_worker.go"
 	mapSwitchWrites := map[string]bool{"RequestUploadToken": true, "PostUpload": true}
 	seenMapSwitchEntry := false
+	const charWipe = "internal/maprotation/charwipe"
+	deletes := map[string]bool{"DeleteFile": true}
+	seenCharWipeEntry, seenDelete := false, false
 	// What the worker may name from this package: the artifact primitives and what they return.
 	workerMay := map[string]bool{"InspectArtifact": true, "WriteArtifact": true, "ArtifactState": true, "ArtifactWrite": true, "Remote": true,
 		"SHA256": true, "StatusWrittenVerified": true, "StatusNotWritten": true, "StatusUncertain": true,
@@ -94,6 +103,15 @@ func TestWriteCapabilityIsIsolated(t *testing.T) {
 				}
 				seenMapSwitchEntry = true
 			}
+			if strings.HasSuffix(ip, "/"+charWipe) {
+				if rel != mapSwitchEntry {
+					t.Errorf("%s imports the character wipe; only %s may", rel, mapSwitchEntry)
+				}
+				seenCharWipeEntry = true
+			}
+			if dir == charWipe && (strings.HasSuffix(ip, "/"+self) || strings.HasSuffix(ip, "/"+mapSwitch)) {
+				t.Errorf("%s imports %s; the character wipe writes nothing", rel, ip)
+			}
 			if dir == mapSwitch && strings.HasSuffix(ip, "/"+self) {
 				t.Errorf("%s imports missionwrite; the map switch has its own two-file write", rel)
 			}
@@ -115,6 +133,13 @@ func TestWriteCapabilityIsIsolated(t *testing.T) {
 					!(dir == mapSwitch && mapSwitchWrites[sel.Sel.Name]) {
 					t.Errorf("%s calls %s", rel, sel.Sel.Name)
 				}
+				// The delete call: the Nitrado client defines it, the character wipe calls it, nobody else.
+				if sel, ok := x.Fun.(*ast.SelectorExpr); ok && deletes[sel.Sel.Name] && !isOS(sel) {
+					if dir != charWipe && dir != "internal/nitrado" {
+						t.Errorf("%s calls %s; only %s may delete a file on a game server", rel, sel.Sel.Name, charWipe)
+					}
+					seenDelete = seenDelete || dir == charWipe
+				}
 			case *ast.AssignStmt:
 				for _, l := range x.Lhs {
 					if sel, ok := l.(*ast.SelectorExpr); ok && sel.Sel.Name == "AllowInsecureUploadURL" {
@@ -134,6 +159,9 @@ func TestWriteCapabilityIsIsolated(t *testing.T) {
 	}
 	if !seenMapSwitchEntry {
 		t.Fatalf("expected %s to import the map switch", mapSwitchEntry)
+	}
+	if !seenCharWipeEntry || !seenDelete {
+		t.Fatalf("expected %s to import the character wipe (%v) and the wipe to call DeleteFile (%v)", mapSwitchEntry, seenCharWipeEntry, seenDelete)
 	}
 	if !seenWorker || !seenEntry {
 		t.Fatalf("expected the delivery worker to import this package (%v) and %s to import the worker (%v)", seenWorker, workerEntry, seenEntry)

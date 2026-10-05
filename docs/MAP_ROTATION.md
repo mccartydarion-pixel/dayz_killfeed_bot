@@ -56,7 +56,8 @@ takes effect within 30 seconds. Sending the same call without `enabled` removes 
    and for each map whether its spawn file is stored.
 5. Choose how often the map changes (every 1, 2 or 3 restarts), the order (sequence or random),
    whether players vote, how long the vote runs, the Discord channel for the announcement and
-   whether it pings `@everyone`.
+   whether it pings `@everyone`. Optionally switch on **Fresh characters on every map switch**
+   (off by default; see the section of that name below before using it).
 6. Switch it on. At least 2 maps must be enabled.
 
 Champion counts restarts from the moment it is switched on. It does not know which map is live
@@ -96,6 +97,91 @@ Limits worth knowing: restarts are counted one at a time as Champion sees them, 
 within a few seconds, or restarts while the bot is down, count as one. A manual restart counts like
 any other.
 
+## Fresh characters on every map switch
+
+Off by default. An option per server (`wipeCharacters`, stored as
+`map_rotation_settings.wipe_characters`).
+
+**Why.** DayZ saves every character, with its position, in `storage_1/players.db` inside the
+mission folder. After a map switch a player therefore logs in where they stood on the old arena
+and has to die once to reach the new map's spawn points. With this option on, Champion removes the
+saved characters when it switches the map, so everyone starts as a fresh spawn on the new map.
+
+> **Not yet tested on a real server.** The three Nitrado calls this uses (stop the server, delete a
+> file, start the server) are written from Nitrado's documentation and have not been run against a
+> live Nitrado service. Until someone has tried the option on a real server and watched it work,
+> treat it as unverified. It is also unverified that a DayZ console server on Nitrado starts
+> cleanly without `players.db` and writes a new one, which is what the game does elsewhere. Try it
+> first on a server where a failed start costs nothing.
+
+**What is deleted.** Exactly one file: `<mission folder>/storage_1/players.db`. That is every
+character: where they are, their health and everything they wear and carry. Nothing else is
+deleted, ever: bases, tents, vehicles, stashes and everything stored in the world are in other
+files of the storage folder and are not touched, and neither is the storage folder itself. Players
+keep what is in their base; they lose what is on their body.
+
+**What happens**, right after a switch's two files are written and verified (so about 5 minutes
+before a known scheduled restart):
+
+1. Champion looks for `storage_1/players.db`. If the folder or the file is not there (for example
+   nobody has joined since the last wipe), the server is **not** stopped; the switch's message says
+   "Saved characters could not be cleared: the saved-characters file was not found." and staff are
+   alerted. The switch stays successful and the rotation goes on.
+2. It stops the server and asks Nitrado for the server's status every 5 seconds, for up to 2
+   minutes, until it reads `stopped`. A server that does not stop keeps its file.
+3. It deletes the file, once, and lists the folder again. Only a listing without the file counts
+   as "cleared".
+4. It starts the server again, **whatever happened in steps 2 and 3**, and watches the status until
+   it reads `restarting` or `started` (up to 2 minutes; the start is requested again, up to 3 times,
+   while the server stays down).
+
+So the server goes down for a short time a few minutes **before** the scheduled restart, comes up
+on the new map with fresh characters, and is restarted again by its schedule shortly after. Players
+see two restarts close together.
+
+The Discord posts are unchanged. The outcome is added to the switch's message, for example "Both
+files were written and verified. Saved characters were cleared, so everyone spawns fresh.", and
+`lastSwitch.charactersCleared` says it as a value.
+
+**Counting restarts.** Champion's own start in step 4 is an extra boot. So that "every N restarts"
+still means N scheduled restarts, every boot seen within **20 minutes** after that start belongs to
+the same restart:
+
+- the first boot seen after the switch makes the new map the current map, as always;
+- a further boot inside the 20 minutes (the scheduled restart) is remembered as the current boot
+  and the period is counted from it, but it does not add to the restart count;
+- inside the 20 minutes nothing is decided, voted on or written, so the few minutes between the
+  two boots never become a period of their own;
+- a boot later than 20 minutes after Champion's start is counted like any other.
+
+With the option off none of this applies and restarts are counted exactly as before. A side effect
+worth knowing: a manual restart in those 20 minutes is not counted either.
+
+**When something goes wrong.** The switch itself stays successful (the two files are in place) in
+every case below.
+
+| What | Result |
+| --- | --- |
+| The file or the storage folder is not found, Nitrado cannot be reached, or the server's status cannot be read | The server is not stopped. Characters not cleared; staff alert (warning). The rotation goes on. |
+| The server does not report `stopped` within 2 minutes | Nothing is deleted. The server is started again. Characters not cleared; staff alert (warning). |
+| Nitrado refuses the delete, or says yes but the file is still listed, or the folder cannot be listed afterwards | The server is started again. Characters not cleared; staff alert (warning). |
+| The server cannot be seen starting again | **The rotation stops** with "The server was stopped to clear characters and could not be started again. Start it in Nitrado." and staff get a critical alert. Saving the settings starts the rotation again. |
+| The bot crashes or is redeployed in the middle | The step it was at is stored on the switch before the step is taken (`wipe_state`: `STOP_REQUESTED`, `DELETED`, `START_REQUESTED`, then `DONE` or `FAILED`). On its next tick the worker never stops the server and never deletes again; it starts the server (unless it is already starting), closes the switch and reports the characters as cleared only if that had been verified before the crash. This also happens when the rotation was switched off, stopped or suspended in the meantime. If the server still cannot be seen starting, or the server's Nitrado connection cannot be opened for 30 minutes, the rotation stops with the message above and staff get the critical alert. |
+
+Limits worth knowing:
+
+- After a crash the server is restarted once more than strictly needed in some cases (Champion
+  cannot know whether its stop request arrived, so it always asks for a start).
+- "Seen starting" is Nitrado's status reading `restarting` or `started`. Champion does not wait for
+  the game to finish loading.
+- A scheduled restart that arrives while the server is stopped for the wipe is not something
+  Champion can prevent. The wipe begins about 5 minutes before a known restart and normally takes
+  one to two minutes.
+- The staff alert for a wipe is sent once, when it happens. If Discord or the bot is down at that
+  moment it is not sent later; the switch's message still says what happened.
+- It runs at most once per switch, only after both files are verified, and never for a switch that
+  failed or was rolled back.
+
 ## Discord
 
 Posted in the configured announce channel (none configured: nothing is posted):
@@ -121,6 +207,12 @@ The switch is `internal/maprotation/mapswitch`. It is the only code besides
 `internal/shop/missionwrite/isolation_test.go` was extended on purpose to allow exactly this
 package, to allow it only those two calls (never `Mkdir`), and to require that only
 `internal/app/map_rotation_worker.go` imports it.
+
+The same test covers the one delete Champion can make. `nitrado.DeleteFile` may be called only by
+`internal/maprotation/charwipe` (fresh characters, above), which only
+`internal/app/map_rotation_worker.go` may import. Inside that package one function,
+`deletePlayersDB`, makes the call, and it refuses every path that is not exactly
+`<located mission folder>/storage_1/players.db`.
 
 - **Validate everything first.** The stored spawn file is checked again before the server is
   asked anything: it must be there, be at most 1 MB and be well-formed XML with the root
@@ -156,7 +248,9 @@ package, to allow it only those two calls (never `Mkdir`), and to require that o
   is only shown; it is never used as a path.)
 - **Two targets only.** A switch writes `cfggameplay.json` and `cfgplayerspawnpoints.xml` in the
   mission folder and nothing else. It never creates a folder and never deletes. (The backup lives
-  in the database, not on the server.)
+  in the database, not on the server.) The only file Champion ever deletes is
+  `storage_1/players.db`, by a separate procedure and only with the owner's "fresh characters"
+  option on.
 - **Never while off.** The flag, the plan and the owner's switch are checked at the start of every
   pass and again immediately before a switch.
 - **Idempotent.** A switch is a row in `map_rotation_switches`: `PENDING` before anything is
@@ -194,11 +288,12 @@ AdminView  {
   available, reason: string|null,
   enabled, everyRestarts: 1|2|3, order: "SEQUENCE"|"RANDOM",
   voteEnabled, voteMinutesBeforeRestart: 5..120, pingEveryone, announceChannelId: string|null,
+  wipeCharacters: boolean,
   maps: MapEntry[],
   current: { mapId|null, name|null, since|null },
   next: { mapId|null, name|null, decidedBy: "ROTATION"|"VOTE"|"STAFF"|null, switchAt|null, restartsUntilSwitch|null },
   vote: Vote|null,
-  lastSwitch: { at, mapId|null, name|null, ok, message }|null,
+  lastSwitch: { at, mapId|null, name|null, ok, message, charactersCleared: boolean|null }|null,
   filesCheck: { mapId, mapFileFound, spawnFileFound, checkedAt }[]
 }
 PlayerView { enabled, linked, serverName,
@@ -210,7 +305,7 @@ PlayerView { enabled, linked, serverName,
 | Route | Body | Result |
 | --- | --- | --- |
 | `GET adminBase/map/rotation` | | `AdminView`. `available: false` with a `reason` when the flag is off, the plan does not include it or no DayZ server is selected. |
-| `PUT adminBase/map/rotation` | `{ enabled, everyRestarts, order, voteEnabled, voteMinutesBeforeRestart, pingEveryone, announceChannelId, maps: [{ id?, name, mapFile, spawnFile, spawnXml?, imageUrl, enabled }] }` | `AdminView`. Array order is rotation order; 0 to 5 maps; a map with `id` is updated, one without is created, a stored map left out is removed. Switching on needs 2 enabled maps. |
+| `PUT adminBase/map/rotation` | `{ enabled, everyRestarts, order, voteEnabled, voteMinutesBeforeRestart, pingEveryone, announceChannelId, wipeCharacters?, maps: [{ id?, name, mapFile, spawnFile, spawnXml?, imageUrl, enabled }] }` | `AdminView`. Array order is rotation order; 0 to 5 maps; a map with `id` is updated, one without is created, a stored map left out is removed. Switching on needs 2 enabled maps. |
 | `POST adminBase/map/rotation/check` | none | `AdminView` with `filesCheck` filled: lists the server's `custom` folder (a read) and reports which configured map files exist. Nothing is looked up on Nitrado for the spawn files. |
 | `POST adminBase/map/rotation/next` | `{ mapId: number\|null }` | `AdminView`. Sets the staff choice for the next switch; `null` clears it. |
 | `GET /api/saas/player/servers/{installationID}/map/vote` | | `PlayerView`. Any signed-in website user; `linked` says whether they can vote. |
@@ -222,6 +317,14 @@ restart that will load it, when known. `vote` is the open vote, or the vote that
 current period (status `CLOSED`) until the restart. `filesCheck` holds the last check of each map
 and is cleared for a map whose map file name changes. `spawnFileFound` means the map's spawn file
 is stored in Champion, as it is now (the same as the map's `spawnUploaded`).
+
+**Fresh characters.** `wipeCharacters` (boolean) is the option described in "Fresh characters on
+every map switch". In the `PUT` body it may be left out, which means `false`: a client that does
+not know the field switches the option off when it saves. `GET` always returns it.
+`lastSwitch.charactersCleared` is read-only: `null` when clearing was not attempted for that switch
+(the option was off, or the switch did not succeed), `true` when `players.db` was deleted and
+verified gone, `false` when it was not (the reason is in `lastSwitch.message`). `lastSwitch.ok`
+stays `true` for a switch whose files were written even when the characters were not cleared.
 
 **The spawn file.** `spawnFile` is the uploaded file's name (required, a `.xml` name as above) and
 is only shown. `spawnXml` is the file's text. The contents are never returned: `spawnUploaded` says
@@ -268,18 +371,28 @@ before it have no stored spawn file: their owner uploads one on the Map rotation
 then a switch to such a map fails without touching the server. `map_rotation_maps.spawn_file_found`
 is still written by the file check (as "stored") but the API reads the stored contents instead.
 
+Migration `0127_map_rotation_wipe_characters` (additive): `map_rotation_settings.wipe_characters`
+(the option, default false) and `wipe_restart_at` (when Champion last started a server after
+clearing characters; the restart count uses it), and on `map_rotation_switches` `wipe_state`
+(default `NONE`), `wipe_state_at`, `wipe_note` (the outcome as a sentence) and
+`characters_cleared` (null when not attempted).
+
 ## Code
 
 | Where | What |
 | --- | --- |
-| `internal/maprotation` | The rules, with no way to write: file names, the `cfggameplay.json` edit, the spawn file check, rotation order, vote count, restart counting and the planner (`Plan`). |
+| `internal/maprotation` | The rules, with no way to write: file names, the `cfggameplay.json` edit, the spawn file check, rotation order, vote count, restart counting (with the 20-minute rule after a wipe restart) and the planner (`Plan`). |
 | `internal/maprotation/mapswitch` | The two-file switch with backup, read-back and rollback. |
+| `internal/maprotation/charwipe` | Fresh characters: stop, delete `players.db`, start, and the resume after a crash. |
 | `internal/repository/map_rotation_repository.go` | Storage. |
 | `internal/app/map_rotation.go` | The API. |
 | `internal/app/map_rotation_worker.go` | The worker (once a minute) and the Discord posts. |
 
 ## Before enabling it on a real server
 
+- "Fresh characters on every map switch" stops and starts the server and deletes a file through
+  Nitrado calls that have not been run against a live Nitrado service. Leave it off until it has
+  been tried on a test server (see its section).
 - The owner's map files and spawn files are used as they are. Champion checks their shape, not
   whether the map works in game.
 - Maps set up before spawn files were uploaded on the website need their spawn file uploaded once.

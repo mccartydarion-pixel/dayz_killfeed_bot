@@ -445,3 +445,101 @@ func TestPlanVoteWindows(t *testing.T) {
 		t.Fatalf("random: %+v", s)
 	}
 }
+
+// The restart count with "fresh characters on every map switch": Champion starts the server itself
+// a few minutes before the scheduled restart, and both boots are one restart.
+func TestRestartCountingAroundAWipeRestart(t *testing.T) {
+	wipe := time.Date(2026, 10, 4, 11, 56, 0, 0, time.UTC)
+	type boot struct {
+		after time.Duration // after the wipe restart (or after `wipe` when there was none)
+		want  RestartEffect
+	}
+	cases := []struct {
+		name      string
+		wipeOn    bool
+		applied   bool // a switch was applied before the first boot
+		boots     []boot
+		wantCount int // restarts counted since the switch became active
+		wantMaps  int // how often a switch was activated
+	}{
+		{"wipe off: the boot after a switch activates it, the next is counted", false, true,
+			[]boot{{2 * time.Minute, RestartActivate}, {6 * time.Minute, RestartCount}}, 1, 1},
+		{"wipe off, no switch: every boot is counted", false, false,
+			[]boot{{2 * time.Minute, RestartCount}, {6 * time.Minute, RestartCount}, {25 * time.Minute, RestartCount}}, 3, 0},
+		{"wipe on: boots at +2 and +6 minutes are one restart", true, true,
+			[]boot{{2 * time.Minute, RestartActivate}, {6 * time.Minute, RestartSame}}, 0, 1},
+		{"wipe on: only the scheduled boot is seen", true, true,
+			[]boot{{6 * time.Minute, RestartActivate}}, 0, 1},
+		{"wipe on: a boot at +25 minutes counts normally", true, true,
+			[]boot{{2 * time.Minute, RestartActivate}, {25 * time.Minute, RestartCount}}, 1, 1},
+		{"wipe on: +2, +6, then +25 and later count", true, true,
+			[]boot{{2 * time.Minute, RestartActivate}, {6 * time.Minute, RestartSame}, {25 * time.Minute, RestartCount}, {4 * time.Hour, RestartCount}}, 2, 1},
+		{"wipe on: the edge of the window", true, true,
+			[]boot{{time.Minute, RestartActivate}, {20 * time.Minute, RestartSame}, {20*time.Minute + time.Second, RestartCount}}, 1, 1},
+		{"wipe on but the switch failed: boots in the window are still one restart", true, false,
+			[]boot{{2 * time.Minute, RestartSame}, {6 * time.Minute, RestartSame}, {30 * time.Minute, RestartCount}}, 1, 0},
+	}
+	cfg := Settings{EveryRestarts: 3, Order: OrderSequence}
+	maps := []Map{{ID: 1, Name: "A", MapFile: "a.json", SpawnFile: "a.xml", Enabled: true, Position: 0}, {ID: 2, Name: "B", MapFile: "b.json", SpawnFile: "b.xml", Enabled: true, Position: 1}}
+	for _, c := range cases {
+		st := State{LastBootFile: "boot0", Phase: PhaseDone, AwaitingActivation: c.applied}
+		if c.wipeOn {
+			st.WipeRestartAt = wipe
+		}
+		count, activated := 0, 0
+		for i, b := range c.boots {
+			at := wipe.Add(b.after)
+			file := "boot" + string(rune('1'+i))
+			step := Plan(cfg, st, maps, Observation{BootFile: file, BootAt: at}, at.Add(30*time.Second), nil)
+			if step.Kind != StepRestart || step.Restart != b.want {
+				t.Fatalf("%s: boot %d at +%s: got %s/%s, want %s", c.name, i+1, b.after, step.Kind, step.Restart, b.want)
+			}
+			switch step.Restart {
+			case RestartActivate:
+				activated++
+				count = 0
+				st.AwaitingActivation = false
+			case RestartCount:
+				count++
+			}
+			// What the worker stores for every kind of restart: the boot, and the period begins.
+			st.LastBootFile, st.Phase, st.PhaseStartedAt, st.RestartsSinceSwitch = file, PhaseIdle, at, count
+		}
+		if count != c.wantCount || activated != c.wantMaps {
+			t.Fatalf("%s: counted %d restarts and %d activations, want %d and %d", c.name, count, activated, c.wantCount, c.wantMaps)
+		}
+	}
+}
+
+// Between Champion's own restart and the scheduled one nothing is decided or written, so those few
+// minutes never become a period of their own. Without a wipe restart nothing is held back.
+func TestNoPeriodStartsInsideTheWipeWindow(t *testing.T) {
+	wipe := time.Date(2026, 10, 4, 11, 56, 0, 0, time.UTC)
+	bootAt := wipe.Add(2 * time.Minute)
+	scheduled := wipe.Add(4 * time.Minute)
+	cfg := Settings{EveryRestarts: 1, Order: OrderSequence}
+	maps := []Map{{ID: 1, Name: "A", MapFile: "a.json", SpawnFile: "a.xml", Enabled: true, Position: 0}, {ID: 2, Name: "B", MapFile: "b.json", SpawnFile: "b.xml", Enabled: true, Position: 1}}
+	st := State{CurrentMapID: 1, LastBootFile: "boot1", Phase: PhaseIdle, PhaseStartedAt: bootAt}
+	obs := Observation{BootFile: "boot1", BootAt: bootAt, NextRestart: &scheduled}
+	now := bootAt.Add(30 * time.Second)
+
+	// As today (no wipe restart): with the restart this close the rotation decides at once.
+	if s := Plan(cfg, st, maps, obs, now, nil); s.Kind != StepDecide {
+		t.Fatalf("without a wipe restart: %s, want %s", s.Kind, StepDecide)
+	}
+	st.WipeRestartAt = wipe
+	if s := Plan(cfg, st, maps, obs, now, nil); s.Kind != StepNone {
+		t.Fatalf("inside the window: %s, want %s", s.Kind, StepNone)
+	}
+	st.Phase, st.NextMapID, st.NextDecidedBy = PhaseDecided, 2, DecidedRotation
+	if s := Plan(cfg, st, maps, Observation{BootFile: "boot1", BootAt: bootAt}, now, nil); s.Kind != StepNone {
+		t.Fatalf("inside the window nothing is written: %s", s.Kind)
+	}
+	// After the window the planner carries on as always.
+	if s := Plan(cfg, st, maps, Observation{BootFile: "boot1", BootAt: bootAt}, wipe.Add(WipeRestartWindow+time.Minute), nil); s.Kind != StepApply {
+		t.Fatalf("after the window: %s, want %s", s.Kind, StepApply)
+	}
+	if !InWipeWindow(wipe, wipe) || InWipeWindow(wipe, wipe.Add(-time.Second)) || InWipeWindow(time.Time{}, wipe) {
+		t.Fatal("the window starts at the wipe restart and does not exist without one")
+	}
+}

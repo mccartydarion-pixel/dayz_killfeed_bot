@@ -270,3 +270,59 @@ func TestMapRotationDiscordMessages(t *testing.T) {
 		t.Fatalf("changed: %+v", changed.Embeds[0])
 	}
 }
+
+// "Fresh characters on every map switch" in the contract: wipeCharacters is off unless sent as
+// true, is returned as saved, and the last switch says whether the characters were cleared (null
+// when clearing was not attempted).
+func TestMapRotationWipeCharactersContract(t *testing.T) {
+	var body mapRotationBody
+	if err := json.Unmarshal([]byte(`{"enabled":false,"everyRestarts":1,"order":"SEQUENCE","voteEnabled":false,"voteMinutesBeforeRestart":30,"pingEveryone":true,"announceChannelId":null,"maps":[]}`), &body); err != nil {
+		t.Fatal(err)
+	}
+	if in, problem := validateMapRotationBody(body); problem != "" || in.WipeCharacters {
+		t.Fatalf("left out, the option is off: %q %v", problem, in.WipeCharacters)
+	}
+	if err := json.Unmarshal([]byte(`{"wipeCharacters":true}`), &body); err != nil {
+		t.Fatal(err)
+	}
+	if in, problem := validateMapRotationBody(body); problem != "" || !in.WipeCharacters {
+		t.Fatalf("sent as true, the option is on: %q %v", problem, in.WipeCharacters)
+	}
+
+	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	view := func(snap repository.MapRotationSnapshot) map[string]any {
+		raw, _ := json.Marshal(toMapRotationAdminDTO(snap, "", now))
+		var v map[string]any
+		_ = json.Unmarshal(raw, &v)
+		return v
+	}
+	if v := view(repository.MapRotationSnapshot{}); v["wipeCharacters"] != false {
+		t.Fatalf("default: %v", v["wipeCharacters"])
+	}
+	yes, no := true, false
+	const down = "The server was stopped to clear characters and could not be started again. Start it in Nitrado."
+	for _, c := range []struct {
+		cleared *bool
+		message string
+		halted  string
+		want    any
+		stopped bool
+	}{
+		{nil, "Both files were written and verified.", "", nil, false},
+		{&yes, "Both files were written and verified. Saved characters were cleared, so everyone spawns fresh.", "", true, false},
+		{&no, "Both files were written and verified. Saved characters could not be cleared: the saved-characters file was not found.", "", false, false},
+		{&yes, "Both files were written and verified. Saved characters were cleared. " + down, down, true, true},
+		// An applied switch is not blamed for a stop that came from somewhere else.
+		{&yes, "Both files were written and verified. Saved characters were cleared, so everyone spawns fresh.", "something else", true, false},
+	} {
+		v := view(repository.MapRotationSnapshot{
+			Settings:   repository.MapRotationSettings{Enabled: true, EveryRestarts: 1, Order: "SEQUENCE", VoteMinutes: 30, WipeCharacters: true, HaltedReason: c.halted},
+			LastSwitch: &repository.MapRotationSwitch{MapName: "Arena 2", Status: repository.MapSwitchApplied, Message: c.message, CreatedAt: now, CharactersCleared: c.cleared},
+		})
+		last := v["lastSwitch"].(map[string]any)
+		cleared, has := last["charactersCleared"]
+		if v["wipeCharacters"] != true || !has || cleared != c.want || last["ok"] != true || strings.Contains(last["message"].(string), "rotation is stopped") != c.stopped {
+			t.Fatalf("%q: %v", c.message, last)
+		}
+	}
+}

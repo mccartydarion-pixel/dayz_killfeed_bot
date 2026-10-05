@@ -122,3 +122,28 @@ func TestAccessListActionRequiresIdentifier(t *testing.T) {
 		t.Fatal("expected an error for an empty identifier")
 	}
 }
+
+func TestDeleteFileSendsDeleteWithThePath(t *testing.T) {
+	var sawPath, sawMethod, sawFile string
+	status := http.StatusOK
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawPath, sawMethod, sawFile = r.URL.Path, r.Method, r.URL.Query().Get("path")
+		w.WriteHeader(status)
+	}))
+	defer srv.Close()
+	client := NewClient(srv.URL, "token", srv.Client())
+	const file = "/games/ni1_1/noftp/dayzps/mpmissions/dayzOffline.chernarusplus/storage_1/players.db"
+	if err := client.DeleteFile(context.Background(), "12345", file); err != nil {
+		t.Fatalf("DeleteFile: %v", err)
+	}
+	if sawMethod != http.MethodDelete || sawPath != "/services/12345/gameservers/file_server/delete" || sawFile != file {
+		t.Fatalf("unexpected request: %s %s path=%q", sawMethod, sawPath, sawFile)
+	}
+	status = http.StatusForbidden
+	if err := client.DeleteFile(context.Background(), "12345", file); err == nil {
+		t.Fatal("a refused delete must be an error")
+	}
+	if client.DeleteFile(context.Background(), "", file) == nil || client.DeleteFile(context.Background(), "12345", "") == nil {
+		t.Fatal("a service and a path are required")
+	}
+}

@@ -10,7 +10,11 @@
 //     uploaded on the website and the caller hands over in the Request (they are not read from
 //     the server).
 //
-// It never creates a folder, never deletes and never writes anywhere else. The rules it follows:
+// It never creates a folder, never deletes and never writes anywhere else. (Champion as a whole does
+// delete one file: with the owner's "fresh characters on every map switch" option on, the sibling
+// package charwipe deletes storage_1/players.db after a switch that this package applied. That is
+// a separate procedure with its own isolation rule; nothing in this package can delete.) The rules
+// it follows:
 //
 //   - the spawn contents are validated, and the two live files and the map file are downloaded and
 //     validated, before the first write; any doubt means no write;
@@ -37,7 +41,7 @@ import (
 )
 
 // Remote is every Nitrado call a switch makes: the three reads and the two write primitives. There
-// is no mkdir: a switch never creates a folder.
+// is no mkdir and no delete: a switch never creates a folder and never removes a file.
 type Remote interface {
 	maprotation.Reader
 	RequestUploadToken(ctx context.Context, serviceID, dir, name string) (nitrado.UploadTarget, error)

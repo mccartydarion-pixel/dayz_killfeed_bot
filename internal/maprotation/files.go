@@ -102,6 +102,22 @@ func (p Paths) File(dir, name string) (string, error) {
 	return capability.SafePath(p.root, dir+"/"+name)
 }
 
+// PlayersDB returns the mission's storage folder and the full path of the saved-characters file
+// inside it (<mission folder>/storage_1/players.db). Both are fixed names, built here so that no
+// caller ever assembles them from anything else.
+func (p Paths) PlayersDB() (dir, file string, err error) {
+	if p.MissionDir == "" {
+		return "", "", capability.ErrUnsafePath
+	}
+	if dir, err = capability.SafePath(p.root, p.MissionDir+"/"+StorageDir); err != nil {
+		return "", "", err
+	}
+	if file, err = capability.SafePath(p.root, dir+"/"+PlayersDBFile); err != nil {
+		return "", "", err
+	}
+	return dir, file, nil
+}
+
 var missionNameRe = regexp.MustCompile(`^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)?$`)
 var gameNameRe = regexp.MustCompile(`^[a-z0-9]+$`)
 

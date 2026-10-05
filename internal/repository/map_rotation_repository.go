@@ -66,6 +66,8 @@ type MapRotationSettings struct {
 	VoteMinutes       int
 	PingEveryone      bool
 	AnnounceChannelID *string
+	// WipeCharacters: clear the saved characters after every map switch (off unless switched on).
+	WipeCharacters bool
 
 	CurrentMapID        *int64
 	CurrentMapName      *string
@@ -81,6 +83,8 @@ type MapRotationSettings struct {
 	NextRestartAt       *time.Time
 	ConsecutiveFailures int
 	HaltedReason        string
+	// WipeRestartAt is when Champion last started the server itself after clearing characters.
+	WipeRestartAt *time.Time
 }
 
 func defaultMapRotationSettings(installationID int64) MapRotationSettings {
@@ -125,7 +129,26 @@ type MapRotationSwitch struct {
 	BackupSaved bool
 	CreatedAt   time.Time
 	FinishedAt  *time.Time
+	// Clearing the saved characters after this switch (loaded by PendingSwitch and BeginSwitch):
+	// how far it got (MapWipe...), when, and the outcome as a sentence.
+	WipeState   string
+	WipeStateAt *time.Time
+	WipeNote    string
+	// CharactersCleared: nil when clearing was not attempted, else whether players.db was verified
+	// deleted. Also loaded for the snapshot's LastSwitch.
+	CharactersCleared *bool
 }
+
+// States of clearing the saved characters after a switch (the same words as
+// internal/maprotation/charwipe, which owns the procedure).
+const (
+	MapWipeNone           = "NONE"
+	MapWipeStopRequested  = "STOP_REQUESTED"
+	MapWipeDeleted        = "DELETED"
+	MapWipeStartRequested = "START_REQUESTED"
+	MapWipeDone           = "DONE"
+	MapWipeFailed         = "FAILED"
+)
 
 // MapRotationSnapshot is everything the API shows.
 type MapRotationSnapshot struct {
@@ -157,6 +180,7 @@ type MapRotationInput struct {
 	VoteMinutes       int
 	PingEveryone      bool
 	AnnounceChannelID *string
+	WipeCharacters    bool
 	Maps              []MapRotationMapInput
 }
 
@@ -183,14 +207,16 @@ type mapRotationQuerier interface {
 
 const mapRotationSettingsColumns = `enabled, every_restarts, rotation_order, vote_enabled, vote_minutes, ping_everyone, announce_channel_id,
  current_map_id, current_map_name, current_map_file, current_since, next_map_id, next_decided_by, staff_next_map_id,
- last_boot_file, restarts_since_switch, phase, phase_started_at, next_restart_at, consecutive_failures, halted_reason`
+ last_boot_file, restarts_since_switch, phase, phase_started_at, next_restart_at, consecutive_failures, halted_reason,
+ wipe_characters, wipe_restart_at`
 
 func loadMapRotationSettings(ctx context.Context, q mapRotationQuerier, installationID int64) (MapRotationSettings, error) {
 	s := defaultMapRotationSettings(installationID)
 	err := q.QueryRow(ctx, `SELECT `+mapRotationSettingsColumns+` FROM map_rotation_settings WHERE installation_id=$1`, installationID).Scan(
 		&s.Enabled, &s.EveryRestarts, &s.Order, &s.VoteEnabled, &s.VoteMinutes, &s.PingEveryone, &s.AnnounceChannelID,
 		&s.CurrentMapID, &s.CurrentMapName, &s.CurrentMapFile, &s.CurrentSince, &s.NextMapID, &s.NextDecidedBy, &s.StaffNextMapID,
-		&s.LastBootFile, &s.RestartsSinceSwitch, &s.Phase, &s.PhaseStartedAt, &s.NextRestartAt, &s.ConsecutiveFailures, &s.HaltedReason)
+		&s.LastBootFile, &s.RestartsSinceSwitch, &s.Phase, &s.PhaseStartedAt, &s.NextRestartAt, &s.ConsecutiveFailures, &s.HaltedReason,
+		&s.WipeCharacters, &s.WipeRestartAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		s.PingEveryone = true // the vote ping reaches everyone unless the owner turns it off
 		return s, nil
@@ -265,9 +291,9 @@ func (r *MapRotationRepository) Load(ctx context.Context, installationID int64) 
 		}
 	}
 	var sw MapRotationSwitch
-	err = r.pool.QueryRow(ctx, `SELECT id, map_id, map_name, map_file, spawn_file, decided_by, status, message, attempts, created_at, finished_at
+	err = r.pool.QueryRow(ctx, `SELECT id, map_id, map_name, map_file, spawn_file, decided_by, status, message, attempts, created_at, finished_at, characters_cleared
 FROM map_rotation_switches WHERE installation_id=$1 AND status<>'PENDING' ORDER BY id DESC LIMIT 1`, installationID).
-		Scan(&sw.ID, &sw.MapID, &sw.MapName, &sw.MapFile, &sw.SpawnFile, &sw.DecidedBy, &sw.Status, &sw.Message, &sw.Attempts, &sw.CreatedAt, &sw.FinishedAt)
+		Scan(&sw.ID, &sw.MapID, &sw.MapName, &sw.MapFile, &sw.SpawnFile, &sw.DecidedBy, &sw.Status, &sw.Message, &sw.Attempts, &sw.CreatedAt, &sw.FinishedAt, &sw.CharactersCleared)
 	if err == nil {
 		snap.LastSwitch = &sw
 	} else if !errors.Is(err, pgx.ErrNoRows) {
@@ -348,13 +374,13 @@ WHERE id=$1 AND installation_id=$2`, m.ID, installationID, m.Name, m.MapFile, m.
 	if _, err := tx.Exec(ctx, `
 UPDATE map_rotation_settings s SET
     enabled=$2, every_restarts=$3, rotation_order=$4, vote_enabled=$5, vote_minutes=$6, ping_everyone=$7, announce_channel_id=$8,
-    updated_at=$9, updated_by=$10, consecutive_failures=0, halted_reason='',
+    updated_at=$9, updated_by=$10, wipe_characters=$11, consecutive_failures=0, halted_reason='',
     next_map_id       = CASE WHEN EXISTS(SELECT 1 FROM map_rotation_maps m WHERE m.id=s.next_map_id AND m.installation_id=$1 AND m.enabled) THEN s.next_map_id END,
     next_decided_by   = CASE WHEN EXISTS(SELECT 1 FROM map_rotation_maps m WHERE m.id=s.next_map_id AND m.installation_id=$1 AND m.enabled) THEN s.next_decided_by END,
     staff_next_map_id = CASE WHEN EXISTS(SELECT 1 FROM map_rotation_maps m WHERE m.id=s.staff_next_map_id AND m.installation_id=$1 AND m.enabled) THEN s.staff_next_map_id END,
     current_map_id    = CASE WHEN EXISTS(SELECT 1 FROM map_rotation_maps m WHERE m.id=s.current_map_id AND m.installation_id=$1) THEN s.current_map_id END
 WHERE s.installation_id=$1`,
-		installationID, in.Enabled, in.EveryRestarts, in.Order, in.VoteEnabled, in.VoteMinutes, in.PingEveryone, in.AnnounceChannelID, now, actor); err != nil {
+		installationID, in.Enabled, in.EveryRestarts, in.Order, in.VoteEnabled, in.VoteMinutes, in.PingEveryone, in.AnnounceChannelID, now, actor, in.WipeCharacters); err != nil {
 		return err
 	}
 	if !in.Enabled || !in.VoteEnabled {
@@ -547,7 +573,11 @@ func (r *MapRotationRepository) Baseline(ctx context.Context, installationID int
 // RecordRestart handles a new boot. If a switch was applied and not yet active, its map becomes
 // the current map and the restart count starts again (the switch is returned); otherwise the
 // restart is counted. A vote still open is closed without a result.
-func (r *MapRotationRepository) RecordRestart(ctx context.Context, installationID int64, bootFile string, bootAt, now time.Time) (*MapRotationSwitch, error) {
+//
+// count false is for a further boot shortly after Champion's own restart (the one that follows
+// clearing the characters; maprotation.RestartSame): the boot is remembered and the period begins
+// with it, but the count stays as it is. A switch waiting for its restart is activated either way.
+func (r *MapRotationRepository) RecordRestart(ctx context.Context, installationID int64, bootFile string, bootAt, now time.Time, count bool) (*MapRotationSwitch, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -575,8 +605,10 @@ WHERE installation_id=$1`, installationID, sw.MapID, sw.MapName, sw.MapFile, boo
 			return nil, err
 		}
 	case errors.Is(err, pgx.ErrNoRows):
-		if _, err := tx.Exec(ctx, `UPDATE map_rotation_settings SET restarts_since_switch=restarts_since_switch+1 WHERE installation_id=$1`, installationID); err != nil {
-			return nil, err
+		if count {
+			if _, err := tx.Exec(ctx, `UPDATE map_rotation_settings SET restarts_since_switch=restarts_since_switch+1 WHERE installation_id=$1`, installationID); err != nil {
+				return nil, err
+			}
 		}
 	default:
 		return nil, err
@@ -660,11 +692,13 @@ func (r *MapRotationRepository) VoteCounts(ctx context.Context, voteID int64) (m
 	return out, rows.Err()
 }
 
-const mapSwitchColumns = `id, map_id, map_name, map_file, spawn_file, decided_by, status, message, attempts, prev_gameplay, prev_spawns, backup_saved_at IS NOT NULL, created_at, finished_at, spawn_xml`
+const mapSwitchColumns = `id, map_id, map_name, map_file, spawn_file, decided_by, status, message, attempts, prev_gameplay, prev_spawns, backup_saved_at IS NOT NULL, created_at, finished_at, spawn_xml,
+ wipe_state, wipe_state_at, wipe_note, characters_cleared`
 
 func scanMapSwitch(row pgx.Row) (*MapRotationSwitch, error) {
 	var sw MapRotationSwitch
-	err := row.Scan(&sw.ID, &sw.MapID, &sw.MapName, &sw.MapFile, &sw.SpawnFile, &sw.DecidedBy, &sw.Status, &sw.Message, &sw.Attempts, &sw.PrevGameplay, &sw.PrevSpawns, &sw.BackupSaved, &sw.CreatedAt, &sw.FinishedAt, &sw.SpawnXML)
+	err := row.Scan(&sw.ID, &sw.MapID, &sw.MapName, &sw.MapFile, &sw.SpawnFile, &sw.DecidedBy, &sw.Status, &sw.Message, &sw.Attempts, &sw.PrevGameplay, &sw.PrevSpawns, &sw.BackupSaved, &sw.CreatedAt, &sw.FinishedAt, &sw.SpawnXML,
+		&sw.WipeState, &sw.WipeStateAt, &sw.WipeNote, &sw.CharactersCleared)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -753,6 +787,99 @@ func (r *MapRotationRepository) FinishSwitch(ctx context.Context, installationID
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// SwitchAwaitingRestart reports whether a switch was applied whose map is not active yet: the next
+// boot loads it.
+func (r *MapRotationRepository) SwitchAwaitingRestart(ctx context.Context, installationID int64) (bool, error) {
+	var ok bool
+	err := r.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM map_rotation_switches WHERE installation_id=$1 AND status='APPLIED' AND activated_at IS NULL)`, installationID).Scan(&ok)
+	return ok, err
+}
+
+// --- fresh characters on a map switch ---------------------------------------------------------------
+
+// SetWipeState stores how far clearing the saved characters got on the PENDING switch, before the
+// step the state names is taken. STOP_REQUESTED is only stored on a switch that has not started
+// clearing yet, so the server is stopped at most once per switch. DELETED also records that the
+// characters were cleared. START_REQUESTED also records the time on the settings: boots seen
+// shortly after it belong to this one restart (maprotation.WipeRestartWindow).
+func (r *MapRotationRepository) SetWipeState(ctx context.Context, installationID, switchID int64, state string, now time.Time) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `UPDATE map_rotation_switches SET wipe_state=$3, wipe_state_at=$4,
+    characters_cleared = CASE WHEN $3::text='DELETED' THEN TRUE WHEN $3::text='STOP_REQUESTED' THEN FALSE ELSE characters_cleared END
+WHERE id=$2 AND installation_id=$1 AND status='PENDING'
+  AND ($3::text <> 'STOP_REQUESTED' OR wipe_state='NONE')
+  AND ($3::text = 'STOP_REQUESTED' OR wipe_state IN ('STOP_REQUESTED','DELETED','START_REQUESTED'))`, installationID, switchID, state, now)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrMapSwitchNotPending
+	}
+	if state == MapWipeStartRequested {
+		if _, err := tx.Exec(ctx, `UPDATE map_rotation_settings SET wipe_restart_at=$2 WHERE installation_id=$1`, installationID, now); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+// CloseWipe records the end of clearing the characters on the PENDING switch: DONE or FAILED, the
+// outcome as a sentence and whether the characters were cleared. halt (non-empty) stops the
+// rotation in the same transaction: it is set when the server was stopped and could not be seen
+// starting again, and a person must look.
+func (r *MapRotationRepository) CloseWipe(ctx context.Context, installationID, switchID int64, state, note string, cleared bool, halt string, now time.Time) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `UPDATE map_rotation_switches SET wipe_state=$3, wipe_state_at=$4, wipe_note=$5, characters_cleared=$6
+WHERE id=$2 AND installation_id=$1 AND status='PENDING' AND wipe_state NOT IN ('DONE','FAILED')`, installationID, switchID, state, now, note, cleared)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrMapSwitchNotPending
+	}
+	if halt != "" {
+		if _, err := tx.Exec(ctx, `UPDATE map_rotation_settings SET halted_reason=$2 WHERE installation_id=$1`, installationID, halt); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+// WipesInProgress lists the installations with a switch whose character clearing was interrupted
+// (a crash) and may have left the server stopped. Unlike ActiveInstallations it does not look at
+// the owner's switch, a stop of the rotation or a suspension: a server Champion stopped is started
+// again whatever happened since.
+func (r *MapRotationRepository) WipesInProgress(ctx context.Context) ([]MapRotationTarget, error) {
+	rows, err := r.pool.Query(ctx, `
+SELECT i.id, i.organization_id, c.guild_id, gs.id, COALESCE(gs.provider_service_id,''), COALESCE(gs.display_name,'')
+FROM map_rotation_switches w
+JOIN installations i ON i.id = w.installation_id
+JOIN discord_guild_connections c ON c.id = i.discord_guild_connection_id
+JOIN game_servers gs ON gs.id = i.game_server_id
+WHERE w.status='PENDING' AND w.wipe_state IN ('STOP_REQUESTED','DELETED','START_REQUESTED') ORDER BY i.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []MapRotationTarget
+	for rows.Next() {
+		var t MapRotationTarget
+		if err := rows.Scan(&t.InstallationID, &t.OrganizationID, &t.GuildID, &t.ServerID, &t.NitradoServiceID, &t.ServerName); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
 }
 
 // SetNextRestart stores the next scheduled restart the worker learned (nil = unknown).

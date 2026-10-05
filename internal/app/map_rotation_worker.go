@@ -13,6 +13,7 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/discord"
 	"github.com/yourname/dayz-killfeed/internal/livemap"
 	"github.com/yourname/dayz-killfeed/internal/maprotation"
+	"github.com/yourname/dayz-killfeed/internal/maprotation/charwipe"
 	"github.com/yourname/dayz-killfeed/internal/maprotation/mapswitch"
 	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/repository"
@@ -22,10 +23,14 @@ import (
 // whose owner switched the rotation on and takes the next step the planner (maprotation.Plan)
 // gives: count a restart, open or close a vote, decide the next map, write the two server files.
 //
-// This is the only file that imports internal/maprotation/mapswitch (enforced by the isolation
-// test in internal/shop/missionwrite). Before every write it checks the three switches again: the
-// map_rotation feature flag, the plan and the owner's `enabled` setting. With any of them off the
-// worker does nothing for the installation: no Nitrado call, no state change, no Discord post.
+// This is the only file that imports internal/maprotation/mapswitch and
+// internal/maprotation/charwipe (enforced by the isolation test in internal/shop/missionwrite).
+// Before every write it checks the three switches again: the map_rotation feature flag, the plan
+// and the owner's `enabled` setting. With any of them off the worker does nothing for the
+// installation: no Nitrado call, no state change, no Discord post.
+//
+// The one exception is a server Champion itself stopped to clear the saved characters
+// (mapRotationWipeRecover): it is started again whatever was switched off in the meantime.
 
 const (
 	mapRotationInterval    = time.Minute
@@ -37,7 +42,24 @@ const (
 	mapRotationResumeFor   = 30 * time.Minute
 	mapRotationMaxAttempts = 3
 	mapRotationMaxSteps    = 6
+	// mapRotationWipeLease: clearing the saved characters stops and starts the server, which takes
+	// minutes. The installation's lease is held this long, longer than the procedure can take
+	// (charwipe's Total), so no second bot process touches the server meanwhile.
+	mapRotationWipeLease = 10 * time.Minute
+	// mapRotationWipeGiveUp: an interrupted clearing whose server cannot even be asked (no Nitrado
+	// connection) is retried each minute for this long, then the rotation stops and staff are told.
+	mapRotationWipeGiveUp = 30 * time.Minute
+	// mapRotationAppliedMessage is the switch's message when it is closed after an interrupted
+	// clearing: the files were verified before the clearing began.
+	mapRotationAppliedMessage = "The map's files were written and verified."
 )
+
+// mapRotationWipeConfig lets tests shorten the waits of clearing the characters and run it in the
+// worker's own goroutine. The zero value is production: default waits, in the background.
+type mapRotationWipeConfig struct {
+	opts   charwipe.Options
+	inline bool
+}
 
 // mapRotationRestartCache remembers each installation's next scheduled restart for a few minutes,
 // so the worker does not ask Nitrado for the task list every tick.
@@ -79,6 +101,8 @@ func (a *App) mapRotationTick(ctx context.Context, now time.Time) {
 			slog.Error("component=map_rotation", "msg", "worker panic recovered", "panic", fmt.Sprint(r))
 		}
 	}()
+	// First of all: a server that was stopped to clear characters and may still be down.
+	a.mapRotationWipeRecover(ctx, now)
 	targets, err := a.MapRotation.ActiveInstallations(ctx)
 	if err != nil {
 		if ctx.Err() == nil {
@@ -99,7 +123,7 @@ func (a *App) mapRotationAllowed(ctx context.Context, t repository.MapRotationTa
 }
 
 func (a *App) mapRotationOne(parent context.Context, t repository.MapRotationTarget, now time.Time) {
-	if !a.mapRotationAllowed(parent, t) {
+	if a.mapRotationWipeBusy(t.InstallationID) || !a.mapRotationAllowed(parent, t) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(parent, mapRotationPassTimeout)
@@ -110,9 +134,10 @@ func (a *App) mapRotationOne(parent context.Context, t repository.MapRotationTar
 		return
 	}
 	defer func() {
-		rctx, rcancel := context.WithTimeout(context.WithoutCancel(parent), 10*time.Second)
-		defer rcancel()
-		_ = a.MapRotation.Release(rctx, t.InstallationID, owner)
+		if a.mapRotationWipeBusy(t.InstallationID) {
+			return // the characters are being cleared in the background, which keeps the lease
+		}
+		a.mapRotationRelease(parent, t.InstallationID, owner)
 	}()
 
 	for i := 0; i < mapRotationMaxSteps; i++ {
@@ -144,6 +169,11 @@ func (a *App) mapRotationStep(ctx context.Context, t repository.MapRotationTarge
 		return false, err
 	}
 	if pending != nil {
+		if charwipe.InProgress(pending.WipeState) {
+			// The server may be stopped. mapRotationWipeRecover deals with that and nothing else
+			// happens for the installation until it has.
+			return false, nil
+		}
 		return false, a.mapRotationResume(ctx, t, snap, *pending, now)
 	}
 
@@ -178,6 +208,15 @@ func (a *App) mapRotationStep(ctx context.Context, t repository.MapRotationTarge
 	if s.NextDecidedBy != nil {
 		st.NextDecidedBy = *s.NextDecidedBy
 	}
+	if s.WipeRestartAt != nil {
+		st.WipeRestartAt = *s.WipeRestartAt
+	}
+	if bootFile != "" && s.LastBootFile != "" && bootFile != s.LastBootFile {
+		// A new boot: does it load a switch that was applied?
+		if st.AwaitingActivation, err = a.MapRotation.SwitchAwaitingRestart(ctx, t.InstallationID); err != nil {
+			return false, err
+		}
+	}
 	if snap.Vote != nil && snap.Vote.Status == "OPEN" {
 		st.VoteOpen, st.VoteClosesAt = true, snap.Vote.ClosesAt
 	}
@@ -190,12 +229,14 @@ func (a *App) mapRotationStep(ctx context.Context, t repository.MapRotationTarge
 		// switched on, so a vote (or the wait before a switch) gets its full length.
 		return true, a.MapRotation.Baseline(ctx, t.InstallationID, bootFile, now)
 	case maprotation.StepRestart:
-		activated, err := a.MapRotation.RecordRestart(ctx, t.InstallationID, bootFile, bootAt, now)
+		// A further boot shortly after Champion's own restart (clearing the characters) is the same
+		// restart: remembered, not counted.
+		activated, err := a.MapRotation.RecordRestart(ctx, t.InstallationID, bootFile, bootAt, now, step.Restart != maprotation.RestartSame)
 		if err != nil {
 			return false, err
 		}
 		a.mapRotationForgetRestart(t.InstallationID)
-		slog.Info("component=map_rotation", "event", "restart_seen", "installation_id", t.InstallationID, "map_activated", activated != nil)
+		slog.Info("component=map_rotation", "event", "restart_seen", "installation_id", t.InstallationID, "map_activated", activated != nil, "effect", string(step.Restart))
 		return true, nil
 	case maprotation.StepOpenVote:
 		options := make([]repository.MapRotationVoteOption, 0, len(step.Options))
@@ -291,6 +332,11 @@ func (a *App) mapRotationForgetRestart(installationID int64) {
 // saved by the first attempt is kept. Later than that nothing is written: the switch is closed as
 // failed and, if a write may have happened, the rotation stops for a person to look.
 func (a *App) mapRotationResume(ctx context.Context, t repository.MapRotationTarget, snap repository.MapRotationSnapshot, sw repository.MapRotationSwitch, now time.Time) error {
+	if charwipe.Closed(sw.WipeState) {
+		// The files were verified and the characters dealt with; only closing the switch was left.
+		// Nothing is written and nothing is cleared a second time.
+		return a.mapRotationFinish(ctx, t, sw.ID, mapswitch.Result{Status: mapswitch.StatusApplied, Message: withWipeNote(mapRotationAppliedMessage, sw.WipeNote)})
+	}
 	if now.Sub(sw.CreatedAt) <= mapRotationResumeFor && sw.Attempts < mapRotationMaxAttempts {
 		return a.mapRotationSwitch(ctx, t, snap, int64Value(sw.MapID), sw.MapName, sw.MapFile, sw.SpawnFile, sw.DecidedBy, snap.Settings.LastBootFile, now)
 	}
@@ -315,18 +361,7 @@ func (a *App) mapRotationSwitch(ctx context.Context, t repository.MapRotationTar
 	if err != nil {
 		return err
 	}
-	// The outcome is recorded even when the pass's own deadline has passed.
-	finish := func(res mapswitch.Result) error {
-		fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
-		defer cancel()
-		halt := ""
-		if res.NeedsAttention {
-			halt = res.Message
-		}
-		slog.Info("component=map_rotation", "event", "switch_finished", "installation_id", t.InstallationID, "switch_id", sw.ID, "status", res.Status,
-			"uploads", res.Writes, "needs_attention", res.NeedsAttention)
-		return a.MapRotation.FinishSwitch(fctx, t.InstallationID, sw.ID, res.Status, res.Message, halt, time.Now().UTC())
-	}
+	finish := func(res mapswitch.Result) error { return a.mapRotationFinish(ctx, t, sw.ID, res) }
 	remote, err := a.mapRotationRemote(ctx, t)
 	if err != nil {
 		return finish(mapswitch.Result{Status: mapswitch.StatusFailed, Message: "The server's Nitrado connection could not be opened. Nothing was changed."})
@@ -355,7 +390,214 @@ func (a *App) mapRotationSwitch(ctx context.Context, t repository.MapRotationTar
 	res := mapswitch.Apply(ctx, remote, req, func(ctx context.Context, b mapswitch.Backup) error {
 		return a.MapRotation.SaveSwitchBackup(ctx, sw.ID, b.Gameplay, b.Spawns, time.Now().UTC())
 	})
+	// Fresh characters: only after both files are verified in place, only when the owner switched
+	// it on, and only once per switch (a switch that already began clearing never comes here: an
+	// interrupted one goes to mapRotationWipeRecover, a finished one is closed in mapRotationResume).
+	if res.Status == mapswitch.StatusApplied && snap.Settings.WipeCharacters && (sw.WipeState == "" || sw.WipeState == charwipe.StateNone) {
+		a.mapRotationWipe(ctx, t, *sw, remote, res)
+		return nil
+	}
 	return finish(res)
+}
+
+// mapRotationFinish records a switch's outcome, even when the pass's own deadline has passed.
+func (a *App) mapRotationFinish(ctx context.Context, t repository.MapRotationTarget, switchID int64, res mapswitch.Result) error {
+	fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
+	halt := ""
+	if res.NeedsAttention {
+		halt = res.Message
+	}
+	slog.Info("component=map_rotation", "event", "switch_finished", "installation_id", t.InstallationID, "switch_id", switchID, "status", res.Status,
+		"uploads", res.Writes, "needs_attention", res.NeedsAttention)
+	return a.MapRotation.FinishSwitch(fctx, t.InstallationID, switchID, res.Status, res.Message, halt, time.Now().UTC())
+}
+
+func (a *App) mapRotationRelease(ctx context.Context, installationID int64, owner string) {
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	_ = a.MapRotation.Release(rctx, installationID, owner)
+}
+
+// --- fresh characters on a map switch ---------------------------------------------------------------
+//
+// With the owner's wipe_characters option on, a switch whose files are verified in place is
+// followed by charwipe: stop the server, delete storage_1/players.db, start the server. It takes
+// minutes, so it runs in the background while the worker goes on to the next installation; the
+// installation itself is skipped (mapRotationWipeBusy) and its lease held until it is over.
+
+func (a *App) mapRotationWipeBusy(installationID int64) bool {
+	_, busy := a.mapRotationWiping.Load(installationID)
+	return busy
+}
+
+func withWipeNote(message, note string) string {
+	return strings.TrimSpace(strings.TrimSpace(message) + " " + strings.TrimSpace(note))
+}
+
+// mapRotationWipeSave stores a state of the clearing on the switch before the step it names.
+func (a *App) mapRotationWipeSave(t repository.MapRotationTarget, switchID int64) charwipe.SaveFunc {
+	return func(ctx context.Context, state string) error {
+		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+		defer cancel()
+		return a.MapRotation.SetWipeState(sctx, t.InstallationID, switchID, state, time.Now().UTC())
+	}
+}
+
+// mapRotationWipeRun runs work for the installation with its lease held for the length of a
+// clearing, in the background (or, in tests, at once). It reports false when the lease could not
+// be taken, in which case work is not run.
+func (a *App) mapRotationWipeRun(ctx context.Context, t repository.MapRotationTarget, work func(bg context.Context)) bool {
+	owner := mapRotationWorkerName()
+	bg := context.WithoutCancel(ctx)
+	lctx, cancel := context.WithTimeout(bg, 15*time.Second)
+	now := time.Now().UTC()
+	claimed, err := a.MapRotation.Claim(lctx, t.InstallationID, owner, now, now.Add(mapRotationWipeLease))
+	cancel()
+	if err != nil || !claimed {
+		return false
+	}
+	a.mapRotationWiping.Store(t.InstallationID, struct{}{})
+	run := func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("component=map_rotation", "msg", "character clearing panic recovered", "installation_id", t.InstallationID, "panic", fmt.Sprint(r))
+			}
+			a.mapRotationRelease(bg, t.InstallationID, owner)
+			a.mapRotationWiping.Delete(t.InstallationID)
+		}()
+		work(bg)
+	}
+	if a.mapRotationWipeCfg.inline {
+		run()
+	} else {
+		go run()
+	}
+	return true
+}
+
+// mapRotationWipe clears the saved characters after an applied switch and then closes the switch
+// with the outcome in its message. The switch stays APPLIED whatever the clearing did.
+func (a *App) mapRotationWipe(ctx context.Context, t repository.MapRotationTarget, sw repository.MapRotationSwitch, remote charwipe.Remote, res mapswitch.Result) {
+	started := a.mapRotationWipeRun(ctx, t, func(bg context.Context) {
+		// Until the stop is requested a minute is plenty; from then on charwipe works on a context
+		// of its own.
+		rctx, cancel := context.WithTimeout(bg, time.Minute)
+		defer cancel()
+		out := charwipe.Run(rctx, remote, t.NitradoServiceID, a.mapRotationWipeSave(t, sw.ID), a.mapRotationWipeCfg.opts)
+		a.mapRotationWipeClose(bg, t, sw, out, res)
+	})
+	if !started {
+		// The lease could not be extended, so the server is not touched.
+		a.mapRotationWipeClose(context.WithoutCancel(ctx), t, sw, charwipe.Outcome{Reason: charwipe.ReasonNotRecorded}, res)
+	}
+}
+
+// mapRotationWipeClose records the outcome of a clearing, tells staff when the characters were not
+// cleared or the server is down, and closes the switch. When the server could not be seen
+// starting again, the rotation stops in the same transaction that records the outcome.
+func (a *App) mapRotationWipeClose(bg context.Context, t repository.MapRotationTarget, sw repository.MapRotationSwitch, out charwipe.Outcome, res mapswitch.Result) {
+	note, halt := out.Note(), ""
+	if out.ServerDown {
+		halt = charwipe.ServerDownMessage
+	}
+	slog.Info("component=map_rotation", "event", "characters_cleared", "installation_id", t.InstallationID, "switch_id", sw.ID, "cleared", out.Cleared,
+		"stop_requested", out.StopRequested, "server_down", out.ServerDown, "restarts_sent", out.Restarts)
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		cctx, cancel := context.WithTimeout(bg, 15*time.Second)
+		err = a.MapRotation.CloseWipe(cctx, t.InstallationID, sw.ID, out.State(), note, out.Cleared, halt, time.Now().UTC())
+		cancel()
+		if err == nil {
+			break
+		}
+	}
+	if !out.Cleared || out.ServerDown {
+		a.mapRotationWipeAlert(t, sw.MapName, note, out.ServerDown)
+	}
+	if err != nil {
+		// The outcome is not stored. The switch stays as it is: if the server was stopped,
+		// mapRotationWipeRecover looks at it again on the next tick.
+		slog.Warn("component=map_rotation", "event", "wipe_close_failed", "installation_id", t.InstallationID, "switch_id", sw.ID, "err", err.Error())
+		if out.StopRequested {
+			return
+		}
+	}
+	res.Message = withWipeNote(res.Message, note)
+	if err := a.mapRotationFinish(bg, t, sw.ID, res); err != nil {
+		slog.Warn("component=map_rotation", "event", "switch_finish_failed", "installation_id", t.InstallationID, "switch_id", sw.ID, "err", err.Error())
+	}
+}
+
+// mapRotationWipeRecover finishes clearings a crash interrupted. For each it never stops the
+// server and never deletes: it makes sure the server is running and closes the switch. It does
+// not ask whether the rotation is still switched on, stopped or suspended: a server Champion
+// stopped is started again regardless.
+func (a *App) mapRotationWipeRecover(ctx context.Context, now time.Time) {
+	targets, err := a.MapRotation.WipesInProgress(ctx)
+	if err != nil {
+		if ctx.Err() == nil {
+			slog.Warn("component=map_rotation", "event", "wipe_list_failed", "err", err.Error())
+		}
+		return
+	}
+	for _, t := range targets {
+		if a.mapRotationWipeBusy(t.InstallationID) {
+			continue // this process is clearing them right now
+		}
+		t := t
+		a.mapRotationWipeRun(ctx, t, func(bg context.Context) { a.mapRotationWipeRecoverOne(bg, t, now) })
+	}
+}
+
+func (a *App) mapRotationWipeRecoverOne(bg context.Context, t repository.MapRotationTarget, now time.Time) {
+	lctx, cancel := context.WithTimeout(bg, 15*time.Second)
+	sw, err := a.MapRotation.PendingSwitch(lctx, t.InstallationID)
+	cancel()
+	if err != nil || sw == nil || !charwipe.InProgress(sw.WipeState) {
+		return
+	}
+	cleared := sw.CharactersCleared != nil && *sw.CharactersCleared
+	slog.Warn("component=map_rotation", "event", "wipe_resumed", "installation_id", t.InstallationID, "switch_id", sw.ID, "state", sw.WipeState)
+	var out charwipe.Outcome
+	remote, err := a.mapRotationRemote(bg, t)
+	switch {
+	case err == nil:
+		out = charwipe.Resume(bg, remote, t.NitradoServiceID, sw.WipeState, cleared, a.mapRotationWipeSave(t, sw.ID), a.mapRotationWipeCfg.opts)
+	case sw.WipeStateAt != nil && now.Sub(*sw.WipeStateAt) < mapRotationWipeGiveUp:
+		return // Nitrado cannot be asked right now: tried again on the next tick
+	default:
+		// Nobody could be asked for too long. Whether the server runs is unknown; a person must look.
+		out = charwipe.Outcome{Cleared: cleared, StopRequested: true, ServerDown: true}
+		if !cleared {
+			out.Reason = charwipe.ReasonInterrupted
+		}
+	}
+	a.mapRotationWipeClose(bg, t, *sw, out, mapswitch.Result{Status: mapswitch.StatusApplied, Message: mapRotationAppliedMessage})
+}
+
+// mapRotationWipeAlert tells staff (ADMIN_ALERTS) that the saved characters were not cleared, or,
+// critically, that the server was stopped and could not be started again.
+func (a *App) mapRotationWipeAlert(t repository.MapRotationTarget, mapName, note string, serverDown bool) {
+	alert := discord.AdminAlert{GuildRowID: t.GuildID, ServerID: t.ServerID, Kind: discord.AlertKindMapRotation, Severity: discord.AlertWarning,
+		Headline: "Saved characters not cleared", Detail: presentation.Truncate(note, 900),
+		Fields: [][2]string{{"Map", presentation.SafeName(mapName, 60)}}}
+	if serverDown {
+		alert.Severity = discord.AlertCritical
+		alert.Headline = "Server stopped and not started again"
+		alert.Fields = append(alert.Fields, [2]string{"Rotation", "Stopped until the settings are saved again"})
+	}
+	a.mapRotationPublish(alert)
+}
+
+func (a *App) mapRotationPublish(alert discord.AdminAlert) {
+	if a.mapRotationAlert != nil {
+		a.mapRotationAlert(alert)
+		return
+	}
+	if a.AdminAlerts != nil {
+		a.AdminAlerts.Publish(alert)
+	}
 }
 
 // --- Discord -------------------------------------------------------------------------------------------
@@ -424,13 +666,7 @@ func (a *App) mapRotationStaffAlert(t repository.MapRotationTarget, sw repositor
 		alert.Severity = discord.AlertCritical
 		alert.Fields = append(alert.Fields, [2]string{"Rotation", "Stopped until the settings are saved again"})
 	}
-	if a.mapRotationAlert != nil {
-		a.mapRotationAlert(alert)
-		return
-	}
-	if a.AdminAlerts != nil {
-		a.AdminAlerts.Publish(alert)
-	}
+	a.mapRotationPublish(alert)
 }
 
 func noMentions() *discordgo.MessageAllowedMentions {
