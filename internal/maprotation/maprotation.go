@@ -4,7 +4,9 @@
 // applied.
 //
 // Nothing in this package can write to a game server. It has no upload call; the only Nitrado
-// surface it uses is Reader, three read methods. The writes live in the sub-package mapswitch.
+// surface it uses is Reader, three read methods. The writes live in the sub-package mapswitch, and
+// clearing the saved characters after a switch (a stop, one delete and a start) in the sub-package
+// charwipe.
 package maprotation
 
 import (
@@ -49,6 +51,19 @@ const (
 	SpawnPointsFile = "cfgplayerspawnpoints.xml"
 	CustomDir       = "custom"
 )
+
+// Where DayZ keeps every character (position, health and what they carry) inside the mission
+// folder. With "fresh characters on every map switch" this one file is deleted after a switch;
+// nothing else in the storage folder (bases, vehicles, stored items) is ever touched.
+const (
+	StorageDir    = "storage_1"
+	PlayersDBFile = "players.db"
+)
+
+// WipeRestartWindow: clearing the characters makes Champion start the server itself a few minutes
+// before the scheduled restart. Every boot seen within this time after that start belongs to the
+// same restart: it is counted once.
+const WipeRestartWindow = 20 * time.Minute
 
 var (
 	ErrFileName = errors.New("a file name may only use letters, digits, dot, underscore and dash (1 to 80 characters), with no folder")
@@ -261,6 +276,40 @@ func RestartsUntilSwitch(every, sinceSwitch int) int {
 // FinalPeriod reports whether the next restart is the one that changes the map.
 func FinalPeriod(every, sinceSwitch int) bool { return RestartsUntilSwitch(every, sinceSwitch) == 1 }
 
+// RestartEffect is what a new boot means for the rotation.
+type RestartEffect string
+
+const (
+	// RestartActivate: the first boot after an applied switch. The switched map becomes the current
+	// map and the count starts again.
+	RestartActivate RestartEffect = "ACTIVATE"
+	// RestartCount: an ordinary restart, counted.
+	RestartCount RestartEffect = "COUNT"
+	// RestartSame: a further boot shortly after Champion's own restart (the one that follows
+	// clearing the characters). It is remembered as the current boot and begins the period, but it
+	// is not counted: together with the boot before it, it is one restart.
+	RestartSame RestartEffect = "SAME"
+)
+
+// InWipeWindow reports whether at lies within WipeRestartWindow after Champion's own restart.
+// With no such restart (the zero time) it is always false.
+func InWipeWindow(wipeRestartAt, at time.Time) bool {
+	return !wipeRestartAt.IsZero() && !at.Before(wipeRestartAt) && at.Sub(wipeRestartAt) <= WipeRestartWindow
+}
+
+// ClassifyRestart decides what a new boot means. awaiting: a switch was applied and its map is not
+// active yet. wipeRestartAt: when Champion last started the server after clearing characters (zero
+// when it never did, which makes this exactly the rule without that option: activate or count).
+func ClassifyRestart(awaiting bool, wipeRestartAt, bootAt time.Time) RestartEffect {
+	switch {
+	case awaiting:
+		return RestartActivate
+	case InWipeWindow(wipeRestartAt, bootAt):
+		return RestartSame
+	}
+	return RestartCount
+}
+
 // --- timing ------------------------------------------------------------------------------------
 
 // VoteWindow is when a vote opens and closes in the final period. With a known scheduled restart
@@ -303,6 +352,11 @@ type State struct {
 	StaffNextMapID      int64
 	VoteOpen            bool
 	VoteClosesAt        time.Time
+	// AwaitingActivation: a switch was applied and the restart that loads it has not been seen.
+	AwaitingActivation bool
+	// WipeRestartAt is when Champion last started the server itself after clearing the characters
+	// (zero: never, or the option is off).
+	WipeRestartAt time.Time
 }
 
 // Observation is what a tick sees of the server.
@@ -332,6 +386,9 @@ type Step struct {
 	Options   []Map
 	Map       Map
 	DecidedBy string
+	// Restart is set on a StepRestart: whether the boot activates a switch, is counted, or belongs
+	// to the restart already seen.
+	Restart RestartEffect
 }
 
 // Plan decides the next step. It is a pure function: the same inputs always give the same step
@@ -344,7 +401,17 @@ func Plan(cfg Settings, st State, maps []Map, obs Observation, now time.Time, pi
 		return Step{Kind: StepBaseline}
 	}
 	if obs.BootFile != st.LastBootFile {
-		return Step{Kind: StepRestart}
+		bootAt := obs.BootAt
+		if bootAt.IsZero() {
+			bootAt = now
+		}
+		return Step{Kind: StepRestart, Restart: ClassifyRestart(st.AwaitingActivation, st.WipeRestartAt, bootAt)}
+	}
+	if InWipeWindow(st.WipeRestartAt, now) {
+		// Champion has just started the server itself and the scheduled restart is still to come.
+		// Nothing is decided, voted on or written until the window is over, so the short time
+		// between the two boots never becomes a period of its own.
+		return Step{Kind: StepNone}
 	}
 	if len(Enabled(maps)) < MinEnabledMaps || !FinalPeriod(cfg.EveryRestarts, st.RestartsSinceSwitch) {
 		return Step{Kind: StepNone}

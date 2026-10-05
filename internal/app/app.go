@@ -76,6 +76,8 @@ type App struct {
 	mapRotationPost      func(t repository.MapRotationTarget, channelID string, msg *discordgo.MessageSend) error
 	mapRotationAlert     func(alert discord.AdminAlert)
 	mapRotationRestarts  mapRotationRestartCache
+	mapRotationWiping    sync.Map // installations whose saved characters are being cleared right now
+	mapRotationWipeCfg   mapRotationWipeConfig
 	upgradeRuns          upgradeThrottle
 	rankedTagsCache      rankedTagCache
 	forecasts            forecastCache

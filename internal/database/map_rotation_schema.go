@@ -130,3 +130,19 @@ const MapRotationSpawnUploadSQL = `
 ALTER TABLE map_rotation_maps ADD COLUMN IF NOT EXISTS spawn_xml BYTEA;
 ALTER TABLE map_rotation_switches ADD COLUMN IF NOT EXISTS spawn_xml BYTEA;
 `
+
+// MapRotationWipeCharactersSQL adds "fresh characters on every map switch" (docs/MAP_ROTATION.md).
+// map_rotation_settings.wipe_characters is the owner's option (off unless switched on) and
+// wipe_restart_at the time Champion last started a server again after clearing characters, which
+// the restart count uses. On a switch, wipe_state is how far clearing the characters got (NONE,
+// STOP_REQUESTED, DELETED, START_REQUESTED, DONE, FAILED) with its time, wipe_note the outcome in
+// plain language and characters_cleared whether the saved characters were removed (NULL: not
+// attempted). Additive.
+const MapRotationWipeCharactersSQL = `
+ALTER TABLE map_rotation_settings ADD COLUMN IF NOT EXISTS wipe_characters BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE map_rotation_settings ADD COLUMN IF NOT EXISTS wipe_restart_at TIMESTAMPTZ;
+ALTER TABLE map_rotation_switches ADD COLUMN IF NOT EXISTS wipe_state TEXT NOT NULL DEFAULT 'NONE';
+ALTER TABLE map_rotation_switches ADD COLUMN IF NOT EXISTS wipe_state_at TIMESTAMPTZ;
+ALTER TABLE map_rotation_switches ADD COLUMN IF NOT EXISTS wipe_note TEXT NOT NULL DEFAULT '';
+ALTER TABLE map_rotation_switches ADD COLUMN IF NOT EXISTS characters_cleared BOOLEAN;
+`

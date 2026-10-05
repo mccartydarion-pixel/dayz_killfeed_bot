@@ -286,6 +286,10 @@ func TestReaderIsReadOnly(t *testing.T) {
 	// (docs/SHOP_GATE_A_UPLOAD.md). They are not part of Reader, and only internal/shop/missionwrite
 	// may call them (missionwrite.TestWriteCapabilityIsIsolated). Any other write method fails here.
 	reviewedWrites := map[string]bool{"RequestUploadToken": true, "PostUpload": true, "Mkdir": true}
+	// One more reviewed file-server call: DeleteFile, for "fresh characters on every map switch"
+	// (docs/MAP_ROTATION.md). Only internal/maprotation/charwipe may call it, and that package can
+	// delete exactly one file, storage_1/players.db (the same isolation test enforces the caller).
+	reviewedWrites["DeleteFile"] = true
 	ct := reflect.TypeOf(&nitrado.Client{})
 	for i := 0; i < ct.NumMethod(); i++ {
 		// (Non-file control calls such as ban-list edits and restarts exist for Client Admin; they are

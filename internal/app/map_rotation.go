@@ -41,13 +41,18 @@ func init() {
 }
 
 // mapRotationRemote is the Nitrado surface map rotation uses: the reads the file check needs, the
-// scheduled tasks (for the next restart) and the two write primitives, which only
-// internal/maprotation/mapswitch ever calls. *nitrado.Client satisfies it.
+// scheduled tasks (for the next restart), the two write primitives, which only
+// internal/maprotation/mapswitch ever calls, and what clearing the saved characters needs (stop,
+// restart and the delete of players.db), which only internal/maprotation/charwipe ever calls.
+// *nitrado.Client satisfies it.
 type mapRotationRemote interface {
 	maprotation.Reader
 	ListScheduledTasks(ctx context.Context, serviceID string) ([]nitrado.ScheduledTask, error)
 	RequestUploadToken(ctx context.Context, serviceID, dir, name string) (nitrado.UploadTarget, error)
 	PostUpload(ctx context.Context, t nitrado.UploadTarget, data []byte) error
+	Stop(ctx context.Context, serviceID, message string) error
+	Restart(ctx context.Context, serviceID, message string) error
+	DeleteFile(ctx context.Context, serviceID, path string) error
 }
 
 func (a *App) registerMapRotationRoutes(adminBase string) {
@@ -157,12 +162,16 @@ type mapNextDTO struct {
 	RestartsUntilSwitch *int    `json:"restartsUntilSwitch"`
 }
 
+// mapLastSwitchDTO is the newest finished switch. charactersCleared is null when clearing the
+// saved characters was not attempted (the option was off, or the switch did not succeed), else
+// whether they were cleared; the message says why not.
 type mapLastSwitchDTO struct {
-	At      string  `json:"at"`
-	MapID   *int64  `json:"mapId"`
-	Name    *string `json:"name"`
-	OK      bool    `json:"ok"`
-	Message string  `json:"message"`
+	At                string  `json:"at"`
+	MapID             *int64  `json:"mapId"`
+	Name              *string `json:"name"`
+	OK                bool    `json:"ok"`
+	Message           string  `json:"message"`
+	CharactersCleared *bool   `json:"charactersCleared"`
 }
 
 type mapFilesCheckDTO struct {
@@ -182,6 +191,7 @@ type mapRotationAdminDTO struct {
 	VoteMinutesBeforeRestart int                `json:"voteMinutesBeforeRestart"`
 	PingEveryone             bool               `json:"pingEveryone"`
 	AnnounceChannelID        *string            `json:"announceChannelId"`
+	WipeCharacters           bool               `json:"wipeCharacters"`
 	Maps                     []mapEntryDTO      `json:"maps"`
 	Current                  mapCurrentDTO      `json:"current"`
 	Next                     mapNextDTO         `json:"next"`
@@ -268,7 +278,7 @@ func toMapRotationAdminDTO(snap repository.MapRotationSnapshot, reason string, n
 	s := snap.Settings
 	out := mapRotationAdminDTO{
 		Available: reason == "", Enabled: s.Enabled, EveryRestarts: s.EveryRestarts, Order: s.Order, VoteEnabled: s.VoteEnabled,
-		VoteMinutesBeforeRestart: s.VoteMinutes, PingEveryone: s.PingEveryone, AnnounceChannelID: s.AnnounceChannelID,
+		VoteMinutesBeforeRestart: s.VoteMinutes, PingEveryone: s.PingEveryone, AnnounceChannelID: s.AnnounceChannelID, WipeCharacters: s.WipeCharacters,
 		Maps: make([]mapEntryDTO, 0, len(snap.Maps)), FilesCheck: []mapFilesCheckDTO{}, Vote: toMapVoteDTO(snap.Vote),
 	}
 	if reason != "" {
@@ -308,9 +318,13 @@ func toMapRotationAdminDTO(snap repository.MapRotationSnapshot, reason string, n
 			at = *sw.FinishedAt
 		}
 		name := sw.MapName
-		out.LastSwitch = &mapLastSwitchDTO{At: rfc3339(at), MapID: sw.MapID, Name: &name, OK: sw.Status == repository.MapSwitchApplied, Message: sw.Message}
+		out.LastSwitch = &mapLastSwitchDTO{At: rfc3339(at), MapID: sw.MapID, Name: &name, OK: sw.Status == repository.MapSwitchApplied, Message: sw.Message,
+			CharactersCleared: sw.CharactersCleared}
 	}
-	if s.HaltedReason != "" && out.LastSwitch != nil && !out.LastSwitch.OK && !strings.Contains(out.LastSwitch.Message, "rotation is stopped") {
+	// A stop of the rotation is said with the switch that caused it: a failed switch, or a switch
+	// after which the server could not be started again (the rotation's stop reason is then part of
+	// the switch's message).
+	if s.HaltedReason != "" && out.LastSwitch != nil && (!out.LastSwitch.OK || strings.Contains(out.LastSwitch.Message, s.HaltedReason)) && !strings.Contains(out.LastSwitch.Message, "rotation is stopped") {
 		out.LastSwitch.Message += " The rotation is stopped until you save the settings again."
 	}
 	return out
@@ -412,13 +426,14 @@ type mapRotationBody struct {
 	VoteMinutesBeforeRestart int                   `json:"voteMinutesBeforeRestart"`
 	PingEveryone             bool                  `json:"pingEveryone"`
 	AnnounceChannelID        *string               `json:"announceChannelId"`
+	WipeCharacters           bool                  `json:"wipeCharacters"` // left out means off
 	Maps                     *[]mapRotationMapBody `json:"maps"`
 }
 
 // validateMapRotationBody turns the request into a save, or says in plain words what is wrong.
 func validateMapRotationBody(b mapRotationBody) (repository.MapRotationInput, string) {
 	in := repository.MapRotationInput{Enabled: b.Enabled, EveryRestarts: b.EveryRestarts, Order: strings.ToUpper(strings.TrimSpace(b.Order)),
-		VoteEnabled: b.VoteEnabled, VoteMinutes: b.VoteMinutesBeforeRestart, PingEveryone: b.PingEveryone}
+		VoteEnabled: b.VoteEnabled, VoteMinutes: b.VoteMinutesBeforeRestart, PingEveryone: b.PingEveryone, WipeCharacters: b.WipeCharacters}
 	if in.EveryRestarts < 1 || in.EveryRestarts > 3 {
 		return in, "everyRestarts must be 1, 2 or 3"
 	}

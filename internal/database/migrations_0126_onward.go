@@ -9,4 +9,11 @@ var migrations0126onward = []Migration{
 		Name: "0126_interactive_read_indexes",
 		SQL:  InteractiveReadIndexesSQL,
 	},
+	{
+		// Map rotation: fresh characters on every map switch (docs/MAP_ROTATION.md). One owner
+		// option (default off), the time of Champion's own restart, and the progress and outcome of
+		// clearing the characters on a switch. Additive.
+		Name: "0127_map_rotation_wipe_characters",
+		SQL:  MapRotationWipeCharactersSQL,
+	},
 }
