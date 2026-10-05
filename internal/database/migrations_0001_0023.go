@@ -1,0 +1,705 @@
+package database
+
+// migrations0001to0023 holds migrations 0001 through 0023, in execution order. It is one fragment of the
+// registry assembled in migrations.go; never edit an applied migration.
+var migrations0001to0023 = []Migration{
+	{
+		Name: "0001_init",
+		SQL: `
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    name TEXT PRIMARY KEY,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS guilds (
+    id BIGSERIAL PRIMARY KEY,
+    discord_guild_id TEXT UNIQUE NOT NULL,
+    category_id TEXT,
+    server_status_channel_id TEXT,
+    killfeed_channel_id TEXT,
+    online_players_channel_id TEXT,
+    leaderboards_channel_id TEXT,
+    player_stats_channel_id TEXT,
+    server_status_message_id TEXT,
+    online_players_message_id TEXT,
+    nitrado_service_id TEXT,
+    setup_complete BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS players (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    dayz_player_id TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(guild_id, dayz_player_id)
+);
+CREATE INDEX IF NOT EXISTS idx_players_guild_name ON players(guild_id, display_name);
+
+CREATE TABLE IF NOT EXISTS kills (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    session_id TEXT NOT NULL,
+    event_fingerprint TEXT NOT NULL,
+    killer_player_id BIGINT REFERENCES players(id) ON DELETE SET NULL,
+    victim_player_id BIGINT REFERENCES players(id) ON DELETE SET NULL,
+    weapon_raw TEXT,
+    weapon_display TEXT,
+    distance DOUBLE PRECISION,
+    headshot BOOLEAN NOT NULL DEFAULT FALSE,
+    kill_style TEXT,
+    event_time TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(guild_id, event_fingerprint)
+);
+CREATE INDEX IF NOT EXISTS idx_kills_killer ON kills(guild_id, killer_player_id);
+CREATE INDEX IF NOT EXISTS idx_kills_victim ON kills(guild_id, victim_player_id);
+CREATE INDEX IF NOT EXISTS idx_kills_distance ON kills(guild_id, distance DESC);
+CREATE INDEX IF NOT EXISTS idx_kills_created ON kills(guild_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS deaths (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    session_id TEXT NOT NULL,
+    event_fingerprint TEXT NOT NULL,
+    player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    death_type TEXT NOT NULL,
+    event_time TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(guild_id, event_fingerprint)
+);
+CREATE INDEX IF NOT EXISTS idx_deaths_player ON deaths(guild_id, player_id);
+
+CREATE TABLE IF NOT EXISTS adm_sessions (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    session_id TEXT NOT NULL,
+    adm_filename TEXT NOT NULL,
+    started_at TIMESTAMPTZ,
+    detected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ended_at TIMESTAMPTZ,
+    UNIQUE(guild_id, session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_adm_sessions_detected ON adm_sessions(guild_id, detected_at DESC);
+
+CREATE TABLE IF NOT EXISTS adm_checkpoints (
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    session_id TEXT NOT NULL,
+    adm_filename TEXT NOT NULL,
+    byte_offset BIGINT NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(guild_id, session_id)
+);
+`,
+	},
+	{
+		Name: "0002_welcome_and_links",
+		SQL: `
+ALTER TABLE guilds ADD COLUMN IF NOT EXISTS welcome_enabled BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE guilds ADD COLUMN IF NOT EXISTS welcome_channel_id TEXT;
+
+CREATE TABLE IF NOT EXISTS player_links (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    discord_user_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    requested_username TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    verified_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(guild_id, discord_user_id),
+    UNIQUE(guild_id, player_id)
+);
+CREATE INDEX IF NOT EXISTS idx_player_links_discord ON player_links(guild_id, discord_user_id);
+
+CREATE TABLE IF NOT EXISTS link_verifications (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    discord_user_id TEXT NOT NULL,
+    player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    challenge_hash TEXT NOT NULL,
+    status TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    verified_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_link_verifications_expiry ON link_verifications(guild_id, expires_at);
+`,
+	},
+	{
+		Name: "0003_phase41_panels_records",
+		SQL: `
+ALTER TABLE guilds ADD COLUMN IF NOT EXISTS leaderboard_message_id TEXT;
+ALTER TABLE guilds ADD COLUMN IF NOT EXISTS player_stats_info_message_id TEXT;
+
+CREATE TABLE IF NOT EXISTS server_records (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    record_type TEXT NOT NULL,
+    player_id BIGINT REFERENCES players(id) ON DELETE SET NULL,
+    kill_id BIGINT REFERENCES kills(id) ON DELETE SET NULL,
+    numeric_value DOUBLE PRECISION,
+    text_value TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(guild_id, record_type)
+);
+`,
+	},
+	{
+		Name: "0004_phase42_streaks_achievements",
+		SQL: `
+CREATE TABLE IF NOT EXISTS player_combat_stats (
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    current_streak INTEGER NOT NULL DEFAULT 0,
+    best_streak INTEGER NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY(guild_id, player_id)
+);
+
+CREATE TABLE IF NOT EXISTS player_session_stats (
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    session_id TEXT NOT NULL,
+    player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    kills BIGINT NOT NULL DEFAULT 0,
+    deaths BIGINT NOT NULL DEFAULT 0,
+    best_streak INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(guild_id, session_id, player_id)
+);
+
+CREATE TABLE IF NOT EXISTS achievements (
+    key TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL,
+    emoji TEXT NOT NULL,
+    hidden BOOLEAN NOT NULL DEFAULT FALSE
+);
+
+CREATE TABLE IF NOT EXISTS player_achievements (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    achievement_key TEXT NOT NULL REFERENCES achievements(key),
+    unlocked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    source_kill_id BIGINT REFERENCES kills(id) ON DELETE SET NULL,
+    UNIQUE(guild_id, player_id, achievement_key)
+);
+CREATE INDEX IF NOT EXISTS idx_player_achievements_player ON player_achievements(guild_id, player_id);
+
+CREATE TABLE IF NOT EXISTS record_events (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    record_type TEXT NOT NULL,
+    player_id BIGINT REFERENCES players(id) ON DELETE SET NULL,
+    kill_id BIGINT REFERENCES kills(id) ON DELETE SET NULL,
+    old_value DOUBLE PRECISION,
+    new_value DOUBLE PRECISION NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+`,
+	},
+	{
+		Name: "0005_phase43_factions",
+		SQL: `
+CREATE TABLE IF NOT EXISTS factions (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    tag TEXT NOT NULL,
+    owner_player_id BIGINT NOT NULL REFERENCES players(id),
+    discord_role_id TEXT,
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_factions_guild_name ON factions(guild_id, LOWER(name));
+CREATE UNIQUE INDEX IF NOT EXISTS uq_factions_guild_tag ON factions(guild_id, LOWER(tag));
+CREATE INDEX IF NOT EXISTS idx_factions_active ON factions(guild_id, active);
+
+CREATE TABLE IF NOT EXISTS faction_members (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    faction_id BIGINT NOT NULL REFERENCES factions(id) ON DELETE CASCADE,
+    player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    role TEXT NOT NULL,
+    joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    active BOOLEAN NOT NULL DEFAULT TRUE
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_active_faction_player ON faction_members(guild_id, player_id) WHERE active;
+CREATE INDEX IF NOT EXISTS idx_faction_members_faction ON faction_members(faction_id, active);
+
+CREATE TABLE IF NOT EXISTS faction_invites (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    faction_id BIGINT NOT NULL REFERENCES factions(id) ON DELETE CASCADE,
+    player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    invited_by_player_id BIGINT NOT NULL REFERENCES players(id),
+    status TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_pending_faction_invite ON faction_invites(guild_id, faction_id, player_id) WHERE status='PENDING';
+CREATE INDEX IF NOT EXISTS idx_faction_invites_player ON faction_invites(guild_id, player_id, status);
+
+CREATE TABLE IF NOT EXISTS faction_membership_history (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    faction_id BIGINT NOT NULL REFERENCES factions(id) ON DELETE CASCADE,
+    player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    role TEXT NOT NULL,
+    joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    left_at TIMESTAMPTZ
+);
+
+ALTER TABLE kills ADD COLUMN IF NOT EXISTS killer_faction_id BIGINT REFERENCES factions(id) ON DELETE SET NULL;
+ALTER TABLE kills ADD COLUMN IF NOT EXISTS victim_faction_id BIGINT REFERENCES factions(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_kills_killer_faction ON kills(guild_id, killer_faction_id);
+CREATE INDEX IF NOT EXISTS idx_kills_victim_faction ON kills(guild_id, victim_faction_id);
+CREATE INDEX IF NOT EXISTS idx_kills_faction_pair ON kills(guild_id, killer_faction_id, victim_faction_id);
+`,
+	},
+	{
+		Name: "0006_phase44_seasons_wars",
+		SQL: `
+CREATE TABLE IF NOT EXISTS seasons (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    starts_at TIMESTAMPTZ NOT NULL,
+    ends_at TIMESTAMPTZ,
+    status TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_active_season_per_guild ON seasons(guild_id) WHERE status='ACTIVE';
+CREATE INDEX IF NOT EXISTS idx_seasons_guild_status ON seasons(guild_id,status);
+
+CREATE TABLE IF NOT EXISTS faction_wars (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    season_id BIGINT REFERENCES seasons(id) ON DELETE SET NULL,
+    faction_a_id BIGINT NOT NULL REFERENCES factions(id),
+    faction_b_id BIGINT NOT NULL REFERENCES factions(id),
+    status TEXT NOT NULL,
+    started_at TIMESTAMPTZ,
+    ended_at TIMESTAMPTZ,
+    created_by_player_id BIGINT REFERENCES players(id),
+    faction_a_score BIGINT NOT NULL DEFAULT 0,
+    faction_b_score BIGINT NOT NULL DEFAULT 0,
+    winner_faction_id BIGINT REFERENCES factions(id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CHECK(faction_a_id < faction_b_id),
+    CHECK(faction_a_id <> faction_b_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_active_war_pair ON faction_wars(guild_id,faction_a_id,faction_b_id) WHERE status='ACTIVE';
+CREATE INDEX IF NOT EXISTS idx_faction_wars_status ON faction_wars(guild_id,status);
+
+CREATE TABLE IF NOT EXISTS faction_rivalries (
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    faction_a_id BIGINT NOT NULL REFERENCES factions(id),
+    faction_b_id BIGINT NOT NULL REFERENCES factions(id),
+    total_a_kills BIGINT NOT NULL DEFAULT 0,
+    total_b_kills BIGINT NOT NULL DEFAULT 0,
+    war_count BIGINT NOT NULL DEFAULT 0,
+    last_fought_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY(guild_id,faction_a_id,faction_b_id),
+    CHECK(faction_a_id < faction_b_id)
+);
+
+CREATE TABLE IF NOT EXISTS season_results (
+    season_id BIGINT PRIMARY KEY REFERENCES seasons(id) ON DELETE CASCADE,
+    top_player_id BIGINT REFERENCES players(id),
+    top_faction_id BIGINT REFERENCES factions(id),
+    top_player_kills BIGINT,
+    top_faction_kills BIGINT,
+    longest_kill_player_id BIGINT REFERENCES players(id),
+    longest_kill_value DOUBLE PRECISION,
+    best_streak_player_id BIGINT REFERENCES players(id),
+    best_streak_value INTEGER,
+    finalized_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE kills ADD COLUMN IF NOT EXISTS season_id BIGINT REFERENCES seasons(id) ON DELETE SET NULL;
+ALTER TABLE kills ADD COLUMN IF NOT EXISTS war_id BIGINT REFERENCES faction_wars(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_kills_guild_season_killer ON kills(guild_id,season_id,killer_player_id);
+CREATE INDEX IF NOT EXISTS idx_kills_guild_season_faction ON kills(guild_id,season_id,killer_faction_id);
+CREATE INDEX IF NOT EXISTS idx_kills_guild_war ON kills(guild_id,war_id);
+`,
+	},
+	{
+		Name: "0007_phase45_events_bounties_points",
+		SQL: `
+CREATE TABLE IF NOT EXISTS competitive_events (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    season_id BIGINT REFERENCES seasons(id) ON DELETE SET NULL,
+    event_type TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT,
+    status TEXT NOT NULL,
+    starts_at TIMESTAMPTZ,
+    ends_at TIMESTAMPTZ,
+    created_by_discord_user_id TEXT,
+    config JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_competitive_events_guild_status ON competitive_events(guild_id,status);
+CREATE INDEX IF NOT EXISTS idx_competitive_events_starts ON competitive_events(guild_id,starts_at);
+CREATE INDEX IF NOT EXISTS idx_competitive_events_ends ON competitive_events(guild_id,ends_at);
+
+CREATE TABLE IF NOT EXISTS event_scores (
+    id BIGSERIAL PRIMARY KEY,
+    event_id BIGINT NOT NULL REFERENCES competitive_events(id) ON DELETE CASCADE,
+    player_id BIGINT REFERENCES players(id) ON DELETE CASCADE,
+    faction_id BIGINT REFERENCES factions(id) ON DELETE CASCADE,
+    score DOUBLE PRECISION NOT NULL DEFAULT 0,
+    kills BIGINT NOT NULL DEFAULT 0,
+    best_distance DOUBLE PRECISION,
+    best_streak INTEGER,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CHECK ((player_id IS NOT NULL) <> (faction_id IS NOT NULL))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_event_player_score ON event_scores(event_id,player_id) WHERE player_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_event_faction_score ON event_scores(event_id,faction_id) WHERE faction_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_event_scores_rank ON event_scores(event_id,score DESC);
+
+CREATE TABLE IF NOT EXISTS event_kills (
+    event_id BIGINT NOT NULL REFERENCES competitive_events(id) ON DELETE CASCADE,
+    kill_id BIGINT NOT NULL REFERENCES kills(id) ON DELETE CASCADE,
+    points DOUBLE PRECISION NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY(event_id,kill_id)
+);
+CREATE INDEX IF NOT EXISTS idx_event_kills_event ON event_kills(event_id,kill_id);
+
+CREATE TABLE IF NOT EXISTS event_results (
+    event_id BIGINT PRIMARY KEY REFERENCES competitive_events(id) ON DELETE CASCADE,
+    winner_player_id BIGINT REFERENCES players(id) ON DELETE SET NULL,
+    winner_faction_id BIGINT REFERENCES factions(id) ON DELETE SET NULL,
+    winning_score DOUBLE PRECISION NOT NULL,
+    runner_up_player_id BIGINT REFERENCES players(id) ON DELETE SET NULL,
+    runner_up_faction_id BIGINT REFERENCES factions(id) ON DELETE SET NULL,
+    finalized_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    metadata JSONB NOT NULL DEFAULT '{}'
+);
+CREATE TABLE IF NOT EXISTS player_event_results (
+    event_id BIGINT NOT NULL REFERENCES competitive_events(id) ON DELETE CASCADE,
+    player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    placement INTEGER NOT NULL,
+    score DOUBLE PRECISION NOT NULL,
+    reward_points INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY(event_id,player_id)
+);
+CREATE TABLE IF NOT EXISTS faction_event_results (
+    event_id BIGINT NOT NULL REFERENCES competitive_events(id) ON DELETE CASCADE,
+    faction_id BIGINT NOT NULL REFERENCES factions(id) ON DELETE CASCADE,
+    placement INTEGER NOT NULL,
+    score DOUBLE PRECISION NOT NULL,
+    reward_points INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY(event_id,faction_id)
+);
+
+CREATE TABLE IF NOT EXISTS bounties (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    season_id BIGINT REFERENCES seasons(id) ON DELETE SET NULL,
+    target_player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    created_by_type TEXT NOT NULL,
+    created_by_discord_user_id TEXT,
+    status TEXT NOT NULL,
+    reward_points INTEGER NOT NULL CHECK (reward_points > 0),
+    reason TEXT,
+    starts_at TIMESTAMPTZ NOT NULL,
+    expires_at TIMESTAMPTZ,
+    claimed_by_player_id BIGINT REFERENCES players(id) ON DELETE SET NULL,
+    claimed_kill_id BIGINT REFERENCES kills(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    claimed_at TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_active_bounty_target ON bounties(guild_id,target_player_id) WHERE status='ACTIVE';
+CREATE INDEX IF NOT EXISTS idx_bounties_status ON bounties(guild_id,status);
+CREATE INDEX IF NOT EXISTS idx_bounties_target_status ON bounties(guild_id,target_player_id,status);
+CREATE INDEX IF NOT EXISTS idx_bounties_expiry ON bounties(expires_at);
+
+CREATE TABLE IF NOT EXISTS player_points (
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    lifetime_points BIGINT NOT NULL DEFAULT 0,
+    season_points BIGINT NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY(guild_id,player_id)
+);
+CREATE TABLE IF NOT EXISTS point_transactions (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    season_id BIGINT REFERENCES seasons(id) ON DELETE SET NULL,
+    player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    amount INTEGER NOT NULL,
+    reason_type TEXT NOT NULL,
+    source_id BIGINT,
+    source_key TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(guild_id,player_id,reason_type,source_key)
+);
+CREATE INDEX IF NOT EXISTS idx_point_transactions_player ON point_transactions(guild_id,player_id);
+CREATE INDEX IF NOT EXISTS idx_point_transactions_season ON point_transactions(guild_id,season_id);
+
+CREATE TABLE IF NOT EXISTS combat_pair_activity (
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    killer_player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    victim_player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    kill_count BIGINT NOT NULL DEFAULT 0,
+    first_kill_at TIMESTAMPTZ,
+    last_kill_at TIMESTAMPTZ,
+    suspicious BOOLEAN NOT NULL DEFAULT FALSE,
+    PRIMARY KEY(guild_id,killer_player_id,victim_player_id)
+);
+`,
+	},
+	{
+		Name: "0008_phase44_death_season_snapshots",
+		SQL: `
+ALTER TABLE deaths ADD COLUMN IF NOT EXISTS season_id BIGINT REFERENCES seasons(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_deaths_guild_season_player ON deaths(guild_id,season_id,player_id);
+`,
+	},
+	{
+		Name: "0009_phase45_combat_anomaly_flags",
+		SQL: `
+CREATE TABLE IF NOT EXISTS combat_anomaly_flags (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    season_id BIGINT REFERENCES seasons(id) ON DELETE SET NULL,
+    killer_player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    victim_player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    flag_type TEXT NOT NULL,
+    occurrences BIGINT NOT NULL DEFAULT 1,
+    window_started_at TIMESTAMPTZ NOT NULL,
+    window_ended_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_combat_anomaly_guild_created ON combat_anomaly_flags(guild_id,created_at DESC);
+`,
+	},
+	{
+		Name: "0010_phase44_45_completion_rewards",
+		SQL: `
+ALTER TABLE season_results ADD COLUMN IF NOT EXISTS completion_announced_at TIMESTAMPTZ;
+ALTER TABLE faction_wars ADD COLUMN IF NOT EXISTS completion_announced_at TIMESTAMPTZ;
+ALTER TABLE event_results ADD COLUMN IF NOT EXISTS completion_announced_at TIMESTAMPTZ;
+ALTER TABLE competitive_events ADD COLUMN IF NOT EXISTS winner_points INTEGER NOT NULL DEFAULT 1000;
+ALTER TABLE competitive_events ADD COLUMN IF NOT EXISTS second_place_points INTEGER NOT NULL DEFAULT 500;
+ALTER TABLE competitive_events ADD COLUMN IF NOT EXISTS third_place_points INTEGER NOT NULL DEFAULT 250;
+`,
+	},
+	{
+		Name: "0011_phase45_announcement_claims",
+		SQL: `
+CREATE TABLE IF NOT EXISTS completion_announcements (
+    kind TEXT NOT NULL,
+    object_id BIGINT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'PENDING',
+    claimed_at TIMESTAMPTZ,
+    announced_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY(kind,object_id),
+    CHECK(status IN ('PENDING','CLAIMED','ANNOUNCED'))
+);
+CREATE INDEX IF NOT EXISTS idx_completion_announcements_retry ON completion_announcements(status,claimed_at);
+`,
+	},
+	{
+		Name: "0012_phase48_multitenant_servers_credentials",
+		SQL: `
+CREATE TABLE IF NOT EXISTS game_servers (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL,
+    provider_service_id TEXT NOT NULL,
+    game TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    display_name TEXT,
+    status TEXT NOT NULL,
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(guild_id,provider,provider_service_id)
+);
+CREATE INDEX IF NOT EXISTS idx_game_servers_guild_active ON game_servers(guild_id,active);
+
+CREATE TABLE IF NOT EXISTS nitrado_connections (
+    id BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    credential_ciphertext BYTEA NOT NULL,
+    credential_nonce BYTEA NOT NULL,
+    credential_key_version INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    last_validated_at TIMESTAMPTZ,
+    last_success_at TIMESTAMPTZ,
+    last_failure_at TIMESTAMPTZ,
+    last_error_class TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(guild_id)
+);
+
+CREATE TABLE IF NOT EXISTS server_configs (
+    server_id BIGINT PRIMARY KEY REFERENCES game_servers(id) ON DELETE CASCADE,
+    adm_poll_interval_ms INTEGER NOT NULL DEFAULT 2000 CHECK(adm_poll_interval_ms >= 1000),
+    directory_rescan_interval_seconds INTEGER NOT NULL DEFAULT 45,
+    startup_mode TEXT NOT NULL DEFAULT 'tail',
+    publish_pvp_kills BOOLEAN NOT NULL DEFAULT TRUE,
+    publish_suicides BOOLEAN NOT NULL DEFAULT FALSE,
+    publish_unknown_deaths BOOLEAN NOT NULL DEFAULT FALSE,
+    online_counter_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    killfeed_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    analytics_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+`,
+	},
+	{
+		Name: "0013_phase48_welcome_configuration",
+		SQL: `
+CREATE TABLE IF NOT EXISTS guild_welcome_configs (
+    guild_id BIGINT PRIMARY KEY REFERENCES guilds(id) ON DELETE CASCADE,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    channel_id TEXT,
+    message_text TEXT,
+    title_text TEXT,
+    footer_text TEXT,
+    image_url TEXT,
+    thumbnail_url TEXT,
+    color INTEGER,
+    mention_user BOOLEAN NOT NULL DEFAULT TRUE,
+    welcome_bots BOOLEAN NOT NULL DEFAULT FALSE,
+    show_member_count BOOLEAN NOT NULL DEFAULT TRUE,
+    show_server_name BOOLEAN NOT NULL DEFAULT TRUE,
+    show_link_instructions BOOLEAN NOT NULL DEFAULT TRUE,
+    last_welcome_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+INSERT INTO guild_welcome_configs(guild_id,channel_id)
+SELECT id,welcome_channel_id FROM guilds WHERE welcome_channel_id IS NOT NULL
+ON CONFLICT(guild_id) DO NOTHING;
+`,
+	},
+	{
+		Name: "0014_link_observed_server_playtime",
+		SQL: `
+CREATE TABLE IF NOT EXISTS player_server_activity (
+    guild_id BIGINT NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+    server_id BIGINT NOT NULL REFERENCES game_servers(id) ON DELETE CASCADE,
+    player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    total_observed_seconds BIGINT NOT NULL DEFAULT 0,
+    current_session_started_at TIMESTAMPTZ,
+    currently_connected BOOLEAN NOT NULL DEFAULT FALSE,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY(guild_id,server_id,player_id)
+);
+CREATE INDEX IF NOT EXISTS idx_player_server_activity_lookup ON player_server_activity(guild_id,server_id,last_seen_at);
+`,
+	},
+	{
+		Name: "0015_link_activity_observation_checkpoints",
+		SQL: `
+ALTER TABLE player_server_activity ADD COLUMN IF NOT EXISTS last_observed_at TIMESTAMPTZ;
+UPDATE player_server_activity SET last_observed_at=COALESCE(last_observed_at,last_seen_at) WHERE currently_connected;
+`,
+	},
+	{
+		Name: "0016_server_context_backfill",
+		SQL: `
+INSERT INTO game_servers(guild_id,provider,provider_service_id,game,platform,display_name,status,active)
+SELECT id,'NITRADO',nitrado_service_id,'DAYZ','PLAYSTATION','Legacy DayZ Server','CONNECTED',TRUE
+FROM guilds WHERE COALESCE(nitrado_service_id,'')<>''
+ON CONFLICT(guild_id,provider,provider_service_id) DO NOTHING;
+ALTER TABLE kills ADD COLUMN IF NOT EXISTS server_id BIGINT REFERENCES game_servers(id) ON DELETE SET NULL;
+ALTER TABLE deaths ADD COLUMN IF NOT EXISTS server_id BIGINT REFERENCES game_servers(id) ON DELETE SET NULL;
+UPDATE kills k SET server_id=s.id FROM game_servers s WHERE k.server_id IS NULL AND s.guild_id=k.guild_id AND s.provider_service_id=(SELECT g.nitrado_service_id FROM guilds g WHERE g.id=k.guild_id) AND s.active;
+UPDATE deaths d SET server_id=s.id FROM game_servers s WHERE d.server_id IS NULL AND s.guild_id=d.guild_id AND s.provider_service_id=(SELECT g.nitrado_service_id FROM guilds g WHERE g.id=d.guild_id) AND s.active;
+CREATE INDEX IF NOT EXISTS idx_kills_server ON kills(guild_id,server_id,created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_deaths_server ON deaths(guild_id,server_id,event_time DESC);
+`,
+	},
+	{
+		Name: "0017_adm_monitor",
+		SQL: `
+ALTER TABLE guilds ADD COLUMN IF NOT EXISTS adm_monitor_channel_id TEXT;
+ALTER TABLE server_configs ADD COLUMN IF NOT EXISTS adm_monitor_message_id TEXT;
+`,
+	},
+	{
+		Name: "0018_public_link_panel",
+		SQL: `
+ALTER TABLE guilds ADD COLUMN IF NOT EXISTS link_panel_channel_id TEXT;
+ALTER TABLE guilds ADD COLUMN IF NOT EXISTS link_panel_message_id TEXT;
+`,
+	},
+	{
+		Name: "0019_adm_incremental_checkpoints",
+		SQL: `
+ALTER TABLE adm_checkpoints ADD COLUMN IF NOT EXISTS server_id BIGINT;
+ALTER TABLE adm_checkpoints ADD COLUMN IF NOT EXISTS remote_modified_at TIMESTAMPTZ;
+ALTER TABLE adm_checkpoints ADD COLUMN IF NOT EXISTS remote_size BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE adm_checkpoints ADD COLUMN IF NOT EXISTS pending_partial_line TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_adm_checkpoints_server ON adm_checkpoints(guild_id, server_id);
+`,
+	},
+	{
+		Name: "0020_selected_public_server",
+		SQL: `
+ALTER TABLE guilds ADD COLUMN IF NOT EXISTS selected_public_server_id BIGINT;
+CREATE INDEX IF NOT EXISTS idx_guilds_selected_public_server ON guilds(selected_public_server_id);
+`,
+	},
+	{
+		Name: "0021_death_channel_and_link_challenge",
+		SQL: `
+ALTER TABLE guilds ADD COLUMN IF NOT EXISTS death_channel_id TEXT;
+ALTER TABLE guilds ADD COLUMN IF NOT EXISTS verified_role_id TEXT;
+ALTER TABLE link_verifications ADD COLUMN IF NOT EXISTS challenge_disconnect_at TIMESTAMPTZ;
+`,
+	},
+	{
+		// Backfill runs in the same transaction as the column add, so it applies
+		// exactly once, atomically with the schema change (see Migrate below).
+		Name: "0022_kills_longshot",
+		SQL: `
+ALTER TABLE kills ADD COLUMN IF NOT EXISTS longshot BOOLEAN NOT NULL DEFAULT FALSE;
+UPDATE kills SET longshot = TRUE WHERE distance IS NOT NULL AND distance >= 100.0 AND longshot = FALSE;
+`,
+	},
+	{
+		// No backfill: unlike longshot (derivable from the still-stored distance),
+		// KILLING_SPREE/STREAK_ENDED depend on the killer/victim streak count at
+		// the moment of that specific historical kill. player_combat_stats only
+		// tracks the CURRENT streak, which has long since moved on for old rows,
+		// and no per-kill streak snapshot exists for rows inserted before this
+		// migration. Guessing from current state would misreport history, so
+		// every pre-existing kill is left as killing_spree=false/streak_ended=false
+		// with NULL counts - only kills persisted after this deploy get real values.
+		Name: "0023_kills_streak_events",
+		SQL: `
+ALTER TABLE kills ADD COLUMN IF NOT EXISTS killing_spree BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE kills ADD COLUMN IF NOT EXISTS killer_streak_after INTEGER;
+ALTER TABLE kills ADD COLUMN IF NOT EXISTS streak_ended BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE kills ADD COLUMN IF NOT EXISTS ended_streak_count INTEGER;
+`,
+	},
+}

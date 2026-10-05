@@ -18,7 +18,7 @@ which correctness property it protects.
 `Tracker.ShouldReadAgain` detects a size or modified-time change (`internal/killfeed/tracker.go`).
 Parsing was already incremental before this phase - `Tracker.DrainCompleteLinesWithOffsets` only
 processes the byte range after `LastByteOffset` - so the only waste was in the network transfer, not
-CPU. `ReadLog` and the full-read block in `Engine.pollSelected` (`internal/killfeed/engine.go`) are
+CPU. `ReadLog` and the full-read block in `Engine.pollSelected` (`internal/killfeed/engine_poll.go`) are
 **byte-for-byte unchanged by this phase** and remain the authoritative path: every delta mechanism
 below falls back to it on any failure or uncertainty.
 
@@ -134,7 +134,7 @@ straight through to the unchanged full-read path in the same poll.
   by a second, simulating a process restart, and the second instance fetches only the bytes appended
   after the checkpoint's offset - no replay, no skip, no duplicate.
 - **Cold start**: unchanged. A brand-new engine with no existing checkpoint still seeds at the file
-  tail on first selection (`startAtTail`/`cold_start_baseline_required` in `engine.go`) exactly as
+  tail on first selection (`startAtTail`/`cold_start_baseline_required` in `engine_discovery.go`) exactly as
   before this phase - delta mode never bypasses this protection, since delta reads only ever trigger
   when `oldOffset > 0`.
 - **Truncation**: `current.Size < Tracker.LastByteOffset` is detected and handled by the existing

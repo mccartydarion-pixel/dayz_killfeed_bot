@@ -46,7 +46,7 @@ Engine.processLine (after dedupe, same guard point as hit-publish)
     → Close(): drains and flushes whatever remains before returning (shutdown flush)
 ```
 
-One `LocationQueue` per server (`internal/app/app.go`'s `runServerWorker`, mirroring
+One `LocationQueue` per server (`internal/app/server_worker.go`'s `runServerWorker`, mirroring
 `PersistenceQueue`'s exact per-server scoping and `addPersistQueue`/`allPersistQueues` pattern via
 `addLocationQueue`/`allLocationQueues`), using the **same `persistenceStoreAdapter`** already
 passed into `NewPersistenceQueueWithServerID` - `InsertLocationEvents` was added to that adapter
