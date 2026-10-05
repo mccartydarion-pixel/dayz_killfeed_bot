@@ -23,7 +23,7 @@ const (
 	// message); a larger burst becomes one summary card.
 	buildFeedMaxCards     = 5
 	buildFeedSummaryLines = 10
-	buildFeedFooter       = "CHAMPION • STAFF INTELLIGENCE"
+	buildFeedFooter       = presentation.FooterStaffOnly
 )
 
 // buildItem is what the feed keeps of one build action.
@@ -157,7 +157,7 @@ func (p *BuildFeedPublisher) Flush(ctx context.Context) {
 // BuildActivityEmbed renders one action with only the fields the ADM line
 // actually carried.
 func BuildActivityEmbed(it buildItem, server string) *discordgo.MessageEmbed {
-	embed := presentation.NewChampionEmbed("🏗️ BUILD ACTIVITY", presentation.FactionGold)
+	embed := presentation.NewChampionEmbed("🏗️ Build activity", presentation.Neutral)
 	// add skips a value the line did not carry (SafeName would turn "" into a
 	// placeholder).
 	add := func(name, value string, max int) {
@@ -178,13 +178,13 @@ func BuildActivityEmbed(it buildItem, server string) *discordgo.MessageEmbed {
 		add("Location", formatMapPosition(it.MapX, it.MapZ), 0)
 	}
 	add("Server", server, 60)
-	embed.Footer = &discordgo.MessageEmbedFooter{Text: buildFeedFooter}
+	embed.Footer = presentation.Footer("", buildFeedFooter)
 	return embed
 }
 
 // BuildActivitySummaryEmbed condenses a burst into one card.
 func BuildActivitySummaryEmbed(items []buildItem, dropped int, server string) *discordgo.MessageEmbed {
-	embed := presentation.NewChampionEmbed("🏗️ BUILD ACTIVITY", presentation.FactionGold)
+	embed := presentation.NewChampionEmbed("🏗️ Build activity", presentation.Neutral)
 	lines := make([]string, 0, buildFeedSummaryLines+1)
 	for i, it := range items {
 		if i == buildFeedSummaryLines {
@@ -206,7 +206,7 @@ func BuildActivitySummaryEmbed(items []buildItem, dropped int, server string) *d
 	if strings.TrimSpace(server) != "" {
 		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Server", Value: presentation.SafeName(server, 60), Inline: true})
 	}
-	embed.Footer = &discordgo.MessageEmbedFooter{Text: buildFeedFooter}
+	embed.Footer = presentation.Footer("", buildFeedFooter)
 	return embed
 }
 

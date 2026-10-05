@@ -100,7 +100,7 @@ func TestPerimeterWatchMessageIsPlainAndSafe(t *testing.T) {
 	if msg.AllowedMentions == nil || len(msg.AllowedMentions.Parse) != 0 || strings.Contains(all, "@everyone") || strings.Contains(all, "@here") || strings.Contains(all, "`") {
 		t.Fatalf("unsafe: %q", all)
 	}
-	if !strings.Contains(all, "Someone is near") || !strings.Contains(all, "About 120 m") {
+	if !strings.Contains(all, "Someone is near") || !strings.Contains(all, "About 120m") {
 		t.Fatalf("copy: %q", all)
 	}
 }

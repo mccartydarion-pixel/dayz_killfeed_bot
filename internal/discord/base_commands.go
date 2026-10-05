@@ -124,22 +124,22 @@ func RegisterBaseCommands(session CommandRegistrar, guildID string) error {
 // resolve finds the caller's server and verified player, answering them when it can't.
 func (h *BaseCommandHandler) resolve(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate) (guildRowID, serverID, playerID int64, ok bool) {
 	if h == nil || i == nil || i.GuildID == "" || h.guilds == nil || h.summary == nil || h.request == nil {
-		respondEphemeral(s, i, "Base commands are unavailable right now.")
+		respondEphemeral(s, i, ReplyAreUnavailable("Base commands"))
 		return 0, 0, 0, false
 	}
 	_, guildRowID, err := h.guilds.GetGuild(ctx, i.GuildID)
 	if err != nil || guildRowID == 0 {
-		respondEphemeral(s, i, "This server is not configured. Run `/setup` first.")
+		respondEphemeral(s, i, ReplyNotSetUp)
 		return 0, 0, 0, false
 	}
 	playerID, _, linked := h.linkedPlayer(ctx, guildRowID, interactionUserID(i))
 	if !linked {
-		respondEphemeral(s, i, "Link your gamertag with `/link` first.")
+		respondEphemeral(s, i, ReplyNotLinked("Link your gamertag with `/link` first."))
 		return 0, 0, 0, false
 	}
 	serverID, found := h.server(ctx, guildRowID)
 	if !found {
-		respondEphemeral(s, i, "No DayZ server is selected for this Discord yet.")
+		respondEphemeral(s, i, ReplyNoServerSelected)
 		return 0, 0, 0, false
 	}
 	return guildRowID, serverID, playerID, true
@@ -156,7 +156,7 @@ func (h *BaseCommandHandler) HandleMyBase(s *discordgo.Session, i *discordgo.Int
 	}
 	sum, err := h.summary(ctx, guildRowID, serverID, playerID)
 	if err != nil {
-		respondEphemeral(s, i, "Your bases couldn't be loaded right now. Try again in a minute.")
+		respondEphemeral(s, i, ReplyCouldNot("load your bases"))
 		return
 	}
 	var components []discordgo.MessageComponent
@@ -289,7 +289,7 @@ func (h *BaseCommandHandler) HandleRentComponent(s *discordgo.Session, i *discor
 	}
 	baseID, ok := parseRentBaseID(customID, rentPayPrefix)
 	if !ok || i.Message == nil || i.Message.ID == "" {
-		respondEphemeral(s, i, "That button is no longer valid. Run `/mybase` again.")
+		respondEphemeral(s, i, ReplyButtonExpired+" Run `/mybase` again.")
 		return
 	}
 	guildRowID, serverID, playerID, ok := h.resolve(ctx, s, i)

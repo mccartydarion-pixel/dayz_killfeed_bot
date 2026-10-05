@@ -16,6 +16,7 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/nitrado"
 	"github.com/yourname/dayz-killfeed/internal/perkstore"
 	"github.com/yourname/dayz-killfeed/internal/permissions"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 	"github.com/yourname/dayz-killfeed/internal/routing"
 )
@@ -801,13 +802,14 @@ func (a *App) endPerk(ctx context.Context, guildID, purchaseID int64, reason str
 
 // --- Discord shout-out -----------------------------------------------------------------------------
 
-const perkEmbedColor = 0xE7B94A
+const perkEmbedColor = presentation.Gold // a thank-you
 
 // buildPerkShoutout is the card posted in the donations channel when a player buys an offer.
 func buildPerkShoutout(p repository.PerkPurchase, top []repository.PerkSupporter, storeURL string) *discordgo.MessageEmbed {
-	title, line := "💎 New supporter", fmt.Sprintf("**%s** picked up **%s**. Thank you for supporting the server!", p.BuyerName, p.OfferName)
+	buyer, offer := orUnknown(p.BuyerName), presentation.SafeName(p.OfferName, 80)
+	title, line := "💎 New supporter", fmt.Sprintf("**%s** picked up **%s**. Thank you for supporting the server!", buyer, offer)
 	if p.Gift {
-		title, line = "🎁 Perk gifted", fmt.Sprintf("**%s** gifted **%s** to **%s**.", p.BuyerName, p.OfferName, p.RecipientName)
+		title, line = "🎁 Perk gifted", fmt.Sprintf("**%s** gifted **%s** to **%s**.", buyer, offer, orUnknown(p.RecipientName))
 	}
 	var perks []string
 	if p.VIPTierName != "" {
@@ -824,9 +826,10 @@ func buildPerkShoutout(p repository.PerkPurchase, top []repository.PerkSupporter
 	case p.Billing == perkstore.BillingMonthly:
 		length = "monthly"
 	case p.DurationDays > 0:
-		length = fmt.Sprintf("%d days", p.DurationDays)
+		length = presentation.Plural(int64(p.DurationDays), "day", "days")
 	}
-	embed := &discordgo.MessageEmbed{Title: title, Description: line, Color: perkEmbedColor, Timestamp: p.CreatedAt.UTC().Format(time.RFC3339)}
+	embed := &discordgo.MessageEmbed{Author: presentation.BrandAuthor("Supporters"), Title: title, Description: line, Color: perkEmbedColor}
+	presentation.StampEmbed(embed, p.CreatedAt)
 	if len(perks) > 0 {
 		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Perks (" + length + ")", Value: "• " + strings.Join(perks, "\n• ")})
 	}
@@ -837,12 +840,13 @@ func buildPerkShoutout(p repository.PerkPurchase, top []repository.PerkSupporter
 			if i >= 3 {
 				break
 			}
-			lines = append(lines, fmt.Sprintf("%s %s · %d pts", medals[i], s.PlayerName, s.Points))
+			lines = append(lines, fmt.Sprintf("%s %s • %s", medals[i], orUnknown(s.PlayerName), presentation.FormatPoints(s.Points)))
 		}
 		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Top supporters this month", Value: strings.Join(lines, "\n")})
 	}
 	if storeURL != "" {
-		embed.Footer = &discordgo.MessageEmbedFooter{Text: "Pick up your own perks in the Player Hub: " + storeURL}
+		// A field, not the footer: Discord shows footers as plain text, so a link there cannot be clicked.
+		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Pick up your own perks in the Player Hub", Value: storeURL})
 	}
 	return embed
 }

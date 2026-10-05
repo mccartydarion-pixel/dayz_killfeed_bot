@@ -104,7 +104,7 @@ func TestTerritoryCaptureIncomeAndMap(t *testing.T) {
 	if holds["nwaf"].FactionID != pw.faction || len(holds) != 1 {
 		t.Fatalf("Red Dawn takes NWAF: %+v", holds)
 	}
-	if len(pw.cards) != 1 || !strings.Contains(pw.cards[0].Title, "NWAF captured") || !strings.Contains(pw.cards[0].Description, "[RD]") {
+	if len(pw.cards) != 1 || !strings.Contains(pw.cards[0].Title, "NWAF captured") || !strings.Contains(pw.cards[0].Description, `\[RD\]`) {
 		t.Fatalf("capture card: %s", cardTitles(pw.cards))
 	}
 	// Income: 100 a day split between Deelo and Mate, who both played this week. Paid once a day.

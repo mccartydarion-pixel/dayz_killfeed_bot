@@ -34,7 +34,9 @@ func isLeaderboardBoardTitle(title string) bool {
 	norm := strings.Join(strings.FieldsFunc(strings.ToUpper(title), func(r rune) bool {
 		return !unicode.IsLetter(r)
 	}), " ")
-	return norm == "SEASON LEADERBOARD" || norm == "CHAMPION KILLFEED SEASON LEADERBOARD" || norm == "CHAMPION LEADERBOARD"
+	// "AUTO LEADERBOARD" covers the V3 header in both spellings: "📊 AUTO LEADERBOARD 📊" (as
+	// posted before the sentence-case titles) and today's "📊 Auto leaderboard".
+	return norm == "SEASON LEADERBOARD" || norm == "CHAMPION KILLFEED SEASON LEADERBOARD" || norm == "CHAMPION LEADERBOARD" || norm == "AUTO LEADERBOARD"
 }
 
 // isObsoleteLeaderboardMessage is true only for a message the bot itself posted

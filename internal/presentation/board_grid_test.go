@@ -7,12 +7,12 @@ import (
 
 func TestBoardValueFormats(t *testing.T) {
 	cases := map[string]string{
-		FormatBoardKills("1"):         "1 Kill",
-		FormatBoardKills("2"):         "2 Kills",
-		FormatBoardKills("6053"):      "6,053 Kills",
-		FormatBoardDeaths("1"):        "1 Death",
-		FormatBoardDeaths("5012"):     "5,012 Deaths",
-		FormatBoardStreak("27"):       "27 Kill Streak",
+		FormatBoardKills("1"):         "1 kill",
+		FormatBoardKills("2"):         "2 kills",
+		FormatBoardKills("6053"):      "6,053 kills",
+		FormatBoardDeaths("1"):        "1 death",
+		FormatBoardDeaths("5012"):     "5,012 deaths",
+		FormatBoardStreak("27"):       "27 kill streak",
 		FormatBoardDistance("98.3m"):  "98.3m",
 		FormatBoardDistance("215"):    "215.0m",
 		FormatBoardDistance("1104.2"): "1,104.2m",
@@ -29,7 +29,7 @@ func TestBoardValueFormats(t *testing.T) {
 func TestBoardGridFields(t *testing.T) {
 	var entries []BoardEntry
 	for i := 0; i < 20; i++ {
-		entries = append(entries, BoardEntry{Name: "P", Value: "1 Kill"})
+		entries = append(entries, BoardEntry{Name: "P", Value: "1 kill"})
 	}
 	f := BoardGridFields(entries, 0, 0)
 	if len(f) != MaxBoardEntries {

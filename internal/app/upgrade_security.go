@@ -11,6 +11,7 @@ import (
 
 	"github.com/yourname/dayz-killfeed/internal/discord"
 	"github.com/yourname/dayz-killfeed/internal/permissions"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -23,7 +24,8 @@ import (
 func buildSecurityDigest(w repository.SecurityWeek, week time.Time, serverID, guildID int64) discord.AdminAlert {
 	end := week.AddDate(0, 0, 6)
 	return discord.AdminAlert{GuildRowID: guildID, ServerID: serverID, Kind: discord.AlertKindSecurityDigest, Severity: discord.AlertInfo,
-		Headline: "SECURITY WEEK " + strings.ToUpper(week.Format("Jan 2")) + " TO " + strings.ToUpper(end.Format("Jan 2")),
+		// A calendar week in UTC: written dates, not Discord timestamps (see the ranked recap).
+		Headline: "Security week " + week.Format("Jan 2") + " to " + end.Format("Jan 2"),
 		Detail:   "What C.A.S.E. and base security saw last week.",
 		Fields: [][2]string{
 			{"C.A.S.E. cases", fmt.Sprintf("%d opened · %d closed · %d waiting for review", w.CasesOpened, w.CasesClosed, w.CasesPending)},
@@ -132,7 +134,7 @@ func (a *App) handleCreateAppeal(w http.ResponseWriter, r *http.Request) {
 	}
 	if a.AdminAlerts != nil {
 		a.AdminAlerts.Publish(discord.AdminAlert{GuildRowID: scope.GuildID, ServerID: scope.ServerID, Kind: discord.AlertKindPlayerAppeal, Severity: discord.AlertWarning,
-			Headline: "NEW APPEAL", Detail: "A player sent an appeal from the Player Hub. Answer it in Client Hub → Anti-cheat → Appeals.",
+			Headline: "New appeal", Detail: "A player sent an appeal from the Player Hub. Answer it in Client Hub → Anti-cheat → Appeals.",
 			Fields: [][2]string{{"Player", orUnknown(appeal.PlayerName)}, {"About", appealTopics[topic]}, {"Message", truncateRunes(message, 900)}}})
 	}
 	writeSaaSJSON(w, http.StatusCreated, appeal)
@@ -184,13 +186,13 @@ func (a *App) handleDecideAppeal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.recordAudit(ctx, ac, "APPEAL_"+appeal.Status, fmt.Sprintf("appeal:%d", appeal.ID), note, "success", nil, appeal)
-	title, desc := "✅ Your appeal was accepted", "Staff accepted your appeal."
+	title, desc, appealColor := "✅ Your appeal was accepted", "Staff accepted your appeal.", presentation.Green
 	if !req.Accept {
-		title, desc = "❌ Your appeal was not accepted", "Staff looked at your appeal and did not accept it."
+		title, desc, appealColor = "❌ Your appeal was not accepted", "Staff looked at your appeal and did not accept it.", presentation.Red
 	}
 	if note != "" {
 		desc += "\n\n> " + note
 	}
-	_ = a.sendPlayerDM(ctx, appeal.GuildID, appeal.PlayerID, dm(upgradeEmbed("CHAMPIONS® APPEALS", title, desc, 0x3B82F6)))
+	_ = a.sendPlayerDM(ctx, appeal.GuildID, appeal.PlayerID, dm(upgradeEmbed("Appeals", title, desc, appealColor)))
 	writeSaaSJSON(w, http.StatusOK, appeal)
 }

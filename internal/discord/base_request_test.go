@@ -37,7 +37,7 @@ func TestNewBaseRequestNotices(t *testing.T) {
 		t.Fatal("base requests must be allowed on ADMIN_ALERTS")
 	}
 	notice := BuildAdminAlertEmbed(AdminAlert{Kind: AlertKindBaseRequest, Severity: AlertInfo, Headline: "NEW BASE REQUEST", Detail: "x"}, "Champions")
-	if notice.Title != "📍 STAFF NOTICE" {
+	if notice.Title != "📍 Staff notice" {
 		t.Fatalf("notice title: %q", notice.Title)
 	}
 	for _, f := range notice.Fields {

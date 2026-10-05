@@ -64,15 +64,20 @@ func assertV2Card(t *testing.T, e *discordgo.MessageEmbed) {
 	if e.Author == nil || e.Author.Name != presentation.AuthorName {
 		t.Fatalf("author must carry the brand once: %#v", e.Author)
 	}
-	if e.Footer == nil || !strings.HasSuffix(e.Footer.Text, presentation.ChampionSlogan) {
-		t.Fatalf("footer must be the slogan: %#v", e.Footer)
+	// The footer is the season when the kill has one, else the slogan - never empty, never shouting.
+	if e.Footer == nil || presentation.CheckFooter(e.Footer.Text) != "" {
+		t.Fatalf("footer must be the season or the slogan: %#v", e.Footer)
 	}
 	text := allText(e)
 	if strings.Contains(text, "CHAMPION KILLFEED") {
 		t.Fatalf("legacy repeated brand in card: %q", text)
 	}
-	if strings.Contains(e.Title, "CHAMPION") {
+	if strings.Contains(strings.ToUpper(e.Title), "CHAMPION") {
 		t.Fatalf("title must be the event only: %q", e.Title)
+	}
+	// Every kill card follows the design rules: palette colour, sentence-case title and labels.
+	if problems := presentation.CheckEmbed(e); len(problems) != 0 {
+		t.Fatalf("kill card breaks the design rules: %v", problems)
 	}
 	if strings.Contains(text, "────") {
 		t.Fatal("ASCII divider in card")
@@ -112,23 +117,23 @@ func assertWithinLimits(t *testing.T, e *discordgo.MessageEmbed) {
 func TestStandardKillCardV2(t *testing.T) {
 	e := BuildKillEmbed(FixtureStandardKill())
 	assertV2Card(t, e)
-	if e.Title != "☠️ PLAYER ELIMINATED" || e.Color != presentation.ChampionGold {
+	if e.Title != "☠️ Player eliminated" || e.Color != presentation.Crimson {
 		t.Fatalf("title/color: %q %x", e.Title, e.Color)
 	}
 	if !strings.HasPrefix(e.Description, `**WilliamAle--10** → **Semillita-azul-\_**`) {
 		t.Fatalf("matchup must lead the description: %q", e.Description)
 	}
-	if !strings.Contains(e.Description, "🔫 **Controlled Burst**\n`M4-A1` • 11.7m • Close Quarters") {
+	if !strings.Contains(e.Description, "🔫 **Controlled Burst**\n`M4-A1` • 11.7m • Close quarters") {
 		t.Fatalf("weapon block: %q", e.Description)
 	}
-	if e.Footer.Text != "EVERY KILL TELLS A STORY" || e.Timestamp == "" {
+	if e.Footer.Text != "Every kill tells a story" || e.Timestamp == "" {
 		t.Fatalf("footer/timestamp: %q %q", e.Footer.Text, e.Timestamp)
 	}
-	// Compact: KILLER | VICTIM | H2H side by side, then FINAL HIT.
+	// Compact: Killer | Victim | Head to head side by side, then Final hit.
 	if len(e.Fields) < 2 || len(e.Fields) > 6 {
 		t.Fatalf("standard kill should have 2-6 fields, got %d", len(e.Fields))
 	}
-	k, v, h := fieldNamed(e, "KILLER"), fieldNamed(e, "VICTIM"), fieldNamed(e, "H2H")
+	k, v, h := fieldNamed(e, "Killer"), fieldNamed(e, "Victim"), fieldNamed(e, "Head to head")
 	if k == nil || v == nil || h == nil || !k.Inline || !v.Inline || !h.Inline {
 		t.Fatalf("killer/victim/H2H must be inline side by side: %#v", e.Fields)
 	}
@@ -138,10 +143,10 @@ func TestStandardKillCardV2(t *testing.T) {
 	if h.Value != "**4–0**\nWilliamAle--10 leads" {
 		t.Fatalf("H2H: %q", h.Value)
 	}
-	if !fieldsContain(e.Fields, "FINAL HIT", "Torso • 34.2 dmg") {
+	if !fieldsContain(e.Fields, "Final hit", "Torso • 34.2 dmg") {
 		t.Fatalf("final hit: %#v", e.Fields)
 	}
-	if strings.Count(allText(e), "KILLFEED") != 1 {
+	if strings.Count(allText(e), "Killfeed") != 1 {
 		t.Fatal("brand must appear exactly once")
 	}
 }
@@ -149,13 +154,13 @@ func TestStandardKillCardV2(t *testing.T) {
 func TestHeadshotCardV2(t *testing.T) {
 	e := BuildKillEmbed(FixtureHeadshotKill())
 	assertV2Card(t, e)
-	if e.Title != "🎯 HEADSHOT" || e.Color != presentation.CombatRed {
+	if e.Title != "🎯 Headshot" || e.Color != presentation.Crimson {
 		t.Fatalf("title/color: %q %x", e.Title, e.Color)
 	}
 	if strings.Contains(e.Description, "🎯 Headshot") {
 		t.Fatal("primary story must not be repeated as a badge")
 	}
-	if fieldNamed(e, "FINAL HIT") != nil {
+	if fieldNamed(e, "Final hit") != nil {
 		t.Fatal("FINAL HIT Head would repeat the title")
 	}
 	if !strings.Contains(e.Description, "_Precision finish_") {
@@ -166,10 +171,10 @@ func TestHeadshotCardV2(t *testing.T) {
 func TestLongshotCardV2(t *testing.T) {
 	e := BuildKillEmbed(FixtureLongshotKill())
 	assertV2Card(t, e)
-	if e.Title != "🎯 LONGSHOT" || e.Color != presentation.Steel {
+	if e.Title != "🎯 Longshot" || e.Color != presentation.Gold {
 		t.Fatalf("title/color: %q %x", e.Title, e.Color)
 	}
-	if len(e.Fields) == 0 || e.Fields[0].Name != "DISTANCE" || e.Fields[0].Value != "**173.8m**" {
+	if len(e.Fields) == 0 || e.Fields[0].Name != "Distance" || e.Fields[0].Value != "**173.8m**" {
 		t.Fatalf("distance must be the hero metric: %#v", e.Fields)
 	}
 	if strings.Count(allText(e), "173.8m") != 1 {
@@ -183,17 +188,17 @@ func TestLongshotCardV2(t *testing.T) {
 func TestExtremeRangeCardV2(t *testing.T) {
 	e := BuildKillEmbed(FixtureExtremeRangeKill())
 	assertV2Card(t, e)
-	if e.Title != "👑 EXTREME RANGE" || e.Color != presentation.EventGold {
+	if e.Title != "👑 Extreme range" || e.Color != presentation.Gold {
 		t.Fatalf("title/color: %q %x", e.Title, e.Color)
 	}
-	if e.Fields[0].Name != "DISTANCE" || e.Fields[0].Value != "**247.3m**" {
+	if e.Fields[0].Name != "Distance" || e.Fields[0].Value != "**247.3m**" {
 		t.Fatalf("hero distance: %#v", e.Fields[0])
 	}
-	// The head hit survives as a secondary badge, exactly once.
-	if !strings.Contains(e.Description, "🎯 Headshot") || strings.Count(allText(e), "Head") != 1 {
+	// The head hit survives as a secondary badge, exactly once (no "Final hit" field repeats it).
+	if !strings.Contains(e.Description, "🎯 Headshot") || strings.Count(allText(e), "Headshot") != 1 || fieldNamed(e, "Final hit") != nil {
 		t.Fatalf("secondary headshot badge once: %q", allText(e))
 	}
-	if fieldNamed(e, "FINAL HIT") != nil {
+	if fieldNamed(e, "Final hit") != nil {
 		t.Fatal("FINAL HIT Head would repeat the headshot badge")
 	}
 }
@@ -201,10 +206,10 @@ func TestExtremeRangeCardV2(t *testing.T) {
 func TestBountyClaimCardV2(t *testing.T) {
 	e := BuildKillEmbed(FixtureBountyKill())
 	assertV2Card(t, e)
-	if e.Title != "💰 BOUNTY CLAIMED" || e.Color != presentation.EventGold {
+	if e.Title != "💰 Bounty claimed" || e.Color != presentation.Gold {
 		t.Fatalf("title/color: %q %x", e.Title, e.Color)
 	}
-	if !fieldsContain(e.Fields, "REWARD", "**12,500 pts**") {
+	if !fieldsContain(e.Fields, "Reward", "**12,500 pts**") {
 		t.Fatalf("reward in Champion Points: %#v", e.Fields)
 	}
 }
@@ -212,13 +217,13 @@ func TestBountyClaimCardV2(t *testing.T) {
 func TestKillingSpreeCardV2(t *testing.T) {
 	e := BuildKillEmbed(FixtureKillingSpreeKill())
 	assertV2Card(t, e)
-	if e.Title != "🔥 KILLING SPREE" {
+	if e.Title != "🔥 Killing spree" {
 		t.Fatalf("title: %q", e.Title)
 	}
-	if !fieldsContain(e.Fields, "STREAK", "**5**") {
+	if !fieldsContain(e.Fields, "Streak", "**5**") {
 		t.Fatalf("streak hero: %#v", e.Fields)
 	}
-	if strings.Contains(fieldNamed(e, "KILLER").Value, "Streak") || strings.Contains(e.Description, "Killing Spree") {
+	if strings.Contains(fieldNamed(e, "Killer").Value, "Streak") || strings.Contains(e.Description, "Killing spree") {
 		t.Fatal("streak must not be duplicated")
 	}
 }
@@ -226,7 +231,7 @@ func TestKillingSpreeCardV2(t *testing.T) {
 func TestStreakEndedCardV2(t *testing.T) {
 	e := BuildKillEmbed(FixtureStreakEndedKill())
 	assertV2Card(t, e)
-	if e.Title != "💀 STREAK ENDED" {
+	if e.Title != "💀 Streak ended" {
 		t.Fatalf("title: %q", e.Title)
 	}
 	if !strings.Contains(e.Description, "Ended a **8-kill streak**") {
@@ -242,14 +247,14 @@ func TestStreakEndedCardV2(t *testing.T) {
 
 func TestExtremeRangeBeatsHeadshot(t *testing.T) {
 	e := BuildKillEmbed(killEv("V", "K", "M4-A1", 250.0, "Head"))
-	if e.Title != "👑 EXTREME RANGE" || !strings.Contains(e.Description, "🎯 Headshot") {
+	if e.Title != "👑 Extreme range" || !strings.Contains(e.Description, "🎯 Headshot") {
 		t.Fatalf("extreme range primary with a secondary headshot badge: %q / %q", e.Title, e.Description)
 	}
 }
 
 func TestHeadshotBeatsCloseRange(t *testing.T) {
 	e := BuildKillEmbed(killEv("V", "K", "M4-A1", 8.0, "Head"))
-	if e.Title != "🎯 HEADSHOT" || !strings.Contains(e.Description, "🔥 Close Range") {
+	if e.Title != "🎯 Headshot" || !strings.Contains(e.Description, "🔥 Close range") {
 		t.Fatalf("headshot primary with close-range badge: %q / %q", e.Title, e.Description)
 	}
 }
@@ -286,7 +291,7 @@ func TestDistanceRoundingAndPrecision(t *testing.T) {
 
 func TestKillStatFieldsOnlyRenderWhenPresent(t *testing.T) {
 	e := BuildKillEmbed(&killfeed.Event{Killer: &killfeed.PlayerRef{Name: "K"}, Victim: &killfeed.PlayerRef{Name: "V"}})
-	for _, name := range []string{"KILLER", "VICTIM", "H2H", "FINAL HIT", "DISTANCE"} {
+	for _, name := range []string{"Killer", "Victim", "Head to head", "Final hit", "Distance"} {
 		if fieldNamed(e, name) != nil {
 			t.Fatalf("%s rendered without source data", name)
 		}
@@ -301,8 +306,8 @@ func TestZeroDeathKDFormattingUsesCombatRecordKD(t *testing.T) {
 	ev := FixtureStandardKill()
 	e := BuildKillEmbed(ev)
 	want := presentation.FormatKD(ev.KillerStats.KD()) + " K/D"
-	if !strings.Contains(fieldNamed(e, "KILLER").Value, want) {
-		t.Fatalf("K/D must be CombatRecord.KD() formatted: %q", fieldNamed(e, "KILLER").Value)
+	if !strings.Contains(fieldNamed(e, "Killer").Value, want) {
+		t.Fatalf("K/D must be CombatRecord.KD() formatted: %q", fieldNamed(e, "Killer").Value)
 	}
 }
 
@@ -311,7 +316,7 @@ func TestCoordinatesOnlyWhenExplicitlyEnabled(t *testing.T) {
 	if strings.Contains(allText(BuildKillEmbed(ev)), "4496") {
 		t.Fatal("coordinates must be private by default")
 	}
-	if !fieldsContain(BuildKillEmbedWithOptions(ev, KillEmbedOptions{LocationMode: LocationCoordinates}).Fields, "LOCATION", "4496.0 • 2.0 • 3.0") {
+	if !fieldsContain(BuildKillEmbedWithOptions(ev, KillEmbedOptions{LocationMode: LocationCoordinates}).Fields, "Location", "4496.0 • 2.0 • 3.0") {
 		t.Fatal("expected coordinates in explicit mode")
 	}
 }
@@ -380,7 +385,7 @@ func TestTimestampSetOnlyWhenAbsolute(t *testing.T) {
 func TestSeasonFooter(t *testing.T) {
 	ev := FixtureStandardKill()
 	ev.SeasonName = "Season 3"
-	if got := BuildKillEmbed(ev).Footer.Text; got != "CHAMPION • Season 3 • EVERY KILL TELLS A STORY" {
+	if got := BuildKillEmbed(ev).Footer.Text; got != "Season 3" {
 		t.Fatalf("season footer: %q", got)
 	}
 }
@@ -406,14 +411,14 @@ func TestSpecialKillTemplateVariableUnchanged(t *testing.T) {
 func TestDeathCardV2(t *testing.T) {
 	e := BuildDeathEmbed(FixtureDeath())
 	assertV2Card(t, e)
-	if e.Title != "☠️ PLAYER DEATH" || e.Description != "**Ceiyxe**" || e.Color != presentation.NeutralGraphite {
+	if e.Title != "☠️ Player death" || e.Description != "**Ceiyxe**" || e.Color != presentation.Neutral {
 		t.Fatalf("death card: %q %q %x", e.Title, e.Description, e.Color)
 	}
-	if len(e.Fields) != 1 || e.Fields[0].Name != "PLAYER STATS" || e.Fields[0].Value != "**1 K** • **50 D** • **0.02 K/D**" {
+	if len(e.Fields) != 1 || e.Fields[0].Name != "Player stats" || e.Fields[0].Value != "**1 K** • **50 D** • **0.02 K/D**" {
 		t.Fatalf("compact stats only: %#v", e.Fields)
 	}
 	for _, f := range e.Fields {
-		if f.Name == "CAUSE" || f.Name == "DEATH DETAILS" {
+		if f.Name == "Cause" || f.Name == "Death details" {
 			t.Fatal("no cause may be fabricated")
 		}
 	}
@@ -426,7 +431,7 @@ func TestDeathCardV2(t *testing.T) {
 
 func TestDeathCardProvenCauseAndFinalHit(t *testing.T) {
 	e := BuildDeathEmbed(&killfeed.Event{Type: killfeed.EventPlayerDeath, Player: &killfeed.PlayerRef{Name: "P"}, Cause: killfeed.DeathCauseInfected, HitZone: "Head"})
-	c, h := fieldNamed(e, "CAUSE"), fieldNamed(e, "FINAL HIT")
+	c, h := fieldNamed(e, "Cause"), fieldNamed(e, "Final hit")
 	if c == nil || c.Value != "Infected" || !c.Inline || h == nil || h.Value != "Head" || !h.Inline {
 		t.Fatalf("cause/final hit inline: %#v", e.Fields)
 	}
@@ -435,13 +440,14 @@ func TestDeathCardProvenCauseAndFinalHit(t *testing.T) {
 func TestSuicideCardV2(t *testing.T) {
 	e := BuildDeathEmbed(FixtureSuicide())
 	assertV2Card(t, e)
-	if e.Title != "💀 SUICIDE" || e.Color != presentation.WarningAmber {
+	// A suicide is a quiet death like any other: neutral, not a warning.
+	if e.Title != "💀 Suicide" || e.Color != presentation.Neutral {
 		t.Fatalf("title/color: %q %x", e.Title, e.Color)
 	}
-	if fieldNamed(e, "CAUSE") != nil {
+	if fieldNamed(e, "Cause") != nil {
 		t.Fatal("the title already says suicide; no cause field")
 	}
-	if !fieldsContain(e.Fields, "WEAPON", "`M4-A1`") || !fieldsContain(e.Fields, "PLAYER STATS", "**1 K**") || fieldsContain(e.Fields, "PLAYER STATS", "Streak") {
+	if !fieldsContain(e.Fields, "Weapon", "`M4-A1`") || !fieldsContain(e.Fields, "Player stats", "**1 K**") || fieldsContain(e.Fields, "Player stats", "Streak") {
 		t.Fatalf("suicide fields: %#v", e.Fields)
 	}
 	if len(e.Fields) > 3 {

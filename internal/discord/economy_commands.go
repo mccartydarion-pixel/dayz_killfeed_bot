@@ -82,18 +82,18 @@ func floatPtr(v float64) *float64 { return &v }
 // the reply text) so it can be exercised without a Discord session.
 func (h *EconomyCommandHandler) Handle(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if h == nil || h.economy == nil || h.players == nil || h.guilds == nil || i == nil || i.Member == nil || i.Member.User == nil {
-		respondEphemeral(s, i, "The economy is unavailable.")
+		respondEphemeral(s, i, ReplyIsUnavailable("The economy"))
 		return
 	}
 	ctx := context.Background()
 	_, guildRowID, err := h.guilds.GetGuild(ctx, i.GuildID)
 	if err != nil || guildRowID == 0 {
-		respondEphemeral(s, i, "Run `/setup` first.")
+		respondEphemeral(s, i, ReplyNotSetUp)
 		return
 	}
 	data := i.ApplicationCommandData()
 	if len(data.Options) == 0 {
-		respondEphemeral(s, i, "Choose a subcommand.")
+		respondEphemeral(s, i, ReplyChooseSubcommand)
 		return
 	}
 	respondEphemeral(s, i, h.dispatch(ctx, i, guildRowID, data.Options[0]))
@@ -114,11 +114,11 @@ func (h *EconomyCommandHandler) dispatch(ctx context.Context, i *discordgo.Inter
 		return h.historyMessage(ctx, guildRowID, playerID)
 	case "credit", "debit":
 		if !isAdminInteraction(i) {
-			return "Administrator or Manage Server permission required."
+			return ReplyNeedsManageServer
 		}
 		return h.adjust(ctx, i, guildRowID, sub, sub.Name == "credit")
 	}
-	return "Unknown subcommand."
+	return ReplyChooseSubcommand
 }
 
 // resolveSelfOrTarget returns the player a balance/history request is about: the
@@ -132,7 +132,7 @@ func (h *EconomyCommandHandler) resolveSelfOrTarget(ctx context.Context, i *disc
 		}
 		id, err := h.players.FindByDisplayName(ctx, guildRowID, target)
 		if err != nil {
-			return 0, "Player not found."
+			return 0, ReplyPlayerNotFound
 		}
 		return id, ""
 	}
@@ -141,7 +141,7 @@ func (h *EconomyCommandHandler) resolveSelfOrTarget(ctx context.Context, i *disc
 	}
 	id, linked := h.links.LinkedPlayerID(ctx, guildRowID, i.Member.User.ID)
 	if !linked {
-		return 0, "🔗 **ACCOUNT NOT LINKED**\nLink your PlayStation username first (use the Link panel), then try again."
+		return 0, ReplyNotLinked("Link your PlayStation username first (use the Link panel), then try again.")
 	}
 	return id, ""
 }
@@ -159,21 +159,21 @@ func (h *EconomyCommandHandler) historyMessage(ctx context.Context, guildRowID, 
 func economyBalanceMessage(ctx context.Context, svc *economy.Service, guildRowID, playerID int64) string {
 	balance, err := svc.Balance(ctx, guildRowID, playerID)
 	if err != nil {
-		return "Could not load the balance right now."
+		return ReplyCouldNot("load the balance")
 	}
-	return fmt.Sprintf("💰 **CHAMPION POINTS BALANCE**\n\nBalance: **%s pts**", formatAmount(balance))
+	return fmt.Sprintf("💰 **Champion Points balance**\n\nBalance: **%s pts**", formatAmount(balance))
 }
 
 func economyHistoryMessage(ctx context.Context, svc *economy.Service, guildRowID, playerID int64) string {
 	page, err := svc.History(ctx, guildRowID, playerID, economyHistoryShown, 0)
 	if err != nil {
-		return "Could not load the transactions right now."
+		return ReplyCouldNot("load the transactions")
 	}
 	if len(page.Items) == 0 {
-		return "🧾 **RECENT TRANSACTIONS**\n\n_No transactions yet._"
+		return "🧾 **Recent transactions**\n\n_No transactions yet._"
 	}
 	var b strings.Builder
-	b.WriteString("🧾 **RECENT TRANSACTIONS**\n")
+	b.WriteString("🧾 **Recent transactions**\n")
 	for _, it := range page.Items {
 		sign, icon := "+", "➕"
 		if it.Amount < 0 {
@@ -199,7 +199,7 @@ func (h *EconomyCommandHandler) adjust(ctx context.Context, i *discordgo.Interac
 	name := strings.TrimSpace(optionString(sub, "player"))
 	playerID, err := h.players.FindByDisplayName(ctx, guildRowID, name)
 	if err != nil {
-		return "Player not found."
+		return ReplyPlayerNotFound
 	}
 	req := economy.Request{GuildID: guildRowID, PlayerID: playerID, Amount: optionInt(sub, "amount"), Description: optionString(sub, "reason"), Actor: i.Member.User.ID}
 	var res economy.Result
@@ -221,6 +221,6 @@ func (h *EconomyCommandHandler) adjust(ctx context.Context, i *discordgo.Interac
 	case errors.Is(err, economy.ErrInvalidAmount):
 		return "Use a positive amount."
 	default:
-		return "Could not apply the adjustment."
+		return ReplyCouldNot("apply the adjustment")
 	}
 }

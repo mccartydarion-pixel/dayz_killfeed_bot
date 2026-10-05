@@ -14,6 +14,7 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/economy"
 	"github.com/yourname/dayz-killfeed/internal/entitlements"
 	"github.com/yourname/dayz-killfeed/internal/permissions"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 	"github.com/yourname/dayz-killfeed/internal/vip"
 )
@@ -293,15 +294,11 @@ func (a *App) runVIPExpiry(ctx context.Context, guildID int64, now time.Time) {
 
 // buildVIPNotice is the direct message a player gets when they receive a tier.
 func buildVIPNotice(t repository.PlayerTier, serverName, hubURL string) *discordgo.MessageSend {
-	where := "the server"
-	if name := strings.TrimSpace(serverName); name != "" {
-		where = name
-	}
 	embed := &discordgo.MessageEmbed{
-		Author:      &discordgo.MessageEmbedAuthor{Name: "CHAMPIONS® SUPPORTER TIERS"},
-		Title:       "💎 You received the " + t.Name + " tier",
-		Description: "From " + where + ". Thank you for supporting the server!",
-		Color:       0xE7B94A,
+		Author:      presentation.BrandAuthor("Supporter Tiers"),
+		Title:       "💎 You received the " + presentation.SafeName(t.Name, 60) + " tier",
+		Description: "From " + serverWord(serverName) + ". Thank you for supporting the server!",
+		Color:       presentation.Gold, // unless the owner gave the tier its own colour (below)
 	}
 	if len(t.Color) == 7 {
 		if c, err := strconv.ParseInt(t.Color[1:], 16, 32); err == nil {
@@ -318,7 +315,7 @@ func buildVIPNotice(t repository.PlayerTier, serverName, hubURL string) *discord
 	embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "What you get", Value: "• " + strings.Join(perks, "\n• ")})
 	until := "No end date"
 	if t.ExpiresAt != nil {
-		until = fmt.Sprintf("<t:%d:f>", t.ExpiresAt.Unix())
+		until = presentation.Timestamp(*t.ExpiresAt, 'f')
 	}
 	embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Yours until", Value: until, Inline: true})
 	if hubURL != "" {

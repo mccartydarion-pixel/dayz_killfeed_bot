@@ -57,7 +57,7 @@ type AdminAlert struct {
 	GuildRowID, ServerID int64
 	Kind                 string
 	Severity             AlertSeverity
-	Headline             string // e.g. "ADM STALE"
+	Headline             string // e.g. "ADM stale"
 	Detail               string
 	Fields               [][2]string // name, value - already safe text
 	At                   time.Time
@@ -74,7 +74,7 @@ const (
 	// nitradoFailureAlertAfter consecutive failed ADM downloads raise an alert
 	// (each single failure is already an ADM monitor diagnostic).
 	nitradoFailureAlertAfter = 3
-	adminAlertFooter         = "CHAMPION • STAFF INTELLIGENCE"
+	adminAlertFooter         = presentation.FooterStaffOnly
 )
 
 // A duplicated numeric server ID in another guild must have independent alert state.
@@ -141,13 +141,13 @@ func (p *AdminAlertPublisher) ObserveSnapshot(guildRowID, serverID int64, snap k
 		return
 	}
 	if stale {
-		p.Publish(AdminAlert{GuildRowID: guildRowID, ServerID: serverID, Kind: AlertKindADMStale, Severity: AlertWarning, Headline: "ADM STALE",
+		p.Publish(AdminAlert{GuildRowID: guildRowID, ServerID: serverID, Kind: AlertKindADMStale, Severity: AlertWarning, Headline: "ADM stale",
 			Detail: "The ADM log has stopped updating while players are online.",
-			Fields: [][2]string{{"Last Log Change", fmt.Sprintf("<t:%d:R>", snap.LastLogChange.Unix())}, {"Players Online", fmt.Sprintf("%d", snap.OnlineCount)}},
+			Fields: [][2]string{{"Last log change", presentation.Timestamp(snap.LastLogChange, 'R')}, {"Players online", presentation.FormatThousands(int64(snap.OnlineCount))}},
 			At:     now})
 		return
 	}
-	p.Publish(AdminAlert{GuildRowID: guildRowID, ServerID: serverID, Kind: AlertKindADMStale, Severity: AlertResolved, Headline: "ADM STALE",
+	p.Publish(AdminAlert{GuildRowID: guildRowID, ServerID: serverID, Kind: AlertKindADMStale, Severity: AlertResolved, Headline: "ADM stale",
 		Detail: "ADM log updates resumed.", At: now})
 }
 
@@ -164,18 +164,18 @@ func (p *AdminAlertPublisher) ObserveDownload(guildRowID int64, report killfeed.
 		st.downloadFailures++
 		if st.downloadFailures >= nitradoFailureAlertAfter && !st.failing {
 			st.failing = true
-			fields := [][2]string{{"Consecutive Failures", fmt.Sprintf("%d", st.downloadFailures)}}
+			fields := [][2]string{{"Consecutive failures", presentation.FormatThousands(int64(st.downloadFailures))}}
 			if report.ErrorClass != "" {
 				fields = append(fields, [2]string{"Error", safeMonitorText(report.ErrorClass)})
 			}
-			alert = &AdminAlert{Kind: AlertKindNitradoFailure, Severity: AlertCritical, Headline: "NITRADO API FAILURE",
+			alert = &AdminAlert{Kind: AlertKindNitradoFailure, Severity: AlertCritical, Headline: "Nitrado API failure",
 				Detail: "ADM log downloads from Nitrado keep failing. Kills and events are delayed until they recover.", Fields: fields}
 		}
 	case "success", "success_no_new_events":
 		st.downloadFailures = 0
 		if st.failing {
 			st.failing = false
-			alert = &AdminAlert{Kind: AlertKindNitradoFailure, Severity: AlertResolved, Headline: "NITRADO API FAILURE",
+			alert = &AdminAlert{Kind: AlertKindNitradoFailure, Severity: AlertResolved, Headline: "Nitrado API failure",
 				Detail: "ADM log downloads recovered."}
 		}
 	}
@@ -264,17 +264,17 @@ func (p *AdminAlertPublisher) send(ctx context.Context, a AdminAlert) {
 }
 
 // BuildAdminAlertEmbed renders one alert: amber for warnings, red for
-// critical conditions, green when resolved - always distinguishable from the
-// steel ADM diagnostics and gold build activity sharing admin-logs.
+// critical conditions, green when resolved, neutral for a notice - the
+// palette's meanings, so an alert reads the same wherever it is posted.
 func BuildAdminAlertEmbed(a AdminAlert, serverName string) *discordgo.MessageEmbed {
-	title, color := "🚨 ADMIN ALERT", presentation.WarningAmber
+	title, color := "🚨 Admin alert", presentation.WarningAmber
 	switch a.Severity {
 	case AlertCritical:
 		color = presentation.ErrorRed
 	case AlertResolved:
-		title, color = "✅ ALERT RESOLVED", presentation.SuccessGreen
+		title, color = "✅ Alert resolved", presentation.SuccessGreen
 	case AlertInfo:
-		title, color = "📍 STAFF NOTICE", presentation.InfoSteel
+		title, color = "📍 Staff notice", presentation.InfoSteel
 	}
 	embed := presentation.NewChampionEmbed(title, color)
 	desc := "**" + a.Headline + "**"
@@ -283,7 +283,7 @@ func BuildAdminAlertEmbed(a AdminAlert, serverName string) *discordgo.MessageEmb
 	}
 	embed.Description = desc
 	if a.Severity != AlertResolved && a.Severity != AlertInfo {
-		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Severity", Value: string(a.Severity), Inline: true})
+		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Severity", Value: presentation.EnumLabel(string(a.Severity)), Inline: true})
 	}
 	if strings.TrimSpace(serverName) != "" {
 		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Server", Value: presentation.SafeName(serverName, 60), Inline: true})
@@ -291,7 +291,7 @@ func BuildAdminAlertEmbed(a AdminAlert, serverName string) *discordgo.MessageEmb
 	for _, f := range a.Fields {
 		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: f[0], Value: f[1], Inline: true})
 	}
-	embed.Footer = &discordgo.MessageEmbedFooter{Text: adminAlertFooter}
+	embed.Footer = presentation.Footer("", adminAlertFooter) // the server is a field: staff read it first
 	presentation.StampEmbed(embed, a.At)
 	return embed
 }
@@ -306,13 +306,13 @@ func IntrusionAdminAlert(ev killfeed.IntrusionEvent) (AdminAlert, bool) {
 	severity := AlertWarning
 	switch ev.Kind {
 	case killfeed.AlertZoneIntrusion:
-		kind, headline = AlertKindZoneIntrusion, "ZONE INTRUSION"
+		kind, headline = AlertKindZoneIntrusion, "Zone intrusion"
 	case killfeed.AlertUAVIntrusion:
-		kind, headline = AlertKindUAVIntrusion, "UAV INTRUSION"
+		kind, headline = AlertKindUAVIntrusion, "UAV intrusion"
 	case killfeed.AlertBaseRadarIntrusion:
-		kind, headline = AlertKindBaseRadar, "BASE RADAR INTRUSION"
+		kind, headline = AlertKindBaseRadar, "Base radar intrusion"
 	case killfeed.AlertZoneBanViolation:
-		kind, headline, severity = AlertKindZoneBanViolated, "ZONE BAN VIOLATION", AlertCritical
+		kind, headline, severity = AlertKindZoneBanViolated, "Zone ban violation", AlertCritical
 	default:
 		return AdminAlert{}, false
 	}
@@ -329,7 +329,7 @@ func IntrusionAdminAlert(ev killfeed.IntrusionEvent) (AdminAlert, bool) {
 	}
 	var fields [][2]string
 	if strings.TrimSpace(ev.Zone.ZoneType) != "" {
-		fields = append(fields, [2]string{"Zone Type", presentation.SafeName(ev.Zone.ZoneType, 40)})
+		fields = append(fields, [2]string{"Zone type", presentation.EnumLabel(presentation.CleanName(ev.Zone.ZoneType, 40))})
 	}
 	return AdminAlert{
 		GuildRowID: ev.Zone.GuildID, ServerID: ev.Zone.ServerID, Kind: kind, Severity: severity, Headline: headline,

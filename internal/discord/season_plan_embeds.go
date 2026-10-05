@@ -1,7 +1,6 @@
 package discord
 
 import (
-	"fmt"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -25,24 +24,25 @@ func BuildSeasonPlanEmbed(c SeasonPlanCard) *discordgo.MessageEmbed {
 	var title, what string
 	switch {
 	case ranked && c.Stage == "DONE":
-		title, what = "🎖️ NEW RANKED SEASON", "Ranked RP has been reset. Every kill from now counts toward the new season."
+		title, what = "🎖️ New ranked season", "Ranked RP has been reset. Every kill from now counts toward the new season."
 	case ranked:
-		title, what = "🗓️ RANKED RESET SCHEDULED", "Ranked RP will be archived and reset. Climb as high as you can before then."
+		title, what = "🗓️ Ranked reset scheduled", "Ranked RP will be archived and reset. Climb as high as you can before then."
 	case c.Stage == "DONE":
-		title, what = "📊 NEW STATS SEASON", "The stats season has rolled over. Season kills, deaths and leaderboards start fresh."
+		title, what = "📊 New stats season", "The stats season has rolled over. Season kills, deaths and leaderboards start fresh."
 	default:
-		title, what = "🗓️ STATS SEASON ENDING", "Season stats will be archived and a new season starts. All-time stats are kept."
+		title, what = "🗓️ Stats season ending", "Season stats will be archived and a new season starts. All-time stats are kept."
 	}
 	embed := presentation.NewFeedEmbed(title, presentation.ChampionGold)
 	embed.Description = what
 	if !ranked && c.NewSeasonName != "" {
-		presentation.AppendFields(embed, presentation.MetricField("NEW SEASON", presentation.SafeName(c.NewSeasonName, 80), true))
+		presentation.AppendFields(embed, presentation.MetricField("New season", presentation.SafeName(c.NewSeasonName, 80), true))
 	}
-	if ranked && c.ServerName != "" {
-		presentation.AppendFields(embed, presentation.MetricField("SERVER", presentation.SafeName(c.ServerName, 80), true))
+	if ranked {
+		// Ranked is per server, so the card says which one - in the footer, like every card.
+		embed.Footer = presentation.Footer(c.ServerName, "Ranked")
 	}
 	if c.Stage != "DONE" && !c.RunAt.IsZero() {
-		presentation.AppendFields(embed, presentation.MetricField("WHEN", fmt.Sprintf("<t:%d:F> (<t:%d:R>)", c.RunAt.Unix(), c.RunAt.Unix()), false))
+		presentation.AppendFields(embed, presentation.MetricField("When", presentation.TimestampWithRelative(c.RunAt), false))
 	}
 	return presentation.FitEmbed(embed)
 }

@@ -16,7 +16,7 @@ import (
 
 func TestPlayerLeaderboardUsesTheSharedRankSystem(t *testing.T) {
 	e := presentation.BuildPlayerLeaderboardEmbed("Kills", FixturePlayerLeaderboard(), "Lifetime")
-	if len(e.Fields) != 1 || e.Fields[0].Name != "⚔️ TOP KILLERS" {
+	if len(e.Fields) != 1 || e.Fields[0].Name != "⚔️ Top killers" {
 		t.Fatalf("one ranking field: %#v", e.Fields)
 	}
 	if e.Fields[0].Value != presentation.FormatRankingBlock(presentation.RankKills, FixturePlayerLeaderboard(), 0) {
@@ -143,28 +143,29 @@ func TestCustomTemplateRegressionOverV2Default(t *testing.T) {
 		if !reflect.DeepEqual(card, def) {
 			t.Errorf("%s: expected the Champion V2 default, got %q", c.name, card.Title)
 		}
-		if card.Title != "☠️ PLAYER ELIMINATED" {
-			t.Errorf("%s: fallback is not the V2 card: %q", c.name, card.Title)
+		// The built-in card's title today (sentence case; docs/DISCORD_DESIGN.md).
+		if card.Title != "☠️ Player eliminated" {
+			t.Errorf("%s: fallback is not the built-in card: %q", c.name, card.Title)
 		}
 	}
 }
 
 func TestSeasonCompletionCardIsCompactAndNeverInventsHolders(t *testing.T) {
 	e := BuildSeasonCompletionEmbed("Season 3", "", 20, "", 55, "", 298.4, "", 8)
-	if e.Title != "🏆 SEASON COMPLETE" || len(e.Fields) != 4 {
+	if e.Title != "🏆 Season complete" || len(e.Fields) != 4 {
 		t.Fatalf("season card: %q %d fields", e.Title, len(e.Fields))
 	}
 	text := allText(e)
-	for _, must := range []string{"**20 Kills**", "**55 Kills**", "**298.4m**", "**8 Kills**", "Season 3"} {
+	for _, must := range []string{"**20 kills**", "**55 kills**", "**298.4m**", "**8 kills**", "Season 3"} {
 		if !strings.Contains(text, must) {
 			t.Errorf("missing %q", must)
 		}
 	}
-	if strings.Contains(text, "Player") || strings.Contains(text, "**SEASON**") {
+	if strings.Contains(text, "Player") || strings.Contains(text, "**Season**") {
 		t.Fatalf("placeholder or debug label rendered: %q", text)
 	}
 	named := BuildSeasonCompletionEmbed("S", "WilliamAle--10", 1, "", 0, "", 0, "", 0)
-	if named.Fields[0].Value != "**1 Kill**\nWilliamAle--10" {
+	if named.Fields[0].Value != "**1 kill**\nWilliamAle--10" {
 		t.Fatalf("known holder: %q", named.Fields[0].Value)
 	}
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/economy"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -29,14 +30,14 @@ func buildSeasonChampionsCard(top []repository.SeasonFinisher, rewards [3]int64,
 		if i >= 3 {
 			break
 		}
-		line := fmt.Sprintf("%s **%s** · %d RP from %d kills", placeMedals[i], orUnknown(f.Name), f.RP, f.Kills)
+		line := fmt.Sprintf("%s **%s** • %s RP from %s", placeMedals[i], orUnknown(f.Name), commaInt(f.RP), presentation.Plural(int64(f.Kills), "kill", "kills"))
 		if rewards[i] > 0 {
-			line += fmt.Sprintf(" · +%d credits", rewards[i])
+			line += " • +" + commaInt(rewards[i]) + " credits"
 		}
 		lines = append(lines, line)
 	}
-	desc := fmt.Sprintf("The ranked season on %s has ended (<t:%d:D> to <t:%d:D>).", serverWord(serverName), s.StartsAt.Unix(), s.EndsAt.Unix())
-	embed := &discordgo.MessageEmbed{Author: rankedCardAuthor(), Color: 0xF5B700, Title: "🏆 Season champions", Description: desc}
+	desc := fmt.Sprintf("The ranked season on %s has ended (%s to %s).", serverWord(serverName), presentation.Timestamp(s.StartsAt, 'D'), presentation.Timestamp(s.EndsAt, 'D'))
+	embed := &discordgo.MessageEmbed{Author: rankedCardAuthor(), Color: presentation.Gold, Title: "🏆 Season champions", Description: desc}
 	if len(lines) > 0 {
 		embed.Fields = []*discordgo.MessageEmbedField{{Name: "Final standings", Value: strings.Join(lines, "\n")}}
 	}
@@ -74,8 +75,8 @@ func (a *App) runSeasonRewards(ctx context.Context, guildID int64, s repository.
 				slog.Warn("component=upgrades", "msg", "season reward failed", "season_id", season.ID, "player_id", f.PlayerID, "err", err.Error())
 				continue
 			}
-			_ = a.sendPlayerDM(ctx, guildID, f.PlayerID, dm(upgradeEmbed("CHAMPIONS® RANKED", placeMedals[i]+" You finished #"+fmt.Sprint(i+1)+" in the ranked season",
-				fmt.Sprintf("On %s, with %d RP. **+%d champ credits** are in your wallet.", serverWord(serverName), f.RP, rewards[i]), 0xF5B700)))
+			_ = a.sendPlayerDM(ctx, guildID, f.PlayerID, dm(upgradeEmbed("Ranked", placeMedals[i]+" You finished #"+fmt.Sprint(i+1)+" in the ranked season",
+				fmt.Sprintf("On %s, with %s RP. **+%s champ credits** are in your wallet.", serverWord(serverName), commaInt(f.RP), commaInt(rewards[i])), presentation.Gold)))
 		}
 		if len(top) > 0 {
 			a.postRankedCard(ctx, guildID, s.ServerID, buildSeasonChampionsCard(top, rewards, serverName, season))

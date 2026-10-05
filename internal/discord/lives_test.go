@@ -44,21 +44,21 @@ func TestBuildLifeRecapEmbedShowsOnlyWhatWasRecorded(t *testing.T) {
 	if !strings.Contains(embed.Description, "with M4-A1 from 51.4m") {
 		t.Fatalf("ending line = %q", embed.Description)
 	}
-	if got := fieldValue(flat, "SURVIVED"); got != "3h 05m played" {
-		t.Fatalf("SURVIVED = %q", got)
+	if got := fieldValue(flat, "Survived"); got != "3h 05m played" {
+		t.Fatalf("Survived = %q", got)
 	}
-	if got := fieldValue(flat, "KILLS"); got != "3 kills (1 headshot)" {
-		t.Fatalf("KILLS = %q", got)
+	if got := fieldValue(flat, "Kills"); got != "3 kills (1 headshot)" {
+		t.Fatalf("Kills = %q", got)
 	}
-	if got := fieldValue(flat, "TRACKED DISTANCE"); got != "at least 2.6 km" {
-		t.Fatalf("TRACKED DISTANCE = %q", got)
+	if got := fieldValue(flat, "Tracked distance"); got != "at least 2.6 km" {
+		t.Fatalf("Tracked distance = %q", got)
 	}
 
 	// A life that began before recording, ended by a bare "died" line: no playtime, no distance,
 	// no invented cause.
 	bare := BuildLifeRecapEmbed(repository.Life{PlayerName: "X", Cause: repository.LifeCauseOther}, "")
 	for _, f := range bare.Fields {
-		if f.Name == "SURVIVED" || f.Name == "TRACKED DISTANCE" || f.Name == "LONGEST KILL" {
+		if f.Name == "Survived" || f.Name == "Tracked distance" || f.Name == "Longest kill" {
 			t.Fatalf("unrecorded field shown: %s=%s", f.Name, f.Value)
 		}
 	}

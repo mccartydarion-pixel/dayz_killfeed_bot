@@ -1,0 +1,2377 @@
+{
+  "BOUNTY_TRACKING/every-variable/cancelled": {
+    "route": "BOUNTY_TRACKING",
+    "vars": {
+      "amount": "100,000",
+      "server_name": "Northstar",
+      "status": "cancelled",
+      "target": "Semillita-azul-_",
+      "victim": "Semillita-azul-_"
+    },
+    "embed": {
+      "title": "Bounty cancelled",
+      "description": "Semillita-azul-\\_ for 100,000 pts\nNorthstar",
+      "color": 13938487
+    }
+  },
+  "BOUNTY_TRACKING/every-variable/claimed": {
+    "route": "BOUNTY_TRACKING",
+    "vars": {
+      "amount": "150,000",
+      "count": "2",
+      "distance": "86m",
+      "hunter": "WilliamAle--10",
+      "killer": "WilliamAle--10",
+      "server_name": "Northstar",
+      "status": "claimed",
+      "target": "Semillita-azul-_",
+      "total": "150,000",
+      "victim": "Semillita-azul-_",
+      "weapon": "M4-A1"
+    },
+    "embed": {
+      "title": "Bounty claimed",
+      "description": "Semillita-azul-\\_ for 150,000 pts\nWilliamAle--10 took 150,000 pts (2)\nM4-A1 86m\nNorthstar",
+      "color": 13938487
+    }
+  },
+  "BOUNTY_TRACKING/every-variable/expired": {
+    "route": "BOUNTY_TRACKING",
+    "vars": {
+      "amount": "100,000",
+      "server_name": "Northstar",
+      "status": "expired",
+      "target": "Semillita-azul-_",
+      "victim": "Semillita-azul-_"
+    },
+    "embed": {
+      "title": "Bounty expired",
+      "description": "Semillita-azul-\\_ for 100,000 pts\nNorthstar",
+      "color": 13938487
+    }
+  },
+  "BOUNTY_TRACKING/every-variable/increased": {
+    "route": "BOUNTY_TRACKING",
+    "vars": {
+      "amount": "150,000",
+      "server_name": "Northstar",
+      "status": "increased",
+      "target": "Semillita-azul-_",
+      "victim": "Semillita-azul-_"
+    },
+    "embed": {
+      "title": "Bounty increased",
+      "description": "Semillita-azul-\\_ for 150,000 pts\nNorthstar",
+      "color": 13938487
+    }
+  },
+  "BOUNTY_TRACKING/every-variable/placed": {
+    "route": "BOUNTY_TRACKING",
+    "vars": {
+      "amount": "100,000",
+      "server_name": "Northstar",
+      "status": "placed",
+      "target": "Semillita-azul-_",
+      "victim": "Semillita-azul-_"
+    },
+    "embed": {
+      "title": "Bounty placed",
+      "description": "Semillita-azul-\\_ for 100,000 pts\nNorthstar",
+      "color": 13938487
+    }
+  },
+  "BOUNTY_TRACKING/website-default/cancelled": {
+    "route": "BOUNTY_TRACKING",
+    "vars": {
+      "amount": "100,000",
+      "server_name": "Northstar",
+      "status": "cancelled",
+      "target": "Semillita-azul-_",
+      "victim": "Semillita-azul-_"
+    },
+    "embed": {
+      "title": "Bounty update",
+      "timestamp": "2026-09-23T18:42:07Z",
+      "color": 10373963,
+      "footer": {
+        "text": "Champion Killfeed"
+      },
+      "fields": [
+        {
+          "name": "Target",
+          "value": "Semillita-azul-\\_",
+          "inline": true
+        }
+      ]
+    }
+  },
+  "BOUNTY_TRACKING/website-default/claimed": {
+    "route": "BOUNTY_TRACKING",
+    "vars": {
+      "amount": "150,000",
+      "count": "2",
+      "distance": "86m",
+      "hunter": "WilliamAle--10",
+      "killer": "WilliamAle--10",
+      "server_name": "Northstar",
+      "status": "claimed",
+      "target": "Semillita-azul-_",
+      "total": "150,000",
+      "victim": "Semillita-azul-_",
+      "weapon": "M4-A1"
+    },
+    "embed": {
+      "title": "Bounty update",
+      "description": "WilliamAle--10 is tracking Semillita-azul-\\_.",
+      "timestamp": "2026-09-23T18:42:07Z",
+      "color": 10373963,
+      "footer": {
+        "text": "Champion Killfeed"
+      },
+      "fields": [
+        {
+          "name": "Hunter",
+          "value": "WilliamAle--10",
+          "inline": true
+        },
+        {
+          "name": "Target",
+          "value": "Semillita-azul-\\_",
+          "inline": true
+        }
+      ]
+    }
+  },
+  "BOUNTY_TRACKING/website-default/expired": {
+    "route": "BOUNTY_TRACKING",
+    "vars": {
+      "amount": "100,000",
+      "server_name": "Northstar",
+      "status": "expired",
+      "target": "Semillita-azul-_",
+      "victim": "Semillita-azul-_"
+    },
+    "embed": {
+      "title": "Bounty update",
+      "timestamp": "2026-09-23T18:42:07Z",
+      "color": 10373963,
+      "footer": {
+        "text": "Champion Killfeed"
+      },
+      "fields": [
+        {
+          "name": "Target",
+          "value": "Semillita-azul-\\_",
+          "inline": true
+        }
+      ]
+    }
+  },
+  "BOUNTY_TRACKING/website-default/increased": {
+    "route": "BOUNTY_TRACKING",
+    "vars": {
+      "amount": "150,000",
+      "server_name": "Northstar",
+      "status": "increased",
+      "target": "Semillita-azul-_",
+      "victim": "Semillita-azul-_"
+    },
+    "embed": {
+      "title": "Bounty update",
+      "timestamp": "2026-09-23T18:42:07Z",
+      "color": 10373963,
+      "footer": {
+        "text": "Champion Killfeed"
+      },
+      "fields": [
+        {
+          "name": "Target",
+          "value": "Semillita-azul-\\_",
+          "inline": true
+        }
+      ]
+    }
+  },
+  "BOUNTY_TRACKING/website-default/placed": {
+    "route": "BOUNTY_TRACKING",
+    "vars": {
+      "amount": "100,000",
+      "server_name": "Northstar",
+      "status": "placed",
+      "target": "Semillita-azul-_",
+      "victim": "Semillita-azul-_"
+    },
+    "embed": {
+      "title": "Bounty update",
+      "timestamp": "2026-09-23T18:42:07Z",
+      "color": 10373963,
+      "footer": {
+        "text": "Champion Killfeed"
+      },
+      "fields": [
+        {
+          "name": "Target",
+          "value": "Semillita-azul-\\_",
+          "inline": true
+        }
+      ]
+    }
+  },
+  "CONNECTIONS/every-variable/joined": {
+    "route": "CONNECTIONS",
+    "vars": {
+      "event": "joined",
+      "event_type": "connected",
+      "player": "WilliamAle--10",
+      "server_name": "Northstar",
+      "timestamp": "2026-09-23 18:42:07 UTC"
+    },
+    "embed": {
+      "description": "WilliamAle--10 joined (connected)\nNorthstar 2026-09-23 18:42:07 UTC",
+      "color": 4165480
+    }
+  },
+  "CONNECTIONS/every-variable/left-no-session": {
+    "route": "CONNECTIONS",
+    "vars": {
+      "event": "left",
+      "event_type": "disconnected",
+      "player": "Semillita-azul-_",
+      "server_name": "Northstar",
+      "timestamp": "2026-09-23 18:42:07 UTC"
+    },
+    "embed": {
+      "description": "Semillita-azul-\\_ left (disconnected)\nNorthstar 2026-09-23 18:42:07 UTC",
+      "color": 4165480
+    }
+  },
+  "CONNECTIONS/every-variable/left-with-session": {
+    "route": "CONNECTIONS",
+    "vars": {
+      "event": "left",
+      "event_type": "disconnected",
+      "player": "Semillita-azul-_",
+      "server_name": "Northstar",
+      "session": "1h 12m",
+      "timestamp": "2026-09-23 18:42:07 UTC"
+    },
+    "embed": {
+      "description": "Semillita-azul-\\_ left (disconnected)\nSession 1h 12m\nNorthstar 2026-09-23 18:42:07 UTC",
+      "color": 4165480
+    }
+  },
+  "CONNECTIONS/website-default/joined": {
+    "route": "CONNECTIONS",
+    "vars": {
+      "event": "joined",
+      "event_type": "connected",
+      "player": "WilliamAle--10",
+      "server_name": "Northstar",
+      "timestamp": "2026-09-23 18:42:07 UTC"
+    },
+    "embed": {
+      "title": "Player connection",
+      "description": "WilliamAle--10 joined the server.",
+      "timestamp": "2026-09-23T18:42:07Z",
+      "color": 5015456,
+      "footer": {
+        "text": "Champion Killfeed"
+      },
+      "fields": [
+        {
+          "name": "Server",
+          "value": "Northstar"
+        }
+      ]
+    }
+  },
+  "CONNECTIONS/website-default/left-no-session": {
+    "route": "CONNECTIONS",
+    "vars": {
+      "event": "left",
+      "event_type": "disconnected",
+      "player": "Semillita-azul-_",
+      "server_name": "Northstar",
+      "timestamp": "2026-09-23 18:42:07 UTC"
+    },
+    "embed": {
+      "title": "Player connection",
+      "description": "Semillita-azul-\\_ left the server.",
+      "timestamp": "2026-09-23T18:42:07Z",
+      "color": 5015456,
+      "footer": {
+        "text": "Champion Killfeed"
+      },
+      "fields": [
+        {
+          "name": "Server",
+          "value": "Northstar"
+        }
+      ]
+    }
+  },
+  "CONNECTIONS/website-default/left-with-session": {
+    "route": "CONNECTIONS",
+    "vars": {
+      "event": "left",
+      "event_type": "disconnected",
+      "player": "Semillita-azul-_",
+      "server_name": "Northstar",
+      "session": "1h 12m",
+      "timestamp": "2026-09-23 18:42:07 UTC"
+    },
+    "embed": {
+      "title": "Player connection",
+      "description": "Semillita-azul-\\_ left the server.",
+      "timestamp": "2026-09-23T18:42:07Z",
+      "color": 5015456,
+      "footer": {
+        "text": "Champion Killfeed"
+      },
+      "fields": [
+        {
+          "name": "Server",
+          "value": "Northstar"
+        }
+      ]
+    }
+  },
+  "ECONOMY/every-variable/admin-credit": {
+    "route": "ECONOMY",
+    "vars": {
+      "amount": "50,000",
+      "player": "WilliamAle--10",
+      "server_name": "Northstar",
+      "transaction_type": "Admin credit"
+    },
+    "embed": {
+      "title": "Admin credit",
+      "description": "WilliamAle--10: 50,000 pts\nNorthstar",
+      "color": 4165480
+    }
+  },
+  "ECONOMY/every-variable/admin-debit": {
+    "route": "ECONOMY",
+    "vars": {
+      "amount": "25,000",
+      "player": "Semillita-azul-_",
+      "server_name": "Northstar",
+      "transaction_type": "Admin debit"
+    },
+    "embed": {
+      "title": "Admin debit",
+      "description": "Semillita-azul-\\_: 25,000 pts\nNorthstar",
+      "color": 4165480
+    }
+  },
+  "ECONOMY/every-variable/bounty-reward": {
+    "route": "ECONOMY",
+    "vars": {
+      "amount": "125,000",
+      "balance": "340,000",
+      "player": "WilliamAle--10",
+      "server_name": "Northstar",
+      "transaction_type": "Bounty reward"
+    },
+    "embed": {
+      "title": "Bounty reward",
+      "description": "WilliamAle--10: 125,000 pts\nBalance 340,000 pts\nNorthstar",
+      "color": 4165480
+    }
+  },
+  "ECONOMY/every-variable/shop-purchase": {
+    "route": "ECONOMY",
+    "vars": {
+      "amount": "750",
+      "player": "Semillita-azul-_",
+      "server_name": "Northstar",
+      "transaction_type": "Shop purchase"
+    },
+    "embed": {
+      "title": "Shop purchase",
+      "description": "Semillita-azul-\\_: 750 pts\nNorthstar",
+      "color": 4165480
+    }
+  },
+  "ECONOMY/every-variable/system-reward": {
+    "route": "ECONOMY",
+    "vars": {
+      "amount": "10",
+      "balance": "10",
+      "player": "WilliamAle--10",
+      "reason": "Daily play reward (3 days in a row)",
+      "server_name": "Northstar",
+      "transaction_type": "Reward"
+    },
+    "embed": {
+      "title": "Reward",
+      "description": "WilliamAle--10: 10 pts\nBalance 10 pts\nFor Daily play reward (3 days in a row)\nNorthstar",
+      "color": 4165480
+    }
+  },
+  "ECONOMY/website-default/admin-credit": {
+    "route": "ECONOMY",
+    "vars": {
+      "amount": "50,000",
+      "player": "WilliamAle--10",
+      "server_name": "Northstar",
+      "transaction_type": "Admin credit"
+    },
+    "embed": {
+      "title": "Economy transaction",
+      "description": "WilliamAle--10 received 50,000 pts.",
+      "timestamp": "2026-09-23T18:42:07Z",
+      "color": 5020274,
+      "footer": {
+        "text": "Champion Killfeed"
+      },
+      "fields": [
+        {
+          "name": "Amount",
+          "value": "50,000",
+          "inline": true
+        }
+      ]
+    }
+  },
+  "ECONOMY/website-default/admin-debit": {
+    "route": "ECONOMY",
+    "vars": {
+      "amount": "25,000",
+      "player": "Semillita-azul-_",
+      "server_name": "Northstar",
+      "transaction_type": "Admin debit"
+    },
+    "embed": {
+      "title": "Economy transaction",
+      "description": "Semillita-azul-\\_ received 25,000 pts.",
+      "timestamp": "2026-09-23T18:42:07Z",
+      "color": 5020274,
+      "footer": {
+        "text": "Champion Killfeed"
+      },
+      "fields": [
+        {
+          "name": "Amount",
+          "value": "25,000",
+          "inline": true
+        }
+      ]
+    }
+  },
+  "ECONOMY/website-default/bounty-reward": {
+    "route": "ECONOMY",
+    "vars": {
+      "amount": "125,000",
+      "balance": "340,000",
+      "player": "WilliamAle--10",
+      "server_name": "Northstar",
+      "transaction_type": "Bounty reward"
+    },
+    "embed": {
+      "title": "Economy transaction",
+      "description": "WilliamAle--10 received 125,000 pts.",
+      "timestamp": "2026-09-23T18:42:07Z",
+      "color": 5020274,
+      "footer": {
+        "text": "Champion Killfeed"
+      },
+      "fields": [
+        {
+          "name": "Amount",
+          "value": "125,000",
+          "inline": true
+        },
+        {
+          "name": "Balance",
+          "value": "340,000",
+          "inline": true
+        }
+      ]
+    }
+  },
+  "ECONOMY/website-default/shop-purchase": {
+    "route": "ECONOMY",
+    "vars": {
+      "amount": "750",
+      "player": "Semillita-azul-_",
+      "server_name": "Northstar",
+      "transaction_type": "Shop purchase"
+    },
+    "embed": {
+      "title": "Economy transaction",
+      "description": "Semillita-azul-\\_ received 750 pts.",
+      "timestamp": "2026-09-23T18:42:07Z",
+      "color": 5020274,
+      "footer": {
+        "text": "Champion Killfeed"
+      },
+      "fields": [
+        {
+          "name": "Amount",
+          "value": "750",
+          "inline": true
+        }
+      ]
+    }
+  },
+  "ECONOMY/website-default/system-reward": {
+    "route": "ECONOMY",
+    "vars": {
+      "amount": "10",
+      "balance": "10",
+      "player": "WilliamAle--10",
+      "reason": "Daily play reward (3 days in a row)",
+      "server_name": "Northstar",
+      "transaction_type": "Reward"
+    },
+    "embed": {
+      "title": "Economy transaction",
+      "description": "WilliamAle--10 received 10 pts.",
+      "timestamp": "2026-09-23T18:42:07Z",
+      "color": 5020274,
+      "footer": {
+        "text": "Champion Killfeed"
+      },
+      "fields": [
+        {
+          "name": "Amount",
+          "value": "10",
+          "inline": true
+        },
+        {
+          "name": "Balance",
+          "value": "10",
+          "inline": true
+        }
+      ]
+    }
+  },
+  "HITFEED/every-variable/full": {
+    "route": "HITFEED",
+    "vars": {
+      "ammo": "556x45",
+      "attacker": "WilliamAle--10",
+      "damage": "142",
+      "distance": "87m",
+      "hit_zone": "Torso",
+      "hits": "3",
+      "killer": "WilliamAle--10",
+      "server_name": "Northstar",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Semillita-azul-_",
+      "weapon": "M4-A1"
+    },
+    "embed": {
+      "title": "WilliamAle--10 hit Semillita-azul-\\_",
+      "description": "M4-A1 556x45 87m\nTorso x3 = 142\nNorthstar 2026-09-23 18:42:07 UTC",
+      "color": 4620980
+    }
+  },
+  "HITFEED/every-variable/partial": {
+    "route": "HITFEED",
+    "vars": {
+      "attacker": "WilliamAle--10",
+      "hits": "2",
+      "killer": "WilliamAle--10",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Semillita-azul-_"
+    },
+    "embed": {
+      "title": "WilliamAle--10 hit Semillita-azul-\\_",
+      "color": 4620980
+    }
+  },
+  "HITFEED/website-default/full": {
+    "route": "HITFEED",
+    "vars": {
+      "ammo": "556x45",
+      "attacker": "WilliamAle--10",
+      "damage": "142",
+      "distance": "87m",
+      "hit_zone": "Torso",
+      "hits": "3",
+      "killer": "WilliamAle--10",
+      "server_name": "Northstar",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Semillita-azul-_",
+      "weapon": "M4-A1"
+    },
+    "embed": {
+      "title": "Hit confirmed",
+      "description": "WilliamAle--10 hit Semillita-azul-\\_ with M4-A1.",
+      "timestamp": "2026-09-23T18:42:07Z",
+      "color": 13208381,
+      "footer": {
+        "text": "Champion Killfeed"
+      },
+      "fields": [
+        {
+          "name": "Distance",
+          "value": "87m",
+          "inline": true
+        }
+      ]
+    }
+  },
+  "HITFEED/website-default/partial": {
+    "route": "HITFEED",
+    "vars": {
+      "attacker": "WilliamAle--10",
+      "hits": "2",
+      "killer": "WilliamAle--10",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Semillita-azul-_"
+    },
+    "embed": {
+      "title": "Hit confirmed",
+      "timestamp": "2026-09-23T18:42:07Z",
+      "color": 13208381,
+      "footer": {
+        "text": "Champion Killfeed"
+      }
+    }
+  },
+  "KILLFEED/story-labels/bare-and-hostile-names": {
+    "route": "KILLFEED",
+    "vars": {
+      "kill_type": "☠️ PLAYER ELIMINATED",
+      "killer": "@everyone **x**",
+      "server_name": "Northstar",
+      "story_title": "☠️ ☠️ PLAYER ELIMINATED",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Unknown"
+    },
+    "embed": {
+      "title": "☠️ ☠️ PLAYER ELIMINATED",
+      "description": "everyone \\*\\*x\\*\\* \u003e Unknown",
+      "color": 9109504,
+      "author": {
+        "name": "Northstar feed"
+      }
+    }
+  },
+  "KILLFEED/story-labels/bounty-claimed": {
+    "route": "KILLFEED",
+    "vars": {
+      "bounty_amount": "12,500",
+      "bounty_claimed": "BOUNTY CLAIMED",
+      "distance": "64.2m",
+      "h2h_killer_wins": "4",
+      "h2h_score": "4–0",
+      "h2h_victim_wins": "0",
+      "hit_zone": "Torso",
+      "kill_type": "💰 BOUNTY CLAIMED",
+      "killer": "WilliamAle--10",
+      "killer_deaths": "0",
+      "killer_kd": "9.00",
+      "killer_kills": "9",
+      "killer_streak": "1",
+      "range": "MID RANGE",
+      "server_name": "Northstar",
+      "special_kill": "BOUNTY CLAIMED",
+      "story_title": "💰 💰 BOUNTY CLAIMED",
+      "streak": "1",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Semillita-azul-_",
+      "victim_deaths": "2",
+      "victim_kd": "1.00",
+      "victim_kills": "2",
+      "weapon": "M4-A1",
+      "weapon_category": "Assault Rifle"
+    },
+    "embed": {
+      "title": "💰 💰 BOUNTY CLAIMED",
+      "description": "💰 BOUNTY CLAIMED | BOUNTY CLAIMED\nWilliamAle--10 \u003e Semillita-azul-\\_",
+      "color": 9109504,
+      "author": {
+        "name": "Northstar feed"
+      },
+      "fields": [
+        {
+          "name": "Killer WilliamAle--10",
+          "value": "9/0 (9.00) streak 1",
+          "inline": true
+        },
+        {
+          "name": "Victim Semillita-azul-\\_",
+          "value": "2/2 (1.00)",
+          "inline": true
+        },
+        {
+          "name": "H2H",
+          "value": "4–0 = 4:0"
+        }
+      ]
+    }
+  },
+  "KILLFEED/story-labels/extreme-range": {
+    "route": "KILLFEED",
+    "vars": {
+      "distance": "247.3m",
+      "h2h_killer_wins": "4",
+      "h2h_score": "4–0",
+      "h2h_victim_wins": "0",
+      "headshot": "HEADSHOT",
+      "hit_zone": "Head",
+      "kill_type": "👑 EXTREME RANGE",
+      "killer": "WilliamAle--10",
+      "killer_deaths": "0",
+      "killer_kd": "9.00",
+      "killer_kills": "9",
+      "killer_streak": "1",
+      "range": "EXTREME RANGE",
+      "server_name": "Northstar",
+      "special_kill": "EXTREME RANGE ELIMINATION",
+      "story_title": "👑 👑 EXTREME RANGE",
+      "streak": "1",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Semillita-azul-_",
+      "victim_deaths": "2",
+      "victim_kd": "1.00",
+      "victim_kills": "2",
+      "weapon": "M70 Tundra",
+      "weapon_category": "Sniper Rifle"
+    },
+    "embed": {
+      "title": "👑 👑 EXTREME RANGE",
+      "description": "👑 EXTREME RANGE | EXTREME RANGE ELIMINATION\nWilliamAle--10 \u003e Semillita-azul-\\_",
+      "color": 9109504,
+      "author": {
+        "name": "Northstar feed"
+      },
+      "fields": [
+        {
+          "name": "Killer WilliamAle--10",
+          "value": "9/0 (9.00) streak 1",
+          "inline": true
+        },
+        {
+          "name": "Victim Semillita-azul-\\_",
+          "value": "2/2 (1.00)",
+          "inline": true
+        },
+        {
+          "name": "H2H",
+          "value": "4–0 = 4:0"
+        }
+      ]
+    }
+  },
+  "KILLFEED/story-labels/headshot": {
+    "route": "KILLFEED",
+    "vars": {
+      "distance": "87.4m",
+      "h2h_killer_wins": "4",
+      "h2h_score": "4–0",
+      "h2h_victim_wins": "0",
+      "headshot": "HEADSHOT",
+      "hit_zone": "Head",
+      "kill_type": "🎯 HEADSHOT",
+      "killer": "WilliamAle--10",
+      "killer_deaths": "0",
+      "killer_kd": "9.00",
+      "killer_kills": "9",
+      "killer_streak": "1",
+      "range": "MID RANGE",
+      "server_name": "Northstar",
+      "special_kill": "HEADSHOT CONFIRMED",
+      "story_title": "🎯 🎯 HEADSHOT",
+      "streak": "1",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Semillita-azul-_",
+      "victim_deaths": "2",
+      "victim_kd": "1.00",
+      "victim_kills": "2",
+      "weapon": "M4-A1",
+      "weapon_category": "Assault Rifle"
+    },
+    "embed": {
+      "title": "🎯 🎯 HEADSHOT",
+      "description": "🎯 HEADSHOT | HEADSHOT CONFIRMED\nWilliamAle--10 \u003e Semillita-azul-\\_",
+      "color": 9109504,
+      "author": {
+        "name": "Northstar feed"
+      },
+      "fields": [
+        {
+          "name": "Killer WilliamAle--10",
+          "value": "9/0 (9.00) streak 1",
+          "inline": true
+        },
+        {
+          "name": "Victim Semillita-azul-\\_",
+          "value": "2/2 (1.00)",
+          "inline": true
+        },
+        {
+          "name": "H2H",
+          "value": "4–0 = 4:0"
+        }
+      ]
+    }
+  },
+  "KILLFEED/story-labels/killing-spree": {
+    "route": "KILLFEED",
+    "vars": {
+      "distance": "42.0m",
+      "h2h_killer_wins": "4",
+      "h2h_score": "4–0",
+      "h2h_victim_wins": "0",
+      "hit_zone": "Torso",
+      "kill_type": "🔥 KILLING SPREE",
+      "killer": "WilliamAle--10",
+      "killer_deaths": "0",
+      "killer_kd": "9.00",
+      "killer_kills": "9",
+      "killer_streak": "5",
+      "killing_spree": "KILLING SPREE",
+      "range": "MID RANGE",
+      "server_name": "Northstar",
+      "special_kill": "STREAK MILESTONE",
+      "story_title": "🔥 🔥 KILLING SPREE",
+      "streak": "5",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Semillita-azul-_",
+      "victim_deaths": "2",
+      "victim_kd": "1.00",
+      "victim_kills": "2",
+      "weapon": "M4-A1",
+      "weapon_category": "Assault Rifle"
+    },
+    "embed": {
+      "title": "🔥 🔥 KILLING SPREE",
+      "description": "🔥 KILLING SPREE | STREAK MILESTONE\nWilliamAle--10 \u003e Semillita-azul-\\_",
+      "color": 9109504,
+      "author": {
+        "name": "Northstar feed"
+      },
+      "fields": [
+        {
+          "name": "Killer WilliamAle--10",
+          "value": "9/0 (9.00) streak 5",
+          "inline": true
+        },
+        {
+          "name": "Victim Semillita-azul-\\_",
+          "value": "2/2 (1.00)",
+          "inline": true
+        },
+        {
+          "name": "H2H",
+          "value": "4–0 = 4:0"
+        }
+      ]
+    }
+  },
+  "KILLFEED/story-labels/longshot": {
+    "route": "KILLFEED",
+    "vars": {
+      "distance": "173.8m",
+      "h2h_killer_wins": "4",
+      "h2h_score": "4–0",
+      "h2h_victim_wins": "0",
+      "hit_zone": "Torso",
+      "kill_type": "🎯 LONGSHOT",
+      "killer": "WilliamAle--10",
+      "killer_deaths": "0",
+      "killer_kd": "9.00",
+      "killer_kills": "9",
+      "killer_streak": "1",
+      "range": "LONG RANGE",
+      "server_name": "Northstar",
+      "special_kill": "LONG RANGE SHOT",
+      "story_title": "🎯 🎯 LONGSHOT",
+      "streak": "1",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Semillita-azul-_",
+      "victim_deaths": "2",
+      "victim_kd": "1.00",
+      "victim_kills": "2",
+      "weapon": "SCR 17"
+    },
+    "embed": {
+      "title": "🎯 🎯 LONGSHOT",
+      "description": "🎯 LONGSHOT | LONG RANGE SHOT\nWilliamAle--10 \u003e Semillita-azul-\\_",
+      "color": 9109504,
+      "author": {
+        "name": "Northstar feed"
+      },
+      "fields": [
+        {
+          "name": "Killer WilliamAle--10",
+          "value": "9/0 (9.00) streak 1",
+          "inline": true
+        },
+        {
+          "name": "Victim Semillita-azul-\\_",
+          "value": "2/2 (1.00)",
+          "inline": true
+        },
+        {
+          "name": "H2H",
+          "value": "4–0 = 4:0"
+        }
+      ]
+    }
+  },
+  "KILLFEED/story-labels/melee": {
+    "route": "KILLFEED",
+    "vars": {
+      "distance": "1.4m",
+      "h2h_killer_wins": "4",
+      "h2h_score": "4–0",
+      "h2h_victim_wins": "0",
+      "kill_type": "☠️ PLAYER ELIMINATED",
+      "killer": "WilliamAle--10",
+      "killer_deaths": "0",
+      "killer_kd": "9.00",
+      "killer_kills": "9",
+      "killer_streak": "1",
+      "range": "CLOSE QUARTERS",
+      "server_name": "Northstar",
+      "story_title": "☠️ ☠️ PLAYER ELIMINATED",
+      "streak": "1",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Semillita-azul-_",
+      "victim_deaths": "2",
+      "victim_kd": "1.00",
+      "victim_kills": "2",
+      "weapon": "Fists",
+      "weapon_category": "Fists"
+    },
+    "embed": {
+      "title": "☠️ ☠️ PLAYER ELIMINATED",
+      "description": "WilliamAle--10 \u003e Semillita-azul-\\_",
+      "color": 9109504,
+      "author": {
+        "name": "Northstar feed"
+      },
+      "fields": [
+        {
+          "name": "Killer WilliamAle--10",
+          "value": "9/0 (9.00) streak 1",
+          "inline": true
+        },
+        {
+          "name": "Victim Semillita-azul-\\_",
+          "value": "2/2 (1.00)",
+          "inline": true
+        },
+        {
+          "name": "H2H",
+          "value": "4–0 = 4:0"
+        }
+      ]
+    }
+  },
+  "KILLFEED/story-labels/standard": {
+    "route": "KILLFEED",
+    "vars": {
+      "ammo": "Bullet_556x45",
+      "damage": "34.2",
+      "distance": "11.7m",
+      "h2h_killer_wins": "4",
+      "h2h_score": "4–0",
+      "h2h_victim_wins": "0",
+      "hit_zone": "Torso",
+      "kill_type": "☠️ PLAYER ELIMINATED",
+      "killer": "WilliamAle--10",
+      "killer_deaths": "0",
+      "killer_kd": "9.00",
+      "killer_kills": "9",
+      "killer_streak": "1",
+      "range": "CLOSE QUARTERS",
+      "server_name": "Northstar",
+      "story_title": "☠️ ☠️ PLAYER ELIMINATED",
+      "streak": "1",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Semillita-azul-_",
+      "victim_deaths": "2",
+      "victim_kd": "1.00",
+      "victim_kills": "2",
+      "weapon": "M4-A1",
+      "weapon_category": "Assault Rifle"
+    },
+    "embed": {
+      "title": "☠️ ☠️ PLAYER ELIMINATED",
+      "description": "WilliamAle--10 \u003e Semillita-azul-\\_\nAssault Rifle M4-A1 Bullet\\_556x45 at 11.7m (CLOSE QUARTERS)",
+      "color": 9109504,
+      "author": {
+        "name": "Northstar feed"
+      },
+      "fields": [
+        {
+          "name": "Killer WilliamAle--10",
+          "value": "9/0 (9.00) streak 1",
+          "inline": true
+        },
+        {
+          "name": "Victim Semillita-azul-\\_",
+          "value": "2/2 (1.00)",
+          "inline": true
+        },
+        {
+          "name": "H2H",
+          "value": "4–0 = 4:0"
+        }
+      ]
+    }
+  },
+  "KILLFEED/story-labels/streak-ended": {
+    "route": "KILLFEED",
+    "vars": {
+      "distance": "42.0m",
+      "ended_streak": "8",
+      "h2h_killer_wins": "4",
+      "h2h_score": "4–0",
+      "h2h_victim_wins": "0",
+      "hit_zone": "Torso",
+      "kill_type": "💀 STREAK ENDED",
+      "killer": "WilliamAle--10",
+      "killer_deaths": "0",
+      "killer_kd": "9.00",
+      "killer_kills": "9",
+      "killer_streak": "1",
+      "range": "MID RANGE",
+      "server_name": "Northstar",
+      "special_kill": "STREAK ENDED",
+      "story_title": "💀 💀 STREAK ENDED",
+      "streak": "1",
+      "streak_ended": "STREAK ENDED",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Semillita-azul-_",
+      "victim_deaths": "2",
+      "victim_kd": "1.00",
+      "victim_kills": "2",
+      "weapon": "M4-A1",
+      "weapon_category": "Assault Rifle"
+    },
+    "embed": {
+      "title": "💀 💀 STREAK ENDED",
+      "description": "💀 STREAK ENDED | STREAK ENDED\nWilliamAle--10 \u003e Semillita-azul-\\_",
+      "color": 9109504,
+      "author": {
+        "name": "Northstar feed"
+      },
+      "fields": [
+        {
+          "name": "Killer WilliamAle--10",
+          "value": "9/0 (9.00) streak 1",
+          "inline": true
+        },
+        {
+          "name": "Victim Semillita-azul-\\_",
+          "value": "2/2 (1.00)",
+          "inline": true
+        },
+        {
+          "name": "H2H",
+          "value": "4–0 = 4:0"
+        }
+      ]
+    }
+  },
+  "KILLFEED/story-labels/war-and-events": {
+    "route": "KILLFEED",
+    "vars": {
+      "ammo": "Bullet_556x45",
+      "bounty_target": "MOST WANTED",
+      "damage": "34.2",
+      "distance": "11.7m",
+      "event_badges": "Double Kill • NWAF Event",
+      "h2h_killer_wins": "4",
+      "h2h_score": "4–0",
+      "h2h_victim_wins": "0",
+      "hit_zone": "Torso",
+      "kill_type": "⚔️ WAR KILL",
+      "killer": "WilliamAle--10",
+      "killer_deaths": "0",
+      "killer_kd": "9.00",
+      "killer_kills": "9",
+      "killer_streak": "1",
+      "range": "CLOSE QUARTERS",
+      "ranked_rp": "+250 RP ⚡💀",
+      "season_name": "Season 3",
+      "server_name": "Northstar",
+      "special_kill": "FACTION WAR",
+      "story_title": "⚔️ ⚔️ WAR KILL",
+      "streak": "1",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Semillita-azul-_",
+      "victim_deaths": "2",
+      "victim_kd": "1.00",
+      "victim_kills": "2",
+      "war_badge": "⚔️ FACTION WAR",
+      "weapon": "M4-A1",
+      "weapon_category": "Assault Rifle"
+    },
+    "embed": {
+      "title": "⚔️ ⚔️ WAR KILL",
+      "description": "⚔️ WAR KILL | FACTION WAR\nWilliamAle--10 \u003e Semillita-azul-\\_\nAssault Rifle M4-A1 Bullet\\_556x45 at 11.7m (CLOSE QUARTERS)\n⚔️ FACTION WAR Double Kill • NWAF Event +250 RP ⚡💀\nSeason 3 on Northstar at 2026-09-23 18:42:07 UTC",
+      "color": 9109504,
+      "footer": {
+        "text": "Season 3 • Northstar"
+      },
+      "author": {
+        "name": "Northstar feed"
+      },
+      "fields": [
+        {
+          "name": "Killer WilliamAle--10",
+          "value": "9/0 (9.00) streak 1",
+          "inline": true
+        },
+        {
+          "name": "Victim Semillita-azul-\\_",
+          "value": "2/2 (1.00)",
+          "inline": true
+        },
+        {
+          "name": "H2H",
+          "value": "4–0 = 4:0"
+        }
+      ]
+    }
+  },
+  "KILLFEED/website-default/bare-and-hostile-names": {
+    "route": "KILLFEED",
+    "vars": {
+      "kill_type": "☠️ PLAYER ELIMINATED",
+      "killer": "@everyone **x**",
+      "server_name": "Northstar",
+      "story_title": "☠️ ☠️ PLAYER ELIMINATED",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Unknown"
+    },
+    "embed": {
+      "title": "☠ PLAYER ELIMINATED",
+      "description": "**everyone \\*\\*x\\*\\*** → **Unknown**",
+      "timestamp": "2026-09-23T18:42:07Z",
+      "color": 13938487,
+      "footer": {
+        "text": "Champion Killfeed"
+      }
+    }
+  },
+  "KILLFEED/website-default/bounty-claimed": {
+    "route": "KILLFEED",
+    "vars": {
+      "bounty_amount": "12,500",
+      "bounty_claimed": "BOUNTY CLAIMED",
+      "distance": "64.2m",
+      "h2h_killer_wins": "4",
+      "h2h_score": "4–0",
+      "h2h_victim_wins": "0",
+      "hit_zone": "Torso",
+      "kill_type": "💰 BOUNTY CLAIMED",
+      "killer": "WilliamAle--10",
+      "killer_deaths": "0",
+      "killer_kd": "9.00",
+      "killer_kills": "9",
+      "killer_streak": "1",
+      "range": "MID RANGE",
+      "server_name": "Northstar",
+      "special_kill": "BOUNTY CLAIMED",
+      "story_title": "💰 💰 BOUNTY CLAIMED",
+      "streak": "1",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Semillita-azul-_",
+      "victim_deaths": "2",
+      "victim_kd": "1.00",
+      "victim_kills": "2",
+      "weapon": "M4-A1",
+      "weapon_category": "Assault Rifle"
+    },
+    "embed": {
+      "title": "☠ PLAYER ELIMINATED",
+      "description": "**WilliamAle--10** → **Semillita-azul-\\_**\n\n`M4-A1` • `64.2m` • MID RANGE",
+      "timestamp": "2026-09-23T18:42:07Z",
+      "color": 13938487,
+      "footer": {
+        "text": "Champion Killfeed"
+      },
+      "fields": [
+        {
+          "name": "KILLER STATS",
+          "value": "Kills: 9\nDeaths: 0\nK/D: 9.00\nStreak: 1",
+          "inline": true
+        },
+        {
+          "name": "VICTIM STATS",
+          "value": "Kills: 2\nDeaths: 2\nK/D: 1.00",
+          "inline": true
+        },
+        {
+          "name": "HEAD TO HEAD",
+          "value": "4–0",
+          "inline": true
+        }
+      ]
+    }
+  },
+  "KILLFEED/website-default/extreme-range": {
+    "route": "KILLFEED",
+    "vars": {
+      "distance": "247.3m",
+      "h2h_killer_wins": "4",
+      "h2h_score": "4–0",
+      "h2h_victim_wins": "0",
+      "headshot": "HEADSHOT",
+      "hit_zone": "Head",
+      "kill_type": "👑 EXTREME RANGE",
+      "killer": "WilliamAle--10",
+      "killer_deaths": "0",
+      "killer_kd": "9.00",
+      "killer_kills": "9",
+      "killer_streak": "1",
+      "range": "EXTREME RANGE",
+      "server_name": "Northstar",
+      "special_kill": "EXTREME RANGE ELIMINATION",
+      "story_title": "👑 👑 EXTREME RANGE",
+      "streak": "1",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Semillita-azul-_",
+      "victim_deaths": "2",
+      "victim_kd": "1.00",
+      "victim_kills": "2",
+      "weapon": "M70 Tundra",
+      "weapon_category": "Sniper Rifle"
+    },
+    "embed": {
+      "title": "☠ PLAYER ELIMINATED",
+      "description": "**WilliamAle--10** → **Semillita-azul-\\_**\n\n`M70 Tundra` • `247.3m` • EXTREME RANGE",
+      "timestamp": "2026-09-23T18:42:07Z",
+      "color": 13938487,
+      "footer": {
+        "text": "Champion Killfeed"
+      },
+      "fields": [
+        {
+          "name": "KILLER STATS",
+          "value": "Kills: 9\nDeaths: 0\nK/D: 9.00\nStreak: 1",
+          "inline": true
+        },
+        {
+          "name": "VICTIM STATS",
+          "value": "Kills: 2\nDeaths: 2\nK/D: 1.00",
+          "inline": true
+        },
+        {
+          "name": "HEAD TO HEAD",
+          "value": "4–0",
+          "inline": true
+        }
+      ]
+    }
+  },
+  "KILLFEED/website-default/headshot": {
+    "route": "KILLFEED",
+    "vars": {
+      "distance": "87.4m",
+      "h2h_killer_wins": "4",
+      "h2h_score": "4–0",
+      "h2h_victim_wins": "0",
+      "headshot": "HEADSHOT",
+      "hit_zone": "Head",
+      "kill_type": "🎯 HEADSHOT",
+      "killer": "WilliamAle--10",
+      "killer_deaths": "0",
+      "killer_kd": "9.00",
+      "killer_kills": "9",
+      "killer_streak": "1",
+      "range": "MID RANGE",
+      "server_name": "Northstar",
+      "special_kill": "HEADSHOT CONFIRMED",
+      "story_title": "🎯 🎯 HEADSHOT",
+      "streak": "1",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Semillita-azul-_",
+      "victim_deaths": "2",
+      "victim_kd": "1.00",
+      "victim_kills": "2",
+      "weapon": "M4-A1",
+      "weapon_category": "Assault Rifle"
+    },
+    "embed": {
+      "title": "☠ PLAYER ELIMINATED",
+      "description": "**WilliamAle--10** → **Semillita-azul-\\_**\n\n`M4-A1` • `87.4m` • MID RANGE",
+      "timestamp": "2026-09-23T18:42:07Z",
+      "color": 13938487,
+      "footer": {
+        "text": "Champion Killfeed"
+      },
+      "fields": [
+        {
+          "name": "KILLER STATS",
+          "value": "Kills: 9\nDeaths: 0\nK/D: 9.00\nStreak: 1",
+          "inline": true
+        },
+        {
+          "name": "VICTIM STATS",
+          "value": "Kills: 2\nDeaths: 2\nK/D: 1.00",
+          "inline": true
+        },
+        {
+          "name": "HEAD TO HEAD",
+          "value": "4–0",
+          "inline": true
+        }
+      ]
+    }
+  },
+  "KILLFEED/website-default/killing-spree": {
+    "route": "KILLFEED",
+    "vars": {
+      "distance": "42.0m",
+      "h2h_killer_wins": "4",
+      "h2h_score": "4–0",
+      "h2h_victim_wins": "0",
+      "hit_zone": "Torso",
+      "kill_type": "🔥 KILLING SPREE",
+      "killer": "WilliamAle--10",
+      "killer_deaths": "0",
+      "killer_kd": "9.00",
+      "killer_kills": "9",
+      "killer_streak": "5",
+      "killing_spree": "KILLING SPREE",
+      "range": "MID RANGE",
+      "server_name": "Northstar",
+      "special_kill": "STREAK MILESTONE",
+      "story_title": "🔥 🔥 KILLING SPREE",
+      "streak": "5",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Semillita-azul-_",
+      "victim_deaths": "2",
+      "victim_kd": "1.00",
+      "victim_kills": "2",
+      "weapon": "M4-A1",
+      "weapon_category": "Assault Rifle"
+    },
+    "embed": {
+      "title": "☠ PLAYER ELIMINATED",
+      "description": "**WilliamAle--10** → **Semillita-azul-\\_**\n\n`M4-A1` • `42.0m` • MID RANGE",
+      "timestamp": "2026-09-23T18:42:07Z",
+      "color": 13938487,
+      "footer": {
+        "text": "Champion Killfeed"
+      },
+      "fields": [
+        {
+          "name": "KILLER STATS",
+          "value": "Kills: 9\nDeaths: 0\nK/D: 9.00\nStreak: 5",
+          "inline": true
+        },
+        {
+          "name": "VICTIM STATS",
+          "value": "Kills: 2\nDeaths: 2\nK/D: 1.00",
+          "inline": true
+        },
+        {
+          "name": "HEAD TO HEAD",
+          "value": "4–0",
+          "inline": true
+        }
+      ]
+    }
+  },
+  "KILLFEED/website-default/longshot": {
+    "route": "KILLFEED",
+    "vars": {
+      "distance": "173.8m",
+      "h2h_killer_wins": "4",
+      "h2h_score": "4–0",
+      "h2h_victim_wins": "0",
+      "hit_zone": "Torso",
+      "kill_type": "🎯 LONGSHOT",
+      "killer": "WilliamAle--10",
+      "killer_deaths": "0",
+      "killer_kd": "9.00",
+      "killer_kills": "9",
+      "killer_streak": "1",
+      "range": "LONG RANGE",
+      "server_name": "Northstar",
+      "special_kill": "LONG RANGE SHOT",
+      "story_title": "🎯 🎯 LONGSHOT",
+      "streak": "1",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Semillita-azul-_",
+      "victim_deaths": "2",
+      "victim_kd": "1.00",
+      "victim_kills": "2",
+      "weapon": "SCR 17"
+    },
+    "embed": {
+      "title": "☠ PLAYER ELIMINATED",
+      "description": "**WilliamAle--10** → **Semillita-azul-\\_**\n\n`SCR 17` • `173.8m` • LONG RANGE",
+      "timestamp": "2026-09-23T18:42:07Z",
+      "color": 13938487,
+      "footer": {
+        "text": "Champion Killfeed"
+      },
+      "fields": [
+        {
+          "name": "KILLER STATS",
+          "value": "Kills: 9\nDeaths: 0\nK/D: 9.00\nStreak: 1",
+          "inline": true
+        },
+        {
+          "name": "VICTIM STATS",
+          "value": "Kills: 2\nDeaths: 2\nK/D: 1.00",
+          "inline": true
+        },
+        {
+          "name": "HEAD TO HEAD",
+          "value": "4–0",
+          "inline": true
+        }
+      ]
+    }
+  },
+  "KILLFEED/website-default/melee": {
+    "route": "KILLFEED",
+    "vars": {
+      "distance": "1.4m",
+      "h2h_killer_wins": "4",
+      "h2h_score": "4–0",
+      "h2h_victim_wins": "0",
+      "kill_type": "☠️ PLAYER ELIMINATED",
+      "killer": "WilliamAle--10",
+      "killer_deaths": "0",
+      "killer_kd": "9.00",
+      "killer_kills": "9",
+      "killer_streak": "1",
+      "range": "CLOSE QUARTERS",
+      "server_name": "Northstar",
+      "story_title": "☠️ ☠️ PLAYER ELIMINATED",
+      "streak": "1",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Semillita-azul-_",
+      "victim_deaths": "2",
+      "victim_kd": "1.00",
+      "victim_kills": "2",
+      "weapon": "Fists",
+      "weapon_category": "Fists"
+    },
+    "embed": {
+      "title": "☠ PLAYER ELIMINATED",
+      "description": "**WilliamAle--10** → **Semillita-azul-\\_**\n\n`Fists` • `1.4m` • CLOSE QUARTERS",
+      "timestamp": "2026-09-23T18:42:07Z",
+      "color": 13938487,
+      "footer": {
+        "text": "Champion Killfeed"
+      },
+      "fields": [
+        {
+          "name": "KILLER STATS",
+          "value": "Kills: 9\nDeaths: 0\nK/D: 9.00\nStreak: 1",
+          "inline": true
+        },
+        {
+          "name": "VICTIM STATS",
+          "value": "Kills: 2\nDeaths: 2\nK/D: 1.00",
+          "inline": true
+        },
+        {
+          "name": "HEAD TO HEAD",
+          "value": "4–0",
+          "inline": true
+        }
+      ]
+    }
+  },
+  "KILLFEED/website-default/standard": {
+    "route": "KILLFEED",
+    "vars": {
+      "ammo": "Bullet_556x45",
+      "damage": "34.2",
+      "distance": "11.7m",
+      "h2h_killer_wins": "4",
+      "h2h_score": "4–0",
+      "h2h_victim_wins": "0",
+      "hit_zone": "Torso",
+      "kill_type": "☠️ PLAYER ELIMINATED",
+      "killer": "WilliamAle--10",
+      "killer_deaths": "0",
+      "killer_kd": "9.00",
+      "killer_kills": "9",
+      "killer_streak": "1",
+      "range": "CLOSE QUARTERS",
+      "server_name": "Northstar",
+      "story_title": "☠️ ☠️ PLAYER ELIMINATED",
+      "streak": "1",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Semillita-azul-_",
+      "victim_deaths": "2",
+      "victim_kd": "1.00",
+      "victim_kills": "2",
+      "weapon": "M4-A1",
+      "weapon_category": "Assault Rifle"
+    },
+    "embed": {
+      "title": "☠ PLAYER ELIMINATED",
+      "description": "**WilliamAle--10** → **Semillita-azul-\\_**\n\n`M4-A1` • `11.7m` • CLOSE QUARTERS",
+      "timestamp": "2026-09-23T18:42:07Z",
+      "color": 13938487,
+      "footer": {
+        "text": "Champion Killfeed"
+      },
+      "fields": [
+        {
+          "name": "KILLER STATS",
+          "value": "Kills: 9\nDeaths: 0\nK/D: 9.00\nStreak: 1",
+          "inline": true
+        },
+        {
+          "name": "VICTIM STATS",
+          "value": "Kills: 2\nDeaths: 2\nK/D: 1.00",
+          "inline": true
+        },
+        {
+          "name": "HEAD TO HEAD",
+          "value": "4–0",
+          "inline": true
+        }
+      ]
+    }
+  },
+  "KILLFEED/website-default/streak-ended": {
+    "route": "KILLFEED",
+    "vars": {
+      "distance": "42.0m",
+      "ended_streak": "8",
+      "h2h_killer_wins": "4",
+      "h2h_score": "4–0",
+      "h2h_victim_wins": "0",
+      "hit_zone": "Torso",
+      "kill_type": "💀 STREAK ENDED",
+      "killer": "WilliamAle--10",
+      "killer_deaths": "0",
+      "killer_kd": "9.00",
+      "killer_kills": "9",
+      "killer_streak": "1",
+      "range": "MID RANGE",
+      "server_name": "Northstar",
+      "special_kill": "STREAK ENDED",
+      "story_title": "💀 💀 STREAK ENDED",
+      "streak": "1",
+      "streak_ended": "STREAK ENDED",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Semillita-azul-_",
+      "victim_deaths": "2",
+      "victim_kd": "1.00",
+      "victim_kills": "2",
+      "weapon": "M4-A1",
+      "weapon_category": "Assault Rifle"
+    },
+    "embed": {
+      "title": "☠ PLAYER ELIMINATED",
+      "description": "**WilliamAle--10** → **Semillita-azul-\\_**\n\n`M4-A1` • `42.0m` • MID RANGE",
+      "timestamp": "2026-09-23T18:42:07Z",
+      "color": 13938487,
+      "footer": {
+        "text": "Champion Killfeed"
+      },
+      "fields": [
+        {
+          "name": "KILLER STATS",
+          "value": "Kills: 9\nDeaths: 0\nK/D: 9.00\nStreak: 1",
+          "inline": true
+        },
+        {
+          "name": "VICTIM STATS",
+          "value": "Kills: 2\nDeaths: 2\nK/D: 1.00",
+          "inline": true
+        },
+        {
+          "name": "HEAD TO HEAD",
+          "value": "4–0",
+          "inline": true
+        }
+      ]
+    }
+  },
+  "KILLFEED/website-default/war-and-events": {
+    "route": "KILLFEED",
+    "vars": {
+      "ammo": "Bullet_556x45",
+      "bounty_target": "MOST WANTED",
+      "damage": "34.2",
+      "distance": "11.7m",
+      "event_badges": "Double Kill • NWAF Event",
+      "h2h_killer_wins": "4",
+      "h2h_score": "4–0",
+      "h2h_victim_wins": "0",
+      "hit_zone": "Torso",
+      "kill_type": "⚔️ WAR KILL",
+      "killer": "WilliamAle--10",
+      "killer_deaths": "0",
+      "killer_kd": "9.00",
+      "killer_kills": "9",
+      "killer_streak": "1",
+      "range": "CLOSE QUARTERS",
+      "ranked_rp": "+250 RP ⚡💀",
+      "season_name": "Season 3",
+      "server_name": "Northstar",
+      "special_kill": "FACTION WAR",
+      "story_title": "⚔️ ⚔️ WAR KILL",
+      "streak": "1",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Semillita-azul-_",
+      "victim_deaths": "2",
+      "victim_kd": "1.00",
+      "victim_kills": "2",
+      "war_badge": "⚔️ FACTION WAR",
+      "weapon": "M4-A1",
+      "weapon_category": "Assault Rifle"
+    },
+    "embed": {
+      "title": "☠ PLAYER ELIMINATED",
+      "description": "**WilliamAle--10** → **Semillita-azul-\\_**\n\n`M4-A1` • `11.7m` • CLOSE QUARTERS",
+      "timestamp": "2026-09-23T18:42:07Z",
+      "color": 13938487,
+      "footer": {
+        "text": "Champion Killfeed"
+      },
+      "fields": [
+        {
+          "name": "KILLER STATS",
+          "value": "Kills: 9\nDeaths: 0\nK/D: 9.00\nStreak: 1",
+          "inline": true
+        },
+        {
+          "name": "VICTIM STATS",
+          "value": "Kills: 2\nDeaths: 2\nK/D: 1.00",
+          "inline": true
+        },
+        {
+          "name": "HEAD TO HEAD",
+          "value": "4–0",
+          "inline": true
+        }
+      ]
+    }
+  },
+  "KILLFEED/website-first-default/bare-and-hostile-names": {
+    "route": "KILLFEED",
+    "vars": {
+      "kill_type": "☠️ PLAYER ELIMINATED",
+      "killer": "@everyone **x**",
+      "server_name": "Northstar",
+      "story_title": "☠️ ☠️ PLAYER ELIMINATED",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Unknown"
+    },
+    "embed": {
+      "title": "everyone \\*\\*x\\*\\* eliminated Unknown",
+      "timestamp": "2026-09-23T18:42:07Z",
+      "color": 13938487,
+      "footer": {
+        "text": "Champion Killfeed"
+      },
+      "fields": [
+        {
+          "name": "Killer",
+          "value": "everyone \\*\\*x\\*\\*",
+          "inline": true
+        },
+        {
+          "name": "Victim",
+          "value": "Unknown",
+          "inline": true
+        }
+      ]
+    }
+  },
+  "KILLFEED/website-first-default/bounty-claimed": {
+    "route": "KILLFEED",
+    "vars": {
+      "bounty_amount": "12,500",
+      "bounty_claimed": "BOUNTY CLAIMED",
+      "distance": "64.2m",
+      "h2h_killer_wins": "4",
+      "h2h_score": "4–0",
+      "h2h_victim_wins": "0",
+      "hit_zone": "Torso",
+      "kill_type": "💰 BOUNTY CLAIMED",
+      "killer": "WilliamAle--10",
+      "killer_deaths": "0",
+      "killer_kd": "9.00",
+      "killer_kills": "9",
+      "killer_streak": "1",
+      "range": "MID RANGE",
+      "server_name": "Northstar",
+      "special_kill": "BOUNTY CLAIMED",
+      "story_title": "💰 💰 BOUNTY CLAIMED",
+      "streak": "1",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Semillita-azul-_",
+      "victim_deaths": "2",
+      "victim_kd": "1.00",
+      "victim_kills": "2",
+      "weapon": "M4-A1",
+      "weapon_category": "Assault Rifle"
+    },
+    "embed": {
+      "title": "WilliamAle--10 eliminated Semillita-azul-\\_",
+      "description": "A M4-A1 kill from 64.2m away.",
+      "timestamp": "2026-09-23T18:42:07Z",
+      "color": 13938487,
+      "footer": {
+        "text": "Champion Killfeed"
+      },
+      "fields": [
+        {
+          "name": "Killer",
+          "value": "WilliamAle--10",
+          "inline": true
+        },
+        {
+          "name": "Victim",
+          "value": "Semillita-azul-\\_",
+          "inline": true
+        },
+        {
+          "name": "Weapon",
+          "value": "M4-A1",
+          "inline": true
+        },
+        {
+          "name": "Distance",
+          "value": "64.2m",
+          "inline": true
+        }
+      ]
+    }
+  },
+  "KILLFEED/website-first-default/extreme-range": {
+    "route": "KILLFEED",
+    "vars": {
+      "distance": "247.3m",
+      "h2h_killer_wins": "4",
+      "h2h_score": "4–0",
+      "h2h_victim_wins": "0",
+      "headshot": "HEADSHOT",
+      "hit_zone": "Head",
+      "kill_type": "👑 EXTREME RANGE",
+      "killer": "WilliamAle--10",
+      "killer_deaths": "0",
+      "killer_kd": "9.00",
+      "killer_kills": "9",
+      "killer_streak": "1",
+      "range": "EXTREME RANGE",
+      "server_name": "Northstar",
+      "special_kill": "EXTREME RANGE ELIMINATION",
+      "story_title": "👑 👑 EXTREME RANGE",
+      "streak": "1",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Semillita-azul-_",
+      "victim_deaths": "2",
+      "victim_kd": "1.00",
+      "victim_kills": "2",
+      "weapon": "M70 Tundra",
+      "weapon_category": "Sniper Rifle"
+    },
+    "embed": {
+      "title": "WilliamAle--10 eliminated Semillita-azul-\\_",
+      "description": "A M70 Tundra kill from 247.3m away.",
+      "timestamp": "2026-09-23T18:42:07Z",
+      "color": 13938487,
+      "footer": {
+        "text": "Champion Killfeed"
+      },
+      "fields": [
+        {
+          "name": "Killer",
+          "value": "WilliamAle--10",
+          "inline": true
+        },
+        {
+          "name": "Victim",
+          "value": "Semillita-azul-\\_",
+          "inline": true
+        },
+        {
+          "name": "Weapon",
+          "value": "M70 Tundra",
+          "inline": true
+        },
+        {
+          "name": "Distance",
+          "value": "247.3m",
+          "inline": true
+        }
+      ]
+    }
+  },
+  "KILLFEED/website-first-default/headshot": {
+    "route": "KILLFEED",
+    "vars": {
+      "distance": "87.4m",
+      "h2h_killer_wins": "4",
+      "h2h_score": "4–0",
+      "h2h_victim_wins": "0",
+      "headshot": "HEADSHOT",
+      "hit_zone": "Head",
+      "kill_type": "🎯 HEADSHOT",
+      "killer": "WilliamAle--10",
+      "killer_deaths": "0",
+      "killer_kd": "9.00",
+      "killer_kills": "9",
+      "killer_streak": "1",
+      "range": "MID RANGE",
+      "server_name": "Northstar",
+      "special_kill": "HEADSHOT CONFIRMED",
+      "story_title": "🎯 🎯 HEADSHOT",
+      "streak": "1",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Semillita-azul-_",
+      "victim_deaths": "2",
+      "victim_kd": "1.00",
+      "victim_kills": "2",
+      "weapon": "M4-A1",
+      "weapon_category": "Assault Rifle"
+    },
+    "embed": {
+      "title": "WilliamAle--10 eliminated Semillita-azul-\\_",
+      "description": "A M4-A1 kill from 87.4m away.",
+      "timestamp": "2026-09-23T18:42:07Z",
+      "color": 13938487,
+      "footer": {
+        "text": "Champion Killfeed"
+      },
+      "fields": [
+        {
+          "name": "Killer",
+          "value": "WilliamAle--10",
+          "inline": true
+        },
+        {
+          "name": "Victim",
+          "value": "Semillita-azul-\\_",
+          "inline": true
+        },
+        {
+          "name": "Weapon",
+          "value": "M4-A1",
+          "inline": true
+        },
+        {
+          "name": "Distance",
+          "value": "87.4m",
+          "inline": true
+        }
+      ]
+    }
+  },
+  "KILLFEED/website-first-default/killing-spree": {
+    "route": "KILLFEED",
+    "vars": {
+      "distance": "42.0m",
+      "h2h_killer_wins": "4",
+      "h2h_score": "4–0",
+      "h2h_victim_wins": "0",
+      "hit_zone": "Torso",
+      "kill_type": "🔥 KILLING SPREE",
+      "killer": "WilliamAle--10",
+      "killer_deaths": "0",
+      "killer_kd": "9.00",
+      "killer_kills": "9",
+      "killer_streak": "5",
+      "killing_spree": "KILLING SPREE",
+      "range": "MID RANGE",
+      "server_name": "Northstar",
+      "special_kill": "STREAK MILESTONE",
+      "story_title": "🔥 🔥 KILLING SPREE",
+      "streak": "5",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Semillita-azul-_",
+      "victim_deaths": "2",
+      "victim_kd": "1.00",
+      "victim_kills": "2",
+      "weapon": "M4-A1",
+      "weapon_category": "Assault Rifle"
+    },
+    "embed": {
+      "title": "WilliamAle--10 eliminated Semillita-azul-\\_",
+      "description": "A M4-A1 kill from 42.0m away.",
+      "timestamp": "2026-09-23T18:42:07Z",
+      "color": 13938487,
+      "footer": {
+        "text": "Champion Killfeed"
+      },
+      "fields": [
+        {
+          "name": "Killer",
+          "value": "WilliamAle--10",
+          "inline": true
+        },
+        {
+          "name": "Victim",
+          "value": "Semillita-azul-\\_",
+          "inline": true
+        },
+        {
+          "name": "Weapon",
+          "value": "M4-A1",
+          "inline": true
+        },
+        {
+          "name": "Distance",
+          "value": "42.0m",
+          "inline": true
+        }
+      ]
+    }
+  },
+  "KILLFEED/website-first-default/longshot": {
+    "route": "KILLFEED",
+    "vars": {
+      "distance": "173.8m",
+      "h2h_killer_wins": "4",
+      "h2h_score": "4–0",
+      "h2h_victim_wins": "0",
+      "hit_zone": "Torso",
+      "kill_type": "🎯 LONGSHOT",
+      "killer": "WilliamAle--10",
+      "killer_deaths": "0",
+      "killer_kd": "9.00",
+      "killer_kills": "9",
+      "killer_streak": "1",
+      "range": "LONG RANGE",
+      "server_name": "Northstar",
+      "special_kill": "LONG RANGE SHOT",
+      "story_title": "🎯 🎯 LONGSHOT",
+      "streak": "1",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Semillita-azul-_",
+      "victim_deaths": "2",
+      "victim_kd": "1.00",
+      "victim_kills": "2",
+      "weapon": "SCR 17"
+    },
+    "embed": {
+      "title": "WilliamAle--10 eliminated Semillita-azul-\\_",
+      "description": "A SCR 17 kill from 173.8m away.",
+      "timestamp": "2026-09-23T18:42:07Z",
+      "color": 13938487,
+      "footer": {
+        "text": "Champion Killfeed"
+      },
+      "fields": [
+        {
+          "name": "Killer",
+          "value": "WilliamAle--10",
+          "inline": true
+        },
+        {
+          "name": "Victim",
+          "value": "Semillita-azul-\\_",
+          "inline": true
+        },
+        {
+          "name": "Weapon",
+          "value": "SCR 17",
+          "inline": true
+        },
+        {
+          "name": "Distance",
+          "value": "173.8m",
+          "inline": true
+        }
+      ]
+    }
+  },
+  "KILLFEED/website-first-default/melee": {
+    "route": "KILLFEED",
+    "vars": {
+      "distance": "1.4m",
+      "h2h_killer_wins": "4",
+      "h2h_score": "4–0",
+      "h2h_victim_wins": "0",
+      "kill_type": "☠️ PLAYER ELIMINATED",
+      "killer": "WilliamAle--10",
+      "killer_deaths": "0",
+      "killer_kd": "9.00",
+      "killer_kills": "9",
+      "killer_streak": "1",
+      "range": "CLOSE QUARTERS",
+      "server_name": "Northstar",
+      "story_title": "☠️ ☠️ PLAYER ELIMINATED",
+      "streak": "1",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Semillita-azul-_",
+      "victim_deaths": "2",
+      "victim_kd": "1.00",
+      "victim_kills": "2",
+      "weapon": "Fists",
+      "weapon_category": "Fists"
+    },
+    "embed": {
+      "title": "WilliamAle--10 eliminated Semillita-azul-\\_",
+      "description": "A Fists kill from 1.4m away.",
+      "timestamp": "2026-09-23T18:42:07Z",
+      "color": 13938487,
+      "footer": {
+        "text": "Champion Killfeed"
+      },
+      "fields": [
+        {
+          "name": "Killer",
+          "value": "WilliamAle--10",
+          "inline": true
+        },
+        {
+          "name": "Victim",
+          "value": "Semillita-azul-\\_",
+          "inline": true
+        },
+        {
+          "name": "Weapon",
+          "value": "Fists",
+          "inline": true
+        },
+        {
+          "name": "Distance",
+          "value": "1.4m",
+          "inline": true
+        }
+      ]
+    }
+  },
+  "KILLFEED/website-first-default/standard": {
+    "route": "KILLFEED",
+    "vars": {
+      "ammo": "Bullet_556x45",
+      "damage": "34.2",
+      "distance": "11.7m",
+      "h2h_killer_wins": "4",
+      "h2h_score": "4–0",
+      "h2h_victim_wins": "0",
+      "hit_zone": "Torso",
+      "kill_type": "☠️ PLAYER ELIMINATED",
+      "killer": "WilliamAle--10",
+      "killer_deaths": "0",
+      "killer_kd": "9.00",
+      "killer_kills": "9",
+      "killer_streak": "1",
+      "range": "CLOSE QUARTERS",
+      "server_name": "Northstar",
+      "story_title": "☠️ ☠️ PLAYER ELIMINATED",
+      "streak": "1",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Semillita-azul-_",
+      "victim_deaths": "2",
+      "victim_kd": "1.00",
+      "victim_kills": "2",
+      "weapon": "M4-A1",
+      "weapon_category": "Assault Rifle"
+    },
+    "embed": {
+      "title": "WilliamAle--10 eliminated Semillita-azul-\\_",
+      "description": "A M4-A1 kill from 11.7m away.",
+      "timestamp": "2026-09-23T18:42:07Z",
+      "color": 13938487,
+      "footer": {
+        "text": "Champion Killfeed"
+      },
+      "fields": [
+        {
+          "name": "Killer",
+          "value": "WilliamAle--10",
+          "inline": true
+        },
+        {
+          "name": "Victim",
+          "value": "Semillita-azul-\\_",
+          "inline": true
+        },
+        {
+          "name": "Weapon",
+          "value": "M4-A1",
+          "inline": true
+        },
+        {
+          "name": "Distance",
+          "value": "11.7m",
+          "inline": true
+        }
+      ]
+    }
+  },
+  "KILLFEED/website-first-default/streak-ended": {
+    "route": "KILLFEED",
+    "vars": {
+      "distance": "42.0m",
+      "ended_streak": "8",
+      "h2h_killer_wins": "4",
+      "h2h_score": "4–0",
+      "h2h_victim_wins": "0",
+      "hit_zone": "Torso",
+      "kill_type": "💀 STREAK ENDED",
+      "killer": "WilliamAle--10",
+      "killer_deaths": "0",
+      "killer_kd": "9.00",
+      "killer_kills": "9",
+      "killer_streak": "1",
+      "range": "MID RANGE",
+      "server_name": "Northstar",
+      "special_kill": "STREAK ENDED",
+      "story_title": "💀 💀 STREAK ENDED",
+      "streak": "1",
+      "streak_ended": "STREAK ENDED",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Semillita-azul-_",
+      "victim_deaths": "2",
+      "victim_kd": "1.00",
+      "victim_kills": "2",
+      "weapon": "M4-A1",
+      "weapon_category": "Assault Rifle"
+    },
+    "embed": {
+      "title": "WilliamAle--10 eliminated Semillita-azul-\\_",
+      "description": "A M4-A1 kill from 42.0m away.",
+      "timestamp": "2026-09-23T18:42:07Z",
+      "color": 13938487,
+      "footer": {
+        "text": "Champion Killfeed"
+      },
+      "fields": [
+        {
+          "name": "Killer",
+          "value": "WilliamAle--10",
+          "inline": true
+        },
+        {
+          "name": "Victim",
+          "value": "Semillita-azul-\\_",
+          "inline": true
+        },
+        {
+          "name": "Weapon",
+          "value": "M4-A1",
+          "inline": true
+        },
+        {
+          "name": "Distance",
+          "value": "42.0m",
+          "inline": true
+        }
+      ]
+    }
+  },
+  "KILLFEED/website-first-default/war-and-events": {
+    "route": "KILLFEED",
+    "vars": {
+      "ammo": "Bullet_556x45",
+      "bounty_target": "MOST WANTED",
+      "damage": "34.2",
+      "distance": "11.7m",
+      "event_badges": "Double Kill • NWAF Event",
+      "h2h_killer_wins": "4",
+      "h2h_score": "4–0",
+      "h2h_victim_wins": "0",
+      "hit_zone": "Torso",
+      "kill_type": "⚔️ WAR KILL",
+      "killer": "WilliamAle--10",
+      "killer_deaths": "0",
+      "killer_kd": "9.00",
+      "killer_kills": "9",
+      "killer_streak": "1",
+      "range": "CLOSE QUARTERS",
+      "ranked_rp": "+250 RP ⚡💀",
+      "season_name": "Season 3",
+      "server_name": "Northstar",
+      "special_kill": "FACTION WAR",
+      "story_title": "⚔️ ⚔️ WAR KILL",
+      "streak": "1",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Semillita-azul-_",
+      "victim_deaths": "2",
+      "victim_kd": "1.00",
+      "victim_kills": "2",
+      "war_badge": "⚔️ FACTION WAR",
+      "weapon": "M4-A1",
+      "weapon_category": "Assault Rifle"
+    },
+    "embed": {
+      "title": "WilliamAle--10 eliminated Semillita-azul-\\_",
+      "description": "A M4-A1 kill from 11.7m away.",
+      "timestamp": "2026-09-23T18:42:07Z",
+      "color": 13938487,
+      "footer": {
+        "text": "Champion Killfeed"
+      },
+      "fields": [
+        {
+          "name": "Killer",
+          "value": "WilliamAle--10",
+          "inline": true
+        },
+        {
+          "name": "Victim",
+          "value": "Semillita-azul-\\_",
+          "inline": true
+        },
+        {
+          "name": "Weapon",
+          "value": "M4-A1",
+          "inline": true
+        },
+        {
+          "name": "Distance",
+          "value": "11.7m",
+          "inline": true
+        }
+      ]
+    }
+  },
+  "PVE_FEED/every-variable/animal": {
+    "route": "PVE_FEED",
+    "vars": {
+      "cause": "animal",
+      "server_name": "Northstar",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Semillita-azul-_"
+    },
+    "embed": {
+      "description": "Semillita-azul-\\_ / animal / Northstar / 2026-09-23 18:42:07 UTC",
+      "color": 12024095
+    }
+  },
+  "PVE_FEED/every-variable/environment": {
+    "route": "PVE_FEED",
+    "vars": {
+      "cause": "environment",
+      "server_name": "Northstar",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Semillita-azul-_"
+    },
+    "embed": {
+      "description": "Semillita-azul-\\_ / environment / Northstar / 2026-09-23 18:42:07 UTC",
+      "color": 12024095
+    }
+  },
+  "PVE_FEED/every-variable/infected": {
+    "route": "PVE_FEED",
+    "vars": {
+      "cause": "infected",
+      "server_name": "Northstar",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Semillita-azul-_"
+    },
+    "embed": {
+      "description": "Semillita-azul-\\_ / infected / Northstar / 2026-09-23 18:42:07 UTC",
+      "color": 12024095
+    }
+  },
+  "PVE_FEED/every-variable/suicide": {
+    "route": "PVE_FEED",
+    "vars": {
+      "cause": "suicide",
+      "server_name": "Northstar",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Semillita-azul-_"
+    },
+    "embed": {
+      "description": "Semillita-azul-\\_ / suicide / Northstar / 2026-09-23 18:42:07 UTC",
+      "color": 12024095
+    }
+  },
+  "PVE_FEED/website-default/animal": {
+    "route": "PVE_FEED",
+    "vars": {
+      "cause": "animal",
+      "server_name": "Northstar",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Semillita-azul-_"
+    },
+    "embed": {
+      "title": "PvE event",
+      "description": "Semillita-azul-\\_ was lost to the wilds.",
+      "timestamp": "2026-09-23T18:42:07Z",
+      "color": 9202221,
+      "footer": {
+        "text": "Champion Killfeed"
+      },
+      "fields": [
+        {
+          "name": "Player",
+          "value": "Semillita-azul-\\_"
+        }
+      ]
+    }
+  },
+  "PVE_FEED/website-default/environment": {
+    "route": "PVE_FEED",
+    "vars": {
+      "cause": "environment",
+      "server_name": "Northstar",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Semillita-azul-_"
+    },
+    "embed": {
+      "title": "PvE event",
+      "description": "Semillita-azul-\\_ was lost to the wilds.",
+      "timestamp": "2026-09-23T18:42:07Z",
+      "color": 9202221,
+      "footer": {
+        "text": "Champion Killfeed"
+      },
+      "fields": [
+        {
+          "name": "Player",
+          "value": "Semillita-azul-\\_"
+        }
+      ]
+    }
+  },
+  "PVE_FEED/website-default/infected": {
+    "route": "PVE_FEED",
+    "vars": {
+      "cause": "infected",
+      "server_name": "Northstar",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Semillita-azul-_"
+    },
+    "embed": {
+      "title": "PvE event",
+      "description": "Semillita-azul-\\_ was lost to the wilds.",
+      "timestamp": "2026-09-23T18:42:07Z",
+      "color": 9202221,
+      "footer": {
+        "text": "Champion Killfeed"
+      },
+      "fields": [
+        {
+          "name": "Player",
+          "value": "Semillita-azul-\\_"
+        }
+      ]
+    }
+  },
+  "PVE_FEED/website-default/suicide": {
+    "route": "PVE_FEED",
+    "vars": {
+      "cause": "suicide",
+      "server_name": "Northstar",
+      "timestamp": "2026-09-23 18:42:07 UTC",
+      "victim": "Semillita-azul-_"
+    },
+    "embed": {
+      "title": "PvE event",
+      "description": "Semillita-azul-\\_ was lost to the wilds.",
+      "timestamp": "2026-09-23T18:42:07Z",
+      "color": 9202221,
+      "footer": {
+        "text": "Champion Killfeed"
+      },
+      "fields": [
+        {
+          "name": "Player",
+          "value": "Semillita-azul-\\_"
+        }
+      ]
+    }
+  }
+}

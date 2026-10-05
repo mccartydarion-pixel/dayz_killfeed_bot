@@ -5,6 +5,7 @@ import (
 	"log/slog"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 )
 
 // Faction Security: when a Base Raid Alarm or Perimeter Watch alert fires for a
@@ -75,7 +76,7 @@ func factionVersion(msg *discordgo.MessageSend, title, description string) *disc
 	e := *msg.Embeds[0]
 	e.Title, e.Description = title, description
 	e.Fields = append([]*discordgo.MessageEmbedField(nil), msg.Embeds[0].Fields...)
-	e.Footer = &discordgo.MessageEmbedFooter{Text: "Shared with you by Faction Security"}
+	e.Footer = presentation.Footer("", "Shared with you by Faction Security")
 	return &discordgo.MessageSend{Embeds: []*discordgo.MessageEmbed{&e},
 		AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}, Users: []string{}, Roles: []string{}}}
 }

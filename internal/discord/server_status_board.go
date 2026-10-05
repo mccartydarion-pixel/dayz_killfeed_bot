@@ -159,25 +159,52 @@ type ServerStatusSection struct {
 	Snapshot   killfeed.AdmSnapshot
 }
 
+// The four states of Champion's link to a server's ADM logs, as the board words them.
+const (
+	ServerLinkWaiting   = "Waiting for first poll"
+	ServerLinkDegraded  = "Degraded"
+	ServerLinkLocating  = "Locating log"
+	ServerLinkConnected = "Connected"
+)
+
 // ServerStatusLink classifies Champion's link to a server's ADM logs.
 func ServerStatusLink(s ServerStatusSection, now time.Time) string {
 	switch {
 	case !s.Seen || s.Snapshot.LastPoll.IsZero():
-		return "WAITING FOR FIRST POLL"
+		return ServerLinkWaiting
 	case now.Sub(s.Snapshot.LastPoll) > serverStatusLinkStale:
-		return "DEGRADED"
+		return ServerLinkDegraded
 	case s.Snapshot.State != killfeed.StatePolling:
-		return "LOCATING LOG"
+		return ServerLinkLocating
 	default:
-		return "CONNECTED"
+		return ServerLinkConnected
 	}
+}
+
+// serverStatusColor is the board's colour, by meaning: amber as soon as one server's link is
+// degraded, green when every server is connected, neutral while there is nothing to judge yet
+// (no server, or still waiting for a first poll or for the log).
+func serverStatusColor(sections []ServerStatusSection, now time.Time) int {
+	if len(sections) == 0 {
+		return presentation.Neutral
+	}
+	color := presentation.Green
+	for _, s := range sections {
+		switch ServerStatusLink(s, now) {
+		case ServerLinkDegraded:
+			return presentation.Amber
+		case ServerLinkWaiting, ServerLinkLocating:
+			color = presentation.Neutral
+		}
+	}
+	return color
 }
 
 // BuildServerStatusEmbed renders the status message from observed values
 // only. Relative Discord timestamps keep the text stable between refreshes,
 // so an unchanged server is never re-edited.
 func BuildServerStatusEmbed(sections []ServerStatusSection, now time.Time) *discordgo.MessageEmbed {
-	embed := presentation.NewChampionEmbed("📡 SERVER STATUS", presentation.Steel)
+	embed := presentation.NewChampionEmbed("📡 Server status", serverStatusColor(sections, now))
 	if len(sections) == 0 {
 		embed.Description = "No server is connected to this channel yet."
 	}
@@ -186,15 +213,15 @@ func BuildServerStatusEmbed(sections []ServerStatusSection, now time.Time) *disc
 		if strings.TrimSpace(s.ServerName) != "" {
 			title = presentation.SafeName(s.ServerName, 60)
 		}
-		lines := []string{"**Champion Link:** " + ServerStatusLink(s, now)}
+		lines := []string{"**Champion link:** " + ServerStatusLink(s, now)}
 		if s.Seen {
 			if !s.Snapshot.LastLogChange.IsZero() {
-				lines = append(lines, fmt.Sprintf("**ADM Log:** updated <t:%d:R>", s.Snapshot.LastLogChange.Unix()))
+				lines = append(lines, "**ADM log:** updated "+presentation.Timestamp(s.Snapshot.LastLogChange, 'R'))
 			}
-			lines = append(lines, "**Players Online:** "+presentation.FormatThousands(int64(s.Snapshot.OnlineCount)))
+			lines = append(lines, "**Players online:** "+presentation.FormatThousands(int64(s.Snapshot.OnlineCount)))
 		}
 		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: title, Value: strings.Join(lines, "\n")})
 	}
-	embed.Footer = &discordgo.MessageEmbedFooter{Text: presentation.FooterLiveIntel}
+	embed.Footer = presentation.Footer("", presentation.FooterAutoRefresh)
 	return embed
 }

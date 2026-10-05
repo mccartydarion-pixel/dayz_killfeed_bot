@@ -69,7 +69,7 @@ func TestConnectionsPublishesConnect(t *testing.T) {
 	if len(msgs) != 1 || len(msgs[0].embeds) != 1 {
 		t.Fatalf("expected 1 message, got %+v", msgs)
 	}
-	if got, want := msgs[0].embeds[0].Description, "🟢 **CONNECTED**\nAlice joined the server."; got != want {
+	if got, want := msgs[0].embeds[0].Description, "🟢 **Connected**\nAlice joined the server."; got != want {
 		t.Fatalf("unexpected card:\n%q\nwant\n%q", got, want)
 	}
 	if msgs[0].mention == nil || len(msgs[0].mention.Parse) != 0 {
@@ -84,7 +84,7 @@ func TestConnectionsPublishesDisconnectWithSessionWhenKnown(t *testing.T) {
 
 	p.PublishConnection(disconnected("Alice", 42*time.Minute))
 	p.tick(false)
-	if got, want := f.lastDescription("conn-chan"), "🔴 **DISCONNECTED**\nAlice left the server.\nSession: 42m"; got != want {
+	if got, want := f.lastDescription("conn-chan"), "🔴 **Disconnected**\nAlice left the server.\nSession: 42m"; got != want {
 		t.Fatalf("unexpected card:\n%q\nwant\n%q", got, want)
 	}
 
@@ -92,7 +92,7 @@ func TestConnectionsPublishesDisconnectWithSessionWhenKnown(t *testing.T) {
 	for _, d := range []time.Duration{0, 30 * time.Second} {
 		p.PublishConnection(disconnected("Bob", d))
 		p.tick(false)
-		if got, want := f.lastDescription("conn-chan"), "🔴 **DISCONNECTED**\nBob left the server."; got != want {
+		if got, want := f.lastDescription("conn-chan"), "🔴 **Disconnected**\nBob left the server."; got != want {
 			t.Fatalf("session %v must be omitted:\n%q\nwant\n%q", d, got, want)
 		}
 	}
@@ -362,7 +362,7 @@ func TestConnectionsBatchFormat(t *testing.T) {
 	p.PublishConnection(disconnected("PlayerD", 0))
 	p.tick(false)
 
-	want := "🔌 **SERVER CONNECTIONS**\n🟢 PlayerA connected\n🟢 PlayerB connected\n🔴 PlayerC disconnected · 12m\n🔴 PlayerD disconnected"
+	want := "🔌 **Server connections**\n🟢 PlayerA connected\n🟢 PlayerB connected\n🔴 PlayerC disconnected • 12m\n🔴 PlayerD disconnected"
 	if got := f.lastDescription("conn-chan"); got != want {
 		t.Fatalf("unexpected batch:\n%q\nwant\n%q", got, want)
 	}

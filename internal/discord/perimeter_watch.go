@@ -2,7 +2,6 @@ package discord
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"strings"
 	"sync/atomic"
@@ -169,10 +168,10 @@ func (p *PerimeterWatchPublisher) deliver(m repository.PerimeterMatch, visitor s
 func PerimeterWatchMessage(baseName, serverName, visitor string, distance int, seenAt time.Time) *discordgo.MessageSend {
 	when := "Just now"
 	if !seenAt.IsZero() {
-		when = fmt.Sprintf("<t:%d:R>", seenAt.Unix())
+		when = presentation.Timestamp(seenAt, 'R')
 	}
 	embed := &discordgo.MessageEmbed{
-		Author:      &discordgo.MessageEmbedAuthor{Name: "CHAMPIONS® PERIMETER WATCH"},
+		Author:      presentation.BrandAuthor("Perimeter Watch"),
 		Title:       "👀 Someone is near " + caseFallback(caseSafeText(baseName, 80), "your base"),
 		Color:       presentation.WarningAmber,
 		Description: "A player who isn't you, your faction or on your friend list was seen near your base.",
@@ -180,9 +179,9 @@ func PerimeterWatchMessage(baseName, serverName, visitor string, distance int, s
 			{Name: "👤 Player", Value: caseFallback(caseSafeText(visitor, 64), "Unknown player"), Inline: true},
 			{Name: "🖥️ Server", Value: caseFallback(caseSafeText(serverName, 100), "Your server"), Inline: true},
 			{Name: "🕒 Seen", Value: when, Inline: true},
-			{Name: "📍 Distance", Value: fmt.Sprintf("About %d m from the centre of your base", distance), Inline: false},
+			{Name: "📍 Distance", Value: "About " + presentation.FormatWholeDistance(float64(distance)) + " from the centre of your base", Inline: false},
 		},
-		Footer: &discordgo.MessageEmbedFooter{Text: "You'll get at most one message per player every so often"},
+		Footer: presentation.Footer("", "You'll get at most one message per player every so often"),
 	}
 	presentation.StampEmbed(embed, time.Now())
 	return &discordgo.MessageSend{Embeds: []*discordgo.MessageEmbed{embed},

@@ -9,6 +9,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/permissions"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -120,21 +121,4 @@ func pointsText(n int64) string {
 }
 
 // commaInt is 12,345.
-func commaInt(n int64) string {
-	s := fmt.Sprintf("%d", n)
-	neg := false
-	if n < 0 {
-		neg, s = true, s[1:]
-	}
-	out := ""
-	for i, c := range s {
-		if i > 0 && (len(s)-i)%3 == 0 {
-			out += ","
-		}
-		out += string(c)
-	}
-	if neg {
-		return "-" + out
-	}
-	return out
-}
+func commaInt(n int64) string { return presentation.FormatThousands(n) }

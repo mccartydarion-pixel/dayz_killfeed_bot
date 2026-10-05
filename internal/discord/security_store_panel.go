@@ -28,7 +28,7 @@ var securityPanelCopy = map[string][2]string{
 // SecurityStorePanel renders the Security Store panel posted in Discord. It
 // shows only what the server owner is selling right now.
 func SecurityStorePanel(items []SecurityPanelItem, serverName, storeURL string, at time.Time) *discordgo.MessageSend {
-	embed := presentation.NewChampionEmbed("🛡️ SECURITY STORE", presentation.ChampionGold)
+	embed := presentation.NewChampionEmbed("🛡️ Security Store", presentation.Crimson)
 	server := caseFallback(caseSafeText(serverName, 100), "this server")
 	if len(items) == 0 {
 		embed.Description = "Nothing is on sale on " + server + " right now. Check back later."
@@ -57,7 +57,7 @@ func SecurityStorePanel(items []SecurityPanelItem, serverName, storeURL string, 
 		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Need a base registered first?",
 			Value: "Stand at your base in game and use `/registerbase`. Check yours with `/mybase`."})
 	}
-	embed.Footer = &discordgo.MessageEmbedFooter{Text: "Updated automatically"}
+	embed.Footer = presentation.Footer(serverName, presentation.FooterAutoRefresh)
 	presentation.StampEmbed(embed, at)
 	msg := &discordgo.MessageSend{Embeds: []*discordgo.MessageEmbed{embed},
 		AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}, Users: []string{}, Roles: []string{}}}

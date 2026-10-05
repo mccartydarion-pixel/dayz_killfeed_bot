@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -313,21 +314,17 @@ func (p *HitfeedPublisher) takeDropLogLocked(now time.Time) string {
 
 // buildHitEmbed renders one compact card from real parsed fields only:
 //
-//	🎯 HIT  PlayerA  ➜  PlayerB
-//	M4-A1 · 556x45 · 42m
-//	Torso · 3 hits · 84 dmg
+//	🎯 Hit  PlayerA  ➜  PlayerB
+//	M4-A1 • 556x45 • 42m
+//	Torso • 3 hits • 84 dmg
 //
 // Missing weapon/ammo/distance/zone/damage are omitted, never shown as
 // "unknown". HP and coordinates are parsed but deliberately not shown.
 func buildHitEmbed(e *hitEncounter) *discordgo.MessageEmbed {
-	name := func(s string) string {
-		if s = sanitizeName(s); s == "" {
-			return "Unknown"
-		}
-		return safeTrunc(s, hitfeedMaxNameLen)
-	}
+	// Names are cleaned, capped and markdown-escaped like on every other card.
+	name := func(s string) string { return presentation.SafeName(s, hitfeedMaxNameLen) }
 	var b strings.Builder
-	fmt.Fprintf(&b, "🎯 **HIT**  %s  ➜  %s", name(e.attacker), name(e.victim))
+	fmt.Fprintf(&b, "🎯 **Hit**  %s  ➜  %s", name(e.attacker), name(e.victim))
 
 	var gear []string
 	if e.weapon != "" {
@@ -337,25 +334,21 @@ func buildHitEmbed(e *hitEncounter) *discordgo.MessageEmbed {
 		gear = append(gear, sanitizeName(ammo))
 	}
 	if e.distance != nil {
-		gear = append(gear, fmt.Sprintf("%.0fm", *e.distance))
+		gear = append(gear, presentation.FormatWholeDistance(*e.distance))
 	}
 	if len(gear) > 0 {
-		b.WriteString("\n" + strings.Join(gear, " · "))
+		b.WriteString("\n" + strings.Join(gear, " • "))
 	}
 
 	var detail []string
 	if e.zone != "" {
 		detail = append(detail, sanitizeName(e.zone))
 	}
-	if e.hits == 1 {
-		detail = append(detail, "1 hit")
-	} else {
-		detail = append(detail, fmt.Sprintf("%d hits", e.hits))
-	}
+	detail = append(detail, presentation.Plural(int64(e.hits), "hit", "hits"))
 	if e.damageHits > 0 && e.damageHits == e.hits {
-		detail = append(detail, fmt.Sprintf("%.0f dmg", e.damage))
+		detail = append(detail, presentation.FormatThousands(int64(math.Round(e.damage)))+" dmg")
 	}
-	b.WriteString("\n" + strings.Join(detail, " · "))
+	b.WriteString("\n" + strings.Join(detail, " • "))
 
 	return &discordgo.MessageEmbed{Description: b.String(), Color: presentation.InfoSteel}
 }

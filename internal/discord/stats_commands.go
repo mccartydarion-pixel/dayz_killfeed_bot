@@ -71,7 +71,7 @@ func RegisterStatsCommands(session CommandRegistrar, guildID string) error {
 // HandleStats processes /stats.
 func (h *StatsCommandHandler) HandleStats(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if i == nil || i.GuildID == "" || h.stats == nil || h.guilds == nil {
-		respondEphemeral(s, i, "Stats are unavailable until the database is connected.")
+		respondEphemeral(s, i, ReplyAreUnavailable("Stats"))
 		return
 	}
 	name := ""
@@ -87,14 +87,14 @@ func (h *StatsCommandHandler) HandleStats(s *discordgo.Session, i *discordgo.Int
 
 	_, guildRowID, err := h.guilds.GetGuild(context.Background(), i.GuildID)
 	if err != nil || guildRowID == 0 {
-		respondEphemeral(s, i, "This server is not configured. Run `/setup` first.")
+		respondEphemeral(s, i, ReplyNotSetUp)
 		return
 	}
 
 	prof, err := h.stats.GetPlayerProfile(context.Background(), guildRowID, name)
 	if err != nil {
 		slog.Warn("component=discord", "msg", "stats query failed", "err", err.Error())
-		respondEphemeral(s, i, "Could not load stats right now.")
+		respondEphemeral(s, i, ReplyCouldNot("load stats"))
 		return
 	}
 	if prof == nil {
@@ -113,7 +113,7 @@ func formatPlayerProfile(prof *repository.PlayerProfile) string {
 		longest = fmt.Sprintf("%.1fm", *prof.LongestKill)
 	}
 	return fmt.Sprintf(
-		"🏆 **CHAMPION PLAYER PROFILE**\n\n"+
+		"🏆 **Champion player profile**\n\n"+
 			"**Player**\n%s\n\n"+
 			"**Kills**\n%d\n\n"+
 			"**Deaths**\n%d\n\n"+
@@ -127,7 +127,7 @@ func formatPlayerProfile(prof *repository.PlayerProfile) string {
 // HandleLeaderboard processes /leaderboard.
 func (h *StatsCommandHandler) HandleLeaderboard(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if i == nil || i.GuildID == "" || h.stats == nil || h.guilds == nil {
-		respondEphemeral(s, i, "Leaderboard is unavailable until the database is connected.")
+		respondEphemeral(s, i, ReplyIsUnavailable("The leaderboard"))
 		return
 	}
 	kind := "kills"
@@ -139,7 +139,7 @@ func (h *StatsCommandHandler) HandleLeaderboard(s *discordgo.Session, i *discord
 
 	_, guildRowID, err := h.guilds.GetGuild(context.Background(), i.GuildID)
 	if err != nil || guildRowID == 0 {
-		respondEphemeral(s, i, "This server is not configured. Run `/setup` first.")
+		respondEphemeral(s, i, ReplyNotSetUp)
 		return
 	}
 

@@ -55,12 +55,12 @@ func RegisterEventCommands(session CommandRegistrar, guildID string) error {
 }
 func (h *EventCommandHandler) Handle(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if h == nil || h.events == nil || h.guilds == nil || i == nil {
-		respondEphemeral(s, i, "Events are unavailable.")
+		respondEphemeral(s, i, ReplyAreUnavailable("Events"))
 		return
 	}
 	_, gid, err := h.guilds.GetGuild(context.Background(), i.GuildID)
 	if err != nil || gid == 0 {
-		respondEphemeral(s, i, "Run `/setup` first.")
+		respondEphemeral(s, i, ReplyNotSetUp)
 		return
 	}
 	opts := i.ApplicationCommandData().Options
@@ -72,11 +72,11 @@ func (h *EventCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interact
 	case "list", "history":
 		rows, err := h.events.GetRecentEvents(context.Background(), gid, 10)
 		if err != nil {
-			respondEphemeral(s, i, "Could not load events.")
+			respondEphemeral(s, i, ReplyCouldNot("load the events"))
 			return
 		}
 		var b strings.Builder
-		b.WriteString("🔥 **CHAMPION EVENTS**\n\n")
+		b.WriteString("🔥 **Champion events**\n\n")
 		for _, e := range rows {
 			fmt.Fprintf(&b, "%d. **%s** — %s\n", e.ID, e.Name, e.Status)
 		}
@@ -96,11 +96,11 @@ func (h *EventCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interact
 		id := optionInt(sub, "id")
 		rows, err := h.leaderboardForGuild(context.Background(), gid, id, 10)
 		if err != nil {
-			respondEphemeral(s, i, "Could not load event leaderboard.")
+			respondEphemeral(s, i, ReplyCouldNot("load the event leaderboard"))
 			return
 		}
 		var b strings.Builder
-		fmt.Fprintf(&b, "🏆 **EVENT %d LEADERBOARD**\n\n", id)
+		fmt.Fprintf(&b, "🏆 **Event %d leaderboard**\n\n", id)
 		for n, row := range rows {
 			who := strconv.FormatInt(row.PlayerID, 10)
 			if row.FactionID > 0 {
@@ -111,11 +111,11 @@ func (h *EventCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interact
 		respondEphemeral(s, i, b.String())
 	case "create":
 		if !isAdminInteraction(i) {
-			respondEphemeral(s, i, "Administrator or Manage Server permission required.")
+			respondEphemeral(s, i, ReplyNeedsManageServer)
 			return
 		}
 		if h.service == nil {
-			respondEphemeral(s, i, "Event service unavailable.")
+			respondEphemeral(s, i, ReplyIsUnavailable("The event service"))
 			return
 		}
 		typ := optionString(sub, "type")
@@ -138,13 +138,13 @@ func (h *EventCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interact
 		payload, _ := json.Marshal(cfg)
 		created, err := h.service.Create(context.Background(), repository.CompetitiveEvent{GuildID: gid, Type: typ, Name: name, Status: competitiveevents.StatusDraft, Config: payload}, cfg, i.Member.User.ID)
 		if err != nil {
-			respondEphemeral(s, i, "Could not create event: "+err.Error())
+			respondEphemeral(s, i, ReplyCouldNotBecause("create the event", err.Error()))
 			return
 		}
 		respondEphemeral(s, i, fmt.Sprintf("🔥 Event created: **%s** (ID %d)", created.Name, created.ID))
 	default:
 		if !isAdminInteraction(i) {
-			respondEphemeral(s, i, "Administrator or Manage Server permission required.")
+			respondEphemeral(s, i, ReplyNeedsManageServer)
 			return
 		}
 		id := optionInt(sub, "id")
@@ -158,7 +158,7 @@ func (h *EventCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interact
 			err = h.service.Cancel(context.Background(), gid, id)
 		}
 		if err != nil {
-			respondEphemeral(s, i, "Event operation failed: "+err.Error())
+			respondEphemeral(s, i, ReplyCouldNotBecause("update the event", err.Error()))
 			return
 		}
 		respondEphemeral(s, i, "Event updated.")
@@ -189,12 +189,12 @@ func RegisterBountyCommands(session CommandRegistrar, guildID string) error {
 }
 func (h *BountyCommandHandler) Handle(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if h == nil || h.bounties == nil || h.service == nil || h.players == nil || h.guilds == nil || i == nil {
-		respondEphemeral(s, i, "Bounties are unavailable.")
+		respondEphemeral(s, i, ReplyAreUnavailable("Bounties"))
 		return
 	}
 	_, gid, err := h.guilds.GetGuild(context.Background(), i.GuildID)
 	if err != nil || gid == 0 {
-		respondEphemeral(s, i, "Run `/setup` first.")
+		respondEphemeral(s, i, ReplyNotSetUp)
 		return
 	}
 	sub := i.ApplicationCommandData().Options[0]
@@ -202,11 +202,11 @@ func (h *BountyCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interac
 	case "list":
 		rows, err := h.bounties.ListBoardAll(context.Background(), gid, 5)
 		if err != nil {
-			respondEphemeral(s, i, "Could not load bounties.")
+			respondEphemeral(s, i, ReplyCouldNot("load the bounties"))
 			return
 		}
 		var b strings.Builder
-		b.WriteString("🎯 **CHAMPION BOUNTIES**\n\n")
+		b.WriteString("🎯 **Champion bounties**\n\n")
 		for n, row := range rows {
 			fmt.Fprintf(&b, "%d. %s — %s Champion Points%s\n", n+1, sanitizeName(row.TargetName), formatAmount(row.Total), stackSuffix(row.Count))
 		}
@@ -215,7 +215,7 @@ func (h *BountyCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interac
 		name := optionString(sub, "player")
 		pid, err := h.players.FindByDisplayName(context.Background(), gid, name)
 		if err != nil {
-			respondEphemeral(s, i, "Player not found.")
+			respondEphemeral(s, i, ReplyPlayerNotFound)
 			return
 		}
 		total, count, err := h.bounties.ActiveTotal(context.Background(), gid, pid)
@@ -223,15 +223,15 @@ func (h *BountyCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interac
 			respondEphemeral(s, i, "No active bounty.")
 			return
 		}
-		respondEphemeral(s, i, fmt.Sprintf("🎯 **ACTIVE BOUNTY**\n%s\n🏆 %s Champion Points%s", sanitizeName(name), formatAmount(total), stackSuffix(count)))
+		respondEphemeral(s, i, fmt.Sprintf("🎯 **Active bounty**\n%s\n🏆 %s Champion Points%s", sanitizeName(name), formatAmount(total), stackSuffix(count)))
 	case "create":
 		if !isAdminInteraction(i) {
-			respondEphemeral(s, i, "Administrator or Manage Server permission required.")
+			respondEphemeral(s, i, ReplyNeedsManageServer)
 			return
 		}
 		pid, err := h.players.FindByDisplayName(context.Background(), gid, optionString(sub, "player"))
 		if err != nil {
-			respondEphemeral(s, i, "Player not found.")
+			respondEphemeral(s, i, ReplyPlayerNotFound)
 			return
 		}
 		points := sub.Options[1].IntValue()
@@ -243,17 +243,17 @@ func (h *BountyCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interac
 		// Guild-wide (no server), exactly as the command always behaved.
 		created, err := h.service.Place(context.Background(), bounties.PlaceRequest{GuildID: gid, TargetPlayerID: pid, Amount: points, PlacedBy: i.Member.User.ID, ExpiresAt: ptrTime(time.Now().UTC().Add(duration))})
 		if err != nil {
-			respondEphemeral(s, i, "Could not create bounty: "+err.Error())
+			respondEphemeral(s, i, ReplyCouldNotBecause("create the bounty", err.Error()))
 			return
 		}
 		respondEphemeral(s, i, fmt.Sprintf("🎯 Bounty created for %d Champion Points (ID %d).", created.RewardPoints, created.ID))
 	case "cancel":
 		if !isAdminInteraction(i) {
-			respondEphemeral(s, i, "Administrator or Manage Server permission required.")
+			respondEphemeral(s, i, ReplyNeedsManageServer)
 			return
 		}
 		if _, err := h.service.Cancel(context.Background(), gid, optionInt(sub, "id")); err != nil {
-			respondEphemeral(s, i, "Could not cancel bounty.")
+			respondEphemeral(s, i, ReplyCouldNot("cancel the bounty"))
 			return
 		}
 		respondEphemeral(s, i, "Bounty cancelled.")

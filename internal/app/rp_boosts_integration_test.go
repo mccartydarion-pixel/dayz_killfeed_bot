@@ -90,7 +90,7 @@ func TestDoubleRPDoublesKillsInsideTheWindowOnly(t *testing.T) {
 	if code != http.StatusOK || boost.Status != repository.RPBoostLive || boost.Multiplier != 2 {
 		t.Fatalf("start: %d %s %+v", code, body, boost)
 	}
-	if len(w.cards) != 1 || !strings.Contains(w.cards[0].Title, "LIVE") || !strings.Contains(w.cards[0].Description, "200 RP instead of 100") {
+	if len(w.cards) != 1 || !strings.Contains(w.cards[0].Title, "is live") || !strings.Contains(w.cards[0].Description, "200 RP instead of 100") {
 		t.Fatalf("the live card should go out at once: %d cards", len(w.cards))
 	}
 	during := w.award(now.Add(10 * time.Second))
@@ -166,7 +166,7 @@ func TestDoubleRPSchedulingAndRules(t *testing.T) {
 	// When the scheduler passes the start, the live card goes out once.
 	w.a.runRPBoostAnnouncements(context.Background(), w.guildID, later.Add(time.Minute))
 	w.a.runRPBoostAnnouncements(context.Background(), w.guildID, later.Add(2*time.Minute))
-	if len(w.cards) != 2 || !strings.Contains(w.cards[1].Title, "LIVE") {
+	if len(w.cards) != 2 || !strings.Contains(w.cards[1].Title, "is live") {
 		t.Fatalf("one live card at the start: %d cards", len(w.cards))
 	}
 	w.a.runRPBoostAnnouncements(context.Background(), w.guildID, later.Add(3*time.Hour))

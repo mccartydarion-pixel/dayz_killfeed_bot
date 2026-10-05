@@ -32,7 +32,7 @@ const (
 	heatmapWindow             = heatmap.DefaultWindow
 	heatmapResolution         = heatmap.DefaultResolution
 	heatmapHotZones           = 3
-	heatmapTitle              = "🗺️ PVP HEATMAP UPDATE"
+	heatmapTitle              = "🗺️ PvP heatmap update"
 )
 
 // HeatmapBoard keeps one persistent PvP heatmap summary per HEATMAPS-routed
@@ -234,8 +234,8 @@ func BuildHeatmapSummaryEmbed(sections []heatmapSection, window time.Duration, r
 	embed := presentation.NewChampionEmbed(heatmapTitle, presentation.CombatRed)
 	embed.Fields = []*discordgo.MessageEmbedField{
 		{Name: "Window", Value: heatmapWindowLabel(window), Inline: true},
-		{Name: "Type", Value: "PvP Kills", Inline: true},
-		{Name: "Resolution", Value: fmt.Sprintf("%dm", resolution), Inline: true},
+		{Name: "Type", Value: "PvP kills", Inline: true},
+		{Name: "Resolution", Value: presentation.FormatWholeDistance(float64(resolution)), Inline: true},
 	}
 	multi := len(sections) > 1
 	for _, s := range sections {
@@ -249,11 +249,11 @@ func BuildHeatmapSummaryEmbed(sections []heatmapSection, window time.Duration, r
 			prefix = presentation.SafeName(s.ServerName, 60) + " • "
 		}
 		embed.Fields = append(embed.Fields,
-			&discordgo.MessageEmbedField{Name: prefix + "Activity", Value: presentation.Plural(total, "Event", "Events")},
-			&discordgo.MessageEmbedField{Name: prefix + "Hot Zones", Value: hotZonesText(cells)},
+			&discordgo.MessageEmbedField{Name: prefix + "Activity", Value: presentation.Plural(total, "event", "events")},
+			&discordgo.MessageEmbedField{Name: prefix + "Hot zones", Value: hotZonesText(cells)},
 		)
 	}
-	embed.Footer = &discordgo.MessageEmbedFooter{Text: presentation.FooterLiveIntel}
+	embed.Footer = presentation.Footer("", presentation.FooterAutoRefresh)
 	presentation.StampEmbed(embed, at)
 	return embed
 }
@@ -282,14 +282,14 @@ func hotZonesText(cells []heatmap.Cell) string {
 		lines = append(lines, fmt.Sprintf("`#%d` X: %s • Z: %s — **%s**", i+1,
 			presentation.FormatThousands(int64(math.Round(c.CenterX))),
 			presentation.FormatThousands(int64(math.Round(c.CenterZ))),
-			presentation.Plural(c.Count, "Kill", "Kills")))
+			presentation.Plural(c.Count, "kill", "kills")))
 	}
 	return strings.Join(lines, "\n")
 }
 
 func heatmapWindowLabel(d time.Duration) string {
 	if h := int(d.Hours()); h > 0 && d%time.Hour == 0 {
-		return fmt.Sprintf("Last %d %s", h, map[bool]string{true: "Hour", false: "Hours"}[h == 1])
+		return "Last " + presentation.Plural(int64(h), "hour", "hours")
 	}
 	return "Last " + d.String()
 }

@@ -82,41 +82,42 @@ func lifeEnding(l repository.Life) string {
 
 // BuildLifeRecapEmbed is the death recap card: what the life that just ended amounted to.
 func BuildLifeRecapEmbed(l repository.Life, serverName string) *discordgo.MessageEmbed {
-	embed := presentation.NewFeedEmbed("🪦 LIFE RECAP", presentation.NeutralGraphite)
+	embed := presentation.NewFeedEmbed("🪦 Life recap", presentation.NeutralGraphite)
+	// A direct message is read outside the server, so it names the server in the sentence.
 	desc := "**" + lifeName(l.PlayerName) + "**"
 	if s := strings.TrimSpace(serverName); s != "" {
 		desc += " on " + presentation.SafeName(s, 60)
 	}
 	embed.Description = desc + "\n" + lifeEnding(l)
 	if l.PlaytimeSeconds != nil {
-		presentation.AppendFields(embed, presentation.MetricField("SURVIVED", FormatLifeDuration(*l.PlaytimeSeconds)+" played", true))
+		presentation.AppendFields(embed, presentation.MetricField("Survived", FormatLifeDuration(*l.PlaytimeSeconds)+" played", true))
 	}
 	kills := presentation.Plural(int64(l.Kills), "kill", "kills")
 	if l.Headshots > 0 {
 		kills += " (" + presentation.Plural(int64(l.Headshots), "headshot", "headshots") + ")"
 	}
-	presentation.AppendFields(embed, presentation.MetricField("KILLS", kills, true))
+	presentation.AppendFields(embed, presentation.MetricField("Kills", kills, true))
 	if l.LongestKillM != nil {
-		presentation.AppendFields(embed, presentation.MetricField("LONGEST KILL", presentation.FormatDistance(*l.LongestKillM), true))
+		presentation.AppendFields(embed, presentation.MetricField("Longest kill", presentation.FormatDistance(*l.LongestKillM), true))
 	}
 	if l.TrackedDistance != nil && *l.TrackedDistance >= 1 {
-		presentation.AppendFields(embed, presentation.MetricField("TRACKED DISTANCE", "at least "+formatTrackedDistance(*l.TrackedDistance), true))
+		presentation.AppendFields(embed, presentation.MetricField("Tracked distance", "at least "+formatTrackedDistance(*l.TrackedDistance), true))
 	}
-	embed.Footer = &discordgo.MessageEmbedFooter{Text: "Turn these off with /life recap off"}
+	embed.Footer = presentation.Footer("", "Turn these off with /life recap off")
 	presentation.StampEmbed(embed, l.EndedAt)
 	return presentation.FitEmbed(embed)
 }
 
 // BuildLifeProfileEmbed is /life me: the life in progress, the lifetime summary and recent lives.
 func BuildLifeProfileEmbed(name string, cur *repository.CurrentLife, sum repository.LifeSummary, recent []repository.Life, recapOn bool) *discordgo.MessageEmbed {
-	embed := presentation.NewFeedEmbed("🧬 LIVES", presentation.ChampionGold)
+	embed := presentation.NewFeedEmbed("🧬 Lives", presentation.Neutral)
 	embed.Description = "**" + lifeName(name) + "**"
 	if cur != nil {
-		value := presentation.Plural(int64(cur.Kills), "kill", "kills") + " • began <t:" + fmt.Sprint(cur.StartedAt.Unix()) + ":R>"
+		value := presentation.Plural(int64(cur.Kills), "kill", "kills") + " • began " + presentation.Timestamp(cur.StartedAt, 'R')
 		if cur.PlaytimeSeconds != nil {
 			value = FormatLifeDuration(*cur.PlaytimeSeconds) + " played • " + value
 		}
-		presentation.AppendFields(embed, presentation.MetricField("CURRENT LIFE", value, false))
+		presentation.AppendFields(embed, presentation.MetricField("Current life", value, false))
 	}
 	if sum.Lives > 0 {
 		parts := []string{presentation.Plural(int64(sum.Lives), "life", "lives") + " recorded"}
@@ -129,7 +130,7 @@ func BuildLifeProfileEmbed(name string, cur *repository.CurrentLife, sum reposit
 		if sum.MostKills > 0 {
 			parts = append(parts, "best "+presentation.Plural(int64(sum.MostKills), "kill", "kills"))
 		}
-		presentation.AppendFields(embed, presentation.MetricField("RECORD", strings.Join(parts, " • "), false))
+		presentation.AppendFields(embed, presentation.MetricField("Record", strings.Join(parts, " • "), false))
 	}
 	if len(recent) > 0 {
 		var b strings.Builder
@@ -138,18 +139,18 @@ func BuildLifeProfileEmbed(name string, cur *repository.CurrentLife, sum reposit
 			if l.PlaytimeSeconds != nil {
 				played = FormatLifeDuration(*l.PlaytimeSeconds)
 			}
-			fmt.Fprintf(&b, "<t:%d:d> • %s • %s • %s\n", l.EndedAt.Unix(), played, presentation.Plural(int64(l.Kills), "kill", "kills"), lifeEnding(l))
+			fmt.Fprintf(&b, "%s • %s • %s • %s\n", presentation.Timestamp(l.EndedAt, 'd'), played, presentation.Plural(int64(l.Kills), "kill", "kills"), lifeEnding(l))
 		}
-		presentation.AppendFields(embed, presentation.MetricField("RECENT LIVES", presentation.Truncate(b.String(), presentation.LimitFieldValue), false))
+		presentation.AppendFields(embed, presentation.MetricField("Recent lives", presentation.Truncate(b.String(), presentation.LimitFieldValue), false))
 	}
 	if cur == nil && sum.Lives == 0 {
 		embed.Description += "\nNo lives recorded on this server yet."
 	}
-	state := "off - turn on with /life recap on"
+	state := "Death recap DMs are off. Turn them on with /life recap on"
 	if recapOn {
-		state = "on"
+		state = "Death recap DMs are on"
 	}
-	embed.Footer = &discordgo.MessageEmbedFooter{Text: "Death recap DMs: " + state}
+	embed.Footer = presentation.Footer("", state)
 	return presentation.FitEmbed(embed)
 }
 
@@ -229,7 +230,7 @@ func interactionUserID(i *discordgo.InteractionCreate) string {
 // Handle processes /life. Every response is ephemeral.
 func (h *LifeCommandHandler) Handle(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if h == nil || i == nil || i.GuildID == "" || h.lives == nil || h.guilds == nil {
-		respondEphemeral(s, i, "Lives are unavailable until the database is connected.")
+		respondEphemeral(s, i, ReplyAreUnavailable("Lives"))
 		return
 	}
 	options := i.ApplicationCommandData().Options
@@ -242,7 +243,7 @@ func (h *LifeCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interacti
 	defer cancel()
 	_, guildRowID, err := h.guilds.GetGuild(ctx, i.GuildID)
 	if err != nil || guildRowID == 0 {
-		respondEphemeral(s, i, "This server is not configured. Run `/setup` first.")
+		respondEphemeral(s, i, ReplyNotSetUp)
 		return
 	}
 	sub := options[0]
@@ -252,13 +253,13 @@ func (h *LifeCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interacti
 		on := len(sub.Options) > 0 && sub.Options[0].StringValue() == "on"
 		if on {
 			if _, _, linked := h.linkedPlayer(ctx, guildRowID, userID); !linked {
-				respondEphemeral(s, i, "Link your gamertag with `/link` first, so the bot knows which deaths are yours.")
+				respondEphemeral(s, i, ReplyNotLinked("Link your gamertag with `/link` first, so the bot knows which deaths are yours."))
 				return
 			}
 		}
 		if err := h.lives.SetDeathRecap(ctx, guildRowID, userID, on); err != nil {
 			slog.Warn("component=lives", "event", "recap_pref_failed", "err", err.Error())
-			respondEphemeral(s, i, "Could not save that right now.")
+			respondEphemeral(s, i, ReplyCouldNot("save that"))
 			return
 		}
 		if on {
@@ -271,14 +272,14 @@ func (h *LifeCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interacti
 
 	serverID, ok := h.server(ctx, guildRowID)
 	if !ok {
-		respondEphemeral(s, i, "No DayZ server is selected for this Discord yet.")
+		respondEphemeral(s, i, ReplyNoServerSelected)
 		return
 	}
 	switch sub.Name {
 	case "me":
 		playerID, name, linked := h.linkedPlayer(ctx, guildRowID, userID)
 		if !linked {
-			respondEphemeral(s, i, "Link your gamertag with `/link` to see your lives.")
+			respondEphemeral(s, i, ReplyNotLinked("Link your gamertag with `/link` to see your lives."))
 			return
 		}
 		cur, err1 := h.lives.CurrentLife(ctx, guildRowID, serverID, playerID, h.now())
@@ -286,7 +287,7 @@ func (h *LifeCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interacti
 		recent, err3 := h.lives.PlayerLives(ctx, guildRowID, serverID, playerID, 5)
 		if err1 != nil || err2 != nil || err3 != nil {
 			slog.Warn("component=lives", "event", "profile_failed", "errs", fmt.Sprint(err1, err2, err3))
-			respondEphemeral(s, i, "Could not load your lives right now.")
+			respondEphemeral(s, i, ReplyCouldNot("load your lives"))
 			return
 		}
 		recapOn, _ := h.lives.DeathRecapEnabled(ctx, guildRowID, userID)
@@ -299,7 +300,7 @@ func (h *LifeCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interacti
 		embed, err := h.board(ctx, guildRowID, serverID, board)
 		if err != nil {
 			slog.Warn("component=lives", "event", "board_failed", "board", board, "err", err.Error())
-			respondEphemeral(s, i, "Could not load that board right now.")
+			respondEphemeral(s, i, ReplyCouldNot("load that board"))
 			return
 		}
 		respondLeaderboardEmbed(s, i, embed)
@@ -321,7 +322,7 @@ func (h *LifeCommandHandler) board(ctx context.Context, guildRowID, serverID int
 		for _, l := range lives {
 			rows = append(rows, LifeBoardRow(l, metric))
 		}
-		title := map[string]string{"longest": "⏳ LONGEST LIVES", "kills": "☠️ DEADLIEST LIVES", "distance": "🧭 FARTHEST TRAVELLED"}[board]
+		title := map[string]string{"longest": "⏳ Longest lives", "kills": "☠️ Deadliest lives", "distance": "🧭 Farthest travelled"}[board]
 		subtitle := map[string]string{
 			"longest":  "Most playtime between two deaths.",
 			"kills":    "Most kills in a single life.",
@@ -341,7 +342,7 @@ func (h *LifeCommandHandler) board(ctx context.Context, guildRowID, serverID int
 			}
 			rows = append(rows, row)
 		}
-		return BuildLifeBoardEmbed("🫀 STILL ALIVE", "Longest lives in progress, by playtime since the last death.", rows), nil
+		return BuildLifeBoardEmbed("🫀 Still alive", "Longest lives in progress, by playtime since the last death.", rows), nil
 	}
 }
 
@@ -470,9 +471,9 @@ type lifeBestReader interface {
 func withPersonalBest(embed *discordgo.MessageEmbed, played int64, best *int64) *discordgo.MessageEmbed {
 	switch {
 	case best == nil || played > *best:
-		presentation.AppendFields(embed, presentation.MetricField("PERSONAL BEST", "🏆 Your longest life yet!", false))
+		presentation.AppendFields(embed, presentation.MetricField("Personal best", "🏆 Your longest life yet!", false))
 	default:
-		presentation.AppendFields(embed, presentation.MetricField("PERSONAL BEST", FormatLifeDuration(*best)+" (this one: "+FormatLifeDuration(played)+")", false))
+		presentation.AppendFields(embed, presentation.MetricField("Personal best", FormatLifeDuration(*best)+" (this one: "+FormatLifeDuration(played)+")", false))
 	}
 	return embed
 }

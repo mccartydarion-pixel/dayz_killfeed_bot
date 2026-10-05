@@ -17,20 +17,20 @@ func TestLinkErrorMessageDistinguishesOutcomes(t *testing.T) {
 		err  error
 		want string
 	}{
-		{linking.ErrInvalidUsername, "INVALID PLAYSTATION USERNAME"},
-		{linking.ErrPlayerNotFound, "PLAYER NOT FOUND"},
-		{linking.ErrPlayerNotObserved, "NOT OBSERVED ON SERVER"},
+		{linking.ErrInvalidUsername, "Invalid PlayStation username"},
+		{linking.ErrPlayerNotFound, "Player not found"},
+		{linking.ErrPlayerNotObserved, "Not observed on server"},
 		{&linking.PlaytimeShortfallError{Observed: 3*time.Minute + 20*time.Second, Required: 5 * time.Minute}, "3m 20s of the required 5m"},
-		{linking.ErrPlaytimeRequired, "MORE PLAYTIME REQUIRED"},
-		{linking.ErrInstallationNotConfigured, "SERVER NOT CONNECTED"},
-		{linking.ErrNoConnectedServer, "SERVER NOT CONNECTED"},
-		{fmt.Errorf("wrapped: %w", linking.ErrNoConnectedServer), "SERVER NOT CONNECTED"},
-		{linking.ErrActivityUnavailable, "LINK CHECK UNAVAILABLE"},
-		{linking.ErrLinkCheckUnavailable, "LINK CHECK UNAVAILABLE"},
-		{linking.ErrAlreadyLinked, "ACCOUNT ALREADY LINKED"},
-		{linking.ErrPlayerClaimed, "ALREADY LINKED"},
-		{fmt.Errorf("wrapped: %w", linking.ErrPlayerNotObserved), "NOT OBSERVED ON SERVER"},
-		{errors.New("boom"), "Could not create a pending link"},
+		{linking.ErrPlaytimeRequired, "More playtime required"},
+		{linking.ErrInstallationNotConfigured, "Server not connected"},
+		{linking.ErrNoConnectedServer, "Server not connected"},
+		{fmt.Errorf("wrapped: %w", linking.ErrNoConnectedServer), "Server not connected"},
+		{linking.ErrActivityUnavailable, "Link check unavailable"},
+		{linking.ErrLinkCheckUnavailable, "Link check unavailable"},
+		{linking.ErrAlreadyLinked, "Account already linked"},
+		{linking.ErrPlayerClaimed, "Already linked"},
+		{fmt.Errorf("wrapped: %w", linking.ErrPlayerNotObserved), "Not observed on server"},
+		{errors.New("boom"), "Couldn't create a pending link"},
 	}
 	for _, tc := range cases {
 		if got := linkErrorMessage(tc.err); !strings.Contains(got, tc.want) {
@@ -38,8 +38,8 @@ func TestLinkErrorMessageDistinguishesOutcomes(t *testing.T) {
 		}
 	}
 	for _, err := range []error{linking.ErrInstallationNotConfigured, linking.ErrNoConnectedServer, linking.ErrPlayerNotObserved, linking.ErrInvalidUsername, linking.ErrPlaytimeRequired, linking.ErrPlayerNotFound, linking.ErrAlreadyLinked, linking.ErrPlayerClaimed} {
-		if strings.Contains(linkErrorMessage(err), "UNAVAILABLE") {
-			t.Errorf("%v must not be reported as LINK CHECK UNAVAILABLE", err)
+		if strings.Contains(strings.ToLower(linkErrorMessage(err)), "unavailable") {
+			t.Errorf("%v must not be reported as a link check that is unavailable", err)
 		}
 	}
 }

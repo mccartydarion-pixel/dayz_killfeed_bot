@@ -121,7 +121,7 @@ func TestSetupRepairReportsEachChannelOnceAcrossInstallations(t *testing.T) {
 				t.Fatalf("system %q listed %d times", sys, n)
 			}
 		}
-		for _, want := range []string{"CHAMPIONS® DISCORD REPAIR", "Repair Complete", "Created: 0", "Reused: " + strconv.Itoa(len(chans)), "Updated: 0", "Failed: 0", "Combat Feed", "All required systems are configured."} {
+		for _, want := range []string{"Discord repair", "Repair complete", "Created: 0", "Reused: " + strconv.Itoa(len(chans)), "Updated: 0", "Failed: 0", "Combat Feed", "All required systems are configured."} {
 			if !strings.Contains(text, want) {
 				t.Fatalf("missing %q:\n%s", want, text)
 			}
@@ -152,7 +152,7 @@ func TestSetupRepairUpdatedAndLegacyAreDeduplicated(t *testing.T) {
 	// A failure in any installation wins and is never also listed as verified.
 	r.AddChannel(discord.SetupChannel{ID: "c1", System: "Combat Feed", Outcome: discord.SetupChannelFailed})
 	text, _ = renderAll(r, true)
-	if !strings.Contains(text, "Needs Attention") || strings.Contains(text, "Systems Verified") || !strings.Contains(text, "Failed: 1") {
+	if !strings.Contains(text, "Needs attention") || strings.Contains(text, "Systems verified") || !strings.Contains(text, "Failed: 1") {
 		t.Fatalf("failure reported once, not as verified:\n%s", text)
 	}
 }

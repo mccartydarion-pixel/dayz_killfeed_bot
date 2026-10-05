@@ -3,6 +3,7 @@ package discord
 import (
 	"testing"
 
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -12,8 +13,9 @@ func TestWelcomePresetChampion(t *testing.T) {
 	if cfgPtr == nil || cfgPtr.MessageText == "" || cfgPtr.TitleText == "" || cfgPtr.FooterText == "" {
 		t.Fatal("expected preset to populate message, title, and footer text")
 	}
-	if cfgPtr.Color == nil || *cfgPtr.Color != ColorChampionGold {
-		t.Fatal("expected champion preset to use the Champion gold accent")
+	// The Champion preset carries the brand accent, which is crimson (presentation.Crimson).
+	if cfgPtr.Color == nil || *cfgPtr.Color != presentation.Crimson {
+		t.Fatal("expected champion preset to use the Champion crimson accent")
 	}
 }
 
@@ -22,7 +24,7 @@ func TestWelcomeColorFromValue(t *testing.T) {
 		"gold":   ColorChampionGold,
 		"red":    ColorDangerRed,
 		"green":  ColorSuccessGreen,
-		"blue":   ColorInfoBlue,
+		"blue":   welcomeBlue, // the owner's own blue, not a built-in card colour
 		"orange": ColorWarningOrange,
 	} {
 		got := colorFromValue(value)

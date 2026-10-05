@@ -33,7 +33,8 @@ func FormatThousands(n int64) string {
 	return b.String()
 }
 
-// Plural returns "1 Kill" / "2 Kills" style counts with separators.
+// Plural returns "1 kill" / "2 kills" style counts with separators. Units are written in
+// lower case on every card ("12 kills", "3 hits", "2 bounties").
 func Plural(n int64, singular, plural string) string {
 	if n == 1 || n == -1 {
 		return FormatThousands(n) + " " + singular
@@ -44,10 +45,32 @@ func Plural(n int64, singular, plural string) string {
 // FormatPoints renders Champion Points: "12,500 pts", "1 pt".
 func FormatPoints(n int64) string { return Plural(n, "pt", "pts") }
 
-// FormatDistance renders meters at one decimal: "11.7m".
-func FormatDistance(meters float64) string {
-	return fmt.Sprintf("%.1fm", math.Round(meters*10)/10)
+// FormatDecimal renders a number at one decimal with thousands separators:
+// "11.7", "1,287.6", "100.0" (99.96 rounds up).
+func FormatDecimal(v float64) string {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return "0.0"
+	}
+	tenths := int64(math.Round(math.Abs(v) * 10))
+	sign := ""
+	if v < 0 && tenths != 0 {
+		sign = "-"
+	}
+	return sign + FormatThousands(tenths/10) + "." + strconv.FormatInt(tenths%10, 10)
 }
+
+// FormatDistance renders meters at one decimal with thousands separators:
+// "11.7m", "1,287.6m".
+func FormatDistance(meters float64) string { return FormatDecimal(meters) + "m" }
+
+// FormatWholeDistance renders meters without decimals, for sources that only know
+// whole meters (hit lines, bounty claims, zone radii): "86m", "1,288m".
+func FormatWholeDistance(meters float64) string {
+	return FormatThousands(int64(math.Round(meters))) + "m"
+}
+
+// FormatPercent renders a share at one decimal: "37.5%".
+func FormatPercent(percent float64) string { return fmt.Sprintf("%.1f%%", percent) }
 
 // FormatKD renders a ratio at fixed two-decimal precision. The ratio itself is
 // computed by the caller (CombatRecord.KD) - only its display lives here.

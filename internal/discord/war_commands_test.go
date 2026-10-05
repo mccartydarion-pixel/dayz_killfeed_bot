@@ -72,7 +72,7 @@ func TestRivalryTextResolvesPlayerNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertNoRawPlayerIDs(t, text)
-	for _, want := range []string{"🎯 Longest Rivalry Kill\nSniper\\_Joe — 412.3m", "🔥 Most Active Killer\n\\*Bold\\*Killer — 9 rivalry kills", "RED +5"} {
+	for _, want := range []string{"🎯 Longest rivalry kill\nSniper\\_Joe — 412.3m", "🔥 Most active killer\n\\*Bold\\*Killer — 9 rivalry kills", "RED +5"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q in:\n%s", want, text)
 		}
@@ -95,10 +95,10 @@ func TestRivalryTextOmitsUnresolvedPlayers(t *testing.T) {
 				t.Fatal(err)
 			}
 			assertNoRawPlayerIDs(t, text)
-			if strings.Contains(text, "Longest Rivalry Kill") || strings.Contains(text, "Most Active Killer") {
+			if strings.Contains(text, "Longest rivalry kill") || strings.Contains(text, "Most active killer") {
 				t.Fatalf("unresolved holder line rendered:\n%s", text)
 			}
-			if !strings.Contains(text, "CHAMPION RIVALRY") {
+			if !strings.Contains(text, "Champion rivalry") {
 				t.Fatalf("rivalry header missing:\n%s", text)
 			}
 		})

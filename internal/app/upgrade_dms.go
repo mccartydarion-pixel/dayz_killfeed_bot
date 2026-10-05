@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -63,8 +64,10 @@ func (a *App) notifyOnce(ctx context.Context, kind string, guildID, serverID, pl
 	return true
 }
 
-func upgradeEmbed(author, title, description string, color int) *discordgo.MessageEmbed {
-	return &discordgo.MessageEmbed{Author: &discordgo.MessageEmbedAuthor{Name: author}, Title: title, Description: description, Color: color}
+// upgradeEmbed is a direct message card: product is the part of Champion it belongs to ("Shop",
+// "Ranked"; "" for the plain brand line) and color one of the palette colours.
+func upgradeEmbed(product, title, description string, color int) *discordgo.MessageEmbed {
+	return &discordgo.MessageEmbed{Author: presentation.BrandAuthor(product), Title: title, Description: description, Color: color}
 }
 
 func dm(embed *discordgo.MessageEmbed) *discordgo.MessageSend {
@@ -75,7 +78,7 @@ func serverWord(name string) string {
 	if strings.TrimSpace(name) == "" {
 		return "the server"
 	}
-	return name
+	return presentation.SafeName(name, 60) // stored data: cleaned and markdown-escaped
 }
 
 // --- 2. win-back -----------------------------------------------------------------------------------
@@ -88,11 +91,11 @@ const (
 
 // buildWinbackDM is the message to a player who stopped playing. hooks are the reasons to come back.
 func buildWinbackDM(name, serverName string, days int, hooks []string, hubURL string) *discordgo.MessageSend {
-	desc := fmt.Sprintf("It's been %d days since we saw **%s** on %s.", days, strings.TrimSpace(name), serverWord(serverName))
+	desc := fmt.Sprintf("It's been %d days since we saw **%s** on %s.", days, orUnknown(name), serverWord(serverName))
 	if len(hooks) > 0 {
 		desc += "\n\n" + strings.Join(hooks, "\n")
 	}
-	embed := upgradeEmbed("CHAMPIONS®", "👋 We miss you on "+serverWord(serverName), desc, 0xE7B94A)
+	embed := upgradeEmbed("", "👋 We miss you on "+serverWord(serverName), desc, presentation.Crimson)
 	if hubURL != "" {
 		embed.Fields = []*discordgo.MessageEmbedField{{Name: "See what's new in the Player Hub", Value: hubURL}}
 	}

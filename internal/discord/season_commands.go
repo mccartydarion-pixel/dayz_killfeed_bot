@@ -57,8 +57,8 @@ func RegisterSeasonCommands(session CommandRegistrar, guildID string) error {
 	}
 	cmd := &discordgo.ApplicationCommand{Name: "season", Description: "Stats season (kill/death history) and each server's Ranked RP season status", Options: []*discordgo.ApplicationCommandOption{
 		{Name: "status", Description: "Show the stats season and each server's Ranked (RP) season", Type: discordgo.ApplicationCommandOptionSubCommand},
-		{Name: "start", Description: "Start a new STATS season (does not start Ranked RP)", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "name", Description: "Stats season name", Type: discordgo.ApplicationCommandOptionString, Required: true}}},
-		{Name: "end", Description: "Finalize the active STATS season (Ranked RP is unaffected)", Type: discordgo.ApplicationCommandOptionSubCommand},
+		{Name: "start", Description: "Start a new stats season (does not start Ranked RP)", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "name", Description: "Stats season name", Type: discordgo.ApplicationCommandOptionString, Required: true}}},
+		{Name: "end", Description: "Finalize the active stats season (Ranked RP is unaffected)", Type: discordgo.ApplicationCommandOptionSubCommand},
 		{Name: "history", Description: "Show recent stats seasons", Type: discordgo.ApplicationCommandOptionSubCommand},
 	}}
 	_, err = session.ApplicationCommandCreate(applicationID, guildID, cmd)
@@ -67,12 +67,12 @@ func RegisterSeasonCommands(session CommandRegistrar, guildID string) error {
 
 func (h *SeasonCommandHandler) Handle(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if i == nil || i.GuildID == "" || h.seasons == nil || h.guilds == nil {
-		respondEphemeral(s, i, "Seasons are unavailable until the database is connected.")
+		respondEphemeral(s, i, ReplyAreUnavailable("Seasons"))
 		return
 	}
 	_, guildID, err := h.guilds.GetGuild(context.Background(), i.GuildID)
 	if err != nil || guildID == 0 {
-		respondEphemeral(s, i, "Run `/setup` first.")
+		respondEphemeral(s, i, ReplyNotSetUp)
 		return
 	}
 	opts := i.ApplicationCommandData().Options
@@ -87,19 +87,19 @@ func (h *SeasonCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interac
 		h.history(s, i, guildID)
 	case "start":
 		if !isAdminInteraction(i) {
-			respondEphemeral(s, i, "Administrator or Manage Server permission required.")
+			respondEphemeral(s, i, ReplyNeedsManageServer)
 			return
 		}
 		name := opts[0].Options[0].StringValue()
 		season, err := h.seasons.Start(context.Background(), guildID, strings.TrimSpace(name), time.Now().UTC())
 		if err != nil {
-			respondEphemeral(s, i, "Cannot start season: "+err.Error())
+			respondEphemeral(s, i, ReplyCouldNotBecause("start the season", err.Error()))
 			return
 		}
-		respondEphemeral(s, i, fmt.Sprintf("📊 **STATS SEASON STARTED**\n\n**%s**\nStarted <t:%d:R>\n\n%s", season.Name, season.StartsAt.Unix(), rankedIsSeparateNote))
+		respondEphemeral(s, i, fmt.Sprintf("📊 **Stats season started**\n\n**%s**\nStarted <t:%d:R>\n\n%s", season.Name, season.StartsAt.Unix(), rankedIsSeparateNote))
 	case "end":
 		if !isAdminInteraction(i) {
-			respondEphemeral(s, i, "Administrator or Manage Server permission required.")
+			respondEphemeral(s, i, ReplyNeedsManageServer)
 			return
 		}
 		active, err := h.seasons.GetActiveSeason(context.Background(), guildID)
@@ -109,10 +109,10 @@ func (h *SeasonCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interac
 		}
 		result, err := h.seasons.FinalizeSeason(context.Background(), guildID, active.ID, time.Now().UTC())
 		if err != nil {
-			respondEphemeral(s, i, "Cannot finalize season: "+err.Error())
+			respondEphemeral(s, i, ReplyCouldNotBecause("finalize the season", err.Error()))
 			return
 		}
-		respondEphemeral(s, i, fmt.Sprintf("👑 **%s COMPLETE** (stats season)\n\nTop player kills: %d\nTop faction kills: %d\nLongest kill: %.1fm\n\n%s", active.Name, result.TopPlayerKills, result.TopFactionKills, result.LongestKillValue, rankedIsSeparateNote))
+		respondEphemeral(s, i, fmt.Sprintf("👑 **%s complete** (stats season)\n\nTop player kills: %d\nTop faction kills: %d\nLongest kill: %.1fm\n\n%s", active.Name, result.TopPlayerKills, result.TopFactionKills, result.LongestKillValue, rankedIsSeparateNote))
 	}
 }
 
@@ -132,7 +132,7 @@ func (h *SeasonCommandHandler) status(s *discordgo.Session, i *discordgo.Interac
 // All-time kills, deaths, streaks and longest kills are never reset by either.
 func (h *SeasonCommandHandler) statusText(ctx context.Context, guildID int64, now time.Time) string {
 	var b strings.Builder
-	b.WriteString("📊 **STATS SEASON**\n")
+	b.WriteString("📊 **Stats season**\n")
 	active, err := h.seasons.GetActiveSeason(ctx, guildID)
 	switch {
 	case err != nil:
@@ -140,10 +140,10 @@ func (h *SeasonCommandHandler) statusText(ctx context.Context, guildID int64, no
 	case active == nil:
 		b.WriteString("No active stats season.\n")
 	default:
-		fmt.Fprintf(&b, "**%s** — %s since <t:%d:R>\n", active.Name, active.Status, active.StartsAt.Unix())
+		fmt.Fprintf(&b, "**%s** — %s since <t:%d:R>\n", active.Name, strings.ToLower(string(active.Status)), active.StartsAt.Unix())
 	}
 	b.WriteString("Labels kill/death history. All-time leaderboards are never reset.\n\n")
-	b.WriteString("🎖️ **RANKED (RP) SEASON** — per server\n")
+	b.WriteString("🎖️ **Ranked (RP) season** — per server\n")
 	b.WriteString(h.rankedStatusLines(ctx, guildID))
 	return b.String()
 }
@@ -172,9 +172,9 @@ func (h *SeasonCommandHandler) rankedStatusLines(ctx context.Context, guildID in
 			fmt.Fprintf(&b, "**%s** — status temporarily unavailable\n", name)
 		case season == nil:
 			anyInactive = true
-			fmt.Fprintf(&b, "**%s** — Not started. Players are Unranked and no RP is awarded.\n", name)
+			fmt.Fprintf(&b, "**%s** — not started. Players are Unranked and no RP is awarded.\n", name)
 		default:
-			fmt.Fprintf(&b, "**%s** — ACTIVE since <t:%d:R> · %s RP per eligible kill\n", name, season.StartsAt.Unix(), presentation.FormatThousands(season.RPPerKill))
+			fmt.Fprintf(&b, "**%s** — active since <t:%d:R> · %s RP per eligible kill\n", name, season.StartsAt.Unix(), presentation.FormatThousands(season.RPPerKill))
 		}
 	}
 	if anyInactive {
@@ -185,11 +185,11 @@ func (h *SeasonCommandHandler) rankedStatusLines(ctx context.Context, guildID in
 func (h *SeasonCommandHandler) history(s *discordgo.Session, i *discordgo.InteractionCreate, guildID int64) {
 	rows, err := h.seasons.GetSeasonHistory(context.Background(), guildID, 5)
 	if err != nil {
-		respondEphemeral(s, i, "Could not load season history.")
+		respondEphemeral(s, i, ReplyCouldNot("load the season history"))
 		return
 	}
 	var b strings.Builder
-	b.WriteString("📊 **STATS SEASON HISTORY**\n\n")
+	b.WriteString("📊 **Stats season history**\n\n")
 	for _, row := range rows {
 		fmt.Fprintf(&b, "%s — %s\n", row.Name, row.Status)
 	}

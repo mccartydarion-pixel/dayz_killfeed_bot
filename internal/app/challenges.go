@@ -11,6 +11,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/economy"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/progression"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
@@ -304,9 +305,6 @@ func buildChallengesCard(set repository.ChallengeSet, points int64, serverName s
 		title = "🗓️ This week's challenges"
 		ends = "Resets Monday 00:00 UTC."
 	}
-	if strings.TrimSpace(serverName) != "" {
-		title += " · " + serverName
-	}
 	lines := make([]string, 0, len(set.Challenges))
 	for _, c := range set.Challenges {
 		lines = append(lines, "• "+c.Title)
@@ -316,5 +314,7 @@ func buildChallengesCard(set repository.ChallengeSet, points int64, serverName s
 		desc += fmt.Sprintf("Each one pays **%s**. ", pointsText(points))
 	}
 	desc += ends + " Track your progress in the Player Hub."
-	return &discordgo.MessageEmbed{Author: &discordgo.MessageEmbedAuthor{Name: "CHAMPIONS® CHALLENGES"}, Color: 0x22C55E, Title: title, Description: desc}
+	// The title is the event; the server is named in the footer, like on every card.
+	return &discordgo.MessageEmbed{Author: presentation.BrandAuthor("Challenges"), Color: presentation.Crimson, Title: title, Description: desc,
+		Footer: presentation.Footer(serverName, "")}
 }

@@ -59,7 +59,7 @@ func TestAutoLeaderboardHeaderIsCompact(t *testing.T) {
 	if h.Color != presentation.ChampionGold || len(h.Fields) != 0 {
 		t.Fatalf("header must be compact gold: color=%X fields=%d", h.Color, len(h.Fields))
 	}
-	want := "**Champions Deathmatch**\nLast Updated <t:1790160000:R>\nAuto Refresh • Every 3 Hours"
+	want := "**Champions Deathmatch**\nLast updated <t:1790160000:R>\nRefreshes every 3 hours"
 	if h.Description != want {
 		t.Fatalf("header description:\n%q\nwant\n%q", h.Description, want)
 	}
@@ -68,7 +68,7 @@ func TestAutoLeaderboardHeaderIsCompact(t *testing.T) {
 	}
 
 	anon := BuildAutoLeaderboardEmbeds(LeaderboardSnapshot{}, DefaultLeaderboardConfig())[0]
-	if anon.Description != "Auto Refresh • Every 3 Hours" {
+	if anon.Description != "Refreshes every 3 hours" {
 		t.Fatalf("no server name / time: only the cadence line, got %q", anon.Description)
 	}
 	evil := BuildAutoLeaderboardEmbeds(LeaderboardSnapshot{ServerName: "@everyone **x**"}, DefaultLeaderboardConfig())[0]
@@ -104,10 +104,10 @@ func TestAutoLeaderboardCategoryValues(t *testing.T) {
 		first, last  string
 		name1, name4 string
 	}{
-		{1, "6,053 Kills", "1 Kill", "🥇 PlayerOne", "#4 PlayerFour"},
-		{2, "27 Kill Streak", "1 Kill Streak", "🥇 PlayerOne", "#4 PlayerFour"},
+		{1, "6,053 kills", "1 kill", "🥇 PlayerOne", "#4 PlayerFour"},
+		{2, "27 kill streak", "1 kill streak", "🥇 PlayerOne", "#4 PlayerFour"},
 		{3, "Diamond III", "Bronze I", "🥇 PlayerOne", "#4 PlayerFour"},
-		{4, "5,012 Deaths", "1 Death", "🥇 PlayerOne", "#4 PlayerFour"},
+		{4, "5,012 deaths", "1 death", "🥇 PlayerOne", "#4 PlayerFour"},
 		{5, "1,104.2m", "12.0m", "🥇 PlayerOne", "#4 PlayerFour"},
 	}
 	for _, c := range cases {

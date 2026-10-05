@@ -65,16 +65,16 @@ func BoardGridFields(entries []BoardEntry, limit, nameCap int) []*discordgo.Mess
 	return out
 }
 
-// FormatBoardKills renders an all-time kill count: "1 Kill", "6,053 Kills".
-func FormatBoardKills(raw string) string { return formatBoardCount(raw, "Kill", "Kills") }
+// FormatBoardKills renders an all-time kill count: "1 kill", "6,053 kills".
+func FormatBoardKills(raw string) string { return formatBoardCount(raw, "kill", "kills") }
 
-// FormatBoardDeaths renders an all-time death count: "1 Death", "5,012 Deaths".
-func FormatBoardDeaths(raw string) string { return formatBoardCount(raw, "Death", "Deaths") }
+// FormatBoardDeaths renders an all-time death count: "1 death", "5,012 deaths".
+func FormatBoardDeaths(raw string) string { return formatBoardCount(raw, "death", "deaths") }
 
-// FormatBoardStreak renders a record streak: "27 Kill Streak".
+// FormatBoardStreak renders a record streak: "27 kill streak".
 func FormatBoardStreak(raw string) string {
 	if n, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64); err == nil {
-		return FormatThousands(n) + " Kill Streak"
+		return FormatThousands(n) + " kill streak"
 	}
 	return SafeName(raw, 40)
 }

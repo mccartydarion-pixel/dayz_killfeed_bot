@@ -18,12 +18,15 @@ type ServerRanksSnapshot struct {
 	Standings  []repository.ServerStanding
 }
 
+// serverRanksTitle is the title of the #server-ranks board, active or not.
+const serverRanksTitle = "🎖️ Server ranks"
+
 // BuildServerRanksEmbed renders the separate #server-ranks panel. This builder
 // has no publishing path; callers must first have an active, verified season.
 func BuildServerRanksEmbed(s ServerRanksSnapshot) *discordgo.MessageEmbed {
 	embed := &discordgo.MessageEmbed{
 		Author: presentation.ChampionAuthor(),
-		Title:  "🎖️ SERVER RANKS 🎖️",
+		Title:  serverRanksTitle,
 		Color:  presentation.ChampionGold,
 	}
 	var lines []string
@@ -34,7 +37,7 @@ func BuildServerRanksEmbed(s ServerRanksSnapshot) *discordgo.MessageEmbed {
 		lines = append(lines, "Season: "+presentation.SafeName(name, 64))
 	}
 	if !s.UpdatedAt.IsZero() {
-		lines = append(lines, fmt.Sprintf("Last Updated <t:%d:R>", s.UpdatedAt.Unix()))
+		lines = append(lines, "Last updated "+presentation.Timestamp(s.UpdatedAt, 'R'))
 	}
 	embed.Description = strings.Join(lines, "\n")
 	entries := make([]presentation.BoardEntry, 0, len(s.Standings))

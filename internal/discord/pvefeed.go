@@ -259,29 +259,25 @@ func (p *PveFeedPublisher) send(channel string, batch []killfeed.PveDeathNotice,
 // the parser proved; there is no generic "unknown cause" card because an
 // unproven death is never claimed in the first place.
 //
-//	💀 SUICIDE        ☣️ PVE DEATH        🐺 PVE DEATH        ⚠️ PVE DEATH
+//	💀 Suicide        ☣️ PvE death        🐺 PvE death        ⚠️ PvE death
 //	Name died by      Name was killed     Name was killed     Name died to the
 //	suicide.          by an infected.     by an animal.       environment.
 //
 // Only the sanitised display name is shown - no id, coordinates or weapon (a
 // suicide's "weapon" is just the item held, not a cause).
 func buildPveEmbed(n killfeed.PveDeathNotice) *discordgo.MessageEmbed {
-	name := sanitizeName(n.Name)
-	if name == "" {
-		name = "Unknown"
-	}
-	name = safeTrunc(name, pveMaxNameLen)
+	name := presentation.SafeName(n.Name, pveMaxNameLen) // cleaned, capped, markdown-escaped
 
 	var text string
 	switch n.Cause {
 	case killfeed.DeathCauseSuicide:
-		text = fmt.Sprintf("💀 **SUICIDE**\n%s died by suicide.", name)
+		text = fmt.Sprintf("💀 **Suicide**\n%s died by suicide.", name)
 	case killfeed.DeathCauseInfected:
-		text = fmt.Sprintf("☣️ **PVE DEATH**\n%s was killed by an infected.", name)
+		text = fmt.Sprintf("☣️ **PvE death**\n%s was killed by an infected.", name)
 	case killfeed.DeathCauseAnimal:
-		text = fmt.Sprintf("🐺 **PVE DEATH**\n%s was killed by an animal.", name)
+		text = fmt.Sprintf("🐺 **PvE death**\n%s was killed by an animal.", name)
 	default: // DeathCauseEnvironment (the only other supported value)
-		text = fmt.Sprintf("⚠️ **PVE DEATH**\n%s died to the environment.", name)
+		text = fmt.Sprintf("⚠️ **PvE death**\n%s died to the environment.", name)
 	}
-	return &discordgo.MessageEmbed{Description: text, Color: presentation.WarningAmber}
+	return &discordgo.MessageEmbed{Description: text, Color: presentation.Neutral} // a quiet death, like the death card
 }

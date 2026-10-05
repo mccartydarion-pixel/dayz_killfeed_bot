@@ -56,21 +56,21 @@ func TestEconomyFeedCards(t *testing.T) {
 		want string
 	}{
 		{"bounty reward", economy.Event{Type: economy.TypeBountyClaim, GuildID: 7, ServerID: 1, PlayerName: "PlayerA", Amount: 125000, Credit: true, BalanceAfter: 340000},
-			"💰 **BOUNTY REWARD**\nPlayerA earned 125,000 pts\nBalance: 340,000 pts"},
+			"💰 **Bounty reward**\nPlayerA earned 125,000 pts\nBalance: 340,000 pts"},
 		{"system reward", economy.Event{Type: economy.TypeSystemReward, GuildID: 7, ServerID: 1, PlayerName: "PlayerA", Amount: 10, Credit: true, BalanceAfter: 10},
-			"🎁 **REWARD**\nPlayerA earned 10 pts\nBalance: 10 pts"},
+			"🎁 **Reward**\nPlayerA earned 10 pts\nBalance: 10 pts"},
 		{"admin credit (no balance shown)", economy.Event{Type: economy.TypeAdminCredit, GuildID: 7, ServerID: 1, PlayerName: "PlayerA", Amount: 50000, Credit: true, BalanceAfter: 999999},
-			"➕ **ADMIN CREDIT**\nPlayerA received 50,000 pts"},
+			"➕ **Admin credit**\nPlayerA received 50,000 pts"},
 		{"admin debit (no balance shown)", economy.Event{Type: economy.TypeAdminDebit, GuildID: 7, ServerID: 1, PlayerName: "PlayerA", Amount: 25000, BalanceAfter: 999999},
-			"➖ **ADMIN DEBIT**\nPlayerA lost 25,000 pts"},
+			"➖ **Admin debit**\nPlayerA lost 25,000 pts"},
 		{"shop purchase", economy.Event{Type: economy.TypeShopPurchase, GuildID: 7, ServerID: 1, PlayerName: "PlayerA", Amount: 750, BalanceAfter: 250, Item: "Care Package"},
-			"🛒 **SHOP PURCHASE**\nPlayerA bought Care Package for 750 pts"},
+			"🛒 **Shop purchase**\nPlayerA bought Care Package for 750 pts"},
 		{"shop purchase without an item name", economy.Event{Type: economy.TypeShopPurchase, GuildID: 7, ServerID: 1, PlayerName: "PlayerA", Amount: 750},
-			"🛒 **SHOP PURCHASE**\nPlayerA spent 750 pts"},
+			"🛒 **Shop purchase**\nPlayerA spent 750 pts"},
 		{"shop refund", economy.Event{Type: economy.TypeShopRefund, GuildID: 7, ServerID: 1, PlayerName: "PlayerA", Amount: 750, Credit: true},
-			"↩️ **SHOP REFUND**\nPlayerA was refunded 750 pts"},
+			"↩️ **Shop refund**\nPlayerA was refunded 750 pts"},
 		{"unknown future type", economy.Event{Type: "CASINO_BET", GuildID: 7, ServerID: 1, PlayerName: "PlayerA", Amount: 5},
-			"💠 **ECONOMY**\nPlayerA lost 5 pts"},
+			"💠 **Economy**\nPlayerA lost 5 pts"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f.feed.Notify(tc.ev)
@@ -298,7 +298,7 @@ func TestEconomyCommandResolvesOwnBalanceThroughLinkAndProtectsOthers(t *testing
 	if id, msg := h.resolveSelfOrTarget(ctx, interaction("user-1", 0), 7, ""); id != 10 || msg != "" {
 		t.Fatalf("a linked player must resolve to their own player, got %d %q", id, msg)
 	}
-	if id, msg := h.resolveSelfOrTarget(ctx, interaction("stranger", 0), 7, ""); id != 0 || !strings.Contains(msg, "NOT LINKED") {
+	if id, msg := h.resolveSelfOrTarget(ctx, interaction("stranger", 0), 7, ""); id != 0 || !strings.Contains(msg, "Account not linked") {
 		t.Fatalf("an unlinked user must be asked to link, got %d %q", id, msg)
 	}
 	// A non-admin naming another player is refused - before any lookup.
@@ -317,7 +317,7 @@ func TestEconomyCommandCreditAndDebitAreAdminOnly(t *testing.T) {
 	for _, name := range []string{"credit", "debit"} {
 		sub := &discordgo.ApplicationCommandInteractionDataOption{Name: name}
 		for _, perms := range []int64{0, discordgo.PermissionSendMessages, discordgo.PermissionManageRoles} {
-			if got := h.dispatch(context.Background(), interaction("u", perms), 7, sub); !strings.Contains(got, "permission required") {
+			if got := h.dispatch(context.Background(), interaction("u", perms), 7, sub); got != ReplyNeedsManageServer {
 				t.Fatalf("%s with permissions %d must be refused, got %q", name, perms, got)
 			}
 		}
@@ -360,7 +360,7 @@ func TestEconomyRepliesRenderBalanceAndHistoryWithoutInternalIDs(t *testing.T) {
 	svc := economy.NewService(store, nil)
 	ctx := context.Background()
 
-	if got := economyBalanceMessage(ctx, svc, 555, 424242); got != "💰 **CHAMPION POINTS BALANCE**\n\nBalance: **340,000 pts**" {
+	if got := economyBalanceMessage(ctx, svc, 555, 424242); got != "💰 **Champion Points balance**\n\nBalance: **340,000 pts**" {
 		t.Fatalf("unexpected balance reply: %q", got)
 	}
 	hist := economyHistoryMessage(ctx, svc, 555, 424242)
@@ -377,7 +377,7 @@ func TestEconomyRepliesRenderBalanceAndHistoryWithoutInternalIDs(t *testing.T) {
 	if empty := economyHistoryMessage(ctx, economy.NewService(discordEconomyStore{name: "Alice"}, nil), 555, 424242); !strings.Contains(empty, "No transactions yet") {
 		t.Fatalf("expected the empty state, got %q", empty)
 	}
-	if got := economyBalanceMessage(ctx, economy.NewService(discordEconomyStore{}, nil), 555, 999); !strings.Contains(got, "Could not load") {
+	if got := economyBalanceMessage(ctx, economy.NewService(discordEconomyStore{}, nil), 555, 999); got != ReplyCouldNot("load the balance") {
 		t.Fatalf("an unknown player must not produce a balance, got %q", got)
 	}
 }

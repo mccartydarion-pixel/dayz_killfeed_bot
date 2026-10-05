@@ -54,10 +54,10 @@ func TestSeasonStatusSeparatesStatsSeasonFromRankedSeason(t *testing.T) {
 	})
 	text := h.statusText(context.Background(), 7, start)
 	for _, want := range []string{
-		"📊 **STATS SEASON**", "**Season 1** — ACTIVE since <t:1790000000:R>", "All-time leaderboards are never reset",
-		"🎖️ **RANKED (RP) SEASON** — per server",
-		"**Champions Deathmatch** — Not started. Players are Unranked and no RP is awarded.",
-		"**PvE Island** — ACTIVE since <t:1790000000:R> · 1,500 RP per eligible kill",
+		"📊 **Stats season**", "**Season 1** — active since <t:1790000000:R>", "All-time leaderboards are never reset",
+		"🎖️ **Ranked (RP) season** — per server",
+		"**Champions Deathmatch** — not started. Players are Unranked and no RP is awarded.",
+		"**PvE Island** — active since <t:1790000000:R> · 1,500 RP per eligible kill",
 		"status temporarily unavailable",
 		"Server Admin → Server Controls → Server Ranked",
 	} {
@@ -68,7 +68,7 @@ func TestSeasonStatusSeparatesStatsSeasonFromRankedSeason(t *testing.T) {
 	if strings.Contains(text, "@everyone") {
 		t.Fatal("server names must be sanitised")
 	}
-	if strings.Index(text, "STATS SEASON") > strings.Index(text, "RANKED (RP) SEASON") {
+	if strings.Index(text, "Stats season") > strings.Index(text, "Ranked (RP) season") {
 		t.Fatal("stats season first, Ranked second")
 	}
 }

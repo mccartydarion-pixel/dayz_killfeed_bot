@@ -418,7 +418,7 @@ func (a *App) mapRotationSend(t repository.MapRotationTarget, channelID string, 
 // mapRotationStaffAlert reports a failed switch through the staff alert route (ADMIN_ALERTS).
 func (a *App) mapRotationStaffAlert(t repository.MapRotationTarget, sw repository.MapRotationSwitch, halted bool) {
 	alert := discord.AdminAlert{GuildRowID: t.GuildID, ServerID: t.ServerID, Kind: discord.AlertKindMapRotation, Severity: discord.AlertWarning,
-		Headline: "MAP NOT CHANGED", Detail: presentation.Truncate(sw.Message, 900),
+		Headline: "Map not changed", Detail: presentation.Truncate(sw.Message, 900),
 		Fields: [][2]string{{"Map", presentation.SafeName(sw.MapName, 60)}}}
 	if halted {
 		alert.Severity = discord.AlertCritical
@@ -440,7 +440,7 @@ func noMentions() *discordgo.MessageAllowedMentions {
 // buildMapVoteOpenMessage is the "pick the next map" post. Only with ping does the message start
 // with @everyone and allow that one mention; nothing else in it can ever ping.
 func buildMapVoteOpenMessage(serverName string, v repository.MapRotationVote, link string, ping bool) *discordgo.MessageSend {
-	embed := presentation.NewChampionEmbed("🗺️ Pick the next map", presentation.ChampionGold)
+	embed := presentation.NewChampionEmbed("🗺️ Pick the next map", presentation.Crimson)
 	names := make([]string, 0, len(v.Options))
 	for _, o := range v.Options {
 		names = append(names, o.Name) // BulletBlock makes each line safe
@@ -452,7 +452,7 @@ func buildMapVoteOpenMessage(serverName string, v repository.MapRotationVote, li
 	embed.Description = "Vote for the map " + where + " loads after the next restart.\n\n**[Vote here](" + link + ")**"
 	embed.Fields = []*discordgo.MessageEmbedField{
 		{Name: "Maps", Value: presentation.BulletBlock(names, len(names))},
-		{Name: "Voting closes", Value: fmt.Sprintf("<t:%d:t> (<t:%d:R>)", v.ClosesAt.Unix(), v.ClosesAt.Unix()), Inline: true},
+		{Name: "Voting closes", Value: presentation.Timestamp(v.ClosesAt, 't') + " (" + presentation.Timestamp(v.ClosesAt, 'R') + ")", Inline: true},
 		{Name: "Who can vote", Value: "Players with a linked gamertag", Inline: true},
 	}
 	presentation.StampEmbed(embed, v.OpensAt)
@@ -479,9 +479,7 @@ func buildMapVoteResultMessage(serverName string, v repository.MapRotationVote) 
 		lines = append(lines, fmt.Sprintf("%s: %s", o.Name, presentation.Plural(int64(o.Votes), "vote", "votes"))) // BulletBlock makes each line safe
 	}
 	embed.Fields = []*discordgo.MessageEmbedField{{Name: "Votes", Value: presentation.BulletBlock(lines, len(lines))}}
-	if strings.TrimSpace(serverName) != "" {
-		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Server", Value: presentation.SafeName(serverName, 60), Inline: true})
-	}
+	embed.Footer = presentation.Footer(serverName, "Map vote") // the server is named in the footer
 	if v.ClosedAt != nil {
 		presentation.StampEmbed(embed, *v.ClosedAt)
 	}

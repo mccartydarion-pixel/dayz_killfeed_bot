@@ -12,6 +12,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/economy"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/progression"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
@@ -19,14 +20,14 @@ import (
 // Territory control (docs/PROGRESSION.md "Territory").
 
 const (
-	territoryColor = 0xF97316
+	territoryColor = presentation.Crimson // ground taken in combat
 	// territoryKillLookback is how far back each pass places kills in zones (late kills included).
 	territoryKillLookback = 3 * time.Hour
 	territoryKillBatch    = 5000
 )
 
 func territoryAuthor() *discordgo.MessageEmbedAuthor {
-	return &discordgo.MessageEmbedAuthor{Name: "CHAMPIONS® TERRITORY"}
+	return presentation.BrandAuthor("Territory")
 }
 
 // territoryZoneDTO is one zone with its holder and the race for it.
@@ -365,24 +366,25 @@ func (a *App) payTerritoryIncome(ctx context.Context, ts repository.TerritorySer
 }
 
 func factionLabel(f repository.TerritoryFaction) string {
+	// Faction names and tags are written by players: cleaned and markdown-escaped like any name.
 	if strings.TrimSpace(f.Tag) != "" {
-		return fmt.Sprintf("[%s] %s", f.Tag, f.Name)
+		return presentation.SafeName(fmt.Sprintf("[%s] %s", f.Tag, f.Name), 80)
 	}
-	return f.Name
+	return presentation.SafeName(f.Name, 80)
 }
 
 func buildTerritoryCard(z progression.Zone, from, to repository.TerritoryFaction, points int, s repository.TerritorySettings, serverName string) *discordgo.MessageEmbed {
 	where := ""
 	if strings.TrimSpace(serverName) != "" {
-		where = " on " + serverName
+		where = " on " + presentation.SafeName(serverName, 60)
 	}
 	if to.ID == 0 {
-		return &discordgo.MessageEmbed{Author: territoryAuthor(), Color: 0x6B7280, Title: "🏳️ " + z.Name + " is unclaimed",
+		return &discordgo.MessageEmbed{Author: territoryAuthor(), Color: presentation.Neutral, Title: "🏳️ " + z.Name + " is unclaimed",
 			Description: fmt.Sprintf("%s held %s%s but got no kills there in %d days. It's up for grabs.", factionLabel(from), z.Name, where, s.WindowDays)}
 	}
-	desc := fmt.Sprintf("**%s** took **%s**%s with %d kills there in the last %d days.", factionLabel(to), z.Name, where, points, s.WindowDays)
+	desc := fmt.Sprintf("**%s** took **%s**%s with %s there in the last %d days.", factionLabel(to), z.Name, where, presentation.Plural(int64(points), "kill", "kills"), s.WindowDays)
 	if from.ID != 0 {
-		desc = fmt.Sprintf("**%s** took **%s** from **%s**%s with %d kills there in the last %d days.", factionLabel(to), z.Name, factionLabel(from), where, points, s.WindowDays)
+		desc = fmt.Sprintf("**%s** took **%s** from **%s**%s with %s there in the last %d days.", factionLabel(to), z.Name, factionLabel(from), where, presentation.Plural(int64(points), "kill", "kills"), s.WindowDays)
 	}
 	if s.IncomePoints > 0 {
 		desc += fmt.Sprintf("\nIt pays the holders %s a day.", pointsText(s.IncomePoints))

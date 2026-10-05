@@ -10,7 +10,7 @@ import (
 )
 
 // RankCategory is the semantic kind of a ranking; it decides how raw values
-// are displayed ("20 Kills", "98.3m", "4.25 K/D", "12,500 pts").
+// are displayed ("20 kills", "98.3m", "4.25 K/D", "12,500 pts").
 type RankCategory string
 
 const (
@@ -46,17 +46,17 @@ func RankCategoryOf(label string) RankCategory {
 func RankHeading(c RankCategory) string {
 	switch c {
 	case RankKills:
-		return "⚔️ TOP KILLERS"
+		return "⚔️ Top killers"
 	case RankKD:
-		return "📈 BEST K/D"
+		return "📈 Best K/D"
 	case RankLongest:
-		return "🎯 LONGEST KILLS"
+		return "🎯 Longest kills"
 	case RankPoints:
-		return "🏆 CHAMPION POINTS"
+		return "🏆 Champion Points"
 	case RankStreak:
-		return "🔥 BEST STREAKS"
+		return "🔥 Best streaks"
 	default:
-		return "🏆 RANKINGS"
+		return "🏆 Rankings"
 	}
 }
 
@@ -68,7 +68,7 @@ func FormatLeaderboardValue(c RankCategory, raw string) string {
 	switch c {
 	case RankKills, RankStreak:
 		if n, err := strconv.ParseInt(raw, 10, 64); err == nil {
-			return Plural(n, "Kill", "Kills")
+			return Plural(n, "kill", "kills")
 		}
 	case RankPoints:
 		if n, err := strconv.ParseInt(raw, 10, 64); err == nil {
@@ -100,7 +100,7 @@ func RankMarker(rank int) string {
 	}
 }
 
-// RankLine is one scoreboard row: "🥇 PlayerOne • **20 Kills**". Plain
+// RankLine is one scoreboard row: "🥇 PlayerOne • **20 kills**". Plain
 // rank • name • value survives mobile and desktop widths alike; no fake
 // whitespace columns.
 func RankLine(rank int, name, value string) string {

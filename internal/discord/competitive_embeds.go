@@ -1,7 +1,6 @@
 package discord
 
 import (
-	"fmt"
 	"math"
 	"strings"
 
@@ -13,8 +12,8 @@ import (
 // headline and one inline field per record. A holder's name is shown only
 // when the caller knows it ("" = omitted, never a placeholder).
 func BuildSeasonCompletionEmbed(name string, topPlayer string, topPlayerKills int64, topFaction string, topFactionKills int64, longestPlayer string, longest float64, streakPlayer string, streak int) *discordgo.MessageEmbed {
-	embed := presentation.NewFeedEmbed("🏆 SEASON COMPLETE", presentation.ChampionGold)
-	embed.Footer.Text = presentation.SeasonFooterText(name)
+	embed := presentation.NewFeedEmbed("🏆 Season complete", presentation.ChampionGold)
+	embed.Footer = presentation.Footer("", presentation.CleanName(name, 60))
 	embed.Description = "**" + presentation.SafeName(name, 60) + "** is in the books."
 	record := func(heading, value, holder string) *discordgo.MessageEmbedField {
 		v := "**" + value + "**"
@@ -24,10 +23,10 @@ func BuildSeasonCompletionEmbed(name string, topPlayer string, topPlayerKills in
 		return &discordgo.MessageEmbedField{Name: heading, Value: v, Inline: true}
 	}
 	presentation.AppendFields(embed,
-		record("👑 TOP PLAYER", presentation.Plural(topPlayerKills, "Kill", "Kills"), topPlayer),
-		record("⚔️ TOP FACTION", presentation.Plural(topFactionKills, "Kill", "Kills"), topFaction),
-		record("🎯 LONGEST KILL", presentation.FormatDistance(longest), longestPlayer),
-		record("🔥 BEST STREAK", presentation.Plural(int64(streak), "Kill", "Kills"), streakPlayer),
+		record("👑 Top player", presentation.Plural(topPlayerKills, "kill", "kills"), topPlayer),
+		record("⚔️ Top faction", presentation.Plural(topFactionKills, "kill", "kills"), topFaction),
+		record("🎯 Longest kill", presentation.FormatDistance(longest), longestPlayer),
+		record("🔥 Best streak", presentation.Plural(int64(streak), "kill", "kills"), streakPlayer),
 	)
 	return presentation.FitEmbed(embed)
 }
@@ -53,8 +52,8 @@ type WarCompletionCard struct {
 // BuildWarCompletionEmbed is the war-final scoreboard: the matchup and result
 // as the headline, one inline field per side, then the war's records.
 func BuildWarCompletionEmbed(c WarCompletionCard) *discordgo.MessageEmbed {
-	embed := presentation.NewFeedEmbed("⚔️ FACTION WAR COMPLETE", presentation.FactionGold)
-	embed.Footer.Text = presentation.SeasonFooterText(c.Season)
+	embed := presentation.NewFeedEmbed("⚔️ Faction war complete", presentation.FactionGold)
+	embed.Footer = presentation.Footer("", seasonContext(c.Season))
 	// Emptiness is checked before SafeName, which turns "" into "Unknown".
 	known := func(s string) bool { return strings.TrimSpace(s) != "" }
 	var lines []string
@@ -65,15 +64,15 @@ func BuildWarCompletionEmbed(c WarCompletionCard) *discordgo.MessageEmbed {
 	case known(c.Winner):
 		lines = append(lines, "👑 **"+presentation.SafeName(c.Winner, 60)+"** wins the war")
 	case c.Draw:
-		lines = append(lines, "🤝 **DRAW**")
+		lines = append(lines, "🤝 **Draw**")
 	}
 	embed.Description = strings.Join(lines, "\n")
 	side := func(name string, score int64) *discordgo.MessageEmbedField {
-		heading := "⚔️ FACTION"
+		heading := "⚔️ Faction"
 		if known(name) {
 			heading = presentation.CleanName(name, 60)
 		}
-		return &discordgo.MessageEmbedField{Name: heading, Value: "**" + presentation.Plural(score, "Kill", "Kills") + "**", Inline: true}
+		return &discordgo.MessageEmbedField{Name: heading, Value: "**" + presentation.Plural(score, "kill", "kills") + "**", Inline: true}
 	}
 	record := func(heading, value, holder string) *discordgo.MessageEmbedField {
 		if !known(holder) {
@@ -84,10 +83,19 @@ func BuildWarCompletionEmbed(c WarCompletionCard) *discordgo.MessageEmbed {
 	presentation.AppendFields(embed,
 		side(c.FactionA, c.ScoreA),
 		side(c.FactionB, c.ScoreB),
-		record("🔥 TOP KILLER", presentation.Plural(c.TopKills, "Kill", "Kills"), c.TopKiller),
-		record("🎯 LONGEST KILL", presentation.FormatDistance(c.Longest), c.LongestKiller),
+		record("🔥 Top killer", presentation.Plural(c.TopKills, "kill", "kills"), c.TopKiller),
+		record("🎯 Longest kill", presentation.FormatDistance(c.Longest), c.LongestKiller),
 	)
 	return presentation.FitEmbed(embed)
+}
+
+// seasonContext is the footer context of a result card: the season it belongs to, cleaned,
+// or nothing when there is none (a result card never falls back to the slogan).
+func seasonContext(season string) string {
+	if strings.TrimSpace(season) == "" {
+		return ""
+	}
+	return presentation.CleanName(season, 60)
 }
 
 // EventPlacement is one resolved row of an event podium.
@@ -100,8 +108,8 @@ type EventPlacement struct {
 // BuildEventCompletionEmbed is the event-final podium: one ranking field of
 // rank lines (🥇🥈🥉 for the top three). Placements must carry resolved names.
 func BuildEventCompletionEmbed(name, season string, placements []EventPlacement) *discordgo.MessageEmbed {
-	embed := presentation.NewFeedEmbed("👑 EVENT COMPLETE", presentation.EventGold)
-	embed.Footer.Text = presentation.SeasonFooterText(season)
+	embed := presentation.NewFeedEmbed("👑 Event complete", presentation.EventGold)
+	embed.Footer = presentation.Footer("", seasonContext(season))
 	embed.Description = "**" + presentation.SafeName(name, 60) + "** is in the books."
 	rows := make([]string, 0, len(placements))
 	for i, pl := range placements {
@@ -117,7 +125,7 @@ func BuildEventCompletionEmbed(name, season string, placements []EventPlacement)
 	if len(rows) == 0 {
 		rows = append(rows, presentation.EmptyRanking)
 	}
-	presentation.AppendFields(embed, &discordgo.MessageEmbedField{Name: "🏆 FINAL STANDINGS", Value: strings.Join(rows, "\n")})
+	presentation.AppendFields(embed, &discordgo.MessageEmbedField{Name: "🏆 Final standings", Value: strings.Join(rows, "\n")})
 	return presentation.FitEmbed(embed)
 }
 
@@ -127,5 +135,5 @@ func formatEventScore(score float64) string {
 	if score == math.Trunc(score) && math.Abs(score) < 1e15 {
 		return presentation.FormatPoints(int64(score))
 	}
-	return fmt.Sprintf("%.1f pts", score)
+	return presentation.FormatDecimal(score) + " pts"
 }

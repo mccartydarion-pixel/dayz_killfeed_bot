@@ -6,6 +6,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/discord"
 	"github.com/yourname/dayz-killfeed/internal/killfeed"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 )
 
 // Champion Phase 4 (docs/ZONES_UAV_RADAR.md): the two small adapters that let
@@ -64,25 +65,31 @@ func (p intrusionPublisher) PublishIntrusionEvent(ev killfeed.IntrusionEvent) {
 }
 
 func buildIntrusionEmbed(ev killfeed.IntrusionEvent) *discordgo.MessageEmbed {
-	title, verb, color := "Zone Intrusion", "entered", 0xE67E22
+	// Amber for someone inside a protected zone, red for a banned player, neutral for a
+	// detection that needs no action, green when they are gone again.
+	title, verb, color := "Zone intrusion", "entered", presentation.Amber
 	switch ev.Kind {
 	case killfeed.AlertUAVIntrusion:
-		title, color = "UAV Detection", 0x3498DB
+		title, color = "UAV detection", presentation.Neutral
 	case killfeed.AlertBaseRadarIntrusion:
-		title, color = "Base Radar Detection", 0x3498DB
+		title, color = "Base radar detection", presentation.Neutral
 	case killfeed.AlertZoneExit:
-		title, verb, color = "Zone Exit", "left", 0x2ECC71
+		title, verb, color = "Zone exit", "left", presentation.Green
 	case killfeed.AlertZoneBanViolation:
-		title, color = "Zone Ban Violation", 0xE74C3C
+		title, color = "Zone ban violation", presentation.Red
 	}
-	return &discordgo.MessageEmbed{
+	// The player's and the zone's names are written by people: cleaned and markdown-escaped.
+	player, zone := orUnknown(ev.Gamertag), presentation.SafeName(ev.Zone.Name, 60)
+	embed := &discordgo.MessageEmbed{
+		Author:      presentation.BrandAuthor("Zones"),
 		Title:       title,
-		Description: ev.Gamertag + " " + verb + " zone **" + ev.Zone.Name + "**",
+		Description: "**" + player + "** " + verb + " zone **" + zone + "**",
 		Color:       color,
-		Timestamp:   ev.At.UTC().Format("2006-01-02T15:04:05Z07:00"),
 		Fields: []*discordgo.MessageEmbedField{
-			{Name: "Zone Type", Value: ev.Zone.ZoneType, Inline: true},
-			{Name: "Player", Value: ev.Gamertag, Inline: true},
+			{Name: "Zone type", Value: presentation.EnumLabel(presentation.CleanName(ev.Zone.ZoneType, 40)), Inline: true},
+			{Name: "Player", Value: player, Inline: true},
 		},
 	}
+	presentation.StampEmbed(embed, ev.At)
+	return embed
 }

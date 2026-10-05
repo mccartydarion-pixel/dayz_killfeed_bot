@@ -29,12 +29,12 @@ func RegisterPointsCommands(session CommandRegistrar, guildID string) error {
 }
 func (h *PointsCommandHandler) Handle(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if h == nil || h.points == nil || h.players == nil || h.guilds == nil || i == nil {
-		respondEphemeral(s, i, "Champion Points are unavailable.")
+		respondEphemeral(s, i, ReplyAreUnavailable("Champion Points"))
 		return
 	}
 	_, gid, err := h.guilds.GetGuild(context.Background(), i.GuildID)
 	if err != nil || gid == 0 {
-		respondEphemeral(s, i, "Run `/setup` first.")
+		respondEphemeral(s, i, ReplyNotSetUp)
 		return
 	}
 	name := ""
@@ -47,7 +47,7 @@ func (h *PointsCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interac
 	}
 	pid, err := h.players.FindByDisplayName(context.Background(), gid, name)
 	if err != nil {
-		respondEphemeral(s, i, "Player not found.")
+		respondEphemeral(s, i, ReplyPlayerNotFound)
 		return
 	}
 	p, err := h.points.Get(context.Background(), gid, pid)
@@ -55,5 +55,5 @@ func (h *PointsCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interac
 		respondEphemeral(s, i, "No Champion Points recorded.")
 		return
 	}
-	respondEphemeral(s, i, fmt.Sprintf("🏆 **CHAMPION POINTS**\n\n%s\n\nSeason: **%d**\nLifetime: **%d**", name, p.Season, p.Lifetime))
+	respondEphemeral(s, i, fmt.Sprintf("🏆 **Champion Points**\n\n%s\n\nSeason: **%d**\nLifetime: **%d**", name, p.Season, p.Lifetime))
 }

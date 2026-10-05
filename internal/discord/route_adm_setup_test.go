@@ -242,6 +242,46 @@ func TestADMFailureAndRecoveryStillPostMessages(t *testing.T) {
 	}
 }
 
+// A run of failed downloads is one outage: the channel is told once when it starts, again only
+// if the kind of failure changes, and once when it is over - not once per poll. Every failure
+// still forces the live panel to refresh, so the current state is always one glance away.
+func TestADMRepeatedFailuresPostOneMessagePerOutage(t *testing.T) {
+	f := newADMFixture(t, "legacy-adm")
+	p := f.publisher(1, "", true)
+	fail := killfeed.DownloadReport{Result: "failure", ErrorClass: "TIMEOUT"}
+	for i := 0; i < 5; i++ {
+		p.HandleDownload(fail)
+	}
+	if f.api.sendCount() != 1 {
+		t.Fatalf("five failed downloads in a row are one outage and one message, sends=%d", f.api.sendCount())
+	}
+	if !p.forceRefresh {
+		t.Fatal("a repeated failure must still force the live panel to refresh")
+	}
+	p.HandleDownload(killfeed.DownloadReport{Result: "failure", ErrorClass: "UNAUTHORIZED"})
+	if f.api.sendCount() != 2 {
+		t.Fatalf("a different kind of failure is new information and is posted, sends=%d", f.api.sendCount())
+	}
+	p.HandleDownload(killfeed.DownloadReport{Result: "failure", ErrorClass: "UNAUTHORIZED"})
+	p.HandleDownload(killfeed.DownloadReport{Result: "success"}) // recovery: one message
+	p.HandleDownload(killfeed.DownloadReport{Result: "success"}) // routine again: nothing
+	if f.api.sendCount() != 3 {
+		t.Fatalf("expected failure, changed failure and recovery, sends=%d", f.api.sendCount())
+	}
+	// The next outage is announced again.
+	p.HandleDownload(fail)
+	p.HandleDownload(fail)
+	if f.api.sendCount() != 4 {
+		t.Fatalf("a new outage after a recovery gets its own message, sends=%d", f.api.sendCount())
+	}
+	// Rotations and checkpoint failures are not part of the dedupe.
+	p.HandleDownload(killfeed.DownloadReport{Result: "checkpoint_failed"})
+	p.HandleDownload(killfeed.DownloadReport{Result: "checkpoint_failed"})
+	if f.api.sendCount() != 6 {
+		t.Fatalf("checkpoint failures are each reported, sends=%d", f.api.sendCount())
+	}
+}
+
 // A routine download must not force the separate Update() status panel to
 // bypass its own refresh-interval throttle - only a notable download should.
 // Before this fix, HandleDownload set forceRefresh unconditionally, so the
