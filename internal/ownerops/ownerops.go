@@ -43,6 +43,16 @@ type ServerState struct {
 	SourceState        string // ADM source state; "" when no engine is known
 	SourceErrorClass   string // Nitrado error class behind a TRANSPORT_ERROR
 	BotInstalled       bool
+
+	// Silent-feed evidence (feedwatch.go). Every duration is measured by the caller from when
+	// this process began watching the server; the zero values imply nothing.
+	PlayersKnown     bool // the online count is a fact, not a guess
+	PlayersOnline    int
+	PlayersOnlineFor time.Duration // how long at least one player has been online without a gap
+	LogSilentFor     time.Duration // how long since the last new log line was read
+	PlayerListSeen   bool          // this server has been seen writing player lists
+	SourceBadFor     time.Duration // how long SourceState has been TRANSPORT_ERROR without a gap
+	ServerStopped    bool          // Nitrado says the game server is stopped
 }
 
 func (s ServerState) operational() bool {
@@ -108,6 +118,14 @@ func Detect(s ServerState) map[string]string {
 	case sourceTransport:
 		if s.SourceErrorClass == "authentication" || s.SourceErrorClass == "permission" {
 			out[KindNitradoAccess] = "Nitrado refuses the saved access token (" + s.SourceErrorClass + ")"
+		}
+	}
+	// A worker that runs and polls but delivers nothing: players online and a silent log, or
+	// every read failing. Same kind as a stalled worker - the feed is stalled either way, and
+	// the same remedy (restart the worker) is tried.
+	if _, stalled := out[KindFeedStalled]; !stalled {
+		if detail, silent := SilentFeed(s); silent {
+			out[KindFeedStalled] = detail
 		}
 	}
 	return out

@@ -52,11 +52,17 @@ Some calls always skip the cache and ask Nitrado:
 
 ## Adaptive poll rate (`Engine.pollingInterval`)
 
+First match wins:
+
 | Situation | Poll rate |
 | --- | --- |
+| The last Nitrado call failed with a 429, a 5xx, a timeout or a network error | base rate, doubling per further failure, at most 60 s; a full wait after the failed attempt |
 | Token budget low (under 20% left, before the reset time) | `max(3 × base, 30s)` |
-| Log changed in the last 5 minutes, and the budget is known with at least half left | fast rate (`NITRADO_POLL_INTERVAL_FAST`, default `3s`; `off` disables it) |
+| Server active, and the budget is known with at least half left | fast rate (`NITRADO_POLL_INTERVAL_FAST`, default `3s`; `off` disables it) |
 | Otherwise | base rate (`NITRADO_POLL_INTERVAL`, default `10s`) |
+
+Active means the log changed in the last 5 minutes, or players are online and it changed in the
+last 15 minutes. Requests per minute in each mode, and why: docs/PERFORMANCE.md section 20.
 
 The interval runs from the start of one poll to the start of the next, so a 2s interval polls every
 2s rather than every 2s plus the poll's own time (about 0.5–0.9s in production). After a slow poll
@@ -67,6 +73,10 @@ The fast rate is only used after Nitrado's headers have been seen. If Nitrado ne
 bot polls exactly as before.
 
 ## Measuring a kill's trip to Discord (`internal/killfeed/poll_timing.go`)
+
+Per-card latency with percentiles, from the game's log line to Discord accepting the post, is
+`feedLatency[]` in the same response (docs/PERFORMANCE.md section 19). The three parts below are
+the older, coarser figures.
 
 These come from data the bot already has (Nitrado's modified time and the Discord delivery
 ledger), so measuring sends nothing extra. All three appear under `timing` and `delivery` in
@@ -157,5 +167,6 @@ What drops is the bytes per read, from the whole file to the new lines.
 ## Not changed
 
 **ADM delta reads** (`NITRADO_DELTA_READ_MODE`) are a separate, older switch and stay off. When
-they are on, they take priority over the verified tail reads above. See
+they are on, they take priority over the verified tail reads above. What each value does, the
+one-time check and what to set: docs/PERFORMANCE.md section 21. See also
 `docs/NITRADO_DELTA_READS.md` and `cmd/nitrado-delta-probe`.

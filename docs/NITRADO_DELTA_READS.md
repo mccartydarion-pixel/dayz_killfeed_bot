@@ -1,5 +1,14 @@
 # Nitrado Delta ADM Reads (Champion Performance Phase 1.5)
 
+> **Current state (2026-10-05).** This is the design record of the `NITRADO_DELTA_READ_MODE`
+> switch. Leave the switch unset: with it unset the bot already reads only the new bytes through
+> `seek`, after proving `seek` against full downloads (verified tail reads,
+> docs/NITRADO_POLLING.md). What each value does today, how an ignored offset is detected and the
+> one-time check to run are in docs/PERFORMANCE.md section 21. Two things below changed since:
+> `ReadDelta` now asks for exactly the bytes the listing says exist instead of a fixed 256 KiB
+> (Nitrado's `seek` answers HTTP 500 for a request past the end of the file), and it refuses an
+> answer longer than it asked for, which is how a `seek` that ignores its offset is detected.
+
 This document is the design record for the partial-read ("delta") path added in Phase 1.5, which
 follows on from `docs/PERFORMANCE.md` section 2 flagging full-file re-download as the largest
 remaining performance lever after Phase 1. It covers: the current full-read behavior it sits
@@ -121,7 +130,8 @@ chunk's `StartOffset` is re-validated against the expected running offset before
 defense in depth on top of each mechanism's own validation. `targetSize` is the remote size captured
 once at the start of the poll cycle; a chunk loop reads up to that captured size and stops even if the
 remote file keeps growing during the read - new growth is picked up on the next poll, not chased
-within this one. The whole `ReadDelta` call fails as a unit on any chunk failure (`ok=false`), never
+within this one. Each chunk request is for bytes inside that captured size, and a chunk answered
+with more bytes than requested fails the call (see the note at the top). The whole `ReadDelta` call fails as a unit on any chunk failure (`ok=false`), never
 returning a partial/best-effort result - the caller's only correct response to `ok=false` is to fall
 straight through to the unchanged full-read path in the same poll.
 

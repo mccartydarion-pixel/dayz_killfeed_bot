@@ -52,6 +52,10 @@ func (e *Engine) processLineAt(line, sourcePath string, endOffset int64) (bool, 
 		return false, nil
 	}
 	ev.DetectedAt = time.Now()
+	ev.ReadAt = e.batchReadAt
+	if ev.ReadAt.IsZero() {
+		ev.ReadAt = ev.DetectedAt
+	}
 	e.metrics.EventsParsed++
 	if e.diagnostics != nil {
 		e.diagnostics.Update(func(s *RuntimeDiagnosticSnapshot) {
@@ -70,6 +74,7 @@ func (e *Engine) processLineAt(line, sourcePath string, endOffset int64) (bool, 
 	// written from this same line share one identity (heatmap join, Live Sync phase 2).
 	if src := e.locationSource(ev, sourcePath, endOffset, ""); src.File != "" {
 		ev.SourceFile, ev.SourceOffset, ev.SourceLocalTime = src.File, src.Offset, src.LocalTime
+		ev.LoggedAt = e.loggedAtUTC(src.LocalTime)
 	}
 	e.correlateFinalHit(ev, lineFile, endOffset, prevFile, prevEnd)
 	if ev.Type == EventPlayerDisconnect {

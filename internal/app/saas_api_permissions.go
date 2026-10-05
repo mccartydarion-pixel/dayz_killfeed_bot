@@ -285,6 +285,7 @@ func (a *App) registerClientAdminRoutes() {
 	h("PUT "+base+"/permissions/{discordRoleID}", a.handleSetPermission)
 	h("DELETE "+base+"/permissions/{mappingID}", a.handleDeletePermission)
 	h("GET "+base+"/audit-log", a.handleListAuditLog)
+	h("GET "+base+"/server-status", a.handleServerStatus)
 
 	a.registerClientAdminCapabilityRoutes(base)
 	a.registerClientAdminFactionHubRoutes(base)

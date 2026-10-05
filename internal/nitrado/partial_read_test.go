@@ -493,20 +493,21 @@ func TestReadDeltaMultipleChunksSequential(t *testing.T) {
 	}
 }
 
-func TestReadDeltaStopsAtTargetSizeEvenIfMoreDataAvailable(t *testing.T) {
+// TestReadDeltaNeverAsksPastTargetSize: every chunk request is for bytes inside the size captured at
+// the start of the poll (Nitrado's seek answered HTTP 500 for a request reaching past the end of
+// the file), and growth after that size is left for the next poll.
+func TestReadDeltaNeverAsksPastTargetSize(t *testing.T) {
 	resetCapabilityCache(t)
-	callCount := 0
+	var lengths []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.Contains(r.URL.Path, "file_server/seek"):
-			callCount++
+			lengths = append(lengths, r.URL.Query().Get("offset")+"+"+r.URL.Query().Get("length"))
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprintf(w, `{"data":{"token":{"url":"http://%s/signed"}}}`, r.Host)
 		case r.URL.Path == "/signed":
-			// The remote file kept growing mid-download (task section 19) - always has more than
-			// targetSize available, but ReadDelta must still stop at the captured target.
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("0123456789")) // 10 bytes, targetSize below asks for only 5
+			_, _ = w.Write([]byte("01234")) // exactly the 5 bytes asked for
 		default:
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
@@ -515,14 +516,48 @@ func TestReadDeltaStopsAtTargetSizeEvenIfMoreDataAvailable(t *testing.T) {
 
 	client := NewClient(srv.URL, "token", srv.Client())
 	result, ok := client.ReadDelta(context.Background(), "svc-delta3", "/profile/x.ADM", 100, 105, DeltaModeSeek)
-	if !ok {
-		t.Fatal("expected success")
+	if !ok || string(result.Data) != "01234" || result.EndOffset != 105 || !result.Complete {
+		t.Fatalf("ok=%v result=%+v", ok, result)
 	}
-	if result.EndOffset < 105 {
-		t.Fatalf("expected to reach at least targetSize 105, got EndOffset=%d", result.EndOffset)
+	if len(lengths) != 1 || lengths[0] != "100+5" {
+		t.Fatalf("seek requests = %v, want exactly one for offset 100, length 5", lengths)
 	}
-	if callCount != 1 {
-		t.Fatalf("expected exactly one chunk request (targetSize-fromOffset=5 fits in one chunk), got %d", callCount)
+}
+
+// TestReadDeltaRefusesSeekThatIgnoresTheOffset: a seek endpoint that ignores offset/length answers
+// with the file from byte 0 - always more bytes than the exact request for what is left after the
+// offset. Those bytes must never be returned as if they started at the offset: the call fails (the
+// caller downloads the whole file instead), and after three such answers the mechanism is paused.
+func TestReadDeltaRefusesSeekThatIgnoresTheOffset(t *testing.T) {
+	resetCapabilityCache(t)
+	whole := []byte("0123456789ABCDEFGHIJ") // a 20-byte file
+	seeks := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "file_server/seek"):
+			seeks++
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"data":{"token":{"url":"http://%s/signed"}}}`, r.Host)
+		case r.URL.Path == "/signed":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(whole) // offset and length ignored
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL, "token", srv.Client())
+	for i := 0; i < 3; i++ {
+		if result, ok := client.ReadDelta(context.Background(), "svc-delta-ignored", "/profile/x.ADM", 12, 20, DeltaModeSeek); ok {
+			t.Fatalf("attempt %d: bytes from an ignored offset were accepted: %q", i, result.Data)
+		}
+	}
+	if got := globalCapabilityCache.get("svc-delta-ignored").capability; got != CapabilityFullOnly {
+		t.Fatalf("capability after three refused answers = %s, want %s", got, CapabilityFullOnly)
+	}
+	if _, ok := client.ReadDelta(context.Background(), "svc-delta-ignored", "/profile/x.ADM", 12, 20, DeltaModeSeek); ok || seeks != 3 {
+		t.Fatalf("paused mechanism was asked again: ok=%v seeks=%d", ok, seeks)
 	}
 }
 

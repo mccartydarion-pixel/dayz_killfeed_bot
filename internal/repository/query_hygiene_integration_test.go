@@ -303,6 +303,11 @@ func TestQueryHygieneIndexesServeTheirQueries(t *testing.T) {
 	if _, err := conn.Exec(ctx, `SET enable_seqscan = off`); err != nil {
 		t.Fatal(err)
 	}
+	// The setting belongs to the session, and this connection goes back to the pool: without the
+	// reset the cleanup's cascading DELETE (and whatever test got the connection next) ran with
+	// sequential scans disabled, which made every foreign-key check without a matching index
+	// crawl - this one test took almost five minutes of the suite.
+	defer func() { _, _ = conn.Exec(ctx, `RESET enable_seqscan`) }()
 	var guildID int64
 	if err := conn.QueryRow(ctx, `INSERT INTO guilds(discord_guild_id) VALUES($1) RETURNING id`, fmt.Sprintf("hygiene-explain-%d", time.Now().UnixNano())).Scan(&guildID); err != nil {
 		t.Fatal(err)

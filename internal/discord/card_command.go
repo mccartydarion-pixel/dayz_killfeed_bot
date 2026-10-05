@@ -93,17 +93,17 @@ func (h *CardCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interacti
 		return
 	}
 	// Rendering and the upload can exceed Discord's three-second window, so acknowledge first.
-	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{Type: discordgo.InteractionResponseDeferredChannelMessageWithSource}); err != nil {
+	if !deferPublic(s, i) {
 		return
 	}
 	png, err := h.render(ctx, guildRowID, serverID, playerID)
 	if err != nil {
 		slog.Warn("component=cards", "event", "card_command_failed", "err", err.Error())
 		msg := "Could not build your card right now."
-		_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &msg})
+		_ = editDeferred(s, i, &discordgo.WebhookEdit{Content: &msg})
 		return
 	}
-	_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+	_ = editDeferred(s, i, &discordgo.WebhookEdit{
 		Files:           []*discordgo.File{{Name: "champion-card.png", ContentType: "image/png", Reader: bytes.NewReader(png)}},
 		AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}},
 	})

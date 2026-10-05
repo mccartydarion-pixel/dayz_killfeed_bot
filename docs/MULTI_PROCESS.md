@@ -6,7 +6,8 @@ started by mistake - and what is and is not safe.
 
 Short version: the periodic workers that would duplicate Discord posts, DMs or Nitrado calls now
 run in one process only. The log pipeline and the Discord gateway are **not** covered: a second
-long-lived process still doubles the killfeed. Keep one replica; a short deploy overlap is fine.
+long-lived process still doubles the hit, build and connection feeds (kill and death cards are
+posted once). Keep one replica; a short deploy overlap is fine.
 
 ## The leader lock
 
@@ -88,6 +89,7 @@ given; it runs in every process. "Not safe" = still assumes one process.
 | Faction logo orphan sweep, Base Black Box prune, location / live sync / data retention | several | **Safe.** Idempotent deletes; a second process only repeats the query. |
 | Shop/economy/bounty feeds, staff alerts publisher, life recap, zone and bounty DMs | `discord.EconomyFeed`, `BountyTracker`, `AdminAlertPublisher`, `LifeRecapNotifier`, … | **Safe, and must not be gated.** They send what *this* process's own requests and events queued; gating them would lose a follower's messages. |
 | Health refresh, Discord presence, feature-flag / owner-access caches | `refreshHealth`, `PresenceManager` | **Safe.** Per-process state only. |
+| Feed watch (30 s) and the deploy self-check | `feed_watch.go`, `deploy_selfcheck.go` | **Safe.** Per-process memory only. The silent-feed incident is judged by the owner-ops monitor (leader only) from the leader's own watch; each process checks its own start-up, and a process still `STANDBY` five minutes after it started reports that as a problem (docs/DEPLOY.md). |
 | **The log pipeline**: one worker per server under `servers.WorkerManager` - the ADM engine, persistence and location queues, killfeed / death / hit / build / connections / PvE feeds, ADM monitor message, base raid alarm, perimeter watch, black box recorder, ranked award reconcile, and the Live Sync supervisor (RPT, script, crash, restart.log) | `runServerWorker` | **Not safe - left alone.** See below. |
 | **Discord gateway handlers**: slash commands, buttons and modals, member-join welcome, invite tracking | `App.Run` | **Not safe - left alone.** See below. |
 
@@ -103,8 +105,10 @@ processes:
 
 - stored data stays correct: kills, deaths, locations and live sync records are inserted with
   deterministic identities and `ON CONFLICT DO NOTHING`, and checkpoints only move forward;
-- **Discord output is doubled**: each process posts its own killfeed, death, hit, build and
-  connection cards and its own alarm DMs, and both edit the ADM monitor message;
+- **Discord output is partly doubled**: each process posts its own hit, build and connection
+  cards and its own alarm DMs, and both edit the ADM monitor message. **Kill and death cards are
+  not doubled**: a card is posted only by the process whose insert of the kill or death succeeded
+  (`TestOverlappingProcessesPostEachKillOnce`, also on PostgreSQL; docs/PERFORMANCE.md section 22);
 - Nitrado is read twice.
 
 **Discord gateway events.** Each process opens its own gateway session with the same bot token and
@@ -118,5 +122,6 @@ own schedule (seconds to minutes, depending on the board), not at once.
 
 **In-memory caches** have no cross-process invalidation (docs/PERFORMANCE.md).
 
-So: two processes for the length of a deploy overlap cost a few doubled kill cards at most. Two
+So: two processes for the length of a deploy overlap cost a few doubled hit, build or connection
+cards at most. Two
 processes for good are not supported until the log pipeline has an owner per server.

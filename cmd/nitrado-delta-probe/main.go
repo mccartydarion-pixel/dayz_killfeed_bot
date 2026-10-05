@@ -82,9 +82,23 @@ func run() error {
 	modes := []nitrado.DeltaMode{nitrado.DeltaModeSeek, nitrado.DeltaModeOffsetQuery, nitrado.DeltaModeRange}
 	mismatch := false
 	for _, mode := range modes {
-		result, ok := client.ReadLogFrom(ctx, *serviceID, path, offset, mode)
+		var result *nitrado.PartialReadResult
+		var ok bool
+		if mode == nitrado.DeltaModeSeek {
+			// Exactly the probe segment, which lies inside the file: Nitrado's seek answered HTTP 500
+			// for a request reaching past the end of the file (docs/NITRADO_POLLING.md), which made
+			// this probe report a working seek as UNSUPPORTED.
+			result, ok = client.ReadLogRange(ctx, *serviceID, path, offset, length)
+		} else {
+			result, ok = client.ReadLogFrom(ctx, *serviceID, path, offset, mode)
+		}
 		if !ok {
 			fmt.Printf("%-14s UNSUPPORTED\n", mode)
+			continue
+		}
+		if int64(len(result.Data)) > length && mode == nitrado.DeltaModeSeek {
+			mismatch = true
+			fmt.Printf("%-14s returned %d bytes for a %d-byte request - the requested range was NOT honoured - DO NOT ENABLE for this service\n", mode, len(result.Data), length)
 			continue
 		}
 		want := full[result.StartOffset:min64(result.StartOffset+int64(len(result.Data)), int64(len(full)))]
@@ -102,6 +116,7 @@ func run() error {
 		os.Exit(1)
 	}
 	fmt.Println("RESULT: every mechanism that reported SUPPORTED was validated byte-for-byte against the full-read baseline.")
+	fmt.Println("What to set: leave NITRADO_DELTA_READ_MODE unset. With it unset the bot already reads only the new bytes through seek once it has proven seek against full downloads itself (docs/PERFORMANCE.md section 21).")
 	return nil
 }
 

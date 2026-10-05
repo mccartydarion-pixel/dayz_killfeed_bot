@@ -99,6 +99,12 @@ type Event struct {
 	// It is observability only (latency measurement), never persisted as the
 	// event's time: the in-game time is TimeOfDay, in the server's local zone.
 	DetectedAt time.Time `json:"-"`
+	// ReadAt is when Champion finished downloading the bytes that hold this line, and LoggedAt is
+	// the line's own time converted to UTC with the server's learned UTC offset (zero when the
+	// offset is unknown - never guessed). Both are latency measurement only (feed_latency.go):
+	// never persisted, never part of a fingerprint, never used for ordering.
+	ReadAt   time.Time `json:"-"`
+	LoggedAt time.Time `json:"-"`
 
 	// Player is the subject for connect/disconnect/death/suicide/unconscious/etc.
 	Player *PlayerRef

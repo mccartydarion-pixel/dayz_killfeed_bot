@@ -12,7 +12,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/jackc/pgx/v5"
 	"github.com/yourname/dayz-killfeed/internal/config"
 	"github.com/yourname/dayz-killfeed/internal/discord"
@@ -66,6 +65,9 @@ func (a *App) Run() error {
 		"DISCORD_TOKEN_configured", a.Config.DiscordToken != "",
 		"KILLFEED_CHANNEL_ID_configured", a.Config.KillfeedChannelID != "",
 	)
+
+	// expectedWorkers is how many server workers this start-up set out to run (the deploy self-check).
+	expectedWorkers := 0
 
 	// --- Nitrado authentication and service verification ---
 	logSourceVerified := false
@@ -131,6 +133,9 @@ func (a *App) Run() error {
 		a.LinkService.SetNotifier(verifiedRole)
 		go a.singleton(ctx, "verified_role_reconciler", a.runRoleReconciler)
 	}
+	// Every command, button and form is a route on this router; each route
+	// names how it is acknowledged when its handler is slow.
+	routes := a.Discord.Interactions()
 	setupHandler := discord.NewSetupHandler(setupManager, a.Guilds, a.WelcomeRepository)
 	// /setup runs the same Channel System V2 layout engine as the website's
 	// one-click setup and repair - there is one channel blueprint.
@@ -143,22 +148,15 @@ func (a *App) Run() error {
 		} else {
 			slog.Info("component=discord", "msg", "welcome commands queued")
 		}
-		a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
-			if i.Type == discordgo.InteractionApplicationCommand && i.ApplicationCommandData().Name == "welcome" {
-				welcomeCommands.Handle(s, i)
-			}
-		})
+		routes.Command("welcome", discord.AckPrivate, welcomeCommands.Handle)
 	}
 	if a.AnalyticsRepository != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
 		analyticsHandler := discord.NewAnalyticsCommandHandler(a.AnalyticsRepository, a.Guilds)
 		if err := discord.RegisterAnalyticsCommands(commands, a.Config.DiscordGuildID, a.Config.DiscordApplicationID); err != nil {
 			slog.Warn("component=discord", "msg", "failed to register analytics commands", "err", err.Error())
 		}
-		a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
-			if i.Type == discordgo.InteractionApplicationCommand && (i.ApplicationCommandData().Name == "matchup" || i.ApplicationCommandData().Name == "weapon") {
-				analyticsHandler.Handle(s, i)
-			}
-		})
+		routes.Command("matchup", discord.AckPrivate, analyticsHandler.Handle)
+		routes.Command("weapon", discord.AckPrivate, analyticsHandler.Handle)
 	}
 	if a.AdminService != nil && a.Config.DiscordGuildID != "" {
 		adminHandler := discord.NewAdminCommandHandler(a.AdminService, a.LinkService, a.Guilds)
@@ -167,11 +165,7 @@ func (a *App) Run() error {
 		} else {
 			slog.Info("component=discord", "msg", "admin commands queued")
 		}
-		a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
-			if i.Type == discordgo.InteractionApplicationCommand && i.ApplicationCommandData().Name == "admin" {
-				adminHandler.Handle(s, i)
-			}
-		})
+		routes.Command("admin", discord.AckPrivate, adminHandler.Handle)
 	}
 	if a.Servers != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
 		serverHandler := discord.NewServerCommandHandler(a.Servers, a.Guilds, a.CredentialCipher, a)
@@ -181,18 +175,10 @@ func (a *App) Run() error {
 		} else {
 			slog.Info("component=discord", "msg", "server commands queued")
 		}
-		a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
-			switch i.Type {
-			case discordgo.InteractionApplicationCommand, discordgo.InteractionApplicationCommandAutocomplete:
-				if i.ApplicationCommandData().Name == "server" {
-					serverHandler.Handle(s, i)
-				}
-			case discordgo.InteractionModalSubmit:
-				if strings.HasPrefix(i.ModalSubmitData().CustomID, "champion_server_") {
-					serverHandler.Handle(s, i)
-				}
-			}
-		})
+		// /server connect opens the token form, which Discord cannot defer.
+		routes.Command("server", discord.AckPrivate, serverHandler.Handle, discord.SubAck{Path: "connect", Ack: discord.AckSelf})
+		routes.Autocomplete("server", serverHandler.Handle)
+		routes.ModalPrefix("champion_server_", discord.AckPrivate, serverHandler.Handle)
 	}
 	if a.AnnouncementService != nil && a.Config.DiscordGuildID != "" {
 		a.CompletionPublisher = discord.NewLiveCompletionPublisher(a.AnnouncementService, api, setupStore, a.Seasons, a.Wars, a.Events, a.Players, a.Factions, a.Guilds, a.Config.DiscordGuildID)
@@ -205,33 +191,21 @@ func (a *App) Run() error {
 		if err := discord.RegisterSeasonCommands(commands, a.Config.DiscordGuildID); err != nil {
 			slog.Warn("component=discord", "msg", "failed to register season commands", "err", err.Error())
 		}
-		a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
-			if i.Type == discordgo.InteractionApplicationCommand && i.ApplicationCommandData().Name == "season" {
-				seasonHandler.Handle(s, i)
-			}
-		})
+		routes.Command("season", discord.AckPrivate, seasonHandler.Handle)
 	}
 	if a.EventService != nil && a.Events != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
 		eventHandler := discord.NewEventCommandHandler(a.EventService, a.Events, a.Guilds)
 		if err := discord.RegisterEventCommands(commands, a.Config.DiscordGuildID); err != nil {
 			slog.Warn("component=discord", "msg", "failed to register event commands", "err", err.Error())
 		}
-		a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
-			if i.Type == discordgo.InteractionApplicationCommand && i.ApplicationCommandData().Name == "event" {
-				eventHandler.Handle(s, i)
-			}
-		})
+		routes.Command("event", discord.AckPrivate, eventHandler.Handle)
 	}
 	if a.Bounties != nil && a.Players != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
 		bountyHandler := discord.NewBountyCommandHandler(a.Bounties, a.BountyService, a.Players, a.Guilds)
 		if err := discord.RegisterBountyCommands(commands, a.Config.DiscordGuildID); err != nil {
 			slog.Warn("component=discord", "msg", "failed to register bounty commands", "err", err.Error())
 		}
-		a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
-			if i.Type == discordgo.InteractionApplicationCommand && i.ApplicationCommandData().Name == "bounty" {
-				bountyHandler.Handle(s, i)
-			}
-		})
+		routes.Command("bounty", discord.AckPrivate, bountyHandler.Handle)
 	}
 	if a.EconomyService != nil && a.Players != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
 		economyHandler := discord.NewEconomyCommandHandler(a.EconomyService, a.Players, a.Guilds, linkedPlayerLookup{a.LinkService})
@@ -240,33 +214,21 @@ func (a *App) Run() error {
 		} else {
 			slog.Info("component=discord", "msg", "economy commands queued")
 		}
-		a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
-			if i.Type == discordgo.InteractionApplicationCommand && i.ApplicationCommandData().Name == "economy" {
-				economyHandler.Handle(s, i)
-			}
-		})
+		routes.Command("economy", discord.AckPrivate, economyHandler.Handle)
 	}
 	if a.Points != nil && a.Players != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
 		pointsHandler := discord.NewPointsCommandHandler(a.Points, a.Players, a.Guilds)
 		if err := discord.RegisterPointsCommands(commands, a.Config.DiscordGuildID); err != nil {
 			slog.Warn("component=discord", "msg", "failed to register points command", "err", err.Error())
 		}
-		a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
-			if i.Type == discordgo.InteractionApplicationCommand && i.ApplicationCommandData().Name == "points" {
-				pointsHandler.Handle(s, i)
-			}
-		})
+		routes.Command("points", discord.AckPrivate, pointsHandler.Handle)
 	}
 	if a.Wars != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
 		warHandler := discord.NewWarCommandHandler(a.Wars, a.Guilds, a.Seasons, a.Factions, a.Links, a.FactionStats, a.FactionPresentation, a.Players)
 		if err := discord.RegisterWarCommands(commands, a.Config.DiscordGuildID); err != nil {
 			slog.Warn("component=discord", "msg", "failed to register faction war commands", "err", err.Error())
 		}
-		a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
-			if i.Type == discordgo.InteractionApplicationCommand && i.ApplicationCommandData().Name == "faction" {
-				warHandler.Handle(s, i)
-			}
-		})
+		routes.Command("faction", discord.AckPrivate, warHandler.Handle)
 	}
 	if a.Config.DiscordGuildID != "" {
 		if err := discord.RegisterSetupCommand(commands, a.Config.DiscordGuildID); err != nil {
@@ -285,17 +247,8 @@ func (a *App) Run() error {
 		} else {
 			slog.Info("component=discord", "msg", "stats commands queued")
 		}
-		a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
-			if i.Type != discordgo.InteractionApplicationCommand {
-				return
-			}
-			switch i.ApplicationCommandData().Name {
-			case "stats":
-				statsHandler.HandleStats(s, i)
-			case "leaderboard":
-				statsHandler.HandleLeaderboard(s, i)
-			}
-		})
+		routes.Command("stats", discord.AckPrivate, statsHandler.HandleStats)
+		routes.Command("leaderboard", discord.AckPrivate, statsHandler.HandleLeaderboard)
 	}
 	a.registerLifeCommands(ctx, session, commands)
 	a.registerCardCommand(session, commands)
@@ -309,38 +262,15 @@ func (a *App) Run() error {
 		} else {
 			slog.Info("component=discord", "msg", "link commands queued")
 		}
-		a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
-			if i.Type == discordgo.InteractionMessageComponent {
-				if strings.HasPrefix(i.MessageComponentData().CustomID, "champion_unlink_") {
-					linkHandler.HandleComponent(s, i)
-				}
-				return
-			}
-			if i.Type == discordgo.InteractionApplicationCommand {
-				name := i.ApplicationCommandData().Name
-				if name == "link" || name == "link-status" || name == "unlink" {
-					linkHandler.Handle(s, i)
-				}
-			}
-		})
+		routes.Command("link", discord.AckPrivate, linkHandler.Handle)
+		routes.Command("link-status", discord.AckPrivate, linkHandler.Handle)
+		routes.Command("unlink", discord.AckPrivate, linkHandler.Handle)
+		routes.ComponentPrefix("champion_unlink_", discord.AckPrivate, linkHandler.HandleComponent)
 	}
 	if a.Guilds != nil && (a.LinkService != nil || a.Stats != nil) && a.Config.DiscordGuildID != "" {
 		publicPanels := discord.NewPublicPanelHandler(a.LinkService, a.Stats, a.Guilds)
 		publicPanels.SetEconomy(a.EconomyService)
-		a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
-			switch i.Type {
-			case discordgo.InteractionMessageComponent:
-				customID := i.MessageComponentData().CustomID
-				if strings.HasPrefix(customID, "champion:link:") || strings.HasPrefix(customID, "champion:stats:") {
-					publicPanels.HandleComponent(s, i)
-				}
-			case discordgo.InteractionModalSubmit:
-				customID := i.ModalSubmitData().CustomID
-				if customID == "champion:link:modal:v1" || customID == "champion:stats:search:modal:v1" {
-					publicPanels.HandleModal(s, i)
-				}
-			}
-		})
+		publicPanels.Register(routes)
 	}
 	a.Discord.AddMemberJoinHandler(welcomeHandler.HandleMemberJoin)
 	if a.VIP != nil && session != nil {
@@ -355,34 +285,19 @@ func (a *App) Run() error {
 		}
 	}
 
-	a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
-		switch i.Type {
-		case discordgo.InteractionApplicationCommand:
-			name := i.ApplicationCommandData().Name
-			switch name {
-			case "setup":
-				setupHandler.Handle(s, i)
-			}
-		case discordgo.InteractionMessageComponent:
-			customID := i.MessageComponentData().CustomID
-			switch {
-			case IsFactionRecruitInteraction(customID):
-				a.HandleFactionRecruitInteraction(s, i)
-			case discord.IsShopOrderInteraction(customID):
-				a.HandleShopOrderInteraction(s, i)
-			case strings.HasPrefix(customID, "champion_reset_"):
-				// Only the /setup reset buttons: every other button has its own handler above.
-				setupHandler.HandleResetConfirm(s, i)
-			}
-		case discordgo.InteractionModalSubmit:
-			switch customID := i.ModalSubmitData().CustomID; {
-			case IsFactionRecruitInteraction(customID):
-				a.HandleFactionRecruitInteraction(s, i)
-			case discord.IsShopOrderInteraction(customID):
-				a.HandleShopOrderInteraction(s, i)
-			}
-		}
-	})
+	routes.Command("setup", discord.AckPrivate, setupHandler.Handle)
+	// Only the /setup reset buttons: every other button has its own route.
+	routes.ComponentPrefix("champion_reset_", discord.AckPrivate, setupHandler.HandleResetConfirm)
+	// Faction recruitment card: Join answers privately; Apply opens a form,
+	// which Discord cannot defer; the submitted form answers privately.
+	routes.ComponentPrefix(factionRecruitPrefix, discord.AckPrivate, a.HandleFactionRecruitInteraction)
+	routes.ComponentPrefix(factionRecruitApply, discord.AckSelf, a.HandleFactionRecruitInteraction)
+	routes.ModalPrefix(factionRecruitPrefix, discord.AckPrivate, a.HandleFactionRecruitInteraction)
+	// Shop order buttons: "Received" and the submitted issue form replace the
+	// order message; "Report an issue" opens a form.
+	routes.ComponentPrefix(discord.ShopOrderPrefix, discord.AckUpdate, a.HandleShopOrderInteraction)
+	routes.ComponentPrefix(discord.ShopOrderIssuePrefix, discord.AckSelf, a.HandleShopOrderInteraction)
+	routes.ModalPrefix(discord.ShopOrderPrefix, discord.AckUpdate, a.HandleShopOrderInteraction)
 
 	// Every handler is installed, so the commands can go live in one request.
 	if a.Config.DiscordGuildID != "" && session != nil {
@@ -800,6 +715,7 @@ func (a *App) Run() error {
 				return row.Active
 			})
 
+			expectedWorkers = len(activeServers)
 			for _, row := range activeServers {
 				if err := a.WorkerManager.Start(ctx, row.ID); err != nil {
 					slog.Error("component=servers", "msg", "failed to start server worker", "server_id", row.ID, "err", err.Error())
@@ -832,6 +748,10 @@ func (a *App) Run() error {
 	if logSourceVerified {
 		slog.Info("component=killfeed", "msg", "live gameplay log source verified")
 	}
+
+	// Start-up is done: from here the process serves. The self-check logs one line once the
+	// leader lock, the Discord gateway and every server worker are in place (docs/DEPLOY.md).
+	a.markReady(ctx, expectedWorkers)
 
 	if err := a.HTTPServer.ListenAndServe(ctx); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("start HTTP server: %w", err)

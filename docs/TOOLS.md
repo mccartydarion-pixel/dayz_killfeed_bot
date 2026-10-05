@@ -105,6 +105,11 @@ prints neither the token nor any download address.
 **Safety notes.** It downloads the newest log in full, so it costs a few Nitrado requests. If it
 reports a byte mismatch, do not enable partial reads for that server.
 
+**Reading the result.** It asks `seek` for exactly the segment it compares (it used to ask for
+256 KiB, which Nitrado refuses near the end of a file, and could report a working `seek` as
+unsupported). Whatever it prints, leave `NITRADO_DELTA_READ_MODE` unset: docs/PERFORMANCE.md
+section 21 says why.
+
 **Status: operator tool, still useful** for as long as the partial-read option exists. Partial
 reads are off by default. Manual: [NITRADO_DELTA_READS.md](NITRADO_DELTA_READS.md).
 

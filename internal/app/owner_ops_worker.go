@@ -131,7 +131,7 @@ func (a *App) ownerOpsMonitor(ctx context.Context, now time.Time, settings repos
 	seenInstallations := map[int64]bool{}
 	for _, f := range facts {
 		seenInstallations[f.InstallationID] = true
-		implied := ownerops.Detect(serverState(f, a.serverRuntime(f.ServerID, now), true))
+		implied := ownerops.Detect(a.watchedServerState(f, a.serverRuntime(f.ServerID, now), true, now))
 		for _, kind := range ownerops.Kinds {
 			key := ownerOpsKey(f.InstallationID, kind)
 			detail, broken := implied[kind]

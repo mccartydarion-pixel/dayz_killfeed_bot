@@ -314,7 +314,9 @@ type Engine struct {
 	onPollCycle        func(PollOutcome)
 	transportStreak    int
 	lastTransportClass string
-	sourceHealth       ADMSourceHealth
+	// lastFailureOverload: the latest failed Nitrado call was a 429, a 5xx or a network failure.
+	lastFailureOverload bool
+	sourceHealth        ADMSourceHealth
 
 	players   *PlayerTracker
 	onPlayers func(count int) // optional hook when the online player set changes
@@ -398,7 +400,36 @@ type Engine struct {
 	// admin performance snapshot (task section 30) - never reset, never used for any decision.
 	deltaBytesReceived   int64
 	fullReadBytesAvoided int64
+
+	// Latency measurement only (feed_latency.go). batchReadAt is when the bytes now being parsed
+	// were downloaded; utcOffset reports the server clock's offset from UTC in minutes, when known.
+	batchReadAt time.Time
+	utcOffset   func() (minutes int, known bool)
 }
+
+// SetServerUTCOffset attaches the source of the game server clock's UTC offset, used only to
+// express a line's own time in UTC for latency measurement. Optional: without it (or while it
+// reports unknown) no line time is converted.
+func (e *Engine) SetServerUTCOffset(fn func() (minutes int, known bool)) {
+	if e != nil {
+		e.utcOffset = fn
+	}
+}
+
+// loggedAtUTC converts a line's server-local time to UTC, or returns zero when the offset is unknown.
+func (e *Engine) loggedAtUTC(local *time.Time) time.Time {
+	if e.utcOffset == nil || local == nil {
+		return time.Time{}
+	}
+	minutes, known := e.utcOffset()
+	if !known {
+		return time.Time{}
+	}
+	return local.Add(-time.Duration(minutes) * time.Minute)
+}
+
+// markBatchRead notes that the bytes about to be parsed have just been downloaded.
+func (e *Engine) markBatchRead() { e.batchReadAt = time.Now() }
 
 // StartAtLogTail marks this engine to begin at the end of the log on its first
 // selection (safe first-connect behavior), instead of replaying the file's
@@ -468,6 +499,10 @@ func NewEngine(client LogSource, serviceID string, parser Parser) *Engine {
 	}
 }
 
+// firstPollDelay is the wait before a worker's first cycle. It used to be a whole poll interval
+// (10s by default), which every restart and every newly connected server spent doing nothing.
+const firstPollDelay = time.Second
+
 // Start begins the polling cycle with a safe time-based tick.
 // Recoverable failures are logged and retried; the engine never crashes on them.
 func (e *Engine) Start(ctx context.Context) error {
@@ -502,7 +537,7 @@ func (e *Engine) Start(ctx context.Context) error {
 
 	// State-aware scheduler: poll the selected log at pollInterval, but back off
 	// during failed discovery to avoid hammering Nitrado.
-	timer := time.NewTimer(e.pollInterval)
+	timer := time.NewTimer(firstPollDelay)
 	defer timer.Stop()
 	for {
 		select {
@@ -526,7 +561,13 @@ func (e *Engine) nextInterval() time.Duration {
 	if e.state == StatePolling {
 		return e.pollingInterval(time.Now())
 	}
-	return discoveryBackoff(e.discoverFails)
+	// Discovery walks the whole file tree, so it never retries faster than the failure backoff
+	// while Nitrado is answering 429/5xx.
+	wait := discoveryBackoff(e.discoverFails)
+	if fb := e.failureBackoff(); fb > wait {
+		wait = fb
+	}
+	return wait
 }
 
 // minPollGap is the shortest pause between two selected-log polls, so a slow poll is never
@@ -536,10 +577,12 @@ const minPollGap = 250 * time.Millisecond
 // nextDelay is how long to wait after a cycle that took elapsed. While polling the selected log,
 // the poll interval is measured from the start of one poll to the start of the next, so a 2s
 // interval really polls every 2s instead of every 2s plus however long the poll took. Discovery
-// backoff is still a full wait after each attempt.
+// backoff and the failure backoff are still a full wait after each attempt.
 func (e *Engine) nextDelay(elapsed time.Duration) time.Duration {
 	next := e.nextInterval()
-	if e.state != StatePolling {
+	if e.state != StatePolling || e.failureBackoff() > 0 {
+		// A backoff is a full wait: a cycle that spent seconds retrying a 429 must not be
+		// followed almost at once by the next one.
 		return next
 	}
 	if next -= elapsed; next < minPollGap {
@@ -551,20 +594,67 @@ func (e *Engine) nextDelay(elapsed time.Duration) time.Duration {
 // busyWindow is how recently the selected log must have changed for the server to count as busy.
 const busyWindow = 5 * time.Minute
 
+// playersBusyWindow is how long players being online keeps the server busy without a log change.
+// DayZ writes the player list every 5 minutes while anyone is online, so with players on the log
+// changes about once per busyWindow and the fast rate would lapse right when the next write is
+// due. Three missed player lists mean the presence figure is stale or the source is stuck, which
+// the stale probe handles; the fast rate stops then.
+const playersBusyWindow = 15 * time.Minute
+
 // lowBudgetInterval is the slowest a selected log is polled while its token's budget is low.
 const lowBudgetInterval = 30 * time.Second
 
-// pollingInterval picks the selected-log poll rate (docs/NITRADO_POLLING.md):
+// pollFailureBackoffMax caps the wait after consecutive Nitrado 429/5xx/network failures.
+const pollFailureBackoffMax = 60 * time.Second
+
+// failureBackoff is the wait Nitrado's own failures impose: after a cycle that ended in a 429, a
+// 5xx or a network error the next poll waits the base interval, doubling with each further
+// consecutive failure up to pollFailureBackoffMax. 0 when the last call succeeded or failed for
+// another reason (a missing file is a rotation, not an overloaded API; see overloadFailure).
+func (e *Engine) failureBackoff() time.Duration {
+	if e.transportStreak <= 0 || !e.lastFailureOverload {
+		return 0
+	}
+	wait := e.pollInterval
+	for i := 1; i < e.transportStreak && wait < pollFailureBackoffMax; i++ {
+		wait *= 2
+	}
+	if wait > pollFailureBackoffMax {
+		wait = pollFailureBackoffMax
+	}
+	return wait
+}
+
+// serverActive reports whether the server counts as busy: its log changed within busyWindow, or
+// players are online and it changed within playersBusyWindow.
+func (e *Engine) serverActive(now time.Time) bool {
+	if e.lastLogChange.IsZero() {
+		return false
+	}
+	quiet := now.Sub(e.lastLogChange)
+	if quiet <= busyWindow {
+		return true
+	}
+	return quiet <= playersBusyWindow && e.players != nil && e.players.OnlineCount() > 0
+}
+
+// pollingInterval picks the selected-log poll rate (docs/NITRADO_POLLING.md), first match wins:
+//   - the last Nitrado call failed with a 429, a 5xx or a network error -> failureBackoff (never
+//     faster than the base interval);
 //   - the token's Nitrado budget is low (under 20% left)  -> max(3x base, 30s) until it resets;
-//   - the log changed in the last 5 minutes and the budget is known and at least half left -> fast;
+//   - the server is active (serverActive) and the budget is known and at least half left -> fast;
 //   - otherwise -> the base interval (NITRADO_POLL_INTERVAL).
 //
 // The fast rate is only used once Nitrado's own rate-limit headers have been seen, so an unknown
 // budget is never spent faster than before.
 func (e *Engine) pollingInterval(now time.Time) time.Duration {
 	base := e.pollInterval
+	failWait := e.failureBackoff()
 	src, ok := e.client.(interface{ RateBudget() nitrado.Budget })
 	if !ok {
+		if failWait > base {
+			return failWait
+		}
 		return base
 	}
 	budget := src.RateBudget()
@@ -573,10 +663,15 @@ func (e *Engine) pollingInterval(now time.Time) time.Duration {
 		if slow < lowBudgetInterval {
 			slow = lowBudgetInterval
 		}
+		if failWait > slow {
+			return failWait
+		}
 		return slow
 	}
-	if e.fastInterval > 0 && e.fastInterval < base && budget.Known && budget.Healthy(now) &&
-		!e.lastLogChange.IsZero() && now.Sub(e.lastLogChange) <= busyWindow {
+	if failWait > 0 {
+		return failWait
+	}
+	if e.fastInterval > 0 && e.fastInterval < base && budget.Known && budget.Healthy(now) && e.serverActive(now) {
 		return e.fastInterval
 	}
 	return base
@@ -588,6 +683,7 @@ func (e *Engine) PollOnce(ctx context.Context) error {
 	if e == nil || e.client == nil {
 		return nil
 	}
+	e.batchReadAt = time.Time{} // set again by whichever read this cycle makes
 
 	switch e.state {
 	case StateDiscovery, StateLogSelected:

@@ -23,21 +23,10 @@ func (a *App) registerBaseCommands(session *discordgo.Session, commands discord.
 	} else {
 		slog.Info("component=discord", "msg", "base commands queued")
 	}
-	a.Discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
-		if i.Type == discordgo.InteractionMessageComponent && discord.IsBaseRentInteraction(i.MessageComponentData().CustomID) {
-			handler.HandleRentComponent(s, i)
-			return
-		}
-		if i.Type != discordgo.InteractionApplicationCommand {
-			return
-		}
-		switch i.ApplicationCommandData().Name {
-		case "mybase":
-			handler.HandleMyBase(s, i)
-		case "registerbase":
-			handler.HandleRegisterBase(s, i)
-		}
-	})
+	routes := a.Discord.Interactions()
+	routes.Command("mybase", discord.AckPrivate, handler.HandleMyBase)
+	routes.Command("registerbase", discord.AckPrivate, handler.HandleRegisterBase)
+	handler.RegisterRent(routes)
 }
 
 func (a *App) baseCommandScope(ctx context.Context, guildRowID, serverID int64) (repository.BaseRequestScope, error) {

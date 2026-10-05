@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/yourname/dayz-killfeed/internal/killfeed"
 )
 
 // rotatingFeedAPI is the narrow Discord surface RotatingFeed needs.
@@ -59,6 +60,9 @@ type feedItem struct {
 	nonce string
 	// journaled is set once the card is in the feed journal (immediate mode).
 	journaled bool
+	// timing is the card's stage timestamps for the latency statistics
+	// (killfeed.FeedLatency). Measurement only.
+	timing killfeed.FeedTiming
 }
 
 // postedCard is a card currently shown in the channel (immediate mode).
@@ -121,6 +125,9 @@ type RotatingFeed struct {
 
 	journal    FeedJournal // optional; see SetJournal
 	journalKey string
+	// latencyServerID names the server in the latency statistics for cards that
+	// do not carry one (cards restored from the journal after a restart).
+	latencyServerID int64
 
 	// routeChannelFn, when set, is consulted first each flush (the
 	// installation route model - see KillfeedPublisher.RouteChannelID); an
@@ -139,6 +146,14 @@ func (f *RotatingFeed) SetRouteChannelResolver(fn func() string) {
 		return
 	}
 	f.routeChannelFn = fn
+}
+
+// SetLatencyServerID names the game server this feed belongs to in the latency
+// statistics. Optional; measurement only.
+func (f *RotatingFeed) SetLatencyServerID(serverID int64) {
+	if f != nil {
+		f.latencyServerID = serverID
+	}
 }
 
 // SetRoute names this feed in the delivery ledger (default KILLFEED).
@@ -188,11 +203,18 @@ func (f *RotatingFeed) Enqueue(embed *discordgo.MessageEmbed) {
 // so the ledger can report detect->deliver latency. It never blocks: in
 // immediate mode it only wakes Run's goroutine.
 func (f *RotatingFeed) EnqueueDetected(embed *discordgo.MessageEmbed, detectedAt time.Time) {
+	f.EnqueueTimed(embed, killfeed.FeedTiming{ParsedAt: detectedAt})
+}
+
+// EnqueueTimed is EnqueueDetected with every stage timestamp the engine knows
+// for the card's event (killfeed.TimingOf), so the latency statistics can
+// split the trip into its stages. Like Enqueue it never blocks.
+func (f *RotatingFeed) EnqueueTimed(embed *discordgo.MessageEmbed, timing killfeed.FeedTiming) {
 	if f == nil || embed == nil {
 		return
 	}
 	f.mu.Lock()
-	f.pending = append(f.pending, feedItem{embed: embed, detectedAt: detectedAt, enqueuedAt: time.Now(), nonce: newCardNonce()})
+	f.pending = append(f.pending, feedItem{embed: embed, detectedAt: timing.ParsedAt, enqueuedAt: time.Now(), nonce: newCardNonce(), timing: timing})
 	f.mu.Unlock()
 	if f.mode == FeedModeImmediate {
 		f.poke()
@@ -308,6 +330,14 @@ func (f *RotatingFeed) send(channelID string, it feedItem) (*discordgo.Message, 
 	if err == nil {
 		now := time.Now()
 		Deliveries.recordLatency(f.route, it.detectedAt, it.enqueuedAt, now)
+		timing := it.timing
+		if timing.ParsedAt.IsZero() {
+			timing.ParsedAt = it.detectedAt
+		}
+		if timing.ServerID == 0 {
+			timing.ServerID = f.latencyServerID
+		}
+		killfeed.FeedLatency.Record(f.route, timing, it.enqueuedAt, now)
 		if f.mode == FeedModeImmediate {
 			// One line per card so a staging run can compute p50/p95/p99 per
 			// stage from the logs (the ledger keeps only avg/max/last).

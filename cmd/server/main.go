@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	// The runtime image (alpine) carries no time zone database, and the heatmap API loads zones
+	// by name (time.LoadLocation): embed the database so that works wherever the binary runs.
+	_ "time/tzdata"
 
 	"github.com/yourname/dayz-killfeed/internal/app"
 	"github.com/yourname/dayz-killfeed/internal/config"

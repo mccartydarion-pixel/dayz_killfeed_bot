@@ -410,13 +410,8 @@ property directly rather than re-deriving it from a bigger, slower scenario.
 
 ## 16. Restart safety
 
-Not modified this phase. Existing coverage already exercises the relevant guarantees: a durable
-byte-offset checkpoint (`killfeed.Engine`'s `DurableCheckpoint`) means a restarted worker resumes
-parsing from the last acknowledged offset, never re-processing already-persisted bytes; the database's
-own `UNIQUE(guild_id, event_fingerprint)` constraint is the backstop against a duplicate insert even if
-the in-memory (non-durable) `Deduplicator` cache was lost on restart. `TestColdStartMismatchedCheckpointBaselinesCurrentADM`
-and `TestCheckForNewerLogPreservesCheckpointAndDedupe` (`internal/killfeed`) cover this; both still
-pass unchanged.
+See section 22: what happens to kills across a restart, a crash and a deploy overlap, with the
+tests that prove it and the cases that can still double or drop.
 
 ## 17. Slash commands, buttons and forms
 
@@ -533,3 +528,330 @@ The live-sync sweep (`internal/app/live_sync.go`) keeps its category-aware query
 
 **Table sizes** in `GET /api/admin/health` -> `performance.tableSizes` (section 11, docs/ADMIN_API.md)
 show where the bytes are, from the catalog, so the Owner Hub can watch the trend.
+
+## 19. Kill-to-Discord latency (the baseline)
+
+Every kill and death card is timed from the game writing its log line to Discord accepting the
+post. The measurement only reads clocks the bot already had: it sends nothing, delays nothing and
+stores no player name or message text.
+
+### The stages of one card
+
+```
+game wrote the line -> bot read it -> queued for Discord -> Discord accepted the post
+```
+
+| Stage | From | To | What sits in it |
+| --- | --- | --- | --- |
+| `gameLogToBotReadMs` | The line's own time | The bot finished downloading the bytes holding the line | Nitrado exposing the log (about 5 minutes per step, docs/NITRADO_POLLING.md) plus the bot's poll interval |
+| `botReadToQueuedMs` | Download finished | The event is in the database and its card is in the feed's queue | Earlier lines of the same download, parsing, the database work per event (section 23) |
+| `queuedToDiscordAcceptedMs` | Card queued | Discord answered the post with success | The feed's own wait (up to a whole 10-minute cycle in `rotating` mode, section 23), Discord's rate limit, the request |
+| `botReadToDiscordAcceptedMs` | Download finished | Discord accepted | Everything the bot controls |
+| `gameLogToDiscordAcceptedMs` | The line's own time | Discord accepted | The whole trip |
+
+**The line's own time.** An ADM line carries only the server's local time of day. The date comes
+from the ADM file's name, and the conversion to UTC uses the server's UTC offset that Live Sync
+learned from `restart.log` (`live_sync_server_clock`, re-read by each worker every 5 minutes).
+
+- Offset not learned yet: the two `gameLog…` stages are simply missing for that card, and it is
+  counted in `cardsWithoutServerClock`. No offset is ever assumed.
+- A converted time more than 30 seconds after the read, or more than 24 hours before it, is a
+  wrong clock (for example an offset learned before a daylight-saving change). The card is counted
+  in `cardsWithImplausibleServerClock` and gets no `gameLog…` stages.
+- An offset that is wrong by an hour in the other direction cannot be told from a real delay. The
+  offset is learned again at every game-server restart.
+- Line times have one-second resolution, so `gameLogToBotReadMs` is exact to about a second.
+
+A card restored from the feed journal after a restart keeps only its parse time; that stands in
+for the read time, so its stages include the time the bot was down. A PvE-feed card that reaches
+the death feed without an event has only `queuedToDiscordAcceptedMs`.
+
+### Where to read it
+
+- **`GET /api/admin/nitrado-usage` → `feedLatency[]`** (platform admins): every server and feed
+  (`KILLFEED`, `DEATH_FEED`).
+- **`GET /api/runtime/status` → `feedLatency[]`**: the same entries for the server the request is
+  about. Absent until this process has delivered a card for that server.
+- **Logs:** `component=killfeed event=feed_latency`, one line per server and feed at most every
+  5 minutes, and only when cards were delivered since the last line.
+
+One entry:
+
+```json
+{
+  "serverId": 3, "feed": "KILLFEED",
+  "deliveredSinceStart": 412,
+  "cardsWithoutServerClock": 0, "cardsWithImplausibleServerClock": 0,
+  "lastDeliveredAt": "2026-10-05T18:07:41Z",
+  "lastHour": {
+    "cards": 37,
+    "gameLogToBotReadMs":         {"samples": 37, "p50Ms": 151000, "p90Ms": 289000, "p99Ms": 301000, "maxMs": 301000},
+    "botReadToQueuedMs":          {"samples": 37, "p50Ms": 900,    "p90Ms": 2100,   "p99Ms": 2600,   "maxMs": 2600},
+    "queuedToDiscordAcceptedMs":  {"samples": 37, "p50Ms": 4200,   "p90Ms": 9800,   "p99Ms": 12000,  "maxMs": 12000},
+    "botReadToDiscordAcceptedMs": {"samples": 37, "p50Ms": 5300,   "p90Ms": 11500,  "p99Ms": 14100,  "maxMs": 14100},
+    "gameLogToDiscordAcceptedMs": {"samples": 37, "p50Ms": 157000, "p90Ms": 297000, "p99Ms": 312000, "maxMs": 312000}
+  },
+  "last24Hours": { "cards": 412, "…": "the same five stages" }
+}
+```
+
+(The numbers above only show the shape. They are not measurements.)
+
+| Field | Meaning |
+| --- | --- |
+| `deliveredSinceStart` | Cards recorded since this process started. |
+| `lastHour`, `last24Hours` | Cards whose post Discord accepted in that window. `cards` is their count. |
+| `samples` | How many of those cards have this stage. Less than `cards` for a `gameLog…` stage when the server clock was unknown. |
+| `p50Ms`, `p90Ms`, `p99Ms`, `maxMs` | Milliseconds. Half, 90% and 99% of the cards were at or below the value; `maxMs` is the slowest. |
+
+The log line carries the last hour: `cards`, `cards_24h`, `game_log_to_discord_{samples,p50,p90,p99,max}_ms`,
+`game_log_to_bot_read_{p50,p90}_ms`, `bot_read_to_queued_{p50,p90}_ms`, `queued_to_discord_{p50,p90}_ms`,
+`bot_read_to_discord_{p50,p90,p99,max}_ms` and `cards_without_server_clock`.
+
+Limits: the numbers live in memory (a restart starts again from zero) and each server feed keeps
+its newest 4,096 cards, so a feed with more than that in 24 hours reports "last 24 hours" over the
+newest 4,096. `internal/killfeed/feed_latency.go`; the feed records a card in
+`RotatingFeed.send` only after Discord confirmed it.
+
+The earlier figures stay where they were: `timing[]` (how often Nitrado writes each log and how
+soon the bot notices) and `delivery[]` (average/maximum queue wait per route) in the same
+`nitrado-usage` response.
+
+## 20. Poll rate
+
+The engine already had two rates (`Engine.pollingInterval`, docs/NITRADO_POLLING.md). What it does
+now, first match wins:
+
+| Situation | Poll every |
+| --- | --- |
+| The last Nitrado call failed with a 429, a 5xx, a timeout or a network error | the base interval, doubling per further failure, at most 60 s. A full wait, however long the failed attempt took. Ends with the first success. **New.** |
+| The token's budget is low (under 20% left) | `max(3 × base, 30s)` (unchanged) |
+| The server is active and the budget is known with at least half left | the fast interval, `NITRADO_POLL_INTERVAL_FAST`, default 3 s |
+| Otherwise | the base interval, `NITRADO_POLL_INTERVAL`, default 10 s |
+
+"Active" was: the log changed in the last 5 minutes. It is now: the log changed in the last
+5 minutes, **or players are online and the log changed in the last 15 minutes**. DayZ writes the
+player list every 5 minutes while anyone is online, so with players on and nothing else happening
+the log changes about once per 5 minutes, and the old rule dropped back to the base rate right
+when the next write was due. A server with nobody online and no log change for 5 minutes polls at
+the base rate; one whose log has not changed for 8 minutes keeps the existing stale-source
+handling (`staleProbeAfter`, `staleGiveUpAfter`), which is unchanged. The thresholds are the
+constants `busyWindow`, `playersBusyWindow` and `pollFailureBackoffMax` in
+`internal/killfeed/engine.go`; no new environment variable.
+
+Two more changes:
+
+- While the engine is searching for a log (discovery), it also never retries faster than the
+  failure backoff during a 429/5xx streak. A missing file (a rotation) is not such a failure and
+  keeps the short discovery backoff.
+- A worker's first cycle starts 1 second after the worker starts (`firstPollDelay`), not a whole
+  poll interval later.
+
+**Requests to Nitrado per server**, from the code (one poll of the selected log is one directory
+listing; the listings a tick makes are shared for 750 ms):
+
+| | Listings | When the log changed | When it has not changed for 2 minutes |
+| --- | --- | --- | --- |
+| Base rate (10 s) | 6 per minute, up to 12 when the ADM is listed under both mounts | +1 token request and +1 download from the file host per change (twice while a tail read is being verified) | +1 token request and +1 download per minute (the stale probe) |
+| Fast rate (3 s) | 20 per minute, up to 26 with both mounts | same | same |
+| Low budget (30 s) | 2 per minute, up to 8 | same | same |
+| After failures | 6 per minute falling to 1 per minute | | |
+
+Live Sync's watchers (RPT, script, crash and restart logs) add about 21 requests per minute per
+server on the same token whatever the ADM rate (docs/CHAMPION_LIVE_SYNC.md 7.2).
+
+Nitrado's limit is whatever its `X-RateLimit-Limit` header says for the token; the bot does not
+assume a number. The fast rate is only used once those headers have been seen and at least half
+the budget is left, and it stops below that. `GET /api/admin/nitrado-usage` → `tokens[]` shows the
+limit, what is left and the requests of the last hour by operation.
+
+What it buys: Nitrado exposes the ADM in steps of about 5 minutes (measured 2026-10-02,
+docs/NITRADO_POLLING.md). Polling at 3 s instead of 10 s shortens the wait after such a step by at
+most 7 seconds. It cannot shorten the step.
+
+Rate limiting in the client (`internal/nitrado/client.go`): a 429 is retried up to three times
+inside the call, waiting `Retry-After` (capped at 60 s); the signed download does the same. What
+was missing is the engine slowing down after the call had failed: it went on at the fast rate.
+
+Tests: `TestPollingIntervalAdaptsToActivityAndBudget`, `TestPollingIntervalStaysFastWhilePlayersAreOnline`,
+`TestPollingBacksOffImmediatelyOnNitradoFailures`, `TestStartRunsFirstCycleWithoutWaitingAWholeInterval`
+(`internal/killfeed/poll_rate_test.go`).
+
+## 21. Reading only what is new
+
+### What is on by default
+
+With `NITRADO_DELTA_READ_MODE` unset, the bot already reads only the new bytes once that is proven
+for the service (verified tail reads, `internal/nitrado/tail_trust.go`, docs/NITRADO_POLLING.md):
+
+1. It downloads the whole file as before and also reads the same bytes through Nitrado's `seek`,
+   and compares the two byte for byte.
+2. After three matches it reads through `seek` only. The first byte of every read must equal the
+   last byte already read, and every 20th read is compared with a full download again.
+3. One mismatch turns it off for that service until the bot restarts.
+
+### What `NITRADO_DELTA_READ_MODE` does
+
+It is the older switch. When it is set, it takes priority over the verified tail reads, and it does
+not compare anything with a full download.
+
+| Value | What the bot tries for each read after the first | If the server does not honour it |
+| --- | --- | --- |
+| unset / `off` / anything unknown | Nothing from this switch. Verified tail reads as above. | - |
+| `seek` | `file_server/seek` for exactly the new bytes | Whole file |
+| `offset_query` | The download URL with `offset`/`count` | Whole file |
+| `range` | The download URL with a `Range` header | Whole file |
+| `auto` | `seek`, then `offset_query`, then `range`; a method that worked is tried first next time | Whole file |
+
+A method that fails three times in a row is not tried again for 10 minutes.
+
+**When the server ignores the offset**, the bot detects it and downloads the whole file in the
+same poll, with nothing consumed from the refused answer:
+
+- `offset_query`: the answer is used only if a `Content-Range` header states the requested offset.
+  Nitrado sends the whole file with a plain 200 and no such header (found 2026-09-24).
+- `range`: only a `206` whose `Content-Range` starts at the requested offset is used. A `200` is
+  the whole file and is refused (what Nitrado does, 2026-10-02).
+- `seek`: **this was not detected before this change.** A `seek` answer was taken as starting at
+  the requested offset whatever came back. The bot now asks `seek` for exactly the bytes the
+  listing says exist and refuses an answer longer than that. A server that ignores the offset
+  returns the file from its first byte, which is always longer than what is left after the offset.
+  Asking for exactly those bytes also matters on Nitrado: its `seek` answered HTTP 500 for a
+  request reaching past the end of the file, so the old fixed 256 KiB request could not work there.
+
+Not detected in these modes: a server that ignores the offset but honours the length, returning
+the right number of bytes from the wrong place. The default (verified tail reads) catches that,
+because it compares bytes. This is one reason to leave the switch unset.
+
+Tests, with the staging Nitrado fixture (`internal/nitrado/nitradofixture`), whose download URL
+ignores `offset`/`count` like Nitrado's: `TestDeltaModesAgainstNitradoFixture`
+(`internal/killfeed/delta_fixture_test.go`) runs the production engine and client in every mode
+against the fixture as it is, against a download host that also ignores `Range`, and against a
+`seek` that ignores or honours its offset. In every case each kill is published once, in log
+order, the checkpoint ends exactly at the end of the file, and no byte of a refused answer is
+counted as received. `TestReadDeltaRefusesSeekThatIgnoresTheOffset` and
+`TestReadDeltaNeverAsksPastTargetSize` (`internal/nitrado/partial_read_test.go`) cover the client.
+
+### The two documents
+
+`docs/NITRADO_DELTA_READS.md` says none of the three methods was tried against a live service.
+`docs/CHAMPION_LIVE_SYNC.md` A9 says Nitrado ignores `offset`/`count`. Both were true when written.
+The later production finding in `docs/NITRADO_POLLING.md` (2026-10-02, one service) is the current
+state: the download URL ignores `offset`/`count` and `Range`; `seek` works when asked for bytes
+inside the file.
+
+### The one-time check, and what to set
+
+Nothing here could reach Nitrado, so this is for the owner or an operator to run once.
+
+1. **From the running bot (no tool needed).** Search the production logs for
+   `event=tail_read_trusted` with the server's `service_id`. If it is there, `seek` matched full
+   downloads three times on that service. `event=tail_read_disabled` means a mismatch was seen.
+   After trust, `component=adm event=download_complete` lines carry `download_mode=SEEK_SUPPORTED`
+   and a `downloaded_bytes` equal to the new bytes only.
+2. **With the operator tool** (read-only: it lists and downloads, prints no token and no download
+   address):
+
+   ```
+   NITRADO_TOKEN=<the server's token> go run ./cmd/nitrado-delta-probe -service <Nitrado service id>
+   ```
+
+   It downloads the newest ADM in full, then reads the file's second half through each method and
+   compares the bytes. Expected on Nitrado today: `seek SUPPORTED, byte-for-byte validated`,
+   `offset_query UNSUPPORTED`, `range UNSUPPORTED`. The tool used to ask `seek` for 256 KiB whatever
+   the file held, which Nitrado answers with HTTP 500 near the end of a file, so it could report a
+   working `seek` as unsupported; it now asks for exactly the segment it compares.
+
+**What to set afterwards: leave `NITRADO_DELTA_READ_MODE` unset**, whatever the tool prints.
+
+- `seek` validated: the default already uses it, with the byte comparison the switch does not have.
+- `seek` not validated: no method works, and the switch could only add failed requests.
+- A `BYTE MISMATCH`: do not set the switch, and report the output.
+
+Setting `auto` on Nitrado today would first try `seek` (which works) and would behave like the
+default without its checks. Setting `offset_query` or `range` would download the whole file twice
+for each change (once refused, once for real) until the method is paused.
+
+## 22. Nothing lost or doubled across a restart
+
+### How it works
+
+- **Where the bot is in the log** is one row per server (`adm_checkpoints`): file and byte offset
+  after the last fully handled line. It is written after each download's lines are handled.
+- **A kill is stored before it is posted.** `kills` and `deaths` have
+  `UNIQUE (guild_id, event_fingerprint)`. The card is handed to the Discord feed only by the
+  process whose insert succeeded; a process that gets "already there" posts nothing
+  (`PersistenceQueue.persistOne`, `KillRepository.InsertKillReturning`).
+- **The fingerprint** is the event type, the line's time of day, the player ids, the weapon and the
+  distance (`internal/killfeed/dedupe.go`).
+- **The Discord feed** (`RotatingFeed`): in `immediate` mode every card is written to the feed
+  journal (`discord_feed_cards`) and carries a Discord nonce, so a card queued or half-sent before
+  a crash is posted once by the next process. In `rotating` mode cards wait in memory for the next
+  10-minute cycle and are posted at a clean shutdown.
+
+`GET /api/runtime/status` → `build.killfeedDeliveryMode` says which mode a deployment runs.
+
+### Proven by tests
+
+`internal/killfeed/restart_safety_test.go` runs the production engine, Nitrado client and
+persistence queue against the staging Nitrado fixture; each bot process is a fresh engine, and
+only the database survives. `restart_safety_integration_test.go` runs the same three scenarios on
+PostgreSQL with the real `kills`/`deaths`/`adm_checkpoints` tables and one connection pool per
+process.
+
+| Scenario | Result |
+| --- | --- |
+| Kills and a death land while no bot is running (`TestRestartKillsWhileDownArePostedInOrder`) | The next process posts exactly those, in log order, and nothing the previous process posted. |
+| The process dies after storing 3 of the 6 kills of one download, before the checkpoint moved (`TestRestartMidBatchPostsEachKillOnce`) | The next process reads all 6 again, posts only the last 3, in order. |
+| Two processes read the same log at the same time for several downloads, as during a deploy (`TestOverlappingProcessesPostEachKillOnce`) | Across both, every kill is posted exactly once; each process posts in log order; the survivor carries on alone. |
+
+So `docs/MULTI_PROCESS.md` was too pessimistic about kills: during an overlap kill and death cards
+are not doubled. Already covered before: a card queued or sent just before a crash in `immediate`
+mode (`TestJournalCrashReplaysQueuedCards`, `TestJournalCrashAfterCreateDoesNotDuplicate`,
+`TestJournalSurvivesSIGKILL`), and the `rotating` flush at shutdown
+(`TestRotatingFeedFlushesOnShutdown`).
+
+### Fixed here
+
+At shutdown the persistence queue's consumer stops with the worker's context. If the engine was in
+the middle of a download's lines, it handed the next event to a queue nobody was reading and
+waited the whole persistence timeout (30 s) for an answer, holding the worker's shutdown that
+long. `EnqueueAndWait` now returns at once when the consumer has stopped
+(`TestEnqueueAndWaitReturnsAtOnceWhenQueueHasStopped`, `TestEnqueueAndWaitReturnsWhenQueueStopsWhileWaiting`).
+Nothing was lost by the wait (the event is read again by the next process); it made the old
+process linger, which lengthens a deploy's overlap.
+
+### What can still double or drop
+
+Not fixed: each needs a change to the pipeline, not a local one.
+
+| What | When | Effect | Proposed fix |
+| --- | --- | --- | --- |
+| **Hit, connection and build cards double** | Two processes overlap (about 15 s per deploy), or a process restarts in the middle of a download | Those feeds are not stored first; each process posts what it reads. Kill and death cards are not affected. | Give each server's log pipeline one owner at a time (a per-server lease like the map rotation worker's), or key these cards by file and byte offset in a small "posted" table. |
+| **Cards waiting in `rotating` mode are lost** | The process is killed without a clean shutdown (crash, out of memory, forced stop) | Up to 10 minutes of kill and death cards never reach Discord. The kills are stored, so the next process sees them as already handled. | Run `immediate` mode (journaled), or journal the rotating batch too. |
+| **One card is lost at shutdown** | A kill's insert commits in the instant the shutdown signal arrives: the feed's final flush can run before that card is queued (in `immediate` mode, before it is journaled). Also when the database commits the insert but the cancelled request reports an error. | That one kill is stored and never posted. A window of milliseconds per deploy, only while a kill is being handled. | Stop the feeds after the engine and the persistence queue have stopped (they share one context today), with a bounded wait so a slow engine cannot hold back the flush. |
+| **Kills written while the bot was down are skipped** | The bot is down across a game-server restart. The checkpoint names the old log file; the new process finds a different newest file, does not match it and starts at that file's end (`cold_start_baseline_required`, `TestColdStartMismatchedCheckpointBaselinesCurrentADM`). The same happens if the same file is listed only under the other mount (`ftproot` instead of `noftp`) when the new process starts. | The tail of the old file and everything in the new file up to that moment is never read: no rows, no cards. A normal deploy is not affected (the old process keeps reading until the new one is up). | On a mismatch with an older boot, drain the checkpoint's file from its offset, then read the new file from byte 0, bounded by age; match mounts by the canonical file name. |
+| **A death is dropped as a duplicate** | The same player dies at the same second of the day on two different days. The fingerprint has no date (`Event.Timestamp` is never set) and no file. | The second death is not stored and not posted. For kills the distance to four decimals is part of the fingerprint, so a collision needs the same killer, victim, weapon, distance and second. | Add the ADM file's date to the fingerprint for new rows. Needs a migration plan: a changed fingerprint for a line already stored would post it again. |
+| **Old cards stay in the channel in `rotating` mode** | Every restart | The cards of the final flush belong to nobody: the next process does not know their ids and never deletes them. Not a double or a drop, but the channel shows more than one batch. | Journal the rotating batch's message ids (the journal already does this for `immediate`). |
+
+## 23. Other delays on the kill's path
+
+Found by reading the path; evidence is the code named. Only the first two were changed.
+
+| Delay | Where | Size | Status |
+| --- | --- | --- | --- |
+| A worker's first cycle waited a whole poll interval | `Engine.Start` | 10 s after every restart and every newly connected server | **Fixed**: 1 s (`firstPollDelay`). |
+| Shutdown waited out the persistence timeout | `PersistenceQueue.EnqueueAndWait` | up to 30 s of extra overlap when a download was being handled | **Fixed** (section 22). |
+| Nitrado exposes the ADM in steps | Nitrado's file API | about 5 minutes; 8.5 minutes for a new boot's file (docs/NITRADO_POLLING.md) | Outside the bot. `gameLogToBotReadMs` now shows it per card. |
+| The rotating cycle | `rotatingFeedInterval`, `RotatingFeed.flush` | up to 10 minutes per card when `KILLFEED_DELIVERY_MODE` is not `immediate` | By design; the owner's switch. `queuedToDiscordAcceptedMs` shows it. |
+| One database round trip after another per kill | `PersistenceQueue.persistOne` and `persistenceStoreAdapter.ProcessPersistedKill`: two player upserts, season, two factions, war, two streak reads, the insert, then ranked award, life end, streak update and reset, two profiles, head-to-head, anomaly check, active events, VIP badge, bounty claim, streak note, wanted check | about 20 queries per kill, one at a time, and the engine waits for each kill before the next line. Nitrado delivers 5 minutes of kills in one download, so the last of N kills waits for N × that. | Not changed: the order of these writes is what keeps statistics and cards consistent. `botReadToQueuedMs` measures it. If it is seconds at p90, post the card first and enrich it in one or two combined queries. |
+| One card, one Discord message, one at a time | `RotatingFeed.postImmediate` | Discord allows about 5 messages per 5 s per channel, so a burst of 20 kills takes about 20 s to appear. With the window full each card also costs a delete request first, plus three journal writes. | Not changed (presentation). `queuedToDiscordAcceptedMs` measures it. |
+| C.A.S.E. evidence writes on the poll loop | `Engine.observeEvidence` | one database write per hit, kill and connect line, before the next line is handled, on servers with the collector enabled | Not changed. Shows in `botReadToQueuedMs`. A batch insert per download would remove it. |
+| Whole-file reads that find nothing | `Engine.probeStaleSource` | when the log has not changed for 2 minutes, the whole file is downloaded once a minute (0.5-3 s each, on the poll loop) - about three times between two Nitrado steps | Not changed: it is the safety net for a stale listing. It could use the verified tail read. |
+| Hit and connection cards wait on purpose | `hitfeedWindow` 5 s + `hitfeedTick` 2 s; `connectionsTick` 2 s | up to 7 s / 2 s | By design (section 10). |
+
+**Files:** `internal/killfeed/feed_latency.go` (new), `engine.go`, `engine_poll.go`,
+`engine_process.go`, `engine_discovery.go`, `engine_stale_probe.go`, `source_health.go`,
+`persistence.go`, `event.go`; `internal/discord/rotating_feed.go`, `killfeed.go`, `deathfeed.go`;
+`internal/app/feed_latency.go` (new), `server_worker.go`, `runtime_status.go`,
+`admin_api_nitrado_usage.go`; `internal/nitrado/partial_read.go`; `cmd/nitrado-delta-probe`.

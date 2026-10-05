@@ -77,16 +77,12 @@ func (h *LinkCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interacti
 		}
 		respondEphemeral(s, i, fmt.Sprintf("🏆 **CHAMPION ACCOUNT**\n\nPlayStation\n%s\n\nStatus\n%s", link.RequestedName, statusLabel(link.Status)))
 	case "unlink":
-		_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseChannelMessageWithSource,
-			Data: &discordgo.InteractionResponseData{
-				Flags:   discordgo.MessageFlagsEphemeral,
-				Content: "⚠️ Confirm unlinking your Champion account?\n\nThis removes account ownership only; historical stats remain.",
-				Components: []discordgo.MessageComponent{discordgo.ActionsRow{Components: []discordgo.MessageComponent{
-					discordgo.Button{Label: "Unlink Account", Style: discordgo.DangerButton, CustomID: "champion_unlink_confirm:" + i.Member.User.ID},
-					discordgo.Button{Label: "Cancel", Style: discordgo.SecondaryButton, CustomID: "champion_unlink_cancel:" + i.Member.User.ID},
-				}}},
-			},
+		respondPrivate(s, i, &discordgo.InteractionResponseData{
+			Content: "⚠️ Confirm unlinking your Champion account?\n\nThis removes account ownership only; historical stats remain.",
+			Components: []discordgo.MessageComponent{discordgo.ActionsRow{Components: []discordgo.MessageComponent{
+				discordgo.Button{Label: "Unlink Account", Style: discordgo.DangerButton, CustomID: "champion_unlink_confirm:" + i.Member.User.ID},
+				discordgo.Button{Label: "Cancel", Style: discordgo.SecondaryButton, CustomID: "champion_unlink_cancel:" + i.Member.User.ID},
+			}}},
 		})
 	}
 }

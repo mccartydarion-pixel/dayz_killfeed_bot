@@ -44,6 +44,11 @@ func (a *App) handleAdminNitradoUsage(w http.ResponseWriter, _ *http.Request, _ 
 		"tokens":   nitrado.RateLimitUsage(),
 		"timing":   killfeed.PollTimings(),
 		"delivery": deliveries(),
+		// Per server and feed: game log -> bot read -> queued -> Discord accepted, p50/p90/p99/max
+		// over the last hour and 24 hours (docs/PERFORMANCE.md section 19).
+		"feedLatency": killfeed.FeedLatency.Snapshot(),
+		// How fast commands and buttons were acknowledged, per masked name (numbers only).
+		"interactionTimings": a.interactionTimings(),
 	})
 }
 
@@ -57,4 +62,16 @@ func deliveries() []feedDelivery {
 			MaxQueueWaitMs: r.MaxQueueWaitMs, LastDetectToDeliverMs: r.LastDetectToDeliverMs, MaxDetectToDeliverMs: r.MaxDetectToDeliverMs})
 	}
 	return out
+}
+
+// interactionTimings is the Discord client's per-command acknowledgement statistics, or an empty
+// list when Discord is not connected.
+func (a *App) interactionTimings() []discord.InteractionTiming {
+	if a == nil || a.Discord == nil {
+		return []discord.InteractionTiming{}
+	}
+	if t := a.Discord.InteractionTimings(); t != nil {
+		return t
+	}
+	return []discord.InteractionTiming{}
 }
