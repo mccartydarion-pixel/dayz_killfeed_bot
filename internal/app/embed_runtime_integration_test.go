@@ -128,7 +128,7 @@ func TestEmbedRuntimeStoreRenderResetAndChangeAgainstRealPostgres(t *testing.T) 
 		t.Fatal(err)
 	}
 	got := w.publish("eco-A")
-	if len(got) != 1 || got[0] != "➕ **ADMIN CREDIT**\nHunter received 50,000 pts" {
+	if len(got) != 1 || got[0] != "➕ **Admin credit**\nHunter received 50,000 pts" {
 		t.Fatalf("no template = the default card: %q", got)
 	}
 
@@ -169,7 +169,7 @@ func TestEmbedRuntimeStoreRenderResetAndChangeAgainstRealPostgres(t *testing.T) 
 	if _, err := w.adminCredit(w.hunter, 5, ""); err != nil {
 		t.Fatal(err)
 	}
-	if c := w.publish("eco-A"); len(c) != 1 || c[0] != "➕ **ADMIN CREDIT**\nHunter received 5 pts" {
+	if c := w.publish("eco-A"); len(c) != 1 || c[0] != "➕ **Admin credit**\nHunter received 5 pts" {
 		t.Fatalf("after DELETE the default card returns: %q", c)
 	}
 }
@@ -189,7 +189,7 @@ func TestEmbedRuntimeMultiServerIsolation(t *testing.T) {
 	if len(a) != 1 || !strings.Contains(a[0], "SERVER-A-STYLE") {
 		t.Fatalf("server A uses its template: %q", a)
 	}
-	if len(b) != 1 || b[0] != "➕ **ADMIN CREDIT**\nHunter received 900 pts" {
+	if len(b) != 1 || b[0] != "➕ **Admin credit**\nHunter received 900 pts" {
 		t.Fatalf("server B (same guild) must keep the default: %q", b)
 	}
 }
@@ -273,7 +273,7 @@ func TestEmbedRuntimeDatabaseFailureFallsBackToTheDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := w.publish("eco-A")
-	if len(c) != 1 || c[0] != "➕ **ADMIN CREDIT**\nHunter received 333 pts" {
+	if len(c) != 1 || c[0] != "➕ **Admin credit**\nHunter received 333 pts" {
 		t.Fatalf("a failing template lookup must publish the Champion default: %q", c)
 	}
 	if w.balance(w.hunter) != before+333 {
@@ -306,7 +306,7 @@ func TestEmbedRuntimeMalformedStoredTemplateFallsBack(t *testing.T) {
 	if _, err := w.adminCredit(w.hunter, 8, ""); err != nil {
 		t.Fatal(err)
 	}
-	if c := w.publish("eco-A"); len(c) != 1 || c[0] != "➕ **ADMIN CREDIT**\nHunter received 8 pts" {
+	if c := w.publish("eco-A"); len(c) != 1 || c[0] != "➕ **Admin credit**\nHunter received 8 pts" {
 		t.Fatalf("a malformed stored template must fall back: %q", c)
 	}
 	if s := w.renderer.Stats(); s.FallbackRender != 1 || s.CustomRender != 0 {

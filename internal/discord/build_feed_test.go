@@ -41,7 +41,7 @@ func TestBuildFeedCardsCarryOnlyRealFields(t *testing.T) {
 		t.Fatalf("want one message with two cards, got %d messages (seen=%d)", len(msgs), seen)
 	}
 	placed := fieldMap(msgs[0].embeds[0])
-	if msgs[0].embeds[0].Title != "🏗️ BUILD ACTIVITY" || placed["Player"] != "Survivor" || placed["Action"] != "Placed" || placed["Object"] != "Sea Chest" ||
+	if msgs[0].embeds[0].Title != "🏗️ Build activity" || placed["Player"] != "Survivor" || placed["Action"] != "Placed" || placed["Object"] != "Sea Chest" ||
 		placed["Location"] != "X: 5,420 • Z: 8,931" || placed["Server"] != "Champions" {
 		t.Fatalf("placed card: %+v", placed)
 	}

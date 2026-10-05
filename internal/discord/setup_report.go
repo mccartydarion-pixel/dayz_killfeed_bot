@@ -191,41 +191,41 @@ func bulletList(items []string, limit int) string {
 
 // SetupLayoutEmbed renders the /setup or /setup repair report as one Champions-branded embed.
 func SetupLayoutEmbed(r SetupLayoutResult, repair bool) *discordgo.MessageEmbed {
-	title := "🏆 CHAMPIONS® DISCORD SETUP"
+	title := "🏆 Discord setup"
 	if repair {
-		title = "🔧 CHAMPIONS® DISCORD REPAIR"
+		title = "🔧 Discord repair"
 	}
 	created, reused, updated := r.Count(SetupChannelCreated), r.Count(SetupChannelReused), r.Count(SetupChannelUpdated)
 	failedSystems := r.FailedSystems()
 	failed := len(failedSystems)
 
-	status, color, result := "Repair Complete", presentation.ChampionGold, "All required systems are configured."
+	status, color, result := "Repair complete", presentation.Green, "All required systems are configured."
 	if !repair {
-		status = "Setup Complete"
+		status = "Setup complete"
 	}
 	if failed > 0 {
-		status, color, result = "Needs Attention", presentation.WarningAmber, fmt.Sprintf("%d system(s) need attention. Check Champion's channel permissions, then run `/setup repair` again.", failed)
+		status, color, result = "Needs attention", presentation.WarningAmber, fmt.Sprintf("%d system(s) need attention. Check Champion's channel permissions, then run `/setup repair` again.", failed)
 	}
 
 	fields := []*discordgo.MessageEmbedField{{
-		Name:  "Channel Summary",
+		Name:  "Channel summary",
 		Value: fmt.Sprintf("• Created: %d\n• Reused: %d\n• Updated: %d\n• Failed: %d", created, reused, updated, failed),
 	}}
 	if v := r.verifiedNotFailed(); len(v) > 0 {
-		fields = append(fields, &discordgo.MessageEmbedField{Name: "Systems Verified", Value: bulletList(v, embedFieldValueLimit)})
+		fields = append(fields, &discordgo.MessageEmbedField{Name: "Systems verified", Value: bulletList(v, embedFieldValueLimit)})
 	}
 	if failed > 0 {
-		fields = append(fields, &discordgo.MessageEmbedField{Name: "Needs Attention", Value: bulletList(failedSystems, embedFieldValueLimit)})
+		fields = append(fields, &discordgo.MessageEmbedField{Name: "Needs attention", Value: bulletList(failedSystems, embedFieldValueLimit)})
 	}
 	if b := r.BlockedSystems(); len(b) > 0 {
-		fields = append(fields, &discordgo.MessageEmbedField{Name: "Not Available Yet", Value: bulletList(b, embedFieldValueLimit)})
+		fields = append(fields, &discordgo.MessageEmbedField{Name: "Not available yet", Value: bulletList(b, embedFieldValueLimit)})
 	}
 	if n := r.LegacyChannels(); n > 0 {
 		noun := "channel"
 		if n != 1 {
 			noun = "channels"
 		}
-		fields = append(fields, &discordgo.MessageEmbedField{Name: "Legacy Channels",
+		fields = append(fields, &discordgo.MessageEmbedField{Name: "Legacy channels",
 			Value: fmt.Sprintf("%d unused Champion %s detected.\nReview obsolete channels under **Website → Setup → Discord Channels**.", n, noun)})
 	}
 	fields = append(fields, &discordgo.MessageEmbedField{Name: "Result", Value: result})
@@ -235,7 +235,7 @@ func SetupLayoutEmbed(r SetupLayoutResult, repair bool) *discordgo.MessageEmbed 
 		Description: "**Status:** " + status,
 		Color:       color,
 		Fields:      fields,
-		Footer:      &discordgo.MessageEmbedFooter{Text: "CHAMPIONS® • Discord Setup"},
+		Footer:      presentation.Footer("", "Discord setup"),
 	}
 }
 
@@ -243,9 +243,9 @@ func SetupLayoutEmbed(r SetupLayoutResult, repair bool) *discordgo.MessageEmbed 
 // guild-wide run finished. Do not expose raw backend or Discord errors here.
 func SetupLayoutPartialEmbed(r SetupLayoutResult, repair, timedOut bool) *discordgo.MessageEmbed {
 	embed := SetupLayoutEmbed(r, repair)
-	embed.Title = "⚠️ CHAMPIONS® SETUP INCOMPLETE"
+	embed.Title = "⚠️ Setup incomplete"
 	if repair {
-		embed.Title = "⚠️ CHAMPIONS® REPAIR INCOMPLETE"
+		embed.Title = "⚠️ Repair incomplete"
 	}
 	embed.Color = presentation.WarningAmber
 	embed.Description = "**Status:** Partial progress — the guild-wide run did not finish."
@@ -274,11 +274,11 @@ func setupErrorMessage(err error) string {
 	case errors.Is(err, ErrNoInstallation):
 		return "ℹ️ This Discord server is not connected to Champion yet.\nConnect it in **Setup** on the Champion website, then run `/setup` again."
 	case errors.Is(err, ErrMissingManageChannels):
-		return "❌ Champion needs the **Manage Channels** permission to set up its channels. Grant it and run `/setup repair`."
+		return "Champion needs the **Manage Channels** permission to set up its channels. Grant it and run `/setup repair`."
 	case errors.Is(err, context.DeadlineExceeded):
 		return "⚠️ Setup reached its time limit before an installation completed. Some channels may already exist; check channel status before retrying."
 	case errors.Is(err, context.Canceled):
 		return "⚠️ Setup was interrupted. Some channels may already exist; check channel status before retrying."
 	}
-	return "❌ Setup failed. Try `/setup repair` again in a moment."
+	return "Setup failed. Try `/setup repair` again in a moment."
 }

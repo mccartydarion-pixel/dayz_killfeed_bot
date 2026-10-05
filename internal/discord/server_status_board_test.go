@@ -13,7 +13,7 @@ func TestServerStatusShowsOnlyObservedValues(t *testing.T) {
 	now := time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
 	healthy := ServerStatusSection{ServerName: "Champions", Seen: true, Snapshot: killfeed.AdmSnapshot{State: killfeed.StatePolling, LastPoll: now.Add(-30 * time.Second), LastLogChange: now.Add(-time.Minute), OnlineCount: 17}}
 	text := embedText(BuildServerStatusEmbed([]ServerStatusSection{healthy}, now))
-	for _, want := range []string{"📡 SERVER STATUS", "Champions", "Champion Link:** CONNECTED", "Players Online:** 17", "ADM Log:** updated <t:"} {
+	for _, want := range []string{"📡 Server status", "Champions", "Champion link:** Connected", "Players online:** 17", "ADM log:** updated <t:"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q in:\n%s", want, text)
 		}
@@ -25,11 +25,11 @@ func TestServerStatusShowsOnlyObservedValues(t *testing.T) {
 	}
 	stale := healthy
 	stale.Snapshot.LastPoll = now.Add(-10 * time.Minute)
-	if ServerStatusLink(stale, now) != "DEGRADED" {
-		t.Fatal("no poll for 10 minutes is DEGRADED")
+	if ServerStatusLink(stale, now) != ServerLinkDegraded {
+		t.Fatal("no poll for 10 minutes is degraded")
 	}
 	waiting := embedText(BuildServerStatusEmbed([]ServerStatusSection{{ServerName: "New"}}, now))
-	if !strings.Contains(waiting, "WAITING FOR FIRST POLL") || strings.Contains(waiting, "Players Online") {
+	if !strings.Contains(waiting, "Waiting for first poll") || strings.Contains(waiting, "Players online") {
 		t.Fatalf("before any snapshot nothing is invented:\n%s", waiting)
 	}
 }

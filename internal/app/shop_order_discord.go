@@ -255,9 +255,9 @@ func (a *App) startShopOrderDesk(ctx context.Context, session *discordgo.Session
 const (
 	shopOrderTextNotYours    = "This order isn't linked to your Discord account, or it no longer exists."
 	shopOrderTextPaused      = "The Shop is paused on this server right now. Ask the server staff, or try again later."
-	shopOrderTextInvalid     = "This button is no longer valid."
-	shopOrderTextTryAgain    = "Something went wrong on our side. Try again in a moment, or answer on the website."
-	shopOrderTextNeedsReason = "Please describe what went wrong so the staff can help."
+	shopOrderTextInvalid     = discord.ReplyButtonExpired
+	shopOrderTextTryAgain    = discord.ReplyTryAgain + " You can also answer on the website."
+	shopOrderTextNeedsReason = "Describe what went wrong so the staff can help."
 )
 
 // modalLookupBudget bounds the database work a button may do before opening a

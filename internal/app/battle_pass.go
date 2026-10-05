@@ -11,6 +11,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/economy"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/progression"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
@@ -18,7 +19,7 @@ import (
 // The battle pass (docs/PROGRESSION.md "Battle pass").
 
 const (
-	battlePassColor       = 0xA855F7
+	battlePassColor       = presentation.Gold // a season of rewards
 	battlePassGrantsBatch = 200
 	// battlePassXPLookback is how far back each pass looks for kills and playtime to turn into XP;
 	// the references make every piece count once, so overlapping passes are harmless.
@@ -26,7 +27,7 @@ const (
 )
 
 func battlePassAuthor() *discordgo.MessageEmbedAuthor {
-	return &discordgo.MessageEmbedAuthor{Name: "CHAMPIONS® BATTLE PASS"}
+	return presentation.BrandAuthor("Battle Pass")
 }
 
 func battlePassMessage(err error) string {
@@ -369,19 +370,19 @@ func (a *App) deliverBattlePassGrants(ctx context.Context, s repository.BattlePa
 func buildBattlePassStartCard(s repository.BattlePassSeason, serverName string) *discordgo.MessageEmbed {
 	where := ""
 	if strings.TrimSpace(serverName) != "" {
-		where = " on " + serverName
+		where = " on " + presentation.SafeName(serverName, 60)
 	}
 	ways := []string{}
 	if s.XPKill > 0 {
-		ways = append(ways, fmt.Sprintf("%d XP a kill", s.XPKill))
+		ways = append(ways, commaInt(int64(s.XPKill))+" XP a kill")
 	}
 	if s.XPHour > 0 {
-		ways = append(ways, fmt.Sprintf("%d XP an hour played", s.XPHour))
+		ways = append(ways, commaInt(int64(s.XPHour))+" XP an hour played")
 	}
 	if s.XPDailyChallenge > 0 || s.XPWeeklyChallenge > 0 {
 		ways = append(ways, "XP for every challenge")
 	}
-	desc := fmt.Sprintf("**%s** is live%s until %s: %d levels of rewards.", s.Name, where, s.EndsAt.UTC().Format("Jan 2"), s.Levels)
+	desc := fmt.Sprintf("**%s** is live%s until %s: %d levels of rewards.", presentation.SafeName(s.Name, 80), where, presentation.Timestamp(s.EndsAt, 'D'), s.Levels)
 	if len(ways) > 0 {
 		desc += "\nEarn " + strings.Join(ways, ", ") + "."
 	}
@@ -398,12 +399,9 @@ func buildBattlePassEndCard(s repository.BattlePassSeason, board []repository.Ba
 		if i >= len(medals) {
 			break
 		}
-		lines = append(lines, fmt.Sprintf("%s %s · level %d (%s XP)", medals[i], orUnknown(p.Name), p.Level, commaInt(p.XP)))
+		lines = append(lines, fmt.Sprintf("%s %s • level %d (%s XP)", medals[i], orUnknown(p.Name), p.Level, commaInt(p.XP)))
 	}
-	title := "🏁 " + s.Name + " has ended"
-	if strings.TrimSpace(serverName) != "" {
-		title += " · " + serverName
-	}
-	return &discordgo.MessageEmbed{Author: battlePassAuthor(), Color: battlePassColor, Title: title,
-		Description: "Thanks for playing! Top of the season:\n" + strings.Join(lines, "\n")}
+	// The title is the event; the server is named in the footer, like on every card.
+	return &discordgo.MessageEmbed{Author: battlePassAuthor(), Color: battlePassColor, Title: "🏁 " + presentation.SafeName(s.Name, 80) + " has ended",
+		Description: "Thanks for playing! Top of the season:\n" + strings.Join(lines, "\n"), Footer: presentation.Footer(serverName, "")}
 }

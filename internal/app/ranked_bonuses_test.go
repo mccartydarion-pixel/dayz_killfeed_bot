@@ -51,7 +51,7 @@ func TestTierLevelsAndBonusSettings(t *testing.T) {
 
 func TestRankedCards(t *testing.T) {
 	wanted := buildWantedCard(repository.WantedPlayer{Name: "Mike", Reason: repository.WantedStreak, Streak: 6, Bounty: 100}, "Champions")
-	if wanted.Title != "💀 BOUNTY ON MIKE" || !strings.Contains(wanted.Description, "6-kill streak") || !strings.Contains(wanted.Description, "+100 RP") {
+	if wanted.Title != "💀 Bounty on Mike" || !strings.Contains(wanted.Description, "6-kill streak") || !strings.Contains(wanted.Description, "+100 RP") {
 		t.Fatalf("wanted: %+v", wanted)
 	}
 	claim := buildBountyClaimCard(repository.BountyClaim{KillerName: "Dan", VictimName: "Mike", Detail: "was #1 on the server", BountyRP: 100, TotalRP: 200})
@@ -59,8 +59,9 @@ func TestRankedCards(t *testing.T) {
 		t.Fatalf("claim: %s", claim.Description)
 	}
 	up := buildRankUpCard(repository.RankUp{Name: "Dan", To: ranked.Gold, RP: 1000, Position: 2}, "Champions")
-	if up.Title != "🏅 Dan reached Gold" || up.Description != "1000 RP · #2 on Champions" {
-		t.Fatalf("rank-up: %+v", up)
+	// Numbers carry thousands separators and the server is named in the footer.
+	if up.Title != "🏅 Dan reached Gold" || up.Description != "1,000 RP • #2" || up.Footer == nil || up.Footer.Text != "Champions" {
+		t.Fatalf("rank-up: %+v %+v", up, up.Footer)
 	}
 	recap := buildWeeklyRecapCard(repository.RankedRecap{WeekStart: time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC), Kills: 0}, "")
 	if len(recap.Fields) != 0 || !strings.Contains(recap.Description, "Sep 28 to Oct 4") {

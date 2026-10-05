@@ -32,13 +32,13 @@ func TestLeaderboardValueFormatting(t *testing.T) {
 		c        RankCategory
 		raw, out string
 	}{
-		{RankKills, "20", "20 Kills"},
-		{RankKills, "1", "1 Kill"},
+		{RankKills, "20", "20 kills"},
+		{RankKills, "1", "1 kill"},
 		{RankLongest, "98.3m", "98.3m"},
 		{RankLongest, "98.34", "98.3m"},
 		{RankKD, "4.25", "4.25 K/D"},
 		{RankPoints, "12500", "12,500 pts"},
-		{RankStreak, "8", "8 Kills"},
+		{RankStreak, "8", "8 kills"},
 		{RankOther, "odd", "odd"},
 	}
 	for _, c := range cases {
@@ -72,7 +72,7 @@ func TestRankingBlockDropsWholeRowsAtTheFieldLimit(t *testing.T) {
 		t.Fatalf("block over the field limit: %d", utf8.RuneCountInString(v))
 	}
 	for _, row := range strings.Split(v, "\n") {
-		if !strings.HasSuffix(row, "**1 Kill**") {
+		if !strings.HasSuffix(row, "**1 kill**") {
 			t.Fatalf("row cut mid-way: %q", row)
 		}
 	}

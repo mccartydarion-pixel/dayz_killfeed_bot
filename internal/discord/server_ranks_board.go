@@ -59,7 +59,7 @@ func ServerRanksInactiveEmbed(serverName string) *discordgo.MessageEmbed {
 	if name := strings.TrimSpace(serverName); name != "" {
 		desc = "**" + presentation.SafeName(name, 100) + "**\n\n" + desc
 	}
-	return &discordgo.MessageEmbed{Author: presentation.ChampionAuthor(), Title: "🎖️ SERVER RANKS 🎖️", Description: desc, Color: presentation.ChampionGold, Footer: presentation.AutoRefreshFooter()}
+	return &discordgo.MessageEmbed{Author: presentation.ChampionAuthor(), Title: serverRanksTitle, Description: desc, Color: presentation.Neutral, Footer: presentation.AutoRefreshFooter()}
 }
 
 func NewServerRanksBoard(resolver RouteResolver, panels *RoutePanels, reader ServerRanksReader, guildID, serverID int64, name string) *ServerRanksBoard {

@@ -132,6 +132,8 @@ var rawIDPattern = regexp.MustCompile(`\b[78]0[12]\d\d\b`)
 // assertNoPlaceholders fails on any placeholder identity or leaked raw ID.
 func assertNoPlaceholders(t *testing.T, text string) {
 	t.Helper()
+	// The war card's own title ("Faction war complete") is not a placeholder.
+	text = strings.ReplaceAll(text, "Faction war complete", "")
 	for _, bad := range []string{"Player ", "Faction ", "Winner ", "\nPlayer\n", "\nFaction\n", "Season\n", "Unknown", "N/A"} {
 		if strings.Contains(text, bad) {
 			t.Errorf("card contains placeholder %q:\n%s", bad, text)
@@ -172,10 +174,10 @@ func TestSeasonCompletionResolvesHolderNames(t *testing.T) {
 	text := completionEmbedText(e)
 	assertNoPlaceholders(t, text)
 	for field, want := range map[string]string{
-		"👑 TOP PLAYER":   "WilliamAle--10",
-		"⚔️ TOP FACTION": `\[WOLF\] Wolfpack`,
-		"🎯 LONGEST KILL": `Semillita-azul-\_`,
-		"🔥 BEST STREAK":  "zTonii99",
+		"👑 Top player":   "WilliamAle--10",
+		"⚔️ Top faction": `\[WOLF\] Wolfpack`,
+		"🎯 Longest kill": `Semillita-azul-\_`,
+		"🔥 Best streak":  "zTonii99",
 	} {
 		f := fieldByName(e, field)
 		if f == nil || !strings.Contains(f.Value, want) {
@@ -199,7 +201,7 @@ func TestSeasonCompletionOmitsUnresolvedHolders(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertNoPlaceholders(t, completionEmbedText(e))
-	if v := fieldByName(e, "👑 TOP PLAYER").Value; v != "**3 Kills**" {
+	if v := fieldByName(e, "👑 Top player").Value; v != "**3 kills**" {
 		t.Errorf("unresolved top player value = %q, want count only", v)
 	}
 }
@@ -223,21 +225,24 @@ func TestWarCompletionResolvesFactionsWinnerAndRecords(t *testing.T) {
 	}
 	text := completionEmbedText(e)
 	assertNoPlaceholders(t, text)
-	for _, want := range []string{`**\[WOLF\] Wolfpack** vs **\[RVN\] Ravens**`, `👑 **\[WOLF\] Wolfpack** wins the war`, "CHAMPION • Season 3 •"} {
+	for _, want := range []string{`**\[WOLF\] Wolfpack** vs **\[RVN\] Ravens**`, `👑 **\[WOLF\] Wolfpack** wins the war`} {
 		if !strings.Contains(text, want) {
 			t.Errorf("card missing %q:\n%s", want, text)
 		}
 	}
-	if f := fieldByName(e, "[WOLF] Wolfpack"); f == nil || f.Value != "**14 Kills**" || !f.Inline {
+	if e.Footer == nil || e.Footer.Text != "Season 3" {
+		t.Errorf("the war's season belongs in the footer: %+v", e.Footer)
+	}
+	if f := fieldByName(e, "[WOLF] Wolfpack"); f == nil || f.Value != "**14 kills**" || !f.Inline {
 		t.Errorf("faction A field = %+v", f)
 	}
-	if f := fieldByName(e, "[RVN] Ravens"); f == nil || f.Value != "**9 Kills**" || !f.Inline {
+	if f := fieldByName(e, "[RVN] Ravens"); f == nil || f.Value != "**9 kills**" || !f.Inline {
 		t.Errorf("faction B field = %+v", f)
 	}
-	if f := fieldByName(e, "🔥 TOP KILLER"); f == nil || f.Value != "**7 Kills**\nWilliamAle--10" {
+	if f := fieldByName(e, "🔥 Top killer"); f == nil || f.Value != "**7 kills**\nWilliamAle--10" {
 		t.Errorf("top killer field = %+v", f)
 	}
-	if f := fieldByName(e, "🎯 LONGEST KILL"); f == nil || !strings.Contains(f.Value, "zTonii99") {
+	if f := fieldByName(e, "🎯 Longest kill"); f == nil || !strings.Contains(f.Value, "zTonii99") {
 		t.Errorf("longest kill field = %+v", f)
 	}
 }
@@ -254,13 +259,13 @@ func TestWarCompletionWithoutKillsIsADrawWithNoRecords(t *testing.T) {
 	}
 	text := completionEmbedText(e)
 	assertNoPlaceholders(t, text)
-	if !strings.Contains(e.Description, "🤝 **DRAW**") {
+	if !strings.Contains(e.Description, "🤝 **Draw**") {
 		t.Errorf("tied war without winner should be a draw: %q", e.Description)
 	}
-	if fieldByName(e, "🔥 TOP KILLER") != nil || fieldByName(e, "🎯 LONGEST KILL") != nil {
+	if fieldByName(e, "🔥 Top killer") != nil || fieldByName(e, "🎯 Longest kill") != nil {
 		t.Errorf("war with no kills must not show records:\n%s", text)
 	}
-	if strings.Contains(e.Footer.Text, "CHAMPION •") {
+	if e.Footer != nil {
 		t.Errorf("war without a season must not invent one: %q", e.Footer.Text)
 	}
 }
@@ -284,7 +289,7 @@ func TestWarCompletionUnresolvedFactionsAndHoldersAreOmitted(t *testing.T) {
 	if e.Description != "" {
 		t.Errorf("no resolved factions/winner: description should be empty, got %q", e.Description)
 	}
-	if fieldByName(e, "🔥 TOP KILLER") != nil || fieldByName(e, "🎯 LONGEST KILL") != nil {
+	if fieldByName(e, "🔥 Top killer") != nil || fieldByName(e, "🎯 Longest kill") != nil {
 		t.Errorf("unresolved holders must be omitted:\n%s", text)
 	}
 }
@@ -308,7 +313,7 @@ func TestEventCompletionResolvesPodiumNames(t *testing.T) {
 	}
 	text := completionEmbedText(e)
 	assertNoPlaceholders(t, text)
-	f := fieldByName(e, "🏆 FINAL STANDINGS")
+	f := fieldByName(e, "🏆 Final standings")
 	if f == nil {
 		t.Fatalf("missing standings field:\n%s", text)
 	}

@@ -58,12 +58,12 @@ func RegisterWarCommands(session CommandRegistrar, guildID string) error {
 }
 func (h *WarCommandHandler) Handle(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if h == nil || h.wars == nil || h.guilds == nil || i == nil {
-		respondEphemeral(s, i, "Faction wars are unavailable.")
+		respondEphemeral(s, i, ReplyAreUnavailable("Faction wars"))
 		return
 	}
 	_, gid, err := h.guilds.GetGuild(context.Background(), i.GuildID)
 	if err != nil || gid == 0 {
-		respondEphemeral(s, i, "Run `/setup` first.")
+		respondEphemeral(s, i, ReplyNotSetUp)
 		return
 	}
 	group := i.ApplicationCommandData().Options[0]
@@ -88,7 +88,7 @@ func (h *WarCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interactio
 	case "challenge":
 		a, b := optionInt(sub, "faction_a"), optionInt(sub, "faction_b")
 		if !h.authorized(ctx, i, gid, a, factions.CanChallengeWar) {
-			respondEphemeral(s, i, "Verified OWNER or LEADER membership in the challenging faction is required.")
+			respondEphemeral(s, i, "You need to be a verified owner or leader of the challenging faction to do that.")
 			return
 		}
 		seasonID := int64(0)
@@ -103,34 +103,34 @@ func (h *WarCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interactio
 		}
 		war, err := h.wars.CreateChallenge(ctx, gid, seasonID, a, b, playerID)
 		if err != nil {
-			respondEphemeral(s, i, "Could not create war: "+err.Error())
+			respondEphemeral(s, i, ReplyCouldNotBecause("create the war", err.Error()))
 			return
 		}
 		respondEphemeral(s, i, fmt.Sprintf("⚔️ War challenge created: **%d** (%d vs %d)", war.ID, war.FactionAID, war.FactionBID))
 	case "accept":
 		war, lookupErr := h.wars.GetWar(ctx, gid, optionInt(sub, "id"))
 		if lookupErr != nil || !h.authorized(ctx, i, gid, war.FactionBID, factions.CanAcceptWar) {
-			respondEphemeral(s, i, "Verified OWNER or LEADER membership in the challenged faction is required.")
+			respondEphemeral(s, i, "You need to be a verified owner or leader of the challenged faction to do that.")
 			return
 		}
 		err = h.wars.AcceptWar(ctx, gid, optionInt(sub, "id"))
 	case "decline":
 		war, lookupErr := h.wars.GetWar(ctx, gid, optionInt(sub, "id"))
 		if lookupErr != nil || !h.authorized(ctx, i, gid, war.FactionBID, factions.CanDeclineWar) {
-			respondEphemeral(s, i, "Verified OWNER or LEADER membership in the challenged faction is required.")
+			respondEphemeral(s, i, "You need to be a verified owner or leader of the challenged faction to do that.")
 			return
 		}
 		err = h.wars.DeclineWar(ctx, gid, optionInt(sub, "id"))
 	case "end":
 		war, lookupErr := h.wars.GetWar(ctx, gid, optionInt(sub, "id"))
 		if lookupErr != nil || (!h.authorized(ctx, i, gid, war.FactionAID, factions.CanEndWar) && !h.authorized(ctx, i, gid, war.FactionBID, factions.CanEndWar)) {
-			respondEphemeral(s, i, "Verified OWNER or LEADER membership in either faction is required.")
+			respondEphemeral(s, i, "You need to be a verified owner or leader of either faction to do that.")
 			return
 		}
 		err = h.wars.EndWar(ctx, gid, optionInt(sub, "id"))
 	case "cancel":
 		if !isAdminInteraction(i) {
-			respondEphemeral(s, i, "Only a server administrator may cancel a war.")
+			respondEphemeral(s, i, ReplyNeedsPermission("cancel a war"))
 			return
 		}
 		err = h.wars.CancelWar(ctx, gid, optionInt(sub, "id"))
@@ -143,7 +143,7 @@ func (h *WarCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interactio
 				return
 			}
 			var b strings.Builder
-			b.WriteString("⚔️ **ACTIVE WARS**\n\n")
+			b.WriteString("⚔️ **Active wars**\n\n")
 			for _, active := range wars {
 				aScore, bScore, _ := h.wars.GetWarScore(ctx, gid, active.ID)
 				fmt.Fprintf(&b, "War %d\nFaction %d %d • Faction %d %d\n\n", active.ID, active.FactionAID, aScore, active.FactionBID, bScore)
@@ -159,27 +159,27 @@ func (h *WarCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interactio
 		}
 		aScore, bScore, scoreErr := h.wars.GetWarScore(ctx, gid, warID)
 		if scoreErr != nil {
-			respondEphemeral(s, i, "Could not load war score.")
+			respondEphemeral(s, i, ReplyCouldNot("load the war score"))
 			return
 		}
 		top, topCount, _ := h.wars.GetWarTopKiller(ctx, gid, warID)
 		longestPlayer, longest, _ := h.wars.GetWarLongestKill(ctx, gid, warID)
-		lead := "TIED"
+		lead := "Tied"
 		if aScore > bScore {
 			lead = fmt.Sprintf("Faction %d +%d", war.FactionAID, aScore-bScore)
 		} else if bScore > aScore {
 			lead = fmt.Sprintf("Faction %d +%d", war.FactionBID, bScore-aScore)
 		}
-		respondEphemeral(s, i, fmt.Sprintf("⚔️ **FACTION WAR STATUS**\n\nFaction %d — %d\nFaction %d — %d\n\nLead: %s\nTop killer: Player %d — %d\nLongest kill: Player %d — %.1fm\nStatus: %s", war.FactionAID, aScore, war.FactionBID, bScore, lead, top, topCount, longestPlayer, longest, war.Status))
+		respondEphemeral(s, i, fmt.Sprintf("⚔️ **Faction war status**\n\nFaction %d — %d\nFaction %d — %d\n\nLead: %s\nTop killer: Player %d — %d\nLongest kill: Player %d — %.1fm\nStatus: %s", war.FactionAID, aScore, war.FactionBID, bScore, lead, top, topCount, longestPlayer, longest, war.Status))
 		return
 	case "history":
 		rows, historyErr := h.wars.GetWarHistory(ctx, gid, 10)
 		if historyErr != nil {
-			respondEphemeral(s, i, "Could not load war history.")
+			respondEphemeral(s, i, ReplyCouldNot("load the war history"))
 			return
 		}
 		var b strings.Builder
-		b.WriteString("⚔️ **FACTION WAR HISTORY**\n\n")
+		b.WriteString("⚔️ **Faction war history**\n\n")
 		for _, war := range rows {
 			fmt.Fprintf(&b, "%d. %d vs %d — %s\n", war.ID, war.FactionAID, war.FactionBID, war.Status)
 		}
@@ -187,7 +187,7 @@ func (h *WarCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interactio
 		return
 	}
 	if err != nil {
-		respondEphemeral(s, i, "War operation failed: "+err.Error())
+		respondEphemeral(s, i, ReplyCouldNotBecause("update the war", err.Error()))
 		return
 	}
 	respondEphemeral(s, i, fmt.Sprintf("⚔️ War %s.", strings.ToLower(sub.Name)))
@@ -195,7 +195,7 @@ func (h *WarCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interactio
 
 func (h *WarCommandHandler) handleInfo(s *discordgo.Session, i *discordgo.InteractionCreate, ctx context.Context, guildID int64, group *discordgo.ApplicationCommandInteractionDataOption) {
 	if h.factionPresentation == nil || h.factions == nil {
-		respondEphemeral(s, i, "Faction profiles are unavailable.")
+		respondEphemeral(s, i, ReplyAreUnavailable("Faction profiles"))
 		return
 	}
 	f, err := h.factions.GetByTag(ctx, guildID, optionString(group, "tag"))
@@ -213,15 +213,15 @@ func (h *WarCommandHandler) handleInfo(s *discordgo.Session, i *discordgo.Intera
 	}
 	p, err := h.factionPresentation.Load(ctx, guildID, seasonID, f.ID)
 	if err != nil {
-		respondEphemeral(s, i, "Could not load faction profile.")
+		respondEphemeral(s, i, ReplyCouldNot("load the faction profile"))
 		return
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "🏆 **[%s] %s**\n\n👑 **OWNER**\n%s\n\n👥 **MEMBERS**\n%d / %d\n\n", safePanelText(p.Tag), safePanelText(p.Name), safePanelText(p.OwnerName), p.MemberCount, p.MaxMembers)
+	fmt.Fprintf(&b, "🏆 **[%s] %s**\n\n👑 **Owner**\n%s\n\n👥 **Members**\n%d / %d\n\n", safePanelText(p.Tag), safePanelText(p.Name), safePanelText(p.OwnerName), p.MemberCount, p.MaxMembers)
 	if seasonName != "" {
-		fmt.Fprintf(&b, "🏆 **SEASON**\n%s\n\n", safePanelText(seasonName))
+		fmt.Fprintf(&b, "🏆 **Season**\n%s\n\n", safePanelText(seasonName))
 	}
-	fmt.Fprintf(&b, "⚔️ **SEASON COMBAT**\n%d Kills\n%d Deaths\n%.2f K/D\n\n🛡️ **FACTION COMBAT**\n%d Enemy Faction Kills\n%d Team Kills\n%d War Kills\n\n🏆 **CHAMPION POINTS**\n%d", p.SeasonKills, p.SeasonDeaths, p.SeasonKD, p.EnemyFactionKills, p.TeamKills, p.WarKills, p.ChampionPoints)
+	fmt.Fprintf(&b, "⚔️ **Season combat**\n%d kills\n%d deaths\n%.2f K/D\n\n🛡️ **Faction combat**\n%d enemy faction kills\n%d team kills\n%d war kills\n\n🏆 **Champion Points**\n%d", p.SeasonKills, p.SeasonDeaths, p.SeasonKD, p.EnemyFactionKills, p.TeamKills, p.WarKills, p.ChampionPoints)
 	respondEphemeral(s, i, b.String())
 }
 
@@ -242,7 +242,7 @@ func (h *WarCommandHandler) authorized(ctx context.Context, i *discordgo.Interac
 
 func (h *WarCommandHandler) handleRivalry(s *discordgo.Session, i *discordgo.InteractionCreate, ctx context.Context, guildID int64, group *discordgo.ApplicationCommandInteractionDataOption) {
 	if h.factions == nil || h.rivalryStats == nil {
-		respondEphemeral(s, i, "Faction statistics are unavailable.")
+		respondEphemeral(s, i, ReplyAreUnavailable("Faction statistics"))
 		return
 	}
 	a, err := h.factions.GetByTag(ctx, guildID, optionString(group, "faction"))
@@ -257,7 +257,7 @@ func (h *WarCommandHandler) handleRivalry(s *discordgo.Session, i *discordgo.Int
 	}
 	text, err := h.rivalryText(ctx, guildID, *a, *b)
 	if err != nil {
-		respondEphemeral(s, i, "Could not load rivalry.")
+		respondEphemeral(s, i, ReplyCouldNot("load the rivalry"))
 		return
 	}
 	respondEphemeral(s, i, text)
@@ -299,19 +299,19 @@ func (h *WarCommandHandler) rivalryText(ctx context.Context, guildID int64, a, b
 // caller resolves names, and an empty holder name omits that line.
 func BuildRivalryText(a, b repository.Faction, r repository.RivalryStats, diff int64, longestName string, longest float64, topName string, topKills int64) string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "🔥 **CHAMPION RIVALRY**\n\n[%s] %s vs [%s] %s\n\n⚔️ Lifetime Kill Exchange\n%s — %d\n%s — %d\n\n📊 Total Encounters\n%d\n🏆 Wars\n%d\n📈 Differential\n%s %+d", a.Tag, a.Name, b.Tag, b.Name, a.Tag, r.AKills, b.Tag, r.BKills, r.TotalKills, r.WarCount, a.Tag, diff)
+	fmt.Fprintf(&sb, "🔥 **Champion rivalry**\n\n[%s] %s vs [%s] %s\n\n⚔️ Lifetime kill exchange\n%s — %d\n%s — %d\n\n📊 Total encounters\n%d\n🏆 Wars\n%d\n📈 Differential\n%s %+d", a.Tag, a.Name, b.Tag, b.Name, a.Tag, r.AKills, b.Tag, r.BKills, r.TotalKills, r.WarCount, a.Tag, diff)
 	if longestName != "" {
-		fmt.Fprintf(&sb, "\n🎯 Longest Rivalry Kill\n%s — %s", presentation.SafeName(longestName, presentation.MaxRankNameRunes), presentation.FormatDistance(longest))
+		fmt.Fprintf(&sb, "\n🎯 Longest rivalry kill\n%s — %s", presentation.SafeName(longestName, presentation.MaxRankNameRunes), presentation.FormatDistance(longest))
 	}
 	if topName != "" {
-		fmt.Fprintf(&sb, "\n🔥 Most Active Killer\n%s — %d rivalry kills", presentation.SafeName(topName, presentation.MaxRankNameRunes), topKills)
+		fmt.Fprintf(&sb, "\n🔥 Most active killer\n%s — %d rivalry kills", presentation.SafeName(topName, presentation.MaxRankNameRunes), topKills)
 	}
 	return sb.String()
 }
 
 func (h *WarCommandHandler) handleLeaderboard(s *discordgo.Session, i *discordgo.InteractionCreate, ctx context.Context, guildID int64, group *discordgo.ApplicationCommandInteractionDataOption) {
 	if h.factionStats == nil {
-		respondEphemeral(s, i, "Faction leaderboards are unavailable.")
+		respondEphemeral(s, i, ReplyAreUnavailable("Faction leaderboards"))
 		return
 	}
 	category := strings.ToLower(optionString(group, "category"))
@@ -330,11 +330,11 @@ func (h *WarCommandHandler) handleLeaderboard(s *discordgo.Session, i *discordgo
 	}
 	rows, err := h.factionStats.Leaderboard(ctx, guildID, seasonID, scope, category, 10)
 	if err != nil {
-		respondEphemeral(s, i, "Could not load faction leaderboard.")
+		respondEphemeral(s, i, ReplyCouldNot("load the faction leaderboard"))
 		return
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "🏆 **FACTION LEADERBOARD — %s**\n\n", strings.ToUpper(category))
+	fmt.Fprintf(&b, "🏆 **Faction leaderboard — %s**\n\n", strings.ToLower(category))
 	for n, row := range rows {
 		fmt.Fprintf(&b, "%d. [%s] %s — %d kills\n", n+1, row.Tag, row.Name, row.Kills)
 	}

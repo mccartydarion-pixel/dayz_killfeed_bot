@@ -69,8 +69,8 @@ func TestHeatmapSummaryUsesRealAggregatesOnly(t *testing.T) {
 		{CellX: 1, CellZ: 1, CenterX: 375, CenterZ: 375, Count: 1},
 	}}
 	text := embedText(BuildHeatmapSummaryEmbed([]heatmapSection{{Result: res}}, 24*time.Hour, 250, time.Now()))
-	for _, want := range []string{"PVP HEATMAP UPDATE", "Window: Last 24 Hours", "Type: PvP Kills", "Resolution: 250m", "Activity: 247 Events",
-		"`#1` X: 7,375 • Z: 9,625 — **32 Kills**", "`#2` X: 4,625 • Z: 3,375 — **21 Kills**", "`#3` X: 10,625 • Z: 3,375 — **17 Kills**", "CHAMPION • LIVE SERVER INTELLIGENCE"} {
+	for _, want := range []string{"PvP heatmap update", "Window: Last 24 hours", "Type: PvP kills", "Resolution: 250m", "Activity: 247 events",
+		"`#1` X: 7,375 • Z: 9,625 — **32 kills**", "`#2` X: 4,625 • Z: 3,375 — **21 kills**", "`#3` X: 10,625 • Z: 3,375 — **17 kills**", "Updates automatically"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q in:\n%s", want, text)
 		}
@@ -80,7 +80,7 @@ func TestHeatmapSummaryUsesRealAggregatesOnly(t *testing.T) {
 	}
 
 	empty := embedText(BuildHeatmapSummaryEmbed([]heatmapSection{{Result: &heatmap.Result{Cells: []heatmap.Cell{}}}}, 24*time.Hour, 250, time.Now()))
-	if !strings.Contains(empty, "Activity: 0 Events") || !strings.Contains(empty, "No PvP kills recorded") || strings.Contains(empty, "#1") {
+	if !strings.Contains(empty, "Activity: 0 events") || !strings.Contains(empty, "No PvP kills recorded") || strings.Contains(empty, "#1") {
 		t.Fatalf("zero activity must be reported as zero, never invented:\n%s", empty)
 	}
 }

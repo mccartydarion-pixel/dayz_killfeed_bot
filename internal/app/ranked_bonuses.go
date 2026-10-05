@@ -11,7 +11,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/permissions"
-	"github.com/yourname/dayz-killfeed/internal/ranked"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -126,67 +126,56 @@ func (a *App) playerRankedBonuses(ctx context.Context, guildID, serverID int64) 
 // --- Discord ---------------------------------------------------------------------------------------
 
 const (
-	rankedWantedColor = 0xC0392B
-	rankedRecapColor  = 0x3B82F6
+	rankedWantedColor = presentation.Crimson // a hunt
+	rankedRecapColor  = presentation.Neutral // a summary
+	rankedRankUpColor = presentation.Gold    // an achievement; the tier is named in the title
 	rankUpsPerPass    = 10
 )
 
-var tierColors = map[ranked.Tier]int{
-	ranked.Bronze: 0xCD7F32, ranked.Silver: 0xC0C0C0, ranked.Gold: 0xF5B700, ranked.Platinum: 0x7FD1C7,
-	ranked.Diamond: 0x5DADE2, ranked.Master: 0x9B59B6,
-}
-
 func rankedCardAuthor() *discordgo.MessageEmbedAuthor {
-	return &discordgo.MessageEmbedAuthor{Name: "CHAMPIONS® RANKED"}
+	return presentation.BrandAuthor("Ranked")
 }
 
 func orUnknown(name string) string {
 	if strings.TrimSpace(name) == "" {
 		return "Unknown player"
 	}
-	return name
+	// Cleaned (no pings, no invisible characters), capped and markdown-escaped, like every
+	// player name on every card.
+	return presentation.SafeName(name, presentation.MaxCardNameRunes)
 }
 
 func buildWantedCard(wp repository.WantedPlayer, serverName string) *discordgo.MessageEmbed {
-	where := "the server"
-	if strings.TrimSpace(serverName) != "" {
-		where = serverName
-	}
+	where := serverWord(serverName)
 	name := orUnknown(wp.Name)
-	desc := fmt.Sprintf("**%s** is #1 on %s with %d RP.", name, where, wp.RP)
+	desc := fmt.Sprintf("**%s** is #1 on %s with %s RP.", name, where, commaInt(wp.RP))
 	if wp.Reason == repository.WantedStreak {
-		desc = fmt.Sprintf("**%s** is on a **%d-kill streak** on %s.", name, wp.Streak, where)
+		desc = fmt.Sprintf("**%s** is on a **%s-kill streak** on %s.", name, commaInt(int64(wp.Streak)), where)
 	}
 	return &discordgo.MessageEmbed{Author: rankedCardAuthor(), Color: rankedWantedColor,
-		Title:       "💀 BOUNTY ON " + strings.ToUpper(name),
-		Description: desc + fmt.Sprintf("\nTake them down for **+%d RP** on top of the kill.", wp.Bounty)}
+		Title:       "💀 Bounty on " + name,
+		Description: desc + fmt.Sprintf("\nTake them down for **+%s RP** on top of the kill.", commaInt(wp.Bounty))}
 }
 
 func buildBountyClaimCard(c repository.BountyClaim) *discordgo.MessageEmbed {
 	return &discordgo.MessageEmbed{Author: rankedCardAuthor(), Color: rankedWantedColor, Title: "🎯 Bounty claimed",
-		Description: fmt.Sprintf("**%s** killed **%s**, who %s, and collected the **+%d RP** bounty (%d RP for the kill).",
-			orUnknown(c.KillerName), orUnknown(c.VictimName), c.Detail, c.BountyRP, c.TotalRP),
+		Description: fmt.Sprintf("**%s** killed **%s**, who %s, and collected the **+%s RP** bounty (%s RP for the kill).",
+			orUnknown(c.KillerName), orUnknown(c.VictimName), c.Detail, commaInt(c.BountyRP), commaInt(c.TotalRP)),
 		Timestamp: c.At.Format(time.RFC3339)}
 }
 
 func buildRankUpCard(u repository.RankUp, serverName string) *discordgo.MessageEmbed {
-	where := ""
-	if strings.TrimSpace(serverName) != "" {
-		where = " on " + serverName
-	}
-	return &discordgo.MessageEmbed{Author: rankedCardAuthor(), Color: tierColors[u.To],
+	// The server is named in the footer, like on every card.
+	return &discordgo.MessageEmbed{Author: rankedCardAuthor(), Color: rankedRankUpColor,
 		Title:       fmt.Sprintf("🏅 %s reached %s", orUnknown(u.Name), repository.TierName(u.To)),
-		Description: fmt.Sprintf("%d RP · #%d%s", u.RP, u.Position, where)}
+		Description: fmt.Sprintf("%s RP • #%s", commaInt(u.RP), commaInt(int64(u.Position))),
+		Footer:      presentation.Footer(serverName, "")}
 }
 
 func buildRankUpDM(u repository.RankUp, serverName, hubURL string) *discordgo.MessageSend {
-	where := "the server"
-	if strings.TrimSpace(serverName) != "" {
-		where = serverName
-	}
-	embed := &discordgo.MessageEmbed{Author: rankedCardAuthor(), Color: tierColors[u.To],
+	embed := &discordgo.MessageEmbed{Author: rankedCardAuthor(), Color: rankedRankUpColor,
 		Title:       "🏅 You reached " + repository.TierName(u.To),
-		Description: fmt.Sprintf("You are now %s on %s with %d RP (#%d). Keep climbing!", repository.TierName(u.To), where, u.RP, u.Position)}
+		Description: fmt.Sprintf("You are now %s on %s with %s RP (#%s). Keep climbing!", repository.TierName(u.To), serverWord(serverName), commaInt(u.RP), commaInt(int64(u.Position)))}
 	if hubURL != "" {
 		embed.Fields = []*discordgo.MessageEmbedField{{Name: "See your rank in the Player Hub", Value: hubURL}}
 	}
@@ -195,13 +184,13 @@ func buildRankUpDM(u repository.RankUp, serverName, hubURL string) *discordgo.Me
 }
 
 func buildWeeklyRecapCard(rc repository.RankedRecap, serverName string) *discordgo.MessageEmbed {
-	where := ""
-	if strings.TrimSpace(serverName) != "" {
-		where = " on " + serverName
-	}
 	end := rc.WeekStart.AddDate(0, 0, 6)
+	// A ranked week is seven calendar days in UTC, so its two dates are written out: a Discord
+	// timestamp would show the day before to readers west of UTC. The server is named in the
+	// footer, like on every card.
 	embed := &discordgo.MessageEmbed{Author: rankedCardAuthor(), Color: rankedRecapColor, Title: "📊 Ranked week in review",
-		Description: fmt.Sprintf("%s to %s%s · %d ranked kills", rc.WeekStart.Format("Jan 2"), end.Format("Jan 2"), where, rc.Kills)}
+		Description: fmt.Sprintf("%s to %s • %s", rc.WeekStart.Format("Jan 2"), end.Format("Jan 2"), presentation.Plural(int64(rc.Kills), "ranked kill", "ranked kills")),
+		Footer:      presentation.Footer(serverName, "")}
 	if len(rc.Climbers) > 0 {
 		medals := []string{"🥇", "🥈", "🥉"}
 		lines := []string{}
@@ -209,21 +198,21 @@ func buildWeeklyRecapCard(rc repository.RankedRecap, serverName string) *discord
 			if i >= len(medals) {
 				break
 			}
-			lines = append(lines, fmt.Sprintf("%s %s · +%d RP from %d kills", medals[i], orUnknown(l.PlayerName), l.RP, l.Kills))
+			lines = append(lines, fmt.Sprintf("%s %s • +%s RP from %s", medals[i], orUnknown(l.PlayerName), commaInt(l.RP), presentation.Plural(int64(l.Kills), "kill", "kills")))
 		}
 		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Top climbers", Value: strings.Join(lines, "\n")})
 	}
 	if rc.Bounty != nil {
 		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Biggest bounty",
-			Value: fmt.Sprintf("%s collected +%d RP on %s", orUnknown(rc.Bounty.KillerName), rc.Bounty.BountyRP, orUnknown(rc.Bounty.VictimName)), Inline: true})
+			Value: fmt.Sprintf("%s collected +%s RP on %s", orUnknown(rc.Bounty.KillerName), commaInt(rc.Bounty.BountyRP), orUnknown(rc.Bounty.VictimName)), Inline: true})
 	}
 	if rc.BestStreak > 1 {
 		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Longest kill streak",
-			Value: fmt.Sprintf("%s · %d kills", orUnknown(rc.StreakName), rc.BestStreak), Inline: true})
+			Value: fmt.Sprintf("%s • %s", orUnknown(rc.StreakName), presentation.Plural(int64(rc.BestStreak), "kill", "kills")), Inline: true})
 	}
 	if rc.Revenges > 0 {
 		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Revenge kills",
-			Value: fmt.Sprintf("%d this week · most: %s (%d)", rc.Revenges, orUnknown(rc.RevengeName), rc.RevengeMost), Inline: true})
+			Value: fmt.Sprintf("%s this week • most: %s (%s)", commaInt(int64(rc.Revenges)), orUnknown(rc.RevengeName), commaInt(int64(rc.RevengeMost))), Inline: true})
 	}
 	return embed
 }

@@ -24,7 +24,11 @@ type ADMMonitorPublisher struct {
 	lastRefresh    time.Time
 	saveMessage    func(string)
 	downloadFailed bool
-	forceRefresh   bool
+	// failureAnnounced is the error class of the failure message already posted for the
+	// current run of failed downloads ("" = none posted yet).
+	failureAnnounced    string
+	failureWasAnnounced bool
+	forceRefresh        bool
 
 	// Installation route model: when set, the ADMIN_LOGS route for this
 	// server's installation wins over the legacy GuildSetup.ADMMonitorChannelID
@@ -79,7 +83,9 @@ func (p *ADMMonitorPublisher) deleteMessage(channelID, messageID string) {
 
 // HandleDownload posts a standalone admin-log message only for a state change
 // worth interrupting the channel for (a healthy<->failing transition, a
-// rotation, or a checkpoint failure) - never for a routine successful
+// rotation, or a checkpoint failure) - once per transition: a run of failed
+// downloads posts one "download failed" message (and another only if the
+// error class changes), then one "recovered" message - never for a routine successful
 // download, which happens roughly once per poll cycle during active
 // gameplay and would otherwise flood the admin-logs channel with a new
 // message every ~10s (the persistent Update() panel already reflects
@@ -93,11 +99,17 @@ func (p *ADMMonitorPublisher) HandleDownload(report killfeed.DownloadReport) {
 		return
 	}
 	routine := report.Result == "success" || report.Result == "success_no_new_events"
+	// repeatFailure: this failure continues a run that already has its message, with the same
+	// error class. The channel was told once; saying it again every poll is noise. A different
+	// error class is new information and is posted.
+	repeatFailure := false
 	if report.Result == "failure" {
+		repeatFailure = p.downloadFailed && p.failureWasAnnounced && p.failureAnnounced == report.ErrorClass
 		p.downloadFailed = true
 	} else if routine && p.downloadFailed {
 		report.Result = "recovered"
 		p.downloadFailed = false
+		p.failureWasAnnounced, p.failureAnnounced = false, ""
 	}
 	notable := report.Result == "recovered" || report.Result == "failure" || report.Result == "checkpoint_failed" || report.Rotation || report.Truncated
 	if !notable {
@@ -107,57 +119,66 @@ func (p *ADMMonitorPublisher) HandleDownload(report killfeed.DownloadReport) {
 	// refresh ahead of its own interval throttle - a routine download must
 	// never bypass that throttle (see above).
 	p.forceRefresh = true
+	if repeatFailure {
+		return // the live panel (refreshed above) and the staff alert carry the ongoing outage
+	}
+	if report.Result == "failure" {
+		p.failureWasAnnounced, p.failureAnnounced = true, report.ErrorClass
+	}
 	_, _ = p.editor.ChannelMessageSendEmbed(channelID, BuildADMDownloadEmbed(report))
 }
 
+// admMonitorFooter is the footer context of the staff ADM monitor and its download reports.
+const admMonitorFooter = "ADM monitor"
+
 func BuildADMDownloadEmbed(report killfeed.DownloadReport) *discordgo.MessageEmbed {
 	color := presentation.SuccessGreen
-	title := "📥 ADM DOWNLOADED"
-	status := "SUCCESS"
+	title := "📥 ADM downloaded"
+	status := "Success"
 	if report.Result == "failure" {
 		color = presentation.ErrorRed
-		title = "🚨 ADM DOWNLOAD FAILED"
-		status = "DOWNLOAD FAILED\nRetry scheduled"
+		title = "🚨 ADM download failed"
+		status = "Download failed\nRetry scheduled"
 	} else if report.Result == "recovered" {
 		color = presentation.SuccessGreen
-		title = "✅ ADM DOWNLOAD RECOVERED"
-		status = "HEALTHY\nProcessing resumed"
+		title = "✅ ADM download recovered"
+		status = "Healthy\nProcessing resumed"
 	} else if report.Result == "success_no_new_events" {
-		status = "WAITING FOR COMPLETE ADM LINE"
+		status = "Waiting for complete ADM line"
 	} else if report.Result == "checkpoint_failed" {
 		color = presentation.WarningAmber
-		status = "CHECKPOINT FAILED\nRetry scheduled"
+		status = "Checkpoint failed\nRetry scheduled"
 	}
 	if report.Rotation {
-		title = "🔄 ADM ROTATION"
+		title = "🔄 ADM rotation"
 	}
-	embed := &discordgo.MessageEmbed{Author: presentation.ChampionAuthor(), Title: title, Color: color, Footer: &discordgo.MessageEmbedFooter{Text: "CHAMPION • ADM MONITOR"}}
+	embed := &discordgo.MessageEmbed{Author: presentation.ChampionAuthor(), Title: title, Color: color, Footer: presentation.Footer("", admMonitorFooter)}
 	add := func(name, value string) {
 		embed.Fields = append(embed.Fields, presentation.StatusField(name, value, true))
 	}
 	if report.PreviousFile != "" && report.Rotation {
-		add("PREVIOUS", safeMonitorText(report.PreviousFile))
+		add("Previous", safeMonitorText(report.PreviousFile))
 	}
-	add("FILE", safeMonitorText(report.File))
+	add("File", safeMonitorText(report.File))
 	if report.RemoteSize > 0 {
-		add("REMOTE SIZE", formatBytes(report.RemoteSize))
+		add("Remote size", formatBytes(report.RemoteSize))
 	}
 	if report.DownloadedBytes > 0 {
-		add("DOWNLOADED", formatBytes(report.DownloadedBytes))
+		add("Downloaded", formatBytes(report.DownloadedBytes))
 	}
 	if report.NewBytes >= 0 {
-		add("NEW DATA", formatBytes(report.NewBytes))
+		add("New data", formatBytes(report.NewBytes))
 	}
-	add("EVENTS PARSED", fmt.Sprintf("%d", report.EventsParsed))
+	add("Events parsed", fmt.Sprintf("%d", report.EventsParsed))
 	if report.PreviousOffset != report.NewOffset {
-		add("PROCESSED OFFSET", fmt.Sprintf("%s → %s", formatBytes(report.PreviousOffset), formatBytes(report.NewOffset)))
+		add("Processed offset", fmt.Sprintf("%s → %s", formatBytes(report.PreviousOffset), formatBytes(report.NewOffset)))
 	}
 	if report.ErrorClass != "" {
-		add("ERROR", report.ErrorClass)
+		add("Error", report.ErrorClass)
 	}
-	add("RESULT", status)
+	add("Result", status)
 	if !report.At.IsZero() {
-		add("COMPLETED", fmt.Sprintf("<t:%d:R>", report.At.Unix()))
+		add("Completed", fmt.Sprintf("<t:%d:R>", report.At.Unix()))
 	}
 	return embed
 }
@@ -239,53 +260,53 @@ func BuildADMMonitorEmbed(snapshot killfeed.AdmSnapshot, now time.Time) *discord
 	if health == killfeed.AdmError {
 		color = presentation.ErrorRed
 	}
-	embed := presentation.NewChampionEmbed("ADM MONITOR", color)
-	embed.Description = fmt.Sprintf("**STATUS**\n%s", strings.ToUpper(string(health)))
+	embed := presentation.NewChampionEmbed("ADM monitor", color)
+	embed.Description = "**Status**\n" + presentation.EnumLabel(string(health))
 	add := func(name, value string) {
 		if value != "" {
 			embed.Fields = append(embed.Fields, presentation.StatusField(name, value, true))
 		}
 	}
-	add("CURRENT ADM", safeMonitorText(snapshot.CurrentFile))
-	add("NEWEST DISCOVERED ADM", safeMonitorText(snapshot.NewestDiscoveredFile))
+	add("Current ADM", safeMonitorText(snapshot.CurrentFile))
+	add("Newest discovered ADM", safeMonitorText(snapshot.NewestDiscoveredFile))
 	if !snapshot.NewestDiscoveredModified.IsZero() {
-		add("NEWEST MODIFIED", fmt.Sprintf("<t:%d:R>", snapshot.NewestDiscoveredModified.Unix()))
+		add("Newest modified", fmt.Sprintf("<t:%d:R>", snapshot.NewestDiscoveredModified.Unix()))
 	}
-	add("CANDIDATE COUNT", fmt.Sprintf("%d", snapshot.CandidateCount))
-	add("SELECTION REASON", snapshot.SelectionReason)
+	add("Candidate count", fmt.Sprintf("%d", snapshot.CandidateCount))
+	add("Selection reason", snapshot.SelectionReason)
 	if snapshot.NewestDiscoveredFile != "" && snapshot.CurrentFile != snapshot.NewestDiscoveredFile {
-		add("SELECTION MATCH", "NO")
+		add("Selection match", "No")
 	}
 	if !snapshot.Modified.IsZero() {
-		add("REMOTE MODIFIED", fmt.Sprintf("<t:%d:R>", snapshot.Modified.Unix()))
+		add("Remote modified", fmt.Sprintf("<t:%d:R>", snapshot.Modified.Unix()))
 	}
 	if snapshot.FileSize > 0 {
-		add("REMOTE SIZE", formatBytes(snapshot.FileSize))
+		add("Remote size", formatBytes(snapshot.FileSize))
 	}
 	if snapshot.ProcessedOffset > 0 {
-		add("PROCESSED", formatBytes(snapshot.ProcessedOffset))
+		add("Processed", formatBytes(snapshot.ProcessedOffset))
 	}
 	if snapshot.FileSize >= snapshot.ProcessedOffset && snapshot.FileSize > 0 {
-		add("UNREAD", formatBytes(snapshot.FileSize-snapshot.ProcessedOffset))
+		add("Unread", formatBytes(snapshot.FileSize-snapshot.ProcessedOffset))
 	}
 	if !snapshot.LastPoll.IsZero() {
-		add("LAST METADATA CHECK", fmt.Sprintf("<t:%d:R>", snapshot.LastPoll.Unix()))
+		add("Last metadata check", fmt.Sprintf("<t:%d:R>", snapshot.LastPoll.Unix()))
 	}
 	if !snapshot.LastLogChange.IsZero() {
-		add("LAST REMOTE CHANGE", fmt.Sprintf("<t:%d:R>", snapshot.LastLogChange.Unix()))
+		add("Last remote change", fmt.Sprintf("<t:%d:R>", snapshot.LastLogChange.Unix()))
 	}
 	if !snapshot.LastDownload.IsZero() {
-		add("LAST DOWNLOAD", fmt.Sprintf("<t:%d:R>", snapshot.LastDownload.Unix()))
+		add("Last download", fmt.Sprintf("<t:%d:R>", snapshot.LastDownload.Unix()))
 	}
 	if snapshot.PendingPartialLine != "" {
-		add("PENDING PARTIAL LINE", "YES")
+		add("Pending partial line", "Yes")
 	}
-	add("CHECKPOINT", "CURRENT")
-	add("ONLINE PLAYERS", fmt.Sprintf("%d", snapshot.OnlineCount))
+	add("Checkpoint", "Current")
+	add("Online players", fmt.Sprintf("%d", snapshot.OnlineCount))
 	if !snapshot.LastRotationAt.IsZero() {
-		add("LAST ROTATION", fmt.Sprintf("<t:%d:R>", snapshot.LastRotationAt.Unix()))
+		add("Last rotation", fmt.Sprintf("<t:%d:R>", snapshot.LastRotationAt.Unix()))
 	}
-	embed.Footer = &discordgo.MessageEmbedFooter{Text: "CHAMPION • ADM MONITOR • AUTO-REFRESH EVERY 5 MIN"}
+	embed.Footer = presentation.Footer("", admMonitorFooter+" · refreshes every 5 minutes")
 	return embed
 }
 

@@ -43,12 +43,12 @@ func (h *LinkCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interacti
 		return
 	}
 	if h.service == nil || h.guilds == nil {
-		respondEphemeral(s, i, "Account linking requires the database to be configured.")
+		respondEphemeral(s, i, ReplyIsUnavailable("Account linking"))
 		return
 	}
 	_, guildID, err := h.guilds.GetGuild(context.Background(), i.GuildID)
 	if err != nil || guildID == 0 {
-		respondEphemeral(s, i, "Run `/setup` before linking your account.")
+		respondEphemeral(s, i, ReplyNotSetUp)
 		return
 	}
 	name := i.ApplicationCommandData().Name
@@ -68,19 +68,19 @@ func (h *LinkCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interacti
 			respondEphemeral(s, i, linkErrorMessage(err))
 			return
 		}
-		respondEphemeral(s, i, fmt.Sprintf("🟡 **PENDING VERIFICATION**\n\nPlayStation\n%s\n\nTo prove you're this account, **disconnect from the server and reconnect** before your request expires <t:%d:R>. Champion will verify it automatically within seconds of you reconnecting.\n\nCan't reconnect in time? Ask an admin to run `/admin verify-link`.", link.RequestedName, link.ExpiresAt.Unix()))
+		respondEphemeral(s, i, fmt.Sprintf("🟡 **Pending verification**\n\nPlayStation\n%s\n\nTo prove you're this account, **disconnect from the server and reconnect** before your request expires <t:%d:R>. Champion will verify it automatically within seconds of you reconnecting.\n\nCan't reconnect in time? Ask an admin to run `/admin verify-link`.", link.RequestedName, link.ExpiresAt.Unix()))
 	case "link-status":
 		link, err := h.serviceStatus(context.Background(), guildID, i.Member.User.ID)
 		if err != nil || link == nil {
 			respondEphemeral(s, i, "No Champion account link found.")
 			return
 		}
-		respondEphemeral(s, i, fmt.Sprintf("🏆 **CHAMPION ACCOUNT**\n\nPlayStation\n%s\n\nStatus\n%s", link.RequestedName, statusLabel(link.Status)))
+		respondEphemeral(s, i, fmt.Sprintf("🏆 **Champion account**\n\nPlayStation\n%s\n\nStatus\n%s", link.RequestedName, statusLabel(link.Status)))
 	case "unlink":
 		respondPrivate(s, i, &discordgo.InteractionResponseData{
 			Content: "⚠️ Confirm unlinking your Champion account?\n\nThis removes account ownership only; historical stats remain.",
 			Components: []discordgo.MessageComponent{discordgo.ActionsRow{Components: []discordgo.MessageComponent{
-				discordgo.Button{Label: "Unlink Account", Style: discordgo.DangerButton, CustomID: "champion_unlink_confirm:" + i.Member.User.ID},
+				discordgo.Button{Label: "Unlink account", Style: discordgo.DangerButton, CustomID: "champion_unlink_confirm:" + i.Member.User.ID},
 				discordgo.Button{Label: "Cancel", Style: discordgo.SecondaryButton, CustomID: "champion_unlink_cancel:" + i.Member.User.ID},
 			}}},
 		})
@@ -95,7 +95,7 @@ func (h *LinkCommandHandler) HandleComponent(s *discordgo.Session, i *discordgo.
 	}
 	parts := strings.SplitN(i.MessageComponentData().CustomID, ":", 2)
 	if len(parts) != 2 || parts[1] != i.Member.User.ID {
-		respondEphemeral(s, i, "⛔ This confirmation belongs to another member.")
+		respondEphemeral(s, i, ReplyNotYourConfirmation)
 		return
 	}
 	if parts[0] == "champion_unlink_cancel" {
@@ -107,11 +107,11 @@ func (h *LinkCommandHandler) HandleComponent(s *discordgo.Session, i *discordgo.
 	}
 	_, guildID, err := h.guilds.GetGuild(context.Background(), i.GuildID)
 	if err != nil || guildID == 0 {
-		respondEphemeral(s, i, "This server is not configured.")
+		respondEphemeral(s, i, ReplyNotSetUp)
 		return
 	}
 	if err := h.service.Unlink(context.Background(), guildID, i.Member.User.ID); err != nil {
-		respondEphemeral(s, i, "❌ Could not unlink your account right now.")
+		respondEphemeral(s, i, ReplyCouldNot("unlink your account"))
 		return
 	}
 	respondEphemeral(s, i, "✅ Account unlinked. Historical stats were preserved.")
@@ -123,7 +123,7 @@ func (h *LinkCommandHandler) serviceStatus(ctx context.Context, guildID int64, u
 
 func statusLabel(status string) string {
 	if status == linking.StatusVerified {
-		return "✅ VERIFIED"
+		return "✅ Verified"
 	}
-	return "🟡 PENDING VERIFICATION"
+	return "🟡 Pending verification"
 }

@@ -1,5 +1,10 @@
 # Champion Discord Presentation V2
 
+> **Look and wording: see `DISCORD_DESIGN.md`.** The palette, title case, footer format and
+> reply voice described there replace the colours, ALL-CAPS titles and slogan footers shown in
+> this document. The structure described here (what each card contains and in what order) still
+> holds.
+
 The visual language of every **default** Champion Discord card. Presentation only:
 nothing here changes parsing, persistence, dedupe, classification, routing,
 rotating-feed cadence, rate limits or custom-template storage. Renderers take an

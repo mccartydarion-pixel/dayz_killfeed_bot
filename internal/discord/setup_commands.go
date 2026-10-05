@@ -90,7 +90,7 @@ func (h *SetupHandler) Handle(s *discordgo.Session, i *discordgo.InteractionCrea
 	}
 
 	if !isAdmin(s, i) {
-		respondEphemeral(s, i, "⛔ You need Administrator or Manage Server permission to run /setup.")
+		respondEphemeral(s, i, ReplyNeedsPermission("run `/setup`"))
 		return
 	}
 
@@ -122,17 +122,17 @@ func (h *SetupHandler) Handle(s *discordgo.Session, i *discordgo.InteractionCrea
 // challenge or an admin's manual approval).
 func (h *SetupHandler) handleVerifiedRole(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if !isAdmin(s, i) {
-		respondEphemeral(s, i, "⛔ You need Administrator or Manage Server permission to run /setup.")
+		respondEphemeral(s, i, ReplyNeedsPermission("run `/setup`"))
 		return
 	}
 	roleID := strings.TrimSpace(optionString(i.ApplicationCommandData().Options[0], "role_id"))
 	if roleID == "" {
-		respondEphemeral(s, i, "❌ role_id is required.")
+		respondEphemeral(s, i, "role_id is required.")
 		return
 	}
 	setup, err := h.manager.store.Get(i.GuildID)
 	if err != nil {
-		respondEphemeral(s, i, "❌ Could not load configuration.")
+		respondEphemeral(s, i, ReplyCouldNot("load the configuration"))
 		return
 	}
 	if setup == nil {
@@ -140,7 +140,7 @@ func (h *SetupHandler) handleVerifiedRole(s *discordgo.Session, i *discordgo.Int
 	}
 	setup.VerifiedRoleID = roleID
 	if err := h.manager.store.Save(*setup); err != nil {
-		respondEphemeral(s, i, "❌ Could not save the verified role.")
+		respondEphemeral(s, i, ReplyCouldNot("save the verified role"))
 		return
 	}
 	respondEphemeral(s, i, "✅ Verified role set. It will be assigned automatically when a /link request is verified.")
@@ -169,7 +169,7 @@ func (h *SetupHandler) handleSetup(s *discordgo.Session, i *discordgo.Interactio
 	slog.Info("component=setup", "action", action, "stage", "deferred", "guild_id", i.GuildID)
 
 	if h.layout == nil {
-		h.editEphemeral(s, i, "❌ Channel setup is unavailable right now. Try again later or use Setup on the Champion website.")
+		h.editEphemeral(s, i, "Channel setup is unavailable right now. Try again later or use Setup on the Champion website.")
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), setupLayoutTimeout)
@@ -252,7 +252,7 @@ func (h *SetupHandler) syncWelcomeChannel(discordGuildID, channelID string) {
 func (h *SetupHandler) handleStatus(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	setup, err := h.manager.store.Get(i.GuildID)
 	if err != nil || setup == nil {
-		respondEphemeral(s, i, "Champion Killfeed is not configured. Run `/setup`.")
+		respondEphemeral(s, i, ReplyNotSetUp)
 		return
 	}
 
@@ -301,7 +301,7 @@ func (h *SetupHandler) HandleResetConfirm(s *discordgo.Session, i *discordgo.Int
 		return
 	}
 	if !isAdmin(s, i) {
-		respondEphemeral(s, i, "⛔ Admin only.")
+		respondEphemeral(s, i, ReplyNeedsManageServer)
 		return
 	}
 	customID := i.MessageComponentData().CustomID
@@ -313,7 +313,7 @@ func (h *SetupHandler) HandleResetConfirm(s *discordgo.Session, i *discordgo.Int
 		return
 	}
 	if err := h.manager.store.Delete(i.GuildID); err != nil {
-		respondEphemeral(s, i, "❌ Reset failed: "+err.Error())
+		respondEphemeral(s, i, ReplyCouldNotBecause("reset the configuration", err.Error()))
 		return
 	}
 	slog.Info("component=discord", "msg", "setup reset confirmed", "guild_id", i.GuildID)

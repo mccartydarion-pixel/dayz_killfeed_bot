@@ -25,7 +25,7 @@ func TestBuildADMMonitorEmbedSanitizesPathAndShowsIncrementalState(t *testing.T)
 	for _, field := range embed.Fields {
 		joined += field.Name + "=" + field.Value + "\n"
 	}
-	if !strings.Contains(joined, "CURRENT ADM=DayZServer.ADM") || !strings.Contains(joined, "PROCESSED=1.0 KB") || !strings.Contains(joined, "UNREAD=1.0 KB") || !strings.Contains(joined, "PENDING PARTIAL LINE=YES") {
+	if !strings.Contains(joined, "Current ADM=DayZServer.ADM") || !strings.Contains(joined, "Processed=1.0 KB") || !strings.Contains(joined, "Unread=1.0 KB") || !strings.Contains(joined, "Pending partial line=Yes") {
 		t.Fatalf("missing monitor state: %s", joined)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
@@ -41,12 +42,15 @@ const (
 )
 
 const (
-	shopOrderColorWaiting  = 0xD4A017
-	shopOrderColorReceived = 0x2ECC71
-	shopOrderColorIssue    = 0xE74C3C
-	shopOrderColorNeutral  = 0x95A5A6
+	shopOrderColorWaiting  = presentation.Amber   // an answer is needed before the deadline
+	shopOrderColorReceived = presentation.Green   // confirmed, or a ticket settled
+	shopOrderColorIssue    = presentation.Red     // something went wrong with the order
+	shopOrderColorNeutral  = presentation.Neutral // nothing left to do
 	shopOrderMaxItemLines  = 10
 )
+
+// shopAuthor is the author line of every Shop order message.
+func shopAuthor() *discordgo.MessageEmbedAuthor { return presentation.BrandAuthor("Shop") }
 
 // IsShopOrderInteraction reports whether a component or modal id belongs to the order confirmation.
 func IsShopOrderInteraction(customID string) bool {
@@ -131,15 +135,16 @@ func BuildShopOrderDeliveredMessage(n repository.ShopOrderNotice, siteURL string
 		where = " on **" + name + "**"
 	}
 	embed := &discordgo.MessageEmbed{
-		Title: "📦 Your order was delivered",
-		Color: shopOrderColorWaiting,
+		Author: shopAuthor(),
+		Title:  "📦 Your order was delivered",
+		Color:  shopOrderColorWaiting,
 		Description: fmt.Sprintf("Order **#%d**%s has been delivered in game.\n\n%s\n\nDid you get it? Press **Received order**, or **Issue with order** to open a support ticket with the server staff.",
 			n.PurchaseID, where, shopOrderItemLines(n.Items)),
 		Fields: []*discordgo.MessageEmbedField{
-			{Name: "Total", Value: fmt.Sprintf("%d Champion Points", n.TotalPoints), Inline: true},
-			{Name: "Answer by", Value: fmt.Sprintf("<t:%d:f>", n.DeadlineAt.Unix()), Inline: true},
+			{Name: "Total", Value: presentation.FormatThousands(n.TotalPoints) + " Champion Points", Inline: true},
+			{Name: "Answer by", Value: presentation.Timestamp(n.DeadlineAt, 'f'), Inline: true},
 		},
-		Footer: &discordgo.MessageEmbedFooter{Text: "No answer by then completes the order automatically. You can still report an issue afterwards."},
+		Footer: presentation.Footer("", "No answer by then completes the order automatically. You can still report an issue afterwards."),
 	}
 	return embed, shopOrderButtons(n.PurchaseID, true, true, siteURL)
 }
@@ -147,7 +152,7 @@ func BuildShopOrderDeliveredMessage(n repository.ShopOrderNotice, siteURL string
 // BuildShopOrderStateMessage replaces the DM once the order has an answer (or lost its buttons for
 // another reason). ticketID is the ticket an issue opened, 0 when unknown.
 func BuildShopOrderStateMessage(c repository.ShopOrderConfirmation, ticketID int64, siteURL string) (*discordgo.MessageEmbed, []discordgo.MessageComponent) {
-	embed := &discordgo.MessageEmbed{Title: fmt.Sprintf("Order #%d", c.PurchaseID), Color: shopOrderColorNeutral}
+	embed := &discordgo.MessageEmbed{Author: shopAuthor(), Title: fmt.Sprintf("Order #%d", c.PurchaseID), Color: shopOrderColorNeutral}
 	received, issue := false, false
 	switch c.State {
 	case repository.ConfirmationAwaitingBuyer:
@@ -449,6 +454,7 @@ func BuildShopTicketOpening(job repository.ShopTicketChannelJob, setup repositor
 		description = "Automatic delivery could not confirm this order and stopped. Staff: check in game whether the item is there, then record the result on the website. The buyer is in this channel."
 	}
 	embed := &discordgo.MessageEmbed{
+		Author:      shopAuthor(),
 		Title:       fmt.Sprintf("🎫 Ticket #%d · order #%d", t.ID, t.PurchaseID),
 		Color:       shopOrderColorIssue,
 		Description: description,
@@ -456,7 +462,7 @@ func BuildShopTicketOpening(job repository.ShopTicketChannelJob, setup repositor
 			{Name: "What went wrong", Value: reason},
 			{Name: "Order", Value: shopOrderItemLines(job.Items)},
 			{Name: "Reported from", Value: via, Inline: true},
-			{Name: "Opened", Value: fmt.Sprintf("<t:%d:f>", t.OpenedAt.Unix()), Inline: true},
+			{Name: "Opened", Value: presentation.Timestamp(t.OpenedAt, 'f'), Inline: true},
 		},
 	}
 	if siteURL != "" {
@@ -478,7 +484,7 @@ func BuildShopTicketResolved(t repository.ShopOrderTicket) *discordgo.MessageEmb
 			outcome = "Resolved"
 		}
 	}
-	embed := &discordgo.MessageEmbed{Title: fmt.Sprintf("✅ Ticket #%d closed", t.ID), Color: shopOrderColorReceived, Description: outcome + "."}
+	embed := &discordgo.MessageEmbed{Author: shopAuthor(), Title: fmt.Sprintf("✅ Ticket #%d closed", t.ID), Color: shopOrderColorReceived, Description: outcome + "."}
 	if t.ResolutionNote != nil && strings.TrimSpace(*t.ResolutionNote) != "" {
 		embed.Fields = []*discordgo.MessageEmbedField{{Name: "Note from staff", Value: shopTruncate(*t.ResolutionNote, 1000)}}
 	}

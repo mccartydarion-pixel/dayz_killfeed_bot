@@ -39,9 +39,9 @@ const (
 	connectionsFinalMessages    = 3
 	connectionsMaxNameLen       = 40
 	connectionsMinShownSession  = time.Minute
-	connectionsBatchTitle       = "🔌 **SERVER CONNECTIONS**"
-	connectionsSingleConnected  = "🟢 **CONNECTED**"
-	connectionsSingleDisconnect = "🔴 **DISCONNECTED**"
+	connectionsBatchTitle       = "🔌 **Server connections**"
+	connectionsSingleConnected  = "🟢 **Connected**"
+	connectionsSingleDisconnect = "🔴 **Disconnected**"
 )
 
 // ConnectionsPublisher publishes authoritative connect/disconnect state changes
@@ -265,7 +265,7 @@ func buildConnectionsEmbed(batch []killfeed.ConnectionNotice, omitted int64) *di
 		if s := formatSession(n.Session); s != "" {
 			desc += "\nSession: " + s
 		}
-		return &discordgo.MessageEmbed{Description: desc, Color: presentation.ErrorRed}
+		return &discordgo.MessageEmbed{Description: desc, Color: presentation.Neutral} // leaving is not an error
 	}
 
 	var b strings.Builder
@@ -278,11 +278,11 @@ func buildConnectionsEmbed(batch []killfeed.ConnectionNotice, omitted int64) *di
 		}
 		fmt.Fprintf(&b, "\n🔴 %s disconnected", name)
 		if s := formatSession(n.Session); s != "" {
-			b.WriteString(" · " + s)
+			b.WriteString(" • " + s)
 		}
 	}
 	if omitted > 0 {
-		fmt.Fprintf(&b, "\n… %d earlier connection events were not shown", omitted)
+		b.WriteString("\n… " + presentation.Plural(omitted, "earlier connection event was", "earlier connection events were") + " not shown")
 	}
 	return &discordgo.MessageEmbed{Description: b.String(), Color: presentation.InfoSteel}
 }
@@ -290,10 +290,7 @@ func buildConnectionsEmbed(batch []killfeed.ConnectionNotice, omitted int64) *di
 // connectionName sanitises a display name: mention/channel characters and
 // control characters are removed and the length is bounded.
 func connectionName(s string) string {
-	if s = sanitizeName(s); s == "" {
-		return "Unknown"
-	}
-	return safeTrunc(s, connectionsMaxNameLen)
+	return presentation.SafeName(s, connectionsMaxNameLen)
 }
 
 // formatSession renders an observed session as "42m" or "1h 5m"; anything under

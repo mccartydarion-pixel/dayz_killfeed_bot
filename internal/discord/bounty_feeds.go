@@ -302,42 +302,43 @@ func buildBountyEventEmbed(e bounties.Event) *discordgo.MessageEmbed {
 	target := bountyBold(e.Target)
 	reward := "Reward **" + formatAmount(e.Amount) + " pts**"
 	var b strings.Builder
-	color := presentation.EventGold
+	// Crimson while the hunt is on, gold when it pays out, neutral when it simply ends.
+	color := presentation.Crimson
 	switch e.Kind {
 	case bounties.EventPlaced:
-		fmt.Fprintf(&b, "🎯 **BOUNTY PLACED**\n%s\n%s", target, reward)
+		fmt.Fprintf(&b, "🎯 **Bounty placed**\n%s\n%s", target, reward)
 		if e.Automatic {
 			b.WriteString("\nSource: kill streak")
 		}
 	case bounties.EventIncreased:
-		fmt.Fprintf(&b, "📈 **BOUNTY INCREASED**\n%s\n%s", target, reward)
+		fmt.Fprintf(&b, "📈 **Bounty increased**\n%s\n%s", target, reward)
 		if e.Automatic {
 			b.WriteString("\nSource: kill streak")
 		}
 	case bounties.EventClaimed:
-		color = presentation.SuccessGreen
-		fmt.Fprintf(&b, "👑 **BOUNTY CLAIMED**\n%s eliminated %s\n%s", bountyBold(e.Hunter), target, reward)
+		color = presentation.Gold
+		fmt.Fprintf(&b, "👑 **Bounty claimed**\n%s eliminated %s\n%s", bountyBold(e.Hunter), target, reward)
 		if e.Count > 1 {
-			fmt.Fprintf(&b, " • %d bounties", e.Count)
+			b.WriteString(" • " + presentation.Plural(int64(e.Count), "bounty", "bounties"))
 		}
 		var how []string
 		if w := strings.TrimSpace(e.Weapon); w != "" {
 			how = append(how, "`"+strings.ReplaceAll(safeTrunc(sanitizeName(w), maxWeaponLen), "`", "'")+"`")
 		}
 		if e.Distance != nil {
-			how = append(how, fmt.Sprintf("%.0fm", *e.Distance))
+			how = append(how, presentation.FormatWholeDistance(*e.Distance))
 		}
 		if len(how) > 0 {
 			b.WriteString("\n" + strings.Join(how, " • "))
 		}
 	case bounties.EventExpired:
-		color = presentation.WarningAmber
-		fmt.Fprintf(&b, "⌛ **BOUNTY EXPIRED**\n%s\n%s", target, reward)
+		color = presentation.Neutral
+		fmt.Fprintf(&b, "⌛ **Bounty expired**\n%s\n%s", target, reward)
 	case bounties.EventCancelled:
-		color = presentation.WarningAmber
-		fmt.Fprintf(&b, "🚫 **BOUNTY CANCELLED**\n%s\n%s", target, reward)
+		color = presentation.Neutral
+		fmt.Fprintf(&b, "🚫 **Bounty cancelled**\n%s\n%s", target, reward)
 	default:
-		fmt.Fprintf(&b, "🎯 **BOUNTY**\n%s", target)
+		fmt.Fprintf(&b, "🎯 **Bounty**\n%s", target)
 	}
 	return &discordgo.MessageEmbed{Description: b.String(), Color: color}
 }
@@ -377,7 +378,7 @@ type BountyBoard struct {
 const (
 	bountyBoardInterval = 30 * time.Second // also picks up expiries and out-of-process changes
 	bountyBoardLimit    = 10
-	bountyBoardFooter   = "CHAMPION • BOUNTY BOARD"
+	bountyBoardFooter   = presentation.FooterAutoRefresh
 )
 
 func NewBountyBoard(resolver RouteResolver, servers GuildServersFunc, panels *RoutePanels, lister BoardLister) *BountyBoard {
@@ -470,20 +471,20 @@ func (b *BountyBoard) SyncOnce(ctx context.Context) {
 // buildBountyBoardEmbed renders the board. Names only - no internal ids.
 func buildBountyBoardEmbed(entries []repository.BoardEntry) *discordgo.MessageEmbed {
 	var b strings.Builder
-	b.WriteString("🎯 **ACTIVE BOUNTIES**\n")
+	b.WriteString("🎯 **Active bounties**\n")
 	if len(entries) == 0 {
 		b.WriteString("\n_No active bounties._")
 	}
 	for i, e := range entries {
 		b.WriteString("\n" + presentation.RankLine(i+1, e.TargetName, presentation.FormatPoints(e.Total)))
 		if e.Count > 1 {
-			fmt.Fprintf(&b, " (%d bounties)", e.Count)
+			b.WriteString(" (" + presentation.Plural(e.Count, "bounty", "bounties") + ")")
 		}
 	}
 	return &discordgo.MessageEmbed{
 		Description: b.String(),
-		Color:       presentation.EventGold,
-		Footer:      &discordgo.MessageEmbedFooter{Text: bountyBoardFooter},
+		Color:       presentation.Gold,
+		Footer:      presentation.Footer("", bountyBoardFooter),
 	}
 }
 

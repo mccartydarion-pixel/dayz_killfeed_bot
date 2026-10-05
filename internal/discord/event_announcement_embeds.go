@@ -33,12 +33,12 @@ func EventRuleText(eventType string, config json.RawMessage) string {
 	switch eventType {
 	case "MOST_KILLS":
 		if c.MinimumDistance != nil && *c.MinimumDistance > 0 {
-			return fmt.Sprintf("Most PvP kills from %.0f m or further wins.", *c.MinimumDistance)
+			return "Most PvP kills from " + presentation.FormatWholeDistance(*c.MinimumDistance) + " or further wins."
 		}
 		return "Most PvP kills wins."
 	case "LONGEST_KILL":
 		if c.MinimumDistance != nil && *c.MinimumDistance > 0 {
-			return fmt.Sprintf("Longest single kill wins (%.0f m minimum).", *c.MinimumDistance)
+			return "Longest single kill wins (" + presentation.FormatWholeDistance(*c.MinimumDistance) + " minimum)."
 		}
 		return "Longest single kill wins."
 	case "KILL_STREAK":
@@ -62,9 +62,9 @@ func EventRuleText(eventType string, config json.RawMessage) string {
 
 // BuildEventAnnouncementEmbed renders the upcoming / started card.
 func BuildEventAnnouncementEmbed(c EventAnnouncementCard) *discordgo.MessageEmbed {
-	title, color := "🏁 EVENT STARTED", presentation.EventGold
+	title, color := "🏁 Event started", presentation.Gold
 	if c.Kind == "UPCOMING" {
-		title, color = "📅 UPCOMING EVENT", presentation.ChampionGold
+		title, color = "📅 Upcoming event", presentation.Gold
 	}
 	embed := presentation.NewFeedEmbed(title, color)
 	desc := "**" + presentation.SafeName(c.Name, 80) + "**"
@@ -72,12 +72,12 @@ func BuildEventAnnouncementEmbed(c EventAnnouncementCard) *discordgo.MessageEmbe
 		desc += "\n" + presentation.SafeName(d, 300)
 	}
 	embed.Description = desc
-	presentation.AppendFields(embed, presentation.MetricField("HOW TO WIN", EventRuleText(c.Type, c.Config), false))
+	presentation.AppendFields(embed, presentation.MetricField("How to win", EventRuleText(c.Type, c.Config), false))
 	if c.Kind == "UPCOMING" && c.StartsAt != nil {
-		presentation.AppendFields(embed, presentation.MetricField("STARTS", fmt.Sprintf("<t:%d:F> (<t:%d:R>)", c.StartsAt.Unix(), c.StartsAt.Unix()), true))
+		presentation.AppendFields(embed, presentation.MetricField("Starts", presentation.TimestampWithRelative(*c.StartsAt), true))
 	}
 	if c.EndsAt != nil {
-		presentation.AppendFields(embed, presentation.MetricField("ENDS", fmt.Sprintf("<t:%d:R>", c.EndsAt.Unix()), true))
+		presentation.AppendFields(embed, presentation.MetricField("Ends", presentation.Timestamp(*c.EndsAt, 'R'), true))
 	}
 	var prizes []string
 	for i, pts := range c.Prizes {
@@ -85,6 +85,6 @@ func BuildEventAnnouncementEmbed(c EventAnnouncementCard) *discordgo.MessageEmbe
 			prizes = append(prizes, fmt.Sprintf("%s %s", []string{"🥇", "🥈", "🥉"}[i], presentation.FormatPoints(int64(pts))))
 		}
 	}
-	presentation.AppendFields(embed, presentation.MetricField("PRIZES", strings.Join(prizes, " • "), false))
+	presentation.AppendFields(embed, presentation.MetricField("Prizes", strings.Join(prizes, " • "), false))
 	return presentation.FitEmbed(embed)
 }

@@ -46,7 +46,7 @@ func TestAdminAlertADMStaleAlertsOnceAndResolves(t *testing.T) {
 		t.Fatalf("a stale log alerts once, not once per poll: got %d", len(msgs))
 	}
 	e := msgs[0].embeds[0]
-	if e.Title != "🚨 ADMIN ALERT" || !strings.Contains(e.Description, "ADM STALE") || e.Color != presentation.WarningAmber {
+	if e.Title != "🚨 Admin alert" || !strings.Contains(e.Description, "ADM stale") || e.Color != presentation.WarningAmber {
 		t.Fatalf("want an amber ADM STALE alert, got %+v", e)
 	}
 
@@ -54,7 +54,7 @@ func TestAdminAlertADMStaleAlertsOnceAndResolves(t *testing.T) {
 	p.ObserveSnapshot(7, 1, snap)
 	drain(p)
 	msgs = sender.messages("chan-admin")
-	if len(msgs) != 2 || msgs[1].embeds[0].Title != "✅ ALERT RESOLVED" || msgs[1].embeds[0].Color != presentation.SuccessGreen {
+	if len(msgs) != 2 || msgs[1].embeds[0].Title != "✅ Alert resolved" || msgs[1].embeds[0].Color != presentation.SuccessGreen {
 		t.Fatalf("want one resolution, got %d messages", len(msgs))
 	}
 }
@@ -87,12 +87,12 @@ func TestAdminAlertNitradoFailureAfterConsecutiveFailures(t *testing.T) {
 	p.ObserveDownload(7, fail)
 	drain(p)
 	msgs := sender.messages("chan-admin")
-	if len(msgs) != 1 || !strings.Contains(msgs[0].embeds[0].Description, "NITRADO API FAILURE") || msgs[0].embeds[0].Color != presentation.ErrorRed {
+	if len(msgs) != 1 || !strings.Contains(msgs[0].embeds[0].Description, "Nitrado API failure") || msgs[0].embeds[0].Color != presentation.ErrorRed {
 		t.Fatalf("want one red NITRADO API FAILURE, got %d", len(msgs))
 	}
 	p.ObserveDownload(7, killfeed.DownloadReport{ServerID: 1, Result: "success_no_new_events"})
 	drain(p)
-	if msgs = sender.messages("chan-admin"); len(msgs) != 2 || msgs[1].embeds[0].Title != "✅ ALERT RESOLVED" {
+	if msgs = sender.messages("chan-admin"); len(msgs) != 2 || msgs[1].embeds[0].Title != "✅ Alert resolved" {
 		t.Fatalf("want a resolution after recovery, got %d", len(msgs))
 	}
 }

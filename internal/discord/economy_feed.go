@@ -259,48 +259,52 @@ func rewardReason(s string) string {
 //
 // Amounts are Champion Points. Only rewards show the resulting balance.
 func buildEconomyEmbed(e economy.Event) *discordgo.MessageEmbed {
-	name := bountyName(e.PlayerName) // the shared display-name sanitiser
+	name := presentation.EscapeMarkdown(bountyName(e.PlayerName)) // the shared display-name sanitiser, safe in markdown
 	amount := formatAmount(e.Amount) + " pts"
 	var b strings.Builder
-	color := presentation.EventGold
+	// Gold for a reward earned, green for points given back or granted, amber for points
+	// taken away, neutral for an ordinary purchase.
+	color := presentation.Neutral
 	switch e.Type {
 	case economy.TypeBountyClaim:
-		b.WriteString("💰 **BOUNTY REWARD**")
+		b.WriteString("💰 **Bounty reward**")
 		fmt.Fprintf(&b, "\n%s earned %s\nBalance: %s pts", name, amount, formatAmount(e.BalanceAfter))
-		color = presentation.SuccessGreen
+		color = presentation.Gold
 	case economy.TypeSystemReward:
-		b.WriteString("🎁 **REWARD**")
+		b.WriteString("🎁 **Reward**")
 		fmt.Fprintf(&b, "\n%s earned %s", name, amount)
 		if reason := rewardReason(e.Reason); reason != "" {
 			fmt.Fprintf(&b, "\nFor: %s", reason)
 		}
 		fmt.Fprintf(&b, "\nBalance: %s pts", formatAmount(e.BalanceAfter))
-		color = presentation.SuccessGreen
+		color = presentation.Gold
 	case economy.TypeAdminCredit:
-		b.WriteString("➕ **ADMIN CREDIT**")
+		b.WriteString("➕ **Admin credit**")
 		fmt.Fprintf(&b, "\n%s received %s", name, amount)
+		color = presentation.Green
 	case economy.TypeAdminDebit:
-		b.WriteString("➖ **ADMIN DEBIT**")
+		b.WriteString("➖ **Admin debit**")
 		fmt.Fprintf(&b, "\n%s lost %s", name, amount)
 		color = presentation.WarningAmber
 	case economy.TypeShopPurchase:
-		b.WriteString("🛒 **SHOP PURCHASE**")
+		b.WriteString("🛒 **Shop purchase**")
 		if strings.TrimSpace(e.Item) != "" {
-			fmt.Fprintf(&b, "\n%s bought %s for %s", name, bountyName(e.Item), amount)
+			fmt.Fprintf(&b, "\n%s bought %s for %s", name, presentation.EscapeMarkdown(bountyName(e.Item)), amount)
 		} else {
 			fmt.Fprintf(&b, "\n%s spent %s", name, amount)
 		}
 	case economy.TypeShopRefund:
-		b.WriteString("↩️ **SHOP REFUND**")
+		b.WriteString("↩️ **Shop refund**")
 		fmt.Fprintf(&b, "\n%s was refunded %s", name, amount)
 		color = presentation.SuccessGreen
 	default:
 		verb := "received"
+		color = presentation.Green
 		if !e.Credit {
 			verb = "lost"
 			color = presentation.WarningAmber
 		}
-		b.WriteString("💠 **ECONOMY**")
+		b.WriteString("💠 **Economy**")
 		fmt.Fprintf(&b, "\n%s %s %s", name, verb, amount)
 	}
 	return &discordgo.MessageEmbed{Description: b.String(), Color: color}

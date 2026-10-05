@@ -143,7 +143,7 @@ func TestBountyAndUnderdog(t *testing.T) {
 
 	// King is #1 and on a 3-kill streak: wanted once, for the streak.
 	w.a.runRankedBonusAnnouncements(ctx, w.guildID, t0.Add(4*time.Minute))
-	if len(w.cards) != 1 || !strings.Contains(w.cards[0].Title, "BOUNTY ON HUNTER") || !strings.Contains(w.cards[0].Description, "3-kill streak") {
+	if len(w.cards) != 1 || !strings.Contains(w.cards[0].Title, "Bounty on Hunter") || !strings.Contains(w.cards[0].Description, "3-kill streak") {
 		t.Fatalf("wanted card: %s", w.cardTitles())
 	}
 	w.a.runRankedBonusAnnouncements(ctx, w.guildID, t0.Add(5*time.Minute))
@@ -173,7 +173,7 @@ func TestBountyAndUnderdog(t *testing.T) {
 	}
 	// Hunter2 now has the most RP: the bounty moves to them.
 	w.a.runRankedBonusAnnouncements(ctx, w.guildID, t0.Add(21*time.Minute))
-	if len(w.cards) != 3 || !strings.Contains(w.cards[2].Title, "BOUNTY ON HUNTER2") || !strings.Contains(w.cards[2].Description, "is #1") {
+	if len(w.cards) != 3 || !strings.Contains(w.cards[2].Title, "Bounty on Hunter2") || !strings.Contains(w.cards[2].Description, "is #1") {
 		t.Fatalf("the new #1 is wanted: %s", w.cardTitles())
 	}
 }
@@ -202,7 +202,7 @@ func TestRankUpsAndWeeklyRecap(t *testing.T) {
 	w.kill(w.killer, w.newPlayer("V2"), t0.Add(2*time.Minute))
 	w.kill(w.killer, w.newPlayer("V3"), t0.Add(3*time.Minute))
 	w.a.runRankedBonusAnnouncements(ctx, w.guildID, t0.Add(4*time.Minute))
-	if len(w.cards) != 1 || !strings.Contains(w.cards[0].Title, "Hunter reached Bronze") || !strings.Contains(w.cards[0].Description, "300 RP · #1") {
+	if len(w.cards) != 1 || !strings.Contains(w.cards[0].Title, "Hunter reached Bronze") || !strings.Contains(w.cards[0].Description, "300 RP • #1") {
 		t.Fatalf("rank-up card: %s", w.cardTitles())
 	}
 	if len(dms.sent[fan.DiscordUserID]) != 1 || !strings.Contains(dms.sent[fan.DiscordUserID][0].Embeds[0].Title, "You reached Bronze") {
@@ -223,7 +223,7 @@ func TestRankUpsAndWeeklyRecap(t *testing.T) {
 		t.Fatalf("recap: %+v %v", rc, err)
 	}
 	card := buildWeeklyRecapCard(rc, "Champions")
-	if !strings.Contains(card.Fields[0].Value, "Hunter · +300 RP from 3 kills") {
+	if !strings.Contains(card.Fields[0].Value, "Hunter • +300 RP from 3 kills") {
 		t.Fatalf("recap card: %+v", card.Fields)
 	}
 	if ok, err := w.a.Ranked.ClaimWeeklyRecap(ctx, w.serverID, week, t0); !ok || err != nil {

@@ -473,21 +473,21 @@ func (a *App) HandleFactionRecruitInteraction(s *discordgo.Session, i *discordgo
 	defer cancel()
 	factionID, err := strconv.ParseInt(rawID, 10, 64)
 	if err != nil || factionID <= 0 || a.FactionHub == nil || a.Guilds == nil || a.SaaSUsers == nil {
-		reply("This button is no longer valid.")
+		reply(discord.ReplyButtonExpired)
 		return
 	}
 	_, guildRowID, err := a.Guilds.GetGuild(ctx, i.GuildID)
 	if ctx.Err() != nil {
-		reply("Something went wrong on our side. Try again in a moment.")
+		reply(discord.ReplyTryAgain)
 		return
 	}
 	if err != nil || guildRowID == 0 {
-		reply("Champion isn't set up on this server yet.")
+		reply(discord.ReplyNotSetUp)
 		return
 	}
 	f, err := a.FactionHub.FactionForGuild(ctx, guildRowID, factionID)
 	if ctx.Err() != nil {
-		reply("Something went wrong on our side. Try again in a moment.")
+		reply(discord.ReplyTryAgain)
 		return
 	}
 	if err != nil {
@@ -497,7 +497,7 @@ func (a *App) HandleFactionRecruitInteraction(s *discordgo.Session, i *discordgo
 	u := i.Member.User
 	user, err := a.SaaSUsers.EnsureDiscordUser(ctx, u.ID, u.Username, u.GlobalName, u.Avatar)
 	if err != nil {
-		reply("Something went wrong on our side. Try again in a moment.")
+		reply(discord.ReplyTryAgain)
 		return
 	}
 	site := a.siteURL()
@@ -543,7 +543,7 @@ func (a *App) HandleFactionRecruitInteraction(s *discordgo.Session, i *discordgo
 		}
 		reply(fmt.Sprintf("📝 Your application to **%s** [%s] is in. The leader will review it; you'll find its status at %s/dashboard/player/factions/applications", f.Name, f.Tag, site))
 	default:
-		reply("This button is no longer valid.")
+		reply(discord.ReplyButtonExpired)
 	}
 }
 
@@ -570,6 +570,6 @@ func recruitFailureText(err error, f *repository.HubFaction, site string) string
 		if errors.As(err, &invalid) {
 			return "That didn't go through: " + strings.Join(invalid.Issues, "; ")
 		}
-		return "Something went wrong on our side. Try again in a moment."
+		return discord.ReplyTryAgain
 	}
 }

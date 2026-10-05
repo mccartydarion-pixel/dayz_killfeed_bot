@@ -27,19 +27,16 @@ type HotZoneAnnouncement struct {
 
 // BuildHotZoneOpenedEmbed announces a hot zone: where it is, how long it lasts and what it pays.
 func BuildHotZoneOpenedEmbed(a HotZoneAnnouncement) *discordgo.MessageEmbed {
-	embed := presentation.NewFeedEmbed("🔥 HOT ZONE OPEN", presentation.CombatRed)
-	desc := "**" + presentation.SafeName(a.Name, 60) + "**"
-	if s := strings.TrimSpace(a.ServerName); s != "" {
-		desc += " on " + presentation.SafeName(s, 60)
-	}
+	embed := presentation.NewFeedEmbed("🔥 Hot zone open", presentation.CombatRed)
+	desc := "**" + presentation.SafeName(a.Name, 60) + "**" // the server is named in the footer
 	if a.KillsObserved > 0 && a.WindowMinutes > 0 {
-		desc += fmt.Sprintf("\n%s there in the last %d minutes.", presentation.Plural(int64(a.KillsObserved), "kill", "kills"), a.WindowMinutes)
+		desc += fmt.Sprintf("\n%s there in the last %s.", presentation.Plural(int64(a.KillsObserved), "kill", "kills"), presentation.Plural(int64(a.WindowMinutes), "minute", "minutes"))
 	}
 	embed.Description = desc
 	presentation.AppendFields(embed,
-		presentation.MetricField("WHERE", fmt.Sprintf("Within %.0f m of %.0f / %.0f", a.RadiusM, a.CenterX, a.CenterZ), true))
+		presentation.MetricField("Where", fmt.Sprintf("Within %s of %.0f / %.0f", presentation.FormatWholeDistance(a.RadiusM), a.CenterX, a.CenterZ), true))
 	if a.EndsAt != nil {
-		presentation.AppendFields(embed, presentation.MetricField("ENDS", fmt.Sprintf("<t:%d:R>", a.EndsAt.Unix()), true))
+		presentation.AppendFields(embed, presentation.MetricField("Ends", presentation.Timestamp(*a.EndsAt, 'R'), true))
 	}
 	var prizes []string
 	for i, pts := range []int{a.FirstPoints, a.SecondPoints, a.ThirdPoints} {
@@ -47,8 +44,9 @@ func BuildHotZoneOpenedEmbed(a HotZoneAnnouncement) *discordgo.MessageEmbed {
 			prizes = append(prizes, fmt.Sprintf("%s %s", []string{"🥇", "🥈", "🥉"}[i], presentation.FormatPoints(int64(pts))))
 		}
 	}
-	presentation.AppendFields(embed, presentation.MetricField("PRIZES", strings.Join(prizes, " • "), false))
-	presentation.AppendFields(embed, presentation.MetricField("HOW IT SCORES", "One point per kill on a player inside the zone.", false))
+	presentation.AppendFields(embed, presentation.MetricField("Prizes", strings.Join(prizes, " • "), false))
+	presentation.AppendFields(embed, presentation.MetricField("How it scores", "One point per kill on a player inside the zone.", false))
+	embed.Footer = presentation.Footer(a.ServerName, "Hot zone")
 	return presentation.FitEmbed(embed)
 }
 

@@ -20,11 +20,11 @@ func WelcomeEmbed(member *discordgo.Member) *discordgo.MessageEmbed {
 		name = member.User.Username
 		userID = member.User.ID
 	}
-	embed := presentation.NewChampionEmbed("WELCOME TO CHAMPIONS", presentation.ChampionGold)
+	embed := presentation.NewChampionEmbed("Welcome to Champions", presentation.Crimson)
 	embed.Description = fmt.Sprintf("Welcome <@%s>, %s.\n\nYou are now connected to the Champions competitive community.", userID, name)
 	embed.Fields = []*discordgo.MessageEmbedField{
-		presentation.StatusField("GET STARTED", "Link your PlayStation username\nView player stats\nCheck leaderboards\nFollow active wars and events", false),
-		presentation.StatusField("NEXT STEP", "Use #link-username to connect your account.", false),
+		presentation.StatusField("Get started", "Link your PlayStation username\nView player stats\nCheck leaderboards\nFollow active wars and events", false),
+		presentation.StatusField("Next step", "Use #link-username to connect your account.", false),
 	}
 	return embed
 }
@@ -35,7 +35,7 @@ func welcomeEmbedFromConfig(cfg repository.WelcomeConfig, member *discordgo.Memb
 		embed.Title = cfg.TitleText
 	}
 	if test {
-		embed.Title = "[TEST WELCOME] " + embed.Title
+		embed.Title = "[Test] " + embed.Title
 	}
 	if cfg.FooterText != "" {
 		embed.Footer = &discordgo.MessageEmbedFooter{Text: cfg.FooterText}

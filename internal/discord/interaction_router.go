@@ -294,12 +294,8 @@ func answerIfSilent(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	respondPrivate(s, i, &discordgo.InteractionResponseData{Content: interactionFailureText})
 }
 
-// Texts for an interaction no handler is registered for (a feature that is
-// switched off, or a button left on an old message).
-const (
-	unroutedCommandText   = "This command is unavailable right now."
-	unroutedComponentText = "This button is no longer valid."
-)
+// unroutedCommandText and unroutedComponentText (voice.go) answer an interaction no handler
+// is registered for (a feature that is switched off, or a button left on an old message).
 
 func answerUnrouted(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	switch i.Type {

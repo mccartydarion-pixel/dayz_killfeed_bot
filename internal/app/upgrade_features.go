@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -48,7 +49,7 @@ func buildAutomationNews(news [][2]string, serverName string) *discordgo.Message
 	for _, n := range news {
 		lines = append(lines, "**"+n[0]+"**\n"+n[1])
 	}
-	return &discordgo.MessageEmbed{Author: &discordgo.MessageEmbedAuthor{Name: "CHAMPIONS®"}, Color: 0xE7B94A,
+	return &discordgo.MessageEmbed{Author: presentation.ChampionAuthor(), Color: presentation.Crimson,
 		Title: "✨ New on " + serverWord(serverName), Description: strings.Join(lines, "\n\n")}
 }
 

@@ -12,6 +12,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/entitlements"
 	"github.com/yourname/dayz-killfeed/internal/permissions"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 	"github.com/yourname/dayz-killfeed/internal/routing"
 )
@@ -154,34 +155,31 @@ func (a *App) handleStopRPBoost(w http.ResponseWriter, r *http.Request) {
 
 // --- Discord ---------------------------------------------------------------------------------------
 
-const rpBoostColor = 0xF5B700
+const rpBoostColor = presentation.Gold // a bonus worth chasing
 
 // buildRPBoostCard is the double RP card for the server's events channel.
 func buildRPBoostCard(kind string, b repository.RPBoost, rpPerKill int64, leaders []repository.RPBoostLeader, serverName, hubURL string) *discordgo.MessageEmbed {
-	where := "the server"
-	if name := strings.TrimSpace(serverName); name != "" {
-		where = name
-	}
-	embed := &discordgo.MessageEmbed{Color: rpBoostColor, Author: &discordgo.MessageEmbedAuthor{Name: "CHAMPIONS® RANKED"}}
+	where := serverWord(serverName)
+	embed := &discordgo.MessageEmbed{Color: rpBoostColor, Author: rankedCardAuthor()}
 	perKill := ""
 	if rpPerKill > 0 {
-		perKill = fmt.Sprintf(" (%d RP instead of %d)", rpPerKill*int64(b.Multiplier), rpPerKill)
+		perKill = fmt.Sprintf(" (%s RP instead of %s)", commaInt(rpPerKill*int64(b.Multiplier)), commaInt(rpPerKill))
 	}
 	switch kind {
 	case "SCHEDULED":
 		embed.Title = fmt.Sprintf("⚡ %d× RP is coming", b.Multiplier)
 		embed.Description = fmt.Sprintf("Every ranked kill on %s will earn **%d× RP**%s.", where, b.Multiplier, perKill)
 		embed.Fields = []*discordgo.MessageEmbedField{
-			{Name: "Starts", Value: fmt.Sprintf("<t:%d:f> (<t:%d:R>)", b.StartsAt.Unix(), b.StartsAt.Unix()), Inline: true},
-			{Name: "Ends", Value: fmt.Sprintf("<t:%d:f>", b.EndsAt.Unix()), Inline: true},
+			{Name: "Starts", Value: presentation.TimestampWithRelative(b.StartsAt), Inline: true},
+			{Name: "Ends", Value: presentation.Timestamp(b.EndsAt, 'f'), Inline: true},
 		}
 	case "STARTED":
-		embed.Title = fmt.Sprintf("⚡ %d× RP IS LIVE", b.Multiplier)
+		embed.Title = fmt.Sprintf("⚡ %d× RP is live", b.Multiplier)
 		embed.Description = fmt.Sprintf("Every ranked kill on %s now earns **%d× RP**%s. Get in there!", where, b.Multiplier, perKill)
-		embed.Fields = []*discordgo.MessageEmbedField{{Name: "Ends", Value: fmt.Sprintf("<t:%d:f> (<t:%d:R>)", b.EndsAt.Unix(), b.EndsAt.Unix())}}
+		embed.Fields = []*discordgo.MessageEmbedField{{Name: "Ends", Value: presentation.TimestampWithRelative(b.EndsAt)}}
 	default:
 		embed.Title = fmt.Sprintf("%d× RP has ended", b.Multiplier)
-		embed.Description = fmt.Sprintf("It ended <t:%d:R>. Ranked kills earn normal RP again.", b.EndsAt.Unix())
+		embed.Description = "It ended " + presentation.Timestamp(b.EndsAt, 'R') + ". Ranked kills earn normal RP again."
 		if len(leaders) > 0 {
 			medals := []string{"🥇", "🥈", "🥉"}
 			lines := make([]string, 0, len(leaders))
@@ -189,11 +187,7 @@ func buildRPBoostCard(kind string, b repository.RPBoost, rpPerKill int64, leader
 				if i >= len(medals) {
 					break
 				}
-				name := l.PlayerName
-				if name == "" {
-					name = "Unknown player"
-				}
-				lines = append(lines, fmt.Sprintf("%s %s · %d RP from %d kills", medals[i], name, l.RP, l.Kills))
+				lines = append(lines, fmt.Sprintf("%s %s • %s RP from %s", medals[i], orUnknown(l.PlayerName), commaInt(l.RP), presentation.Plural(int64(l.Kills), "kill", "kills")))
 			}
 			embed.Fields = []*discordgo.MessageEmbedField{{Name: "Most RP during the boost", Value: strings.Join(lines, "\n")}}
 		} else {
@@ -201,7 +195,8 @@ func buildRPBoostCard(kind string, b repository.RPBoost, rpPerKill int64, leader
 		}
 	}
 	if hubURL != "" && kind != "ENDED" {
-		embed.Footer = &discordgo.MessageEmbedFooter{Text: "Track your rank in the Player Hub: " + hubURL}
+		// A field, not the footer: Discord shows footers as plain text, so a link there cannot be clicked.
+		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Track your rank in the Player Hub", Value: hubURL})
 	}
 	return embed
 }

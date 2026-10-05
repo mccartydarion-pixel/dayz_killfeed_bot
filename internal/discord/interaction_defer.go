@@ -46,9 +46,8 @@ func (m AckMode) String() string {
 	return "invalid"
 }
 
-// interactionFailureText answers an interaction whose handler crashed or
+// interactionFailureText (voice.go) answers an interaction whose handler crashed or
 // returned without answering.
-const interactionFailureText = "Something went wrong on our side. Try again in a moment."
 
 type replyState struct {
 	mu       sync.Mutex

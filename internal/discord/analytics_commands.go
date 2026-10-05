@@ -37,12 +37,12 @@ func RegisterAnalyticsCommands(s CommandRegistrar, guildID string, configuredID 
 }
 func (h *AnalyticsCommandHandler) Handle(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if h == nil || h.repo == nil || h.guilds == nil || i == nil {
-		respondEphemeral(s, i, "Analytics unavailable.")
+		respondEphemeral(s, i, ReplyAreUnavailable("Analytics"))
 		return
 	}
 	_, gid, err := h.guilds.GetGuild(context.Background(), i.GuildID)
 	if err != nil {
-		respondEphemeral(s, i, "Run `/setup` first.")
+		respondEphemeral(s, i, ReplyNotSetUp)
 		return
 	}
 	data := i.ApplicationCommandData()
@@ -50,23 +50,23 @@ func (h *AnalyticsCommandHandler) Handle(s *discordgo.Session, i *discordgo.Inte
 		a, b := data.Options[0].StringValue(), data.Options[1].StringValue()
 		m, err := h.repo.Matchup(context.Background(), gid, a, b, analytics.ScopeLifetime, 0)
 		if err != nil {
-			respondEphemeral(s, i, "Could not load matchup.")
+			respondEphemeral(s, i, ReplyCouldNot("load the matchup"))
 			return
 		}
-		respondEphemeral(s, i, fmt.Sprintf("⚔️ **KILL EXCHANGE**\n\n%s — %d\n%s — %d\n\nTotal encounters: %d", m.PlayerA, m.AKills, m.PlayerB, m.BKills, m.Total))
+		respondEphemeral(s, i, fmt.Sprintf("⚔️ **Kill exchange**\n\n%s — %d\n%s — %d\n\nTotal encounters: %d", m.PlayerA, m.AKills, m.PlayerB, m.BKills, m.Total))
 		return
 	}
 	if data.Name == "weapon" && len(data.Options) > 0 {
 		weapon := data.Options[0].Options[0].StringValue()
 		w, err := h.repo.Weapon(context.Background(), gid, weapon, analytics.ScopeLifetime, 0)
 		if err != nil {
-			respondEphemeral(s, i, "Could not load weapon stats.")
+			respondEphemeral(s, i, ReplyCouldNot("load the weapon stats"))
 			return
 		}
 		avg := "—"
 		if w.AverageDistance != nil {
 			avg = fmt.Sprintf("%.1fm", *w.AverageDistance)
 		}
-		respondEphemeral(s, i, fmt.Sprintf("🔫 **WEAPON STATS**\n\n%s\nPvP kills: %d\nUnique users: %d\nAverage distance: %s\nHeadshots: %d (%.1f%%)", strings.TrimSpace(w.Weapon), w.Kills, w.UniqueUsers, avg, w.Headshots, w.HeadshotRate))
+		respondEphemeral(s, i, fmt.Sprintf("🔫 **Weapon stats**\n\n%s\nPvP kills: %d\nUnique users: %d\nAverage distance: %s\nHeadshots: %d (%.1f%%)", strings.TrimSpace(w.Weapon), w.Kills, w.UniqueUsers, avg, w.Headshots, w.HeadshotRate))
 	}
 }

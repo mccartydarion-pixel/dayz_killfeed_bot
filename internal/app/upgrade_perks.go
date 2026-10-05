@@ -7,6 +7,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -47,7 +48,7 @@ func (a *App) runPerkReminders(ctx context.Context, guildID int64, servers []rep
 	for _, e := range due {
 		title, desc := buildExpiryReminder(e)
 		a.notifyOnce(ctx, "EXPIRY_"+e.Kind, guildID, 0, e.PlayerID, fmt.Sprintf("%d:%d", e.ID, e.ExpiresAt.Unix()), now,
-			dm(upgradeEmbed("CHAMPIONS® SUPPORTERS", title, desc, 0xE7B94A)))
+			dm(upgradeEmbed("Supporters", title, desc, presentation.Gold)))
 	}
 }
 
@@ -89,5 +90,5 @@ func (a *App) sendGiftNotice(ctx context.Context, p repository.PerkPurchase, not
 	if claimed, err := a.Upgrades.ClaimNotice(ctx, "PERK_GIFT", p.ServerID, p.RecipientPlayerID, fmt.Sprint(p.ID), time.Now().UTC()); err != nil || !claimed {
 		return
 	}
-	_ = a.sendPlayerDM(ctx, p.GuildID, p.RecipientPlayerID, dm(upgradeEmbed("CHAMPIONS® SUPPORTERS", "🎁 You got a gift", desc, 0xE7B94A)))
+	_ = a.sendPlayerDM(ctx, p.GuildID, p.RecipientPlayerID, dm(upgradeEmbed("Supporters", "🎁 You got a gift", desc, presentation.Gold)))
 }

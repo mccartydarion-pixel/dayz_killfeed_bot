@@ -134,7 +134,7 @@ func TestFeaturesToggleLeavesSettingAloneWhenDiscordIsDown(t *testing.T) {
 	api := newFakeFeaturesDiscord()
 	api.lookupErr = &discordgo.RESTError{Response: &http.Response{StatusCode: http.StatusBadGateway}}
 	reply := NewFeaturesCommandHandler(store).toggle(context.Background(), api, "g1", "bot")
-	if !strings.Contains(reply, "Could not check") || len(api.created) != 0 || len(store.sets) != 0 {
+	if !strings.Contains(reply, "Couldn't check") || len(api.created) != 0 || len(store.sets) != 0 {
 		t.Fatalf("reply %q, created %d, sets %v", reply, len(api.created), store.sets)
 	}
 }
@@ -159,7 +159,7 @@ func TestFeaturesToggleCleansUpWhenPostingFails(t *testing.T) {
 	api := newFakeFeaturesDiscord()
 	api.sendErr = errors.New("boom")
 	reply := NewFeaturesCommandHandler(store).toggle(context.Background(), api, "g1", "bot")
-	if !strings.Contains(reply, "Could not post") || store.channel != "" || len(api.deleted) != 1 {
+	if !strings.Contains(reply, "Couldn't post") || store.channel != "" || len(api.deleted) != 1 {
 		t.Fatalf("reply %q, channel %q, deleted %v", reply, store.channel, api.deleted)
 	}
 }
@@ -168,7 +168,7 @@ func TestFeaturesToggleCleansUpWhenSaveFails(t *testing.T) {
 	store := &fakeFeaturesStore{rowID: 1, setErr: errors.New("db down")}
 	api := newFakeFeaturesDiscord()
 	reply := NewFeaturesCommandHandler(store).toggle(context.Background(), api, "g1", "bot")
-	if !strings.Contains(reply, "Could not save") || len(api.deleted) != 1 || len(api.sent) != 0 {
+	if !strings.Contains(reply, "Couldn't save") || len(api.deleted) != 1 || len(api.sent) != 0 {
 		t.Fatalf("reply %q, deleted %v, sent %d", reply, api.deleted, len(api.sent))
 	}
 }

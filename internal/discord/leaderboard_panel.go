@@ -177,13 +177,13 @@ type LeaderboardSnapshot struct {
 
 // Auto Leaderboard V3 product copy.
 const (
-	AutoLeaderboardTitle  = "📊 AUTO LEADERBOARD 📊"
-	AutoBoardKillsTitle   = "🔫 All Time Top 15 Kills 🔫"
-	AutoBoardStreaksTitle = "🥷 All Time Top 15 Killstreaks 🥷"
-	AutoBoardRanksTitle   = "🎖️ Current Top 15 Ranks 🎖️"
-	AutoBoardDeathsTitle  = "💀 All Time Top 15 Deaths 💀"
-	AutoBoardLongestTitle = "🔭 All Time Top 15 Longest Kills 🔭"
-	AutoBoardWeekTitle    = "📅 This Week's Top 15 Kills 📅"
+	AutoLeaderboardTitle  = "📊 Auto leaderboard"
+	AutoBoardKillsTitle   = "🔫 All-time top 15 kills"
+	AutoBoardStreaksTitle = "🥷 All-time top 15 kill streaks"
+	AutoBoardRanksTitle   = "🎖️ Current top 15 ranks"
+	AutoBoardDeathsTitle  = "💀 All-time top 15 deaths"
+	AutoBoardLongestTitle = "🔭 All-time top 15 longest kills"
+	AutoBoardWeekTitle    = "📅 This week's top 15 kills"
 )
 
 // withMoves adds each player's movement to their board value.
@@ -266,8 +266,8 @@ func buildAutoLeaderboardEmbeds(s LeaderboardSnapshot, cfg LeaderboardConfig, na
 		embeds = append(embeds, rankEmbed)
 	}
 	return append(embeds,
-		autoBoardEmbed(AutoBoardDeathsTitle, presentation.CombatRed, boardEntries(s.TopDeaths, presentation.FormatBoardDeaths), cfg.TopDeathsLimit, nameCap),
-		autoBoardEmbed(AutoBoardLongestTitle, presentation.InfoSteel, withMoves(boardEntries(s.TopLongest, presentation.FormatBoardDistance), s.LongestMoves), cfg.TopLongestLimit, nameCap),
+		autoBoardEmbed(AutoBoardDeathsTitle, presentation.Gold, boardEntries(s.TopDeaths, presentation.FormatBoardDeaths), cfg.TopDeathsLimit, nameCap),
+		autoBoardEmbed(AutoBoardLongestTitle, presentation.Gold, withMoves(boardEntries(s.TopLongest, presentation.FormatBoardDistance), s.LongestMoves), cfg.TopLongestLimit, nameCap),
 	)
 }
 
@@ -288,19 +288,19 @@ func autoLeaderboardHeader(s LeaderboardSnapshot) *discordgo.MessageEmbed {
 		lines = append(lines, "**"+presentation.SafeName(name, 100)+"**")
 	}
 	if !s.GeneratedAt.IsZero() {
-		lines = append(lines, fmt.Sprintf("Last Updated <t:%d:R>", s.GeneratedAt.Unix()))
+		lines = append(lines, "Last updated "+presentation.Timestamp(s.GeneratedAt, 'R'))
 	}
-	lines = append(lines, "Auto Refresh • "+refreshCadence(LeaderboardRefreshInterval))
+	lines = append(lines, "Refreshes "+refreshCadence(LeaderboardRefreshInterval))
 	embed.Description = strings.Join(lines, "\n")
 	return presentation.FitEmbed(embed)
 }
 
-// refreshCadence renders the scheduler interval: "Every 3 Hours".
+// refreshCadence renders the scheduler interval: "every 3 hours".
 func refreshCadence(d time.Duration) string {
 	if d >= time.Hour && d%time.Hour == 0 {
-		return "Every " + presentation.Plural(int64(d/time.Hour), "Hour", "Hours")
+		return "every " + presentation.Plural(int64(d/time.Hour), "hour", "hours")
 	}
-	return "Every " + presentation.Plural(int64(d/time.Minute), "Minute", "Minutes")
+	return "every " + presentation.Plural(int64(d/time.Minute), "minute", "minutes")
 }
 
 func autoBoardEmbed(title string, color int, entries []presentation.BoardEntry, limit, nameCap int) *discordgo.MessageEmbed {
@@ -411,7 +411,7 @@ func hashEmbed(e *discordgo.MessageEmbed) string {
 
 // PlayerStatsInfoEmbed is the persistent instruction panel for #player-stats.
 func PlayerStatsInfoEmbed() *discordgo.MessageEmbed {
-	embed := presentation.NewChampionEmbed("PLAYER STATS", presentation.InfoSteel)
+	embed := presentation.NewChampionEmbed("Player stats", presentation.Crimson)
 	embed.Description = "View your Champion profile or search another player."
 	return embed
 }

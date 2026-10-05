@@ -69,7 +69,7 @@ func TestPveFeedPublishesSuicideAndClaimsIt(t *testing.T) {
 	if len(msgs) != 1 || len(msgs[0].embeds) != 1 {
 		t.Fatalf("expected 1 message with 1 card, got %+v", msgs)
 	}
-	if got, want := msgs[0].embeds[0].Description, "💀 **SUICIDE**\nAlice died by suicide."; got != want {
+	if got, want := msgs[0].embeds[0].Description, "💀 **Suicide**\nAlice died by suicide."; got != want {
 		t.Fatalf("unexpected card:\n%q\nwant\n%q", got, want)
 	}
 	if msgs[0].mention == nil || len(msgs[0].mention.Parse) != 0 {
@@ -85,9 +85,9 @@ func TestPveFeedRendersOnlyTheProvenCause(t *testing.T) {
 		cause killfeed.DeathCause
 		want  string
 	}{
-		{killfeed.DeathCauseInfected, "☣️ **PVE DEATH**\nBob was killed by an infected."},
-		{killfeed.DeathCauseAnimal, "🐺 **PVE DEATH**\nBob was killed by an animal."},
-		{killfeed.DeathCauseEnvironment, "⚠️ **PVE DEATH**\nBob died to the environment."},
+		{killfeed.DeathCauseInfected, "☣️ **PvE death**\nBob was killed by an infected."},
+		{killfeed.DeathCauseAnimal, "🐺 **PvE death**\nBob was killed by an animal."},
+		{killfeed.DeathCauseEnvironment, "⚠️ **PvE death**\nBob died to the environment."},
 	} {
 		if !p.PublishPveDeath(killfeed.PveDeathNotice{Cause: tc.cause, Name: "Bob"}) {
 			t.Fatalf("%s must be claimed", tc.cause)

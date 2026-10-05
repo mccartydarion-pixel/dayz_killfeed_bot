@@ -143,7 +143,7 @@ func TestSetupLayoutEmbedSections(t *testing.T) {
 	r.AddLegacy("old")
 	r.AddBlockedSystem("Build Feed")
 	e := SetupLayoutEmbed(r, true)
-	if e.Title != "🔧 CHAMPIONS® DISCORD REPAIR" || e.Description != "**Status:** Repair Complete" || e.Author == nil || e.Footer == nil {
+	if e.Title != "🔧 Discord repair" || e.Description != "**Status:** Repair complete" || e.Author == nil || e.Footer == nil {
 		t.Fatalf("header: %+v", e)
 	}
 	fields := map[string]string{}
@@ -152,20 +152,20 @@ func TestSetupLayoutEmbedSections(t *testing.T) {
 		fields[f.Name] = f.Value
 		order = append(order, f.Name)
 	}
-	if fields["Channel Summary"] != "• Created: 0\n• Reused: 12\n• Updated: 0\n• Failed: 0" {
-		t.Fatalf("summary: %q", fields["Channel Summary"])
+	if fields["Channel summary"] != "• Created: 0\n• Reused: 12\n• Updated: 0\n• Failed: 0" {
+		t.Fatalf("summary: %q", fields["Channel summary"])
 	}
-	if strings.Count(fields["Systems Verified"], "•") != len(systems) {
-		t.Fatalf("each system once: %q", fields["Systems Verified"])
+	if strings.Count(fields["Systems verified"], "•") != len(systems) {
+		t.Fatalf("each system once: %q", fields["Systems verified"])
 	}
-	if !strings.Contains(fields["Legacy Channels"], "1 unused Champion channel detected.") || fields["Result"] != "All required systems are configured." {
+	if !strings.Contains(fields["Legacy channels"], "1 unused Champion channel detected.") || fields["Result"] != "All required systems are configured." {
 		t.Fatalf("legacy/result: %+v", fields)
 	}
-	want := []string{"Channel Summary", "Systems Verified", "Not Available Yet", "Legacy Channels", "Result"}
+	want := []string{"Channel summary", "Systems verified", "Not available yet", "Legacy channels", "Result"}
 	if strings.Join(order, "|") != strings.Join(want, "|") {
 		t.Fatalf("section order: %v", order)
 	}
-	if setup := SetupLayoutEmbed(r, false); setup.Title != "🏆 CHAMPIONS® DISCORD SETUP" || setup.Description != "**Status:** Setup Complete" {
+	if setup := SetupLayoutEmbed(r, false); setup.Title != "🏆 Discord setup" || setup.Description != "**Status:** Setup complete" {
 		t.Fatalf("setup variant: %+v", setup)
 	}
 }
@@ -329,7 +329,7 @@ func TestSetupMultiInstallationDeadlineAndPartialReport(t *testing.T) {
 	result.AddVerifiedSystem("C.A.S.E. Status")
 	for _, repair := range []bool{false, true} {
 		e := SetupLayoutPartialEmbed(result, repair, true)
-		if !strings.Contains(e.Title, "INCOMPLETE") || !strings.Contains(e.Description, "Partial progress") {
+		if !strings.Contains(e.Title, "incomplete") || !strings.Contains(e.Description, "Partial progress") {
 			t.Fatalf("partial work must not be presented as successful: %+v", e)
 		}
 		joined := ""

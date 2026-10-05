@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -44,12 +45,12 @@ func RegisterWelcomeCommands(s CommandRegistrar, guildID string) error {
 }
 func (h *WelcomeCommandHandler) Handle(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if h == nil || h.repo == nil || h.guilds == nil || i == nil {
-		respondEphemeral(s, i, "Welcomer is unavailable.")
+		respondEphemeral(s, i, ReplyIsUnavailable("The welcomer"))
 		return
 	}
 	_, gid, err := h.guilds.GetGuild(context.Background(), i.GuildID)
 	if err != nil || gid == 0 {
-		respondEphemeral(s, i, "Run `/setup run` first.")
+		respondEphemeral(s, i, ReplyNotSetUp)
 		return
 	}
 	cfg, err := h.repo.Get(context.Background(), gid)
@@ -62,7 +63,7 @@ func (h *WelcomeCommandHandler) Handle(s *discordgo.Session, i *discordgo.Intera
 	}
 	name := i.ApplicationCommandData().Options[0].Name
 	if name != "status" && !isAdminInteraction(i) {
-		respondEphemeral(s, i, "Administrator or Manage Server permission required.")
+		respondEphemeral(s, i, ReplyNeedsManageServer)
 		return
 	}
 	if name == "status" {
@@ -73,7 +74,7 @@ func (h *WelcomeCommandHandler) Handle(s *discordgo.Session, i *discordgo.Intera
 	if name == "enable" || name == "disable" {
 		cfg.Enabled = name == "enable"
 		if err := h.repo.Upsert(context.Background(), *cfg); err != nil {
-			respondEphemeral(s, i, "Could not update welcome configuration.")
+			respondEphemeral(s, i, ReplyCouldNot("update the welcome settings"))
 			return
 		}
 		respondEphemeral(s, i, "Welcomer updated.")
@@ -101,7 +102,7 @@ func (h *WelcomeCommandHandler) Handle(s *discordgo.Session, i *discordgo.Intera
 	} else if name == "preset" {
 		cfg = welcomePresetConfig(strings.TrimSpace(optionString(i.ApplicationCommandData().Options[0], "name")), *cfg)
 	} else if name == "preview" {
-		respondEphemeral(s, i, "🏆 **WELCOME PREVIEW**\n\nWelcome to Champion!\n\nUse `/link` to connect your PlayStation username.")
+		respondEphemeral(s, i, "🏆 **Welcome preview**\n\nWelcome to Champion!\n\nUse `/link` to connect your PlayStation username.")
 		return
 	} else if name == "test" {
 		h.sendWelcomeTest(s, i, *cfg)
@@ -109,7 +110,7 @@ func (h *WelcomeCommandHandler) Handle(s *discordgo.Session, i *discordgo.Intera
 	}
 
 	if err := h.repo.Upsert(context.Background(), *cfg); err != nil {
-		respondEphemeral(s, i, "Could not update welcome configuration.")
+		respondEphemeral(s, i, ReplyCouldNot("update the welcome settings"))
 		return
 	}
 	respondEphemeral(s, i, "Welcomer updated.")
@@ -180,18 +181,18 @@ func (h *WelcomeCommandHandler) welcomeStatus(s *discordgo.Session, guildID stri
 	if s != nil {
 		intentRequested = s.Identify.Intents&discordgo.IntentsGuildMembers != 0
 	}
-	return fmt.Sprintf("🏆 **CHAMPION WELCOMER**\n\nEnabled\n%s\nChannel\n%s\nChannel Exists\n%s\nView Permission\n%s\nSend Permission\n%s\nEmbed Permission\n%s\nGuild Members Intent Required\n%s\nLast Successful Welcome\n%s\nLast Error Class\n%s", state, configuredLabel(cfg.ChannelID), boolLabel(channel.exists), boolLabel(channel.view), boolLabel(channel.send), boolLabel(channel.embed), boolLabel(intentRequested), lastWelcome, lastError)
+	return fmt.Sprintf("🏆 **Champion welcomer**\n\nEnabled\n%s\nChannel\n%s\nChannel Exists\n%s\nView Permission\n%s\nSend Permission\n%s\nEmbed Permission\n%s\nGuild Members Intent Required\n%s\nLast Successful Welcome\n%s\nLast Error Class\n%s", state, configuredLabel(cfg.ChannelID), boolLabel(channel.exists), boolLabel(channel.view), boolLabel(channel.send), boolLabel(channel.embed), boolLabel(intentRequested), lastWelcome, lastError)
 }
 
 func (h *WelcomeCommandHandler) sendWelcomeTest(s *discordgo.Session, i *discordgo.InteractionCreate, cfg repository.WelcomeConfig) {
 	deferEphemeral(s, i) // reads the channel from Discord and posts the test
 	channel := inspectWelcomeChannel(s, i.GuildID, cfg.ChannelID)
 	if !channel.exists {
-		respondEphemeral(s, i, "❌ TEST WELCOME FAILED\nWelcome channel was not found.\nError class: "+channel.errClass)
+		respondEphemeral(s, i, welcomeTestFailed+"The welcome channel was not found.")
 		return
 	}
 	if !channel.view || !channel.send || !channel.embed {
-		respondEphemeral(s, i, fmt.Sprintf("❌ TEST WELCOME FAILED\nMissing permission: View=%s Send=%s Embed=%s\nError class: %s", boolLabel(channel.view), boolLabel(channel.send), boolLabel(channel.embed), channel.errClass))
+		respondEphemeral(s, i, fmt.Sprintf(welcomeTestFailed+"Champion is missing a permission in the welcome channel. View Channel: %s · Send Messages: %s · Embed Links: %s", boolLabel(channel.view), boolLabel(channel.send), boolLabel(channel.embed)))
 		return
 	}
 	embed := welcomeEmbedFromConfig(cfg, &discordgo.Member{User: &discordgo.User{ID: "0", Username: "Test Member"}}, true)
@@ -199,13 +200,13 @@ func (h *WelcomeCommandHandler) sendWelcomeTest(s *discordgo.Session, i *discord
 	if err != nil {
 		class := welcomeErrorClass(err)
 		if class == "RATE_LIMITED" {
-			respondEphemeral(s, i, "❌ TEST WELCOME FAILED\nDiscord rate limited the test send. Retry-After: "+retryAfterFromError(err))
+			respondEphemeral(s, i, welcomeTestFailed+"Discord rate limited the test send. Retry after: "+retryAfterFromError(err))
 			return
 		}
-		respondEphemeral(s, i, "❌ TEST WELCOME FAILED\nError class: "+class)
+		respondEphemeral(s, i, welcomeTestFailed+welcomeFailureSentence(class))
 		return
 	}
-	respondEphemeral(s, i, "✅ TEST WELCOME SENT\nOne TEST WELCOME embed was sent to the configured channel.")
+	respondEphemeral(s, i, "✅ Test welcome sent\nOne test welcome card was sent to the configured channel.")
 }
 
 func configuredLabel(channelID string) string {
@@ -220,6 +221,24 @@ func boolLabel(value bool) string {
 		return "yes"
 	}
 	return "no"
+}
+
+// welcomeTestFailed starts every answer to a welcome test that did not post.
+const welcomeTestFailed = "Test welcome failed\n"
+
+// welcomeFailureSentence says what a failure class means in plain words (the class itself is
+// an internal name and is never shown).
+func welcomeFailureSentence(class string) string {
+	switch class {
+	case "CHANNEL_MISSING":
+		return "The welcome channel was not found."
+	case "PERMISSION_BLOCKED":
+		return "Champion is missing a permission in the welcome channel."
+	case "RATE_LIMITED":
+		return "Discord rate limited the test send. Try again in a moment."
+	default:
+		return "Discord did not answer. Try again in a moment."
+	}
 }
 
 func welcomeErrorClass(err error) string {
@@ -257,6 +276,10 @@ func retryAfterFromError(err error) string {
 	return "unknown"
 }
 
+// welcomeBlue is the "blue" an owner can pick for their own welcome card. The welcome card's
+// colour, title and footer are the owner's choice, so they are not held to the built-in palette.
+const welcomeBlue = 0x7FA7FF
+
 func colorFromValue(value string) *int {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "gold":
@@ -269,7 +292,7 @@ func colorFromValue(value string) *int {
 		v := ColorSuccessGreen
 		return &v
 	case "blue":
-		v := ColorInfoBlue
+		v := welcomeBlue
 		return &v
 	case "orange":
 		v := ColorWarningOrange
@@ -284,15 +307,15 @@ func welcomePresetConfig(name string, cfg repository.WelcomeConfig) *repository.
 	case "minimal":
 		cfg.TitleText = "Welcome to Champion"
 		cfg.MessageText = "Welcome {user} to {server}!"
-		cfg.FooterText = "Champion Killfeed"
+		cfg.FooterText = "Champions Killfeed"
 		v := ColorInfoBlue
 		cfg.Color = &v
 		return &cfg
 	default:
-		cfg.TitleText = "🏆 WELCOME TO CHAMPION"
+		cfg.TitleText = "🏆 Welcome to Champion"
 		cfg.MessageText = "Welcome {user} to {server}.\n\nUse `/link` to connect your PlayStation username and unlock your combat history."
-		cfg.FooterText = "CHAMPION KILLFEED • EVERY KILL TELLS A STORY"
-		v := ColorChampionGold
+		cfg.FooterText = "Champions Killfeed · " + presentation.ChampionSlogan
+		v := presentation.Crimson
 		cfg.Color = &v
 		return &cfg
 	}

@@ -67,25 +67,25 @@ func (h *CardCommandHandler) allow(userID string) bool {
 // Handle processes /card.
 func (h *CardCommandHandler) Handle(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if h == nil || i == nil || i.GuildID == "" || h.guilds == nil || h.render == nil {
-		respondEphemeral(s, i, "Cards are unavailable until the database is connected.")
+		respondEphemeral(s, i, ReplyAreUnavailable("Cards"))
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_, guildRowID, err := h.guilds.GetGuild(ctx, i.GuildID)
 	if err != nil || guildRowID == 0 {
-		respondEphemeral(s, i, "This server is not configured. Run `/setup` first.")
+		respondEphemeral(s, i, ReplyNotSetUp)
 		return
 	}
 	userID := interactionUserID(i)
 	playerID, _, linked := h.linkedPlayer(ctx, guildRowID, userID)
 	if !linked {
-		respondEphemeral(s, i, "Link your gamertag with `/link` to get a Champion Card.")
+		respondEphemeral(s, i, ReplyNotLinked("Link your gamertag with `/link` to get a Champion Card."))
 		return
 	}
 	serverID, ok := h.server(ctx, guildRowID)
 	if !ok {
-		respondEphemeral(s, i, "No DayZ server is selected for this Discord yet.")
+		respondEphemeral(s, i, ReplyNoServerSelected)
 		return
 	}
 	if !h.allow(userID) {
@@ -99,7 +99,7 @@ func (h *CardCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interacti
 	png, err := h.render(ctx, guildRowID, serverID, playerID)
 	if err != nil {
 		slog.Warn("component=cards", "event", "card_command_failed", "err", err.Error())
-		msg := "Could not build your card right now."
+		msg := ReplyCouldNot("build your card")
 		_ = editDeferred(s, i, &discordgo.WebhookEdit{Content: &msg})
 		return
 	}

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/yourname/dayz-killfeed/internal/bounties"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -37,9 +38,9 @@ func (a *App) bountyPlacerDMsOn(ctx context.Context, b repository.Bounty) bool {
 func buildBountyPlacerDM(target string, points int64, outcome, hunter string) (title, desc string) {
 	target = orUnknown(target)
 	if outcome == bounties.PlacerClaimed {
-		return "🎯 Your bounty was claimed", fmt.Sprintf("**%s** took down **%s** and collected your **%d point** bounty.", orUnknown(hunter), target, points)
+		return "🎯 Your bounty was claimed", fmt.Sprintf("**%s** took down **%s** and collected your **%s** bounty.", orUnknown(hunter), target, presentation.Plural(points, "point", "point"))
 	}
-	return "⌛ Your bounty ran out", fmt.Sprintf("Nobody claimed your **%d point** bounty on **%s** before it expired.", points, target)
+	return "⌛ Your bounty ran out", fmt.Sprintf("Nobody claimed your **%s** bounty on **%s** before it expired.", presentation.Plural(points, "point", "point"), target)
 }
 
 // notifyBountyPlacer is the bounty service's placer hook. It runs after the claim or expiry
@@ -64,7 +65,7 @@ func (a *App) notifyBountyPlacer(b repository.Bounty, outcome, hunter string) {
 		if claimed, err := a.Upgrades.ClaimNotice(ctx, "BOUNTY_"+outcome, b.ServerID, 0, fmt.Sprint(b.ID), time.Now().UTC()); err != nil || !claimed {
 			return
 		}
-		_ = a.sendUserDM(b.CreatedByDiscordUserID, dm(upgradeEmbed("CHAMPIONS® BOUNTIES", title, desc, 0xC0392B)))
+		_ = a.sendUserDM(b.CreatedByDiscordUserID, dm(upgradeEmbed("Bounties", title, desc, presentation.Crimson)))
 	}()
 }
 

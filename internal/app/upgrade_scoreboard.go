@@ -10,6 +10,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/discord"
 	competitiveevents "github.com/yourname/dayz-killfeed/internal/events"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 	"github.com/yourname/dayz-killfeed/internal/routing"
 )
@@ -31,26 +32,27 @@ type eventScoreLine struct {
 func formatEventScore(eventType string, score float64, kills int64) string {
 	switch eventType {
 	case competitiveevents.TypeLongestKill:
-		return fmt.Sprintf("%.0f m", score)
+		return presentation.FormatWholeDistance(score)
 	case competitiveevents.TypeKillStreak:
 		return fmt.Sprintf("%.0f streak", score)
 	case competitiveevents.TypeHeadshotHunt:
 		return fmt.Sprintf("%.0f headshots", score)
 	}
 	if kills > 0 && float64(kills) != score {
-		return fmt.Sprintf("%.0f pts · %d kills", score, kills)
+		return fmt.Sprintf("%.0f pts • %s", score, presentation.Plural(kills, "kill", "kills"))
 	}
 	return fmt.Sprintf("%.0f kills", score)
 }
 
 func buildEventScoreboard(e repository.CompetitiveEvent, lines []eventScoreLine, ended bool, now time.Time) *discordgo.MessageEmbed {
-	title := "📋 LIVE: " + e.Name
+	name := presentation.SafeName(e.Name, 80)
+	title := "📋 Live: " + name
 	desc := "Standings update every few minutes."
-	color := 0xE74C3C
+	color := presentation.Crimson // the fight is on
 	if ended {
-		title, desc, color = "🏁 FINAL: "+e.Name, "This event is over. These are the final standings.", 0x95A5A6
+		title, desc, color = "🏁 Final: "+name, "This event is over. These are the final standings.", presentation.Gold
 	} else if e.EndsAt != nil {
-		desc = fmt.Sprintf("Ends <t:%d:R>. Standings update every few minutes.", e.EndsAt.Unix())
+		desc = "Ends " + presentation.Timestamp(*e.EndsAt, 'R') + ". Standings update every few minutes."
 	}
 	rows := make([]string, 0, len(lines))
 	for i, l := range lines {
@@ -58,13 +60,13 @@ func buildEventScoreboard(e repository.CompetitiveEvent, lines []eventScoreLine,
 		if i < len(placeMedals) {
 			prefix = placeMedals[i]
 		}
-		rows = append(rows, fmt.Sprintf("%s %s · %s", prefix, orUnknown(l.Name), formatEventScore(e.Type, l.Score, l.Kills)))
+		rows = append(rows, fmt.Sprintf("%s %s • %s", prefix, orUnknown(l.Name), formatEventScore(e.Type, l.Score, l.Kills)))
 	}
 	value := "No qualifying kills yet. Be the first!"
 	if len(rows) > 0 {
 		value = strings.Join(rows, "\n")
 	}
-	return &discordgo.MessageEmbed{Author: &discordgo.MessageEmbedAuthor{Name: "CHAMPIONS® EVENTS"}, Title: title, Description: desc, Color: color,
+	return &discordgo.MessageEmbed{Author: presentation.BrandAuthor("Events"), Title: title, Description: desc, Color: color,
 		Fields: []*discordgo.MessageEmbedField{{Name: "Standings", Value: value}}, Timestamp: now.UTC().Format(time.RFC3339)}
 }
 

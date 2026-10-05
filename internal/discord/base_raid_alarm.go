@@ -2,7 +2,6 @@ package discord
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"strings"
 	"sync/atomic"
@@ -210,12 +209,12 @@ func BaseRaidAlarmMessage(baseName, serverName string, ev repository.BaseRaidEve
 	if tool := caseSafeText(ev.Tool, 64); tool != "" {
 		what += " with a " + tool
 	}
-	when := fmt.Sprintf("<t:%d:R>", at.Unix())
+	when := presentation.Timestamp(at, 'R')
 	if tod := caseSafeText(ev.TimeOfDay, 16); tod != "" {
 		when = tod + " server time (" + when + ")"
 	}
 	embed := &discordgo.MessageEmbed{
-		Author:      &discordgo.MessageEmbedAuthor{Name: "CHAMPIONS® BASE RAID ALARM"},
+		Author:      presentation.BrandAuthor("Base Raid Alarm"),
 		Title:       "🚨 Someone is breaking into " + caseFallback(caseSafeText(baseName, 80), "your base"),
 		Color:       presentation.ErrorRed,
 		Description: "A player who isn't you, your faction or on your friend list is taking your base apart.",
@@ -225,7 +224,7 @@ func BaseRaidAlarmMessage(baseName, serverName string, ev repository.BaseRaidEve
 			{Name: "🕒 When", Value: when, Inline: true},
 			{Name: "🔨 What happened", Value: what, Inline: false},
 		},
-		Footer: &discordgo.MessageEmbedFooter{Text: "You'll get at most one alarm per base every few minutes"},
+		Footer: presentation.Footer("", "You'll get at most one alarm per base every few minutes"),
 	}
 	presentation.StampEmbed(embed, at)
 	return &discordgo.MessageSend{

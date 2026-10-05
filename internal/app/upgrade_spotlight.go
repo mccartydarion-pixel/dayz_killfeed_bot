@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -66,10 +67,10 @@ func (a *App) runSpotlight(ctx context.Context, now time.Time) {
 		return
 	}
 	slog.Info("component=upgrades", "event", "spotlight_picked", "installation_id", pick.InstallationID, "week", week.Format("2006-01-02"))
-	a.postRankedCard(ctx, pick.GuildID, pick.ServerID, &discordgo.MessageEmbed{Author: &discordgo.MessageEmbedAuthor{Name: "CHAMPIONS® NETWORK"}, Color: 0xF5B700,
-		Title: "🌟 Server of the Week",
-		Description: fmt.Sprintf("**%s** is this week's Server of the Week on the Champion Network, with %d active players and %d kills in the last seven days. Thanks for playing!",
-			pick.Name, pick.ActivePlayers, pick.Kills),
+	a.postRankedCard(ctx, pick.GuildID, pick.ServerID, &discordgo.MessageEmbed{Author: presentation.BrandAuthor("Network"), Color: presentation.Gold,
+		Title: "🌟 Server of the week",
+		Description: fmt.Sprintf("**%s** is this week's Server of the Week on the Champion Network, with %s active players and %s kills in the last seven days. Thanks for playing!",
+			presentation.SafeName(pick.Name, 80), commaInt(int64(pick.ActivePlayers)), commaInt(int64(pick.Kills))),
 		Fields: []*discordgo.MessageEmbedField{{Name: "See it on the network", Value: fmt.Sprintf("%s/network/%d", a.siteURL(), pick.InstallationID)}}})
 }
 

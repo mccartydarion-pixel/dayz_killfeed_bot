@@ -263,7 +263,7 @@ func TestBountyEndToEndClaimAfterPersistence(t *testing.T) {
 	}
 	w.tracker.Flush()
 	w.board.SyncOnce(w.ctx)
-	if cards := w.d.cardsIn("track-A"); len(cards) != 1 || !strings.Contains(cards[0], "BOUNTY PLACED") || !strings.Contains(cards[0], "**Target**") || !strings.Contains(cards[0], "250,000 pts") {
+	if cards := w.d.cardsIn("track-A"); len(cards) != 1 || !strings.Contains(cards[0], "Bounty placed") || !strings.Contains(cards[0], "**Target**") || !strings.Contains(cards[0], "250,000 pts") {
 		t.Fatalf("expected the placement on server A's tracking feed, got %v", cards)
 	}
 	if len(w.d.cardsIn("track-B")) != 0 {
@@ -312,7 +312,7 @@ func TestBountyEndToEndClaimAfterPersistence(t *testing.T) {
 	w.tracker.Flush()
 	w.board.SyncOnce(w.ctx)
 	cards := w.d.cardsIn("track-A")
-	if len(cards) != 2 || cards[1] != "👑 **BOUNTY CLAIMED**\n**Hunter** eliminated **Target**\nReward **250,000 pts**\n`M4-A1` • 86m" {
+	if len(cards) != 2 || cards[1] != "👑 **Bounty claimed**\n**Hunter** eliminated **Target**\nReward **250,000 pts**\n`M4-A1` • 86m" {
 		t.Fatalf("unexpected claim card: %q", cards)
 	}
 	if !strings.Contains(w.d.boardText("board-A"), "No active bounties") {

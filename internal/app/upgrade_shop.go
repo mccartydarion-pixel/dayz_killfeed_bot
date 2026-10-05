@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -36,13 +37,13 @@ func orderStepMessage(step string, o repository.OrderStep, serverName string) (t
 	}
 	switch step {
 	case "RECEIVED":
-		return "📦 Order received", fmt.Sprintf("Thanks! We got your order on %s: **%s** (%d points). We'll message you as it moves along.", serverWord(serverName), items, o.TotalPoints)
+		return "📦 Order received", fmt.Sprintf("Thanks! We got your order on %s: **%s** (%s points). We'll message you as it moves along.", serverWord(serverName), items, commaInt(o.TotalPoints))
 	case "AWAITING_RESTART":
 		return "🚚 Your order is on its way", fmt.Sprintf("**%s** is ready and arrives in game at the next server restart.", items)
 	case "HELD":
 		return "⚠️ Your order needs a hand", fmt.Sprintf("Delivering **%s** hit a problem. Staff have been told and will sort it out.", items)
 	default:
-		return "↩️ Your order was refunded", fmt.Sprintf("**%s** was refunded: %d points are back in your wallet.", items, o.TotalPoints)
+		return "↩️ Your order was refunded", fmt.Sprintf("**%s** was refunded: %s points are back in your wallet.", items, commaInt(o.TotalPoints))
 	}
 }
 
@@ -64,7 +65,7 @@ func (a *App) runShopOrderUpdates(ctx context.Context, guildID int64, s reposito
 		for _, step := range orderSteps(o) {
 			title, desc := orderStepMessage(step, o, serverName)
 			a.notifyOnce(ctx, "SHOP_STEP", guildID, s.ServerID, o.PlayerID, fmt.Sprintf("%d:%s", o.PurchaseID, step), now,
-				dm(upgradeEmbed("CHAMPIONS® SHOP", title, desc, 0x2ECC71)))
+				dm(upgradeEmbed("Shop", title, desc, presentation.Green)))
 		}
 	}
 }

@@ -97,12 +97,15 @@ func (h *historyDiscord) liveIDs(channelID string) []string {
 }
 
 func TestLeaderboardBoardTitleMatchesOnlyBoards(t *testing.T) {
-	for _, title := range []string{"🏆 SEASON LEADERBOARD", "SEASON LEADERBOARD", "CHAMPION KILLFEED\nSEASON LEADERBOARD", "🏆 CHAMPION LEADERBOARD", AutoLeaderboardTitle} {
+	// "📊 AUTO LEADERBOARD 📊" is the V3 header as it was posted before the sentence-case titles:
+	// a board left behind with that title must still be recognised and cleaned up.
+	for _, title := range []string{"🏆 SEASON LEADERBOARD", "SEASON LEADERBOARD", "CHAMPION KILLFEED\nSEASON LEADERBOARD", "🏆 CHAMPION LEADERBOARD", AutoLeaderboardTitle, "📊 AUTO LEADERBOARD 📊", "📊 Auto leaderboard"} {
 		if !isLeaderboardBoardTitle(title) {
 			t.Errorf("%q must be recognised as a leaderboard board", title)
 		}
 	}
-	for _, title := range []string{"🏆 PLAYER LEADERBOARD", "PLAYER STATS", "🎖️ SERVER RANKS 🎖️", "🔫 All Time Top 15 Kills 🔫", "SEASON LEADERBOARD NOTES", "", "🏆 SEASON COMPLETE"} {
+	for _, title := range []string{"🏆 PLAYER LEADERBOARD", "🏆 Player leaderboard", "PLAYER STATS", "Player stats", "🎖️ SERVER RANKS 🎖️", "🎖️ Server ranks", "🔫 All Time Top 15 Kills 🔫",
+		AutoBoardKillsTitle, "SEASON LEADERBOARD NOTES", "", "🏆 SEASON COMPLETE", "🏆 Season complete"} {
 		if isLeaderboardBoardTitle(title) {
 			t.Errorf("%q must never be swept", title)
 		}

@@ -78,7 +78,7 @@ func TestEconomyBountyRewardEndToEnd(t *testing.T) {
 		t.Fatalf("the reward must land in the spendable balance, got %d", got)
 	}
 	cards := w.d.cardsIn("eco-A")
-	if len(cards) != 1 || cards[0] != "💰 **BOUNTY REWARD**\nHunter earned 125,000 pts\nBalance: 125,000 pts" {
+	if len(cards) != 1 || cards[0] != "💰 **Bounty reward**\nHunter earned 125,000 pts\nBalance: 125,000 pts" {
 		t.Fatalf("unexpected reward card: %q", cards)
 	}
 	if len(w.d.cardsIn("eco-B")) != 0 {
@@ -143,7 +143,7 @@ func TestEconomyAdminAdjustmentsFanOutWithoutLeakingAudit(t *testing.T) {
 	w.feed.Flush()
 	for _, ch := range []string{"eco-A", "eco-B"} {
 		cards := w.d.cardsIn(ch)
-		if len(cards) != 2 || cards[0] != "➕ **ADMIN CREDIT**\nHunter received 50,000 pts" || cards[1] != "➖ **ADMIN DEBIT**\nHunter lost 25,000 pts" {
+		if len(cards) != 2 || cards[0] != "➕ **Admin credit**\nHunter received 50,000 pts" || cards[1] != "➖ **Admin debit**\nHunter lost 25,000 pts" {
 			t.Fatalf("%s: unexpected admin cards %q", ch, cards)
 		}
 		for _, c := range cards {

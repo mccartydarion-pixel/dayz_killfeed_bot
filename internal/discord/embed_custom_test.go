@@ -433,8 +433,9 @@ func TestPublishersUseTheDefaultWhenTheCustomizerReturnsIt(t *testing.T) {
 	f.feed.SetCustomizer(&stubCustomizer{passDflt: true}, names)
 	f.feed.Notify(economy.Event{Type: economy.TypeAdminCredit, GuildID: 7, ServerID: 1, PlayerName: "Alice", Amount: 50000, Credit: true})
 	f.feed.Flush()
-	if got := f.last("eco-chan"); got != "➕ **ADMIN CREDIT**\nAlice received 50,000 pts" {
-		t.Fatalf("the default card must be exactly the existing one: %q", got)
+	// The built-in card as buildEconomyEmbed writes it today (sentence-case header, docs/DISCORD_DESIGN.md).
+	if got := f.last("eco-chan"); got != "➕ **Admin credit**\nAlice received 50,000 pts" {
+		t.Fatalf("the default card must be exactly the built-in one: %q", got)
 	}
 }
 

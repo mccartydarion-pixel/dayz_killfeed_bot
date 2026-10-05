@@ -302,12 +302,12 @@ func TestBuildHotZoneOpenedEmbed(t *testing.T) {
 	for _, f := range e.Fields {
 		values[f.Name] = f.Value
 	}
-	if values["WHERE"] != "Within 500 m of 7750 / 12750" || values["ENDS"] != "<t:1700000000:R>" || values["PRIZES"] != "🥇 500 pts • 🥈 250 pts" {
+	if values["Where"] != "Within 500m of 7750 / 12750" || values["Ends"] != "<t:1700000000:R>" || values["Prizes"] != "🥇 500 pts • 🥈 250 pts" {
 		t.Fatalf("fields = %v", values)
 	}
 	// No prizes configured: the prize field is omitted, never an empty heading.
 	for _, f := range BuildHotZoneOpenedEmbed(HotZoneAnnouncement{Name: "Z"}).Fields {
-		if f.Name == "PRIZES" {
+		if f.Name == "Prizes" {
 			t.Fatal("an empty PRIZES field was rendered")
 		}
 	}

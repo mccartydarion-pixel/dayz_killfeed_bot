@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -60,11 +61,11 @@ func RegisterFeaturesCommand(s CommandRegistrar, guildID string) error {
 // Handle processes /features.
 func (h *FeaturesCommandHandler) Handle(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if h == nil || h.store == nil || i == nil || i.GuildID == "" {
-		respondEphemeral(s, i, "The features channel is unavailable until the database is connected.")
+		respondEphemeral(s, i, ReplyIsUnavailable("The features channel"))
 		return
 	}
 	if !isAdminInteraction(i) {
-		respondEphemeral(s, i, "Administrator or Manage Server permission required.")
+		respondEphemeral(s, i, ReplyNeedsManageServer)
 		return
 	}
 	deferEphemeral(s, i) // creating the channel and posting the guide takes several requests
@@ -82,25 +83,25 @@ func (h *FeaturesCommandHandler) Handle(s *discordgo.Session, i *discordgo.Inter
 func (h *FeaturesCommandHandler) toggle(ctx context.Context, api featuresDiscord, guildID, botID string) string {
 	guild, guildRowID, err := h.store.GetGuild(ctx, guildID)
 	if err != nil || guildRowID == 0 {
-		return "This server is not configured. Run `/setup` first."
+		return ReplyNotSetUp
 	}
 	current, err := h.store.FeaturesChannel(ctx, guildID)
 	if err != nil {
-		return "Could not read the features channel setting. Try again in a moment."
+		return ReplyCouldNot("read the features channel setting")
 	}
 	if current != "" {
 		ch, err := api.Channel(current)
 		switch {
 		case err == nil && ch != nil && ch.GuildID == guildID:
 			if _, err := api.ChannelDelete(current); err != nil {
-				return "Could not remove the features channel: " + featuresErrorText(err)
+				return ReplyCouldNotBecause("remove the features channel", featuresErrorText(err))
 			}
 			if err := h.store.SetFeaturesChannel(ctx, guildID, ""); err != nil {
 				slog.Warn("component=discord", "event", "features_channel_forget_failed", "err", err.Error())
 			}
 			return "Features channel removed. Run `/features` again to bring it back."
 		case err != nil && welcomeErrorClass(err) != "CHANNEL_MISSING":
-			return "Could not check the features channel: " + featuresErrorText(err)
+			return ReplyCouldNotBecause("check the features channel", featuresErrorText(err))
 		}
 		// The recorded channel was deleted by hand (or is not in this server): make a new one.
 	}
@@ -119,17 +120,17 @@ func (h *FeaturesCommandHandler) toggle(ctx context.Context, api featuresDiscord
 		ch, err = api.GuildChannelCreateComplex(guildID, data)
 	}
 	if err != nil || ch == nil {
-		return "Could not create the features channel: " + featuresErrorText(err)
+		return ReplyCouldNotBecause("create the features channel", featuresErrorText(err))
 	}
 	if err := h.store.SetFeaturesChannel(ctx, guildID, ch.ID); err != nil {
 		_, _ = api.ChannelDelete(ch.ID) // never leave a channel the next /features cannot find
-		return "Could not save the features channel. Nothing was changed; try again in a moment."
+		return "Couldn't save the features channel. Nothing was changed. Try again in a moment."
 	}
 	for _, msg := range featuresGuideMessages() {
 		if _, err := api.ChannelMessageSendComplex(ch.ID, msg); err != nil {
 			_, _ = api.ChannelDelete(ch.ID)
 			_ = h.store.SetFeaturesChannel(ctx, guildID, "")
-			return "Could not post the feature guide: " + featuresErrorText(err)
+			return ReplyCouldNotBecause("post the feature guide", featuresErrorText(err))
 		}
 	}
 	return "Features channel created: <#" + ch.ID + ">. Run `/features` again to remove it."
@@ -201,6 +202,9 @@ func embedTextLength(e *discordgo.MessageEmbed) int {
 	return n
 }
 
+// The guide's colours follow the palette's meanings like every card: crimson for the intro and
+// for combat features, gold for features about rewards and standing, neutral for the rest.
+//
 // featuresGuideEmbeds is the guide itself: one card per feature, newest first after the intro.
 // Only features that are live for everyone belong here; nothing still in testing.
 func featuresGuideEmbeds() []*discordgo.MessageEmbed {
@@ -212,10 +216,10 @@ func featuresGuideEmbeds() []*discordgo.MessageEmbed {
 	}
 	return []*discordgo.MessageEmbed{
 		{
-			Color: ColorChampionGold, Title: "🏆 What's new on Champion",
+			Color: presentation.Crimson, Title: "🏆 What's new on Champion",
 			Description: "This channel lists Champion's newest features and how to use them.\n\n" +
 				"Some features are switched on by this server's staff, so not every one may be active here yet.",
-			Footer: &discordgo.MessageEmbedFooter{Text: "CHAMPION • Staff can remove this channel with /features"},
+			Footer: presentation.Footer("", "Staff can remove this channel with /features"),
 		},
 		card(ColorInfoBlue, "🔗 Start here: link your account",
 			"Link your PlayStation name to Discord once to unlock your stats, card and Player Hub.",
@@ -223,7 +227,7 @@ func featuresGuideEmbeds() []*discordgo.MessageEmbed {
 			"Discord `/link`, then the website Player Hub"),
 		card(ColorChampionGold, "⚡ Double RP",
 			"Staff can open a double RP window: every ranked kill inside it earns twice the usual RP.",
-			"• A window lasts 1 to 72 hours and is announced with a \"2× RP IS LIVE\" card\n• What counts is when the kill happened, so a late-logged kill is still doubled\n• The repeat-kill cooldown on the same player still applies\n• When it ends, the top three RP earners are posted",
+			"• A window lasts 1 to 72 hours and is announced with a \"2× RP is live\" card\n• What counts is when the kill happened, so a late-logged kill is still doubled\n• The repeat-kill cooldown on the same player still applies\n• When it ends, the top three RP earners are posted",
 			"Events channel, and beside your rank in the Player Hub"),
 		card(ColorChampionGold, "🪪 Champion Card",
 			"A picture of your stats you can show off in any channel.",
@@ -233,15 +237,15 @@ func featuresGuideEmbeds() []*discordgo.MessageEmbed {
 			"Every life from spawn to death: how long it lasted, what happened and how it ended.",
 			"• Each life is tracked automatically once your account is linked\n• `/life me` shows your current and recent lives, `/life top` the boards\n• `/life recap on` sends you a DM recap when you die",
 			"Discord `/life`, website Player Hub"),
-		card(ColorDangerRed, "🔥 Hot zones",
+		card(presentation.Crimson, "🔥 Hot zones",
 			"When a fight breaks out, a short event opens on that spot by itself.",
 			"• The opening card shows where it is, how big, when it ends and what it pays\n• Get kills inside the circle while it is open\n• The top three when it closes earn Champion Points",
 			"Server status channel"),
-		card(ColorDangerRed, "💀 Bounties",
+		card(presentation.Crimson, "💀 Bounties",
 			"Put Champion Points on another player's head.",
 			"• `/bounty create` with the player, the points and how long it lasts\n• Kill the target before it runs out to claim it\n• `/bounty list` shows every open bounty",
 			"Discord `/bounty`, bounties channel"),
-		card(ColorSuccessGreen, "🛒 Shop orders and tickets",
+		card(presentation.Neutral, "🛒 Shop orders and tickets",
 			"Spend Champion Points in the server's Shop and confirm what you received.",
 			"• Buy on the website and pick where you want the item dropped\n• After delivery you get a DM with **Received order** and **Issue with order**\n• **Issue with order** opens a private ticket channel with staff\n• No answer in 48 hours completes the order",
 			"Website Shop, Discord DM"),
@@ -249,7 +253,7 @@ func featuresGuideEmbeds() []*discordgo.MessageEmbed {
 			"Support the server and get recognised for it.",
 			"• When staff give you a supporter tier you get a DM, and a tier card shows in your Player Hub\n• The Donate tab sells non-gameplay perks for Champion Points",
 			"Website Player Hub and Donate tab"),
-		card(ColorWarningOrange, "🛡️ Base protection",
+		card(presentation.Neutral, "🛡️ Base protection",
 			"Know when someone is at your base, even when you are offline.",
 			"• Register your base with `/registerbase` and check it with `/mybase`\n• Base Raid Alarm: a DM when someone starts taking your base apart\n• Perimeter Watch: a DM when another player comes near\n• Faction Security sends the alerts to your whole faction",
 			"Discord, Security Store"),

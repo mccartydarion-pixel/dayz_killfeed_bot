@@ -100,17 +100,17 @@ var championDestinations = []championDestination{
 	{
 		Key: "COMBAT_FEED", Label: "Combat Feed", Category: categoryLive, ChannelName: "🔫・combat-feed",
 		Routes: []string{"KILLFEED"}, Anchors: []string{"KILLFEED"},
-		Starter: &starterCard{"🔫 COMBAT FEED", "Player-versus-player eliminations will appear here."},
+		Starter: &starterCard{"🔫 Combat feed", "Player-versus-player eliminations will appear here."},
 	},
 	{
 		Key: "PVE_FEED", Label: "PvE & Death Feed", Category: categoryLive, ChannelName: "☠️・pve-feed",
 		Routes: []string{"PVE_FEED"}, Anchors: []string{"PVE_FEED"},
-		Starter: &starterCard{"☠️ PvE & DEATH FEED", "Deaths, suicides, and supported PvE events will appear here."},
+		Starter: &starterCard{"☠️ PvE and death feed", "Deaths, suicides, and supported PvE events will appear here."},
 	},
 	{
 		Key: "HITFEED", Label: "Hitfeed", Category: categoryLive, ChannelName: "🎯・hitfeed",
 		Routes: []string{"HITFEED"}, Anchors: []string{"HITFEED"},
-		Starter: &starterCard{"🎯 HITFEED", "Champion hit reports will appear here."},
+		Starter: &starterCard{"🎯 Hitfeed", "Champion hit reports will appear here."},
 	},
 	{
 		Key: "BOUNTIES", Label: "Bounties", Category: categoryLive, ChannelName: "💀・bounties",
@@ -119,7 +119,7 @@ var championDestinations = []championDestination{
 	{
 		Key: "CONNECTIONS", Label: "Connections", Category: categoryLive, ChannelName: "🟢・connections",
 		Routes: []string{"CONNECTIONS"}, Anchors: []string{"CONNECTIONS"},
-		Starter: &starterCard{"🟢 CONNECTIONS", "Player connection and disconnection activity will appear here."},
+		Starter: &starterCard{"🟢 Connections", "Player connection and disconnection activity will appear here."},
 	},
 	{
 		Key: "HEATMAPS", Label: "Heatmaps", Category: categoryLive, ChannelName: "🗺️・heatmaps",
@@ -132,7 +132,7 @@ var championDestinations = []championDestination{
 	{
 		Key: "EVENTS", Label: "Events", Category: categoryHub, ChannelName: "🏁・events",
 		Routes: []string{"EVENTS"}, Anchors: []string{"EVENTS"},
-		Starter: &starterCard{"🏁 SERVER EVENTS", "Server events are announced here: an **upcoming** card when an event is scheduled, a **started** card when it goes live, and the **results** when it ends."},
+		Starter: &starterCard{"🏁 Server events", "Server events are announced here: an **upcoming** card when an event is scheduled, a **started** card when it goes live, and the **results** when it ends."},
 	},
 	{
 		Key: "LEADERBOARDS", Label: "Leaderboards", Category: categoryHub, ChannelName: "📊・leaderboards",
@@ -145,7 +145,7 @@ var championDestinations = []championDestination{
 	{
 		Key: "FACTION_RECRUITMENT", Label: "Faction Recruitment", Category: categoryHub, ChannelName: "🛡️・faction-recruitment",
 		Routes: []string{"FACTION_RECRUITMENT"}, Anchors: []string{"FACTION_RECRUITMENT"},
-		Starter: &starterCard{"🛡️ FACTION RECRUITMENT", "Faction leaders post their recruitment cards here from the Champion website. Press **Join** on an open faction to join instantly, or **Apply** on an invite-only faction to send the leader a request."},
+		Starter: &starterCard{"🛡️ Faction recruitment", "Faction leaders post their recruitment cards here from the Champion website. Press **Join** on an open faction to join instantly, or **Apply** on an invite-only faction to send the leader a request."},
 	},
 	{
 		Key: "PLAYER_LINK", Label: "Player Link", Category: categoryHub, ChannelName: "🔗・player-link",
@@ -154,12 +154,12 @@ var championDestinations = []championDestination{
 	{
 		Key: "ECONOMY", Label: "Economy", Category: categoryHub, ChannelName: "💰・economy",
 		Routes: []string{"ECONOMY", "SHOP"}, Anchors: []string{"ECONOMY", "SHOP"},
-		Starter: &starterCard{"💰 CHAMPION ECONOMY", "Champion Points and shop activity will appear here."},
+		Starter: &starterCard{"💰 Champion economy", "Champion Points and shop activity will appear here."},
 	},
 	{
 		Key: "DONATION_PERKS", Label: "Donations & Perks", Category: categoryHub, ChannelName: "💎・donations-perks",
 		Routes: []string{"DONATION_PERKS"}, Anchors: []string{"DONATION_PERKS"},
-		Starter: &starterCard{"💎 DONATIONS & PERKS", "Supporters who pick up a perk in the Player Hub are thanked here, with this month's top supporters."},
+		Starter: &starterCard{"💎 Donations and perks", "Supporters who pick up a perk in the Player Hub are thanked here, with this month's top supporters."},
 	},
 	{
 		Key: "ONLINE_COUNTER", Label: "Players Online", Category: categoryHub, ChannelName: discord.OnlineCounterName(0, 0),
@@ -183,7 +183,7 @@ var championDestinations = []championDestination{
 	{
 		Key: "ADMIN_LOGS", Label: "Admin Logs", Category: categoryStaff, ChannelName: "🛡️・admin-logs",
 		Routes: []string{"ADMIN_LOGS", "ADMIN_ALERTS", "BUILD_FEED"}, Anchors: []string{"ADMIN_LOGS", "ADMIN_ALERTS", "BUILD_FEED"},
-		Starter: &starterCard{"🛡️ ADMIN LOGS", "Champion staff operations will appear here.\n\n**Includes**\n• ADM log health\n• Operational alerts\n• Build activity, when the server logs it"},
+		Starter: &starterCard{"🛡️ Admin logs", "Champion staff operations will appear here.\n\n**Includes**\n• ADM log health\n• Operational alerts\n• Build activity, when the server logs it"},
 	},
 }
 

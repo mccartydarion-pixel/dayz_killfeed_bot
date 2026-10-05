@@ -88,7 +88,7 @@ func RegisterServerCommands(s CommandRegistrar, guildID string) error {
 // themselves, the connect modal submission, and service_id autocomplete.
 func (h *ServerCommandHandler) Handle(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if h == nil || h.servers == nil || h.guilds == nil || i == nil {
-		respondEphemeral(s, i, "Server management is unavailable.")
+		respondEphemeral(s, i, ReplyIsUnavailable("Server management"))
 		return
 	}
 
@@ -103,7 +103,7 @@ func (h *ServerCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interac
 		return
 	case discordgo.InteractionModalSubmit:
 		if !isAdmin(s, i) {
-			respondEphemeral(s, i, "⛔ You need Administrator or Manage Server permission to manage servers.")
+			respondEphemeral(s, i, ReplyNeedsPermission("manage servers"))
 			return
 		}
 		h.handleModalSubmit(s, i)
@@ -115,13 +115,13 @@ func (h *ServerCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interac
 	}
 
 	if !isAdmin(s, i) {
-		respondEphemeral(s, i, "⛔ You need Administrator or Manage Server permission to manage servers.")
+		respondEphemeral(s, i, ReplyNeedsPermission("manage servers"))
 		return
 	}
 
 	opts := i.ApplicationCommandData().Options
 	if len(opts) == 0 {
-		respondEphemeral(s, i, "Choose a /server subcommand.")
+		respondEphemeral(s, i, ReplyChooseSubcommand)
 		return
 	}
 	sub := opts[0]
@@ -140,7 +140,7 @@ func (h *ServerCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interac
 	case "status":
 		h.handleStatus(s, i)
 	default:
-		respondEphemeral(s, i, "Unknown /server subcommand.")
+		respondEphemeral(s, i, ReplyChooseSubcommand)
 	}
 }
 
@@ -148,12 +148,12 @@ func (h *ServerCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interac
 // visible channel message or logged anywhere.
 func (h *ServerCommandHandler) handleConnect(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if h.cipher == nil {
-		respondEphemeral(s, i, "❌ Server connection is unavailable: credential encryption is not configured on this deployment.")
+		respondEphemeral(s, i, serverConnectUnavailable)
 		return
 	}
 	err := respondModalData(s, i, &discordgo.InteractionResponseData{
 		CustomID: serverConnectModalID,
-		Title:    "Connect Nitrado Server",
+		Title:    "Connect a Nitrado server",
 		Components: []discordgo.MessageComponent{
 			discordgo.ActionsRow{Components: []discordgo.MessageComponent{
 				discordgo.TextInput{
@@ -181,16 +181,16 @@ func (h *ServerCommandHandler) handleModalSubmit(s *discordgo.Session, i *discor
 		return
 	}
 	if !isAdmin(s, i) {
-		respondEphemeral(s, i, "⛔ You need Administrator or Manage Server permission to manage servers.")
+		respondEphemeral(s, i, ReplyNeedsPermission("manage servers"))
 		return
 	}
 	if h.cipher == nil {
-		respondEphemeral(s, i, "❌ Server connection is unavailable: credential encryption is not configured.")
+		respondEphemeral(s, i, serverConnectUnavailable)
 		return
 	}
 	token := strings.TrimSpace(modalValue(i.ModalSubmitData(), serverConnectTokenID))
 	if token == "" {
-		respondEphemeral(s, i, "❌ No token was provided.")
+		respondEphemeral(s, i, "No token was provided.")
 		return
 	}
 
@@ -204,20 +204,20 @@ func (h *ServerCommandHandler) handleModalSubmit(s *discordgo.Session, i *discor
 
 	_, guildRowID, err := h.guilds.GetGuild(ctx, i.GuildID)
 	if err != nil || guildRowID == 0 {
-		h.editResponse(s, i, "❌ Run `/setup` before connecting a server.")
+		h.editResponse(s, i, ReplyNotSetUp)
 		return
 	}
 
 	client := nitrado.NewClient(nitrado.DefaultBaseURL, token, nil)
 	if err := client.AuthenticationCheck(ctx); err != nil {
-		h.editResponse(s, i, "❌ Token rejected by Nitrado: "+classifyNitradoErr(err))
+		h.editResponse(s, i, "Nitrado rejected the token: "+classifyNitradoErr(err))
 		return
 	}
 
 	ciphertext, nonce, version, err := h.cipher.Encrypt([]byte(token))
 	token = "" // never retain plaintext beyond this point
 	if err != nil {
-		h.editResponse(s, i, "❌ Could not securely store the token.")
+		h.editResponse(s, i, ReplyCouldNot("store the token securely"))
 		return
 	}
 	now := time.Now().UTC()
@@ -231,12 +231,15 @@ func (h *ServerCommandHandler) handleModalSubmit(s *discordgo.Session, i *discor
 		LastSuccessAt:   &now,
 	}
 	if err := h.servers.SaveConnection(ctx, conn); err != nil {
-		h.editResponse(s, i, "❌ Could not save the connection.")
+		h.editResponse(s, i, ReplyCouldNot("save the connection"))
 		return
 	}
 	slog.Info("component=discord", "msg", "nitrado connection saved", "guild_id", i.GuildID)
 	h.editResponse(s, i, "✅ Nitrado token verified and securely stored.\nRun `/server services` to see your DayZ servers, then `/server select`.")
 }
+
+// serverConnectUnavailable answers when the deployment cannot store a Nitrado token safely.
+const serverConnectUnavailable = "Connecting a server is unavailable right now: credential encryption is not configured on this deployment."
 
 // handleServices lists the real, DayZ-filtered services on the guild's
 // connected Nitrado account.
@@ -246,7 +249,7 @@ func (h *ServerCommandHandler) handleServices(s *discordgo.Session, i *discordgo
 	defer cancel()
 	services, err := h.dayZServices(ctx, i.GuildID)
 	if err != nil {
-		respondEphemeral(s, i, "❌ "+err.Error())
+		respondEphemeral(s, i, ReplyCouldNotBecause("read your Nitrado services", err.Error()))
 		return
 	}
 	if len(services) == 0 {
@@ -277,7 +280,7 @@ func (h *ServerCommandHandler) handleSelect(s *discordgo.Session, i *discordgo.I
 
 	services, client, err := h.dayZServicesAndClient(ctx, i.GuildID)
 	if err != nil {
-		respondEphemeral(s, i, "❌ "+err.Error())
+		respondEphemeral(s, i, ReplyCouldNotBecause("read your Nitrado services", err.Error()))
 		return
 	}
 	var matched *nitrado.Service
@@ -288,13 +291,13 @@ func (h *ServerCommandHandler) handleSelect(s *discordgo.Session, i *discordgo.I
 		}
 	}
 	if matched == nil {
-		respondEphemeral(s, i, "❌ That service ID was not found among your DayZ services. Run `/server services`.")
+		respondEphemeral(s, i, "That service ID was not found among your DayZ services. Run `/server services`.")
 		return
 	}
 
 	_, guildRowID, err := h.guilds.GetGuild(ctx, i.GuildID)
 	if err != nil || guildRowID == 0 {
-		respondEphemeral(s, i, "❌ Run `/setup` before connecting a server.")
+		respondEphemeral(s, i, ReplyNotSetUp)
 		return
 	}
 
@@ -317,7 +320,7 @@ func (h *ServerCommandHandler) handleSelect(s *discordgo.Session, i *discordgo.I
 		Active:            true,
 	})
 	if err != nil {
-		respondEphemeral(s, i, "❌ Could not save the server.")
+		respondEphemeral(s, i, ReplyCouldNot("save the server"))
 		return
 	}
 	if _, err := h.servers.EnsureConfig(ctx, row.ID); err != nil {
@@ -349,16 +352,16 @@ func (h *ServerCommandHandler) handleDisconnect(s *discordgo.Session, i *discord
 
 	_, guildRowID, err := h.guilds.GetGuild(ctx, i.GuildID)
 	if err != nil || guildRowID == 0 {
-		respondEphemeral(s, i, "❌ Run `/setup` first.")
+		respondEphemeral(s, i, ReplyNotSetUp)
 		return
 	}
 	row, err := h.servers.FindByGuildAndService(ctx, guildRowID, serviceID)
 	if err != nil || row == nil {
-		respondEphemeral(s, i, "❌ That server is not connected to this guild.")
+		respondEphemeral(s, i, "That server is not connected to this Discord.")
 		return
 	}
 	if err := h.servers.Deactivate(ctx, row.ID); err != nil {
-		respondEphemeral(s, i, "❌ Could not disconnect the server.")
+		respondEphemeral(s, i, ReplyCouldNot("disconnect the server"))
 		return
 	}
 	if h.runtime != nil {
@@ -382,18 +385,18 @@ func (h *ServerCommandHandler) handleRepair(s *discordgo.Session, i *discordgo.I
 
 	_, guildRowID, err := h.guilds.GetGuild(ctx, i.GuildID)
 	if err != nil || guildRowID == 0 {
-		respondEphemeral(s, i, "❌ Run `/setup` first.")
+		respondEphemeral(s, i, ReplyNotSetUp)
 		return
 	}
 	row, err := h.servers.FindByGuildAndService(ctx, guildRowID, serviceID)
 	if err != nil || row == nil {
-		respondEphemeral(s, i, "❌ That server is not known to this guild. Run `/server select` instead.")
+		respondEphemeral(s, i, "That server is not known to this Discord. Run `/server select` instead.")
 		return
 	}
 
 	services, err := h.dayZServices(ctx, i.GuildID)
 	if err != nil {
-		respondEphemeral(s, i, "❌ Re-validation failed: "+err.Error())
+		respondEphemeral(s, i, ReplyCouldNotBecause("re-validate the server", err.Error()))
 		return
 	}
 	found := false
@@ -404,12 +407,12 @@ func (h *ServerCommandHandler) handleRepair(s *discordgo.Session, i *discordgo.I
 		}
 	}
 	if !found {
-		respondEphemeral(s, i, "❌ That service was not found on the connected Nitrado account anymore.")
+		respondEphemeral(s, i, "That service was not found on the connected Nitrado account anymore.")
 		return
 	}
 
 	if err := h.servers.Reactivate(ctx, row.ID); err != nil {
-		respondEphemeral(s, i, "❌ Could not reactivate the server.")
+		respondEphemeral(s, i, ReplyCouldNot("reactivate the server"))
 		return
 	}
 	if h.runtime == nil {
@@ -418,7 +421,7 @@ func (h *ServerCommandHandler) handleRepair(s *discordgo.Session, i *discordgo.I
 	}
 	// The worker outlives this command: it must not inherit the command's timeout.
 	if err := h.runtime.RepairServer(context.WithoutCancel(ctx), row.ID); err != nil {
-		respondEphemeral(s, i, fmt.Sprintf("❌ Re-validated, but the worker could not be reattached: %s", err.Error()))
+		respondEphemeral(s, i, fmt.Sprintf("The server was re-validated, but its killfeed worker could not be reattached: %s", err.Error()))
 		return
 	}
 	respondEphemeral(s, i, fmt.Sprintf("✅ **%s** re-validated and its killfeed worker has been reattached.", row.DisplayName))
@@ -428,16 +431,16 @@ func (h *ServerCommandHandler) handleStatus(s *discordgo.Session, i *discordgo.I
 	ctx := context.Background()
 	_, gid, err := h.guilds.GetGuild(ctx, i.GuildID)
 	if err != nil || gid == 0 {
-		respondEphemeral(s, i, "Run `/setup` first.")
+		respondEphemeral(s, i, ReplyNotSetUp)
 		return
 	}
 	rows, err := h.servers.ListActiveByGuild(ctx, gid)
 	if err != nil {
-		respondEphemeral(s, i, "Could not load server connections.")
+		respondEphemeral(s, i, ReplyCouldNot("load the server connections"))
 		return
 	}
 	var b strings.Builder
-	b.WriteString("🏆 **CHAMPION SERVER CONNECTIONS**\n\n")
+	b.WriteString("🏆 **Champion server connections**\n\n")
 	for _, row := range rows {
 		fmt.Fprintf(&b, "**%s**\n%s • %s\nStatus: %s\n\n", row.DisplayName, row.Game, row.Platform, row.Status)
 	}

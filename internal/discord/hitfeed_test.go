@@ -126,7 +126,7 @@ func TestHitfeedPublishesToConfiguredRoute(t *testing.T) {
 	if len(msgs) != 1 || len(msgs[0].embeds) != 1 {
 		t.Fatalf("expected 1 message with 1 card, got %+v", msgs)
 	}
-	want := "🎯 **HIT**  Alice  ➜  Bob\nM4-A1 · 556x45 · 42m\nTorso · 1 hit · 28 dmg"
+	want := "🎯 **Hit**  Alice  ➜  Bob\nM4-A1 • 556x45 • 42m\nTorso • 1 hit • 28 dmg"
 	if got := desc(msgs[0], 0); got != want {
 		t.Fatalf("unexpected card:\n%q\nwant\n%q", got, want)
 	}
@@ -254,7 +254,7 @@ func TestHitfeedRapidHitsAggregateIntoOneCard(t *testing.T) {
 		t.Fatalf("expected a single aggregated card, got %d messages", len(msgs))
 	}
 	got := desc(msgs[0], 0)
-	if !strings.Contains(got, "300 hits") || !strings.Contains(got, "399m") || !strings.Contains(got, "Head") || !strings.Contains(got, "8400 dmg") {
+	if !strings.Contains(got, "300 hits") || !strings.Contains(got, "399m") || !strings.Contains(got, "Head") || !strings.Contains(got, "8,400 dmg") {
 		t.Fatalf("expected latest distance/zone, hit count and summed damage, got %q", got)
 	}
 }
@@ -499,10 +499,10 @@ func TestHitfeedMissingOptionalFieldsAreOmittedCleanly(t *testing.T) {
 	p.tick(false)
 
 	got := desc(f.sender.messages("hit-chan")[0], 0)
-	if got != "🎯 **HIT**  Alice  ➜  Bob\n1 hit" {
+	if got != "🎯 **Hit**  Alice  ➜  Bob\n1 hit" {
 		t.Fatalf("expected a minimal valid card, got %q", got)
 	}
-	for _, banned := range []string{"unknown", "Unknown", " · ", "dmg", "0m"} {
+	for _, banned := range []string{"unknown", "Unknown", " • ", "dmg", "0m"} {
 		if strings.Contains(got, banned) {
 			t.Fatalf("a missing field must be omitted, not filled in (%q found): %q", banned, got)
 		}

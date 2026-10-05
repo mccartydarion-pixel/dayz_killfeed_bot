@@ -1,5 +1,10 @@
 # Auto Leaderboard V3
 
+> **Titles and colours: see `DISCORD_DESIGN.md`.** The board's titles are now sentence case with
+> one leading emoji (`📊 Auto leaderboard`, `🔫 All-time top 15 kills` ...), every category is
+> gold, values use lower-case units (`6,053 kills`) and the header reads
+> `Refreshes every 3 hours`. The layout, order and refresh behaviour below are unchanged.
+
 The persistent `AUTO_LEADERBOARD` board is **one Discord message carrying
 several embeds**, sent and edited together in a single API call. One message
 ID, one refresh, and no drift in message order.

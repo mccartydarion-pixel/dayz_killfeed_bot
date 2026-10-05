@@ -123,10 +123,7 @@ func (a *App) notifyZoneAlertPlayer(ev killfeed.IntrusionEvent) {
 			cooldown = time.Minute
 		}
 		ref := fmt.Sprintf("%d:%d:%d", ev.Zone.ID, ev.PlayerID, ev.At.Unix()/int64(cooldown.Seconds()))
-		embed := buildIntrusionEmbed(ev)
-		embed.Author = nil
-		embed.Description = fmt.Sprintf("**%s** %s", orUnknown(ev.Gamertag), strings.TrimPrefix(embed.Description, ev.Gamertag+" "))
-		embed.Footer = nil
+		embed := buildIntrusionEmbed(ev) // the same card the zone's channel gets
 		a.notifyOnce(ctx, "ZONE_ALERT", ev.Zone.GuildID, ev.Zone.ServerID, target.PlayerID, ref, time.Now().UTC(), dm(embed))
 	}()
 }

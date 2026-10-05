@@ -75,7 +75,7 @@ func (a *VerifiedRoleAssigner) NotifyVerified(ctx context.Context, discordUserID
 	if err != nil {
 		return fmt.Errorf("open DM channel: %w", err)
 	}
-	message := "✅ **VERIFICATION COMPLETE**\n\nYour PlayStation account is now verified with Champion."
+	message := "✅ **Verification complete**\n\nYour PlayStation account is now verified with Champion."
 	if roleAssigned {
 		message += " Your Verified role has been assigned."
 	}
