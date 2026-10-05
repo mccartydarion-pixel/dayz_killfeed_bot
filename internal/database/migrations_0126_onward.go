@@ -29,4 +29,12 @@ var migrations0126onward = []Migration{
 		Name: "0129_ranked_same_victim_cooldown",
 		SQL:  RankedSameVictimCooldownSQL,
 	},
+	{
+		// Ranked seasons: the same-victim wait can change during a season
+		// (docs/RANKED_SERVER_SEASONS.md). The history of values lets the award path use the wait
+		// that was in force when a kill happened. Existing seasons are seeded from their own row,
+		// effective from the season start. Additive.
+		Name: "0130_ranked_cooldown_changes",
+		SQL:  RankedCooldownChangesSQL,
+	},
 }
