@@ -6,7 +6,10 @@ info:
     pages. Machine-readable companion to docs/ADMIN_API.md. Separate from the
     customer API (docs/saas-openapi.yaml): only platform admins on the
     CHAMPION_ADMIN_DISCORD_IDS allowlist may call it; organization roles and
-    Discord guild permissions never grant access. Phase 1 has no write routes.
+    Discord guild permissions never grant access. NOTE: this file covers only
+    the first, read-only routes. The owner controls (POST routes), feature flags,
+    platform staff and operations routes added since are documented in
+    docs/ADMIN_API.md and docs/OWNER_OPS.md and are not listed here.
   version: "1.0.0"
 servers:
   - url: "{baseUrl}"

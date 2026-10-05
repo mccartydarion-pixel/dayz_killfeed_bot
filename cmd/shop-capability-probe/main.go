@@ -1,5 +1,5 @@
 // Command shop-capability-probe runs Champion Shop Phase 2C.1 capability discovery
-// (docs/SHOP_DELIVERY_PHASE2C1.md) against one Nitrado service. It is READ-ONLY: it uses only
+// (docs/archive/SHOP_DELIVERY_PHASE2C1.md) against one Nitrado service. It is READ-ONLY: it uses only
 // internal/shop/capability's Reader (GET requests and signed downloads) and prints the sanitized
 // JSON report - never the token, a signed URL, a credential, or a configuration file's contents.
 //

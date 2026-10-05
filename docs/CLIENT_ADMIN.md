@@ -361,8 +361,8 @@ and deferred the rest rather than ship unverified or fabricated plumbing:
   (`PLAYER_LAST_LOCATION_VIEW`/`PLAYER_LOCATION_VIEW`).
 - **~~Zones, zone-ignore, zone-ban, Base Radar/UAV~~ - built in Phase 4** (`docs/ZONES_UAV_RADAR.md`):
   a stateful intrusion engine consuming `player_location_events`, sharing one engine for every zone
-  type (no duplicated UAV/Base Radar logic). **Heatmap aggregation is still deferred** - it was not
-  part of Phase 4's scope either.
+  type (no duplicated UAV/Base Radar logic). Heatmap aggregation was not part of Phase 4's scope; it was
+  built in Phase 5 (`docs/HEATMAPS.md`, see "What changed (Phase 5" above).
 - **Discord kick/ban/timeout/bulk message clear** - discordgo has direct, well-documented support
   for all four; deferred purely to keep this phase's already-large surface bounded, not because of
   any capability gap.

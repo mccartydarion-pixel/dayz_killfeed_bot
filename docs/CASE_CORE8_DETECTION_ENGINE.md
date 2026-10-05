@@ -1,6 +1,6 @@
 # C.A.S.E. Core Eight — detection engine
 
-Status: **offline engine implemented and unit-tested. No production caller. No detector is active.** All eight catalog entries stay `BLOCKED` (Xbox PC: `UNSUPPORTED`), so the engine cannot produce `canNotify: true`, and `enforcement` is always `DISABLED`.
+Status: **engine implemented and unit-tested. No detector is active.** The bot calls it only for the read-only shadow reads described below (Suspicious Logins, Base Boosting) and for the staff-alert worker, which sends nothing while no detector is released (`docs/CASE_STAFF_ALERTS.md`). All eight catalog entries stay `BLOCKED` (Xbox PC: `UNSUPPORTED`), so the engine cannot produce `canNotify: true`, and `enforcement` is always `DISABLED`.
 
 This is the implementation for Phases 2–6 of the [Core Eight roadmap](CASE_CORE_ADVANCED_ROADMAP.md). It adds no ninth module and does not change polling, killfeed, economy, billing, verification, `/setup` or Discord delivery.
 
@@ -80,7 +80,7 @@ These are why every module stays blocked. They are properties of the data source
 5. **No item identity or inventory transactions** in ADM. Dupe stays `ITEM_EVIDENCE_UNAVAILABLE`.
 6. **No platform attestation** on console. PC Detection (Xbox) stays `UNSUPPORTED`.
 7. **Restart schedule.** `BootRestartWindows` derives restarts from boot boundaries (a newer boot file is written evidence of a restart), for the shadow read only. An ADM gap alone is still not a restart, and no host API or owner schedule is connected.
-8. **Base registry.** Draft [#157](https://github.com/mccartydarion-pixel/dayz_killfeed_bot/pull/157) (migration 0070) is unmerged. A real ADM build line sample is still unverified.
+8. **Base registry.** Merged: migration `0070_case_base_registration` (written as draft #157). A real ADM build line sample is still unverified.
 
 ## Shadow evaluation: Suspicious Logins
 
@@ -94,7 +94,7 @@ The protected `/anti-cheat/sessions` read now includes `loginShadow`: a read-onl
 ## Dashboard and marketplace
 
 - The protected `/anti-cheat/detector-readiness` read now includes `requiredTelemetry` for each module's health entry: one `{kind, status, reason}` per feed in `RequiredTelemetry`. Status is one of `CURRENT`, `STALE`, `UNAVAILABLE`, `NOT_CONFIGURED`, `UNVERIFIED` or `UNSUPPORTED`. Only the ADM feed can be `CURRENT`, and only from the live worker snapshot. The field is additive: module `state` and `reasons` are unchanged. The dashboard should list these feeds so an owner can see exactly what each detector is missing. A module must never show as operational unless its state is `ACTIVE`, which the owner toggle alone cannot achieve.
-- Owner sensitivity storage stays in draft [#170](https://github.com/mccartydarion-pixel/dayz_killfeed_bot/pull/170). The engine consumes it as `EvalContext.Mode` / `Thresholds`.
+- Owner sensitivity storage is merged (`internal/repository/case_detector_settings_repository.go`, written as draft #170). The engine consumes it as `EvalContext.Mode` / `Thresholds`.
 - Security Marketplace products (#156) are not detectors. Base Boost findings carry `AffectedBaseID`, so a future purchased owner notice can be built on the separate player-facing path. The engine never sends player-facing messages.
 
 ## Release gate per detector
@@ -106,4 +106,4 @@ A module can move from `BLOCKED` to `VALIDATED_SHADOW` only after all of the fol
 3. Thresholds are approved.
 4. The owner has separately authorized it.
 
-Until then the engine runs only in tests.
+Until then the engine runs only in tests and in the read-only shadow reads above.

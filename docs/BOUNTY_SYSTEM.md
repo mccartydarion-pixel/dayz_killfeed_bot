@@ -3,7 +3,9 @@
 Server-scoped bounties with an atomic, persistence-ordered claim, a persistent
 public board (`BOUNTY` route) and a lifecycle feed (`BOUNTY_TRACKING` route).
 
-Phase 1 deliberately has **no economy**: no purchasing, casino, shop or cash. A
+Phase 1 deliberately has **no economy** of its own: placing a bounty costs nothing, and there is
+no casino or cash. (The Champion Points ledger and the Shop came later: `docs/ECONOMY_SYSTEM.md`,
+`docs/SHOP.md`.) A
 bounty's *amount* is what the claimant is awarded in **Champion Points** (the
 existing `point_transactions` / `player_points` ledger). Nothing is deducted from
 whoever places a bounty.

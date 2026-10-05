@@ -2,6 +2,8 @@
 
 Status: foundation / implementation not enabled. This document is the execution contract; it does not itself activate or sell access.
 
+> **Reading note:** the phase sections below were written one change at a time and still say "draft". The code they describe is merged into the bot (`internal/casebilling`, `internal/app/saas_api_case_billing.go`); it stays inactive while `CHAMPION_CASE_BILLING_ENABLED` and `CHAMPION_CASE_ACCESS_ENABLED` are false, which is the default.
+
 ## Existing system and non-negotiable invariants
 
 - Existing base subscriptions are stored in `subscriptions` with a unique `organization_id`. Do **not** reuse that row, `subscriptions.plan`, `provider_subscription_id`, or the existing base plan catalog as the paid C.A.S.E. product record.

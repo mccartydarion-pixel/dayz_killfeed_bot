@@ -117,7 +117,8 @@ Auth: member. Response `200`: [`DashboardSummary`](#dashboardsummary) - organiza
 ### `POST /api/saas/organizations/{organizationID}/installations`
 Auth: **OWNER/ADMIN**. Creates an installation (with its setup-progress and
 settings child rows) referencing an already-connected guild connection.
-`game_server_id` starts unset - server selection is a later phase.
+`game_server_id` starts unset until a server is selected with
+`POST .../installations/{installationID}/dayz-server` (docs/SAAS_API.md, route 16).
 
 Request:
 ```json
@@ -289,7 +290,7 @@ credential (section 18) - see `TestNoSensitiveFieldsInAPIResponses` in
   health: "SETTING_UP"|"HEALTHY"|"DEGRADED"|"OFFLINE",  // derived from status, not a stored field
   setupProgress?: SetupProgress,
   discordConnection?: DiscordGuildConnectionSummary,
-  dayzServer?: DayZServerSummary,   // present only once a server is selected (a later phase)
+  dayzServer?: DayZServerSummary,   // present only once a server is selected
   createdAt: string,
   setupCompletedAt?: string,        // stamped once, the first time status reaches READY
   lastHealthCheckAt?: string

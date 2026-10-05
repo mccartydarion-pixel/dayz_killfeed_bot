@@ -1,4 +1,4 @@
-# C.A.S.E. neutral review history API candidate
+# C.A.S.E. neutral review history API
 
 `GET /api/saas/organizations/{organizationID}/installations/{installationID}/admin/anti-cheat/cases/{caseID}/history`
 returns a bounded page of immutable state-transition summaries for exactly one
@@ -14,5 +14,5 @@ a detector, send an alert or enforce a sanction. It relies on the already
 deployed inert case-review schema and neutral queue.
 
 This is read plumbing, not end-to-end acceptance. No live finding producer or
-staff mutation route exists yet. Gates A–G remain open, and merging this PR
-requires separate production-impacting approval after exact-head CI.
+staff mutation route exists yet. Gates A–G remain open. (This note was written
+as the description of the change that added the route; the route is merged.)

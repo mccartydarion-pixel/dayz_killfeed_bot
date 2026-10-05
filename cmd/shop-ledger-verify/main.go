@@ -1,5 +1,5 @@
 // Command shop-ledger-verify is the READ-ONLY post-deployment acceptance check for the Shop delivery
-// ledger rollout (docs/SHOP_LEDGER_ROLLOUT.md). It opens a READ ONLY transaction, reads aggregates
+// ledger rollout (docs/archive/SHOP_LEDGER_ROLLOUT.md). It opens a READ ONLY transaction, reads aggregates
 // only (no player names, no personal ids, no credentials) and compares them with the pre-deployment
 // baseline passed as flags. It never writes, never runs migrations and never prints the connection
 // string.

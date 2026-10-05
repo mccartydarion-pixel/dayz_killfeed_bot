@@ -5,6 +5,12 @@ Every Champion Shop purchase now has a **persistent delivery record**. A product
 spawning, no Nitrado file write, no server restart. It builds on `docs/SHOP.md` (purchase transaction, ledger, idempotency, fulfillment, refunds), which is unchanged except
 where this document says otherwise.
 
+> **Since Phase 2A:** the "future proposal" column and section 11 below describe the position when this phase shipped.
+> A guarded Nitrado file write (`internal/shop/missionwrite`), the automatic delivery states (migration 0054) and an
+> automatic delivery worker now exist; the worker is off unless an operator and the owner switch it on. See
+> `docs/SHOP_DELIVERY_WORKER_DESIGN.md` and `docs/SHOP_DELIVERY_WORKER.md`. `shop.DisabledAdapter` and
+> `nitradodelivery.PrototypeAdapter` are still disabled; the worker does not go through them.
+
 ## 1. Implemented vs. future
 
 | Implemented (Phase 2A) | Future proposal (Phase 2B, **not built**) |
@@ -180,7 +186,7 @@ Existing Shop codes are unchanged (`INVALID_PURCHASE_STATUS` for fulfilling a re
 
 ## 11. Nitrado investigation (what exists today)
 
-**Phase 2B research** (official Nitrado upload flow, the DayZ object-spawner mechanism, the non-executing plan/dry-run prototype, duplicate prevention and the test-server experiment) is in `docs/SHOP_DELIVERY_PHASE2B.md`.
+**Phase 2B research** (official Nitrado upload flow, the DayZ object-spawner mechanism, the non-executing plan/dry-run prototype, duplicate prevention and the test-server experiment) is in `docs/archive/SHOP_DELIVERY_PHASE2B.md`.
 
 What `internal/nitrado` actually implements for connected console DayZ services:
 

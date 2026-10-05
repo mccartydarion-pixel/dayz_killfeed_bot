@@ -116,8 +116,9 @@ all-time boards remain guild scoped.
 Before a local season is started, or while a multi-server guild has no public
 server selection, the Ranks embed is omitted. An actual database error still
 fails the entire refresh and preserves the last good message. Dedicated
-`SERVER_RANKS` panels remain separate for each game server. This wiring is
-in the draft Ranked stack and is not deployed until the stack is released.
+`SERVER_RANKS` panels remain separate for each game server. This wiring was
+written as part of the Ranked stack, which has since been merged
+(`internal/discord/server_ranks_board.go`, `docs/RANKED_SERVER_SEASONS.md`).
 
 ## Refresh model
 

@@ -4,8 +4,9 @@ This document is the design record for the authoritative player-directory and lo
 foundation required by Last Locations, Online Player Intelligence, Zones, UAV/Base Radar,
 Heatmaps, and intrusion history - all of which are explicitly **deferred** (`docs/CLIENT_ADMIN.md`
 "Deferred") because none of them had a real, persisted location-history data source to build on.
-This phase builds that source. **Zones, UAV, and heatmaps are still not built** - this is
-backend-first, foundation-only, matching the task's own explicit instruction.
+This phase builds that source. **Zones, UAV, and heatmaps were not built in this phase** - this is
+backend-first, foundation-only, matching the task's own explicit instruction. They were built
+afterwards: `docs/ZONES_UAV_RADAR.md` (Phase 4) and `docs/HEATMAPS.md` (Phase 5).
 
 ## Why this was safe to build now (and wasn't before)
 
@@ -250,7 +251,10 @@ frontend phase would consume. See `docs/CLIENT_ADMIN.md` and `docs/saas-openapi.
 route/response reference, matching the convention already established for every other Client Admin
 route.
 
-## Deferred (still, deliberately)
+## Deferred in this phase (built since)
+
+> Built since: zones and UAV/Base Radar in Phase 4 (`docs/ZONES_UAV_RADAR.md`), heatmap aggregation in Phase 5
+> (`docs/HEATMAPS.md`). The paragraph below is the position when Phase 3 shipped.
 
 Zones, zone-ignore, zone-ban, Base Radar/UAV intrusion detection, and heatmap aggregation are
 **not** built in this phase - the task's own instruction ("Do NOT build zones, UAV, or heatmaps
