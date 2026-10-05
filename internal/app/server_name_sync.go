@@ -212,7 +212,8 @@ func (a *App) startServerNameSync(ctx context.Context) {
 		return
 	}
 	store := repository.NewServerNameRepository(a.DB.Pool)
-	go func() {
+	// One process only (singleton_leader.go): a second one would repeat every Nitrado read.
+	go a.singleton(ctx, "server_name_sync", func(ctx context.Context) {
 		wait := serverNameSyncWait(serverNameSyncStartDelay)
 		for {
 			timer := time.NewTimer(wait)
@@ -225,5 +226,5 @@ func (a *App) startServerNameSync(ctx context.Context) {
 			a.serverNameSyncPass(ctx, store)
 			wait = serverNameSyncWait(serverNameSyncInterval)
 		}
-	}()
+	})
 }

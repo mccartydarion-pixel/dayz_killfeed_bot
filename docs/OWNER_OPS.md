@@ -109,7 +109,8 @@ recovered ("recovered on its own", "recovered after 2 automatic restart(s)").
 
 With `selfHealEnabled`, a worker is restarted at most three times per incident, at least ten
 minutes apart. Each restart is claimed with one conditional `UPDATE`, so two instances never
-both act, and is audited as `incident.self_heal` by actor `system`.
+both act (and the monitor itself runs only in the process holding the leader lock,
+docs/MULTI_PROCESS.md), and is audited as `incident.self_heal` by actor `system`.
 
 With `alertsEnabled`, the platform admins are DMed once when an incident opens and once when it
 resolves. With `customerNoticesEnabled`, the organization's owner is DMed once for the kinds only

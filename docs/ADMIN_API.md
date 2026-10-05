@@ -359,7 +359,8 @@ pagination is already a stable ordering).
 
 Champion Live Sync phase 2 (docs/CHAMPION_LIVE_SYNC.md section 7.5). For every running server worker:
 per-family watcher freshness (`FRESH` / `LAGGING` / `FAILING` / `NO_SOURCE`), canonical source file,
-checkpoint, read vs listed size, last read / growth / failure, safe error class, record counts
+checkpoint, read vs listed size, last read / growth / failure, safe error class, whether the file
+was given up (`gaveUp`, `gaveUpAt`, `gaveUpReason`, `nextRetryAt`), record counts
 (live / backfill / unknown), rotations and a measured latency summary; the learned UTC offset;
 session-end evidence; the recorded ADM session; stored-record statistics and ADM latency for the
 last 6 hours. In-memory and stored state only - no live Nitrado call, no token, signed URL,

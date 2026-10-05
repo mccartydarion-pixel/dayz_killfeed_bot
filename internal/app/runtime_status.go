@@ -42,6 +42,9 @@ type RuntimeStatusResponse struct {
 	// checked against its pinned commit and configuration without shell
 	// access. Names and modes only - never a credential.
 	Build *RuntimeBuild `json:"build,omitempty"`
+	// Leadership says whether THIS process runs the singleton background workers (the boards,
+	// reminders and schedulers that must run once when several processes share the database).
+	Leadership *RuntimeLeadership `json:"leadership,omitempty"`
 }
 
 // RuntimeBuild is the deployment identity block of GET /api/runtime/status.
@@ -182,7 +185,7 @@ func (a *App) runtimeStatusHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := RuntimeStatusResponse{OK: true, GuildID: requestedGuildID, Build: a.runtimeBuild()}
+	resp := RuntimeStatusResponse{OK: true, GuildID: requestedGuildID, Build: a.runtimeBuild(), Leadership: a.runtimeLeadership()}
 
 	serverID := guild.SelectedPublicServerID
 	if raw := strings.TrimSpace(r.URL.Query().Get("server_id")); raw != "" {
