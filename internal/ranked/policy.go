@@ -7,7 +7,33 @@ import (
 	"time"
 )
 
-const SameVictimCooldown = 5 * time.Minute
+// SameVictimCooldown is the default wait before the same attacker earns RP from
+// the same victim again. A season freezes its own value (0 to 120 minutes) when
+// it starts; this default applies when the owner does not choose one.
+const SameVictimCooldown = DefaultSameVictimCooldownMinutes * time.Minute
+
+const (
+	DefaultSameVictimCooldownMinutes = 5
+	MaxSameVictimCooldownMinutes     = 120
+)
+
+// ValidSameVictimCooldownMinutes reports whether a season may freeze this wait.
+// 0 means no wait: every eligible kill of the same victim counts.
+func ValidSameVictimCooldownMinutes(minutes int) bool {
+	return minutes >= 0 && minutes <= MaxSameVictimCooldownMinutes
+}
+
+// DescribeSameVictimWait is the player-facing wording for a season's wait.
+func DescribeSameVictimWait(minutes int) string {
+	switch {
+	case minutes <= 0:
+		return "every kill of the same player counts"
+	case minutes == 1:
+		return "the same player counts again after 1 minute"
+	default:
+		return fmt.Sprintf("the same player counts again after %d minutes", minutes)
+	}
+}
 
 type Tier string
 
@@ -73,8 +99,13 @@ func (t Tier) Level() int {
 
 // EligibleRepeat reports whether the same attacker can earn RP from the same
 // victim again. The caller must use the server's player IDs, event time,
-// and a durable local award ledger. Kills remain ordinary combat events when
-// this returns false.
-func EligibleRepeat(killAt, previousAwardAt time.Time) bool {
-	return !killAt.Before(previousAwardAt.Add(SameVictimCooldown))
+// a durable local award ledger and the kill's season's frozen wait. A kill
+// exactly at the end of the wait is eligible; a wait of zero (or less) makes
+// every kill eligible. Kills remain ordinary combat events when this returns
+// false.
+func EligibleRepeat(killAt, previousAwardAt time.Time, cooldown time.Duration) bool {
+	if cooldown <= 0 {
+		return true
+	}
+	return !killAt.Before(previousAwardAt.Add(cooldown))
 }

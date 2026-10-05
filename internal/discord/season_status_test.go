@@ -49,7 +49,7 @@ func TestSeasonStatusSeparatesStatsSeasonFromRankedSeason(t *testing.T) {
 	h := NewSeasonCommandHandler(fakeSeasonStore{active: &repository.Season{Name: "Season 1", Status: "ACTIVE", StartsAt: start}}, nil)
 	h.SetRankedStatus(fakeRankedStatus{
 		servers: []repository.GameServer{{ID: 1, DisplayName: "Champions Deathmatch"}, {ID: 2, DisplayName: "PvE Island"}, {ID: 3, DisplayName: "@everyone"}},
-		seasons: map[int64]*repository.ServerRankedSeason{2: {RPPerKill: 1500, Thresholds: ranked.Thresholds{1, 2, 3, 4, 5, 6, 7}, StartsAt: start}},
+		seasons: map[int64]*repository.ServerRankedSeason{2: {RPPerKill: 1500, SameVictimCooldownMinutes: 30, Thresholds: ranked.Thresholds{1, 2, 3, 4, 5, 6, 7}, StartsAt: start}},
 		err:     map[int64]error{3: errors.New("db")},
 	})
 	text := h.statusText(context.Background(), 7, start)
@@ -57,7 +57,7 @@ func TestSeasonStatusSeparatesStatsSeasonFromRankedSeason(t *testing.T) {
 		"📊 **Stats season**", "**Season 1** — active since <t:1790000000:R>", "All-time leaderboards are never reset",
 		"🎖️ **Ranked (RP) season** — per server",
 		"**Champions Deathmatch** — not started. Players are Unranked and no RP is awarded.",
-		"**PvE Island** — active since <t:1790000000:R> · 1,500 RP per eligible kill",
+		"**PvE Island** — active since <t:1790000000:R> · 1,500 RP per eligible kill · the same player counts again after 30 minutes",
 		"status temporarily unavailable",
 		"Server Admin → Server Controls → Server Ranked",
 	} {

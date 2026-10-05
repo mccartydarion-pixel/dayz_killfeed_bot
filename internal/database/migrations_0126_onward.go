@@ -22,4 +22,11 @@ var migrations0126onward = []Migration{
 		Name: "0128_map_rotation_map_images",
 		SQL:  MapRotationMapImagesSQL,
 	},
+	{
+		// Ranked seasons: the wait before the same attacker earns RP from the same victim again
+		// becomes part of a season's frozen rules (docs/RANKED_SERVER_SEASONS.md). Existing
+		// seasons, active and archived, keep the old fixed five minutes. Additive.
+		Name: "0129_ranked_same_victim_cooldown",
+		SQL:  RankedSameVictimCooldownSQL,
+	},
 }

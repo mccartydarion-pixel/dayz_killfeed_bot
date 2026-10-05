@@ -4,6 +4,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -27,7 +28,8 @@ func TestServerRankedSeasonOwnerStartAndReset(t *testing.T) {
 	if rr := w.call(w.a.handleStartServerRankedSeason, http.MethodPost, path, w.f.OwnerDiscordID, start, nil); rr.Code != http.StatusOK {
 		t.Fatalf("owner start: %d %s", rr.Code, rr.Body.String())
 	}
-	if rr := w.call(w.a.handleGetServerRankedSeason, http.MethodGet, path, w.f.OwnerDiscordID, nil, nil); rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"rpPerKill":100`) {
+	// The request above had no sameVictimCooldownMinutes (an older website): the season keeps five minutes.
+	if rr := w.call(w.a.handleGetServerRankedSeason, http.MethodGet, path, w.f.OwnerDiscordID, nil, nil); rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"rpPerKill":100`) || !strings.Contains(rr.Body.String(), `"sameVictimCooldownMinutes":5`) {
 		t.Fatalf("owner read active rules: %d %s", rr.Code, rr.Body.String())
 	}
 	if rr := w.call(w.a.handleStartServerRankedSeason, http.MethodPost, path, w.f.OwnerDiscordID, start, nil); rr.Code != http.StatusConflict {
@@ -38,8 +40,24 @@ func TestServerRankedSeasonOwnerStartAndReset(t *testing.T) {
 		t.Fatalf("reset without confirmation: %d %s", rr.Code, rr.Body.String())
 	}
 	start.Confirm = "RESET SERVER RANKED"
-	if rr := w.call(w.a.handleResetServerRankedSeason, http.MethodPost, resetPath, w.f.OwnerDiscordID, start, nil); rr.Code != http.StatusOK {
+	// A wait that is not a whole number from 0 to 120 is refused and leaves the season as it was.
+	for _, bad := range []string{"-1", "121", "5.5", `"5"`} {
+		start.SameVictimCooldownMinutes = json.RawMessage(bad)
+		if rr := w.call(w.a.handleResetServerRankedSeason, http.MethodPost, resetPath, w.f.OwnerDiscordID, start, nil); rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "whole number of minutes from 0 to 120") {
+			t.Fatalf("wait %s: expected a 400 naming the range, got %d %s", bad, rr.Code, rr.Body.String())
+		}
+	}
+	// The wait changes only through a reset, like RP per kill.
+	start.SameVictimCooldownMinutes = json.RawMessage("30")
+	if rr := w.call(w.a.handleResetServerRankedSeason, http.MethodPost, resetPath, w.f.OwnerDiscordID, start, nil); rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"sameVictimCooldownMinutes":30`) {
 		t.Fatalf("owner reset: %d %s", rr.Code, rr.Body.String())
+	}
+	if rr := w.call(w.a.handleGetServerRankedSeason, http.MethodGet, path, w.f.OwnerDiscordID, nil, nil); rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"sameVictimCooldownMinutes":30`) {
+		t.Fatalf("owner read reset rules: %d %s", rr.Code, rr.Body.String())
+	}
+	var archivedWait, activeWait int
+	if err := w.a.DB.Pool.QueryRow(context.Background(), `SELECT MAX(same_victim_cooldown_minutes) FILTER (WHERE status='ARCHIVED'),MAX(same_victim_cooldown_minutes) FILTER (WHERE status='ACTIVE') FROM ranked_seasons WHERE server_id=$1`, w.serverID).Scan(&archivedWait, &activeWait); err != nil || archivedWait != 5 || activeWait != 30 {
+		t.Fatalf("archived season keeps its own wait: archived=%d active=%d %v", archivedWait, activeWait, err)
 	}
 	var archived, active int
 	if err := w.a.DB.Pool.QueryRow(context.Background(), `SELECT count(*) FILTER (WHERE status='ARCHIVED'),count(*) FILTER (WHERE status='ACTIVE') FROM ranked_seasons WHERE server_id=$1`, w.serverID).Scan(&archived, &active); err != nil || archived != 1 || active != 1 {

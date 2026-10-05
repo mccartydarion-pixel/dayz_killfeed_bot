@@ -119,8 +119,10 @@ func (r *RankedRepository) RecordServerKill(ctx context.Context, seasonID, killI
 	var fingerprint string
 	var eventTime time.Time
 	var thresholdValues []int64
+	// The wait is the one frozen on this kill's season, never the package default.
+	var cooldownMinutes int
 	err = tx.QueryRow(ctx, `
-SELECT s.server_id,k.guild_id,k.killer_player_id,k.victim_player_id,s.rp_per_kill,k.event_fingerprint,ev.happened_at,s.thresholds
+SELECT s.server_id,k.guild_id,k.killer_player_id,k.victim_player_id,s.rp_per_kill,k.event_fingerprint,ev.happened_at,s.thresholds,s.same_victim_cooldown_minutes
 FROM ranked_seasons s JOIN game_servers gs ON gs.id=s.server_id
 JOIN kills k ON k.id=$2 AND k.server_id=s.server_id AND k.guild_id=gs.guild_id
 LEFT JOIN live_sync_server_clock c ON c.server_id=s.server_id
@@ -130,7 +132,7 @@ WHERE s.id=$1 AND s.scope='SERVER' AND s.status='ACTIVE' AND s.platform=gs.platf
   AND k.killer_player_id IS NOT NULL AND k.victim_player_id IS NOT NULL
   AND k.killer_player_id<>k.victim_player_id AND ev.happened_at IS NOT NULL
   AND ev.happened_at>=s.starts_at AND (s.ends_at IS NULL OR ev.happened_at<s.ends_at)
-FOR SHARE OF s`, seasonID, killID).Scan(&serverID, &guildID, &killerID, &victimID, &rp, &fingerprint, &eventTime, &thresholdValues)
+FOR SHARE OF s`, seasonID, killID).Scan(&serverID, &guildID, &killerID, &victimID, &rp, &fingerprint, &eventTime, &thresholdValues, &cooldownMinutes)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return result, ErrRankedIneligible
 	}
@@ -181,7 +183,7 @@ ORDER BY event_time DESC LIMIT 1`, seasonID, attacker, victim).Scan(&previous)
 		switch {
 		case eventTime.Before(previous):
 			result.Outcome, result.Amount, result.Multiplier = "OUT_OF_ORDER", 0, 1
-		case !ranked.EligibleRepeat(eventTime, previous):
+		case !ranked.EligibleRepeat(eventTime, previous, time.Duration(cooldownMinutes)*time.Minute):
 			result.Outcome, result.Amount, result.Multiplier = "COOLDOWN", 0, 1
 		}
 	}

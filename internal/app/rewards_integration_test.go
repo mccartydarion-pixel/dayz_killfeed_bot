@@ -61,7 +61,7 @@ func TestRewardsAutomation(t *testing.T) {
 
 	a, b, c := w.player("Ace"), w.player("Bee"), w.player("Cee")
 	// Ranked: Ace reaches Bronze (thresholds 100/300/...; 100 RP per kill -> 4 kills = 400 RP).
-	if _, err := w.a.Ranked.StartServerSeason(ctx, w.guildID, w.serverID, 100, ranked.Thresholds{100, 300, 600, 1000, 1500, 2100, 2800}, false, now.Add(-time.Hour)); err != nil {
+	if _, err := w.a.Ranked.StartServerSeason(ctx, w.guildID, w.serverID, 100, ranked.Thresholds{100, 300, 600, 1000, 1500, 2100, 2800}, ranked.DefaultSameVictimCooldownMinutes, false, now.Add(-time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 4; i++ {

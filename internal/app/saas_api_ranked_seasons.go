@@ -2,10 +2,12 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/yourname/dayz-killfeed/internal/entitlements"
@@ -29,7 +31,26 @@ func init() {
 type serverRankedSeasonRequest struct {
 	RPPerKill  int64             `json:"rpPerKill"`
 	Thresholds ranked.Thresholds `json:"thresholds"`
-	Confirm    string            `json:"confirm"`
+	// SameVictimCooldownMinutes is kept raw so an absent field (an older website) means the
+	// default and anything that is not a whole number gets a plain-language 400.
+	SameVictimCooldownMinutes json.RawMessage `json:"sameVictimCooldownMinutes,omitempty"`
+	Confirm                   string          `json:"confirm"`
+}
+
+const sameVictimCooldownMessage = "the wait before the same player counts again must be a whole number of minutes from 0 to 120"
+
+// parseSameVictimCooldownMinutes reads the season's same-victim wait from a start/reset request:
+// absent or null is the default (5), otherwise a whole number of minutes from 0 to 120.
+func parseSameVictimCooldownMinutes(raw json.RawMessage) (int, bool) {
+	text := strings.TrimSpace(string(raw))
+	if text == "" || text == "null" {
+		return ranked.DefaultSameVictimCooldownMinutes, true
+	}
+	minutes, err := strconv.Atoi(text)
+	if err != nil || !ranked.ValidSameVictimCooldownMinutes(minutes) {
+		return 0, false
+	}
+	return minutes, true
 }
 
 func (a *App) handleGetServerRankedSeason(w http.ResponseWriter, r *http.Request) {
@@ -87,6 +108,11 @@ func (a *App) changeServerRankedSeason(w http.ResponseWriter, r *http.Request, r
 		writeSaaSError(w, codeInvalidRequest, "positive RP per kill and seven increasing tier thresholds are required")
 		return
 	}
+	cooldownMinutes, ok := parseSameVictimCooldownMinutes(req.SameVictimCooldownMinutes)
+	if !ok {
+		writeSaaSError(w, codeInvalidRequest, sameVictimCooldownMessage)
+		return
+	}
 	if a.Ranked == nil {
 		writeSaaSError(w, codeInternalError, "ranked season system unavailable")
 		return
@@ -96,7 +122,7 @@ func (a *App) changeServerRankedSeason(w http.ResponseWriter, r *http.Request, r
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), adminTimeout)
 	defer cancel()
-	season, err := a.Ranked.StartServerSeason(ctx, ac.scope.GuildID, *ac.scope.ServerID, req.RPPerKill, req.Thresholds, reset, time.Now().UTC())
+	season, err := a.Ranked.StartServerSeason(ctx, ac.scope.GuildID, *ac.scope.ServerID, req.RPPerKill, req.Thresholds, cooldownMinutes, reset, time.Now().UTC())
 	if errors.Is(err, repository.ErrRankedSeasonConflict) {
 		writeSaaSError(w, codeAdminConfirmationNeeded, "an active Ranked season exists; use the reset endpoint to archive it")
 		return

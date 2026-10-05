@@ -72,6 +72,13 @@ WHERE k.victim_player_id IS NOT NULL AND k.killer_player_id IS DISTINCT FROM k.v
 ON CONFLICT (guild_id, event_fingerprint) DO NOTHING;
 `
 
+// RankedSameVictimCooldownSQL adds a season's frozen same-victim wait in minutes (0 = no wait).
+// Archived seasons live in the same table (status='ARCHIVED'), so one column covers both.
+const RankedSameVictimCooldownSQL = `
+ALTER TABLE ranked_seasons ADD COLUMN IF NOT EXISTS same_victim_cooldown_minutes INTEGER NOT NULL DEFAULT 5
+    CHECK (same_victim_cooldown_minutes BETWEEN 0 AND 120);
+`
+
 // RankedLedgerFoundationSQL creates server-scoped seasonal RP storage.
 // No existing kills or economy rows are rewritten.
 const RankedLedgerFoundationSQL = `

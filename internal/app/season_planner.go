@@ -279,7 +279,7 @@ func (a *App) executeSeasonAction(ctx context.Context, action repository.SeasonA
 		if current == nil {
 			return "", errors.New("no active Ranked season to reset")
 		}
-		next, err := a.Ranked.StartServerSeason(ctx, action.GuildID, *action.ServerID, current.RPPerKill, current.Thresholds, true, now)
+		next, err := a.Ranked.StartServerSeason(ctx, action.GuildID, *action.ServerID, current.RPPerKill, current.Thresholds, current.SameVictimCooldownMinutes, true, now)
 		if err != nil {
 			return "", fmt.Errorf("could not reset Ranked: %s", err.Error())
 		}
