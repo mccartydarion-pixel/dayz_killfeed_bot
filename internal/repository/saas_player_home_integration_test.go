@@ -88,3 +88,40 @@ func TestPlayerHomeOrdersObservedServersFirst(t *testing.T) {
 		t.Fatalf("expected the observed server, got %+v found=%v err=%v", home, found, err)
 	}
 }
+
+func TestPlayerHomesListsEveryLinkedServerInDefaultOrder(t *testing.T) {
+	db := saasIntegrationDB(t)
+	first := newSaaSFixture(t, db)
+	second := newSaaSFixture(t, db)
+	foreign := newSaaSFixture(t, db) // the user holds no link here
+	repo := NewPlayerServerRepository(db.Pool)
+	ctx := context.Background()
+	discordID := fmt.Sprintf("homes-%d", time.Now().UnixNano())
+
+	if homes, err := repo.HomesForDiscordUser(ctx, discordID); err != nil || len(homes) != 0 {
+		t.Fatalf("no link: %v %v", homes, err)
+	}
+	linkHomePlayer(t, repo, first, discordID, "VERIFIED")
+	homes, err := repo.HomesForDiscordUser(ctx, discordID)
+	if err != nil || len(homes) != 1 || homes[0].InstallationID != first.InstallationID {
+		t.Fatalf("single server: %+v %v", homes, err)
+	}
+	onSecond := linkHomePlayer(t, repo, second, discordID, "VERIFIED")
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO player_server_activity(guild_id, server_id, player_id) VALUES($1,$2,$3)`, second.GuildRowID, second.ServerRowID, onSecond); err != nil {
+		t.Fatal(err)
+	}
+	homes, err = repo.HomesForDiscordUser(ctx, discordID)
+	if err != nil || len(homes) != 2 || homes[0].InstallationID != second.InstallationID || !homes[0].Observed ||
+		homes[1].InstallationID != first.InstallationID || homes[1].Observed {
+		t.Fatalf("observed first, then the rest: %+v %v", homes, err)
+	}
+	for _, home := range homes {
+		if home.InstallationID == foreign.InstallationID {
+			t.Fatalf("a server without a link was listed: %+v", homes)
+		}
+	}
+	home, found, err := repo.HomeForDiscordUser(ctx, discordID)
+	if err != nil || !found || home != homes[0] {
+		t.Fatalf("the home is the first of the list: %+v found=%v err=%v", home, found, err)
+	}
+}
