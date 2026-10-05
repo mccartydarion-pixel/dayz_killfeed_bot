@@ -1,0 +1,12 @@
+# Keeps the Docker build context to what `go build ./cmd/server` reads, so a commit that only
+# touches documentation or tests reuses the cached compile layer (docs/DEPLOY.md).
+.git
+.github
+.gitignore
+.gitattributes
+.env
+.env.*
+docs
+*.md
+**/*_test.go
+**/testdata

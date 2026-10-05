@@ -241,6 +241,16 @@ type App struct {
 	ownerOpsReady       func() bool
 	ownerOpsDM          func(discordUserID, text string) error
 	ownerOpsChannelPost func(channelID, text string) error
+	// feedWatch times, per server and in memory, how long players have been online and the log
+	// silent (feed_watch.go). serverStatusFacts is the short cache behind GET .../admin/server-status.
+	feedWatch           feedWatch
+	serverStatusMu      sync.Mutex
+	serverStatusFacts   map[int64]repository.FleetFact
+	serverStatusFactsAt time.Time
+	// discordReady replaces the gateway check in tests.
+	discordReady func() bool
+	// deploy is the start-up self-check (deploy_selfcheck.go).
+	deploy deploySelfCheck
 	// FeatureFlags resolves the owner's per-installation overrides of the env rollout switches.
 	FeatureFlags *featureflags.Resolver
 	// Locations backs Champion Phase 3 (docs/PLAYER_INTELLIGENCE.md): the authoritative player
@@ -485,6 +495,13 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			total, idle, _ := db.PoolStats()
 			state.SetDatabase(true, total, idle)
 			app.DB = db
+			// The self-check reports how many migrations the database has (deploy_selfcheck.go).
+			countCtx, countCancel := context.WithTimeout(ctx, 5*time.Second)
+			var applied int
+			if err := db.Pool.QueryRow(countCtx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&applied); err == nil {
+				app.deploy.setMigrations(applied)
+			}
+			countCancel()
 			app.startLeaderElection()
 			app.Guilds = repository.NewGuildRepository(db.Pool)
 			app.Players = repository.NewPlayerRepository(db.Pool)
@@ -600,6 +617,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.PlatformOwner = repository.NewPlatformOwnerRepository(db.Pool)
 			app.PlatformOps = repository.NewPlatformOpsRepository(db.Pool)
 			go app.singleton(ctx, "owner_ops", app.runOwnerOps)
+			go app.runFeedWatch(ctx)
 			// Platform owner access: an organization owned by an account on
 			// CHAMPION_ADMIN_DISCORD_IDS has every plan feature and its feature switches
 			// default to on. Loaded before anything asks a plan or flag question.
@@ -725,7 +743,18 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	return app, nil
 }
 
+// shutdownBudget bounds the part of a shutdown that can wait on other systems (stopping the
+// workers, flushing the feeds to Discord). Railway sends SIGTERM and kills the container
+// `drainingSeconds` later (30 in production, docs/DEPLOY.md): the budget leaves room to close
+// Discord and the database inside that window instead of being cut off mid-flush.
+const (
+	shutdownBudget     = 20 * time.Second
+	shutdownWorkerStop = 12 * time.Second
+)
+
 func (a *App) shutdown() {
+	started := time.Now()
+	deadline := started.Add(shutdownBudget)
 	if a.cancel != nil {
 		a.cancel()
 	}
@@ -735,6 +764,9 @@ func (a *App) shutdown() {
 		a.stopLeader()
 	}
 	if a.WorkerManager != nil {
+		// The process is exiting: a worker that does not stop in time is left behind rather than
+		// waited on for the manager's usual 30 seconds.
+		a.WorkerManager.SetStopTimeout(shutdownWorkerStop)
 		a.WorkerManager.StopAll()
 	}
 	// Flush every per-server persistence queue (drain pending events) before
@@ -751,11 +783,14 @@ func (a *App) shutdown() {
 	// flush (see RotatingFeed.Run) before closing Discord, so a redeploy never
 	// silently drops whatever was enqueued since the last 10-minute cycle.
 	feeds := a.allRotatingFeeds()
-	for _, f := range feeds {
-		f.WaitDone()
-	}
 	if len(feeds) > 0 {
-		slog.Info("component=shutdown", "msg", "rotating feeds flushed", "count", len(feeds))
+		if waitFeedsFlushed(feeds, time.Until(deadline)) {
+			slog.Info("component=shutdown", "msg", "rotating feeds flushed", "count", len(feeds))
+		} else {
+			// Immediate-mode cards are journalled and replayed by the next process; a rotating
+			// batch that did not go out is the loss (the events themselves are stored).
+			slog.Warn("component=shutdown", "msg", "rotating feeds did not finish flushing before the shutdown deadline", "count", len(feeds))
+		}
 	}
 	if a.HTTPServer != nil {
 		httpCtx, cancelHTTP := context.WithTimeout(context.Background(), 10*time.Second)
@@ -782,6 +817,33 @@ func (a *App) shutdown() {
 	if a.DB != nil {
 		a.DB.Close()
 	}
-	slog.Info("component=shutdown", "msg", "shutdown complete")
+	slog.Info("component=shutdown", "msg", "shutdown complete", "duration_ms", time.Since(started).Milliseconds())
 	time.Sleep(50 * time.Millisecond)
+}
+
+// feedFlusher is the part of a rotating feed a shutdown waits on.
+type feedFlusher interface{ WaitDone() }
+
+// waitFeedsFlushed waits for every feed's final flush, but no longer than limit (at least two
+// seconds, so a slow worker stop does not take the flush's whole share). It reports whether all
+// of them finished.
+func waitFeedsFlushed[F feedFlusher](feeds []F, limit time.Duration) bool {
+	if limit < 2*time.Second {
+		limit = 2 * time.Second
+	}
+	done := make(chan struct{})
+	go func() {
+		for _, f := range feeds {
+			f.WaitDone()
+		}
+		close(done)
+	}()
+	timer := time.NewTimer(limit)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
+	}
 }

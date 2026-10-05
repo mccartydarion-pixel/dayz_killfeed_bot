@@ -122,6 +122,35 @@ Field | Notes
 With two processes behind one address the answer describes whichever process
 served the request.
 
+### `deploy` (the start-up self-check)
+
+Every successful response carries `deploy` for the process that answered
+(docs/DEPLOY.md, "The deploy self-check"). The verdict is recorded once; the
+other fields are read at request time.
+
+Field | Notes
+--- | ---
+`state` | the self-check's verdict: `PENDING` until it has decided, then `HEALTHY` or `UNHEALTHY` (not healthy 5 minutes after the process started). `UNHEALTHY` becomes `HEALTHY` if the process recovers within the following hour
+`checkedAt` | when the verdict was recorded; `null` while `PENDING`
+`processStartedAt` | when this process started
+`readyAt`, `readyMs` | when start-up finished (just before the HTTP server began listening), and the milliseconds from process start to that moment
+`migrationsApplied` | rows in `schema_migrations`, counted after migrating; `null` without a database
+`leadership` | `LEADER`, `STANDBY` (another process holds the lock), `ERROR` (the lock cannot be reached) or `NO_LOCK` (no election; this process runs every singleton worker)
+`discordGateway` | whether the Discord gateway session is ready right now
+`workersExpected` | active game servers found when this process started its workers
+`workersStarted` | server workers running right now
+`workersReading` | of those, the ones whose last poll of the server log completed without a Nitrado failure streak
+`problems` | what is wrong right now, as short sentences; `[]` when nothing is
+
+```json
+"deploy": {
+  "state": "HEALTHY", "checkedAt": "2026-10-05T11:12:16Z",
+  "processStartedAt": "2026-10-05T11:11:55Z", "readyAt": "2026-10-05T11:11:57Z", "readyMs": 1700,
+  "migrationsApplied": 126, "leadership": "LEADER", "discordGateway": true,
+  "workersExpected": 1, "workersStarted": 1, "workersReading": 1, "problems": []
+}
+```
+
 Delivery ledger fields for journaled feeds: `replayed` (cards restored after a
 restart), `dropped` (backlog overflow, or too old to replay after a restart),
 `journal_failures` (feed-journal writes that failed; delivery continued).

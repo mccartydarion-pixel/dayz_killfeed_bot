@@ -26,7 +26,9 @@ How to read these documents:
 | [NITRADO_POLLING.md](NITRADO_POLLING.md) | How often server logs are read, Nitrado rate limits and the adaptive polling speed. |
 | [NITRADO_DELTA_READS.md](NITRADO_DELTA_READS.md) | Partial log reads (`NITRADO_DELTA_READ_MODE`, off by default) and how to probe a server first. |
 | [CHAMPION_LIVE_SYNC.md](CHAMPION_LIVE_SYNC.md) | How log changes are detected, checkpointed and recorded, and how the right log file is chosen after a restart. |
-| [runtime-status-api.md](runtime-status-api.md) | `GET /api/runtime/status`: live runtime state for the website. |
+| [runtime-status-api.md](runtime-status-api.md) | `GET /api/runtime/status`: live runtime state for the website, including the deploy self-check. |
+| [DEPLOY.md](DEPLOY.md) | How a release goes live: where the deploy time goes (measured), the Railway settings, start-up and readiness, the deploy self-check and shutdown. |
+| [SERVER_STATUS.md](SERVER_STATUS.md) | `GET .../admin/server-status`: "is my killfeed working" for a server owner. The route, who may call it and the exact JSON contract. |
 | [incidents/](#incident-records-september-2026) | Dated records of the September 2026 reliability incident and its release. Historical. |
 
 ## Discord features

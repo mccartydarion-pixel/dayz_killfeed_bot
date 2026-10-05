@@ -8,25 +8,16 @@ on:
 permissions:
   contents: read
 
+# Three jobs run side by side so the whole run takes as long as the slowest one, not the sum.
+# Railway waits for this run before it deploys (docs/DEPLOY.md), so its length is deploy time.
+#  - test: everything that needs no database. The job keeps the name `test`.
+#  - integration: the database tests, split by package into three groups, each with its own
+#    throwaway PostgreSQL. Together the three groups are exactly `./...`: two packages are named,
+#    the third group is every other package.
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    services:
-      # A throwaway database that exists only for this job - never production.
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: champion
-          POSTGRES_PASSWORD: champion
-          POSTGRES_DB: champion_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U champion -d champion_test"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -55,10 +46,51 @@ jobs:
       - name: Race tests (publishers and ADM pipeline)
         run: go test -race ./internal/discord ./internal/killfeed ./internal/app
 
+  integration:
+    name: integration (${{ matrix.group }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [repository, factionstats, other]
+    services:
+      # A throwaway database that exists only for this job - never production.
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: champion
+          POSTGRES_PASSWORD: champion
+          POSTGRES_DB: champion_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U champion -d champion_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
       - name: Integration tests (disposable PostgreSQL)
         env:
           TEST_DATABASE_URL: postgres://champion:champion@localhost:5432/champion_test?sslmode=disable
           ALLOW_INTEGRATION_DB_TESTS: "true"
           REQUIRE_INTEGRATION_DB: "1"
+          GROUP: ${{ matrix.group }}
         # -p 1: every package migrates and writes the same database.
-        run: go test -tags integration -p 1 -count=1 ./...
+        run: |
+          set -euo pipefail
+          named='/internal/(repository|factionstats)(/|$)'
+          case "$GROUP" in
+            repository)   packages=$(go list -tags integration ./... | grep -E '/internal/repository(/|$)') ;;
+            factionstats) packages=$(go list -tags integration ./... | grep -E '/internal/factionstats(/|$)') ;;
+            other)        packages=$(go list -tags integration ./... | grep -v -E "$named") ;;
+            *) echo "unknown group $GROUP"; exit 1 ;;
+          esac
+          echo "$packages"
+          go test -tags integration -p 1 -count=1 $packages

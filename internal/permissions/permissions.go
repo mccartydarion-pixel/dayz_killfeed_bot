@@ -138,6 +138,9 @@ const (
 	// Map rotation with a player vote (docs/MAP_ROTATION.md). It changes which map the server
 	// loads by writing two files on the game server, so it is Owner only.
 	CapMapRotationManage Capability = "MAP_ROTATION_MANAGE"
+	// The owner-facing server status (docs/SERVER_STATUS.md): is the feed working, is Nitrado
+	// reachable, are positions arriving. Read-only facts about the installation's own server.
+	CapServerStatusView Capability = "SERVER_STATUS_VIEW"
 )
 
 // requiredLevel is the default minimum Level each capability needs (task's "DEFAULT ROLE
@@ -190,6 +193,7 @@ var requiredLevel = map[Capability]Level{
 	CapPerksView:              LevelAdministrator,
 	CapPerksManage:            LevelOwner,
 	CapMapRotationManage:      LevelOwner,
+	CapServerStatusView:       LevelAdministrator,
 }
 
 // Allows reports whether actorLevel satisfies capability's required minimum Level. An unknown

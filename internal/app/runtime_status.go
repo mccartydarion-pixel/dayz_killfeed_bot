@@ -45,6 +45,9 @@ type RuntimeStatusResponse struct {
 	// Leadership says whether THIS process runs the singleton background workers (the boards,
 	// reminders and schedulers that must run once when several processes share the database).
 	Leadership *RuntimeLeadership `json:"leadership,omitempty"`
+	// Deploy is the start-up self-check: its verdict, and whether migrations, leadership, the
+	// Discord gateway and the server workers are in place right now (docs/DEPLOY.md).
+	Deploy *RuntimeDeploy `json:"deploy,omitempty"`
 }
 
 // RuntimeBuild is the deployment identity block of GET /api/runtime/status.
@@ -185,7 +188,7 @@ func (a *App) runtimeStatusHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := RuntimeStatusResponse{OK: true, GuildID: requestedGuildID, Build: a.runtimeBuild(), Leadership: a.runtimeLeadership()}
+	resp := RuntimeStatusResponse{OK: true, GuildID: requestedGuildID, Build: a.runtimeBuild(), Leadership: a.runtimeLeadership(), Deploy: a.runtimeDeploy(time.Now())}
 
 	serverID := guild.SelectedPublicServerID
 	if raw := strings.TrimSpace(r.URL.Query().Get("server_id")); raw != "" {
