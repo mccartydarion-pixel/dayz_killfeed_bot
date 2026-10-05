@@ -250,9 +250,19 @@ func (r *run) logNotFound(ctx context.Context, paths maprotation.Paths) {
 		}
 		return strings.Join(out, " ")
 	}
+	// Paths are shown relative to the service's root, which is the account folder.
+	rel := func(dir string) string {
+		parts := strings.SplitN(strings.TrimPrefix(dir, "/"), "/", 3)
+		if len(parts) < 3 {
+			return "/"
+		}
+		return parts[2]
+	}
 	for _, cand := range paths.PlayersDBCandidates() {
-		mount := path.Base(path.Dir(path.Dir(cand[0])))
-		slog.Info("component=map_rotation", "event", "wipe_file_not_found", "mount", mount, "mission_entries", names(cand[0]), "storage_entries", names(cand[1]))
+		slog.Info("component=map_rotation", "event", "wipe_file_not_found", "mission", rel(cand[0]), "mission_entries", names(cand[0]), "storage_entries", names(cand[1]))
+	}
+	for _, dir := range paths.ProbeDirs() {
+		slog.Info("component=map_rotation", "event", "wipe_probe", "dir", rel(dir), "entries", names(dir))
 	}
 }
 
