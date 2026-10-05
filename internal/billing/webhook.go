@@ -43,14 +43,14 @@ const (
 	EventInvoicePaymentFailed = "invoice.payment_failed"
 
 	// Payment reversals (Phase 6.26B). Handled only for C.A.S.E. invoices; base billing ignores them.
-	EventChargeRefunded          = "charge.refunded"
-	EventChargeRefundUpdated     = "charge.refund.updated"
-	EventDisputeCreated          = "charge.dispute.created"
-	EventDisputeUpdated          = "charge.dispute.updated"
-	EventDisputeClosed           = "charge.dispute.closed"
-	EventDisputeFundsReinstated  = "charge.dispute.funds_reinstated"
-	EventInvoiceVoided           = "invoice.voided"
-	EventInvoiceUncollectible    = "invoice.marked_uncollectible"
+	EventChargeRefunded         = "charge.refunded"
+	EventChargeRefundUpdated    = "charge.refund.updated"
+	EventDisputeCreated         = "charge.dispute.created"
+	EventDisputeUpdated         = "charge.dispute.updated"
+	EventDisputeClosed          = "charge.dispute.closed"
+	EventDisputeFundsReinstated = "charge.dispute.funds_reinstated"
+	EventInvoiceVoided          = "invoice.voided"
+	EventInvoiceUncollectible   = "invoice.marked_uncollectible"
 )
 
 // isCaseReversalEvent reports the event types reconciled against C.A.S.E. invoice coverage.
@@ -134,11 +134,16 @@ type webhookCheckoutSession struct {
 // first line item's own period (an Invoice has no single top-level period - each line does),
 // mirroring webhookSubscription's own items.data[0] pattern above.
 type webhookInvoice struct {
-	ID            string `json:"id"`
-	Customer      jsonID `json:"customer"`
-	Subscription  jsonID `json:"subscription"`
+	ID           string `json:"id"`
+	Customer     jsonID `json:"customer"`
+	Subscription jsonID `json:"subscription"`
 	// Stripe copies the subscription's metadata (Champion's champion_organization_id) onto the invoice.
-	Parent struct { SubscriptionDetails struct { Subscription jsonID `json:"subscription"`; Metadata map[string]string `json:"metadata"` } `json:"subscription_details"` } `json:"parent"`
+	Parent struct {
+		SubscriptionDetails struct {
+			Subscription jsonID            `json:"subscription"`
+			Metadata     map[string]string `json:"metadata"`
+		} `json:"subscription_details"`
+	} `json:"parent"`
 	Status        string `json:"status"`
 	AmountPaid    int64  `json:"amount_paid"`
 	AmountDue     int64  `json:"amount_due"`
@@ -146,14 +151,18 @@ type webhookInvoice struct {
 	PaymentIntent jsonID `json:"payment_intent"`
 	Lines         struct {
 		Data []struct {
-			Amount int64 `json:"amount"` // negative for a proration credit line
-			Price jsonID `json:"price"` // legacy Stripe invoice line
+			Amount  int64  `json:"amount"` // negative for a proration credit line
+			Price   jsonID `json:"price"`  // legacy Stripe invoice line
 			Pricing struct {
-				PriceDetails struct { Price jsonID `json:"price"` } `json:"price_details"`
+				PriceDetails struct {
+					Price jsonID `json:"price"`
+				} `json:"price_details"`
 			} `json:"pricing"`
 			Parent struct {
-				Type string `json:"type"`
-				SubscriptionItemDetails struct { Subscription jsonID `json:"subscription"` } `json:"subscription_item_details"`
+				Type                    string `json:"type"`
+				SubscriptionItemDetails struct {
+					Subscription jsonID `json:"subscription"`
+				} `json:"subscription_item_details"`
 			} `json:"parent"`
 			Period struct {
 				Start int64 `json:"start"`
@@ -201,9 +210,9 @@ func (inv *webhookInvoice) caseLines() []CaseInvoiceLine {
 			price = string(line.Price)
 		}
 		out = append(out, CaseInvoiceLine{Amount: line.Amount, PriceID: price,
-			SubscriptionID: string(line.Parent.SubscriptionItemDetails.Subscription),
+			SubscriptionID:   string(line.Parent.SubscriptionItemDetails.Subscription),
 			SubscriptionItem: line.Parent.Type == "subscription_item_details",
-			PeriodStart: line.Period.Start, PeriodEnd: line.Period.End})
+			PeriodStart:      line.Period.Start, PeriodEnd: line.Period.End})
 	}
 	return out
 }
@@ -243,14 +252,18 @@ func ParseEvent(e stripe.Event) (ParsedEvent, error) {
 		if err := json.Unmarshal(e.Data.Raw, &inv); err != nil {
 			return out, fmt.Errorf("parse %s: %w", out.Type, err)
 		}
-		if inv.Subscription == "" { inv.Subscription = inv.Parent.SubscriptionDetails.Subscription }
+		if inv.Subscription == "" {
+			inv.Subscription = inv.Parent.SubscriptionDetails.Subscription
+		}
 		out.Invoice = &inv
 	case EventInvoiceVoided, EventInvoiceUncollectible:
 		var inv webhookInvoice
 		if err := json.Unmarshal(e.Data.Raw, &inv); err != nil {
 			return out, fmt.Errorf("parse %s: %w", out.Type, err)
 		}
-		if inv.Subscription == "" { inv.Subscription = inv.Parent.SubscriptionDetails.Subscription }
+		if inv.Subscription == "" {
+			inv.Subscription = inv.Parent.SubscriptionDetails.Subscription
+		}
 		out.Invoice = &inv
 	case EventChargeRefunded, EventChargeRefundUpdated, EventDisputeCreated, EventDisputeUpdated,
 		EventDisputeClosed, EventDisputeFundsReinstated:

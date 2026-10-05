@@ -48,7 +48,7 @@ func TestCASEAddonSchemaIsolatedFromBaseBilling(t *testing.T) {
 	}
 	for _, pair := range []struct {
 		name string
-		id *int64
+		id   *int64
 	}{{"owner", &orgID}, {"other", &otherOrgID}} {
 		if err := tx.QueryRow(ctx, `INSERT INTO organizations(name,slug,owner_user_id)
 		VALUES($1,$2,$3) RETURNING id`, pair.name, fmt.Sprintf("case-%s-%d", pair.name, suffix), userID).Scan(pair.id); err != nil {

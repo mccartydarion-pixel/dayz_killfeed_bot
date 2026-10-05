@@ -13,9 +13,9 @@ import (
 // credentials. It behaves like Stripe closely enough to exercise Champion's own logic (ids,
 // idempotent customer reuse, cancel-at-period-end, price swaps) without any network call.
 type FakeProvider struct {
-	mu   sync.Mutex
-	subs map[string]*SubscriptionState
-	caseSessions map[string]*CaseCheckoutSessionState
+	mu              sync.Mutex
+	subs            map[string]*SubscriptionState
+	caseSessions    map[string]*CaseCheckoutSessionState
 	caseProration   int64
 	caseDeclineNext bool
 	caseInvoices    map[string]CaseInvoice
@@ -31,7 +31,9 @@ type FakeCall struct {
 	Arg    any
 }
 
-func NewFakeProvider() *FakeProvider { return &FakeProvider{subs: map[string]*SubscriptionState{},caseSessions: map[string]*CaseCheckoutSessionState{}} }
+func NewFakeProvider() *FakeProvider {
+	return &FakeProvider{subs: map[string]*SubscriptionState{}, caseSessions: map[string]*CaseCheckoutSessionState{}}
+}
 
 // fakeIDSeq is process-global (not per-FakeProvider): a real Stripe id is globally unique, and an
 // integration test's FakeProvider shares its database with every other test in the same run (no

@@ -362,6 +362,8 @@ type Engine struct {
 	candidateHistory       map[string]candidateObservation
 	staleMarks             map[string]staleMark
 	lastStaleRediscoveryAt time.Time
+	// staleWarnedFile is the last file selected_stale was logged at warn level for.
+	staleWarnedFile string
 
 	// noftpMemory backs the bounded-retry mount preference in
 	// canonical_source.go: it remembers each canonical ADM source's last
@@ -1331,7 +1333,14 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 			if e.lastStaleRediscoveryAt.IsZero() || time.Since(e.lastStaleRediscoveryAt) >= staleProbeInterval {
 				e.lastStaleRediscoveryAt = time.Now()
 				e.markSelectedStale(e.selected)
-				slog.Warn("component=adm", "event", "selected_stale", "file", e.selected.Name)
+				// A quiet server re-enters this branch every staleProbeInterval for as long
+				// as nobody is playing. Warn once per file; repeats are routine.
+				if e.staleWarnedFile != e.selected.Name {
+					e.staleWarnedFile = e.selected.Name
+					slog.Warn("component=adm", "event", "selected_stale", "file", e.selected.Name)
+				} else {
+					slog.Debug("component=adm", "event", "selected_stale", "file", e.selected.Name)
+				}
 				e.state = StateDiscovery
 				return e.discoverOnce(ctx)
 			}

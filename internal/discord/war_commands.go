@@ -301,10 +301,10 @@ func BuildRivalryText(a, b repository.Faction, r repository.RivalryStats, diff i
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "🔥 **CHAMPION RIVALRY**\n\n[%s] %s vs [%s] %s\n\n⚔️ Lifetime Kill Exchange\n%s — %d\n%s — %d\n\n📊 Total Encounters\n%d\n🏆 Wars\n%d\n📈 Differential\n%s %+d", a.Tag, a.Name, b.Tag, b.Name, a.Tag, r.AKills, b.Tag, r.BKills, r.TotalKills, r.WarCount, a.Tag, diff)
 	if longestName != "" {
-		fmt.Fprintf(&sb, "\n🎯 Longest Rivalry Kill\n%s — %s",presentation.SafeName(longestName, presentation.MaxRankNameRunes), presentation.FormatDistance(longest))
+		fmt.Fprintf(&sb, "\n🎯 Longest Rivalry Kill\n%s — %s", presentation.SafeName(longestName, presentation.MaxRankNameRunes), presentation.FormatDistance(longest))
 	}
 	if topName != "" {
-		fmt.Fprintf(&sb, "\n🔥 Most Active Killer\n%s — %d rivalry kills",presentation.SafeName(topName, presentation.MaxRankNameRunes), topKills)
+		fmt.Fprintf(&sb, "\n🔥 Most Active Killer\n%s — %d rivalry kills", presentation.SafeName(topName, presentation.MaxRankNameRunes), topKills)
 	}
 	return sb.String()
 }

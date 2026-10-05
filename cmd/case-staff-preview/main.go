@@ -3,21 +3,21 @@
 package main
 
 import (
- "encoding/json"
- "io"
- "os"
+	"encoding/json"
+	"io"
+	"os"
 
- "github.com/yourname/dayz-killfeed/internal/discord"
+	"github.com/yourname/dayz-killfeed/internal/discord"
 )
 
 func writePreview(w io.Writer) error {
- enc:=json.NewEncoder(w)
- enc.SetIndent("", "  ")
- return enc.Encode(discord.BuildCASEStaffDemoEmbed())
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(discord.BuildCASEStaffDemoEmbed())
 }
 
 func main() {
- if err:=writePreview(os.Stdout);err!=nil {
-  os.Exit(1)
- }
+	if err := writePreview(os.Stdout); err != nil {
+		os.Exit(1)
+	}
 }

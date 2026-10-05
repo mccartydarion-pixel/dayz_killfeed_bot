@@ -27,12 +27,12 @@ const (
 // IDs must be configured on the backend and verified with Stripe before a plan
 // can be offered for purchase. The first Phase 6 milestone ships closed.
 type Plan struct {
-	Tier         Tier
-	Name         string
-	AmountCents  int64
-	Currency     string
-	Interval     string
-	Purchasable  bool
+	Tier        Tier
+	Name        string
+	AmountCents int64
+	Currency    string
+	Interval    string
+	Purchasable bool
 	// Description and Features are the approved public marketing copy. They describe only
 	// shipped, observation-only behaviour: C.A.S.E. never claims to detect, confirm or punish
 	// cheating.

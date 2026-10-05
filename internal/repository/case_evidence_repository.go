@@ -22,8 +22,8 @@ func NewCaseEvidenceRepository(pool *pgxpool.Pool) *CaseEvidenceRepository {
 }
 
 type CaseEvidencePerson struct {
-	DayZID string
-	Name string
+	DayZID         string
+	Name           string
 	X, Z, Altitude *float64
 }
 
@@ -32,28 +32,34 @@ type CaseBuildEvidence struct {
 }
 
 type CaseEvidenceInput struct {
-	GuildID, ServerID int64
-	SourceID string
-	SourceEndOffset int64
-	LineSHA256 string
-	EventType string
-	ADMClock string
-	Subject, Actor, Target CaseEvidencePerson
+	GuildID, ServerID                int64
+	SourceID                         string
+	SourceEndOffset                  int64
+	LineSHA256                       string
+	EventType                        string
+	ADMClock                         string
+	Subject, Actor, Target           CaseEvidencePerson
 	Weapon, Ammo, HitZone, HitZoneID string
-	Damage, HP, DistanceMeters *float64
-	BoundaryKind string
-	Build *CaseBuildEvidence
+	Damage, HP, DistanceMeters       *float64
+	BoundaryKind                     string
+	Build                            *CaseBuildEvidence
 }
 
 func caseBounded(s string, max int) string {
-	if !utf8.ValidString(s) { return "" }
+	if !utf8.ValidString(s) {
+		return ""
+	}
 	r := []rune(s)
-	if len(r) > max { return string(r[:max]) }
+	if len(r) > max {
+		return string(r[:max])
+	}
 	return s
 }
 
 func caseEvidencePlayer(ctx context.Context, tx pgx.Tx, guildID int64, p CaseEvidencePerson) (*int64, error) {
-	if p.DayZID == "" { return nil, nil }
+	if p.DayZID == "" {
+		return nil, nil
+	}
 	var id int64
 	err := tx.QueryRow(ctx, `
 		INSERT INTO players(guild_id,dayz_player_id,display_name,last_seen_at)
@@ -62,7 +68,9 @@ func caseEvidencePlayer(ctx context.Context, tx pgx.Tx, guildID int64, p CaseEvi
 		  SET last_seen_at=GREATEST(players.last_seen_at,EXCLUDED.last_seen_at)
 		RETURNING id
 	`, guildID, p.DayZID, caseBounded(p.Name, 128), time.Now().UTC()).Scan(&id)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	return &id, nil
 }
 
@@ -70,7 +78,9 @@ func caseEvidencePlayer(ctx context.Context, tx pgx.Tx, guildID int64, p CaseEvi
 // the same line. A reused source offset with different content is a hard error:
 // silently ignoring it would disguise truncation/replacement as a clean stream.
 func (r *CaseEvidenceRepository) RecordCaseEvidence(ctx context.Context, item CaseEvidenceInput) error {
-	if r == nil || r.pool == nil { return errors.New("C.A.S.E. repository unavailable") }
+	if r == nil || r.pool == nil {
+		return errors.New("C.A.S.E. repository unavailable")
+	}
 	if item.GuildID <= 0 || item.ServerID <= 0 || item.SourceID == "" || item.SourceEndOffset < 0 || len(item.LineSHA256) != 64 || item.EventType == "" {
 		return errors.New("invalid C.A.S.E. source address")
 	}
@@ -82,19 +92,31 @@ func (r *CaseEvidenceRepository) RecordCaseEvidence(ctx context.Context, item Ca
 			!utf8.ValidString(item.Build.Object+item.Build.Target+item.Build.Tool) {
 			return errors.New("invalid C.A.S.E. build evidence")
 		}
-	} else if item.Build != nil { return errors.New("build evidence on non-build event") }
+	} else if item.Build != nil {
+		return errors.New("build evidence on non-build event")
+	}
 	build := CaseBuildEvidence{}
-	if item.Build != nil { build = *item.Build }
+	if item.Build != nil {
+		build = *item.Build
+	}
 	tx, err := r.pool.Begin(ctx)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	defer tx.Rollback(ctx)
 
 	subjectID, err := caseEvidencePlayer(ctx, tx, item.GuildID, item.Subject)
-	if err != nil { return fmt.Errorf("resolve subject: %w", err) }
+	if err != nil {
+		return fmt.Errorf("resolve subject: %w", err)
+	}
 	actorID, err := caseEvidencePlayer(ctx, tx, item.GuildID, item.Actor)
-	if err != nil { return fmt.Errorf("resolve actor: %w", err) }
+	if err != nil {
+		return fmt.Errorf("resolve actor: %w", err)
+	}
 	targetID, err := caseEvidencePlayer(ctx, tx, item.GuildID, item.Target)
-	if err != nil { return fmt.Errorf("resolve target: %w", err) }
+	if err != nil {
+		return fmt.Errorf("resolve target: %w", err)
+	}
 
 	var id int64
 	err = tx.QueryRow(ctx, `
@@ -108,71 +130,79 @@ func (r *CaseEvidenceRepository) RecordCaseEvidence(ctx context.Context, item Ca
 		ON CONFLICT (guild_id,server_id,source_id,source_end_offset) DO NOTHING
 		RETURNING id
 	`,
-		item.GuildID,item.ServerID,item.SourceID,item.SourceEndOffset,item.LineSHA256,item.EventType,caseBounded(item.ADMClock, 12),
-		subjectID,actorID,targetID,caseBounded(item.Subject.Name,128),caseBounded(item.Actor.Name,128),caseBounded(item.Target.Name,128),
-		item.Subject.X,item.Subject.Z,item.Subject.Altitude,item.Actor.X,item.Actor.Z,item.Actor.Altitude,item.Target.X,item.Target.Z,item.Target.Altitude,
-		caseBounded(item.Weapon,128),caseBounded(item.Ammo,128),caseBounded(item.HitZone,64),caseBounded(item.HitZoneID,64),item.Damage,item.HP,item.DistanceMeters,item.BoundaryKind,
-		build.Action,build.Object,build.Target,build.Tool).Scan(&id)
+		item.GuildID, item.ServerID, item.SourceID, item.SourceEndOffset, item.LineSHA256, item.EventType, caseBounded(item.ADMClock, 12),
+		subjectID, actorID, targetID, caseBounded(item.Subject.Name, 128), caseBounded(item.Actor.Name, 128), caseBounded(item.Target.Name, 128),
+		item.Subject.X, item.Subject.Z, item.Subject.Altitude, item.Actor.X, item.Actor.Z, item.Actor.Altitude, item.Target.X, item.Target.Z, item.Target.Altitude,
+		caseBounded(item.Weapon, 128), caseBounded(item.Ammo, 128), caseBounded(item.HitZone, 64), caseBounded(item.HitZoneID, 64), item.Damage, item.HP, item.DistanceMeters, item.BoundaryKind,
+		build.Action, build.Object, build.Target, build.Tool).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		var priorHash, priorType, priorAction, priorObject, priorTarget, priorTool string
 		err = tx.QueryRow(ctx, `SELECT line_sha256,event_type,build_action,build_object,build_target,build_tool FROM case_evidence_events
 		  WHERE guild_id=$1 AND server_id=$2 AND source_id=$3 AND source_end_offset=$4`,
-			item.GuildID,item.ServerID,item.SourceID,item.SourceEndOffset).Scan(&priorHash,&priorType,&priorAction,&priorObject,&priorTarget,&priorTool)
-		if err != nil { return fmt.Errorf("verify replay: %w", err) }
-		if priorHash != item.LineSHA256 { return errors.New("C.A.S.E. source offset collision: changed ADM line at prior position") }
+			item.GuildID, item.ServerID, item.SourceID, item.SourceEndOffset).Scan(&priorHash, &priorType, &priorAction, &priorObject, &priorTarget, &priorTool)
+		if err != nil {
+			return fmt.Errorf("verify replay: %w", err)
+		}
+		if priorHash != item.LineSHA256 {
+			return errors.New("C.A.S.E. source offset collision: changed ADM line at prior position")
+		}
 		if priorType != item.EventType || priorAction != build.Action || priorObject != build.Object || priorTarget != build.Target || priorTool != build.Tool {
 			return errors.New("C.A.S.E. replay evidence mismatch")
 		}
 		return nil
 	}
-	if err != nil { return fmt.Errorf("persist C.A.S.E. evidence: %w", err) }
+	if err != nil {
+		return fmt.Errorf("persist C.A.S.E. evidence: %w", err)
+	}
 	return tx.Commit(ctx)
 }
 
 type CaseEvidenceRow struct {
-	ID int64 `json:"id"`
-	Type string `json:"type"`
+	ID         int64     `json:"id"`
+	Type       string    `json:"type"`
 	IngestedAt time.Time `json:"ingestedAt"`
-	ADMClock string `json:"admClock"`
+	ADMClock   string    `json:"admClock"`
 	// SourceRef is a digest, not a raw Nitrado path or private identifier.
-	SourceRef string `json:"sourceRef"`
-	SourceEndOffset int64 `json:"sourceEndOffset"`
-	LineSHA256 string `json:"lineSha256"`
-	SubjectPlayerID *int64 `json:"subjectPlayerId,omitempty"`
-	ActorPlayerID *int64 `json:"actorPlayerId,omitempty"`
-	TargetPlayerID *int64 `json:"targetPlayerId,omitempty"`
-	SubjectName string `json:"subjectName,omitempty"`
-	ActorName string `json:"actorName,omitempty"`
-	TargetName string `json:"targetName,omitempty"`
-	Weapon string `json:"weapon,omitempty"`
-	Ammo string `json:"ammo,omitempty"`
-	HitZone string `json:"hitZone,omitempty"`
-	HitZoneID string `json:"hitZoneId,omitempty"`
-	Damage *float64 `json:"damage,omitempty"`
-	HP *float64 `json:"hp,omitempty"`
-	DistanceMeters *float64 `json:"distanceMeters,omitempty"`
-	BoundaryKind string `json:"boundaryKind,omitempty"`
-	BuildAction string `json:"buildAction,omitempty"`
-	BuildObject string `json:"buildObject,omitempty"`
-	BuildTarget string `json:"buildTarget,omitempty"`
-	BuildTool string `json:"buildTool,omitempty"`
-	SubjectX *float64 `json:"subjectX,omitempty"`
-	SubjectZ *float64 `json:"subjectZ,omitempty"`
+	SourceRef       string   `json:"sourceRef"`
+	SourceEndOffset int64    `json:"sourceEndOffset"`
+	LineSHA256      string   `json:"lineSha256"`
+	SubjectPlayerID *int64   `json:"subjectPlayerId,omitempty"`
+	ActorPlayerID   *int64   `json:"actorPlayerId,omitempty"`
+	TargetPlayerID  *int64   `json:"targetPlayerId,omitempty"`
+	SubjectName     string   `json:"subjectName,omitempty"`
+	ActorName       string   `json:"actorName,omitempty"`
+	TargetName      string   `json:"targetName,omitempty"`
+	Weapon          string   `json:"weapon,omitempty"`
+	Ammo            string   `json:"ammo,omitempty"`
+	HitZone         string   `json:"hitZone,omitempty"`
+	HitZoneID       string   `json:"hitZoneId,omitempty"`
+	Damage          *float64 `json:"damage,omitempty"`
+	HP              *float64 `json:"hp,omitempty"`
+	DistanceMeters  *float64 `json:"distanceMeters,omitempty"`
+	BoundaryKind    string   `json:"boundaryKind,omitempty"`
+	BuildAction     string   `json:"buildAction,omitempty"`
+	BuildObject     string   `json:"buildObject,omitempty"`
+	BuildTarget     string   `json:"buildTarget,omitempty"`
+	BuildTool       string   `json:"buildTool,omitempty"`
+	SubjectX        *float64 `json:"subjectX,omitempty"`
+	SubjectZ        *float64 `json:"subjectZ,omitempty"`
 	SubjectAltitude *float64 `json:"subjectAltitude,omitempty"`
-	ActorX *float64 `json:"actorX,omitempty"`
-	ActorZ *float64 `json:"actorZ,omitempty"`
-	ActorAltitude *float64 `json:"actorAltitude,omitempty"`
-	TargetX *float64 `json:"targetX,omitempty"`
-	TargetZ *float64 `json:"targetZ,omitempty"`
-	TargetAltitude *float64 `json:"targetAltitude,omitempty"`
+	ActorX          *float64 `json:"actorX,omitempty"`
+	ActorZ          *float64 `json:"actorZ,omitempty"`
+	ActorAltitude   *float64 `json:"actorAltitude,omitempty"`
+	TargetX         *float64 `json:"targetX,omitempty"`
+	TargetZ         *float64 `json:"targetZ,omitempty"`
+	TargetAltitude  *float64 `json:"targetAltitude,omitempty"`
 }
 
 // ListCaseEvidence requires an authorized guild AND server from AdminScope.
 // Optional player and exact evidence IDs select only records on this scoped server.
 // Latest-first ID order reflects ingestion order, not an invented UTC ADM time.
-func (r *CaseEvidenceRepository) ListCaseEvidence(ctx context.Context, guildID, serverID int64, playerID, beforeID, evidenceID *int64, limit int) ([]CaseEvidenceRow,error) {
-	if limit < 1 || limit > 100 { limit=50 }
-	rows,err:=r.pool.Query(ctx, `
+func (r *CaseEvidenceRepository) ListCaseEvidence(ctx context.Context, guildID, serverID int64, playerID, beforeID, evidenceID *int64, limit int) ([]CaseEvidenceRow, error) {
+	if limit < 1 || limit > 100 {
+		limit = 50
+	}
+	rows, err := r.pool.Query(ctx, `
 	  SELECT id,event_type,ingested_at,adm_clock,
 	         encode(sha256(convert_to(source_id,'UTF8')),'hex') AS source_ref,source_end_offset,line_sha256,
 	         subject_player_id,actor_player_id,target_player_id,
@@ -185,28 +215,32 @@ func (r *CaseEvidenceRepository) ListCaseEvidence(ctx context.Context, guildID, 
 	    AND ($4::BIGINT IS NULL OR id<$4)
 	    AND ($5::BIGINT IS NULL OR id=$5)
 	  ORDER BY id DESC LIMIT $6
-	`,guildID,serverID,playerID,beforeID,evidenceID,limit)
-	if err!=nil {return nil,err}
-	defer rows.Close()
-	out:=make([]CaseEvidenceRow,0)
-	for rows.Next(){
-	  var e CaseEvidenceRow
-	  if err=rows.Scan(&e.ID,&e.Type,&e.IngestedAt,&e.ADMClock,&e.SourceRef,&e.SourceEndOffset,&e.LineSHA256,
-	    &e.SubjectPlayerID,&e.ActorPlayerID,&e.TargetPlayerID,
-	    &e.SubjectName,&e.ActorName,&e.TargetName,&e.Weapon,&e.Ammo,&e.HitZone,&e.HitZoneID,
-	    &e.Damage,&e.HP,&e.DistanceMeters,&e.BoundaryKind,&e.BuildAction,&e.BuildObject,&e.BuildTarget,&e.BuildTool,
-	    &e.SubjectX,&e.SubjectZ,&e.SubjectAltitude,&e.ActorX,&e.ActorZ,&e.ActorAltitude,&e.TargetX,&e.TargetZ,&e.TargetAltitude);err!=nil{return nil,err}
-	  e.SourceRef=e.SourceRef[:16]
-	  out=append(out,e)
+	`, guildID, serverID, playerID, beforeID, evidenceID, limit)
+	if err != nil {
+		return nil, err
 	}
-	return out,rows.Err()
+	defer rows.Close()
+	out := make([]CaseEvidenceRow, 0)
+	for rows.Next() {
+		var e CaseEvidenceRow
+		if err = rows.Scan(&e.ID, &e.Type, &e.IngestedAt, &e.ADMClock, &e.SourceRef, &e.SourceEndOffset, &e.LineSHA256,
+			&e.SubjectPlayerID, &e.ActorPlayerID, &e.TargetPlayerID,
+			&e.SubjectName, &e.ActorName, &e.TargetName, &e.Weapon, &e.Ammo, &e.HitZone, &e.HitZoneID,
+			&e.Damage, &e.HP, &e.DistanceMeters, &e.BoundaryKind, &e.BuildAction, &e.BuildObject, &e.BuildTarget, &e.BuildTool,
+			&e.SubjectX, &e.SubjectZ, &e.SubjectAltitude, &e.ActorX, &e.ActorZ, &e.ActorAltitude, &e.TargetX, &e.TargetZ, &e.TargetAltitude); err != nil {
+			return nil, err
+		}
+		e.SourceRef = e.SourceRef[:16]
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }
 
-func (r *CaseEvidenceRepository) CaseHitCount(ctx context.Context,guildID,serverID int64,from,to time.Time)(int64,error){
+func (r *CaseEvidenceRepository) CaseHitCount(ctx context.Context, guildID, serverID int64, from, to time.Time) (int64, error) {
 	var count int64
-	err:=r.pool.QueryRow(ctx, `
+	err := r.pool.QueryRow(ctx, `
 	  SELECT COUNT(*) FROM case_evidence_events
 	  WHERE guild_id=$1 AND server_id=$2 AND event_type='PLAYER_HIT' AND ingested_at >=$3 AND ingested_at <=$4
-	`,guildID,serverID,from,to).Scan(&count)
-	return count,err
+	`, guildID, serverID, from, to).Scan(&count)
+	return count, err
 }

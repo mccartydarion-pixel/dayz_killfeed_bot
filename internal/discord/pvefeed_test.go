@@ -431,7 +431,6 @@ func TestPveFeedNilSafety(t *testing.T) {
 	q.Flush()
 }
 
-
 func TestPveNoticesShareFiftyCardManagedDeathWindow(t *testing.T) {
 	freshLedger(t)
 	fixture := newPveFixture()

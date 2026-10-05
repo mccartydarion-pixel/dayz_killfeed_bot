@@ -41,7 +41,7 @@ func (r ServerSeasonRankReader) TopCurrentRanks(ctx context.Context, guildID int
 	for _, row := range rows {
 		out = append(out, RankEntry{
 			DisplayName: row.Name,
-			Rank: fmt.Sprintf("%s • %s RP", row.Tier, presentation.FormatThousands(row.RP)),
+			Rank:        fmt.Sprintf("%s • %s RP", row.Tier, presentation.FormatThousands(row.RP)),
 		})
 	}
 	return out, nil

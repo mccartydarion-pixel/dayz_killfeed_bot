@@ -289,7 +289,9 @@ type routePanelRepo interface {
 type routePanelStoreAdapter struct{ repo routePanelRepo }
 
 // NewRoutePanelStore adapts repository.GuildRoutePanelRepository to RoutePanelStore.
-func NewRoutePanelStore(repo routePanelRepo) RoutePanelStore { return routePanelStoreAdapter{repo: repo} }
+func NewRoutePanelStore(repo routePanelRepo) RoutePanelStore {
+	return routePanelStoreAdapter{repo: repo}
+}
 
 func (a routePanelStoreAdapter) List(ctx context.Context, guildRowID int64, routeKey string) ([]RoutePanelMessage, error) {
 	rows, err := a.repo.List(ctx, guildRowID, routeKey)

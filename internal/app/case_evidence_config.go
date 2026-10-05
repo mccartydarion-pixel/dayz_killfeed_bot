@@ -107,7 +107,9 @@ func caseBuildEvidenceEnvForServer(serverID int64) bool {
 	}
 	for _, raw := range strings.Split(os.Getenv("CASE_BUILD_EVIDENCE_SERVER_IDS"), ",") {
 		id, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
-		if err == nil && id == serverID { return true }
+		if err == nil && id == serverID {
+			return true
+		}
 	}
 	return false
 }

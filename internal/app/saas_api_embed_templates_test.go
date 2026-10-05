@@ -33,7 +33,9 @@ func TestEmbedTemplateRoutesMatchTheChannelRouteBlueprint(t *testing.T) {
 		}
 	}
 	for _, route := range []string{"CASE_STATUS", "CASE_EVIDENCE", "CASE_ALERTS"} {
-		if !embedtemplates.ValidRoute(route) {t.Fatalf("%s missing template contract", route)}
+		if !embedtemplates.ValidRoute(route) {
+			t.Fatalf("%s missing template contract", route)
+		}
 		if (&App{}).runtimeRenderingFor(0, route) != "NOT_ENABLED" {
 			t.Fatalf("%s has no authorized live publisher", route)
 		}

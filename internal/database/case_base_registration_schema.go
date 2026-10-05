@@ -116,4 +116,4 @@ CREATE TRIGGER trg_case_base_grant_requires_draft
  FOR EACH ROW EXECUTE FUNCTION case_base_grant_requires_draft();
 CREATE INDEX IF NOT EXISTS idx_case_base_grants_scope
  ON case_base_authorizations(installation_id,guild_id,server_id,base_id,valid_from);
-`;
+`

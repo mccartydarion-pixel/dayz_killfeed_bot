@@ -73,11 +73,11 @@ type CaseTierChangeResult struct {
 // CaseTierPreview is what the owner confirms. Amounts are Stripe-calculated
 // (upgrade) or zero; the browser never supplies a price or an amount.
 type CaseTierPreview struct {
-	Kind                   CaseTierChangeKind
+	Kind                    CaseTierChangeKind
 	CurrentTier, TargetTier casebilling.Tier
-	AmountDueNowCents      int64
-	Currency               string
-	ProrationDate          int64
+	AmountDueNowCents       int64
+	Currency                string
+	ProrationDate           int64
 	// EffectiveAt is when the target tier's access takes effect: nil for an
 	// upgrade (on payment), the paid-through end for a downgrade, now for
 	// a restore.

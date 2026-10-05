@@ -6,8 +6,8 @@
 package heatmap
 
 import (
-	"fmt"
 	"context"
+	"fmt"
 	"sync"
 	"time"
 

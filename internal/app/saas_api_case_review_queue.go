@@ -24,7 +24,9 @@ type caseReviewQueuePage struct {
 // modify a review, deliver a Discord message or run a detector.
 func (a *App) handleAntiCheatCases(w http.ResponseWriter, r *http.Request) {
 	ac, ok := a.requireCapability(w, r, permissions.CapPlayerLocationView)
-	if !ok { return }
+	if !ok {
+		return
+	}
 	if ac.scope.ServerID == nil || *ac.scope.ServerID <= 0 {
 		writeSaaSError(w, codeInvalidRequest, "no DayZ server selected")
 		return
@@ -33,7 +35,9 @@ func (a *App) handleAntiCheatCases(w http.ResponseWriter, r *http.Request) {
 		writeSaaSError(w, codeInternalError, "C.A.S.E. review unavailable")
 		return
 	}
-	if !enforceRateLimit(w, a.saasAdminReadLimiter, rateLimitKey(r)) { return }
+	if !enforceRateLimit(w, a.saasAdminReadLimiter, rateLimitKey(r)) {
+		return
+	}
 	var before *int64
 	if raw := r.URL.Query().Get("before"); raw != "" {
 		value, err := strconv.ParseInt(raw, 10, 64)

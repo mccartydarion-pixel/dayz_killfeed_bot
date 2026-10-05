@@ -11,120 +11,160 @@ import (
 
 type caseEvidenceRecorder struct {
 	items []repository.CaseEvidenceInput
-	err error
+	err   error
 }
+
 func (s *caseEvidenceRecorder) RecordCaseEvidence(_ context.Context, in repository.CaseEvidenceInput) error {
-	if s.err!=nil {return s.err}
-	s.items=append(s.items,in)
+	if s.err != nil {
+		return s.err
+	}
+	s.items = append(s.items, in)
 	return nil
 }
 
 const caseTestHit = `16:30:00 | Player "Victim" (id=v001 pos=<7504.7, 1334.4, 0.9>) [HP: 42.5] hit by Player "Shooter" (id=s002 pos=<7490.2, 1528.2, 43.0>) into Torso(3) for 28.8605 damage (Bullet_762x39Tracer) with AKM from 115.058 meters`
 
 func TestCaseEvidenceIdenticalHitLinesRetainSeparateSourceOffsets(t *testing.T) {
-	e:=NewEngine(nil,"svc",NewADMParser())
-	e.SetDurableCheckpoint(nil,11,22)
-	store:=&caseEvidenceRecorder{}
+	e := NewEngine(nil, "svc", NewADMParser())
+	e.SetDurableCheckpoint(nil, 11, 22)
+	store := &caseEvidenceRecorder{}
 	e.SetEvidenceStore(store)
-	p1:="/games/123/noftp/dayzps/config/DayZServer_PS4_x64_2026-09-23.ADM"
-	p2:="/games/123/ftproot/dayzps/config/DayZServer_PS4_x64_2026-09-23.ADM"
-	if _,err:=e.processLineAt(caseTestHit,p1,100);err!=nil {t.Fatal(err)}
-	if _,err:=e.processLineAt(caseTestHit,p2,300);err!=nil {t.Fatal(err)}
-	if len(store.items)!=2 {t.Fatalf("both source lines must be observed despite legacy fingerprint dedupe, got %d",len(store.items))}
-	a,b:=store.items[0],store.items[1]
-	if a.SourceID!=b.SourceID || a.SourceEndOffset!=100 || b.SourceEndOffset!=300 || a.LineSHA256!=b.LineSHA256 {
-		t.Fatalf("source provenance invalid: a=%+v b=%+v",a,b)
+	p1 := "/games/123/noftp/dayzps/config/DayZServer_PS4_x64_2026-09-23.ADM"
+	p2 := "/games/123/ftproot/dayzps/config/DayZServer_PS4_x64_2026-09-23.ADM"
+	if _, err := e.processLineAt(caseTestHit, p1, 100); err != nil {
+		t.Fatal(err)
 	}
-	if a.Actor.DayZID!="s002" || a.Target.DayZID!="v001" || a.Actor.X==nil || *a.Actor.X!=7490.2 || a.Actor.Z==nil || *a.Actor.Z!=1528.2 || a.Actor.Altitude==nil || *a.Actor.Altitude!=43.0 {
-		t.Fatalf("hit identity/ADM coordinate order wrong: %+v",a)
+	if _, err := e.processLineAt(caseTestHit, p2, 300); err != nil {
+		t.Fatal(err)
 	}
-	if a.ADMClock!="16:30:00" || a.BoundaryKind!="" || a.Damage==nil || *a.Damage!=28.8605 {
-		t.Fatalf("invented timing or missing hit metadata: %+v",a)
+	if len(store.items) != 2 {
+		t.Fatalf("both source lines must be observed despite legacy fingerprint dedupe, got %d", len(store.items))
+	}
+	a, b := store.items[0], store.items[1]
+	if a.SourceID != b.SourceID || a.SourceEndOffset != 100 || b.SourceEndOffset != 300 || a.LineSHA256 != b.LineSHA256 {
+		t.Fatalf("source provenance invalid: a=%+v b=%+v", a, b)
+	}
+	if a.Actor.DayZID != "s002" || a.Target.DayZID != "v001" || a.Actor.X == nil || *a.Actor.X != 7490.2 || a.Actor.Z == nil || *a.Actor.Z != 1528.2 || a.Actor.Altitude == nil || *a.Actor.Altitude != 43.0 {
+		t.Fatalf("hit identity/ADM coordinate order wrong: %+v", a)
+	}
+	if a.ADMClock != "16:30:00" || a.BoundaryKind != "" || a.Damage == nil || *a.Damage != 28.8605 {
+		t.Fatalf("invented timing or missing hit metadata: %+v", a)
 	}
 }
 
 func TestCaseEvidenceFailureStopsBeforeLegacyDedupe(t *testing.T) {
-	e:=NewEngine(nil,"svc",NewADMParser())
-	e.SetDurableCheckpoint(nil,11,22)
-	store:=&caseEvidenceRecorder{err:errors.New("temporary storage failure")}
+	e := NewEngine(nil, "svc", NewADMParser())
+	e.SetDurableCheckpoint(nil, 11, 22)
+	store := &caseEvidenceRecorder{err: errors.New("temporary storage failure")}
 	e.SetEvidenceStore(store)
-	if _,err:=e.processLineAt(caseTestHit,"/noftp/dayzps/config/test.ADM",400);err==nil {t.Fatal("checkpoint must not advance past missing evidence")}
-	store.err=nil
-	if _,err:=e.processLineAt(caseTestHit,"/ftproot/dayzps/config/test.ADM",400);err!=nil {t.Fatal(err)}
-	if len(store.items)!=1 {t.Fatalf("retry must reach evidence sink, got %d",len(store.items))}
+	if _, err := e.processLineAt(caseTestHit, "/noftp/dayzps/config/test.ADM", 400); err == nil {
+		t.Fatal("checkpoint must not advance past missing evidence")
+	}
+	store.err = nil
+	if _, err := e.processLineAt(caseTestHit, "/ftproot/dayzps/config/test.ADM", 400); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.items) != 1 {
+		t.Fatalf("retry must reach evidence sink, got %d", len(store.items))
+	}
 }
 
 func TestCaseBoundaryOnlyForProvenLifecycle(t *testing.T) {
-	for _,tt:=range []struct{kind EventType; expected string}{
-		{EventPlayerConnect,"CONNECT"},{EventPlayerDisconnect,"DISCONNECT"},
-		{EventPlayerRespawn,"RESPAWN"},{EventPlayerKill,"DEATH"},
-		{EventPlayerDeath,"DEATH"},{EventSuicideAction,"SUICIDE"},
-		{EventPlayerHit,""},{EventPlayerUnconscious,""},{EventPlayerConscious,""},
+	for _, tt := range []struct {
+		kind     EventType
+		expected string
+	}{
+		{EventPlayerConnect, "CONNECT"}, {EventPlayerDisconnect, "DISCONNECT"},
+		{EventPlayerRespawn, "RESPAWN"}, {EventPlayerKill, "DEATH"},
+		{EventPlayerDeath, "DEATH"}, {EventSuicideAction, "SUICIDE"},
+		{EventPlayerHit, ""}, {EventPlayerUnconscious, ""}, {EventPlayerConscious, ""},
 	} {
-		got:=caseBoundary(&Event{Type:tt.kind})
-		if got!=tt.expected {t.Fatalf("%s -> %q, expected %q",tt.kind,got,tt.expected)}
+		got := caseBoundary(&Event{Type: tt.kind})
+		if got != tt.expected {
+			t.Fatalf("%s -> %q, expected %q", tt.kind, got, tt.expected)
+		}
 	}
 }
 
 func TestCasePersistedSuicideEventUsesBoundaryAuditVocabulary(t *testing.T) {
- in:=caseEvidenceInput(&Event{Type:EventSuicideAction,Raw:"synthetic suicide",TimeOfDay:"10:00:00"},
-  1,2,"/ftproot/dayzps/config/synthetic.ADM",100)
- if in.EventType!="SUICIDE_ACTION"||in.BoundaryKind!="SUICIDE" {
-  t.Fatalf("collector event vocabulary changed: %q %q",in.EventType,in.BoundaryKind)
- }
- report,err:=caseintel.AuditAdmissibility([]caseintel.AdmissibilitySample{{
-  EvidenceID:1,SourceID:in.SourceID,SourceEndOffset:in.SourceEndOffset,
-  LineSHA256:in.LineSHA256,EventType:in.EventType,ADMClock:in.ADMClock,
- }},1,false)
- if err!=nil {t.Fatal(err)}
- if report.BoundaryObservations!=1||report.OtherObservations!=0||
- report.MovementDetectorStatus!="BLOCKED"||report.SafeSpeedPairs!=0||report.Enforcement!="DISABLED"{
-  t.Fatalf("collector/audit suicide boundary contract broken: %+v",report)
- }
+	in := caseEvidenceInput(&Event{Type: EventSuicideAction, Raw: "synthetic suicide", TimeOfDay: "10:00:00"},
+		1, 2, "/ftproot/dayzps/config/synthetic.ADM", 100)
+	if in.EventType != "SUICIDE_ACTION" || in.BoundaryKind != "SUICIDE" {
+		t.Fatalf("collector event vocabulary changed: %q %q", in.EventType, in.BoundaryKind)
+	}
+	report, err := caseintel.AuditAdmissibility([]caseintel.AdmissibilitySample{{
+		EvidenceID: 1, SourceID: in.SourceID, SourceEndOffset: in.SourceEndOffset,
+		LineSHA256: in.LineSHA256, EventType: in.EventType, ADMClock: in.ADMClock,
+	}}, 1, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.BoundaryObservations != 1 || report.OtherObservations != 0 ||
+		report.MovementDetectorStatus != "BLOCKED" || report.SafeSpeedPairs != 0 || report.Enforcement != "DISABLED" {
+		t.Fatalf("collector/audit suicide boundary contract broken: %+v", report)
+	}
 }
 
 const caseTestBuild = `16:31:00 | Player "Builder" (id=b001 pos=<100.5, 200.5, 5.5>) built Fence Wall on Fence with Hatchet`
 
 func TestCaseBuildEvidenceKeepsSourceAndTupleBeforeFeedDedupe(t *testing.T) {
- e:=NewEngine(nil,"svc",NewADMParser())
- e.SetDurableCheckpoint(nil,11,22)
- store:=&caseEvidenceRecorder{}
- e.SetEvidenceStore(store)
- e.SetBuildEvidenceEnabled(true)
- for _,offset:=range []int64{100,200} {
-  if _,err:=e.processLineAt(caseTestBuild,"/ftproot/dayzps/config/build.ADM",offset);err!=nil{t.Fatal(err)}
- }
- if len(store.items)!=2{t.Fatalf("expected two independent build observations, got %d",len(store.items))}
- a,b:=store.items[0],store.items[1]
- if a.EventType!="BUILD_ACTION"||a.Build==nil||a.Build.Action!="Built"||
-  a.Build.Object!="Fence Wall"||a.Build.Target!="Fence"||a.Build.Tool!="Hatchet"||
-  a.Subject.DayZID!="b001"||a.Subject.X==nil||*a.Subject.X!=100.5||
-  a.Subject.Z==nil||*a.Subject.Z!=200.5||a.Subject.Altitude==nil||*a.Subject.Altitude!=5.5||
-  a.ADMClock!="16:31:00"||a.SourceID!=b.SourceID||a.SourceEndOffset!=100||b.SourceEndOffset!=200{
-  t.Fatalf("build tuple or provenance lost: %+v %+v",a,b)
- }
+	e := NewEngine(nil, "svc", NewADMParser())
+	e.SetDurableCheckpoint(nil, 11, 22)
+	store := &caseEvidenceRecorder{}
+	e.SetEvidenceStore(store)
+	e.SetBuildEvidenceEnabled(true)
+	for _, offset := range []int64{100, 200} {
+		if _, err := e.processLineAt(caseTestBuild, "/ftproot/dayzps/config/build.ADM", offset); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(store.items) != 2 {
+		t.Fatalf("expected two independent build observations, got %d", len(store.items))
+	}
+	a, b := store.items[0], store.items[1]
+	if a.EventType != "BUILD_ACTION" || a.Build == nil || a.Build.Action != "Built" ||
+		a.Build.Object != "Fence Wall" || a.Build.Target != "Fence" || a.Build.Tool != "Hatchet" ||
+		a.Subject.DayZID != "b001" || a.Subject.X == nil || *a.Subject.X != 100.5 ||
+		a.Subject.Z == nil || *a.Subject.Z != 200.5 || a.Subject.Altitude == nil || *a.Subject.Altitude != 5.5 ||
+		a.ADMClock != "16:31:00" || a.SourceID != b.SourceID || a.SourceEndOffset != 100 || b.SourceEndOffset != 200 {
+		t.Fatalf("build tuple or provenance lost: %+v %+v", a, b)
+	}
 }
 
 func TestCaseBuildEvidenceFailureStopsSourceCheckpoint(t *testing.T) {
- e:=NewEngine(nil,"svc",NewADMParser())
- e.SetDurableCheckpoint(nil,11,22)
- store:=&caseEvidenceRecorder{err:errors.New("temporary storage failure")}
- e.SetEvidenceStore(store)
- e.SetBuildEvidenceEnabled(true)
- if _,err:=e.processLineAt(caseTestBuild,"/ftproot/dayzps/config/build.ADM",400);err==nil{t.Fatal("missing build evidence must stop checkpoint")}
- store.err=nil
- if _,err:=e.processLineAt(caseTestBuild,"/ftproot/dayzps/config/build.ADM",400);err!=nil{t.Fatal(err)}
- if len(store.items)!=1{t.Fatalf("retry must record build evidence once, got %d",len(store.items))}
+	e := NewEngine(nil, "svc", NewADMParser())
+	e.SetDurableCheckpoint(nil, 11, 22)
+	store := &caseEvidenceRecorder{err: errors.New("temporary storage failure")}
+	e.SetEvidenceStore(store)
+	e.SetBuildEvidenceEnabled(true)
+	if _, err := e.processLineAt(caseTestBuild, "/ftproot/dayzps/config/build.ADM", 400); err == nil {
+		t.Fatal("missing build evidence must stop checkpoint")
+	}
+	store.err = nil
+	if _, err := e.processLineAt(caseTestBuild, "/ftproot/dayzps/config/build.ADM", 400); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.items) != 1 {
+		t.Fatalf("retry must record build evidence once, got %d", len(store.items))
+	}
 }
 
 func TestCaseBuildEvidenceRequiresSecondOptIn(t *testing.T) {
- e:=NewEngine(nil,"svc",NewADMParser())
- e.SetDurableCheckpoint(nil,11,22)
- store:=&caseEvidenceRecorder{}
- e.SetEvidenceStore(store)
- if _,err:=e.processLineAt(caseTestBuild,"/ftproot/dayzps/config/build.ADM",100);err!=nil{t.Fatal(err)}
- if len(store.items)!=0{t.Fatal("existing collector must not observe build actions without separate opt-in")}
- e.SetBuildEvidenceEnabled(true)
- if _,err:=e.processLineAt(caseTestBuild,"/ftproot/dayzps/config/build.ADM",200);err!=nil{t.Fatal(err)}
- if len(store.items)!=1||store.items[0].Build==nil{t.Fatalf("explicit build opt-in failed: %+v",store.items)}
+	e := NewEngine(nil, "svc", NewADMParser())
+	e.SetDurableCheckpoint(nil, 11, 22)
+	store := &caseEvidenceRecorder{}
+	e.SetEvidenceStore(store)
+	if _, err := e.processLineAt(caseTestBuild, "/ftproot/dayzps/config/build.ADM", 100); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.items) != 0 {
+		t.Fatal("existing collector must not observe build actions without separate opt-in")
+	}
+	e.SetBuildEvidenceEnabled(true)
+	if _, err := e.processLineAt(caseTestBuild, "/ftproot/dayzps/config/build.ADM", 200); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.items) != 1 || store.items[0].Build == nil {
+		t.Fatalf("explicit build opt-in failed: %+v", store.items)
+	}
 }

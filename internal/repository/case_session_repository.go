@@ -16,8 +16,10 @@ import (
 // reconstruction engine sorts each source's rows by its physical byte offset.
 func (r *CaseEvidenceRepository) ListCaseSessionEvidence(ctx context.Context,
 	guildID, serverID, playerID int64, beforeID *int64, limit int) ([]caseintel.Event, *int64, error) {
-	if limit < 1 || limit > 500 {limit=200}
-	rows,err:=r.pool.Query(ctx, `
+	if limit < 1 || limit > 500 {
+		limit = 200
+	}
+	rows, err := r.pool.Query(ctx, `
 	  SELECT id,source_id,source_end_offset,event_type,adm_clock,ingested_at,
 	         subject_player_id,actor_player_id,target_player_id,
 	         subject_name,actor_name,target_name,
@@ -29,24 +31,32 @@ func (r *CaseEvidenceRepository) ListCaseSessionEvidence(ctx context.Context,
 	    AND (subject_player_id=$3 OR actor_player_id=$3 OR target_player_id=$3)
 	    AND ($4::BIGINT IS NULL OR id<$4)
 	  ORDER BY id DESC LIMIT $5
-	`,guildID,serverID,playerID,beforeID,limit+1)
-	if err!=nil{return nil,nil,err}
-	defer rows.Close()
-	out:=make([]caseintel.Event,0,limit+1)
-	for rows.Next(){
-		var e caseintel.Event
-		if err=rows.Scan(&e.ID,&e.SourceID,&e.SourceEndOffset,&e.Type,&e.ADMClock,&e.IngestedAt,
-			&e.SubjectID,&e.ActorID,&e.TargetID,&e.SubjectName,&e.ActorName,&e.TargetName,
-			&e.SubjectX,&e.SubjectZ,&e.SubjectAltitude,
-			&e.ActorX,&e.ActorZ,&e.ActorAltitude,
-			&e.TargetX,&e.TargetZ,&e.TargetAltitude);err!=nil{return nil,nil,err}
-		out=append(out,e)
+	`, guildID, serverID, playerID, beforeID, limit+1)
+	if err != nil {
+		return nil, nil, err
 	}
-	if err=rows.Err();err!=nil{return nil,nil,err}
-	if len(out)<=limit{return out,nil,nil}
-	out=out[:limit]
-	cursor:=out[len(out)-1].ID
-	return out,&cursor,nil
+	defer rows.Close()
+	out := make([]caseintel.Event, 0, limit+1)
+	for rows.Next() {
+		var e caseintel.Event
+		if err = rows.Scan(&e.ID, &e.SourceID, &e.SourceEndOffset, &e.Type, &e.ADMClock, &e.IngestedAt,
+			&e.SubjectID, &e.ActorID, &e.TargetID, &e.SubjectName, &e.ActorName, &e.TargetName,
+			&e.SubjectX, &e.SubjectZ, &e.SubjectAltitude,
+			&e.ActorX, &e.ActorZ, &e.ActorAltitude,
+			&e.TargetX, &e.TargetZ, &e.TargetAltitude); err != nil {
+			return nil, nil, err
+		}
+		out = append(out, e)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	if len(out) <= limit {
+		return out, nil, nil
+	}
+	out = out[:limit]
+	cursor := out[len(out)-1].ID
+	return out, &cursor, nil
 }
 
 // CaseServerUTCOffset returns the server's UTC offset in minutes as learned

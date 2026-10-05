@@ -152,113 +152,127 @@ func TestAdminAlertPublishNeverBlocks(t *testing.T) {
 	nilP.ObserveDownload(1, killfeed.DownloadReport{})
 }
 
-
 func TestCASEAndUnknownKindsCannotUseOperationalAdminAlerts(t *testing.T) {
- p, sender, resolver, _ := newAlertFixture()
- resolver.set(7, 1, routeKeyAdminAlerts, "chan-admin")
- for _, kind := range []string{"CASE_MOVEMENT_FINDING", "CASE_SHADOW_DIAGNOSTIC", "CASE_STAFF_DEMO", "", "UNKNOWN_KIND"} {
-  a := AdminAlert{GuildRowID:7, ServerID:1, Kind:kind, Severity:AlertCritical, Headline:"FALSE ACCUSATION", Detail:"not an operational condition"}
-  p.Publish(a)
-  // Defend even against direct queue insertion or future bypass of Publish.
-  p.queue <- a
- }
- drain(p)
- if sender.total()!=0 {t.Fatalf("non-operational kinds reached Discord: %d",sender.total())}
- if len(p.queue)!=0 {t.Fatalf("non-operational alert remained queued: %d",len(p.queue))}
- // Existing operational conditions must continue to work.
- p.Publish(AdminAlert{GuildRowID:7,ServerID:1,Kind:AlertKindADMStale,Severity:AlertWarning,Headline:"ADM STALE"})
- drain(p)
- if sender.total()!=1 {t.Fatalf("operational alert was blocked: %d",sender.total())}
+	p, sender, resolver, _ := newAlertFixture()
+	resolver.set(7, 1, routeKeyAdminAlerts, "chan-admin")
+	for _, kind := range []string{"CASE_MOVEMENT_FINDING", "CASE_SHADOW_DIAGNOSTIC", "CASE_STAFF_DEMO", "", "UNKNOWN_KIND"} {
+		a := AdminAlert{GuildRowID: 7, ServerID: 1, Kind: kind, Severity: AlertCritical, Headline: "FALSE ACCUSATION", Detail: "not an operational condition"}
+		p.Publish(a)
+		// Defend even against direct queue insertion or future bypass of Publish.
+		p.queue <- a
+	}
+	drain(p)
+	if sender.total() != 0 {
+		t.Fatalf("non-operational kinds reached Discord: %d", sender.total())
+	}
+	if len(p.queue) != 0 {
+		t.Fatalf("non-operational alert remained queued: %d", len(p.queue))
+	}
+	// Existing operational conditions must continue to work.
+	p.Publish(AdminAlert{GuildRowID: 7, ServerID: 1, Kind: AlertKindADMStale, Severity: AlertWarning, Headline: "ADM STALE"})
+	drain(p)
+	if sender.total() != 1 {
+		t.Fatalf("operational alert was blocked: %d", sender.total())
+	}
 }
-
 
 func TestOperationalAlertAllowlistPreservesEverySupportedKind(t *testing.T) {
- supported := []string{
-  AlertKindADMStale, AlertKindNitradoFailure, AlertKindZoneIntrusion,
-  AlertKindUAVIntrusion, AlertKindBaseRadar, AlertKindZoneBanViolated,
- }
- p, sender, resolver, _ := newAlertFixture()
- resolver.set(7, 1, routeKeyAdminAlerts, "chan-admin")
- for _, kind := range supported {
-  if !operationalAdminAlertKind(kind) {t.Fatalf("supported kind rejected: %s",kind)}
-  p.Publish(AdminAlert{GuildRowID:7,ServerID:1,Kind:kind,Severity:AlertWarning,Headline:kind})
- }
- drain(p)
- if sender.total()!=len(supported) {t.Fatalf("expected %d supported operational alerts, got %d",len(supported),sender.total())}
- for _, kind := range []string{"CASE_MOVEMENT_FINDING","CASE_SHADOW_DIAGNOSTIC","CASE_STAFF_DEMO","","UNKNOWN_KIND"} {
-  if operationalAdminAlertKind(kind) {t.Fatalf("non-operational kind admitted: %q",kind)}
- }
+	supported := []string{
+		AlertKindADMStale, AlertKindNitradoFailure, AlertKindZoneIntrusion,
+		AlertKindUAVIntrusion, AlertKindBaseRadar, AlertKindZoneBanViolated,
+	}
+	p, sender, resolver, _ := newAlertFixture()
+	resolver.set(7, 1, routeKeyAdminAlerts, "chan-admin")
+	for _, kind := range supported {
+		if !operationalAdminAlertKind(kind) {
+			t.Fatalf("supported kind rejected: %s", kind)
+		}
+		p.Publish(AdminAlert{GuildRowID: 7, ServerID: 1, Kind: kind, Severity: AlertWarning, Headline: kind})
+	}
+	drain(p)
+	if sender.total() != len(supported) {
+		t.Fatalf("expected %d supported operational alerts, got %d", len(supported), sender.total())
+	}
+	for _, kind := range []string{"CASE_MOVEMENT_FINDING", "CASE_SHADOW_DIAGNOSTIC", "CASE_STAFF_DEMO", "", "UNKNOWN_KIND"} {
+		if operationalAdminAlertKind(kind) {
+			t.Fatalf("non-operational kind admitted: %q", kind)
+		}
+	}
 }
-
 
 func TestCASEBoundaryDoesNotCrossServerOrFallback(t *testing.T) {
- p, sender, resolver, _ := newAlertFixture()
- resolver.set(7, 2, routeKeyAdminAlerts, "chan-server-two")
- // Server one has no staff route. Even an allowed operational kind must
- // not fall through to server two's configured channel.
- p.Publish(AdminAlert{GuildRowID:7,ServerID:1,Kind:AlertKindADMStale,Severity:AlertWarning,Headline:"ADM STALE"})
- // A C.A.S.E. kind remains forbidden even when server two has a route.
- p.Publish(AdminAlert{GuildRowID:7,ServerID:2,Kind:"CASE_MOVEMENT_FINDING",Severity:AlertCritical,Headline:"DO NOT SEND"})
- drain(p)
- if sender.total()!=0 {t.Fatalf("missing route or C.A.S.E. alert leaked to Discord: %d",sender.total())}
- p.Publish(AdminAlert{GuildRowID:7,ServerID:2,Kind:AlertKindADMStale,Severity:AlertWarning,Headline:"ADM STALE"})
- drain(p)
- if len(sender.messages("chan-server-two"))!=1 || sender.total()!=1 {
-  t.Fatalf("expected exactly one server-two operational alert, got %d",sender.total())
- }
+	p, sender, resolver, _ := newAlertFixture()
+	resolver.set(7, 2, routeKeyAdminAlerts, "chan-server-two")
+	// Server one has no staff route. Even an allowed operational kind must
+	// not fall through to server two's configured channel.
+	p.Publish(AdminAlert{GuildRowID: 7, ServerID: 1, Kind: AlertKindADMStale, Severity: AlertWarning, Headline: "ADM STALE"})
+	// A C.A.S.E. kind remains forbidden even when server two has a route.
+	p.Publish(AdminAlert{GuildRowID: 7, ServerID: 2, Kind: "CASE_MOVEMENT_FINDING", Severity: AlertCritical, Headline: "DO NOT SEND"})
+	drain(p)
+	if sender.total() != 0 {
+		t.Fatalf("missing route or C.A.S.E. alert leaked to Discord: %d", sender.total())
+	}
+	p.Publish(AdminAlert{GuildRowID: 7, ServerID: 2, Kind: AlertKindADMStale, Severity: AlertWarning, Headline: "ADM STALE"})
+	drain(p)
+	if len(sender.messages("chan-server-two")) != 1 || sender.total() != 1 {
+		t.Fatalf("expected exactly one server-two operational alert, got %d", sender.total())
+	}
 }
-
 
 func TestCASEBoundaryDoesNotCrossGuild(t *testing.T) {
- p, sender, resolver, _ := newAlertFixture()
- resolver.set(8, 1, routeKeyAdminAlerts, "chan-other-guild")
- // An identical server ID in a different guild is not permission to send.
- p.Publish(AdminAlert{GuildRowID:7,ServerID:1,Kind:AlertKindADMStale,Severity:AlertWarning,Headline:"ADM STALE"})
- p.Publish(AdminAlert{GuildRowID:8,ServerID:1,Kind:"CASE_MOVEMENT_FINDING",Severity:AlertCritical,Headline:"DO NOT SEND"})
- drain(p)
- if sender.total()!=0 {t.Fatalf("cross-guild or C.A.S.E. alert leaked: %d",sender.total())}
- p.Publish(AdminAlert{GuildRowID:8,ServerID:1,Kind:AlertKindADMStale,Severity:AlertWarning,Headline:"ADM STALE"})
- drain(p)
- if len(sender.messages("chan-other-guild"))!=1 || sender.total()!=1 {
-  t.Fatalf("expected exactly one authorized operational alert, got %d",sender.total())
- }
+	p, sender, resolver, _ := newAlertFixture()
+	resolver.set(8, 1, routeKeyAdminAlerts, "chan-other-guild")
+	// An identical server ID in a different guild is not permission to send.
+	p.Publish(AdminAlert{GuildRowID: 7, ServerID: 1, Kind: AlertKindADMStale, Severity: AlertWarning, Headline: "ADM STALE"})
+	p.Publish(AdminAlert{GuildRowID: 8, ServerID: 1, Kind: "CASE_MOVEMENT_FINDING", Severity: AlertCritical, Headline: "DO NOT SEND"})
+	drain(p)
+	if sender.total() != 0 {
+		t.Fatalf("cross-guild or C.A.S.E. alert leaked: %d", sender.total())
+	}
+	p.Publish(AdminAlert{GuildRowID: 8, ServerID: 1, Kind: AlertKindADMStale, Severity: AlertWarning, Headline: "ADM STALE"})
+	drain(p)
+	if len(sender.messages("chan-other-guild")) != 1 || sender.total() != 1 {
+		t.Fatalf("expected exactly one authorized operational alert, got %d", sender.total())
+	}
 }
 
-
 func TestOperationalAlertConditionStateIsGuildAndServerScoped(t *testing.T) {
- p, sender, resolver, clock := newAlertFixture()
- resolver.set(7, 1, routeKeyAdminAlerts, "guild-seven")
- resolver.set(8, 1, routeKeyAdminAlerts, "guild-eight")
- stale := killfeed.AdmSnapshot{OnlineCount:2, LastLogChange:clock.Add(-10*time.Minute)}
- // The same numeric server ID must not suppress a second guild's transition.
- p.ObserveSnapshot(7, 1, stale)
- p.ObserveSnapshot(8, 1, stale)
- drain(p)
- if len(sender.messages("guild-seven"))!=1 || len(sender.messages("guild-eight"))!=1 {
-  t.Fatalf("independent stale transitions lost: guild7=%d guild8=%d",
-   len(sender.messages("guild-seven")),len(sender.messages("guild-eight")))
- }
- // Recovering one guild must not resolve the other.
- fresh := killfeed.AdmSnapshot{OnlineCount:2, LastLogChange:*clock}
- p.ObserveSnapshot(7, 1, fresh)
- p.ObserveSnapshot(8, 1, stale)
- drain(p)
- if len(sender.messages("guild-seven"))!=2 || len(sender.messages("guild-eight"))!=1 {
-  t.Fatalf("guild-specific stale resolution leaked: guild7=%d guild8=%d",
-   len(sender.messages("guild-seven")),len(sender.messages("guild-eight")))
- }
- fail := killfeed.DownloadReport{ServerID:1,Result:"failure",ErrorClass:"TIMEOUT"}
- for i:=0;i<3;i++ {p.ObserveDownload(7,fail);p.ObserveDownload(8,fail)}
- drain(p)
- if len(sender.messages("guild-seven"))!=3 || len(sender.messages("guild-eight"))!=2 {
-  t.Fatalf("failure streaks crossed guilds: guild7=%d guild8=%d",
-   len(sender.messages("guild-seven")),len(sender.messages("guild-eight")))
- }
- p.ObserveDownload(7,killfeed.DownloadReport{ServerID:1,Result:"success"})
- p.ObserveDownload(8,fail)
- drain(p)
- if len(sender.messages("guild-seven"))!=4 || len(sender.messages("guild-eight"))!=2 {
-  t.Fatalf("recovery crossed guilds: guild7=%d guild8=%d",
-   len(sender.messages("guild-seven")),len(sender.messages("guild-eight")))
- }
+	p, sender, resolver, clock := newAlertFixture()
+	resolver.set(7, 1, routeKeyAdminAlerts, "guild-seven")
+	resolver.set(8, 1, routeKeyAdminAlerts, "guild-eight")
+	stale := killfeed.AdmSnapshot{OnlineCount: 2, LastLogChange: clock.Add(-10 * time.Minute)}
+	// The same numeric server ID must not suppress a second guild's transition.
+	p.ObserveSnapshot(7, 1, stale)
+	p.ObserveSnapshot(8, 1, stale)
+	drain(p)
+	if len(sender.messages("guild-seven")) != 1 || len(sender.messages("guild-eight")) != 1 {
+		t.Fatalf("independent stale transitions lost: guild7=%d guild8=%d",
+			len(sender.messages("guild-seven")), len(sender.messages("guild-eight")))
+	}
+	// Recovering one guild must not resolve the other.
+	fresh := killfeed.AdmSnapshot{OnlineCount: 2, LastLogChange: *clock}
+	p.ObserveSnapshot(7, 1, fresh)
+	p.ObserveSnapshot(8, 1, stale)
+	drain(p)
+	if len(sender.messages("guild-seven")) != 2 || len(sender.messages("guild-eight")) != 1 {
+		t.Fatalf("guild-specific stale resolution leaked: guild7=%d guild8=%d",
+			len(sender.messages("guild-seven")), len(sender.messages("guild-eight")))
+	}
+	fail := killfeed.DownloadReport{ServerID: 1, Result: "failure", ErrorClass: "TIMEOUT"}
+	for i := 0; i < 3; i++ {
+		p.ObserveDownload(7, fail)
+		p.ObserveDownload(8, fail)
+	}
+	drain(p)
+	if len(sender.messages("guild-seven")) != 3 || len(sender.messages("guild-eight")) != 2 {
+		t.Fatalf("failure streaks crossed guilds: guild7=%d guild8=%d",
+			len(sender.messages("guild-seven")), len(sender.messages("guild-eight")))
+	}
+	p.ObserveDownload(7, killfeed.DownloadReport{ServerID: 1, Result: "success"})
+	p.ObserveDownload(8, fail)
+	drain(p)
+	if len(sender.messages("guild-seven")) != 4 || len(sender.messages("guild-eight")) != 2 {
+		t.Fatalf("recovery crossed guilds: guild7=%d guild8=%d",
+			len(sender.messages("guild-seven")), len(sender.messages("guild-eight")))
+	}
 }

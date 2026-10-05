@@ -15,18 +15,18 @@ import (
 // replaces the organization's existing base subscriptions row.
 type CaseAddonSubscription struct {
 	ID, OrganizationID, InstallationID, GameServerID int64
-	Tier, Status                                      string
-	Provider, ProviderCustomerID                      string
-	ProviderSubscriptionID, ProviderPriceID           string
-	CheckoutSessionID                                  string
-	CurrentPeriodStart, CurrentPeriodEnd              *time.Time
-	TrialStartedAt, TrialEndsAt, PaidThrough          *time.Time
-	PaidTier                                          string // tier covered by invoice.paid through PaidThrough
-	CoverageState                                     string // OK, PARTIALLY_REFUNDED, REFUNDED, DISPUTED or DISPUTE_LOST (0064)
-	CoverageBackfilled                                bool   // false: paid before 0064, ledger not yet reconstructed
-	CancelAtPeriodEnd                                 bool
-	FounderTrialGranted                                bool
-	CreatedAt, UpdatedAt                              time.Time
+	Tier, Status                                     string
+	Provider, ProviderCustomerID                     string
+	ProviderSubscriptionID, ProviderPriceID          string
+	CheckoutSessionID                                string
+	CurrentPeriodStart, CurrentPeriodEnd             *time.Time
+	TrialStartedAt, TrialEndsAt, PaidThrough         *time.Time
+	PaidTier                                         string // tier covered by invoice.paid through PaidThrough
+	CoverageState                                    string // OK, PARTIALLY_REFUNDED, REFUNDED, DISPUTED or DISPUTE_LOST (0064)
+	CoverageBackfilled                               bool   // false: paid before 0064, ledger not yet reconstructed
+	CancelAtPeriodEnd                                bool
+	FounderTrialGranted                              bool
+	CreatedAt, UpdatedAt                             time.Time
 	// A changed/removed installation server must not transfer paid access.
 	SelectedGameServerID *int64
 }

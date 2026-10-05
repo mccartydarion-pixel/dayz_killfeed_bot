@@ -21,23 +21,23 @@ import (
 // positions a continuous location stream.
 
 type caseTelemetryCoverage struct {
-	Kills             string `json:"kills"`
-	Positions         string `json:"positions"`
-	Hits              string `json:"hits"`
-	Shots             string `json:"shots"`
-	ControllerInputs  string `json:"controllerInputs"`
-	ContinuousGPS     bool   `json:"continuousGps"`
+	Kills            string `json:"kills"`
+	Positions        string `json:"positions"`
+	Hits             string `json:"hits"`
+	Shots            string `json:"shots"`
+	ControllerInputs string `json:"controllerInputs"`
+	ContinuousGPS    bool   `json:"continuousGps"`
 }
 
 type caseTelemetrySummary struct {
-	WindowStart           string                `json:"windowStart"`
-	WindowEnd             string                `json:"windowEnd"`
-	KillEvents24h         int64                 `json:"killEvents24h"`
-	LocationSamples24h    int64                 `json:"locationSamples24h"`
-	HitEvents24h          *int64                `json:"hitEvents24h"`
-	LastKillAt            *string               `json:"lastKillAt"`
-	LastLocationSampleAt  *string               `json:"lastLocationSampleAt"`
-	Coverage              caseTelemetryCoverage `json:"coverage"`
+	WindowStart          string                `json:"windowStart"`
+	WindowEnd            string                `json:"windowEnd"`
+	KillEvents24h        int64                 `json:"killEvents24h"`
+	LocationSamples24h   int64                 `json:"locationSamples24h"`
+	HitEvents24h         *int64                `json:"hitEvents24h"`
+	LastKillAt           *string               `json:"lastKillAt"`
+	LastLocationSampleAt *string               `json:"lastLocationSampleAt"`
+	Coverage             caseTelemetryCoverage `json:"coverage"`
 }
 
 type caseObservedPlayer struct {
@@ -46,59 +46,59 @@ type caseObservedPlayer struct {
 }
 
 type caseObservedEvent struct {
-	ID              string              `json:"id"`
-	Type            string              `json:"type"`
-	Timestamp       string              `json:"timestamp"`
-	TimestampSource string              `json:"timestampSource"`
-	Killer          caseObservedPlayer  `json:"killer"`
-	Victim          caseObservedPlayer  `json:"victim"`
-	Weapon          string              `json:"weapon"`
-	DistanceMeters  *float64            `json:"distanceMeters"`
+	ID              string             `json:"id"`
+	Type            string             `json:"type"`
+	Timestamp       string             `json:"timestamp"`
+	TimestampSource string             `json:"timestampSource"`
+	Killer          caseObservedPlayer `json:"killer"`
+	Victim          caseObservedPlayer `json:"victim"`
+	Weapon          string             `json:"weapon"`
+	DistanceMeters  *float64           `json:"distanceMeters"`
 }
 
 type caseObservationResponse struct {
-	Version          string                `json:"version"`
-	Mode             string                `json:"mode"`
-	Status           string                `json:"status"`
-	GeneratedAt      string                `json:"generatedAt"`
-	ServerID         int64                 `json:"serverId"`
-	Telemetry        caseTelemetrySummary  `json:"telemetry"`
-	RecentEvents     []caseObservedEvent   `json:"recentEvents"`
-	Cases            []any                 `json:"cases"`
-	Alerts           []any                 `json:"alerts"`
-	Watchlist        []any                 `json:"watchlist"`
-	DetectorsEnabled bool                  `json:"detectorsEnabled"`
-	Enforcement      string                `json:"enforcement"`
-	EvidenceConfigured bool `json:"evidenceConfigured"`
+	Version            string               `json:"version"`
+	Mode               string               `json:"mode"`
+	Status             string               `json:"status"`
+	GeneratedAt        string               `json:"generatedAt"`
+	ServerID           int64                `json:"serverId"`
+	Telemetry          caseTelemetrySummary `json:"telemetry"`
+	RecentEvents       []caseObservedEvent  `json:"recentEvents"`
+	Cases              []any                `json:"cases"`
+	Alerts             []any                `json:"alerts"`
+	Watchlist          []any                `json:"watchlist"`
+	DetectorsEnabled   bool                 `json:"detectorsEnabled"`
+	Enforcement        string               `json:"enforcement"`
+	EvidenceConfigured bool                 `json:"evidenceConfigured"`
 }
 
 func newCaseObservationResponse(serverID int64, now time.Time) caseObservationResponse {
 	return caseObservationResponse{
-		Version: "2.1-observation",
-		Mode: "OBSERVATION_ONLY",
-		Status: "AWAITING_EVENTS",
+		Version:     "2.1-observation",
+		Mode:        "OBSERVATION_ONLY",
+		Status:      "AWAITING_EVENTS",
 		GeneratedAt: now.UTC().Format(time.RFC3339),
-		ServerID: serverID,
+		ServerID:    serverID,
 		Telemetry: caseTelemetrySummary{
 			WindowStart: now.Add(-24 * time.Hour).UTC().Format(time.RFC3339),
-			WindowEnd: now.UTC().Format(time.RFC3339),
+			WindowEnd:   now.UTC().Format(time.RFC3339),
 			// nil means unknown/unmeasured; zero would falsely claim zero hits.
 			HitEvents24h: nil,
 			Coverage: caseTelemetryCoverage{
-				Kills: "PERSISTED_ADM_EVENTS",
-				Positions: "EVENT_TRIGGERED_ADM_SAMPLES",
-				Hits: "PARSED_BUT_NOT_DURABLY_STORED",
-				Shots: "NOT_AVAILABLE",
+				Kills:            "PERSISTED_ADM_EVENTS",
+				Positions:        "EVENT_TRIGGERED_ADM_SAMPLES",
+				Hits:             "PARSED_BUT_NOT_DURABLY_STORED",
+				Shots:            "NOT_AVAILABLE",
 				ControllerInputs: "NOT_AVAILABLE",
-				ContinuousGPS: false,
+				ContinuousGPS:    false,
 			},
 		},
-		RecentEvents: make([]caseObservedEvent, 0),
-		Cases: make([]any, 0),
-		Alerts: make([]any, 0),
-		Watchlist: make([]any, 0),
+		RecentEvents:     make([]caseObservedEvent, 0),
+		Cases:            make([]any, 0),
+		Alerts:           make([]any, 0),
+		Watchlist:        make([]any, 0),
 		DetectorsEnabled: false,
-		Enforcement: "DISABLED",
+		Enforcement:      "DISABLED",
 	}
 }
 
@@ -111,7 +111,9 @@ func caseISO(t *time.Time) *string {
 }
 
 func (a *App) registerAntiCheatRoutes(base string) {
-	if a.caseWatchDigestLimiter == nil { a.caseWatchDigestLimiter = newSaaSRateLimiter(time.Hour, 1) }
+	if a.caseWatchDigestLimiter == nil {
+		a.caseWatchDigestLimiter = newSaaSRateLimiter(time.Hour, 1)
+	}
 	a.HTTPServer.Handle("POST "+base+"/anti-cheat/premium/watch-digest", a.handleAntiCheatWatchDigest)
 	a.HTTPServer.Handle("GET "+base+"/anti-cheat/premium/watch-digest/{deliveryID}", a.handleAntiCheatWatchDigestReceipt)
 	a.HTTPServer.Handle("POST "+base+"/anti-cheat/premium/watch-digest/{deliveryID}/reconcile", a.handleAntiCheatWatchDigestReconcile)
@@ -253,66 +255,90 @@ func (a *App) handleAntiCheatOverview(w http.ResponseWriter, r *http.Request) {
 	writeSaaSJSON(w, http.StatusOK, out)
 }
 
-
 type caseEvidencePage struct {
-	Mode string `json:"mode"`
-	ServerID int64 `json:"serverId"`
-	TimeBasis string `json:"timeBasis"`
-	Items []repository.CaseEvidenceRow `json:"items"`
-	NextCursor *string `json:"nextCursor"`
-	DetectorsEnabled bool `json:"detectorsEnabled"`
-	Enforcement string `json:"enforcement"`
+	Mode             string                       `json:"mode"`
+	ServerID         int64                        `json:"serverId"`
+	TimeBasis        string                       `json:"timeBasis"`
+	Items            []repository.CaseEvidenceRow `json:"items"`
+	NextCursor       *string                      `json:"nextCursor"`
+	DetectorsEnabled bool                         `json:"detectorsEnabled"`
+	Enforcement      string                       `json:"enforcement"`
 }
 
 // Case evidence contains player identities and observed positions, so the
 // ADMINISTRATOR-level location capability is required, not mere directory view.
 func (a *App) handleAntiCheatEvidence(w http.ResponseWriter, r *http.Request) {
-	ac,ok:=a.requireCapability(w,r,permissions.CapPlayerLocationView)
-	if !ok {return}
-	if ac.scope.ServerID==nil {writeSaaSError(w,codeInvalidRequest,"no DayZ server selected");return}
-	if a.DB==nil || a.DB.Pool==nil {writeSaaSError(w,codeInternalError,"C.A.S.E. evidence unavailable");return}
-	if !enforceRateLimit(w,a.saasAdminReadLimiter,rateLimitKey(r)){return}
-	q:=r.URL.Query()
-	var playerID,before,evidenceID *int64
-	if raw:=q.Get("playerId");raw!="" {
-		v,err:=strconv.ParseInt(raw,10,64)
-		if err!=nil || v<=0 {writeSaaSError(w,codeInvalidRequest,"invalid playerId");return}
-		playerID=&v
-	}
-	if raw:=q.Get("before");raw!="" {
-		v,err:=strconv.ParseInt(raw,10,64)
-		if err!=nil || v<=0 {writeSaaSError(w,codeInvalidRequest,"invalid cursor");return}
-		before=&v
-	}
-	if raw:=q.Get("evidenceId");raw!="" {
-		v,err:=strconv.ParseInt(raw,10,64)
-		if err!=nil || v<=0 {writeSaaSError(w,codeInvalidRequest,"invalid evidenceId");return}
-		if before!=nil {writeSaaSError(w,codeInvalidRequest,"evidenceId and before cannot be combined");return}
-		evidenceID=&v
-	}
-	limit:=50
-	if raw:=q.Get("limit");raw!="" {
-		v,err:=strconv.Atoi(raw)
-		if err!=nil || v<1 || v>100 {writeSaaSError(w,codeInvalidRequest,"limit must be 1-100");return}
-		limit=v
-	}
-	ctx,cancel:=context.WithTimeout(r.Context(),adminTimeout)
-	defer cancel()
-	items,err:=repository.NewCaseEvidenceRepository(a.DB.Pool).
-		ListCaseEvidence(ctx,ac.scope.GuildID,*ac.scope.ServerID,playerID,before,evidenceID,limit)
-	if err!=nil {
-		slog.Warn("component=case","event","evidence_read_failed","err",err.Error())
-		writeSaaSError(w,codeInternalError,"could not load C.A.S.E. evidence")
+	ac, ok := a.requireCapability(w, r, permissions.CapPlayerLocationView)
+	if !ok {
 		return
 	}
-	out:=caseEvidencePage{Mode:"OBSERVATION_ONLY",ServerID:*ac.scope.ServerID,
-		TimeBasis:"ADM_CLOCK_ONLY_WITH_INGESTION_ORDER",Items:items,
-		DetectorsEnabled:false,Enforcement:"DISABLED"}
-	if evidenceID==nil && len(items)==limit {
-		cursor:=strconv.FormatInt(items[len(items)-1].ID,10)
-		out.NextCursor=&cursor
+	if ac.scope.ServerID == nil {
+		writeSaaSError(w, codeInvalidRequest, "no DayZ server selected")
+		return
 	}
-	a.recordAudit(ctx,ac,"CASE_EVIDENCE_VIEWED","", "", "success",nil,
-		map[string]any{"count":len(items),"filtered":playerID!=nil,"exactRecord":evidenceID!=nil})
-	writeSaaSJSON(w,http.StatusOK,out)
+	if a.DB == nil || a.DB.Pool == nil {
+		writeSaaSError(w, codeInternalError, "C.A.S.E. evidence unavailable")
+		return
+	}
+	if !enforceRateLimit(w, a.saasAdminReadLimiter, rateLimitKey(r)) {
+		return
+	}
+	q := r.URL.Query()
+	var playerID, before, evidenceID *int64
+	if raw := q.Get("playerId"); raw != "" {
+		v, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || v <= 0 {
+			writeSaaSError(w, codeInvalidRequest, "invalid playerId")
+			return
+		}
+		playerID = &v
+	}
+	if raw := q.Get("before"); raw != "" {
+		v, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || v <= 0 {
+			writeSaaSError(w, codeInvalidRequest, "invalid cursor")
+			return
+		}
+		before = &v
+	}
+	if raw := q.Get("evidenceId"); raw != "" {
+		v, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || v <= 0 {
+			writeSaaSError(w, codeInvalidRequest, "invalid evidenceId")
+			return
+		}
+		if before != nil {
+			writeSaaSError(w, codeInvalidRequest, "evidenceId and before cannot be combined")
+			return
+		}
+		evidenceID = &v
+	}
+	limit := 50
+	if raw := q.Get("limit"); raw != "" {
+		v, err := strconv.Atoi(raw)
+		if err != nil || v < 1 || v > 100 {
+			writeSaaSError(w, codeInvalidRequest, "limit must be 1-100")
+			return
+		}
+		limit = v
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), adminTimeout)
+	defer cancel()
+	items, err := repository.NewCaseEvidenceRepository(a.DB.Pool).
+		ListCaseEvidence(ctx, ac.scope.GuildID, *ac.scope.ServerID, playerID, before, evidenceID, limit)
+	if err != nil {
+		slog.Warn("component=case", "event", "evidence_read_failed", "err", err.Error())
+		writeSaaSError(w, codeInternalError, "could not load C.A.S.E. evidence")
+		return
+	}
+	out := caseEvidencePage{Mode: "OBSERVATION_ONLY", ServerID: *ac.scope.ServerID,
+		TimeBasis: "ADM_CLOCK_ONLY_WITH_INGESTION_ORDER", Items: items,
+		DetectorsEnabled: false, Enforcement: "DISABLED"}
+	if evidenceID == nil && len(items) == limit {
+		cursor := strconv.FormatInt(items[len(items)-1].ID, 10)
+		out.NextCursor = &cursor
+	}
+	a.recordAudit(ctx, ac, "CASE_EVIDENCE_VIEWED", "", "", "success", nil,
+		map[string]any{"count": len(items), "filtered": playerID != nil, "exactRecord": evidenceID != nil})
+	writeSaaSJSON(w, http.StatusOK, out)
 }

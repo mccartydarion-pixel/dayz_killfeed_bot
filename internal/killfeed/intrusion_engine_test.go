@@ -18,7 +18,7 @@ type fakeIntrusionStore struct {
 
 	ignoredPlayers     map[zonePlayerKey]bool
 	ignoredFactions    map[int64]map[int64]bool // zoneID -> factionID -> ignored
-	discordRoleIgnores map[int64][]string        // zoneID -> role snowflakes
+	discordRoleIgnores map[int64][]string       // zoneID -> role snowflakes
 	authorized         map[zonePlayerKey]bool
 	bans               map[zonePlayerKey]*repository.ZoneBan
 

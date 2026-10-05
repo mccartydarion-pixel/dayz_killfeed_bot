@@ -108,15 +108,15 @@ type liveMapKillDTO struct {
 }
 
 type liveMapPublicDTO struct {
-	InstallationID int64              `json:"installationId"`
-	Name           string             `json:"name"`
-	Platform       string             `json:"platform"`
-	Map            liveMapMapDTO      `json:"map"`
-	Public         bool               `json:"public"`
+	InstallationID int64         `json:"installationId"`
+	Name           string        `json:"name"`
+	Platform       string        `json:"platform"`
+	Map            liveMapMapDTO `json:"map"`
+	Public         bool          `json:"public"`
 	// Listed is whether the server is listed on the network (the website lets search engines
 	// index only listed servers' maps).
-	Listed       bool `json:"listed"`
-	DelaySeconds int  `json:"delaySeconds"`
+	Listed         bool               `json:"listed"`
+	DelaySeconds   int                `json:"delaySeconds"`
 	GeneratedAt    string             `json:"generatedAt"`
 	PlayersOnline  int                `json:"playersOnline"`
 	LastActivityAt *string            `json:"lastActivityAt"`

@@ -49,10 +49,10 @@ type Service struct {
 	cancelPath     string
 	portalPath     string
 	// Phase 6 optional C.A.S.E. state never writes the organization base row.
-	caseStore CaseStore
-	casePrices map[casebilling.Tier]string
-	caseEnabled bool
-	caseAccessEnabled bool
+	caseStore           CaseStore
+	casePrices          map[casebilling.Tier]string
+	caseEnabled         bool
+	caseAccessEnabled   bool
 	caseVerifiedThrough casebilling.Tier
 }
 

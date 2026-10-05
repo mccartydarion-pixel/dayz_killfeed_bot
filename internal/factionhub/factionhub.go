@@ -80,7 +80,7 @@ var (
 	ErrAlreadyInFaction  = errors.New("user already belongs to a faction on this installation")
 	ErrRecruitmentClosed = errors.New("faction is not accepting applications")
 	// ErrJoinRequiresOpen: instant join is only for OPEN factions; INVITE_ONLY takes applications.
-	ErrJoinRequiresOpen = errors.New("this faction is invite only: apply and wait for the leader")
+	ErrJoinRequiresOpen  = errors.New("this faction is invite only: apply and wait for the leader")
 	ErrAlreadyApplied    = errors.New("a pending application already exists")
 	ErrNotPending        = errors.New("application is not pending")
 	ErrLeaderProtected   = errors.New("the faction leader cannot be changed or removed")

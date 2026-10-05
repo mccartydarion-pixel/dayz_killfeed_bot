@@ -20,4 +20,4 @@ CREATE TABLE IF NOT EXISTS case_detector_settings (
  CONSTRAINT fk_case_settings_guild_server FOREIGN KEY (guild_id,server_id)
   REFERENCES game_servers(guild_id,id) ON DELETE CASCADE
 );
-`;
+`
