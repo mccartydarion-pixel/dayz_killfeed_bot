@@ -160,7 +160,7 @@ type Event struct {
 
 	// Stat fields below are populated post-persistence (see
 	// persistenceStoreAdapter.ProcessPersistedKill/ProcessPersistedDeath in
-	// app.go), same as the competitive context above - best-effort, never
+	// internal/app/persistence_store_adapter.go), same as the competitive context above - best-effort, never
 	// blocking publish, and rendered into the same embed rather than a
 	// separate message. Pointers distinguish "not available" from a real
 	// zero value; a guild without the stats/analytics repositories wired

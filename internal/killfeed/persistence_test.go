@@ -257,7 +257,7 @@ func TestDeathPersistedHookFiresForDeathAndSuicideOnly(t *testing.T) {
 }
 
 // fakeDeathPostProcessor records calls and stamps a fixed CombatRecord onto
-// the event, mirroring how app.go's real implementation enriches it.
+// the event, mirroring how the real implementation in internal/app/persistence_store_adapter.go enriches it.
 type fakeDeathPostProcessor struct {
 	calls   int
 	lastRec repository.DeathRecord

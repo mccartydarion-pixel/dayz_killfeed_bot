@@ -46,7 +46,7 @@ func (c *cardCapture) last() (*discordgo.MessageEmbed, *killfeed.Event) {
 	return c.cards[len(c.cards)-1], c.evs[len(c.evs)-1]
 }
 
-// server wires one game server's worker exactly as app.go does: a persistence queue that
+// server wires one game server's worker exactly as server_worker.go does: a persistence queue that
 // claims bounties and publishes kills, and a KillfeedPublisher bound to (guild, server) with
 // the renderer (nil = the flag is off: no customizer is wired at all).
 func (w *runtimeWorld) server(serverID int64, r *embedrender.Renderer) (*killfeed.PersistenceQueue, *cardCapture) {

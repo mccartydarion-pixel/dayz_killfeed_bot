@@ -4,7 +4,7 @@
 
 **The Go backend (this repository) is the authoritative owner of the shared
 Champion production PostgreSQL schema**, including every table documented
-here. `internal/database/migrations.go` is the single migration history for
+here. `internal/database/migrations.go` (the registry, with its entries in the `migrations_NNNN_NNNN.go` files beside it) is the single migration history for
 the whole database - the website repository has no migration system and
 must never gain one against these tables.
 
@@ -13,13 +13,13 @@ server-side services (never client-side, never with a shared/static
 credential), but it must never run its own migrations against them, add
 columns directly, or introduce a conflicting schema for the same concepts.
 If the website needs a new field or table for these SaaS concerns, that
-change belongs in this repository's `internal/database/migrations.go`, in a
+change belongs in this repository's migration registry (`internal/database/migrations.go` and the `migrations_NNNN_NNNN.go` files beside it), in a
 PR reviewed the same way as any other Champion backend change.
 
 This split exists because the Go backend already owns the entire
 production migration history (schema_migrations, 24+ migrations covering
 kills/players/factions/seasons/links/servers/etc. - see
-`internal/database/migrations.go`) and the live runtime (ADM ingestion,
+`internal/database/migrations.go` and the `migrations_NNNN_NNNN.go` files beside it) and the live runtime (ADM ingestion,
 Discord bot, presence) that several of these tables also back. Splitting
 schema ownership between two migration systems against the same database
 would risk migration-order conflicts and duplicate-concept drift; centralizing
@@ -299,7 +299,7 @@ Repository: `PlatformOwnerRepository` (`platform_staff_repository.go`) - `ListPl
 
 No column in this schema uses a SQL `CHECK` constraint for enumerated
 values (matching the existing convention throughout
-`internal/database/migrations.go` - e.g. `game_servers.status`,
+the migrations in `internal/database` - e.g. `game_servers.status`,
 `competitive_events.status`). Every enumerated column is a plain `TEXT`
 column with allowed values enforced at the Go application layer via typed
 constants. This is deliberate: adding a new status/role/plan value later

@@ -17,9 +17,9 @@ setup-only `CASE_*` cards); the code's own list of every route key and its produ
 ```
 Nitrado ADM log poll                       internal/killfeed/engine.go (per-server Engine)
   -> parsed PLAYER_KILL event              internal/killfeed/parser.go
-  -> Engine.processLine                    engine.go processLine
+  -> Engine.processLine                    engine_process.go processLine
   -> PersistenceQueue.EnqueueAndWait       durable, non-duplicate insert
-  -> killPersistedHook (only AFTER a       engine.go SetPersistence
+  -> killPersistedHook (only AFTER a       engine_hooks.go SetPersistence
      successful non-duplicate insert)
   -> KillfeedPublisher.PublishKill         internal/discord/killfeed.go
   -> RotatingFeed.Enqueue                  internal/discord/rotating_feed.go
@@ -28,7 +28,7 @@ Nitrado ADM log poll                       internal/killfeed/engine.go (per-serv
 
 What the code actually knows at each point:
 
-- **Server identity**: `runServerWorker` (internal/app/app.go) receives the
+- **Server identity**: `runServerWorker` (internal/app/server_worker.go) receives the
   `repository.GameServer` row - `row.ID` (`game_servers.id`) and `row.GuildID`
   (internal `guilds.id`). One worker, one Engine, one `KillfeedPublisher`, one
   `RotatingFeed` per server. The publisher previously was never told which

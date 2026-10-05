@@ -14,7 +14,7 @@ its limitations.
 Nitrado API -> ADM discovery/download -> parse -> dedupe -> persist -> route resolve -> publisher queue -> Discord API -> message visible
 ```
 
-Concurrency model (internal/servers/workermanager.go, internal/app/app.go `runServerWorker`): **one
+Concurrency model (internal/servers/workermanager.go, internal/app/server_worker.go `runServerWorker`): **one
 goroutine per game server**, each with its own `killfeed.Engine` (own tracker, own deduplicator, own
 `PersistenceQueue`) and its own Discord publishers. There is no shared poll loop and no shared
 work queue across servers - this was already true before this phase and is the structural reason one
@@ -215,7 +215,7 @@ single-call latency, which was never the bottleneck. `go test -race ./internal/r
 ### Cache invalidation
 
 Audited, unchanged, confirmed correct: an in-process route save calls `resolver.InvalidateAll()`
-synchronously (`internal/app/app.go`'s `completeChannelsStep`), so the *same* process's very next
+synchronously (`internal/app/saas_api_channels.go`'s `completeChannelsStep`), so the *same* process's very next
 lookup sees the new route immediately - proven by the existing `TestResolverInvalidateAllIsImmediate`.
 A **different** process (another Railway replica) has no cross-process invalidation channel and relies
 purely on the 30s `DefaultTTL` (matched by `RouteSyncer`'s own 30s resync interval) - this was already
@@ -324,7 +324,7 @@ the correct "internal/admin mechanism" the task asked for.
 
 ## 12. Health
 
-Audited `internal/health` (`model.go`, `queue.go`, `workers.go`) and `app.go`'s `refreshHealth`:
+Audited `internal/health` (`model.go`, `queue.go`, `workers.go`) and `internal/app/health_refresh.go`'s `refreshHealth`:
 overall status already correctly accounts for persistence-queue drops/high-water (`Degraded`/
 `Unhealthy` via `health.EvaluateQueue`) and ADM staleness (`ADMHealth.Evaluate`), not merely "is the
 poll loop running." It does **not** currently factor in recent Discord *send* failures (only Discord

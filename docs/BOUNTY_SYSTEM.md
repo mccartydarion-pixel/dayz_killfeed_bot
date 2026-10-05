@@ -20,10 +20,10 @@ duplicating it.
 | `bounties` table (ACTIVE/CLAIMED/EXPIRED/CANCELLED, ADMIN/AUTOMATIC, `reward_points`, `starts_at`/`expires_at`, claimant + kill) | migration `0007` | reused; extended by `0029` |
 | Points ledger (`point_transactions` with a unique `source_key`, `player_points`) | migration `0007` | reused for awards |
 | Automatic **streak bounties** (`RewardForStreak`: 10/15/20/25 kills -> 500/750/1000/1500 pts) | `internal/bounties` | reused, rule unchanged |
-| Claim on a persisted kill (`ProcessPersistedKill`), already excluding self-kills and same-faction kills | `internal/app/app.go` | reused; now server-aware and stacking |
+| Claim on a persisted kill (`ProcessPersistedKill`), already excluding self-kills and same-faction kills | `internal/app/persistence_store_adapter.go` | reused; now server-aware and stacking |
 | Kill card: `BountyClaimed` story ("BOUNTY CLAIMED" header, "💰 BOUNTY" badge) and `BountyTarget` ("wanted") | `killfeed.Event`, `presentation` | reused unchanged |
 | `/bounty create/list/status/cancel` | `discord/competitive_commands.go` | reused; now goes through the service |
-| Expiry sweeper (every competitive-scheduler tick) | `internal/app/app.go` | reused; now reports each expiry once |
+| Expiry sweeper (every competitive-scheduler tick) | `internal/app/competitive_schedulers.go` | reused; now reports each expiry once |
 | "MOST WANTED" section of the live-panels message | `discord/panels` | reused; now shows names, not player ids |
 
 What did **not** exist: server scope (bounties were guild-wide), stacking (a unique
