@@ -72,10 +72,14 @@ func playerServerSummary(p repository.PlayerInstallation) playerServerSummaryDTO
 // installation-scoped Faction Hub membership instead (hub_faction_members.installation_id) - null
 // when the player is not in a Faction Hub faction on this installation.
 type playerStatsDTO struct {
-	InstallationID    int64   `json:"installationId"`
-	Kills             int     `json:"kills"`
-	Deaths            int     `json:"deaths"`
-	KD                float64 `json:"kd"`
+	InstallationID int64   `json:"installationId"`
+	Kills          int     `json:"kills"`
+	Deaths         int     `json:"deaths"` // every death
+	KD             float64 `json:"kd"`     // overall: kills / deaths
+	// pvpDeaths + pveDeaths = deaths; pvpKd is kills / pvpDeaths (internal/deathstats).
+	PvPDeaths         int     `json:"pvpDeaths"`
+	PvEDeaths         int     `json:"pveDeaths"`
+	PvPKD             float64 `json:"pvpKd"`
 	Headshots         int     `json:"headshots"`
 	Longshots         int     `json:"longshots"`
 	LongestKillMeters float64 `json:"longestKillMeters"`
@@ -283,7 +287,7 @@ func (a *App) handlePlayerServerStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	kills, deaths, headshots, longshots, longest, err := a.SaaSPlayer.KillStats(ctx, scope.GuildID, scope.ServerID, scope.PlayerID)
+	combat, err := a.SaaSPlayer.CombatStats(ctx, scope.GuildID, scope.ServerID, scope.PlayerID)
 	if err != nil {
 		playerFailed(w, "load player kill stats", err)
 		return
@@ -310,11 +314,19 @@ func (a *App) handlePlayerServerStats(w http.ResponseWriter, r *http.Request) {
 		faction = &name
 	}
 
-	writeSaaSJSON(w, http.StatusOK, playerStatsDTO{
-		InstallationID: installationID, Kills: kills, Deaths: deaths, KD: killsToKD(kills, deaths),
-		Headshots: headshots, Longshots: longshots, LongestKillMeters: longest, PlaytimeSeconds: playtimeSeconds,
-		BountiesClaimed: claimed, BountyValue: bountyValue, Faction: faction, LastSeenAt: lastSeen,
-	})
+	dto := toPlayerStatsDTO(installationID, combat)
+	dto.PlaytimeSeconds, dto.BountiesClaimed, dto.BountyValue, dto.Faction, dto.LastSeenAt = playtimeSeconds, claimed, bountyValue, faction, lastSeen
+	writeSaaSJSON(w, http.StatusOK, dto)
+}
+
+// toPlayerStatsDTO fills the combat figures: deaths and kd keep their meaning (every death, the
+// overall K/D); pvpDeaths, pveDeaths and pvpKd are the split.
+func toPlayerStatsDTO(installationID int64, c repository.PlayerCombatStats) playerStatsDTO {
+	return playerStatsDTO{
+		InstallationID: installationID, Kills: c.Kills, Deaths: c.Deaths, KD: killsToKD(c.Kills, c.Deaths),
+		PvPDeaths: c.PvPDeaths, PvEDeaths: c.PvEDeaths(), PvPKD: killsToKD(c.Kills, c.PvPDeaths),
+		Headshots: c.Headshots, Longshots: c.Longshots, LongestKillMeters: c.LongestMeters,
+	}
 }
 
 func playerFailed(w http.ResponseWriter, what string, err error) {

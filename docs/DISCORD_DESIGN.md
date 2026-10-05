@@ -78,7 +78,11 @@ to one of the six. No builder may use a raw hex value.
 * Thousands separators everywhere (`presentation.FormatThousands`): `12,500 pts`, `1,284 kills`.
 * Distances: one decimal for a kill (`FormatDistance`: `1,287.6m`), whole metres where the source
   only knows whole metres (`FormatWholeDistance`: `86m`). No space before the `m`.
-* K/D at two decimals (`FormatKD`), percentages at one (`FormatPercent`).
+* K/D at two decimals (`FormatKD`), percentages at one (`FormatPercent`). A bare `K/D` is the
+  overall one (kills per death of any kind). Where both are shown they are labelled `K/D (PvP)` and
+  `K/D (overall)`, and a death count's split reads `PvP 250 • PvE 60` (`DeathSplit`). The stat strip
+  of a kill or death card gains a second line, `PvP **262 D** • **4.90 K/D**` (`CompactPvPStats`),
+  only for a player with at least one PvE death (docs/DEATH_COUNTS.md).
 * Units are lower case: `12 kills`, `3 hits`, `2 bounties` (`presentation.Plural`).
 * Every name written by a person (player, faction, server, zone, base, event) goes through
   `presentation.SafeName`: no pings, no invisible characters, capped length, markdown escaped.

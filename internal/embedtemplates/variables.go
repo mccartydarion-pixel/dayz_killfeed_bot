@@ -51,6 +51,7 @@ func v(name, label, cat, desc, example, format, source, availability string, opt
 
 const (
 	statsAvail  = "Present when Champion loaded the player's combat record for this kill."
+	splitAvail  = "Present when Champion loaded the player's combat record for this kill. PvP deaths and PvE deaths add up to the player's deaths."
 	hitDataNote = "Only present when the kill event carries hit data. Standard ADM kill lines do not include a hit zone or damage, so this is usually absent."
 	// finalHitNote: the kill line itself has no hit data; Champion attaches the lethal hit only when
 	// the ADM hit line immediately before the kill agrees on every point (killfeed/final_hit.go).
@@ -74,10 +75,16 @@ var routeVariableDefinitions = map[string][]VariableDefinition{
 		v("killer_kills", "Killer Kills", CatKillerStats, "The killer's all-time kills after this kill.", "9", "integer", "Event.KillerStats.Kills", statsAvail, true),
 		v("killer_deaths", "Killer Deaths", CatKillerStats, "The killer's all-time deaths.", "0", "integer", "Event.KillerStats.Deaths", statsAvail, true),
 		v("killer_kd", "Killer K/D", CatKillerStats, "The killer's all-time K/D after the confirmed kill.", "9.00", "decimal", "Event.KillerStats.KD()", statsAvail, true),
+		v("killer_pvp_deaths", "Killer PvP Deaths", CatKillerStats, "The killer's all-time deaths caused by another player.", "0", "integer", "Event.KillerStats.PvPDeaths", splitAvail, true),
+		v("killer_pve_deaths", "Killer PvE Deaths", CatKillerStats, "The killer's all-time deaths not caused by another player (environment, suicide, unknown cause).", "0", "integer", "Event.KillerStats.PvEDeaths()", splitAvail, true),
+		v("killer_pvp_kd", "Killer PvP K/D", CatKillerStats, "The killer's all-time kills per PvP death after the confirmed kill.", "9.00", "decimal", "Event.KillerStats.PvPKD()", splitAvail, true),
 		v("killer_streak", "Killer Streak", CatKillerStats, "The killer's current kill streak including this kill (same value as streak).", "1", "integer", "Event.KillerStreak", "Present when the streak is known and above zero.", true),
 		v("victim_kills", "Victim Kills", CatVictimStats, "The victim's all-time kills.", "2", "integer", "Event.VictimStats.Kills", statsAvail, true),
 		v("victim_deaths", "Victim Deaths", CatVictimStats, "The victim's all-time deaths after this death.", "2", "integer", "Event.VictimStats.Deaths", statsAvail, true),
 		v("victim_kd", "Victim K/D", CatVictimStats, "The victim's all-time K/D after this death.", "1.00", "decimal", "Event.VictimStats.KD()", statsAvail, true),
+		v("victim_pvp_deaths", "Victim PvP Deaths", CatVictimStats, "The victim's all-time deaths caused by another player, after this death.", "2", "integer", "Event.VictimStats.PvPDeaths", splitAvail, true),
+		v("victim_pve_deaths", "Victim PvE Deaths", CatVictimStats, "The victim's all-time deaths not caused by another player (environment, suicide, unknown cause).", "0", "integer", "Event.VictimStats.PvEDeaths()", splitAvail, true),
+		v("victim_pvp_kd", "Victim PvP K/D", CatVictimStats, "The victim's all-time kills per PvP death after this death.", "1.00", "decimal", "Event.VictimStats.PvPKD()", splitAvail, true),
 		v("h2h_killer_wins", "H2H Killer Wins", CatHeadToHead, "How many times the killer has killed this victim.", "4", "integer", "Event.Encounters.KillerWins", "Present when Champion loaded the head-to-head record.", true),
 		v("h2h_victim_wins", "H2H Victim Wins", CatHeadToHead, "How many times this victim has killed the killer.", "0", "integer", "Event.Encounters.VictimWins", "Present when Champion loaded the head-to-head record.", true),
 		v("h2h_score", "H2H Score", CatHeadToHead, "The head-to-head record, killer first.", "4–0", "text", "Event.Encounters", "Present when Champion loaded the head-to-head record.", true),

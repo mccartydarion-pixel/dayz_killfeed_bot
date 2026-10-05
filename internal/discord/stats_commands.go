@@ -16,6 +16,7 @@ type StatsReader interface {
 	GetPlayerProfile(ctx context.Context, guildID int64, displayName string) (*repository.PlayerProfile, error)
 	TopByKills(ctx context.Context, guildID int64, limit int) ([]repository.LeaderboardEntry, error)
 	TopByKD(ctx context.Context, guildID int64, limit, minKills int) ([]repository.LeaderboardEntry, error)
+	TopByPvPKD(ctx context.Context, guildID int64, limit, minKills int) ([]repository.LeaderboardEntry, error)
 	TopLongestKill(ctx context.Context, guildID int64, limit int) ([]repository.LeaderboardEntry, error)
 }
 
@@ -57,7 +58,7 @@ func RegisterStatsCommands(session CommandRegistrar, guildID string) error {
 		Options: []*discordgo.ApplicationCommandOption{{
 			Type:        discordgo.ApplicationCommandOptionString,
 			Name:        "type",
-			Description: "kills | kd | longest",
+			Description: "kills | kd | pvpkd | longest",
 			Required:    false,
 		}},
 	}
@@ -107,6 +108,10 @@ func (h *StatsCommandHandler) HandleStats(s *discordgo.Session, i *discordgo.Int
 
 // formatPlayerProfile is the single authoritative rendering for a player
 // profile, shared by /stats and the public "My Stats"/"Search Player" panels.
+//
+// Deaths is every death, with the PvP/PvE split on the line below it. K/D (PvP) is kills per
+// death caused by another player; K/D (overall) is kills per death of any kind, the figure this
+// profile has always called K/D (internal/deathstats).
 func formatPlayerProfile(prof *repository.PlayerProfile) string {
 	longest := "—"
 	if prof.LongestKill != nil {
@@ -116,11 +121,13 @@ func formatPlayerProfile(prof *repository.PlayerProfile) string {
 		"🏆 **Champion player profile**\n\n"+
 			"**Player**\n%s\n\n"+
 			"**Kills**\n%d\n\n"+
-			"**Deaths**\n%d\n\n"+
-			"**K/D**\n%.2f\n\n"+
+			"**Deaths**\n%d\n%s\n\n"+
+			"**K/D (PvP)**\n%s\n\n"+
+			"**K/D (overall)**\n%.2f\n\n"+
 			"**Longest Kill**\n%s\n\n"+
 			"**Last Seen**\n<t:%d:R>",
-		prof.DisplayName, prof.Kills, prof.Deaths, prof.KD(), longest, prof.LastSeen.Unix(),
+		prof.DisplayName, prof.Kills, prof.Deaths, presentation.DeathSplit(prof.PvPDeaths, prof.PvEDeaths()),
+		presentation.FormatKD(prof.PvPKD()), prof.KD(), longest, prof.LastSeen.Unix(),
 	)
 }
 
@@ -149,6 +156,10 @@ func (h *StatsCommandHandler) HandleLeaderboard(s *discordgo.Session, i *discord
 	case "kd":
 		title = "K/D"
 		entries, err = h.stats.TopByKD(context.Background(), guildRowID, 10, h.minKillsKD)
+	case "pvpkd", "pvp-kd", "pvp_kd", "pvp kd", "pvp k/d":
+		// Kills per death caused by another player; "kd" stays kills per death of any kind.
+		title = "K/D (PvP)"
+		entries, err = h.stats.TopByPvPKD(context.Background(), guildRowID, 10, h.minKillsKD)
 	case "longest":
 		title = "Longest Kill"
 		entries, err = h.stats.TopLongestKill(context.Background(), guildRowID, 10)

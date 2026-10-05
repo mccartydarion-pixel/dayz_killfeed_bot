@@ -378,6 +378,18 @@ func heroField(ev *killfeed.Event, story presentation.StoryType) *discordgo.Mess
 	return nil
 }
 
+// compactCombatStats is the stat strip of the kill and death cards. The first line is unchanged:
+// kills, every death and the overall K/D. A player who has also died to something other than a
+// player gets one more line with the PvP deaths and the PvP K/D (internal/deathstats); for
+// everyone else the two K/Ds are the same number, so the line is left out rather than repeated.
+func compactCombatStats(rec *killfeed.CombatRecord) string {
+	value := presentation.CompactStats(rec.Kills, rec.Deaths, rec.KD())
+	if rec.DeathSplitKnown && rec.PvEDeaths() > 0 {
+		value += "\n" + presentation.CompactPvPStats(rec.PvPDeaths, rec.PvPKD())
+	}
+	return value
+}
+
 // combatStatFields renders KILLER / VICTIM / H2H side by side (inline), each
 // only when its source data is present - a guild without the stats/analytics
 // repositories wired still gets a working card, just without these fields.
@@ -385,7 +397,7 @@ func heroField(ev *killfeed.Event, story presentation.StoryType) *discordgo.Mess
 func combatStatFields(ev *killfeed.Event, story presentation.StoryType, killer, victim string) []*discordgo.MessageEmbedField {
 	var fields []*discordgo.MessageEmbedField
 	if ev.KillerStats != nil {
-		value := presentation.CompactStats(ev.KillerStats.Kills, ev.KillerStats.Deaths, ev.KillerStats.KD())
+		value := compactCombatStats(ev.KillerStats)
 		// The spree card already shows the streak as its hero metric.
 		if ev.KillerStreak != nil && *ev.KillerStreak > 0 && story != presentation.StoryStreakMilestone {
 			value += "\n🔥 Streak **" + presentation.FormatThousands(int64(*ev.KillerStreak)) + "**"
@@ -393,7 +405,7 @@ func combatStatFields(ev *killfeed.Event, story presentation.StoryType, killer, 
 		fields = append(fields, &discordgo.MessageEmbedField{Name: "Killer", Value: value, Inline: true})
 	}
 	if ev.VictimStats != nil {
-		value := presentation.CompactStats(ev.VictimStats.Kills, ev.VictimStats.Deaths, ev.VictimStats.KD())
+		value := compactCombatStats(ev.VictimStats)
 		fields = append(fields, &discordgo.MessageEmbedField{Name: "Victim", Value: value, Inline: true})
 	}
 	if ev.Encounters != nil {

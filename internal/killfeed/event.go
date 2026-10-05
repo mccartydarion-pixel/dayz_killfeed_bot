@@ -1,6 +1,10 @@
 package killfeed
 
-import "time"
+import (
+	"time"
+
+	"github.com/yourname/dayz-killfeed/internal/deathstats"
+)
 
 // EventType describes the normalized event kind.
 type EventType string
@@ -190,8 +194,20 @@ type Event struct {
 // and death embeds.
 type CombatRecord struct {
 	Kills  int64
-	Deaths int64
+	Deaths int64 // every death
+	// PvPDeaths are the deaths caused by another player (internal/deathstats). It is only
+	// meaningful when DeathSplitKnown is set: a record built without the split (an older caller, a
+	// fixture) says nothing about it, and the cards and template variables then leave it out
+	// rather than report "0 PvP deaths".
+	PvPDeaths       int64
+	DeathSplitKnown bool
 }
+
+// PvEDeaths are the deaths not caused by another player.
+func (c CombatRecord) PvEDeaths() int64 { return deathstats.PvE(c.Deaths, c.PvPDeaths) }
+
+// PvPKD is Kills per PvP death, by the same zero rule as KD.
+func (c CombatRecord) PvPKD() float64 { return deathstats.KD(c.Kills, c.PvPDeaths) }
 
 // KD returns Kills/Deaths, or Kills if Deaths is zero (matches
 // repository.PlayerProfile.KD's convention).

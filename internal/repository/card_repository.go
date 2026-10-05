@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/yourname/dayz-killfeed/internal/deathstats"
 )
 
 // CardRepository reads the figures on a Champion Card and stores its share links
@@ -24,7 +25,8 @@ type CardStats struct {
 	PlayerName         string
 	ServerName         string
 	Kills              int
-	Deaths             int
+	Deaths             int // every death
+	PvPDeaths          int // the deaths caused by another player (internal/deathstats)
 	Headshots          int
 	LongestKillMeters  float64
 	PlaytimeSeconds    int64
@@ -39,6 +41,7 @@ func (r *CardRepository) Stats(ctx context.Context, guildID, serverID, playerID 
 SELECT p.display_name, COALESCE(gs.display_name, ''),
   (SELECT COUNT(*) FROM kills WHERE guild_id=$1 AND server_id=$2 AND killer_player_id=$3)::int,
   (SELECT COUNT(*) FROM deaths WHERE guild_id=$1 AND server_id=$2 AND player_id=$3)::int,
+  (SELECT COUNT(*) FROM deaths WHERE guild_id=$1 AND server_id=$2 AND player_id=$3 AND ` + deathstats.PvPPredicate + `)::int,
   (SELECT COUNT(*) FROM kills WHERE guild_id=$1 AND server_id=$2 AND killer_player_id=$3 AND headshot)::int,
   (SELECT COALESCE(MAX(distance), 0) FROM kills WHERE guild_id=$1 AND server_id=$2 AND killer_player_id=$3)::float8,
   COALESCE((SELECT total_observed_seconds FROM player_server_activity WHERE guild_id=$1 AND server_id=$2 AND player_id=$3), 0),
@@ -47,7 +50,7 @@ SELECT p.display_name, COALESCE(gs.display_name, ''),
 FROM players p LEFT JOIN game_servers gs ON gs.id=$2 AND gs.guild_id=$1
 WHERE p.guild_id=$1 AND p.id=$3`
 	var s CardStats
-	err := r.pool.QueryRow(ctx, q, guildID, serverID, playerID).Scan(&s.PlayerName, &s.ServerName, &s.Kills, &s.Deaths, &s.Headshots,
+	err := r.pool.QueryRow(ctx, q, guildID, serverID, playerID).Scan(&s.PlayerName, &s.ServerName, &s.Kills, &s.Deaths, &s.PvPDeaths, &s.Headshots,
 		&s.LongestKillMeters, &s.PlaytimeSeconds, &s.LongestLifeSeconds, &s.RankedPlayers)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil

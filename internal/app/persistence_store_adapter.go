@@ -322,11 +322,11 @@ func (p *persistenceStoreAdapter) ProcessPersistedKill(ctx context.Context, kill
 		ev.EndedStreakCount = record.EndedStreakCount
 		if p.stats != nil {
 			if prof, statErr := p.stats.GetPlayerProfileByPlayerID(ctx, record.GuildID, record.KillerPlayerID); statErr == nil && prof != nil {
-				ev.KillerStats = &killfeed.CombatRecord{Kills: prof.Kills, Deaths: prof.Deaths}
+				ev.KillerStats = combatRecordOf(prof)
 			}
 			if record.VictimPlayerID > 0 {
 				if prof, statErr := p.stats.GetPlayerProfileByPlayerID(ctx, record.GuildID, record.VictimPlayerID); statErr == nil && prof != nil {
-					ev.VictimStats = &killfeed.CombatRecord{Kills: prof.Kills, Deaths: prof.Deaths}
+					ev.VictimStats = combatRecordOf(prof)
 				}
 			}
 		}
@@ -434,7 +434,13 @@ func (p *persistenceStoreAdapter) ProcessPersistedDeath(ctx context.Context, rec
 	if err != nil || prof == nil {
 		return
 	}
-	ev.PlayerStats = &killfeed.CombatRecord{Kills: prof.Kills, Deaths: prof.Deaths}
+	ev.PlayerStats = combatRecordOf(prof)
+}
+
+// combatRecordOf is a profile as the kill and death cards carry it, with the deaths split into
+// PvP and PvE (internal/deathstats).
+func combatRecordOf(prof *repository.PlayerProfile) *killfeed.CombatRecord {
+	return &killfeed.CombatRecord{Kills: prof.Kills, Deaths: prof.Deaths, PvPDeaths: prof.PvPDeaths, DeathSplitKnown: true}
 }
 
 func valueOfID(v *int64) int64 {

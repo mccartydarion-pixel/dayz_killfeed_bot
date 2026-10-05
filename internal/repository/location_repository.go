@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/yourname/dayz-killfeed/internal/deathstats"
 )
 
 // LocationRepository backs Champion Phase 3 (docs/PLAYER_INTELLIGENCE.md): the authoritative
@@ -366,7 +367,8 @@ type PlayerDirectoryEntry struct {
 	LastDisconnectedAt      *time.Time
 	CurrentSessionStartedAt *time.Time
 	Kills                   int64
-	Deaths                  int64
+	Deaths                  int64 // every death
+	PvPDeaths               int64 // the deaths caused by another player (internal/deathstats)
 	FactionID               *int64
 	FactionName             *string
 	WarningCount            int64
@@ -406,6 +408,7 @@ SELECT p.id, p.display_name,
        COALESCE(a.currently_connected,false), a.last_seen_at, a.first_seen_at, a.current_session_started_at,
        (SELECT COUNT(*) FROM kills k WHERE k.guild_id=$1 AND k.server_id=$2 AND k.killer_player_id=p.id),
        (SELECT COUNT(*) FROM deaths d WHERE d.guild_id=$1 AND d.server_id=$2 AND d.player_id=p.id),
+       (SELECT COUNT(*) FROM deaths d WHERE d.guild_id=$1 AND d.server_id=$2 AND d.player_id=p.id AND ` + deathstats.PvPPredicateD + `),
        fm.faction_id, f.name,
        (SELECT COUNT(*) FROM player_warnings w WHERE w.guild_id=$1 AND w.cleared=false AND w.player_id=p.id)
 FROM players p
@@ -449,7 +452,7 @@ WHERE p.guild_id=$1`
 		var lastSeenAt, firstSeenAt *time.Time
 		if err := rows.Scan(&e.PlayerID, &e.Gamertag, &e.DiscordUserID, &e.DiscordDisplayName,
 			&e.Online, &lastSeenAt, &firstSeenAt, &e.CurrentSessionStartedAt,
-			&e.Kills, &e.Deaths, &e.FactionID, &e.FactionName, &e.WarningCount); err != nil {
+			&e.Kills, &e.Deaths, &e.PvPDeaths, &e.FactionID, &e.FactionName, &e.WarningCount); err != nil {
 			return nil, err
 		}
 		e.Linked = e.DiscordUserID != nil

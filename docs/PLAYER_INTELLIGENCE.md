@@ -154,6 +154,8 @@ pointer fields marshal as `null`/omitted, never a guessed default):
   "currentSessionStartedAt": "2026-09-23T03:40:00Z",
   "kills": 14,
   "deaths": 6,
+  "pvpDeaths": 4,
+  "pveDeaths": 2,
   "factionId": 9,
   "factionName": "The Wolves",
   "warningCount": 0,

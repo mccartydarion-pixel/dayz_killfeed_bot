@@ -103,3 +103,71 @@ func TestPrintableReplacesMissingGlyphs(t *testing.T) {
 		t.Fatalf("printable = %q", got)
 	}
 }
+
+func TestTilesCarryThePvPSplitOnlyWhenItIsKnown(t *testing.T) {
+	// Not known: the card is exactly the one it always was.
+	plain := sample()
+	for i, n := range plain.TileNotes() {
+		if n != "" {
+			t.Fatalf("tile %d has a note without a split: %q", i, n)
+		}
+	}
+	if _, ok := plain.PvEDeaths(); ok {
+		t.Fatal("PvEDeaths reported a split that is not known")
+	}
+	if _, ok := plain.PvPKD(); ok {
+		t.Fatal("PvPKD reported a split that is not known")
+	}
+
+	pvp := 160
+	split := sample() // 1,284 kills, 211 deaths
+	split.PvPDeaths = &pvp
+	if pve, ok := split.PvEDeaths(); !ok || pve != 51 {
+		t.Fatalf("PvEDeaths = %d, %v", pve, ok)
+	}
+	if kd, ok := split.PvPKD(); !ok || kd != 1284.0/160 {
+		t.Fatalf("PvPKD = %v, %v", kd, ok)
+	}
+	tiles, notes := split.Tiles(), split.TileNotes()
+	if len(notes) != len(tiles) {
+		t.Fatalf("%d notes for %d tiles", len(notes), len(tiles))
+	}
+	// The tiles themselves keep their meaning: every death, the overall K/D.
+	if tiles[1] != [2]string{"DEATHS", "211"} || tiles[2] != [2]string{"K/D", "6.09"} {
+		t.Fatalf("tiles = %v", tiles)
+	}
+	for i, n := range notes {
+		want := map[int]string{1: "PVP 160 / PVE 51", 2: "PVP 8.03"}[i]
+		if n != want {
+			t.Errorf("note %d = %q, want %q", i, n, want)
+		}
+	}
+
+	// Zero rules: no PvP deaths means the PvP K/D is the kill count; only PvP deaths means both agree.
+	none, all := 0, 211
+	onlyPvE, onlyPvP := sample(), sample()
+	onlyPvE.PvPDeaths, onlyPvP.PvPDeaths = &none, &all
+	if n := onlyPvE.TileNotes(); n[1] != "PVP 0 / PVE 211" || n[2] != "PVP 1284.00" {
+		t.Fatalf("only PvE notes = %v", n)
+	}
+	if n := onlyPvP.TileNotes(); n[1] != "PVP 211 / PVE 0" || n[2] != "PVP 6.09" {
+		t.Fatalf("only PvP notes = %v", n)
+	}
+
+	a, err := Render(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := Render(split)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(a, b) {
+		t.Fatal("the split did not change the image")
+	}
+	if path := os.Getenv("CHAMPION_CARD_SPLIT_SAMPLE_OUT"); path != "" {
+		if err := os.WriteFile(path, b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

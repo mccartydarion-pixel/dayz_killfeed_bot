@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"fmt"
+	"github.com/yourname/dayz-killfeed/internal/deathstats"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -59,18 +60,26 @@ func (r *PlayerRepository) CountForGuild(ctx context.Context, guildID int64) (in
 type PlayerProfile struct {
 	DisplayName string
 	Kills       int64
+	// Deaths is every death; PvPDeaths are the ones caused by another player (internal/deathstats).
 	Deaths      int64
+	PvPDeaths   int64
 	LongestKill *float64
 	LastSeen    time.Time
 }
 
-// KD returns kills/deaths. If deaths is zero, returns kills (no divide-by-zero).
+// KD returns kills/deaths (the overall K/D). If deaths is zero, returns kills (no divide-by-zero).
 func (p PlayerProfile) KD() float64 {
 	if p.Deaths == 0 {
 		return float64(p.Kills)
 	}
 	return float64(p.Kills) / float64(p.Deaths)
 }
+
+// PvEDeaths are the deaths not caused by another player.
+func (p PlayerProfile) PvEDeaths() int64 { return deathstats.PvE(p.Deaths, p.PvPDeaths) }
+
+// PvPKD is kills per PvP death, by the same zero rule as KD.
+func (p PlayerProfile) PvPKD() float64 { return deathstats.KD(p.Kills, p.PvPDeaths) }
 
 // DisplayNamesByID resolves player row IDs to display names in one query.
 // IDs with no player row are absent from the map; zero IDs are skipped.

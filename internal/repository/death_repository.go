@@ -6,12 +6,16 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/yourname/dayz-killfeed/internal/deathstats"
 )
 
 // Death type classifications. Only values the real ADM data supports. PVP rows are written with
 // the kill (KillRepository.InsertKillReturning); the others by InsertDeath (docs/DEATH_COUNTS.md).
+//
+// PVP is the only type that is a PvP death; every other type is a PvE death. That rule lives in
+// internal/deathstats and nowhere else.
 const (
-	DeathTypePVP     = "PVP"
+	DeathTypePVP     = deathstats.TypePvP
 	DeathTypeSuicide = "SUICIDE"
 	DeathTypeUnknown = "UNKNOWN"
 )
