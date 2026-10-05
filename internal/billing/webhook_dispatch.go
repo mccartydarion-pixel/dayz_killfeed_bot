@@ -43,9 +43,13 @@ func (s *Service) HandleWebhook(ctx context.Context, payload []byte, sigHeader s
 			return nil
 		}
 	}
-	isCase, err := s.classifyCaseEvent(ctx,parsed)
-	if err != nil {return fmt.Errorf("classify Stripe subscription kind: %w",err)}
-	if isCase {return s.applyCaseEvent(ctx,parsed)}
+	isCase, err := s.classifyCaseEvent(ctx, parsed)
+	if err != nil {
+		return fmt.Errorf("classify Stripe subscription kind: %w", err)
+	}
+	if isCase {
+		return s.applyCaseEvent(ctx, parsed)
+	}
 	// Base billing continues through its existing idempotency and event logic.
 	inserted, err := s.store.RecordWebhookEventOnce(ctx, repository.ProviderStripe, event.ID, string(event.Type), nil)
 	if err != nil {

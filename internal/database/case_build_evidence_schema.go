@@ -18,4 +18,4 @@ ALTER TABLE case_evidence_events
    AND ((event_type='BUILD_ACTION') = (build_action <> ''))
    AND ((build_action = '') = (build_object = ''))
  ) NOT VALID;
-`;
+`

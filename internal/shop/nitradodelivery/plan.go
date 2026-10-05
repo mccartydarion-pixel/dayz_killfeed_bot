@@ -32,17 +32,17 @@ import (
 // Champion never edits a server-owner file except through the guarded, owner-approved gates. Nothing
 // here accepts a path from a request.
 const (
-	ArtifactDir      = "custom"
-	ArtifactFile     = "champion_shop_delivery.json"
-	ArtifactRelPath  = ArtifactDir + "/" + ArtifactFile // relative to the mission folder
+	ArtifactDir     = "custom"
+	ArtifactFile    = "champion_shop_delivery.json"
+	ArtifactRelPath = ArtifactDir + "/" + ArtifactFile // relative to the mission folder
 	// LegacyArtifactRelPath is the first location (Gates A/B, 2026-09-26/29). The game host never
 	// received it; it stays on the file server, unreferenced once Gate D has run.
 	LegacyArtifactRelPath = "champion/" + ArtifactFile
 	// BackupDir holds verified backups. It is deliberately NOT under custom/, so backups never reach
 	// the game host.
-	BackupDir = "champion/backup"
-	MaxUnitsPerOrder = 10                               // one spawner entry per unit
-	MaxStagedObjects = 50                               // per installation file
+	BackupDir        = "champion/backup"
+	MaxUnitsPerOrder = 10 // one spawner entry per unit
+	MaxStagedObjects = 50 // per installation file
 )
 
 // RequiredAction is what must happen on the server for a staged file to take effect. The spawner only

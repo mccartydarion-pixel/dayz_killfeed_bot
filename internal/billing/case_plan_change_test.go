@@ -285,11 +285,11 @@ func TestCaseTierChangeGuards(t *testing.T) {
 		tier      string
 		want      error
 	}{
-		"same tier":        {10, 20, "CASE_WATCH", ErrCaseTierUnchanged},
-		"unverified tier":  {10, 20, "CASE_COMMAND", ErrCaseNotPurchasable},
-		"base plan key":    {10, 20, "LOW", ErrCaseNotPurchasable},
-		"other org":        {11, 20, "CASE_PRO", ErrCaseNotManaged},
-		"other install":    {10, 21, "CASE_PRO", ErrCaseNotManaged},
+		"same tier":       {10, 20, "CASE_WATCH", ErrCaseTierUnchanged},
+		"unverified tier": {10, 20, "CASE_COMMAND", ErrCaseNotPurchasable},
+		"base plan key":   {10, 20, "LOW", ErrCaseNotPurchasable},
+		"other org":       {11, 20, "CASE_PRO", ErrCaseNotManaged},
+		"other install":   {10, 21, "CASE_PRO", ErrCaseNotManaged},
 	} {
 		if _, err := h.s.CasePreviewTierChange(ctx, tc.org, tc.inst, tc.tier); !errors.Is(err, tc.want) {
 			t.Errorf("%s: %v, want %v", name, err, tc.want)

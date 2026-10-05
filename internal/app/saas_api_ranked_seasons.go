@@ -27,23 +27,31 @@ func init() {
 }
 
 type serverRankedSeasonRequest struct {
-	RPPerKill int64 `json:"rpPerKill"`
+	RPPerKill  int64             `json:"rpPerKill"`
 	Thresholds ranked.Thresholds `json:"thresholds"`
-	Confirm string `json:"confirm"`
+	Confirm    string            `json:"confirm"`
 }
 
 func (a *App) handleGetServerRankedSeason(w http.ResponseWriter, r *http.Request) {
 	ac, ok := a.requireCapability(w, r, permissions.CapServerStatsReset)
-	if !ok { return }
+	if !ok {
+		return
+	}
 	if ac.scope.ServerID == nil || *ac.scope.ServerID <= 0 {
 		writeSaaSError(w, codeInvalidRequest, "no DayZ server selected")
 		return
 	}
-	if a.Ranked == nil { writeSaaSError(w, codeInternalError, "ranked season system unavailable"); return }
+	if a.Ranked == nil {
+		writeSaaSError(w, codeInternalError, "ranked season system unavailable")
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), adminTimeout)
 	defer cancel()
 	season, err := a.Ranked.ActiveServerSeason(ctx, ac.scope.GuildID, *ac.scope.ServerID)
-	if err != nil { writeSaaSError(w, codeInternalError, "could not load Ranked season"); return }
+	if err != nil {
+		writeSaaSError(w, codeInternalError, "could not load Ranked season")
+		return
+	}
 	writeSaaSJSON(w, http.StatusOK, map[string]any{"season": season})
 }
 
@@ -57,16 +65,24 @@ func (a *App) handleResetServerRankedSeason(w http.ResponseWriter, r *http.Reque
 
 func (a *App) changeServerRankedSeason(w http.ResponseWriter, r *http.Request, reset bool) {
 	ac, ok := a.requireCapability(w, r, permissions.CapServerStatsReset)
-	if !ok { return }
+	if !ok {
+		return
+	}
 	// Starting or resetting a season is Champion-only; reading the current one stays open.
-	if !a.requirePlanFeature(w, r, ac.scope.OrganizationID, entitlements.RankedSeasons) { return }
+	if !a.requirePlanFeature(w, r, ac.scope.OrganizationID, entitlements.RankedSeasons) {
+		return
+	}
 	if ac.scope.ServerID == nil || *ac.scope.ServerID <= 0 {
 		writeSaaSError(w, codeInvalidRequest, "no DayZ server selected")
 		return
 	}
 	req, ok := decodeJSONBody[serverRankedSeasonRequest](w, r)
-	if !ok { return }
-	if reset && !requireConfirmation(w, req.Confirm, "RESET SERVER RANKED") { return }
+	if !ok {
+		return
+	}
+	if reset && !requireConfirmation(w, req.Confirm, "RESET SERVER RANKED") {
+		return
+	}
 	if req.RPPerKill <= 0 || req.Thresholds.Validate() != nil {
 		writeSaaSError(w, codeInvalidRequest, "positive RP per kill and seven increasing tier thresholds are required")
 		return
@@ -75,7 +91,9 @@ func (a *App) changeServerRankedSeason(w http.ResponseWriter, r *http.Request, r
 		writeSaaSError(w, codeInternalError, "ranked season system unavailable")
 		return
 	}
-	if !enforceRateLimit(w, a.saasAdminActionLimiter, rateLimitKey(r)) { return }
+	if !enforceRateLimit(w, a.saasAdminActionLimiter, rateLimitKey(r)) {
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), adminTimeout)
 	defer cancel()
 	season, err := a.Ranked.StartServerSeason(ctx, ac.scope.GuildID, *ac.scope.ServerID, req.RPPerKill, req.Thresholds, reset, time.Now().UTC())
@@ -98,8 +116,12 @@ func (a *App) changeServerRankedSeason(w http.ResponseWriter, r *http.Request, r
 		return
 	}
 	action := "SERVER_RANKED_START"
-	if reset { action = "SERVER_RANKED_RESET" }
+	if reset {
+		action = "SERVER_RANKED_RESET"
+	}
 	a.recordAudit(ctx, ac, action, "server:"+strconv.FormatInt(*ac.scope.ServerID, 10), "Ranked season", "success", nil, map[string]int64{"seasonId": season.ID})
-	for _, board := range a.ServerRanksBoards { board.SyncOnce(ctx) }
+	for _, board := range a.ServerRanksBoards {
+		board.SyncOnce(ctx)
+	}
 	writeSaaSJSON(w, http.StatusOK, season)
 }

@@ -1,9 +1,9 @@
 package repository
 
 import (
-	"time"
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )

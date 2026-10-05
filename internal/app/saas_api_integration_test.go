@@ -69,13 +69,13 @@ type fakeSentMessage struct {
 }
 
 type fakeGuildChannel struct {
-	ID       string
-	Name     string
-	Type     discordgo.ChannelType
-	ParentID string
-	Private bool
+	ID                 string
+	Name               string
+	Type               discordgo.ChannelType
+	ParentID           string
+	Private            bool
 	PublicViewOverride bool
-	Position int
+	Position           int
 }
 
 // BotID returns a fixed fake bot user ID - only used for diagnostic log

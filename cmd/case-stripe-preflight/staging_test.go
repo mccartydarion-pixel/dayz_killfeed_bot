@@ -54,12 +54,12 @@ func TestBaseCatalogMustLiveInSameSandbox(t *testing.T) {
 		catalog string
 		wantErr string
 	}{
-		"present":          {map[string]stripePrice{"price_base_low": basePrice("price_base_low", 599, false)}, stagingCatalog, ""},
-		"other account":    {map[string]stripePrice{}, stagingCatalog, "does not exist in this sandbox"},
-		"wrong amount":     {map[string]stripePrice{"price_base_low": basePrice("price_base_low", 999, false)}, stagingCatalog, "does not match"},
+		"present":           {map[string]stripePrice{"price_base_low": basePrice("price_base_low", 599, false)}, stagingCatalog, ""},
+		"other account":     {map[string]stripePrice{}, stagingCatalog, "does not exist in this sandbox"},
+		"wrong amount":      {map[string]stripePrice{"price_base_low": basePrice("price_base_low", 999, false)}, stagingCatalog, "does not match"},
 		"is a case product": {map[string]stripePrice{"price_base_low": basePrice("price_base_low", 599, true)}, stagingCatalog, "does not match"},
 		"reuses case price": {nil, strings.Replace(stagingCatalog, "price_base_low", "price_watch", 1), "reuses a C.A.S.E. price"},
-		"empty catalog":    {nil, `[]`, "no plans"},
+		"empty catalog":     {nil, `[]`, "no plans"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			srv := stub(t, tc.prices, nil)

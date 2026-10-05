@@ -14,26 +14,26 @@ type AccessInput struct {
 	// The zero value grants nothing; Command cannot be enabled by a Watch/Pro rollout.
 	VerifiedThrough Tier
 
-	OrganizationID      int64
-	InstallationID      int64
+	OrganizationID       int64
+	InstallationID       int64
 	SelectedGameServerID int64
 	BaseStatus           string
 
-	AddonOrganizationID  int64
-	AddonInstallationID  int64
-	BoundGameServerID    int64
-	Tier                 Tier
-	Status               string
-	Provider             string
+	AddonOrganizationID    int64
+	AddonInstallationID    int64
+	BoundGameServerID      int64
+	Tier                   Tier
+	Status                 string
+	Provider               string
 	ProviderSubscriptionID string
-	ProviderPriceID      string
-	CurrentPeriodEnd     *time.Time
-	PaidThrough          *time.Time // verified invoice.paid, never inferred from ACTIVE status
+	ProviderPriceID        string
+	CurrentPeriodEnd       *time.Time
+	PaidThrough            *time.Time // verified invoice.paid, never inferred from ACTIVE status
 	// PaidTier is the tier that invoice.paid covered through PaidThrough. After
 	// an upgrade it stays lower until the proration invoice is paid; after a
 	// downgrade it stays higher until the paid period ends.
-	PaidTier             Tier
-	TrialEndsAt          *time.Time
+	PaidTier            Tier
+	TrialEndsAt         *time.Time
 	FounderTrialGranted bool // exact stored, one-time server grant; Stripe trialing alone is insufficient
 }
 
@@ -64,7 +64,9 @@ func Resolve(in AccessInput, now time.Time) []Capability {
 	case "ACTIVE":
 		// Subscription ACTIVE does not prove the invoice was paid, especially
 		// with delayed payment methods. Require confirmed paid coverage.
-		if in.PaidThrough == nil || !in.PaidThrough.After(now) { return nil }
+		if in.PaidThrough == nil || !in.PaidThrough.After(now) {
+			return nil
+		}
 		// Capabilities follow what was actually paid for, never the tier a
 		// pending upgrade is about to bill. Rows written before paid_tier
 		// existed were backfilled to their tier (migration 0063).

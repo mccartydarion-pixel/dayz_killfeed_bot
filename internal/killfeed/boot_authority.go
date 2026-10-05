@@ -55,8 +55,8 @@ type BootAuthorityStats struct {
 	RejectedOlder        int64 // older-boot candidates filtered out or refused
 	UnverifiedCandidates int64 // newer-stamped candidates whose header did not confirm the stamp (yet)
 	LastRejectedFile     string
-	LastCandidateFile string // canonical newer boot being verified
-	LastCandidateReason string // reason a newer candidate could not be verified; empty on acceptance
+	LastCandidateFile    string // canonical newer boot being verified
+	LastCandidateReason  string // reason a newer candidate could not be verified; empty on acceptance
 	LastCandidateCheckAt time.Time
 }
 

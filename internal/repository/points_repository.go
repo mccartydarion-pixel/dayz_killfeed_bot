@@ -11,6 +11,7 @@ type Points struct{ Lifetime, Season int64 }
 type PointsRepository struct{ pool *pgxpool.Pool }
 
 func NewPointsRepository(pool *pgxpool.Pool) *PointsRepository { return &PointsRepository{pool: pool} }
+
 // Award credits earned Champion Points through the economy ledger (the single
 // implementation of every point credit). It returns false, nil when the same
 // (guild, player, reason, sourceKey) was already awarded.

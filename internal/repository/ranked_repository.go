@@ -233,8 +233,12 @@ func (r *RankedRepository) AwardActiveServerKill(ctx context.Context, serverID, 
 	}
 	var seasonID int64
 	err := r.pool.QueryRow(ctx, `SELECT id FROM ranked_seasons WHERE scope='SERVER' AND server_id=$1 AND status='ACTIVE'`, serverID).Scan(&seasonID)
-	if errors.Is(err, pgx.ErrNoRows) { return RankedAward{}, ErrRankedIneligible }
-	if err != nil { return RankedAward{}, fmt.Errorf("load active ranked season: %w", err) }
+	if errors.Is(err, pgx.ErrNoRows) {
+		return RankedAward{}, ErrRankedIneligible
+	}
+	if err != nil {
+		return RankedAward{}, fmt.Errorf("load active ranked season: %w", err)
+	}
 	return r.RecordServerKill(ctx, seasonID, killID)
 }
 
@@ -242,7 +246,9 @@ func (r *RankedRepository) AwardActiveServerKill(ctx context.Context, serverID, 
 // replaying the killfeed. Only kills inside the active season are considered;
 // every decision is still made through RecordServerKill's durable pair lock.
 func (r *RankedRepository) ReconcileServerAwards(ctx context.Context, serverID int64) (int, error) {
-	if r == nil || r.pool == nil || serverID <= 0 { return 0, fmt.Errorf("server ID is required") }
+	if r == nil || r.pool == nil || serverID <= 0 {
+		return 0, fmt.Errorf("server ID is required")
+	}
 	const batchSize = 100
 	processed := 0
 	for {
@@ -256,23 +262,37 @@ AND ev.happened_at>=s.starts_at AND (s.ends_at IS NULL OR ev.happened_at<s.ends_
 AND k.killer_player_id IS NOT NULL AND k.victim_player_id IS NOT NULL AND k.killer_player_id<>k.victim_player_id
 AND NOT EXISTS (SELECT 1 FROM ranked_awards a WHERE a.season_id=s.id AND a.kill_id=k.id)
 ORDER BY ev.happened_at,k.id LIMIT $2`, serverID, batchSize)
-		if err != nil { return processed, fmt.Errorf("query missing ranked awards: %w", err) }
+		if err != nil {
+			return processed, fmt.Errorf("query missing ranked awards: %w", err)
+		}
 		type candidate struct{ seasonID, killID int64 }
 		var pending []candidate
 		for rows.Next() {
 			var c candidate
-			if err = rows.Scan(&c.seasonID, &c.killID); err != nil { break }
+			if err = rows.Scan(&c.seasonID, &c.killID); err != nil {
+				break
+			}
 			pending = append(pending, c)
 		}
-		if err == nil { err = rows.Err() }
+		if err == nil {
+			err = rows.Err()
+		}
 		rows.Close()
-		if err != nil { return processed, fmt.Errorf("scan missing ranked awards: %w", err) }
+		if err != nil {
+			return processed, fmt.Errorf("scan missing ranked awards: %w", err)
+		}
 		for _, c := range pending {
 			_, err = r.RecordServerKill(ctx, c.seasonID, c.killID)
-			if errors.Is(err, ErrRankedIneligible) { return processed, nil } // season archived concurrently
-			if err != nil { return processed, fmt.Errorf("reconcile ranked kill %d: %w", c.killID, err) }
+			if errors.Is(err, ErrRankedIneligible) {
+				return processed, nil
+			} // season archived concurrently
+			if err != nil {
+				return processed, fmt.Errorf("reconcile ranked kill %d: %w", c.killID, err)
+			}
 			processed++
 		}
-		if len(pending) < batchSize { return processed, nil }
+		if len(pending) < batchSize {
+			return processed, nil
+		}
 	}
 }

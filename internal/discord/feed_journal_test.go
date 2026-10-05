@@ -258,7 +258,9 @@ func TestJournalStrictCapacityBlocksUntilOldestRemoved(t *testing.T) {
 	}
 	eventually(t, "journal retains the old card and the pending new card", func() bool {
 		rows, err := j.Open(context.Background(), "KILLFEED:1")
-		if err != nil || len(rows) != 11 { return false }
+		if err != nil || len(rows) != 11 {
+			return false
+		}
 		return rows[0].MessageID != "" && rows[10].MessageID == ""
 	})
 	rig.emu.mu.Lock()
@@ -271,7 +273,9 @@ func TestJournalStrictCapacityBlocksUntilOldestRemoved(t *testing.T) {
 	rig.emu.mu.Lock()
 	peak := rig.emu.peak[rig.kf]
 	rig.emu.mu.Unlock()
-	if peak > 10 { t.Fatalf("peak visible cards %d, want <=10", peak) }
+	if peak > 10 {
+		t.Fatalf("peak visible cards %d, want <=10", peak)
+	}
 }
 
 // A card queued longer than the replay window is not posted as if live; it is

@@ -1,10 +1,10 @@
 package app
 
 import (
-	"golang.org/x/sync/singleflight"
 	"context"
 	"errors"
 	"fmt"
+	"golang.org/x/sync/singleflight"
 	"log/slog"
 	"net/http"
 	"os"
@@ -44,8 +44,8 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/linking"
 	"github.com/yourname/dayz-killfeed/internal/livesync"
 	"github.com/yourname/dayz-killfeed/internal/nitrado"
-	"github.com/yourname/dayz-killfeed/internal/owneraccess"
 	"github.com/yourname/dayz-killfeed/internal/operations"
+	"github.com/yourname/dayz-killfeed/internal/owneraccess"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 	"github.com/yourname/dayz-killfeed/internal/routing"
 	"github.com/yourname/dayz-killfeed/internal/seasons"
@@ -58,18 +58,18 @@ import (
 
 // App owns the main runtime dependencies.
 type App struct {
-	Config       *config.Config
-	Nitrado      *nitrado.Client
-	Discord      *discord.Client
-	HTTPServer   *server.Server
-	State        *server.State
-	DB           *database.DB
-	Guilds       *repository.GuildRepository
-	Players      *repository.PlayerRepository
-	Kills        *repository.KillRepository
-	Deaths       *repository.DeathRepository
-	Stats        *repository.StatsRepository
-	Ranked       *repository.RankedRepository
+	Config     *config.Config
+	Nitrado    *nitrado.Client
+	Discord    *discord.Client
+	HTTPServer *server.Server
+	State      *server.State
+	DB         *database.DB
+	Guilds     *repository.GuildRepository
+	Players    *repository.PlayerRepository
+	Kills      *repository.KillRepository
+	Deaths     *repository.DeathRepository
+	Stats      *repository.StatsRepository
+	Ranked     *repository.RankedRepository
 	// Upgrades holds the automation switches and state (docs/FEATURE_UPGRADES.md).
 	Upgrades *repository.UpgradeRepository
 	// Challenges, BattlePass and Territory are progression (docs/PROGRESSION.md).
@@ -86,11 +86,11 @@ type App struct {
 	mapRotationPost      func(t repository.MapRotationTarget, channelID string, msg *discordgo.MessageSend) error
 	mapRotationAlert     func(alert discord.AdminAlert)
 	mapRotationRestarts  mapRotationRestartCache
-	upgradeRuns upgradeThrottle
-	rankedTagsCache rankedTagCache
-	forecasts       forecastCache
+	upgradeRuns          upgradeThrottle
+	rankedTagsCache      rankedTagCache
+	forecasts            forecastCache
 	// routePanels keeps one edited message per routed panel; nil when channel routing is off.
-	routePanels *discord.RoutePanels
+	routePanels  *discord.RoutePanels
 	Sessions     *repository.SessionRepository
 	Checkpoints  *repository.CheckpointRepository
 	Streaks      *repository.StreakRepository

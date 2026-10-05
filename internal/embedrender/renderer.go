@@ -105,7 +105,7 @@ type Options struct {
 	// Gate, when set, decides per installation whether its template may render; a false
 	// answer yields the default card exactly as a missing template would.
 	Gate func(installationID int64) bool
-	Now     func() time.Time // tests
+	Now  func() time.Time // tests
 }
 
 func New(o Options) *Renderer {

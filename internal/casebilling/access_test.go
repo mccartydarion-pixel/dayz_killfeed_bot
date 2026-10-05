@@ -9,7 +9,7 @@ import (
 func TestCatalogIsClosedAndIsolatedFromBasePlans(t *testing.T) {
 	plans := Plans()
 	want := []struct {
-		key Tier
+		key   Tier
 		price int64
 	}{{Watch, 499}, {Pro, 999}, {Command, 1499}}
 	if len(plans) != len(want) {
@@ -56,7 +56,7 @@ func TestAccessRequiresSameServerPaidBaseAndVerifiedTier(t *testing.T) {
 		t.Fatal("Pro grants only Watch+Pro")
 	}
 	cases := []struct {
-		name string
+		name   string
 		change func(*AccessInput)
 	}{
 		{"flag off", func(x *AccessInput) { x.BillingEnabled = false }},
@@ -135,7 +135,7 @@ func TestAccessFollowsPaidTier(t *testing.T) {
 		tier, paid Tier
 		want       []Capability
 	}{
-		{Pro, Watch, []Capability{CapWatch}},        // upgrade billed, proration unpaid
+		{Pro, Watch, []Capability{CapWatch}},         // upgrade billed, proration unpaid
 		{Watch, Pro, []Capability{CapWatch, CapPro}}, // downgrade: paid Pro until paid_through
 		{Pro, Pro, []Capability{CapWatch, CapPro}},
 		{Pro, "", []Capability{CapWatch, CapPro}}, // pre-0063 row (backfilled in DB)

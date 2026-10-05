@@ -69,7 +69,9 @@ func TestCASEActiveRequiresSignedInvoicePaidCoverage(t *testing.T) {
 	checkout := ParsedEvent{ID: "evt_case_checkout", Type: EventCheckoutCompleted,
 		Session: &webhookCheckoutSession{ID: "cs_case", Mode: "subscription",
 			Subscription: "sub_case", Customer: "cus_case", Metadata: meta}}
-	if err := s.applyCaseEvent(context.Background(), checkout); err != nil { t.Fatal(err) }
+	if err := s.applyCaseEvent(context.Background(), checkout); err != nil {
+		t.Fatal(err)
+	}
 	if len(store.applied) != 1 || store.applied[0].PaidThrough != nil {
 		t.Fatalf("checkout incorrectly claimed invoice was paid: %+v", store.applied)
 	}
@@ -81,10 +83,16 @@ func TestCASEActiveRequiresSignedInvoicePaidCoverage(t *testing.T) {
 	{"amount":999,"parent":{"type":"subscription_item_details","subscription_item_details":{"subscription":"sub_case"}},"pricing":{"price_details":{"price":"price_pro"}},"period":{"start":` + formatUnix(now) + `,"end":` + formatUnix(end) + `}}
 	]}}`)
 	var invoice webhookInvoice
-	if err := json.Unmarshal(raw, &invoice); err != nil { t.Fatal(err) }
-	if invoice.Subscription == "" { invoice.Subscription = invoice.Parent.SubscriptionDetails.Subscription }
+	if err := json.Unmarshal(raw, &invoice); err != nil {
+		t.Fatal(err)
+	}
+	if invoice.Subscription == "" {
+		invoice.Subscription = invoice.Parent.SubscriptionDetails.Subscription
+	}
 	paid := ParsedEvent{ID: "evt_case_paid", Type: EventInvoicePaid, Invoice: &invoice}
-	if err := s.applyCaseEvent(context.Background(), paid); err != nil {t.Fatal(err)}
+	if err := s.applyCaseEvent(context.Background(), paid); err != nil {
+		t.Fatal(err)
+	}
 	if len(store.applied) != 2 || store.applied[1].PaidThrough == nil || !store.applied[1].PaidThrough.Equal(end) {
 		t.Fatalf("invoice.paid coverage mismatch: %+v", store.applied)
 	}
@@ -95,11 +103,11 @@ func TestCASEActiveRequiresSignedInvoicePaidCoverage(t *testing.T) {
 		t.Fatalf("expected active statuses but separate payment proof: %v", got)
 	}
 	// Paid invoice from another product cannot activate this server's access.
-	foreign:=invoice
-	foreign.Lines.Data=foreign.Lines.Data[:1]
-	foreignEvent:=ParsedEvent{ID:"evt_foreign_invoice",Type:EventInvoicePaid,Invoice:&foreign}
-	if err:=s.applyCaseEvent(context.Background(),foreignEvent);!errors.Is(err,repository.ErrCaseWebhookMismatch) {
-		t.Fatalf("unrelated invoice line activated case: %v",err)
+	foreign := invoice
+	foreign.Lines.Data = foreign.Lines.Data[:1]
+	foreignEvent := ParsedEvent{ID: "evt_foreign_invoice", Type: EventInvoicePaid, Invoice: &foreign}
+	if err := s.applyCaseEvent(context.Background(), foreignEvent); !errors.Is(err, repository.ErrCaseWebhookMismatch) {
+		t.Fatalf("unrelated invoice line activated case: %v", err)
 	}
 	invoice.Lines.Data = nil
 	paid.ID = "evt_no_period"
@@ -109,5 +117,5 @@ func TestCASEActiveRequiresSignedInvoicePaidCoverage(t *testing.T) {
 }
 
 func formatUnix(t time.Time) string {
-	return strconv.FormatInt(t.Unix(),10)
+	return strconv.FormatInt(t.Unix(), 10)
 }

@@ -46,7 +46,9 @@ func (s *Service) CaseAccess(ctx context.Context, organizationID, installationID
 	}
 	caps := casebilling.Resolve(addon.AccessInput(organizationID, installationID,
 		base.Status, s.caseAccessEnabled, s.caseVerifiedThrough), now)
-	if len(caps) == 0 { return empty, nil }
+	if len(caps) == 0 {
+		return empty, nil
+	}
 	return caps, nil
 }
 

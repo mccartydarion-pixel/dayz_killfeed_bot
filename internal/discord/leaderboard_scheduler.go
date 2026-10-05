@@ -1,9 +1,9 @@
 package discord
 
 import (
-	"fmt"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"

@@ -34,17 +34,21 @@ type legacyPanelSpec struct {
 var routedStaticPanels = []legacyPanelSpec{
 	{
 		routeKey: routeKeyLinkGamertag,
-		content:  func() PanelContent { return PanelContent{Embed: LinkUsernameInfoEmbed(), Components: LinkUsernamePanelComponents()} },
-		channel:  func(g *GuildSetup) string { return g.LinkPanelChannelID },
-		message:  func(g *GuildSetup) string { return g.LinkPanelMessageID },
-		clear:    func(g *GuildSetup) { g.LinkPanelMessageID = "" },
+		content: func() PanelContent {
+			return PanelContent{Embed: LinkUsernameInfoEmbed(), Components: LinkUsernamePanelComponents()}
+		},
+		channel: func(g *GuildSetup) string { return g.LinkPanelChannelID },
+		message: func(g *GuildSetup) string { return g.LinkPanelMessageID },
+		clear:   func(g *GuildSetup) { g.LinkPanelMessageID = "" },
 	},
 	{
 		routeKey: routeKeyStatsLeaderboards,
-		content:  func() PanelContent { return PanelContent{Embed: PlayerStatsInfoEmbed(), Components: PlayerStatsPanelComponents()} },
-		channel:  func(g *GuildSetup) string { return g.PlayerStatsChannelID },
-		message:  func(g *GuildSetup) string { return g.PlayerStatsInfoMessageID },
-		clear:    func(g *GuildSetup) { g.PlayerStatsInfoMessageID = "" },
+		content: func() PanelContent {
+			return PanelContent{Embed: PlayerStatsInfoEmbed(), Components: PlayerStatsPanelComponents()}
+		},
+		channel: func(g *GuildSetup) string { return g.PlayerStatsChannelID },
+		message: func(g *GuildSetup) string { return g.PlayerStatsInfoMessageID },
+		clear:   func(g *GuildSetup) { g.PlayerStatsInfoMessageID = "" },
 	},
 }
 
@@ -87,7 +91,9 @@ func NewRouteSyncer(resolver RouteResolver, servers GuildServersFunc, panels *Ro
 }
 
 // SetLeaderboard attaches the scheduler refreshed when AUTO_LEADERBOARD routes change.
-func (s *RouteSyncer) SetLeaderboard(l interface{ RefreshOnce(ctx context.Context) error }) {
+func (s *RouteSyncer) SetLeaderboard(l interface {
+	RefreshOnce(ctx context.Context) error
+}) {
 	if s != nil {
 		s.leaderboard = l
 	}

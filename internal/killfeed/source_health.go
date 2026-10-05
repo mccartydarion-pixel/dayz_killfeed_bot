@@ -98,7 +98,9 @@ func ClassifyADMSourceHealth(h ADMSourceHealth, now time.Time) (state, reason st
 }
 
 func newerUnacceptedBoot(h ADMSourceHealth) bool {
-	if h.NewestListedFile == "" || h.NewestListedFile == h.AcceptedFile { return false }
+	if h.NewestListedFile == "" || h.NewestListedFile == h.AcceptedFile {
+		return false
+	}
 	listed, listedOK := admBootStamp(h.NewestListedFile)
 	accepted, acceptedOK := admBootStamp(h.AcceptedFile)
 	// Unknown identities remain conservative; only a proven older listing

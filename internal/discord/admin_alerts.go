@@ -78,7 +78,7 @@ const (
 )
 
 // A duplicated numeric server ID in another guild must have independent alert state.
-type alertScope struct { guildRowID, serverID int64 }
+type alertScope struct{ guildRowID, serverID int64 }
 
 type serverAlertState struct {
 	stale            bool
@@ -189,13 +189,13 @@ func (p *AdminAlertPublisher) ObserveDownload(guildRowID int64, report killfeed.
 // operationalAdminAlertKind is an explicit boundary: C.A.S.E. diagnostics,
 // preview cards, or future finding events cannot enter the operational route.
 func operationalAdminAlertKind(kind string) bool {
- switch kind {
- case AlertKindADMStale, AlertKindNitradoFailure, AlertKindZoneIntrusion,
-  AlertKindUAVIntrusion, AlertKindBaseRadar, AlertKindZoneBanViolated, AlertKindBaseRequest, AlertKindRentPaused, AlertKindSecurityDigest, AlertKindPlayerAppeal, AlertKindMapRotation:
-  return true
- default:
-  return false
- }
+	switch kind {
+	case AlertKindADMStale, AlertKindNitradoFailure, AlertKindZoneIntrusion,
+		AlertKindUAVIntrusion, AlertKindBaseRadar, AlertKindZoneBanViolated, AlertKindBaseRequest, AlertKindRentPaused, AlertKindSecurityDigest, AlertKindPlayerAppeal, AlertKindMapRotation:
+		return true
+	default:
+		return false
+	}
 }
 
 // Publish enqueues an alert without blocking; a full queue drops it.
@@ -235,7 +235,9 @@ func (p *AdminAlertPublisher) Run(ctx context.Context) {
 }
 
 func (p *AdminAlertPublisher) send(ctx context.Context, a AdminAlert) {
-	if !operationalAdminAlertKind(a.Kind) { return }
+	if !operationalAdminAlertKind(a.Kind) {
+		return
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("component=admin_alerts", "msg", "send panic recovered", "panic", fmt.Sprint(r))
@@ -338,16 +340,18 @@ func IntrusionAdminAlert(ev killfeed.IntrusionEvent) (AdminAlert, bool) {
 // BuildCaseWatchDigestEmbed is observational, never an accusation, score or
 // statement that no cheating occurred in a period without recorded evidence.
 func BuildCaseWatchDigestEmbed(a AdminAlert, serverName string) *discordgo.MessageEmbed {
-	embed:=presentation.NewChampionEmbed("C.A.S.E. WATCH • OBSERVATION DIGEST",presentation.InfoSteel)
-	embed.Description="Persisted ADM source observations from the selected server. Counts describe collected evidence only; they are not cheat alerts or gameplay verdicts."
-	if strings.TrimSpace(serverName)!="" {
-		embed.Fields=append(embed.Fields,&discordgo.MessageEmbedField{Name:"Server",Value:presentation.SafeName(serverName,60),Inline:true})
+	embed := presentation.NewChampionEmbed("C.A.S.E. WATCH • OBSERVATION DIGEST", presentation.InfoSteel)
+	embed.Description = "Persisted ADM source observations from the selected server. Counts describe collected evidence only; they are not cheat alerts or gameplay verdicts."
+	if strings.TrimSpace(serverName) != "" {
+		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Server", Value: presentation.SafeName(serverName, 60), Inline: true})
 	}
-	for _,field:=range a.Fields {
-		if strings.TrimSpace(field[0])=="" || strings.TrimSpace(field[1])=="" {continue}
-		embed.Fields=append(embed.Fields,&discordgo.MessageEmbedField{Name:presentation.SafeName(field[0],70),Value:presentation.SafeName(field[1],150),Inline:true})
+	for _, field := range a.Fields {
+		if strings.TrimSpace(field[0]) == "" || strings.TrimSpace(field[1]) == "" {
+			continue
+		}
+		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: presentation.SafeName(field[0], 70), Value: presentation.SafeName(field[1], 150), Inline: true})
 	}
-	embed.Footer=&discordgo.MessageEmbedFooter{Text:"C.A.S.E. • SOURCE OBSERVATION ONLY • NO ENFORCEMENT"}
-	presentation.StampEmbed(embed,a.At)
+	embed.Footer = &discordgo.MessageEmbedFooter{Text: "C.A.S.E. • SOURCE OBSERVATION ONLY • NO ENFORCEMENT"}
+	presentation.StampEmbed(embed, a.At)
 	return embed
 }

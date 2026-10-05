@@ -15,9 +15,10 @@ import (
 
 type rankedADMStore struct {
 	players *repository.PlayerRepository
-	kills *repository.KillRepository
-	deaths *repository.DeathRepository
+	kills   *repository.KillRepository
+	deaths  *repository.DeathRepository
 }
+
 func (s rankedADMStore) UpsertPlayer(ctx context.Context, guild int64, id, name string, at time.Time) (int64, error) {
 	return s.players.UpsertPlayer(ctx, guild, id, name, at)
 }
@@ -32,14 +33,15 @@ func (s rankedADMStore) InsertDeath(ctx context.Context, record repository.Death
 }
 
 type rankedADMPostprocessor struct {
-	ranked *repository.RankedRepository
-	serverID int64
+	ranked    *repository.RankedRepository
+	serverID  int64
 	decisions chan rankedADMDecision
 }
 type rankedADMDecision struct {
 	award repository.RankedAward
-	err error
+	err   error
 }
+
 func (p rankedADMPostprocessor) ProcessPersistedKill(ctx context.Context, killID int64, _ repository.KillRecord, _ *Event) {
 	award, err := p.ranked.AwardActiveServerKill(ctx, p.serverID, killID)
 	p.decisions <- rankedADMDecision{award: award, err: err}
@@ -48,7 +50,9 @@ func (p rankedADMPostprocessor) ProcessPersistedKill(ctx context.Context, killID
 func TestRealADMKillAwardsServerRankedRP(t *testing.T) {
 	url := os.Getenv("TEST_DATABASE_URL")
 	if url == "" {
-		if os.Getenv("REQUIRE_INTEGRATION_DB") == "1" { t.Fatal("TEST_DATABASE_URL is required") }
+		if os.Getenv("REQUIRE_INTEGRATION_DB") == "1" {
+			t.Fatal("TEST_DATABASE_URL is required")
+		}
 		t.Skip("TEST_DATABASE_URL is not set")
 	}
 	if os.Getenv("ALLOW_INTEGRATION_DB_TESTS") != "true" {
@@ -57,27 +61,39 @@ func TestRealADMKillAwardsServerRankedRP(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	db, err := database.Connect(ctx, url)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer db.Close()
-	if err = db.Migrate(ctx); err != nil { t.Fatal(err) }
+	if err = db.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
 
 	suffix := time.Now().UnixNano()
 	guildID, err := repository.NewGuildRepository(db.Pool).UpsertGuild(ctx,
 		repository.GuildRecord{DiscordGuildID: fmt.Sprintf("ranked-adm-%d", suffix)})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	server, err := repository.NewServerRepository(db.Pool).UpsertGameServer(ctx,
 		repository.GameServer{GuildID: guildID, Provider: "fixture",
 			ProviderServiceID: fmt.Sprintf("ranked-adm-%d", suffix),
-			Game: "dayz", Platform: "PLAYSTATION", Status: "CONNECTED", Active: true})
-	if err != nil { t.Fatal(err) }
+			Game:              "dayz", Platform: "PLAYSTATION", Status: "CONNECTED", Active: true})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err = repository.NewLiveSyncRepository(db.Pool).SetServerUTCOffset(
-		ctx, guildID, server.ID, -240, "ranked-adm-integration"); err != nil { t.Fatal(err) }
+		ctx, guildID, server.ID, -240, "ranked-adm-integration"); err != nil {
+		t.Fatal(err)
+	}
 	seasonStart := time.Date(2026, 9, 24, 20, 0, 0, 0, time.UTC)
 	var seasonID int64
 	err = db.Pool.QueryRow(ctx, `INSERT INTO ranked_seasons(scope,platform,server_id,status,rp_per_kill,thresholds,starts_at)
 VALUES('SERVER','PLAYSTATION',$1,'ACTIVE',100,ARRAY[100,300,600,1000,1500,2100,2800]::bigint[],$2) RETURNING id`,
 		server.ID, seasonStart).Scan(&seasonID)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	store := rankedADMStore{repository.NewPlayerRepository(db.Pool), repository.NewKillRepository(db.Pool), repository.NewDeathRepository(db.Pool)}
 	rankedRepo := repository.NewRankedRepository(db.Pool)
@@ -91,7 +107,9 @@ VALUES('SERVER','PLAYSTATION',$1,'ACTIVE',100,ARRAY[100,300,600,1000,1500,2100,2
 	for i, clock := range []string{"16:40:12", "16:44:12", "16:45:12"} {
 		line := fmt.Sprintf(`%s | Player "victim" (DEAD) (id=victim-%d pos=<1, 2, 3>) killed by Player "killer" (id=killer-%d pos=<4, 5, 6>) with M4-A1 from 62.1978 meters`,
 			clock, suffix, suffix)
-		if _, err = engine.processLineAt(line, path, int64(900+i*200)); err != nil { t.Fatal(err) }
+		if _, err = engine.processLineAt(line, path, int64(900+i*200)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	for i, want := range []string{"AWARDED", "COOLDOWN", "AWARDED"} {
 		select {

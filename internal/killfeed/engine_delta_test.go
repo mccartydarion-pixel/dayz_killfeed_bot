@@ -19,10 +19,10 @@ import (
 
 type deltaLogSource struct {
 	fakeLogSource
-	deltaReads  int
-	deltaFail   bool // force every ReadDelta call to report ok=false, to test the full-read fallback
-	sawFrom     []int64
-	sawTarget   []int64
+	deltaReads int
+	deltaFail  bool // force every ReadDelta call to report ok=false, to test the full-read fallback
+	sawFrom    []int64
+	sawTarget  []int64
 }
 
 func (f *deltaLogSource) ReadDelta(ctx context.Context, serviceID, path string, fromOffset, targetSize int64, mode nitrado.DeltaMode) (*nitrado.PartialReadResult, bool) {
@@ -279,7 +279,9 @@ type memCheckpointStore struct {
 func newMemCheckpointStore() *memCheckpointStore {
 	return &memCheckpointStore{saved: map[string]DurableCheckpoint{}}
 }
-func (m *memCheckpointStore) key(guildID, serverID int64) string { return fmt.Sprintf("%d:%d", guildID, serverID) }
+func (m *memCheckpointStore) key(guildID, serverID int64) string {
+	return fmt.Sprintf("%d:%d", guildID, serverID)
+}
 func (m *memCheckpointStore) LoadADMCheckpoint(ctx context.Context, guildID, serverID int64) (*DurableCheckpoint, error) {
 	c, ok := m.saved[m.key(guildID, serverID)]
 	if !ok {
@@ -435,7 +437,7 @@ func TestEngineDeltaByteForByteOracle(t *testing.T) {
 func TestEngineDeltaLoadComparisonBytesTransferred(t *testing.T) {
 	const polls = 1000
 	const growthPerPoll = 7 // bytes/poll, deliberately not a clean divisor of maxChunkBytes
-	base := "S" // 1-byte seed, no newline - never parsed as a line until later growth adds one
+	base := "S"             // 1-byte seed, no newline - never parsed as a line until later growth adds one
 
 	fullEngine, fakeFull := newDeltaEngine(nitrado.DeltaModeOff, base, int64(len(base)))
 	deltaEngine, fakeDelta := newDeltaEngine(nitrado.DeltaModeAuto, base, int64(len(base)))
