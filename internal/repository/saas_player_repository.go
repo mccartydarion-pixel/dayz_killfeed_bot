@@ -82,7 +82,7 @@ ORDER BY psa.last_seen_at DESC NULLS LAST, i.id`
 	return out, rows.Err()
 }
 
-// PlayerHome is the one server the website's Player Hub shows for a Discord user who is not an
+// PlayerHome is one server the website's Player Hub can show for a Discord user who is not an
 // organization member (docs/PLAYER_API.md "Player home").
 type PlayerHome struct {
 	InstallationID   int64
@@ -97,18 +97,19 @@ type PlayerHome struct {
 	Observed         bool   // the player has a session, a kill or a death on this installation's server
 }
 
-// HomeForDiscordUser returns the installation the Player Hub should open for discordUserID, or
-// found=false. Unlike ListForDiscordUser it needs only the VERIFIED player_links row for the
-// installation's guild, NOT observed activity: a player who has just linked and has not played yet
-// must still reach their hub. It therefore proves less than ListForDiscordUser does, and is only
-// used to tell the website which server to show - every player route keeps its own authorization.
+// HomesForDiscordUser returns every installation the Player Hub may open for discordUserID, in
+// one query; the first row is the default. Unlike ListForDiscordUser it needs only the VERIFIED
+// player_links row for the installation's guild, NOT observed activity: a player who has just
+// linked and has not played yet must still reach their hub. It therefore proves less than
+// ListForDiscordUser does, and is only used to tell the website which servers to offer - every
+// player route keeps its own authorization.
 //
 // Only VERIFIED links count: PENDING is an unconfirmed claim that expires after ten minutes, and
 // REJECTED / UNLINKED / EXPIRED are not links.
 //
-// With several candidates (one guild backing several installations, or links in several guilds):
-// servers the player was observed on first, most recently seen first, then installation id.
-func (r *PlayerServerRepository) HomeForDiscordUser(ctx context.Context, discordUserID string) (home PlayerHome, found bool, err error) {
+// Order (one guild backing several installations, or links in several guilds): servers the player
+// was observed on first, most recently seen first, then installation id.
+func (r *PlayerServerRepository) HomesForDiscordUser(ctx context.Context, discordUserID string) ([]PlayerHome, error) {
 	const q = `
 SELECT i.id, i.organization_id, COALESCE(o.name, ''), COALESCE(gs.display_name, ''), COALESCE(gs.platform, ''), i.status,
        g.discord_guild_id, COALESCE(c.guild_name, ''), pl.status, obs.observed
@@ -125,17 +126,32 @@ CROSS JOIN LATERAL (SELECT (
     OR EXISTS (SELECT 1 FROM deaths d WHERE d.guild_id = pl.guild_id AND d.server_id = i.game_server_id AND d.player_id = pl.player_id)
   ) AS observed) obs
 WHERE pl.discord_user_id = $1 AND pl.status = 'VERIFIED'
-ORDER BY obs.observed DESC, psa.last_seen_at DESC NULLS LAST, i.id
-LIMIT 1`
-	err = r.pool.QueryRow(ctx, q, discordUserID).Scan(&home.InstallationID, &home.OrganizationID, &home.OrganizationName,
-		&home.ServerName, &home.Platform, &home.ServerStatus, &home.DiscordGuildID, &home.DiscordGuildName, &home.LinkStatus, &home.Observed)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return PlayerHome{}, false, nil
-	}
+ORDER BY obs.observed DESC, psa.last_seen_at DESC NULLS LAST, i.id`
+	rows, err := r.pool.Query(ctx, q, discordUserID)
 	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PlayerHome
+	for rows.Next() {
+		var home PlayerHome
+		if err := rows.Scan(&home.InstallationID, &home.OrganizationID, &home.OrganizationName,
+			&home.ServerName, &home.Platform, &home.ServerStatus, &home.DiscordGuildID, &home.DiscordGuildName, &home.LinkStatus, &home.Observed); err != nil {
+			return nil, err
+		}
+		out = append(out, home)
+	}
+	return out, rows.Err()
+}
+
+// HomeForDiscordUser returns the default server of HomesForDiscordUser (its first row), or
+// found=false.
+func (r *PlayerServerRepository) HomeForDiscordUser(ctx context.Context, discordUserID string) (home PlayerHome, found bool, err error) {
+	homes, err := r.HomesForDiscordUser(ctx, discordUserID)
+	if err != nil || len(homes) == 0 {
 		return PlayerHome{}, false, err
 	}
-	return home, true, nil
+	return homes[0], true, nil
 }
 
 // PlayerInstallationScope is what installationID resolves to for a stats lookup.

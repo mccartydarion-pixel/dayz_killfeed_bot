@@ -188,12 +188,13 @@ otherwise); it does not need observed activity on the server.
 
 ## 10. Player home
 
-`GET /api/saas/player/home`
+`GET /api/saas/player/home[?installationId=<id>]`
 
-Auth: service auth + acting user. No organization/installation id in the request.
+Auth: service auth + acting user. No organization id in the request.
 
 The website's Player Hub asks this for a user who belongs to no organization (a plain player), to
-learn which server to show. Organization owners and members never need it.
+learn which servers the player can open and which one to show. Organization owners and members
+never need it.
 
 ```json
 {
@@ -208,20 +209,41 @@ learn which server to show. Organization owners and members never need it.
     "discordGuildName": "Example Community",
     "linkStatus": "VERIFIED",
     "observed": false
-  }
+  },
+  "servers": [
+    { "installationId": 42, "...": "same fields as server" },
+    { "installationId": 57, "...": "same fields as server" }
+  ],
+  "selected": "PREFERRED"
 }
 ```
 
-`{"server":null}` (200) when the user has no home: a normal state, not an error.
+`{"server":null,"servers":[],"selected":null}` (200) when the user has no home: a normal state, not
+an error. `servers` is always an array and `server`, when not null, is always one of its entries.
 
-Rule (`PlayerServerRepository.HomeForDiscordUser`): the installations, with a game server, of every
-guild the user holds a `VERIFIED` `player_links` row in. Unlike section 2 this does **not** need
-observed activity: a player who has just linked and has not played yet has no
+Rule (`PlayerServerRepository.HomesForDiscordUser`, one query): the installations, with a game
+server, of every guild the user holds a `VERIFIED` `player_links` row in. Unlike section 2 this does
+**not** need observed activity: a player who has just linked and has not played yet has no
 `player_server_activity`, kill or death row, is therefore on no `GET /api/saas/player/servers`
 list, and must still get their hub. `observed` says whether that proof of play exists.
 
-Order, first row returned: observed servers first, then `player_server_activity.last_seen_at DESC
-NULLS LAST`, then installation id.
+Order of `servers`: observed servers first, then `player_server_activity.last_seen_at DESC NULLS
+LAST`, then installation id. The order never depends on `installationId`.
+
+Which entry is `server`:
+
+| `selected` | Rule |
+|------------|------|
+| `PREFERRED` | `?installationId=` names one of `servers`; that one. |
+| `DEFAULT` | Otherwise the first of `servers`. |
+| `null` | `servers` is empty. |
+
+`installationId` is a wish, not authority. Absent, empty, not a positive integer, unknown, or an
+installation the user holds no verified link for: all give the default, never an error and never a
+server outside `servers`. The website keeps the player's choice in a cookie and sends it here.
+
+Fields `servers` and `selected` and the query parameter were added later; a client that ignores
+them sees the original `{"server": ...}` behaviour.
 
 `linkStatus` is always `VERIFIED` today. The other `player_links` statuses never give a home:
 `PENDING` is an unconfirmed claim on a gamertag that expires after ten minutes, and `REJECTED`,

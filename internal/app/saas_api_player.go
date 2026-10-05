@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/yourname/dayz-killfeed/internal/repository"
@@ -148,28 +149,68 @@ type playerHomeServerDTO struct {
 	Observed         bool   `json:"observed"`
 }
 
-// playerHomeResponseDTO is GET /api/saas/player/home. Server is null (never omitted) when the
-// acting user has no verified link in any guild that has an installation with a game server.
+// How playerHomeResponseDTO.Server was chosen.
+const (
+	playerHomeSelectedPreferred = "PREFERRED" // the caller's ?installationId=, one of the user's servers
+	playerHomeSelectedDefault   = "DEFAULT"   // the first server of the documented order
+)
+
+// playerHomeResponseDTO is GET /api/saas/player/home. Server and Selected are null (never
+// omitted) when the acting user has no verified link in any guild that has an installation with a
+// game server; Servers is then [] (never null).
 type playerHomeResponseDTO struct {
-	Server *playerHomeServerDTO `json:"server"`
+	Server   *playerHomeServerDTO  `json:"server"`
+	Servers  []playerHomeServerDTO `json:"servers"`
+	Selected *string               `json:"selected"`
 }
 
-func playerHomeResponse(home repository.PlayerHome, found bool) playerHomeResponseDTO {
-	if !found {
-		return playerHomeResponseDTO{}
-	}
-	return playerHomeResponseDTO{Server: &playerHomeServerDTO{
+func playerHomeServer(home repository.PlayerHome) playerHomeServerDTO {
+	return playerHomeServerDTO{
 		InstallationID: home.InstallationID, OrganizationID: home.OrganizationID, OrganizationName: home.OrganizationName,
 		ServerName: home.ServerName, Platform: home.Platform, ServerStatus: home.ServerStatus,
 		DiscordGuildID: home.DiscordGuildID, DiscordGuildName: home.DiscordGuildName,
 		LinkStatus: home.LinkStatus, Observed: home.Observed,
-	}}
+	}
 }
 
-// handlePlayerHome is GET /api/saas/player/home: the server the website's Player Hub shows for the
-// acting user (docs/PLAYER_API.md "Player home"). It needs a VERIFIED link but, unlike
-// handlePlayerServers, no observed activity, so a player who has just linked gets their hub.
-// No server is a normal answer ({"server":null}), not an error.
+// playerHomeResponse builds the response from the user's servers in default order. preferred is
+// the caller's wish (0 = none): it is honoured only when it is one of homes, so the answer can
+// never be a server the user is not linked on, whatever the browser sent.
+func playerHomeResponse(homes []repository.PlayerHome, preferred int64) playerHomeResponseDTO {
+	resp := playerHomeResponseDTO{Servers: make([]playerHomeServerDTO, 0, len(homes))}
+	chosen := -1
+	for i, home := range homes {
+		resp.Servers = append(resp.Servers, playerHomeServer(home))
+		if chosen < 0 && preferred > 0 && home.InstallationID == preferred {
+			chosen = i
+		}
+	}
+	if len(homes) == 0 {
+		return resp
+	}
+	selected := playerHomeSelectedPreferred
+	if chosen < 0 {
+		chosen, selected = 0, playerHomeSelectedDefault
+	}
+	server := resp.Servers[chosen]
+	resp.Server, resp.Selected = &server, &selected
+	return resp
+}
+
+// playerHomePreference reads the optional ?installationId=. Anything that is not a positive
+// integer is no preference (0) - the route never fails on it.
+func playerHomePreference(r *http.Request) int64 {
+	id, err := strconv.ParseInt(r.URL.Query().Get("installationId"), 10, 64)
+	if err != nil || id <= 0 {
+		return 0
+	}
+	return id
+}
+
+// handlePlayerHome is GET /api/saas/player/home: the servers the website's Player Hub can show for
+// the acting user and the one it shows now (docs/PLAYER_API.md "Player home"). It needs a VERIFIED
+// link but, unlike handlePlayerServers, no observed activity, so a player who has just linked gets
+// their hub. No server is a normal answer ({"server":null,"servers":[],"selected":null}).
 func (a *App) handlePlayerHome(w http.ResponseWriter, r *http.Request) {
 	if !a.requireSaaSServiceAuth(w, r) {
 		return
@@ -184,12 +225,12 @@ func (a *App) handlePlayerHome(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), playerTimeout)
 	defer cancel()
-	home, found, err := a.SaaSPlayer.HomeForDiscordUser(ctx, user.DiscordUserID)
+	homes, err := a.SaaSPlayer.HomesForDiscordUser(ctx, user.DiscordUserID)
 	if err != nil {
 		playerFailed(w, "resolve player home", err)
 		return
 	}
-	writeSaaSJSON(w, http.StatusOK, playerHomeResponse(home, found))
+	writeSaaSJSON(w, http.StatusOK, playerHomeResponse(homes, playerHomePreference(r)))
 }
 
 // handlePlayerServerStats is GET .../player/servers/{installationID}/stats: the acting user's own

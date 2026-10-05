@@ -326,3 +326,85 @@ func TestPlayerHomeNeverReturnsAnotherTenantsServer(t *testing.T) {
 		t.Fatalf("%v", server)
 	}
 }
+
+// --- GET /api/saas/player/home: servers + ?installationId= ---------------------------------------
+
+func homeInstallationIDs(t *testing.T, resp map[string]any) []int64 {
+	t.Helper()
+	list, ok := resp["servers"].([]any)
+	if !ok {
+		t.Fatalf("servers must always be an array: %v", resp)
+	}
+	ids := make([]int64, 0, len(list))
+	for _, item := range list {
+		ids = append(ids, int64(item.(map[string]any)["installationId"].(float64)))
+	}
+	return ids
+}
+
+func homeSelected(t *testing.T, resp map[string]any) (int64, string) {
+	t.Helper()
+	server, _ := resp["server"].(map[string]any)
+	if server == nil {
+		t.Fatalf("expected a server: %v", resp)
+	}
+	selected, _ := resp["selected"].(string)
+	return int64(server["installationId"].(float64)), selected
+}
+
+func TestPlayerHomeListsEveryServerAndHonoursThePreference(t *testing.T) {
+	w := newFactionWorld(t)
+	actor := w.players[5]
+	second := w.secondInstallation(w.a1) // same guild, higher installation id
+	w.linkPlayer(w.a1, actor, "TwoServers")
+	path := func(q string) string { return "/api/saas/player/home" + q }
+
+	resp := w.getJSON(path(""), actor)
+	if ids := homeInstallationIDs(t, resp); len(ids) != 2 || ids[0] != w.a1.InstallationID || ids[1] != second.InstallationID {
+		t.Fatalf("servers %v", ids)
+	}
+	if id, selected := homeSelected(t, resp); id != w.a1.InstallationID || selected != "DEFAULT" {
+		t.Fatalf("default: %d %s", id, selected)
+	}
+
+	resp = w.getJSON(path(fmt.Sprintf("?installationId=%d", second.InstallationID)), actor)
+	if id, selected := homeSelected(t, resp); id != second.InstallationID || selected != "PREFERRED" {
+		t.Fatalf("preferred: %d %s", id, selected)
+	}
+	if ids := homeInstallationIDs(t, resp); len(ids) != 2 || ids[0] != w.a1.InstallationID {
+		t.Fatalf("a preference must not reorder the list: %v", ids)
+	}
+
+	// Another tenant's installation, an unknown id and garbage: the default, never an error.
+	for _, q := range []string{fmt.Sprintf("?installationId=%d", w.b1.InstallationID), "?installationId=999999999", "?installationId=abc", "?installationId=-1", "?installationId="} {
+		resp = w.getJSON(path(q), actor)
+		if id, selected := homeSelected(t, resp); id != w.a1.InstallationID || selected != "DEFAULT" {
+			t.Fatalf("%s: %d %s", q, id, selected)
+		}
+		for _, id := range homeInstallationIDs(t, resp) {
+			if id == w.b1.InstallationID {
+				t.Fatalf("%s leaked another tenant's server", q)
+			}
+		}
+	}
+}
+
+func TestPlayerHomeSingleAndNoServer(t *testing.T) {
+	w := newFactionWorld(t)
+	actor := w.players[0]
+	resp := w.getJSON(fmt.Sprintf("/api/saas/player/home?installationId=%d", w.a1.InstallationID), actor)
+	if resp["server"] != nil || resp["selected"] != nil || len(homeInstallationIDs(t, resp)) != 0 {
+		t.Fatalf("an unlinked user gets nothing, even when asking for a real installation: %v", resp)
+	}
+	if _, present := resp["selected"]; !present {
+		t.Fatalf("selected must be present: %v", resp)
+	}
+	w.linkPlayer(w.b1, actor, "OneServer")
+	resp = w.getJSON("/api/saas/player/home", actor)
+	if ids := homeInstallationIDs(t, resp); len(ids) != 1 || ids[0] != w.b1.InstallationID {
+		t.Fatalf("servers %v", ids)
+	}
+	if id, selected := homeSelected(t, resp); id != w.b1.InstallationID || selected != "DEFAULT" {
+		t.Fatalf("%d %s", id, selected)
+	}
+}
