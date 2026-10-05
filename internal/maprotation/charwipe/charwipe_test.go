@@ -521,3 +521,20 @@ func TestOnlyPlayersDBMayBeDeleted(t *testing.T) {
 	}
 	f.untouched(t)
 }
+
+// The config files and the saved world can sit under different mounts: the file is found (and
+// only it is deleted) under the mount that holds storage_1.
+func TestStorageUnderAnotherMount(t *testing.T) {
+	f := newFake()
+	ftp := rootDir + "/ftproot/dayzps_missions/dayzOffline.chernarusplus"
+	f.files[ftp+"/cfggameplay.json"] = false
+	f.files[ftp+"/cfgplayerspawnpoints.xml"] = false
+	delete(f.files, missionDir+"/cfggameplay.json")
+	out := Run(context.Background(), f, svc, f.save, f.opts())
+	if !out.Cleared || out.ServerDown {
+		t.Fatalf("outcome: %+v", out)
+	}
+	if want := []string{"stop", "delete " + playersDB, "restart"}; !reflect.DeepEqual(f.calls, want) {
+		t.Fatalf("calls: %v, want %v", f.calls, want)
+	}
+}
