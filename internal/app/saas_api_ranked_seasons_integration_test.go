@@ -47,7 +47,7 @@ func TestServerRankedSeasonOwnerStartAndReset(t *testing.T) {
 			t.Fatalf("wait %s: expected a 400 naming the range, got %d %s", bad, rr.Code, rr.Body.String())
 		}
 	}
-	// The wait changes only through a reset, like RP per kill.
+	// A reset can also choose a new wait (it can be changed without one too: see the test below).
 	start.SameVictimCooldownMinutes = json.RawMessage("30")
 	if rr := w.call(w.a.handleResetServerRankedSeason, http.MethodPost, resetPath, w.f.OwnerDiscordID, start, nil); rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"sameVictimCooldownMinutes":30`) {
 		t.Fatalf("owner reset: %d %s", rr.Code, rr.Body.String())
@@ -114,5 +114,91 @@ func TestServerRankedSeasonRejectsIneligibleServerWithReason(t *testing.T) {
 				t.Fatalf("%s: no season may be created", name)
 			}
 		})
+	}
+}
+
+// The wait, and only the wait, changes on the active season without a reset.
+func TestServerRankedSeasonWaitChangesMidSeason(t *testing.T) {
+	w := newClientAdminWorld(t)
+	w.a.Ranked = repository.NewRankedRepository(w.a.DB.Pool)
+	ctx := context.Background()
+	path := w.path("/ranked/server-season")
+	change := func(actor, body string) (int, string) {
+		t.Helper()
+		rr := w.call(w.a.handleChangeServerRankedSeasonWait, http.MethodPatch, path, actor, json.RawMessage(body), nil)
+		return rr.Code, rr.Body.String()
+	}
+	// No active season: 409 in the house style.
+	if code, body := change(w.f.OwnerDiscordID, `{"sameVictimCooldownMinutes":2}`); code != http.StatusConflict || !strings.Contains(body, "RANKED_NO_ACTIVE_SEASON") {
+		t.Fatalf("no season: %d %s", code, body)
+	}
+	start := serverRankedSeasonRequest{RPPerKill: 100, Thresholds: ranked.Thresholds{100, 300, 600, 1000, 1500, 2100, 2800}, SameVictimCooldownMinutes: json.RawMessage("30")}
+	if rr := w.call(w.a.handleStartServerRankedSeason, http.MethodPost, path, w.f.OwnerDiscordID, start, nil); rr.Code != http.StatusOK {
+		t.Fatalf("start: %d %s", rr.Code, rr.Body.String())
+	}
+	if code, body := change("other-user", `{"sameVictimCooldownMinutes":2}`); code == http.StatusOK {
+		t.Fatalf("non-owner changed the wait: %s", body)
+	}
+	for _, bad := range []string{`{}`, `{"sameVictimCooldownMinutes":null}`, `{"sameVictimCooldownMinutes":-1}`, `{"sameVictimCooldownMinutes":121}`, `{"sameVictimCooldownMinutes":5.5}`, `{"sameVictimCooldownMinutes":"5"}`} {
+		if code, body := change(w.f.OwnerDiscordID, bad); code != http.StatusBadRequest || !strings.Contains(body, "whole number of minutes from 0 to 120") {
+			t.Fatalf("%s: expected a 400 naming the range, got %d %s", bad, code, body)
+		}
+	}
+	// The frozen rules are refused, not silently ignored.
+	for _, frozen := range []string{`{"sameVictimCooldownMinutes":2,"rpPerKill":500}`, `{"sameVictimCooldownMinutes":2,"thresholds":[1,2,3,4,5,6,7]}`} {
+		if code, body := change(w.f.OwnerDiscordID, frozen); code != http.StatusBadRequest || !strings.Contains(body, "frozen") {
+			t.Fatalf("%s: expected a 400 about frozen rules, got %d %s", frozen, code, body)
+		}
+	}
+	var seasonID int64
+	state := func() (wait int, rp int64, history int) {
+		t.Helper()
+		if err := w.a.DB.Pool.QueryRow(ctx, `SELECT s.id,s.same_victim_cooldown_minutes,s.rp_per_kill,(SELECT count(*) FROM ranked_season_cooldown_changes c WHERE c.season_id=s.id)
+FROM ranked_seasons s WHERE s.server_id=$1 AND s.status='ACTIVE'`, w.serverID).Scan(&seasonID, &wait, &rp, &history); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	if wait, rp, history := state(); wait != 30 || rp != 100 || history != 1 {
+		t.Fatalf("refused requests must change nothing: wait=%d rp=%d history=%d", wait, rp, history)
+	}
+	firstSeason := seasonID
+	code, body := change(w.f.OwnerDiscordID, `{"sameVictimCooldownMinutes":2}`)
+	if code != http.StatusOK || !strings.Contains(body, `"sameVictimCooldownMinutes":2`) || !strings.Contains(body, `"rpPerKill":100`) || !strings.Contains(body, `"thresholds":[100,300,600,1000,1500,2100,2800]`) || !strings.Contains(body, `"status":"ACTIVE"`) {
+		t.Fatalf("owner change: %d %s", code, body)
+	}
+	if wait, rp, history := state(); wait != 2 || rp != 100 || history != 2 || seasonID != firstSeason {
+		t.Fatalf("after change: wait=%d rp=%d history=%d season=%d (was %d)", wait, rp, history, seasonID, firstSeason)
+	}
+	var by string
+	if err := w.a.DB.Pool.QueryRow(ctx, `SELECT changed_by FROM ranked_season_cooldown_changes WHERE season_id=$1 ORDER BY effective_from DESC,id DESC LIMIT 1`, seasonID).Scan(&by); err != nil || by != w.f.OwnerDiscordID {
+		t.Fatalf("change must record who made it: %q %v", by, err)
+	}
+	// Saving the same value again is a success and adds no history.
+	if code, body := change(w.f.OwnerDiscordID, `{"sameVictimCooldownMinutes":2}`); code != http.StatusOK {
+		t.Fatalf("same value: %d %s", code, body)
+	}
+	if _, _, history := state(); history != 2 {
+		t.Fatalf("an unchanged save added history: %d", history)
+	}
+	// One audit entry for the one real change (who and when, with the value before and after).
+	entries, err := w.a.AdminAudit.List(ctx, w.f.OrgID, &w.f.InstallationID, 0, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	audited := 0
+	for _, e := range entries {
+		if e.Action == "SERVER_RANKED_WAIT_CHANGE" {
+			audited++
+			if e.ActorDiscordID != w.f.OwnerDiscordID || !strings.Contains(strings.ReplaceAll(string(e.BeforeState), " ", ""), `"sameVictimCooldownMinutes":30`) || !strings.Contains(strings.ReplaceAll(string(e.AfterState), " ", ""), `"sameVictimCooldownMinutes":2`) {
+				t.Fatalf("audit entry: %+v", e)
+			}
+		}
+	}
+	if audited != 1 {
+		t.Fatalf("expected one wait-change audit entry, got %d", audited)
+	}
+	if rr := w.call(w.a.handleGetServerRankedSeason, http.MethodGet, path, w.f.OwnerDiscordID, nil, nil); rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"sameVictimCooldownMinutes":2`) {
+		t.Fatalf("read after change: %d %s", rr.Code, rr.Body.String())
 	}
 }

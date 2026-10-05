@@ -151,3 +151,78 @@ func (a *App) changeServerRankedSeason(w http.ResponseWriter, r *http.Request, r
 	}
 	writeSaaSJSON(w, http.StatusOK, season)
 }
+
+// serverRankedSeasonWaitRequest is the body of PATCH .../ranked/server-season. Only the wait can
+// change on an active season; the frozen rules are decoded just to refuse an attempt to send them.
+type serverRankedSeasonWaitRequest struct {
+	SameVictimCooldownMinutes json.RawMessage `json:"sameVictimCooldownMinutes"`
+	RPPerKill                 json.RawMessage `json:"rpPerKill"`
+	Thresholds                json.RawMessage `json:"thresholds"`
+}
+
+// parseSameVictimCooldownChange reads a mid-season wait change. Unlike start/reset there is no
+// default: the field is required. rpPerKill and thresholds are refused, not ignored.
+func parseSameVictimCooldownChange(req serverRankedSeasonWaitRequest) (int, string) {
+	if len(req.RPPerKill) > 0 || len(req.Thresholds) > 0 {
+		return 0, "RP per kill and tier thresholds are frozen for the season; only the wait can be changed (reset the season to change the others)"
+	}
+	text := strings.TrimSpace(string(req.SameVictimCooldownMinutes))
+	if text == "" || text == "null" {
+		return 0, sameVictimCooldownMessage
+	}
+	minutes, ok := parseSameVictimCooldownMinutes(req.SameVictimCooldownMinutes)
+	if !ok {
+		return 0, sameVictimCooldownMessage
+	}
+	return minutes, ""
+}
+
+// handleChangeServerRankedSeasonWait changes the active season's same-victim wait without a reset.
+// Same gate as start/reset. It applies to kills from now on (see ChangeActiveSeasonCooldown).
+func (a *App) handleChangeServerRankedSeasonWait(w http.ResponseWriter, r *http.Request) {
+	ac, ok := a.requireCapability(w, r, permissions.CapServerStatsReset)
+	if !ok {
+		return
+	}
+	if !a.requirePlanFeature(w, r, ac.scope.OrganizationID, entitlements.RankedSeasons) {
+		return
+	}
+	if ac.scope.ServerID == nil || *ac.scope.ServerID <= 0 {
+		writeSaaSError(w, codeInvalidRequest, "no DayZ server selected")
+		return
+	}
+	req, ok := decodeJSONBody[serverRankedSeasonWaitRequest](w, r)
+	if !ok {
+		return
+	}
+	minutes, problem := parseSameVictimCooldownChange(req)
+	if problem != "" {
+		writeSaaSError(w, codeInvalidRequest, problem)
+		return
+	}
+	if a.Ranked == nil {
+		writeSaaSError(w, codeInternalError, "ranked season system unavailable")
+		return
+	}
+	if !enforceRateLimit(w, a.saasAdminActionLimiter, rateLimitKey(r)) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), adminTimeout)
+	defer cancel()
+	season, previous, err := a.Ranked.ChangeActiveSeasonCooldown(ctx, ac.scope.GuildID, *ac.scope.ServerID, minutes, ac.user.DiscordUserID, time.Now().UTC())
+	if errors.Is(err, repository.ErrRankedNoActiveSeason) {
+		writeSaaSError(w, codeRankedNoActiveSeason, "there is no active Ranked season; start one first")
+		return
+	}
+	if err != nil {
+		slog.Warn("component=ranked", "event", "season_wait_change_failed", "server_id", *ac.scope.ServerID, "err", err.Error())
+		writeSaaSError(w, codeInternalError, "could not change the Ranked wait time")
+		return
+	}
+	if previous != minutes {
+		a.recordAudit(ctx, ac, "SERVER_RANKED_WAIT_CHANGE", "server:"+strconv.FormatInt(*ac.scope.ServerID, 10), "Ranked season wait", "success",
+			map[string]int64{"seasonId": season.ID, "sameVictimCooldownMinutes": int64(previous)},
+			map[string]int64{"seasonId": season.ID, "sameVictimCooldownMinutes": int64(minutes)})
+	}
+	writeSaaSJSON(w, http.StatusOK, season)
+}

@@ -79,6 +79,25 @@ ALTER TABLE ranked_seasons ADD COLUMN IF NOT EXISTS same_victim_cooldown_minutes
     CHECK (same_victim_cooldown_minutes BETWEEN 0 AND 120);
 `
 
+// RankedCooldownChangesSQL records every value a season's same-victim wait has had, so a kill is
+// judged by the wait in force when it happened even if it is processed or reconciled after a
+// change. Each existing season gets its current value from its start. Additive.
+const RankedCooldownChangesSQL = `
+CREATE TABLE IF NOT EXISTS ranked_season_cooldown_changes (
+    id BIGSERIAL PRIMARY KEY,
+    season_id BIGINT NOT NULL REFERENCES ranked_seasons(id) ON DELETE CASCADE,
+    cooldown_minutes INTEGER NOT NULL CHECK (cooldown_minutes BETWEEN 0 AND 120),
+    effective_from TIMESTAMPTZ NOT NULL,
+    changed_by TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_ranked_season_cooldown_changes_at ON ranked_season_cooldown_changes(season_id, effective_from DESC, id DESC);
+INSERT INTO ranked_season_cooldown_changes(season_id, cooldown_minutes, effective_from, changed_by)
+SELECT s.id, s.same_victim_cooldown_minutes, s.starts_at, 'season-start'
+FROM ranked_seasons s
+WHERE NOT EXISTS (SELECT 1 FROM ranked_season_cooldown_changes c WHERE c.season_id = s.id);
+`
+
 // RankedLedgerFoundationSQL creates server-scoped seasonal RP storage.
 // No existing kills or economy rows are rewritten.
 const RankedLedgerFoundationSQL = `

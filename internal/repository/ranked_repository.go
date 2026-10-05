@@ -90,7 +90,7 @@ GROUP BY p.id,p.display_name ORDER BY rp DESC,p.id ASC LIMIT $2`, seasonID, limi
 }
 
 // RecordServerKill processes a previously persisted kill in an active local
-// season. The award and five-minute pair decision are committed together.
+// season. The award and same-victim wait decision are committed together.
 // Replays return the existing decision without awarding again. Delayed kills
 // older than the pair's latest awarded event are marked OUT_OF_ORDER rather
 // than retroactively changing RP already displayed to players.
@@ -119,10 +119,21 @@ func (r *RankedRepository) RecordServerKill(ctx context.Context, seasonID, killI
 	var fingerprint string
 	var eventTime time.Time
 	var thresholdValues []int64
-	// The wait is the one frozen on this kill's season, never the package default.
+	// The wait is the season's value that was in force when the kill happened (the season's wait
+	// can change mid-season; ranked_season_cooldown_changes), never the package default. A kill
+	// processed or reconciled after a change is still judged by the wait of its own moment.
 	var cooldownMinutes int
+	// Take the season lock in its own statement first: a wait change holds FOR UPDATE on the row,
+	// and the next statement's snapshot must be taken after that change committed so it sees the
+	// new history row (a statement that itself waited would re-read the season row only).
+	if _, err = tx.Exec(ctx, `SELECT 1 FROM ranked_seasons WHERE id=$1 FOR SHARE`, seasonID); err != nil {
+		return result, fmt.Errorf("lock ranked season: %w", err)
+	}
 	err = tx.QueryRow(ctx, `
-SELECT s.server_id,k.guild_id,k.killer_player_id,k.victim_player_id,s.rp_per_kill,k.event_fingerprint,ev.happened_at,s.thresholds,s.same_victim_cooldown_minutes
+SELECT s.server_id,k.guild_id,k.killer_player_id,k.victim_player_id,s.rp_per_kill,k.event_fingerprint,ev.happened_at,s.thresholds,
+  COALESCE((SELECT h.cooldown_minutes FROM ranked_season_cooldown_changes h
+    WHERE h.season_id=s.id AND h.effective_from<=ev.happened_at
+    ORDER BY h.effective_from DESC,h.id DESC LIMIT 1), s.same_victim_cooldown_minutes)
 FROM ranked_seasons s JOIN game_servers gs ON gs.id=s.server_id
 JOIN kills k ON k.id=$2 AND k.server_id=s.server_id AND k.guild_id=gs.guild_id
 LEFT JOIN live_sync_server_clock c ON c.server_id=s.server_id
