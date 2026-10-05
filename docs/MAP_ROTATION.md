@@ -52,6 +52,11 @@ takes effect within 30 seconds. Sending the same call without `enabled` removes 
    they should rotate, and upload each map's spawn file (`.xml`, at most 1 MB). Champion checks the
    file when it is uploaded: well-formed XML, root `<playerspawnpoints>`, at least one `<pos x z>`.
    To change a map's spawn points later, upload a new file; saving without one keeps the stored one.
+   A map's picture is optional and is uploaded the same way: a JPEG, PNG or WebP file of at most
+   400 KB. Champion stores it and the website shows it on the vote page from its own address, so it
+   keeps loading (a pasted link to a picture on Discord stops working after about a day, and
+   pictures from other sites do not load inside a Discord Activity). Saving without a new picture
+   keeps the stored one; **Remove picture** deletes it.
 4. Press **Check files**: Champion lists the `custom` folder and shows which map files it found,
    and for each map whether its spawn file is stored.
 5. Choose how often the map changes (every 1, 2 or 3 restarts), the order (sequence or random),
@@ -196,6 +201,9 @@ A failed switch goes to staff through the existing staff alert route (`ADMIN_ALE
 `MAP_ROTATION_FAILED`), never to the public channel. Each post is sent once; one that Discord
 refuses is tried again each minute while it is still current.
 
+These messages carry no map picture: neither a pasted picture address nor an uploaded picture is
+put into them.
+
 `<site>` is `CHAMPION_SITE_BASE_URL` (default `https://championshp.vip`), the setting every other
 link to the website already uses.
 
@@ -281,8 +289,9 @@ Errors use the standard shape `{"error": {"code", "message"}}`.
 
 ```
 MapEntry   { id, name, mapFile, spawnFile, spawnUploaded: boolean, spawnBytes: number,
-             imageUrl: string|null, enabled, position }
-VoteOption { mapId, name, imageUrl: string|null, votes }
+             imageUrl: string|null, imageUploaded: boolean, imageBytes: number,
+             imageVersion: string|null, enabled, position }
+VoteOption { mapId, name, imageUrl: string|null, imageVersion: string|null, votes }
 Vote       { id, status: "OPEN"|"CLOSED", opensAt, closesAt, options: VoteOption[], totalVotes }
 AdminView  {
   available, reason: string|null,
@@ -305,11 +314,12 @@ PlayerView { enabled, linked, serverName,
 | Route | Body | Result |
 | --- | --- | --- |
 | `GET adminBase/map/rotation` | | `AdminView`. `available: false` with a `reason` when the flag is off, the plan does not include it or no DayZ server is selected. |
-| `PUT adminBase/map/rotation` | `{ enabled, everyRestarts, order, voteEnabled, voteMinutesBeforeRestart, pingEveryone, announceChannelId, wipeCharacters?, maps: [{ id?, name, mapFile, spawnFile, spawnXml?, imageUrl, enabled }] }` | `AdminView`. Array order is rotation order; 0 to 5 maps; a map with `id` is updated, one without is created, a stored map left out is removed. Switching on needs 2 enabled maps. |
+| `PUT adminBase/map/rotation` | `{ enabled, everyRestarts, order, voteEnabled, voteMinutesBeforeRestart, pingEveryone, announceChannelId, wipeCharacters?, maps: [{ id?, name, mapFile, spawnFile, spawnXml?, imageUrl, imageData?, removeImage?, enabled }] }` | `AdminView`. Array order is rotation order; 0 to 5 maps; a map with `id` is updated, one without is created, a stored map left out is removed. Switching on needs 2 enabled maps. |
 | `POST adminBase/map/rotation/check` | none | `AdminView` with `filesCheck` filled: lists the server's `custom` folder (a read) and reports which configured map files exist. Nothing is looked up on Nitrado for the spawn files. |
 | `POST adminBase/map/rotation/next` | `{ mapId: number\|null }` | `AdminView`. Sets the staff choice for the next switch; `null` clears it. |
 | `GET /api/saas/player/servers/{installationID}/map/vote` | | `PlayerView`. Any signed-in website user; `linked` says whether they can vote. |
 | `POST /api/saas/player/servers/{installationID}/map/vote` | `{ mapId }` | `PlayerView`. One vote per linked player per vote; voting again changes it. |
+| `GET /api/saas/network/servers/{installationID}/map-images/{mapID}` | | The map's stored picture as bytes (not JSON). Service bearer only, no acting user, like the public live map. See "The picture". |
 
 Notes on the views: `next` is filled once the next map is known: a staff choice at once, a sequence
 without a vote in advance, a vote or a random order when decided. `switchAt` is the scheduled
@@ -337,13 +347,39 @@ whether they are stored and `spawnBytes` how large they are (0 when nothing is s
 - `spawnXml` must not be empty, is at most 1 MB (1,048,576 bytes) and must be a spawn point file
   (well-formed XML, root `<playerspawnpoints>`, at least one `<pos x z>`). Each failure is a
   `VALIDATION_ERROR` that names the map.
-- The request body of the `PUT` is limited to 7,929,856 bytes, about 7.6 MiB (five files of 1 MB, half as much again
-  because a file is larger as a JSON string, and 64 KB for the rest). A larger body is a
-  `VALIDATION_ERROR`.
+- The request body of the `PUT` is limited to 10,660,536 bytes, about 10.2 MiB (five files of 1 MB, half as much again
+  because a file is larger as a JSON string, five pictures of 400 KB as base64, and 64 KB for the
+  rest). A larger body is a `VALIDATION_ERROR`.
+
+**The picture.** A map's picture is uploaded and stored in Champion. `imageUrl` (a pasted address)
+still works as before and is kept for maps that have one; a client shows the stored picture when
+`imageVersion` is not null and falls back to `imageUrl` otherwise.
+
+- `imageData` is the picture file in standard base64 (with padding, no `data:` prefix). Left out,
+  null or empty, the stored picture is kept. Sent, it replaces it.
+- The picture is at most 400 KiB (409,600 bytes) decoded and must be a JPEG, PNG or WebP image.
+  Champion decides the type from the bytes; SVG, GIF and everything else are refused. Each failure
+  is a `VALIDATION_ERROR` that names the map, for example "Map 2 (Dust): the picture must be a
+  JPEG, PNG or WebP image".
+- `removeImage: true` deletes the stored picture. With `imageData` in the same map the new picture
+  is stored and `removeImage` has no effect.
+- A map removed from the list loses its picture with it.
+- The bytes are never part of a JSON view. `imageUploaded` says whether a picture is stored,
+  `imageBytes` how large it is (0 when none) and `imageVersion` is the first 16 hex characters of
+  the SHA-256 of the bytes (null when none). A vote option's `imageVersion` is read from the map as
+  it is now, not as it was when the vote opened: a picture uploaded or removed during a vote shows
+  at once, and it is null when the map has been removed.
+- `GET /api/saas/network/servers/{installationID}/map-images/{mapID}` answers `200` with the bytes
+  and `Content-Type` (`image/jpeg`, `image/png` or `image/webp`), `X-Content-Type-Options: nosniff`,
+  `Cache-Control: public, max-age=31536000, immutable` and `ETag: "<imageVersion>"`. It answers
+  `404 NOT_FOUND` (the standard JSON error) when the installation, the map or the picture does not
+  exist or the map belongs to another installation. It does not depend on the rotation being
+  switched on, on the feature flag or on the plan. The website serves it to players at
+  `<site>/api/live/<installationID>/map-image/<mapID>?v=<imageVersion>`.
 
 | Code | HTTP | When |
 | --- | --- | --- |
-| `VALIDATION_ERROR` | 400 | A field is out of range, a file name or picture address is not allowed, a spawn file is missing, empty, too large or not a spawn point file, a map id is unknown, the channel is not a text channel of this Discord server; on a vote, the map is not an option. |
+| `VALIDATION_ERROR` | 400 | A field is out of range, a file name or picture address is not allowed, a picture is too large or not a JPEG, PNG or WebP image, a spawn file is missing, empty, too large or not a spawn point file, a map id is unknown, the channel is not a text channel of this Discord server; on a vote, the map is not an option. |
 | `INVALID_REQUEST` | 400 | The body is not JSON, or no DayZ server is selected. |
 | `ADMIN_FORBIDDEN` | 403 | The caller does not hold `MAP_ROTATION_MANAGE`. |
 | `PLAN_FEATURE_REQUIRED` | 403 | A write, and the plan does not include map rotation. |
@@ -376,6 +412,10 @@ Migration `0127_map_rotation_wipe_characters` (additive): `map_rotation_settings
 clearing characters; the restart count uses it), and on `map_rotation_switches` `wipe_state`
 (default `NONE`), `wipe_state_at`, `wipe_note` (the outcome as a sentence) and
 `characters_cleared` (null when not attempted).
+
+Migration `0128_map_rotation_map_images` (additive, three nullable columns on `map_rotation_maps`):
+`image_data` (`BYTEA`, the uploaded picture), `image_type` (its content type) and `image_version`
+(the first 16 hex characters of the SHA-256 of the bytes). `image_url` stays.
 
 ## Code
 

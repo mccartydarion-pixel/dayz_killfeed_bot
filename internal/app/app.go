@@ -74,13 +74,15 @@ type App struct {
 	MapRotation          *repository.MapRotationRepository
 	mapRotationRemoteFor func(ctx context.Context, t repository.MapRotationTarget) (mapRotationRemote, error)
 	mapRotationPost      func(t repository.MapRotationTarget, channelID string, msg *discordgo.MessageSend) error
-	mapRotationAlert     func(alert discord.AdminAlert)
-	mapRotationRestarts  mapRotationRestartCache
-	mapRotationWiping    sync.Map // installations whose saved characters are being cleared right now
-	mapRotationWipeCfg   mapRotationWipeConfig
-	upgradeRuns          upgradeThrottle
-	rankedTagsCache      rankedTagCache
-	forecasts            forecastCache
+	// mapRotationImageFor replaces the stored-picture lookup in tests (nil: MapRotation.MapImage).
+	mapRotationImageFor func(ctx context.Context, installationID, mapID int64) (*repository.MapImage, error)
+	mapRotationAlert    func(alert discord.AdminAlert)
+	mapRotationRestarts mapRotationRestartCache
+	mapRotationWiping   sync.Map // installations whose saved characters are being cleared right now
+	mapRotationWipeCfg  mapRotationWipeConfig
+	upgradeRuns         upgradeThrottle
+	rankedTagsCache     rankedTagCache
+	forecasts           forecastCache
 	// routePanels keeps one edited message per routed panel; nil when channel routing is off.
 	routePanels  *discord.RoutePanels
 	Sessions     *repository.SessionRepository

@@ -16,4 +16,10 @@ var migrations0126onward = []Migration{
 		Name: "0127_map_rotation_wipe_characters",
 		SQL:  MapRotationWipeCharactersSQL,
 	},
+	{
+		// Map rotation: a map's picture is uploaded and stored in Champion instead of linked
+		// (docs/MAP_ROTATION.md). Three nullable columns on map_rotation_maps. Additive.
+		Name: "0128_map_rotation_map_images",
+		SQL:  MapRotationMapImagesSQL,
+	},
 }
