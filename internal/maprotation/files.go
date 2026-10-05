@@ -94,7 +94,13 @@ type Paths struct {
 	// missionMounts is the mission folder as it appears under each of the service's mounts
 	// ("ftproot", "noftp"). The config files and the saved world can sit under different mounts.
 	missionMounts []string
+	// probeDirs are folders listed (names only) for the log when the saved-characters file is
+	// not found anywhere, so its real location can be read from the log.
+	probeDirs []string
 }
+
+// ProbeDirs returns the folders worth listing when the saved-characters file is not found.
+func (p Paths) ProbeDirs() []string { return append([]string(nil), p.probeDirs...) }
 
 // File returns the full path of a file directly inside dir (the mission or the custom folder).
 // name must be a plain file name.
@@ -180,7 +186,18 @@ func Locate(ctx context.Context, rd Reader, serviceID string) (Paths, error) {
 						mounts = append(mounts, d)
 					}
 				}
-				return Paths{root: root, MissionDir: dir, CustomDir: custom, missionMounts: mounts}, nil
+				// The running server's own copy of the mission, inside the game folder: on console
+				// services the saved world (storage_1) is kept there, not beside the config files.
+				var probes []string
+				if d, err := capability.SafePath(root, root+"/noftp/"+gs.Game+"/mpmissions/"+gs.Mission); err == nil {
+					mounts = append(mounts, d)
+				}
+				for _, p := range []string{root, root + "/noftp", root + "/noftp/" + gs.Game, root + "/noftp/" + gs.Game + "/mpmissions", root + "/ftproot"} {
+					if d, err := capability.SafePath(root, p); err == nil {
+						probes = append(probes, d)
+					}
+				}
+				return Paths{root: root, MissionDir: dir, CustomDir: custom, missionMounts: mounts, probeDirs: probes}, nil
 			}
 		}
 	}
