@@ -245,20 +245,22 @@ WHERE k.guild_id=$1 AND k.season_id=$2 AND k.distance IS NOT NULL ORDER BY k.dis
 }
 
 type RankedSeasonPreview struct {
-	SeasonID     int64           `json:"seasonId"`
-	ServerID     int64           `json:"serverId"`
-	StartsAt     time.Time       `json:"startsAt"`
-	RPPerKill    int64           `json:"rpPerKill"`
-	AwardedKills int64           `json:"awardedKills"`
-	Players      int64           `json:"players"`
-	Top          []PreviewLeader `json:"top"`
+	SeasonID  int64     `json:"seasonId"`
+	ServerID  int64     `json:"serverId"`
+	StartsAt  time.Time `json:"startsAt"`
+	RPPerKill int64     `json:"rpPerKill"`
+	// SameVictimCooldownMinutes: minutes before the same victim earns the killer RP again (0 = no wait).
+	SameVictimCooldownMinutes int             `json:"sameVictimCooldownMinutes"`
+	AwardedKills              int64           `json:"awardedKills"`
+	Players                   int64           `json:"players"`
+	Top                       []PreviewLeader `json:"top"`
 }
 
 // RankedSeasonPreview summarises a server's active Ranked season (nil when none is active).
 func (r *SeasonPlannerRepository) RankedSeasonPreview(ctx context.Context, guildID, serverID int64) (*RankedSeasonPreview, error) {
 	p := RankedSeasonPreview{ServerID: serverID, Top: []PreviewLeader{}}
-	err := r.pool.QueryRow(ctx, `SELECT s.id,s.starts_at,s.rp_per_kill FROM ranked_seasons s JOIN game_servers gs ON gs.id=s.server_id AND gs.guild_id=$1
-WHERE s.scope='SERVER' AND s.status='ACTIVE' AND s.server_id=$2`, guildID, serverID).Scan(&p.SeasonID, &p.StartsAt, &p.RPPerKill)
+	err := r.pool.QueryRow(ctx, `SELECT s.id,s.starts_at,s.rp_per_kill,s.same_victim_cooldown_minutes FROM ranked_seasons s JOIN game_servers gs ON gs.id=s.server_id AND gs.guild_id=$1
+WHERE s.scope='SERVER' AND s.status='ACTIVE' AND s.server_id=$2`, guildID, serverID).Scan(&p.SeasonID, &p.StartsAt, &p.RPPerKill, &p.SameVictimCooldownMinutes)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}

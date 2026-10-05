@@ -78,7 +78,7 @@ func TestSeasonPlanner(t *testing.T) {
 	}
 
 	// Ranked reset keeps the server's current rules.
-	if _, err := w.a.Ranked.StartServerSeason(ctx, w.guildID, w.serverID, 100, thresholds, false, time.Now().UTC()); err != nil {
+	if _, err := w.a.Ranked.StartServerSeason(ctx, w.guildID, w.serverID, 100, thresholds, 30, false, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 	rr = w.call(w.a.handleScheduleSeasonAction, http.MethodPost, w.path("/seasons/planner"), owner,
@@ -119,8 +119,9 @@ func TestSeasonPlanner(t *testing.T) {
 	}
 	var archived, live int
 	var rp int64
-	if err := pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE status='ARCHIVED'),count(*) FILTER (WHERE status='ACTIVE'),MAX(rp_per_kill) FILTER (WHERE status='ACTIVE') FROM ranked_seasons WHERE server_id=$1`, w.serverID).Scan(&archived, &live, &rp); err != nil || archived != 1 || live != 1 || rp != 100 {
-		t.Fatalf("ranked reset with same rules: archived=%d live=%d rp=%d %v", archived, live, rp, err)
+	var wait int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE status='ARCHIVED'),count(*) FILTER (WHERE status='ACTIVE'),MAX(rp_per_kill) FILTER (WHERE status='ACTIVE'),MAX(same_victim_cooldown_minutes) FILTER (WHERE status='ACTIVE') FROM ranked_seasons WHERE server_id=$1`, w.serverID).Scan(&archived, &live, &rp, &wait); err != nil || archived != 1 || live != 1 || rp != 100 || wait != 30 {
+		t.Fatalf("ranked reset with same rules: archived=%d live=%d rp=%d wait=%d %v", archived, live, rp, wait, err)
 	}
 	w.a.runSeasonPlanner(ctx, w.guildID, later.Add(time.Hour))
 	if err := pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE status='ARCHIVED') FROM ranked_seasons WHERE server_id=$1`, w.serverID).Scan(&archived); err != nil || archived != 1 {

@@ -27,7 +27,7 @@ func TestPlayerRankedProgressIsVerifiedAndServerScoped(t *testing.T) {
 	}
 	ctx := context.Background()
 	guild, server := w.gameContext(w.a1)
-	_, err := w.a.Ranked.StartServerSeason(ctx, guild, server, 100, ranked.Thresholds{100, 300, 600, 1000, 1500, 2100, 2800}, false, time.Now().UTC())
+	_, err := w.a.Ranked.StartServerSeason(ctx, guild, server, 100, ranked.Thresholds{100, 300, 600, 1000, 1500, 2100, 2800}, ranked.DefaultSameVictimCooldownMinutes, false, time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
 	}

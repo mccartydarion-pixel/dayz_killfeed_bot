@@ -8,6 +8,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/presentation"
+	"github.com/yourname/dayz-killfeed/internal/ranked"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -174,7 +175,7 @@ func (h *SeasonCommandHandler) rankedStatusLines(ctx context.Context, guildID in
 			anyInactive = true
 			fmt.Fprintf(&b, "**%s** — not started. Players are Unranked and no RP is awarded.\n", name)
 		default:
-			fmt.Fprintf(&b, "**%s** — active since <t:%d:R> · %s RP per eligible kill\n", name, season.StartsAt.Unix(), presentation.FormatThousands(season.RPPerKill))
+			fmt.Fprintf(&b, "**%s** — active since <t:%d:R> · %s RP per eligible kill · %s\n", name, season.StartsAt.Unix(), presentation.FormatThousands(season.RPPerKill), ranked.DescribeSameVictimWait(season.SameVictimCooldownMinutes))
 		}
 	}
 	if anyInactive {
