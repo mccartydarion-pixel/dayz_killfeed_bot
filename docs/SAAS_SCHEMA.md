@@ -274,6 +274,27 @@ business decision for the billing-integration task, not this one. Call
 sites should key off the returned entitlement keys (not "is a plan
 configured"), so tightening this later needs no call-site changes.
 
+**Platform owner access.** The exported questions take an
+`entitlements.Plan`, built only by `entitlements.ForOrganization(organizationID, planKey)`:
+an organization owned by a platform owner (`CHAMPION_ADMIN_DISCORD_IDS`) has every key on
+any plan. See `docs/ADMIN_API.md` "Platform owner access".
+
+## Platform staff (migration 0125)
+
+`platform_staff`: Discord accounts that may read the Owner Hub and change nothing
+(`docs/ADMIN_API.md` "Roles"). Platform owners are never stored here.
+
+| Column | Notes |
+|---|---|
+| `discord_user_id` | TEXT primary key, `CHECK` digits only, 15 to 20 long |
+| `note` | TEXT, default `''`, `CHECK` at most 120 characters |
+| `added_by` | TEXT - Discord id of the owner who added the member |
+| `added_at` | TIMESTAMPTZ |
+
+Repository: `PlatformOwnerRepository` (`platform_staff_repository.go`) - `ListPlatformStaff`,
+`GetPlatformStaff`, `UpsertPlatformStaff`, `RemovePlatformStaff`, and `PlatformOwnerScope`
+(the organizations and installations owned by a platform owner).
+
 ## Enum/status convention
 
 No column in this schema uses a SQL `CHECK` constraint for enumerated

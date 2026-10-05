@@ -152,7 +152,7 @@ WHERE i.id = a.installation_id AND i.organization_id = $1 AND a.installation_id 
 // 0053); with Champion Default selected the runtime keeps the default card.
 func (r *EmbedTemplateRepository) ResolveTemplate(ctx context.Context, guildRowID, serverID int64, routeKey string) (int64, *embedtemplates.Config, error) {
 	const q = `
-SELECT i.id, t.config_json, COALESCE(s.plan, '')
+SELECT i.id, t.config_json, COALESCE(s.plan, ''), i.organization_id
 FROM installations i
 JOIN discord_guild_connections c ON c.id = i.discord_guild_connection_id
 JOIN game_servers gs ON gs.id = i.game_server_id
@@ -169,7 +169,8 @@ LIMIT 1`
 	var instID int64
 	var raw []byte
 	var plan string
-	err := r.pool.QueryRow(ctx, q, guildRowID, serverID, routeKey).Scan(&instID, &raw, &plan)
+	var orgID int64
+	err := r.pool.QueryRow(ctx, q, guildRowID, serverID, routeKey).Scan(&instID, &raw, &plan, &orgID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, nil, nil
 	}
@@ -178,7 +179,7 @@ LIMIT 1`
 	}
 	// A plan without custom embeds keeps the Champion default card; the saved template
 	// is kept untouched and comes back if the organization upgrades.
-	if raw == nil || !entitlements.Has(plan, entitlements.CustomEmbeds) {
+	if raw == nil || !entitlements.Has(entitlements.ForOrganization(orgID, plan), entitlements.CustomEmbeds) {
 		return instID, nil, nil
 	}
 	var cfg embedtemplates.Config

@@ -19,12 +19,22 @@ type flagStateDTO struct {
 	featureflags.Definition
 	// Effective is what the installation gets right now; Default is the environment answer;
 	// Override is the owner's stored decision, if any.
-	Effective bool    `json:"effective"`
-	Default   bool    `json:"default"`
-	Override  *bool   `json:"override"`
-	Reason    *string `json:"reason"`
-	UpdatedBy *string `json:"updatedBy"`
-	UpdatedAt *string `json:"updatedAt"`
+	//
+	// Source says where Effective comes from: "override" (the stored decision), "owner_access"
+	// (no override, and the installation belongs to a platform owner's own organization, for
+	// which this flag is on - docs/ADMIN_API.md "Platform owner access") or "default" (the
+	// environment). OwnerAccess is true whenever owner access applies to this flag for this
+	// installation, including when an override currently hides it.
+	Effective   bool   `json:"effective"`
+	Default     bool   `json:"default"`
+	Source      string `json:"source"`
+	OwnerAccess bool   `json:"ownerAccess"`
+	// SourceLabel is the same thing in plain words, for the Owner Hub to show.
+	SourceLabel string  `json:"sourceLabel"`
+	Override    *bool   `json:"override"`
+	Reason      *string `json:"reason"`
+	UpdatedBy   *string `json:"updatedBy"`
+	UpdatedAt   *string `json:"updatedAt"`
 }
 
 // flagDefault is the environment's answer for one installation, exactly as the consumer
@@ -53,6 +63,26 @@ func (a *App) flagDefault(inst *repository.InstallationSuspension, key string) b
 	return false
 }
 
+// Where a flag's effective value comes from (flagStateDTO.Source).
+const (
+	flagSourceDefault     = "default"
+	flagSourceOwnerAccess = "owner_access"
+	flagSourceOverride    = "override"
+)
+
+// flagOwnerAccess reports whether owner access switches key on for the installation, as the
+// consumer would see it. Custom embeds still need the renderer itself (customEmbedsFor), so
+// owner access cannot turn them on where there is none.
+func (a *App) flagOwnerAccess(installationID int64, key string) bool {
+	if a.FeatureFlags == nil || !a.FeatureFlags.OwnerAccess(installationID, key) {
+		return false
+	}
+	if key == featureflags.CustomEmbeds && (a.EmbedRenderer == nil || !a.EmbedRenderer.Enabled()) {
+		return false
+	}
+	return true
+}
+
 func (a *App) flagStates(ctx context.Context, inst *repository.InstallationSuspension) ([]flagStateDTO, error) {
 	stored, err := a.PlatformOwner.InstallationOverrides(ctx, inst.InstallationID)
 	if err != nil {
@@ -65,10 +95,15 @@ func (a *App) flagStates(ctx context.Context, inst *repository.InstallationSuspe
 	out := make([]flagStateDTO, 0, len(featureflags.Catalog))
 	for _, def := range featureflags.Catalog {
 		st := flagStateDTO{Definition: def, Default: a.flagDefault(inst, def.Key)}
-		st.Effective = st.Default
+		st.Effective, st.Source, st.SourceLabel = st.Default, flagSourceDefault, "Environment default"
+		st.OwnerAccess = a.flagOwnerAccess(inst.InstallationID, def.Key)
+		if st.OwnerAccess {
+			st.Effective, st.Source, st.SourceLabel = true, flagSourceOwnerAccess, "On through owner access: this server belongs to a platform owner"
+		}
 		if o, ok := byKey[def.Key]; ok {
 			v := o.Enabled
 			st.Override, st.Effective = &v, v
+			st.Source, st.SourceLabel = flagSourceOverride, "Set here for this server"
 			st.Reason, st.UpdatedBy = optStr(o.Reason), optStr(o.UpdatedBy)
 			at := o.UpdatedAt.UTC().Format(time.RFC3339)
 			st.UpdatedAt = &at
@@ -96,7 +131,8 @@ func (a *App) handleOwnerFlagCatalog(w http.ResponseWriter, r *http.Request, _ a
 		case featureflags.MapRotation:
 			env = os.Getenv("CHAMPION_MAP_ROTATION_ENABLED")
 		}
-		items = append(items, map[string]any{"key": def.Key, "label": def.Label, "description": def.Description, "envVar": def.EnvVar, "restartRequired": def.RestartRequired, "envValue": strings.TrimSpace(env)})
+		items = append(items, map[string]any{"key": def.Key, "label": def.Label, "description": def.Description, "envVar": def.EnvVar, "restartRequired": def.RestartRequired, "envValue": strings.TrimSpace(env),
+			"ownerDefaultOn": def.OwnerDefaultOn, "ownerDefaultNote": def.OwnerDefaultNote})
 	}
 	a.writeAdminJSON(w, http.StatusOK, map[string]any{"items": items})
 }
@@ -175,7 +211,7 @@ func (a *App) handleOwnerSetInstallationFlag(w http.ResponseWriter, r *http.Requ
 func flagByKey(states []flagStateDTO, key string) any {
 	for _, s := range states {
 		if s.Key == key {
-			return map[string]any{"flag": key, "effective": s.Effective, "default": s.Default, "override": s.Override}
+			return map[string]any{"flag": key, "effective": s.Effective, "default": s.Default, "override": s.Override, "source": s.Source}
 		}
 	}
 	return nil
@@ -185,8 +221,7 @@ func (a *App) registerFlagsAPI() {
 	if a.HTTPServer == nil {
 		return
 	}
-	h := a.HTTPServer.Handle
-	h("GET /api/admin/flags", a.adminRoute(a.handleOwnerFlagCatalog))
-	h("GET /api/admin/installations/{installationID}/flags", a.adminRoute(a.handleOwnerInstallationFlags))
-	h("PUT /api/admin/installations/{installationID}/flags/{flag}", a.adminRoute(a.handleOwnerSetInstallationFlag))
+	a.adminHandle("GET /api/admin/flags", a.handleOwnerFlagCatalog)
+	a.adminHandle("GET /api/admin/installations/{installationID}/flags", a.handleOwnerInstallationFlags)
+	a.adminHandle("PUT /api/admin/installations/{installationID}/flags/{flag}", a.handleOwnerSetInstallationFlag)
 }

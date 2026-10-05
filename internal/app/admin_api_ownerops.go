@@ -755,7 +755,8 @@ func (a *App) buildConfigChecks(orgs []repository.OrganizationFact, facts []repo
 		}
 		subs = append(subs, ownerops.SubscriptionFact{OrganizationID: o.ID, OrganizationName: o.Name, Plan: o.Plan, Status: o.Status,
 			StripeBilled: o.StripeBilled && o.Status != repository.SubscriptionCanceled, PriceID: o.PriceID})
-		if strings.EqualFold(o.Plan, entitlements.PlanSurvivor) && (o.Status == repository.SubscriptionActive || o.Status == repository.SubscriptionPastDue) {
+		// A platform owner's own organization is never restricted, whatever its plan.
+		if !entitlements.OwnerOrganization(o.ID) && strings.EqualFold(o.Plan, entitlements.PlanSurvivor) && (o.Status == repository.SubscriptionActive || o.Status == repository.SubscriptionPastDue) {
 			survivors = append(survivors, o.Name+" (#"+strconv.FormatInt(o.ID, 10)+")")
 		}
 		if o.Status == repository.SubscriptionTrial && o.TrialEndsAt != nil && !o.TrialEndsAt.After(now) {
@@ -1198,11 +1199,9 @@ func (a *App) handleOrganizationBroadcasts(w http.ResponseWriter, r *http.Reques
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	plan, err := a.organizationPlan(ctx, orgID)
-	if err != nil {
-		plan = ""
-	}
-	rows, err := a.PlatformOps.ActiveBroadcasts(ctx, plan, time.Now())
+	// Audience targeting, not a feature gate: a broadcast is addressed by the real plan key.
+	plan, _ := a.organizationPlan(ctx, orgID)
+	rows, err := a.PlatformOps.ActiveBroadcasts(ctx, plan.Key(), time.Now())
 	if err != nil {
 		// A notice banner must never break a dashboard: report none.
 		writeSaaSJSON(w, http.StatusOK, map[string]any{"items": items})
@@ -1340,20 +1339,20 @@ func (a *App) registerOwnerOpsAPI() {
 		return
 	}
 	h := a.HTTPServer.Handle
-	h("GET /api/admin/config-check", a.adminRoute(a.handleAdminConfigCheck))
-	h("GET /api/admin/fleet", a.adminRoute(a.handleAdminFleet))
-	h("GET /api/admin/customer-health", a.adminRoute(a.handleAdminCustomerHealth))
-	h("GET /api/admin/funnel", a.adminRoute(a.handleAdminFunnel))
-	h("GET /api/admin/revenue", a.adminRoute(a.handleAdminRevenue))
-	h("GET /api/admin/briefing", a.adminRoute(a.handleAdminBriefing))
-	h("GET /api/admin/nitrado-usage", a.adminRoute(a.handleAdminNitradoUsage))
-	h("GET /api/admin/automation", a.adminRoute(a.handleAdminGetAutomation))
-	h("PUT /api/admin/automation", a.adminRoute(a.handleAdminPutAutomation))
-	h("GET /api/admin/incidents", a.adminRoute(a.handleAdminIncidents))
-	h("POST /api/admin/incidents/{incidentID}/resolve", a.adminRoute(a.handleAdminResolveIncident))
-	h("GET /api/admin/broadcasts", a.adminRoute(a.handleAdminBroadcasts))
-	h("POST /api/admin/broadcasts", a.adminRoute(a.handleAdminCreateBroadcast))
-	h("POST /api/admin/broadcasts/{broadcastID}/end", a.adminRoute(a.handleAdminEndBroadcast))
-	h("POST /api/admin/organizations/{organizationID}/view-as", a.adminRoute(a.handleAdminViewAs))
+	a.adminHandle("GET /api/admin/config-check", a.handleAdminConfigCheck)
+	a.adminHandle("GET /api/admin/fleet", a.handleAdminFleet)
+	a.adminHandle("GET /api/admin/customer-health", a.handleAdminCustomerHealth)
+	a.adminHandle("GET /api/admin/funnel", a.handleAdminFunnel)
+	a.adminHandle("GET /api/admin/revenue", a.handleAdminRevenue)
+	a.adminHandle("GET /api/admin/briefing", a.handleAdminBriefing)
+	a.adminHandle("GET /api/admin/nitrado-usage", a.handleAdminNitradoUsage)
+	a.adminHandle("GET /api/admin/automation", a.handleAdminGetAutomation)
+	a.adminHandle("PUT /api/admin/automation", a.handleAdminPutAutomation)
+	a.adminHandle("GET /api/admin/incidents", a.handleAdminIncidents)
+	a.adminHandle("POST /api/admin/incidents/{incidentID}/resolve", a.handleAdminResolveIncident)
+	a.adminHandle("GET /api/admin/broadcasts", a.handleAdminBroadcasts)
+	a.adminHandle("POST /api/admin/broadcasts", a.handleAdminCreateBroadcast)
+	a.adminHandle("POST /api/admin/broadcasts/{broadcastID}/end", a.handleAdminEndBroadcast)
+	a.adminHandle("POST /api/admin/organizations/{organizationID}/view-as", a.handleAdminViewAs)
 	h("GET /api/saas/organizations/{organizationID}/broadcasts", a.handleOrganizationBroadcasts)
 }

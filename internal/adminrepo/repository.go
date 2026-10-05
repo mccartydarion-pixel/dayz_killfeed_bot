@@ -129,13 +129,16 @@ type SubscriptionInfo struct {
 	// OwnerGrantUntil/OwnerGrantReason: set when the platform owner granted the plan (Owner Hub).
 	OwnerGrantUntil  *string `json:"ownerGrantUntil"`
 	OwnerGrantReason *string `json:"ownerGrantReason"`
+	// PlatformOwnerAccess: the organization belongs to a platform owner, so Entitlements is every
+	// feature whatever Plan and Status say (docs/ADMIN_API.md "Platform owner access").
+	PlatformOwnerAccess bool `json:"platformOwnerAccess"`
 }
 
 // subscriptionInfo builds the DTO from the columns every subscription read selects.
-func subscriptionInfo(plan, status string, trial, period *time.Time, interval string, cancelAtPeriodEnd bool, sCreated, sUpdated *time.Time, stripeManaged bool, grantUntil *time.Time, grantReason string) *SubscriptionInfo {
+func subscriptionInfo(organizationID int64, plan, status string, trial, period *time.Time, interval string, cancelAtPeriodEnd bool, sCreated, sUpdated *time.Time, stripeManaged bool, grantUntil *time.Time, grantReason string) *SubscriptionInfo {
 	info := &SubscriptionInfo{Plan: plan, Status: status, TrialEndsAt: tsp(trial), CurrentPeriodEnd: tsp(period),
-		BillingInterval: interval, CancelAtPeriodEnd: cancelAtPeriodEnd, Entitlements: entitlementKeys(plan), CreatedAt: tsp(sCreated), UpdatedAt: tsp(sUpdated),
-		ExternallyBilled: stripeManaged, OwnerGrantUntil: tsp(grantUntil)}
+		BillingInterval: interval, CancelAtPeriodEnd: cancelAtPeriodEnd, Entitlements: entitlementKeys(organizationID, plan), CreatedAt: tsp(sCreated), UpdatedAt: tsp(sUpdated),
+		ExternallyBilled: stripeManaged, OwnerGrantUntil: tsp(grantUntil), PlatformOwnerAccess: entitlements.OwnerOrganization(organizationID)}
 	if grantReason != "" {
 		info.OwnerGrantReason = &grantReason
 	}
@@ -227,9 +230,11 @@ type SubscriptionRow struct {
 	BillingInterval   string   `json:"billingInterval,omitempty"`
 	CancelAtPeriodEnd bool     `json:"cancelAtPeriodEnd"`
 	Entitlements      []string `json:"entitlements"`
-	InstallationCount int      `json:"installationCount"`
-	CreatedAt         *string  `json:"createdAt"`
-	UpdatedAt         *string  `json:"updatedAt"`
+	// PlatformOwnerAccess: see SubscriptionInfo.
+	PlatformOwnerAccess bool    `json:"platformOwnerAccess"`
+	InstallationCount   int     `json:"installationCount"`
+	CreatedAt           *string `json:"createdAt"`
+	UpdatedAt           *string `json:"updatedAt"`
 }
 
 type SetupProgress struct {
@@ -437,8 +442,8 @@ func strOrNil(s string) *string {
 	return &s
 }
 
-func entitlementKeys(plan string) []string {
-	keys := entitlements.Resolve(plan)
+func entitlementKeys(organizationID int64, plan string) []string {
+	keys := entitlements.Resolve(entitlements.ForOrganization(organizationID, plan))
 	out := make([]string, 0, len(keys))
 	for _, k := range keys {
 		out = append(out, string(k))
@@ -710,7 +715,7 @@ func scanOrg(row pgx.Row) (orgRec, error) {
 	o.Owner = &owner.DisplayName
 	o.OwnerUser = &owner
 	if plan != nil && status != nil {
-		o.Subscription = subscriptionInfo(*plan, *status, trial, period, interval, cancelAtPeriodEnd, sCreated, sUpdated, stripeManaged, grantUntil, grantReason)
+		o.Subscription = subscriptionInfo(o.ID, *plan, *status, trial, period, interval, cancelAtPeriodEnd, sCreated, sUpdated, stripeManaged, grantUntil, grantReason)
 	}
 	o.Installations = []InstallationSummary{}
 	return rec, nil
@@ -891,7 +896,8 @@ FROM subscriptions s JOIN organizations o ON o.id = s.organization_id` + b.where
 		s.Organization = s.OrganizationName
 		s.TrialEndsAt, s.CurrentPeriodEnd = tsp(trial), tsp(period)
 		s.CreatedAt, s.UpdatedAt = tsv(created), tsv(updated)
-		s.Entitlements = entitlementKeys(s.Plan)
+		s.Entitlements = entitlementKeys(s.OrganizationID, s.Plan)
+		s.PlatformOwnerAccess = entitlements.OwnerOrganization(s.OrganizationID)
 		out = append(out, s)
 	}
 	if err := rows.Err(); err != nil {
@@ -935,7 +941,7 @@ LEFT JOIN subscriptions s ON s.organization_id = o.id WHERE i.id = $1`, id).
 	}
 	d.UpdatedAt = ts(instUpdated)
 	if plan != nil && status != nil {
-		d.Subscription = subscriptionInfo(*plan, *status, trial, period, interval, cancelAtPeriodEnd, sCreated, sUpdated, stripeManaged, grantUntil, grantReason)
+		d.Subscription = subscriptionInfo(sum.OrganizationID, *plan, *status, trial, period, interval, cancelAtPeriodEnd, sCreated, sUpdated, stripeManaged, grantUntil, grantReason)
 	}
 	if suspendedAt != nil {
 		d.Suspension = &SuspensionInfo{SuspendedAt: ts(*suspendedAt)}

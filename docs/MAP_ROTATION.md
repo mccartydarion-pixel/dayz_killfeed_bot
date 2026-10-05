@@ -29,6 +29,7 @@ server's mission folder, before the restart that should load them:
 | --- | --- | --- |
 | Feature flag `map_rotation` | off | Champion (Owner Hub, per installation), or `CHAMPION_MAP_ROTATION_ENABLED=true` for every installation |
 | Plan entitlement `map_rotation` | Champion plans | Only matters when `CHAMPION_PLAN_GATING_ENABLED` is on: Survivor (`NORMAL`) does not include it |
+| Platform owner access | - | For an installation of an organization a platform owner owns, both rows above are satisfied with no override and on any plan (docs/ADMIN_API.md "Platform owner access"). An explicit OFF override still wins. The owner's own switch below is unaffected. |
 | The owner's `enabled` setting | off | The server owner, in the settings below |
 
 With any of them off, or while Champion has suspended the installation, the worker does nothing for the installation: no Nitrado call, no state

@@ -59,6 +59,14 @@ func (s *Server) Handle(pattern string, handler http.HandlerFunc) {
 	s.mux.HandleFunc(pattern, handler)
 }
 
+// Handler returns the server's mux, so tests can drive the registered routes without a listener.
+func (s *Server) Handler() http.Handler {
+	if s == nil || s.mux == nil {
+		return http.NotFoundHandler()
+	}
+	return s.mux
+}
+
 func configLoadError() error {
 	return nil
 }

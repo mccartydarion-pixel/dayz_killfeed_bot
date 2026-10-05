@@ -183,6 +183,9 @@ type SubscriptionSummaryDTO struct {
 	TrialStatus        string  `json:"trialStatus"`
 	TrialDaysRemaining int     `json:"trialDaysRemaining"`
 	BillingRequired    bool    `json:"billingRequired"`
+	// PlatformOwnerAccess: a platform owner owns the organization, so every feature is unlocked
+	// and billing is never required (docs/ADMIN_API.md "Platform owner access").
+	PlatformOwnerAccess bool `json:"platformOwnerAccess"`
 }
 
 func subscriptionSummaryDTO(sum *billing.Summary, canManage bool) SubscriptionSummaryDTO {
@@ -192,6 +195,7 @@ func subscriptionSummaryDTO(sum *billing.Summary, canManage bool) SubscriptionSu
 		CancelAtPeriodEnd: sum.CancelAtPeriodEnd, Entitlements: sum.Entitlements, HasBillingCustomer: sum.HasBillingCustomer,
 		HasActiveSubscription: sum.HasActiveSubscription, CanManageBilling: canManage,
 		IntendedPlan: optStr(sum.IntendedPlan), TrialStatus: sum.TrialStatus, TrialDaysRemaining: sum.TrialDaysRemaining, BillingRequired: sum.BillingRequired,
+		PlatformOwnerAccess: sum.PlatformOwnerAccess,
 	}
 }
 

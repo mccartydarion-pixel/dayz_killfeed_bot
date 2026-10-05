@@ -44,6 +44,7 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/linking"
 	"github.com/yourname/dayz-killfeed/internal/livesync"
 	"github.com/yourname/dayz-killfeed/internal/nitrado"
+	"github.com/yourname/dayz-killfeed/internal/owneraccess"
 	"github.com/yourname/dayz-killfeed/internal/operations"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 	"github.com/yourname/dayz-killfeed/internal/routing"
@@ -328,6 +329,14 @@ type App struct {
 	// /api/admin (internal/adminrepo); adminChannelNames optionally overrides the
 	// Discord-cache channel name lookup (tests).
 	adminSaaS adminReader
+	// adminRoutes is every pattern registered through adminHandle (the only way onto
+	// /api/admin), in registration order. platformStaff optionally overrides the staff list
+	// (tests); otherwise PlatformOwner is the staff list.
+	adminRoutes   []string
+	platformStaff platformStaffStore
+	// OwnerAccess knows which organizations and installations belong to a platform owner
+	// (docs/ADMIN_API.md "Platform owner access"). Nil when there is no database.
+	OwnerAccess *owneraccess.Resolver
 	// EmbedTemplates persists custom embed templates (storage + API only; no
 	// publisher reads them - runtime rendering is not enabled).
 	EmbedTemplates *embedtemplates.Service
@@ -924,7 +933,18 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.PlatformOwner = repository.NewPlatformOwnerRepository(db.Pool)
 			app.PlatformOps = repository.NewPlatformOpsRepository(db.Pool)
 			go app.runOwnerOps(ctx)
+			// Platform owner access: an organization owned by an account on
+			// CHAMPION_ADMIN_DISCORD_IDS has every plan feature and its feature switches
+			// default to on. Loaded before anything asks a plan or flag question.
+			app.OwnerAccess = owneraccess.New(app.PlatformOwner, cfg.AdminDiscordIDs, owneraccess.DefaultTTL)
+			ownerCtx, ownerCancel := context.WithTimeout(ctx, 5*time.Second)
+			if err := app.OwnerAccess.Refresh(ownerCtx); err != nil {
+				slog.Warn("component=owneraccess", "msg", "initial load failed; no organization has owner access until the next refresh", "err", err.Error())
+			}
+			ownerCancel()
+			entitlements.SetOwnerOrganizations(app.OwnerAccess.Organization)
 			app.FeatureFlags = featureflags.New(app.PlatformOwner, featureflags.DefaultTTL)
+			app.FeatureFlags.SetOwnerInstallations(app.OwnerAccess.Installation)
 			caseFlags = app.FeatureFlags
 			flagCtx, flagCancel := context.WithTimeout(ctx, 5*time.Second)
 			if err := app.FeatureFlags.Refresh(flagCtx); err != nil {

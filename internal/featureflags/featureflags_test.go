@@ -75,3 +75,69 @@ func TestCatalogKeysAreKnown(t *testing.T) {
 		t.Fatal("unknown key")
 	}
 }
+
+// For an installation of a platform owner's own organization, a flag marked OwnerDefaultOn is on
+// with no override; an override still wins; and nothing changes for any other installation.
+func TestOwnerAccessTurnsTheDefaultOnAndAnOverrideStillWins(t *testing.T) {
+	store := &memStore{rows: []Override{{InstallationID: 7, Flag: MapRotation, Enabled: false}}, servers: map[int64]int64{30: 7, 40: 8, 50: 9}}
+	r := New(store, time.Hour)
+	r.SetOwnerInstallations(func(id int64) bool { return id == 7 || id == 8 })
+	if err := r.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !r.Enabled(8, MapRotation, false) || !r.Enabled(8, CustomEmbeds, false) {
+		t.Fatal("owner installation: map rotation and custom embeds are on with no override")
+	}
+	if r.Enabled(7, MapRotation, false) || r.Enabled(7, MapRotation, true) {
+		t.Fatal("an explicit OFF override wins over owner access")
+	}
+	if !r.OwnerAccess(7, MapRotation) {
+		t.Fatal("OwnerAccess reports the owner rule even when an override hides it")
+	}
+	if r.Enabled(9, MapRotation, false) || r.Enabled(9, CustomEmbeds, false) || r.OwnerAccess(9, MapRotation) {
+		t.Fatal("a customer installation keeps the plain default")
+	}
+	for _, flag := range []string{ShopCanary, CaseEvidence, CaseBuildEvidence} {
+		if r.Enabled(8, flag, false) || r.OwnerAccess(8, flag) || r.EnabledForServer(40, flag, false) {
+			t.Fatalf("%s must never be switched on by owner access", flag)
+		}
+	}
+	if !r.EnabledForServer(40, MapRotation, false) || r.EnabledForServer(50, MapRotation, false) {
+		t.Fatal("server-scoped questions follow the owning installation")
+	}
+	if r.Enabled(8, "not_a_flag", false) || r.OwnerAccess(0, MapRotation) {
+		t.Fatal("unknown flags and installation 0 never get owner access")
+	}
+	if got := r.Overrides(8); len(got) != 0 {
+		t.Fatalf("owner access must not appear as a stored override: %v", got)
+	}
+	plain := New(store, time.Hour)
+	_ = plain.Refresh(context.Background())
+	if plain.Enabled(8, MapRotation, false) || plain.OwnerAccess(8, MapRotation) {
+		t.Fatal("without a lookup nobody has owner access")
+	}
+}
+
+// The list of flags owner access switches on is a decision, not an accident: adding a flag to
+// the catalog must come with an explicit answer here.
+func TestOwnerDefaultIsDecidedForEveryFlag(t *testing.T) {
+	want := map[string]bool{CustomEmbeds: true, MapRotation: true, ShopCanary: false, CaseEvidence: false, CaseBuildEvidence: false}
+	if len(Catalog) != len(want) {
+		t.Fatalf("the catalog has %d flags and this test decides %d: decide whether owner access switches the new flag on", len(Catalog), len(want))
+	}
+	for _, d := range Catalog {
+		on, ok := want[d.Key]
+		if !ok {
+			t.Fatalf("flag %s has no owner-access decision", d.Key)
+		}
+		if d.OwnerDefaultOn != on || OwnerDefaultOn(d.Key) != on {
+			t.Fatalf("flag %s: OwnerDefaultOn=%v, want %v", d.Key, d.OwnerDefaultOn, on)
+		}
+		if on && d.RestartRequired {
+			t.Fatalf("flag %s needs a worker restart and so cannot be switched on by owner access", d.Key)
+		}
+		if on != (d.OwnerDefaultNote == "") {
+			t.Fatalf("flag %s: a flag owner access leaves off must say why, and one it switches on must not", d.Key)
+		}
+	}
+}

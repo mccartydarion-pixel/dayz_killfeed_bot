@@ -581,6 +581,8 @@ plan grants nothing: `plan` stays `TRIAL` until a Stripe webhook sets the paid p
 Converting during the trial bills immediately, and the trial ends when the webhook applies `ACTIVE`.
 
 **Expiry.** When `trial_ends_at` passes without a paid subscription, `trialStatus` is `EXPIRED` and `billingRequired` is true. Setting up a new service returns `402 BILLING_REQUIRED`.
+
+**Platform owner access.** An organization owned by a platform owner (`CHAMPION_ADMIN_DISCORD_IDS`) is never locked out by its own billing state: `billingRequired` is always `false`, the installation capacity is 1000, `entitlements` is every feature, and the subscription and trial responses carry `platformOwnerAccess: true`. Its subscription row is not changed and `plan`, `status` and the trial fields are reported as they are (`billing.StateFor`, `billing.InstallationLimitFor`). Every other organization is unaffected. See `docs/ADMIN_API.md` "Platform owner access".
 Nothing is deleted, nothing is charged, and no checkout is created automatically. Existing installations, their configuration and all community data are kept.
 
 **Installation capacity** (`POST .../installations`, the "initial setup / new service" operation):

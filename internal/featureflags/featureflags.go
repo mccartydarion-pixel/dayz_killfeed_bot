@@ -4,6 +4,10 @@
 // installation_feature_flags. An override wins over the default; no override means the
 // default applies, exactly as before this package existed.
 //
+// One rule sits between the two: for an installation of a platform owner's own organization
+// the default of a flag marked OwnerDefaultOn is on. An override still wins, so the owner can
+// switch a feature off for their own server.
+//
 // The resolver keeps every override in memory and refreshes it in the background on a short
 // TTL, so hot paths (an embed render per event, a worker start) never wait on the database.
 package featureflags
@@ -35,15 +39,38 @@ type Definition struct {
 	// RestartRequired: the flag is read when a worker starts, so a change takes effect on
 	// the installation's next worker restart (the Owner Hub offers that button).
 	RestartRequired bool `json:"restartRequired"`
+	// OwnerDefaultOn: for an installation of a platform owner's own organization the flag
+	// is on unless an override says otherwise (docs/ADMIN_API.md "Platform owner access").
+	// Only set it for a flag where "on" simply unlocks a feature the owner then configures.
+	// A flag that makes the bot start doing something by itself (real shop deliveries,
+	// evidence collection with high write volume) or that needs a worker restart stays
+	// false and says why in OwnerDefaultNote.
+	OwnerDefaultOn bool `json:"ownerDefaultOn"`
+	// OwnerDefaultNote explains, for the Owner Hub, why a flag is not switched on by owner
+	// access. Empty when OwnerDefaultOn is true.
+	OwnerDefaultNote string `json:"ownerDefaultNote,omitempty"`
 }
 
 // Catalog is every flag the owner can override, in display order.
 var Catalog = []Definition{
-	{Key: CustomEmbeds, Label: "Custom embeds", Description: "Let this installation's saved embed templates render live feed cards instead of the Champion defaults.", EnvVar: "CHAMPION_CUSTOM_EMBEDS_ENABLED"},
-	{Key: ShopCanary, Label: "Shop canary execution", Description: "Allow real shop fulfilment operations (Pay-to-win canary) for this installation.", EnvVar: "CHAMPION_SHOP_CANARY_EXECUTION / _INSTALLATION_IDS"},
-	{Key: CaseEvidence, Label: "C.A.S.E. evidence", Description: "Collect anti-cheat evidence (sessions, movement, detectors) for this installation's server. High write volume.", EnvVar: "CASE_EVIDENCE_ENABLED / _SERVER_IDS", RestartRequired: true},
-	{Key: CaseBuildEvidence, Label: "C.A.S.E. build evidence", Description: "Also collect build-action evidence. Requires C.A.S.E. evidence.", EnvVar: "CASE_BUILD_EVIDENCE_ENABLED / _SERVER_IDS", RestartRequired: true},
-	{Key: MapRotation, Label: "Map rotation", Description: "Let this installation's owner set up map rotation with a player vote. When it runs, Champion writes cfggameplay.json and cfgplayerspawnpoints.xml on the game server.", EnvVar: "CHAMPION_MAP_ROTATION_ENABLED"},
+	{Key: CustomEmbeds, Label: "Custom embeds", Description: "Let this installation's saved embed templates render live feed cards instead of the Champion defaults.", EnvVar: "CHAMPION_CUSTOM_EMBEDS_ENABLED", OwnerDefaultOn: true},
+	{Key: ShopCanary, Label: "Shop canary execution", Description: "Allow real shop fulfilment operations (Pay-to-win canary) for this installation.", EnvVar: "CHAMPION_SHOP_CANARY_EXECUTION / _INSTALLATION_IDS",
+		OwnerDefaultNote: "Not switched on by owner access: it lets real shop deliveries change files on the game server, and the canary needs its own preparation. Set an override to use it."},
+	{Key: CaseEvidence, Label: "C.A.S.E. evidence", Description: "Collect anti-cheat evidence (sessions, movement, detectors) for this installation's server. High write volume.", EnvVar: "CASE_EVIDENCE_ENABLED / _SERVER_IDS", RestartRequired: true,
+		OwnerDefaultNote: "Not switched on by owner access: it starts collecting evidence by itself with high write volume, and only takes effect after a worker restart. Set an override to use it."},
+	{Key: CaseBuildEvidence, Label: "C.A.S.E. build evidence", Description: "Also collect build-action evidence. Requires C.A.S.E. evidence.", EnvVar: "CASE_BUILD_EVIDENCE_ENABLED / _SERVER_IDS", RestartRequired: true,
+		OwnerDefaultNote: "Not switched on by owner access: it depends on C.A.S.E. evidence, adds more writes, and only takes effect after a worker restart. Set an override to use it."},
+	{Key: MapRotation, Label: "Map rotation", Description: "Let this installation's owner set up map rotation with a player vote. When it runs, Champion writes cfggameplay.json and cfgplayerspawnpoints.xml on the game server.", EnvVar: "CHAMPION_MAP_ROTATION_ENABLED", OwnerDefaultOn: true},
+}
+
+// OwnerDefaultOn reports whether key is switched on by platform-owner access.
+func OwnerDefaultOn(key string) bool {
+	for _, d := range Catalog {
+		if d.Key == key {
+			return d.OwnerDefaultOn
+		}
+	}
+	return false
 }
 
 // Known reports whether key is a catalog flag.
@@ -90,6 +117,27 @@ type Resolver struct {
 	servers    map[int64]int64           // gameServerID -> installationID
 	loadedAt   time.Time
 	refreshing bool
+
+	// ownerInstallation answers, from memory, whether an installation belongs to a platform
+	// owner's own organization (internal/owneraccess). nil means none does.
+	ownerInstallation func(installationID int64) bool
+}
+
+// SetOwnerInstallations installs the platform-owner lookup. Call it once, before the resolver
+// is shared between goroutines.
+func (r *Resolver) SetOwnerInstallations(fn func(installationID int64) bool) {
+	if r != nil {
+		r.ownerInstallation = fn
+	}
+}
+
+// OwnerAccess reports whether flag is on for installationID because the installation belongs
+// to a platform owner's own organization. It ignores overrides: Enabled applies those first.
+func (r *Resolver) OwnerAccess(installationID int64, flag string) bool {
+	if r == nil || installationID <= 0 || r.ownerInstallation == nil || !OwnerDefaultOn(flag) {
+		return false
+	}
+	return r.ownerInstallation(installationID)
 }
 
 // New builds a resolver; it loads nothing until Refresh or the first question.
@@ -152,20 +200,22 @@ func (r *Resolver) ensureFresh() {
 	}()
 }
 
-// Enabled answers for one installation: the override when there is one, else fallback.
+// Enabled answers for one installation: the override when there is one; else on when the
+// installation has platform-owner access to the flag (OwnerAccess); else fallback.
 func (r *Resolver) Enabled(installationID int64, flag string, fallback bool) bool {
 	if r == nil || installationID <= 0 {
 		return fallback
 	}
 	r.ensureFresh()
 	r.mu.RLock()
-	defer r.mu.RUnlock()
 	if m := r.overrides[installationID]; m != nil {
 		if v, ok := m[flag]; ok {
+			r.mu.RUnlock()
 			return v
 		}
 	}
-	return fallback
+	r.mu.RUnlock()
+	return fallback || r.OwnerAccess(installationID, flag)
 }
 
 // EnabledForServer answers for the installation that owns gameServerID.

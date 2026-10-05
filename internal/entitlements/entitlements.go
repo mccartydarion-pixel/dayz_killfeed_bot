@@ -15,6 +15,10 @@
 // Subscription status (trial expired, canceled, past due) is decided elsewhere
 // (internal/billing); this package answers only "which features does this plan
 // include".
+//
+// One exception sits above the plan: an organization owned by a platform owner
+// (CHAMPION_ADMIN_DISCORD_IDS) has every feature, whatever its plan and whether or
+// not gating is enforced. See Plan and ForOrganization.
 package entitlements
 
 import (
@@ -84,8 +88,99 @@ func restricted(plan string) bool {
 	return enforced.Load() && strings.EqualFold(strings.TrimSpace(plan), PlanSurvivor)
 }
 
-// Resolve returns the feature keys granted by plan, as an independent copy.
-func Resolve(plan string) []Key {
+// Plan is one organization's effective plan: its subscription plan key, plus whether the
+// organization belongs to a platform owner (docs/ADMIN_API.md "Platform owner access"), in which
+// case it has every feature whatever the key says.
+//
+// It can only be built by ForOrganization, and every exported question in this package takes a
+// Plan rather than a plan string. That is the seam: a caller cannot ask about a plan without
+// saying whose plan it is, so no gate can forget the platform-owner rule.
+type Plan struct {
+	key   string
+	owner bool
+}
+
+// ownerOrganizations answers "is this organization owned by a platform owner". Set once at
+// startup (SetOwnerOrganizations); nil means nobody is.
+var ownerOrganizations atomic.Pointer[func(organizationID int64) bool]
+
+// SetOwnerOrganizations installs the platform-owner lookup (internal/owneraccess). The function
+// is called on hot paths, so it must answer from memory. Passing nil removes it.
+func SetOwnerOrganizations(fn func(organizationID int64) bool) {
+	if fn == nil {
+		ownerOrganizations.Store(nil)
+		return
+	}
+	ownerOrganizations.Store(&fn)
+}
+
+// OwnerOrganization reports whether organizationID belongs to a platform owner.
+func OwnerOrganization(organizationID int64) bool {
+	if organizationID <= 0 {
+		return false
+	}
+	fn := ownerOrganizations.Load()
+	return fn != nil && (*fn)(organizationID)
+}
+
+// ForOrganization is the effective plan of organizationID, whose subscription plan key is
+// planKey ("" when it has no subscription row). Always pass the real organization id: an id of 0
+// can never be a platform owner's organization.
+func ForOrganization(organizationID int64, planKey string) Plan {
+	return Plan{key: planKey, owner: OwnerOrganization(organizationID)}
+}
+
+// Key is the subscription plan key the plan was built from.
+func (p Plan) Key() string { return p.key }
+
+// OwnerAccess reports whether the plan is unrestricted because a platform owner owns the
+// organization.
+func (p Plan) OwnerAccess() bool { return p.owner }
+
+// Resolve returns the feature keys granted by the plan, as an independent copy.
+func Resolve(p Plan) []Key {
+	if p.owner {
+		out := make([]Key, len(allKeys))
+		copy(out, allKeys)
+		return out
+	}
+	return resolve(p.key)
+}
+
+// Has reports whether the plan grants key.
+func Has(p Plan, key Key) bool {
+	if p.owner {
+		return known(key)
+	}
+	return has(p.key, key)
+}
+
+// FactionLimit is the most factions one installation may have on the plan; 0 = unlimited.
+func FactionLimit(p Plan) int {
+	if Has(p, UnlimitedFactions) {
+		return 0
+	}
+	return SurvivorFactionLimit
+}
+
+// RouteAllowed reports whether the plan includes whatever the route delivers.
+func RouteAllowed(p Plan, routeKey string) bool {
+	key, gated := RouteFeature(routeKey)
+	return !gated || Has(p, key)
+}
+
+func known(key Key) bool {
+	for _, k := range allKeys {
+		if k == key {
+			return true
+		}
+	}
+	return false
+}
+
+// resolve, has, factionLimit and routeAllowed answer for a bare plan key. They stay unexported
+// so that code outside this package has to go through a Plan.
+func resolve(plan string) []Key {
 	src := allKeys
 	if restricted(plan) {
 		src = survivorKeys
@@ -95,15 +190,9 @@ func Resolve(plan string) []Key {
 	return out
 }
 
-// Has reports whether plan grants key.
-func Has(plan string, key Key) bool {
+func has(plan string, key Key) bool {
 	if !restricted(plan) {
-		for _, k := range allKeys {
-			if k == key {
-				return true
-			}
-		}
-		return false
+		return known(key)
 	}
 	for _, k := range survivorKeys {
 		if k == key {
@@ -113,12 +202,16 @@ func Has(plan string, key Key) bool {
 	return false
 }
 
-// FactionLimit is the most factions one installation may have on plan; 0 = unlimited.
-func FactionLimit(plan string) int {
-	if Has(plan, UnlimitedFactions) {
+func factionLimit(plan string) int {
+	if has(plan, UnlimitedFactions) {
 		return 0
 	}
 	return SurvivorFactionLimit
+}
+
+func routeAllowed(plan, routeKey string) bool {
+	key, gated := RouteFeature(routeKey)
+	return !gated || has(plan, key)
 }
 
 // RouteFeature maps a Discord channel route key to the feature it delivers, for the
@@ -137,12 +230,6 @@ func RouteFeature(routeKey string) (Key, bool) {
 		return PerkStore, true
 	}
 	return "", false
-}
-
-// RouteAllowed reports whether plan includes whatever the route delivers.
-func RouteAllowed(plan, routeKey string) bool {
-	key, gated := RouteFeature(routeKey)
-	return !gated || Has(plan, key)
 }
 
 // Label is the customer-facing name of a feature, for upgrade messages.
