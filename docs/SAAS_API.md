@@ -1403,6 +1403,7 @@ organization role at all; authorization comes entirely from a `VERIFIED` `player
 | Route | Who | Notes |
 |---|---|---|
 | `GET /api/saas/player/servers` | any synced user | installations the acting user is a proven player on, most-recently-active first; empty list (not an error) if unverified/never observed |
+| `GET /api/saas/player/home` | any synced user | the one server the website's Player Hub shows a non-member: needs a `VERIFIED` link only (no observed activity), returns `organizationId`; `{"server":null}` if none (`docs/PLAYER_API.md` section 10) |
 | `GET /api/saas/player/servers/{installationID}/stats` | any synced user, if associated | kills/deaths/kd/headshots/longshots/playtime/bounties/faction/lastSeenAt, scoped strictly to this installation's own server |
 
 New error codes: `PLAYER_IDENTITY_REQUIRED` (409, reused from the economy's `Me` endpoint - no `VERIFIED` link for this installation's guild). An unknown installation id AND a verified-but-never-

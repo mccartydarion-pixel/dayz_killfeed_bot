@@ -241,3 +241,88 @@ func TestPlayerServersUnauthenticated(t *testing.T) {
 	w.expect(w.do(http.MethodGet, w.playerServersPath(), "", nil), http.StatusUnauthorized, "no acting user")
 	w.expect(w.do(http.MethodGet, w.playerStatsPath(w.a1.InstallationID), "", nil), http.StatusUnauthorized, "no acting user")
 }
+
+// --- GET /api/saas/player/home -------------------------------------------------------------------
+
+func (w *factionWorld) playerHome(actor string) map[string]any {
+	w.t.Helper()
+	resp := w.getJSON("/api/saas/player/home", actor)
+	if _, present := resp["server"]; !present {
+		w.t.Fatalf("server must always be present (null when there is none): %v", resp)
+	}
+	server, _ := resp["server"].(map[string]any)
+	return server
+}
+
+// The reason the route exists: a player who has linked but has not played yet is on no
+// /player/servers list, and must still be told which server their Player Hub shows.
+func TestPlayerHomeLinkedPlayerWithoutActivityGetsTheirServer(t *testing.T) {
+	w := newFactionWorld(t)
+	actor := w.players[0]
+	w.linkPlayer(w.a1, actor, "FreshLink")
+
+	if items := w.getJSON(w.playerServersPath(), actor)["items"].([]any); len(items) != 0 {
+		t.Fatalf("/player/servers must keep requiring observed activity, got %v", items)
+	}
+	server := w.playerHome(actor)
+	if server == nil {
+		t.Fatal("expected a home server for a verified, never-observed player")
+	}
+	if int64(server["installationId"].(float64)) != w.a1.InstallationID || int64(server["organizationId"].(float64)) != w.a1.OrgID {
+		t.Fatalf("%v", server)
+	}
+	if server["discordGuildId"] != w.a1.DiscordGuildID {
+		t.Fatalf("discordGuildId must be the Discord snowflake: %v", server)
+	}
+	if server["linkStatus"] != "VERIFIED" || server["observed"] != false {
+		t.Fatalf("%v", server)
+	}
+	if name, _ := server["organizationName"].(string); name == "" {
+		t.Fatalf("organizationName missing: %v", server)
+	}
+}
+
+func TestPlayerHomeWithoutVerifiedLinkIsNull(t *testing.T) {
+	w := newFactionWorld(t)
+	if server := w.playerHome(w.players[1]); server != nil {
+		t.Fatalf("a never-linked user has no home, got %v", server)
+	}
+	// A link that is not VERIFIED is not a link.
+	actor := w.players[2]
+	player := w.linkPlayer(w.a1, actor, "Unconfirmed")
+	for _, status := range []string{"PENDING", "REJECTED", "UNLINKED", "EXPIRED"} {
+		if _, err := w.a.DB.Pool.Exec(context.Background(), `UPDATE player_links SET status=$2 WHERE player_id=$1`, player, status); err != nil {
+			t.Fatal(err)
+		}
+		if server := w.playerHome(actor); server != nil {
+			t.Fatalf("status %s must not give a home, got %v", status, server)
+		}
+	}
+}
+
+// Observed servers win over never-played ones, whatever the installation ids are.
+func TestPlayerHomePrefersTheServerThePlayerWasObservedOn(t *testing.T) {
+	w := newFactionWorld(t)
+	actor := w.players[3]
+	second := w.secondInstallation(w.a1) // higher installation id, same guild
+	player := w.linkPlayer(w.a1, actor, "PlaysOnSecond")
+
+	if server := w.playerHome(actor); server == nil || int64(server["installationId"].(float64)) != w.a1.InstallationID {
+		t.Fatalf("with no activity anywhere the lowest installation id is the home, got %v", server)
+	}
+	w.insertKill(second, player, time.Now(), false)
+	server := w.playerHome(actor)
+	if server == nil || int64(server["installationId"].(float64)) != second.InstallationID || server["observed"] != true {
+		t.Fatalf("expected the observed server, got %v", server)
+	}
+}
+
+func TestPlayerHomeNeverReturnsAnotherTenantsServer(t *testing.T) {
+	w := newFactionWorld(t)
+	actor := w.players[4]
+	w.linkPlayer(w.a1, actor, "OnlyOnAHome")
+	server := w.playerHome(actor)
+	if server == nil || int64(server["installationId"].(float64)) == w.b1.InstallationID || int64(server["organizationId"].(float64)) != w.a1.OrgID {
+		t.Fatalf("%v", server)
+	}
+}
