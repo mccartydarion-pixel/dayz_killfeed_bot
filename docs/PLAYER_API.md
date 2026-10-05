@@ -185,3 +185,50 @@ exception to the association rule in section 2: any signed-in website user may r
 installation (the link is posted publicly in the server's Discord), and the response says whether
 they are `linked`. Voting needs a verified link for the installation's guild (`403 NOT_LINKED`
 otherwise); it does not need observed activity on the server.
+
+## 10. Player home
+
+`GET /api/saas/player/home`
+
+Auth: service auth + acting user. No organization/installation id in the request.
+
+The website's Player Hub asks this for a user who belongs to no organization (a plain player), to
+learn which server to show. Organization owners and members never need it.
+
+```json
+{
+  "server": {
+    "installationId": 42,
+    "organizationId": 7,
+    "organizationName": "Example Community",
+    "serverName": "DE #3 | 1PP | Chernarus",
+    "platform": "PLAYSTATION",
+    "serverStatus": "READY",
+    "discordGuildId": "123456789012345678",
+    "discordGuildName": "Example Community",
+    "linkStatus": "VERIFIED",
+    "observed": false
+  }
+}
+```
+
+`{"server":null}` (200) when the user has no home: a normal state, not an error.
+
+Rule (`PlayerServerRepository.HomeForDiscordUser`): the installations, with a game server, of every
+guild the user holds a `VERIFIED` `player_links` row in. Unlike section 2 this does **not** need
+observed activity: a player who has just linked and has not played yet has no
+`player_server_activity`, kill or death row, is therefore on no `GET /api/saas/player/servers`
+list, and must still get their hub. `observed` says whether that proof of play exists.
+
+Order, first row returned: observed servers first, then `player_server_activity.last_seen_at DESC
+NULLS LAST`, then installation id.
+
+`linkStatus` is always `VERIFIED` today. The other `player_links` statuses never give a home:
+`PENDING` is an unconfirmed claim on a gamertag that expires after ten minutes, and `REJECTED`,
+`UNLINKED` and `EXPIRED` are not links.
+
+`organizationId` is returned here, and only here, because the organization-scoped **player** routes
+(economy "me", shop, Faction Hub, leaderboards: `docs/SAAS_API.md`) carry it in their path while
+needing no organization role. It grants nothing: every route authorizes the acting user again, and
+the routes of sections 3 and 4 still need observed activity, so for `observed:false` they answer
+`404` until the player has been seen on the server.

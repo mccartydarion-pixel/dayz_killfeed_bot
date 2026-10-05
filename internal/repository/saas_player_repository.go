@@ -82,6 +82,62 @@ ORDER BY psa.last_seen_at DESC NULLS LAST, i.id`
 	return out, rows.Err()
 }
 
+// PlayerHome is the one server the website's Player Hub shows for a Discord user who is not an
+// organization member (docs/PLAYER_API.md "Player home").
+type PlayerHome struct {
+	InstallationID   int64
+	OrganizationID   int64
+	OrganizationName string
+	ServerName       string
+	Platform         string
+	ServerStatus     string // installations.status
+	DiscordGuildID   string // guilds.discord_guild_id (the Discord snowflake)
+	DiscordGuildName string
+	LinkStatus       string // player_links.status; always VERIFIED today
+	Observed         bool   // the player has a session, a kill or a death on this installation's server
+}
+
+// HomeForDiscordUser returns the installation the Player Hub should open for discordUserID, or
+// found=false. Unlike ListForDiscordUser it needs only the VERIFIED player_links row for the
+// installation's guild, NOT observed activity: a player who has just linked and has not played yet
+// must still reach their hub. It therefore proves less than ListForDiscordUser does, and is only
+// used to tell the website which server to show - every player route keeps its own authorization.
+//
+// Only VERIFIED links count: PENDING is an unconfirmed claim that expires after ten minutes, and
+// REJECTED / UNLINKED / EXPIRED are not links.
+//
+// With several candidates (one guild backing several installations, or links in several guilds):
+// servers the player was observed on first, most recently seen first, then installation id.
+func (r *PlayerServerRepository) HomeForDiscordUser(ctx context.Context, discordUserID string) (home PlayerHome, found bool, err error) {
+	const q = `
+SELECT i.id, i.organization_id, COALESCE(o.name, ''), COALESCE(gs.display_name, ''), COALESCE(gs.platform, ''), i.status,
+       g.discord_guild_id, COALESCE(c.guild_name, ''), pl.status, obs.observed
+FROM player_links pl
+JOIN guilds g ON g.id = pl.guild_id
+JOIN discord_guild_connections c ON c.guild_id = pl.guild_id
+JOIN installations i ON i.discord_guild_connection_id = c.id AND i.game_server_id IS NOT NULL
+JOIN game_servers gs ON gs.id = i.game_server_id
+JOIN organizations o ON o.id = i.organization_id
+LEFT JOIN player_server_activity psa ON psa.guild_id = pl.guild_id AND psa.server_id = i.game_server_id AND psa.player_id = pl.player_id
+CROSS JOIN LATERAL (SELECT (
+    psa.player_id IS NOT NULL
+    OR EXISTS (SELECT 1 FROM kills k WHERE k.guild_id = pl.guild_id AND k.server_id = i.game_server_id AND k.killer_player_id = pl.player_id)
+    OR EXISTS (SELECT 1 FROM deaths d WHERE d.guild_id = pl.guild_id AND d.server_id = i.game_server_id AND d.player_id = pl.player_id)
+  ) AS observed) obs
+WHERE pl.discord_user_id = $1 AND pl.status = 'VERIFIED'
+ORDER BY obs.observed DESC, psa.last_seen_at DESC NULLS LAST, i.id
+LIMIT 1`
+	err = r.pool.QueryRow(ctx, q, discordUserID).Scan(&home.InstallationID, &home.OrganizationID, &home.OrganizationName,
+		&home.ServerName, &home.Platform, &home.ServerStatus, &home.DiscordGuildID, &home.DiscordGuildName, &home.LinkStatus, &home.Observed)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return PlayerHome{}, false, nil
+	}
+	if err != nil {
+		return PlayerHome{}, false, err
+	}
+	return home, true, nil
+}
+
 // PlayerInstallationScope is what installationID resolves to for a stats lookup.
 type PlayerInstallationScope struct {
 	InstallationID    int64

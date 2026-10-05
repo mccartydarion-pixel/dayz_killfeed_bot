@@ -28,6 +28,7 @@ func (a *App) registerPlayerRoutes() {
 	}
 	h := a.HTTPServer.Handle
 	h("GET /api/saas/player/servers", a.handlePlayerServers)
+	h("GET /api/saas/player/home", a.handlePlayerHome)
 	h("GET /api/saas/player/servers/{installationID}/stats", a.handlePlayerServerStats)
 	h("GET /api/saas/player/servers/{installationID}/ranked", a.handlePlayerServerRanked)
 }
@@ -128,6 +129,67 @@ func (a *App) handlePlayerServers(w http.ResponseWriter, r *http.Request) {
 		resp.DefaultInstallationID = &id
 	}
 	writeSaaSJSON(w, http.StatusOK, resp)
+}
+
+// playerHomeServerDTO is the server of GET /api/saas/player/home. Unlike playerServerSummaryDTO it
+// does carry organizationId: the website's Player Hub needs it to build the organization-scoped
+// PLAYER routes (wallet, shop, factions, leaderboards), which take an organization id in the path
+// but need no organization role. The id grants nothing by itself - every route authorizes again.
+type playerHomeServerDTO struct {
+	InstallationID   int64  `json:"installationId"`
+	OrganizationID   int64  `json:"organizationId"`
+	OrganizationName string `json:"organizationName"`
+	ServerName       string `json:"serverName"`
+	Platform         string `json:"platform"`
+	ServerStatus     string `json:"serverStatus"`
+	DiscordGuildID   string `json:"discordGuildId"`
+	DiscordGuildName string `json:"discordGuildName"`
+	LinkStatus       string `json:"linkStatus"`
+	Observed         bool   `json:"observed"`
+}
+
+// playerHomeResponseDTO is GET /api/saas/player/home. Server is null (never omitted) when the
+// acting user has no verified link in any guild that has an installation with a game server.
+type playerHomeResponseDTO struct {
+	Server *playerHomeServerDTO `json:"server"`
+}
+
+func playerHomeResponse(home repository.PlayerHome, found bool) playerHomeResponseDTO {
+	if !found {
+		return playerHomeResponseDTO{}
+	}
+	return playerHomeResponseDTO{Server: &playerHomeServerDTO{
+		InstallationID: home.InstallationID, OrganizationID: home.OrganizationID, OrganizationName: home.OrganizationName,
+		ServerName: home.ServerName, Platform: home.Platform, ServerStatus: home.ServerStatus,
+		DiscordGuildID: home.DiscordGuildID, DiscordGuildName: home.DiscordGuildName,
+		LinkStatus: home.LinkStatus, Observed: home.Observed,
+	}}
+}
+
+// handlePlayerHome is GET /api/saas/player/home: the server the website's Player Hub shows for the
+// acting user (docs/PLAYER_API.md "Player home"). It needs a VERIFIED link but, unlike
+// handlePlayerServers, no observed activity, so a player who has just linked gets their hub.
+// No server is a normal answer ({"server":null}), not an error.
+func (a *App) handlePlayerHome(w http.ResponseWriter, r *http.Request) {
+	if !a.requireSaaSServiceAuth(w, r) {
+		return
+	}
+	user := a.resolveActingUser(w, r)
+	if user == nil {
+		return
+	}
+	if a.SaaSPlayer == nil {
+		writeSaaSError(w, codeInternalError, "player service unavailable")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), playerTimeout)
+	defer cancel()
+	home, found, err := a.SaaSPlayer.HomeForDiscordUser(ctx, user.DiscordUserID)
+	if err != nil {
+		playerFailed(w, "resolve player home", err)
+		return
+	}
+	writeSaaSJSON(w, http.StatusOK, playerHomeResponse(home, found))
 }
 
 // handlePlayerServerStats is GET .../player/servers/{installationID}/stats: the acting user's own
