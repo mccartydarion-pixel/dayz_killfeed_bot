@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"image/gif"
 	"image/png"
 	"net/http"
 	"strings"
@@ -67,6 +68,18 @@ func TestPlayerCardDataImageAndShareLifecycle(t *testing.T) {
 	if err != nil || decoded.Bounds().Dx() != playercard.Width || decoded.Bounds().Dy() != playercard.Height {
 		t.Fatalf("own card is not a %dx%d PNG: %v", playercard.Width, playercard.Height, err)
 	}
+	// The animated card: the same authorization chain, a GIF, never cached.
+	anim := w.publicGet(http.MethodGet, w.cardPath(w.a1.InstallationID, ".gif"), map[string]string{"Authorization": "Bearer test-secret", actingUserHeader: actor})
+	if anim.Status != http.StatusOK || anim.Header.Get("Content-Type") != "image/gif" || anim.Header.Get("Cache-Control") != "private, no-store" {
+		t.Fatalf("own card gif: %d %v", anim.Status, anim.Header)
+	}
+	g, err := gif.DecodeAll(bytes.NewReader(anim.Body))
+	if err != nil || g.Config.Width != playercard.Width || g.Config.Height != playercard.Height || len(g.Image) < 2 {
+		t.Fatalf("own card is not an animated %dx%d GIF: %v", playercard.Width, playercard.Height, err)
+	}
+	if r := w.do(http.MethodGet, w.cardPath(w.a1.InstallationID, ".gif"), w.players[2], nil); r.Status == http.StatusOK {
+		t.Fatal("an unlinked user got an animated card")
+	}
 
 	// Share: idempotent, public, revocable.
 	share := w.expect(w.do(http.MethodPost, w.cardPath(w.a1.InstallationID, "/share"), actor, nil), http.StatusOK, "share").JSON(t)
@@ -94,7 +107,8 @@ func TestPlayerCardDataImageAndShareLifecycle(t *testing.T) {
 		t.Fatalf("shared card = %v", shared)
 	}
 
-	for _, bad := range []string{"/cards/nope.png", "/cards/" + token, "/cards/" + token + ".jpg", "/cards/.png"} {
+	// The share routes stay PNG-only: a link preview needs a still.
+	for _, bad := range []string{"/cards/nope.png", "/cards/" + token, "/cards/" + token + ".jpg", "/cards/" + token + ".gif", "/cards/.png"} {
 		if r := w.publicGet(http.MethodGet, bad, nil); r.Status != http.StatusNotFound {
 			t.Fatalf("%s: %d", bad, r.Status)
 		}
@@ -180,7 +194,7 @@ func TestPlayerCardAuthorization(t *testing.T) {
 	unlinked, onlyA := w.players[2], w.players[3]
 	p := w.linkPlayer(w.a1, onlyA, "CardOnlyA")
 	w.insertKill(w.a1, p, time.Now(), false)
-	for _, suffix := range []string{"", ".png"} {
+	for _, suffix := range []string{"", ".png", ".gif"} {
 		if r := w.do(http.MethodGet, w.cardPath(w.a1.InstallationID, suffix), unlinked, nil); r.Status == http.StatusOK {
 			t.Fatalf("unlinked user got a card (%s)", suffix)
 		}

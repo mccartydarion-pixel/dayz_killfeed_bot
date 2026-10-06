@@ -108,8 +108,13 @@ func tierSlug(t ranked.Tier) string {
 
 type emblem struct {
 	once sync.Once
-	img  *image.RGBA // the PNG decoded and scaled to emblemSize with Catmull-Rom, premultiplied
+	src  image.Image // the PNG as shipped, 256 px
+	img  *image.RGBA // src scaled to emblemSize with Catmull-Rom, premultiplied
 	err  error
+
+	// sizes are the other scales the animation draws (the emblem settles from 1.25x), each made once.
+	mu    sync.Mutex
+	sizes map[int]*image.RGBA
 }
 
 var emblems = map[string]*emblem{
@@ -132,9 +137,34 @@ func tierEmblem(t ranked.Tier) (*image.RGBA, error) {
 			e.err = fmt.Errorf("decode %s emblem: %w", tierSlug(t), err)
 			return
 		}
-		dst := image.NewRGBA(image.Rect(0, 0, emblemSize, emblemSize))
-		xdraw.CatmullRom.Scale(dst, dst.Bounds(), src, src.Bounds(), xdraw.Src, nil)
-		e.img = dst
+		e.src, e.img = src, scaleEmblem(src, emblemSize)
 	})
 	return e.img, e.err
+}
+
+// tierEmblemAt is the emblem of a tier scaled to size pixels, from the 256 px source: the card's
+// own size comes from tierEmblem, any other is cached per size per tier.
+func tierEmblemAt(t ranked.Tier, size int) (*image.RGBA, error) {
+	img, err := tierEmblem(t)
+	if err != nil || size == emblemSize {
+		return img, err
+	}
+	e := emblems[tierSlug(t)]
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if scaled, ok := e.sizes[size]; ok {
+		return scaled, nil
+	}
+	if e.sizes == nil {
+		e.sizes = map[int]*image.RGBA{}
+	}
+	scaled := scaleEmblem(e.src, size)
+	e.sizes[size] = scaled
+	return scaled, nil
+}
+
+func scaleEmblem(src image.Image, size int) *image.RGBA {
+	dst := image.NewRGBA(image.Rect(0, 0, size, size))
+	xdraw.CatmullRom.Scale(dst, dst.Bounds(), src, src.Bounds(), xdraw.Src, nil)
+	return dst
 }

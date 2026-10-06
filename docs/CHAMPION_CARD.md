@@ -1,13 +1,15 @@
 # Champion Card
 
 A 1200x630 PNG of one player's stats on one server - the Open Graph size, so a shared link unfurls
-as the card itself.
+as the card itself - and the same card animated, as a GIF of it filling in (see "Animated card").
 
 Migration `0079_player_card_shares`. Code: `internal/playercard` (rendering: `playercard.go` the
-card data, tiles and layout, `draw.go` the canvas helpers, `assets.go` the embedded assets),
+card data, tiles and layout, `animation.go` the sequence and the GIF, `quantize.go` the GIF palette
+and dither, `draw.go` the canvas helpers, `assets.go` the embedded assets),
 `internal/repository/card_repository.go`, `internal/app/player_card.go`,
 `internal/discord/card_command.go`. Dependency: `golang.org/x/image` (OpenType rendering, the
-`vector` rasterizer for anti-aliased shapes, `draw` for scaling the emblem).
+`vector` rasterizer for anti-aliased shapes, `draw` for scaling the emblem); the GIF is written
+with the standard library's `image/gif`.
 
 ## What it shows
 
@@ -56,6 +58,35 @@ about 670 KB to the binary (about 750 KB with the rasterizer and scaler code).
 
 Rendering is pure: the same card data always produces the same image.
 
+## Animated card
+
+`playercard.RenderAnimation` is the card filling in: 1200x630, 25 fps, 2.6 s of motion (65
+frames) and then the finished card held for 4 s, looping forever. The still and the animation
+share one layout: every element has a window in which it eases (cubic ease-out) from its start
+state to its place, and the still is the frame where every window has passed - the last frame of
+the GIF, before its colours are reduced, is `Render`'s image pixel for pixel.
+
+The sequence, in seconds: the background and the gold bar are there from the start; the header
+fades in (0.00-0.30); the emblem lands, shrinking from 1.25x and fading in, while its glow
+overshoots to 0.55 (0.10-0.60), settles to its resting 0.30 (0.60-1.10) and breathes once before
+the end (1.90-2.50); the name and sub line fade in rising 18 px (0.20-0.60); the rank row, the bar
+and its caption fade in rising 12 px (0.45-0.80); the tiles fade in rising 14 px, one every 70 ms
+from 0.40; the footer fades in (0.60-0.90). Every figure counts up over 0.60-1.80: the tiles from
+zero (ratios included), the RP from the tier's start with the bar filling and the caption's
+remaining RP counting down (at Master the bar simply fills), the server rank down from the field
+(`#123` to `#3`); a dash stays a dash and the position (`#5 in Ranked`) does not count. Each step
+is formatted by the still's own functions. A soft light sweep crosses the card from left to right
+(2.00-2.60), over everything but the gold bar.
+
+The GIF: one global palette per animation (a median cut over three sample frames: the still, the
+emblem's landing and the middle of the sweep), 255 colours and a transparent index; pixels map to
+it through a 64x64x64 lookup table with an 8x8 Bayer ordered dither, so a region that does not
+change between frames maps to the same bytes; every frame after the first carries only the
+rectangle that changed, with the unchanged pixels inside it transparent (disposal "none"), and a
+frame that changes nothing lengthens the one before instead. Frames are 40 ms, the hold 4000 ms,
+loop count 0. The Gold sample is about 1.75 MB and renders in about a second on two cores
+(frames render in parallel; the result does not depend on the order).
+
 ## Routes
 
 Player routes use the player API's authorization chain (docs/PLAYER_API.md).
@@ -64,10 +95,11 @@ Player routes use the player API's authorization chain (docs/PLAYER_API.md).
 | --- | --- |
 | `GET /api/saas/player/servers/{installationId}/card` | the acting player's card as JSON, plus their active share |
 | `GET /api/saas/player/servers/{installationId}/card.png` | the same card as a PNG (`Cache-Control: private, no-store`) |
+| `GET /api/saas/player/servers/{installationId}/card.gif` | the same card animated, as a GIF (`Cache-Control: private, no-store`) |
 | `POST /api/saas/player/servers/{installationId}/card/share` | create, or return, the player's share link |
 | `DELETE /api/saas/player/servers/{installationId}/card/share` | revoke it |
 | `GET /api/saas/cards/{token}` | the data behind a share link, for the website's share page (service secret, no acting user) |
-| `GET /cards/{token}.png` | **public, unauthenticated** card image |
+| `GET /cards/{token}.png` | **public, unauthenticated** card image (PNG only: link previews need a still) |
 
 Card JSON:
 
@@ -107,5 +139,8 @@ For the website's share page: fetch `GET /api/saas/cards/{token}` server-side an
 
 ## Discord
 
-`/card` posts the caller's own card in the channel as an image. There is no player argument:
-nobody can post someone else's stats for them. One card per user per 30 seconds.
+`/card` posts the caller's own card in the channel, animated (`champion-card.gif`). The reply is
+deferred first (the GIF takes a few seconds to render and upload); if the animation cannot be
+rendered the still is posted instead (`champion-card.png`, logged as `card_gif_failed`). There is
+no player argument: nobody can post someone else's stats for them. One card per user per 30
+seconds.

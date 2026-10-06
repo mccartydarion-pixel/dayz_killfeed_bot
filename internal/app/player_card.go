@@ -18,9 +18,10 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
-// Champion Card (docs/CHAMPION_CARD.md): a shareable PNG of one player's stats on one server.
-// Three ways in: the player API (the player's own card, JSON or PNG), a public share link the
-// player creates and can revoke (the only unauthenticated route), and /card in Discord.
+// Champion Card (docs/CHAMPION_CARD.md): a shareable PNG of one player's stats on one server, and
+// the same card animated as a GIF. Three ways in: the player API (the player's own card, JSON, PNG
+// or GIF), a public share link the player creates and can revoke (the only unauthenticated route,
+// PNG only: link previews need a still), and /card in Discord (the GIF).
 
 const (
 	cardSharePath = "/cards/"
@@ -37,6 +38,7 @@ func (a *App) registerCardRoutes() {
 	h := a.HTTPServer.Handle
 	h("GET /api/saas/player/servers/{installationID}/card", a.handlePlayerCard)
 	h("GET /api/saas/player/servers/{installationID}/card.png", a.handlePlayerCardImage)
+	h("GET /api/saas/player/servers/{installationID}/card.gif", a.handlePlayerCardGIF)
 	h("POST /api/saas/player/servers/{installationID}/card/share", a.handleShareCard)
 	h("DELETE /api/saas/player/servers/{installationID}/card/share", a.handleUnshareCard)
 	h("GET /api/saas/cards/{token}", a.handleSharedCard)
@@ -244,7 +246,27 @@ func (a *App) handlePlayerCardImage(w http.ResponseWriter, r *http.Request) {
 		cardFailed(w, "render card", err)
 		return
 	}
-	writeCardPNG(w, r, png, "private, no-store")
+	writeCardImage(w, r, "image/png", png, "private, no-store")
+}
+
+// handlePlayerCardGIF is GET .../card.gif: the acting player's own card, animated.
+func (a *App) handlePlayerCardGIF(w http.ResponseWriter, r *http.Request) {
+	scope, ctx, cancel, ok := a.resolvePlayerScope(w, r)
+	if !ok {
+		return
+	}
+	defer cancel()
+	card, err := a.buildCard(ctx, scope.InstallationID, scope.GuildID, scope.ServerID, scope.PlayerID)
+	if err != nil || card == nil {
+		cardFailed(w, "build card", err)
+		return
+	}
+	gif, err := playercard.RenderAnimation(*card)
+	if err != nil {
+		cardFailed(w, "animate card", err)
+		return
+	}
+	writeCardImage(w, r, "image/gif", gif, "private, no-store")
 }
 
 // handleShareCard is POST .../card/share: create (or return) the acting player's public link.
@@ -330,7 +352,7 @@ func (a *App) handleSharedCardImage(w http.ResponseWriter, r *http.Request) {
 	}
 	cache := a.cardCache()
 	if png, hit := cache.get(token); hit {
-		writeCardPNG(w, r, png, cardPublicCacheControl)
+		writeCardImage(w, r, "image/png", png, cardPublicCacheControl)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), playerTimeout)
@@ -360,22 +382,22 @@ func (a *App) handleSharedCardImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cache.put(token, png)
-	writeCardPNG(w, r, png, cardPublicCacheControl)
+	writeCardImage(w, r, "image/png", png, cardPublicCacheControl)
 }
 
 var cardPublicCacheControl = fmt.Sprintf("public, max-age=%d", int(cardCacheTTL.Seconds()))
 
-func writeCardPNG(w http.ResponseWriter, r *http.Request, png []byte, cacheControl string) {
+func writeCardImage(w http.ResponseWriter, r *http.Request, contentType string, data []byte, cacheControl string) {
 	h := w.Header()
-	h.Set("Content-Type", "image/png")
+	h.Set("Content-Type", contentType)
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Content-Security-Policy", "default-src 'none'; sandbox")
 	h.Set("Cross-Origin-Resource-Policy", "cross-origin")
 	h.Set("Cache-Control", cacheControl)
-	h.Set("Content-Length", fmt.Sprint(len(png)))
+	h.Set("Content-Length", fmt.Sprint(len(data)))
 	w.WriteHeader(http.StatusOK)
 	if r.Method != http.MethodHead {
-		_, _ = w.Write(png)
+		_, _ = w.Write(data)
 	}
 }
 
@@ -445,18 +467,11 @@ func (a *App) registerCardCommand(session *discordgo.Session, commands discord.C
 	if a.Cards == nil || a.Guilds == nil || a.Discord == nil || session == nil || a.Config.DiscordGuildID == "" {
 		return
 	}
-	render := func(ctx context.Context, guildRowID, serverID, playerID int64) ([]byte, error) {
+	card := func(ctx context.Context, guildRowID, serverID, playerID int64) (*playercard.Card, error) {
 		installationID, _ := a.Cards.InstallationForServer(ctx, serverID)
-		card, err := a.buildCard(ctx, installationID, guildRowID, serverID, playerID)
-		if err != nil {
-			return nil, err
-		}
-		if card == nil {
-			return nil, fmt.Errorf("player not found")
-		}
-		return playercard.Render(*card)
+		return a.buildCard(ctx, installationID, guildRowID, serverID, playerID)
 	}
-	handler := discord.NewCardCommandHandler(a.Guilds, a.linkedPlayer, a.publicServerID, render)
+	handler := discord.NewCardCommandHandler(a.Guilds, a.linkedPlayer, a.publicServerID, card)
 	if err := discord.RegisterCardCommand(commands, a.Config.DiscordGuildID); err != nil {
 		slog.Warn("component=discord", "msg", "failed to register card command", "err", err.Error())
 	} else {

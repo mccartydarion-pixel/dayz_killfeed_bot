@@ -6,6 +6,7 @@ import (
 	"image/draw"
 	"math"
 	"strings"
+	"sync"
 
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/opentype"
@@ -17,20 +18,27 @@ import (
 // Drawing helpers for the card. Everything here is deterministic: no clock, no randomness, no map
 // iteration order in the output. Shapes are anti-aliased with golang.org/x/image/vector and
 // composited through their coverage mask, so a fill can be a flat colour, a gradient or a glow.
+// Every colour can carry an opacity, which is how the animation fades an element in: the same
+// call at full opacity paints exactly what the still paints.
 
-// canvas is the card being drawn. The first drawing error is kept and reported by Render.
+// canvas is the card being drawn. The first drawing error is kept and reported by Render. A canvas
+// draws one card at a time but may draw many frames of it: the faces and the glyph masks it builds
+// serve every frame.
 type canvas struct {
 	img   *image.RGBA
 	fonts *fontSet
 	// faces are built per canvas: a font.Face is not safe for concurrent use, and cards render
 	// concurrently (the player API, the public share route and /card).
 	faces map[faceKey]*face
-	buf   sfnt.Buffer
-	err   error
+	// glyphs caches rasterised glyph masks, keyed by the face, the rune and the sub-pixel position,
+	// so a frame of the animation does not rasterise text the previous frame already did.
+	glyphs map[glyphKey]*glyph
+	buf    sfnt.Buffer
+	err    error
 }
 
 func newCanvas(fonts *fontSet) *canvas {
-	return &canvas{img: image.NewRGBA(image.Rect(0, 0, Width, Height)), fonts: fonts, faces: map[faceKey]*face{}}
+	return &canvas{img: image.NewRGBA(image.Rect(0, 0, Width, Height)), fonts: fonts, faces: map[faceKey]*face{}, glyphs: map[glyphKey]*glyph{}}
 }
 
 func (c *canvas) fail(err error) {
@@ -51,6 +59,15 @@ func alpha(col color.RGBA, a float64) color.NRGBA {
 }
 
 func opaque(col color.RGBA) color.NRGBA { return color.NRGBA{col.R, col.G, col.B, 0xFF} }
+
+// fade is col at an opacity of a, for text: the colour itself at full opacity, so a still and a
+// finished fade draw the same bytes.
+func fade(col color.RGBA, a float64) color.Color {
+	if a >= 1 {
+		return col
+	}
+	return alpha(col, a)
+}
 
 // lerp is the colour t of the way from a to b.
 func lerp(a, b color.RGBA, t float64) color.RGBA {
@@ -87,25 +104,146 @@ func (c *canvas) rect(x, y, w, h int, col color.Color) {
 	draw.Draw(c.img, image.Rect(x, y, x+w, y+h), image.NewUniform(col), image.Point{}, draw.Src)
 }
 
-// background paints the whole canvas with a vertical gradient from top to bottom.
-func (c *canvas) background(top, bottom color.RGBA) {
-	for y := 0; y < Height; y++ {
-		row := lerp(top, bottom, float64(y)/float64(Height-1))
-		c.rect(0, y, Width, 1, row)
+// fillRect paints an axis-aligned rectangle in col at an opacity of a: a plain fill when opaque,
+// else composited over what is there.
+func (c *canvas) fillRect(x, y, w, h int, col color.RGBA, a float64) {
+	if a >= 1 {
+		c.rect(x, y, w, h, col)
+		return
+	}
+	draw.Draw(c.img, image.Rect(x, y, x+w, y+h), image.NewUniform(alpha(col, a)), image.Point{}, draw.Over)
+}
+
+var (
+	backgroundOnce sync.Once
+	backgroundImg  *image.RGBA
+)
+
+// backgroundLayer is the card's background, a vertical gradient from top to bottom, painted once
+// per process: every card and every frame starts as a copy of it.
+func backgroundLayer() *image.RGBA {
+	backgroundOnce.Do(func() {
+		img := image.NewRGBA(image.Rect(0, 0, Width, Height))
+		for y := 0; y < Height; y++ {
+			row := lerp(colBackgroundTop, colBackgroundBottom, float64(y)/float64(Height-1))
+			draw.Draw(img, image.Rect(0, y, Width, y+1), image.NewUniform(row), image.Point{}, draw.Src)
+		}
+		backgroundImg = img
+	})
+	return backgroundImg
+}
+
+// clear starts a card: the canvas becomes the background gradient.
+func (c *canvas) clear() {
+	copy(c.img.Pix, backgroundLayer().Pix)
+}
+
+// The glow behind the emblem: a soft radial light centred on the emblem, fading linearly from its
+// peak opacity at the centre to nothing at glowRadius.
+const glowRadius = 150
+
+// glowFalloff is the glow's coverage, 1 − d/r for every pixel within the radius (0 outside),
+// computed once: the centre and the radius never change, only the colour and the peak.
+type glowFalloff struct {
+	x0, y0, w, h int
+	m            []float64
+}
+
+var (
+	glowOnce sync.Once
+	glowMask glowFalloff
+)
+
+func glowCoverage() *glowFalloff {
+	glowOnce.Do(func() {
+		cx, cy, r := float64(emblemLeft+emblemSize/2), float64(emblemTop+emblemSize/2), float64(glowRadius)
+		x0, x1 := int(math.Floor(cx-r)), int(math.Ceil(cx+r))
+		y0, y1 := int(math.Floor(cy-r)), int(math.Ceil(cy+r))
+		g := glowFalloff{x0: x0, y0: y0, w: x1 - x0 + 1, h: y1 - y0 + 1}
+		g.m = make([]float64, g.w*g.h)
+		for y := y0; y <= y1; y++ {
+			for x := x0; x <= x1; x++ {
+				if d := math.Hypot(float64(x)+0.5-cx, float64(y)+0.5-cy); d < r {
+					g.m[(y-y0)*g.w+(x-x0)] = 1 - d/r
+				}
+			}
+		}
+		glowMask = g
+	})
+	return &glowMask
+}
+
+// glow paints the emblem's glow in col with the given peak opacity.
+func (c *canvas) glow(col color.RGBA, peak float64) {
+	g := glowCoverage()
+	for y := 0; y < g.h; y++ {
+		for x := 0; x < g.w; x++ {
+			if m := g.m[y*g.w+x]; m > 0 {
+				c.blend(g.x0+x, g.y0+y, alpha(col, peak*m), 0xFF)
+			}
+		}
 	}
 }
 
-// glow is a soft radial light: alpha peak at the centre fading linearly to nothing at radius r.
-func (c *canvas) glow(cx, cy, r float64, col color.RGBA, peak float64) {
-	x0, x1 := int(math.Floor(cx-r)), int(math.Ceil(cx+r))
-	y0, y1 := int(math.Floor(cy-r)), int(math.Ceil(cy+r))
-	for y := y0; y <= y1; y++ {
-		for x := x0; x <= x1; x++ {
-			d := math.Hypot(float64(x)+0.5-cx, float64(y)+0.5-cy)
-			if d >= r {
+// drawImage composites a premultiplied image at (x, y) with an opacity of a.
+func (c *canvas) drawImage(src *image.RGBA, x, y int, a float64) {
+	r := image.Rect(x, y, x+src.Rect.Dx(), y+src.Rect.Dy())
+	if a >= 1 {
+		draw.Draw(c.img, r, src, image.Point{}, draw.Over)
+		return
+	}
+	ai := uint32(math.Round(255 * clamp01(a)))
+	r = r.Intersect(c.img.Rect)
+	if ai == 0 || r.Empty() {
+		return
+	}
+	for yy := r.Min.Y; yy < r.Max.Y; yy++ {
+		si := src.PixOffset(src.Rect.Min.X+r.Min.X-x, src.Rect.Min.Y+yy-y)
+		di := c.img.PixOffset(r.Min.X, yy)
+		for xx := r.Min.X; xx < r.Max.X; xx, si, di = xx+1, si+4, di+4 {
+			s := src.Pix[si : si+4 : si+4]
+			sa := uint32(s[3]) * ai / 255
+			if sa == 0 {
 				continue
 			}
-			c.blend(x, y, alpha(col, peak*(1-d/r)), 0xFF)
+			d := c.img.Pix[di : di+4 : di+4]
+			keep := 255 - sa
+			d[0] = uint8(min((uint32(d[0])*keep+127)/255+uint32(s[0])*ai/255, 255))
+			d[1] = uint8(min((uint32(d[1])*keep+127)/255+uint32(s[1])*ai/255, 255))
+			d[2] = uint8(min((uint32(d[2])*keep+127)/255+uint32(s[2])*ai/255, 255))
+			d[3] = 0xFF
+		}
+	}
+}
+
+// The light sweep (docs/CHAMPION_CARD.md, "Animated card"): a soft white band leaning sweepLean
+// from vertical, sweepWidth wide, that crosses the card once.
+const (
+	sweepWidth = 160.0
+	sweepLean  = 20 * math.Pi / 180
+	sweepPeak  = 0.10
+	// sweepLeft is where the band starts: the gold accent bar is never brightened.
+	sweepLeft = 10
+)
+
+// sweep paints the light band p of the way (0 to 1) from entirely off the left edge to entirely
+// off the right edge. Its profile across the band is a raised cosine: soft edges, the peak in the
+// middle.
+func (c *canvas) sweep(p float64) {
+	tan, cos := math.Tan(sweepLean), math.Cos(sweepLean)
+	half := sweepWidth / 2 / cos          // half the band's width measured along a row
+	reach := half + float64(Height)/2*tan // how far a row of the band can lie from its centre line
+	x0 := -reach + p*(float64(Width)+2*reach)
+	white := rgb(0xFFFFFF)
+	for y := 0; y < Height; y++ {
+		centre := x0 - (float64(y)+0.5-float64(Height)/2)*tan
+		xa, xb := int(math.Floor(centre-half)), int(math.Ceil(centre+half))
+		for x := max(xa, sweepLeft); x <= xb && x < Width; x++ {
+			r := math.Abs(float64(x)+0.5-centre) * cos / (sweepWidth / 2)
+			if r >= 1 {
+				continue
+			}
+			c.blend(x, y, alpha(white, sweepPeak*0.5*(1+math.Cos(math.Pi*r))), 0xFF)
 		}
 	}
 }
@@ -198,10 +336,11 @@ func (c *canvas) roundRectBorder(x, y, w, h, r, width float64, col color.NRGBA) 
 	c.fill(s, col)
 }
 
-// bar draws a progress bar with fully rounded ends: the track, then the filled fraction painted
-// left to right from lo to hi. A fraction above zero is never narrower than the bar is tall.
-func (c *canvas) bar(x, y, w, h float64, frac float64, track color.RGBA, lo, hi color.RGBA) {
-	c.roundRect(x, y, w, h, h/2, opaque(track))
+// bar draws a progress bar with fully rounded ends at an opacity of a: the track, then the filled
+// fraction painted left to right from lo to hi. A fraction above zero is never narrower than the
+// bar is tall.
+func (c *canvas) bar(x, y, w, h float64, frac float64, track color.RGBA, lo, hi color.RGBA, a float64) {
+	c.roundRect(x, y, w, h, h/2, alpha(track, a))
 	frac = clamp01(frac)
 	if frac == 0 {
 		return
@@ -210,7 +349,7 @@ func (c *canvas) bar(x, y, w, h float64, frac float64, track color.RGBA, lo, hi 
 	s := newShape(x, y, fw, h)
 	s.roundedRect(x, y, fw, h, h/2, false)
 	c.paint(s, func(px, _ int) color.NRGBA {
-		return opaque(lerp(lo, hi, (float64(px)+0.5-x)/fw))
+		return alpha(lerp(lo, hi, (float64(px)+0.5-x)/fw), a)
 	})
 }
 
@@ -351,6 +490,46 @@ func (c *canvas) measure(st style, s string) int {
 	return w.Ceil()
 }
 
+// glyphKey identifies a rasterised glyph: a rune in a face at a sub-pixel position (the fractional
+// part of the dot, in 64ths), which is all its mask depends on.
+type glyphKey struct {
+	f      *face
+	r      rune
+	fx, fy fixed.Int26_6
+}
+
+// glyph is a cached mask with its offset from the dot's whole-pixel position.
+type glyph struct {
+	mask *image.Alpha
+	off  image.Point
+	ok   bool
+}
+
+// glyph rasterises r at dot, or returns the mask rasterised earlier at the same sub-pixel position.
+func (c *canvas) glyph(f *face, dot fixed.Point26_6, r rune) (dr image.Rectangle, mask *image.Alpha, ok bool) {
+	key := glyphKey{f, r, dot.X & 63, dot.Y & 63}
+	base := image.Pt(dot.X.Floor(), dot.Y.Floor())
+	g, hit := c.glyphs[key]
+	if !hit {
+		g = &glyph{}
+		if dr, m, mp, _, ok := f.Glyph(dot, r); ok {
+			// The face reuses its mask buffer on the next call: keep a copy.
+			src := m.(*image.Alpha)
+			cp := image.NewAlpha(image.Rect(0, 0, dr.Dx(), dr.Dy()))
+			for y := 0; y < dr.Dy(); y++ {
+				copy(cp.Pix[y*cp.Stride:(y+1)*cp.Stride], src.Pix[(mp.Y+y)*src.Stride+mp.X:][:dr.Dx()])
+			}
+			g.mask, g.off, g.ok = cp, dr.Min.Sub(base), true
+		}
+		c.glyphs[key] = g
+	}
+	if !g.ok {
+		return image.Rectangle{}, nil, false
+	}
+	min := base.Add(g.off)
+	return image.Rectangle{Min: min, Max: min.Add(g.mask.Rect.Size())}, g.mask, true
+}
+
 // text draws s with its baseline at y and returns its width. align is -1 (x is the left edge), 0
 // (centre) or 1 (right edge).
 func (c *canvas) text(x, y int, st style, col color.Color, align int, s string) int {
@@ -368,11 +547,11 @@ func (c *canvas) text(x, y int, st style, col color.Color, align int, s string) 
 	}
 	src := image.NewUniform(col)
 	for i, r := range []rune(s) {
-		dr, mask, maskp, _, ok := f.Glyph(fixed.Point26_6{X: origin + xs[i], Y: fixed.I(y)}, r)
+		dr, mask, ok := c.glyph(f, fixed.Point26_6{X: origin + xs[i], Y: fixed.I(y)}, r)
 		if !ok {
 			continue
 		}
-		draw.DrawMask(c.img, dr, src, image.Point{}, mask, maskp, draw.Over)
+		draw.DrawMask(c.img, dr, src, image.Point{}, mask, image.Point{}, draw.Over)
 	}
 	return w.Ceil()
 }
