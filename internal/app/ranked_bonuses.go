@@ -164,16 +164,22 @@ func buildBountyClaimCard(c repository.BountyClaim) *discordgo.MessageEmbed {
 		Timestamp: c.At.Format(time.RFC3339)}
 }
 
-func buildRankUpCard(u repository.RankUp, serverName string) *discordgo.MessageEmbed {
+// buildRankUpCard announces a promotion. siteBase is the website address the tier icon is served
+// from (the card's thumbnail); "" leaves the picture out.
+func buildRankUpCard(u repository.RankUp, serverName, siteBase string) *discordgo.MessageEmbed {
 	// The server is named in the footer, like on every card.
 	return &discordgo.MessageEmbed{Author: rankedCardAuthor(), Color: rankedRankUpColor,
+		Thumbnail:   presentation.RankTierThumbnail(siteBase, string(u.To)),
 		Title:       fmt.Sprintf("🏅 %s reached %s", orUnknown(u.Name), repository.TierName(u.To)),
 		Description: fmt.Sprintf("%s RP • #%s", commaInt(u.RP), commaInt(int64(u.Position))),
 		Footer:      presentation.Footer(serverName, "")}
 }
 
-func buildRankUpDM(u repository.RankUp, serverName, hubURL string) *discordgo.MessageSend {
+// buildRankUpDM is the same news sent to the player. siteBase is the website address the tier
+// icon is served from (the thumbnail); "" leaves the picture out.
+func buildRankUpDM(u repository.RankUp, serverName, hubURL, siteBase string) *discordgo.MessageSend {
 	embed := &discordgo.MessageEmbed{Author: rankedCardAuthor(), Color: rankedRankUpColor,
+		Thumbnail:   presentation.RankTierThumbnail(siteBase, string(u.To)),
 		Title:       "🏅 You reached " + repository.TierName(u.To),
 		Description: fmt.Sprintf("You are now %s on %s with %s RP (#%s). Keep climbing!", repository.TierName(u.To), serverWord(serverName), commaInt(u.RP), commaInt(int64(u.Position)))}
 	if hubURL != "" {
@@ -312,12 +318,12 @@ func (a *App) announceRankUps(ctx context.Context, guildID int64, season reposit
 	}
 	for _, u := range ups {
 		if s.RankUpCards {
-			a.postRankedCard(ctx, guildID, season.ServerID, buildRankUpCard(u, serverName))
+			a.postRankedCard(ctx, guildID, season.ServerID, buildRankUpCard(u, serverName, a.siteURL()))
 		}
 		if s.RankUpDMs && u.DiscordUserID != "" && a.VIPNotices != nil {
 			ch, err := a.VIPNotices.UserChannelCreate(u.DiscordUserID)
 			if err == nil {
-				_, err = a.VIPNotices.ChannelMessageSendComplex(ch.ID, buildRankUpDM(u, serverName, a.siteURL()+"/dashboard/player"))
+				_, err = a.VIPNotices.ChannelMessageSendComplex(ch.ID, buildRankUpDM(u, serverName, a.siteURL()+"/dashboard/player", a.siteURL()))
 			}
 			if err != nil {
 				slog.Info("component=ranked", "event", "rank_up_dm_failed", "player_id", u.PlayerID, "err", err.Error())

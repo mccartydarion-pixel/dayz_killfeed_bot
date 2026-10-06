@@ -58,10 +58,24 @@ func TestRankedCards(t *testing.T) {
 	if !strings.Contains(claim.Description, "**Dan** killed **Mike**, who was #1 on the server, and collected the **+100 RP** bounty (200 RP for the kill)") {
 		t.Fatalf("claim: %s", claim.Description)
 	}
-	up := buildRankUpCard(repository.RankUp{Name: "Dan", To: ranked.Gold, RP: 1000, Position: 2}, "Champions")
+	up := buildRankUpCard(repository.RankUp{Name: "Dan", To: ranked.Gold, RP: 1000, Position: 2}, "Champions", "https://site.example/")
 	// Numbers carry thousands separators and the server is named in the footer.
 	if up.Title != "🏅 Dan reached Gold" || up.Description != "1,000 RP • #2" || up.Footer == nil || up.Footer.Text != "Champions" {
 		t.Fatalf("rank-up: %+v %+v", up, up.Footer)
+	}
+	// The tier icon is the thumbnail, served by the website; without a site address there is none.
+	if up.Thumbnail == nil || up.Thumbnail.URL != "https://site.example/ranks/gold.png" {
+		t.Fatalf("rank-up thumbnail: %+v", up.Thumbnail)
+	}
+	if bare := buildRankUpCard(repository.RankUp{Name: "Dan", To: ranked.Gold, RP: 1000, Position: 2}, "Champions", ""); bare.Thumbnail != nil || bare.Title != up.Title {
+		t.Fatalf("rank-up without a site: %+v", bare.Thumbnail)
+	}
+	dm := buildRankUpDM(repository.RankUp{Name: "Dan", To: ranked.Master, RP: 9000, Position: 1}, "Champions", "https://site.example/dashboard/player", "https://site.example")
+	if e := dm.Embeds[0]; e.Thumbnail == nil || e.Thumbnail.URL != "https://site.example/ranks/master.png" || e.Title != "🏅 You reached Master" {
+		t.Fatalf("rank-up DM: %+v %+v", e, e.Thumbnail)
+	}
+	if e := buildRankUpDM(repository.RankUp{To: ranked.Master}, "Champions", "", "").Embeds[0]; e.Thumbnail != nil {
+		t.Fatalf("rank-up DM without a site: %+v", e.Thumbnail)
 	}
 	recap := buildWeeklyRecapCard(repository.RankedRecap{WeekStart: time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC), Kills: 0}, "")
 	if len(recap.Fields) != 0 || !strings.Contains(recap.Description, "Sep 28 to Oct 4") {
