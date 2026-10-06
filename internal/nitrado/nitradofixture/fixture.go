@@ -9,6 +9,11 @@
 // /services or /token) is refused with 403 and counted. Synthetic events are
 // injected through the /_fixture control endpoints, which require the
 // control token when one is configured.
+//
+// Tests of the guarded mission-file writes may additionally turn on a
+// synthetic mission folder and, inside it only, the file-server upload and
+// mkdir calls (mission.go: EnableMission, AllowMissionWrites). Nothing turns
+// those on in the staging deployment.
 package nitradofixture
 
 import (
@@ -47,6 +52,8 @@ type Server struct {
 	started        bool
 	refusedWrites  int
 	requestsByPath map[string]int
+	// mission is the opt-in synthetic mission folder (mission.go); zero means no such folder.
+	mission mission
 }
 
 // restartEvery is the synthetic scheduled-restart interval (GET /services/:id/tasks).
@@ -162,9 +169,19 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.serveFile(w, r)
 		return
 	}
+	if strings.HasPrefix(path, "/_upload/") {
+		s.missionTransfer(w, r)
+		return
+	}
 	s.mu.Lock()
 	s.requestsByPath[r.Method+" "+routeLabel(path)]++
 	if r.Method != http.MethodGet {
+		s.mu.Unlock()
+		// The only writes ever accepted: the mission-folder uploads and mkdirs a test enabled.
+		if s.missionWrite(w, r) {
+			return
+		}
+		s.mu.Lock()
 		s.refusedWrites++
 		s.mu.Unlock()
 		writeJSON(w, http.StatusForbidden, map[string]string{"status": "error", "message": "nitrado fixture is read-only"})
@@ -188,6 +205,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.list(w, r.URL.Query().Get("dir"))
 	case "/services/" + id + "/gameservers/file_server/download":
 		file := r.URL.Query().Get("file")
+		if s.missionDownload(w, r, file) {
+			return
+		}
 		if !s.isADM(file) {
 			writeJSON(w, 404, map[string]string{"status": "error", "message": "file not found"})
 			return
@@ -266,6 +286,9 @@ func (s *Server) isADM(file string) bool {
 
 func (s *Server) list(w http.ResponseWriter, dir string) {
 	dir = strings.TrimRight(dir, "/")
+	if s.missionList(w, dir) {
+		return
+	}
 	entries := []any{}
 	s.mu.Lock()
 	switch dir {
@@ -289,6 +312,9 @@ func (s *Server) list(w http.ResponseWriter, dir string) {
 func (s *Server) serveFile(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		writeJSON(w, http.StatusForbidden, map[string]string{"status": "error", "message": "nitrado fixture is read-only"})
+		return
+	}
+	if s.missionServe(w, r.URL.Query().Get("file")) {
 		return
 	}
 	if !s.isADM(r.URL.Query().Get("file")) {

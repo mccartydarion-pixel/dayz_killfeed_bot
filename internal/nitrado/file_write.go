@@ -15,10 +15,12 @@ import (
 
 // File-server WRITE primitives (Champion Shop Gate A tool, docs/SHOP_GATE_A_UPLOAD.md). They are
 // called ONLY by internal/shop/missionwrite, which wraps every write in an owner-authorized, fully
-// re-verified single operation, and by internal/maprotation/mapswitch, the map rotation switch
+// re-verified single operation, by internal/maprotation/mapswitch, the map rotation switch
 // (docs/MAP_ROTATION.md: two fixed mission files, backup, read-back and rollback; upload token and
-// transfer only, never mkdir). The bot's startup, Live Sync and Shop delivery never call them
-// (enforced by missionwrite's import test).
+// transfer only, never mkdir), and by internal/stadium/stadiumwrite, the Stadium build the owner
+// requests (docs/STADIUM.md: three fixed mission files and their folders, verified backup,
+// read-back). The bot's startup, Live Sync and Shop delivery never call them (enforced by
+// missionwrite's import test).
 //
 // Protocol, from Nitrado's official PHP SDK (github.com/nitrado/NitrAPI-PHP,
 // lib/Nitrapi/Services/Gameservers/FileServer/FileServer.php: uploadToken / writeFile / createDirectory):

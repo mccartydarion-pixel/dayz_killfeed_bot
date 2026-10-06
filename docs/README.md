@@ -101,6 +101,12 @@ How to read these documents:
 | --- | --- |
 | [MAP_ROTATION.md](MAP_ROTATION.md) | Switching a server's map on restart, with a player vote. Off until three switches are on. |
 
+## Stadium
+
+| Document | What it is for |
+| --- | --- |
+| [STADIUM.md](STADIUM.md) | The tournament arena: the layout, the owner API, the guarded write to the server and the manual install steps. |
+
 ## Shop
 
 | Document | What it is for |

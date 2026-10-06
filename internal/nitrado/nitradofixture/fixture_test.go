@@ -78,3 +78,52 @@ func TestFixtureServesScheduledTasksAndClockSettings(t *testing.T) {
 		t.Fatalf("facts = %+v", facts)
 	}
 }
+
+// The mission folder is listable and downloadable once enabled, but every write stays refused
+// until a test allows writes, and even then only inside the mission folder.
+func TestFixtureMissionFolderIsReadOnlyUntilAllowed(t *testing.T) {
+	fx := New(90000001, "")
+	fx.EnableMission([]byte(`{"WorldsData":{"objectSpawnersArr":[]}}`))
+	fx.AddMissionDir("custom")
+	srv := httptest.NewServer(fx)
+	defer srv.Close()
+	client := nitrado.NewClient(srv.URL, "fixture-token-not-a-credential", nil)
+	ctx := context.Background()
+	entries, err := client.ListEntries(ctx, "90000001", MissionDir)
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("mission listing: %v %+v", err, entries)
+	}
+	if b, err := client.ReadLog(ctx, "90000001", MissionDir+"/cfggameplay.json"); err != nil || !strings.Contains(string(b), "objectSpawnersArr") {
+		t.Fatalf("mission download: %v %q", err, b)
+	}
+	if _, err := client.RequestUploadToken(ctx, "90000001", MissionDir+"/custom", "x.json"); err == nil {
+		t.Fatal("an upload token must be refused while writes are off")
+	}
+	if err := client.Mkdir(ctx, "90000001", MissionDir, "champion"); err == nil || fx.MissionDirExists("champion") {
+		t.Fatal("mkdir must be refused while writes are off")
+	}
+	if fx.Snapshot().RefusedWrites != 2 {
+		t.Fatalf("refused writes: %d", fx.Snapshot().RefusedWrites)
+	}
+	fx.AllowMissionWrites(true)
+	// Outside the mission folder: still refused.
+	if _, err := client.RequestUploadToken(ctx, "90000001", ConfigDir, "x.ADM"); err == nil {
+		t.Fatal("an upload outside the mission folder must be refused")
+	}
+	prev := nitrado.AllowInsecureUploadURL
+	nitrado.AllowInsecureUploadURL = true
+	defer func() { nitrado.AllowInsecureUploadURL = prev }()
+	target, err := client.RequestUploadToken(ctx, "90000001", MissionDir+"/custom", "x.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.PostUpload(ctx, target, []byte(`{"Objects":[]}`)); err != nil {
+		t.Fatal(err)
+	}
+	if b, ok := fx.MissionFile("custom/x.json"); !ok || string(b) != `{"Objects":[]}` || strings.Join(fx.MissionWrites(), ",") != "upload custom/x.json" {
+		t.Fatalf("stored: %v %q %v", ok, b, fx.MissionWrites())
+	}
+	if err := client.Mkdir(ctx, "90000001", MissionDir, "champion"); err != nil || !fx.MissionDirExists("champion") {
+		t.Fatalf("mkdir: %v", err)
+	}
+}

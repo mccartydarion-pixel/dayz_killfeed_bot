@@ -250,6 +250,19 @@ capability is `FAIL`.
 Exact response shapes, with examples, are in [docs/LIVE_MAP.md](LIVE_MAP.md); the machine-readable
 version is in [saas-openapi.yaml](saas-openapi.yaml).
 
+### Stadium (`docs/STADIUM.md`)
+
+Base `/api/saas/organizations/{organizationID}/installations/{installationID}/stadium`, organization
+OWNER/ADMIN only (a view-as session may only `GET`).
+
+| Route | Purpose |
+|---|---|
+| `GET` | The saved arena configuration, its preview (object count, footprint, zones, classes, items, warnings) and build state. |
+| `PUT` | Save the configuration (`Params`); `400 VALIDATION_ERROR` with a plain message. |
+| `POST /position` | The owner's (or a named player's) latest ADM position with its recorded altitude, within 24 h; `404 NOT_FOUND` otherwise. |
+| `POST /build`, `POST /remove` | Write the spawner file to `custom/champion_stadium.json` and reference it (build), or write the empty file (remove). Returns the verified `Outcome`; the server still needs a restart. |
+| `GET /file` | The spawner file as a download, for a manual upload. |
+
 ## Response DTOs
 
 None of these ever include a Nitrado ciphertext/IV/auth tag, a Discord

@@ -78,11 +78,16 @@ type App struct {
 	mapRotationImageFor func(ctx context.Context, installationID, mapID int64) (*repository.MapImage, error)
 	mapRotationAlert    func(alert discord.AdminAlert)
 	mapRotationRestarts mapRotationRestartCache
-	mapRotationWiping   sync.Map // installations whose saved characters are being cleared right now
-	mapRotationWipeCfg  mapRotationWipeConfig
-	upgradeRuns         upgradeThrottle
-	rankedTagsCache     rankedTagCache
-	forecasts           forecastCache
+	// Stadium is the tournament arena (docs/STADIUM.md); stadiumRemoteFor replaces its Nitrado
+	// access in tests and stadiumBusy keeps one build per installation at a time.
+	Stadium            *repository.StadiumRepository
+	stadiumRemoteFor   func(ctx context.Context, t repository.StadiumTarget) (stadiumRemote, error)
+	stadiumBusy        sync.Map
+	mapRotationWiping  sync.Map // installations whose saved characters are being cleared right now
+	mapRotationWipeCfg mapRotationWipeConfig
+	upgradeRuns        upgradeThrottle
+	rankedTagsCache    rankedTagCache
+	forecasts          forecastCache
 	// routePanels keeps one edited message per routed panel; nil when channel routing is off.
 	routePanels  *discord.RoutePanels
 	Sessions     *repository.SessionRepository
@@ -519,6 +524,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.Territory = repository.NewTerritoryRepository(db.Pool)
 			app.UAV = repository.NewUAVRepository(db.Pool)
 			app.MapRotation = repository.NewMapRotationRepository(db.Pool)
+			app.Stadium = repository.NewStadiumRepository(db.Pool)
 			app.Sessions = repository.NewSessionRepository(db.Pool)
 			app.Checkpoints = repository.NewCheckpointRepository(db.Pool)
 			app.Streaks = repository.NewStreakRepository(db.Pool)

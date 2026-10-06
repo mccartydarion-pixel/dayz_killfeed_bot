@@ -37,6 +37,14 @@ import (
 // deletes one fixed file, <mission folder>/storage_1/players.db, and refuses every other path. It
 // may not call the write primitives, it does not import missionwrite or the map switch, and it too
 // is reachable only from internal/app/map_rotation_worker.go.
+//
+// The last package allowed the three write primitives (upload token, transfer and mkdir) is
+// internal/stadium/stadiumwrite, the Stadium build approved in docs/STADIUM.md. It writes three
+// fixed mission files (custom/champion_stadium.json, the verified backup
+// champion/backup/cfggameplay.json.<sha12>.bak and cfggameplay.json) and creates at most the
+// custom/, champion/ and champion/backup/ folders. It is reachable from exactly one file of the
+// bot, internal/app/saas_api_stadium.go, where the owner's own Build or Remove request is the
+// approval. It does not import missionwrite or the map switch.
 func TestWriteCapabilityIsIsolated(t *testing.T) {
 	root, err := filepath.Abs(filepath.Join("..", "..", ".."))
 	if err != nil {
@@ -52,6 +60,9 @@ func TestWriteCapabilityIsIsolated(t *testing.T) {
 	const charWipe = "internal/maprotation/charwipe"
 	deletes := map[string]bool{"DeleteFile": true}
 	seenCharWipeEntry, seenDelete := false, false
+	const stadiumWrite = "internal/stadium/stadiumwrite"
+	const stadiumEntry = "internal/app/saas_api_stadium.go"
+	seenStadiumEntry := false
 	// What the worker may name from this package: the artifact primitives and what they return.
 	workerMay := map[string]bool{"InspectArtifact": true, "WriteArtifact": true, "ArtifactState": true, "ArtifactWrite": true, "Remote": true,
 		"SHA256": true, "StatusWrittenVerified": true, "StatusNotWritten": true, "StatusUncertain": true,
@@ -115,6 +126,15 @@ func TestWriteCapabilityIsIsolated(t *testing.T) {
 			if dir == mapSwitch && strings.HasSuffix(ip, "/"+self) {
 				t.Errorf("%s imports missionwrite; the map switch has its own two-file write", rel)
 			}
+			if strings.HasSuffix(ip, "/"+stadiumWrite) {
+				if rel != stadiumEntry {
+					t.Errorf("%s imports the stadium write; only %s may", rel, stadiumEntry)
+				}
+				seenStadiumEntry = true
+			}
+			if dir == stadiumWrite && (strings.HasSuffix(ip, "/"+self) || strings.HasSuffix(ip, "/"+mapSwitch)) {
+				t.Errorf("%s imports %s; the stadium write has its own fixed-file write", rel, ip)
+			}
 		}
 		if dir == worker {
 			ast.Inspect(f, func(n ast.Node) bool {
@@ -130,7 +150,7 @@ func TestWriteCapabilityIsIsolated(t *testing.T) {
 			switch x := n.(type) {
 			case *ast.CallExpr:
 				if sel, ok := x.Fun.(*ast.SelectorExpr); ok && writes[sel.Sel.Name] && !isOS(sel) && dir != self && dir != "internal/nitrado" &&
-					!(dir == mapSwitch && mapSwitchWrites[sel.Sel.Name]) {
+					!(dir == mapSwitch && mapSwitchWrites[sel.Sel.Name]) && dir != stadiumWrite {
 					t.Errorf("%s calls %s", rel, sel.Sel.Name)
 				}
 				// The delete call: the Nitrado client defines it, the character wipe calls it, nobody else.
@@ -165,6 +185,9 @@ func TestWriteCapabilityIsIsolated(t *testing.T) {
 	}
 	if !seenWorker || !seenEntry {
 		t.Fatalf("expected the delivery worker to import this package (%v) and %s to import the worker (%v)", seenWorker, workerEntry, seenEntry)
+	}
+	if !seenStadiumEntry {
+		t.Fatalf("expected %s to import the stadium write", stadiumEntry)
 	}
 }
 
