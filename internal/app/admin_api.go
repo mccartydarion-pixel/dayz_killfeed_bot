@@ -420,6 +420,8 @@ func (a *App) handleAdminListOrganizations(w http.ResponseWriter, r *http.Reques
 	}
 	f.InstallationStatus, unknownInst = adminEnumParam(p.Query, instParam, adminrepo.IsInstallationStatus)
 	f.Plan, unknownPlan = adminPlanParam(p.Query)
+	// noServer=true: only organizations with no game server connected (the accidental ones).
+	f.NoServer = strings.EqualFold(strings.TrimSpace(p.Query.Get("noServer")), "true")
 	if unknownSub || unknownInst || unknownPlan {
 		a.writeAdminJSON(w, http.StatusOK, adminList([]adminrepo.Organization{}, 0, p.Limit))
 		return
@@ -757,6 +759,7 @@ func (a *App) registerAdminAPI() {
 	a.adminHandle("GET /api/admin/live-sync", a.handleAdminLiveSync)
 	a.registerAdminBillingRoutes()
 	a.registerOwnerAPI()
+	a.registerDeleteAPI()
 	a.registerOpsAPI()
 	a.registerFlagsAPI()
 	a.registerUsersAPI()

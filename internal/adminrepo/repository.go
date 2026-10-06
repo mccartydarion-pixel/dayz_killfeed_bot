@@ -199,19 +199,24 @@ type InstallationSummary struct {
 // InstallationCount says how many there are; the detail carries all of them,
 // primary first, and the members.
 type Organization struct {
-	ID                int64                 `json:"id"`
-	Name              string                `json:"name"`
-	Slug              string                `json:"slug"`
-	CreatedAt         *string               `json:"createdAt"`
-	Owner             *string               `json:"owner"`
-	OwnerUser         *UserRef              `json:"ownerUser"`
-	MemberCount       int                   `json:"memberCount"`
-	InstallationCount int                   `json:"installationCount"`
-	DiscordGuild      *string               `json:"discordGuild"`
-	DayZServer        *string               `json:"dayzServer"`
-	Subscription      *SubscriptionInfo     `json:"subscription"`
-	Installations     []InstallationSummary `json:"installations"`
-	Members           []MemberRow           `json:"members,omitempty"`
+	ID                int64    `json:"id"`
+	Name              string   `json:"name"`
+	Slug              string   `json:"slug"`
+	CreatedAt         *string  `json:"createdAt"`
+	Owner             *string  `json:"owner"`
+	OwnerUser         *UserRef `json:"ownerUser"`
+	MemberCount       int      `json:"memberCount"`
+	InstallationCount int      `json:"installationCount"`
+	// ServerCount is how many game servers the organization has connected (through an
+	// installation, or registered to it). Zero is the "set up my server by accident" shape.
+	ServerCount int `json:"serverCount"`
+	// DiscordConnectionCount is how many Discord guilds it has connected, installation or not.
+	DiscordConnectionCount int                   `json:"discordConnectionCount"`
+	DiscordGuild           *string               `json:"discordGuild"`
+	DayZServer             *string               `json:"dayzServer"`
+	Subscription           *SubscriptionInfo     `json:"subscription"`
+	Installations          []InstallationSummary `json:"installations"`
+	Members                []MemberRow           `json:"members,omitempty"`
 }
 
 // SubscriptionRow is the website's AdminSubscription & {organization, installationCount}.
@@ -666,7 +671,18 @@ type OrganizationFilter struct {
 	Plan               string
 	SubscriptionStatus string
 	InstallationStatus string
+	// NoServer keeps only organizations with no game server connected (orgNoServerSQL).
+	NoServer bool
 }
+
+// orgServerCountSQL counts the organization's game servers: those an installation points at
+// and those registered to the organization itself.
+const orgServerCountSQL = `(SELECT COUNT(*) FROM game_servers gs WHERE gs.organization_id = o.id
+    OR EXISTS (SELECT 1 FROM installations si WHERE si.organization_id = o.id AND si.game_server_id = gs.id))`
+
+// orgNoServerSQL is the same test as a filter, written so both halves use an index.
+const orgNoServerSQL = `NOT EXISTS (SELECT 1 FROM installations ni WHERE ni.organization_id = o.id AND ni.game_server_id IS NOT NULL)
+    AND NOT EXISTS (SELECT 1 FROM game_servers ng WHERE ng.organization_id = o.id)`
 
 // The primary installation is the organization's READY one if any, else its
 // newest; its id comes from the same statement (LATERAL) and the summaries of a
@@ -678,6 +694,8 @@ SELECT o.id, o.name, o.slug, o.created_at,
        s.plan, s.status, s.trial_ends_at, s.current_period_end, COALESCE(s.billing_interval,''), COALESCE(s.cancel_at_period_end,false), s.created_at, s.updated_at,
        COALESCE(s.provider_subscription_id,'')<>'', s.owner_grant_until, COALESCE(s.owner_grant_reason,''),
        (SELECT COUNT(*) FROM installations ic WHERE ic.organization_id = o.id),
+       CASE WHEN ` + orgNoServerSQL + ` THEN 0 ELSE ` + orgServerCountSQL + ` END,
+       (SELECT COUNT(*) FROM discord_guild_connections dc WHERE dc.organization_id = o.id),
        pi.id
 FROM organizations o
 JOIN app_users u ON u.id = o.owner_user_id
@@ -707,7 +725,7 @@ func scanOrg(row pgx.Row) (orgRec, error) {
 		&owner.UserID, &owner.DisplayName, &owner.DiscordID,
 		&o.MemberCount, &plan, &status, &trial, &period, &interval, &cancelAtPeriodEnd, &sCreated, &sUpdated,
 		&stripeManaged, &grantUntil, &grantReason,
-		&o.InstallationCount, &rec.primaryID)
+		&o.InstallationCount, &o.ServerCount, &o.DiscordConnectionCount, &rec.primaryID)
 	if err != nil {
 		return orgRec{}, err
 	}
@@ -745,6 +763,9 @@ func (r *Repository) ListOrganizations(ctx context.Context, f OrganizationFilter
 	}
 	if f.InstallationStatus != "" {
 		b.where("EXISTS (SELECT 1 FROM installations fi WHERE fi.organization_id = o.id AND fi.status = " + b.arg(f.InstallationStatus) + ")")
+	}
+	if f.NoServer {
+		b.where(orgNoServerSQL)
 	}
 	rows, err := r.pool.Query(ctx, orgSelect+b.whereSQL()+" ORDER BY o.id DESC LIMIT "+b.arg(limit+1), b.args...)
 	if err != nil {

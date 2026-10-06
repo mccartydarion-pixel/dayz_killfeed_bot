@@ -214,7 +214,10 @@ the structured breakdown.
 ### `GET /api/admin/organizations`
 
 Params: `limit`, `cursor`, `search`, `plan`, `subscriptionStatus`, `installationStatus`
-(an organization matches when *any* of its installations has that status). The
+(an organization matches when *any* of its installations has that status), `noServer=true`
+(only organizations with no game server connected: no installation of theirs has a game
+server and no `game_servers` row is registered to them. This is how the Owner Hub finds
+communities created by accident). The
 website's customers filter sends `status`; on this endpoint it is an alias for
 `installationStatus` (an explicit `installationStatus` wins).
 
@@ -224,6 +227,7 @@ website's customers filter sends `status`; on this endpoint it is an alias for
   "owner": "Alice",
   "ownerUser": { "id": 3, "displayName": "Alice", "discordId": "111..." },
   "memberCount": 3, "installationCount": 1,
+  "serverCount": 1, "discordConnectionCount": 1,
   "discordGuild": "Alpha Guild", "dayzServer": "Alpha Server",
   "subscription": { "plan": "TRIAL", "status": "TRIAL", "trialEndsAt": "...", "currentPeriodEnd": null,
       "entitlements": ["killfeed", "..."], "createdAt": "...", "updatedAt": "..." },
@@ -234,6 +238,9 @@ website's customers filter sends `status`; on this endpoint it is an alias for
 * In a **list**, `installations` holds only the organization's *primary* installation
   (its `READY` one if any, otherwise its newest), first and only; `installationCount`
   is the total. `discordGuild`/`dayzServer` are that primary installation's names.
+* `serverCount` is the number of game servers connected (0 = no server connected);
+  `discordConnectionCount` is the number of Discord guilds connected, with or without an
+  installation.
 * `subscription` is `null` with no subscription row. `owner` is the owner's display
   name (the website's contract); `ownerUser` is the full reference.
 * One page = two statements (organizations, then the page's primary installations
@@ -491,6 +498,77 @@ username, globalName, avatar, createdAt, lastLoginAt, bannedAt, banReason}}`.
 The read model exposes the same state: `subscription.externallyBilled`,
 `subscription.ownerGrantUntil/ownerGrantReason` on organizations and installations,
 `installation.suspension` on the installation detail, and `members[].bannedAt`.
+
+## Deleting a community or an installation
+
+Owner only, like every write. These are the only routes that remove rows. Nothing under
+`/api/saas` reaches them, so an organization owner cannot delete anything this way. Code:
+`internal/app/admin_api_delete.go`, `internal/repository/platform_owner_delete.go`.
+
+| Route | Body | Effect |
+| --- | --- | --- |
+| `GET /organizations/{id}/delete-check` | - | What a delete would remove and every reason it would be refused. Changes nothing. |
+| `POST /organizations/{id}/delete` | `reason`, `confirm` (the organization's exact name) | Permanently deletes an **empty** organization. |
+| `GET /installations/{id}/delete-check` | - | The same check for one installation. |
+| `POST /installations/{id}/delete` | `reason`, `confirm` (the installation id, as text) | Removes the installation and its configuration; its game server is switched off and kept. |
+
+**Typed confirmation.** The server compares `confirm` itself, inside the transaction, against
+the locked row: surrounding spaces are ignored, everything else must match exactly (capital
+letters included). The website cannot skip it.
+
+**Errors.** `400 INVALID_REQUEST` no reason, no `confirm`, or `confirm` does not match;
+`401` / `403` as on every admin route (platform staff get `403` on the two POSTs);
+`404 NOT_FOUND` no such organization or installation; `409 CONFLICT` it is not safe to
+delete, with every reason in the message. Nothing is changed on any error.
+
+**An organization is empty when all of these hold** (checked in the same transaction as the
+delete, with the organization, its installations and its subscription row locked):
+
+1. no installation of it has a game server, and no `game_servers` row is registered to it;
+2. it has no live paid subscription: `provider_subscription_id` is empty, or the status is
+   `CANCELED` / `INACTIVE`. A trial or an owner grant is not a paid subscription;
+3. it has no payment records (`billing_transactions`);
+4. no table below it or its installations holds a row, other than the configuration tables
+   listed in `deleteConfigTables` (memberships, Discord connection, installation, setup
+   progress, settings, channel routes, embed templates, permissions, feature flags, zones,
+   shop catalogue, feature settings, subscription row, trial marker, organization audit log).
+
+Rule 4 is computed by walking the live foreign-key graph, not from a hand-kept list of
+"record" tables: a table added by a later migration blocks the delete until it is added to
+`deleteConfigTables`.
+
+**Deleting an empty organization removes** the organization, its memberships, its Discord
+connection(s), its installations (none has a game server) with their setup and configuration,
+its subscription row and trial marker (the owner may start a free trial again), its
+organization audit log, and a Nitrado credential stored for it that no game server uses.
+**It keeps** every user account (the owner simply has no organization any more, which the
+website shows as the player view), the `guilds` row and everything keyed by guild (players,
+player links, kills, stats), every other organization, and the `platform_audit_log`. The bot
+is not removed from the Discord server, and nothing is called in Stripe: an unused Stripe
+customer may remain there.
+
+**Removing an installation removes** the installation row and its configuration (the same
+configuration tables). **It keeps** the game server row, switched off exactly as a suspension
+switches it off (`active = FALSE`, `status = DISCONNECTED`, worker stopped) and released from
+the organization (`organization_id = NULL`), so no worker, scheduler or poster picks it up and
+the slot is gone from the hubs; all gameplay data (kills, deaths, players, player links,
+stats, seasons: keyed by guild and game server); the organization, its members, its Discord
+connection and its Nitrado credential. It is refused (`409`) while the organization has a
+live paid subscription (cancel it first; nothing here calls Stripe) and while the
+installation holds records that are not configuration (shop orders, factions, CASE cases or
+add-on billing, base security records): suspend such an installation instead. Once an
+organization's installations are removed it is empty and can be deleted.
+
+**Not implemented:** deleting gameplay data, deleting a game server row, and a one-step
+delete of an organization that has servers, payments or records.
+
+**Audit.** A delete writes its `platform_audit_log` row in the same transaction: action
+`organization.deleted` / `installation.deleted`, `actor_discord_id`, `target_id`,
+`organization_id`, `reason`, `created_at`, and `before_state` holding the snapshot (name,
+slug, owner Discord id and name, member / installation / game-server counts, Discord guild
+names, subscription plan and status, rows removed per table). A delete refused with `409`
+is recorded as `organization.delete_refused` / `installation.delete_refused` with result
+`REFUSED` and the blockers.
 
 ## Operations console
 
