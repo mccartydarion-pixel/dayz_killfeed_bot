@@ -187,6 +187,8 @@ components:
         ownerUser: { $ref: "#/components/schemas/UserRef" }
         memberCount: { type: integer }
         installationCount: { type: integer }
+        serverCount: { type: integer, description: Game servers connected; 0 means no server connected. }
+        discordConnectionCount: { type: integer, description: Discord guilds connected, with or without an installation. }
         discordGuild: { type: string, nullable: true }
         dayzServer: { type: string, nullable: true }
         subscription: { $ref: "#/components/schemas/Subscription" }
@@ -467,6 +469,7 @@ paths:
         - { name: subscriptionStatus, in: query, schema: { $ref: "#/components/schemas/SubscriptionStatus" } }
         - { name: installationStatus, in: query, schema: { $ref: "#/components/schemas/InstallationStatus" } }
         - { name: status, in: query, schema: { $ref: "#/components/schemas/InstallationStatus" }, description: "Alias for installationStatus (the website's customers filter); an explicit installationStatus wins." }
+        - { name: noServer, in: query, schema: { type: boolean }, description: "true = only organizations with no game server connected." }
       responses:
         "200":
           description: OK
