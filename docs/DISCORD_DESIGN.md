@@ -266,7 +266,7 @@ these rules were applied. C = crimson, G = gold, Gr = green, A = amber, R = red,
 | 41 | Battle pass season ends | same | yes | G | `🏁 <season> has ended` | none | server | none | yes |
 | 42 | Ranked: bounty on a player | `app/ranked_bonuses.go` | yes | C | `💀 Bounty on <player>` | none | none | none | yes |
 | 43 | Ranked: bounty claimed | same | yes | C | `🎯 Bounty claimed` | none | none | embed timestamp | yes |
-| 44 | Ranked: rank-up | same | yes | G | `🏅 <player> reached <tier>` | none | server | none | yes |
+| 44 | Ranked: rank-up | same | yes | G | `🏅 <player> reached <tier>` (thumbnail: the tier icon) | none | server | none | yes |
 | 45 | Ranked: week in review | same | yes | N | `📊 Ranked week in review` | `Top climbers`, three inline records | server | written dates (a UTC week) | yes |
 | 46 | Double RP coming / live / ended | `app/rp_boosts.go` | yes | G | `⚡ 2× RP is live` ... | `Starts` `Ends`, leaders, Player Hub link | none | `<t:F> (<t:R>)` | yes |
 | 47 | Territory captured / unclaimed | `app/territory.go` | yes | C captured, N unclaimed | `🏴 <zone> captured` | none | none | none | yes |
@@ -300,7 +300,7 @@ these rules were applied. C = crimson, G = gold, Gr = green, A = amber, R = red,
 | 70 | Shop ticket opened (in the ticket channel) | same | yes | R | `🎫 Ticket #7 · order #1042` | `What went wrong`, `Order`, `Reported from` `Opened` inline, `Staff` | none | `<t:f>` | yes |
 | 71 | Shop ticket closed | same | yes | Gr | `✅ Ticket #7 closed` | `Note from staff` | none | none | yes |
 | 72 | Shop progress (received, on its way, needs a hand, refunded) | `app/upgrade_shop.go` | yes | Gr | `📦 Order received` ... | none | none | none | yes |
-| 73 | Rank-up | `app/ranked_bonuses.go` `buildRankUpDM` | yes | G | `🏅 You reached <tier>` | Player Hub link | none | none | yes |
+| 73 | Rank-up | `app/ranked_bonuses.go` `buildRankUpDM` | yes | G | `🏅 You reached <tier>` (thumbnail: the tier icon) | Player Hub link | none | none | yes |
 | 74 | Supporter tier received | `app/vip.go` | yes | G, or the owner's tier colour | `💎 You received the <tier> tier` | `What you get`, `Yours until`, Player Hub link | none | `<t:f>` | yes |
 | 75 | Supporter tier ending, perk gifted | `app/upgrade_perks.go` | yes | G | `⏰ Your <tier> tier ends soon`, `🎁 You got a gift` | none | none | none | yes |
 | 76 | We miss you | `app/upgrade_dms.go` | yes | C | `👋 We miss you on <server>` | Player Hub link | none | none | yes |

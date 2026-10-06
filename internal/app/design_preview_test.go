@@ -84,7 +84,7 @@ func designPreviewCards() []designPreviewCard {
 	add("battle-pass-end", "Battle pass: a season ends", "Progression", "", buildBattlePassEndCard(season, []repository.BattlePassProgress{
 		{Name: "Sample_Raven", XP: 48250, Level: 30}, {Name: "Fictional_Fox", XP: 31900, Level: 24}, {Name: "Made_Up_Moose", XP: 12040, Level: 11},
 	}, previewServer))
-	add("rank-up", "Ranked: a player ranks up", "Progression", "", buildRankUpCard(repository.RankUp{Name: "Sample_Raven", From: ranked.Gold, To: ranked.Platinum, RP: 12850, Position: 3}, previewServer))
+	add("rank-up", "Ranked: a player ranks up", "Progression", "", buildRankUpCard(repository.RankUp{Name: "Sample_Raven", From: ranked.Gold, To: ranked.Platinum, RP: 12850, Position: 3}, previewServer, "https://example.invalid"))
 	add("ranked-wanted", "Ranked: a bounty on the top player", "Progression", "", buildWantedCard(repository.WantedPlayer{Name: "Sample_Raven", Reason: repository.WantedStreak, Streak: 12, RP: 12850, Bounty: 500}, previewServer))
 	add("ranked-week-recap", "Ranked: week in review", "Progression", "", buildWeeklyRecapCard(repository.RankedRecap{
 		WeekStart: time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC), Kills: 1482,
@@ -126,7 +126,7 @@ func designPreviewCards() []designPreviewCard {
 	message("dm-winback", "DM: we miss you", "Direct messages", buildWinbackDM("Sample_Raven", previewServer, 21, []string{"• A new battle pass season started."}, "https://example.invalid/dashboard/player"))
 	bountyTitle, bountyDesc := buildBountyPlacerDM("Fictional_Fox", 25000, "CLAIMED", "Sample_Raven")
 	add("dm-bounty-claimed", "DM: the bounty you placed was claimed", "Direct messages", "", upgradeEmbed("Bounties", bountyTitle, bountyDesc, presentation.Crimson))
-	message("dm-rank-up", "DM: you ranked up", "Direct messages", buildRankUpDM(repository.RankUp{Name: "Sample_Raven", To: ranked.Platinum, RP: 12850, Position: 3}, previewServer, "https://example.invalid/dashboard/player"))
+	message("dm-rank-up", "DM: you ranked up", "Direct messages", buildRankUpDM(repository.RankUp{Name: "Sample_Raven", To: ranked.Platinum, RP: 12850, Position: 3}, previewServer, "https://example.invalid/dashboard/player", "https://example.invalid"))
 	return cards
 }
 
