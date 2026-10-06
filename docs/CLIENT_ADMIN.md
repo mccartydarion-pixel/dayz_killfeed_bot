@@ -229,8 +229,8 @@ same standard `docs/NITRADO_DELTA_READS.md` applied to the seek/offset-count end
 |---|---|---|
 | restart | **NITRADO API** | `POST /services/{id}/gameservers/restart` (optional `message`) |
 | stop | **NITRADO API** | `POST /services/{id}/gameservers/stop` (optional `message`) |
-| whitelist add/remove | **NITRADO API** | `POST`/`DELETE /services/{id}/gameservers/games/whitelist` (`identifier`) |
-| banlist add/remove | **NITRADO API** | `POST`/`DELETE /services/{id}/gameservers/games/banlist` (`identifier`) |
+| whitelist add/remove | **NITRADO API** | read `settings.general.whitelist` from `GET /services/{id}/gameservers`, write the whole list back with `POST /services/{id}/gameservers/settings` (`category: general`, `key: whitelist`); one player name per line |
+| banlist add/remove | **NITRADO API** | the same, with `key: bans`. The earlier `/gameservers/games/banlist` call was answered 501 by live Nitrado |
 | start (already-installed, currently-stopped server) | **UNVERIFIED** | No distinct endpoint found in the SDK separate from `restart`; `autoStart`'s design assumes `restart` also starts a stopped server (common in game panels) but this was not verified live - see Deferred |
 | priority queue | **NITRADO API (settings write)** | One setting, `settings.general.priority`, one name per line: read from `GET /services/{id}/gameservers`, replaced with `POST /services/{id}/gameservers/settings` (`category=general`, `key=priority`, `value`). Not in Nitrado's PHP SDK; the call shape is the one behind the web panel's "Prioritized players" field and the one community clients use. Champion reads before every write and refuses to write when the setting is absent (`internal/nitrado/priority.go`). Not yet exercised against a live service |
 | ban list *duration* | **DEFERRED** | Nitrado's banlist API takes only `identifier`, no duration/expiry - Champion's own `installation_access_entries.expires_at` records the intent, but nothing currently enforces an automatic un-ban when it passes (see Deferred) |

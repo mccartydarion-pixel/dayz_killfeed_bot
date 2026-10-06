@@ -4,10 +4,12 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -105,6 +107,7 @@ func (w *clientAdminWorld) seedPlayer(name string) int64 {
 func withFakeNitradoActions(t *testing.T, a *App) *[]string {
 	t.Helper()
 	calls := &[]string{}
+	general := map[string]string{"whitelist": "", "bans": "", "priority": ""}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		*calls = append(*calls, r.Method+" "+r.URL.Path)
 		if r.URL.Path == "/services" {
@@ -112,6 +115,17 @@ func withFakeNitradoActions(t *testing.T, a *App) *[]string {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(psServiceJSON))
 			return
+		}
+		// The whitelist and ban list are settings (one name per line), read and written whole.
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/gameservers") {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"gameserver": map[string]any{"settings": map[string]any{"general": general}}}})
+			return
+		}
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/gameservers/settings") {
+			var body map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			general[body["key"]] = body["value"]
 		}
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -432,7 +446,7 @@ func TestWhitelistAddListRemoveRoundTrip(t *testing.T) {
 	}
 	sawAdd := false
 	for _, c := range *calls {
-		if c == "POST /services/"+w.providerServiceID+"/gameservers/games/whitelist" {
+		if c == "POST /services/"+w.providerServiceID+"/gameservers/settings" {
 			sawAdd = true
 		}
 	}
@@ -454,7 +468,7 @@ func TestWhitelistAddListRemoveRoundTrip(t *testing.T) {
 	}
 	sawRemove := false
 	for _, c := range *calls {
-		if c == "DELETE /services/"+w.providerServiceID+"/gameservers/games/whitelist" {
+		if c == "POST /services/"+w.providerServiceID+"/gameservers/settings" {
 			sawRemove = true
 		}
 	}
