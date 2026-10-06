@@ -16,7 +16,7 @@ func TestFileNameValidation(t *testing.T) {
 		}
 	}
 	for _, bad := range []string{"", ".json", "arena1", "arena1.xml", "custom/arena1.json", "../arena1.json", "..json", "a..b.json", `a\b.json`, "arena 1.json",
-		"arena1.json ", "arena%2f.json", "arena1.json\x00", ".hidden.json", strings.Repeat("a", 76) + ".json", "ärena.json", "champion_shop_delivery.json", "Champion_Shop_Delivery.JSON"} {
+		"arena1.json ", "arena%2f.json", "arena1.json\x00", ".hidden.json", strings.Repeat("a", 76) + ".json", "ärena.json", "champion_shop_delivery.json", "Champion_Shop_Delivery.JSON", "champion_stadium.json", "CHAMPION_STADIUM.json"} {
 		if err := ValidateMapFile(bad); err == nil {
 			t.Errorf("map file %q accepted", bad)
 		}
@@ -86,6 +86,36 @@ func TestEditSpawnersCollapsesSeveralOwnEntriesAndMatchesLoosely(t *testing.T) {
 	}
 	if want := `{"WorldsData": {"objectSpawnersArr": ["custom/arena2.json", "custom/keep.json", "other/arena1.json"], "k": true}}`; string(ed.Out) != want {
 		t.Fatalf("single-line style not kept: %s", ed.Out)
+	}
+}
+
+// The Stadium adds Champion's own reserved file (which no owner can configure as a map) once and
+// keeps everything else; the same call on the result changes nothing.
+func TestEditChampionSpawnerAddsTheReservedFileOnce(t *testing.T) {
+	if !IsReservedName("champion_stadium.json") || !IsReservedName("Champion_Shop_Delivery.JSON") || IsReservedName("arena1.json") {
+		t.Fatal("reserved names")
+	}
+	if _, err := EditChampionSpawner([]byte(gameplayFixture), "arena1.json"); !errors.Is(err, ErrFileName) {
+		t.Fatalf("an owner's map name must be refused here: %v", err)
+	}
+	ed, err := EditChampionSpawner([]byte(gameplayFixture), "champion_stadium.json")
+	if err != nil || !ed.Changed {
+		t.Fatalf("edit: %v changed=%v", err, ed.Changed)
+	}
+	if got := strings.Join(spawners(t, ed.Out), ","); got != "custom/shop.json,custom/arena1.json,custom/loadouts.json,custom/champion_stadium.json" {
+		t.Fatalf("entries: %s", got)
+	}
+	again, err := EditChampionSpawner(ed.Out, "champion_stadium.json")
+	if err != nil || again.Changed || !bytes.Equal(again.Out, ed.Out) {
+		t.Fatalf("second edit: %v changed=%v", err, again.Changed)
+	}
+	// A rotation switch never removes it, whatever the owner's maps are called.
+	sw, err := EditSpawners(ed.Out, []string{"arena1.json", "champion_stadium.json"}, "arena1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(spawners(t, sw.Out), ","); got != "custom/shop.json,custom/arena1.json,custom/loadouts.json,custom/champion_stadium.json" {
+		t.Fatalf("after a switch: %s", got)
 	}
 }
 

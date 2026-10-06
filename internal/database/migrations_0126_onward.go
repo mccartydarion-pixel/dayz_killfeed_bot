@@ -37,4 +37,10 @@ var migrations0126onward = []Migration{
 		Name: "0130_ranked_cooldown_changes",
 		SQL:  RankedCooldownChangesSQL,
 	},
+	{
+		// The Stadium (docs/STADIUM.md): the owner's arena configuration and its build state, one
+		// row per installation. Additive.
+		Name: "0131_stadiums",
+		SQL:  StadiumSQL,
+	},
 }

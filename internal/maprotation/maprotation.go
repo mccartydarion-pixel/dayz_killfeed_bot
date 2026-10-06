@@ -76,8 +76,13 @@ var (
 
 var fileNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,80}$`)
 
-// reservedNames are Champion's own files inside custom/.
-var reservedNames = map[string]bool{"champion_shop_delivery.json": true}
+// reservedNames are Champion's own files inside custom/: the Shop delivery file and the Stadium
+// (docs/STADIUM.md). Neither can be a rotation map, so a switch never removes them from
+// objectSpawnersArr.
+var reservedNames = map[string]bool{"champion_shop_delivery.json": true, "champion_stadium.json": true}
+
+// IsReservedName reports whether name (a base name in custom/) is one of Champion's own files.
+func IsReservedName(name string) bool { return reservedNames[strings.ToLower(name)] }
 
 func validateName(name, ext string, extErr error) error {
 	if !fileNameRe.MatchString(name) || strings.Contains(name, "..") || strings.HasPrefix(name, ".") {

@@ -102,6 +102,9 @@ type Paths struct {
 // ProbeDirs returns the folders worth listing when the saved-characters file is not found.
 func (p Paths) ProbeDirs() []string { return append([]string(nil), p.probeDirs...) }
 
+// Root is the service's file-browser root ("/games/<account>") every path here lies inside.
+func (p Paths) Root() string { return p.root }
+
 // File returns the full path of a file directly inside dir (the mission or the custom folder).
 // name must be a plain file name.
 func (p Paths) File(dir, name string) (string, error) {

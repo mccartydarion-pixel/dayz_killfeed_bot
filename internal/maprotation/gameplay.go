@@ -44,10 +44,24 @@ func normalizeEntry(e string) string {
 // changes. A WorldsData without objectSpawnersArr gets the key. A file that is not valid JSON, has
 // no WorldsData object or whose objectSpawnersArr is not a list of strings is refused.
 func EditSpawners(current []byte, owned []string, add string) (GameplayEdit, error) {
-	var ed GameplayEdit
 	if err := ValidateMapFile(add); err != nil {
-		return ed, err
+		return GameplayEdit{}, err
 	}
+	return editSpawners(current, owned, add)
+}
+
+// EditChampionSpawner is EditSpawners for one of Champion's own reserved files (IsReservedName):
+// it adds custom/<name> to objectSpawnersArr, once, and changes nothing else. An owner-supplied
+// name is refused here just as a reserved name is refused by EditSpawners.
+func EditChampionSpawner(current []byte, name string) (GameplayEdit, error) {
+	if !IsReservedName(name) {
+		return GameplayEdit{}, ErrFileName
+	}
+	return editSpawners(current, nil, name)
+}
+
+func editSpawners(current []byte, owned []string, add string) (GameplayEdit, error) {
+	var ed GameplayEdit
 	body := current
 	if bytes.HasPrefix(body, utf8BOM) {
 		body = body[len(utf8BOM):]
