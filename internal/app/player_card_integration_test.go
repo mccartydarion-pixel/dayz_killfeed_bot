@@ -4,6 +4,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"image/png"
 	"net/http"
@@ -12,6 +13,8 @@ import (
 	"time"
 
 	"github.com/yourname/dayz-killfeed/internal/playercard"
+	"github.com/yourname/dayz-killfeed/internal/ranked"
+	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
 // Champion Card over the real routes and a real PostgreSQL (docs/CHAMPION_CARD.md).
@@ -48,8 +51,12 @@ func TestPlayerCardDataImageAndShareLifecycle(t *testing.T) {
 		t.Fatalf("unshared, factionless card carries share/faction: %v", card)
 	}
 	tiles := card["tiles"].([]any)
-	if len(tiles) != 8 || tiles[0].(map[string]any)["value"] != "3" || tiles[7].(map[string]any)["value"] != "#2" {
+	if len(tiles) != 8 || tiles[0].(map[string]any)["value"] != "3" || tiles[7].(map[string]any)["value"] != "#2" || tiles[7].(map[string]any)["note"] != "of 2 · by kills" {
 		t.Fatalf("tiles = %v", tiles)
+	}
+	// No Ranked repository wired at all: the card still comes, without a season.
+	if r := card["ranked"].(map[string]any); r["status"] != "NOT_STARTED" {
+		t.Fatalf("ranked = %v", r)
 	}
 
 	img := w.expect(w.do(http.MethodGet, w.cardPath(w.a1.InstallationID, ".png"), actor, nil), http.StatusOK, "own card png")
@@ -108,6 +115,63 @@ func TestPlayerCardDataImageAndShareLifecycle(t *testing.T) {
 	fresh := w.expect(w.do(http.MethodPost, w.cardPath(w.a1.InstallationID, "/share"), actor, nil), http.StatusOK, "reshare").JSON(t)
 	if fresh["token"] == token {
 		t.Fatal("re-sharing reused the revoked token")
+	}
+}
+
+// The card's Ranked standing follows the server's Ranked Points season: NOT_STARTED before one,
+// then the tier, RP and position the ranked route reports, on every way to the card.
+func TestPlayerCardCarriesTheRankedSeason(t *testing.T) {
+	w := newFactionWorld(t)
+	w.a.Ranked = repository.NewRankedRepository(w.a.DB.Pool)
+	w.a.Config.SiteBaseURL = "https://championshp.vip"
+	actor := w.players[0]
+	player := w.linkPlayer(w.a1, actor, "RankedCard")
+	w.insertKill(w.a1, player, time.Now().UTC().Add(-time.Minute), false) // before the season: never awarded
+	path := w.cardPath(w.a1.InstallationID, "")
+
+	before := w.getJSON(path, actor)
+	if r := before["ranked"].(map[string]any); r["status"] != "NOT_STARTED" || len(r) != 1 {
+		t.Fatalf("ranked before the season = %v", r)
+	}
+	if _, err := png.Decode(bytes.NewReader(w.expect(w.do(http.MethodGet, w.cardPath(w.a1.InstallationID, ".png"), actor, nil), http.StatusOK, "card before season").Body)); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	guild, server := w.gameContext(w.a1)
+	if _, err := w.a.Ranked.StartServerSeason(ctx, guild, server, 100, ranked.Thresholds{100, 300, 600, 1000, 1500, 2100, 2800}, ranked.DefaultSameVictimCooldownMinutes, false, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	zero := w.getJSON(path, actor)["ranked"].(map[string]any)
+	if zero["status"] != "ACTIVE" || zero["tier"] != "UNRANKED" || zero["rp"].(float64) != 0 || zero["position"] != nil || zero["nextTier"] != "ROOKIE" || zero["remainingRp"].(float64) != 100 || zero["tierStartRp"].(float64) != 0 || zero["nextTierRp"].(float64) != 100 {
+		t.Fatalf("ranked at the start of the season = %v", zero)
+	}
+
+	w.insertKill(w.a1, player, time.Now().UTC(), false)
+	var killID int64
+	if err := w.a.DB.Pool.QueryRow(ctx, `SELECT id FROM kills WHERE server_id=$1 AND killer_player_id=$2 ORDER BY id DESC LIMIT 1`, server, player).Scan(&killID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.a.Ranked.AwardActiveServerKill(ctx, server, killID); err != nil {
+		t.Fatal(err)
+	}
+	card := w.getJSON(path, actor)
+	rookie := card["ranked"].(map[string]any)
+	if rookie["status"] != "ACTIVE" || rookie["tier"] != "ROOKIE" || rookie["rp"].(float64) != 100 || rookie["position"].(float64) != 1 || rookie["nextTier"] != "BRONZE" || rookie["remainingRp"].(float64) != 200 || rookie["tierStartRp"].(float64) != 100 || rookie["nextTierRp"].(float64) != 300 {
+		t.Fatalf("ranked after an award = %v", rookie)
+	}
+	// The same standing reaches the public share page and image.
+	token := w.expect(w.do(http.MethodPost, w.cardPath(w.a1.InstallationID, "/share"), actor, nil), http.StatusOK, "share").JSON(t)["token"].(string)
+	shared := w.expect(w.do(http.MethodGet, "/api/saas/cards/"+token, "", nil), http.StatusOK, "shared card data").JSON(t)
+	if r := shared["ranked"].(map[string]any); r["tier"] != "ROOKIE" || r["rp"].(float64) != 100 {
+		t.Fatalf("shared ranked = %v", r)
+	}
+	public := w.publicGet(http.MethodGet, "/cards/"+token+".png", nil)
+	if public.Status != http.StatusOK {
+		t.Fatalf("public card: %d", public.Status)
+	}
+	if _, err := png.Decode(bytes.NewReader(public.Body)); err != nil {
+		t.Fatal(err)
 	}
 }
 

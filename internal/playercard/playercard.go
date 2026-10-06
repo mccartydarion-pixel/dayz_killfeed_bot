@@ -10,16 +10,12 @@ import (
 	"image/color"
 	"image/draw"
 	"image/png"
+	"math"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/yourname/dayz-killfeed/internal/deathstats"
-	"golang.org/x/image/font"
-	"golang.org/x/image/font/gofont/gobold"
-	"golang.org/x/image/font/gofont/goregular"
-	"golang.org/x/image/font/opentype"
-	"golang.org/x/image/math/fixed"
+	"github.com/yourname/dayz-killfeed/internal/ranked"
 )
 
 // Width and Height are the Open Graph image size.
@@ -28,14 +24,17 @@ const (
 	Height = 630
 )
 
-// Card is everything the image shows. Pointer fields are optional: a nil value's tile shows an em
-// dash rather than a made-up number.
+// Card is everything the image shows. Pointer fields are optional: a nil value's tile shows a dash
+// rather than a made-up number.
 type Card struct {
 	PlayerName  string
 	ServerName  string
 	FactionName string
 	FactionTag  string
 	SeasonName  string
+	// SiteHost is the website's host name ("championshp.vip") for the footer; empty shows the date
+	// the card was generated instead.
+	SiteHost string
 
 	Kills  int
 	Deaths int // every death
@@ -51,7 +50,41 @@ type Card struct {
 	Rank          *int
 	RankedPlayers int
 
+	// Ranked is the player's standing in the server's Ranked Points season; nil when the server has
+	// no active season.
+	Ranked *Ranked
+
 	GeneratedAt time.Time
+}
+
+// Ranked is one player's place in a server's active Ranked Points season, as
+// repository.ServerRankedProgress reports it.
+type Ranked struct {
+	Tier ranked.Tier
+	RP   int64
+	// Position is the player's place on the server by RP; nil until they have any.
+	Position *int64
+	// NextTier, Remaining and NextTierRP describe the climb out of the current tier, which starts
+	// at TierStartRP. At Master there is nowhere to climb: NextTier is "" and NextTierRP nil.
+	NextTier    ranked.Tier
+	Remaining   int64
+	TierStartRP int64
+	NextTierRP  *int64
+}
+
+// AtTop reports whether there is no tier above the player's.
+func (r Ranked) AtTop() bool { return r.NextTier == "" || r.NextTierRP == nil }
+
+// Progress is how far the player is through their tier, 0 to 1; 1 at the top tier.
+func (r Ranked) Progress() float64 {
+	if r.AtTop() {
+		return 1
+	}
+	span := *r.NextTierRP - r.TierStartRP
+	if span <= 0 {
+		return 0
+	}
+	return clamp01(float64(r.RP-r.TierStartRP) / float64(span))
 }
 
 // KD follows the convention used everywhere else: kills when there are no deaths.
@@ -78,153 +111,63 @@ func (c Card) PvPKD() (kd float64, ok bool) {
 	return deathstats.KD(int64(c.Kills), int64(*c.PvPDeaths)), true
 }
 
-var (
-	colBackground = color.RGBA{0x14, 0x17, 0x1A, 0xFF}
-	colTile       = color.RGBA{0x1E, 0x23, 0x27, 0xFF}
-	colGold       = color.RGBA{0xC9, 0xA2, 0x27, 0xFF} // presentation.ChampionGold
-	colWhite      = color.RGBA{0xF2, 0xF2, 0xF0, 0xFF}
-	colMuted      = color.RGBA{0x8B, 0x93, 0x9B, 0xFF}
-)
+// --- palette ---------------------------------------------------------------------------------------
 
 var (
-	fontsOnce sync.Once
-	fontsErr  error
-	boldFont  *opentype.Font
-	plainFont *opentype.Font
-	facesMu   sync.Mutex
-	faces     = map[faceKey]font.Face{}
+	colBackgroundTop    = rgb(0x0F1114)
+	colBackgroundBottom = rgb(0x171B20)
+	colGold             = rgb(0xC9A227) // presentation.ChampionGold
+	colWhite            = rgb(0xF2F2F0)
+	colMuted            = rgb(0x8B939B)
+	colTile             = rgb(0x1B1F24)
+	colTileBorder       = rgb(0x2A3036)
+	colHairline         = rgb(0x272D33)
 )
 
-type faceKey struct {
-	bold bool
-	size float64
+// tierPalette is a tier's colours, taken from its emblem: a highlight, a mid tone, a shadow and the
+// glow behind the emblem.
+type tierPalette struct{ hi, mid, lo, glow color.RGBA }
+
+var tierPalettes = map[ranked.Tier]tierPalette{
+	ranked.Unranked: {rgb(0xa9aeba), rgb(0x6b707c), rgb(0x3a3d45), rgb(0x8a8f9b)},
+	ranked.Rookie:   {rgb(0xb7dcc0), rgb(0x5f8f6f), rgb(0x2f4a3a), rgb(0x7fc797)},
+	ranked.Bronze:   {rgb(0xf0b47a), rgb(0xb0692f), rgb(0x5a2f14), rgb(0xe08a3c)},
+	ranked.Silver:   {rgb(0xf4f7fb), rgb(0xa7b1c0), rgb(0x4c5563), rgb(0xcfd8e6)},
+	ranked.Gold:     {rgb(0xfff0a8), rgb(0xe0a81e), rgb(0x7a4d05), rgb(0xffcf3f)},
+	ranked.Platinum: {rgb(0xe4fffb), rgb(0x57c7c9), rgb(0x1f5b63), rgb(0x6ff0e6)},
+	ranked.Diamond:  {rgb(0xe3f0ff), rgb(0x4f8dff), rgb(0x1b3a8f), rgb(0x6fb0ff)},
+	ranked.Master:   {rgb(0xffc2b8), rgb(0xe0162a), rgb(0x6d0710), rgb(0xff3b4a)},
 }
 
-func loadFonts() error {
-	fontsOnce.Do(func() {
-		if boldFont, fontsErr = opentype.Parse(gobold.TTF); fontsErr != nil {
-			return
-		}
-		plainFont, fontsErr = opentype.Parse(goregular.TTF)
-	})
-	return fontsErr
+// paletteFor is a tier's colours; a tier this build does not know is drawn as Unranked, like its emblem.
+func paletteFor(t ranked.Tier) tierPalette {
+	if p, ok := tierPalettes[t]; ok {
+		return p
+	}
+	return tierPalettes[ranked.Unranked]
 }
 
-func face(bold bool, size float64) (font.Face, error) {
-	facesMu.Lock()
-	defer facesMu.Unlock()
-	key := faceKey{bold, size}
-	if f, ok := faces[key]; ok {
-		return f, nil
-	}
-	src := plainFont
-	if bold {
-		src = boldFont
-	}
-	f, err := opentype.NewFace(src, &opentype.FaceOptions{Size: size, DPI: 72, Hinting: font.HintingFull})
-	if err != nil {
-		return nil, err
-	}
-	faces[key] = f
-	return f, nil
-}
+// The type styles of the card (docs/CHAMPION_CARD.md, "Layout").
+var (
+	stEyebrow     = style{manropeBold, 22, 0.16}
+	stServer      = style{manropeMedium, 22, 0}
+	stName        = style{soraExtraBold, 80, 0}
+	stSubline     = style{manropeMedium, 26, 0}
+	stPill        = style{manropeBold, 18, 0.12}
+	stRP          = style{soraExtraBold, 26, 0}
+	stPosition    = style{manropeMedium, 22, 0}
+	stCaption     = style{manropeMedium, 18, 0}
+	stNoSeason    = style{manropeMedium, 22, 0}
+	stLabel       = style{manropeBold, 16, 0.14}
+	stValue       = style{soraExtraBold, 46, 0}
+	stNote        = style{manropeMedium, 15, 0}
+	stFooter      = style{manropeBold, 16, 0.14}
+	stFooterRight = style{manropeMedium, 16, 0}
+)
 
-// printable replaces every rune the face has no glyph for (and control characters) with '?', so a
-// gamertag in an unsupported script never renders as a row of empty boxes of unknown width.
-func printable(f font.Face, s string) string {
-	var b strings.Builder
-	for _, r := range strings.TrimSpace(s) {
-		if r < 0x20 || r == 0x7F {
-			continue
-		}
-		if _, ok := f.GlyphAdvance(r); !ok {
-			b.WriteRune('?')
-			continue
-		}
-		b.WriteRune(r)
-	}
-	return b.String()
-}
+// --- formatting ------------------------------------------------------------------------------------
 
-type canvas struct {
-	img *image.RGBA
-	err error
-}
-
-func (c *canvas) rect(x, y, w, h int, col color.Color) {
-	draw.Draw(c.img, image.Rect(x, y, x+w, y+h), image.NewUniform(col), image.Point{}, draw.Src)
-}
-
-// roundRect fills a rectangle with corners of radius r.
-func (c *canvas) roundRect(x, y, w, h, r int, col color.RGBA) {
-	for py := 0; py < h; py++ {
-		for px := 0; px < w; px++ {
-			dx, dy := 0, 0
-			switch {
-			case px < r:
-				dx = r - px
-			case px >= w-r:
-				dx = px - (w - r - 1)
-			}
-			switch {
-			case py < r:
-				dy = r - py
-			case py >= h-r:
-				dy = py - (h - r - 1)
-			}
-			if dx > 0 && dy > 0 && dx*dx+dy*dy > r*r {
-				continue
-			}
-			c.img.SetRGBA(x+px, y+py, col)
-		}
-	}
-}
-
-func (c *canvas) width(bold bool, size float64, s string) int {
-	f, err := face(bold, size)
-	if err != nil {
-		c.err = err
-		return 0
-	}
-	return font.MeasureString(f, printable(f, s)).Ceil()
-}
-
-// text draws s with its baseline at y. align is -1 (x is the left edge), 0 (centre) or 1 (right edge).
-func (c *canvas) text(x, y int, bold bool, size float64, col color.Color, align int, s string) {
-	f, err := face(bold, size)
-	if err != nil {
-		c.err = err
-		return
-	}
-	s = printable(f, s)
-	w := font.MeasureString(f, s).Ceil()
-	switch align {
-	case 0:
-		x -= w / 2
-	case 1:
-		x -= w
-	}
-	d := font.Drawer{Dst: c.img, Src: image.NewUniform(col), Face: f, Dot: fixed.P(x, y)}
-	d.DrawString(s)
-}
-
-// fit returns the largest size from sizes at which s fits maxWidth, and s truncated with an
-// ellipsis if even the smallest does not.
-func (c *canvas) fit(bold bool, sizes []float64, maxWidth int, s string) (float64, string) {
-	for _, size := range sizes {
-		if c.width(bold, size, s) <= maxWidth {
-			return size, s
-		}
-	}
-	size := sizes[len(sizes)-1]
-	r := []rune(s)
-	for len(r) > 1 && c.width(bold, size, string(r)+"...") > maxWidth {
-		r = r[:len(r)-1]
-	}
-	return size, string(r) + "..."
-}
-
-func thousands(n int) string {
+func thousands(n int64) string {
 	s := fmt.Sprint(n)
 	neg := strings.HasPrefix(s, "-")
 	s = strings.TrimPrefix(s, "-")
@@ -255,11 +198,37 @@ func FormatDuration(seconds int64) string {
 	}
 }
 
+// TierName is a tier in title case: "Platinum" for PLATINUM.
+func TierName(t ranked.Tier) string {
+	s := strings.ToLower(strings.TrimSpace(string(t)))
+	if s == "" {
+		return ""
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
+}
+
+// subline is the line under the name: the faction (with its tag) and the season, whichever exist.
+func (c Card) subline() string {
+	var parts []string
+	switch {
+	case c.FactionTag != "" && c.FactionName != "":
+		parts = append(parts, "["+c.FactionTag+"] "+c.FactionName)
+	case c.FactionName != "":
+		parts = append(parts, c.FactionName)
+	}
+	if c.SeasonName != "" {
+		parts = append(parts, c.SeasonName)
+	}
+	return strings.Join(parts, "  ·  ")
+}
+
+// --- tiles -----------------------------------------------------------------------------------------
+
 type tile struct {
 	label string
 	value string
 	gold  bool
-	// note is a small caption under the figure: the PvP/PvE split of the tile's figure.
+	// note is a small caption under the figure: the PvP/PvE split, or what the server rank counts.
 	note string
 }
 
@@ -273,7 +242,8 @@ func (c Card) Tiles() [][2]string {
 }
 
 // TileNotes is the small caption of each tile, in the order of Tiles ("" for a tile without one).
-// Only the deaths and K/D tiles carry one, and only when the PvP/PvE split is known.
+// The deaths and K/D tiles carry one when the PvP/PvE split is known; the server rank tile when the
+// player is ranked ("of 123 · by kills": the Ranked Points position is on the rank row instead).
 func (c Card) TileNotes() []string {
 	out := make([]string, 0, 8)
 	for _, t := range c.tiles() {
@@ -284,104 +254,137 @@ func (c Card) TileNotes() []string {
 
 func (c Card) tiles() []tile {
 	const none = "-"
-	longestKill, longestLife, rank := none, none, none
+	longestKill, longestLife, rank, rankNote := none, none, none, ""
 	if c.LongestKillMeters > 0 {
-		longestKill = fmt.Sprintf("%.0f m", c.LongestKillMeters)
+		longestKill = thousands(int64(math.Round(c.LongestKillMeters))) + " m"
 	}
 	if c.LongestLifeSeconds != nil && *c.LongestLifeSeconds > 0 {
 		longestLife = FormatDuration(*c.LongestLifeSeconds)
 	}
 	if c.Rank != nil && *c.Rank > 0 {
-		rank = "#" + thousands(*c.Rank)
+		rank = "#" + thousands(int64(*c.Rank))
+		if c.RankedPlayers > 0 {
+			rankNote = "of " + thousands(int64(c.RankedPlayers)) + " · by kills"
+		}
 	}
 	var deathsNote, kdNote string
 	if pve, ok := c.PvEDeaths(); ok {
 		pvpKD, _ := c.PvPKD()
-		deathsNote = "PVP " + thousands(*c.PvPDeaths) + " / PVE " + thousands(pve)
+		deathsNote = "PVP " + thousands(int64(*c.PvPDeaths)) + " / PVE " + thousands(int64(pve))
 		kdNote = "PVP " + fmt.Sprintf("%.2f", pvpKD)
 	}
 	return []tile{
-		{label: "KILLS", value: thousands(c.Kills), gold: true},
-		{label: "DEATHS", value: thousands(c.Deaths), note: deathsNote},
+		{label: "KILLS", value: thousands(int64(c.Kills)), gold: true},
+		{label: "DEATHS", value: thousands(int64(c.Deaths)), note: deathsNote},
 		{label: "K/D", value: fmt.Sprintf("%.2f", c.KD()), note: kdNote},
-		{label: "HEADSHOTS", value: thousands(c.Headshots)},
+		{label: "HEADSHOTS", value: thousands(int64(c.Headshots))},
 		{label: "LONGEST KILL", value: longestKill},
 		{label: "PLAYTIME", value: FormatDuration(c.PlaytimeSeconds)},
 		{label: "LONGEST LIFE", value: longestLife},
-		{label: "SERVER RANK", value: rank, gold: true},
+		{label: "SERVER RANK", value: rank, gold: true, note: rankNote},
 	}
 }
 
+// --- layout ----------------------------------------------------------------------------------------
+
+// The card's columns and the identity band (docs/CHAMPION_CARD.md, "Layout").
+const (
+	left, right = 64, Width - 64
+	textLeft    = 268 // the name, the sub line and the rank row start right of the emblem
+	emblemLeft  = 64
+	emblemTop   = 100
+	rowBaseline = 264 // the rank row: pill, RP and position share this baseline
+	pillTop     = 238
+	pillHeight  = 36
+	barLeft     = 820
+	barTop      = 252
+	barHeight   = 10
+	rowLimit    = 800 // the rank row must end before the progress bar
+)
+
 // Render draws the card and returns it PNG-encoded.
 func Render(c Card) ([]byte, error) {
-	if err := loadFonts(); err != nil {
+	fonts, err := loadFonts()
+	if err != nil {
 		return nil, fmt.Errorf("load card fonts: %w", err)
 	}
-	cv := &canvas{img: image.NewRGBA(image.Rect(0, 0, Width, Height))}
-	cv.rect(0, 0, Width, Height, colBackground)
-	cv.rect(0, 0, 14, Height, colGold)
+	cv := newCanvas(fonts)
+	cv.background(colBackgroundTop, colBackgroundBottom)
 
-	const left, right = 64, Width - 56
-	cv.text(left, 76, true, 26, colGold, -1, "CHAMPIONS KILLFEED")
-	if c.ServerName != "" {
-		_, server := cv.fit(false, []float64{26}, 560, c.ServerName)
-		cv.text(right, 76, false, 26, colMuted, 1, server)
+	tier := ranked.Unranked
+	if c.Ranked != nil {
+		tier = c.Ranked.Tier
 	}
-	cv.rect(left, 96, right-left, 2, colTile)
+	pal := paletteFor(tier)
+	emblem, err := tierEmblem(tier)
+	if err != nil {
+		return nil, fmt.Errorf("load card emblem: %w", err)
+	}
+	cx, cy := float64(emblemLeft+emblemSize/2), float64(emblemTop+emblemSize/2)
+	if c.Ranked != nil && tier != ranked.Unranked {
+		cv.glow(cx, cy, 150, pal.glow, 0.30)
+	}
+	cv.rect(0, 0, 10, Height, colGold)
 
+	// Header.
+	cv.text(left, 66, stEyebrow, colGold, -1, "CHAMPIONS KILLFEED")
+	if c.ServerName != "" {
+		st, server := cv.fit(stServer, []float64{stServer.size}, 560, c.ServerName)
+		cv.text(right, 66, st, colMuted, 1, server)
+	}
+	cv.rect(left, 92, right-left, 1, colHairline)
+
+	// Identity band: the emblem, the name, the sub line and the Ranked row.
+	draw.Draw(cv.img, image.Rect(emblemLeft, emblemTop, emblemLeft+emblemSize, emblemTop+emblemSize), emblem, image.Point{}, draw.Over)
 	name := c.PlayerName
 	if strings.TrimSpace(name) == "" {
 		name = "Unknown"
 	}
-	size, name := cv.fit(true, []float64{84, 72, 60, 50}, right-left, name)
-	cv.text(left, 196, true, size, colWhite, -1, name)
-
-	var sub []string
-	switch {
-	case c.FactionTag != "" && c.FactionName != "":
-		sub = append(sub, "["+c.FactionTag+"] "+c.FactionName)
-	case c.FactionName != "":
-		sub = append(sub, c.FactionName)
+	st, name := cv.fit(stName, []float64{80, 68, 58, 48}, right-textLeft, name)
+	cv.text(textLeft, 172, st, colWhite, -1, name)
+	if sub := c.subline(); sub != "" {
+		st, line := cv.fit(stSubline, []float64{stSubline.size}, right-textLeft, sub)
+		cv.text(textLeft, 214, st, colMuted, -1, line)
 	}
-	if c.SeasonName != "" {
-		sub = append(sub, c.SeasonName)
-	}
-	if len(sub) > 0 {
-		_, line := cv.fit(false, []float64{30}, right-left, strings.Join(sub, "  /  "))
-		cv.text(left, 244, false, 30, colMuted, -1, line)
+	if c.Ranked == nil {
+		cv.text(textLeft, rowBaseline, stNoSeason, colMuted, -1, "Ranked season not started")
+	} else {
+		cv.rankRow(*c.Ranked, pal)
 	}
 
+	// Stat grid: four by two.
 	const (
-		gridTop = 276
-		tileW   = 258
-		tileH   = 132 // room under the figure for a tile's caption
-		gap     = 16
-		rowGap  = 14
+		gridTop = 292
+		tileW   = 257
+		tileH   = 124
+		colGap  = 14
+		rowGap  = 12
 	)
 	for i, t := range c.tiles() {
-		x := left + (i%4)*(tileW+gap)
+		x := left + (i%4)*(tileW+colGap)
 		y := gridTop + (i/4)*(tileH+rowGap)
-		cv.roundRect(x, y, tileW, tileH, 14, colTile)
-		cv.text(x+22, y+38, true, 19, colMuted, -1, t.label)
+		cv.roundRect(float64(x), float64(y), tileW, tileH, 12, opaque(colTile))
+		cv.roundRectBorder(float64(x), float64(y), tileW, tileH, 12, 1, opaque(colTileBorder))
+		cv.text(x+22, y+34, stLabel, colMuted, -1, t.label)
 		col := colWhite
 		if t.gold {
 			col = colGold
 		}
-		valueSize, value := cv.fit(true, []float64{52, 44, 36}, tileW-44, t.value)
-		cv.text(x+22, y+98, true, valueSize, col, -1, value)
+		st, value := cv.fit(stValue, []float64{46, 40, 34}, tileW-44, t.value)
+		cv.text(x+22, y+86, st, col, -1, value)
 		if t.note != "" {
-			// Under the figure, in the strip the tile leaves below it.
-			noteSize, note := cv.fit(false, []float64{17, 15, 13}, tileW-44, t.note)
-			cv.text(x+22, y+120, false, noteSize, colMuted, -1, note)
+			st, note := cv.fit(stNote, []float64{stNote.size}, tileW-44, t.note)
+			cv.text(x+22, y+108, st, colMuted, -1, note)
 		}
 	}
 
-	footer := "EVERY KILL TELLS A STORY"
-	cv.text(left, Height-34, true, 20, colMuted, -1, footer)
-	if c.Rank != nil && c.RankedPlayers > 0 {
-		cv.text(right, Height-34, false, 20, colMuted, 1, "of "+thousands(c.RankedPlayers)+" ranked players")
-	} else if !c.GeneratedAt.IsZero() {
-		cv.text(right, Height-34, false, 20, colMuted, 1, c.GeneratedAt.UTC().Format("2 Jan 2006"))
+	// Footer.
+	cv.text(left, 598, stFooter, colMuted, -1, "EVERY KILL TELLS A STORY")
+	switch {
+	case c.SiteHost != "":
+		cv.text(right, 598, stFooterRight, colMuted, 1, c.SiteHost)
+	case !c.GeneratedAt.IsZero():
+		cv.text(right, 598, stFooterRight, colMuted, 1, c.GeneratedAt.UTC().Format("2 Jan 2006"))
 	}
 	if cv.err != nil {
 		return nil, cv.err
@@ -393,4 +396,55 @@ func Render(c Card) ([]byte, error) {
 		return nil, fmt.Errorf("encode card: %w", err)
 	}
 	return buf.Bytes(), nil
+}
+
+// rankRow draws the Ranked standing: the tier pill, the RP, the server position, and the progress
+// bar to the next tier with its caption.
+func (cv *canvas) rankRow(r Ranked, pal tierPalette) {
+	// The pill, with the tier name centred on it.
+	label := strings.ToUpper(strings.TrimSpace(string(r.Tier)))
+	if label == "" {
+		label = string(ranked.Unranked)
+	}
+	pillW := cv.measure(stPill, label) + 36
+	cv.roundRect(textLeft, pillTop, float64(pillW), pillHeight, pillHeight/2, alpha(pal.mid, 0.18))
+	cv.roundRectBorder(textLeft, pillTop, float64(pillW), pillHeight, pillHeight/2, 1.5, alpha(pal.mid, 0.70))
+	cv.text(textLeft+18, pillTop+pillHeight/2+cv.capHeight(stPill)/2, stPill, pal.hi, -1, label)
+
+	// The RP and the position. The row must end before the bar: a long one loses the position
+	// first, then the RP shrinks.
+	const gap, sepGap = 18, 10
+	rp := thousands(r.RP) + " RP"
+	position := ""
+	if r.Position != nil {
+		position = "·  #" + thousands(*r.Position) + " in Ranked"
+	}
+	x := textLeft + pillW + gap
+	rpStyle := stRP
+	width := func() int {
+		w := x + cv.measure(rpStyle, rp)
+		if position != "" {
+			w += sepGap + cv.measure(stPosition, position)
+		}
+		return w
+	}
+	if width() > rowLimit {
+		position = ""
+	}
+	if width() > rowLimit {
+		rpStyle = stRP.at(22)
+	}
+	x += cv.text(x, rowBaseline, rpStyle, colWhite, -1, rp)
+	if position != "" {
+		cv.text(x+sepGap, rowBaseline, stPosition, colMuted, -1, position)
+	}
+
+	// The progress bar and its caption.
+	if r.AtTop() {
+		cv.bar(barLeft, barTop, right-barLeft, barHeight, 1, colHairline, colGold, colGold)
+		cv.text(right, 240, stCaption, colMuted, 1, "Top tier")
+		return
+	}
+	cv.bar(barLeft, barTop, right-barLeft, barHeight, r.Progress(), colHairline, pal.lo, pal.hi)
+	cv.text(right, 240, stCaption, colMuted, 1, thousands(r.Remaining)+" RP to "+TierName(r.NextTier))
 }

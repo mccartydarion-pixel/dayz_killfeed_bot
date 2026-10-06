@@ -2,9 +2,11 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -12,6 +14,8 @@ import (
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/discord"
 	"github.com/yourname/dayz-killfeed/internal/playercard"
+	"github.com/yourname/dayz-killfeed/internal/ranked"
+	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
 // Champion Card (docs/CHAMPION_CARD.md): a shareable PNG of one player's stats on one server.
@@ -40,8 +44,9 @@ func (a *App) registerCardRoutes() {
 	h("GET "+cardSharePath+"{file}", a.handleSharedCardImage)
 }
 
-// buildCard assembles a card for one player on one server. installationID is optional (0): it only
-// adds the Faction Hub faction. Returns (nil, nil) when the player does not exist.
+// buildCard assembles a card for one player on one server: the same card whichever way in (the
+// player API, the public share routes, /card). installationID is optional (0): it only adds the
+// Faction Hub faction. Returns (nil, nil) when the player does not exist.
 func (a *App) buildCard(ctx context.Context, installationID, guildID, serverID, playerID int64) (*playercard.Card, error) {
 	if a.Cards == nil {
 		return nil, fmt.Errorf("cards unavailable")
@@ -53,7 +58,7 @@ func (a *App) buildCard(ctx context.Context, installationID, guildID, serverID, 
 	card := &playercard.Card{
 		PlayerName: stats.PlayerName, ServerName: stats.ServerName, Kills: stats.Kills, Deaths: stats.Deaths, PvPDeaths: &stats.PvPDeaths, Headshots: stats.Headshots,
 		LongestKillMeters: stats.LongestKillMeters, PlaytimeSeconds: stats.PlaytimeSeconds, LongestLifeSeconds: stats.LongestLifeSeconds,
-		Rank: stats.Rank, RankedPlayers: stats.RankedPlayers, GeneratedAt: time.Now().UTC(),
+		Rank: stats.Rank, RankedPlayers: stats.RankedPlayers, SiteHost: a.siteHost(), GeneratedAt: time.Now().UTC(),
 	}
 	if installationID > 0 {
 		if name, tag, ok, err := a.Cards.Faction(ctx, installationID, guildID, playerID); err == nil && ok {
@@ -65,7 +70,39 @@ func (a *App) buildCard(ctx context.Context, installationID, guildID, serverID, 
 			card.SeasonName = season.Name
 		}
 	}
+	card.Ranked = a.cardRanked(ctx, guildID, serverID, playerID)
 	return card, nil
+}
+
+// cardRanked is the player's Ranked Points standing for the card, nil when the server has no
+// active season. A failure to read it is logged and leaves the card without a rank: the card
+// itself never fails over its rank row.
+func (a *App) cardRanked(ctx context.Context, guildID, serverID, playerID int64) *playercard.Ranked {
+	if a.Ranked == nil {
+		return nil
+	}
+	p, err := a.Ranked.ServerPlayerProgress(ctx, guildID, serverID, playerID)
+	if errors.Is(err, repository.ErrRankedIneligible) {
+		return nil
+	}
+	if err != nil {
+		slog.Warn("component=saas_api", "event", "card_ranked_failed", "err", err.Error())
+		return nil
+	}
+	return &playercard.Ranked{Tier: p.Tier, RP: p.RP, Position: p.ServerPosition, NextTier: p.NextTier, Remaining: p.Remaining, TierStartRP: p.TierStartRP, NextTierRP: p.NextTierRP}
+}
+
+// siteHost is the website's host name for the card's footer ("championshp.vip"), or "" when no
+// site address is configured.
+func (a *App) siteHost() string {
+	if a == nil || a.Config == nil {
+		return ""
+	}
+	u, err := url.Parse(strings.TrimSpace(a.Config.SiteBaseURL))
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
 }
 
 type cardDTO struct {
@@ -87,15 +124,46 @@ type cardDTO struct {
 	LongestLifeSeconds *int64        `json:"longestLifeSeconds"`
 	Rank               *int          `json:"rank"`
 	RankedPlayers      int           `json:"rankedPlayers"`
+	Ranked             cardRankedDTO `json:"ranked"`
 	Tiles              []cardTileDTO `json:"tiles"` // exactly what the image shows, in order
 	Image              cardImageDTO  `json:"image"`
 	Share              *cardShareDTO `json:"share"`
 }
 
+// cardRankedDTO is the player's Ranked Points standing on the card: {"status": "NOT_STARTED"} when
+// the server has no active season, else the progress fields beside "status": "ACTIVE".
+type cardRankedDTO struct {
+	Status string `json:"status"`
+	*cardRankedProgressDTO
+}
+
+type cardRankedProgressDTO struct {
+	Tier     ranked.Tier `json:"tier"`
+	RP       int64       `json:"rp"`
+	Position *int64      `json:"position"` // null until the player has RP
+	// The climb to the next tier; absent at Master (remainingRp is never 0 below Master).
+	NextTier    ranked.Tier `json:"nextTier,omitempty"`
+	RemainingRP int64       `json:"remainingRp,omitempty"`
+	TierStartRP int64       `json:"tierStartRp"`
+	NextTierRP  *int64      `json:"nextTierRp,omitempty"`
+}
+
+func toCardRankedDTO(r *playercard.Ranked) cardRankedDTO {
+	if r == nil {
+		return cardRankedDTO{Status: "NOT_STARTED"}
+	}
+	p := &cardRankedProgressDTO{Tier: r.Tier, RP: r.RP, Position: r.Position, TierStartRP: r.TierStartRP}
+	if !r.AtTop() {
+		p.NextTier, p.RemainingRP, p.NextTierRP = r.NextTier, r.Remaining, r.NextTierRP
+	}
+	return cardRankedDTO{Status: "ACTIVE", cardRankedProgressDTO: p}
+}
+
 type cardTileDTO struct {
 	Label string `json:"label"`
 	Value string `json:"value"`
-	// Note is the tile's small caption on the image (the PvP/PvE split); absent when it has none.
+	// Note is the tile's small caption on the image (the PvP/PvE split, what the server rank
+	// counts); absent when it has none.
 	Note string `json:"note,omitempty"`
 }
 
@@ -122,7 +190,7 @@ func (a *App) toCardDTO(c playercard.Card) cardDTO {
 		PlayerName: c.PlayerName, ServerName: c.ServerName, FactionName: optionalString(c.FactionName), FactionTag: optionalString(c.FactionTag),
 		SeasonName: optionalString(c.SeasonName), Kills: c.Kills, Deaths: c.Deaths, KD: c.KD(), Headshots: c.Headshots,
 		LongestKillMeters: c.LongestKillMeters, PlaytimeSeconds: c.PlaytimeSeconds, LongestLifeSeconds: c.LongestLifeSeconds,
-		Rank: c.Rank, RankedPlayers: c.RankedPlayers, Image: cardImageDTO{Width: playercard.Width, Height: playercard.Height},
+		Rank: c.Rank, RankedPlayers: c.RankedPlayers, Ranked: toCardRankedDTO(c.Ranked), Image: cardImageDTO{Width: playercard.Width, Height: playercard.Height},
 	}
 	if pve, ok := c.PvEDeaths(); ok {
 		pvpKD, _ := c.PvPKD()
