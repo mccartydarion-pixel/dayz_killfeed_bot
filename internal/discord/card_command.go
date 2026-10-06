@@ -3,21 +3,28 @@ package discord
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/yourname/dayz-killfeed/internal/playercard"
 )
 
 // CardCommandHandler serves /card (docs/CHAMPION_CARD.md): it posts the caller's own Champion Card
-// in the channel as an image. The card is always the caller's - there is no player argument, so
-// nobody can post someone else's stats on their behalf.
+// in the channel, animated (the card filling in, as a GIF), or as the still when the animation
+// cannot be made. The card is always the caller's - there is no player argument, so nobody can
+// post someone else's stats on their behalf.
 type CardCommandHandler struct {
 	guilds       GuildStore
 	linkedPlayer func(ctx context.Context, guildRowID int64, discordUserID string) (int64, string, bool)
 	server       func(ctx context.Context, guildRowID int64) (int64, bool)
-	render       func(ctx context.Context, guildRowID, serverID, playerID int64) ([]byte, error)
+	// card assembles the caller's card; (nil, nil) means the player is not known on the server.
+	card func(ctx context.Context, guildRowID, serverID, playerID int64) (*playercard.Card, error)
+	// animate and still render the card: playercard.RenderAnimation and playercard.Render.
+	animate func(playercard.Card) ([]byte, error)
+	still   func(playercard.Card) ([]byte, error)
 
 	mu   sync.Mutex
 	last map[string]time.Time
@@ -28,11 +35,18 @@ type CardCommandHandler struct {
 // public channel message.
 const cardCommandCooldown = 30 * time.Second
 
+// The attachment names of the two forms of the card.
+const (
+	cardAnimationFile = "champion-card.gif"
+	cardStillFile     = "champion-card.png"
+)
+
 func NewCardCommandHandler(guilds GuildStore,
 	linkedPlayer func(ctx context.Context, guildRowID int64, discordUserID string) (int64, string, bool),
 	server func(ctx context.Context, guildRowID int64) (int64, bool),
-	render func(ctx context.Context, guildRowID, serverID, playerID int64) ([]byte, error)) *CardCommandHandler {
-	return &CardCommandHandler{guilds: guilds, linkedPlayer: linkedPlayer, server: server, render: render, last: map[string]time.Time{}, now: time.Now}
+	card func(ctx context.Context, guildRowID, serverID, playerID int64) (*playercard.Card, error)) *CardCommandHandler {
+	return &CardCommandHandler{guilds: guilds, linkedPlayer: linkedPlayer, server: server, card: card,
+		animate: playercard.RenderAnimation, still: playercard.Render, last: map[string]time.Time{}, now: time.Now}
 }
 
 // RegisterCardCommand registers /card.
@@ -66,7 +80,7 @@ func (h *CardCommandHandler) allow(userID string) bool {
 
 // Handle processes /card.
 func (h *CardCommandHandler) Handle(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	if h == nil || i == nil || i.GuildID == "" || h.guilds == nil || h.render == nil {
+	if h == nil || i == nil || i.GuildID == "" || h.guilds == nil || h.card == nil {
 		respondEphemeral(s, i, ReplyAreUnavailable("Cards"))
 		return
 	}
@@ -92,19 +106,39 @@ func (h *CardCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interacti
 		respondEphemeral(s, i, "You just posted your card. Try again in a moment.")
 		return
 	}
-	// Rendering and the upload can exceed Discord's three-second window, so acknowledge first.
+	// Building the card, rendering the animation (a few seconds) and the upload exceed Discord's
+	// three-second window, so acknowledge first (a no-op when the router already has).
 	if !deferPublic(s, i) {
 		return
 	}
-	png, err := h.render(ctx, guildRowID, serverID, playerID)
+	card, err := h.card(ctx, guildRowID, serverID, playerID)
+	if err == nil && card == nil {
+		err = errPlayerNotFound
+	}
 	if err != nil {
 		slog.Warn("component=cards", "event", "card_command_failed", "err", err.Error())
 		msg := ReplyCouldNot("build your card")
 		_ = editDeferred(s, i, &discordgo.WebhookEdit{Content: &msg})
 		return
 	}
+	name, contentType := cardAnimationFile, "image/gif"
+	data, err := h.animate(*card)
+	if err != nil {
+		// The still is the same card without the motion: better than no card.
+		slog.Warn("component=cards", "event", "card_gif_failed", "err", err.Error())
+		name, contentType = cardStillFile, "image/png"
+		if data, err = h.still(*card); err != nil {
+			slog.Warn("component=cards", "event", "card_command_failed", "err", err.Error())
+			msg := ReplyCouldNot("build your card")
+			_ = editDeferred(s, i, &discordgo.WebhookEdit{Content: &msg})
+			return
+		}
+	}
 	_ = editDeferred(s, i, &discordgo.WebhookEdit{
-		Files:           []*discordgo.File{{Name: "champion-card.png", ContentType: "image/png", Reader: bytes.NewReader(png)}},
+		Files:           []*discordgo.File{{Name: name, ContentType: contentType, Reader: bytes.NewReader(data)}},
 		AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}},
 	})
 }
+
+// errPlayerNotFound is the card builder reporting a player it does not know.
+var errPlayerNotFound = errors.New("player not found")
