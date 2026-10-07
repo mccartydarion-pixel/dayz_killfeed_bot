@@ -43,4 +43,10 @@ var migrations0126onward = []Migration{
 		Name: "0131_stadiums",
 		SQL:  StadiumSQL,
 	},
+	{
+		// Tournament mode (docs/TOURNAMENTS.md): tournaments, entries, the bracket's matches,
+		// rounds, the champion's title and the prize payouts. Additive.
+		Name: "0132_tournaments",
+		SQL:  TournamentSQL,
+	},
 }

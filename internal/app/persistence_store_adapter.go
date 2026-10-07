@@ -13,6 +13,7 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/factionstats"
 	"github.com/yourname/dayz-killfeed/internal/killfeed"
 	"github.com/yourname/dayz-killfeed/internal/repository"
+	"github.com/yourname/dayz-killfeed/internal/tournament"
 )
 
 // persistenceStoreAdapter adapts the repositories to the killfeed.PersistenceStore
@@ -52,6 +53,9 @@ type persistenceStoreAdapter struct {
 	// queues the opt-in recap DM. Both nil-safe.
 	lives     *repository.LifeRepository
 	lifeRecap *discord.LifeRecapNotifier
+	// tournaments scores a persisted kill (or a non-player death) in the server's live
+	// tournament (docs/TOURNAMENTS.md). Nil-safe; it never blocks the kill path.
+	tournaments *tournament.Service
 }
 
 type admCheckpointStoreAdapter struct {
@@ -287,6 +291,8 @@ func (p *persistenceStoreAdapter) ProcessPersistedKill(ctx context.Context, kill
 	defer p.factionStats.NotifyCombat(record.GuildID, record.ServerID, record.KillerPlayerID)
 	// Before the streak early-returns below: the victim's life ends with this kill regardless.
 	p.recordLifeEndFromKill(ctx, killID, record, ev)
+	// The server's live tournament, if any, scores the kill: a round, or a flag for an admin.
+	p.tournamentKill(ctx, killID, record, ev)
 	if p.streaks == nil {
 		return
 	}
@@ -427,6 +433,7 @@ func (p *persistenceStoreAdapter) ProcessPersistedKill(ctx context.Context, kill
 func (p *persistenceStoreAdapter) ProcessPersistedDeath(ctx context.Context, record repository.DeathRecord, ev *killfeed.Event) {
 	defer p.factionStats.NotifyCombat(record.GuildID, record.ServerID, 0) // a death changes deaths/K-D/streaks only
 	p.recordLifeEnd(ctx, record, ev)
+	p.tournamentDeath(ctx, record, ev)
 	if p.stats == nil || ev == nil || record.PlayerID == 0 {
 		return
 	}

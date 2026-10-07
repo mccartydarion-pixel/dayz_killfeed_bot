@@ -103,7 +103,8 @@ association (section 2) before computing or returning anything.
   "bountiesClaimed": 3,
   "bountyValue": 750,
   "faction": "Wolfpack",
-  "lastSeenAt": "2026-09-20T18:04:00Z"
+  "lastSeenAt": "2026-09-20T18:04:00Z",
+  "tournamentTitle": "Friday Champion"
 }
 ```
 
@@ -111,6 +112,8 @@ association (section 2) before computing or returning anything.
   `repository.PlayerProfile.KD()`).
 - `playtimeSeconds`: whole seconds, not a duration string - chosen deliberately over the task's
   looser suggested name `playtime` for unambiguous website-side formatting.
+- `tournamentTitle`: the title the player holds from winning a tournament on this installation
+  (`docs/TOURNAMENTS.md`), or `null`.
 - `faction`: the acting user's **current Faction Hub faction on this installation**
   (`hub_faction_members`, genuinely installation-scoped), or `null`. This is intentionally NOT the
   classic guild-wide faction system (`FactionRepository.GetActiveFactionForPlayer`) - see section 5.
@@ -257,3 +260,12 @@ them sees the original `{"server": ...}` behaviour.
 needing no organization role. It grants nothing: every route authorizes the acting user again, and
 the routes of sections 3 and 4 still need observed activity, so for `observed:false` they answer
 `404` until the player has been seen on the server.
+
+## 11. Tournaments
+
+`GET` / `POST /api/saas/player/servers/{installationId}/tournaments[/{tid}/join|leave|checkin]`
+(docs/TOURNAMENTS.md): the installation's current tournament with the player's own entry and
+next match, and the latest past ones. Reading needs only a signed-in user; joining, leaving and
+checking in need a verified link for the installation's guild (`409 PLAYER_IDENTITY_REQUIRED`),
+not observed activity. The title a player wins is `tournamentTitle` on the stats route of
+section 4 and on the Champion Card data.
