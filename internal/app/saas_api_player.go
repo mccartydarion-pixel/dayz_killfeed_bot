@@ -88,6 +88,9 @@ type playerStatsDTO struct {
 	BountyValue       int64   `json:"bountyValue"`
 	Faction           *string `json:"faction"` // Faction Hub faction name on THIS installation, or null
 	LastSeenAt        *string `json:"lastSeenAt"`
+	// TournamentTitle is the title the player holds from winning a tournament on this
+	// installation (docs/TOURNAMENTS.md), or null.
+	TournamentTitle *string `json:"tournamentTitle"`
 }
 
 func killsToKD(kills, deaths int) float64 {
@@ -316,6 +319,11 @@ func (a *App) handlePlayerServerStats(w http.ResponseWriter, r *http.Request) {
 
 	dto := toPlayerStatsDTO(installationID, combat)
 	dto.PlaytimeSeconds, dto.BountiesClaimed, dto.BountyValue, dto.Faction, dto.LastSeenAt = playtimeSeconds, claimed, bountyValue, faction, lastSeen
+	if a.Tournaments != nil {
+		if title, err := a.Tournaments.Title(ctx, installationID, scope.PlayerID); err == nil && title != "" {
+			dto.TournamentTitle = &title
+		}
+	}
 	writeSaaSJSON(w, http.StatusOK, dto)
 }
 

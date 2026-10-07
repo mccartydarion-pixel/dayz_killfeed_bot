@@ -73,6 +73,11 @@ func (a *App) buildCard(ctx context.Context, installationID, guildID, serverID, 
 		}
 	}
 	card.Ranked = a.cardRanked(ctx, guildID, serverID, playerID)
+	if installationID > 0 && a.Tournaments != nil {
+		if title, err := a.Tournaments.Title(ctx, installationID, playerID); err == nil {
+			card.TournamentTitle = title
+		}
+	}
 	return card, nil
 }
 
@@ -113,9 +118,11 @@ type cardDTO struct {
 	FactionName *string `json:"factionName"`
 	FactionTag  *string `json:"factionTag"`
 	SeasonName  *string `json:"seasonName"`
-	Kills       int     `json:"kills"`
-	Deaths      int     `json:"deaths"` // every death
-	KD          float64 `json:"kd"`     // overall: kills / deaths
+	// TournamentTitle is the title the player holds from winning a tournament on this server.
+	TournamentTitle *string `json:"tournamentTitle"`
+	Kills           int     `json:"kills"`
+	Deaths          int     `json:"deaths"` // every death
+	KD              float64 `json:"kd"`     // overall: kills / deaths
 	// pvpDeaths + pveDeaths = deaths; pvpKd is kills / pvpDeaths (internal/deathstats).
 	PvPDeaths          *int          `json:"pvpDeaths,omitempty"`
 	PvEDeaths          *int          `json:"pveDeaths,omitempty"`
@@ -190,7 +197,7 @@ func optionalString(s string) *string {
 func (a *App) toCardDTO(c playercard.Card) cardDTO {
 	d := cardDTO{
 		PlayerName: c.PlayerName, ServerName: c.ServerName, FactionName: optionalString(c.FactionName), FactionTag: optionalString(c.FactionTag),
-		SeasonName: optionalString(c.SeasonName), Kills: c.Kills, Deaths: c.Deaths, KD: c.KD(), Headshots: c.Headshots,
+		SeasonName: optionalString(c.SeasonName), TournamentTitle: optionalString(c.TournamentTitle), Kills: c.Kills, Deaths: c.Deaths, KD: c.KD(), Headshots: c.Headshots,
 		LongestKillMeters: c.LongestKillMeters, PlaytimeSeconds: c.PlaytimeSeconds, LongestLifeSeconds: c.LongestLifeSeconds,
 		Rank: c.Rank, RankedPlayers: c.RankedPlayers, Ranked: toCardRankedDTO(c.Ranked), Image: cardImageDTO{Width: playercard.Width, Height: playercard.Height},
 	}

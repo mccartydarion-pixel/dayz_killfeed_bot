@@ -406,6 +406,7 @@ func (a *App) registerSaaSAPI() {
 	a.registerSecurityMarketplaceRoutes()
 	a.registerPerkStoreRoutes()
 	a.registerStadiumRoutes()
+	a.registerTournamentRoutes()
 	a.HTTPServer.Handle("GET /api/saas/organizations/{organizationID}/installations/{installationID}/vip/me", a.handleMyVIP)
 	a.registerBillingRoutes()
 	a.registerTrialRoutes()

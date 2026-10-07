@@ -263,6 +263,16 @@ OWNER/ADMIN only (a view-as session may only `GET`).
 | `POST /build`, `POST /remove` | Write the spawner file to `custom/champion_stadium.json` and reference it (build), or write the empty file (remove). Returns the verified `Outcome`; the server still needs a restart. |
 | `GET /file` | The spawner file as a download, for a manual upload. |
 
+### Tournaments (`docs/TOURNAMENTS.md`)
+
+Base `/api/saas/organizations/{organizationID}/installations/{installationID}/tournaments`,
+organization OWNER/ADMIN only (a view-as session may only `GET`): `GET` (the newest 50), `POST`
+(create a draft), `GET /{tid}`, `PATCH /{tid}`, `POST /{tid}/open|start|pause|resume|cancel|call`,
+`POST /{tid}/matches/{mid}/result`, `POST /{tid}/matches/{mid}/replay`, `POST /{tid}/entries/{eid}/dq`.
+Public: `GET /api/saas/network/servers/{installationID}/tournament` (service bearer only, cached
+3 s; the website serves it at `/api/live/{installationID}/tournament`). Player routes are in
+`docs/PLAYER_API.md`.
+
 ## Response DTOs
 
 None of these ever include a Nitrado ciphertext/IV/auth tag, a Discord

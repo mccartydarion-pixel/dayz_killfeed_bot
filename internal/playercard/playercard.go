@@ -31,6 +31,9 @@ type Card struct {
 	FactionName string
 	FactionTag  string
 	SeasonName  string
+	// TournamentTitle is the title the player holds from winning a tournament on this server
+	// (docs/TOURNAMENTS.md); carried in the card's data, not drawn.
+	TournamentTitle string
 	// SiteHost is the website's host name ("championshp.vip") for the footer; empty shows the date
 	// the card was generated instead.
 	SiteHost string

@@ -44,6 +44,7 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/servers"
 	"github.com/yourname/dayz-killfeed/internal/shop"
 	"github.com/yourname/dayz-killfeed/internal/shop/canaryops"
+	"github.com/yourname/dayz-killfeed/internal/tournament"
 )
 
 // App owns the main runtime dependencies.
@@ -80,7 +81,10 @@ type App struct {
 	mapRotationRestarts mapRotationRestartCache
 	// Stadium is the tournament arena (docs/STADIUM.md); stadiumRemoteFor replaces its Nitrado
 	// access in tests and stadiumBusy keeps one build per installation at a time.
-	Stadium            *repository.StadiumRepository
+	Stadium *repository.StadiumRepository
+	// Tournaments and TournamentService are tournament mode (docs/TOURNAMENTS.md).
+	Tournaments        *repository.TournamentRepository
+	TournamentService  *tournament.Service
 	stadiumRemoteFor   func(ctx context.Context, t repository.StadiumTarget) (stadiumRemote, error)
 	stadiumBusy        sync.Map
 	mapRotationWiping  sync.Map // installations whose saved characters are being cleared right now
@@ -525,6 +529,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.UAV = repository.NewUAVRepository(db.Pool)
 			app.MapRotation = repository.NewMapRotationRepository(db.Pool)
 			app.Stadium = repository.NewStadiumRepository(db.Pool)
+			app.Tournaments = repository.NewTournamentRepository(db.Pool)
 			app.Sessions = repository.NewSessionRepository(db.Pool)
 			app.Checkpoints = repository.NewCheckpointRepository(db.Pool)
 			app.Streaks = repository.NewStreakRepository(db.Pool)
@@ -743,6 +748,9 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			return result
 		})
 	}
+
+	// The tournament engine needs the economy (prizes) and the repositories above.
+	app.TournamentService = app.newTournamentService()
 
 	app.registerRuntimeStatusAPI()
 	app.registerSaaSAPI()

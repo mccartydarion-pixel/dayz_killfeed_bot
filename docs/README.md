@@ -106,6 +106,7 @@ How to read these documents:
 | Document | What it is for |
 | --- | --- |
 | [STADIUM.md](STADIUM.md) | The tournament arena: the layout, the owner API, the guarded write to the server and the manual install steps. |
+| [TOURNAMENTS.md](TOURNAMENTS.md) | Tournament mode: single-elimination 1v1 and 2v2 scored from the kill feed, the `/tournament` command, the bracket image, prizes and titles, and the owner, player and public routes. |
 
 ## Shop
 

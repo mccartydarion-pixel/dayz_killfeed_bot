@@ -50,6 +50,9 @@ func (a *App) Run() error {
 	// A server's name follows its Nitrado name unless the owner typed one in Champion: one read
 	// per server about every twenty minutes (docs/SERVER_NAME_SYNC.md).
 	a.startServerNameSync(ctx)
+	// Tournament mode: the clock that opens sign-up and check-in, starts the draw and enforces
+	// the match timers runs on the leader (docs/TOURNAMENTS.md).
+	a.startTournamentScheduler(ctx)
 	// Faction Hub achievements: kills queue an evaluation (drained every 5 seconds, one evaluation
 	// per affected faction), and a reconcile - one minute after start, then daily - backfills
 	// factions that already qualify and unlocks the time-based ones. Unlocking is silent.
@@ -252,6 +255,7 @@ func (a *App) Run() error {
 	}
 	a.registerLifeCommands(ctx, session, commands)
 	a.registerCardCommand(session, commands)
+	a.registerTournamentCommand(session, commands)
 	a.registerFeaturesCommand(commands)
 	a.registerBaseCommands(session, commands)
 	if a.LinkService != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
@@ -673,7 +677,7 @@ func (a *App) Run() error {
 				setupManager.SetRouteGate(a.RouteSyncer.HasRoute)
 				go a.singleton(ctx, "route_syncer", a.RouteSyncer.Run)
 			}
-			store := &persistenceStoreAdapter{players: a.Players, kills: a.Kills, deaths: a.Deaths, seasons: a.Seasons, ranked: a.Ranked, factions: a.Factions, wars: a.Wars, events: a.Events, vip: a.VIP, bounties: a.Bounties, bountySvc: a.BountyService, streaks: a.Streaks, anomalies: a.Anomalies, activity: a.ActivityRepository, servers: a.Servers, stats: a.Stats, analytics: a.AnalyticsRepository, factionStats: a.FactionHubStats, locations: a.Locations, zones: a.Zones, lives: a.Lives, lifeRecap: a.LifeRecap, rankedTags: a.killfeedRankedTagsOn, panelDirty: func() {
+			store := &persistenceStoreAdapter{players: a.Players, kills: a.Kills, deaths: a.Deaths, seasons: a.Seasons, ranked: a.Ranked, factions: a.Factions, wars: a.Wars, events: a.Events, vip: a.VIP, bounties: a.Bounties, bountySvc: a.BountyService, streaks: a.Streaks, anomalies: a.Anomalies, activity: a.ActivityRepository, servers: a.Servers, stats: a.Stats, analytics: a.AnalyticsRepository, factionStats: a.FactionHubStats, locations: a.Locations, zones: a.Zones, lives: a.Lives, lifeRecap: a.LifeRecap, tournaments: a.TournamentService, rankedTags: a.killfeedRankedTagsOn, panelDirty: func() {
 				if a.LeaderboardScheduler != nil {
 					a.LeaderboardScheduler.MarkDirty()
 				}
