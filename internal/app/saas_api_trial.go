@@ -89,7 +89,7 @@ func (a *App) handleGetTrial(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, ok := a.requireOrganizationMember(w, r, orgID, user.ID); !ok {
+	if _, ok := a.requireOrganizationViewer(w, r, orgID, user); !ok {
 		return
 	}
 	if a.SaaSSubscriptions == nil {

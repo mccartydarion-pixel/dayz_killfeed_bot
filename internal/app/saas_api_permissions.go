@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yourname/dayz-killfeed/internal/discord"
 	"github.com/yourname/dayz-killfeed/internal/permissions"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
@@ -247,9 +248,12 @@ func requireConfirmation(w http.ResponseWriter, got, expected string) bool {
 type rolePermissionDTO struct {
 	ID            int64  `json:"id"`
 	DiscordRoleID string `json:"discordRoleId"`
-	Level         string `json:"level"`
-	CreatedAt     string `json:"createdAt"`
-	UpdatedAt     string `json:"updatedAt"`
+	// DiscordRoleName is the role's current name in Discord; empty when it no longer exists or
+	// Discord could not be read.
+	DiscordRoleName string `json:"discordRoleName,omitempty"`
+	Level           string `json:"level"`
+	CreatedAt       string `json:"createdAt"`
+	UpdatedAt       string `json:"updatedAt"`
 }
 
 func toRolePermissionDTO(p repository.RolePermission) rolePermissionDTO {
@@ -282,6 +286,7 @@ func (a *App) registerClientAdminRoutes() {
 	h := a.HTTPServer.Handle
 	h("GET "+base+"/me", a.handleClientAdminMe)
 	h("GET "+base+"/permissions", a.handleListPermissions)
+	h("GET "+base+"/discord-roles", a.handleListDiscordRoles)
 	h("PUT "+base+"/permissions/{discordRoleID}", a.handleSetPermission)
 	h("DELETE "+base+"/permissions/{mappingID}", a.handleDeletePermission)
 	h("GET "+base+"/audit-log", a.handleListAuditLog)
@@ -369,11 +374,65 @@ func (a *App) handleListPermissions(w http.ResponseWriter, r *http.Request) {
 		writeSaaSError(w, codeInternalError, "could not list permissions")
 		return
 	}
+	names := map[string]string{}
+	if roles, err := a.guildRoleList(ac.scope.DiscordGuildID); err == nil {
+		for _, role := range roles {
+			names[role.ID] = role.Name
+		}
+	}
 	out := make([]rolePermissionDTO, 0, len(rows))
 	for _, p := range rows {
-		out = append(out, toRolePermissionDTO(p))
+		dto := toRolePermissionDTO(p)
+		dto.DiscordRoleName = names[p.DiscordRoleID]
+		out = append(out, dto)
 	}
 	writeSaaSJSON(w, http.StatusOK, map[string]any{"items": out, "actorLevel": ac.level.String()})
+}
+
+// guildRoleLister is the optional Discord surface for the Staff page's role picker.
+type guildRoleLister interface {
+	GuildRoleList(guildID string) ([]discord.GuildRoleInfo, error)
+}
+
+func (a *App) guildRoleList(guildID string) ([]discord.GuildRoleInfo, error) {
+	lister, ok := a.saasDiscordVerifier.(guildRoleLister)
+	if !ok {
+		return nil, errors.New("discord roles unavailable")
+	}
+	return lister.GuildRoleList(guildID)
+}
+
+type discordRoleDTO struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Color    int    `json:"color"`
+	Position int    `json:"position"`
+}
+
+// handleListDiscordRoles is GET .../admin/discord-roles (PERMISSIONS_VIEW): the guild's roles a
+// member can hold, highest first, for picking which roles get Server Hub access.
+func (a *App) handleListDiscordRoles(w http.ResponseWriter, r *http.Request) {
+	ac, ok := a.requireCapability(w, r, permissions.CapPermissionsView)
+	if !ok {
+		return
+	}
+	if !enforceRateLimit(w, a.saasAdminReadLimiter, rateLimitKey(r)) {
+		return
+	}
+	roles, err := a.guildRoleList(ac.scope.DiscordGuildID)
+	if err != nil {
+		slog.Warn("component=saas_api", "msg", "list discord roles failed", "err", err.Error())
+		writeSaaSError(w, codeAdminDiscordUnavailable, "could not read Discord roles")
+		return
+	}
+	out := make([]discordRoleDTO, 0, len(roles))
+	for _, role := range roles {
+		if role.Managed {
+			continue
+		}
+		out = append(out, discordRoleDTO{ID: role.ID, Name: role.Name, Color: role.Color, Position: role.Position})
+	}
+	writeSaaSJSON(w, http.StatusOK, map[string]any{"items": out})
 }
 
 type setPermissionRequest struct {

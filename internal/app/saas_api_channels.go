@@ -98,7 +98,7 @@ func (a *App) handleListDiscordChannels(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	if _, ok := a.requireOrganizationMember(w, r, organizationID, user.ID); !ok {
+	if _, ok := a.requireOrganizationViewer(w, r, organizationID, user); !ok {
 		return
 	}
 	installationID, ok := pathInt64(w, r, "installationID")
@@ -155,7 +155,7 @@ func (a *App) handleGetChannelSettings(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, ok := a.requireOrganizationMember(w, r, organizationID, user.ID); !ok {
+	if _, ok := a.requireOrganizationViewer(w, r, organizationID, user); !ok {
 		return
 	}
 	installationID, ok := pathInt64(w, r, "installationID")

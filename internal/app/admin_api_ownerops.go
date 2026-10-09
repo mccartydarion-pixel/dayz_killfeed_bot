@@ -1181,7 +1181,7 @@ func (a *App) handleOrganizationBroadcasts(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-	if _, ok := a.requireOrganizationMember(w, r, orgID, user.ID); !ok {
+	if _, ok := a.requireOrganizationViewer(w, r, orgID, user); !ok {
 		return
 	}
 	type itemDTO struct {
