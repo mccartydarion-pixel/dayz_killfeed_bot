@@ -124,6 +124,28 @@ calls with the same Level always return byte-identical `capabilities`). `discord
 live role list Discord returned during resolution - omitted (not fabricated as empty) when the
 organization-owner bootstrap resolved the Level without a Discord lookup at all.
 
+## Staff access to the Server Hub
+
+The Staff page maps Discord roles to levels, and that mapping is also how staff reach the
+website's Server Hub. Nobody is invited and nothing is stored per person:
+
+- `POST /api/saas/staff/installations` with `{"guilds": [...]}` (the Discord guild IDs from the
+  user's Discord sign-in) returns every installation in those guilds where the acting user holds
+  a mapped role, with the level: `organizationId`, `organizationName`, `installationId`,
+  `discordGuildId`, `guildName`, `level`. Organizations the user is a member of are left out:
+  they come from `GET /api/saas/organizations`.
+- The organization read routes the Server Hub needs (organization, dashboard, installation,
+  setup progress, hub, settings, channel routes and settings, channel layout, embed templates,
+  trial, broadcasts) accept such a user with the effective role `STAFF`, only for the
+  installations they staff. The dashboard lists only those installations.
+- Everything else stays as it was: billing, Nitrado, Discord connection and every OWNER/ADMIN
+  route refuse `STAFF`, and each client-admin route still checks the level's capability.
+- Access follows the role: roles are re-read from Discord every 15 s, so removing the role in
+  Discord removes the access.
+- `GET .../admin/discord-roles` (PERMISSIONS_VIEW) lists the guild's roles a member can hold,
+  highest first, for the Staff page's role picker; `GET .../admin/permissions` items carry
+  `discordRoleName`.
+
 ## Routes
 
 All under `/api/saas/organizations/{organizationID}/installations/{installationID}/admin`, same

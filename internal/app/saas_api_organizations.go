@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/yourname/dayz-killfeed/internal/billing"
+	"github.com/yourname/dayz-killfeed/internal/permissions"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -144,7 +145,7 @@ func (a *App) handleGetOrganization(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	role, ok := a.requireOrganizationMember(w, r, organizationID, user.ID)
+	role, ok := a.requireOrganizationViewer(w, r, organizationID, user)
 	if !ok {
 		return
 	}
@@ -353,7 +354,7 @@ func (a *App) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	role, ok := a.requireOrganizationMember(w, r, organizationID, user.ID)
+	role, ok := a.requireOrganizationViewer(w, r, organizationID, user)
 	if !ok {
 		return
 	}
@@ -390,8 +391,16 @@ func (a *App) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		writeSaaSError(w, codeInternalError, "could not load installations")
 		return
 	}
+	// Staff see only the installations they staff.
+	var staffed map[int64]permissions.Level
+	if role == repository.RoleStaff {
+		staffed, _ = a.staffInstallationsForOrganization(ctx, organizationID, user)
+	}
 	resp.Installations = make([]InstallationSummary, 0, len(installs))
 	for _, inst := range installs {
+		if role == repository.RoleStaff && staffed[inst.ID] == permissions.LevelNone {
+			continue
+		}
 		resp.Installations = append(resp.Installations, a.buildInstallationSummary(ctx, organizationID, inst))
 	}
 

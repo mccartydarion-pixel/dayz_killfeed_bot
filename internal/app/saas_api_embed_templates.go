@@ -132,7 +132,7 @@ func (a *App) embedTemplateContext(w http.ResponseWriter, r *http.Request, write
 		if _, good = a.requireOrganizationRole(w, r, organizationID, user.ID); !good {
 			return
 		}
-	} else if _, good = a.requireOrganizationMember(w, r, organizationID, user.ID); !good {
+	} else if _, good = a.requireOrganizationViewer(w, r, organizationID, user); !good {
 		return
 	}
 	installationID, good = pathInt64(w, r, "installationID")

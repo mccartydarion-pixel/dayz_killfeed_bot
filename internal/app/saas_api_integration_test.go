@@ -52,6 +52,8 @@ type fakeDiscordVerifier struct {
 	// this map resolves to an empty role list (never an error), matching "this person is in the
 	// guild but holds no mapped role" rather than "lookup failed".
 	memberRoles map[string]map[string][]string
+	// guildRoles backs GuildRoleList.
+	guildRoles map[string][]discordRoleFixture
 	// botPosts counts bot messages per channel: starter cards sent through
 	// SendChannelEmbed, plus panels a test marks as posted.
 	botPosts map[string]int
@@ -138,6 +140,21 @@ func (f *fakeDiscordVerifier) GuildPermissions(guildID string) (int64, error) {
 		return perms, nil
 	}
 	return discordgo.PermissionAll, nil
+}
+
+type discordRoleFixture struct {
+	ID, Name string
+	Position int
+	Managed  bool
+}
+
+// GuildRoleList returns the configured roles of guildID.
+func (f *fakeDiscordVerifier) GuildRoleList(guildID string) ([]discord.GuildRoleInfo, error) {
+	out := []discord.GuildRoleInfo{}
+	for _, r := range f.guildRoles[guildID] {
+		out = append(out, discord.GuildRoleInfo{ID: r.ID, Name: r.Name, Position: r.Position, Managed: r.Managed})
+	}
+	return out, nil
 }
 
 // MemberRoles returns the configured role list for (guildID, userID), or an empty (non-nil) list

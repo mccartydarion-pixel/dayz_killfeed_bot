@@ -261,7 +261,7 @@ func (a *App) handleGetInstallationHub(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	role, ok := a.requireOrganizationMember(w, r, organizationID, user.ID)
+	role, ok := a.requireOrganizationViewer(w, r, organizationID, user)
 	if !ok {
 		return
 	}
@@ -386,7 +386,7 @@ func (a *App) handleGetInstallationSettings(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
-	if _, ok := a.requireOrganizationMember(w, r, organizationID, user.ID); !ok {
+	if _, ok := a.requireOrganizationViewer(w, r, organizationID, user); !ok {
 		return
 	}
 	installationID, ok := pathInt64(w, r, "installationID")

@@ -314,7 +314,7 @@ func (a *App) requireLayoutScope(w http.ResponseWriter, r *http.Request, write b
 	if write {
 		_, ok = a.requireOrganizationRole(w, r, organizationID, user.ID)
 	} else {
-		_, ok = a.requireOrganizationMember(w, r, organizationID, user.ID)
+		_, ok = a.requireOrganizationViewer(w, r, organizationID, user)
 	}
 	if !ok {
 		return

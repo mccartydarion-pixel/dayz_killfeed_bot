@@ -24,6 +24,17 @@ type AdminScope struct {
 	ServerID       *int64
 }
 
+// StaffInstallation is an installation that has at least one Discord role mapped to a staff
+// level: a candidate for website access by people holding one of those roles.
+type StaffInstallation struct {
+	OrganizationID   int64
+	OrganizationName string
+	InstallationID   int64
+	GuildID          int64
+	DiscordGuildID   string
+	GuildName        string
+}
+
 type ClientAdminRepository struct{ pool *pgxpool.Pool }
 
 func NewClientAdminRepository(pool *pgxpool.Pool) *ClientAdminRepository {
@@ -334,6 +345,44 @@ FROM factions f WHERE f.guild_id=$1 ORDER BY f.created_at DESC LIMIT $2`, guildI
 	for rows.Next() {
 		var s FactionSummary
 		if err := rows.Scan(&s.ID, &s.Name, &s.Tag, &s.OwnerPlayerID, &s.Active, &s.CreatedAt, &s.MemberCount); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+const staffInstallationQuery = `
+SELECT o.id, o.name, i.id, g.id, g.discord_guild_id, COALESCE(c.guild_name, '')
+FROM installations i
+JOIN organizations o ON o.id = i.organization_id
+JOIN discord_guild_connections c ON c.id = i.discord_guild_connection_id
+JOIN guilds g ON g.id = c.guild_id
+WHERE EXISTS (SELECT 1 FROM installation_role_permissions p WHERE p.installation_id = i.id)`
+
+// StaffInstallationsInGuilds lists the staff-mapped installations in the given Discord guilds.
+func (r *ClientAdminRepository) StaffInstallationsInGuilds(ctx context.Context, discordGuildIDs []string) ([]StaffInstallation, error) {
+	if len(discordGuildIDs) == 0 {
+		return nil, nil
+	}
+	return r.staffInstallations(ctx, staffInstallationQuery+` AND g.discord_guild_id = ANY($1) ORDER BY o.id, i.id`, discordGuildIDs)
+}
+
+// StaffInstallationsForOrganization lists the organization's staff-mapped installations.
+func (r *ClientAdminRepository) StaffInstallationsForOrganization(ctx context.Context, organizationID int64) ([]StaffInstallation, error) {
+	return r.staffInstallations(ctx, staffInstallationQuery+` AND o.id = $1 ORDER BY i.id`, organizationID)
+}
+
+func (r *ClientAdminRepository) staffInstallations(ctx context.Context, query string, arg any) ([]StaffInstallation, error) {
+	rows, err := r.pool.Query(ctx, query, arg)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []StaffInstallation
+	for rows.Next() {
+		var s StaffInstallation
+		if err := rows.Scan(&s.OrganizationID, &s.OrganizationName, &s.InstallationID, &s.GuildID, &s.DiscordGuildID, &s.GuildName); err != nil {
 			return nil, err
 		}
 		out = append(out, s)

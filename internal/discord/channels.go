@@ -216,3 +216,39 @@ func memberChannelPermissions(guild *discordgo.Guild, channel *discordgo.Channel
 	}
 	return perms
 }
+
+// GuildRoleInfo is one Discord role, for the Staff page's role picker.
+type GuildRoleInfo struct {
+	ID       string
+	Name     string
+	Color    int
+	Position int
+	Managed  bool // bot or integration roles, which members cannot hold
+}
+
+// GuildRoleList returns guildID's roles (state cache first, one REST fallback), highest first,
+// without @everyone.
+func (c *Client) GuildRoleList(guildID string) ([]GuildRoleInfo, error) {
+	if c == nil || c.session == nil {
+		return nil, fmt.Errorf("discord session not initialized")
+	}
+	var roles []*discordgo.Role
+	if g, err := c.session.State.Guild(guildID); err == nil && g != nil && len(g.Roles) > 0 {
+		roles = g.Roles
+	} else {
+		fetched, err := c.session.GuildRoles(guildID)
+		if err != nil {
+			return nil, fmt.Errorf("fetch guild roles: %w", err)
+		}
+		roles = fetched
+	}
+	out := make([]GuildRoleInfo, 0, len(roles))
+	for _, r := range roles {
+		if r == nil || r.ID == guildID { // @everyone shares the guild's ID
+			continue
+		}
+		out = append(out, GuildRoleInfo{ID: r.ID, Name: r.Name, Color: r.Color, Position: r.Position, Managed: r.Managed})
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Position > out[j].Position })
+	return out, nil
+}

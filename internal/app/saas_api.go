@@ -362,6 +362,7 @@ func (a *App) registerSaaSAPI() {
 	a.HTTPServer.Handle("POST /api/saas/organizations", a.handleCreateOrganization)
 	a.HTTPServer.Handle("GET /api/saas/organizations/{organizationID}", a.handleGetOrganization)
 	a.HTTPServer.Handle("GET /api/saas/organizations/{organizationID}/dashboard", a.handleDashboard)
+	a.HTTPServer.Handle("POST /api/saas/staff/installations", a.handleStaffInstallations)
 
 	a.HTTPServer.Handle("POST /api/saas/organizations/{organizationID}/installations", a.handleCreateInstallation)
 	a.HTTPServer.Handle("GET /api/saas/organizations/{organizationID}/installations/{installationID}", a.handleGetInstallation)
