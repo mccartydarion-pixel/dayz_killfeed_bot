@@ -1,10 +1,13 @@
 package app
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/discord"
 	"github.com/yourname/dayz-killfeed/internal/ownerops"
 )
@@ -94,5 +97,103 @@ func TestServerDownDMCarriesTheAlertAndPingsNobody(t *testing.T) {
 	}
 	if !named {
 		t.Fatal("the DM must name the server")
+	}
+}
+
+type fakeAlertTransport struct {
+	sends    []string // channel ids
+	edits    []string // "channel/message"
+	failEdit bool
+	next     int
+}
+
+func (f *fakeAlertTransport) Send(channelID string, _ *discordgo.MessageSend) (string, error) {
+	f.sends = append(f.sends, channelID)
+	f.next++
+	return fmt.Sprintf("m%d", f.next), nil
+}
+
+func (f *fakeAlertTransport) Edit(channelID, messageID string, _ *discordgo.MessageEmbed) error {
+	if f.failEdit {
+		return errors.New("unknown message")
+	}
+	f.edits = append(f.edits, channelID+"/"+messageID)
+	return nil
+}
+
+func newTestNotifier(tr *fakeAlertTransport) *serverDownNotifier {
+	return &serverDownNotifier{transport: tr, targets: func() []string { return []string{"staff", "dm"} }, serverName: func() string { return "Chernarus" }}
+}
+
+func TestServerDownNotifierEditsItsOwnMessages(t *testing.T) {
+	tr := &fakeAlertTransport{}
+	n := newTestNotifier(tr)
+	down := discord.AdminAlert{Kind: discord.AlertKindServerDown, Severity: discord.AlertCritical, Headline: "Game server looks down"}
+	back := discord.AdminAlert{Kind: discord.AlertKindServerDown, Severity: discord.AlertResolved, Headline: "Game server is back"}
+
+	n.notify(down)
+	if strings.Join(tr.sends, ",") != "staff,dm" || len(tr.edits) != 0 {
+		t.Fatalf("down: sends=%v edits=%v", tr.sends, tr.edits)
+	}
+	n.notify(back)
+	if strings.Join(tr.sends, ",") != "staff,dm" || strings.Join(tr.edits, ",") != "staff/m1,dm/m2" {
+		t.Fatalf("back must edit the two down messages and send nothing: sends=%v edits=%v", tr.sends, tr.edits)
+	}
+
+	// The next outage is a new pair of messages, edited in turn.
+	n.notify(down)
+	n.notify(back)
+	if len(tr.sends) != 4 || strings.Join(tr.edits[2:], ",") != "staff/m3,dm/m4" {
+		t.Fatalf("second outage: sends=%v edits=%v", tr.sends, tr.edits)
+	}
+}
+
+func TestServerDownNotifierSendsWhenItHasNothingToEdit(t *testing.T) {
+	// After a bot restart the ids are gone: "back" is posted once in each place.
+	tr := &fakeAlertTransport{}
+	n := newTestNotifier(tr)
+	n.notify(discord.AdminAlert{Kind: discord.AlertKindServerDown, Severity: discord.AlertResolved, Headline: "Game server is back"})
+	if strings.Join(tr.sends, ",") != "staff,dm" || len(n.sent) != 0 {
+		t.Fatalf("sends=%v sent=%v", tr.sends, n.sent)
+	}
+
+	// A message that can no longer be edited (deleted) is replaced by a new one.
+	tr = &fakeAlertTransport{}
+	n = newTestNotifier(tr)
+	n.notify(discord.AdminAlert{Kind: discord.AlertKindServerDown, Severity: discord.AlertCritical, Headline: "Game server looks down"})
+	tr.failEdit = true
+	n.notify(discord.AdminAlert{Kind: discord.AlertKindServerDown, Severity: discord.AlertResolved, Headline: "Game server is back"})
+	if len(tr.sends) != 4 {
+		t.Fatalf("sends=%v, want the two alerts and two replacements", tr.sends)
+	}
+}
+
+func TestGameServerStatusForTheBoard(t *testing.T) {
+	boot := time.Date(2026, 10, 10, 16, 36, 30, 0, time.UTC)
+	now := boot.Add(20 * time.Minute)
+	in := ownerops.DownInput{Now: now, LastGrowth: now.Add(-time.Minute), LastListing: now, BootAt: boot, RunLength: 68 * time.Minute}
+	g, known := gameServerStatus(in, serverDownState{})
+	if !known || g.State != ownerops.GameOnline || !g.StartedAt.Equal(boot) || !g.NextRestart.Equal(boot.Add(68*time.Minute).Truncate(time.Minute)) {
+		t.Fatalf("online: %+v known=%v", g, known)
+	}
+	// An open alert keeps the board on "down", even when this check cannot see the server.
+	since := now.Add(-time.Hour)
+	g, known = gameServerStatus(ownerops.DownInput{Now: now, LastGrowth: since, LastListing: now, ListingFailed: true}, serverDownState{alerted: true, downSince: since})
+	if !known || g.State != ownerops.GameDown || !g.DownSince.Equal(since) {
+		t.Fatalf("down: %+v known=%v", g, known)
+	}
+	if _, known := gameServerStatus(ownerops.DownInput{Now: now}, serverDownState{}); known {
+		t.Fatal("nothing known must not change the board")
+	}
+}
+
+func TestKnownStartsKeepsEachStartOnce(t *testing.T) {
+	a := time.Date(2026, 10, 10, 9, 17, 46, 0, time.UTC)
+	starts := knownStarts(nil, a)
+	starts = knownStarts(starts, a)
+	starts = knownStarts(starts, time.Time{})
+	starts = knownStarts(starts, a.Add(68*time.Minute))
+	if len(starts) != 2 {
+		t.Fatalf("starts = %v", starts)
 	}
 }

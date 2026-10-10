@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -17,9 +18,11 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
-// The server-down alert (docs/SERVER_DOWN_ALERT.md): one staff alert when a game server's log
-// files have stopped growing for long enough that the game is not running, and one when they
-// grow again. The decision is ownerops.ServerDown; this file feeds it and posts the result.
+// The server-down alert and the restart lines of the status board (docs/SERVER_DOWN_ALERT.md).
+// One alert goes out when a game server's log files have stopped growing for long enough that the
+// game is not running; when they grow again that same message is edited to say so. The status
+// board shows the game server's state, its last restart and about when the next one is due. The
+// decisions are in ownerops (ServerDown, GameState); this file feeds them and posts the result.
 
 const serverDownCheckEvery = time.Minute
 
@@ -70,10 +73,13 @@ func (st *serverDownState) step(in ownerops.DownInput, guildID, serverID int64) 
 			At:       in.Now}
 	case !down && st.alerted && in.LastGrowth.After(st.downSince):
 		was := in.LastGrowth.Sub(st.downSince)
+		from := st.downSince
 		st.alerted, st.downSince = false, time.Time{}
 		return &discord.AdminAlert{GuildRowID: guildID, ServerID: serverID, Kind: discord.AlertKindServerDown, Severity: discord.AlertResolved,
 			Headline: "Game server is back",
-			Detail:   "The server's log files are being written again. It was quiet for " + roughDuration(was) + ".", At: in.Now}
+			Detail:   "The server's log files are being written again. It was not running for " + roughDuration(was) + ".",
+			Fields:   [][2]string{{"Stopped", presentation.Timestamp(from, 't')}, {"Back", presentation.Timestamp(in.LastGrowth, 't')}},
+			At:       in.Now}
 	}
 	return nil
 }
@@ -95,9 +101,10 @@ func roughDuration(d time.Duration) string {
 }
 
 // serverDownInput reads what the live sync supervisor and the ADM reader know about one server.
-func (a *App) serverDownInput(sup *livesync.Supervisor, serverID int64, after time.Duration, now time.Time) ownerops.DownInput {
+// starts are the server-local start times of the runs seen so far.
+func (a *App) serverDownInput(sup *livesync.Supervisor, serverID int64, after time.Duration, starts []time.Time, now time.Time) ownerops.DownInput {
 	snap := sup.Snapshot()
-	in := ownerops.DownInput{Now: now, After: after, ListingFailed: snap.ListingError != ""}
+	in := ownerops.DownInput{Now: now, After: after, ListingFailed: snap.ListingError != "", RunLength: ownerops.TypicalRunLength(starts)}
 	if snap.LastListingAt != nil {
 		in.LastListing = *snap.LastListingAt
 	}
@@ -110,7 +117,81 @@ func (a *App) serverDownInput(sup *livesync.Supervisor, serverID int64, after ti
 	if v := a.feedWatch.view(serverID, now); v.Watching && v.Sample.LastLogLineAt.After(in.LastGrowth) {
 		in.LastGrowth = v.Sample.LastLogLineAt
 	}
+	// File names carry the server's own clock; the learned offset turns the newest into UTC.
+	if boot := newestStart(snap); !boot.IsZero() && snap.UTCOffsetMinutes != nil {
+		in.BootAt = boot.Add(-time.Duration(*snap.UTCOffsetMinutes) * time.Minute)
+	}
 	return in
+}
+
+// newestStart is the newest server-local start time in the names of the engine reports being read.
+func newestStart(snap livesync.Snapshot) time.Time {
+	var newest time.Time
+	for _, src := range snap.Sources {
+		if src.Family == livesync.FamilyRPT && src.FileLocalStart != nil && src.FileLocalStart.After(newest) {
+			newest = *src.FileLocalStart
+		}
+	}
+	return newest
+}
+
+// knownStarts adds start to starts unless it is already there, keeping the newest 24.
+func knownStarts(starts []time.Time, start time.Time) []time.Time {
+	if start.IsZero() {
+		return starts
+	}
+	for _, s := range starts {
+		if s.Equal(start) {
+			return starts
+		}
+	}
+	starts = append(starts, start)
+	if len(starts) > 24 {
+		starts = starts[len(starts)-24:]
+	}
+	return starts
+}
+
+// storedStarts are the start times of the runs live sync has on record, oldest first.
+func (a *App) storedStarts(ctx context.Context, row repository.GameServer) []time.Time {
+	if a.LiveSync == nil {
+		return nil
+	}
+	opCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	sources, err := a.LiveSync.LoadSources(opCtx, row.GuildID, row.ID)
+	if err != nil {
+		slog.Warn("component=server_down", "event", "starts_load_failed", "server_id", row.ID, "err", err.Error())
+		return nil
+	}
+	var starts []time.Time
+	for _, src := range sources {
+		if src.Family == livesync.FamilyRPT && src.FileLocalStart != nil {
+			starts = append(starts, *src.FileLocalStart)
+		}
+	}
+	sort.Slice(starts, func(i, j int) bool { return starts[i].Before(starts[j]) })
+	var out []time.Time
+	for _, s := range starts {
+		out = knownStarts(out, s)
+	}
+	return out
+}
+
+// gameServerStatus is what the status board shows for one server. While an alert is open the
+// state stays "down" until the logs grow again, even through a check that cannot see the server.
+func gameServerStatus(in ownerops.DownInput, st serverDownState) (discord.GameServerStatus, bool) {
+	state := ownerops.GameState(in)
+	if st.alerted {
+		state = ownerops.GameDown
+	}
+	if state == ownerops.GameUnknown {
+		return discord.GameServerStatus{}, false
+	}
+	g := discord.GameServerStatus{State: state, StartedAt: in.BootAt, NextRestart: in.NextRestart(), DownSince: st.downSince}
+	// Whole minutes: the board is edited only when what it shows changes.
+	g.NextRestart = g.NextRestart.Truncate(time.Minute)
+	return g, true
 }
 
 // runServerDownWatch checks one server once a minute until ctx ends.
@@ -127,51 +208,135 @@ func (a *App) runServerDownWatch(ctx context.Context, row repository.GameServer,
 	ticker := time.NewTicker(serverDownCheckEvery)
 	defer ticker.Stop()
 	var st serverDownState
+	starts := a.storedStarts(ctx, row)
+	notifier := &serverDownNotifier{transport: a.serverDownTransport(), targets: func() []string { return a.serverDownTargets(ctx, row) }, serverName: func() string { return a.serverName(row.ID) }}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
-			alert := st.step(a.serverDownInput(sup, row.ID, after, now.UTC()), row.GuildID, row.ID)
+			starts = knownStarts(starts, newestStart(sup.Snapshot()))
+			in := a.serverDownInput(sup, row.ID, after, starts, now.UTC())
+			alert := st.step(in, row.GuildID, row.ID)
+			if g, known := gameServerStatus(in, st); known && a.ServerStatusBoard != nil {
+				a.ServerStatusBoard.ObserveGame(row.ID, g)
+			}
 			if alert == nil {
 				continue
 			}
-			slog.Warn("component=server_down", "event", "server_down_"+strings.ToLower(string(alert.Severity)), "server_id", row.ID, "guild_id", row.GuildID)
-			if a.AdminAlerts != nil {
-				a.AdminAlerts.Publish(*alert)
-			}
-			a.dmOwnerServerDown(ctx, *alert)
+			slog.Warn("component=server_down", "event", "server_down_"+strings.ToLower(string(alert.Severity)), "server_id", row.ID, "guild_id", row.GuildID,
+				"restart_due", in.RestartDue())
+			notifier.notify(*alert)
 		}
 	}
 }
 
-// dmOwnerServerDown sends the alert to the organization owner by DM as well: an outage at night
-// is seen sooner there than in a staff channel. A failure (DMs closed, no owner on record) is
-// logged and nothing else: the staff alert has already gone out.
-func (a *App) dmOwnerServerDown(ctx context.Context, alert discord.AdminAlert) {
-	if a.DB == nil || a.DB.Pool == nil || a.Discord == nil || a.Discord.Session() == nil {
+// alertTransport is the little of Discord the notifier needs.
+type alertTransport interface {
+	Send(channelID string, msg *discordgo.MessageSend) (messageID string, err error)
+	Edit(channelID, messageID string, embed *discordgo.MessageEmbed) error
+}
+
+type sentAlert struct{ channelID, messageID string }
+
+// serverDownNotifier posts the down alert once and, when the server is back, edits those same
+// messages instead of posting again: one message per outage in each place. The message ids are
+// kept in memory, so after a bot restart the "back" notice is a new message.
+type serverDownNotifier struct {
+	transport  alertTransport
+	targets    func() []string // channel ids: the staff alerts channel and the owner's DM
+	serverName func() string
+	sent       []sentAlert
+}
+
+func (n *serverDownNotifier) notify(alert discord.AdminAlert) {
+	if n == nil || n.transport == nil {
 		return
 	}
+	msg := serverDownDM(alert, n.serverName())
+	if alert.Severity == discord.AlertResolved && len(n.sent) > 0 {
+		for _, s := range n.sent {
+			if err := n.transport.Edit(s.channelID, s.messageID, msg.Embeds[0]); err != nil {
+				slog.Warn("component=server_down", "event", "alert_edit_failed", "server_id", alert.ServerID, "err", err.Error())
+				if _, err := n.transport.Send(s.channelID, msg); err != nil {
+					slog.Warn("component=server_down", "event", "alert_send_failed", "server_id", alert.ServerID, "err", err.Error())
+				}
+			}
+		}
+		n.sent = nil
+		return
+	}
+	n.sent = nil
+	for _, channelID := range n.targets() {
+		id, err := n.transport.Send(channelID, msg)
+		if err != nil {
+			slog.Warn("component=server_down", "event", "alert_send_failed", "server_id", alert.ServerID, "err", err.Error())
+			continue
+		}
+		if alert.Severity != discord.AlertResolved {
+			n.sent = append(n.sent, sentAlert{channelID: channelID, messageID: id})
+		}
+	}
+}
+
+// sessionAlertTransport sends and edits through the bot's Discord session.
+type sessionAlertTransport struct{ session *discordgo.Session }
+
+func (t sessionAlertTransport) Send(channelID string, msg *discordgo.MessageSend) (string, error) {
+	m, err := t.session.ChannelMessageSendComplex(channelID, msg)
+	if err != nil {
+		return "", err
+	}
+	return m.ID, nil
+}
+
+func (t sessionAlertTransport) Edit(channelID, messageID string, embed *discordgo.MessageEmbed) error {
+	embeds := []*discordgo.MessageEmbed{embed}
+	_, err := t.session.ChannelMessageEditComplex(&discordgo.MessageEdit{Channel: channelID, ID: messageID, Embeds: &embeds})
+	return err
+}
+
+func (a *App) serverDownTransport() alertTransport {
+	if a.Discord == nil || a.Discord.Session() == nil {
+		return nil
+	}
+	return sessionAlertTransport{session: a.Discord.Session()}
+}
+
+// serverDownTargets are the channels the alert goes to: the server's staff alerts channel and the
+// organization owner's DM. Either can be missing (no route, DMs closed, no owner on record).
+func (a *App) serverDownTargets(ctx context.Context, row repository.GameServer) []string {
+	var out []string
 	opCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	ownerID, err := repository.NewCaseBaseRequestRepository(a.DB.Pool).OwnerDiscordForServer(opCtx, alert.GuildRowID, alert.ServerID)
-	if err != nil || ownerID == "" {
+	if a.ChannelRoutes != nil {
+		ch, found, err := a.ChannelRoutes.Resolve(opCtx, row.GuildID, row.ID, "ADMIN_ALERTS")
 		if err != nil {
-			slog.Warn("component=server_down", "event", "owner_lookup_failed", "server_id", alert.ServerID, "err", err.Error())
+			slog.Warn("component=server_down", "event", "route_lookup_failed", "server_id", row.ID, "err", err.Error())
+		} else if found && ch != "" {
+			out = append(out, ch)
 		}
-		return
 	}
-	session := a.Discord.Session()
-	ch, err := session.UserChannelCreate(ownerID)
-	if err == nil {
-		_, err = session.ChannelMessageSendComplex(ch.ID, serverDownDM(alert, a.serverName(alert.ServerID)))
+	if a.DB == nil || a.DB.Pool == nil || a.Discord == nil || a.Discord.Session() == nil {
+		return out
 	}
+	ownerID, err := repository.NewCaseBaseRequestRepository(a.DB.Pool).OwnerDiscordForServer(opCtx, row.GuildID, row.ID)
 	if err != nil {
-		slog.Warn("component=server_down", "event", "owner_dm_failed", "server_id", alert.ServerID, "err", err.Error())
+		slog.Warn("component=server_down", "event", "owner_lookup_failed", "server_id", row.ID, "err", err.Error())
+		return out
 	}
+	if ownerID == "" {
+		return out
+	}
+	dm, err := a.Discord.Session().UserChannelCreate(ownerID)
+	if err != nil {
+		slog.Warn("component=server_down", "event", "owner_dm_failed", "server_id", row.ID, "err", err.Error())
+		return out
+	}
+	return append(out, dm.ID)
 }
 
-// serverDownDM is the owner's copy of the alert. It carries no mention and no link.
+// serverDownDM is the alert as a message. It carries no mention and no link.
 func serverDownDM(alert discord.AdminAlert, serverName string) *discordgo.MessageSend {
 	return &discordgo.MessageSend{
 		Embeds:          []*discordgo.MessageEmbed{discord.BuildAdminAlertEmbed(alert, serverName)},
