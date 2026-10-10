@@ -83,7 +83,7 @@ const (
 	CapWhitelistManage   Capability = "WHITELIST_MANAGE"
 	CapBanlistManage     Capability = "BANLIST_MANAGE"
 	// The Nitrado priority list ("Prioritized players"): who skips the queue when the server is full.
-	CapPriorityManage     Capability = "PRIORITY_MANAGE"
+	CapPriorityManage Capability = "PRIORITY_MANAGE"
 	// Reading the game server's own log files (docs/SERVER_LOGS.md). Owner only: the files name
 	// every player, their platform ids and where they were.
 	CapServerLogsView     Capability = "SERVER_LOGS_VIEW"
