@@ -34,7 +34,11 @@ To the server's staff alerts channel (the `ADMIN_ALERTS` route), kind `SERVER_DO
 - **Game server looks down** (critical) once, when the rule first holds.
 - **Game server is back** (resolved) once, when a file grows again, with how long it was quiet.
 
-With no staff alerts channel nothing is posted. The state is kept in memory, so a server that is
+The organization owner gets the same two messages by DM, so an outage at night is seen without
+watching a channel. The DM goes out whether or not a staff alerts channel is set; if the owner's
+DMs are closed it is logged (`owner_dm_failed`) and skipped.
+
+With no staff alerts channel only the DM is sent. The state is kept in memory, so a server that is
 still down when the bot restarts is reported once more.
 
 ## Setting

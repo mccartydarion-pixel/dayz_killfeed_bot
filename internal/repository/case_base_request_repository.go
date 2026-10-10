@@ -369,6 +369,24 @@ func (r *CaseBaseRequestRepository) RequestNotice(ctx context.Context, s BaseReq
 	return ownerDiscordID, playerName, err
 }
 
+// OwnerDiscordForServer returns the Discord account of the organization owner of a guild's game
+// server, "" when the server has no installation or the owner has no Discord account on record.
+func (r *CaseBaseRequestRepository) OwnerDiscordForServer(ctx context.Context, guildID, serverID int64) (string, error) {
+	if r == nil || r.pool == nil || guildID <= 0 || serverID <= 0 {
+		return "", ErrInvalidBaseRequest
+	}
+	var id string
+	err := r.pool.QueryRow(ctx, `SELECT COALESCE(u.discord_user_id,'') FROM installations i
+ JOIN discord_guild_connections c ON c.id=i.discord_guild_connection_id
+ JOIN organizations o ON o.id=i.organization_id
+ JOIN app_users u ON u.id=o.owner_user_id
+ WHERE i.game_server_id=$2 AND c.guild_id=$1 ORDER BY i.id LIMIT 1`, guildID, serverID).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return id, err
+}
+
 // InstallationForServer finds the installation a guild's game server belongs
 // to (for Discord commands, which only know the guild and server).
 func (r *CaseBaseRequestRepository) InstallationForServer(ctx context.Context, guildID, serverID int64) (int64, error) {

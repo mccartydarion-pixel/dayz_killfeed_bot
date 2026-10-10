@@ -1,6 +1,7 @@
 package app
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -76,5 +77,22 @@ func TestServerDownIsAnOperationalAlert(t *testing.T) {
 	}
 	if !discord.OperationalAdminAlertKind(discord.AlertKindServerDown) {
 		t.Fatal("SERVER_DOWN must be accepted by the staff alert publisher")
+	}
+}
+
+func TestServerDownDMCarriesTheAlertAndPingsNobody(t *testing.T) {
+	msg := serverDownDM(discord.AdminAlert{Kind: discord.AlertKindServerDown, Severity: discord.AlertCritical, Headline: "Game server looks down", Detail: "The logs are still."}, "Chernarus")
+	if len(msg.Embeds) != 1 || !strings.Contains(msg.Embeds[0].Description, "Game server looks down") {
+		t.Fatalf("embed = %+v", msg.Embeds)
+	}
+	if msg.AllowedMentions == nil || len(msg.AllowedMentions.Parse) != 0 {
+		t.Fatal("the DM must not allow mentions")
+	}
+	var named bool
+	for _, f := range msg.Embeds[0].Fields {
+		named = named || f.Value == "Chernarus"
+	}
+	if !named {
+		t.Fatal("the DM must name the server")
 	}
 }

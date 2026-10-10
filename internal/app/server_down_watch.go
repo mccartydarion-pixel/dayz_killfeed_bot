@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/discord"
 	"github.com/yourname/dayz-killfeed/internal/livesync"
 	"github.com/yourname/dayz-killfeed/internal/ownerops"
@@ -139,6 +140,41 @@ func (a *App) runServerDownWatch(ctx context.Context, row repository.GameServer,
 			if a.AdminAlerts != nil {
 				a.AdminAlerts.Publish(*alert)
 			}
+			a.dmOwnerServerDown(ctx, *alert)
 		}
+	}
+}
+
+// dmOwnerServerDown sends the alert to the organization owner by DM as well: an outage at night
+// is seen sooner there than in a staff channel. A failure (DMs closed, no owner on record) is
+// logged and nothing else: the staff alert has already gone out.
+func (a *App) dmOwnerServerDown(ctx context.Context, alert discord.AdminAlert) {
+	if a.DB == nil || a.DB.Pool == nil || a.Discord == nil || a.Discord.Session() == nil {
+		return
+	}
+	opCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	ownerID, err := repository.NewCaseBaseRequestRepository(a.DB.Pool).OwnerDiscordForServer(opCtx, alert.GuildRowID, alert.ServerID)
+	if err != nil || ownerID == "" {
+		if err != nil {
+			slog.Warn("component=server_down", "event", "owner_lookup_failed", "server_id", alert.ServerID, "err", err.Error())
+		}
+		return
+	}
+	session := a.Discord.Session()
+	ch, err := session.UserChannelCreate(ownerID)
+	if err == nil {
+		_, err = session.ChannelMessageSendComplex(ch.ID, serverDownDM(alert, a.serverName(alert.ServerID)))
+	}
+	if err != nil {
+		slog.Warn("component=server_down", "event", "owner_dm_failed", "server_id", alert.ServerID, "err", err.Error())
+	}
+}
+
+// serverDownDM is the owner's copy of the alert. It carries no mention and no link.
+func serverDownDM(alert discord.AdminAlert, serverName string) *discordgo.MessageSend {
+	return &discordgo.MessageSend{
+		Embeds:          []*discordgo.MessageEmbed{discord.BuildAdminAlertEmbed(alert, serverName)},
+		AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}},
 	}
 }
