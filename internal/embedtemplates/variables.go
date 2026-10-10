@@ -72,6 +72,7 @@ var routeVariableDefinitions = map[string][]VariableDefinition{
 		v("range", "Range", CatCombat, "Champion's range class for the kill.", "CLOSE QUARTERS", "label", "presentation.RangeClass(Event.Distance)", "Present when the distance is known or the kill was melee.", true),
 		v("hit_zone", "Hit Zone", CatCombat, "The body part of the lethal hit.", "Torso", "text", "correlated lethal hit (Event.FinalHit)", finalHitNote, true),
 		v("damage", "Damage", CatCombat, "Damage of the lethal hit (that one hit, not a total).", "28.7", "decimal", "correlated lethal hit (Event.FinalHit)", finalHitNote, true),
+		v("hit_label", "Hit Label", CatCombat, "CRITICAL HIT when the lethal hit was to the head, otherwise HIT.", "CRITICAL HIT", "label", "Event.HitZone / Event.FinalHit.Zone", finalHitNote, true),
 		v("killer_kills", "Killer Kills", CatKillerStats, "The killer's all-time kills after this kill.", "9", "integer", "Event.KillerStats.Kills", statsAvail, true),
 		v("killer_deaths", "Killer Deaths", CatKillerStats, "The killer's all-time deaths.", "0", "integer", "Event.KillerStats.Deaths", statsAvail, true),
 		v("killer_kd", "Killer K/D", CatKillerStats, "The killer's all-time K/D after the confirmed kill.", "9.00", "decimal", "Event.KillerStats.KD()", statsAvail, true),
@@ -103,6 +104,7 @@ var routeVariableDefinitions = map[string][]VariableDefinition{
 		v("ranked_rp", "Ranked RP", CatCompetitive, "The RP this kill earned, with icons for double RP and bonuses.", "+250 RP ⚡💀", "text", "Event.RankedTag", "Only when the server shows ranked tags and the kill earned RP.", true),
 		v("war_badge", "War Badge", CatCompetitive, "The faction war this kill counted for.", "WAR KILL", "label", "Event.WarBadge", "Only for kills in an active faction war.", true),
 		v("event_badges", "Event Badges", CatCompetitive, "Active competitive events this kill counted for, joined by •.", "Double Kill • NWAF Event", "text", "Event.ActiveEventBadges", "Only when the kill counted for an active event.", true),
+		v("time_ago", "Time Ago", CatServer, "When the kill happened as a live Discord time (\"2 minutes ago\"): it counts up by itself and shows in each reader's own time zone.", "2 minutes ago", "timestamp", "Event.Timestamp", always, false),
 		serverName(), timestamp(),
 	},
 	"HITFEED": {

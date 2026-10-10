@@ -112,7 +112,7 @@ func TestKillCardUsesTheCustomCardAndProvenVariables(t *testing.T) {
 		}
 	}
 	for k := range c.vars {
-		if _, ok := want[k]; !ok && k != "timestamp" {
+		if _, ok := want[k]; !ok && k != "timestamp" && k != "time_ago" {
 			t.Errorf("unexpected variable %q (only authoritative values may be passed)", k)
 		}
 	}

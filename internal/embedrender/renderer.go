@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -266,12 +267,22 @@ func RenderEventWithReport(cfg embedtemplates.Config, routeKey string, vars map[
 	return RenderWithReport(cfg, routeKey, approvedOnly(routeKey, vars), at)
 }
 
+// discordRelativeTime is a Discord relative timestamp and nothing else: <t:1791646433:R>.
+var discordRelativeTime = regexp.MustCompile(`^<t:\d{1,12}:R>$`)
+
 // approvedOnly keeps only the variables the route approves and sanitizes each value,
 // so a publisher can neither pass an extra variable nor an unsanitized one.
 func approvedOnly(routeKey string, vars map[string]string) map[string]string {
 	out := make(map[string]string, len(vars))
 	for _, name := range embedtemplates.Variables(routeKey) {
 		if v, ok := vars[name]; ok {
+			// {{time_ago}} is Discord timestamp syntax, which sanitizing would escape into plain
+			// text. It is kept as written only when it is exactly that syntax; anything else
+			// under the name (a designer's sample text) is sanitized like every other value.
+			if name == "time_ago" && discordRelativeTime.MatchString(v) {
+				out[name] = v
+				continue
+			}
 			if s := SanitizeValue(v); s != "" {
 				out[name] = s
 			}

@@ -68,6 +68,12 @@ func setIf(m map[string]string, k, v string) {
 // killfeedVars: only values the authoritative kill event carries.
 func killfeedVars(ev *killfeed.Event, serverName string) map[string]string {
 	m := map[string]string{"timestamp": stampVar(time.Now())}
+	// The live "time ago": the kill's own time when the event carries one, else now.
+	at := ev.Timestamp
+	if at.IsZero() {
+		at = time.Now()
+	}
+	m["time_ago"] = presentation.Timestamp(at, 'R')
 	if ev.Killer != nil {
 		m["killer"] = nameVar(ev.Killer.Name)
 	} else {
@@ -103,6 +109,14 @@ func killfeedVars(ev *killfeed.Event, serverName string) map[string]string {
 	}
 	if isHeadshot(ev) {
 		m["headshot"] = "HEADSHOT"
+	}
+	// {{hit_label}} names the lethal hit: CRITICAL HIT to the head, HIT anywhere else. Absent
+	// with no hit zone, so a line built on it disappears like one built on {{hit_zone}}.
+	if zone := m["hit_zone"]; zone != "" {
+		m["hit_label"] = "HIT"
+		if strings.EqualFold(strings.TrimSpace(zone), "Head") {
+			m["hit_label"] = "CRITICAL HIT"
+		}
 	}
 
 	// Stats and streaks were attached to the event after durable persistence

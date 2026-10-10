@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"strings"
 	"testing"
 	"time"
 
@@ -165,5 +166,33 @@ func checkNoDB(t *testing.T, file string, funcs ...string) {
 	}
 	for fn := range want {
 		t.Errorf("%s not found in %s", fn, file)
+	}
+}
+
+func TestKillfeedHitLabelAndTimeAgo(t *testing.T) {
+	ev := richKill() // a head hit
+	ev.Timestamp = time.Date(2026, 10, 10, 13, 41, 9, 0, time.UTC)
+	m := killfeedVars(ev, "")
+	if m["hit_label"] != "CRITICAL HIT" {
+		t.Errorf("hit_label on a head hit = %q, want CRITICAL HIT", m["hit_label"])
+	}
+	if want := presentation.Timestamp(ev.Timestamp, 'R'); m["time_ago"] != want {
+		t.Errorf("time_ago = %q, want the kill's own time %q", m["time_ago"], want)
+	}
+
+	body := richKill()
+	body.HitZone = "Torso"
+	if got := killfeedVars(body, "")["hit_label"]; got != "HIT" {
+		t.Errorf("hit_label on a torso hit = %q, want HIT", got)
+	}
+
+	// No hit zone: no label, so a line built on it is left out. The time is always there.
+	bare := &killfeed.Event{Type: killfeed.EventPlayerKill, Killer: &killfeed.PlayerRef{Name: "A"}, Victim: &killfeed.PlayerRef{Name: "B"}}
+	m = killfeedVars(bare, "")
+	if _, ok := m["hit_label"]; ok {
+		t.Errorf("hit_label without a hit zone = %q, want absent", m["hit_label"])
+	}
+	if !strings.HasPrefix(m["time_ago"], "<t:") || !strings.HasSuffix(m["time_ago"], ":R>") {
+		t.Errorf("time_ago without an event time = %q, want a Discord relative time", m["time_ago"])
 	}
 }
