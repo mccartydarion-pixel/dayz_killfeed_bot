@@ -95,7 +95,10 @@ func roughDuration(d time.Duration) string {
 }
 
 // serverDownInput reads what the live sync supervisor and the ADM reader know about one server.
-func (a *App) serverDownInput(sup *livesync.Supervisor, serverID int64, after time.Duration, now time.Time) ownerops.DownInput {
+// Stillness is never counted from before watchingSince, the moment this process began watching:
+// the growth times a new process starts with are the stored ones from before it existed, and the
+// first minute after a deploy would otherwise look like an outage.
+func (a *App) serverDownInput(sup *livesync.Supervisor, serverID int64, after time.Duration, watchingSince, now time.Time) ownerops.DownInput {
 	snap := sup.Snapshot()
 	in := ownerops.DownInput{Now: now, After: after, ListingFailed: snap.ListingError != ""}
 	if snap.LastListingAt != nil {
@@ -110,7 +113,17 @@ func (a *App) serverDownInput(sup *livesync.Supervisor, serverID int64, after ti
 	if v := a.feedWatch.view(serverID, now); v.Watching && v.Sample.LastLogLineAt.After(in.LastGrowth) {
 		in.LastGrowth = v.Sample.LastLogLineAt
 	}
+	in.LastGrowth = serverDownGrowthFloor(in.LastGrowth, watchingSince)
 	return in
+}
+
+// serverDownGrowthFloor is the growth time to judge by: the newest growth seen, but never earlier
+// than when this process began watching.
+func serverDownGrowthFloor(lastGrowth, watchingSince time.Time) time.Time {
+	if watchingSince.After(lastGrowth) {
+		return watchingSince
+	}
+	return lastGrowth
 }
 
 // runServerDownWatch checks one server once a minute until ctx ends.
@@ -127,12 +140,13 @@ func (a *App) runServerDownWatch(ctx context.Context, row repository.GameServer,
 	ticker := time.NewTicker(serverDownCheckEvery)
 	defer ticker.Stop()
 	var st serverDownState
+	watchingSince := time.Now().UTC()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
-			alert := st.step(a.serverDownInput(sup, row.ID, after, now.UTC()), row.GuildID, row.ID)
+			alert := st.step(a.serverDownInput(sup, row.ID, after, watchingSince, now.UTC()), row.GuildID, row.ID)
 			if alert == nil {
 				continue
 			}

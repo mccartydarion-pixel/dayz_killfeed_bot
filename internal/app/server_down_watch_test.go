@@ -96,3 +96,30 @@ func TestServerDownDMCarriesTheAlertAndPingsNobody(t *testing.T) {
 		t.Fatal("the DM must name the server")
 	}
 }
+
+// A new process starts with growth times stored before it existed. One minute after a deploy
+// those must not read as an outage (the false alarm of 2026-10-10 16:22 UTC).
+func TestServerDownDoesNotAlertRightAfterTheBotStarts(t *testing.T) {
+	started := time.Date(2026, 10, 10, 16, 21, 15, 0, time.UTC)
+	stored := started.Add(-3 * time.Hour) // e.g. restart.log, last grown hours ago
+	var st serverDownState
+	check := func(d time.Duration, growth time.Time) *discord.AdminAlert {
+		now := started.Add(d)
+		return st.step(ownerops.DownInput{Now: now, LastGrowth: serverDownGrowthFloor(growth, started), LastListing: now.Add(-20 * time.Second)}, 1, 1)
+	}
+	if a := check(time.Minute, stored); a != nil {
+		t.Fatalf("alerted a minute after start: %+v", a)
+	}
+	if a := check(19*time.Minute, stored); a != nil {
+		t.Fatalf("alerted before the wait had passed in this process: %+v", a)
+	}
+	// A server that really is down is still reported, 20 minutes after the bot started.
+	if a := check(20*time.Minute, stored); a == nil || a.Severity != discord.AlertCritical {
+		t.Fatalf("a server still down was not reported: %+v", a)
+	}
+	// Growth seen by this process is used as it is.
+	seen := started.Add(5 * time.Minute)
+	if got := serverDownGrowthFloor(seen, started); !got.Equal(seen) {
+		t.Fatalf("floor moved a newer growth time: %s", got)
+	}
+}

@@ -20,6 +20,10 @@ What did change is that the log files stopped. A running DayZ server writes to i
 - none of its log files (RPT, script, crash, restart, ADM) has grown for 20 minutes, and
 - the files have been still for less than 24 hours.
 
+Stillness is counted from the last growth this bot process saw, and never from before the
+process started: right after a deploy the only growth times it has are stored ones from before
+it existed. So a server that is down when the bot restarts is reported 20 minutes later.
+
 When the first condition fails Champion cannot see the server, so the answer is "unknown" and an
 alert stays as it is. The 24-hour limit keeps a server that was switched off for good from
 alerting after every bot restart.
