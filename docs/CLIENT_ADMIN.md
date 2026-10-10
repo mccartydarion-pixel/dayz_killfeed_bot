@@ -59,6 +59,7 @@ permission mapping granting a Level at or below their own resolved Level - enfor
 | `SERVER_NAME_EDIT` | Administrator | Champion display name only, never a Nitrado rename. A typed name is custom and is not replaced when the Nitrado name changes (`docs/SERVER_NAME_SYNC.md`) |
 | `WHITELIST_MANAGE` | Gatekeeper | |
 | `PRIORITY_MANAGE` | Administrator | Nitrado priority list; takes effect at the next server restart |
+| `SERVER_LOGS_VIEW` | Owner | Reading the game server log files (docs/SERVER_LOGS.md) |
 | `BANLIST_MANAGE` | Moderator | |
 | `PLAYER_LAST_ONLINE_VIEW` | Moderator | |
 | `FEED_LOCATION_MANAGE` | Moderator | per-route `show_location` toggle |
@@ -194,6 +195,8 @@ DELETE /banlist/{identifier}                   BANLIST_MANAGE
 GET    /priority                               PRIORITY_MANAGE      -> {"supported":bool,"items":["..."],"limit":500}
 POST   /priority                               PRIORITY_MANAGE      body: {"name":"...","reason":"..."}
 DELETE /priority/{name}                        PRIORITY_MANAGE
+GET    /server-logs                            SERVER_LOGS_VIEW     -> {"files":[{"name","kind","size","modifiedAt","startedAt"}]}
+GET    /server-logs/content?file=&before=      SERVER_LOGS_VIEW     -> {"name","kind","size","start","end","hasEarlier","text"}
 
 POST   /stats/player/{playerID}/reset-streak   PLAYER_STATS_RESET
 POST   /stats/reset-season                     SERVER_STATS_RESET   body: {"name":"Season 2","confirm":"RESET EVERYONE"}

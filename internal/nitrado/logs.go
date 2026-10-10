@@ -740,6 +740,24 @@ func (c *Client) ReadLog(ctx context.Context, serviceID string, path string) ([]
 	return c.readRemoteFile(ctx, serviceID, path)
 }
 
+// ConfigDir is the DayZ log directory (ADM, RPT, script and crash logs) Nitrado reports for the
+// service.
+func (c *Client) ConfigDir(ctx context.Context, serviceID string) (string, error) {
+	if serviceID == "" {
+		return "", fmt.Errorf("service ID is required")
+	}
+	return c.gameserverConfigDir(ctx, serviceID)
+}
+
+// ReadRemoteFile downloads one file-server path in full. Unlike ReadLog it never reads a local
+// file or a URL, so it is the one to use when a request chose the file.
+func (c *Client) ReadRemoteFile(ctx context.Context, serviceID, path string) ([]byte, error) {
+	if serviceID == "" || path == "" {
+		return nil, fmt.Errorf("service ID and path are required")
+	}
+	return c.readRemoteFile(ctx, serviceID, path)
+}
+
 // readRemoteFile resolves a file-server path to a signed download URL and reads it.
 // Uses GET /services/:id/gameservers/file_server/download?file=<path>.
 func (c *Client) readRemoteFile(ctx context.Context, serviceID, path string) ([]byte, error) {
