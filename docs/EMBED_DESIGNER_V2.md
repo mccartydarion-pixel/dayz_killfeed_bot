@@ -314,3 +314,12 @@ Publishers still build the Champion default card and pass it to `Customize`, whi
 default on any problem (no template, flag off, disabled, render error). Queueing, dedupe, routing,
 persistence, rate limits and ordering are untouched; the only change is that `Customize` calls the
 shared `RenderEvent`.
+
+## Emojis
+
+`GET .../installations/{installationID}/embed-emojis` returns the custom emojis uploaded to the
+bot's own application in the Discord Developer Portal, as `{"emojis":[{"id","name","animated"}]}`
+sorted by name. The Embed Designer's picker inserts one as `<:name:id>` (`<a:name:id>` when
+animated). They belong to the bot, so every installation sees the same list and they render in
+every server the bot posts to. Read-only, cached for two minutes; a failed refresh keeps the
+last list. Anyone who may open the Embed Designer may read it.
