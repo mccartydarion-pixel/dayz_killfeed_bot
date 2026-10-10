@@ -178,8 +178,8 @@ send and live events agree):
 Escapes are expanded in the **template** before variables are substituted, so a value can never
 become syntax: a player named `Bad\nPlayer` stays that name (sanitized, no extra line), and a
 real line break inside a value becomes a space. Description, field values and footer keep line
-breaks; title, author name and field names are single-line in Discord and fold breaks into a
-space. Discord limits are enforced after expansion and substitution - each `\n` counts as one
+breaks. The title keeps up to three lines (blank lines are dropped and further breaks fold into
+a space); author name and field names are single-line and fold breaks into a space. Discord limits are enforced after expansion and substitution - each `\n` counts as one
 rendered character.
 
 Example field (KILLFEED), label `KILLER STATS`:
