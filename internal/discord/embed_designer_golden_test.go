@@ -45,6 +45,9 @@ var designerGoldenAt = time.Date(2026, 9, 23, 18, 42, 7, 0, time.UTC)
 // time, which a byte-for-byte comparison cannot contain.
 const designerGoldenStamp = "2026-09-23 18:42:07 UTC"
 
+// designerGoldenTimeAgo is the same moment as a Discord relative time.
+const designerGoldenTimeAgo = "<t:1790188927:R>"
+
 type designerCase struct {
 	id    string
 	route string
@@ -122,6 +125,10 @@ func designerCases() []designerCase {
 	stamp := func(vars map[string]string) map[string]string {
 		if _, ok := vars["timestamp"]; ok {
 			vars["timestamp"] = designerGoldenStamp
+		}
+		// {{time_ago}} is the publish time for an event without a time of its own: pinned too.
+		if _, ok := vars["time_ago"]; ok {
+			vars["time_ago"] = designerGoldenTimeAgo
 		}
 		return vars
 	}
