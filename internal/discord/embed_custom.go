@@ -93,7 +93,13 @@ func killfeedVars(ev *killfeed.Event, serverName string) map[string]string {
 		m["distance"] = fmt.Sprintf("%.1fm", math.Round(*ev.Distance*10)/10)
 	}
 	setIf(m, "range", presentation.RangeClass(ev.Distance, melee))
-	setIf(m, "ammo", ev.Ammo)
+	// The kill line rarely names the ammunition; the matched lethal hit usually does.
+	ammo := ev.Ammo
+	if strings.TrimSpace(ammo) == "" && ev.FinalHit != nil {
+		ammo = ev.FinalHit.Ammo
+	}
+	setIf(m, "ammo", ammo)
+	setIf(m, "weapon_with_ammo", weaponWithAmmo(ev.Weapon, ammo))
 	// Hit data: only when the event itself carries it, or when the lethal hit was reliably
 	// correlated with this kill (killfeed.FinalHit: the ADM line immediately before the kill, same
 	// boot file, same players, second, weapon and distance) - never inferred or approximated.
@@ -286,4 +292,16 @@ func setDeathSplitVars(m map[string]string, who string, s *killfeed.CombatRecord
 	m[who+"_pvp_deaths"] = presentation.FormatThousands(s.PvPDeaths)
 	m[who+"_pve_deaths"] = presentation.FormatThousands(s.PvEDeaths())
 	m[who+"_pvp_kd"] = presentation.FormatKD(s.PvPKD())
+}
+
+// weaponWithAmmo is the weapon followed by its ammunition in brackets when the ammunition is
+// known ("M4-A1 (556x45)"), and the weapon alone when it is not, so a template line built on it
+// never disappears for want of the ammunition. "" without a weapon.
+func weaponWithAmmo(weapon, ammo string) string {
+	weapon = strings.TrimSpace(weapon)
+	ammo = strings.TrimPrefix(strings.TrimSpace(ammo), "Bullet_")
+	if weapon == "" || ammo == "" {
+		return weapon
+	}
+	return weapon + " (" + ammo + ")"
 }

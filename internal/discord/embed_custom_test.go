@@ -104,7 +104,7 @@ func TestKillCardUsesTheCustomCardAndProvenVariables(t *testing.T) {
 	story := BuildPresentation(ev)
 	want := map[string]string{"killer": "Alice", "victim": "Bob", "weapon": "M4-A1", "distance": "86.4m", "ammo": "Bullet_556x45", "streak": "3", "server_name": "Northstar",
 		// V2.1: derived from the same event through the default card's own helpers.
-		"killer_streak": "3", "weapon_category": presentation.WeaponCategory("M4-A1", false), "range": presentation.RangeClass(ev.Distance, false),
+		"killer_streak": "3", "weapon_with_ammo": "M4-A1 (556x45)", "weapon_category": presentation.WeaponCategory("M4-A1", false), "range": presentation.RangeClass(ev.Distance, false),
 		"kill_type": story.Title, "story_title": story.Icon + " " + story.Title}
 	for k, v := range want {
 		if c.vars[k] != v {

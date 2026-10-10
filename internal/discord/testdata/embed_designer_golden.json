@@ -681,7 +681,8 @@
       "victim_kd": "1.00",
       "victim_kills": "2",
       "weapon": "M4-A1",
-      "weapon_category": "Assault Rifle"
+      "weapon_category": "Assault Rifle",
+      "weapon_with_ammo": "M4-A1"
     },
     "embed": {
       "title": "💰 💰 BOUNTY CLAIMED",
@@ -736,7 +737,8 @@
       "victim_kd": "1.00",
       "victim_kills": "2",
       "weapon": "M70 Tundra",
-      "weapon_category": "Sniper Rifle"
+      "weapon_category": "Sniper Rifle",
+      "weapon_with_ammo": "M70 Tundra"
     },
     "embed": {
       "title": "👑 👑 EXTREME RANGE",
@@ -791,7 +793,8 @@
       "victim_kd": "1.00",
       "victim_kills": "2",
       "weapon": "M4-A1",
-      "weapon_category": "Assault Rifle"
+      "weapon_category": "Assault Rifle",
+      "weapon_with_ammo": "M4-A1"
     },
     "embed": {
       "title": "🎯 🎯 HEADSHOT",
@@ -846,7 +849,8 @@
       "victim_kd": "1.00",
       "victim_kills": "2",
       "weapon": "M4-A1",
-      "weapon_category": "Assault Rifle"
+      "weapon_category": "Assault Rifle",
+      "weapon_with_ammo": "M4-A1"
     },
     "embed": {
       "title": "🔥 🔥 KILLING SPREE",
@@ -899,7 +903,8 @@
       "victim_deaths": "2",
       "victim_kd": "1.00",
       "victim_kills": "2",
-      "weapon": "SCR 17"
+      "weapon": "SCR 17",
+      "weapon_with_ammo": "SCR 17"
     },
     "embed": {
       "title": "🎯 🎯 LONGSHOT",
@@ -950,7 +955,8 @@
       "victim_kd": "1.00",
       "victim_kills": "2",
       "weapon": "Fists",
-      "weapon_category": "Fists"
+      "weapon_category": "Fists",
+      "weapon_with_ammo": "Fists"
     },
     "embed": {
       "title": "☠️ ☠️ PLAYER ELIMINATED",
@@ -1005,7 +1011,8 @@
       "victim_kd": "1.00",
       "victim_kills": "2",
       "weapon": "M4-A1",
-      "weapon_category": "Assault Rifle"
+      "weapon_category": "Assault Rifle",
+      "weapon_with_ammo": "M4-A1 (556x45)"
     },
     "embed": {
       "title": "☠️ ☠️ PLAYER ELIMINATED",
@@ -1061,7 +1068,8 @@
       "victim_kd": "1.00",
       "victim_kills": "2",
       "weapon": "M4-A1",
-      "weapon_category": "Assault Rifle"
+      "weapon_category": "Assault Rifle",
+      "weapon_with_ammo": "M4-A1"
     },
     "embed": {
       "title": "💀 💀 STREAK ENDED",
@@ -1122,7 +1130,8 @@
       "victim_kills": "2",
       "war_badge": "⚔️ FACTION WAR",
       "weapon": "M4-A1",
-      "weapon_category": "Assault Rifle"
+      "weapon_category": "Assault Rifle",
+      "weapon_with_ammo": "M4-A1 (556x45)"
     },
     "embed": {
       "title": "⚔️ ⚔️ WAR KILL",
@@ -1202,7 +1211,8 @@
       "victim_kd": "1.00",
       "victim_kills": "2",
       "weapon": "M4-A1",
-      "weapon_category": "Assault Rifle"
+      "weapon_category": "Assault Rifle",
+      "weapon_with_ammo": "M4-A1"
     },
     "embed": {
       "title": "☠ PLAYER ELIMINATED",
@@ -1259,7 +1269,8 @@
       "victim_kd": "1.00",
       "victim_kills": "2",
       "weapon": "M70 Tundra",
-      "weapon_category": "Sniper Rifle"
+      "weapon_category": "Sniper Rifle",
+      "weapon_with_ammo": "M70 Tundra"
     },
     "embed": {
       "title": "☠ PLAYER ELIMINATED",
@@ -1316,7 +1327,8 @@
       "victim_kd": "1.00",
       "victim_kills": "2",
       "weapon": "M4-A1",
-      "weapon_category": "Assault Rifle"
+      "weapon_category": "Assault Rifle",
+      "weapon_with_ammo": "M4-A1"
     },
     "embed": {
       "title": "☠ PLAYER ELIMINATED",
@@ -1373,7 +1385,8 @@
       "victim_kd": "1.00",
       "victim_kills": "2",
       "weapon": "M4-A1",
-      "weapon_category": "Assault Rifle"
+      "weapon_category": "Assault Rifle",
+      "weapon_with_ammo": "M4-A1"
     },
     "embed": {
       "title": "☠ PLAYER ELIMINATED",
@@ -1428,7 +1441,8 @@
       "victim_deaths": "2",
       "victim_kd": "1.00",
       "victim_kills": "2",
-      "weapon": "SCR 17"
+      "weapon": "SCR 17",
+      "weapon_with_ammo": "SCR 17"
     },
     "embed": {
       "title": "☠ PLAYER ELIMINATED",
@@ -1481,7 +1495,8 @@
       "victim_kd": "1.00",
       "victim_kills": "2",
       "weapon": "Fists",
-      "weapon_category": "Fists"
+      "weapon_category": "Fists",
+      "weapon_with_ammo": "Fists"
     },
     "embed": {
       "title": "☠ PLAYER ELIMINATED",
@@ -1538,7 +1553,8 @@
       "victim_kd": "1.00",
       "victim_kills": "2",
       "weapon": "M4-A1",
-      "weapon_category": "Assault Rifle"
+      "weapon_category": "Assault Rifle",
+      "weapon_with_ammo": "M4-A1 (556x45)"
     },
     "embed": {
       "title": "☠ PLAYER ELIMINATED",
@@ -1596,7 +1612,8 @@
       "victim_kd": "1.00",
       "victim_kills": "2",
       "weapon": "M4-A1",
-      "weapon_category": "Assault Rifle"
+      "weapon_category": "Assault Rifle",
+      "weapon_with_ammo": "M4-A1"
     },
     "embed": {
       "title": "☠ PLAYER ELIMINATED",
@@ -1659,7 +1676,8 @@
       "victim_kills": "2",
       "war_badge": "⚔️ FACTION WAR",
       "weapon": "M4-A1",
-      "weapon_category": "Assault Rifle"
+      "weapon_category": "Assault Rifle",
+      "weapon_with_ammo": "M4-A1 (556x45)"
     },
     "embed": {
       "title": "☠ PLAYER ELIMINATED",
@@ -1749,7 +1767,8 @@
       "victim_kd": "1.00",
       "victim_kills": "2",
       "weapon": "M4-A1",
-      "weapon_category": "Assault Rifle"
+      "weapon_category": "Assault Rifle",
+      "weapon_with_ammo": "M4-A1"
     },
     "embed": {
       "title": "WilliamAle--10 eliminated Semillita-azul-\\_",
@@ -1811,7 +1830,8 @@
       "victim_kd": "1.00",
       "victim_kills": "2",
       "weapon": "M70 Tundra",
-      "weapon_category": "Sniper Rifle"
+      "weapon_category": "Sniper Rifle",
+      "weapon_with_ammo": "M70 Tundra"
     },
     "embed": {
       "title": "WilliamAle--10 eliminated Semillita-azul-\\_",
@@ -1873,7 +1893,8 @@
       "victim_kd": "1.00",
       "victim_kills": "2",
       "weapon": "M4-A1",
-      "weapon_category": "Assault Rifle"
+      "weapon_category": "Assault Rifle",
+      "weapon_with_ammo": "M4-A1"
     },
     "embed": {
       "title": "WilliamAle--10 eliminated Semillita-azul-\\_",
@@ -1935,7 +1956,8 @@
       "victim_kd": "1.00",
       "victim_kills": "2",
       "weapon": "M4-A1",
-      "weapon_category": "Assault Rifle"
+      "weapon_category": "Assault Rifle",
+      "weapon_with_ammo": "M4-A1"
     },
     "embed": {
       "title": "WilliamAle--10 eliminated Semillita-azul-\\_",
@@ -1995,7 +2017,8 @@
       "victim_deaths": "2",
       "victim_kd": "1.00",
       "victim_kills": "2",
-      "weapon": "SCR 17"
+      "weapon": "SCR 17",
+      "weapon_with_ammo": "SCR 17"
     },
     "embed": {
       "title": "WilliamAle--10 eliminated Semillita-azul-\\_",
@@ -2053,7 +2076,8 @@
       "victim_kd": "1.00",
       "victim_kills": "2",
       "weapon": "Fists",
-      "weapon_category": "Fists"
+      "weapon_category": "Fists",
+      "weapon_with_ammo": "Fists"
     },
     "embed": {
       "title": "WilliamAle--10 eliminated Semillita-azul-\\_",
@@ -2115,7 +2139,8 @@
       "victim_kd": "1.00",
       "victim_kills": "2",
       "weapon": "M4-A1",
-      "weapon_category": "Assault Rifle"
+      "weapon_category": "Assault Rifle",
+      "weapon_with_ammo": "M4-A1 (556x45)"
     },
     "embed": {
       "title": "WilliamAle--10 eliminated Semillita-azul-\\_",
@@ -2178,7 +2203,8 @@
       "victim_kd": "1.00",
       "victim_kills": "2",
       "weapon": "M4-A1",
-      "weapon_category": "Assault Rifle"
+      "weapon_category": "Assault Rifle",
+      "weapon_with_ammo": "M4-A1"
     },
     "embed": {
       "title": "WilliamAle--10 eliminated Semillita-azul-\\_",
@@ -2246,7 +2272,8 @@
       "victim_kills": "2",
       "war_badge": "⚔️ FACTION WAR",
       "weapon": "M4-A1",
-      "weapon_category": "Assault Rifle"
+      "weapon_category": "Assault Rifle",
+      "weapon_with_ammo": "M4-A1 (556x45)"
     },
     "embed": {
       "title": "WilliamAle--10 eliminated Semillita-azul-\\_",
