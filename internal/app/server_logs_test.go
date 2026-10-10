@@ -171,14 +171,16 @@ func TestRedactServerLog(t *testing.T) {
 		"Player \"Bob\" (id=ABC123 pos=<100.0, 200.0, 3.0>) connected from 203.0.113.9:2304",
 		"passwordAdmin = \"hunter2\";",
 		"Token: abc.def",
+		`Log C:\SERVICES\ni13295416_2_local\dayzps\config\crash_2026-10-09_22-33-29.log started at 09.10. 22:49:31`,
+		`CLI params: ip 203.0.113.9 port 15200 config serverDZ_Private.cfg limitFPS 100 profiles C:\SERVICES\ni13295416_2_local\dayzps/config dologs`,
 	}, "\r\n")
 	got := redactServerLog(in)
-	for _, leaked := range []string{"203.0.113.9", "ni13295416_2", "hunter2", "abc.def", "-port"} {
+	for _, leaked := range []string{"203.0.113.9", "ni13295416_2", "hunter2", "abc.def", "-port", "ni13295416", "15200", "serverDZ_Private"} {
 		if strings.Contains(got, leaked) {
 			t.Errorf("redacted text still holds %q:\n%s", leaked, got)
 		}
 	}
-	for _, kept := range []string{"Version 1.28.160.593", "id=ABC123", "pos=<100.0, 200.0, 3.0>", "====================", "passwordAdmin = [hidden]"} {
+	for _, kept := range []string{"Version 1.28.160.593", "id=ABC123", "pos=<100.0, 200.0, 3.0>", "====================", "passwordAdmin = [hidden]", "CLI params: [hidden]", `[service hidden]\dayzps\config\crash_2026-10-09_22-33-29.log started at 09.10. 22:49:31`} {
 		if !strings.Contains(got, kept) {
 			t.Errorf("redacted text lost %q:\n%s", kept, got)
 		}

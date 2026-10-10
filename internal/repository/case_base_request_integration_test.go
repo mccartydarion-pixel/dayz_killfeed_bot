@@ -151,4 +151,11 @@ func TestCaseBaseRequestNotice(t *testing.T) {
 	if err := zones.pool.QueryRow(context.Background(), `SELECT discord_user_id FROM app_users WHERE id=$1`, fx.OwnerUserID).Scan(&want); err != nil || owner != want {
 		t.Fatalf("owner discord id: %q want %q %v", owner, want, err)
 	}
+	// The same owner is found from the guild and server alone (the server-down alert's DM).
+	if got, err := repo.OwnerDiscordForServer(context.Background(), fx.GuildRowID, fx.ServerRowID); err != nil || got != want {
+		t.Fatalf("owner for server: %q want %q %v", got, want, err)
+	}
+	if got, err := repo.OwnerDiscordForServer(context.Background(), fx.GuildRowID, fx.ServerRowID+100000); err != nil || got != "" {
+		t.Fatalf("owner for an unknown server: %q %v", got, err)
+	}
 }
