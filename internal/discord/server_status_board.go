@@ -38,7 +38,39 @@ type ServerStatusBoard struct {
 
 	mu        sync.Mutex
 	snapshots map[int64]killfeed.AdmSnapshot
+	games     map[int64]GameServerStatus
 	syncMu    sync.Mutex
+}
+
+// GameServerStatus is what Champion can tell about the game process itself from its log files
+// (docs/SERVER_DOWN_ALERT.md). The zero value means "nothing known" and adds nothing to the board.
+type GameServerStatus struct {
+	// State is "ONLINE", "RESTARTING" or "DOWN"; anything else is shown as unknown.
+	State string
+	// StartedAt is when the current run started; NextRestart is about when the next start is
+	// expected. Both are zero when unknown.
+	StartedAt   time.Time
+	NextRestart time.Time
+	// DownSince is when the logs stopped, while State is "DOWN".
+	DownSince time.Time
+}
+
+// ObserveGame records one server's game status and refreshes the board when it changed. The
+// board is one message edited in place, so a restart never adds a message.
+func (b *ServerStatusBoard) ObserveGame(serverID int64, g GameServerStatus) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	if b.games == nil {
+		b.games = map[int64]GameServerStatus{}
+	}
+	changed := b.games[serverID] != g
+	b.games[serverID] = g
+	b.mu.Unlock()
+	if changed {
+		b.Trigger()
+	}
 }
 
 func NewServerStatusBoard(resolver RouteResolver, servers GuildServersFunc, panels *RoutePanels) *ServerStatusBoard {
@@ -142,7 +174,7 @@ func (b *ServerStatusBoard) SyncOnce(ctx context.Context) {
 			if b.serverNames != nil {
 				name = b.serverNames(serverID)
 			}
-			sections = append(sections, ServerStatusSection{ServerName: name, Seen: seen, Snapshot: snap})
+			sections = append(sections, ServerStatusSection{ServerName: name, Seen: seen, Snapshot: snap, Game: b.games[serverID]})
 		}
 		b.mu.Unlock()
 		return PanelContent{Embed: BuildServerStatusEmbed(sections, now)}, nil
@@ -157,6 +189,35 @@ type ServerStatusSection struct {
 	ServerName string
 	Seen       bool // a worker has reported at least one snapshot
 	Snapshot   killfeed.AdmSnapshot
+	Game       GameServerStatus
+}
+
+// gameServerLines are the board's lines about the game process: its state, when it last
+// restarted and about when the next restart is due. Discord timestamps keep the text the same
+// between refreshes, so the message is edited only when something changed.
+func gameServerLines(g GameServerStatus) []string {
+	var lines []string
+	switch g.State {
+	case "ONLINE":
+		lines = append(lines, "**Game server:** 🟢 Online")
+	case "RESTARTING":
+		lines = append(lines, "**Game server:** 🔄 Restarting")
+	case "DOWN":
+		line := "**Game server:** 🔴 Not running"
+		if !g.DownSince.IsZero() {
+			line += " since " + presentation.Timestamp(g.DownSince, 't') + " (" + presentation.Timestamp(g.DownSince, 'R') + ")"
+		}
+		lines = append(lines, line)
+	default:
+		return nil
+	}
+	if !g.StartedAt.IsZero() {
+		lines = append(lines, "**Last restart:** "+presentation.Timestamp(g.StartedAt, 't')+" ("+presentation.Timestamp(g.StartedAt, 'R')+")")
+	}
+	if g.State == "ONLINE" && !g.NextRestart.IsZero() {
+		lines = append(lines, "**Next restart:** about "+presentation.Timestamp(g.NextRestart, 't')+" ("+presentation.Timestamp(g.NextRestart, 'R')+")")
+	}
+	return lines
 }
 
 // The four states of Champion's link to a server's ADM logs, as the board words them.
@@ -181,14 +242,24 @@ func ServerStatusLink(s ServerStatusSection, now time.Time) string {
 	}
 }
 
-// serverStatusColor is the board's colour, by meaning: amber as soon as one server's link is
-// degraded, green when every server is connected, neutral while there is nothing to judge yet
+// serverStatusColor is the board's colour, by meaning: red when a game server is not running,
+// amber while one restarts or as soon as one server's link is degraded, green when every server is connected, neutral while there is nothing to judge yet
 // (no server, or still waiting for a first poll or for the log).
 func serverStatusColor(sections []ServerStatusSection, now time.Time) int {
 	if len(sections) == 0 {
 		return presentation.Neutral
 	}
 	color := presentation.Green
+	for _, s := range sections {
+		if s.Game.State == "DOWN" {
+			return presentation.ErrorRed
+		}
+	}
+	for _, s := range sections {
+		if s.Game.State == "RESTARTING" {
+			return presentation.Amber
+		}
+	}
 	for _, s := range sections {
 		switch ServerStatusLink(s, now) {
 		case ServerLinkDegraded:
@@ -213,7 +284,7 @@ func BuildServerStatusEmbed(sections []ServerStatusSection, now time.Time) *disc
 		if strings.TrimSpace(s.ServerName) != "" {
 			title = presentation.SafeName(s.ServerName, 60)
 		}
-		lines := []string{"**Champion link:** " + ServerStatusLink(s, now)}
+		lines := append(gameServerLines(s.Game), "**Champion link:** "+ServerStatusLink(s, now))
 		if s.Seen {
 			if !s.Snapshot.LastLogChange.IsZero() {
 				lines = append(lines, "**ADM log:** updated "+presentation.Timestamp(s.Snapshot.LastLogChange, 'R'))

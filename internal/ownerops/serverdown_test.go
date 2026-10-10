@@ -31,3 +31,52 @@ func TestServerDown(t *testing.T) {
 		}
 	}
 }
+
+func TestFailedRestartAlertsSooner(t *testing.T) {
+	boot := time.Date(2026, 10, 10, 13, 17, 46, 0, time.UTC)
+	run := 68 * time.Minute
+	stopped := boot.Add(66 * time.Minute) // the logs stop at the scheduled shutdown
+	at := func(d time.Duration) DownInput {
+		now := stopped.Add(d)
+		return DownInput{Now: now, LastGrowth: stopped, LastListing: now.Add(-30 * time.Second), BootAt: boot, RunLength: run}
+	}
+	if in := at(2 * time.Minute); GameState(in) != GameOnline {
+		t.Errorf("two minutes into a restart reads %s", GameState(in))
+	}
+	// A healthy restart shows nothing new for about ten minutes.
+	if in := at(11 * time.Minute); GameState(in) != GameRestarting {
+		t.Errorf("eleven minutes into a restart reads %s, want RESTARTING", GameState(in))
+	}
+	if _, down, _ := ServerDown(at(14 * time.Minute)); down {
+		t.Error("14 minutes is still inside what a healthy restart can take to show")
+	}
+	if _, down, _ := ServerDown(at(15 * time.Minute)); !down {
+		t.Error("a restart that has not come back after 15 minutes must alert")
+	}
+	// Logs that stop in the middle of a run wait the full 20 minutes.
+	mid := boot.Add(30 * time.Minute)
+	now := mid.Add(15 * time.Minute)
+	in := DownInput{Now: now, LastGrowth: mid, LastListing: now, BootAt: boot, RunLength: run}
+	if _, down, _ := ServerDown(in); down || in.RestartDue() {
+		t.Error("a mid-run pause of 15 minutes must not alert")
+	}
+	if got := at(0).NextRestart(); !got.Equal(boot.Add(run)) {
+		t.Errorf("next restart = %s", got)
+	}
+}
+
+func TestTypicalRunLength(t *testing.T) {
+	base := time.Date(2026, 10, 9, 0, 54, 26, 0, time.UTC)
+	var starts []time.Time
+	for i := 0; i < 8; i++ {
+		starts = append(starts, base.Add(time.Duration(i)*68*time.Minute+time.Duration(i%3)*20*time.Second))
+	}
+	starts = append(starts, starts[len(starts)-1].Add(10*time.Hour)) // one outage does not move the median
+	got := TypicalRunLength(starts)
+	if got < 67*time.Minute || got > 69*time.Minute {
+		t.Fatalf("run length = %s, want about 68m", got)
+	}
+	if TypicalRunLength(starts[:2]) != 0 {
+		t.Fatal("two starts are not enough to know the schedule")
+	}
+}
