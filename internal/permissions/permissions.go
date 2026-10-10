@@ -84,6 +84,9 @@ const (
 	CapBanlistManage     Capability = "BANLIST_MANAGE"
 	// The Nitrado priority list ("Prioritized players"): who skips the queue when the server is full.
 	CapPriorityManage     Capability = "PRIORITY_MANAGE"
+	// Reading the game server's own log files (docs/SERVER_LOGS.md). Owner only: the files name
+	// every player, their platform ids and where they were.
+	CapServerLogsView     Capability = "SERVER_LOGS_VIEW"
 	CapPlayerLastOnline   Capability = "PLAYER_LAST_ONLINE_VIEW"
 	CapFeedLocationManage Capability = "FEED_LOCATION_MANAGE"
 	CapMaintenanceMode    Capability = "MAINTENANCE_MODE"
@@ -165,6 +168,7 @@ var requiredLevel = map[Capability]Level{
 	CapWhitelistManage:        LevelGatekeeper,
 	CapBanlistManage:          LevelModerator,
 	CapPriorityManage:         LevelAdministrator,
+	CapServerLogsView:         LevelOwner,
 	CapPlayerLastOnline:       LevelModerator,
 	CapFeedLocationManage:     LevelModerator,
 	CapMaintenanceMode:        LevelAdministrator,
