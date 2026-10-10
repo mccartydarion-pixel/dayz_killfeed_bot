@@ -48,6 +48,10 @@ func TestFinalHitCorrelatedFromTheImmediatelyPrecedingLethalHit(t *testing.T) {
 	if k.FinalHit == nil || k.FinalHit.Zone != "Head" || k.FinalHit.Damage == nil || *k.FinalHit.Damage != 22.0527 {
 		t.Fatalf("the lethal hit (not the earlier torso hit) is attached: %+v", k.FinalHit)
 	}
+	// The hit line names the ammunition; the kill line does not.
+	if k.FinalHit.Ammo != "Bullet_556x45" || k.Ammo != "" {
+		t.Fatalf("ammunition: final hit %q, kill line %q", k.FinalHit.Ammo, k.Ammo)
+	}
 	// The kill's own hit fields - headshot statistics, the default card, the durable fingerprint -
 	// are untouched.
 	if k.HitZone != "" || k.Damage != nil || isHeadshotEvent(k) {

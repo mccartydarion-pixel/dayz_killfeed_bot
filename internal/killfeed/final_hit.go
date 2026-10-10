@@ -31,6 +31,9 @@ type FinalHit struct {
 	Zone   string
 	ZoneID string
 	Damage *float64
+	// Ammo is the ammunition the hit line names ("Bullet_556x45"), "" when it names none. The
+	// kill line itself rarely states it.
+	Ammo string
 }
 
 type lethalHit struct {
@@ -43,6 +46,7 @@ type lethalHit struct {
 	distance    *float64
 	zone, zonID string
 	damage      *float64
+	ammo        string
 }
 
 // noteLine records the physical position of every processed line: the previous line's end is
@@ -65,7 +69,7 @@ func (e *Engine) correlateFinalHit(ev *Event, file string, end int64, prevFile s
 		}
 		// Only the most recent lethal hit is kept: a kill can only match the line right before it.
 		e.lastLethal = &lethalHit{file: file, end: end, timeOfDay: ev.TimeOfDay, victimID: ev.Victim.ID, attackerID: ev.Attacker.ID,
-			weapon: strings.TrimSpace(ev.Weapon), distance: ev.Distance, zone: ev.HitZone, zonID: ev.HitZoneID, damage: ev.Damage}
+			weapon: strings.TrimSpace(ev.Weapon), distance: ev.Distance, zone: ev.HitZone, zonID: ev.HitZoneID, damage: ev.Damage, ammo: strings.TrimSpace(ev.Ammo)}
 	case EventPlayerKill:
 		h := e.lastLethal
 		e.lastLethal = nil // single use: never reused for a later kill
@@ -84,7 +88,7 @@ func (e *Engine) correlateFinalHit(ev *Event, file string, end int64, prevFile s
 		case h.distance != nil && ev.Distance != nil && math.Abs(*h.distance-*ev.Distance) > 0.001:
 			return
 		}
-		fh := &FinalHit{Zone: h.zone, ZoneID: h.zonID}
+		fh := &FinalHit{Zone: h.zone, ZoneID: h.zonID, Ammo: h.ammo}
 		if h.damage != nil {
 			d := *h.damage
 			fh.Damage = &d

@@ -196,3 +196,39 @@ func TestKillfeedHitLabelAndTimeAgo(t *testing.T) {
 		t.Errorf("time_ago without an event time = %q, want a Discord relative time", m["time_ago"])
 	}
 }
+
+func TestKillfeedWeaponWithAmmo(t *testing.T) {
+	for _, c := range []struct{ weapon, ammo, want string }{
+		{"M4-A1", "Bullet_556x45", "M4-A1 (556x45)"},
+		{"M4-A1", "", "M4-A1"},
+		{"Mosin", " 762x54 ", "Mosin (762x54)"},
+		{"", "Bullet_556x45", ""},
+	} {
+		if got := weaponWithAmmo(c.weapon, c.ammo); got != c.want {
+			t.Errorf("weaponWithAmmo(%q, %q) = %q, want %q", c.weapon, c.ammo, got, c.want)
+		}
+	}
+
+	// A kill line without ammunition: the weapon still shows, alone.
+	ev := &killfeed.Event{Type: killfeed.EventPlayerKill, Killer: &killfeed.PlayerRef{Name: "A"}, Victim: &killfeed.PlayerRef{Name: "B"}, Weapon: "M4-A1"}
+	m := killfeedVars(ev, "")
+	if m["weapon_with_ammo"] != "M4-A1" {
+		t.Errorf("weapon_with_ammo without ammunition = %q, want the weapon alone", m["weapon_with_ammo"])
+	}
+	if _, ok := m["ammo"]; ok {
+		t.Errorf("ammo = %q, want absent", m["ammo"])
+	}
+
+	// The matched lethal hit supplies the ammunition the kill line left out.
+	ev.FinalHit = &killfeed.FinalHit{Zone: "Head", Ammo: "Bullet_556x45"}
+	m = killfeedVars(ev, "")
+	if m["ammo"] != "Bullet_556x45" || m["weapon_with_ammo"] != "M4-A1 (556x45)" {
+		t.Errorf("with a matched hit: ammo=%q weapon_with_ammo=%q", m["ammo"], m["weapon_with_ammo"])
+	}
+
+	// The kill line's own ammunition wins over the hit's.
+	ev.Ammo = "Bullet_762x39"
+	if got := killfeedVars(ev, "")["weapon_with_ammo"]; got != "M4-A1 (762x39)" {
+		t.Errorf("kill-line ammunition must win: %q", got)
+	}
+}
