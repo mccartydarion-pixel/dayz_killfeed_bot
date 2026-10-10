@@ -73,6 +73,7 @@ func (a *App) startLiveSync(ctx context.Context, row repository.GameServer, clie
 				slog.Error("component=livesync", "event", "supervisor_panic", "server_id", row.ID, "panic", fmt.Sprint(r))
 			}
 		}()
+		go a.runServerDownWatch(ctx, row, sup)
 		sup.Run(ctx)
 	}()
 	return done

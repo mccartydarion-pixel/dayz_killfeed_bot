@@ -46,6 +46,8 @@ const (
 	AlertKindPlayerAppeal = "PLAYER_APPEAL"
 	// AlertKindMapRotation: Champion could not change the map (docs/MAP_ROTATION.md).
 	AlertKindMapRotation = "MAP_ROTATION_FAILED"
+	// AlertKindServerDown: the game server's log files stopped growing (docs/SERVER_DOWN_ALERT.md).
+	AlertKindServerDown = "SERVER_DOWN"
 	// AlertKindCaseWatchDigest labels the paid C.A.S.E. Watch digest embed. It is NOT an
 	// operational kind: the ADMIN_ALERTS publisher refuses it (operationalAdminAlertKind), and the
 	// durable digest outbox sends it only to the private C.A.S.E. status channel.
@@ -191,12 +193,15 @@ func (p *AdminAlertPublisher) ObserveDownload(guildRowID int64, report killfeed.
 func operationalAdminAlertKind(kind string) bool {
 	switch kind {
 	case AlertKindADMStale, AlertKindNitradoFailure, AlertKindZoneIntrusion,
-		AlertKindUAVIntrusion, AlertKindBaseRadar, AlertKindZoneBanViolated, AlertKindBaseRequest, AlertKindRentPaused, AlertKindSecurityDigest, AlertKindPlayerAppeal, AlertKindMapRotation:
+		AlertKindUAVIntrusion, AlertKindBaseRadar, AlertKindZoneBanViolated, AlertKindBaseRequest, AlertKindRentPaused, AlertKindSecurityDigest, AlertKindPlayerAppeal, AlertKindMapRotation, AlertKindServerDown:
 		return true
 	default:
 		return false
 	}
 }
+
+// OperationalAdminAlertKind reports whether the ADMIN_ALERTS publisher sends kind.
+func OperationalAdminAlertKind(kind string) bool { return operationalAdminAlertKind(kind) }
 
 // Publish enqueues an alert without blocking; a full queue drops it.
 func (p *AdminAlertPublisher) Publish(a AdminAlert) {

@@ -40,7 +40,8 @@ The size is the one in Nitrado's listing, which Nitrado refreshes in steps of ab
 
 - A request names a file, never a path. The name must be a server log name and must match a file
   in Nitrado's listing; the path read is the one from that listing.
-- Text is redacted before it leaves the bot: the start-up command line (service account, address,
-  port, paths), IP addresses, and any value written as a password, secret, token or API key.
+- Text is redacted before it leaves the bot: the start-up command line and the crash log's
+  "CLI params" line (address, port, config file), the Nitrado service account name wherever it
+  appears, IP addresses, and any value written as a password, secret, token or API key.
 - Reads are Nitrado seek reads of 256 KiB. When Nitrado refuses a seek read the whole file is
   downloaded instead, up to 8 MiB; a larger file then returns `NITRADO_UNAVAILABLE`.

@@ -204,13 +204,15 @@ func readServerLogBytes(ctx context.Context, src serverLogSource, serviceID stri
 }
 
 var (
-	serverLogIPRe     = regexp.MustCompile(`\b(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\b`)
-	serverLogSecretRe = regexp.MustCompile(`(?i)\b(password\w*|passwd|secret|token|api_?key)(\s*[=:]\s*)("[^"]*"|\S+)`)
+	serverLogIPRe = regexp.MustCompile(`\b(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\b`)
+	// serverLogServiceRe is the Nitrado service account name, which appears in file paths.
+	serverLogServiceRe = regexp.MustCompile(`\bni\d{4,}_\d+\w*`)
+	serverLogSecretRe  = regexp.MustCompile(`(?i)\b(password\w*|passwd|secret|token|api_?key)(\s*[=:]\s*)("[^"]*"|\S+)`)
 )
 
-// redactServerLog hides what the page has no reason to show: the start-up command line (the
-// service account, address, port and paths), IP addresses and anything written as a password or
-// token. Player names, ids and positions stay - they are what the logs are read for.
+// redactServerLog hides what the page has no reason to show: the start-up command line and the
+// crash log's "CLI params" (address, port, config), the Nitrado service account name, IP addresses
+// and anything written as a password or token. Player names, ids and positions stay - they are what the logs are read for.
 func redactServerLog(text string) string {
 	text = strings.ReplaceAll(strings.ToValidUTF8(text, "?"), "\x00", "")
 	lines := strings.Split(text, "\n")
@@ -220,6 +222,11 @@ func redactServerLog(text string) string {
 			lines[i] = "== [start-up command line hidden]"
 			continue
 		}
+		// The crash log repeats the start-up parameters (address, port, config file) in every block.
+		if i := strings.Index(line, "CLI params:"); i >= 0 {
+			line = line[:i] + "CLI params: [hidden]"
+		}
+		line = serverLogServiceRe.ReplaceAllString(line, "[service hidden]")
 		line = serverLogIPRe.ReplaceAllStringFunc(line, func(m string) string {
 			for _, part := range strings.Split(m, ".") {
 				if n, err := strconv.Atoi(part); err != nil || n > 255 {
