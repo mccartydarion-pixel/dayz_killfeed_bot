@@ -2,6 +2,7 @@ package billing
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -50,7 +51,10 @@ func (s *Service) HandleWebhook(ctx context.Context, payload []byte, sigHeader s
 	if isCase {
 		return s.applyCaseEvent(ctx, parsed)
 	}
-	// Base billing continues through its existing idempotency and event logic.
+	// Base billing continues through its existing idempotency and event logic. The processed-event
+	// marker is written before handling (so a concurrent redelivery of the same event is a no-op)
+	// and removed again if handling fails: the 5xx makes Stripe retry, and that retry must be
+	// processed rather than acknowledged as a duplicate - otherwise the change is lost for good.
 	inserted, err := s.store.RecordWebhookEventOnce(ctx, repository.ProviderStripe, event.ID, string(event.Type), nil)
 	if err != nil {
 		return fmt.Errorf("record webhook event: %w", err)
@@ -59,6 +63,19 @@ func (s *Service) HandleWebhook(ctx context.Context, payload []byte, sigHeader s
 		slog.Info("component=billing", "event", "billing_webhook_duplicate", "stripe_event_id", event.ID, "type", string(event.Type))
 		return nil
 	}
+	if err := s.dispatchBaseEvent(ctx, parsed); err != nil {
+		// WithoutCancel: a cancelled request context must not stop the marker from being released.
+		if ferr := s.store.ForgetWebhookEvent(context.WithoutCancel(ctx), repository.ProviderStripe, event.ID); ferr != nil {
+			slog.Error("component=billing", "event", "billing_webhook_release_failed", "stripe_event_id", event.ID, "type", string(event.Type), "err", ferr.Error())
+		}
+		return err
+	}
+	return nil
+}
+
+// dispatchBaseEvent routes one already-deduped base-billing event to its handler. A non-nil error
+// means the event was NOT (fully) applied and must be retried by Stripe.
+func (s *Service) dispatchBaseEvent(ctx context.Context, parsed ParsedEvent) error {
 	switch parsed.Type {
 	case EventCheckoutCompleted:
 		return s.onCheckoutCompleted(ctx, parsed)
@@ -73,7 +90,7 @@ func (s *Service) HandleWebhook(ctx context.Context, payload []byte, sigHeader s
 	case EventInvoicePaymentFailed:
 		return s.onInvoice(ctx, parsed, "billing_payment_failed")
 	default:
-		slog.Info("component=billing", "event", "billing_webhook_ignored", "stripe_event_id", event.ID, "type", string(event.Type))
+		slog.Info("component=billing", "event", "billing_webhook_ignored", "stripe_event_id", parsed.ID, "type", parsed.Type)
 		return nil
 	}
 }
@@ -135,8 +152,12 @@ func (s *Service) onSubscriptionEvent(ctx context.Context, e ParsedEvent, auditE
 		slog.Warn("component=billing", "event", "billing_webhook_unattributed", "stripe_event_id", e.ID, "type", e.Type, "stripe_subscription_id", e.Sub.ID, "reason", reason)
 		return nil
 	}
+	st, err := s.currentSubscriptionState(ctx, e)
+	if err != nil {
+		return err
+	}
 	planKey := e.Sub.Metadata["champion_plan_key"]
-	if _, err := s.applyState(ctx, orgID, e.Sub.state(), planKey); err != nil {
+	if _, err := s.applyState(ctx, orgID, st, planKey); err != nil {
 		return fmt.Errorf("apply subscription event: %w", err)
 	}
 	slog.Info("component=billing", "event", auditEvent, "organization_id", orgID, "stripe_event_id", e.ID)
@@ -155,13 +176,38 @@ func (s *Service) onSubscriptionDeleted(ctx context.Context, e ParsedEvent) erro
 		slog.Warn("component=billing", "event", "billing_webhook_unattributed", "stripe_event_id", e.ID, "type", e.Type, "stripe_subscription_id", e.Sub.ID, "reason", reason)
 		return nil
 	}
-	st := e.Sub.state()
+	st, err := s.currentSubscriptionState(ctx, e)
+	if errors.Is(err, ErrSubscriptionNotFound) {
+		st, err = e.Sub.state(), nil // gone at Stripe: the deletion event itself is the only state left
+	}
+	if err != nil {
+		return err
+	}
 	st.StripeStatus = "canceled" // the event name IS the fact; trust it over whatever status string Stripe attached
 	if _, err := s.applyState(ctx, orgID, st, ""); err != nil {
 		return fmt.Errorf("apply subscription deletion: %w", err)
 	}
 	slog.Info("component=billing", "event", "billing_subscription_cancelled", "organization_id", orgID, "stripe_event_id", e.ID, "reason", "deleted_on_provider")
 	return nil
+}
+
+// currentSubscriptionState re-fetches the subscription a customer.subscription.* event names and
+// returns Stripe's CURRENT state, never the event's snapshot. Stripe does not deliver events in
+// order, so applying e.Sub directly let an older event (say, a delayed "updated: active") overwrite
+// newer state already stored from a later one ("deleted"); the fetched state is always the latest,
+// whichever delivery triggers it - the same reason onInvoice and onCheckoutCompleted fetch.
+func (s *Service) currentSubscriptionState(ctx context.Context, e ParsedEvent) (*SubscriptionState, error) {
+	if s.provider == nil {
+		return nil, fmt.Errorf("%w: cannot fetch stripe subscription for webhook", ErrProviderNotConfigured)
+	}
+	st, err := s.provider.GetSubscription(ctx, e.Sub.ID)
+	if err != nil {
+		return nil, fmt.Errorf("get stripe subscription after subscription event: %w", err)
+	}
+	if st.CustomerID == "" {
+		st.CustomerID = string(e.Sub.Customer)
+	}
+	return st, nil
 }
 
 // onInvoice reconciles the full subscription on any invoice event that names one (both a successful

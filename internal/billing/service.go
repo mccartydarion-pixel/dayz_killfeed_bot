@@ -34,6 +34,7 @@ type Store interface {
 	GetByProviderCustomerID(ctx context.Context, provider, customerID string) (*repository.Subscription, error)
 	GetByProviderSubscriptionID(ctx context.Context, provider, subscriptionID string) (*repository.Subscription, error)
 	RecordWebhookEventOnce(ctx context.Context, provider, eventID, eventType string, organizationID *int64) (bool, error)
+	ForgetWebhookEvent(ctx context.Context, provider, eventID string) error
 	RecordBillingTransaction(ctx context.Context, t repository.BillingTransaction) error
 }
 

@@ -700,6 +700,12 @@ func (a *App) Run() error {
 						return fmt.Errorf("server worker %d: unknown game_servers row", workerServerID)
 					}
 				}
+				if paused, err := a.serverBillingPaused(workerCtx, workerServerID); err != nil {
+					slog.Warn("component=servers", "event", "billing_check_failed", "server_id", workerServerID, "err", err.Error())
+				} else if paused {
+					slog.Warn("component=servers", "event", "server_paused_billing", "server_id", workerServerID, "guild_id", row.GuildID)
+					return errBillingPaused
+				}
 				return a.runServerWorker(workerCtx, row, store, setupStore, onlineCounter)
 			})
 			// A failed worker is restarted under supervision (jittered backoff)
@@ -716,7 +722,13 @@ func (a *App) Run() error {
 					slog.Warn("component=servers", "msg", "restart gate could not read game_servers; allowing restart", "server_id", workerServerID, "err", err.Error())
 					return true
 				}
-				return row.Active
+				if !row.Active {
+					return false
+				}
+				// A worker paused for billing is not restarted; the reconciler resumes it once
+				// the customer pays.
+				paused, err := a.serverBillingPaused(lookupCtx, workerServerID)
+				return err != nil || !paused
 			})
 
 			expectedWorkers = len(activeServers)
@@ -727,6 +739,10 @@ func (a *App) Run() error {
 				}
 				slog.Info("component=servers", "msg", "server worker started", "server_id", row.ID, "display_name", row.DisplayName)
 			}
+			// Every other guild's active servers (SaaS customers) start here too, and keep being
+			// reconciled: started when missing, paused when their billing lapses.
+			expectedWorkers += a.reconcileServerWorkers(ctx)
+			go a.runWorkerReconciler(ctx)
 
 			if a.EventService != nil || a.CompletionPublisher != nil {
 				go a.singleton(ctx, "competitive_schedulers", func(leaderCtx context.Context) {
