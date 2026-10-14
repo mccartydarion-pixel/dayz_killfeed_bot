@@ -251,6 +251,37 @@ FROM (SELECT COUNT(*) AS kills,
 	return s, err
 }
 
+// PlayerLastKill is the most recent kill a player made on one installation's server.
+type PlayerLastKill struct {
+	KillID         int64
+	VictimName     string
+	Weapon         string
+	DistanceMeters float64
+	Headshot       bool
+	At             time.Time
+}
+
+// LastKill returns the player's most recent kill on the server, or nil when they have none.
+func (r *PlayerServerRepository) LastKill(ctx context.Context, guildID, serverID, playerID int64) (*PlayerLastKill, error) {
+	const q = `
+SELECT k.id, COALESCE(v.display_name, ''), COALESCE(NULLIF(k.weapon_display, ''), k.weapon_raw, ''),
+       COALESCE(k.distance, 0), k.headshot, COALESCE(k.event_time, k.created_at)
+FROM kills k
+LEFT JOIN players v ON v.id = k.victim_player_id
+WHERE k.guild_id=$1 AND k.server_id=$2 AND k.killer_player_id=$3
+ORDER BY COALESCE(k.event_time, k.created_at) DESC, k.id DESC
+LIMIT 1`
+	var k PlayerLastKill
+	err := r.pool.QueryRow(ctx, q, guildID, serverID, playerID).Scan(&k.KillID, &k.VictimName, &k.Weapon, &k.DistanceMeters, &k.Headshot, &k.At)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &k, nil
+}
+
 // BountyStats aggregates claimed bounties for one player, scoped to one installation's server. A
 // bounty's own server_id is nullable (NULL = a guild-wide bounty claimable on any server of the
 // guild, the same scoping ClaimForKill already enforces at claim time - see bounty_repository.go),

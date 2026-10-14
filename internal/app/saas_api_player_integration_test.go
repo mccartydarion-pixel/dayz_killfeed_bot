@@ -142,10 +142,14 @@ func TestPlayerStatsFieldsComputeCorrectly(t *testing.T) {
 	actor := w.players[4]
 	player := w.linkPlayer(w.a1, actor, "StatsPlayer")
 
-	w.insertKill(w.a1, player, time.Now(), true)  // headshot
-	w.insertKill(w.a1, player, time.Now(), false) // not a headshot
 	w.insertDeath(w.a1, player, time.Now())
-	w.claimBounty(w.a1, player, 250, 0) // guild-wide claim
+	if before := w.getJSON(w.playerStatsPath(w.a1.InstallationID), actor); before["lastKill"] != nil {
+		t.Fatalf("lastKill must be null before any kill: %v", before)
+	}
+
+	w.insertKill(w.a1, player, time.Now().Add(-time.Hour), true) // headshot, older
+	w.insertKill(w.a1, player, time.Now(), false)                // not a headshot, most recent
+	w.claimBounty(w.a1, player, 250, 0)                          // guild-wide claim
 
 	resp := w.getJSON(w.playerStatsPath(w.a1.InstallationID), actor)
 	if int(resp["kills"].(float64)) != 2 {
@@ -165,6 +169,19 @@ func TestPlayerStatsFieldsComputeCorrectly(t *testing.T) {
 	}
 	if resp["installationId"] == nil || int64(resp["installationId"].(float64)) != w.a1.InstallationID {
 		t.Fatalf("%v", resp)
+	}
+	last, ok := resp["lastKill"].(map[string]any)
+	if !ok {
+		t.Fatalf("lastKill missing: %v", resp)
+	}
+	if last["victimName"] != "Some Victim" || last["weapon"] != "M4-A1" || last["distanceMeters"].(float64) != 80 {
+		t.Fatalf("lastKill fields: %v", last)
+	}
+	if last["headshot"] != false {
+		t.Fatalf("lastKill must be the most recent (non-headshot) kill: %v", last)
+	}
+	if at, err := time.Parse(time.RFC3339, last["at"].(string)); err != nil || time.Since(at) > 10*time.Minute {
+		t.Fatalf("lastKill at: %v (%v)", last["at"], err)
 	}
 }
 

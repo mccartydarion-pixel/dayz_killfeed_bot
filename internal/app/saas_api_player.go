@@ -91,6 +91,17 @@ type playerStatsDTO struct {
 	// TournamentTitle is the title the player holds from winning a tournament on this
 	// installation (docs/TOURNAMENTS.md), or null.
 	TournamentTitle *string `json:"tournamentTitle"`
+	// LastKill is the player's most recent kill on this server, or null when they have none.
+	LastKill *playerLastKillDTO `json:"lastKill"`
+}
+
+type playerLastKillDTO struct {
+	KillID         int64   `json:"killId"`
+	VictimName     string  `json:"victimName"`
+	Weapon         string  `json:"weapon"`
+	DistanceMeters float64 `json:"distanceMeters"`
+	Headshot       bool    `json:"headshot"`
+	At             string  `json:"at"`
 }
 
 func killsToKD(kills, deaths int) float64 {
@@ -319,6 +330,11 @@ func (a *App) handlePlayerServerStats(w http.ResponseWriter, r *http.Request) {
 
 	dto := toPlayerStatsDTO(installationID, combat)
 	dto.PlaytimeSeconds, dto.BountiesClaimed, dto.BountyValue, dto.Faction, dto.LastSeenAt = playtimeSeconds, claimed, bountyValue, faction, lastSeen
+	if last, err := a.SaaSPlayer.LastKill(ctx, scope.GuildID, scope.ServerID, scope.PlayerID); err != nil {
+		slog.Warn("component=saas_api", "event", "player_last_kill_failed", "err", err.Error())
+	} else if last != nil {
+		dto.LastKill = &playerLastKillDTO{KillID: last.KillID, VictimName: last.VictimName, Weapon: last.Weapon, DistanceMeters: last.DistanceMeters, Headshot: last.Headshot, At: last.At.UTC().Format(time.RFC3339)}
+	}
 	if a.Tournaments != nil {
 		if title, err := a.Tournaments.Title(ctx, installationID, scope.PlayerID); err == nil && title != "" {
 			dto.TournamentTitle = &title
