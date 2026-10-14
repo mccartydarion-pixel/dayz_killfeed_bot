@@ -209,6 +209,17 @@ ON CONFLICT ON CONSTRAINT uq_billing_webhook_events DO NOTHING RETURNING id`, pr
 	return true, nil
 }
 
+// ForgetWebhookEvent removes a processed-event marker written by RecordWebhookEventOnce. The
+// webhook handler calls it when handling the event failed, so Stripe's retry of the same event is
+// processed instead of being acknowledged as an already-handled duplicate. Deleting a marker that
+// does not exist is not an error.
+func (r *SubscriptionRepository) ForgetWebhookEvent(ctx context.Context, provider, eventID string) error {
+	if _, err := r.pool.Exec(ctx, `DELETE FROM billing_webhook_events WHERE provider=$1 AND event_id=$2`, provider, eventID); err != nil {
+		return fmt.Errorf("forget webhook event: %w", err)
+	}
+	return nil
+}
+
 // Normalized payment statuses (Champion Access Model Phase 2, Part D). Only PAID and FAILED are
 // ever written - see the 0038_billing_transactions migration comment for why OPEN/VOID/REFUNDED
 // are not invented states.
