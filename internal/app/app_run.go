@@ -706,6 +706,10 @@ func (a *App) Run() error {
 					slog.Warn("component=servers", "event", "server_paused_billing", "server_id", workerServerID, "guild_id", row.GuildID)
 					return errBillingPaused
 				}
+				if ok, err := a.serverHasNitrado(workerCtx, row); err == nil && !ok {
+					slog.Warn("component=servers", "event", "server_waiting_for_nitrado", "server_id", workerServerID, "guild_id", row.GuildID)
+					return errNoNitrado
+				}
 				return a.runServerWorker(workerCtx, row, store, setupStore, onlineCounter)
 			})
 			// A failed worker is restarted under supervision (jittered backoff)
@@ -727,6 +731,9 @@ func (a *App) Run() error {
 				}
 				// A worker paused for billing is not restarted; the reconciler resumes it once
 				// the customer pays.
+				if ok, err := a.serverHasNitrado(lookupCtx, *row); err == nil && !ok {
+					return false
+				}
 				paused, err := a.serverBillingPaused(lookupCtx, workerServerID)
 				return err != nil || !paused
 			})

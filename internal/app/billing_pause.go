@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/yourname/dayz-killfeed/internal/billing"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
@@ -63,6 +65,29 @@ func (a *App) serverBillingPaused(ctx context.Context, serverID int64) (bool, er
 	return servicePaused(*orgID, sub, time.Now()), nil
 }
 
+// errNoNitrado is returned by a server worker that has no saved Nitrado connection.
+var errNoNitrado = errors.New("no Nitrado connection for this server")
+
+// serverHasNitrado reports whether row has a saved Nitrado connection: its guild's, or that of
+// the organization that owns it (website onboarding stores it there). Without one no worker can
+// read logs, so none is started or restarted; owner ops raises NITRADO_ACCESS for the owner
+// instead, and the reconciler starts the worker once they connect Nitrado.
+func (a *App) serverHasNitrado(ctx context.Context, row repository.GameServer) (bool, error) {
+	if a.Servers == nil {
+		return true, nil
+	}
+	if _, err := a.Servers.GetConnection(ctx, row.GuildID); err == nil {
+		return true, nil
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return false, err
+	}
+	envelope, err := a.organizationCredentialForServer(ctx, row.ID)
+	if err != nil {
+		return false, err
+	}
+	return envelope != nil, nil
+}
+
 // reconcileServerWorkers makes the running workers match the active servers: it starts every
 // active server that is not running (any guild's, not only DISCORD_GUILD_ID's) and stops every
 // worker whose organization's service is paused for billing. It returns how many it started.
@@ -89,6 +114,9 @@ func (a *App) reconcileServerWorkers(ctx context.Context) int {
 			a.WorkerManager.Stop(row.ID)
 			slog.Warn("component=servers", "event", "server_paused_billing", "server_id", row.ID, "guild_id", row.GuildID)
 		case !paused && !running:
+			if ok, err := a.serverHasNitrado(ctx, row); err != nil || !ok {
+				continue
+			}
 			if err := a.WorkerManager.Start(ctx, row.ID); err != nil {
 				slog.Warn("component=servers", "event", "worker_reconcile_start_failed", "server_id", row.ID, "err", err.Error())
 				continue

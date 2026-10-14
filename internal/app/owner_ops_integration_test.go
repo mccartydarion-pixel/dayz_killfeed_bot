@@ -85,6 +85,11 @@ VALUES($1,'nitrado',$2,'dayz','PLAYSTATION','Ops Server','ACTIVE',$3) RETURNING 
 	if _, err := pool.Exec(ctx, `UPDATE installations SET game_server_id=$1, status='READY', setup_completed_at=NOW() WHERE id=$2`, w.serverID, w.a1.InstallationID); err != nil {
 		t.Fatal(err)
 	}
+	// A set-up server has its organization's Nitrado connection (website onboarding).
+	if _, err := pool.Exec(ctx, `INSERT INTO nitrado_connections(guild_id, organization_id, credential_ciphertext, credential_nonce, credential_key_version, status)
+VALUES(NULL,$1,'\x01','\x02',1,'ACTIVE') ON CONFLICT (organization_id) DO NOTHING`, w.a1.OrgID); err != nil {
+		t.Fatal(err)
+	}
 	return w
 }
 

@@ -88,7 +88,8 @@ func (a *App) ownerOpsRuntimeReady() bool {
 
 func serverState(f repository.FleetFact, rt serverRuntime, runtimeReady bool) ownerops.ServerState {
 	return ownerops.ServerState{InstallationStatus: f.Status, ServerActive: f.ServerActive, RuntimeReady: runtimeReady,
-		WorkerRunning: rt.WorkerRunning, SourceState: rt.SourceState, SourceErrorClass: rt.ErrorClass, BotInstalled: f.BotInstalled}
+		WorkerRunning: rt.WorkerRunning, SourceState: rt.SourceState, SourceErrorClass: rt.ErrorClass, BotInstalled: f.BotInstalled,
+		NitradoMissing: f.ServerID > 0 && f.NitradoStatus == ""}
 }
 
 func (a *App) ownerOpsAvailable(w http.ResponseWriter) bool {

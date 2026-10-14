@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/yourname/dayz-killfeed/internal/nitrado"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 	"github.com/yourname/dayz-killfeed/internal/security"
@@ -38,10 +40,36 @@ func (a *App) nitradoClientForServer(ctx context.Context, row repository.GameSer
 		return nil, errors.New("server repository is not initialized")
 	}
 	connection, err := a.Servers.GetConnection(ctx, row.GuildID)
-	if err != nil {
+	if err == nil {
+		return nitradoClientFromConnection(a.CredentialCipher, *connection)
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("load Nitrado credential for guild %d: %w", row.GuildID, err)
 	}
-	return nitradoClientFromConnection(a.CredentialCipher, *connection)
+	// Website customers connect Nitrado for their organization, not for one Discord server: use
+	// the credential of the organization that owns this server.
+	envelope, err := a.organizationCredentialForServer(ctx, row.ID)
+	if err != nil {
+		return nil, fmt.Errorf("load Nitrado credential for server %d: %w", row.ID, err)
+	}
+	if envelope == nil {
+		return nil, fmt.Errorf("load Nitrado credential for guild %d: %w", row.GuildID, pgx.ErrNoRows)
+	}
+	return a.nitradoClientFromEnvelope(*envelope)
+}
+
+// organizationCredentialForServer returns the organization-scoped Nitrado credential of the
+// organization that owns game server serverID, or nil when the server has no organization or the
+// organization has not connected Nitrado.
+func (a *App) organizationCredentialForServer(ctx context.Context, serverID int64) (*repository.CredentialEnvelope, error) {
+	if a.SaaSCredentials == nil {
+		return nil, nil
+	}
+	orgID, err := a.Servers.OrganizationIDFor(ctx, serverID)
+	if err != nil || orgID == nil {
+		return nil, err
+	}
+	return a.SaaSCredentials.GetForOrganizationOnly(ctx, *orgID)
 }
 
 func (a *App) verifyNitrado(ctx context.Context) (authenticated, verified bool, game, serviceType, status string) {
