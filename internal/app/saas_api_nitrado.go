@@ -449,6 +449,9 @@ func (a *App) handleSelectDayZServer(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Start the customer's killfeed now rather than waiting for the next reconcile.
+	a.startCustomerServer(context.WithoutCancel(ctx), server.ID)
+
 	if reused && resolvedInstallationID != installationID {
 		// Best-effort cleanup of the redundant, still-empty installation
 		// the customer's request originally targeted (section 7) - never

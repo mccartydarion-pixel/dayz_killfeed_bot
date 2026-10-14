@@ -167,6 +167,16 @@ func (r *ServerRepository) GetByID(ctx context.Context, id int64) (*GameServer, 
 	return &s, nil
 }
 
+// OrganizationIDFor returns the SaaS organization that owns game server id, or nil for a
+// server no organization has claimed (a legacy /server connect server).
+func (r *ServerRepository) OrganizationIDFor(ctx context.Context, id int64) (*int64, error) {
+	var orgID *int64
+	if err := r.pool.QueryRow(ctx, `SELECT organization_id FROM game_servers WHERE id=$1`, id).Scan(&orgID); err != nil {
+		return nil, err
+	}
+	return orgID, nil
+}
+
 // FindByGuildAndService looks up a game_servers row by its provider service ID
 // regardless of active state, for onboarding flows (disconnect/repair) that
 // need to find a server that may already be inactive.
