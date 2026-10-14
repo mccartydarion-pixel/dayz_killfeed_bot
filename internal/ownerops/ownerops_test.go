@@ -299,3 +299,18 @@ func TestBriefingText(t *testing.T) {
 		t.Fatalf("a long briefing must stay under Discord's limit and summarise: %d runes", len([]rune(long)))
 	}
 }
+
+// A server whose guild has no Nitrado connection is an access problem for the owner, never a
+// worker the monitor should keep restarting.
+func TestDetectNitradoMissing(t *testing.T) {
+	s := live()
+	s.WorkerRunning = false
+	s.NitradoMissing = true
+	got := Detect(s)
+	if len(got) != 1 || got[KindNitradoAccess] == "" {
+		t.Fatalf("missing Nitrado connection = %v, want only %s", got, KindNitradoAccess)
+	}
+	if Healable(KindNitradoAccess) || !NeedsCustomer(KindNitradoAccess) {
+		t.Fatal("a missing Nitrado connection must go to the customer, not self-heal")
+	}
+}

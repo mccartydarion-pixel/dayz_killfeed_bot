@@ -53,7 +53,14 @@ FROM installations i
 JOIN organizations o ON o.id = i.organization_id
 JOIN discord_guild_connections c ON c.id = i.discord_guild_connection_id
 LEFT JOIN game_servers gs ON gs.id = i.game_server_id
-LEFT JOIN nitrado_connections n ON n.guild_id = gs.guild_id
+LEFT JOIN LATERAL (
+    -- The guild's own connection, else the organization's (website onboarding stores it there).
+    SELECT nc.status, nc.last_error_class, nc.last_success_at, nc.last_failure_at
+    FROM nitrado_connections nc
+    WHERE nc.guild_id = gs.guild_id OR (nc.guild_id IS NULL AND nc.organization_id = i.organization_id)
+    ORDER BY (nc.guild_id IS NULL)
+    LIMIT 1
+) n ON TRUE
 ORDER BY i.id LIMIT 5000`, now.UTC(), stats)
 	if err != nil {
 		return nil, err

@@ -43,6 +43,7 @@ type ServerState struct {
 	SourceState        string // ADM source state; "" when no engine is known
 	SourceErrorClass   string // Nitrado error class behind a TRANSPORT_ERROR
 	BotInstalled       bool
+	NitradoMissing     bool // neither the server's guild nor its organization has a Nitrado connection
 
 	// Silent-feed evidence (feedwatch.go). Every duration is measured by the caller from when
 	// this process began watching the server; the zero values imply nothing.
@@ -107,6 +108,12 @@ func Detect(s ServerState) map[string]string {
 	}
 	if !s.BotInstalled {
 		out[KindDiscordAccess] = "the Champion bot is no longer in the Discord server"
+	}
+	if s.NitradoMissing {
+		// No worker can run without a Nitrado connection, so this is not a worker problem and
+		// restarting cannot fix it: only the owner reconnecting Nitrado can.
+		out[KindNitradoAccess] = "no Nitrado account is connected for this server"
+		return out
 	}
 	if !s.WorkerRunning {
 		out[KindWorkerDown] = "no log worker is running for this server"

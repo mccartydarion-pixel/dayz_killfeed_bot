@@ -250,7 +250,7 @@ func customerIncidentMessage(kind, server, dashboard string) string {
 	}
 	switch kind {
 	case ownerops.KindNitradoAccess:
-		return "Champion can no longer read the logs of your DayZ server " + server + ": Nitrado is refusing the saved access token, so your killfeed has stopped. " +
+		return "Champion can no longer read the logs of your DayZ server " + server + ": its Nitrado connection is missing or Nitrado is refusing the saved access token, so your killfeed has stopped. " +
 			"Reconnect Nitrado from your Champion dashboard to bring it back." + link
 	case ownerops.KindDiscordAccess:
 		return "The Champion bot is no longer in the Discord server for " + server + ", so nothing can be posted there. " +
