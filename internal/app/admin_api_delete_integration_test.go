@@ -207,7 +207,7 @@ func TestOwnerDeletesAnEmptyOrganization(t *testing.T) {
 	if n := w.count(t, `SELECT COUNT(*) FROM nitrado_connections WHERE organization_id=$1 OR (organization_id IS NULL AND guild_id IS NULL)`, target.OrgID); n != 0 {
 		t.Errorf("nitrado credential left behind: %d", n)
 	}
-	if n := w.count(t, `SELECT COUNT(*) FROM trial_grants WHERE organization_id=$1`, target.OrgID); n != 0 {
+	if n := w.count(t, `SELECT COUNT(*) FROM trial_grants WHERE organization_id=$1 OR user_id=$2`, target.OrgID, ownerUserID); n != 0 {
 		t.Errorf("trial marker left behind: %d", n)
 	}
 

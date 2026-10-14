@@ -60,7 +60,7 @@ Useful endpoints once it is running:
 | --- | --- |
 | `GET /health` | Liveness. Makes no external call. |
 | `GET /ready` | Readiness, including worker health. |
-| `GET /api/v1/status` | Sanitized live runtime state. |
+| `GET /api/v1/status` | Sanitized live runtime state (requires `Authorization: Bearer <WEBSITE_API_SECRET>`). |
 
 ## Docker
 

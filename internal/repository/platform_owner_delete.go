@@ -417,6 +417,11 @@ WHERE nc.organization_id = $1
   AND (nc.guild_id IS NULL OR NOT EXISTS (SELECT 1 FROM game_servers gs WHERE gs.guild_id = nc.guild_id))`, organizationID); err != nil {
 		return nil, fmt.Errorf("delete organization: credential: %w", err)
 	}
+	// The trial marker is removed (the owner may start a free trial again). Its reference is SET
+	// NULL since 0133 (a self-serve erase keeps it), so this delete removes it explicitly.
+	if _, err := tx.Exec(ctx, `DELETE FROM trial_grants WHERE organization_id = $1`, organizationID); err != nil {
+		return nil, fmt.Errorf("delete organization: trial marker: %w", err)
+	}
 	tag, err := tx.Exec(ctx, `DELETE FROM organizations WHERE id = $1`, organizationID)
 	if err != nil {
 		return nil, fmt.Errorf("delete organization: %w", err)

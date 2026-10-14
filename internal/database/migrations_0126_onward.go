@@ -49,4 +49,25 @@ var migrations0126onward = []Migration{
 		Name: "0132_tournaments",
 		SQL:  TournamentSQL,
 	},
+	{
+		// Self-serve organization erase (docs/SAAS_HTTP_API.md "Erase an organization"): payment
+		// records and the one-trial-per-account marker outlive the organization they belonged to.
+		// Both references become nullable ON DELETE SET NULL instead of CASCADE. No data changes.
+		Name: "0133_erase_keeps_billing_records",
+		SQL:  EraseKeepsBillingRecordsSQL,
+	},
 }
+
+// EraseKeepsBillingRecordsSQL keeps billing_transactions (needed for tax and accounting) and
+// trial_grants (one no-card trial per Discord account) when their organization is deleted: the
+// organization_id is cleared instead of the row being removed.
+const EraseKeepsBillingRecordsSQL = `
+ALTER TABLE billing_transactions ALTER COLUMN organization_id DROP NOT NULL;
+ALTER TABLE billing_transactions DROP CONSTRAINT IF EXISTS billing_transactions_organization_id_fkey;
+ALTER TABLE billing_transactions ADD CONSTRAINT billing_transactions_organization_id_fkey
+    FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE SET NULL;
+ALTER TABLE trial_grants ALTER COLUMN organization_id DROP NOT NULL;
+ALTER TABLE trial_grants DROP CONSTRAINT IF EXISTS trial_grants_organization_id_fkey;
+ALTER TABLE trial_grants ADD CONSTRAINT trial_grants_organization_id_fkey
+    FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE SET NULL;
+`

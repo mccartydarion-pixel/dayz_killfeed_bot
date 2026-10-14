@@ -71,6 +71,7 @@ var httpStatusForCode = map[string]int{
 	codeInstallationNotVerified: http.StatusUnprocessableEntity,
 	codeInternalError:           http.StatusInternalServerError,
 	codeNitradoUnavailable:      http.StatusServiceUnavailable,
+	codeSubscriptionActive:      http.StatusConflict,
 	codePayloadTooLarge:         http.StatusRequestEntityTooLarge,
 	codeUnsupportedMediaType:    http.StatusUnsupportedMediaType,
 	codeLeadershipTransfer:      http.StatusConflict,
@@ -116,6 +117,11 @@ func (a *App) requireSaaSServiceAuth(w http.ResponseWriter, r *http.Request) boo
 		writeSaaSError(w, codeUnauthorized, "missing or invalid service authentication")
 		return false
 	}
+	// The identity headers must carry a valid HMAC (identity_signature.go).
+	// Every /api/saas and /api/admin route reaches this before it reads them.
+	if !a.requireSignedIdentity(w, r) {
+		return false
+	}
 	// A "view as customer" session (docs/OWNER_OPS.md) may only read.
 	if a.rejectImpersonatedWrite(w, r) {
 		return false
@@ -129,6 +135,12 @@ func (a *App) requireSaaSServiceAuth(w http.ResponseWriter, r *http.Request) boo
 // never synced (POST /api/saas/users/sync must run at least once per user -
 // see saas_api_users.go).
 func (a *App) resolveActingUser(w http.ResponseWriter, r *http.Request) *repository.AppUser {
+	// Defense in depth: requireSaaSServiceAuth already checked the identity
+	// signature, but the acting user must never be trusted unsigned even if a
+	// handler forgets that call. Verifying twice is cheap and idempotent.
+	if !a.requireSignedIdentity(w, r) {
+		return nil
+	}
 	discordUserID := strings.TrimSpace(r.Header.Get(actingUserHeader))
 	if discordUserID == "" {
 		writeSaaSError(w, codeUnauthorized, "missing acting user")
@@ -414,6 +426,7 @@ func (a *App) registerSaaSAPI() {
 	a.registerBillingRoutes()
 	a.registerTrialRoutes()
 	a.registerPlayerRoutes()
+	a.registerDataDeletionRoutes()
 	a.registerLifeRoutes()
 	a.registerCardRoutes()
 	a.registerNetworkRoutes()

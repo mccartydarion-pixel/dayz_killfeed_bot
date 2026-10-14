@@ -2,8 +2,10 @@ package server
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/yourname/dayz-killfeed/internal/config"
@@ -30,7 +32,11 @@ func New(cfg *config.Config, state *State) (*Server, error) {
 	mux.HandleFunc("/health", HealthHandler)
 	mux.HandleFunc("/live", LiveHandler)
 	mux.HandleFunc("/ready", state.ReadyHandler)
-	mux.HandleFunc("/api/v1/status", state.StatusHandler)
+	// /api/v1/status exposes runtime internals (bot name, log paths, DB pool
+	// stats, Nitrado status), so it needs the same WEBSITE_API_SECRET bearer
+	// as /api/runtime/status. /health, /live and /ready stay open: Railway's
+	// healthcheck and readiness probes carry no credentials.
+	mux.HandleFunc("/api/v1/status", requireWebsiteBearer(cfg, state.StatusHandler))
 
 	addr := "0.0.0.0:" + cfg.Port
 	if cfg.Port == "" {
@@ -65,6 +71,29 @@ func (s *Server) Handler() http.Handler {
 		return http.NotFoundHandler()
 	}
 	return s.mux
+}
+
+// requireWebsiteBearer wraps next so it runs only for a request carrying
+// "Authorization: Bearer <WEBSITE_API_SECRET>" (constant-time compare, the
+// same rule as app.validBearerToken). An unset secret refuses everything.
+func requireWebsiteBearer(cfg *config.Config, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if cfg == nil || !validBearer(r.Header.Get("Authorization"), cfg.WebsiteAPISecret) {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "unauthorized"})
+			return
+		}
+		next(w, r)
+	}
+}
+
+// validBearer reports whether header is exactly "Bearer <secret>", compared
+// in constant time. An empty secret never matches.
+func validBearer(header, secret string) bool {
+	const prefix = "Bearer "
+	if secret == "" || !strings.HasPrefix(header, prefix) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(strings.TrimPrefix(header, prefix)), []byte(secret)) == 1
 }
 
 func configLoadError() error {
