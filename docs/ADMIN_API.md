@@ -90,7 +90,9 @@ Every one of them answers with the whole list in the same shape, oldest first:
   the audit log with `targetType=platform_staff`.
 
 The website also sends `X-Champion-Admin: true`. The backend **ignores** it - a header
-a caller controls can never grant access; only the allowlist does.
+a caller controls can never grant access; only the allowlist does. It is, however, part of
+the signed identity (docs/SAAS_HTTP_API.md "Signed identity"), like `X-Champion-Acting-User`
+and `X-Champion-Impersonator`.
 
 ### The platform-owner allowlist
 
@@ -539,7 +541,8 @@ Rule 4 is computed by walking the live foreign-key graph, not from a hand-kept l
 
 **Deleting an empty organization removes** the organization, its memberships, its Discord
 connection(s), its installations (none has a game server) with their setup and configuration,
-its subscription row and trial marker (the owner may start a free trial again), its
+its subscription row and trial marker (the owner may start a free trial again; a self-serve erase
+keeps the marker instead), its
 organization audit log, and a Nitrado credential stored for it that no game server uses.
 **It keeps** every user account (the owner simply has no organization any more, which the
 website shows as the player view), the `guilds` row and everything keyed by guild (players,

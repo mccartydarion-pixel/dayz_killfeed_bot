@@ -162,6 +162,12 @@ func (a *App) runtimeStatusHandler(w http.ResponseWriter, r *http.Request) {
 		writeRuntimeJSON(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "unauthorized"})
 		return
 	}
+	// This route reads no identity, but a request that asserts one is held to
+	// the same signed-identity rule (keyed by this route's secret).
+	if !checkSignedIdentity(r, a.Config.WebsiteAPISecret, a.Config.RequireSignedIdentity) {
+		writeRuntimeJSON(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "unauthorized"})
+		return
+	}
 
 	requestedGuildID := strings.TrimSpace(r.URL.Query().Get("discord_guild_id"))
 	if requestedGuildID == "" {

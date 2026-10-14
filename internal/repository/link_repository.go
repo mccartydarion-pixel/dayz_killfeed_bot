@@ -77,6 +77,21 @@ func (r *LinkRepository) Unlink(ctx context.Context, guildID int64, discordUserI
 	return err
 }
 
+// UnlinkAllForDiscordUser marks every VERIFIED or PENDING link of discordUserID, on every guild,
+// UNLINKED (the per-guild Unlink, for the website's "unlink my identity"). Players and their
+// stats are kept. Returns how many links changed.
+func (r *LinkRepository) UnlinkAllForDiscordUser(ctx context.Context, discordUserID string) (int64, error) {
+	if discordUserID == "" {
+		return 0, nil
+	}
+	tag, err := r.pool.Exec(ctx, `UPDATE player_links SET status=$2,updated_at=NOW() WHERE discord_user_id=$1 AND status IN ($3,$4)`,
+		discordUserID, linking.StatusUnlinked, linking.StatusVerified, linking.StatusPending)
+	if err != nil {
+		return 0, fmt.Errorf("unlink all: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
 // ExpirePending marks stale pending links as EXPIRED.
 func (r *LinkRepository) ExpirePending(ctx context.Context) error {
 	_, err := r.pool.Exec(ctx, `UPDATE player_links SET status=$1,updated_at=NOW() WHERE status=$2 AND updated_at < NOW() - INTERVAL '10 minutes'`, linking.StatusExpired, linking.StatusPending)

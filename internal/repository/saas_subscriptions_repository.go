@@ -270,7 +270,8 @@ type BillingTransactionFilter struct {
 }
 
 // ListBillingTransactions pages through billing_transactions, newest first, joined to the owning
-// organization's name for display. next is 0 on the last page.
+// organization's name for display. A payment whose organization was erased is kept and listed
+// with OrganizationID 0 and an empty name. next is 0 on the last page.
 func (r *SubscriptionRepository) ListBillingTransactions(ctx context.Context, f BillingTransactionFilter) (rows []BillingTransactionRow, next int64, err error) {
 	limit := f.Limit
 	if limit <= 0 {
@@ -299,9 +300,9 @@ func (r *SubscriptionRepository) ListBillingTransactions(ctx context.Context, f 
 		where = "WHERE " + strings.Join(conds, " AND ")
 	}
 	q := `
-SELECT t.id, t.organization_id, o.name, t.provider, t.provider_invoice_id, t.provider_subscription_id,
+SELECT t.id, COALESCE(t.organization_id, 0), COALESCE(o.name, ''), t.provider, t.provider_invoice_id, t.provider_subscription_id,
        t.status, t.amount_cents, t.currency, t.period_start, t.period_end, t.paid_at, t.failed_at, t.created_at
-FROM billing_transactions t JOIN organizations o ON o.id = t.organization_id
+FROM billing_transactions t LEFT JOIN organizations o ON o.id = t.organization_id
 ` + where + ` ORDER BY t.id DESC LIMIT ` + arg(limit+1)
 	pgRows, err := r.pool.Query(ctx, q, args...)
 	if err != nil {

@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"strconv"
@@ -51,6 +52,14 @@ type Config struct {
 	// WebsiteAPISecret authenticates the website's read-only runtime status
 	// API (see internal/app/runtime_status.go). Empty disables the endpoint.
 	WebsiteAPISecret string
+
+	// RequireSignedIdentity is CHAMPION_REQUIRE_SIGNED_IDENTITY: when true, a
+	// website request that asserts an identity (X-Champion-Acting-User,
+	// X-Champion-Impersonator or X-Champion-Admin) without an
+	// X-Champion-Signature is refused with 401. Default false for the rollout:
+	// unsigned identity is then accepted with a rate-limited warning. A
+	// signature that is present but invalid or expired is always refused.
+	RequireSignedIdentity bool
 
 	// AdminDiscordIDs is the platform-admin (founder) allowlist from
 	// CHAMPION_ADMIN_DISCORD_IDS: Discord user ids that may use the read-only
@@ -152,6 +161,7 @@ func Load() (*Config, error) {
 		CredentialEncryptionKey:   strings.TrimSpace(os.Getenv("CREDENTIAL_ENCRYPTION_KEY")),
 		DiscordGuildMembersIntent: strings.EqualFold(strings.TrimSpace(os.Getenv("DISCORD_GUILD_MEMBERS_INTENT_ENABLED")), "true"),
 		WebsiteAPISecret:          strings.TrimSpace(os.Getenv("WEBSITE_API_SECRET")),
+		RequireSignedIdentity:     parseBoolWithDefault(os.Getenv("CHAMPION_REQUIRE_SIGNED_IDENTITY"), false),
 		AdminDiscordIDs:           ParseAdminDiscordIDs(os.Getenv("CHAMPION_ADMIN_DISCORD_IDS")),
 		CustomEmbedsEnabled:       parseBoolWithDefault(os.Getenv("CHAMPION_CUSTOM_EMBEDS_ENABLED"), false),
 		PlanGatingEnabled:         parseBoolWithDefault(os.Getenv("CHAMPION_PLAN_GATING_ENABLED"), false),
@@ -188,6 +198,8 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	WarnWeakWebsiteSecret(cfg.WebsiteAPISecret)
+
 	if cfg.HTTPPort == "" {
 		cfg.HTTPPort = "8080"
 	}
@@ -200,6 +212,21 @@ func Load() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// minWebsiteSecretBytes is the shortest WEBSITE_API_SECRET that does not
+// draw a startup warning (the secret is also the identity-signing HMAC key).
+const minWebsiteSecretBytes = 32
+
+// WarnWeakWebsiteSecret logs a startup warning (never fails) when
+// WEBSITE_API_SECRET is set but shorter than 32 bytes. Only the length is
+// logged, never the value. It reports whether it warned.
+func WarnWeakWebsiteSecret(secret string) bool {
+	if secret == "" || len(secret) >= minWebsiteSecretBytes {
+		return false
+	}
+	slog.Warn("component=config", "event", "weak_website_secret", "length", len(secret), "min_length", minWebsiteSecretBytes)
+	return true
 }
 
 // ValidateNitradoAPIBaseURL allows a Nitrado API replacement only in an

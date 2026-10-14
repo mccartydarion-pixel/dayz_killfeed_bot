@@ -41,6 +41,38 @@ Every request goes through, in order:
 `POST /api/saas/users/sync` is the one exception to step 2 - it establishes
 the acting user's row, so it only requires service auth.
 
+### Signed identity
+
+The bearer secret proves the caller is the website; it does not prove WHO is
+acting. So the identity headers (`X-Champion-Acting-User`,
+`X-Champion-Impersonator`, `X-Champion-Admin`) are bound to the request with an
+HMAC. Every `/api/saas/*` and `/api/admin/*` route (and `/api/runtime/status`)
+checks it, centrally, right after the bearer token:
+
+```
+X-Champion-Timestamp: <unix seconds>
+X-Champion-Signature: v1=<lowercase hex HMAC-SHA256(key, canonical)>
+```
+
+* **key**: `WEBSITE_API_SECRET` (the same secret as the bearer token).
+* **canonical**: these seven lines joined with `\n`, no trailing newline:
+  `v1`, the timestamp exactly as sent, the HTTP method uppercased, the URL path
+  (no query string), then the values of `X-Champion-Acting-User`,
+  `X-Champion-Impersonator` and `X-Champion-Admin` (`""` for an absent header).
+* The timestamp must be within ±300 seconds of the server clock.
+
+| Request | Result |
+|---|---|
+| no identity header | no signature needed |
+| identity header + valid signature | allowed |
+| signature present but wrong or expired | `401 UNAUTHORIZED` |
+| identity header, no signature, `CHAMPION_REQUIRE_SIGNED_IDENTITY=true` | `401 UNAUTHORIZED` |
+| identity header, no signature, flag unset/false (rollout default) | allowed; the bot logs `component=saas_api event=unsigned_identity path=<path>` at most once a minute |
+
+Turn `CHAMPION_REQUIRE_SIGNED_IDENTITY=true` on once the website signs every
+request. The bot warns at startup (`component=config event=weak_website_secret`)
+when `WEBSITE_API_SECRET` is shorter than 32 bytes.
+
 ## Error contract
 
 Every non-2xx response is:
@@ -235,6 +267,43 @@ cannot post without them). `Embed Links` and `Read Message History` are
 *degrading* - missing either is `WARNING` (the bot can still post, just with
 reduced presentation). If the guild or channel isn't reachable at all, every
 capability is `FAIL`.
+
+### `POST /api/saas/organizations/{organizationID}/erase`
+
+Erase an organization: OWNER only (ADMIN/MEMBER/non-member `403`; a "view as"
+session `403`; a platform owner's own organization `403`).
+
+Request: `{ "confirm": "DELETE" }` (exactly; anything else `400 INVALID_REQUEST`).
+
+Refused with `409 SUBSCRIPTION_ACTIVE` while the organization (or a C.A.S.E.
+add-on of it) has a live paid Stripe subscription (a provider subscription id
+and a status other than `CANCELED`/`INACTIVE`): cancel it first. An expired or
+never-started trial may erase. `409 CONFLICT` when it holds records the
+database keeps by design (C.A.S.E. review history, add-on billing records);
+nothing is changed then.
+
+What it does, in one transaction (its server workers are stopped first): its
+Nitrado credentials are deleted; its game servers are switched off and
+released; its installations (with their configuration and records), Discord
+guild connections, memberships, subscription row and organization audit log
+are deleted, then the organization itself. Gameplay data of a guild it
+connected (players, kills, deaths, links, stats) is deleted only when no other
+organization still uses that guild and it is not the bot's `DISCORD_GUILD_ID`.
+Payment records (`billing_transactions`, `billing_webhook_events`) and the
+one-trial-per-account marker are kept with their organization cleared (so an
+erase never grants a second free trial). Audited
+(`platform_audit_log` action `organization.erased`; log `event=organization_erased`).
+
+Response `200`: `{ "erased": true }`.
+
+### `POST /api/saas/player/identity/unlink`
+
+The acting user unlinks their own DayZ gamertag(s): every `VERIFIED` or
+`PENDING` link of theirs, on every server, becomes `UNLINKED` (the website
+equivalent of Discord `/unlink`). Gameplay stats are kept. No body. A "view as"
+session gets `403`.
+
+Response `200`: `{ "unlinked": <number of links changed> }`.
 
 ### Live map (`docs/LIVE_MAP.md`)
 
