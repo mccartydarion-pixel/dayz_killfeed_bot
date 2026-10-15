@@ -11,16 +11,17 @@ import (
 )
 
 // liveFeedAPI is a concurrency-safe fake that tracks which messages are
-// currently visible in the channel.
+// currently visible in the channel, with the titles of the cards each holds.
 type liveFeedAPI struct {
 	mu      sync.Mutex
 	next    int
-	visible map[string]string // message id -> title
-	posts   int
+	visible map[string][]string // message id -> card titles
+	posts   int                 // messages created
+	sent    [][]string          // every message created, as card titles, in order
 	deletes int
 }
 
-func newLiveFeedAPI() *liveFeedAPI { return &liveFeedAPI{visible: map[string]string{}} }
+func newLiveFeedAPI() *liveFeedAPI { return &liveFeedAPI{visible: map[string][]string{}} }
 
 func (f *liveFeedAPI) ChannelMessagesBulkDelete(_ string, ids []string, _ ...discordgo.RequestOption) error {
 	f.mu.Lock()
@@ -45,15 +46,36 @@ func (f *liveFeedAPI) ChannelMessageSendComplex(_ string, data *discordgo.Messag
 	defer f.mu.Unlock()
 	f.next++
 	id := fmt.Sprintf("m%d", f.next)
-	f.visible[id] = data.Embeds[0].Title
+	var titles []string
+	for _, e := range data.Embeds {
+		titles = append(titles, e.Title)
+	}
+	f.visible[id] = titles
+	f.sent = append(f.sent, titles)
 	f.posts++
-	return &discordgo.Message{ID: id}, nil
+	return &discordgo.Message{ID: id, Embeds: data.Embeds}, nil
 }
 
+// shown returns the number of cards visible and the number of messages posted.
 func (f *liveFeedAPI) shown() (int, int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return len(f.visible), f.posts
+	cards := 0
+	for _, titles := range f.visible {
+		cards += len(titles)
+	}
+	return cards, f.posts
+}
+
+// visibleTitles returns every visible card title (any order).
+func (f *liveFeedAPI) visibleTitles() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for _, titles := range f.visible {
+		out = append(out, titles...)
+	}
+	return out
 }
 
 func newLiveFeed(api *liveFeedAPI, interval time.Duration, mode string) *RotatingFeed {
@@ -107,13 +129,11 @@ func TestImmediateModeKeepsTheRollingWindow(t *testing.T) {
 	if posts != 13 || visible != 10 {
 		t.Fatalf("expected 13 posted and the newest 10 visible, got posts=%d visible=%d", posts, visible)
 	}
-	api.mu.Lock()
-	for _, title := range api.visible {
+	for _, title := range api.visibleTitles() {
 		if title == "kill-1" || title == "kill-2" || title == "kill-3" {
 			t.Errorf("oldest card %s should have been removed", title)
 		}
 	}
-	api.mu.Unlock()
 }
 
 // TestImmediateModeEmptiesAfterAQuietInterval: like the rotating cycle, cards

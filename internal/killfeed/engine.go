@@ -408,6 +408,9 @@ type Engine struct {
 	utcOffset   func() (minutes int, known bool)
 	// lastEventTimeWarn rate-limits the implausible-event-time warning (event_time.go).
 	lastEventTimeWarn time.Time
+	// batchPersisted counts the events of the batch read at batchReadAt that persistence
+	// acknowledged (BatchTracker: one batch_processed line per download).
+	batchPersisted int
 }
 
 // SetServerUTCOffset attaches the source of the game server clock's UTC offset, used to express a
@@ -428,8 +431,22 @@ func (e *Engine) loggedAtUTC(local *time.Time) time.Time {
 	return lineTimeUTC(local, minutes, known)
 }
 
-// markBatchRead notes that the bytes about to be parsed have just been downloaded.
-func (e *Engine) markBatchRead() { e.batchReadAt = time.Now() }
+// markBatchRead notes that the bytes about to be parsed have just been downloaded. A batch still
+// open from an earlier read in the same cycle is finished first.
+func (e *Engine) markBatchRead() {
+	e.finishBatch()
+	e.batchReadAt = time.Now()
+}
+
+// finishBatch hands the batch read at batchReadAt to the BatchTracker: every event of it that
+// persistence acknowledged has its card queued by now (the persistence queue answers only after
+// the publish hook). Measurement only.
+func (e *Engine) finishBatch() {
+	if e.batchPersisted > 0 && !e.batchReadAt.IsZero() {
+		Batches.BatchFinished(e.serverID, e.batchReadAt, e.batchPersisted)
+	}
+	e.batchPersisted = 0
+}
 
 // StartAtLogTail marks this engine to begin at the end of the log on its first
 // selection (safe first-connect behavior), instead of replaying the file's
@@ -683,7 +700,9 @@ func (e *Engine) PollOnce(ctx context.Context) error {
 	if e == nil || e.client == nil {
 		return nil
 	}
+	e.finishBatch()
 	e.batchReadAt = time.Time{} // set again by whichever read this cycle makes
+	defer e.finishBatch()
 
 	switch e.state {
 	case StateDiscovery, StateLogSelected:

@@ -39,6 +39,9 @@ func newRecoveryRig(t *testing.T, interval, clientTimeout time.Duration) *recove
 	feed := NewRotatingFeed(NewFeedSession(s), store, "g1", func(g *GuildSetup) string { return g.KillfeedChannelID }, interval, 10)
 	feed.SetRouteChannelResolver(func() string { return route })
 	feed.SetMode(FeedModeImmediate)
+	// One card per message: these gates assert the exact per-card window.
+	// Grouped messages (production) are covered by rotating_feed_group_test.go.
+	feed.SetMaxCardsPerMessage(1)
 	ctx, cancel := context.WithCancel(context.Background())
 	go feed.Run(ctx)
 	// Stop the feed (and its retry timers) before the ledger is restored, so

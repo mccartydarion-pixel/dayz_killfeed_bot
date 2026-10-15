@@ -849,8 +849,8 @@ Found by reading the path; evidence is the code named. Only the first two were c
 | Shutdown waited out the persistence timeout | `PersistenceQueue.EnqueueAndWait` | up to 30 s of extra overlap when a download was being handled | **Fixed** (section 22). |
 | Nitrado exposes the ADM in steps | Nitrado's file API | about 5 minutes; 8.5 minutes for a new boot's file (docs/NITRADO_POLLING.md) | Outside the bot. `gameLogToBotReadMs` now shows it per card. |
 | The rotating cycle | `rotatingFeedInterval`, `RotatingFeed.flush` | up to 10 minutes per card when `KILLFEED_DELIVERY_MODE` is not `immediate` | By design; the owner's switch. `queuedToDiscordAcceptedMs` shows it. |
-| One database round trip after another per kill | `PersistenceQueue.persistOne` and `persistenceStoreAdapter.ProcessPersistedKill`: two player upserts, season, two factions, war, two streak reads, the insert, then ranked award, life end, streak update and reset, two profiles, head-to-head, anomaly check, active events, VIP badge, bounty claim, streak note, wanted check | about 20 queries per kill, one at a time, and the engine waits for each kill before the next line. Nitrado delivers 5 minutes of kills in one download, so the last of N kills waits for N × that. | Not changed: the order of these writes is what keeps statistics and cards consistent. `botReadToQueuedMs` measures it. If it is seconds at p90, post the card first and enrich it in one or two combined queries. |
-| One card, one Discord message, one at a time | `RotatingFeed.postImmediate` | Discord allows about 5 messages per 5 s per channel, so a burst of 20 kills takes about 20 s to appear. With the window full each card also costs a delete request first, plus three journal writes. | Not changed (presentation). `queuedToDiscordAcceptedMs` measures it. |
+| One database round trip after another per kill | `PersistenceQueue.persistOne` and `persistenceStoreAdapter.ProcessPersistedKill`: two player upserts, season, two factions, war, two streak reads, the insert, then ranked award, life end, streak update and reset, two profiles, head-to-head, anomaly check, active events, VIP badge, bounty claim, streak note, wanted check | about 20 queries per kill, one at a time, and the engine waits for each kill before the next line. Nitrado delivers 5 minutes of kills in one download, so the last of N kills waits for N × that. | **Changed** (below, "What the card needs"): the card's reads run side by side, the card is queued and the engine released before the writes nothing on the card depends on, which still run in log order. `botReadToQueuedMs` measures it. |
+| One card, one Discord message, one at a time | `RotatingFeed.postImmediate` | Discord allows about 5 messages per 5 s per channel, so a burst of 20 kills takes about 20 s to appear. With the window full each card also costs a delete request first, plus three journal writes. | **Changed** (below, "Grouped messages"): cards waiting together go out in one message, up to 10 per message. `queuedToDiscordAcceptedMs` measures it. |
 | C.A.S.E. evidence writes on the poll loop | `Engine.observeEvidence` | one database write per hit, kill and connect line, before the next line is handled, on servers with the collector enabled | Not changed. Shows in `botReadToQueuedMs`. A batch insert per download would remove it. |
 | Whole-file reads that find nothing | `Engine.probeStaleSource` | when the log has not changed for 2 minutes, the whole file is downloaded once a minute (0.5-3 s each, on the poll loop) - about three times between two Nitrado steps | Not changed: it is the safety net for a stale listing. It could use the verified tail read. |
 | Hit and connection cards wait on purpose | `hitfeedWindow` 5 s + `hitfeedTick` 2 s; `connectionsTick` 2 s | up to 7 s / 2 s | By design (section 10). |
@@ -860,3 +860,87 @@ Found by reading the path; evidence is the code named. Only the first two were c
 `persistence.go`, `event.go`; `internal/discord/rotating_feed.go`, `killfeed.go`, `deathfeed.go`;
 `internal/app/feed_latency.go` (new), `server_worker.go`, `runtime_status.go`,
 `admin_api_nitrado_usage.go`; `internal/nitrado/partial_read.go`; `cmd/nitrado-delta-probe`.
+
+### Bursts: grouped messages and the card before the rest
+
+Seen in production on a tournament server: 478, 694 and 902 kills in single downloads. With one
+message per card at Discord's rate (about 5 messages per 5 s per channel) the last of 900 cards
+was posted about 15 minutes after the download, and before that each kill's twenty database
+round trips ran one after another, the engine waiting for every one before reading the next line.
+Two changes, both in `immediate` mode's path and both measured by the new batch line below.
+
+**Grouped messages** (`RotatingFeed.postImmediate`, `nextGroupLocked`, `sendGroup`). When more
+than one card is waiting, the feed posts them together in ONE Discord message, newest last, up to
+Discord's 10 embeds per message and under its 6000 characters across a message's embeds (title,
+description, field names and values, footer and author are counted; the feed stops at 5500). A
+single waiting card still posts alone at once. Only while a burst is already in progress - two or
+more cards waiting and fewer than a full message - does the feed wait 150 ms
+(`feedCoalesceWindow`) for the cards right behind them, once per pass, so they share the message.
+A card is counted delivered, timed and journaled on its own, as before.
+
+- The window counts cards, not messages, and deletes whole messages: with the channel at its
+  `maxItems` (50) cards and a group of n arriving, the oldest messages holding at least n cards are
+  deleted first, in one bulk request. The channel therefore shows between 41 and 50 cards during a
+  burst, never more than 50.
+- The journal (`discord_feed_cards`) keeps one row per card; the rows of a grouped message share
+  its message id. A restart takes the message back as one window entry of n cards, an eviction
+  closes all n rows, and the replay of cards queued before a crash is grouped like any other burst.
+- Every message carries the nonce of its first card. A grouped message whose create succeeded but
+  whose confirmation was lost (timeout, crash before the journal write) comes back from Discord on
+  the retry with the cards it holds; the feed marks exactly those cards posted and sends nothing
+  twice, even when the retry would have grouped differently.
+- A grouped message Discord rejects outright (400) is retried card by card, so only a card
+  rejected on its own is dropped (and counted).
+- `rotating` mode is unchanged: one message per card at the cycle.
+
+**What the card needs** (`persistenceStoreAdapter.ProcessPersistedKillStaged`, verified against
+`BuildKillEmbed` and `embed_custom.go`). The kill card shows the ranked award, the killer's streak
+and the spree / streak-ended flags, both players' kill and death counts, the head-to-head count,
+the active events' badges, the supporter badge, the war badge, the bounty this kill claimed and
+whether the killer is wanted. Every one of those is state the NEXT kill changes (a later kill
+moves the counts, the head-to-head, the streak, the bounties), so the card cannot be built later
+from a cheaper read: it is built at the kill's own place in the log, from reads of that moment.
+What no card field depends on: the victim's life end, the live tournament, the anti-farming pair
+check, the event score writes, the faction-stats notice and the panel refresh - about six of the
+twenty round trips. So:
+
+- Those six run AFTER the card is queued and the engine released (`finish`, still on the queue's
+  goroutine and before the next event, so every write happens in log order - streaks, lives,
+  seasons and tournaments see events exactly as the log reported them).
+- The card's reads that do not depend on one another (both profiles; the head-to-head; the active
+  events; the badge-claim-bounty-wanted chain) run side by side on separate pool connections
+  (`runSideBySide`), so their wall time is the longest chain rather than the sum. The writes keep
+  their order: ranked award, streak increment, streak reset, bounty claim, streak bounty.
+- `PersistenceQueue` still answers the engine (`EnqueueAndWait`) only after `finish` returns, so
+  "persisted" keeps meaning "all of this event's work is done" for everything that waits on it
+  (the checkpoint, the tests). Answering before `finish` was tried and dropped: it saved only the
+  overlap with the engine's own per-line work, and anything that reads tournament or life state
+  right after the answer would have seen it a moment late. Deaths take the same two stages (the
+  profile read for the card first; life end and tournament after).
+
+**The batch line.** One `INFO` line per download batch with at least one persisted event:
+
+```
+component=killfeed event=batch_processed server_id=3 events=478 cards=478 cards_posted=478
+  read_to_last_card_queued_ms=9800 cards_posted_ms=52000 complete=true
+```
+
+`events` is how many kills, deaths, connects and disconnects of the download were persisted,
+`cards` how many cards the feeds queued for them, `read_to_last_card_queued_ms` the time from the
+download to the last card entering its feed's queue (the database work of the whole batch) and
+`cards_posted_ms` the time from the download to Discord accepting the last card. A batch whose
+cards do not all post (a dropped card, a route without a channel, `rotating` mode's cycle) is
+logged with `complete=false` after 15 minutes or when 32 newer batches are waiting
+(`internal/killfeed/batch_progress.go`). Measurement only; nothing waits for it.
+
+Expected for a burst, with one database round trip at about 2 ms and Discord accepting a message
+in about 300 ms within its channel rate:
+
+| Burst | Before: last card queued | Before: last card posted | After: last card queued | After: last card posted |
+| --- | --- | --- | --- | --- |
+| 20 kills | about 20 × 40 ms = 0.8 s | about 20 s (20 messages) | about 20 × 20 ms = 0.4 s | about 2 s (2 messages) |
+| 900 kills | about 36 s | about 15 min (900 messages) | about 18 s | about 90 s (90 messages) |
+
+The "after" database figures are the per-kill chain cut from twenty sequential round trips to
+about ten (the card's parallel reads and the deferred writes); the Discord figures are the
+message count at Discord's rate. Real numbers come from the batch line and `feedLatency[]`.

@@ -142,6 +142,7 @@ func (e *Engine) processLineAt(line, sourcePath string, endOffset int64) (bool, 
 		e.presenceMu.Lock()
 		e.lastPersistenceResult = "SUCCESS"
 		e.presenceMu.Unlock()
+		e.batchPersisted++
 		if e.diagnostics != nil {
 			e.diagnostics.Update(func(s *RuntimeDiagnosticSnapshot) {
 				s.LastPersistenceEvent = string(ev.Type)

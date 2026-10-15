@@ -459,13 +459,11 @@ func TestPveNoticesShareFiftyCardManagedDeathWindow(t *testing.T) {
 	if posts != 51 || visible != 50 {
 		t.Fatalf("expected 51 delivered cards and exactly 50 visible, got posts=%d visible=%d", posts, visible)
 	}
-	api.mu.Lock()
-	for _, title := range api.visible {
+	for _, title := range api.visibleTitles() {
 		if title == "oldest-death" {
 			t.Error("oldest ordinary death must leave the shared PvE window")
 		}
 	}
-	api.mu.Unlock()
 	if fixture.sender.total() != 0 {
 		t.Fatal("PvE notices must not bypass the managed 50-card window")
 	}

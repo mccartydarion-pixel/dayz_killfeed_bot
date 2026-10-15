@@ -3,7 +3,9 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/yourname/dayz-killfeed/internal/analytics"
@@ -276,7 +278,30 @@ func (p *persistenceStoreAdapter) ResolveStreakContext(ctx context.Context, guil
 	return killerStreakBefore, victimStreakBefore
 }
 
+// ProcessPersistedKill is ProcessPersistedKillStaged followed at once by its finish: the whole
+// post-kill work in one call, for callers that do not publish in between.
 func (p *persistenceStoreAdapter) ProcessPersistedKill(ctx context.Context, killID int64, record repository.KillRecord, ev *killfeed.Event) {
+	if finish := p.ProcessPersistedKillStaged(ctx, killID, record, ev); finish != nil {
+		finish(ctx)
+	}
+}
+
+// ProcessPersistedKillStaged does the post-kill work the kill CARD depends on, and returns the
+// rest as finish (docs/PERFORMANCE.md section 23).
+//
+// The card shows: the ranked award (written here), the killer's streak and the spree/ended
+// flags (from the kill row), both players' kills and deaths (a read that must see this kill
+// and no later one), the head-to-head count (same), the active events' badges, the killer's
+// supporter badge, the war badge, the bounty claimed by this kill (written here) and whether
+// the killer is wanted. Every one of those reads is of state the NEXT kill changes, so the card
+// is built here, at the kill's place in the log, from reads of its own moment. Reads that do
+// not depend on each other run side by side on separate connections; the writes keep their
+// order (ranked award, streak increment, streak reset, bounty claim, streak bounty).
+//
+// finish does what no card field depends on, still in log order on the queue's goroutine: the
+// victim's life, the live tournament, the anti-farming pair check, the event scores, the
+// faction-stats notice and the panel refresh.
+func (p *persistenceStoreAdapter) ProcessPersistedKillStaged(ctx context.Context, killID int64, record repository.KillRecord, ev *killfeed.Event) (finish func(context.Context)) {
 	if p.ranked != nil && record.ServerID > 0 {
 		award, err := p.ranked.AwardActiveServerKill(ctx, record.ServerID, killID)
 		if err != nil && !errors.Is(err, repository.ErrRankedIneligible) {
@@ -288,18 +313,22 @@ func (p *persistenceStoreAdapter) ProcessPersistedKill(ctx context.Context, kill
 	}
 	// Runs on every exit (including the bounty claim at the end): the kill is durable, so cached
 	// faction figures are stale and the killer's factions may have earned an achievement.
-	defer p.factionStats.NotifyCombat(record.GuildID, record.ServerID, record.KillerPlayerID)
-	// Before the streak early-returns below: the victim's life ends with this kill regardless.
-	p.recordLifeEndFromKill(ctx, killID, record, ev)
-	// The server's live tournament, if any, scores the kill: a round, or a flag for an admin.
-	p.tournamentKill(ctx, killID, record, ev)
+	notifyFactions := func() { p.factionStats.NotifyCombat(record.GuildID, record.ServerID, record.KillerPlayerID) }
+	// Nothing on the card depends on these; they still run in log order, after the card.
+	afterCard := func(ctx context.Context) {
+		defer notifyFactions()
+		// The victim's life ends with this kill regardless of streak processing.
+		p.recordLifeEndFromKill(ctx, killID, record, ev)
+		// The server's live tournament, if any, scores the kill: a round, or a flag for an admin.
+		p.tournamentKill(ctx, killID, record, ev)
+	}
 	if p.streaks == nil {
-		return
+		return afterCard
 	}
 	streak, err := p.streaks.Increment(ctx, record.GuildID, record.KillerPlayerID)
 	if err != nil {
 		slog.Warn("component=killfeed", "msg", "streak processing failed", "err", err.Error())
-		return
+		return afterCard
 	}
 	if record.VictimPlayerID > 0 {
 		_ = p.streaks.Reset(ctx, record.GuildID, record.VictimPlayerID)
@@ -309,9 +338,6 @@ func (p *persistenceStoreAdapter) ProcessPersistedKill(ctx context.Context, kill
 		at = ev.Timestamp.UTC()
 	}
 
-	// Stat-rich embed fields: best-effort, never block the kill from
-	// publishing. A guild without stats/analytics wired just gets an embed
-	// without these sections (nil-checked in BuildKillEmbed).
 	if ev != nil {
 		// Prefer the persisted, authoritative streak-after snapshot (computed
 		// before this kill's own Increment call above, and durably stored on
@@ -326,122 +352,211 @@ func (p *persistenceStoreAdapter) ProcessPersistedKill(ctx context.Context, kill
 		ev.KillingSpree = record.KillingSpree
 		ev.StreakEnded = record.StreakEnded
 		ev.EndedStreakCount = record.EndedStreakCount
-		if p.stats != nil {
+	}
+
+	// Stat-rich embed fields: best-effort, never block the kill from
+	// publishing. A guild without stats/analytics wired just gets an embed
+	// without these sections (nil-checked in BuildKillEmbed). The reads below
+	// do not depend on one another, so they run side by side; each writes its
+	// own result and ev is only touched once all are back.
+	var killerStats, victimStats *killfeed.CombatRecord
+	var encounters *killfeed.HeadToHead
+	var eventBadges []string
+	var eventScores []func(context.Context)
+	var supporterBadge string
+	bountyClaimed, bountyTarget := false, false
+	var bountyPoints int64
+	var reads []func()
+	if p.stats != nil && ev != nil {
+		reads = append(reads, func() {
 			if prof, statErr := p.stats.GetPlayerProfileByPlayerID(ctx, record.GuildID, record.KillerPlayerID); statErr == nil && prof != nil {
-				ev.KillerStats = combatRecordOf(prof)
+				killerStats = combatRecordOf(prof)
 			}
 			if record.VictimPlayerID > 0 {
 				if prof, statErr := p.stats.GetPlayerProfileByPlayerID(ctx, record.GuildID, record.VictimPlayerID); statErr == nil && prof != nil {
-					ev.VictimStats = combatRecordOf(prof)
+					victimStats = combatRecordOf(prof)
 				}
 			}
-		}
-		if p.analytics != nil && ev.Killer != nil && ev.Victim != nil && ev.Killer.Name != "" && ev.Victim.Name != "" && ev.Killer.Name != ev.Victim.Name {
-			if m, matchupErr := p.analytics.Matchup(ctx, record.GuildID, ev.Killer.Name, ev.Victim.Name, analytics.ScopeLifetime, 0); matchupErr == nil && m != nil {
-				ev.Encounters = &killfeed.HeadToHead{KillerWins: m.AKills, VictimWins: m.BKills}
+		})
+	}
+	if p.analytics != nil && ev != nil && ev.Killer != nil && ev.Victim != nil && ev.Killer.Name != "" && ev.Victim.Name != "" && ev.Killer.Name != ev.Victim.Name {
+		killerName, victimName := ev.Killer.Name, ev.Victim.Name
+		reads = append(reads, func() {
+			if m, matchupErr := p.analytics.Matchup(ctx, record.GuildID, killerName, victimName, analytics.ScopeLifetime, 0); matchupErr == nil && m != nil {
+				encounters = &killfeed.HeadToHead{KillerWins: m.AKills, VictimWins: m.BKills}
 			}
-		}
+		})
 	}
-	if p.anomalies != nil && record.KillerPlayerID > 0 && record.VictimPlayerID > 0 && record.KillerPlayerID != record.VictimPlayerID {
-		if suspicious, anomalyErr := p.anomalies.ObservePair(ctx, record.GuildID, valueOfID(record.SeasonID), record.KillerPlayerID, record.VictimPlayerID, at); anomalyErr == nil && suspicious {
-			slog.Debug("component=anti-farming", "msg", "repeated pair activity observed", "killer_player_id", record.KillerPlayerID, "victim_player_id", record.VictimPlayerID)
-		}
-	}
-
 	if p.events != nil {
-		var eventBadges []string
-		if active, listErr := p.events.GetActiveEvents(ctx, record.GuildID); listErr == nil {
+		var killerPos, victimPos *competitiveevents.Point
+		if ev != nil {
+			killerPos, victimPos = killPoint(ev.Killer), killPoint(ev.Victim)
+		}
+		reads = append(reads, func() {
+			active, listErr := p.events.GetActiveEvents(ctx, record.GuildID)
+			if listErr != nil {
+				return
+			}
 			for _, stored := range active {
 				competitive := competitiveevents.Event{ID: stored.ID, GuildID: stored.GuildID, SeasonID: stored.SeasonID, Type: stored.Type, Name: stored.Name, Description: stored.Description, Status: stored.Status, StartsAt: stored.StartsAt, EndsAt: stored.EndsAt, Config: stored.Config}
-				input := competitiveevents.KillInput{KillID: killID, KillerPlayerID: record.KillerPlayerID, VictimPlayerID: record.VictimPlayerID, KillerFactionID: record.KillerFactionID, VictimFactionID: record.VictimFactionID, WarID: record.WarID, WeaponDisplay: record.WeaponDisplay, Distance: record.Distance, Headshot: record.Headshot, Streak: streak.Current, EventTime: at, ServerID: record.ServerID}
-				if ev != nil {
-					input.KillerPos, input.VictimPos = killPoint(ev.Killer), killPoint(ev.Victim)
+				input := competitiveevents.KillInput{KillID: killID, KillerPlayerID: record.KillerPlayerID, VictimPlayerID: record.VictimPlayerID, KillerFactionID: record.KillerFactionID, VictimFactionID: record.VictimFactionID, WarID: record.WarID, WeaponDisplay: record.WeaponDisplay, Distance: record.Distance, Headshot: record.Headshot, Streak: streak.Current, EventTime: at, ServerID: record.ServerID, KillerPos: killerPos, VictimPos: victimPos}
+				score := competitiveevents.Qualify(competitive, input)
+				if !score.Qualifies {
+					continue
 				}
-				if score := competitiveevents.Qualify(competitive, input); score.Qualifies {
-					if len(eventBadges) < 2 {
-						eventBadges = append(eventBadges, "🔥 "+stored.Name)
+				if len(eventBadges) < 2 {
+					eventBadges = append(eventBadges, "🔥 "+stored.Name)
+				}
+				eventID := stored.ID
+				eventScores = append(eventScores, func(ctx context.Context) {
+					if _, scoreErr := p.events.ScoreKill(ctx, eventID, killID, score.PlayerID, score.FactionID, score.Points, score.BestDistance, score.BestStreak); scoreErr != nil {
+						slog.Warn("component=events", "msg", "event scoring failed", "event_id", eventID, "err", scoreErr.Error())
 					}
-					if _, scoreErr := p.events.ScoreKill(ctx, stored.ID, killID, score.PlayerID, score.FactionID, score.Points, score.BestDistance, score.BestStreak); scoreErr != nil {
-						slog.Warn("component=events", "msg", "event scoring failed", "event_id", stored.ID, "err", scoreErr.Error())
-					}
+				})
+			}
+		})
+	}
+	// The bounty chain keeps its order: the supporter badge read, this kill's claim, the
+	// killer's own streak bounty, then whether the killer is wanted (which that bounty may
+	// have just made true).
+	reads = append(reads, func() {
+		if p.vip != nil && ev != nil && record.KillerPlayerID > 0 && record.KillerPlayerID != record.VictimPlayerID {
+			if badge, vipErr := p.vip.ActiveBadge(ctx, record.GuildID, record.KillerPlayerID); vipErr == nil {
+				supporterBadge = badge
+			}
+		}
+		// Bounty claim. This runs only for a durably persisted, non-duplicate PvP kill
+		// (ProcessPersistedKill is the persisted-kill hook), never from a raw ADM line.
+		// Suicides, environment and ambiguous deaths are never kills and never reach
+		// here; self-kills and same-faction (team) kills do not claim.
+		if p.bountySvc != nil && record.VictimPlayerID > 0 && record.KillerPlayerID > 0 && record.KillerPlayerID != record.VictimPlayerID && (record.KillerFactionID == nil || record.VictimFactionID == nil || *record.KillerFactionID != *record.VictimFactionID) {
+			in := bounties.KillInput{
+				GuildID: record.GuildID, ServerID: record.ServerID,
+				VictimPlayerID: record.VictimPlayerID, KillerPlayerID: record.KillerPlayerID,
+				KillID: killID, SeasonID: valueOfID(record.SeasonID), At: at,
+				Weapon: record.WeaponDisplay, Distance: record.Distance,
+			}
+			if ev != nil {
+				if ev.Killer != nil {
+					in.HunterName = ev.Killer.Name
+				}
+				if ev.Victim != nil {
+					in.TargetName = ev.Victim.Name
+				}
+			}
+			// Every eligible active bounty on the victim (this server's plus guild-wide)
+			// is claimed atomically in one transaction; the notification runs after the
+			// commit and cannot undo it.
+			result, claimErr := p.bountySvc.ClaimForKill(ctx, in)
+			if claimErr != nil {
+				slog.Warn("component=bounty", "msg", "bounty claim failed", "err", claimErr.Error())
+			} else if result.Count > 0 && ev != nil {
+				bountyClaimed = true
+				bountyPoints = result.Total
+			}
+		}
+		if p.bountySvc != nil {
+			killerName := ""
+			if ev != nil && ev.Killer != nil {
+				killerName = ev.Killer.Name
+			}
+			p.bountySvc.NoteStreak(ctx, bounties.StreakInput{GuildID: record.GuildID, ServerID: record.ServerID, PlayerID: record.KillerPlayerID, SeasonID: valueOfID(record.SeasonID), Streak: streak.Current, At: at, PlayerName: killerName})
+			if p.bounties != nil && ev != nil && record.KillerPlayerID > 0 {
+				if wanted, wantedErr := p.bounties.HasActiveAt(ctx, record.GuildID, record.ServerID, record.KillerPlayerID, at); wantedErr == nil && wanted {
+					bountyTarget = true
 				}
 			}
 		}
-		if ev != nil {
+	})
+	runSideBySide(reads...)
+
+	if ev != nil {
+		ev.KillerStats, ev.VictimStats = killerStats, victimStats
+		ev.Encounters = encounters
+		if p.events != nil {
 			ev.ActiveEventBadges = eventBadges
 		}
-	}
-	if p.vip != nil && ev != nil && record.KillerPlayerID > 0 && record.KillerPlayerID != record.VictimPlayerID {
-		if badge, vipErr := p.vip.ActiveBadge(ctx, record.GuildID, record.KillerPlayerID); vipErr == nil {
-			ev.SupporterBadge = badge
+		if supporterBadge != "" {
+			ev.SupporterBadge = supporterBadge
 		}
-	}
-	if ev != nil && record.WarID != nil {
-		ev.WarBadge = "⚔️ FACTION WAR"
+		if record.WarID != nil {
+			ev.WarBadge = "⚔️ FACTION WAR"
+		}
+		if bountyClaimed {
+			ev.BountyClaimed = true
+			ev.BountyPoints = bountyPoints
+		}
+		if bountyTarget {
+			ev.BountyTarget = true
+		}
 	}
 
-	// Bounty claim. This runs only for a durably persisted, non-duplicate PvP kill
-	// (ProcessPersistedKill is the persisted-kill hook), never from a raw ADM line.
-	// Suicides, environment and ambiguous deaths are never kills and never reach
-	// here; self-kills and same-faction (team) kills do not claim.
-	if p.bountySvc != nil && record.VictimPlayerID > 0 && record.KillerPlayerID > 0 && record.KillerPlayerID != record.VictimPlayerID && (record.KillerFactionID == nil || record.VictimFactionID == nil || *record.KillerFactionID != *record.VictimFactionID) {
-		in := bounties.KillInput{
-			GuildID: record.GuildID, ServerID: record.ServerID,
-			VictimPlayerID: record.VictimPlayerID, KillerPlayerID: record.KillerPlayerID,
-			KillID: killID, SeasonID: valueOfID(record.SeasonID), At: at,
-			Weapon: record.WeaponDisplay, Distance: record.Distance,
-		}
-		if ev != nil {
-			if ev.Killer != nil {
-				in.HunterName = ev.Killer.Name
-			}
-			if ev.Victim != nil {
-				in.TargetName = ev.Victim.Name
+	return func(ctx context.Context) {
+		afterCard(ctx)
+		if p.anomalies != nil && record.KillerPlayerID > 0 && record.VictimPlayerID > 0 && record.KillerPlayerID != record.VictimPlayerID {
+			if suspicious, anomalyErr := p.anomalies.ObservePair(ctx, record.GuildID, valueOfID(record.SeasonID), record.KillerPlayerID, record.VictimPlayerID, at); anomalyErr == nil && suspicious {
+				slog.Debug("component=anti-farming", "msg", "repeated pair activity observed", "killer_player_id", record.KillerPlayerID, "victim_player_id", record.VictimPlayerID)
 			}
 		}
-		// Every eligible active bounty on the victim (this server's plus guild-wide)
-		// is claimed atomically in one transaction; the notification runs after the
-		// commit and cannot undo it.
-		result, claimErr := p.bountySvc.ClaimForKill(ctx, in)
-		if claimErr != nil {
-			slog.Warn("component=bounty", "msg", "bounty claim failed", "err", claimErr.Error())
-		} else if result.Count > 0 && ev != nil {
-			ev.BountyClaimed = true
-			ev.BountyPoints = result.Total
+		for _, score := range eventScores {
+			score(ctx)
 		}
-	}
-	if p.bountySvc != nil {
-		killerName := ""
-		if ev != nil && ev.Killer != nil {
-			killerName = ev.Killer.Name
+		if p.panelDirty != nil {
+			p.panelDirty()
 		}
-		p.bountySvc.NoteStreak(ctx, bounties.StreakInput{GuildID: record.GuildID, ServerID: record.ServerID, PlayerID: record.KillerPlayerID, SeasonID: valueOfID(record.SeasonID), Streak: streak.Current, At: at, PlayerName: killerName})
-		if p.bounties != nil && ev != nil && record.KillerPlayerID > 0 {
-			if wanted, wantedErr := p.bounties.HasActiveAt(ctx, record.GuildID, record.ServerID, record.KillerPlayerID, at); wantedErr == nil && wanted {
-				ev.BountyTarget = true
-			}
-		}
-	}
-	if p.panelDirty != nil {
-		p.panelDirty()
 	}
 }
 
-// ProcessPersistedDeath fetches the deceased player's stats for the death
-// embed. Best-effort: on failure ev.PlayerStats stays nil and the embed
-// renders without that section (nil-checked in BuildDeathEmbed).
-func (p *persistenceStoreAdapter) ProcessPersistedDeath(ctx context.Context, record repository.DeathRecord, ev *killfeed.Event) {
-	defer p.factionStats.NotifyCombat(record.GuildID, record.ServerID, 0) // a death changes deaths/K-D/streaks only
-	p.recordLifeEnd(ctx, record, ev)
-	p.tournamentDeath(ctx, record, ev)
-	if p.stats == nil || ev == nil || record.PlayerID == 0 {
+// runSideBySide runs fns concurrently and returns when all are done. Each fn is a chain of
+// database calls that none of the others depends on; a panic in one is logged and never takes
+// the kill pipeline down.
+func runSideBySide(fns ...func()) {
+	if len(fns) == 1 {
+		fns[0]()
 		return
+	}
+	var wg sync.WaitGroup
+	for _, fn := range fns {
+		wg.Add(1)
+		go func(fn func()) {
+			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("component=killfeed", "msg", "kill enrichment panic recovered", "panic", fmt.Sprint(r))
+				}
+			}()
+			fn()
+		}(fn)
+	}
+	wg.Wait()
+}
+
+// ProcessPersistedDeath is ProcessPersistedDeathStaged followed at once by its finish.
+func (p *persistenceStoreAdapter) ProcessPersistedDeath(ctx context.Context, record repository.DeathRecord, ev *killfeed.Event) {
+	if finish := p.ProcessPersistedDeathStaged(ctx, record, ev); finish != nil {
+		finish(ctx)
+	}
+}
+
+// ProcessPersistedDeathStaged fetches the deceased player's stats for the death
+// embed (the only thing the card depends on). Best-effort: on failure ev.PlayerStats stays nil
+// and the embed renders without that section (nil-checked in BuildDeathEmbed). finish closes
+// the player's life and scores the live tournament, in log order, after the card is queued.
+func (p *persistenceStoreAdapter) ProcessPersistedDeathStaged(ctx context.Context, record repository.DeathRecord, ev *killfeed.Event) (finish func(context.Context)) {
+	finish = func(ctx context.Context) {
+		defer p.factionStats.NotifyCombat(record.GuildID, record.ServerID, 0) // a death changes deaths/K-D/streaks only
+		p.recordLifeEnd(ctx, record, ev)
+		p.tournamentDeath(ctx, record, ev)
+	}
+	if p.stats == nil || ev == nil || record.PlayerID == 0 {
+		return finish
 	}
 	prof, err := p.stats.GetPlayerProfileByPlayerID(ctx, record.GuildID, record.PlayerID)
 	if err != nil || prof == nil {
-		return
+		return finish
 	}
 	ev.PlayerStats = combatRecordOf(prof)
+	return finish
 }
 
 // combatRecordOf is a profile as the kill and death cards carry it, with the deaths split into

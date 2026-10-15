@@ -212,24 +212,39 @@ func (f *RotatingFeed) restore() {
 		slog.Error("component=discord", "msg", "feed cards queued before restart were not replayed", "route", f.route, "feed", f.journalKey, "too_old", len(stale), "unreadable", len(unreadable), "replay_window", feedReplayWindow.String())
 	}
 
-	// Cards still shown, grouped for deletion by channel.
+	// Cards still shown, as messages (the rows of a grouped message share
+	// its id and are consecutive in queue order), grouped for deletion by
+	// channel.
 	remove := map[string][]postedCard{}
 	var window []postedCard
 	lastChannel := ""
 	if len(shown) > 0 {
 		lastChannel = shown[len(shown)-1].ChannelID
 	}
+	type shownMessage struct {
+		postedCard
+		channelID string
+	}
+	var messages []shownMessage
 	for _, c := range shown {
-		card := postedCard{id: c.MessageID, postedAt: c.PostedAt}
-		if f.mode != FeedModeImmediate || c.ChannelID != lastChannel || now.Sub(c.PostedAt) >= f.interval {
-			remove[c.ChannelID] = append(remove[c.ChannelID], card)
+		if n := len(messages); n > 0 && messages[n-1].id == c.MessageID {
+			messages[n-1].cards++
 			continue
 		}
-		window = append(window, card)
+		messages = append(messages, shownMessage{postedCard{id: c.MessageID, postedAt: c.PostedAt, cards: 1}, c.ChannelID})
 	}
-	if over := len(window) - f.maxItems; over > 0 {
-		remove[lastChannel] = append(remove[lastChannel], window[:over]...)
-		window = window[over:]
+	for _, m := range messages {
+		if f.mode != FeedModeImmediate || m.channelID != lastChannel || now.Sub(m.postedAt) >= f.interval {
+			remove[m.channelID] = append(remove[m.channelID], m.postedCard)
+			continue
+		}
+		window = append(window, m.postedCard)
+	}
+	// The window keeps at most maxItems cards, in whole messages, newest.
+	for over := windowCards(window) - f.maxItems; over > 0 && len(window) > 0; {
+		remove[lastChannel] = append(remove[lastChannel], window[0])
+		over -= window[0].count()
+		window = window[1:]
 	}
 
 	f.mu.Lock()
@@ -265,5 +280,5 @@ func (f *RotatingFeed) restore() {
 		Deliveries.recordReplayed(f.route, len(queued))
 	}
 	slog.Info("component=discord", "msg", "feed journal restored", "route", f.route, "feed", f.journalKey, "mode", f.mode,
-		"replayed", len(queued), "window", len(window), "removed_shown", len(shown)-len(window))
+		"replayed", len(queued), "window", windowCards(window), "removed_shown", len(shown)-windowCards(window))
 }

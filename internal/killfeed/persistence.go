@@ -48,12 +48,29 @@ type KillPostProcessor interface {
 	ProcessPersistedKill(ctx context.Context, killID int64, record repository.KillRecord, event *Event)
 }
 
+// StagedKillPostProcessor is the optional two-stage form of KillPostProcessor. The queue calls
+// ProcessPersistedKillStaged, which does only what the kill card needs (and the writes the next
+// event's classification depends on), then publishes the card, and only then calls finish for
+// the writes nothing on the card depends on (lives, tournaments, anomaly checks, event scores).
+// finish may be nil. Both run on the queue's own goroutine, in log order, before the engine is
+// answered, so every write still happens in the order the log reported it and EnqueueAndWait
+// keeps its meaning; the card just enters the feed's queue before those writes instead of after.
+type StagedKillPostProcessor interface {
+	ProcessPersistedKillStaged(ctx context.Context, killID int64, record repository.KillRecord, event *Event) (finish func(context.Context))
+}
+
 // DeathPostProcessor enriches a persisted death/suicide's Event (e.g. with
 // player stats for the death embed) before onDeathPersisted fires. Unlike
 // KillPostProcessor, InsertDeath returns no ID, so there's nothing to pass
 // beyond the record itself.
 type DeathPostProcessor interface {
 	ProcessPersistedDeath(ctx context.Context, record repository.DeathRecord, event *Event)
+}
+
+// StagedDeathPostProcessor is the two-stage form of DeathPostProcessor (see
+// StagedKillPostProcessor).
+type StagedDeathPostProcessor interface {
+	ProcessPersistedDeathStaged(ctx context.Context, record repository.DeathRecord, event *Event) (finish func(context.Context))
 }
 type ActivityRecorder interface {
 	RecordConnect(context.Context, int64, int64, int64, time.Time) error
@@ -431,8 +448,13 @@ func (q *PersistenceQueue) persistOne(ctx context.Context, ev *Event) error {
 			slog.Warn("component=killfeed", "msg", "kill persistence failed; not published", "err", err.Error())
 			return err
 		}
+		var finish func(context.Context)
 		if q.postProcessor != nil && killID > 0 {
-			q.postProcessor.ProcessPersistedKill(ctx, killID, rec, ev)
+			if staged, ok := q.postProcessor.(StagedKillPostProcessor); ok {
+				finish = staged.ProcessPersistedKillStaged(ctx, killID, rec, ev)
+			} else {
+				q.postProcessor.ProcessPersistedKill(ctx, killID, rec, ev)
+			}
 		}
 		// Publish only after a successful, non-duplicate durable insert.
 		q.mu.Lock()
@@ -444,6 +466,11 @@ func (q *PersistenceQueue) persistOne(ctx context.Context, ev *Event) error {
 		q.mu.Lock()
 		q.persisted++
 		q.mu.Unlock()
+		// The card is queued; the writes nothing on it depends on come last,
+		// still before the engine is answered and the next event is taken.
+		if finish != nil {
+			finish(ctx)
+		}
 		return nil
 	case EventPlayerDeath, EventSuicideAction:
 		playerID, err := q.upsertPlayer(ctx, ev.Player)
@@ -480,14 +507,22 @@ func (q *PersistenceQueue) persistOne(ctx context.Context, ev *Event) error {
 			// Durable dedupe: already persisted — do NOT publish again.
 			slog.Debug("component=killfeed", "msg", "death already persisted; skipping publish", "fingerprint", rec.Fingerprint)
 		} else {
+			var finish func(context.Context)
 			if q.deathProcessor != nil {
-				q.deathProcessor.ProcessPersistedDeath(ctx, rec, ev)
+				if staged, ok := q.deathProcessor.(StagedDeathPostProcessor); ok {
+					finish = staged.ProcessPersistedDeathStaged(ctx, rec, ev)
+				} else {
+					q.deathProcessor.ProcessPersistedDeath(ctx, rec, ev)
+				}
 			}
 			q.mu.Lock()
 			hook := q.onDeathPersisted
 			q.mu.Unlock()
 			if hook != nil {
 				hook(ev)
+			}
+			if finish != nil {
+				finish(ctx)
 			}
 		}
 	default:
