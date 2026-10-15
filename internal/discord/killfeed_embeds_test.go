@@ -395,11 +395,11 @@ func TestEmbedTimestampPrefersEventTimeOverReadTime(t *testing.T) {
 	if got := BuildDeathEmbed(death).Timestamp; got != "2026-09-08T16:45:00.000Z" {
 		t.Fatalf("death card without an event time must show the read time: %q", got)
 	}
-	// Nothing known at all (fixtures, legacy callers): still stamped, with now.
-	before := time.Now().UTC().Add(-time.Second).Format("2006-01-02T15:04:05.000Z")
+	// Nothing known at all (fixtures, legacy callers): no timestamp, as before this feature - a
+	// card must not carry a made-up "now", and two cards built from the same event must be equal.
 	bare := BuildKillEmbed(&killfeed.Event{Type: killfeed.EventPlayerKill, TimeOfDay: "16:40:12", Victim: &killfeed.PlayerRef{Name: "V"}, Killer: &killfeed.PlayerRef{Name: "K"}})
-	if bare.Timestamp == "" || bare.Timestamp < before {
-		t.Fatalf("expected a current timestamp when neither event nor read time is known, got %q", bare.Timestamp)
+	if bare.Timestamp != "" {
+		t.Fatalf("expected no timestamp when neither event nor read time is known, got %q", bare.Timestamp)
 	}
 }
 

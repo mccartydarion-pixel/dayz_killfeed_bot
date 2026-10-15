@@ -76,7 +76,7 @@ func killfeedVars(ev *killfeed.Event, serverName string) map[string]string {
 	// {{timestamp}} is documented as the publish time; {{time_ago}} is the kill's own time when the
 	// event carries one, else when it was read (Event.DisplayTime).
 	m := map[string]string{"timestamp": stampVar(time.Now())}
-	m["time_ago"] = presentation.Timestamp(ev.DisplayTime(), 'R')
+	m["time_ago"] = presentation.Timestamp(ev.DisplayTimeOrNow(), 'R')
 	if ev.Killer != nil {
 		m["killer"] = nameVar(ev.Killer.Name)
 	} else {

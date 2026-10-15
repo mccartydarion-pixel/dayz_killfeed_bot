@@ -198,15 +198,25 @@ type Event struct {
 }
 
 // DisplayTime is the time a card or variable should show for ev: the event's own time when it is
-// known, otherwise when Champion read the line (the previous behaviour), otherwise now.
+// known, otherwise when Champion read the line. Zero when neither is known, so a card built from
+// such an event carries no timestamp (as before this feature) rather than a made-up "now".
 func (ev *Event) DisplayTime() time.Time {
 	if ev == nil {
-		return time.Now().UTC()
+		return time.Time{}
 	}
 	for _, t := range []time.Time{ev.Timestamp, ev.ReadAt, ev.DetectedAt} {
 		if !t.IsZero() {
 			return t.UTC()
 		}
+	}
+	return time.Time{}
+}
+
+// DisplayTimeOrNow is DisplayTime, or now when no time is known - for relative-time variables and
+// custom templates, where a zero time would render nonsense.
+func (ev *Event) DisplayTimeOrNow() time.Time {
+	if at := ev.DisplayTime(); !at.IsZero() {
+		return at
 	}
 	return time.Now().UTC()
 }

@@ -76,7 +76,7 @@ func (p *KillfeedPublisher) Card(ev *killfeed.Event) *discordgo.MessageEmbed {
 	def := BuildKillEmbed(ev)
 	return customEmbedAt(p.custom, p.routeGuildID, p.routeServerID, routeKeyKillfeed, def, func() map[string]string {
 		return killfeedVars(ev, p.currentServerName())
-	}, ev.DisplayTime())
+	}, ev.DisplayTimeOrNow())
 }
 
 // RouteResolver resolves a feature route key to the Discord channel an
