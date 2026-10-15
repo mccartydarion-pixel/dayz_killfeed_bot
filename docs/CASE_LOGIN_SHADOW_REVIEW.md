@@ -63,3 +63,7 @@ If the criteria are not met, adjust the parameters (`LoginReconnectGap`, `LoginB
 ## Review buttons
 
 Each flagged finding on the dashboard card has **False alarm** and **Looks suspicious** buttons (optional short note). Verdicts are stored in `case_shadow_verdicts` (migration `0085_case_shadow_verdicts`), one per finding (changing your mind replaces it), and the card shows the score: reviewed, false alarms and percentage. API: `GET/PUT …/admin/case/shadow-verdicts` (`PLAYER_LOCATION_VIEW` for Suspicious Logins, `UAV_MANAGE` for Base Boosting), audited `CASE_SHADOW_VERDICT_SAVED`. Verdicts never release a detector, send an alert or act on a player.
+
+## Review list
+
+So staff don't have to open players one by one, **Dashboard → Anti-cheat → Players** (no player picked) shows a **Login check review** list: the same read-only shadow run for everyone who connected in the last 7 days (up to 60 players, 200 flags), newest flag first, each with the review buttons above and the score. API: `GET …/admin/case/login-review?days=1..14` (`PLAYER_LOCATION_VIEW`), audited `CASE_LOGIN_REVIEW_VIEWED`. The response lists `playersChecked`, a count per run status, and `paused` with reasons when the live game-log feed isn't healthy at that moment — the run then can't draw conclusions, so try again once the feed is back. Like the card, it sends nothing and never acts on a player.
