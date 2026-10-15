@@ -401,15 +401,21 @@ type Engine struct {
 	deltaBytesReceived   int64
 	fullReadBytesAvoided int64
 
-	// Latency measurement only (feed_latency.go). batchReadAt is when the bytes now being parsed
-	// were downloaded; utcOffset reports the server clock's offset from UTC in minutes, when known.
+	// batchReadAt is when the bytes now being parsed were downloaded (latency measurement,
+	// feed_latency.go); utcOffset reports the server clock's offset from UTC in minutes, when
+	// known - it is what turns a line's clock into its real UTC time (event_time.go).
 	batchReadAt time.Time
 	utcOffset   func() (minutes int, known bool)
+	// lastEventTimeWarn rate-limits the implausible-event-time warning (event_time.go).
+	lastEventTimeWarn time.Time
+	// batchPersisted counts the events of the batch read at batchReadAt that persistence
+	// acknowledged (BatchTracker: one batch_processed line per download).
+	batchPersisted int
 }
 
-// SetServerUTCOffset attaches the source of the game server clock's UTC offset, used only to
-// express a line's own time in UTC for latency measurement. Optional: without it (or while it
-// reports unknown) no line time is converted.
+// SetServerUTCOffset attaches the source of the game server clock's UTC offset, used to express a
+// line's own time in UTC (Event.Timestamp, and the latency measurement's LoggedAt). Optional:
+// without it (or while it reports unknown) no line time is converted.
 func (e *Engine) SetServerUTCOffset(fn func() (minutes int, known bool)) {
 	if e != nil {
 		e.utcOffset = fn
@@ -418,18 +424,29 @@ func (e *Engine) SetServerUTCOffset(fn func() (minutes int, known bool)) {
 
 // loggedAtUTC converts a line's server-local time to UTC, or returns zero when the offset is unknown.
 func (e *Engine) loggedAtUTC(local *time.Time) time.Time {
-	if e.utcOffset == nil || local == nil {
+	if e.utcOffset == nil {
 		return time.Time{}
 	}
 	minutes, known := e.utcOffset()
-	if !known {
-		return time.Time{}
-	}
-	return local.Add(-time.Duration(minutes) * time.Minute)
+	return lineTimeUTC(local, minutes, known)
 }
 
-// markBatchRead notes that the bytes about to be parsed have just been downloaded.
-func (e *Engine) markBatchRead() { e.batchReadAt = time.Now() }
+// markBatchRead notes that the bytes about to be parsed have just been downloaded. A batch still
+// open from an earlier read in the same cycle is finished first.
+func (e *Engine) markBatchRead() {
+	e.finishBatch()
+	e.batchReadAt = time.Now()
+}
+
+// finishBatch hands the batch read at batchReadAt to the BatchTracker: every event of it that
+// persistence acknowledged has its card queued by now (the persistence queue answers only after
+// the publish hook). Measurement only.
+func (e *Engine) finishBatch() {
+	if e.batchPersisted > 0 && !e.batchReadAt.IsZero() {
+		Batches.BatchFinished(e.serverID, e.batchReadAt, e.batchPersisted)
+	}
+	e.batchPersisted = 0
+}
 
 // StartAtLogTail marks this engine to begin at the end of the log on its first
 // selection (safe first-connect behavior), instead of replaying the file's
@@ -683,7 +700,9 @@ func (e *Engine) PollOnce(ctx context.Context) error {
 	if e == nil || e.client == nil {
 		return nil
 	}
+	e.finishBatch()
 	e.batchReadAt = time.Time{} // set again by whichever read this cycle makes
+	defer e.finishBatch()
 
 	switch e.state {
 	case StateDiscovery, StateLogSelected:

@@ -32,7 +32,8 @@ import (
 
 type fakeMessage struct {
 	ID, Nonce string
-	Embed     discordgo.MessageEmbed
+	Embed     discordgo.MessageEmbed   // the first card
+	Embeds    []discordgo.MessageEmbed // every card of the message, in order
 }
 
 type discordFault struct {
@@ -104,13 +105,20 @@ func (d *discordEmu) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		// enforce_nonce: a repeated nonce returns the existing message.
 		if id, ok := d.nonces[ch+"/"+body.Nonce]; ok && body.EnforceNonce && body.Nonce != "" {
+			// Like Discord, the existing message comes back with its own embeds.
+			existing := discordgo.Message{ID: id, ChannelID: ch}
+			for _, m := range d.channels[ch] {
+				if m.ID == id {
+					existing.Embeds = embedPointers(m.Embeds)
+				}
+			}
 			d.mu.Unlock()
-			_ = json.NewEncoder(w).Encode(discordgo.Message{ID: id, ChannelID: ch})
+			_ = json.NewEncoder(w).Encode(existing)
 			return
 		}
 		d.next++
 		id := strconv.Itoa(d.next)
-		d.channels[ch] = append(d.channels[ch], fakeMessage{ID: id, Nonce: body.Nonce, Embed: body.Embeds[0]})
+		d.channels[ch] = append(d.channels[ch], fakeMessage{ID: id, Nonce: body.Nonce, Embed: body.Embeds[0], Embeds: body.Embeds})
 		d.creates[ch]++
 		if n := len(d.channels[ch]); n > d.peak[ch] {
 			d.peak[ch] = n
@@ -138,7 +146,7 @@ func (d *discordEmu) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(discordgo.Message{ID: id, ChannelID: ch})
+		_ = json.NewEncoder(w).Encode(discordgo.Message{ID: id, ChannelID: ch, Embeds: embedPointers(body.Embeds)})
 	case r.Method == http.MethodPost && len(parts) == 3 && parts[2] == "bulk-delete":
 		var body struct {
 			Messages []string `json:"messages"`
@@ -183,12 +191,40 @@ func (d *discordEmu) remove(ch string, ids ...string) {
 	d.channels[ch] = keep
 }
 
+// titles lists the cards visible in ch, oldest first (a grouped message
+// contributes every one of its cards).
 func (d *discordEmu) titles(ch string) []string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	var out []string
 	for _, m := range d.channels[ch] {
-		out = append(out, m.Embed.Title)
+		for _, e := range m.Embeds {
+			out = append(out, e.Title)
+		}
+	}
+	return out
+}
+
+// messages lists the visible messages of ch as their card titles, oldest first.
+func (d *discordEmu) messages(ch string) [][]string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var out [][]string
+	for _, m := range d.channels[ch] {
+		var cards []string
+		for _, e := range m.Embeds {
+			cards = append(cards, e.Title)
+		}
+		out = append(out, cards)
+	}
+	return out
+}
+
+func embedPointers(embeds []discordgo.MessageEmbed) []*discordgo.MessageEmbed {
+	out := make([]*discordgo.MessageEmbed, len(embeds))
+	for i := range embeds {
+		e := embeds[i]
+		out[i] = &e
 	}
 	return out
 }

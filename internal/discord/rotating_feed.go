@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/killfeed"
@@ -50,6 +51,21 @@ var (
 // maxCleanupAttempts bounds retries of one failed card deletion.
 const maxCleanupAttempts = 5
 
+// Immediate-mode grouping. When more than one card is waiting, they go out
+// together in one Discord message, newest last, within Discord's limits of 10
+// embeds per message and 6000 characters across all of a message's embeds
+// (feedMaxMessageChars keeps a margin under that). A single waiting card is
+// posted alone at once; only when a burst is already in progress (two or more
+// cards waiting, fewer than a full message) does the feed wait feedCoalesceWindow
+// for the cards right behind them, so a download of hundreds of kills becomes
+// tens of messages instead of hundreds of rate-limited posts.
+const (
+	feedMaxEmbedsPerMessage = 10
+	feedMaxMessageChars     = 5500
+)
+
+var feedCoalesceWindow = 150 * time.Millisecond
+
 // feedItem is one queued card with the timestamps the latency ledger needs.
 type feedItem struct {
 	embed      *discordgo.MessageEmbed
@@ -60,15 +76,38 @@ type feedItem struct {
 	nonce string
 	// journaled is set once the card is in the feed journal (immediate mode).
 	journaled bool
+	// solo keeps the card out of grouped messages: set when a grouped message
+	// was rejected, so each of its cards is tried on its own and only a card
+	// Discord rejects by itself is dropped.
+	solo bool
 	// timing is the card's stage timestamps for the latency statistics
 	// (killfeed.FeedLatency). Measurement only.
 	timing killfeed.FeedTiming
 }
 
-// postedCard is a card currently shown in the channel (immediate mode).
+// postedCard is a message currently shown in the channel (immediate mode):
+// one card, or a group of cards posted together. cards is how many it holds
+// (0 is read as 1, for cards restored from older journal rows).
 type postedCard struct {
 	id       string
 	postedAt time.Time
+	cards    int
+}
+
+func (c postedCard) count() int {
+	if c.cards <= 0 {
+		return 1
+	}
+	return c.cards
+}
+
+// windowCards is the number of cards the window's messages hold.
+func windowCards(window []postedCard) int {
+	n := 0
+	for _, c := range window {
+		n += c.count()
+	}
+	return n
 }
 
 // orphanCard is a card whose deletion failed; it is retried, never forgotten.
@@ -88,14 +127,22 @@ type orphanCard struct {
 // Immediate mode (SetMode(FeedModeImmediate)) keeps the same presentation -
 // at most maxItems cards, none older than about one interval, the channel
 // empty after a quiet interval - but posts each card as soon as it is queued
-// and removes the oldest card when the window is full, so a kill reaches
-// Discord in seconds instead of waiting up to a whole interval.
+// and removes the oldest cards when the window is full, so a kill reaches
+// Discord in seconds instead of waiting up to a whole interval. Cards that are
+// waiting together are posted together, in one message (up to
+// feedMaxEmbedsPerMessage of them, feedMaxMessageChars in all), still in
+// order; a single waiting card is posted alone at once. The window counts
+// cards, not messages, and removes whole messages: with maxItems cards shown
+// and a group of n arriving, the oldest messages holding at least n cards are
+// deleted first.
 //
-// Delivery guarantees (both modes): cards are posted in queue order, one at a
-// time, from this feed's own goroutine (never the ADM pipeline). A transient
-// failure stops the batch and keeps the failed card and everything after it,
-// in order, for the next attempt. Each card carries a Discord nonce, so a
-// retried create never produces a second card. A card is counted delivered
+// Delivery guarantees (both modes): cards are posted in queue order, from
+// this feed's own goroutine (never the ADM pipeline). A transient failure
+// stops the batch and keeps the failed card and everything after it, in
+// order, for the next attempt. Each message carries a Discord nonce (the first
+// card's), so a retried create never produces a second message - and a
+// retried group returns the message with the cards it already holds, which
+// the feed then marks posted without re-sending. A card is counted delivered
 // only after Discord confirms it. In immediate mode with a journal
 // (SetJournal) every card is also recorded in the database before it is
 // posted, so a crash does not lose it: the next start replays it (see
@@ -111,6 +158,9 @@ type RotatingFeed struct {
 	maxItems    int
 	route       string // delivery-ledger route name (KILLFEED, DEATH_FEED)
 	mode        string
+	// maxCardsPerMessage caps an immediate-mode grouped message (default
+	// feedMaxEmbedsPerMessage; 1 posts every card on its own).
+	maxCardsPerMessage int
 
 	mu            sync.Mutex
 	pending       []feedItem
@@ -164,6 +214,22 @@ func (f *RotatingFeed) SetRoute(route string) {
 	f.route = route
 }
 
+// SetMaxCardsPerMessage caps how many waiting cards an immediate-mode message
+// may carry (1..feedMaxEmbedsPerMessage; 1 disables grouping). Must be called
+// before Run.
+func (f *RotatingFeed) SetMaxCardsPerMessage(n int) {
+	if f == nil {
+		return
+	}
+	if n < 1 {
+		n = 1
+	}
+	if n > feedMaxEmbedsPerMessage {
+		n = feedMaxEmbedsPerMessage
+	}
+	f.maxCardsPerMessage = n
+}
+
 // SetMode selects FeedModeRotating (default) or FeedModeImmediate. Must be
 // called before Run.
 func (f *RotatingFeed) SetMode(mode string) {
@@ -190,7 +256,7 @@ func (f *RotatingFeed) Mode() string {
 // same type serves both channels.
 func NewRotatingFeed(api rotatingFeedAPI, store SetupStore, guildID string, channelIDFn func(*GuildSetup) string, interval time.Duration, maxItems int) *RotatingFeed {
 	return &RotatingFeed{api: api, store: store, guildID: guildID, channelIDFn: channelIDFn, interval: interval, maxItems: maxItems,
-		route: "KILLFEED", mode: FeedModeRotating, wake: make(chan struct{}, 1), done: make(chan struct{})}
+		route: "KILLFEED", mode: FeedModeRotating, maxCardsPerMessage: feedMaxEmbedsPerMessage, wake: make(chan struct{}, 1), done: make(chan struct{})}
 }
 
 // Enqueue appends an embed to the current cycle's pending batch. Safe to
@@ -213,9 +279,11 @@ func (f *RotatingFeed) EnqueueTimed(embed *discordgo.MessageEmbed, timing killfe
 	if f == nil || embed == nil {
 		return
 	}
+	now := time.Now()
 	f.mu.Lock()
-	f.pending = append(f.pending, feedItem{embed: embed, detectedAt: timing.ParsedAt, enqueuedAt: time.Now(), nonce: newCardNonce(), timing: timing})
+	f.pending = append(f.pending, feedItem{embed: embed, detectedAt: timing.ParsedAt, enqueuedAt: now, nonce: newCardNonce(), timing: timing})
 	f.mu.Unlock()
+	killfeed.Batches.CardQueued(timing, now)
 	if f.mode == FeedModeImmediate {
 		f.poke()
 	}
@@ -306,29 +374,50 @@ func (f *RotatingFeed) channelID() string {
 }
 
 func (f *RotatingFeed) send(channelID string, it feedItem) (*discordgo.Message, error) {
+	return f.sendGroup(channelID, []feedItem{it})
+}
+
+// sendGroup posts items together as one message, under the first item's
+// nonce, and records every item as delivered when Discord accepts it. The
+// caller checks the returned message's embed count: a message that already
+// existed (nonce) holds the cards of the attempt that created it.
+func (f *RotatingFeed) sendGroup(channelID string, items []feedItem) (*discordgo.Message, error) {
+	embeds := make([]*discordgo.MessageEmbed, len(items))
+	for i, it := range items {
+		embeds[i] = it.embed
+	}
 	data := &discordgo.MessageSend{
-		Embeds: []*discordgo.MessageEmbed{it.embed},
+		Embeds: embeds,
 		AllowedMentions: &discordgo.MessageAllowedMentions{
 			Parse: []discordgo.AllowedMentionType{},
 		},
 	}
+	nonce := items[0].nonce
 	var msg *discordgo.Message
 	var err error
 	callStart := time.Now()
-	if ns, ok := f.api.(nonceSender); ok && it.nonce != "" {
+	if ns, ok := f.api.(nonceSender); ok && nonce != "" {
 		// Every attempt (deliver's in-call retries and later re-queues)
 		// reuses the card's nonce: Discord returns the existing message for a
 		// create that already succeeded.
 		err = deliver(f.route, channelID, func() error {
-			m, e := ns.ChannelMessageSendNonce(channelID, data, it.nonce)
+			m, e := ns.ChannelMessageSendNonce(channelID, data, nonce)
 			msg = m
 			return e
 		})
 	} else {
 		msg, err = deliverMessage(f.api, f.route, channelID, data)
 	}
-	if err == nil {
-		now := time.Now()
+	if err != nil {
+		return msg, err
+	}
+	now := time.Now()
+	oldest := items[0].enqueuedAt
+	for i, it := range items {
+		if i > 0 {
+			// deliver counted the request; the ledger counts cards delivered.
+			Deliveries.recordSuccess(f.route, channelID)
+		}
 		Deliveries.recordLatency(f.route, it.detectedAt, it.enqueuedAt, now)
 		timing := it.timing
 		if timing.ParsedAt.IsZero() {
@@ -338,19 +427,23 @@ func (f *RotatingFeed) send(channelID string, it feedItem) (*discordgo.Message, 
 			timing.ServerID = f.latencyServerID
 		}
 		killfeed.FeedLatency.Record(f.route, timing, it.enqueuedAt, now)
-		if f.mode == FeedModeImmediate {
-			// One line per card so a staging run can compute p50/p95/p99 per
-			// stage from the logs (the ledger keeps only avg/max/last).
-			detectMs := int64(-1)
-			if !it.detectedAt.IsZero() {
-				detectMs = now.Sub(it.detectedAt).Milliseconds()
-			}
-			slog.Info("component=discord", "msg", "feed card delivered", "route", f.route,
-				"queue_ms", callStart.Sub(it.enqueuedAt).Milliseconds(), "discord_ms", now.Sub(callStart).Milliseconds(),
-				"detect_to_publish_ms", detectMs)
+		killfeed.Batches.CardPosted(timing, now)
+		if it.enqueuedAt.Before(oldest) {
+			oldest = it.enqueuedAt
 		}
 	}
-	return msg, err
+	if f.mode == FeedModeImmediate {
+		// One line per message so a staging run can compute p50/p95/p99 per
+		// stage from the logs (the ledger keeps only avg/max/last).
+		detectMs := int64(-1)
+		if !items[0].detectedAt.IsZero() {
+			detectMs = now.Sub(items[0].detectedAt).Milliseconds()
+		}
+		slog.Info("component=discord", "msg", "feed card delivered", "route", f.route, "cards", len(items),
+			"queue_ms", callStart.Sub(oldest).Milliseconds(), "discord_ms", now.Sub(callStart).Milliseconds(),
+			"detect_to_publish_ms", detectMs)
+	}
+	return msg, nil
 }
 
 // deliverItems posts items strictly in order and returns the posted message
@@ -423,11 +516,13 @@ func (f *RotatingFeed) flush() {
 }
 
 // postImmediate (immediate mode) posts every pending card, strictly in order,
+// grouping the cards that are waiting together into one message (nextGroup),
 // and keeps the channel at most maxItems managed cards by deleting the oldest
-// confirmed card before posting the next one. If deletion fails, the pending
-// card stays in order (and in the journal) until cleanup succeeds. Unlike the rotating cycle it
-// never skips a card because others are waiting: every event is delivered
-// (bounded only by maxPendingCards, whose overflow is counted, never silent).
+// messages before posting the next one. If deletion fails, the pending cards
+// stay in order (and in the journal) until cleanup succeeds. Unlike the
+// rotating cycle it never skips a card because others are waiting: every
+// event is delivered (bounded only by maxPendingCards, whose overflow is
+// counted, never silent).
 func (f *RotatingFeed) postImmediate() {
 	if f.api == nil {
 		return
@@ -466,7 +561,18 @@ func (f *RotatingFeed) postImmediate() {
 	f.deleteCards(oldChannel, moved)
 
 	stopClass := ""
+	coalesced := false
 	for {
+		// A burst in progress (more than one card waiting, fewer than a full
+		// message): give the cards right behind them a moment to arrive, so
+		// they share the message - once per pass. A single card never waits.
+		f.mu.Lock()
+		waiting := len(f.pending)
+		f.mu.Unlock()
+		if !coalesced && waiting > 1 && waiting < f.maxCardsPerMessage && feedCoalesceWindow > 0 {
+			coalesced = true
+			time.Sleep(feedCoalesceWindow)
+		}
 		// A card enqueued while this loop runs must be journaled before it
 		// is posted, or a restart would replay it (no-op when all are).
 		f.journalPending()
@@ -475,7 +581,7 @@ func (f *RotatingFeed) postImmediate() {
 			f.mu.Unlock()
 			break
 		}
-		it := f.pending[0]
+		group := f.nextGroupLocked()
 		// An earlier expiration or route cleanup may have failed. Such a
 		// card is still visible even if no longer in window; do not create
 		// another card on this channel until the orphan is actually gone.
@@ -486,54 +592,90 @@ func (f *RotatingFeed) postImmediate() {
 				break
 			}
 		}
-		var oldest postedCard
-		full := f.maxItems > 0 && len(f.window) >= f.maxItems
-		if full {
-			oldest = f.window[0]
+		// Room for the group: the oldest whole messages whose cards make up
+		// the overflow.
+		var evict []postedCard
+		if f.maxItems > 0 {
+			over := windowCards(f.window) + len(group) - f.maxItems
+			for _, c := range f.window {
+				if over <= 0 {
+					break
+				}
+				evict = append(evict, c)
+				over -= c.count()
+			}
 		}
 		f.mu.Unlock()
 		if blocked {
 			stopClass = "CLEANUP_PENDING"
 			break
 		}
-		if full {
+		if len(evict) > 0 {
 			// Delete first, *then* publish. A failed deletion must neither
-			// remove the card from our window nor mark its journal row removed.
-			// The pending card stays queued, preserving both order and crash
-			// replay. This is a hard per-channel capacity gate.
-			if len(f.deleteIDs(channelID, []string{oldest.id})) != 0 {
-				Deliveries.recordCleanup(f.route, 1, 1)
+			// remove the message from our window nor mark its journal rows
+			// removed. The pending cards stay queued, preserving both order
+			// and crash replay. This is a hard per-channel capacity gate.
+			ids := make([]string, len(evict))
+			for i, c := range evict {
+				ids[i] = c.id
+			}
+			failed := f.deleteIDs(channelID, ids)
+			gone := without(ids, failed)
+			f.journalRemoved(gone)
+			f.mu.Lock()
+			f.window = withoutCards(f.window, gone)
+			f.mu.Unlock()
+			if len(failed) != 0 {
+				Deliveries.recordCleanup(f.route, len(failed), len(failed))
 				stopClass = "CLEANUP_FAILED"
 				break
 			}
-			f.journalRemoved([]string{oldest.id})
-			f.mu.Lock()
-			if len(f.window) > 0 && f.window[0].id == oldest.id {
-				f.window = f.window[1:]
-			}
-			f.mu.Unlock()
 		}
 
-		msg, err := f.send(channelID, it)
+		msg, err := f.sendGroup(channelID, group)
 		if err != nil {
 			class := ClassifyDeliveryError(err)
-			slog.Warn("component=discord", "msg", "feed publish failed", "route", f.route, "channel_id", channelID, "class", class, "err", err.Error())
+			slog.Warn("component=discord", "msg", "feed publish failed", "route", f.route, "channel_id", channelID, "class", class, "cards", len(group), "err", err.Error())
 			if class == DeliveryRejected {
+				if len(group) > 1 {
+					// The message as a whole was refused: try its cards one
+					// by one, so only a card refused on its own is lost.
+					f.mu.Lock()
+					for i := range f.pending[:len(group)] {
+						f.pending[i].solo = true
+					}
+					f.mu.Unlock()
+					continue
+				}
 				f.mu.Lock()
 				f.pending = f.pending[1:] // cannot ever succeed; recorded in the ledger
 				f.mu.Unlock()
-				f.journalDropped([]feedItem{it}, dropRejected)
+				f.journalDropped(group, dropRejected)
 				continue
 			}
-			stopClass = class // keep this card first, in order
+			stopClass = class // keep these cards first, in order
 			break
 		}
+		// A message that already existed (the nonce of a create that did
+		// succeed before a timeout or a restart) holds the cards of that
+		// earlier attempt: the first len(msg.Embeds) waiting cards, since a
+		// group always starts at the head of the queue.
+		posted := len(group)
+		if n := len(msg.Embeds); n > 0 && n != posted {
+			posted = n
+		}
 		postedAt := time.Now()
-		f.journalPosted(it, channelID, msg.ID, postedAt)
 		f.mu.Lock()
-		f.pending = f.pending[1:]
-		f.window = append(f.window, postedCard{id: msg.ID, postedAt: postedAt})
+		if posted > len(f.pending) {
+			posted = len(f.pending)
+		}
+		done := append([]feedItem(nil), f.pending[:posted]...)
+		f.pending = f.pending[posted:]
+		f.window = append(f.window, postedCard{id: msg.ID, postedAt: postedAt, cards: posted})
 		f.mu.Unlock()
+		for _, it := range done {
+			f.journalPosted(it, channelID, msg.ID, postedAt)
+		}
 	}
 
 	f.mu.Lock()
@@ -557,6 +699,78 @@ func (f *RotatingFeed) postImmediate() {
 	dropped := f.boundPendingLocked()
 	f.mu.Unlock()
 	f.journalDropped(dropped, dropBacklogOverflow)
+}
+
+// nextGroupLocked returns the cards at the head of the queue that go out in
+// the next message: as many as fit under maxCardsPerMessage, maxItems (a
+// message never holds more than the window) and feedMaxMessageChars, in
+// order; always at least the first card. A card marked solo goes alone.
+// Caller holds f.mu.
+func (f *RotatingFeed) nextGroupLocked() []feedItem {
+	limit := f.maxCardsPerMessage
+	if limit < 1 {
+		limit = 1
+	}
+	if f.maxItems > 0 && f.maxItems < limit {
+		limit = f.maxItems
+	}
+	n, chars := 0, 0
+	for n < len(f.pending) && n < limit {
+		it := f.pending[n]
+		if it.solo && n > 0 {
+			break
+		}
+		c := embedChars(it.embed)
+		if n > 0 && chars+c > feedMaxMessageChars {
+			break
+		}
+		chars += c
+		n++
+		if it.solo {
+			break
+		}
+	}
+	return append([]feedItem(nil), f.pending[:n]...)
+}
+
+// embedChars counts the characters Discord counts towards a message's 6000:
+// title, description, every field's name and value, the footer and the
+// author name.
+func embedChars(e *discordgo.MessageEmbed) int {
+	if e == nil {
+		return 0
+	}
+	n := utf8.RuneCountInString(e.Title) + utf8.RuneCountInString(e.Description)
+	for _, fld := range e.Fields {
+		if fld != nil {
+			n += utf8.RuneCountInString(fld.Name) + utf8.RuneCountInString(fld.Value)
+		}
+	}
+	if e.Footer != nil {
+		n += utf8.RuneCountInString(e.Footer.Text)
+	}
+	if e.Author != nil {
+		n += utf8.RuneCountInString(e.Author.Name)
+	}
+	return n
+}
+
+// withoutCards returns window minus the messages with the given ids, in order.
+func withoutCards(window []postedCard, ids []string) []postedCard {
+	if len(ids) == 0 {
+		return window
+	}
+	drop := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		drop[id] = true
+	}
+	keep := window[:0]
+	for _, c := range window {
+		if !drop[c.id] {
+			keep = append(keep, c)
+		}
+	}
+	return keep
 }
 
 // maxPendingCards bounds an immediate-mode backlog (a long Discord outage or

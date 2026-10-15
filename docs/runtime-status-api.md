@@ -112,7 +112,7 @@ Field | Notes
 --- | ---
 `commit` | `RAILWAY_GIT_COMMIT_SHA`, else the Go VCS stamp, else `unknown`
 `appEnv` | `APP_ENV`
-`killfeedDeliveryMode` | `rotating` (default, `KILLFEED_DELIVERY_MODE` unset) or `immediate`
+`killfeedDeliveryMode` | `rotating` (default, `KILLFEED_DELIVERY_MODE` unset) or `immediate`. In `immediate` mode cards that are waiting together are posted in one Discord message (up to 10 per message; a lone card posts at once) - docs/PERFORMANCE.md section 23
 `nitradoSource` | `nitrado`, or `fixture` when `NITRADO_API_BASE_URL` points at the staging Nitrado fixture (accepted only with `APP_ENV=staging`)
 
 ### `leadership` (which process runs the singleton workers)

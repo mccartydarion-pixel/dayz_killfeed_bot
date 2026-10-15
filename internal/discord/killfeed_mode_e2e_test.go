@@ -128,7 +128,12 @@ func (s *slowDiscord) ChannelMessageSendComplex(channelID string, data *discordg
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.next++
-	s.posted = append(s.posted, postedRecord{channel: channelID, title: data.Embeds[0].Title, embed: data.Embeds[0], start: start, end: time.Now()})
+	// Immediate mode groups cards that are waiting together into one message: every embed is
+	// its own card, in order, so each is recorded (one message, one record was the old shape).
+	end := time.Now()
+	for _, e := range data.Embeds {
+		s.posted = append(s.posted, postedRecord{channel: channelID, title: e.Title, embed: e, start: start, end: end})
+	}
 	return &discordgo.Message{ID: fmt.Sprint(s.next)}, nil
 }
 

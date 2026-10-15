@@ -75,6 +75,8 @@ func (e *Engine) processLineAt(line, sourcePath string, endOffset int64) (bool, 
 	if src := e.locationSource(ev, sourcePath, endOffset, ""); src.File != "" {
 		ev.SourceFile, ev.SourceOffset, ev.SourceLocalTime = src.File, src.Offset, src.LocalTime
 		ev.LoggedAt = e.loggedAtUTC(src.LocalTime)
+		// The event's real time, from the same derivation (event_time.go).
+		e.stampEventTime(ev, time.Now())
 	}
 	e.correlateFinalHit(ev, lineFile, endOffset, prevFile, prevEnd)
 	if ev.Type == EventPlayerDisconnect {
@@ -140,6 +142,7 @@ func (e *Engine) processLineAt(line, sourcePath string, endOffset int64) (bool, 
 		e.presenceMu.Lock()
 		e.lastPersistenceResult = "SUCCESS"
 		e.presenceMu.Unlock()
+		e.batchPersisted++
 		if e.diagnostics != nil {
 			e.diagnostics.Update(func(s *RuntimeDiagnosticSnapshot) {
 				s.LastPersistenceEvent = string(ev.Type)

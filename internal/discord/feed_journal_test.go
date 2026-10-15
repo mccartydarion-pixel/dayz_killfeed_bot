@@ -132,6 +132,7 @@ func startJournalFeed(t *testing.T, mode string, interval time.Duration, ch stri
 		f.SetRouteChannelResolver(resolve)
 	}
 	f.SetMode(mode)
+	f.SetMaxCardsPerMessage(1) // per-card gates; grouped restarts: rotating_feed_group_test.go
 	f.SetJournal(j, "KILLFEED:1")
 	ctx, cancel := context.WithCancel(context.Background())
 	go f.Run(ctx)
@@ -362,6 +363,7 @@ func TestDeathFeedIndependentInSharedChannel(t *testing.T) {
 		f := NewRotatingFeed(NewFeedSession(s), store, "g1", func(g *GuildSetup) string { return g.KillfeedChannelID }, time.Hour, 10)
 		f.SetRoute(route)
 		f.SetMode(FeedModeImmediate)
+		f.SetMaxCardsPerMessage(1)
 		f.SetJournal(j, key)
 		ctx, cancel := context.WithCancel(context.Background())
 		go f.Run(ctx)

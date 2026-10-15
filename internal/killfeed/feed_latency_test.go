@@ -235,7 +235,9 @@ func TestEngineStampsReadTimeAndConvertsLineTimeOnlyWithKnownOffset(t *testing.T
 		t.Fatalf("line time in UTC = %v, want %v", pub.kills[1].LoggedAt, want)
 	}
 	if !pub.kills[1].Timestamp.IsZero() {
-		t.Fatal("the measurement must not set Event.Timestamp (it is part of the durable fingerprint)")
+		// The same derivation feeds Event.Timestamp (event_time.go), but only within a day of now:
+		// this fixture's 2026-10-05 boot date is far older, so the event time is left unknown.
+		t.Fatalf("an implausible (days old) line time must not become Event.Timestamp: %v", pub.kills[1].Timestamp)
 	}
 	if got := TimingOf(pub.kills[1]); !got.LoggedAt.Equal(pub.kills[1].LoggedAt) || !got.ReadAt.Equal(pub.kills[1].ReadAt) {
 		t.Fatalf("TimingOf: %+v", got)

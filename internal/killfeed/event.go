@@ -95,7 +95,14 @@ type Event struct {
 	ServerID  int64
 	SessionID string
 	Type      EventType
+	// Timestamp is when the event happened, in UTC. For an ADM line it is derived by the engine
+	// (event_time.go): the file's boot date plus the line's clock, converted with the server's UTC
+	// offset. Zero when that cannot be done - never guessed.
 	Timestamp time.Time
+	// TimestampDerived marks a Timestamp the engine derived from TimeOfDay (see Timestamp) rather
+	// than one read from a full date on the line. The durable fingerprint (dedupe.go) ignores a
+	// derived Timestamp, so a line's identity is exactly what it was before the derivation existed.
+	TimestampDerived bool
 	// TimeOfDay preserves the raw HH:MM:SS clock from the ADM line when a full
 	// session date is not available (the date comes from the log filename).
 	TimeOfDay string
@@ -188,6 +195,30 @@ type Event struct {
 	KillingSpree     bool
 	StreakEnded      bool
 	EndedStreakCount *int
+}
+
+// DisplayTime is the time a card or variable should show for ev: the event's own time when it is
+// known, otherwise when Champion read the line. Zero when neither is known, so a card built from
+// such an event carries no timestamp (as before this feature) rather than a made-up "now".
+func (ev *Event) DisplayTime() time.Time {
+	if ev == nil {
+		return time.Time{}
+	}
+	for _, t := range []time.Time{ev.Timestamp, ev.ReadAt, ev.DetectedAt} {
+		if !t.IsZero() {
+			return t.UTC()
+		}
+	}
+	return time.Time{}
+}
+
+// DisplayTimeOrNow is DisplayTime, or now when no time is known - for relative-time variables and
+// custom templates, where a zero time would render nonsense.
+func (ev *Event) DisplayTimeOrNow() time.Time {
+	if at := ev.DisplayTime(); !at.IsZero() {
+		return at
+	}
+	return time.Now().UTC()
 }
 
 // CombatRecord is a lightweight kills/deaths snapshot for the stat-rich kill

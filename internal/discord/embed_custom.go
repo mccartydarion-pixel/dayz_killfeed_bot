@@ -35,10 +35,16 @@ type ServerNameFunc func(serverID int64) string
 // customEmbed is the nil-safe call every publisher makes. The vars closure is only
 // evaluated when a customizer is wired, so the default path pays nothing.
 func customEmbed(c EmbedCustomizer, guildRowID, serverID int64, routeKey string, def *discordgo.MessageEmbed, vars func() map[string]string) *discordgo.MessageEmbed {
+	return customEmbedAt(c, guildRowID, serverID, routeKey, def, vars, time.Now())
+}
+
+// customEmbedAt is customEmbed with the card's own time (the template's timestamp), for a card
+// whose event carries one (Event.DisplayTime).
+func customEmbedAt(c EmbedCustomizer, guildRowID, serverID int64, routeKey string, def *discordgo.MessageEmbed, vars func() map[string]string, at time.Time) *discordgo.MessageEmbed {
 	if c == nil || def == nil || guildRowID <= 0 || serverID <= 0 {
 		return def
 	}
-	return c.Customize(context.Background(), guildRowID, serverID, routeKey, vars(), time.Now(), def)
+	return c.Customize(context.Background(), guildRowID, serverID, routeKey, vars(), at, def)
 }
 
 func serverNameOf(f ServerNameFunc, serverID int64) string {
@@ -67,13 +73,10 @@ func setIf(m map[string]string, k, v string) {
 
 // killfeedVars: only values the authoritative kill event carries.
 func killfeedVars(ev *killfeed.Event, serverName string) map[string]string {
+	// {{timestamp}} is documented as the publish time; {{time_ago}} is the kill's own time when the
+	// event carries one, else when it was read (Event.DisplayTime).
 	m := map[string]string{"timestamp": stampVar(time.Now())}
-	// The live "time ago": the kill's own time when the event carries one, else now.
-	at := ev.Timestamp
-	if at.IsZero() {
-		at = time.Now()
-	}
-	m["time_ago"] = presentation.Timestamp(at, 'R')
+	m["time_ago"] = presentation.Timestamp(ev.DisplayTimeOrNow(), 'R')
 	if ev.Killer != nil {
 		m["killer"] = nameVar(ev.Killer.Name)
 	} else {

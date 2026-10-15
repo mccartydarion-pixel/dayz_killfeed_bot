@@ -12,10 +12,11 @@ package database
 //   - kills (guild_id, server_id, COALESCE(event_time, created_at)): the time window every
 //     per-server read (fight replay, heatmaps, kills-by-hour, network boards) filters and sorts
 //     on. A plain created_at range cannot replace it: event_time is NULL for every ADM-sourced
-//     row today (Event.Timestamp is never set - docs/CHAMPION_LIVE_SYNC.md A2/A8) and, where it
-//     is set, it is the log line's own clock, which after an outage or a backfill read sits hours
-//     or days before created_at - no fixed margin is safe. The expression index serves the
-//     predicate as written, for NULL and non-NULL event_time alike.
+//     row written before the engine derived event times, and for any row whose server UTC offset
+//     or boot date was unknown (internal/killfeed/event_time.go); where it is set, it is the log
+//     line's own clock, which after an outage or a backfill read sits hours before created_at -
+//     no fixed margin is safe. The expression index serves the predicate as written, for NULL
+//     and non-NULL event_time alike.
 //   - live_sync_records (detected_at): the hourly retention sweep selects rows by detected_at;
 //     without this it sequentially scans the highest-volume table every hour.
 //   - combat_anomaly_flags (created_at): the new retention sweep for a table that is only ever

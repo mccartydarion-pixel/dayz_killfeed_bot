@@ -70,6 +70,10 @@ func TestJournalCrashChildProcess(t *testing.T) {
 	_ = store.Save(GuildSetup{GuildID: "g1", KillfeedChannelID: ch})
 	f := NewRotatingFeed(NewFeedSession(s), store, "g1", func(g *GuildSetup) string { return g.KillfeedChannelID }, time.Hour, 10)
 	f.SetMode(FeedModeImmediate)
+	// Per-card crash accounting: one card per message, so exactly kill-01 is in flight when the
+	// parent kills this process. Grouped-message replay after a restart is covered by
+	// rotating_feed_group_test.go.
+	f.SetMaxCardsPerMessage(1)
 	f.SetJournal(repository.NewFeedCardRepository(db.Pool), os.Getenv("FEED_CRASH_KEY"))
 	go f.Run(context.Background())
 	for n := 1; n <= 3; n++ {
@@ -139,6 +143,7 @@ func TestJournalSurvivesSIGKILL(t *testing.T) {
 	_ = store.Save(GuildSetup{GuildID: "g1", KillfeedChannelID: ch})
 	f := NewRotatingFeed(NewFeedSession(s), store, "g1", func(g *GuildSetup) string { return g.KillfeedChannelID }, time.Hour, 10)
 	f.SetMode(FeedModeImmediate)
+	f.SetMaxCardsPerMessage(1) // per-card accounting below: one message per card, kill-01 recovered by nonce
 	f.SetJournal(j, key)
 	ctx, cancel := context.WithCancel(context.Background())
 	go f.Run(ctx)

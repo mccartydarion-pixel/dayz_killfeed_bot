@@ -308,7 +308,9 @@ func BuildKillEmbedWithOptions(ev *killfeed.Event, options KillEmbedOptions) *di
 		pos := ev.Killer.Position
 		presentation.AppendFields(embed, presentation.MetricField("Location", fmt.Sprintf("%.1f • %.1f • %.1f", pos.X, pos.Y, pos.Z), true))
 	}
-	presentation.StampEmbed(embed, ev.Timestamp)
+	// The kill's own time when the engine derived one, else when the line was read: Discord shows
+	// the embed timestamp in each viewer's own time zone.
+	presentation.StampEmbed(embed, ev.DisplayTime())
 	return presentation.FitEmbed(embed)
 }
 

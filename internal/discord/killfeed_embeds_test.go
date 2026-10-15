@@ -372,13 +372,34 @@ func TestEmbedLimitsWithMaximalInputs(t *testing.T) {
 	assertWithinLimits(t, d)
 }
 
-func TestTimestampSetOnlyWhenAbsolute(t *testing.T) {
-	if BuildKillEmbed(killEv("V", "K", "M4-A1", 10, "Torso")).Timestamp == "" {
-		t.Fatal("expected embed timestamp from valid absolute event time")
+// The card's embed timestamp is the event's own time when the engine derived one, else the time
+// the line was read; Discord renders it in each viewer's zone.
+func TestEmbedTimestampPrefersEventTimeOverReadTime(t *testing.T) {
+	eventAt := time.Date(2026, 9, 8, 16, 40, 12, 0, time.UTC)
+	readAt := time.Date(2026, 9, 8, 16, 45, 0, 0, time.UTC)
+	ev := killEv("V", "K", "M4-A1", 10, "Torso")
+	ev.Timestamp, ev.TimestampDerived, ev.ReadAt, ev.DetectedAt = eventAt, true, readAt, readAt
+	if got := BuildKillEmbed(ev).Timestamp; got != "2026-09-08T16:40:12.000Z" {
+		t.Fatalf("kill card with an event time: %q", got)
 	}
-	e := BuildKillEmbed(&killfeed.Event{Type: killfeed.EventPlayerKill, TimeOfDay: "16:40:12", Victim: &killfeed.PlayerRef{Name: "V"}, Killer: &killfeed.PlayerRef{Name: "K"}})
-	if e.Timestamp != "" {
-		t.Fatalf("expected no timestamp when only time-of-day is known, got %q", e.Timestamp)
+	ev.Timestamp, ev.TimestampDerived = time.Time{}, false
+	ev.TimeOfDay = "16:40:12"
+	if got := BuildKillEmbed(ev).Timestamp; got != "2026-09-08T16:45:00.000Z" {
+		t.Fatalf("kill card without an event time must show the read time: %q", got)
+	}
+	death := &killfeed.Event{Type: killfeed.EventPlayerDeath, Player: &killfeed.PlayerRef{Name: "V"}, Timestamp: eventAt, TimestampDerived: true, ReadAt: readAt}
+	if got := BuildDeathEmbed(death).Timestamp; got != "2026-09-08T16:40:12.000Z" {
+		t.Fatalf("death card with an event time: %q", got)
+	}
+	death.Timestamp = time.Time{}
+	if got := BuildDeathEmbed(death).Timestamp; got != "2026-09-08T16:45:00.000Z" {
+		t.Fatalf("death card without an event time must show the read time: %q", got)
+	}
+	// Nothing known at all (fixtures, legacy callers): no timestamp, as before this feature - a
+	// card must not carry a made-up "now", and two cards built from the same event must be equal.
+	bare := BuildKillEmbed(&killfeed.Event{Type: killfeed.EventPlayerKill, TimeOfDay: "16:40:12", Victim: &killfeed.PlayerRef{Name: "V"}, Killer: &killfeed.PlayerRef{Name: "K"}})
+	if bare.Timestamp != "" {
+		t.Fatalf("expected no timestamp when neither event nor read time is known, got %q", bare.Timestamp)
 	}
 }
 
