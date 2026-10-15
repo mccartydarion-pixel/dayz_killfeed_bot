@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -42,7 +43,7 @@ func (w *securityExpiryWorker) tick(ctx context.Context) {
 	}
 	for _, e := range due {
 		if e.DiscordUserID != "" && w.dm != nil {
-			if err := w.dm(e.DiscordUserID, securityExpiryMessage(e.ServiceID, w.server(e.ServerID), w.storeURL())); err != nil {
+			if err := w.dm(e.DiscordUserID, securityExpiryMessage(e.ServiceID, w.server(e.ServerID), w.storeURL(), time.Now())); err != nil {
 				slog.Warn("component=security_market", "msg", "expiry dm failed", "purchase_id", e.PurchaseID, "err", err.Error())
 			}
 		}
@@ -70,7 +71,8 @@ func (w *securityExpiryWorker) storeURL() string {
 	return base + "/dashboard/player/security-store"
 }
 
-func securityExpiryMessage(serviceID, serverName, storeURL string) *discordgo.MessageSend {
+// securityExpiryMessage is the "your service has ended" DM: a warning card, mentions disabled.
+func securityExpiryMessage(serviceID, serverName, storeURL string, at time.Time) *discordgo.MessageSend {
 	what := "You won't get raid messages for your base any more."
 	switch serviceID {
 	case repository.ServicePerimeterWatch:
@@ -82,14 +84,14 @@ func securityExpiryMessage(serviceID, serverName, storeURL string) *discordgo.Me
 	case repository.ServiceSentinelPro:
 		what = "The base services it included have stopped, unless you bought them separately."
 	}
-	text := "⏰ **Your " + repository.SecurityServiceLabel(serviceID) + " on " + caseSafeName(serverName) + " has ended.** " + what + " Nothing was charged."
+	title := "⏰ Your " + repository.SecurityServiceLabel(serviceID) + " on " + caseSafeName(serverName) + " has ended"
+	body := what + " Nothing was charged."
 	if storeURL != "" {
-		text += "\nWant it back? Buy it again in the Security Store: " + storeURL
+		body += "\nWant it back? Buy it again in the Security Store: " + storeURL
 	} else {
-		text += "\nWant it back? Buy it again in the Security Store on the Champion website."
+		body += "\nWant it back? Buy it again in the Security Store on the Champion website."
 	}
-	return &discordgo.MessageSend{Content: text, AllowedMentions: &discordgo.MessageAllowedMentions{
-		Parse: []discordgo.AllowedMentionType{}, Users: []string{}, Roles: []string{}}}
+	return presentation.NoticeMessage(presentation.NoticeEmbed(title, body, presentation.NoticeWarning, at))
 }
 
 func caseSafeName(s string) string {

@@ -11,6 +11,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/discord"
 	"github.com/yourname/dayz-killfeed/internal/killfeed"
+	"github.com/yourname/dayz-killfeed/internal/ownerops"
 	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/progression"
 	"github.com/yourname/dayz-killfeed/internal/ranked"
@@ -127,6 +128,22 @@ func designPreviewCards() []designPreviewCard {
 	bountyTitle, bountyDesc := buildBountyPlacerDM("Fictional_Fox", 25000, "CLAIMED", "Sample_Raven")
 	add("dm-bounty-claimed", "DM: the bounty you placed was claimed", "Direct messages", "", upgradeEmbed("Bounties", bountyTitle, bountyDesc, presentation.Crimson))
 	message("dm-rank-up", "DM: you ranked up", "Direct messages", buildRankUpDM(repository.RankUp{Name: "Sample_Raven", To: ranked.Platinum, RP: 12850, Position: 3}, previewServer, "https://example.invalid/dashboard/player", "https://example.invalid"))
+	message("dm-security-expired", "DM: a paid base service ended", "Direct messages", securityExpiryMessage(repository.ServicePerimeterWatch, previewServer, "https://example.invalid/dashboard/player/security-store", previewAt))
+
+	// --- Owner Hub notices (DMs to the platform admins, posts to staff channels) ---------------------
+	briefing := ownerops.Briefing{Day: previewAt, NewUsers24h: 4, NewOrganizations: 2, MRRCents: 1499, Currency: "usd", PaidCents24h: 1499, FailedPayments24h: 1,
+		StuckOnboarding: 3, LiveServers: 5, BrokenServers: 1, PlayersOnline: 22, Kills24h: 310, ActiveSubscribers: 1, TrialOrganizations: 6,
+		OpenIncidents: []string{"Worker down: Example Community / Example Server Alpha"}, AtRisk: []string{"Example Community (35)"}, TrialsEndingSoon: []string{"Example Community"}, ConfigProblems: 2}
+	add("ops-briefing", "Owner Hub: the daily briefing", "Owner Hub", "", briefingNotice(briefing, previewAt).embed())
+	add("ops-briefing-quiet", "Owner Hub: a quiet day's briefing", "Owner Hub", "", briefingNotice(ownerops.Briefing{Day: previewAt, ResolvedIncidents: 2, LiveServers: 5}, previewAt).embed())
+	add("ops-incident-opened", "Owner Hub: an incident opened", "Owner Hub", "", ownerOpsNotice{Title: "Incident opened: " + ownerops.KindLabel(ownerops.KindFeedStalled),
+		Body: "Example Community / Example Server Alpha (installation 12)\nthe log worker has not completed a poll cycle recently", Tone: incidentTone(ownerops.KindFeedStalled), Footer: presentation.FooterOwnerHub, At: previewAt}.embed())
+	add("ops-incident-resolved", "Owner Hub: an incident resolved", "Owner Hub", "", ownerOpsNotice{Title: "Incident resolved: " + ownerops.KindLabel(ownerops.KindFeedStalled),
+		Body: "Example Community / Example Server Alpha\nrecovered after 1 automatic restart(s) after 12m0s.", Tone: presentation.NoticeSuccess, Footer: presentation.FooterOwnerHub, At: previewAt}.embed())
+	add("ops-customer-nitrado", "DM: a customer's Nitrado access is lost", "Owner Hub", "", customerIncidentMessage(ownerops.KindNitradoAccess, previewServer, "https://example.invalid/dashboard").embed())
+	add("ops-deploy-failed", "Owner Hub: the deploy self-check failed", "Owner Hub", "", ownerOpsNotice{Title: "Deploy self-check failed",
+		Body: "Commit 0d66f2d is not healthy 10 minutes after it started:\n- the Discord gateway is not connected\nUNHEALTHY commit=0d66f2d", Tone: presentation.NoticeCritical, Footer: presentation.FooterOwnerHub, At: previewAt}.embed())
+	add("ops-broadcast", "Staff channel: a platform broadcast", "Owner Hub", "", broadcastNotice(repository.PlatformBroadcast{Title: "Maintenance tonight", Body: "Champion will be down for ten minutes at 02:00 UTC.", Severity: repository.BroadcastMaintenance, CreatedAt: previewAt}).embed())
 	return cards
 }
 

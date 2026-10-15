@@ -487,8 +487,9 @@ func TestOwnerOpsMonitorOpensHealsAndResolves(t *testing.T) {
 	if len(open) != 1 || open[0].Kind != repository.IncidentDiscordAccess || open[0].Attempts != 0 || open[0].CustomerNotifiedAt == nil {
 		t.Fatalf("discord access incident = %+v", open)
 	}
-	if n := w.sent("dm", w.a1.OwnerDiscordID+"|The Champion bot is no longer in the Discord server"); n != 1 {
-		t.Fatalf("the customer was told %d times, want once", n)
+	// The customer's DM is a card: the incident as its headline, the explanation as its body.
+	if n := w.sent("dm", w.a1.OwnerDiscordID+"|**Discord access lost**\nThe Champion bot is no longer in the Discord server"); n != 1 {
+		t.Fatalf("the customer was told %d times, want once: %v", n, w.dms)
 	}
 
 	// The owner can close an incident by hand; the list endpoint shows both states.
@@ -567,8 +568,14 @@ func TestOwnerOpsBriefingIsSentOnceADay(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if n := w.sent("dm", adminFounderID+"|**Champion briefing, "+stamp); n != 1 {
-		t.Fatalf("briefing sent %d times, want once", n)
+	// The fake receives the card's text form: the bold headline, then one block per section.
+	if n := w.sent("dm", adminFounderID+"|**Champion briefing · "+stamp+"**\n\n**Revenue**\n"); n != 1 {
+		t.Fatalf("briefing sent %d times, want once: %v", n, w.dms)
+	}
+	// Other tests' incidents share the database, so the incidents block is either "Incidents"
+	// (none open) or "Open incidents (n)"; the fleet block is always there.
+	if w.sent("dm", "**Growth**\n") != 1 || w.sent("dm", "**Fleet**\n") != 1 || w.sent("dm", "ncidents") < 1 {
+		t.Fatalf("the briefing card has Growth, Fleet and incidents sections: %v", w.dms)
 	}
 	last, delivered, err := a.PlatformOps.LastBriefing(ctx)
 	if err != nil || last == nil || last.Format("2006-01-02") != "2099-01-01" || delivered != 1 {

@@ -136,7 +136,9 @@ func TestTournamentAnnouncerFlow(t *testing.T) {
 	}
 	// The bracket is posted first, then the call (the call follows the picture).
 	bracket := sender.sent[1]
-	if len(bracket.Files) != 1 || !strings.Contains(bracket.Content, "now playing: Match 1") || tr.BracketMessageID != "m2" {
+	// The picture is posted under a card, not a plain caption: the card shows the attachment.
+	if len(bracket.Files) != 1 || bracket.Content != "" || len(bracket.Embeds) != 1 || !strings.Contains(bracket.Embeds[0].Description, "now playing: Match 1") ||
+		bracket.Embeds[0].Image == nil || bracket.Embeds[0].Image.URL != "attachment://bracket.png" || tr.BracketMessageID != "m2" {
 		t.Fatalf("bracket post: %+v", bracket)
 	}
 	call := sender.sent[2]

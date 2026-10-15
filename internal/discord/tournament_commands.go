@@ -678,6 +678,6 @@ func (h *TournamentCommandHandler) postBracket(ctx context.Context, s *discordgo
 		_ = editDeferred(s, i, &discordgo.WebhookEdit{Content: &text})
 		return
 	}
-	caption := "🏆 **" + presentation.CleanName(t.Name, 80) + "** · " + bracketCaption(t)
-	_ = editDeferred(s, i, &discordgo.WebhookEdit{Content: &caption, Files: []*discordgo.File{{Name: "bracket.png", ContentType: "image/png", Reader: strings.NewReader(string(data))}}, AllowedMentions: noMentions})
+	embeds := []*discordgo.MessageEmbed{BracketEmbed(t, time.Now())}
+	_ = editDeferred(s, i, &discordgo.WebhookEdit{Embeds: &embeds, Files: []*discordgo.File{{Name: bracketFile, ContentType: "image/png", Reader: strings.NewReader(string(data))}}, AllowedMentions: noMentions})
 }

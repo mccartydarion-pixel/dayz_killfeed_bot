@@ -298,6 +298,70 @@ func TestBriefingText(t *testing.T) {
 	if long := BriefingText(many); len([]rune(long)) > 2000 || !strings.Contains(long, "and 394 more") {
 		t.Fatalf("a long briefing must stay under Discord's limit and summarise: %d runes", len([]rune(long)))
 	}
+	if BriefingTitle(b) != "Champion briefing · Thu 1 Oct 2026" {
+		t.Fatalf("title: %q", BriefingTitle(b))
+	}
+}
+
+// The card form: one section per block, the numbers side by side, the lists on their own rows,
+// every value within Discord's field limit.
+func TestBriefingSections(t *testing.T) {
+	b := Briefing{Day: time.Date(2026, 10, 1, 13, 0, 0, 0, time.UTC), NewUsers24h: 4, NewOrganizations: 2, MRRCents: 1499, Currency: "usd",
+		PaidCents24h: 1499, FailedPayments24h: 1, StuckOnboarding: 3, LiveServers: 5, BrokenServers: 1, PlayersOnline: 22, Kills24h: 310,
+		ActiveSubscribers: 1, TrialOrganizations: 6, OpenIncidents: []string{"Worker down: Alpha / Lost City"}, AtRisk: []string{"Bravo (35)"},
+		TrialsEndingSoon: []string{"Charlie"}, ConfigProblems: 2}
+	sections := BriefingSections(b)
+	names := make([]string, len(sections))
+	for i, s := range sections {
+		names[i] = s.Name
+	}
+	if got := strings.Join(names, "|"); got != "Revenue|Growth|Fleet|Open incidents (1)|At-risk customers (1)|Trials ending within 3 days (1)|Configuration" {
+		t.Fatalf("sections: %s", got)
+	}
+	for i, s := range sections {
+		if s.Inline != (i < 3) {
+			t.Errorf("%s inline=%v: the three numbers sit side by side, the lists take a row", s.Name, s.Inline)
+		}
+	}
+	for name, want := range map[string]string{"Revenue": "$14.99 MRR from 1 paying, 6 on trial. Collected $14.99 in the last 24h, 1 failed payment(s).",
+		"Growth": "4 new account(s), 2 new organization(s), 3 stuck in onboarding.", "Fleet": "5 server(s) live, 1 broken, 22 player(s) online, 310 kill(s) in 24h.",
+		"Open incidents (1)": "- Worker down: Alpha / Lost City", "At-risk customers (1)": "- Bravo (35)", "Trials ending within 3 days (1)": "- Charlie",
+		"Configuration": "2 configuration check(s) need attention."} {
+		found := false
+		for _, s := range sections {
+			if s.Name == name {
+				found = true
+				if s.Value != want {
+					t.Errorf("%s = %q, want %q", name, s.Value, want)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("no %s section", name)
+		}
+	}
+	// The same words as the text form, so the stored claim and the card never disagree.
+	text := BriefingText(b)
+	for _, s := range sections[:3] {
+		if !strings.Contains(text, s.Value) {
+			t.Errorf("the text form lacks the %s section %q", s.Name, s.Value)
+		}
+	}
+
+	quiet := BriefingSections(Briefing{Day: b.Day, ResolvedIncidents: 2})
+	if len(quiet) != 4 || quiet[3].Name != "Incidents" || quiet[3].Value != "No open incidents; 2 resolved in the last 24h." || quiet[3].Inline {
+		t.Fatalf("quiet day: %+v", quiet)
+	}
+
+	many := Briefing{Day: b.Day}
+	for i := 0; i < 400; i++ {
+		many.OpenIncidents = append(many.OpenIncidents, strings.Repeat("é", 300))
+	}
+	for _, s := range BriefingSections(many) {
+		if n := len([]rune(s.Value)); n > 1024 {
+			t.Fatalf("%s is %d runes, over Discord's field limit", s.Name, n)
+		}
+	}
 }
 
 // A server whose guild has no Nitrado connection is an access problem for the owner, never a

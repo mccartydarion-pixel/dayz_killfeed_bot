@@ -340,9 +340,7 @@ func (a *TournamentAnnouncer) postBracket(ctx context.Context, t *tournament.Tou
 	if t.BracketMessageID != "" {
 		_ = a.sender.Delete(t.DiscordChannelID, t.BracketMessageID)
 	}
-	caption := "🏆 **" + presentation.CleanName(t.Name, 80) + "** · " + bracketCaption(t)
-	msg, err := a.sender.Send(t.DiscordChannelID, &discordgo.MessageSend{Content: caption, AllowedMentions: noMentions,
-		Files: []*discordgo.File{{Name: "bracket.png", ContentType: "image/png", Reader: bytes.NewReader(data)}}})
+	msg, err := a.sender.Send(t.DiscordChannelID, BracketMessage(t, data, time.Now()))
 	if err != nil {
 		slog.Warn("component=tournament", "event", "bracket_post_failed", "err", err.Error())
 		return
@@ -353,6 +351,25 @@ func (a *TournamentAnnouncer) postBracket(ctx context.Context, t *tournament.Tou
 			slog.Warn("component=tournament", "event", "bracket_record_failed", "err", err.Error())
 		}
 	}
+}
+
+// bracketFile is the attachment name of a bracket picture; the card shows it as its image.
+const bracketFile = "bracket.png"
+
+// BracketEmbed is the card a bracket picture is posted under: the tournament's name as the
+// title, the state of play as the description, the picture as the image.
+func BracketEmbed(t *tournament.Tournament, at time.Time) *discordgo.MessageEmbed {
+	e := &discordgo.MessageEmbed{Author: presentation.BrandAuthor("Tournament"), Title: "🏆 " + presentation.CleanName(t.Name, 80),
+		Description: bracketCaption(t), Color: presentation.Gold, Footer: presentation.Footer("", presentation.CleanName(t.Name, 60)),
+		Image: &discordgo.MessageEmbedImage{URL: "attachment://" + bracketFile}}
+	presentation.StampEmbed(e, at)
+	return presentation.FitEmbed(e)
+}
+
+// BracketMessage is the bracket card with its picture attached, mentions disabled.
+func BracketMessage(t *tournament.Tournament, png []byte, at time.Time) *discordgo.MessageSend {
+	return &discordgo.MessageSend{Embeds: []*discordgo.MessageEmbed{BracketEmbed(t, at)}, AllowedMentions: noMentions,
+		Files: []*discordgo.File{{Name: bracketFile, ContentType: "image/png", Reader: bytes.NewReader(png)}}}
 }
 
 func bracketCaption(t *tournament.Tournament) string {

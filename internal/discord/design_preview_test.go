@@ -221,6 +221,7 @@ func designPreviewCards() []designPreviewCard {
 	add("welcome", "Welcome card", "Announcements", WelcomeEmbed(&discordgo.Member{User: &discordgo.User{ID: "100000000000000001", Username: "sample_member"}}))
 
 	// --- Direct messages ----------------------------------------------------------------------------
+	add("dm-verified", "DM: your link is verified", "Direct messages", VerifiedMessage(true, previewAt).Embeds...)
 	played, longest := previewInt64(5400), previewFloat(412.7)
 	add("dm-life-recap", "DM: death recap", "Direct messages", BuildLifeRecapEmbed(repository.Life{
 		PlayerName: "Sample_Raven", EndedAt: previewAt, PlaytimeSeconds: played, Kills: 4, Headshots: 1, LongestKillM: longest,
