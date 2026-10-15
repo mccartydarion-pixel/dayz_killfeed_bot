@@ -3,6 +3,9 @@ package discord
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -68,12 +71,23 @@ func (f *liveFeedAPI) shown() (int, int) {
 }
 
 // visibleTitles returns every visible card title (any order).
+// visibleTitles lists the cards still shown, oldest message first (ids are created in order;
+// visible is a map, so it must be sorted here or the result is random).
 func (f *liveFeedAPI) visibleTitles() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	ids := make([]string, 0, len(f.visible))
+	for id := range f.visible {
+		ids = append(ids, id)
+	}
+	seq := func(id string) int { // "m12" -> 12
+		n, _ := strconv.Atoi(strings.TrimLeft(id, "m"))
+		return n
+	}
+	sort.Slice(ids, func(i, j int) bool { return seq(ids[i]) < seq(ids[j]) })
 	var out []string
-	for _, titles := range f.visible {
-		out = append(out, titles...)
+	for _, id := range ids {
+		out = append(out, f.visible[id]...)
 	}
 	return out
 }
