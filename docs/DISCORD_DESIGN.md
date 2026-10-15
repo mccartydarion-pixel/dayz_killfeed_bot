@@ -277,7 +277,7 @@ these rules were applied. C = crimson, G = gold, Gr = green, A = amber, R = red,
 | 52 | Welcome card (built-in and presets) | `discord/welcome.go` | yes | C | `Welcome to Champions` | `Get started`, `Next step` | none | none | yes |
 | 53 | Welcome card (the owner's own text, colour, images) | same | yes | the owner's | the owner's | built-in | the owner's | none | no (exception) |
 | 54 | Zone alert in the owner's zone channel | `app/intrusion_publisher.go` | yes | A intrusion, R ban violation, N detection, Gr exit | `Zone intrusion` ... | `Zone type` `Player` inline | none | embed timestamp | yes |
-| 55 | Platform broadcast | `app/owner_ops_worker.go` | no | none (plain text) | `**Prefix: title**` | none | none | none | no |
+| 55 | Platform broadcast (to each installation's staff alerts channel) | `app/owner_ops_worker.go` `broadcastNotice` via `presentation.NoticeEmbed` | yes | N notice, A maintenance, R incident | `Champion notice: <title>` ... | none (the body is the description) | slogan | embed timestamp | yes |
 
 ### Direct messages
 
@@ -308,7 +308,10 @@ these rules were applied. C = crimson, G = gold, Gr = green, A = amber, R = red,
 | 78 | Ranked season finish | `app/upgrade_season.go` | yes | G | `🥇 You finished #1 in the ranked season` | none | none | none | yes |
 | 79 | Appeal accepted / not accepted | `app/upgrade_security.go` | yes | Gr / R | `✅ Your appeal was accepted` ... | none | none | none | yes |
 | 80 | Zone alert to the zone's alert player | `app/upgrade_zones.go` | yes | as #54 | as #54 | as #54 | none | embed timestamp | yes |
-| 81 | Verification complete (plain text) | `discord/verified_role.go` | no | none | `✅ **Verification complete**` | none | none | none | yes |
+| 81 | Verification complete | `discord/verified_role.go` `VerifiedMessage` via `presentation.NoticeEmbed` | yes | Gr | `✅ Verification complete` | none | slogan | embed timestamp | yes |
+| 81a | A paid base service ended | `app/security_expiry_worker.go` via `presentation.NoticeEmbed` | yes | A | `⏰ Your <service> on <server> has ended` | none (Security Store link in the body) | slogan | embed timestamp | yes |
+| 81b | Owner-ops notice to a customer: Nitrado or Discord access lost, your killfeed is back | `app/owner_ops_worker.go` `customerIncidentMessage` | yes | R lost, Gr back | `Nitrado access lost` ... | none (dashboard link in the body) | slogan | embed timestamp | yes |
+| 81c | Owner Hub notices to the platform admins: daily briefing, incident opened / resolved, deploy self-check failed / recovered | `app/owner_ops_worker.go` `briefingNotice`, `app/deploy_selfcheck.go` | yes | N briefing (A with incidents), A / R opened, Gr resolved and recovered, R failed | `Champion briefing · <date>`, `Incident opened: <kind>` ... | briefing: `Revenue` `Growth` `Fleet` inline, `Open incidents (n)`, `At-risk customers (n)`, `Trials ending within 3 days (n)`, `Configuration` | `Owner Hub` | embed timestamp | yes |
 | 82 | C.A.S.E. staff alert | `discord/case_core8_alert.go` | partly | palette | unchanged | unchanged | unchanged | embed timestamp | no (exception) |
 
 ### Staff messages
@@ -350,9 +353,17 @@ these rules were applied. C = crimson, G = gold, Gr = green, A = amber, R = red,
 | 110 | The router's three fallback answers | `discord/voice.go` | text | the reference tone | no |
 | 111 | Embed Designer test send | `discord/embed_test_message.go` | n/a | the owner's template | no |
 
-111 message families: 100 changed, 11 not (2 are the owner's own templates and are unchanged by
-the Embed Designer contract, 6 are deliberate exceptions, 3 already followed the rules or are
-plain text with nothing to restyle).
+114 message families: 105 changed, 9 not (2 are the owner's own templates and are unchanged by
+the Embed Designer contract, 6 are deliberate exceptions, 1 already followed the rules).
+
+Every message the bot posts or DMs is a card. The operational notices that used to be plain
+text (the platform broadcast, the verification DM, the service-ended DM, and the Owner Hub's
+briefing, incident, deploy and customer notices) are built by `presentation.NoticeEmbed`: the
+headline as the title, the text as the description, a tone (information, success, warning,
+critical) that maps to N / Gr / A / R, the embed timestamp, and every mention disabled. A test
+(`internal/presentation/plain_text_scan_test.go`) reads the source and fails on a channel message
+or DM that would go out as text again. Interaction replies (the private one-line answers to a
+command) are the one place plain text remains, and only as a reply to the person who typed.
 
 ## What changed for people who already use the bot
 

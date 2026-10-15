@@ -580,25 +580,96 @@ func bullets(items []string, max int) string {
 	return b.String()
 }
 
+// BriefingTitle is the headline of a briefing: "Champion briefing · Thu 15 Oct 2026".
+func BriefingTitle(b Briefing) string {
+	return "Champion briefing · " + b.Day.UTC().Format("Mon 2 Jan 2006")
+}
+
+// BriefingSection is one block of the briefing: a label and its text, as a card field.
+// Inline sections sit side by side (the three numbers); lists take a full row.
+type BriefingSection struct {
+	Name   string
+	Value  string
+	Inline bool
+}
+
+// briefingSectionMax is Discord's limit on a field value, counted in runes.
+const briefingSectionMax = 1024
+
+func clipRunes(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max-1]) + "…"
+}
+
+func (b Briefing) revenue() string {
+	s := fmt.Sprintf("%s MRR from %d paying, %d on trial. Collected %s in the last 24h", money(b.MRRCents, b.Currency), b.ActiveSubscribers, b.TrialOrganizations, money(b.PaidCents24h, b.Currency))
+	if b.FailedPayments24h > 0 {
+		s += fmt.Sprintf(", %d failed payment(s)", b.FailedPayments24h)
+	}
+	return s + "."
+}
+
+func (b Briefing) growth() string {
+	return fmt.Sprintf("%d new account(s), %d new organization(s), %d stuck in onboarding.", b.NewUsers24h, b.NewOrganizations, b.StuckOnboarding)
+}
+
+func (b Briefing) fleet() string {
+	return fmt.Sprintf("%d server(s) live, %d broken, %d player(s) online, %d kill(s) in 24h.", b.LiveServers, b.BrokenServers, b.PlayersOnline, b.Kills24h)
+}
+
+// quietIncidents is the incidents line of a day with nothing open.
+func (b Briefing) quietIncidents() string {
+	s := "No open incidents"
+	if b.ResolvedIncidents > 0 {
+		s += fmt.Sprintf("; %d resolved in the last 24h", b.ResolvedIncidents)
+	}
+	return s + "."
+}
+
+// BriefingSections is the briefing as labelled blocks, in reading order: the three numbers,
+// then the incidents, then the lists that are not empty. Every value fits a card field.
+func BriefingSections(b Briefing) []BriefingSection {
+	out := []BriefingSection{
+		{Name: "Revenue", Value: b.revenue(), Inline: true},
+		{Name: "Growth", Value: b.growth(), Inline: true},
+		{Name: "Fleet", Value: b.fleet(), Inline: true},
+	}
+	if len(b.OpenIncidents) > 0 {
+		out = append(out, BriefingSection{Name: fmt.Sprintf("Open incidents (%d)", len(b.OpenIncidents)), Value: strings.TrimRight(bullets(b.OpenIncidents, 6), "\n")})
+	} else {
+		out = append(out, BriefingSection{Name: "Incidents", Value: b.quietIncidents()})
+	}
+	if len(b.AtRisk) > 0 {
+		out = append(out, BriefingSection{Name: fmt.Sprintf("At-risk customers (%d)", len(b.AtRisk)), Value: strings.TrimRight(bullets(b.AtRisk, 6), "\n")})
+	}
+	if len(b.TrialsEndingSoon) > 0 {
+		out = append(out, BriefingSection{Name: fmt.Sprintf("Trials ending within 3 days (%d)", len(b.TrialsEndingSoon)), Value: strings.TrimRight(bullets(b.TrialsEndingSoon, 6), "\n")})
+	}
+	if b.ConfigProblems > 0 {
+		out = append(out, BriefingSection{Name: "Configuration", Value: fmt.Sprintf("%d configuration check(s) need attention.", b.ConfigProblems)})
+	}
+	for i := range out {
+		out[i].Value = clipRunes(out[i].Value, briefingSectionMax)
+	}
+	return out
+}
+
 // BriefingText renders the briefing as Discord markdown, under Discord's 2000-character limit.
+// It is the text the day's claim is stored with (one briefing per day); the card the admins
+// receive is built from BriefingSections.
 func BriefingText(b Briefing) string {
 	var s strings.Builder
 	fmt.Fprintf(&s, "**Champion briefing, %s**\n", b.Day.UTC().Format("Mon 2 Jan 2006"))
-	fmt.Fprintf(&s, "Revenue: %s MRR from %d paying, %d on trial. Collected %s in the last 24h", money(b.MRRCents, b.Currency), b.ActiveSubscribers, b.TrialOrganizations, money(b.PaidCents24h, b.Currency))
-	if b.FailedPayments24h > 0 {
-		fmt.Fprintf(&s, ", %d failed payment(s)", b.FailedPayments24h)
-	}
-	s.WriteString(".\n")
-	fmt.Fprintf(&s, "Growth: %d new account(s), %d new organization(s), %d stuck in onboarding.\n", b.NewUsers24h, b.NewOrganizations, b.StuckOnboarding)
-	fmt.Fprintf(&s, "Fleet: %d server(s) live, %d broken, %d player(s) online, %d kill(s) in 24h.\n", b.LiveServers, b.BrokenServers, b.PlayersOnline, b.Kills24h)
+	s.WriteString("Revenue: " + b.revenue() + "\n")
+	s.WriteString("Growth: " + b.growth() + "\n")
+	s.WriteString("Fleet: " + b.fleet() + "\n")
 	if len(b.OpenIncidents) > 0 {
 		fmt.Fprintf(&s, "\n**Open incidents (%d)**\n%s", len(b.OpenIncidents), bullets(b.OpenIncidents, 6))
 	} else {
-		s.WriteString("No open incidents")
-		if b.ResolvedIncidents > 0 {
-			fmt.Fprintf(&s, "; %d resolved in the last 24h", b.ResolvedIncidents)
-		}
-		s.WriteString(".\n")
+		s.WriteString(b.quietIncidents() + "\n")
 	}
 	if len(b.AtRisk) > 0 {
 		fmt.Fprintf(&s, "\n**At-risk customers (%d)**\n%s", len(b.AtRisk), bullets(b.AtRisk, 6))

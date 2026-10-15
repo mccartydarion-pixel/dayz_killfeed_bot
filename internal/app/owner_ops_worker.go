@@ -10,6 +10,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 
 	"github.com/yourname/dayz-killfeed/internal/ownerops"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -181,8 +182,11 @@ func (a *App) ownerOpsMonitor(ctx context.Context, now time.Time, settings repos
 func (a *App) ownerOpsHandleOpen(ctx context.Context, settings repository.OwnerOpsSettings, f repository.FleetFact, incident repository.PlatformIncident) {
 	if settings.AlertsEnabled && incident.OwnerNotifiedAt == nil {
 		if claimed, err := a.PlatformOps.ClaimIncidentNotice(ctx, incident.ID, false); err == nil && claimed {
-			a.ownerOpsNotifyAdmins(fmt.Sprintf("**Incident opened: %s**\n%s / %s (installation %d)\n%s", ownerops.KindLabel(incident.Kind),
-				f.OrganizationName, serverLabel(f), f.InstallationID, incident.Detail))
+			a.ownerOpsNotifyAdmins(ownerOpsNotice{
+				Title: "Incident opened: " + ownerops.KindLabel(incident.Kind),
+				Body:  fmt.Sprintf("%s / %s (installation %d)\n%s", f.OrganizationName, serverLabel(f), f.InstallationID, incident.Detail),
+				Tone:  incidentTone(incident.Kind), Footer: presentation.FooterOwnerHub, At: incident.DetectedAt,
+			})
 		}
 	}
 	if settings.SelfHealEnabled && ownerops.Healable(incident.Kind) && f.ServerID > 0 {
@@ -227,12 +231,28 @@ func (a *App) ownerOpsResolve(ctx context.Context, settings repository.OwnerOpsS
 	a.ownerOpsAudit(ctx, "incident.resolved", closed, resolution, "OK", nil)
 	// Only tell people it is fixed if they were told it was broken.
 	if settings.AlertsEnabled && incident.OwnerNotifiedAt != nil {
-		a.ownerOpsNotifyAdmins(fmt.Sprintf("**Incident resolved: %s**\n%s / %s\n%s after %s.", ownerops.KindLabel(incident.Kind),
-			f.OrganizationName, serverLabel(f), resolution, time.Since(incident.DetectedAt).Round(time.Minute)))
+		a.ownerOpsNotifyAdmins(ownerOpsNotice{
+			Title: "Incident resolved: " + ownerops.KindLabel(incident.Kind),
+			Body:  fmt.Sprintf("%s / %s\n%s after %s.", f.OrganizationName, serverLabel(f), resolution, time.Since(incident.DetectedAt).Round(time.Minute)),
+			Tone:  presentation.NoticeSuccess, Footer: presentation.FooterOwnerHub, At: time.Now(),
+		})
 	}
 	if settings.CustomerNoticesEnabled && incident.CustomerNotifiedAt != nil {
-		a.ownerOpsNotifyCustomer(ctx, f, "Champion is reading your DayZ server "+serverLabel(f)+" again. Nothing more is needed from you.")
+		a.ownerOpsNotifyCustomer(ctx, f, ownerOpsNotice{
+			Title: "Your killfeed is back",
+			Body:  "Champion is reading your DayZ server " + serverLabel(f) + " again. Nothing more is needed from you.",
+			Tone:  presentation.NoticeSuccess, At: time.Now(),
+		})
 	}
+}
+
+// incidentTone is how loud an incident notice is: an access problem only the customer can fix
+// is critical, a worker problem the monitor can heal is a warning.
+func incidentTone(kind string) presentation.NoticeTone {
+	if ownerops.NeedsCustomer(kind) {
+		return presentation.NoticeCritical
+	}
+	return presentation.NoticeWarning
 }
 
 func serverLabel(f repository.FleetFact) string {
@@ -243,20 +263,24 @@ func serverLabel(f repository.FleetFact) string {
 }
 
 // customerIncidentMessage is the DM an organization's owner gets when only they can fix it.
-func customerIncidentMessage(kind, server, dashboard string) string {
+func customerIncidentMessage(kind, server, dashboard string) ownerOpsNotice {
 	link := ""
 	if dashboard != "" {
 		link = "\n" + dashboard
 	}
+	n := ownerOpsNotice{Title: ownerops.KindLabel(kind), Tone: presentation.NoticeCritical, At: time.Now()}
 	switch kind {
 	case ownerops.KindNitradoAccess:
-		return "Champion can no longer read the logs of your DayZ server " + server + ": its Nitrado connection is missing or Nitrado is refusing the saved access token, so your killfeed has stopped. " +
+		n.Body = "Champion can no longer read the logs of your DayZ server " + server + ": its Nitrado connection is missing or Nitrado is refusing the saved access token, so your killfeed has stopped. " +
 			"Reconnect Nitrado from your Champion dashboard to bring it back." + link
 	case ownerops.KindDiscordAccess:
-		return "The Champion bot is no longer in the Discord server for " + server + ", so nothing can be posted there. " +
+		n.Body = "The Champion bot is no longer in the Discord server for " + server + ", so nothing can be posted there. " +
 			"Add the bot again from your Champion dashboard." + link
+	default:
+		n.Title = "Champion found a problem"
+		n.Body = "Champion found a problem with your DayZ server " + server + "." + link
 	}
-	return "Champion found a problem with your DayZ server " + server + "." + link
+	return n
 }
 
 func (a *App) dashboardURL() string {
@@ -288,10 +312,35 @@ func (a *App) ownerOpsCanDM() bool {
 	return a.Discord != nil && a.Discord.Session() != nil
 }
 
+// ownerOpsNotice is one operational message: what the owner-ops worker and the deploy
+// self-check tell the platform admins, a customer or an installation's staff channel. It is
+// sent as a card (presentation.NoticeEmbed); the test fakes receive its text form.
+type ownerOpsNotice struct {
+	Title  string
+	Body   string
+	Tone   presentation.NoticeTone
+	Fields []*discordgo.MessageEmbedField // optional: the briefing's sections
+	Footer string                         // footer context; "" keeps the notice default
+	At     time.Time                      // the embed timestamp; zero leaves it out
+}
+
+// embed is the notice as the card Discord receives.
+func (n ownerOpsNotice) embed() *discordgo.MessageEmbed {
+	e := presentation.NoticeEmbed(n.Title, n.Body, n.Tone, n.At)
+	if n.Footer != "" {
+		e.Footer = presentation.Footer("", n.Footer)
+	}
+	presentation.AppendFields(e, n.Fields...)
+	return presentation.FitEmbed(e)
+}
+
+// text is the notice as the plain text it replaced, for logs and the test fakes.
+func (n ownerOpsNotice) text() string { return presentation.NoticeText(n.embed()) }
+
 // ownerOpsSend DMs one Discord user. Mentions are disabled: the text can carry customer names.
-func (a *App) ownerOpsSend(discordUserID, text string) error {
+func (a *App) ownerOpsSend(discordUserID string, n ownerOpsNotice) error {
 	if a.ownerOpsDM != nil {
-		return a.ownerOpsDM(discordUserID, text)
+		return a.ownerOpsDM(discordUserID, n.text())
 	}
 	if a.Discord == nil || a.Discord.Session() == nil {
 		return fmt.Errorf("discord is not connected")
@@ -301,18 +350,18 @@ func (a *App) ownerOpsSend(discordUserID, text string) error {
 	if err != nil {
 		return err
 	}
-	_, err = session.ChannelMessageSendComplex(ch.ID, &discordgo.MessageSend{Content: text, AllowedMentions: &discordgo.MessageAllowedMentions{}})
+	_, err = session.ChannelMessageSendComplex(ch.ID, presentation.NoticeMessage(n.embed()))
 	return err
 }
 
 // ownerOpsNotifyAdmins DMs every platform admin; it returns how many were reached.
-func (a *App) ownerOpsNotifyAdmins(text string) int {
+func (a *App) ownerOpsNotifyAdmins(n ownerOpsNotice) int {
 	if a.Config == nil {
 		return 0
 	}
 	delivered := 0
 	for _, id := range a.Config.AdminDiscordIDs {
-		if err := a.ownerOpsSend(id, text); err != nil {
+		if err := a.ownerOpsSend(id, n); err != nil {
 			slog.Warn("component=owner_ops", "event", "admin_dm_failed", "err", err.Error())
 			continue
 		}
@@ -322,50 +371,66 @@ func (a *App) ownerOpsNotifyAdmins(text string) int {
 }
 
 // ownerOpsNotifyCustomer DMs the owner of the organization an installation belongs to.
-func (a *App) ownerOpsNotifyCustomer(ctx context.Context, f repository.FleetFact, text string) {
+func (a *App) ownerOpsNotifyCustomer(ctx context.Context, f repository.FleetFact, n ownerOpsNotice) {
 	discordID, _, _, found, err := a.PlatformOps.ViewAsTarget(ctx, f.OrganizationID)
 	if err != nil || !found || discordID == "" {
 		return
 	}
-	if err := a.ownerOpsSend(discordID, text); err != nil {
+	if err := a.ownerOpsSend(discordID, n); err != nil {
 		slog.Warn("component=owner_ops", "event", "customer_dm_failed", "organization_id", f.OrganizationID, "err", err.Error())
 	}
 }
 
-// ownerOpsBriefing sends today's briefing once.
+// ownerOpsBriefing sends today's briefing once. The day's claim is stored with the briefing's
+// text form (ownerops.BriefingText); what the admins receive is the card.
 func (a *App) ownerOpsBriefing(ctx context.Context, now time.Time) {
 	b, err := a.buildBriefing(ctx, now)
 	if err != nil {
 		slog.Warn("component=owner_ops", "event", "briefing_failed", "err", err.Error())
 		return
 	}
-	text := ownerops.BriefingText(b)
-	claimed, err := a.PlatformOps.ClaimBriefing(ctx, now, text)
+	claimed, err := a.PlatformOps.ClaimBriefing(ctx, now, ownerops.BriefingText(b))
 	if err != nil || !claimed {
 		return
 	}
-	delivered := a.ownerOpsNotifyAdmins(text)
+	delivered := a.ownerOpsNotifyAdmins(briefingNotice(b, now))
 	if err := a.PlatformOps.SetBriefingDelivered(ctx, now, delivered); err != nil {
 		slog.Warn("component=owner_ops", "event", "briefing_mark_failed", "err", err.Error())
 	}
 	slog.Info("component=owner_ops", "event", "briefing_sent", "delivered", delivered)
 }
 
+// briefingNotice is the daily briefing as a card: one field per section, the three numbers
+// side by side, the incidents and the lists on rows of their own. A broken server or an open
+// incident colours it amber; a quiet fleet is neutral.
+func briefingNotice(b ownerops.Briefing, at time.Time) ownerOpsNotice {
+	n := ownerOpsNotice{Title: ownerops.BriefingTitle(b), Tone: presentation.NoticeInfo, Footer: presentation.FooterOwnerHub, At: at}
+	if len(b.OpenIncidents) > 0 || b.BrokenServers > 0 {
+		n.Tone = presentation.NoticeWarning
+	}
+	for _, s := range ownerops.BriefingSections(b) {
+		n.Fields = append(n.Fields, presentation.StatusField(s.Name, s.Value, s.Inline))
+	}
+	return n
+}
+
 // --- broadcast delivery -----------------------------------------------------------------------------
 
-func broadcastMessage(b repository.PlatformBroadcast) string {
-	prefix := "Champion notice"
+// broadcastNotice is a platform broadcast as the card an installation's staff channel gets.
+// The owner's title and body are data: the card quotes them with every mention disabled.
+func broadcastNotice(b repository.PlatformBroadcast) ownerOpsNotice {
+	prefix, tone := "Champion notice", presentation.NoticeInfo
 	switch b.Severity {
 	case repository.BroadcastMaintenance:
-		prefix = "Champion maintenance"
+		prefix, tone = "Champion maintenance", presentation.NoticeWarning
 	case repository.BroadcastIncident:
-		prefix = "Champion incident"
+		prefix, tone = "Champion incident", presentation.NoticeCritical
 	}
-	text := "**" + prefix + ": " + b.Title + "**\n" + b.Body
-	if r := []rune(text); len(r) > 1900 {
-		text = string(r[:1900])
+	at := b.CreatedAt
+	if at.IsZero() {
+		at = time.Now()
 	}
-	return text
+	return ownerOpsNotice{Title: prefix + ": " + b.Title, Body: b.Body, Tone: tone, At: at}
 }
 
 // deliverBroadcast posts a broadcast's Discord copy to each target installation's staff alerts
@@ -378,7 +443,7 @@ func (a *App) deliverBroadcast(ctx context.Context, b repository.PlatformBroadca
 		slog.Warn("component=owner_ops", "event", "broadcast_targets_failed", "broadcast_id", b.ID, "err", err.Error())
 		return
 	}
-	text := broadcastMessage(b)
+	notice := broadcastNotice(b)
 	sent, failed, skipped := 0, 0, 0
 	for _, t := range targets {
 		if ctx.Err() != nil {
@@ -396,7 +461,7 @@ func (a *App) deliverBroadcast(ctx context.Context, b repository.PlatformBroadca
 			skipped++
 			continue
 		}
-		if err := a.ownerOpsPost(t.ChannelID, text); err != nil {
+		if err := a.ownerOpsPost(t.ChannelID, notice); err != nil {
 			failed++
 			slog.Warn("component=owner_ops", "event", "broadcast_post_failed", "broadcast_id", b.ID, "installation_id", t.InstallationID, "err", err.Error())
 		} else {
@@ -411,14 +476,14 @@ func (a *App) deliverBroadcast(ctx context.Context, b repository.PlatformBroadca
 	slog.Info("component=owner_ops", "event", "broadcast_delivered", "broadcast_id", b.ID, "sent", sent, "failed", failed, "no_channel", skipped)
 }
 
-// ownerOpsPost sends a plain message to a channel with every mention disabled.
-func (a *App) ownerOpsPost(channelID, text string) error {
+// ownerOpsPost posts a notice card to a channel with every mention disabled.
+func (a *App) ownerOpsPost(channelID string, n ownerOpsNotice) error {
 	if a.ownerOpsChannelPost != nil {
-		return a.ownerOpsChannelPost(channelID, text)
+		return a.ownerOpsChannelPost(channelID, n.text())
 	}
 	if a.Discord == nil || a.Discord.Session() == nil {
 		return fmt.Errorf("discord is not connected")
 	}
-	_, err := a.Discord.Session().ChannelMessageSendComplex(channelID, &discordgo.MessageSend{Content: text, AllowedMentions: &discordgo.MessageAllowedMentions{}})
+	_, err := a.Discord.Session().ChannelMessageSendComplex(channelID, presentation.NoticeMessage(n.embed()))
 	return err
 }

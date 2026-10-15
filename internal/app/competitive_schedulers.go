@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/yourname/dayz-killfeed/internal/discord"
 	"github.com/yourname/dayz-killfeed/internal/discord/panels"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
@@ -64,21 +63,6 @@ func (a *App) runCompetitiveSchedulers(ctx context.Context, guildID int64) {
 			return
 		}
 	}
-}
-
-type contentPanelEditor struct{ api *discord.SessionAPI }
-
-func (e contentPanelEditor) Send(channelID, content string) (string, error) {
-	m, err := e.api.ChannelMessageSendContent(channelID, content)
-	if m == nil {
-		return "", err
-	}
-	return m.ID, err
-}
-
-func (e contentPanelEditor) Edit(channelID, messageID, content string) error {
-	_, err := e.api.ChannelMessageEditContent(channelID, messageID, content)
-	return err
 }
 
 type competitivePanelLoader struct {

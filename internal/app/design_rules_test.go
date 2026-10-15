@@ -11,7 +11,7 @@ import (
 // previewSampleNames are the made-up names in the preview data: data, not labels.
 var previewSampleNames = []string{
 	"Example Server Alpha", "Example Season One", "Example Wolves", "Sample Ravens", "Example Trader", "Supporter Pack", "Gold Supporter",
-	"Sample_Raven", "Fictional_Fox", "Made_Up_Moose", "Sniper Sunday", "North West Airfield", "Sakhal", "Chernarus", "Livonia", "Platinum",
+	"Sample_Raven", "Fictional_Fox", "Made_Up_Moose", "Sniper Sunday", "North West Airfield", "Sakhal", "Chernarus", "Livonia", "Platinum", "Example Community", "Mon 5 Oct 2026", "Maintenance tonight", // the broadcast's title is the owner's own text
 }
 
 // TestDesignRules walks the cards this package builds and asserts the rules of

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -49,9 +50,13 @@ func TestSecurityExpiryWorkerSendsOneDMPerEndedPurchase(t *testing.T) {
 	if len(sent) != 2 {
 		t.Fatal("expiry DM repeated")
 	}
-	if last.AllowedMentions == nil || len(last.AllowedMentions.Parse) != 0 || strings.Contains(last.Content, "@everyone") ||
-		!strings.Contains(last.Content, "has ended") || !strings.Contains(last.Content, "Nothing was charged") ||
-		!strings.Contains(last.Content, "https://champions.example/dashboard/player/security-store") {
+	// The DM is a card, not plain text: a warning-coloured notice with mentions disabled.
+	if last.Content != "" || len(last.Embeds) != 1 || last.AllowedMentions == nil || len(last.AllowedMentions.Parse) != 0 {
 		t.Fatalf("expiry DM: %+v", last)
+	}
+	e := last.Embeds[0]
+	if strings.Contains(e.Title, "@everyone") || !strings.HasSuffix(e.Title, "has ended") || e.Color != presentation.Amber || e.Timestamp == "" ||
+		!strings.Contains(e.Description, "Nothing was charged") || !strings.Contains(e.Description, "https://champions.example/dashboard/player/security-store") {
+		t.Fatalf("expiry card: %+v", e)
 	}
 }

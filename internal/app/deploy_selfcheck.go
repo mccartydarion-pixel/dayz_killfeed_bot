@@ -10,6 +10,7 @@ import (
 
 	"github.com/yourname/dayz-killfeed/internal/killfeed"
 	"github.com/yourname/dayz-killfeed/internal/leader"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 )
 
 // The deploy self-check (docs/DEPLOY.md): after start-up the process checks itself and logs ONE
@@ -252,7 +253,7 @@ func (a *App) runDeploySelfCheck(ctx context.Context, every, deadline, recoveryE
 		alerted := a.deploy.alerted
 		a.deploy.mu.Unlock()
 		if alerted {
-			a.ownerOpsNotifyAdmins("**Deploy recovered**\n" + line)
+			a.ownerOpsNotifyAdmins(ownerOpsNotice{Title: "Deploy recovered", Body: line, Tone: presentation.NoticeSuccess, Footer: presentation.FooterOwnerHub, At: now})
 		}
 		return
 	}
@@ -276,9 +277,13 @@ func (a *App) deployUnhealthy(ctx context.Context, now time.Time, facts deployFa
 	if err != nil || !settings.AlertsEnabled {
 		return
 	}
-	text := fmt.Sprintf("**Deploy self-check failed**\nCommit %s is not healthy %d minutes after it started:\n- %s\n%s",
-		shortCommit(facts.Commit), int(now.Sub(processStartedAt).Minutes()), strings.Join(problems, "\n- "), line)
-	if a.ownerOpsNotifyAdmins(text) > 0 {
+	notice := ownerOpsNotice{
+		Title: "Deploy self-check failed",
+		Body: fmt.Sprintf("Commit %s is not healthy %d minutes after it started:\n- %s\n%s",
+			shortCommit(facts.Commit), int(now.Sub(processStartedAt).Minutes()), strings.Join(problems, "\n- "), line),
+		Tone: presentation.NoticeCritical, Footer: presentation.FooterOwnerHub, At: now,
+	}
+	if a.ownerOpsNotifyAdmins(notice) > 0 {
 		a.deploy.mu.Lock()
 		a.deploy.alerted = true
 		a.deploy.mu.Unlock()

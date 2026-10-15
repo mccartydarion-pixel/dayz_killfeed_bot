@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/linking"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 )
 
 // VerifiedRoleAssigner adds the guild's configured @Verified role to a member
@@ -75,15 +77,20 @@ func (a *VerifiedRoleAssigner) NotifyVerified(ctx context.Context, discordUserID
 	if err != nil {
 		return fmt.Errorf("open DM channel: %w", err)
 	}
-	message := "✅ **Verification complete**\n\nYour PlayStation account is now verified with Champion."
-	if roleAssigned {
-		message += " Your Verified role has been assigned."
-	}
 	if err := deliver("VERIFICATION_DM", "", func() error {
-		_, err := a.client.Session().ChannelMessageSend(channel.ID, message)
+		_, err := a.client.Session().ChannelMessageSendComplex(channel.ID, VerifiedMessage(roleAssigned, time.Now()))
 		return err
 	}); err != nil {
 		return fmt.Errorf("send verification DM: %w", err)
 	}
 	return nil
+}
+
+// VerifiedMessage is the "your link is verified" DM: a success card, mentions disabled.
+func VerifiedMessage(roleAssigned bool, at time.Time) *discordgo.MessageSend {
+	body := "Your PlayStation account is now verified with Champion."
+	if roleAssigned {
+		body += " Your Verified role has been assigned."
+	}
+	return presentation.NoticeMessage(presentation.NoticeEmbed("✅ Verification complete", body, presentation.NoticeSuccess, at))
 }
