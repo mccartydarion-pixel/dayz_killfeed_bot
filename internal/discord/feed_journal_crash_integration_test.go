@@ -143,6 +143,7 @@ func TestJournalSurvivesSIGKILL(t *testing.T) {
 	_ = store.Save(GuildSetup{GuildID: "g1", KillfeedChannelID: ch})
 	f := NewRotatingFeed(NewFeedSession(s), store, "g1", func(g *GuildSetup) string { return g.KillfeedChannelID }, time.Hour, 10)
 	f.SetMode(FeedModeImmediate)
+	f.SetMaxCardsPerMessage(1) // per-card accounting below: one message per card, kill-01 recovered by nonce
 	f.SetJournal(j, key)
 	ctx, cancel := context.WithCancel(context.Background())
 	go f.Run(ctx)
