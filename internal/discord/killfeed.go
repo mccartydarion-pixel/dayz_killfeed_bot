@@ -74,9 +74,9 @@ func (p *KillfeedPublisher) killCard(ev *killfeed.Event) *discordgo.MessageEmbed
 // default, custom, fallback - can be exercised without a Discord session).
 func (p *KillfeedPublisher) Card(ev *killfeed.Event) *discordgo.MessageEmbed {
 	def := BuildKillEmbed(ev)
-	return customEmbed(p.custom, p.routeGuildID, p.routeServerID, routeKeyKillfeed, def, func() map[string]string {
+	return customEmbedAt(p.custom, p.routeGuildID, p.routeServerID, routeKeyKillfeed, def, func() map[string]string {
 		return killfeedVars(ev, p.currentServerName())
-	})
+	}, ev.DisplayTime())
 }
 
 // RouteResolver resolves a feature route key to the Discord channel an

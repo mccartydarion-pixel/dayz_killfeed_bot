@@ -401,15 +401,18 @@ type Engine struct {
 	deltaBytesReceived   int64
 	fullReadBytesAvoided int64
 
-	// Latency measurement only (feed_latency.go). batchReadAt is when the bytes now being parsed
-	// were downloaded; utcOffset reports the server clock's offset from UTC in minutes, when known.
+	// batchReadAt is when the bytes now being parsed were downloaded (latency measurement,
+	// feed_latency.go); utcOffset reports the server clock's offset from UTC in minutes, when
+	// known - it is what turns a line's clock into its real UTC time (event_time.go).
 	batchReadAt time.Time
 	utcOffset   func() (minutes int, known bool)
+	// lastEventTimeWarn rate-limits the implausible-event-time warning (event_time.go).
+	lastEventTimeWarn time.Time
 }
 
-// SetServerUTCOffset attaches the source of the game server clock's UTC offset, used only to
-// express a line's own time in UTC for latency measurement. Optional: without it (or while it
-// reports unknown) no line time is converted.
+// SetServerUTCOffset attaches the source of the game server clock's UTC offset, used to express a
+// line's own time in UTC (Event.Timestamp, and the latency measurement's LoggedAt). Optional:
+// without it (or while it reports unknown) no line time is converted.
 func (e *Engine) SetServerUTCOffset(fn func() (minutes int, known bool)) {
 	if e != nil {
 		e.utcOffset = fn
@@ -418,14 +421,11 @@ func (e *Engine) SetServerUTCOffset(fn func() (minutes int, known bool)) {
 
 // loggedAtUTC converts a line's server-local time to UTC, or returns zero when the offset is unknown.
 func (e *Engine) loggedAtUTC(local *time.Time) time.Time {
-	if e.utcOffset == nil || local == nil {
+	if e.utcOffset == nil {
 		return time.Time{}
 	}
 	minutes, known := e.utcOffset()
-	if !known {
-		return time.Time{}
-	}
-	return local.Add(-time.Duration(minutes) * time.Minute)
+	return lineTimeUTC(local, minutes, known)
 }
 
 // markBatchRead notes that the bytes about to be parsed have just been downloaded.

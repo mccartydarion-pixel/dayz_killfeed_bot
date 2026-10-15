@@ -55,7 +55,8 @@ func BuildDeathEmbed(ev *killfeed.Event) *discordgo.MessageEmbed {
 	if ev.PlayerStats != nil {
 		presentation.AppendFields(embed, presentation.MetricField("Player stats", compactCombatStats(ev.PlayerStats), false))
 	}
-	presentation.StampEmbed(embed, ev.Timestamp)
+	// The death's own time when the engine derived one, else when the line was read.
+	presentation.StampEmbed(embed, ev.DisplayTime())
 	return presentation.FitEmbed(embed)
 }
 

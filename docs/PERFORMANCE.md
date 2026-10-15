@@ -552,6 +552,11 @@ game wrote the line -> bot read it -> queued for Discord -> Discord accepted the
 **The line's own time.** An ADM line carries only the server's local time of day. The date comes
 from the ADM file's name, and the conversion to UTC uses the server's UTC offset that Live Sync
 learned from `restart.log` (`live_sync_server_clock`, re-read by each worker every 5 minutes).
+This one derivation (`internal/killfeed/event_time.go`) is also the event's real time: it becomes
+`Event.Timestamp`, is stored as `kills.event_time` / `deaths.event_time` and is the time the kill
+and death cards show, when it is within a day before now and at most 10 minutes ahead of it
+(otherwise the column stays NULL and the card shows the read time). The durable fingerprint
+ignores the derived time, so a deploy never re-posts history.
 
 - Offset not learned yet: the two `gameLog…` stages are simply missing for that card, and it is
   counted in `cardsWithoutServerClock`. No offset is ever assumed.
