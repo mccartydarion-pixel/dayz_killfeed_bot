@@ -217,7 +217,7 @@ these rules were applied. C = crimson, G = gold, Gr = green, A = amber, R = red,
 | 2 | Death card | `discord/deathfeed.go` `BuildDeathEmbed` | yes | N | `☠️ Player death`, `💀 Suicide` | `Cause` `Weapon` `Final hit` inline, `Player stats` | season, else slogan | embed timestamp | yes |
 | 3 | Hit card | `discord/hitfeed.go` `buildHitEmbed` | yes | N | header `🎯 **Hit**  A  ➜  B` | none (three lines) | none | none | yes |
 | 4 | PvE death card | `discord/pvefeed.go` `buildPveEmbed` | yes | N | header `💀 **Suicide**`, `☣️ **PvE death**` | none | none | none | yes |
-| 5 | Connection card | `discord/connections.go` `buildConnectionsEmbed` | yes | Gr joined, N left | header `🟢 **Connected**`, `🔴 **Disconnected**` | none | none | none | yes |
+| 5 | Connection card | `discord/connections.go` `buildConnectionEmbed` | `Champion Connections notification` | Gr joined, R left | `🟢 Connection`, `🔴 Disconnection`; description `**Connection – <t:…:T>**` then `` `name` is connected`` | disconnects: `Session time` (`00H 33M 26S`), `Location` (`x;y;z`), `Cash earned` (economy servers) | server name | the line's own time | yes |
 | 6 | Connection list (several at once) | same | yes | N | header `🔌 **Server connections**` | none | none | none | yes |
 | 7 | Build activity card | `discord/build_feed.go` `BuildActivityEmbed` | yes | N | `🏗️ Build activity` | `Player` `Action` `Object` `On`/`From` `Tool` `Location` `Server` inline | `Staff only` | none | yes |
 | 8 | Build activity summary | same, `BuildActivitySummaryEmbed` | yes | N | `🏗️ Build activity` | `Server` | `Staff only` | none | yes |

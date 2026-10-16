@@ -183,7 +183,7 @@ func (e *Engine) processLineAt(line, sourcePath string, endOffset int64) (bool, 
 	if e.players != nil {
 		switch ev.Type {
 		case EventPlayerConnect:
-			if e.players.PlayerConnected(ev.Player) {
+			if e.players.PlayerConnectedAt(ev.Player, ev.Timestamp) {
 				connectAt := time.Now()
 				e.presenceMu.Lock()
 				e.lastPresenceEvent = "PLAYER_CONNECT"
@@ -202,10 +202,10 @@ func (e *Engine) processLineAt(line, sourcePath string, endOffset int64) (bool, 
 				// only when the player was genuinely not online yet - a repeated
 				// "is connected" for an online player is a refresh, not a new
 				// connection.
-				e.publishConnection(ConnectionNotice{Kind: ConnectionConnected, Name: ev.Player.Name})
+				e.publishConnection(ConnectionNotice{Kind: ConnectionConnected, Name: ev.Player.Name, At: ev.Timestamp, Position: ev.Player.Position, PlayerID: ev.Player.ID})
 			}
 		case EventPlayerDisconnect:
-			if session, removed := e.players.DisconnectSession(ev.Player); removed {
+			if session, removed := e.players.DisconnectSessionAt(ev.Player, ev.Timestamp); removed {
 				disconnectAt := time.Now()
 				e.presenceMu.Lock()
 				e.lastPresenceEvent = "PLAYER_DISCONNECT"
@@ -220,7 +220,7 @@ func (e *Engine) processLineAt(line, sourcePath string, endOffset int64) (bool, 
 				slog.Info("component=presence", "event", "disconnect_committed", "server_id", e.serverID, "online_count", e.players.OnlineCount())
 				e.notePresenceEvent(disconnectAt)
 				e.firePlayersChanged()
-				e.publishConnection(ConnectionNotice{Kind: ConnectionDisconnected, Name: ev.Player.Name, Session: session})
+				e.publishConnection(ConnectionNotice{Kind: ConnectionDisconnected, Name: ev.Player.Name, Session: session, At: ev.Timestamp, Position: ev.Player.Position, PlayerID: ev.Player.ID})
 			}
 		}
 	}

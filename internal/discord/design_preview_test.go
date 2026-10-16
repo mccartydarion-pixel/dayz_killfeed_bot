@@ -113,7 +113,7 @@ func designPreviewCards() []designPreviewCard {
 	add("pve-suicide", "PvE feed: a suicide", "Feeds", buildPveEmbed(killfeed.PveDeathNotice{Name: "Made_Up_Moose", Cause: killfeed.DeathCauseSuicide}))
 	add("pve-death", "PvE feed: killed by an infected", "Feeds", buildPveEmbed(killfeed.PveDeathNotice{Name: "Made_Up_Moose", Cause: killfeed.DeathCauseInfected}))
 	add("connection-joined", "Connection card: a player joined", "Feeds", buildConnectionsEmbed([]killfeed.ConnectionNotice{{Kind: killfeed.ConnectionConnected, Name: "Sample_Raven"}}, 0))
-	add("connection-left", "Connection card: a player left", "Feeds", buildConnectionsEmbed([]killfeed.ConnectionNotice{{Kind: killfeed.ConnectionDisconnected, Name: "Fictional_Fox", Session: 72 * time.Minute}}, 0))
+	add("connection-left", "Connection card: a player left", "Feeds", buildConnectionEmbed(killfeed.ConnectionNotice{Kind: killfeed.ConnectionDisconnected, Name: "Fictional_Fox", Session: 72*time.Minute + 26*time.Second, Position: &killfeed.Position{X: 9047.2, Y: 11890, Z: 227.7}}, "Example Server Alpha", 3500, true))
 	add("connection-batch", "Connection card: several at once", "Feeds", buildConnectionsEmbed([]killfeed.ConnectionNotice{
 		{Kind: killfeed.ConnectionConnected, Name: "Sample_Raven"},
 		{Kind: killfeed.ConnectionDisconnected, Name: "Fictional_Fox", Session: 72 * time.Minute},

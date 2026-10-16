@@ -184,6 +184,13 @@ type ConnectionNotice struct {
 	Kind    ConnectionKind
 	Name    string
 	Session time.Duration // 0 = unknown
+	// At is when the line says it happened (Event.Timestamp, derived by the engine); zero when
+	// the engine could not derive it, in which case the feed uses the time it read the line.
+	At time.Time
+	// Position is where the player was, when the ADM line carries pos=<...>. nil otherwise.
+	Position *Position
+	// PlayerID is the DayZ identity, for look-ups (session earnings) only. It is never shown.
+	PlayerID string
 }
 
 // ConnectionPublisher is the consumer for authoritative connect/disconnect

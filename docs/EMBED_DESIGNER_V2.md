@@ -304,8 +304,12 @@ Streak: 1
 | `event` | Event | Activity | joined or left. | `connection notice kind` | `joined` | no | label | Always present. |
 | `event_type` | Event Type | Activity | connected or disconnected. | `connection notice kind` | `connected` | no | label | Always present. |
 | `session` | Session Length | Activity | How long the player was online. | `connection notice session` | `1h 12m` | yes | text | Only on disconnects when the session length is known. |
+| `session_time` | Session Time | Activity | The session as a clock. | `connection notice session` | `00H 33M 26S` | yes | text | Only on disconnects when the session length is known. |
+| `location` | Location | Activity | Where the player was, as the log prints it. | `connection notice position` | `9047.2;11890.0;227.7` | yes | text | When the log line carries a position. |
+| `cash_earned` | Cash Earned | Activity | Champion Points credited during the session. | `economy ledger` | `3,500` | yes | text | Only on disconnects, on servers with the economy. |
+| `time` | Time | Server | The moment of the line, in the reader's time zone. | `log line time` | `<t:1792194705:T>` | no | text | Always present. |
 | `server_name` | Server Name | Server | The DayZ server's display name. | `game server display name` | `Champions Deathmatch` | yes | text | Present when the server has a display name. |
-| `timestamp` | Timestamp | Server | When Champion published the card (UTC). | `publish time` | `2026-09-23 12:00:00 UTC` | no | timestamp | Always present. |
+| `timestamp` | Timestamp | Server | The moment of the line (UTC). | `log line time` | `2026-09-23 12:00:00 UTC` | no | timestamp | Always present. |
 
 
 ## Live publishing is unchanged

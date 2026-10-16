@@ -203,10 +203,11 @@ func designerCases() []designerCase {
 		"website-default": websiteDefault("CONNECTIONS", "#4C87A0", "Player connection", "{{player}} {{event}} the server.", tmplField("server", "Server", "{{server_name}}", false, 0)),
 		"every-variable":  {RouteKey: "CONNECTIONS", Enabled: true, Color: "#3F8F68", Description: embedtemplates.Text{Enabled: true, Template: "{{player}} {{event}} ({{event_type}})\nSession {{session}}\n{{server_name}} {{timestamp}}"}},
 	}
+	connAt := time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC) // the line's own time: fixed, so {{time}} is stable
 	connectionEvents := map[string]killfeed.ConnectionNotice{
-		"joined":            {Kind: killfeed.ConnectionConnected, Name: "WilliamAle--10"},
-		"left-with-session": {Kind: killfeed.ConnectionDisconnected, Name: "Semillita-azul-_", Session: 72 * time.Minute},
-		"left-no-session":   {Kind: killfeed.ConnectionDisconnected, Name: "Semillita-azul-_"},
+		"joined":            {Kind: killfeed.ConnectionConnected, Name: "WilliamAle--10", At: connAt},
+		"left-with-session": {Kind: killfeed.ConnectionDisconnected, Name: "Semillita-azul-_", Session: 72*time.Minute + 26*time.Second, At: connAt, Position: &killfeed.Position{X: 9047.2, Y: 11890, Z: 227.7}},
+		"left-no-session":   {Kind: killfeed.ConnectionDisconnected, Name: "Semillita-azul-_", At: connAt},
 	}
 	for tname, cfg := range connectionTemplates {
 		for ename, ev := range connectionEvents {

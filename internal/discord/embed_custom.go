@@ -240,12 +240,19 @@ func pveVars(n killfeed.PveDeathNotice, serverName string) map[string]string {
 
 // connectionVars: one connect/disconnect state change.
 func connectionVars(n killfeed.ConnectionNotice, serverName string) map[string]string {
-	m := map[string]string{"player": nameVar(n.Name), "timestamp": stampVar(time.Now())}
+	at := connectionTime(n)
+	m := map[string]string{"player": nameVar(n.Name), "timestamp": stampVar(at), "time": presentation.Timestamp(at, 'T')}
 	if n.Kind == killfeed.ConnectionConnected {
 		m["event"], m["event_type"] = "joined", "connected"
 	} else {
 		m["event"], m["event_type"] = "left", "disconnected"
 		setIf(m, "session", formatSession(n.Session))
+		if n.Session > 0 {
+			m["session_time"] = formatSessionClock(n.Session)
+		}
+	}
+	if n.Position != nil {
+		m["location"] = formatLocation(*n.Position)
 	}
 	setIf(m, "server_name", serverName)
 	return m

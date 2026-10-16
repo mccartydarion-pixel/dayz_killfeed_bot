@@ -623,3 +623,28 @@ func TestEconomyRepositoryLookupsAreGuildScoped(t *testing.T) {
 		t.Fatalf("guild B must not see guild A's balance, got %d", b)
 	}
 }
+
+// EarnedSince (the CONNECTIONS card's "Cash earned" row): the player's credits since a moment,
+// found by DayZ identity, debits and older rows left out, other players left out.
+func TestEconomyEarnedSince(t *testing.T) {
+	f := newEcoFix(t)
+	dayzID := fmt.Sprintf("dz-Hunter-%d", f.suffix)
+	// The ledger is append-only, so the "older" row is simply written before the window opens.
+	f.credit(f.hunter, 1000, "SYSTEM_REWARD", true, "old")
+	var since time.Time
+	must(t, f.pool.QueryRow(f.ctx, `SELECT MAX(created_at)+INTERVAL '1 millisecond' FROM point_transactions WHERE guild_id=$1 AND player_id=$2`, f.guildA, f.hunter).Scan(&since))
+	f.credit(f.hunter, 3000, "SYSTEM_REWARD", true, "kill-1")
+	f.credit(f.hunter, 500, "ADMIN_CREDIT", false, "gift")
+	_, err := f.repoEco().Debit(f.ctx, LedgerParams{GuildID: f.guildA, PlayerID: f.hunter, Type: "SHOP_PURCHASE", Amount: 200, ReferenceID: "buy", CreatedBy: "test"})
+	must(t, err)
+	f.credit(f.target, 900, "SYSTEM_REWARD", true, "other")
+
+	got, err := f.repoEco().EarnedSince(f.ctx, f.guildA, dayzID, since)
+	must(t, err)
+	if got != 3500 {
+		t.Fatalf("earned since = %d, want 3500 (3000 + 500; the debit and the row before the window left out)", got)
+	}
+	if got, err := f.repoEco().EarnedSince(f.ctx, f.guildA, "dz-nobody", since); err != nil || got != 0 {
+		t.Fatalf("unknown player: %d %v", got, err)
+	}
+}

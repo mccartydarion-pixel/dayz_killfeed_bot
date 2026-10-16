@@ -173,7 +173,7 @@ func TestColoursFollowMeaning(t *testing.T) {
 		"death":                      {BuildDeathEmbed(FixtureDeath()).Color, presentation.Neutral},
 		"hit":                        {buildHitEmbed(&hitEncounter{attacker: "a", victim: "b", hits: 1}).Color, presentation.Neutral},
 		"player joined":              {buildConnectionsEmbed([]killfeed.ConnectionNotice{{Kind: killfeed.ConnectionConnected, Name: "a"}}, 0).Color, presentation.Green},
-		"player left":                {buildConnectionsEmbed([]killfeed.ConnectionNotice{{Kind: killfeed.ConnectionDisconnected, Name: "a"}}, 0).Color, presentation.Neutral},
+		"player left":                {buildConnectionsEmbed([]killfeed.ConnectionNotice{{Kind: killfeed.ConnectionDisconnected, Name: "a"}}, 0).Color, presentation.Red}, // green in, red out: the pair reads at a glance
 		"bounty placed":              {buildBountyEventEmbed(bounties.Event{Kind: bounties.EventPlaced, Target: "a", Amount: 1}).Color, presentation.Crimson},
 		"bounty claimed":             {buildBountyEventEmbed(bounties.Event{Kind: bounties.EventClaimed, Target: "a", Hunter: "b", Amount: 1}).Color, presentation.Gold},
 		"bounty expired":             {buildBountyEventEmbed(bounties.Event{Kind: bounties.EventExpired, Target: "a", Amount: 1}).Color, presentation.Neutral},

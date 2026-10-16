@@ -13,6 +13,9 @@ type OnlinePlayer struct {
 	ID          string
 	Name        string
 	ConnectedAt time.Time
+	// EventAt is the connect line's own time when the engine could derive it (zero otherwise),
+	// so a session is measured between the log's clocks rather than between two reads.
+	EventAt time.Time
 }
 
 // PlayerTracker tracks online players keyed by DayZ player ID when available.
@@ -44,6 +47,12 @@ func playerKey(p *PlayerRef) string {
 // connections for the same player refresh the record rather than double-counting.
 // Returns true only when the player was not already tracked as online.
 func (t *PlayerTracker) PlayerConnected(p *PlayerRef) bool {
+	return t.PlayerConnectedAt(p, time.Time{})
+}
+
+// PlayerConnectedAt is PlayerConnected that also records the connect line's own time (zero when
+// unknown), for DisconnectSessionAt.
+func (t *PlayerTracker) PlayerConnectedAt(p *PlayerRef, eventAt time.Time) bool {
 	if t == nil || p == nil {
 		return false
 	}
@@ -59,8 +68,9 @@ func (t *PlayerTracker) PlayerConnected(p *PlayerRef) bool {
 		// A duplicate "is connected" refreshes the record but must not restart
 		// the session clock, or the observed session length would be wrong.
 		connectedAt = prev.ConnectedAt
+		eventAt = prev.EventAt
 	}
-	t.players[key] = OnlinePlayer{ID: p.ID, Name: p.Name, ConnectedAt: connectedAt}
+	t.players[key] = OnlinePlayer{ID: p.ID, Name: p.Name, ConnectedAt: connectedAt, EventAt: eventAt}
 	return !alreadyOnline
 }
 
@@ -78,6 +88,12 @@ func (t *PlayerTracker) PlayerDisconnected(p *PlayerRef) bool {
 // before Champion started, or before a tracker reset, has no known start), in
 // which case removal still succeeds but the duration is 0.
 func (t *PlayerTracker) DisconnectSession(p *PlayerRef) (session time.Duration, removed bool) {
+	return t.DisconnectSessionAt(p, time.Time{})
+}
+
+// DisconnectSessionAt is DisconnectSession measured between the two lines' own times when both
+// the connect's and this disconnect's (eventAt) are known; otherwise between the two reads.
+func (t *PlayerTracker) DisconnectSessionAt(p *PlayerRef, eventAt time.Time) (session time.Duration, removed bool) {
 	if t == nil || p == nil {
 		return 0, false
 	}
@@ -92,6 +108,11 @@ func (t *PlayerTracker) DisconnectSession(p *PlayerRef) (session time.Duration, 
 		return 0, false
 	}
 	delete(t.players, key)
+	if !tracked.EventAt.IsZero() && !eventAt.IsZero() {
+		if d := eventAt.Sub(tracked.EventAt); d > 0 {
+			return d, true
+		}
+	}
 	if !tracked.ConnectedAt.IsZero() {
 		if d := t.now().Sub(tracked.ConnectedAt); d > 0 {
 			session = d

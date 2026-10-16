@@ -235,6 +235,17 @@ func (r *EconomyRepository) Balance(ctx context.Context, guildID, playerID int64
 	return b, err
 }
 
+// EarnedSince sums what the player with DayZ identity dayzPlayerID was credited in guildID
+// since the given time (every positive ledger row: rewards, prizes and admin credits alike).
+// A player with no row earned nothing.
+func (r *EconomyRepository) EarnedSince(ctx context.Context, guildID int64, dayzPlayerID string, since time.Time) (int64, error) {
+	var total int64
+	err := r.pool.QueryRow(ctx, `SELECT COALESCE(SUM(t.amount),0) FROM point_transactions t
+JOIN players p ON p.id=t.player_id AND p.guild_id=t.guild_id
+WHERE t.guild_id=$1 AND p.dayz_player_id=$2 AND t.amount>0 AND t.created_at>=$3`, guildID, dayzPlayerID, since).Scan(&total)
+	return total, err
+}
+
 const (
 	DefaultHistoryLimit = 10
 	MaxHistoryLimit     = 50
