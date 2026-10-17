@@ -17,26 +17,32 @@ import (
 // routeKeyConnections mirrors routing.RouteConnections (asserted equal in tests).
 const routeKeyConnections = "CONNECTIONS"
 
-// CONNECTIONS delivery policy. Connections are far rarer than hits, but a
-// server restart makes every player reconnect within seconds, so delivery is
-// bounded rather than one message per event:
+// CONNECTIONS delivery policy. Every connect and disconnect is its own card
+// (the customizable single-event card, docs/DISCORD_DESIGN.md row 5): Nitrado
+// hands the log over in chunks of several minutes, so events that happened
+// minutes apart reach the bot together, and merging them would turn almost
+// every event into a summary line. Delivery is still bounded, because a
+// server restart makes every player reconnect within seconds:
 //
 //   - one bounded queue and one goroutine per server worker (never a goroutine
 //     per event);
-//   - each tick sends at most ONE message, batching up to
-//     connectionsLinesPerMessage events into a single embed (a lone event gets
-//     the plain single-line card);
-//   - every event keeps its own line and player - players are never merged;
+//   - each tick sends at most connectionsCardsPerTick cards, one event each;
+//   - a flood (more than connectionsSummaryThreshold events queued, or events
+//     dropped) switches that tick to ONE summary message of up to
+//     connectionsLinesPerMessage events; every event keeps its own line and
+//     player - players are never merged;
 //   - the queue holds at most connectionsMaxQueue events; on overflow the
 //     OLDEST are dropped and the next message says how many were not shown.
 //
-// Worst case: 1 message / 2s carrying 20 events (10 events/s sustained).
+// Worst case: connectionsCardsPerTick messages / 2s while cards are sent, or
+// 1 message / 2s carrying 20 events (10 events/s sustained) under a flood.
 const (
 	connectionsTick             = 2 * time.Second
 	connectionsMaxQueue         = 300
 	connectionsLinesPerMessage  = 20
-	connectionsMessagesPerTick  = 1
-	connectionsFinalMessages    = 3
+	connectionsCardsPerTick     = 5
+	connectionsFinalCards       = 5
+	connectionsSummaryThreshold = 12
 	connectionsMaxNameLen       = 40
 	connectionsMinShownSession  = time.Minute
 	connectionsBatchTitle       = "🔌 **Server connections**"
@@ -114,9 +120,9 @@ func (p *ConnectionsPublisher) SetEarnings(f SessionEarningsFunc) {
 	p.earnings = f
 }
 
-// card renders one message: a lone connect/disconnect may use the custom template;
-// a batch (several players, or "earlier events not shown") is a summary list, which a
-// single-event template cannot describe, so it always keeps the default.
+// card renders one message: a single connect/disconnect (the normal case) may use the
+// custom template; a flood batch (several events, or "earlier events not shown") is a
+// summary list, which a single-event template cannot describe, so it always keeps the default.
 func (p *ConnectionsPublisher) card(batch []killfeed.ConnectionNotice, omitted int64) *discordgo.MessageEmbed {
 	if len(batch) != 1 || omitted != 0 {
 		return buildConnectionsEmbed(batch, omitted)
@@ -221,9 +227,9 @@ func (p *ConnectionsPublisher) tick(final bool) {
 		p.mu.Unlock()
 		return
 	}
-	messages := connectionsMessagesPerTick
+	messages := connectionsCardsPerTick
 	if final {
-		messages = connectionsFinalMessages
+		messages = connectionsFinalCards
 	}
 	dropWarn := ""
 	if p.dropped > 0 && (p.lastDropWarned.IsZero() || time.Since(p.lastDropWarned) >= time.Minute) {
@@ -241,10 +247,15 @@ func (p *ConnectionsPublisher) tick(final bool) {
 			return
 		}
 		p.send(channel, batch, omitted)
+		if len(batch) > 1 || omitted > 0 {
+			return // a flood tick: one summary message, the rest waits for the next tick
+		}
 	}
 }
 
-// takeBatch removes up to one message's worth of events from the queue and
+// takeBatch removes the next message's worth of events from the queue: one
+// event (its own card) normally, up to connectionsLinesPerMessage events (a
+// summary) when the queue is a flood or earlier events were dropped. It also
 // returns how many earlier events were dropped since the last message.
 func (p *ConnectionsPublisher) takeBatch() ([]killfeed.ConnectionNotice, int64) {
 	p.mu.Lock()
@@ -252,7 +263,10 @@ func (p *ConnectionsPublisher) takeBatch() ([]killfeed.ConnectionNotice, int64) 
 	if len(p.queue) == 0 {
 		return nil, 0
 	}
-	n := connectionsLinesPerMessage
+	n := 1
+	if len(p.queue) > connectionsSummaryThreshold || p.notShown > 0 {
+		n = connectionsLinesPerMessage
+	}
 	if n > len(p.queue) {
 		n = len(p.queue)
 	}

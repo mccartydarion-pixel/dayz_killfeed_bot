@@ -3,6 +3,7 @@ package discord
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"sync"
@@ -334,16 +335,27 @@ func TestConnectionsSingleEventUsesTheTemplateAndBatchesKeepTheDefault(t *testin
 		t.Fatal("a connect has no session")
 	}
 
+	// Two events in one tick are two cards, each through the template.
 	before := stub.count()
 	p.PublishConnection(connected("C1"))
 	p.PublishConnection(connected("C2"))
 	p.tick(false)
+	if stub.count() != before+2 {
+		t.Fatalf("each event's card goes through the template, got %d renders for 2 events", stub.count()-before)
+	}
+	// A flood (more than connectionsSummaryThreshold queued) is a summary list, which the
+	// single-event template cannot describe: it keeps the default and skips the customizer.
+	before = stub.count()
+	for i := 0; i < connectionsSummaryThreshold+1; i++ {
+		p.PublishConnection(connected(fmt.Sprintf("F%02d", i)))
+	}
+	p.tick(false)
 	got := f.lastDescription("conn-chan")
-	if !strings.Contains(got, "C1") || !strings.Contains(got, "C2") || strings.HasPrefix(got, "CUSTOM") {
-		t.Fatalf("a multi-player batch is a summary list and keeps the default card: %q", got)
+	if !strings.Contains(got, "F00") || !strings.Contains(got, fmt.Sprintf("F%02d", connectionsSummaryThreshold)) || strings.HasPrefix(got, "CUSTOM") {
+		t.Fatalf("a flood batch is a summary list and keeps the default card: %q", got)
 	}
 	if stub.count() != before {
-		t.Fatal("the customizer is not consulted for a batch")
+		t.Fatal("the customizer is not consulted for a flood batch")
 	}
 	// A disconnect whose session is unknown or short leaves {{session}} absent.
 	p.PublishConnection(disconnected("D", 10*time.Second))

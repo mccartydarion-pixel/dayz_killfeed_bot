@@ -218,7 +218,7 @@ these rules were applied. C = crimson, G = gold, Gr = green, A = amber, R = red,
 | 3 | Hit card | `discord/hitfeed.go` `buildHitEmbed` | yes | N | header `🎯 **Hit**  A  ➜  B` | none (three lines) | none | none | yes |
 | 4 | PvE death card | `discord/pvefeed.go` `buildPveEmbed` | yes | N | header `💀 **Suicide**`, `☣️ **PvE death**` | none | none | none | yes |
 | 5 | Connection card | `discord/connections.go` `buildConnectionEmbed` | `Champion Connections notification` | Gr joined, R left | `🟢 Connection`, `🔴 Disconnection`; description `**Connection – <t:…:T>**` then `` `name` is connected`` | disconnects: `Session time` (`00H 33M 26S`), `Location` (`x;y;z`), `Cash earned` (economy servers) | server name | the line's own time | yes |
-| 6 | Connection list (several at once) | same | yes | N | header `🔌 **Server connections**` | none | none | none | yes |
+| 6 | Connection list (flood only: more than 12 events queued, or events dropped) | same | yes | N | header `🔌 **Server connections**` | none | none | none | yes |
 | 7 | Build activity card | `discord/build_feed.go` `BuildActivityEmbed` | yes | N | `🏗️ Build activity` | `Player` `Action` `Object` `On`/`From` `Tool` `Location` `Server` inline | `Staff only` | none | yes |
 | 8 | Build activity summary | same, `BuildActivitySummaryEmbed` | yes | N | `🏗️ Build activity` | `Server` | `Staff only` | none | yes |
 | 9 | Bounty feed card (placed, increased, claimed, expired, cancelled) | `discord/bounty_feeds.go` `buildBountyEventEmbed` | yes | C placed/increased, G claimed, N expired/cancelled | header `🎯 **Bounty placed**` ... | none | none | none | yes |
