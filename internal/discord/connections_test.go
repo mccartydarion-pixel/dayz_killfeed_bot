@@ -443,9 +443,9 @@ func TestConnectionsBurstIsBoundedAndKeepsPlayersSeparate(t *testing.T) {
 	}
 }
 
-// A small batch (>1 event) uses the batched card; players stay on separate lines,
-// mixed connects/disconnects keep their order.
-func TestConnectionsBatchFormat(t *testing.T) {
+// Several events in one tick are each their own card, in order: Nitrado delivers the log in
+// chunks, so events minutes apart arrive together and must not collapse into a list.
+func TestConnectionsEachEventIsItsOwnCard(t *testing.T) {
 	f := newConnFixture()
 	f.res.set(7, 1, "CONNECTIONS", "conn-chan")
 	p := f.publisher(1)
@@ -455,12 +455,49 @@ func TestConnectionsBatchFormat(t *testing.T) {
 	p.PublishConnection(disconnected("PlayerD", 0))
 	p.tick(false)
 
-	want := "🔌 **Server connections**\n🟢 PlayerA connected\n🟢 PlayerB connected\n🔴 PlayerC disconnected • 12m\n🔴 PlayerD disconnected"
-	if got := f.lastDescription("conn-chan"); got != want {
-		t.Fatalf("unexpected batch:\n%q\nwant\n%q", got, want)
+	msgs := f.sender.messages("conn-chan")
+	if len(msgs) != 4 {
+		t.Fatalf("four events must be four cards, got %d", len(msgs))
 	}
-	if f.sender.total() != 1 {
-		t.Fatalf("a small burst must be ONE message, got %d", f.sender.total())
+	wantTitles := []string{connectionsSingleConnected, connectionsSingleConnected, connectionsSingleDisconnect, connectionsSingleDisconnect}
+	wantNames := []string{"PlayerA", "PlayerB", "PlayerC", "PlayerD"}
+	for i, m := range msgs {
+		e := m.embeds[0]
+		if e.Title != wantTitles[i] || !strings.Contains(e.Description, "`"+wantNames[i]+"`") {
+			t.Fatalf("card %d: title %q description %q, want %q about %s", i, e.Title, e.Description, wantTitles[i], wantNames[i])
+		}
+		if strings.Contains(e.Description, connectionsBatchTitle) {
+			t.Fatalf("card %d is a summary list: %q", i, e.Description)
+		}
+	}
+}
+
+// More events than connectionsSummaryThreshold queued is a flood: that tick sends ONE
+// summary list (players on separate lines, order kept) instead of a card storm; once the
+// queue drains below the threshold, cards resume.
+func TestConnectionsFloodUsesSummaryList(t *testing.T) {
+	f := newConnFixture()
+	f.res.set(7, 1, "CONNECTIONS", "conn-chan")
+	p := f.publisher(1)
+	for i := 0; i < connectionsSummaryThreshold+2; i++ {
+		p.PublishConnection(connected(fmt.Sprintf("Player%02d", i)))
+	}
+	p.tick(false)
+	msgs := f.sender.messages("conn-chan")
+	if len(msgs) != 1 {
+		t.Fatalf("a flood tick must send one summary message, got %d", len(msgs))
+	}
+	desc := msgs[0].embeds[0].Description
+	if !strings.HasPrefix(desc, connectionsBatchTitle+"\n🟢 Player00 connected\n🟢 Player01 connected") {
+		t.Fatalf("unexpected summary: %q", desc)
+	}
+	if got := strings.Count(desc, "🟢"); got != connectionsSummaryThreshold+2 {
+		t.Fatalf("summary carried %d events, want %d", got, connectionsSummaryThreshold+2)
+	}
+	p.PublishConnection(disconnected("PlayerC", 12*time.Minute))
+	p.tick(false)
+	if got := f.lastDescription("conn-chan"); !strings.Contains(got, "`PlayerC` has disconnected") {
+		t.Fatalf("after the flood a lone event must be a card again, got %q", got)
 	}
 }
 
@@ -522,9 +559,15 @@ func TestConnectionsIgnoresUnknownKindsAndNeverInfersReconnect(t *testing.T) {
 	p.PublishConnection(disconnected("Alice", 3*time.Minute))
 	p.PublishConnection(connected("Alice"))
 	p.tick(false)
-	got := f.lastDescription("conn-chan")
-	if strings.Contains(strings.ToLower(got), "reconnect") || !strings.Contains(got, "🔴 Alice disconnected") || !strings.Contains(got, "🟢 Alice connected") {
-		t.Fatalf("expected plain disconnect + connect lines, got %q", got)
+	msgs := f.sender.messages("conn-chan")
+	if len(msgs) != 2 {
+		t.Fatalf("expected a disconnect card then a connect card, got %d messages", len(msgs))
+	}
+	first, second := msgs[0].embeds[0], msgs[1].embeds[0]
+	if strings.Contains(strings.ToLower(first.Description+second.Description), "reconnect") ||
+		first.Title != connectionsSingleDisconnect || !strings.Contains(first.Description, "`Alice` has disconnected") ||
+		second.Title != connectionsSingleConnected || !strings.Contains(second.Description, "`Alice` is connected") {
+		t.Fatalf("expected plain disconnect + connect cards, got %q then %q", first.Description, second.Description)
 	}
 }
 

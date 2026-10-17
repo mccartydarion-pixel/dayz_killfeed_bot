@@ -21,7 +21,7 @@ Performed against the code BEFORE any integration; a route key alone never count
 | `PVE_FEED` | yes | yes (explicit suicides only today) | embeds, up to 10 per message | **yes** (presentation only) | Champion PvE card |
 | `BOUNTY_TRACKING` | yes | yes (`BountyTracker`) | embeds, up to 10 per message | **yes** (placed / increased / claimed / expired / cancelled) | Champion lifecycle card |
 | `ECONOMY` | yes | yes (`EconomyFeed`: bounty rewards, admin credit/debit) | embeds, up to 10 per message | **yes** | Champion economy card |
-| `CONNECTIONS` | yes | yes (`ConnectionsPublisher`) | one embed per message: a single event, or a batched summary list | **single-event cards only**; a batched summary (several players / "earlier events not shown") keeps the default | Champion connection card |
+| `CONNECTIONS` | yes | yes (`ConnectionsPublisher`) | one card per event; a flood (more than 12 queued, or events dropped) sends one summary list instead | **single-event cards only**; a flood summary keeps the default | Champion connection card |
 | `BOUNTY` | yes | yes (`BountyBoard`) | **persistent board** (one edited message per channel, top-N rows) | **no - INCOMPATIBLE**: a multi-row board reconciled from the database is not a single-event card; left untouched | Champion board |
 | `ADMIN_LOGS` | yes | yes (`ADMMonitorPublisher`) | **persistent live diagnostic panel** (edited in place) plus per-download report embeds, with a fixed diagnostic field model | **no - INCOMPATIBLE** | Champion ADM monitor |
 | `LINK_GAMERTAG` | yes | yes (`RouteSyncer` panel) | **persistent interactive panel** (buttons, modals) | **no - INCOMPATIBLE** (panel, not an event card) | Champion panel |
