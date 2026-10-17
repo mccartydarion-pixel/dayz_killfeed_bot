@@ -351,7 +351,7 @@ func (a *App) tournamentOwnerContext(w http.ResponseWriter, r *http.Request, wri
 	if !ok {
 		return tournamentOwnerRequest{}, false
 	}
-	if _, ok := a.requireOrganizationRole(w, r, orgID, user.ID); !ok {
+	if _, ok := a.requireOrganizationManager(w, r, orgID, user); !ok {
 		return tournamentOwnerRequest{}, false
 	}
 	limiter := a.saasAdminReadLimiter

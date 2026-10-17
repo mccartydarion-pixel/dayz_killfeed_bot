@@ -5,6 +5,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"github.com/bwmarrin/discordgo"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -123,4 +124,50 @@ func (a *App) mustUser(t *testing.T, discordUserID string) int64 {
 		t.Fatalf("user %s: %v", discordUserID, err)
 	}
 	return user.ID
+}
+
+// A staff Administrator (a non-member whose Discord role is mapped to ADMINISTRATOR) runs the
+// server like the owner: the organization-manager routes behind the website's "Discord &
+// channels" tab admit them; a staff Moderator is still refused, and billing stays the owner's.
+func TestStaffAdministratorIsAnOrganizationManager(t *testing.T) {
+	w := newClientAdminWorld(t)
+	suffix := time.Now().UnixNano()
+	admin := syncUser(t, w.a, fmt.Sprintf("staff-admin-%d", suffix), "Staff admin")
+	mod := syncUser(t, w.a, fmt.Sprintf("staff-mod-%d", suffix), "Staff mod")
+	w.mapRole(admin.DiscordUserID, fmt.Sprintf("role-admin-%d", suffix), "ADMINISTRATOR")
+	w.mapRole(mod.DiscordUserID, fmt.Sprintf("role-mod-%d", suffix), "MODERATOR")
+
+	// Saving channel routes: a manager route with an {installationID}. The fake Discord knows
+	// one channel in the installation's guild for the killfeed.
+	if w.verifier.channelFound == nil {
+		w.verifier.channelFound = map[string]bool{}
+	}
+	w.verifier.guildFound[w.f.DiscordGuildID] = true
+	w.verifier.channelFound[w.f.DiscordGuildID+"|staff-kf-chan"] = true
+	seedGuildChannels(w.verifier, w.f.DiscordGuildID, fakeGuildChannel{ID: "staff-kf-chan", Name: "killfeed", Type: discordgo.ChannelTypeGuildText})
+	routes := map[string]string{"KILLFEED": "staff-kf-chan"}
+	if rr := saveChannelRoutes(t, w.a, w.f.OrgID, w.f.InstallationID, mod.DiscordUserID, routes); rr.Code != http.StatusForbidden {
+		t.Fatalf("staff moderator saved channel routes: %d %s", rr.Code, rr.Body.String())
+	}
+	if rr := saveChannelRoutes(t, w.a, w.f.OrgID, w.f.InstallationID, admin.DiscordUserID, routes); rr.Code != http.StatusOK {
+		t.Fatalf("staff administrator could not save channel routes: %d %s", rr.Code, rr.Body.String())
+	}
+	if rr := saveChannelRoutes(t, w.a, w.f.OrgID, w.f.InstallationID+1000, admin.DiscordUserID, routes); rr.Code != http.StatusForbidden {
+		t.Fatalf("staff administrator reached an installation they do not staff: %d %s", rr.Code, rr.Body.String())
+	}
+
+	// The plan is the owner's: billing refuses a staff administrator like any non-owner.
+	ctx := context.Background()
+	role, ok, err := w.a.organizationManager(ctx, w.f.OrgID, &repository.AppUser{ID: admin.ID, DiscordUserID: admin.DiscordUserID}, "")
+	if err != nil || !ok || role != repository.RoleStaff {
+		t.Fatalf("organizationManager for a staff administrator: %q %v %v", role, ok, err)
+	}
+	if _, ok, _ := w.a.organizationManager(ctx, w.f.OrgID, &repository.AppUser{ID: mod.ID, DiscordUserID: mod.DiscordUserID}, ""); ok {
+		t.Fatal("a staff moderator is not an organization manager")
+	}
+	org := strconv.FormatInt(w.f.OrgID, 10)
+	rr := w.call(w.a.handleStartTrial, http.MethodPost, "/api/saas/organizations/"+org+"/trial/start", admin.DiscordUserID, map[string]any{}, nil)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("staff administrator reached trial start (the plan is the owner's): %d %s", rr.Code, rr.Body.String())
+	}
 }

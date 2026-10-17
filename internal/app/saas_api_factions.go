@@ -257,18 +257,15 @@ func (a *App) factionContext(w http.ResponseWriter, r *http.Request) (fr faction
 	return factionRequest{orgID: orgID, instID: instID, user: user}, true
 }
 
-// orgViewer reports whether the user is an OWNER/ADMIN of the organization (read-only
-// moderation visibility).
-func (a *App) orgViewer(ctx context.Context, orgID, userID int64) bool {
-	if a.SaaSOrganizations == nil {
-		return false
-	}
-	role, member, err := a.SaaSOrganizations.VerifyMembership(ctx, orgID, userID)
+// orgViewer reports whether the user may moderate factions for the installation: an OWNER or
+// ADMIN of the organization, or a staff Administrator of that installation (organizationManager).
+func (a *App) orgViewer(ctx context.Context, orgID, instID int64, user *repository.AppUser) bool {
+	_, ok, err := a.organizationManager(ctx, orgID, user, strconv.FormatInt(instID, 10))
 	if err != nil {
 		slog.Warn("component=saas_api", "msg", "faction moderation view membership check failed", "err", err.Error())
 		return false
 	}
-	return member && (role == repository.RoleOwner || role == repository.RoleAdmin)
+	return ok
 }
 
 // decodeFactionBody decodes exactly one JSON object with no unknown keys.
@@ -398,7 +395,7 @@ func (a *App) buildFactionProfile(ctx context.Context, fr factionRequest, f repo
 	}
 	out.Viewer.CanEdit = factionhub.CanEditFaction(viewerRole)
 	out.Viewer.CanManageApplications = factionhub.CanManageApplications(viewerRole)
-	out.Viewer.ModerationView = a.orgViewer(ctx, fr.orgID, fr.user.ID)
+	out.Viewer.ModerationView = a.orgViewer(ctx, fr.orgID, fr.instID, fr.user)
 	return out
 }
 
@@ -837,7 +834,7 @@ func (a *App) handleListFactionApplications(w http.ResponseWriter, r *http.Reque
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), factionTimeout)
 	defer cancel()
-	access := repository.HubAccess{UserID: fr.user.ID, OrgViewer: a.orgViewer(ctx, fr.orgID, fr.user.ID)}
+	access := repository.HubAccess{UserID: fr.user.ID, OrgViewer: a.orgViewer(ctx, fr.orgID, fr.instID, fr.user)}
 	items, more, err := a.FactionHub.ListApplications(ctx, fr.orgID, fr.instID, factionID, access, status, limit, before)
 	if err != nil {
 		factionFailed(w, "load applications", err)

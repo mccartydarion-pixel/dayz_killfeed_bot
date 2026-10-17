@@ -214,7 +214,7 @@ func (a *App) handleConnectDiscordGuild(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	if _, ok := a.requireOrganizationRole(w, r, organizationID, user.ID); !ok {
+	if _, ok := a.requireOrganizationManager(w, r, organizationID, user); !ok {
 		return
 	}
 	if a.Guilds == nil || a.SaaSGuildConnections == nil {

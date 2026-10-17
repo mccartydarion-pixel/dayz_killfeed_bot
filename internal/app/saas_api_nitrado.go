@@ -132,7 +132,7 @@ func (a *App) handleNitradoConnect(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, ok := a.requireOrganizationRole(w, r, organizationID, user.ID); !ok {
+	if _, ok := a.requireOrganizationManager(w, r, organizationID, user); !ok {
 		return
 	}
 	if !enforceRateLimit(w, a.saasNitradoConnectLimiter, rateLimitKey(r)) {
@@ -315,7 +315,7 @@ func (a *App) handleSelectDayZServer(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, ok := a.requireOrganizationRole(w, r, organizationID, user.ID); !ok {
+	if _, ok := a.requireOrganizationManager(w, r, organizationID, user); !ok {
 		return
 	}
 	installationID, ok := pathInt64(w, r, "installationID")
