@@ -34,7 +34,7 @@ func newEconomyWorld(t *testing.T, ecoA, ecoB string) *economyWorld {
 	ew := &economyWorld{bountyWorld: w}
 	ew.setRoutes(ecoA, ecoB)
 
-	ew.feed = discord.NewEconomyFeed(trackingSender{w.d}, w.a.ChannelRoutes, w.servers)
+	ew.feed = discord.NewEconomyFeed(trackingSender{w.d}, w.a.ChannelRoutes, discord.SingleGuild(w.servers))
 	ew.svc = economy.NewService(repository.NewEconomyRepository(w.a.DB.Pool), ew.feed)
 	w.a.EconomyService = ew.svc
 	w.a.BountyService.SetEconomyNotifier(ew.feed)

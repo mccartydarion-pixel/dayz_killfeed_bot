@@ -530,11 +530,21 @@ func (a *App) Run() error {
 				seasonCancel()
 			}
 			// Guild-level routed artifacts (link/stats panels, the persistent
-			// leaderboard) follow the union of the AUTO_LEADERBOARD /
-			// LINK_GAMERTAG / STATS_LEADERBOARDS routes of every active
-			// server in the guild, each resolved on its own (guild, server)
-			// identity through the shared resolver.
+			// leaderboard, the boards and feeds) are served for EVERY guild
+			// that has an active server - this is a multi-tenant bot, and a
+			// customer's guild is never the configured one. Each guild
+			// follows the union of its own servers' routes, each resolved on
+			// its own (guild, server) identity through the shared resolver.
 			routingEnabled := a.ChannelRoutes != nil && a.GuildRoutePanels != nil
+			allGuildServers := func(ctx context.Context) ([]discord.GuildServers, error) {
+				rows, listErr := a.Servers.ListActive(ctx)
+				if listErr != nil {
+					return nil, listErr
+				}
+				return groupServersByGuild(rows), nil
+			}
+			// guildServers is the primary guild alone: only the online voice
+			// counter still uses it (a known limit, see docs/SAAS_RUNTIME_ROUTING.md).
 			guildServers := func(ctx context.Context) (int64, []int64, error) {
 				rows, listErr := a.Servers.ListActiveByGuild(ctx, guildRowID)
 				if listErr != nil {
@@ -552,18 +562,17 @@ func (a *App) Run() error {
 				a.routePanels = routePanels
 			}
 			if routingEnabled && a.Ranked != nil {
-				for _, serverRow := range activeServers {
-					board := discord.NewServerRanksBoard(a.ChannelRoutes, routePanels, a.Ranked, guildRowID, serverRow.ID, serverRow.DisplayName)
-					board.SetServerNameFunc(a.serverNameFunc())
-					a.ServerRanksBoards = append(a.ServerRanksBoards, board)
-					go a.singleton(ctx, fmt.Sprintf("server_ranks_board_%d", serverRow.ID), board.Run)
-				}
+				// SERVER_RANKS: one panel per active server of every guild,
+				// re-listed on each sync so a server connected later is covered.
+				a.ServerRanksBoards = discord.NewServerRanksBoards(a.ChannelRoutes, allGuildServers, routePanels, a.Ranked)
+				a.ServerRanksBoards.SetServerNameFunc(a.serverNameFunc())
+				go a.singleton(ctx, "server_ranks_boards", a.ServerRanksBoards.Run)
 			}
 			if routingEnabled && a.EconomyService != nil {
 				// ECONOMY: the public transaction feed, per (guild, server) through the
 				// shared resolver, no fallback. Fed only after a transaction committed
 				// (admin adjustments and bounty payouts).
-				economyFeed := discord.NewEconomyFeed(session, a.ChannelRoutes, guildServers)
+				economyFeed := discord.NewEconomyFeed(session, a.ChannelRoutes, allGuildServers)
 				economyFeed.SetCustomizer(a.embedCustomizer(), a.serverNameFunc())
 				a.EconomyService.SetNotifier(economyFeed)
 				if a.BountyService != nil {
@@ -576,20 +585,20 @@ func (a *App) Run() error {
 				// BOUNTY_TRACKING (lifecycle feed), both resolved per (guild, server)
 				// through the shared resolver. They only report state that is already
 				// committed; with no routes they are no-ops and the database is unaffected.
-				bountyTracker := discord.NewBountyTracker(session, a.ChannelRoutes, guildServers)
+				bountyTracker := discord.NewBountyTracker(session, a.ChannelRoutes, allGuildServers)
 				bountyTracker.SetCustomizer(a.embedCustomizer(), a.serverNameFunc())
-				a.BountyBoard = discord.NewBountyBoard(a.ChannelRoutes, guildServers, routePanels, a.Bounties)
+				a.BountyBoard = discord.NewBountyBoard(a.ChannelRoutes, allGuildServers, routePanels, a.Bounties)
 				a.BountyService.SetNotifier(discord.BountyEvents{Tracker: bountyTracker, Board: a.BountyBoard})
 				go bountyTracker.Run(ctx)
 				go a.singleton(ctx, "bounty_board", a.BountyBoard.Run)
 			}
 			if routingEnabled {
 				a.guildServers = guildServers
-				// Completion announcements follow the SERVER_STATUS route.
-				a.CompletionPublisher.SetRouting(a.ChannelRoutes, guildServers)
+				// Completion announcements follow their guild's SERVER_STATUS route.
+				a.CompletionPublisher.SetRouting(a.ChannelRoutes, allGuildServers)
 				// SERVER_STATUS: one persistent status message per routed
 				// channel, from what the server workers observe.
-				a.ServerStatusBoard = discord.NewServerStatusBoard(a.ChannelRoutes, guildServers, routePanels)
+				a.ServerStatusBoard = discord.NewServerStatusBoard(a.ChannelRoutes, allGuildServers, routePanels)
 				a.ServerStatusBoard.SetServerNames(a.serverNameFunc())
 				go a.singleton(ctx, "server_status_board", a.ServerStatusBoard.Run)
 				a.syncOnlineCounterRoute(ctx)
@@ -625,7 +634,7 @@ func (a *App) Run() error {
 				if a.Config != nil {
 					interval = time.Duration(a.Config.HeatmapDiscordIntervalMinutes) * time.Minute
 				}
-				a.HeatmapBoard = discord.NewHeatmapBoard(a.ChannelRoutes, guildServers, routePanels, a.Heatmap, interval)
+				a.HeatmapBoard = discord.NewHeatmapBoard(a.ChannelRoutes, allGuildServers, routePanels, a.Heatmap, interval)
 				a.HeatmapBoard.SetServerNames(a.serverNameFunc())
 				a.HeatmapBoard.SetPicture(&heatmapimage.Tiles{BaseURL: a.siteURL()}, a.heatmapMapOf)
 				go a.singleton(ctx, "heatmap_board", a.HeatmapBoard.Run)
@@ -648,12 +657,12 @@ func (a *App) Run() error {
 					if a.Ranked != nil && a.Servers != nil {
 						a.LeaderboardScheduler.SetRankSource(discord.ServerSeasonRankReader{Servers: a.Servers, Ranked: a.Ranked})
 					}
-					a.LeaderboardScheduler.SetServerNames(guildServers, a.serverNameFunc())
+					a.LeaderboardScheduler.SetServerNames(allGuildServers, a.serverNameFunc())
 					if a.Upgrades != nil {
 						a.LeaderboardScheduler.SetMovementStore(a.Upgrades)
 					}
 					if routingEnabled {
-						a.LeaderboardScheduler.SetRouting(a.ChannelRoutes, guildServers, routePanels,
+						a.LeaderboardScheduler.SetRouting(a.ChannelRoutes, allGuildServers, routePanels,
 							discord.NewLegacyLeaderboardRetirer(api, setupStore, a.Config.DiscordGuildID))
 					}
 					go a.singleton(ctx, "leaderboard_scheduler", a.LeaderboardScheduler.Run)
@@ -665,7 +674,7 @@ func (a *App) Run() error {
 				}
 			}
 			if routingEnabled {
-				a.RouteSyncer = discord.NewRouteSyncer(a.ChannelRoutes, guildServers, routePanels, api, setupStore, a.Config.DiscordGuildID)
+				a.RouteSyncer = discord.NewRouteSyncer(a.ChannelRoutes, allGuildServers, routePanels, api, setupStore, a.Config.DiscordGuildID, guildRowID)
 				if a.LeaderboardScheduler != nil {
 					a.RouteSyncer.SetLeaderboard(a.LeaderboardScheduler)
 				}
@@ -788,4 +797,22 @@ func (a *App) Run() error {
 	slog.Info("component=shutdown", "msg", "shutdown requested")
 	a.shutdown()
 	return nil
+}
+
+// groupServersByGuild groups active game servers by their guild, in the order
+// the guilds first appear (rows come ordered by server id), for the
+// discord.AllGuildServersFunc every panel and feed is served through.
+func groupServersByGuild(rows []repository.GameServer) []discord.GuildServers {
+	var out []discord.GuildServers
+	index := map[int64]int{}
+	for _, r := range rows {
+		i, ok := index[r.GuildID]
+		if !ok {
+			i = len(out)
+			index[r.GuildID] = i
+			out = append(out, discord.GuildServers{GuildRowID: r.GuildID})
+		}
+		out[i].ServerIDs = append(out[i].ServerIDs, r.ID)
+	}
+	return out
 }

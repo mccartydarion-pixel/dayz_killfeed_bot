@@ -24,9 +24,10 @@ const routeKeyEconomy = "ECONOMY"
 //
 // Routing is per (guild row, server): an event attributed to a server goes to that
 // server's ECONOMY route (a bounty payout: the server the kill happened on); a
-// guild-wide event (an admin adjustment) goes to every server's route, deduplicated
-// by channel. No route, or a failed lookup, is a no-op (throttled warning) - there
-// is no fallback to KILLFEED or any other channel.
+// guild-wide event (an admin adjustment) goes to every route of the event's own
+// guild, deduplicated by channel - never to another guild. No route, or a failed
+// lookup, is a no-op (throttled warning) - there is no fallback to KILLFEED or any
+// other channel.
 //
 // Notify only appends to a bounded queue; route lookups and Discord I/O run on
 // Run's goroutine, at most economyFeedEventsPerTick events per tick, in messages of
@@ -38,7 +39,7 @@ const routeKeyEconomy = "ECONOMY"
 type EconomyFeed struct {
 	sender   HitSender
 	resolver RouteResolver
-	servers  GuildServersFunc
+	servers  AllGuildServersFunc
 
 	// Optional custom embed templates (nil = the Champion default, always).
 	custom     EmbedCustomizer
@@ -59,7 +60,7 @@ const (
 	economyFeedEmbedsPerFrame = 10
 )
 
-func NewEconomyFeed(sender HitSender, resolver RouteResolver, servers GuildServersFunc) *EconomyFeed {
+func NewEconomyFeed(sender HitSender, resolver RouteResolver, servers AllGuildServersFunc) *EconomyFeed {
 	return &EconomyFeed{sender: sender, resolver: resolver, servers: servers, lastWarn: make(map[string]time.Time)}
 }
 
@@ -186,8 +187,12 @@ func (f *EconomyFeed) targetsFor(ctx context.Context, e economy.Event) []channel
 		if f.servers == nil {
 			return nil
 		}
-		guildRowID, ids, err := f.servers(ctx)
-		if err != nil || guildRowID != e.GuildID {
+		guilds, err := f.servers(ctx)
+		if err != nil {
+			return nil
+		}
+		ids, ok := serversOfGuild(guilds, e.GuildID)
+		if !ok {
 			return nil
 		}
 		serverIDs = ids

@@ -402,7 +402,7 @@ func (r fixtureRanks) TopCurrentRanks(context.Context, int64, int) ([]RankEntry,
 func newV3Scheduler(f *routedFixture, stats AutoLeaderboardReader) *LeaderboardScheduler {
 	panel := NewLeaderboardPanel(f.api, "legacy-chan", "", DefaultLeaderboardConfig())
 	s := NewLeaderboardScheduler(panel, stats, f.guild, DefaultLeaderboardConfig(), func(string) {})
-	servers := func(context.Context) (int64, []int64, error) { return f.guild, f.servers, nil }
+	servers := SingleGuild(func(context.Context) (int64, []int64, error) { return f.guild, f.servers, nil })
 	s.SetRouting(f.resolver, servers, f.panels, NewLegacyLeaderboardRetirer(f.api, f.setup, "g1"))
 	s.SetServerNames(servers, func(id int64) string {
 		if id == 1 {

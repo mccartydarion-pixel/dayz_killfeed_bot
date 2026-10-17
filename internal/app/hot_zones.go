@@ -113,7 +113,7 @@ func (a *App) announceHotZone(ctx context.Context, inst repository.HotZoneInstal
 		WindowMinutes: inst.Settings.WindowMinutes, EndsAt: event.EndsAt,
 		FirstPoints: inst.Settings.FirstPoints, SecondPoints: inst.Settings.SecondPoints, ThirdPoints: inst.Settings.ThirdPoints,
 	})
-	if err := a.CompletionPublisher.Announce(ctx, embed); err != nil {
+	if err := a.CompletionPublisher.Announce(ctx, inst.GuildID, embed); err != nil {
 		slog.Warn("component=hotzone", "event", "announce_failed", "event_id", event.ID, "err", err.Error())
 	}
 }

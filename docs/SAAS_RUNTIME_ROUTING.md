@@ -160,7 +160,37 @@ Exactly one destination is chosen, so nothing is ever published to both.
   are collected in server order, and one message is kept per channel. Two servers
   routing to different channels get a panel in each; two routing to the same
   channel share one. The legacy channel is used **only when no server of the
-  guild has a route**.
+  primary guild has a route**.
+
+### Every guild is served
+
+Champion is multi-tenant: a customer's installation lives in its own Discord
+guild, never in the bot's configured one (`DISCORD_GUILD_ID`, the *primary*
+guild). Every guild-level panel and feed therefore takes a
+`discord.AllGuildServersFunc` - every guild that has an active game server, with
+those servers, grouped from `game_servers` on each sync (`app_run.go`
+`allGuildServers`) - and serves each guild on its own `(guild, server)` routes:
+
+* `RouteSyncer` (`LINK_GAMERTAG`, `STATS_LEADERBOARDS` panels, keyed per guild
+  and route key), `LeaderboardScheduler` (`AUTO_LEADERBOARD`, one board per
+  guild from that guild's stats), `BountyBoard`, `HeatmapBoard`,
+  `ServerStatusBoard`, and `ServerRanksBoards` (`SERVER_RANKS`, one panel per
+  active server of every guild, re-listed on every sync so a server connected
+  from the website later is covered without a restart).
+* `BountyTracker`, `EconomyFeed` and the completion/event announcements
+  (`LiveCompletionPublisher`) resolve the routes of the event's **own** guild;
+  a guild-wide event (an admin credit, a guild bounty) goes to every route of
+  that guild only, never to another guild's channel.
+* `guild_route_panels` rows are keyed by guild, so each guild's panels are
+  recorded, moved and retired independently.
+
+Legacy `GuildSetup` channels exist for the primary guild only: its legacy
+panels are retired when it enters route mode and restored when its routes are
+removed; another guild without a route simply has no panel (and the
+announcement is dropped, never sent to the primary guild's legacy channel).
+`RouteSyncer.HasRoute` (the `SetupManager` gate) also answers for the primary
+guild only. **Known limit:** the online voice counter (`ONLINE_COUNTER`) still
+follows the primary guild alone (`App.guildServers`); it is unchanged by this.
 
 ### How persistent messages avoid duplicates
 

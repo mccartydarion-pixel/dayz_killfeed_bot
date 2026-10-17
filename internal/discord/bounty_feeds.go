@@ -64,16 +64,17 @@ func bountyName(s string) string {
 //
 // Routing is per (guild row, server): an event scoped to a server goes to that
 // server's route; a claim (or streak placement) goes to the server the kill
-// happened on; a guild-wide event with no server goes to every server's route
-// (deduplicated by channel). No route, or a failed lookup, is a no-op (with a
-// throttled warning) - there is no fallback to any other channel.
+// happened on; a guild-wide event with no server goes to every route of the
+// event's own guild (deduplicated by channel) - never to another guild. No
+// route, or a failed lookup, is a no-op (with a throttled warning) - there is
+// no fallback to any other channel.
 //
 // Notify only appends to a bounded queue; route lookups and Discord I/O run on
 // Run's goroutine, one message (up to 10 cards) per channel per tick.
 type BountyTracker struct {
 	sender   HitSender
 	resolver RouteResolver
-	servers  GuildServersFunc
+	servers  AllGuildServersFunc
 
 	// Optional custom embed templates for the lifecycle cards (nil = default). The
 	// persistent BOUNTY board is NOT customizable: it is a multi-row view, not a
@@ -96,7 +97,7 @@ const (
 	bountyEmbedsPerMessage     = 10
 )
 
-func NewBountyTracker(sender HitSender, resolver RouteResolver, servers GuildServersFunc) *BountyTracker {
+func NewBountyTracker(sender HitSender, resolver RouteResolver, servers AllGuildServersFunc) *BountyTracker {
 	return &BountyTracker{sender: sender, resolver: resolver, servers: servers, lastWarn: make(map[string]time.Time)}
 }
 
@@ -236,8 +237,12 @@ func (t *BountyTracker) targetsFor(ctx context.Context, e bounties.Event) []chan
 		if t.servers == nil {
 			return nil
 		}
-		guildRowID, ids, err := t.servers(ctx)
-		if err != nil || guildRowID != e.GuildID {
+		guilds, err := t.servers(ctx)
+		if err != nil {
+			return nil
+		}
+		ids, ok := serversOfGuild(guilds, e.GuildID)
+		if !ok {
 			return nil
 		}
 		serverIDs = ids
@@ -361,15 +366,16 @@ type BoardLister interface {
 // cancel edits or moves the same board instead of posting a new one.
 //
 // Like every other guild-level routed panel it resolves BOUNTY per (guild row,
-// server) for each active server of the guild and keeps one board per distinct
-// channel; a channel shared by several servers shows the union of their bounties
-// (plus guild-wide ones), a server's own channel shows only its own. A bounty
-// scoped to another server never appears. No route -> no board (a previously
-// routed board is retired); a failed lookup leaves existing boards alone. The
-// database is the source of truth throughout - the board is a view of it.
+// server) for each active server of every guild and keeps one board per
+// distinct channel of each guild; a channel shared by several servers shows
+// the union of their bounties (plus guild-wide ones), a server's own channel
+// shows only its own. A bounty scoped to another server never appears. No
+// route -> no board (a previously routed board is retired); a failed lookup
+// leaves existing boards alone. The database is the source of truth
+// throughout - the board is a view of it.
 type BountyBoard struct {
 	resolver RouteResolver
-	servers  GuildServersFunc
+	servers  AllGuildServersFunc
 	panels   *RoutePanels
 	lister   BoardLister
 	trigger  chan struct{}
@@ -381,7 +387,7 @@ const (
 	bountyBoardFooter   = presentation.FooterAutoRefresh
 )
 
-func NewBountyBoard(resolver RouteResolver, servers GuildServersFunc, panels *RoutePanels, lister BoardLister) *BountyBoard {
+func NewBountyBoard(resolver RouteResolver, servers AllGuildServersFunc, panels *RoutePanels, lister BoardLister) *BountyBoard {
 	return &BountyBoard{resolver: resolver, servers: servers, panels: panels, lister: lister, trigger: make(chan struct{}, 1)}
 }
 
@@ -420,7 +426,7 @@ func (b *BountyBoard) Run(ctx context.Context) {
 	}
 }
 
-// SyncOnce reconciles every board once. Never fatal; panic-safe.
+// SyncOnce reconciles every guild's boards once. Never fatal; panic-safe.
 func (b *BountyBoard) SyncOnce(ctx context.Context) {
 	if b == nil || b.resolver == nil || b.servers == nil || b.panels == nil || b.lister == nil {
 		return
@@ -430,15 +436,23 @@ func (b *BountyBoard) SyncOnce(ctx context.Context) {
 			slog.Error("component=bounty_board", "msg", "sync panic recovered", "panic", fmt.Sprint(r))
 		}
 	}()
-	guildRowID, serverIDs, err := b.servers(ctx)
+	guilds, err := b.servers(ctx)
 	if err != nil {
 		slog.Warn("component=bounty_board", "event", "bounty_board_servers_failed", "err", err.Error())
 		return
 	}
+	for _, g := range guilds {
+		b.syncGuild(ctx, g)
+	}
+}
+
+// syncGuild reconciles one guild's boards, one per distinct routed channel.
+func (b *BountyBoard) syncGuild(ctx context.Context, g GuildServers) {
+	guildRowID := g.GuildRowID
 	byChannel := map[string][]int64{}
 	var order []string
 	lookupErrs := 0
-	for _, serverID := range serverIDs {
+	for _, serverID := range g.ServerIDs {
 		ch, found, rerr := b.resolver.Resolve(ctx, guildRowID, serverID, routeKeyBounty)
 		if rerr != nil {
 			lookupErrs++
@@ -464,7 +478,7 @@ func (b *BountyBoard) SyncOnce(ctx context.Context) {
 		return PanelContent{Embed: buildBountyBoardEmbed(entries)}, nil
 	}
 	if _, err := b.panels.SyncEach(ctx, guildRowID, routeKeyBounty, order, contentFor, lookupErrs == 0); err != nil {
-		slog.Warn("component=bounty_board", "event", "bounty_board_sync_failed", "err", err.Error())
+		slog.Warn("component=bounty_board", "event", "bounty_board_sync_failed", "guild_id", guildRowID, "err", err.Error())
 	}
 }
 

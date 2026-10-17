@@ -287,7 +287,7 @@ func (a *App) channelRouteProducers() map[string]routeProducer {
 	if a.LeaderboardScheduler == nil {
 		broken("leaderboard scheduler is not running", "AUTO_LEADERBOARD")
 	}
-	if len(a.ServerRanksBoards) == 0 {
+	if a.ServerRanksBoards == nil {
 		broken("server ranks board is not running", "SERVER_RANKS")
 	}
 	if a.RouteSyncer == nil {

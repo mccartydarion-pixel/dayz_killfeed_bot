@@ -72,7 +72,7 @@ func newRuntimeWorld(t *testing.T, ttl time.Duration) *runtimeWorld {
 	ew.a.EmbedActivations = repo
 	ew.a.EmbedRenderer = r
 	rich := &richSender{cards: map[string][]string{}}
-	feed := discord.NewEconomyFeed(rich, ew.a.ChannelRoutes, ew.servers) // the real feed, delivering to the recording sender
+	feed := discord.NewEconomyFeed(rich, ew.a.ChannelRoutes, discord.SingleGuild(ew.servers)) // the real feed, delivering to the recording sender
 	feed.SetCustomizer(r, serverName)
 	ew.svc.SetNotifier(feed)
 	ew.feed = feed
@@ -317,7 +317,7 @@ func TestEmbedRuntimeMalformedStoredTemplateFallsBack(t *testing.T) {
 // BOUNTY_TRACKING lifecycle cards through the real renderer + tracker.
 func TestEmbedRuntimeBountyTrackingLifecycle(t *testing.T) {
 	w := newRuntimeWorld(t, time.Hour)
-	tr := discord.NewBountyTracker(w.rich, w.a.ChannelRoutes, w.servers)
+	tr := discord.NewBountyTracker(w.rich, w.a.ChannelRoutes, discord.SingleGuild(w.servers))
 	tr.SetCustomizer(w.renderer, serverName)
 	w.a.BountyService.SetNotifier(discord.BountyEvents{Tracker: tr, Board: w.board})
 

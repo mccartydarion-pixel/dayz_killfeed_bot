@@ -750,10 +750,15 @@ instantiated in the process (routing disabled, service absent) is reported
 | `BUILD_FEED` | `BuildFeedPublisher` - ADM placement/build lines (`docs/ADMIN_LOGS.md`) | ACTIVE once a build line has been parsed in this process; otherwise BLOCKED - `SOURCE_BLOCKED` (the server must enable `adminLogPlacement` / `adminLogBuildActions`) |
 
 The runtime panel owners (`RouteSyncer`, `BountyBoard`, `HeatmapBoard`,
-`ServerStatusBoard`, `LeaderboardScheduler`, `EconomyFeed`, the voice counter) serve the bot's configured guild. An
-installation in any other guild will see its panel channels reported
-`BROKEN` (no visible panel) by auto-setup's verification, never silently
-passed.
+`ServerStatusBoard`, `ServerRanksBoards`, `LeaderboardScheduler`, `EconomyFeed`,
+`BountyTracker`, the completion announcements) serve **every guild with an
+active game server**, each on its own routes (`docs/SAAS_RUNTIME_ROUTING.md`
+"Every guild is served"), so an installation in a customer's guild gets its
+panels like the bot's configured guild does. The one exception is the voice
+counter, which still serves the configured guild only. A panel that is not
+visible is reported `BROKEN` by auto-setup's verification, never silently
+passed; the `saas_channel_layout_applied` log line lists the `broken_keys`
+and `blocked_keys`.
 
 **Backward-compatible backfill** (migration 0027, one-time, additive): any
 existing installation's legacy `installation_settings` values were copied

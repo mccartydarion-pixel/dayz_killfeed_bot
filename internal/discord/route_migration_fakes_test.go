@@ -341,6 +341,6 @@ func newRoutedFixture(t *testing.T) *routedFixture {
 	t.Helper()
 	f := &routedFixture{t: t, guild: 7, servers: []int64{1, 2}, resolver: newKeyedResolver(), api: newFakeDiscord(), store: newMemPanelStore(), setup: NewInMemorySetupStore()}
 	f.panels = NewRoutePanels(f.api, f.store)
-	f.syncer = NewRouteSyncer(f.resolver, func(context.Context) (int64, []int64, error) { return f.guild, f.servers, nil }, f.panels, f.api, f.setup, "g1")
+	f.syncer = NewRouteSyncer(f.resolver, SingleGuild(func(context.Context) (int64, []int64, error) { return f.guild, f.servers, nil }), f.panels, f.api, f.setup, "g1", f.guild)
 	return f
 }

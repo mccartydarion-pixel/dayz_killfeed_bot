@@ -42,7 +42,7 @@ type trackerFixture struct {
 
 func newTrackerFixture() *trackerFixture {
 	f := &trackerFixture{res: newKeyedResolver(), sender: &fakeHitSender{fail: map[string]error{}}}
-	f.t = NewBountyTracker(f.sender, f.res, func(context.Context) (int64, []int64, error) { return 7, []int64{1, 2}, nil })
+	f.t = NewBountyTracker(f.sender, f.res, SingleGuild(func(context.Context) (int64, []int64, error) { return 7, []int64{1, 2}, nil }))
 	return f
 }
 
@@ -383,7 +383,7 @@ type boardFixture struct {
 func newBoardFixture(t *testing.T) *boardFixture {
 	t.Helper()
 	f := &boardFixture{routedFixture: newRoutedFixture(t), lister: &fakeBoardLister{}}
-	f.board = NewBountyBoard(f.resolver, func(context.Context) (int64, []int64, error) { return f.guild, f.servers, nil }, f.panels, f.lister)
+	f.board = NewBountyBoard(f.resolver, SingleGuild(func(context.Context) (int64, []int64, error) { return f.guild, f.servers, nil }), f.panels, f.lister)
 	return f
 }
 
@@ -497,7 +497,7 @@ func TestBountyBoardRestartEditsTheRecordedMessage(t *testing.T) {
 
 	// "Restart": brand-new panels/board over the SAME durable store and Discord.
 	f.lister.set(boardRow{1, "PlayerA", 100}, boardRow{1, "PlayerZ", 999})
-	restarted := NewBountyBoard(f.resolver, func(context.Context) (int64, []int64, error) { return f.guild, f.servers, nil }, NewRoutePanels(f.api, f.store), f.lister)
+	restarted := NewBountyBoard(f.resolver, SingleGuild(func(context.Context) (int64, []int64, error) { return f.guild, f.servers, nil }), NewRoutePanels(f.api, f.store), f.lister)
 	restarted.SyncOnce(context.Background())
 
 	if f.api.sendCount() != 1 || f.api.liveIn("board-1") != 1 || f.store.messageFor(f.guild, "BOUNTY", "board-1") != msg {

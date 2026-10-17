@@ -188,8 +188,10 @@ type App struct {
 	onlineLoopOnce sync.Once
 	onlineLoop     *onlineCounterLoop
 	setupStore     discord.SetupStore
-	// guildServers lists the configured guild's row id and active servers
-	// (set once routing starts).
+	// guildServers lists the configured (primary) guild's row id and active
+	// servers (set once routing starts). Only the online voice counter still
+	// uses it: every panel and feed is served per guild through
+	// discord.AllGuildServersFunc.
 	guildServers func(ctx context.Context) (int64, []int64, error)
 	// buildActionsSeen counts ADM build/placement actions parsed by any server
 	// worker - the proof that some server's ADM carries BUILD_FEED lines.
@@ -339,8 +341,10 @@ type App struct {
 	GuildRoutePanels *repository.GuildRoutePanelRepository
 	// RouteSyncer keeps those guild-level routed artifacts in step with the
 	// installation routes. Nil-safe: without it routes are simply not synced.
-	RouteSyncer       *discord.RouteSyncer
-	ServerRanksBoards []*discord.ServerRanksBoard
+	RouteSyncer *discord.RouteSyncer
+	// ServerRanksBoards keeps one SERVER_RANKS panel per active server of
+	// every guild.
+	ServerRanksBoards *discord.ServerRanksBoards
 	// adminSaaS is the cross-tenant, read-only platform-admin read model behind
 	// /api/admin (internal/adminrepo); adminChannelNames optionally overrides the
 	// Discord-cache channel name lookup (tests).

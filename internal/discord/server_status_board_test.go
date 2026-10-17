@@ -37,7 +37,7 @@ func TestServerStatusShowsOnlyObservedValues(t *testing.T) {
 func TestServerStatusBoardOneMessageEditedInPlace(t *testing.T) {
 	f := newRoutedFixture(t)
 	f.resolver.set(f.guild, 1, routeKeyServerStatus, "chan-status")
-	servers := func(context.Context) (int64, []int64, error) { return f.guild, f.servers, nil }
+	servers := SingleGuild(func(context.Context) (int64, []int64, error) { return f.guild, f.servers, nil })
 	b := NewServerStatusBoard(f.resolver, servers, f.panels)
 	ctx := context.Background()
 	b.SyncOnce(ctx)

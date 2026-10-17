@@ -50,20 +50,20 @@ func BuildHotZoneOpenedEmbed(a HotZoneAnnouncement) *discordgo.MessageEmbed {
 	return presentation.FitEmbed(embed)
 }
 
-// Announce posts an embed where completion cards go (the SERVER_STATUS route, else the legacy
-// status/leaderboard channel).
-func (p *LiveCompletionPublisher) Announce(ctx context.Context, embed *discordgo.MessageEmbed) error {
+// Announce posts an embed where guildID's completion cards go (its SERVER_STATUS route, else -
+// for the primary guild - the legacy status/leaderboard channel).
+func (p *LiveCompletionPublisher) Announce(ctx context.Context, guildID int64, embed *discordgo.MessageEmbed) error {
 	if p == nil {
 		return fmt.Errorf("announcement publisher unavailable")
 	}
-	return p.send(ctx, embed)
+	return p.send(ctx, guildID, embed)
 }
 
-// AnnounceEvent posts an event's "upcoming" or "started" card to the EVENTS channel, falling back
-// to where Announce posts when the installation has no events channel yet.
-func (p *LiveCompletionPublisher) AnnounceEvent(ctx context.Context, embed *discordgo.MessageEmbed) error {
+// AnnounceEvent posts an event's "upcoming" or "started" card to guildID's EVENTS channel,
+// falling back to where Announce posts when the installation has no events channel yet.
+func (p *LiveCompletionPublisher) AnnounceEvent(ctx context.Context, guildID int64, embed *discordgo.MessageEmbed) error {
 	if p == nil {
 		return fmt.Errorf("announcement publisher unavailable")
 	}
-	return p.sendEvent(ctx, embed)
+	return p.sendEvent(ctx, guildID, embed)
 }

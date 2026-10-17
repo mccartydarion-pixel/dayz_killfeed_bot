@@ -36,12 +36,12 @@ const (
 )
 
 // HeatmapBoard keeps one persistent PvP heatmap summary per HEATMAPS-routed
-// channel, edited in place (never a new message per refresh). The message
-// is recorded through RoutePanels, so a restart edits the same message
-// instead of posting another.
+// channel of every guild, edited in place (never a new message per refresh).
+// The message is recorded through RoutePanels, so a restart edits the same
+// message instead of posting another.
 type HeatmapBoard struct {
 	resolver    RouteResolver
-	servers     GuildServersFunc
+	servers     AllGuildServersFunc
 	panels      *RoutePanels
 	heatmaps    HeatmapQuerier
 	serverNames ServerNameFunc
@@ -51,13 +51,18 @@ type HeatmapBoard struct {
 	now         func() time.Time
 	trigger     chan struct{}
 
-	mu          sync.Mutex // serializes the Run loop with setup-time SyncOnce
-	lastSig     string
-	lastRefresh time.Time
+	mu   sync.Mutex // serializes the Run loop with setup-time SyncOnce
+	last map[int64]heatmapRefresh
 }
 
-func NewHeatmapBoard(resolver RouteResolver, servers GuildServersFunc, panels *RoutePanels, heatmaps HeatmapQuerier, interval time.Duration) *HeatmapBoard {
-	return &HeatmapBoard{resolver: resolver, servers: servers, panels: panels, heatmaps: heatmaps, interval: interval, now: time.Now, trigger: make(chan struct{}, 1)}
+// heatmapRefresh is what one guild's board was last refreshed for and when.
+type heatmapRefresh struct {
+	sig string
+	at  time.Time
+}
+
+func NewHeatmapBoard(resolver RouteResolver, servers AllGuildServersFunc, panels *RoutePanels, heatmaps HeatmapQuerier, interval time.Duration) *HeatmapBoard {
+	return &HeatmapBoard{resolver: resolver, servers: servers, panels: panels, heatmaps: heatmaps, interval: interval, now: time.Now, trigger: make(chan struct{}, 1), last: map[int64]heatmapRefresh{}}
 }
 
 // MapOfServer returns a server's DayZ map key and edge in metres (ok=false when unknown).
@@ -138,7 +143,7 @@ func (b *HeatmapBoard) Run(ctx context.Context) {
 	}
 }
 
-// SyncOnce refreshes every routed channel now.
+// SyncOnce refreshes every routed channel of every guild now.
 func (b *HeatmapBoard) SyncOnce(ctx context.Context) { b.sync(ctx, true) }
 
 func (b *HeatmapBoard) sync(ctx context.Context, force bool) {
@@ -152,15 +157,23 @@ func (b *HeatmapBoard) sync(ctx context.Context, force bool) {
 			slog.Error("component=heatmap_board", "msg", "sync panic recovered", "panic", fmt.Sprint(r))
 		}
 	}()
-	guildRowID, serverIDs, err := b.servers(ctx)
+	guilds, err := b.servers(ctx)
 	if err != nil {
 		slog.Warn("component=heatmap_board", "event", "heatmap_board_servers_failed", "err", err.Error())
 		return
 	}
+	for _, g := range guilds {
+		b.syncGuild(ctx, g, force)
+	}
+}
+
+// syncGuild refreshes one guild's routed channels (when due, unless forced).
+func (b *HeatmapBoard) syncGuild(ctx context.Context, g GuildServers, force bool) {
+	guildRowID := g.GuildRowID
 	byChannel := map[string][]int64{}
 	var order []string
 	lookupErrs := 0
-	for _, serverID := range serverIDs {
+	for _, serverID := range g.ServerIDs {
 		ch, found, rerr := b.resolver.Resolve(ctx, guildRowID, serverID, routeKeyHeatmaps)
 		if rerr != nil {
 			lookupErrs++
@@ -181,7 +194,7 @@ func (b *HeatmapBoard) sync(ctx context.Context, force bool) {
 
 	now := b.now()
 	sig := routeSignature(byChannel, order)
-	if !force && sig == b.lastSig && now.Sub(b.lastRefresh) < b.interval {
+	if last := b.last[guildRowID]; !force && sig == last.sig && now.Sub(last.at) < b.interval {
 		return
 	}
 
@@ -205,10 +218,10 @@ func (b *HeatmapBoard) sync(ctx context.Context, force bool) {
 		return content, nil
 	}
 	if _, err := b.panels.SyncEach(ctx, guildRowID, routeKeyHeatmaps, order, contentFor, lookupErrs == 0); err != nil {
-		slog.Warn("component=heatmap_board", "event", "heatmap_board_sync_failed", "err", err.Error())
+		slog.Warn("component=heatmap_board", "event", "heatmap_board_sync_failed", "guild_id", guildRowID, "err", err.Error())
 		return
 	}
-	b.lastSig, b.lastRefresh = sig, now
+	b.last[guildRowID] = heatmapRefresh{sig: sig, at: now}
 }
 
 func routeSignature(byChannel map[string][]int64, order []string) string {

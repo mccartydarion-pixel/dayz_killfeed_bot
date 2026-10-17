@@ -22,7 +22,9 @@ func TestServerRanksBoardPersistentRouteAndSourceFailure(t *testing.T) {
 	f := newRoutedFixture(t)
 	reader := &fixtureServerRanks{err: repository.ErrRankedIneligible}
 	f.resolver.set(f.guild, 1, routeKeyServerRanks, "ranks-a")
-	board := NewServerRanksBoard(f.resolver, f.panels, reader, f.guild, 1, "Champions")
+	servers := SingleGuild(func(context.Context) (int64, []int64, error) { return f.guild, []int64{1}, nil })
+	board := NewServerRanksBoards(f.resolver, servers, f.panels, reader)
+	board.SetServerNameFunc(func(int64) string { return "Champions" })
 	ctx := context.Background()
 	board.SyncOnce(ctx)
 	key := fmt.Sprintf("%s:%d", routeKeyServerRanks, 1)
@@ -46,9 +48,36 @@ func TestServerRanksBoardPersistentRouteAndSourceFailure(t *testing.T) {
 	if f.api.liveIn("ranks-a") != 0 || f.api.liveIn("ranks-b") != 1 {
 		t.Fatalf("route move left duplicate panel: %v", f.api.live())
 	}
-	restarted := NewServerRanksBoard(f.resolver, NewRoutePanels(f.api, f.store), reader, f.guild, 1, "Champions")
+	restarted := NewServerRanksBoards(f.resolver, servers, NewRoutePanels(f.api, f.store), reader)
 	restarted.SyncOnce(ctx)
 	if f.api.liveIn("ranks-b") != 1 || f.api.sendCount() != 2 {
 		t.Fatal("restart posted a duplicate server ranks panel")
+	}
+}
+
+// Two guilds, each with its own server and SERVER_RANKS channel: each server gets
+// its own panel in its own guild, and a server connected after startup is picked
+// up on the next sync without a restart.
+func TestServerRanksBoardsServeEveryGuild(t *testing.T) {
+	f := newRoutedFixture(t)
+	reader := &fixtureServerRanks{err: repository.ErrRankedIneligible}
+	guilds := []GuildServers{{GuildRowID: 7, ServerIDs: []int64{1}}, {GuildRowID: 8, ServerIDs: []int64{3}}}
+	f.resolver.set(7, 1, routeKeyServerRanks, "ranks-7")
+	f.resolver.set(8, 3, routeKeyServerRanks, "ranks-8")
+	board := NewServerRanksBoards(f.resolver, func(context.Context) ([]GuildServers, error) { return guilds, nil }, f.panels, reader)
+	ctx := context.Background()
+	board.SyncOnce(ctx)
+	if f.api.liveIn("ranks-7") != 1 || f.api.liveIn("ranks-8") != 1 {
+		t.Fatalf("expected one panel per guild, live=%v", f.api.live())
+	}
+	if f.store.messageFor(7, routeKeyServerRanks+":1", "ranks-7") == "" || f.store.messageFor(8, routeKeyServerRanks+":3", "ranks-8") == "" {
+		t.Fatal("each panel must be recorded under its own guild")
+	}
+	// Guild 8 connects a second server later: its panel appears on the next sync.
+	guilds[1].ServerIDs = []int64{3, 4}
+	f.resolver.set(8, 4, routeKeyServerRanks, "ranks-8b")
+	board.SyncOnce(ctx)
+	if f.api.liveIn("ranks-8b") != 1 || f.api.sendCount() != 3 {
+		t.Fatalf("a server added later must get its panel, live=%v", f.api.live())
 	}
 }

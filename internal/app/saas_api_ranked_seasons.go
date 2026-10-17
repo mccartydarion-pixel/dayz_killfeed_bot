@@ -146,9 +146,7 @@ func (a *App) changeServerRankedSeason(w http.ResponseWriter, r *http.Request, r
 		action = "SERVER_RANKED_RESET"
 	}
 	a.recordAudit(ctx, ac, action, "server:"+strconv.FormatInt(*ac.scope.ServerID, 10), "Ranked season", "success", nil, map[string]int64{"seasonId": season.ID})
-	for _, board := range a.ServerRanksBoards {
-		board.SyncOnce(ctx)
-	}
+	a.ServerRanksBoards.SyncOnce(ctx)
 	writeSaaSJSON(w, http.StatusOK, season)
 }
 

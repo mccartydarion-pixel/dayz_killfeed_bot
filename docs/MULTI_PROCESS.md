@@ -70,7 +70,7 @@ given; it runs in every process. "Not safe" = still assumes one process.
 | Server name sync (Nitrado name read, ~20 min) | `server_name_sync.go` | **Gated.** Had no claim: every process repeated every Nitrado read. |
 | Competitive scheduler (45 s): completion-announcement recovery, event scheduler and finalization, event announcements, season planner, perk store, RP boost and ranked bonus announcements, feature upgrades (priority rewards, win-back, season rewards, rent reminders, daily play reward, shop order updates, security digest, event scoreboards, perk reminders, spotlight), territory / challenges / battle pass, VIP expiry, rewards, hot zones, bounty expiry | `runCompetitiveSchedulers` | **Gated** as one loop. Several steps claim their rows (completion announcements, season planner, bounty sweep) but many post or pay from a plain "due → act → mark" pass. |
 | Auto leaderboard refresh | `discord.LeaderboardScheduler` | **Gated.** Two processes raced to create/edit the same message. |
-| Server ranks boards (one per server) | `discord.ServerRanksBoard` | **Gated.** Same. |
+| Server ranks boards (one per active server of every guild) | `discord.ServerRanksBoards` | **Gated.** Same. |
 | Bounty board, server status board, heatmap board | `discord.BountyBoard`, `ServerStatusBoard`, `HeatmapBoard` | **Gated.** Same. |
 | Route syncer (guild-level routed panels) | `discord.RouteSyncer` | **Gated.** Same. |
 | Security Store panel refresh (10 min) | `security_store_panel.go` | **Gated.** Two processes would both post a panel that has no message yet. |
