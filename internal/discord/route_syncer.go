@@ -58,18 +58,29 @@ type routeSyncState struct {
 	verified time.Time
 }
 
+// routeSyncKey identifies one guild's state for one route key.
+type routeSyncKey struct {
+	guildRowID int64
+	routeKey   string
+}
+
 // RouteSyncer keeps the guild-level, route-driven artifacts in step with the
-// installation routes: the LINK_GAMERTAG and STATS_LEADERBOARDS panels, and a
-// refresh of the AUTO_LEADERBOARD when its routed channels change. Everything
-// is resolved per (guild, server) through the shared resolver - it owns no
-// route cache of its own.
+// installation routes, for every guild that has an active server: the
+// LINK_GAMERTAG and STATS_LEADERBOARDS panels, and a refresh of the
+// AUTO_LEADERBOARD when its routed channels change. Everything is resolved
+// per (guild, server) through the shared resolver - it owns no route cache
+// of its own. Only the primary guild has legacy GuildSetup panels to retire
+// or restore.
 type RouteSyncer struct {
 	resolver RouteResolver
-	servers  GuildServersFunc
+	servers  AllGuildServersFunc
 	panels   *RoutePanels
 	api      messageDeleter
 	setup    SetupStore
-	guildID  string // Discord guild snowflake, for the legacy GuildSetup
+	// guildID is the primary guild's Discord snowflake (for its legacy
+	// GuildSetup) and primaryGuildRowID its internal guilds.id.
+	guildID           string
+	primaryGuildRowID int64
 
 	leaderboard interface {
 		RefreshOnce(ctx context.Context) error
@@ -81,13 +92,18 @@ type RouteSyncer struct {
 	trigger chan struct{}
 
 	mu    sync.Mutex
-	state map[string]*routeSyncState
+	state map[routeSyncKey]*routeSyncState
+	// booted is set after the first full pass. A guild first seen later (a
+	// customer connecting a server while the bot runs) was not covered by
+	// the scheduler's startup refresh, so its routes count as a change.
+	booted bool
 }
 
 // NewRouteSyncer builds a syncer. api is used only to retire legacy panel
-// messages; setup/guildID locate the legacy GuildSetup.
-func NewRouteSyncer(resolver RouteResolver, servers GuildServersFunc, panels *RoutePanels, api messageDeleter, setup SetupStore, guildID string) *RouteSyncer {
-	return &RouteSyncer{resolver: resolver, servers: servers, panels: panels, api: api, setup: setup, guildID: guildID, trigger: make(chan struct{}, 1), state: make(map[string]*routeSyncState)}
+// messages; setup/guildID locate the legacy GuildSetup of the primary guild,
+// whose internal id is primaryGuildRowID.
+func NewRouteSyncer(resolver RouteResolver, servers AllGuildServersFunc, panels *RoutePanels, api messageDeleter, setup SetupStore, guildID string, primaryGuildRowID int64) *RouteSyncer {
+	return &RouteSyncer{resolver: resolver, servers: servers, panels: panels, api: api, setup: setup, guildID: guildID, primaryGuildRowID: primaryGuildRowID, trigger: make(chan struct{}, 1), state: make(map[routeSyncKey]*routeSyncState)}
 }
 
 // SetLeaderboard attaches the scheduler refreshed when AUTO_LEADERBOARD routes change.
@@ -138,43 +154,79 @@ func (s *RouteSyncer) Run(ctx context.Context) {
 	}
 }
 
-// HasRoute reports whether any server of the guild currently has a route for
-// routeKey. SetupManager uses it so it never creates a legacy panel next to a
-// routed one. A failed lookup reports false (legacy), matching the fallback rule.
+// HasRoute reports whether any server of the primary guild currently has a
+// route for routeKey. SetupManager uses it so it never creates a legacy panel
+// next to a routed one; only the primary guild has legacy panels. A failed
+// lookup reports false (legacy), matching the fallback rule.
 func (s *RouteSyncer) HasRoute(routeKey string) bool {
 	if s == nil || s.resolver == nil || s.servers == nil {
 		return false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*routeLookupTimeout)
 	defer cancel()
-	guildRowID, serverIDs, err := s.servers(ctx)
+	guilds, err := s.servers(ctx)
 	if err != nil {
 		return false
 	}
-	channels, _ := resolveGuildRouteChannels(ctx, s.resolver, guildRowID, serverIDs, routeKey)
+	serverIDs, ok := serversOfGuild(guilds, s.primaryGuildRowID)
+	if !ok {
+		return false
+	}
+	channels, _ := resolveGuildRouteChannels(ctx, s.resolver, s.primaryGuildRowID, serverIDs, routeKey)
 	return len(channels) > 0
 }
 
-// SyncOnce evaluates every migrated guild-level route once. Failures are
-// logged and never fatal; nothing is torn down while a lookup is failing.
+// SyncOnce evaluates every migrated guild-level route of every guild once.
+// Failures are logged and never fatal; nothing is torn down while a lookup
+// is failing.
 func (s *RouteSyncer) SyncOnce(ctx context.Context) {
 	if s == nil || s.resolver == nil || s.servers == nil {
 		return
 	}
-	guildRowID, serverIDs, err := s.servers(ctx)
+	guilds, err := s.servers(ctx)
 	if err != nil {
 		slog.Warn("component=discord", "event", "route_sync_servers_failed", "err", err.Error())
 		return
 	}
-	for _, spec := range routedStaticPanels {
-		s.syncStaticPanel(ctx, guildRowID, serverIDs, spec)
+	s.mu.Lock()
+	booted := s.booted
+	s.mu.Unlock()
+	var changed []pendingLeaderboardSig
+	for _, g := range guilds {
+		for _, spec := range routedStaticPanels {
+			s.syncStaticPanel(ctx, g, spec)
+		}
+		if st, sig, moved := s.leaderboardRoutesMoved(ctx, g, booted); moved {
+			changed = append(changed, pendingLeaderboardSig{st, sig})
+		}
 	}
-	s.syncLeaderboard(ctx, guildRowID, serverIDs)
+	s.mu.Lock()
+	s.booted = true
+	s.mu.Unlock()
+	if len(changed) == 0 {
+		return
+	}
+	// One refresh covers every guild, so the changed guilds share it.
+	if err := s.leaderboard.RefreshOnce(ctx); err != nil {
+		slog.Warn("component=discord", "event", "route_leaderboard_refresh_failed", "err", err.Error())
+		return // keep the old signatures so the next pass retries
+	}
+	for _, c := range changed {
+		c.state.sig = c.sig
+	}
 }
 
-func (s *RouteSyncer) stateFor(key string) *routeSyncState {
+// pendingLeaderboardSig is a guild whose AUTO_LEADERBOARD channels changed
+// and the signature to record once the refresh succeeded.
+type pendingLeaderboardSig struct {
+	state *routeSyncState
+	sig   string
+}
+
+func (s *RouteSyncer) stateFor(guildRowID int64, routeKey string) *routeSyncState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	key := routeSyncKey{guildRowID, routeKey}
 	st := s.state[key]
 	if st == nil {
 		st = &routeSyncState{}
@@ -183,12 +235,13 @@ func (s *RouteSyncer) stateFor(key string) *routeSyncState {
 	return st
 }
 
-func (s *RouteSyncer) syncStaticPanel(ctx context.Context, guildRowID int64, serverIDs []int64, spec legacyPanelSpec) {
-	channels, lookupErrs := resolveGuildRouteChannels(ctx, s.resolver, guildRowID, serverIDs, spec.routeKey)
+func (s *RouteSyncer) syncStaticPanel(ctx context.Context, g GuildServers, spec legacyPanelSpec) {
+	guildRowID := g.GuildRowID
+	channels, lookupErrs := resolveGuildRouteChannels(ctx, s.resolver, guildRowID, g.ServerIDs, spec.routeKey)
 	if lookupErrs > 0 && len(channels) == 0 {
 		return // unknown state: keep whatever is live
 	}
-	st := s.stateFor(spec.routeKey)
+	st := s.stateFor(guildRowID, spec.routeKey)
 	sig := strings.Join(channels, ",")
 	if st.known && st.sig == sig && time.Since(st.verified) < routePanelVerifyEvery {
 		return
@@ -204,6 +257,9 @@ func (s *RouteSyncer) syncStaticPanel(ctx context.Context, guildRowID int64, ser
 	if res.Errors == 0 {
 		st.known, st.sig, st.verified = true, sig, time.Now()
 	}
+	if guildRowID != s.primaryGuildRowID {
+		return // only the primary guild has a legacy panel to retire or restore
+	}
 	switch {
 	case len(channels) > 0 && res.Errors == 0:
 		// Route mode is live: retire the legacy panel so only one copy exists.
@@ -214,30 +270,34 @@ func (s *RouteSyncer) syncStaticPanel(ctx context.Context, guildRowID int64, ser
 	}
 }
 
-func (s *RouteSyncer) syncLeaderboard(ctx context.Context, guildRowID int64, serverIDs []int64) {
+// leaderboardRoutesMoved reports whether a guild's AUTO_LEADERBOARD channels
+// differ from the ones the leaderboard was last refreshed for. booted says
+// the syncer's first pass is over, so a guild observed for the first time
+// now is new since startup.
+func (s *RouteSyncer) leaderboardRoutesMoved(ctx context.Context, g GuildServers, booted bool) (st *routeSyncState, sig string, moved bool) {
 	if s.leaderboard == nil {
-		return
+		return nil, "", false
 	}
-	channels, lookupErrs := resolveGuildRouteChannels(ctx, s.resolver, guildRowID, serverIDs, routeKeyAutoLeaderboard)
+	channels, lookupErrs := resolveGuildRouteChannels(ctx, s.resolver, g.GuildRowID, g.ServerIDs, routeKeyAutoLeaderboard)
 	if lookupErrs > 0 && len(channels) == 0 {
-		return
+		return nil, "", false
 	}
-	st := s.stateFor(routeKeyAutoLeaderboard)
-	sig := strings.Join(channels, ",")
+	st = s.stateFor(g.GuildRowID, routeKeyAutoLeaderboard)
+	sig = strings.Join(channels, ",")
 	if !st.known {
-		// First observation: the scheduler's own startup refresh already
-		// published for the current routes; just record them.
-		st.known, st.sig = true, sig
-		return
+		st.known = true
+		if booted && sig != "" {
+			// A guild first seen after startup: the scheduler's startup
+			// refresh did not cover it, so publish now. Its signature is
+			// recorded once that succeeds, so a failure is retried.
+			return st, sig, true
+		}
+		// First observation at startup: the scheduler's own startup refresh
+		// already published for the current routes; just record them.
+		st.sig = sig
+		return st, sig, false
 	}
-	if st.sig == sig {
-		return
-	}
-	if err := s.leaderboard.RefreshOnce(ctx); err != nil {
-		slog.Warn("component=discord", "event", "route_leaderboard_refresh_failed", "err", err.Error())
-		return // keep the old signature so the next pass retries
-	}
-	st.sig = sig
+	return st, sig, st.sig != sig
 }
 
 // retireLegacyPanel deletes the legacy panel message (best-effort) and clears

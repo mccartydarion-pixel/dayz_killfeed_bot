@@ -360,7 +360,7 @@ func TestBountyTrackingCardsUseTheTemplatePerServerAndEventKind(t *testing.T) {
 	res.set(7, 1, "BOUNTY_TRACKING", "track-1")
 	res.set(7, 2, "BOUNTY_TRACKING", "track-2")
 	sender := &fakeHitSender{fail: map[string]error{}}
-	tr := NewBountyTracker(sender, res, func(context.Context) (int64, []int64, error) { return 7, []int64{1, 2}, nil })
+	tr := NewBountyTracker(sender, res, SingleGuild(func(context.Context) (int64, []int64, error) { return 7, []int64{1, 2}, nil }))
 	stub := &stubCustomizer{}
 	tr.SetCustomizer(stub, names)
 

@@ -198,7 +198,7 @@ func TestRoutedRefreshReplacesObsoleteSingleEmbedBoard(t *testing.T) {
 
 	panel := NewLeaderboardPanel(h, "leaderboards", "", DefaultLeaderboardConfig())
 	s := NewLeaderboardScheduler(panel, newFixtureStats(), f.guild, DefaultLeaderboardConfig(), func(string) {})
-	servers := func(context.Context) (int64, []int64, error) { return f.guild, f.servers, nil }
+	servers := SingleGuild(func(context.Context) (int64, []int64, error) { return f.guild, f.servers, nil })
 	s.SetRouting(f.resolver, servers, f.panels, NewLegacyLeaderboardRetirer(h, f.setup, "g1"))
 	f.resolver.set(f.guild, 1, routeKeyAutoLeaderboard, "leaderboards")
 

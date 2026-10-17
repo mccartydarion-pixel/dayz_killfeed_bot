@@ -219,7 +219,8 @@ func TestSyncerLookupFailureFallsBackSafely(t *testing.T) {
 	f.resolver.clear(f.guild, 1, routeKeyLinkGamertag)
 	f.resolver.fail(f.guild, 1, routeKeyLinkGamertag, errors.New("db down"))
 	// Force a re-evaluation past the verify window.
-	f.syncer.state[routeKeyLinkGamertag].verified = f.syncer.state[routeKeyLinkGamertag].verified.Add(-2 * routePanelVerifyEvery)
+	linkState := f.syncer.state[routeSyncKey{f.guild, routeKeyLinkGamertag}]
+	linkState.verified = linkState.verified.Add(-2 * routePanelVerifyEvery)
 	f.syncer.SyncOnce(context.Background())
 
 	if f.api.liveIn("route-chan") != 1 || f.store.count(f.guild, routeKeyLinkGamertag) != 1 {

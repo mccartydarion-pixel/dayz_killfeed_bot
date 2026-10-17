@@ -44,7 +44,7 @@ func newHeatmapBoardFixture(t *testing.T) (*routedFixture, *heatmapFake, *Heatma
 	f := newRoutedFixture(t)
 	hm := &heatmapFake{results: map[int64]*heatmap.Result{}}
 	clock := time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
-	b := NewHeatmapBoard(f.resolver, func(context.Context) (int64, []int64, error) { return f.guild, f.servers, nil }, f.panels, hm, 30*time.Minute)
+	b := NewHeatmapBoard(f.resolver, SingleGuild(func(context.Context) (int64, []int64, error) { return f.guild, f.servers, nil }), f.panels, hm, 30*time.Minute)
 	b.now = func() time.Time { return clock }
 	return f, hm, b, &clock
 }
@@ -121,7 +121,7 @@ func TestHeatmapBoardOneMessagePerChannelEditedInPlace(t *testing.T) {
 	}
 
 	// A restart (new board, same durable store) edits the same message.
-	b2 := NewHeatmapBoard(f.resolver, func(context.Context) (int64, []int64, error) { return f.guild, f.servers, nil }, NewRoutePanels(f.api, f.store), hm, 30*time.Minute)
+	b2 := NewHeatmapBoard(f.resolver, SingleGuild(func(context.Context) (int64, []int64, error) { return f.guild, f.servers, nil }), NewRoutePanels(f.api, f.store), hm, 30*time.Minute)
 	b2.SyncOnce(ctx)
 	if f.api.sendCount() != 1 || f.api.liveIn("chan-heat") != 1 {
 		t.Fatalf("restart must not duplicate the summary, live=%v", f.api.live())

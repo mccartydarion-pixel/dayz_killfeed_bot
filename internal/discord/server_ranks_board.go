@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -20,33 +21,26 @@ type ServerRanksReader interface {
 	ServerStandings(ctx context.Context, serverID int64, limit int) ([]repository.ServerStanding, error)
 }
 
-// ServerRanksBoard maintains a distinct persistent panel per game server.
-// It is not attached to the runtime until the setup route and season gate are
-// wired. A missing season gets an honest placeholder, never fixture ranks.
-type ServerRanksBoard struct {
+// ServerRanksBoards maintains a distinct persistent panel per game server, for
+// every active server of every guild the provider lists on each sync - so a
+// server connected from the website after startup gets its panel without a
+// restart. A missing season gets an honest placeholder, never fixture ranks.
+type ServerRanksBoards struct {
 	resolver RouteResolver
+	servers  AllGuildServersFunc
 	panels   *RoutePanels
 	reader   ServerRanksReader
-	guildID  int64
-	serverID int64
-	name     string
 	nameFn   ServerNameFunc
+	syncMu   sync.Mutex // serializes the Run loop with setup-time SyncOnce
 }
 
-// SetServerNameFunc makes the panel show the server's current name on each refresh (an owner
-// rename or a Nitrado name change) instead of the name the board was created with. A nil
-// function, or one that returns "", keeps that name. Call it before Run.
-func (b *ServerRanksBoard) SetServerNameFunc(f ServerNameFunc) {
+// SetServerNameFunc makes each panel show its server's current name on each refresh (an owner
+// rename or a Nitrado name change). A nil function, or one that returns "", leaves the name off.
+// Call it before Run.
+func (b *ServerRanksBoards) SetServerNameFunc(f ServerNameFunc) {
 	if b != nil {
 		b.nameFn = f
 	}
-}
-
-func (b *ServerRanksBoard) serverName() string {
-	if name := serverNameOf(b.nameFn, b.serverID); name != "" {
-		return name
-	}
-	return b.name
 }
 
 // ServerRanksInactiveEmbed is the honest notice shown while a server has no
@@ -62,11 +56,12 @@ func ServerRanksInactiveEmbed(serverName string) *discordgo.MessageEmbed {
 	return &discordgo.MessageEmbed{Author: presentation.ChampionAuthor(), Title: serverRanksTitle, Description: desc, Color: presentation.Neutral, Footer: presentation.AutoRefreshFooter()}
 }
 
-func NewServerRanksBoard(resolver RouteResolver, panels *RoutePanels, reader ServerRanksReader, guildID, serverID int64, name string) *ServerRanksBoard {
-	return &ServerRanksBoard{resolver: resolver, panels: panels, reader: reader, guildID: guildID, serverID: serverID, name: name}
+func NewServerRanksBoards(resolver RouteResolver, servers AllGuildServersFunc, panels *RoutePanels, reader ServerRanksReader) *ServerRanksBoards {
+	return &ServerRanksBoards{resolver: resolver, servers: servers, panels: panels, reader: reader}
 }
 
-func (b *ServerRanksBoard) Run(ctx context.Context) {
+// Run syncs at startup and every ServerRanksRefreshInterval until ctx ends.
+func (b *ServerRanksBoards) Run(ctx context.Context) {
 	if b == nil {
 		return
 	}
@@ -83,32 +78,59 @@ func (b *ServerRanksBoard) Run(ctx context.Context) {
 	}
 }
 
-func (b *ServerRanksBoard) SyncOnce(ctx context.Context) {
-	if b == nil || b.resolver == nil || b.panels == nil || b.reader == nil || b.guildID <= 0 || b.serverID <= 0 {
+// SyncOnce refreshes the panel of every active server of every guild. Never
+// fatal; panic-safe.
+func (b *ServerRanksBoards) SyncOnce(ctx context.Context) {
+	if b == nil || b.resolver == nil || b.servers == nil || b.panels == nil || b.reader == nil {
 		return
 	}
-	channel, found, err := b.resolver.Resolve(ctx, b.guildID, b.serverID, routeKeyServerRanks)
+	b.syncMu.Lock()
+	defer b.syncMu.Unlock()
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("component=ranked", "msg", "server ranks sync panic recovered", "panic", fmt.Sprint(r))
+		}
+	}()
+	guilds, err := b.servers(ctx)
 	if err != nil {
-		slog.Warn("component=ranked", "event", "route_lookup_failed", "server_id", b.serverID, "err", err.Error())
+		slog.Warn("component=ranked", "event", "server_ranks_servers_failed", "err", err.Error())
+		return
+	}
+	for _, g := range guilds {
+		for _, serverID := range g.ServerIDs {
+			b.syncServer(ctx, g.GuildRowID, serverID)
+		}
+	}
+}
+
+// syncServer places or refreshes one server's panel on its SERVER_RANKS route.
+func (b *ServerRanksBoards) syncServer(ctx context.Context, guildRowID, serverID int64) {
+	if guildRowID <= 0 || serverID <= 0 {
+		return
+	}
+	channel, found, err := b.resolver.Resolve(ctx, guildRowID, serverID, routeKeyServerRanks)
+	if err != nil {
+		slog.Warn("component=ranked", "event", "route_lookup_failed", "guild_id", guildRowID, "server_id", serverID, "err", err.Error())
 		return // unknown route state: keep the last good panel
 	}
-	key := fmt.Sprintf("%s:%d", routeKeyServerRanks, b.serverID)
+	key := fmt.Sprintf("%s:%d", routeKeyServerRanks, serverID)
 	if !found || channel == "" {
-		_, _ = b.panels.Sync(ctx, b.guildID, key, nil, PanelContent{}, false, true)
+		_, _ = b.panels.Sync(ctx, guildRowID, key, nil, PanelContent{}, false, true)
 		return
 	}
-	rows, err := b.reader.ServerStandings(ctx, b.serverID, presentation.MaxBoardEntries)
+	rows, err := b.reader.ServerStandings(ctx, serverID, presentation.MaxBoardEntries)
+	name := serverNameOf(b.nameFn, serverID)
 	var embed *discordgo.MessageEmbed
 	switch {
 	case err == nil:
-		embed = BuildServerRanksEmbed(ServerRanksSnapshot{ServerName: b.serverName(), UpdatedAt: time.Now().UTC(), Standings: rows})
+		embed = BuildServerRanksEmbed(ServerRanksSnapshot{ServerName: name, UpdatedAt: time.Now().UTC(), Standings: rows})
 	case errors.Is(err, repository.ErrRankedIneligible):
-		embed = ServerRanksInactiveEmbed(b.serverName())
+		embed = ServerRanksInactiveEmbed(name)
 	default:
-		slog.Warn("component=ranked", "event", "standings_failed", "server_id", b.serverID, "err", err.Error())
+		slog.Warn("component=ranked", "event", "standings_failed", "server_id", serverID, "err", err.Error())
 		return // query failure: preserve last good panel
 	}
-	if _, err := b.panels.Sync(ctx, b.guildID, key, []string{channel}, PanelContent{Embed: embed}, true, true); err != nil {
-		slog.Warn("component=ranked", "event", "panel_sync_failed", "server_id", b.serverID, "err", err.Error())
+	if _, err := b.panels.Sync(ctx, guildRowID, key, []string{channel}, PanelContent{Embed: embed}, true, true); err != nil {
+		slog.Warn("component=ranked", "event", "panel_sync_failed", "server_id", serverID, "err", err.Error())
 	}
 }

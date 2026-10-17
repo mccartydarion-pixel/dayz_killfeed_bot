@@ -23,14 +23,14 @@ const (
 )
 
 // ServerStatusBoard keeps one persistent server-status message per
-// SERVER_STATUS-routed channel, edited in place through RoutePanels (so
-// restarts and route changes never duplicate it). It shows only what the
-// server workers actually observe - Champion's ADM link, log freshness and
-// the tracked online count. There is no uptime, latency or game-server
-// power state: Champion does not measure them.
+// SERVER_STATUS-routed channel of every guild, edited in place through
+// RoutePanels (so restarts and route changes never duplicate it). It shows
+// only what the server workers actually observe - Champion's ADM link, log
+// freshness and the tracked online count. There is no uptime, latency or
+// game-server power state: Champion does not measure them.
 type ServerStatusBoard struct {
 	resolver    RouteResolver
-	servers     GuildServersFunc
+	servers     AllGuildServersFunc
 	panels      *RoutePanels
 	serverNames ServerNameFunc
 	now         func() time.Time
@@ -73,7 +73,7 @@ func (b *ServerStatusBoard) ObserveGame(serverID int64, g GameServerStatus) {
 	}
 }
 
-func NewServerStatusBoard(resolver RouteResolver, servers GuildServersFunc, panels *RoutePanels) *ServerStatusBoard {
+func NewServerStatusBoard(resolver RouteResolver, servers AllGuildServersFunc, panels *RoutePanels) *ServerStatusBoard {
 	return &ServerStatusBoard{resolver: resolver, servers: servers, panels: panels, now: time.Now, trigger: make(chan struct{}, 1), snapshots: map[int64]killfeed.AdmSnapshot{}}
 }
 
@@ -126,7 +126,8 @@ func (b *ServerStatusBoard) Run(ctx context.Context) {
 	}
 }
 
-// SyncOnce places or refreshes the status message in every routed channel.
+// SyncOnce places or refreshes the status message in every routed channel of
+// every guild.
 func (b *ServerStatusBoard) SyncOnce(ctx context.Context) {
 	if b == nil || b.resolver == nil || b.servers == nil || b.panels == nil {
 		return
@@ -138,15 +139,23 @@ func (b *ServerStatusBoard) SyncOnce(ctx context.Context) {
 			slog.Error("component=server_status", "msg", "sync panic recovered", "panic", fmt.Sprint(r))
 		}
 	}()
-	guildRowID, serverIDs, err := b.servers(ctx)
+	guilds, err := b.servers(ctx)
 	if err != nil {
 		slog.Warn("component=server_status", "event", "server_status_servers_failed", "err", err.Error())
 		return
 	}
+	for _, g := range guilds {
+		b.syncGuild(ctx, g)
+	}
+}
+
+// syncGuild places or refreshes one guild's status messages.
+func (b *ServerStatusBoard) syncGuild(ctx context.Context, g GuildServers) {
+	guildRowID := g.GuildRowID
 	byChannel := map[string][]int64{}
 	var order []string
 	lookupErrs := 0
-	for _, serverID := range serverIDs {
+	for _, serverID := range g.ServerIDs {
 		ch, found, rerr := b.resolver.Resolve(ctx, guildRowID, serverID, routeKeyServerStatus)
 		if rerr != nil {
 			lookupErrs++
@@ -180,7 +189,7 @@ func (b *ServerStatusBoard) SyncOnce(ctx context.Context) {
 		return PanelContent{Embed: BuildServerStatusEmbed(sections, now)}, nil
 	}
 	if _, err := b.panels.SyncEach(ctx, guildRowID, routeKeyServerStatus, order, contentFor, lookupErrs == 0); err != nil {
-		slog.Warn("component=server_status", "event", "server_status_sync_failed", "err", err.Error())
+		slog.Warn("component=server_status", "event", "server_status_sync_failed", "guild_id", guildRowID, "err", err.Error())
 	}
 }
 

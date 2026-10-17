@@ -211,7 +211,7 @@ func (a *App) runSeasonPlanner(ctx context.Context, guildID int64, now time.Time
 	if a.CompletionPublisher != nil {
 		if notices, err := a.SeasonPlanner.PendingNotices(ctx, guildID, 10); err == nil {
 			for _, n := range notices {
-				if err := a.CompletionPublisher.Announce(ctx, discord.BuildSeasonPlanEmbed(seasonPlanCard(n, "SCHEDULED"))); err != nil {
+				if err := a.CompletionPublisher.Announce(ctx, guildID, discord.BuildSeasonPlanEmbed(seasonPlanCard(n, "SCHEDULED"))); err != nil {
 					slog.Warn("component=season_planner", "msg", "notice failed", "action_id", n.ID, "err", err.Error())
 					continue
 				}
@@ -237,7 +237,7 @@ func (a *App) runSeasonPlanner(ctx context.Context, guildID int64, now time.Time
 			slog.Warn("component=season_planner", "msg", "finish stamp failed", "action_id", action.ID, "err", err.Error())
 		}
 		if runErr == nil && action.Announce && a.CompletionPublisher != nil {
-			if err := a.CompletionPublisher.Announce(ctx, discord.BuildSeasonPlanEmbed(seasonPlanCard(action, "DONE"))); err != nil {
+			if err := a.CompletionPublisher.Announce(ctx, guildID, discord.BuildSeasonPlanEmbed(seasonPlanCard(action, "DONE"))); err != nil {
 				slog.Warn("component=season_planner", "msg", "done card failed", "action_id", action.ID, "err", err.Error())
 			}
 		}

@@ -17,17 +17,21 @@ import (
 // persistent public leaderboard panel is automatically refreshed.
 const LeaderboardRefreshInterval = 3 * time.Hour
 
-// LeaderboardScheduler owns the guild's one persistent leaderboard panel and
-// refreshes it on a fixed interval, editing the existing message in place.
-// Kills never trigger a refresh directly; they only make the next scheduled
-// (or manually triggered) refresh reflect the latest data.
+// LeaderboardScheduler owns the persistent leaderboard panels and refreshes
+// them on a fixed interval, editing the existing messages in place. In route
+// mode every guild with an active server gets its own panel (its own stats,
+// its own routed channels); the legacy GuildSetup panel exists only for the
+// primary guild. Kills never trigger a refresh directly; they only make the
+// next scheduled (or manually triggered) refresh reflect the latest data.
 type LeaderboardScheduler struct {
 	panel       *LeaderboardPanel
 	stats       AutoLeaderboardReader
 	ranks       RankReader
 	movement    BoardMovementStore
-	serverIDs   GuildServersFunc
+	serverIDs   AllGuildServersFunc
 	serverNames ServerNameFunc
+	// guildRowID is the primary guild (DISCORD_GUILD_ID): the only guild that
+	// has a legacy panel to fall back to or retire.
 	guildRowID  int64
 	cfg         LeaderboardConfig
 	onMessageID func(string)
@@ -41,7 +45,7 @@ type LeaderboardScheduler struct {
 
 	// Installation route model (see SetRouting). Unset -> legacy only.
 	routes        RouteResolver
-	servers       GuildServersFunc
+	servers       AllGuildServersFunc
 	routePanels   *RoutePanels
 	retireLegacy  func()
 	legacyRetired bool
@@ -106,17 +110,17 @@ func boardMoves(entries []repository.LeaderboardEntry, before map[string]int) (m
 	return moves, now
 }
 
-func (s *LeaderboardScheduler) applyMovement(ctx context.Context, board string, entries []repository.LeaderboardEntry, now time.Time) map[string]string {
+func (s *LeaderboardScheduler) applyMovement(ctx context.Context, guildRowID int64, board string, entries []repository.LeaderboardEntry, now time.Time) map[string]string {
 	if s.movement == nil {
 		return nil
 	}
 	day := now.UTC().Truncate(24 * time.Hour)
-	before, err := s.movement.PreviousPositions(ctx, s.guildRowID, board, day)
+	before, err := s.movement.PreviousPositions(ctx, guildRowID, board, day)
 	if err != nil {
 		return nil
 	}
 	moves, positions := boardMoves(entries, before)
-	_ = s.movement.RecordPositions(ctx, s.guildRowID, board, day, positions)
+	_ = s.movement.RecordPositions(ctx, guildRowID, board, day, positions)
 	return moves
 }
 
@@ -128,26 +132,65 @@ func (s *LeaderboardScheduler) SetRankSource(r RankReader) {
 	}
 }
 
-// SetServerNames lets the header show the guild's real server display
+// SetServerNames lets each guild's header show its real server display
 // name(s). Unset, the header simply omits the name line.
-func (s *LeaderboardScheduler) SetServerNames(servers GuildServersFunc, names ServerNameFunc) {
+func (s *LeaderboardScheduler) SetServerNames(servers AllGuildServersFunc, names ServerNameFunc) {
 	if s != nil {
 		s.serverIDs, s.serverNames = servers, names
 	}
 }
 
-// GuildServersFunc lists the guild's internal id and the ids of its active
+// GuildServersFunc lists one guild's internal id and the ids of its active
 // game servers. The leaderboard is a guild-level message, so it follows the
 // union of the AUTO_LEADERBOARD routes of every server in the guild - each
 // resolved on its own (guild, server) identity.
 type GuildServersFunc func(ctx context.Context) (guildRowID int64, serverIDs []int64, err error)
 
-// SetRouting moves the persistent leaderboard onto AUTO_LEADERBOARD routes.
-// Resolution order per refresh: route(s) -> legacy GuildSetup channel. Exactly
-// one mode is active, so a guild is never published to both. retireLegacy
-// removes the legacy panel message the first time route mode takes over, and
-// is optional.
-func (s *LeaderboardScheduler) SetRouting(resolver RouteResolver, servers GuildServersFunc, panels *RoutePanels, retireLegacy func()) {
+// GuildServers is one Discord guild (internal guilds.id) and its active game servers.
+type GuildServers struct {
+	GuildRowID int64
+	ServerIDs  []int64
+}
+
+// AllGuildServersFunc lists every guild that has an active game server, with
+// those servers. The panels and feeds are multi-tenant: each guild is served
+// on its own (guild, server) identities, never through the primary guild's.
+type AllGuildServersFunc func(ctx context.Context) ([]GuildServers, error)
+
+// SingleGuild adapts a one-guild provider into an AllGuildServersFunc (tests
+// and the legacy single-guild path). A nil provider stays nil.
+func SingleGuild(f GuildServersFunc) AllGuildServersFunc {
+	if f == nil {
+		return nil
+	}
+	return func(ctx context.Context) ([]GuildServers, error) {
+		guildRowID, serverIDs, err := f(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return []GuildServers{{GuildRowID: guildRowID, ServerIDs: serverIDs}}, nil
+	}
+}
+
+// serversOfGuild is guildRowID's entry in a listing; ok=false when it has no
+// active server (and so nothing to route).
+func serversOfGuild(guilds []GuildServers, guildRowID int64) (serverIDs []int64, ok bool) {
+	for _, g := range guilds {
+		if g.GuildRowID == guildRowID {
+			return g.ServerIDs, true
+		}
+	}
+	return nil, false
+}
+
+// SetRouting moves the persistent leaderboard onto AUTO_LEADERBOARD routes,
+// for every guild the provider lists. Resolution order per refresh for the
+// primary guild: route(s) -> legacy GuildSetup channel; exactly one mode is
+// active, so it is never published to both. Another guild has no legacy
+// channel: without a route it simply has no leaderboard. retireLegacy removes
+// the legacy panel message the first time route mode takes over, and is
+// optional.
+func (s *LeaderboardScheduler) SetRouting(resolver RouteResolver, servers AllGuildServersFunc, panels *RoutePanels, retireLegacy func()) {
 	if s == nil {
 		return
 	}
@@ -163,25 +206,28 @@ func (s *LeaderboardScheduler) MarkDirty() {
 	s.mu.Unlock()
 }
 
-// NewLeaderboardScheduler creates a scheduler bound to one guild's panel.
+// NewLeaderboardScheduler creates a scheduler; guildRowID is the primary
+// guild, whose legacy panel is the fallback when it has no route.
 func NewLeaderboardScheduler(panel *LeaderboardPanel, stats AutoLeaderboardReader, guildRowID int64, cfg LeaderboardConfig, onMessageID func(string)) *LeaderboardScheduler {
 	return &LeaderboardScheduler{panel: panel, stats: stats, guildRowID: guildRowID, cfg: cfg, onMessageID: onMessageID}
 }
 
-// RefreshOnce queries current data and updates the panel if it changed. Used
-// by both the automatic ticker and the manual /admin leaderboard-refresh path,
-// so there is exactly one leaderboard-refresh code path.
+// RefreshOnce queries current data and updates the panels if they changed.
+// Used by both the automatic ticker and the manual /admin leaderboard-refresh
+// path, so there is exactly one leaderboard-refresh code path.
 func (s *LeaderboardScheduler) RefreshOnce(ctx context.Context) error {
 	if s == nil || s.panel == nil || s.stats == nil {
 		return nil
 	}
 	s.refreshMu.Lock()
 	defer s.refreshMu.Unlock()
-	snapshot, err := s.loadSnapshot(ctx)
+	guilds, listErr := s.listGuilds(ctx)
+	primaryServers, _ := serversOfGuild(guilds, s.guildRowID)
+	snapshot, err := s.loadSnapshot(ctx, s.guildRowID, primaryServers)
 	if err != nil {
 		return err
 	}
-	if handled, routeErr := s.refreshRouted(ctx, snapshot); handled {
+	if handled, routeErr := s.refreshRouted(ctx, guilds, listErr, snapshot); handled {
 		if routeErr == nil {
 			s.mu.Lock()
 			s.dirty = false
@@ -212,26 +258,75 @@ func (s *LeaderboardScheduler) RefreshOnce(ctx context.Context) error {
 	return nil
 }
 
-// refreshRouted publishes to AUTO_LEADERBOARD route channels when any server
-// of the guild has one. handled=false means "use the legacy panel": no routing
-// configured, no route found, or the server/route lookup failed (a failed
-// lookup falls back to legacy and never tears down routed panels).
-func (s *LeaderboardScheduler) refreshRouted(ctx context.Context, snapshot LeaderboardSnapshot) (handled bool, err error) {
+// listGuilds lists every guild and its servers for one refresh: the routing
+// provider, or the names provider while routing is off. A failure only drops
+// the header names and route mode (which falls back to legacy, logged by
+// refreshRouted).
+func (s *LeaderboardScheduler) listGuilds(ctx context.Context) ([]GuildServers, error) {
+	list := s.servers
+	if list == nil {
+		list = s.serverIDs
+	}
+	if list == nil {
+		return nil, nil
+	}
+	return list(ctx)
+}
+
+// refreshRouted publishes every listed guild's board to its AUTO_LEADERBOARD
+// route channels. handled reports the primary guild only: false means "use
+// its legacy panel" (no routing configured, no route found, or the listing
+// failed - a failed lookup falls back to legacy and never tears down routed
+// panels). Another guild's failure is logged and retried next refresh; it
+// never decides the primary guild's mode.
+func (s *LeaderboardScheduler) refreshRouted(ctx context.Context, guilds []GuildServers, listErr error, primary LeaderboardSnapshot) (handled bool, err error) {
 	if s.routes == nil || s.servers == nil || s.routePanels == nil {
 		return false, nil
 	}
-	guildRowID, serverIDs, listErr := s.servers(ctx)
 	if listErr != nil {
 		slog.Warn("component=discord", "event", "channel_route_fallback", "route_key", routeKeyAutoLeaderboard, "reason", "lookup_error", "err", listErr.Error())
 		return false, nil
 	}
-	channels, lookupErrs := resolveGuildRouteChannels(ctx, s.routes, guildRowID, serverIDs, routeKeyAutoLeaderboard)
+	var firstErr error
+	for _, g := range guilds {
+		snapshot := primary
+		if g.GuildRowID != s.guildRowID {
+			loaded, loadErr := s.loadSnapshot(ctx, g.GuildRowID, g.ServerIDs)
+			if loadErr != nil {
+				slog.Warn("component=discord", "msg", "routed leaderboard load failed", "guild_id", g.GuildRowID, "err", loadErr.Error())
+				if firstErr == nil {
+					firstErr = loadErr
+				}
+				continue
+			}
+			snapshot = loaded
+		}
+		routed, syncErr := s.refreshGuild(ctx, g, snapshot)
+		if g.GuildRowID == s.guildRowID {
+			handled = routed
+		}
+		if syncErr != nil && firstErr == nil {
+			firstErr = syncErr
+		}
+	}
+	if !handled {
+		return false, nil
+	}
+	return true, firstErr
+}
+
+// refreshGuild publishes one guild's board to its route channels. handled is
+// false when the guild has no route (its routed panels, if any, are retired).
+func (s *LeaderboardScheduler) refreshGuild(ctx context.Context, g GuildServers, snapshot LeaderboardSnapshot) (handled bool, err error) {
+	guildRowID := g.GuildRowID
+	primary := guildRowID == s.guildRowID
+	channels, lookupErrs := resolveGuildRouteChannels(ctx, s.routes, guildRowID, g.ServerIDs, routeKeyAutoLeaderboard)
 	if len(channels) == 0 {
 		if lookupErrs == 0 {
 			// Definitively no routes: retire any routed panel left from a
 			// route that has since been removed.
 			if _, syncErr := s.routePanels.Sync(ctx, guildRowID, routeKeyAutoLeaderboard, nil, PanelContent{}, true, true); syncErr != nil {
-				slog.Warn("component=discord", "event", "route_panel_retire_failed", "route_key", routeKeyAutoLeaderboard, "err", syncErr.Error())
+				slog.Warn("component=discord", "event", "route_panel_retire_failed", "route_key", routeKeyAutoLeaderboard, "guild_id", guildRowID, "err", syncErr.Error())
 			}
 		}
 		return false, nil
@@ -240,10 +335,10 @@ func (s *LeaderboardScheduler) refreshRouted(ctx context.Context, snapshot Leade
 	content := PanelContent{Embeds: BuildAutoLeaderboardEmbeds(snapshot, s.cfg)}
 	res, syncErr := s.routePanels.Sync(ctx, guildRowID, routeKeyAutoLeaderboard, channels, content, true, lookupErrs == 0)
 	if syncErr != nil {
-		slog.Warn("component=discord", "msg", "routed leaderboard refresh failed", "err", syncErr.Error())
+		slog.Warn("component=discord", "msg", "routed leaderboard refresh failed", "guild_id", guildRowID, "err", syncErr.Error())
 		return true, syncErr
 	}
-	if res.Errors == 0 && !s.legacyRetired {
+	if primary && res.Errors == 0 && !s.legacyRetired {
 		if s.retireLegacy != nil {
 			s.retireLegacy()
 		}
@@ -259,7 +354,11 @@ func (s *LeaderboardScheduler) refreshRouted(ctx context.Context, snapshot Leade
 			for _, r := range recorded {
 				keep[r.MessageID] = true
 			}
-			s.sweep(append(append([]string(nil), channels...), s.panel.ChannelID()), keep)
+			sweepChannels := append([]string(nil), channels...)
+			if primary {
+				sweepChannels = append(sweepChannels, s.panel.ChannelID())
+			}
+			s.sweep(sweepChannels, keep)
 		}
 	}
 	return true, nil
@@ -287,31 +386,31 @@ func (s *LeaderboardScheduler) sweep(channels []string, keep map[string]bool) {
 	}
 }
 
-// loadSnapshot loads EVERY category before anything is rendered, so the
-// message is only ever edited with a complete snapshot: any failed ranking
-// query fails the whole refresh and the last good board stays untouched
-// (logged by the caller, retried next refresh). Four bounded aggregate
-// queries, plus one for ranks when a rank source is wired.
-func (s *LeaderboardScheduler) loadSnapshot(ctx context.Context) (LeaderboardSnapshot, error) {
-	kills, err := s.stats.TopByKills(ctx, s.guildRowID, boardLimit(s.cfg.TopKillsLimit))
+// loadSnapshot loads EVERY category of one guild before anything is
+// rendered, so a message is only ever edited with a complete snapshot: any
+// failed ranking query fails that guild's refresh and its last good board
+// stays untouched (logged by the caller, retried next refresh). Four bounded
+// aggregate queries, plus one for ranks when a rank source is wired.
+func (s *LeaderboardScheduler) loadSnapshot(ctx context.Context, guildRowID int64, serverIDs []int64) (LeaderboardSnapshot, error) {
+	kills, err := s.stats.TopByKills(ctx, guildRowID, boardLimit(s.cfg.TopKillsLimit))
 	if err != nil {
 		return LeaderboardSnapshot{}, err
 	}
-	streaks, err := s.stats.TopByBestStreak(ctx, s.guildRowID, boardLimit(s.cfg.TopStreaksLimit))
+	streaks, err := s.stats.TopByBestStreak(ctx, guildRowID, boardLimit(s.cfg.TopStreaksLimit))
 	if err != nil {
 		return LeaderboardSnapshot{}, err
 	}
-	deaths, err := s.stats.TopByDeaths(ctx, s.guildRowID, boardLimit(s.cfg.TopDeathsLimit))
+	deaths, err := s.stats.TopByDeaths(ctx, guildRowID, boardLimit(s.cfg.TopDeathsLimit))
 	if err != nil {
 		return LeaderboardSnapshot{}, err
 	}
-	longest, err := s.stats.TopLongestKill(ctx, s.guildRowID, boardLimit(s.cfg.TopLongestLimit))
+	longest, err := s.stats.TopLongestKill(ctx, guildRowID, boardLimit(s.cfg.TopLongestLimit))
 	if err != nil {
 		return LeaderboardSnapshot{}, err
 	}
 	snap := LeaderboardSnapshot{TopKills: kills, TopStreaks: streaks, TopDeaths: deaths, TopLongest: longest}
 	if s.ranks != nil {
-		ranks, rankErr := s.ranks.TopCurrentRanks(ctx, s.guildRowID, boardLimit(s.cfg.TopRanksLimit))
+		ranks, rankErr := s.ranks.TopCurrentRanks(ctx, guildRowID, boardLimit(s.cfg.TopRanksLimit))
 		if rankErr != nil && !errors.Is(rankErr, repository.ErrRankedIneligible) {
 			return LeaderboardSnapshot{}, rankErr
 		}
@@ -319,17 +418,17 @@ func (s *LeaderboardScheduler) loadSnapshot(ctx context.Context) (LeaderboardSna
 			snap.CurrentRanks, snap.RanksEnabled = ranks, true
 		}
 	}
-	snap.ServerName = s.serverName(ctx)
+	snap.ServerName = s.serverName(serverIDs)
 	snap.GeneratedAt = time.Now()
 	if weekly, ok := s.stats.(WeeklyKillsReader); ok {
-		week, err := weekly.TopByKillsSince(ctx, s.guildRowID, weekStartUTC(snap.GeneratedAt), boardLimit(s.cfg.TopKillsLimit))
+		week, err := weekly.TopByKillsSince(ctx, guildRowID, weekStartUTC(snap.GeneratedAt), boardLimit(s.cfg.TopKillsLimit))
 		if err != nil {
 			return LeaderboardSnapshot{}, err
 		}
 		snap.TopKillsWeek, snap.WeekEnabled = week, true
 	}
-	snap.KillMoves = s.applyMovement(ctx, "KILLS", snap.TopKills, snap.GeneratedAt)
-	snap.LongestMoves = s.applyMovement(ctx, "LONGEST", snap.TopLongest, snap.GeneratedAt)
+	snap.KillMoves = s.applyMovement(ctx, guildRowID, "KILLS", snap.TopKills, snap.GeneratedAt)
+	snap.LongestMoves = s.applyMovement(ctx, guildRowID, "LONGEST", snap.TopLongest, snap.GeneratedAt)
 	return snap, nil
 }
 
@@ -343,19 +442,15 @@ func boardLimit(n int) int {
 }
 
 // serverName is the header's display name: the guild's active server
-// name(s), de-duplicated in server order. A lookup failure only drops the
-// name line - it never fails the refresh.
-func (s *LeaderboardScheduler) serverName(ctx context.Context) string {
-	if s.serverIDs == nil || s.serverNames == nil {
-		return ""
-	}
-	_, ids, err := s.serverIDs(ctx)
-	if err != nil {
+// name(s), de-duplicated in server order. Without a name source the name
+// line is simply omitted - it never fails the refresh.
+func (s *LeaderboardScheduler) serverName(serverIDs []int64) string {
+	if s.serverNames == nil {
 		return ""
 	}
 	seen := map[string]bool{}
 	var names []string
-	for _, id := range ids {
+	for _, id := range serverIDs {
 		n := strings.TrimSpace(s.serverNames(id))
 		if n == "" || seen[n] {
 			continue
@@ -368,7 +463,7 @@ func (s *LeaderboardScheduler) serverName(ctx context.Context) string {
 
 // Run performs one immediate refresh (so members do not wait 3 hours after
 // startup), then refreshes every LeaderboardRefreshInterval until ctx is
-// cancelled. Callers must start this exactly once per guild.
+// cancelled. Callers must start this exactly once per process.
 func (s *LeaderboardScheduler) Run(ctx context.Context) {
 	if s == nil {
 		return

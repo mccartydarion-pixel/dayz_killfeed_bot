@@ -179,9 +179,9 @@ func newBountyWorld(t *testing.T, routesA, routesB map[string]string) *bountyWor
 	w.save(w.installB, "kf-B", routesB)
 
 	w.servers = func(context.Context) (int64, []int64, error) { return w.guildRowID, []int64{w.serverA, w.serverB}, nil }
-	w.tracker = discord.NewBountyTracker(trackingSender{w.d}, a.ChannelRoutes, w.servers)
+	w.tracker = discord.NewBountyTracker(trackingSender{w.d}, a.ChannelRoutes, discord.SingleGuild(w.servers))
 	w.panelStore = discord.NewRoutePanelStore(a.GuildRoutePanels)
-	w.board = discord.NewBountyBoard(a.ChannelRoutes, w.servers, discord.NewRoutePanels(w.d, w.panelStore), a.Bounties)
+	w.board = discord.NewBountyBoard(a.ChannelRoutes, discord.SingleGuild(w.servers), discord.NewRoutePanels(w.d, w.panelStore), a.Bounties)
 	a.BountyBoard = w.board
 	a.BountyService.SetNotifier(discord.BountyEvents{Tracker: w.tracker, Board: w.board})
 
@@ -419,7 +419,7 @@ func TestBountyBoardRestartAndRouteChangeAgainstRealStore(t *testing.T) {
 	}
 
 	// A restart: a brand-new board and panel manager over the SAME database.
-	restarted := discord.NewBountyBoard(w.a.ChannelRoutes, w.servers, discord.NewRoutePanels(w.d, discord.NewRoutePanelStore(w.a.GuildRoutePanels)), w.a.Bounties)
+	restarted := discord.NewBountyBoard(w.a.ChannelRoutes, discord.SingleGuild(w.servers), discord.NewRoutePanels(w.d, discord.NewRoutePanelStore(w.a.GuildRoutePanels)), w.a.Bounties)
 	restarted.SyncOnce(w.ctx)
 	if w.d.sends != 1 || w.d.liveIn("board-A") != 1 {
 		t.Fatalf("a restart must edit the recorded board, not post another: sends=%d", w.d.sends)

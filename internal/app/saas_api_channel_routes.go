@@ -429,9 +429,7 @@ func (a *App) syncRoutedPanelsNow(ctx context.Context) {
 	a.BountyBoard.SyncOnce(ctx)
 	a.HeatmapBoard.SyncOnce(ctx)
 	a.ServerStatusBoard.SyncOnce(ctx)
-	for _, board := range a.ServerRanksBoards {
-		board.SyncOnce(ctx)
-	}
+	a.ServerRanksBoards.SyncOnce(ctx)
 	a.syncOnlineCounterRoute(ctx)
 }
 

@@ -31,7 +31,7 @@ type economyFeedFixture struct {
 
 func newEconomyFeedFixture() *economyFeedFixture {
 	f := &economyFeedFixture{res: newKeyedResolver(), sender: &fakeHitSender{fail: map[string]error{}}}
-	f.feed = NewEconomyFeed(f.sender, f.res, func(context.Context) (int64, []int64, error) { return 7, []int64{1, 2}, nil })
+	f.feed = NewEconomyFeed(f.sender, f.res, SingleGuild(func(context.Context) (int64, []int64, error) { return 7, []int64{1, 2}, nil }))
 	return f
 }
 

@@ -219,7 +219,7 @@ func (a *App) finishInstallationLayout(ctx context.Context, p *pendingLayout) (A
 
 	slog.Info("component=saas_api", "event", "saas_channel_layout_applied", "installation_id", installationID, "preserve", preserve,
 		"created", len(summary.Created), "reused", len(summary.Reused), "remapped", len(summary.Remapped), "preserved", len(summary.Preserved),
-		"broken", len(summary.Broken), "retirable", summary.Retirable)
+		"broken", len(summary.Broken), "broken_keys", summary.Broken, "blocked_keys", summary.Blocked, "retirable", summary.Retirable)
 	return resp, nil
 }
 
