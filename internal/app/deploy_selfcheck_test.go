@@ -35,6 +35,12 @@ func TestDeployProblems(t *testing.T) {
 		"gateway down":         {func(f *deployFacts) { f.DiscordGateway = false }, []string{"Discord gateway is not connected"}},
 		"a worker missing":     {func(f *deployFacts) { f.WorkersStarted, f.WorkersReading = 1, 1 }, []string{"1 of 2 server workers are not running"}},
 		"a worker not reading": {func(f *deployFacts) { f.WorkersReading = 1 }, []string{"1 of 2 server workers have not read their server log"}},
+		"portal not read yet":  {func(f *deployFacts) { f.AppChecked = false }, nil},
+		"portal settings right": {func(f *deployFacts) {
+			f.AppChecked, f.AppPublic, f.AppCodeGrant, f.AppPrivacyURL = true, true, false, "https://championshp.vip/privacy"
+		}, nil},
+		"bot not public":      {func(f *deployFacts) { f.AppChecked, f.AppPublic = true, false }, []string{"not a public bot"}},
+		"code grant required": {func(f *deployFacts) { f.AppChecked, f.AppPublic, f.AppCodeGrant = true, true, true }, []string{"requires an OAuth2 code grant"}},
 		"several at once": {func(f *deployFacts) {
 			f.DiscordGateway, f.WorkersStarted, f.WorkersReading = false, 1, 0
 		}, []string{"Discord gateway", "1 of 2 server workers are not running", "1 of 1 server workers have not read"}},

@@ -3,11 +3,13 @@ package app
 import (
 	"context"
 	"fmt"
+	"github.com/bwmarrin/discordgo"
 	"log/slog"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/yourname/dayz-killfeed/internal/discord"
 	"github.com/yourname/dayz-killfeed/internal/killfeed"
 	"github.com/yourname/dayz-killfeed/internal/leader"
 	"github.com/yourname/dayz-killfeed/internal/presentation"
@@ -54,6 +56,13 @@ type deployFacts struct {
 	WorkersStarted    int
 	WorkersReading    int // started workers whose last log read worked
 	ReadyAfter        time.Duration
+	// The Discord application's portal settings (discord.ApplicationSettings), read once per
+	// process. AppChecked is false until the read succeeds; the three below are then meaningful.
+	AppChecked    bool
+	AppPublic     bool   // "Public Bot": customers can add the bot
+	AppCodeGrant  bool   // "Requires OAuth2 Code Grant": breaks the plain invite link
+	AppPrivacyURL string // the Developer Portal's privacy policy URL
+	AppTermsURL   string
 }
 
 // deployLeadership names the leadership state in one word.
@@ -94,6 +103,14 @@ func deployProblems(f deployFacts) []string {
 	if f.WorkersReading < f.WorkersStarted {
 		out = append(out, fmt.Sprintf("%d of %d server workers have not read their server log", f.WorkersStarted-f.WorkersReading, f.WorkersStarted))
 	}
+	if f.AppChecked {
+		if !f.AppPublic {
+			out = append(out, "the Discord application is not a public bot (Developer Portal > Bot > Public Bot), so customers cannot add it")
+		}
+		if f.AppCodeGrant {
+			out = append(out, "the Discord application requires an OAuth2 code grant (Developer Portal > Bot), so the invite link fails")
+		}
+	}
 	return out
 }
 
@@ -132,6 +149,8 @@ type deploySelfCheck struct {
 	state             string
 	checkedAt         time.Time
 	alerted           bool
+	app               *discordgo.Application // the portal settings, once read
+	appTriedAt        time.Time
 }
 
 func (d *deploySelfCheck) setMigrations(n int) {
@@ -167,6 +186,9 @@ func (a *App) deployFactsNow(now time.Time) deployFacts {
 	f.DatabaseConnected = a.DB != nil
 	f.Leadership = a.Leader.Status()
 	f.DiscordGateway = a.discordGatewayConnected()
+	if app := a.deployApplication(now); app != nil {
+		f.AppChecked, f.AppPublic, f.AppCodeGrant, f.AppPrivacyURL, f.AppTermsURL = true, app.BotPublic, app.BotRequireCodeGrant, app.PrivacyProxyURL, app.TermsOfServiceURL
+	}
 	for _, id := range a.watchedServerIDs() {
 		s := a.sampleServer(id, now)
 		if !s.WorkerRunning {
@@ -178,6 +200,34 @@ func (a *App) deployFactsNow(now time.Time) deployFacts {
 		}
 	}
 	return f
+}
+
+// deployApplication is the Discord application's portal settings, read once the gateway is up
+// and retried at most once a minute until it succeeds. nil until then, or without Discord.
+func (a *App) deployApplication(now time.Time) *discordgo.Application {
+	a.deploy.mu.Lock()
+	app, tried := a.deploy.app, a.deploy.appTriedAt
+	a.deploy.mu.Unlock()
+	if app != nil {
+		return app
+	}
+	if a.Discord == nil || a.Discord.Session() == nil || (!tried.IsZero() && now.Sub(tried) < time.Minute) {
+		return nil
+	}
+	a.deploy.mu.Lock()
+	a.deploy.appTriedAt = now
+	a.deploy.mu.Unlock()
+	app, err := discord.ApplicationSettings(a.Discord.Session())
+	if err != nil {
+		slog.Warn("component=startup", "event", "discord_application_read_failed", "err", err.Error())
+		return nil
+	}
+	a.deploy.mu.Lock()
+	a.deploy.app = app
+	a.deploy.mu.Unlock()
+	slog.Info("component=startup", "event", "discord_application", "name", app.Name, "bot_public", app.BotPublic,
+		"require_code_grant", app.BotRequireCodeGrant, "privacy_policy_url", app.PrivacyProxyURL, "terms_of_service_url", app.TermsOfServiceURL)
+	return app
 }
 
 // markReady records that start-up finished and starts the self-check. Called once, when the
@@ -217,7 +267,8 @@ func (a *App) runDeploySelfCheck(ctx context.Context, every, deadline, recoveryE
 			slog.Info("component=startup", "event", "deploy_self_check", "result", DeployHealthy, "msg", deploySummary(DeployHealthy, facts, nil),
 				"commit", facts.Commit, "migrations_applied", facts.MigrationsApplied, "leadership", deployLeadership(facts.Leadership),
 				"discord_gateway", facts.DiscordGateway, "workers_expected", facts.WorkersExpected, "workers_started", facts.WorkersStarted,
-				"workers_reading", facts.WorkersReading, "ready_ms", facts.ReadyAfter.Milliseconds(), "healthy_after_s", int(now.Sub(processStartedAt).Seconds()))
+				"workers_reading", facts.WorkersReading, "ready_ms", facts.ReadyAfter.Milliseconds(), "healthy_after_s", int(now.Sub(processStartedAt).Seconds()),
+				"bot_public", facts.AppPublic, "require_code_grant", facts.AppCodeGrant, "privacy_policy_url", facts.AppPrivacyURL)
 			return
 		}
 		if !now.Before(limit) {
