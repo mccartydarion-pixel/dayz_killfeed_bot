@@ -129,7 +129,7 @@ func (a *App) embedTemplateContext(w http.ResponseWriter, r *http.Request, write
 		return
 	}
 	if write {
-		if _, good = a.requireOrganizationRole(w, r, organizationID, user.ID); !good {
+		if _, good = a.requireOrganizationManager(w, r, organizationID, user); !good {
 			return
 		}
 	} else if _, good = a.requireOrganizationViewer(w, r, organizationID, user); !good {

@@ -205,7 +205,7 @@ func (a *App) handleSaveChannelSettings(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	if _, ok := a.requireOrganizationRole(w, r, organizationID, user.ID); !ok {
+	if _, ok := a.requireOrganizationManager(w, r, organizationID, user); !ok {
 		return
 	}
 	installationID, ok := pathInt64(w, r, "installationID")
@@ -427,7 +427,7 @@ func (a *App) handleCreateDiscordChannel(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	if _, ok := a.requireOrganizationRole(w, r, organizationID, user.ID); !ok {
+	if _, ok := a.requireOrganizationManager(w, r, organizationID, user); !ok {
 		return
 	}
 	installationID, ok := pathInt64(w, r, "installationID")

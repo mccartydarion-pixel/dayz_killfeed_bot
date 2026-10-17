@@ -175,7 +175,7 @@ func (a *App) stadiumContext(w http.ResponseWriter, r *http.Request, write bool)
 	if !ok {
 		return stadiumRequest{}, false
 	}
-	if _, ok := a.requireOrganizationRole(w, r, orgID, user.ID); !ok {
+	if _, ok := a.requireOrganizationManager(w, r, orgID, user); !ok {
 		return stadiumRequest{}, false
 	}
 	limiter := a.saasAdminReadLimiter

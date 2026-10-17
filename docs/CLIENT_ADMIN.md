@@ -146,8 +146,13 @@ website's Server Hub. Nobody is invited and nothing is stored per person:
   setup progress, hub, settings, channel routes and settings, channel layout, embed templates,
   trial, broadcasts) accept such a user with the effective role `STAFF`, only for the
   installations they staff. The dashboard lists only those installations.
-- Everything else stays as it was: billing, Nitrado, Discord connection and every OWNER/ADMIN
-  route refuse `STAFF`, and each client-admin route still checks the level's capability.
+- A staff member at the ADMINISTRATOR level (or OWNER) is an organization manager for the
+  installations they staff (`requireOrganizationManager`): the Discord and channel set-up,
+  Nitrado, server selection, setup completion, embed templates, tournaments, stadium, the
+  economy admin view and faction moderation admit them like an organization OWNER/ADMIN. A
+  MODERATOR or GATEKEEPER staff member is refused there, and each client-admin route still
+  checks the level's capability. Billing and trial start refuse `STAFF` of any level: the plan
+  is the owner's (`requireOrganizationOwner`).
 - Access follows the role: roles are re-read from Discord every 15 s, so removing the role in
   Discord removes the access.
 - `GET .../admin/discord-roles` (PERMISSIONS_VIEW) lists the guild's roles a member can hold,

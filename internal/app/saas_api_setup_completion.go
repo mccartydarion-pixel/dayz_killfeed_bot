@@ -51,7 +51,7 @@ func (a *App) handleFinalizeSetup(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, ok := a.requireOrganizationRole(w, r, organizationID, user.ID); !ok {
+	if _, ok := a.requireOrganizationManager(w, r, organizationID, user); !ok {
 		return
 	}
 	installationID, ok := pathInt64(w, r, "installationID")
@@ -431,7 +431,7 @@ func (a *App) handleSaveInstallationSettings(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
-	if _, ok := a.requireOrganizationRole(w, r, organizationID, user.ID); !ok {
+	if _, ok := a.requireOrganizationManager(w, r, organizationID, user); !ok {
 		return
 	}
 	installationID, ok := pathInt64(w, r, "installationID")

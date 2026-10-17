@@ -105,7 +105,7 @@ func (a *App) scopedContext(w http.ResponseWriter, r *http.Request, adminCode st
 		writeSaaSError(w, codeInternalError, "economy unavailable")
 		return
 	}
-	if adminCode != "" && !a.economyAdminAllowed(w, r, orgID, user.ID, adminCode) {
+	if adminCode != "" && !a.economyAdminAllowed(w, r, orgID, user, adminCode) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), economyTimeout)
@@ -118,22 +118,19 @@ func (a *App) scopedContext(w http.ResponseWriter, r *http.Request, adminCode st
 	return economyRequest{user: user, scope: scope}, true
 }
 
-// economyAdminAllowed is the economy admin gate: an OWNER or ADMIN of the organization. Faction
-// roles and MEMBER grant nothing.
-func (a *App) economyAdminAllowed(w http.ResponseWriter, r *http.Request, orgID, userID int64, code string) bool {
-	if a.SaaSOrganizations == nil {
-		writeSaaSError(w, codeInternalError, "organization directory unavailable")
-		return false
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+// economyAdminAllowed is the economy admin gate: an OWNER or ADMIN of the organization, or a
+// staff Administrator of one of its installations (organizationManager). Faction roles and
+// MEMBER grant nothing.
+func (a *App) economyAdminAllowed(w http.ResponseWriter, r *http.Request, orgID int64, user *repository.AppUser, code string) bool {
+	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 	defer cancel()
-	role, member, err := a.SaaSOrganizations.VerifyMembership(ctx, orgID, userID)
+	_, ok, err := a.organizationManager(ctx, orgID, user, r.PathValue("installationID"))
 	if err != nil {
 		slog.Warn("component=saas_api", "msg", "economy admin membership check failed", "err", err.Error())
 		writeSaaSError(w, codeInternalError, "could not verify membership")
 		return false
 	}
-	if !member || (role != repository.RoleOwner && role != repository.RoleAdmin) {
+	if !ok {
 		writeSaaSError(w, code, "OWNER or ADMIN role required")
 		return false
 	}

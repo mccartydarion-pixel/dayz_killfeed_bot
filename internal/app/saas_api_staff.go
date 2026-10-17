@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -80,6 +81,67 @@ func (a *App) requireOrganizationViewer(w http.ResponseWriter, r *http.Request, 
 	}
 	writeSaaSError(w, codeForbidden, "not a member of this organization")
 	return "", false
+}
+
+// organizationManager reports whether user may run the organization's servers: a member with
+// the OWNER or ADMIN role, or anyone (a MEMBER or a non-member) whose Discord role is mapped on
+// the installation rawInstallationID names (any of the organization's installations when it is
+// empty) at the ADMINISTRATOR level or above. A member's own role is returned; a non-member
+// gets RoleStaff. The plan is the owner's: billing uses
+// requireOrganizationOwner, never this.
+func (a *App) organizationManager(ctx context.Context, organizationID int64, user *repository.AppUser, rawInstallationID string) (role string, ok bool, err error) {
+	if a.SaaSOrganizations == nil {
+		return "", false, errors.New("organization directory unavailable")
+	}
+	role, member, err := a.SaaSOrganizations.VerifyMembership(ctx, organizationID, user.ID)
+	if err != nil {
+		return "", false, err
+	}
+	if member && (role == repository.RoleOwner || role == repository.RoleAdmin) {
+		return role, true, nil
+	}
+	// A MEMBER, or a non-member, whose Discord role is mapped to ADMINISTRATOR or above on the
+	// installation runs it like the owner. A member keeps their own role; a non-member is STAFF.
+	granted := role
+	if !member {
+		granted = repository.RoleStaff
+	}
+	staffed, err := a.staffInstallationsForOrganization(ctx, organizationID, user)
+	if err != nil {
+		return "", false, err
+	}
+	if rawInstallationID != "" {
+		id, perr := strconv.ParseInt(rawInstallationID, 10, 64)
+		if perr == nil && staffed[id] >= permissions.LevelAdministrator {
+			return granted, true, nil
+		}
+		return "", false, nil
+	}
+	for _, level := range staffed {
+		if level >= permissions.LevelAdministrator {
+			return granted, true, nil
+		}
+	}
+	return "", false, nil
+}
+
+// requireOrganizationManager is requireOrganizationRole for everything that runs the server
+// (Discord and channel set-up, Nitrado, server selection, embed templates, tournaments,
+// stadium): organizationManager, writing the refusal.
+func (a *App) requireOrganizationManager(w http.ResponseWriter, r *http.Request, organizationID int64, user *repository.AppUser) (role string, ok bool) {
+	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	defer cancel()
+	role, ok, err := a.organizationManager(ctx, organizationID, user, r.PathValue("installationID"))
+	if err != nil {
+		slog.Warn("component=saas_api", "msg", "membership check failed", "err", err.Error())
+		writeSaaSError(w, codeInternalError, "could not verify membership")
+		return "", false
+	}
+	if !ok {
+		writeSaaSError(w, codeForbidden, "OWNER or ADMIN role required")
+		return "", false
+	}
+	return role, true
 }
 
 func staffedInstallation(staffed map[int64]permissions.Level, raw string) bool {
