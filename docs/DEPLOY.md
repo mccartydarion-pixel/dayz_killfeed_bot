@@ -119,7 +119,8 @@ deploy self-check HEALTHY: commit 0d66f2dfcdf8, 126 migrations applied, leadersh
 
 (`component=startup`, `event=deploy_self_check`, with the same facts as separate fields:
 `commit`, `migrations_applied`, `leadership`, `discord_gateway`, `workers_expected`,
-`workers_started`, `workers_reading`, `ready_ms`, `healthy_after_s`.)
+`workers_started`, `workers_reading`, `ready_ms`, `healthy_after_s`, `bot_public`,
+`require_code_grant`, `privacy_policy_url`.)
 
 | Fact | Where it comes from | Healthy when |
 | --- | --- | --- |
@@ -128,6 +129,7 @@ deploy self-check HEALTHY: commit 0d66f2dfcdf8, 126 migrations applied, leadersh
 | leadership | the leader lock ([MULTI_PROCESS.md](MULTI_PROCESS.md)) | `LEADER`, or `NO_LOCK` (`SINGLETON_LEADER_LOCK=off`). `STANDBY` (another process holds the lock) and `ERROR` (the lock cannot be reached) are not |
 | Discord gateway | the session's ready flag | connected |
 | server workers started | workers running, against the active servers found at start-up | all of them |
+| Discord application | `GET /applications/@me` once the gateway is up (`event=discord_application` logs the name, `bot_public`, `require_code_grant`, `privacy_policy_url`, `terms_of_service_url`) | the bot is public and no OAuth2 code grant is required; the privacy URL is only logged |
 | reading logs | workers whose last poll of the server log completed without a Nitrado failure streak | all started workers |
 | ready | process start to "about to serve HTTP" | always shown |
 
