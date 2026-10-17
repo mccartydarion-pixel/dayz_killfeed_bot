@@ -974,7 +974,7 @@ const liveMapOnlineCounterMaxAge = 5 * time.Minute
 // a long time after a restart, so for the server the online counter watches, its reading (the one
 // the Discord counter shows, normally Nitrado's own count) wins while it is fresh.
 func (a *App) liveMapPlayersOnline(serverID int64, fromLog int, now time.Time) int {
-	st := a.OnlineCounterStatus()
+	st, _ := a.onlineCounterStatusFor(serverID)
 	return pickLiveMapPlayersOnline(st, serverID, fromLog, now)
 }
 

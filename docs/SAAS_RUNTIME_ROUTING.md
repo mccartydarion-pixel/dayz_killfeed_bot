@@ -115,7 +115,7 @@ installation is still `CONFIGURING`.
 | `ADMIN_ALERTS` | `AdminAlertPublisher` (`discord/admin_alerts.go`) - alert on entering a condition, resolution on leaving it | none - no fallback | per-server ADM snapshots and download reports; zone intrusion engine | **IMPLEMENTED / RUNTIME ROUTED** |
 | `ADMIN_LOGS` | `ADMMonitorPublisher` (`discord/adm_monitor.go`) | legacy `GuildSetup.ADMMonitorChannelID` | ADM snapshot/download callbacks | **MIGRATED TO RUNTIME ROUTES** (route -> legacy) |
 | `SERVER_STATUS` | `ServerStatusBoard` (`discord/server_status_board.go`) - one persistent message per routed channel; `LiveCompletionPublisher` season/war/event results | legacy `GuildSetup.ServerStatusChannelID` (completion announcements only) | per-server ADM snapshots | **IMPLEMENTED / RUNTIME ROUTED** |
-| `ONLINE_COUNTER` | `VoiceChannelCounter` (`discord/counter.go`) - binds to the routed voice channel | legacy `GuildSetup.OnlinePlayersChannelID` | the public counter server's presence tracker | **IMPLEMENTED / RUNTIME ROUTED** |
+| `ONLINE_COUNTER` | `VoiceChannelCounter` (`discord/counter.go`) - one per guild, bound to that guild's routed voice channel | legacy `GuildSetup.OnlinePlayersChannelID` (primary guild only) | the guild's public counter server: Nitrado live query, else its proven presence tracker | **IMPLEMENTED / RUNTIME ROUTED** |
 
 `DeathfeedPublisher` (non-PvP deaths) has no route key of its own: Channel
 System V2 sends it to the `KILLFEED` route (the combat feed), with
@@ -189,8 +189,13 @@ panels are retired when it enters route mode and restored when its routes are
 removed; another guild without a route simply has no panel (and the
 announcement is dropped, never sent to the primary guild's legacy channel).
 `RouteSyncer.HasRoute` (the `SetupManager` gate) also answers for the primary
-guild only. **Known limit:** the online voice counter (`ONLINE_COUNTER`) still
-follows the primary guild alone (`App.guildServers`); it is unchanged by this.
+guild only. The online voice counter (`ONLINE_COUNTER`) runs per guild: the
+primary guild's counter (`App.onlineCounter`, legacy fallback included) uses
+`App.guildServers`; every other guild with an active server and an
+`ONLINE_COUNTER` route gets its own counter on that channel, renamed from the
+count of its own public server (its selected public server, else its first
+active server), with no legacy fallback (`online_counter.go`,
+`evaluateGuildCounters`).
 
 ### How persistent messages avoid duplicates
 

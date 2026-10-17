@@ -328,6 +328,7 @@ func (a *App) Run() error {
 	onlineCounter := discord.NewVoiceChannelCounter(api, "")
 	onlineCounter.SetGuildID(a.Config.DiscordGuildID)
 	a.onlineCounter = onlineCounter
+	a.voiceNamer = api
 	a.setupStore = setupStore
 	onlineCounter.OnPublish(func(count int, result string) { a.recordPublicVoicePublish(count, result) })
 	if cfg := setupStore; cfg != nil {
@@ -543,8 +544,9 @@ func (a *App) Run() error {
 				}
 				return groupServersByGuild(rows), nil
 			}
-			// guildServers is the primary guild alone: only the online voice
-			// counter still uses it (a known limit, see docs/SAAS_RUNTIME_ROUTING.md).
+			// guildServers is the primary guild alone: its own voice counter
+			// (with the legacy GuildSetup fallback) uses it; every other
+			// guild's counter comes from allGuildServers.
 			guildServers := func(ctx context.Context) (int64, []int64, error) {
 				rows, listErr := a.Servers.ListActiveByGuild(ctx, guildRowID)
 				if listErr != nil {
@@ -594,6 +596,7 @@ func (a *App) Run() error {
 			}
 			if routingEnabled {
 				a.guildServers = guildServers
+				a.allGuildServers = allGuildServers
 				// Completion announcements follow their guild's SERVER_STATUS route.
 				a.CompletionPublisher.SetRouting(a.ChannelRoutes, allGuildServers)
 				// SERVER_STATUS: one persistent status message per routed

@@ -410,7 +410,7 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 	// make a Discord or Nitrado call itself: a rename rate limit here would
 	// stall kill processing.
 	engine.OnPlayersChanged(func(int) {
-		if a.ownsPublicCounter(row.ID) {
+		if a.counterServes(row.ID) {
 			a.pokeOnlineCounter()
 		}
 	})

@@ -189,10 +189,18 @@ type App struct {
 	onlineLoop     *onlineCounterLoop
 	setupStore     discord.SetupStore
 	// guildServers lists the configured (primary) guild's row id and active
-	// servers (set once routing starts). Only the online voice counter still
-	// uses it: every panel and feed is served per guild through
-	// discord.AllGuildServersFunc.
+	// servers (set once routing starts). The primary guild's online voice
+	// counter (onlineCounter, with its legacy fallback) uses it; every panel
+	// and feed, and the other guilds' counters, are served per guild through
+	// allGuildServers.
 	guildServers func(ctx context.Context) (int64, []int64, error)
+	// allGuildServers lists every guild with an active server; the online
+	// counter loop runs one voice counter per non-primary guild from it
+	// (online_counter.go, evaluateGuildCounters).
+	allGuildServers discord.AllGuildServersFunc
+	// voiceNamer renames voice channels (the Discord session API); the
+	// per-guild counters are built on it.
+	voiceNamer discord.VoiceChannelNamer
 	// buildActionsSeen counts ADM build/placement actions parsed by any server
 	// worker - the proof that some server's ADM carries BUILD_FEED lines.
 	buildActionsSeen     atomic.Int64

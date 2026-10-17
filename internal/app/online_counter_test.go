@@ -503,3 +503,81 @@ func TestOnlineCounterMultipleServersUsesOnlyThePublicServer(t *testing.T) {
 	h.eval(t)
 	h.waitName(t, "🟢・Online: 30/40")
 }
+
+// guildRouteStore answers ONLINE_COUNTER lookups per guild row id.
+type guildRouteStore struct {
+	mu       sync.Mutex
+	channels map[int64]string
+	err      error
+}
+
+func (s *guildRouteStore) ResolveChannel(_ context.Context, guildRowID, _ int64, _ string) (string, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ch := s.channels[guildRowID]
+	return ch, ch != "", s.err
+}
+
+// TestGuildCountersRenameEachGuildsOwnChannel: a guild other than the
+// primary one gets its own counter on its ONLINE_COUNTER route, renamed from
+// its own server's count; the primary guild's counter is untouched by it, and
+// a guild without the route gets no counter.
+func TestGuildCountersRenameEachGuildsOwnChannel(t *testing.T) {
+	h := newCounterHarness("")
+	h.live.set(started(2), nil)
+	// Guild 9 owns server 43 (its only active server); guild 10 owns 44 but has no route.
+	other := &fakeLive{}
+	other.set(nitrado.GameserverLive{ServiceID: 555, Status: "started", Slots: 40, PlayerCurrent: intp(2), PlayerMax: 40}, nil)
+	h.app.registerCounterSource(43, counterSource{serviceID: "555", live: other, engine: killfeed.NewEngine(nil, "555", killfeed.NewADMParser())})
+	third := &fakeLive{}
+	third.set(nitrado.GameserverLive{ServiceID: 777, Status: "started", Slots: 10, PlayerCurrent: intp(9), PlayerMax: 10}, nil)
+	h.app.registerCounterSource(44, counterSource{serviceID: "777", live: third, engine: killfeed.NewEngine(nil, "777", killfeed.NewADMParser())})
+
+	routes := &guildRouteStore{channels: map[int64]string{9: "vc-guild9"}}
+	h.app.ChannelRoutes = routing.NewResolver(routes, time.Nanosecond)
+	h.app.guildServers = func(context.Context) (int64, []int64, error) { return 7, []int64{42}, nil }
+	h.app.allGuildServers = func(context.Context) ([]discord.GuildServers, error) {
+		return []discord.GuildServers{{GuildRowID: 7, ServerIDs: []int64{42}}, {GuildRowID: 9, ServerIDs: []int64{43}}, {GuildRowID: 10, ServerIDs: []int64{44}}}, nil
+	}
+	h.app.voiceNamer = h.channel
+	ctx := context.Background()
+
+	h.app.evaluateGuildCounters(ctx)
+	l := h.app.counterLoop()
+	l.mu.Lock()
+	gc := l.guilds[9]
+	_, hasTen := l.guilds[10]
+	l.mu.Unlock()
+	if gc == nil || gc.counter.ChannelID() != "vc-guild9" || gc.serverID != 43 {
+		t.Fatalf("guild 9 counter = %+v, want its route channel and server 43", gc)
+	}
+	if hasTen {
+		t.Fatal("guild 10 has no ONLINE_COUNTER route and must get no counter")
+	}
+	if third.gets != 0 {
+		t.Fatalf("a guild without a counter must not be queried, got %d reads", third.gets)
+	}
+	h.waitName(t, "🟢・Online: 2/40")
+	if !h.app.counterServes(43) || h.app.counterServes(44) {
+		t.Fatal("presence pokes must follow the servers a counter shows")
+	}
+	if count, ok := h.app.knownPresenceCount(43); !ok || count != 2 {
+		t.Fatalf("knownPresenceCount(43) = %d,%t want 2,true", count, ok)
+	}
+
+	// The route is removed: the guild's counter stops. The primary counter
+	// still shows its own server.
+	routes.mu.Lock()
+	delete(routes.channels, 9)
+	routes.mu.Unlock()
+	h.app.ChannelRoutes.InvalidateAll()
+	h.app.evaluateGuildCounters(ctx)
+	l.mu.Lock()
+	_, hasNine := l.guilds[9]
+	l.mu.Unlock()
+	if hasNine {
+		t.Fatal("guild 9 lost its route and must lose its counter")
+	}
+	h.eval(t)
+	h.waitName(t, "🟢・Online: 2/18")
+}
