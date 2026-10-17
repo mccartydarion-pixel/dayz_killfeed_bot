@@ -151,7 +151,7 @@ func (a *App) sampleServer(serverID int64, now time.Time) feedSample {
 	s.PlayersSource = counterSourceUnknown
 	// One authority for the count: the online counter's reading when it watches this server
 	// (Nitrado first), else this worker's own tracker once a player list or a boot proved it.
-	if st := a.OnlineCounterStatus(); st.ServerID == serverID && !st.EvaluatedAt.IsZero() && now.Sub(st.EvaluatedAt) < 5*time.Minute {
+	if st, ok := a.onlineCounterStatusFor(serverID); ok && now.Sub(st.EvaluatedAt) < 5*time.Minute {
 		if st.Reading.Known {
 			s.PlayersKnown, s.PlayersOnline, s.PlayersSource = true, st.Reading.Count, st.Source
 		}

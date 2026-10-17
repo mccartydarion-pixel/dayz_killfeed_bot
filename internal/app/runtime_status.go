@@ -298,7 +298,7 @@ func (a *App) runtimeHealth(serverID int64, binding string) RuntimeHealth {
 		in.Counter = a.onlineCounter.Health()
 		in.CounterOwned = a.ownsPublicCounter(serverID)
 	}
-	if st := a.OnlineCounterStatus(); st.ServerID == serverID && !st.EvaluatedAt.IsZero() {
+	if st, ok := a.onlineCounterStatusFor(serverID); ok {
 		in.CounterStatus = &st
 	}
 	in.Now = time.Now()

@@ -10,6 +10,7 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/discord"
 	"github.com/yourname/dayz-killfeed/internal/killfeed"
 	"github.com/yourname/dayz-killfeed/internal/nitrado"
+	"github.com/yourname/dayz-killfeed/internal/routing"
 )
 
 // Online-players voice counter: ONE authority and fallback policy
@@ -163,10 +164,14 @@ type onlineCounterLoop struct {
 	mu           sync.Mutex
 	sources      map[int64]counterSource
 	status       onlineCounterStatus
+	serverStatus map[int64]onlineCounterStatus // latest evaluation per server, public or guild counter
 	slots        map[int64]int
 	lastKnown    map[int64]time.Time
 	disagreement map[int64]*presenceDisagreement
 	lastEval     time.Time
+	// guilds are the counters of every guild other than the primary one that
+	// has an active server and an ONLINE_COUNTER route (guildCounter).
+	guilds map[int64]*guildCounter
 	// startedAt starts the unknown grace at process start too, so a restart
 	// of the bot (workers not registered yet, first Nitrado read failing)
 	// never flashes the channel to "?".
@@ -174,13 +179,26 @@ type onlineCounterLoop struct {
 	poke      chan struct{}
 }
 
+// guildCounter is one non-primary guild's online-players voice counter: its
+// own channel (that guild's ONLINE_COUNTER route, no legacy fallback) renamed
+// from the count of its own public server. The primary guild keeps
+// App.onlineCounter, which also carries the legacy GuildSetup fallback.
+type guildCounter struct {
+	guildRowID     int64
+	discordGuildID string
+	serverID       int64
+	counter        *discord.VoiceChannelCounter
+}
+
 func (a *App) counterLoop() *onlineCounterLoop {
 	a.onlineLoopOnce.Do(func() {
 		a.onlineLoop = &onlineCounterLoop{
 			sources:      map[int64]counterSource{},
+			serverStatus: map[int64]onlineCounterStatus{},
 			slots:        map[int64]int{},
 			lastKnown:    map[int64]time.Time{},
 			disagreement: map[int64]*presenceDisagreement{},
+			guilds:       map[int64]*guildCounter{},
 			startedAt:    time.Now(),
 			poke:         make(chan struct{}, 1),
 		}
@@ -212,12 +230,41 @@ func (a *App) pokeOnlineCounter() {
 	}
 }
 
-// OnlineCounterStatus returns the latest counter evaluation.
+// counterServes reports whether a counter (the public one or a guild's)
+// currently shows serverID, so its presence changes are worth a poke.
+func (a *App) counterServes(serverID int64) bool {
+	if a.ownsPublicCounter(serverID) {
+		return true
+	}
+	l := a.counterLoop()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, g := range l.guilds {
+		if g.serverID == serverID {
+			return true
+		}
+	}
+	return false
+}
+
+// OnlineCounterStatus returns the latest counter evaluation of the public
+// (primary guild) server.
 func (a *App) OnlineCounterStatus() onlineCounterStatus {
 	l := a.counterLoop()
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.status
+}
+
+// onlineCounterStatusFor returns the latest evaluation made for serverID by
+// whichever counter shows it (the public one or its guild's). ok is false when
+// no counter has evaluated that server.
+func (a *App) onlineCounterStatusFor(serverID int64) (onlineCounterStatus, bool) {
+	l := a.counterLoop()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	st, ok := l.serverStatus[serverID]
+	return st, ok && !st.EvaluatedAt.IsZero()
 }
 
 // runOnlineCounter drives the voice counter until ctx ends. It evaluates once
@@ -232,13 +279,17 @@ func (a *App) runOnlineCounter(ctx context.Context, counter *discord.VoiceChanne
 	l := a.counterLoop()
 	ticker := time.NewTicker(onlineCounterPollInterval)
 	defer ticker.Stop()
-	a.evaluateOnlineCounter(ctx, counter)
+	evaluate := func() {
+		a.evaluateOnlineCounter(ctx, counter)
+		a.evaluateGuildCounters(ctx)
+	}
+	evaluate()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			a.evaluateOnlineCounter(ctx, counter)
+			evaluate()
 		case <-l.poke:
 			l.mu.Lock()
 			wait := onlineCounterMinEval - time.Since(l.lastEval)
@@ -250,28 +301,20 @@ func (a *App) runOnlineCounter(ctx context.Context, counter *discord.VoiceChanne
 				case <-time.After(wait):
 				}
 			}
-			a.evaluateOnlineCounter(ctx, counter)
+			evaluate()
 		}
 	}
 }
 
-// evaluateOnlineCounter resolves the public server's current count and
-// publishes it to the voice counter.
-func (a *App) evaluateOnlineCounter(ctx context.Context, counter *discord.VoiceChannelCounter) {
+// readServerCount resolves one server's current player count from its
+// registered sources (Nitrado live query, then the proven ADM tracker) and
+// records the evaluation under that server. It makes no Discord call.
+func (a *App) readServerCount(ctx context.Context, serverID int64, now time.Time) (discord.CounterReading, onlineCounterStatus) {
 	l := a.counterLoop()
-	now := time.Now()
-	a.counterOwnerMu.RLock()
-	serverID := a.publicCounterServerID
-	a.counterOwnerMu.RUnlock()
-
 	l.mu.Lock()
-	l.lastEval = now
 	src, haveSource := l.sources[serverID]
 	in := onlineReadingInput{KnownSlots: l.slots[serverID], Now: now}
 	l.mu.Unlock()
-	if serverID == 0 {
-		return // no installation selected: leave the channel alone
-	}
 
 	status := onlineCounterStatus{ServerID: serverID, EvaluatedAt: now, ADMState: killfeed.PresenceUnknown}
 	if haveSource {
@@ -331,8 +374,8 @@ func (a *App) evaluateOnlineCounter(ctx context.Context, counter *discord.VoiceC
 		graceFrom = l.startedAt
 	}
 	status.Held = !reading.Known && now.Sub(graceFrom) < onlineCounterUnknownGrace
-	previous := l.status
-	l.status = status
+	previous := l.serverStatus[serverID]
+	l.serverStatus[serverID] = status
 	l.mu.Unlock()
 
 	if previous.Source != source || previous.Reading != reading {
@@ -344,6 +387,48 @@ func (a *App) evaluateOnlineCounter(ctx context.Context, counter *discord.VoiceC
 		slog.Warn("component=presence", "event", "presence_disagreement", "server_id", serverID,
 			"nitrado_count", disagreement.NitradoCount, "adm_count", disagreement.ADMCount, "since", disagreement.Since.UTC().Format(time.RFC3339), "shown", "nitrado")
 	}
+	return reading, status
+}
+
+// publishCounter renames counter to reading when this process is the leader.
+// The first publish to a channel reads its current name first (Reconcile), so
+// an identical name is never renamed, a stale one is corrected, and ownership
+// is validated.
+func (a *App) publishCounter(counter *discord.VoiceChannelCounter, reading discord.CounterReading) {
+	if !a.isSingletonLeader() {
+		// Another process renames the channel. This one keeps its reading current for its own
+		// API and health output, and takes over the renaming if it becomes the leader.
+		return
+	}
+	if counter.LastName() == "" {
+		if err := counter.Reconcile(reading); err != nil {
+			slog.Warn("component=voice_counter", "event", "reconcile_failed", "channel_id", counter.ChannelID(), "err", err.Error())
+		}
+		return
+	}
+	counter.Publish(reading)
+}
+
+// evaluateOnlineCounter resolves the public server's current count and
+// publishes it to the primary guild's voice counter.
+func (a *App) evaluateOnlineCounter(ctx context.Context, counter *discord.VoiceChannelCounter) {
+	l := a.counterLoop()
+	now := time.Now()
+	a.counterOwnerMu.RLock()
+	serverID := a.publicCounterServerID
+	a.counterOwnerMu.RUnlock()
+
+	l.mu.Lock()
+	l.lastEval = now
+	l.mu.Unlock()
+	if serverID == 0 {
+		return // no installation selected: leave the channel alone
+	}
+	reading, status := a.readServerCount(ctx, serverID, now)
+	l.mu.Lock()
+	l.status = status
+	l.mu.Unlock()
+
 	if reading.Known && a.State != nil {
 		a.State.SetOnlinePlayers(reading.Count)
 	}
@@ -351,32 +436,153 @@ func (a *App) evaluateOnlineCounter(ctx context.Context, counter *discord.VoiceC
 		return
 	}
 	a.bindCounterChannel(ctx, counter)
-	if !a.isSingletonLeader() {
-		// Another process renames the channel. This one keeps its reading current for its own
-		// API and health output, and takes over the renaming if it becomes the leader.
-		return
-	}
-	if counter.LastName() == "" {
-		// First publish to this channel: its current name is not known yet
-		// (fresh process, new route) - read it so an identical name is never
-		// renamed, a stale one is corrected, and ownership is validated.
-		if err := counter.Reconcile(reading); err != nil {
-			slog.Warn("component=voice_counter", "event", "reconcile_failed", "err", err.Error())
-		}
-	} else {
-		counter.Publish(reading)
-	}
+	a.publishCounter(counter, reading)
 	if a.State != nil {
 		a.State.SetOnlineCounter(counter.LastPublished(), counter.UpdateErrors(), counter.PermissionBlocked())
 	}
 }
 
+// evaluateGuildCounters runs the online counter of every guild other than
+// the primary one: each guild with an active server and an ONLINE_COUNTER
+// route gets its own counter on that route's channel, renamed from the count
+// of its own public server (its selected public server, else its first
+// active server). A guild without the route has no counter and no fallback;
+// a route lookup error keeps the current binding (not evidence the route is
+// gone). The primary guild is evaluateOnlineCounter's.
+func (a *App) evaluateGuildCounters(ctx context.Context) {
+	if a.allGuildServers == nil || a.ChannelRoutes == nil || a.voiceNamer == nil {
+		return
+	}
+	guilds, err := a.allGuildServers(ctx)
+	if err != nil {
+		slog.Warn("component=voice_counter", "event", "guild_list_failed", "err", err.Error())
+		return
+	}
+	primaryRowID := int64(0)
+	if a.guildServers != nil {
+		if id, _, listErr := a.guildServers(ctx); listErr == nil {
+			primaryRowID = id
+		}
+	}
+	l := a.counterLoop()
+	now := time.Now()
+	seen := map[int64]bool{}
+	for _, g := range guilds {
+		if g.GuildRowID == primaryRowID || len(g.ServerIDs) == 0 {
+			continue
+		}
+		serverID, discordGuildID := a.guildCounterServer(ctx, g)
+		channelID, outcome := a.guildCounterRouteChannel(ctx, g.GuildRowID, serverID, g.ServerIDs)
+		l.mu.Lock()
+		gc := l.guilds[g.GuildRowID]
+		switch outcome {
+		case counterRouteFound:
+			if gc == nil {
+				gc = &guildCounter{guildRowID: g.GuildRowID, counter: discord.NewVoiceChannelCounter(a.voiceNamer, channelID)}
+				sid := serverID
+				gc.counter.OnPublish(func(count int, result string) { a.recordVoicePublishFor(sid, count, result) })
+				l.guilds[g.GuildRowID] = gc
+				slog.Info("component=voice_counter", "event", "guild_counter_started", "guild_row_id", g.GuildRowID, "server_id", serverID, "channel_id", channelID)
+			} else if gc.counter.ChannelID() != channelID {
+				slog.Info("component=voice_counter", "event", "bound_to_route", "guild_row_id", g.GuildRowID, "channel_id", channelID, "previous_channel_id", gc.counter.ChannelID())
+				gc.counter.SetChannelID(channelID)
+			}
+		case counterRouteAbsent:
+			if gc != nil {
+				slog.Info("component=voice_counter", "event", "guild_counter_stopped", "guild_row_id", g.GuildRowID, "reason", "route removed")
+				delete(l.guilds, g.GuildRowID)
+				gc = nil
+			}
+		}
+		if gc != nil {
+			seen[g.GuildRowID] = true
+			gc.serverID = serverID
+			if discordGuildID != "" && gc.discordGuildID != discordGuildID {
+				gc.discordGuildID = discordGuildID
+				gc.counter.SetGuildID(discordGuildID)
+			}
+		}
+		l.mu.Unlock()
+		if gc == nil {
+			continue
+		}
+		reading, status := a.readServerCount(ctx, serverID, now)
+		if status.Held {
+			continue
+		}
+		a.publishCounter(gc.counter, reading)
+	}
+	// A guild whose last active server was removed loses its counter.
+	l.mu.Lock()
+	for id := range l.guilds {
+		if !seen[id] {
+			slog.Info("component=voice_counter", "event", "guild_counter_stopped", "guild_row_id", id, "reason", "no active server")
+			delete(l.guilds, id)
+		}
+	}
+	l.mu.Unlock()
+}
+
+// guildCounterServer picks the server a guild's counter shows: the guild's
+// selected public server when it is one of its active servers, else the
+// first active server. It also returns the guild's Discord id (for channel
+// ownership validation), "" when unknown.
+func (a *App) guildCounterServer(ctx context.Context, g discord.GuildServers) (int64, string) {
+	serverID := g.ServerIDs[0]
+	discordGuildID := ""
+	if a.Guilds != nil {
+		if rec, err := a.Guilds.GetGuildByID(ctx, g.GuildRowID); err == nil && rec != nil {
+			discordGuildID = rec.DiscordGuildID
+			for _, id := range g.ServerIDs {
+				if id == rec.SelectedPublicServerID {
+					serverID = id
+					break
+				}
+			}
+		}
+	}
+	return serverID, discordGuildID
+}
+
+// guildCounterRouteChannel resolves a guild's ONLINE_COUNTER route, the
+// counter's own server first, with the same outcomes as
+// onlineCounterRouteChannel.
+func (a *App) guildCounterRouteChannel(ctx context.Context, guildRowID, preferred int64, serverIDs []int64) (string, string) {
+	order := append([]int64{preferred}, serverIDs...)
+	lookupFailed := false
+	for _, serverID := range order {
+		channelID, found, err := a.ChannelRoutes.Resolve(ctx, guildRowID, serverID, routing.RouteOnlineCounter)
+		if err != nil {
+			lookupFailed = true
+			continue
+		}
+		if found && channelID != "" {
+			return channelID, counterRouteFound
+		}
+	}
+	if lookupFailed {
+		return "", counterRouteError
+	}
+	return "", counterRouteAbsent
+}
+
+// recordVoicePublishFor reports a counter publish on the server's own engine
+// diagnostics.
+func (a *App) recordVoicePublishFor(serverID int64, count int, result string) {
+	a.presenceMu.Lock()
+	engine := a.presenceEngines[serverID]
+	a.presenceMu.Unlock()
+	if engine != nil {
+		engine.RecordVoicePublish(count, result)
+	}
+}
+
 // knownPresenceCount returns the count the counter would show for serverID
 // (its latest known reading), for health output. known is false while the
-// count is unknown or the server is not the counter's public server.
+// count is unknown or no counter shows the server.
 func (a *App) knownPresenceCount(serverID int64) (int, bool) {
-	st := a.OnlineCounterStatus()
-	if st.ServerID != serverID || !st.Reading.Known {
+	st, ok := a.onlineCounterStatusFor(serverID)
+	if !ok || !st.Reading.Known {
 		return 0, false
 	}
 	return st.Reading.Count, true
