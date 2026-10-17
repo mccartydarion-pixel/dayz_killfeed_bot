@@ -424,6 +424,42 @@ func TestIsAdminUsesInteractionPermissionsWithoutAskingDiscord(t *testing.T) {
 	}
 }
 
+// A member without Discord's own permissions is an admin when one of their roles maps to the
+// Champion ADMINISTRATOR level (admin_gate.go); the resolver gets the guild and the roles, and
+// its absence refuses.
+func TestIsAdminAcceptsMappedChampionAdministrator(t *testing.T) {
+	s, _ := recordingSession(t)
+	mapped := &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{GuildID: "g", ChannelID: "c", Member: &discordgo.Member{User: &discordgo.User{ID: "u"}, Permissions: discordgo.PermissionSendMessages, Roles: []string{"r-mod", "r-admin"}}}}
+	plain := &discordgo.InteractionCreate{Interaction: &discordgo.Interaction{GuildID: "g", ChannelID: "c", Member: &discordgo.Member{User: &discordgo.User{ID: "u"}, Permissions: discordgo.PermissionSendMessages, Roles: []string{"r-mod"}}}}
+	if isAdmin(s, mapped) || isAdminInteraction(mapped) {
+		t.Fatal("without a resolver a mapped role grants nothing")
+	}
+	var askedGuild string
+	var askedRoles []string
+	SetChampionAdminResolver(func(guildID string, roles []string) bool {
+		askedGuild, askedRoles = guildID, roles
+		for _, r := range roles {
+			if r == "r-admin" {
+				return true
+			}
+		}
+		return false
+	})
+	t.Cleanup(func() { SetChampionAdminResolver(nil) })
+	if !isAdmin(s, mapped) || !isAdminInteraction(mapped) {
+		t.Fatal("a mapped Champion administrator is an admin")
+	}
+	if askedGuild != "g" || len(askedRoles) != 2 {
+		t.Fatalf("resolver asked for %q %v", askedGuild, askedRoles)
+	}
+	if isAdmin(s, plain) || isAdminInteraction(plain) {
+		t.Fatal("an unmapped member is still refused")
+	}
+	if isAdminInteraction(&discordgo.InteractionCreate{Interaction: &discordgo.Interaction{GuildID: "g", Member: &discordgo.Member{Permissions: discordgo.PermissionManageServer}}}) != true {
+		t.Fatal("Discord's own permission still grants")
+	}
+}
+
 // --- structural guard ---------------------------------------------------------------------------
 
 // sourceFiles returns the non-test Go files of a package directory.

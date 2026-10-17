@@ -11,9 +11,14 @@ func TestCaseSetupChecklist(t *testing.T) {
 	w := newClientAdminWorld(t)
 	admin := zoneActor(t, w, "setup-admin")
 	w.mapRole(admin, "setup-admin-role", "ADMINISTRATOR")
+	mod := zoneActor(t, w, "setup-admin-mod")
+	w.mapRole(mod, "setup-admin-mod-role", "MODERATOR")
 	path := w.path("/case/setup")
-	if rr := w.call(w.a.handleGetCaseSetup, http.MethodGet, path, admin, nil, nil); rr.Code != http.StatusForbidden {
-		t.Fatalf("admin: %d", rr.Code)
+	if rr := w.call(w.a.handleGetCaseSetup, http.MethodGet, path, mod, nil, nil); rr.Code != http.StatusForbidden {
+		t.Fatalf("moderator: %d", rr.Code)
+	}
+	if rr := w.call(w.a.handleGetCaseSetup, http.MethodGet, path, admin, nil, nil); rr.Code != http.StatusOK {
+		t.Fatalf("administrator: %d %s", rr.Code, rr.Body.String())
 	}
 	first := w.call(w.a.handleGetCaseSetup, http.MethodGet, path, w.f.OwnerDiscordID, nil, nil)
 	if first.Code != http.StatusOK {
@@ -43,8 +48,8 @@ func TestCaseSetupChecklist(t *testing.T) {
 		t.Fatalf("self-serve off must refuse: %d", rr.Code)
 	}
 	t.Setenv("CASE_EVIDENCE_SELF_SERVE", "true")
-	if rr := w.call(w.a.handleSetCaseEvidence, http.MethodPut, evPath, admin, map[string]any{"enabled": true}, nil); rr.Code != http.StatusForbidden {
-		t.Fatalf("admin set: %d", rr.Code)
+	if rr := w.call(w.a.handleSetCaseEvidence, http.MethodPut, evPath, mod, map[string]any{"enabled": true}, nil); rr.Code != http.StatusForbidden {
+		t.Fatalf("moderator set: %d", rr.Code)
 	}
 	if rr := w.call(w.a.handleSetCaseEvidence, http.MethodPut, evPath, w.f.OwnerDiscordID, map[string]any{"enabled": true, "x": 1}, nil); rr.Code != http.StatusBadRequest {
 		t.Fatalf("unknown field: %d", rr.Code)

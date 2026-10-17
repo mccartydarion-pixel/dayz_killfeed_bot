@@ -15,9 +15,14 @@ func TestFactionSecurityOwnerSettings(t *testing.T) {
 	w := newClientAdminWorld(t)
 	admin := zoneActor(t, w, "faction-security-admin")
 	w.mapRole(admin, "faction-security-admin-role", "ADMINISTRATOR")
+	mod := zoneActor(t, w, "faction-security-admin-mod")
+	w.mapRole(mod, "faction-security-admin-mod-role", "MODERATOR")
 	path := w.path("/case/faction-security")
-	if got := w.call(w.a.handleGetFactionSecurity, http.MethodGet, path, admin, nil, nil); got.Code != http.StatusForbidden {
-		t.Fatalf("admin read: %d", got.Code)
+	if got := w.call(w.a.handleGetFactionSecurity, http.MethodGet, path, mod, nil, nil); got.Code != http.StatusForbidden {
+		t.Fatalf("moderator read: %d", got.Code)
+	}
+	if got := w.call(w.a.handleGetFactionSecurity, http.MethodGet, path, admin, nil, nil); got.Code != http.StatusOK {
+		t.Fatalf("administrator read: %d", got.Code)
 	}
 	type view struct {
 		Settings repository.FactionSecuritySettings `json:"settings"`
@@ -30,8 +35,8 @@ func TestFactionSecurityOwnerSettings(t *testing.T) {
 	if rr := w.call(w.a.handleSetFactionSecurity, http.MethodPut, path, w.f.OwnerDiscordID, map[string]any{"enabled": true, "everyone": true}, nil); rr.Code != http.StatusBadRequest {
 		t.Fatalf("unknown field accepted: %d", rr.Code)
 	}
-	if rr := w.call(w.a.handleSetFactionSecurity, http.MethodPut, path, admin, map[string]any{"enabled": true}, nil); rr.Code != http.StatusForbidden {
-		t.Fatalf("admin turned it on: %d", rr.Code)
+	if rr := w.call(w.a.handleSetFactionSecurity, http.MethodPut, path, mod, map[string]any{"enabled": true}, nil); rr.Code != http.StatusForbidden {
+		t.Fatalf("moderator turned it on: %d", rr.Code)
 	}
 	on := w.call(w.a.handleSetFactionSecurity, http.MethodPut, path, w.f.OwnerDiscordID, map[string]any{"enabled": true}, nil)
 	if s := decodeBody[view](t, on).Settings; on.Code != http.StatusOK || !s.Enabled {

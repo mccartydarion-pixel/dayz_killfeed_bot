@@ -63,6 +63,8 @@ func TestBaseRequestsOwnerSide(t *testing.T) {
 	ctx := context.Background()
 	admin := zoneActor(t, w, "base-request-admin")
 	w.mapRole(admin, "base-request-admin-role", "ADMINISTRATOR")
+	mod := zoneActor(t, w, "base-request-admin-mod")
+	w.mapRole(mod, "base-request-admin-mod-role", "MODERATOR")
 	player := w.seedPlayer("Builder")
 	repo := repository.NewCaseBaseRequestRepository(w.a.DB.Pool)
 	s := repository.BaseRequestScope{InstallationID: w.f.InstallationID, GuildID: w.guildID, ServerID: w.serverID}
@@ -75,8 +77,11 @@ func TestBaseRequestsOwnerSide(t *testing.T) {
 		return q.ID
 	}
 	path := w.path("/case/base-requests")
-	if rr := w.call(w.a.handleGetBaseRequests, http.MethodGet, path, admin, nil, nil); rr.Code != http.StatusForbidden {
-		t.Fatalf("admin list: %d", rr.Code)
+	if rr := w.call(w.a.handleGetBaseRequests, http.MethodGet, path, mod, nil, nil); rr.Code != http.StatusForbidden {
+		t.Fatalf("moderator list: %d", rr.Code)
+	}
+	if rr := w.call(w.a.handleGetBaseRequests, http.MethodGet, path, admin, nil, nil); rr.Code != http.StatusOK {
+		t.Fatalf("administrator list: %d", rr.Code)
 	}
 	id := newRequest("Hilltop")
 	list := decodeBody[struct {
@@ -87,8 +92,8 @@ func TestBaseRequestsOwnerSide(t *testing.T) {
 		t.Fatalf("owner list: %+v", list)
 	}
 	pv := map[string]string{"requestID": strconv.FormatInt(id, 10)}
-	if rr := w.call(w.a.handleApproveBaseRequest, http.MethodPost, path+"/x/approve", admin, map[string]any{"mapKey": "chernarusplus"}, pv); rr.Code != http.StatusForbidden {
-		t.Fatalf("admin approve: %d", rr.Code)
+	if rr := w.call(w.a.handleApproveBaseRequest, http.MethodPost, path+"/x/approve", mod, map[string]any{"mapKey": "chernarusplus"}, pv); rr.Code != http.StatusForbidden {
+		t.Fatalf("moderator approve: %d", rr.Code)
 	}
 	if rr := w.call(w.a.handleApproveBaseRequest, http.MethodPost, path+"/x/approve", w.f.OwnerDiscordID, map[string]any{"mapKey": ""}, pv); rr.Code != http.StatusBadRequest {
 		t.Fatalf("approve without a map: %d", rr.Code)

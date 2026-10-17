@@ -16,6 +16,8 @@ func TestCaseShadowVerdictsReviewScore(t *testing.T) {
 	ctx := context.Background()
 	admin := zoneActor(t, w, "verdict-admin")
 	w.mapRole(admin, "verdict-admin-role", "ADMINISTRATOR")
+	mod := zoneActor(t, w, "verdict-admin-mod")
+	w.mapRole(mod, "verdict-admin-mod-role", "MODERATOR")
 	var player int64
 	if err := w.a.DB.Pool.QueryRow(ctx, `INSERT INTO players(guild_id,dayz_player_id,display_name) VALUES($1,'verdict-player','Verdict Player') RETURNING id`, w.guildID).Scan(&player); err != nil {
 		t.Fatal(err)
@@ -44,8 +46,8 @@ func TestCaseShadowVerdictsReviewScore(t *testing.T) {
 	if code := save(w.f.OwnerDiscordID, "CASE-LOGIN-001", key("b"), "SUSPICIOUS"); code != http.StatusOK {
 		t.Fatalf("owner could not review logins: %d", code)
 	}
-	if code := save(admin, "CASE-BASE-001", key("c"), "FALSE_ALARM"); code != http.StatusForbidden {
-		t.Fatalf("admin reviewed the owner-only Base Boosting test: %d", code)
+	if code := save(mod, "CASE-BASE-001", key("c"), "FALSE_ALARM"); code != http.StatusForbidden {
+		t.Fatalf("moderator reviewed the Base Boosting test: %d", code)
 	}
 	for name, body := range map[string]map[string]any{
 		"bad key":       {"detectorId": "CASE-LOGIN-001", "incidentKey": "nope", "playerId": player, "verdict": "FALSE_ALARM"},
@@ -67,8 +69,11 @@ func TestCaseShadowVerdictsReviewScore(t *testing.T) {
 		len(got.Items) != 2 || got.Items[0].Note != "console crash" || got.Summary.FirstReviewAt == nil || got.Summary.DaysReviewing != 0 {
 		t.Fatalf("score: %d %+v", code, got)
 	}
-	if code, _ := read(admin, "CASE-BASE-001"); code != http.StatusForbidden {
-		t.Fatalf("admin read Base Boosting review: %d", code)
+	if code, _ := read(mod, "CASE-BASE-001"); code != http.StatusForbidden {
+		t.Fatalf("moderator read Base Boosting review: %d", code)
+	}
+	if code, got := read(admin, "CASE-BASE-001"); code != http.StatusOK || got.Summary.Reviewed != 0 {
+		t.Fatalf("administrator read Base Boosting review: %d %+v", code, got)
 	}
 	if code, got := read(w.f.OwnerDiscordID, "CASE-BASE-001"); code != http.StatusOK || got.Summary.Reviewed != 0 {
 		t.Fatalf("base review: %d %+v", code, got)

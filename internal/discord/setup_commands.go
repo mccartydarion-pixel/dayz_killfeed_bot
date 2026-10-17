@@ -25,11 +25,11 @@ func RegisterSetupCommand(session CommandRegistrar, guildID string) error {
 		return fmt.Errorf("discord session is nil")
 	}
 
-	defaultMemberPerms := int64(discordgo.PermissionManageServer) // hides it from normal members
+	// No default-member permission: a mapped Champion administrator must see it (admin_gate.go);
+	// isAdmin refuses everyone else.
 	cmd := &discordgo.ApplicationCommand{
-		Name:                     "setup",
-		Description:              "Configure Champion Killfeed for this server",
-		DefaultMemberPermissions: &defaultMemberPerms,
+		Name:        "setup",
+		Description: "Configure Champion Killfeed for this server",
 		Options: []*discordgo.ApplicationCommandOption{
 			{Name: "run", Description: "Set up Champion's Discord channels", Type: discordgo.ApplicationCommandOptionSubCommand},
 			{Name: "status", Description: "Show Champion Killfeed configuration status", Type: discordgo.ApplicationCommandOptionSubCommand},
@@ -323,6 +323,9 @@ func (h *SetupHandler) HandleResetConfirm(s *discordgo.Session, i *discordgo.Int
 // isAdmin reports whether the invoking member has Administrator or Manage Server.
 func isAdmin(s *discordgo.Session, i *discordgo.InteractionCreate) bool {
 	if i.Member != nil && i.Member.Permissions&adminPerms != 0 {
+		return true
+	}
+	if championAdminMember(i) {
 		return true
 	}
 	// Discord sends the member's permissions in this channel with every guild

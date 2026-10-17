@@ -302,26 +302,45 @@ func TestMapRotationAdminContract(t *testing.T) {
 	}
 
 	w.flag(true)
-	// Owner only: an Administrator is refused on every route.
+	// Administrator and up: a Moderator is refused on every route; an Administrator is admitted
+	// everywhere the Owner is (the same answer as the Owner on every route).
+	modUser := syncUser(t, a, fmt.Sprintf("mr-mod-%d", standoutSeq.Add(1)), "Mod")
+	w.mapRole(modUser.DiscordUserID, "role-mr-mod", "MODERATOR")
 	adminUser := syncUser(t, a, fmt.Sprintf("mr-admin-%d", standoutSeq.Add(1)), "Admin")
 	w.mapRole(adminUser.DiscordUserID, "role-mr-admin", "ADMINISTRATOR")
-	for name, call := range map[string]func() (int, map[string]any){
-		"GET": func() (int, map[string]any) {
-			return w.admin(http.MethodGet, a.handleAdminMapRotation, "/map/rotation", adminUser.DiscordUserID, nil)
+	routes := map[string]func(actor string) (int, map[string]any){
+		"GET": func(actor string) (int, map[string]any) {
+			return w.admin(http.MethodGet, a.handleAdminMapRotation, "/map/rotation", actor, nil)
 		},
-		"PUT": func() (int, map[string]any) {
-			return w.admin(http.MethodPut, a.handleSaveMapRotation, "/map/rotation", adminUser.DiscordUserID, rotationBody(threeMaps(), nil))
+		"PUT": func(actor string) (int, map[string]any) {
+			// Six maps: refused by validation, so a save as an Administrator stores nothing here.
+			six := append(threeMaps(), threeMaps()...)
+			for i := range six {
+				six[i]["mapFile"] = fmt.Sprintf("m%d.json", i)
+			}
+			return w.admin(http.MethodPut, a.handleSaveMapRotation, "/map/rotation", actor, rotationBody(six, nil))
 		},
-		"check": func() (int, map[string]any) {
-			return w.admin(http.MethodPost, a.handleCheckMapRotation, "/map/rotation/check", adminUser.DiscordUserID, nil)
+		"check": func(actor string) (int, map[string]any) {
+			return w.admin(http.MethodPost, a.handleCheckMapRotation, "/map/rotation/check", actor, nil)
 		},
-		"next": func() (int, map[string]any) {
-			return w.admin(http.MethodPost, a.handleSetNextMap, "/map/rotation/next", adminUser.DiscordUserID, map[string]any{"mapId": nil})
+		"next": func(actor string) (int, map[string]any) {
+			return w.admin(http.MethodPost, a.handleSetNextMap, "/map/rotation/next", actor, map[string]any{"mapId": nil})
 		},
-	} {
-		if code, body := call(); code != http.StatusForbidden || errCode(body) != codeAdminForbidden {
-			t.Fatalf("%s as an Administrator: %d %v", name, code, body)
+	}
+	for name, call := range routes {
+		if code, body := call(modUser.DiscordUserID); code != http.StatusForbidden || errCode(body) != codeAdminForbidden {
+			t.Fatalf("%s as a Moderator: %d %v", name, code, body)
 		}
+	}
+	for name, call := range routes {
+		ownerCode, ownerBody := call(owner)
+		adminCode, adminBody := call(adminUser.DiscordUserID)
+		if adminCode == http.StatusForbidden || adminCode != ownerCode || errCode(adminBody) != errCode(ownerBody) {
+			t.Fatalf("%s as an Administrator: %d %v (owner: %d %v)", name, adminCode, adminBody, ownerCode, ownerBody)
+		}
+	}
+	if code, _ := w.admin(http.MethodGet, a.handleAdminMapRotation, "/map/rotation", adminUser.DiscordUserID, nil); code != http.StatusOK {
+		t.Fatalf("GET as an Administrator: %d", code)
 	}
 	code, view = w.admin(http.MethodGet, a.handleAdminMapRotation, "/map/rotation", owner, nil)
 	if code != http.StatusOK || view["available"] != true || view["reason"] != nil {

@@ -51,9 +51,9 @@ func RegisterFeaturesCommand(s CommandRegistrar, guildID string) error {
 	if err != nil {
 		return err
 	}
-	perms := int64(discordgo.PermissionAdministrator | discordgo.PermissionManageServer)
+	// No default-member permission (admin_gate.go): isAdminInteraction decides.
 	_, err = s.ApplicationCommandCreate(appID, guildID, &discordgo.ApplicationCommand{
-		Name: "features", Description: "Turn the Champion features channel on or off", DefaultMemberPermissions: &perms,
+		Name: "features", Description: "Turn the Champion features channel on or off",
 	})
 	return err
 }

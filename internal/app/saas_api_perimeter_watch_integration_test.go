@@ -13,9 +13,14 @@ func TestPerimeterWatchOwnerSettings(t *testing.T) {
 	w := newClientAdminWorld(t)
 	admin := zoneActor(t, w, "perimeter-admin")
 	w.mapRole(admin, "perimeter-admin-role", "ADMINISTRATOR")
+	mod := zoneActor(t, w, "perimeter-admin-mod")
+	w.mapRole(mod, "perimeter-admin-mod-role", "MODERATOR")
 	path := w.path("/case/perimeter-watch")
-	if got := w.call(w.a.handleGetPerimeterWatch, http.MethodGet, path, admin, nil, nil); got.Code != http.StatusForbidden {
-		t.Fatalf("admin read: %d", got.Code)
+	if got := w.call(w.a.handleGetPerimeterWatch, http.MethodGet, path, mod, nil, nil); got.Code != http.StatusForbidden {
+		t.Fatalf("moderator read: %d", got.Code)
+	}
+	if got := w.call(w.a.handleGetPerimeterWatch, http.MethodGet, path, admin, nil, nil); got.Code != http.StatusOK {
+		t.Fatalf("administrator read: %d", got.Code)
 	}
 	type view struct {
 		Settings repository.PerimeterWatchSettings `json:"settings"`
@@ -34,8 +39,8 @@ func TestPerimeterWatchOwnerSettings(t *testing.T) {
 	if s := decodeBody[view](t, on).Settings; on.Code != http.StatusOK || !s.Enabled || s.MarginMeters != 150 || s.CooldownSeconds != 1800 {
 		t.Fatalf("turn on: %d %+v", on.Code, s)
 	}
-	if rr := w.call(w.a.handleSetPerimeterWatchOffer, http.MethodPut, path+"/offer", admin, map[string]any{"enabled": true, "pricePoints": 300, "durationDays": 7}, nil); rr.Code != http.StatusForbidden {
-		t.Fatalf("admin set offer: %d", rr.Code)
+	if rr := w.call(w.a.handleSetPerimeterWatchOffer, http.MethodPut, path+"/offer", mod, map[string]any{"enabled": true, "pricePoints": 300, "durationDays": 7}, nil); rr.Code != http.StatusForbidden {
+		t.Fatalf("moderator set offer: %d", rr.Code)
 	}
 	if rr := w.call(w.a.handleSetPerimeterWatchOffer, http.MethodPut, path+"/offer", w.f.OwnerDiscordID, map[string]any{"enabled": true, "pricePoints": 300, "durationDays": 7}, nil); rr.Code != http.StatusOK {
 		t.Fatalf("set offer: %d %s", rr.Code, rr.Body.String())

@@ -133,3 +133,27 @@ func TestCapabilitiesForLevelNoneIsEmpty(t *testing.T) {
 		t.Fatalf("expected zero capabilities for LevelNone, got %v", got)
 	}
 }
+
+// An ADMINISTRATOR runs the server exactly as the OWNER does: every capability is held by
+// Administrator and up. Only granting the OWNER level itself stays the owner's (billing is an
+// organization-role check outside this package).
+func TestAdministratorHoldsEveryCapability(t *testing.T) {
+	owner := CapabilitiesForLevel(LevelOwner)
+	admin := CapabilitiesForLevel(LevelAdministrator)
+	if len(owner) == 0 || len(owner) != len(admin) {
+		t.Fatalf("owner holds %d capabilities, administrator %d; expected the same non-empty set", len(owner), len(admin))
+	}
+	for i := range owner {
+		if owner[i] != admin[i] {
+			t.Fatalf("capability sets differ at index %d: owner %v, administrator %v", i, owner[i], admin[i])
+		}
+	}
+	for capability, need := range requiredLevel {
+		if need > LevelAdministrator {
+			t.Errorf("%s requires %s; nothing may require more than ADMINISTRATOR", capability, need)
+		}
+	}
+	if CanGrant(LevelAdministrator, LevelOwner) {
+		t.Fatal("an administrator must still not grant the OWNER level")
+	}
+}

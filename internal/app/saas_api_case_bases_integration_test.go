@@ -11,7 +11,7 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
-func TestCaseBaseDraftAdminFlowIsOwnerScopedAndInert(t *testing.T) {
+func TestCaseBaseDraftAdminFlowIsAdministratorScopedAndInert(t *testing.T) {
 	w := newClientAdminWorld(t)
 	owner := w.seedPlayer("Base Owner")
 	guest := w.seedPlayer("Guest")
@@ -21,9 +21,14 @@ func TestCaseBaseDraftAdminFlowIsOwnerScopedAndInert(t *testing.T) {
 	}
 	admin := zoneActor(t, w, "case-base-admin")
 	w.mapRole(admin, "case-base-admin-role", "ADMINISTRATOR")
-	denied := w.call(w.a.handleCaseCreateBaseDraft, http.MethodPost, w.path("/case/bases"), admin, req, nil)
+	mod := zoneActor(t, w, "case-base-admin-mod")
+	w.mapRole(mod, "case-base-admin-mod-role", "MODERATOR")
+	denied := w.call(w.a.handleCaseCreateBaseDraft, http.MethodPost, w.path("/case/bases"), mod, req, nil)
 	if denied.Code != http.StatusForbidden {
-		t.Fatalf("non-owner created a base: %d %s", denied.Code, denied.Body.String())
+		t.Fatalf("moderator created a base: %d %s", denied.Code, denied.Body.String())
+	}
+	if allowed := w.call(w.a.handleCaseListBases, http.MethodGet, w.path("/case/bases"), admin, nil, nil); allowed.Code != http.StatusOK {
+		t.Fatalf("administrator list: %d %s", allowed.Code, allowed.Body.String())
 	}
 	created := w.call(w.a.handleCaseCreateBaseDraft, http.MethodPost, w.path("/case/bases"), w.f.OwnerDiscordID, req, nil)
 	if created.Code != http.StatusCreated {
@@ -84,16 +89,16 @@ func TestCaseBaseDraftAdminFlowIsOwnerScopedAndInert(t *testing.T) {
 	if invalid.Code != http.StatusBadRequest {
 		t.Fatalf("ambiguous grant accepted: %d", invalid.Code)
 	}
-	denied = w.call(w.a.handleCaseListBaseGrants, http.MethodGet, path, admin, nil, pv)
+	denied = w.call(w.a.handleCaseListBaseGrants, http.MethodGet, path, mod, nil, pv)
 	if denied.Code != http.StatusForbidden {
-		t.Fatalf("non-owner read grants: %d", denied.Code)
+		t.Fatalf("moderator read grants: %d", denied.Code)
 	}
 
 	endPV := map[string]string{"baseID": strconv.FormatInt(out.Base.ID, 10), "grantID": strconv.FormatInt(got.Grant.ID, 10)}
 	endPath := w.path("/case/bases/x/grants/y/end")
-	denied = w.call(w.a.handleCaseEndBaseGrant, http.MethodPost, endPath, admin, nil, endPV)
+	denied = w.call(w.a.handleCaseEndBaseGrant, http.MethodPost, endPath, mod, nil, endPV)
 	if denied.Code != http.StatusForbidden {
-		t.Fatalf("non-owner ended grant: %d", denied.Code)
+		t.Fatalf("moderator ended grant: %d", denied.Code)
 	}
 	ended := w.call(w.a.handleCaseEndBaseGrant, http.MethodPost, endPath, w.f.OwnerDiscordID, nil, endPV)
 	if ended.Code != http.StatusOK {
@@ -111,9 +116,9 @@ func TestCaseBaseDraftAdminFlowIsOwnerScopedAndInert(t *testing.T) {
 	}
 	withdrawPV := map[string]string{"baseID": strconv.FormatInt(out.Base.ID, 10)}
 	withdrawPath := w.path("/case/bases/x/withdraw")
-	denied = w.call(w.a.handleCaseWithdrawBaseDraft, http.MethodPost, withdrawPath, admin, nil, withdrawPV)
+	denied = w.call(w.a.handleCaseWithdrawBaseDraft, http.MethodPost, withdrawPath, mod, nil, withdrawPV)
 	if denied.Code != http.StatusForbidden {
-		t.Fatalf("non-owner withdrew draft: %d", denied.Code)
+		t.Fatalf("moderator withdrew draft: %d", denied.Code)
 	}
 	withdrawn := w.call(w.a.handleCaseWithdrawBaseDraft, http.MethodPost, withdrawPath, w.f.OwnerDiscordID, nil, withdrawPV)
 	if withdrawn.Code != http.StatusOK {

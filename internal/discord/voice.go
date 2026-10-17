@@ -28,7 +28,7 @@ const (
 	// ReplyNoServerSelected answers a player command when the Discord has no DayZ server picked.
 	ReplyNoServerSelected = "No DayZ server is selected for this Discord yet."
 	// ReplyNeedsManageServer refuses a staff action without naming it.
-	ReplyNeedsManageServer = "You need the Administrator or Manage Server permission to do that."
+	ReplyNeedsManageServer = "You need the Administrator or Manage Server permission, or a Champion Administrator role, to do that."
 	// ReplyNotYourConfirmation refuses a confirmation button pressed by someone else.
 	ReplyNotYourConfirmation = "This confirmation belongs to another member."
 	// ReplyPlayerNotFound answers a lookup that matched no player.
@@ -43,7 +43,7 @@ const (
 // ReplyNeedsPermission refuses a staff action and says which one:
 // "You need the Administrator or Manage Server permission to manage servers."
 func ReplyNeedsPermission(action string) string {
-	return "You need the Administrator or Manage Server permission to " + strings.TrimSpace(action) + "."
+	return "You need the Administrator or Manage Server permission, or a Champion Administrator role, to " + strings.TrimSpace(action) + "."
 }
 
 // ReplyIsUnavailable says a feature cannot be used right now: "The economy is unavailable

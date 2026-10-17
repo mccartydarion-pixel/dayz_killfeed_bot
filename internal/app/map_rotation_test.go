@@ -48,16 +48,21 @@ func TestMapRotationIsOffByDefaultAtEveryLevel(t *testing.T) {
 	}
 }
 
-func TestMapRotationCapabilityIsOwnerOnly(t *testing.T) {
-	if permissions.Allows(permissions.LevelAdministrator, permissions.CapMapRotationManage) || !permissions.Allows(permissions.LevelOwner, permissions.CapMapRotationManage) {
-		t.Fatal("MAP_ROTATION_MANAGE is an Owner capability")
+func TestMapRotationCapabilityIsAdministratorAndUp(t *testing.T) {
+	if permissions.Allows(permissions.LevelModerator, permissions.CapMapRotationManage) {
+		t.Fatal("a moderator must not manage the map rotation")
 	}
-	found := false
-	for _, c := range permissions.CapabilitiesForLevel(permissions.LevelOwner) {
-		found = found || c == "MAP_ROTATION_MANAGE"
+	if !permissions.Allows(permissions.LevelAdministrator, permissions.CapMapRotationManage) || !permissions.Allows(permissions.LevelOwner, permissions.CapMapRotationManage) {
+		t.Fatal("MAP_ROTATION_MANAGE is an Administrator-and-up capability")
 	}
-	if !found {
-		t.Fatal(".../admin/me must list MAP_ROTATION_MANAGE for an owner")
+	for _, level := range []permissions.Level{permissions.LevelAdministrator, permissions.LevelOwner} {
+		found := false
+		for _, c := range permissions.CapabilitiesForLevel(level) {
+			found = found || c == "MAP_ROTATION_MANAGE"
+		}
+		if !found {
+			t.Fatalf(".../admin/me must list MAP_ROTATION_MANAGE for %s", level)
+		}
 	}
 }
 

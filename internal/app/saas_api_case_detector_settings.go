@@ -28,8 +28,8 @@ func (a *App) caseDetectorSettingsActor(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return adminActor{}, nil, false
 	}
-	if ac.level != permissions.LevelOwner {
-		writeSaaSError(w, codeAdminForbidden, "server owner required")
+	if ac.level < permissions.LevelAdministrator {
+		writeSaaSError(w, codeAdminForbidden, "server administrator required")
 		return adminActor{}, nil, false
 	}
 	if ac.scope.ServerID == nil {

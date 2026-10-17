@@ -199,6 +199,15 @@ func (h *SeasonCommandHandler) history(s *discordgo.Session, i *discordgo.Intera
 	}
 	respondEphemeral(s, i, b.String())
 }
+
+// isAdminInteraction is the admin gate for commands that never ask Discord: the member's
+// permissions as Discord sent them, else a mapped Champion ADMINISTRATOR role (admin_gate.go).
 func isAdminInteraction(i *discordgo.InteractionCreate) bool {
-	return i != nil && i.Member != nil && (i.Member.Permissions&(discordgo.PermissionAdministrator|discordgo.PermissionManageServer)) != 0
+	if i == nil || i.Member == nil {
+		return false
+	}
+	if i.Member.Permissions&(discordgo.PermissionAdministrator|discordgo.PermissionManageServer) != 0 {
+		return true
+	}
+	return championAdminMember(i)
 }

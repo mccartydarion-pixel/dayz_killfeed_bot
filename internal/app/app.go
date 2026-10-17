@@ -632,6 +632,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.SaaSChannelRoutes = repository.NewChannelRouteRepository(db.Pool)
 			app.SaaSRetiredChannels = repository.NewRetiredChannelRepository(db.Pool)
 			app.Permissions = repository.NewPermissionsRepository(db.Pool)
+			discord.SetChampionAdminResolver(app.championAdminResolver())
 			app.AdminAudit = repository.NewAuditRepository(db.Pool)
 			app.PlatformOwner = repository.NewPlatformOwnerRepository(db.Pool)
 			app.PlatformOps = repository.NewPlatformOpsRepository(db.Pool)

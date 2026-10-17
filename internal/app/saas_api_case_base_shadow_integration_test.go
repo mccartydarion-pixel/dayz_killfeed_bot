@@ -17,6 +17,8 @@ func TestCaseBaseShadowReadsBuildsAndBasesAndCannotNotify(t *testing.T) {
 	ctx := context.Background()
 	admin := zoneActor(t, w, "base-shadow-admin")
 	w.mapRole(admin, "base-shadow-admin-role", "ADMINISTRATOR")
+	mod := zoneActor(t, w, "base-shadow-admin-mod")
+	w.mapRole(mod, "base-shadow-admin-mod-role", "MODERATOR")
 	evidence := repository.NewCaseEvidenceRepository(w.a.DB.Pool)
 	source := "dayzps/config/DayZServer_PS4_x64_2026-10-01_02-00-00.ADM"
 	f := func(v float64) *float64 { return &v }
@@ -56,8 +58,11 @@ func TestCaseBaseShadowReadsBuildsAndBasesAndCannotNotify(t *testing.T) {
 	}
 
 	path := w.path("/case/bases/shadow")
-	if denied := w.call(w.a.handleCaseBaseShadow, http.MethodGet, path, admin, nil, nil); denied.Code != http.StatusForbidden {
-		t.Fatalf("admin read base shadow: %d", denied.Code)
+	if denied := w.call(w.a.handleCaseBaseShadow, http.MethodGet, path, mod, nil, nil); denied.Code != http.StatusForbidden {
+		t.Fatalf("moderator read base shadow: %d", denied.Code)
+	}
+	if allowed := w.call(w.a.handleCaseBaseShadow, http.MethodGet, path, admin, nil, nil); allowed.Code != http.StatusOK {
+		t.Fatalf("administrator read base shadow: %d %s", allowed.Code, allowed.Body.String())
 	}
 	rr := w.call(w.a.handleCaseBaseShadow, http.MethodGet, path, w.f.OwnerDiscordID, nil, nil)
 	if rr.Code != http.StatusOK {

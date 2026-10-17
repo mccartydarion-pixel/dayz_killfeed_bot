@@ -9,15 +9,20 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
-func TestSecurityGiftOwnerOnly(t *testing.T) {
+func TestSecurityGiftAdministratorAndUp(t *testing.T) {
 	w := newClientAdminWorld(t)
 	admin := zoneActor(t, w, "gift-admin")
 	w.mapRole(admin, "gift-admin-role", "ADMINISTRATOR")
+	mod := zoneActor(t, w, "gift-admin-mod")
+	w.mapRole(mod, "gift-admin-mod-role", "MODERATOR")
 	player := w.seedPlayer("Lucky")
 	path := w.path("/case/security-gifts")
 	body := map[string]any{"playerId": player, "serviceId": "BASE_RAID_ALARM", "days": 7, "note": "Event winner", "idempotencyKey": "gift-request-1"}
-	if rr := w.call(w.a.handleGiveSecurityGift, http.MethodPost, path, admin, body, nil); rr.Code != http.StatusForbidden {
-		t.Fatalf("admin gift: %d", rr.Code)
+	if rr := w.call(w.a.handleGiveSecurityGift, http.MethodPost, path, mod, body, nil); rr.Code != http.StatusForbidden {
+		t.Fatalf("moderator gift: %d", rr.Code)
+	}
+	if rr := w.call(w.a.handleListSecurityGifts, http.MethodGet, path, admin, nil, nil); rr.Code != http.StatusOK {
+		t.Fatalf("administrator list: %d", rr.Code)
 	}
 	for _, bad := range []map[string]any{
 		{"playerId": player, "serviceId": "OFFLINE_PROTECTION", "days": 7, "idempotencyKey": "gift-request-2"},

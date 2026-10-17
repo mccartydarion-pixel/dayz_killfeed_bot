@@ -7,13 +7,18 @@ import (
 	"testing"
 )
 
-func TestSecuritySalesOwnerOnly(t *testing.T) {
+func TestSecuritySalesAdministratorAndUp(t *testing.T) {
 	w := newClientAdminWorld(t)
 	admin := zoneActor(t, w, "sales-admin")
 	w.mapRole(admin, "sales-admin-role", "ADMINISTRATOR")
+	mod := zoneActor(t, w, "sales-admin-mod")
+	w.mapRole(mod, "sales-admin-mod-role", "MODERATOR")
 	path := w.path("/case/security-sales")
-	if rr := w.call(w.a.handleGetSecuritySales, http.MethodGet, path, admin, nil, nil); rr.Code != http.StatusForbidden {
-		t.Fatalf("admin read: %d", rr.Code)
+	if rr := w.call(w.a.handleGetSecuritySales, http.MethodGet, path, mod, nil, nil); rr.Code != http.StatusForbidden {
+		t.Fatalf("moderator read: %d", rr.Code)
+	}
+	if rr := w.call(w.a.handleGetSecuritySales, http.MethodGet, path, admin, nil, nil); rr.Code != http.StatusOK {
+		t.Fatalf("administrator read: %d", rr.Code)
 	}
 	if rr := w.call(w.a.handleGetSecuritySales, http.MethodGet, path+"?days=12", w.f.OwnerDiscordID, nil, nil); rr.Code != http.StatusBadRequest {
 		t.Fatalf("bad window accepted: %d", rr.Code)

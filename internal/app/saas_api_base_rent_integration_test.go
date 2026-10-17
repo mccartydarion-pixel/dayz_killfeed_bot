@@ -19,9 +19,14 @@ func TestBaseRentOwnerSettings(t *testing.T) {
 	w := newClientAdminWorld(t)
 	admin := zoneActor(t, w, "rent-admin")
 	w.mapRole(admin, "rent-admin-role", "ADMINISTRATOR")
+	mod := zoneActor(t, w, "rent-admin-mod")
+	w.mapRole(mod, "rent-admin-mod-role", "MODERATOR")
 	path := w.path("/case/base-rent")
-	if rr := w.call(w.a.handleGetBaseRent, http.MethodGet, path, admin, nil, nil); rr.Code != http.StatusForbidden {
-		t.Fatalf("admin read: %d", rr.Code)
+	if rr := w.call(w.a.handleGetBaseRent, http.MethodGet, path, mod, nil, nil); rr.Code != http.StatusForbidden {
+		t.Fatalf("moderator read: %d", rr.Code)
+	}
+	if rr := w.call(w.a.handleGetBaseRent, http.MethodGet, path, admin, nil, nil); rr.Code != http.StatusOK {
+		t.Fatalf("administrator read: %d", rr.Code)
 	}
 	type view struct {
 		Settings  repository.BaseRentSettings `json:"settings"`
@@ -36,8 +41,8 @@ func TestBaseRentOwnerSettings(t *testing.T) {
 			t.Fatalf("bad %v accepted: %d", bad, rr.Code)
 		}
 	}
-	if rr := w.call(w.a.handleSetBaseRent, http.MethodPut, path, admin, map[string]any{"enabled": true, "pricePoints": 100, "periodDays": 7}, nil); rr.Code != http.StatusForbidden {
-		t.Fatalf("admin set: %d", rr.Code)
+	if rr := w.call(w.a.handleSetBaseRent, http.MethodPut, path, mod, map[string]any{"enabled": true, "pricePoints": 100, "periodDays": 7}, nil); rr.Code != http.StatusForbidden {
+		t.Fatalf("moderator set: %d", rr.Code)
 	}
 	on := w.call(w.a.handleSetBaseRent, http.MethodPut, path, w.f.OwnerDiscordID, map[string]any{"enabled": true, "pricePoints": 250, "periodDays": 14}, nil)
 	if s := decodeBody[view](t, on).Settings; on.Code != http.StatusOK || !s.Enabled || s.PricePoints != 250 || s.PeriodDays != 14 {
@@ -121,12 +126,14 @@ func TestBaseRentPlayerPaysAndReminders(t *testing.T) {
 	}
 }
 
-func TestBaseRentGiftOwnerOnly(t *testing.T) {
+func TestBaseRentGiftAdministratorAndUp(t *testing.T) {
 	w := newClientAdminWorld(t)
 	ctx := context.Background()
 	pool := w.a.DB.Pool
 	admin := zoneActor(t, w, "rentgift-admin")
 	w.mapRole(admin, "rentgift-admin-role", "ADMINISTRATOR")
+	mod := zoneActor(t, w, "rentgift-admin-mod")
+	w.mapRole(mod, "rentgift-admin-mod-role", "MODERATOR")
 	renter := w.seedPlayer("Gifted")
 	s := repository.SecurityScope{InstallationID: w.f.InstallationID, GuildID: w.guildID, ServerID: w.serverID}
 	reqs := repository.NewCaseBaseRequestRepository(pool)
@@ -150,8 +157,11 @@ func TestBaseRentGiftOwnerOnly(t *testing.T) {
 	t.Cleanup(func() {
 		_, _ = repository.NewBaseRentRepository(pool).SetSettings(context.Background(), s, false, 300, 7, nil)
 	})
-	if rr := w.call(w.a.handleGiftBaseRent, http.MethodPost, path, admin, body, nil); rr.Code != http.StatusForbidden {
-		t.Fatalf("admin gift: %d", rr.Code)
+	if rr := w.call(w.a.handleGiftBaseRent, http.MethodPost, path, mod, body, nil); rr.Code != http.StatusForbidden {
+		t.Fatalf("moderator gift: %d", rr.Code)
+	}
+	if rr := w.call(w.a.handleGetBaseRent, http.MethodGet, w.path("/case/base-rent"), admin, nil, nil); rr.Code != http.StatusOK {
+		t.Fatalf("administrator read: %d", rr.Code)
 	}
 	for _, bad := range []map[string]any{
 		{"baseId": baseID, "days": 0, "idempotencyKey": "rent-gift-0002"},
@@ -272,12 +282,14 @@ func TestBaseRentPauseDigest(t *testing.T) {
 	}
 }
 
-func TestBaseRentFreeOwnerOnly(t *testing.T) {
+func TestBaseRentFreeAdministratorAndUp(t *testing.T) {
 	w := newClientAdminWorld(t)
 	ctx := context.Background()
 	pool := w.a.DB.Pool
 	admin := zoneActor(t, w, "rentfree-admin")
 	w.mapRole(admin, "rentfree-admin-role", "ADMINISTRATOR")
+	mod := zoneActor(t, w, "rentfree-admin-mod")
+	w.mapRole(mod, "rentfree-admin-mod-role", "MODERATOR")
 	player := w.seedPlayer("Staffer")
 	s := repository.SecurityScope{InstallationID: w.f.InstallationID, GuildID: w.guildID, ServerID: w.serverID}
 	reqs := repository.NewCaseBaseRequestRepository(pool)
@@ -292,8 +304,11 @@ func TestBaseRentFreeOwnerOnly(t *testing.T) {
 	baseID := *d.Request.BaseID
 	path := w.path("/case/base-rent/rent-free")
 	body := map[string]any{"baseId": baseID, "free": true, "note": "Staff base"}
-	if rr := w.call(w.a.handleSetBaseRentFree, http.MethodPut, path, admin, body, nil); rr.Code != http.StatusForbidden {
-		t.Fatalf("admin: %d", rr.Code)
+	if rr := w.call(w.a.handleSetBaseRentFree, http.MethodPut, path, mod, body, nil); rr.Code != http.StatusForbidden {
+		t.Fatalf("moderator: %d", rr.Code)
+	}
+	if rr := w.call(w.a.handleGetBaseRent, http.MethodGet, w.path("/case/base-rent"), admin, nil, nil); rr.Code != http.StatusOK {
+		t.Fatalf("administrator read: %d", rr.Code)
 	}
 	if rr := w.call(w.a.handleSetBaseRentFree, http.MethodPut, path, w.f.OwnerDiscordID, map[string]any{"baseId": baseID + 99999, "free": true}, nil); rr.Code != http.StatusConflict {
 		t.Fatalf("unknown base: %d", rr.Code)

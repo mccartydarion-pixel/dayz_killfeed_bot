@@ -1,7 +1,10 @@
 // Package permissions implements Champion's tenant administration permission model (Client Admin
 // Control Plane Phase 1, docs/CLIENT_ADMIN.md). This is a capability-based system with four fixed
 // levels (OWNER > ADMINISTRATOR > MODERATOR > GATEKEEPER), each level automatically holding every
-// capability the levels below it hold. A Client maps their own Discord roles to these levels
+// capability the levels below it hold. An ADMINISTRATOR holds every capability: it runs the server
+// exactly as the OWNER does. The only things that stay the organization owner's are changing the
+// organization's plan/billing and granting the OWNER level itself (CanGrant), neither of which is
+// a capability here. A Client maps their own Discord roles to these levels
 // (internal/repository.PermissionsRepository); the level -> capability mapping itself is fixed by
 // Champion, not customer-configurable.
 //
@@ -84,7 +87,7 @@ const (
 	CapBanlistManage     Capability = "BANLIST_MANAGE"
 	// The Nitrado priority list ("Prioritized players"): who skips the queue when the server is full.
 	CapPriorityManage Capability = "PRIORITY_MANAGE"
-	// Reading the game server's own log files (docs/SERVER_LOGS.md). Owner only: the files name
+	// Reading the game server's own log files (docs/SERVER_LOGS.md). Administrator and up: the files name
 	// every player, their platform ids and where they were.
 	CapServerLogsView     Capability = "SERVER_LOGS_VIEW"
 	CapPlayerLastOnline   Capability = "PLAYER_LAST_ONLINE_VIEW"
@@ -135,11 +138,11 @@ const (
 	CapVIPView           Capability = "VIP_VIEW"
 	CapVIPManage         Capability = "VIP_MANAGE"
 	// The perk store (docs/PERK_STORE.md): viewing orders and handing out custom perks, and
-	// changing offers, the store switch and refunds (points move, so Owner only).
+	// changing offers, the store switch and refunds (points move, so Administrator and up).
 	CapPerksView   Capability = "PERKS_VIEW"
 	CapPerksManage Capability = "PERKS_MANAGE"
 	// Map rotation with a player vote (docs/MAP_ROTATION.md). It changes which map the server
-	// loads by writing two files on the game server, so it is Owner only.
+	// loads by writing two files on the game server, so it is Administrator and up.
 	CapMapRotationManage Capability = "MAP_ROTATION_MANAGE"
 	// The owner-facing server status (docs/SERVER_STATUS.md): is the feed working, is Nitrado
 	// reachable, are positions arriving. Read-only facts about the installation's own server.
@@ -160,7 +163,7 @@ var requiredLevel = map[Capability]Level{
 	CapFactionDissolve:        LevelAdministrator,
 	CapBountyManage:           LevelModerator,
 	CapPlayerStatsReset:       LevelAdministrator,
-	CapServerStatsReset:       LevelOwner,
+	CapServerStatsReset:       LevelAdministrator,
 	CapServerRestart:          LevelModerator,
 	CapServerStop:             LevelAdministrator,
 	CapServerAutostart:        LevelAdministrator,
@@ -168,7 +171,7 @@ var requiredLevel = map[Capability]Level{
 	CapWhitelistManage:        LevelGatekeeper,
 	CapBanlistManage:          LevelModerator,
 	CapPriorityManage:         LevelAdministrator,
-	CapServerLogsView:         LevelOwner,
+	CapServerLogsView:         LevelAdministrator,
 	CapPlayerLastOnline:       LevelModerator,
 	CapFeedLocationManage:     LevelModerator,
 	CapMaintenanceMode:        LevelAdministrator,
@@ -178,25 +181,25 @@ var requiredLevel = map[Capability]Level{
 	CapZoneView:               LevelModerator,
 	CapZoneManage:             LevelAdministrator,
 	CapZoneIgnoreManage:       LevelAdministrator,
-	CapUAVManage:              LevelOwner,
+	CapUAVManage:              LevelAdministrator,
 	CapIntrusionAck:           LevelModerator,
 	CapHeatmapView:            LevelModerator,
 	CapFeatureSettingsView:    LevelModerator,
 	CapFeatureSettingsManage:  LevelAdministrator,
-	CapNetworkManage:          LevelOwner,
-	CapFeedIdentityManage:     LevelOwner,
+	CapNetworkManage:          LevelAdministrator,
+	CapFeedIdentityManage:     LevelAdministrator,
 	CapRetentionView:          LevelAdministrator,
 	CapEventsView:             LevelModerator,
 	CapEventsManage:           LevelAdministrator,
 	CapInvitesView:            LevelAdministrator,
 	CapRewardsView:            LevelAdministrator,
-	CapRewardsManage:          LevelOwner,
+	CapRewardsManage:          LevelAdministrator,
 	CapStaffActivityView:      LevelAdministrator,
 	CapVIPView:                LevelModerator,
 	CapVIPManage:              LevelAdministrator,
 	CapPerksView:              LevelAdministrator,
-	CapPerksManage:            LevelOwner,
-	CapMapRotationManage:      LevelOwner,
+	CapPerksManage:            LevelAdministrator,
+	CapMapRotationManage:      LevelAdministrator,
 	CapServerStatusView:       LevelAdministrator,
 }
 

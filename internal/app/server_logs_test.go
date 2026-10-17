@@ -51,9 +51,12 @@ func logFile(name string, size int64) nitrado.LogFile {
 	return nitrado.LogFile{Name: name, Path: "/games/ni1_1/noftp/dayzps/config/" + name, Size: size}
 }
 
-func TestServerLogsCapabilityIsOwnerOnly(t *testing.T) {
-	if permissions.Allows(permissions.LevelAdministrator, permissions.CapServerLogsView) {
-		t.Fatal("an administrator must not read server logs")
+func TestServerLogsCapabilityIsAdministratorAndUp(t *testing.T) {
+	if permissions.Allows(permissions.LevelModerator, permissions.CapServerLogsView) {
+		t.Fatal("a moderator must not read server logs")
+	}
+	if !permissions.Allows(permissions.LevelAdministrator, permissions.CapServerLogsView) {
+		t.Fatal("an administrator must be able to read server logs")
 	}
 	if !permissions.Allows(permissions.LevelOwner, permissions.CapServerLogsView) {
 		t.Fatal("the owner must be able to read server logs")

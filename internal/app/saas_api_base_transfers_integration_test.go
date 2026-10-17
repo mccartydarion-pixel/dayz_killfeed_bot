@@ -57,6 +57,8 @@ func TestBaseTransferOwnerRoutes(t *testing.T) {
 	pool := w.a.DB.Pool
 	admin := zoneActor(t, w, "xfer-admin")
 	w.mapRole(admin, "xfer-admin-role", "ADMINISTRATOR")
+	mod := zoneActor(t, w, "xfer-admin-mod")
+	w.mapRole(mod, "xfer-admin-mod-role", "MODERATOR")
 	giver, mate := w.seedPlayer("Owner Giver"), w.seedPlayer("Owner Mate")
 	var faction, hall int64
 	if err := pool.QueryRow(ctx, `INSERT INTO factions(guild_id,name,tag,owner_player_id) VALUES($1,'OXfer','OXF',$2) RETURNING id`, w.guildID, giver).Scan(&faction); err != nil {
@@ -87,8 +89,11 @@ func TestBaseTransferOwnerRoutes(t *testing.T) {
 		m["transferID"] = fmt.Sprint(id)
 		return m
 	}
-	if rr := w.call(w.a.handleGetBaseTransfers, http.MethodGet, w.path("/case/base-transfers"), admin, nil, nil); rr.Code != http.StatusForbidden {
-		t.Fatalf("admin list: %d", rr.Code)
+	if rr := w.call(w.a.handleGetBaseTransfers, http.MethodGet, w.path("/case/base-transfers"), mod, nil, nil); rr.Code != http.StatusForbidden {
+		t.Fatalf("moderator list: %d", rr.Code)
+	}
+	if rr := w.call(w.a.handleGetBaseTransfers, http.MethodGet, w.path("/case/base-transfers"), admin, nil, nil); rr.Code != http.StatusOK {
+		t.Fatalf("administrator list: %d", rr.Code)
 	}
 	list := decodeBody[struct {
 		Transfers []repository.BaseTransfer `json:"transfers"`
@@ -108,8 +113,8 @@ func TestBaseTransferOwnerRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	approve := w.path(fmt.Sprintf("/case/base-transfers/%d/approve", second.ID))
-	if rr := w.call(w.a.handleApproveBaseTransfer, http.MethodPost, approve, admin, nil, pv(second.ID)); rr.Code != http.StatusForbidden {
-		t.Fatalf("admin approve: %d", rr.Code)
+	if rr := w.call(w.a.handleApproveBaseTransfer, http.MethodPost, approve, mod, nil, pv(second.ID)); rr.Code != http.StatusForbidden {
+		t.Fatalf("moderator approve: %d", rr.Code)
 	}
 	if rr := w.call(w.a.handleApproveBaseTransfer, http.MethodPost, approve, w.f.OwnerDiscordID, nil, pv(second.ID)); rr.Code != http.StatusOK {
 		t.Fatalf("approve: %d %s", rr.Code, rr.Body.String())

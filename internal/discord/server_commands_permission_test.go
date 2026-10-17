@@ -52,13 +52,15 @@ func TestServerAutocompleteIsAdminOnly(t *testing.T) {
 	}
 }
 
-func TestServerCommandIsHiddenFromMembers(t *testing.T) {
+// /server carries no Discord default-member permission: a Champion administrator mapped by role
+// (admin_gate.go) must be able to see and run it, so the bot's own isAdmin gate decides.
+func TestServerCommandIsVisibleToMappedAdministrators(t *testing.T) {
 	batch := NewCommandBatch("app")
 	if err := RegisterServerCommands(batch, "g"); err != nil {
 		t.Fatal(err)
 	}
 	cmd := batch.Commands()[0]
-	if cmd.DefaultMemberPermissions == nil || *cmd.DefaultMemberPermissions&discordgo.PermissionManageServer == 0 {
-		t.Fatalf("/server is visible to every member: %+v", cmd.DefaultMemberPermissions)
+	if cmd.DefaultMemberPermissions != nil {
+		t.Fatalf("/server must not be hidden by a Discord permission: %+v", *cmd.DefaultMemberPermissions)
 	}
 }

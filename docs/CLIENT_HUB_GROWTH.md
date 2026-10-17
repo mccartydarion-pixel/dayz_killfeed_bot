@@ -9,9 +9,9 @@ the admin audit log.
 | --- | --- | --- | --- |
 | Peak hours planner | `GET /planner/peak-hours` | `RETENTION_VIEW` (Administrator) | Retention |
 | Event builder | `GET /events`, `GET /events/templates`, `POST /events`, `POST /events/{id}/cancel`, `POST /events/{id}/end` | `EVENTS_VIEW` (Moderator) / `EVENTS_MANAGE` (Administrator) | — |
-| Wipe & season planner | `GET /seasons/planner`, `POST /seasons/planner`, `POST /seasons/planner/{id}/cancel` | `SERVER_STATS_RESET` (Owner) | Ranked reset: Ranked seasons |
+| Wipe & season planner | `GET /seasons/planner`, `POST /seasons/planner`, `POST /seasons/planner/{id}/cancel` | `SERVER_STATS_RESET` (Administrator) | Ranked reset: Ranked seasons |
 | Invite tracking | `GET /invites` | `INVITES_VIEW` (Administrator) | Retention |
-| Rewards automation | `GET /rewards`, `PUT /rewards/rules`, `DELETE /rewards/rules/{id}` | `REWARDS_VIEW` (Administrator) / `REWARDS_MANAGE` (Owner) | Economy |
+| Rewards automation | `GET /rewards`, `PUT /rewards/rules`, `DELETE /rewards/rules/{id}` | `REWARDS_VIEW` (Administrator) / `REWARDS_MANAGE` (Administrator) | Economy |
 | Player timeline | `GET /players/{id}/timeline` | `PLAYER_DIRECTORY_VIEW` (Moderator) | — |
 | Staff activity | `GET /staff-activity` | `STAFF_ACTIVITY_VIEW` (Administrator) | — |
 | Zone & base map | existing `/zones` API | `ZONE_VIEW` / `ZONE_MANAGE` (`UAV_MANAGE` for UAV and Base Radar) | — |
