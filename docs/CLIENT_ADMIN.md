@@ -43,6 +43,11 @@ permission mapping granting a Level at or below their own resolved Level - enfor
 
 An ADMINISTRATOR runs the server exactly as the OWNER does: every capability below is held by Administrator and up, and no capability requires the OWNER level. The only things that stay the organization owner's are changing the organization's plan/billing (`docs/BILLING.md`, an organization-role check, not a capability) and granting the OWNER level itself (`CanGrant`).
 
+In Discord as on the website: a member whose Discord role is mapped to ADMINISTRATOR (or OWNER) may
+run the admin slash commands (`/setup`, `/server`, `/admin`, `/features` and the admin subcommands)
+without Discord's own Administrator or Manage Server permission (`internal/discord/admin_gate.go`;
+those commands therefore carry no Discord default-member permission).
+
 | Capability | Level | Notes |
 |---|---|---|
 | `PERMISSIONS_VIEW` | Moderator | list role mappings + read audit log |

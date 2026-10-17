@@ -117,7 +117,7 @@ func (a *App) handleCaseBillingServers(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeSaaSJSON(w, http.StatusOK, map[string]any{"items": items,
-		"canManageBilling": br.role == repository.RoleOwner || br.role == repository.RoleAdmin})
+		"canManageBilling": br.role == repository.RoleOwner})
 }
 
 func caseCoverageStateOrOK(s string) string {
@@ -152,7 +152,7 @@ type caseCoverageEventDTO struct {
 	RecordedAt          string  `json:"recordedAt"`
 }
 
-// Organization OWNER/ADMIN only: payment amounts, refunds and disputes for one
+// Organization OWNER or ADMIN: payment amounts, refunds and disputes for one
 // installation's add-on. Read-only, database only (no Stripe call), and no
 // Stripe identifiers leave the server.
 func (a *App) handleCaseBillingCoverage(w http.ResponseWriter, r *http.Request) {
@@ -282,7 +282,7 @@ func (a *App) handleCaseBillingReactivate(w http.ResponseWriter, r *http.Request
 	a.handleCaseBillingManage(w, r, false)
 }
 
-// Organization OWNER/ADMIN only. This manages the selected server's add-on,
+// Organization OWNER only (the plan is the owner's). This manages the selected server's add-on,
 // not the organization's base subscription. No purchase-release flag is
 // required for cancellation: operators must never strand paid subscribers.
 func (a *App) handleCaseBillingManage(w http.ResponseWriter, r *http.Request, cancel bool) {
@@ -381,7 +381,7 @@ func (a *App) decodeCaseTierRequest(w http.ResponseWriter, r *http.Request) (bil
 	return br, &body, true
 }
 
-// Organization OWNER/ADMIN only. Read-only: returns what the change will do
+// Organization OWNER only (the plan is the owner's). Read-only: returns what the change will do
 // and cost (Stripe-calculated) before anything is mutated.
 func (a *App) handleCaseBillingPlanPreview(w http.ResponseWriter, r *http.Request) {
 	br, body, ok := a.decodeCaseTierRequest(w, r)
@@ -405,7 +405,7 @@ func (a *App) handleCaseBillingPlanPreview(w http.ResponseWriter, r *http.Reques
 	})
 }
 
-// Organization OWNER/ADMIN only. Applies a previewed Watch <-> Pro change on
+// Organization OWNER only (the plan is the owner's). Applies a previewed Watch <-> Pro change on
 // the server's existing add-on subscription. 200 with status PAYMENT_PENDING
 // means Stripe is holding an upgrade until its proration is paid; access is
 // unchanged until the signed invoice.paid webhook arrives.
