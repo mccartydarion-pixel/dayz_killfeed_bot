@@ -40,9 +40,17 @@ const (
 	connectionsMaxNameLen       = 40
 	connectionsMinShownSession  = time.Minute
 	connectionsBatchTitle       = "🔌 **Server connections**"
-	connectionsSingleConnected  = "🟢 **Connected**"
-	connectionsSingleDisconnect = "🔴 **Disconnected**"
+	connectionsSingleConnected  = "🟢 Connection"
+	connectionsSingleDisconnect = "🔴 Disconnection"
+	connectionsAuthor           = "Connections notification"
+	connectionsEarningsTimeout  = 3 * time.Second
 )
+
+// SessionEarningsFunc reports how much a player earned (credits to their Champion Points
+// wallet) since they connected: the amount and whether the server keeps an economy at all. A
+// server without one reports false and the card shows no "Cash earned" row. It runs on the
+// publisher's own goroutine, never on the parser's.
+type SessionEarningsFunc func(ctx context.Context, playerID string, since time.Time) (amount int64, ok bool)
 
 // ConnectionsPublisher publishes authoritative connect/disconnect state changes
 // to the server's CONNECTIONS route. One publisher belongs to one server worker
@@ -66,6 +74,7 @@ type ConnectionsPublisher struct {
 	// single-event card is customizable; a batched summary keeps the default.
 	custom                      EmbedCustomizer
 	serverName                  ServerNameFunc
+	earnings                    SessionEarningsFunc
 	routeGuildID, routeServerID int64
 
 	mu             sync.Mutex
@@ -97,17 +106,45 @@ func (p *ConnectionsPublisher) SetCustomizer(c EmbedCustomizer, serverName Serve
 	p.serverName = serverName
 }
 
+// SetEarnings enables the "Cash earned" row of a disconnect card.
+func (p *ConnectionsPublisher) SetEarnings(f SessionEarningsFunc) {
+	if p == nil {
+		return
+	}
+	p.earnings = f
+}
+
 // card renders one message: a lone connect/disconnect may use the custom template;
 // a batch (several players, or "earlier events not shown") is a summary list, which a
 // single-event template cannot describe, so it always keeps the default.
 func (p *ConnectionsPublisher) card(batch []killfeed.ConnectionNotice, omitted int64) *discordgo.MessageEmbed {
-	def := buildConnectionsEmbed(batch, omitted)
 	if len(batch) != 1 || omitted != 0 {
-		return def
+		return buildConnectionsEmbed(batch, omitted)
 	}
+	server := serverNameOf(p.serverName, p.routeServerID)
+	n := batch[0]
+	cash, cashKnown := p.sessionEarnings(n)
+	def := buildConnectionEmbed(n, server, cash, cashKnown)
 	return customEmbed(p.custom, p.routeGuildID, p.routeServerID, routeKeyConnections, def, func() map[string]string {
-		return connectionVars(batch[0], serverNameOf(p.serverName, p.routeServerID))
+		m := connectionVars(n, server)
+		if cashKnown {
+			m["cash_earned"] = formatAmount(cash)
+		}
+		return m
 	})
+}
+
+// sessionEarnings asks the earnings hook, bounded by connectionsEarningsTimeout, for what a
+// disconnecting player earned since they connected. Unknown (no hook, no economy, no observed
+// connect, lookup failed) is reported as not known and the row is left off the card.
+func (p *ConnectionsPublisher) sessionEarnings(n killfeed.ConnectionNotice) (int64, bool) {
+	if p.earnings == nil || n.Kind != killfeed.ConnectionDisconnected || n.PlayerID == "" || n.Session <= 0 {
+		return 0, false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), connectionsEarningsTimeout)
+	defer cancel()
+	since := connectionTime(n).Add(-n.Session)
+	return p.earnings(ctx, n.PlayerID, since)
 }
 
 // PublishConnection implements killfeed.ConnectionPublisher. It never blocks and
@@ -245,27 +282,81 @@ func (p *ConnectionsPublisher) send(channel string, batch []killfeed.ConnectionN
 	}
 }
 
+// connectionTime is when the notice happened: the line's own time when the engine derived it,
+// else when the line was read.
+func connectionTime(n killfeed.ConnectionNotice) time.Time {
+	if !n.At.IsZero() {
+		return n.At
+	}
+	return time.Now()
+}
+
+// buildConnectionEmbed renders a lone connect or disconnect:
+//
+//	🟢 Connection                              (title)
+//	**Connection – 5:42:53 PM**                (the line's own time, in the reader's zone)
+//	`Ceiyxe` is connected
+//
+//	🔴 Disconnection
+//	**Disconnection – 5:48:58 PM**
+//	`titanlaxman` has disconnected
+//	Session time   00H 33M 26S                 (when Champion saw the connect)
+//	Location       9047.2;11890.0;227.7        (when the line carries a position)
+//	Cash earned    3,500                       (servers with an economy)
+//
+// The display name is shown in code so it reads as data (no markdown, no pings); the ADM id
+// is never shown. The footer names the server; the embed timestamp is the event's time.
+func buildConnectionEmbed(n killfeed.ConnectionNotice, server string, cash int64, cashKnown bool) *discordgo.MessageEmbed {
+	at := connectionTime(n)
+	name := connectionName(n.Name)
+	e := &discordgo.MessageEmbed{Author: presentation.BrandAuthor(connectionsAuthor), Footer: presentation.Footer(server, "")}
+	if n.Kind == killfeed.ConnectionConnected {
+		e.Title, e.Color = connectionsSingleConnected, presentation.SuccessGreen
+		e.Description = "**Connection – " + presentation.Timestamp(at, 'T') + "**\n`" + name + "` is connected"
+	} else {
+		e.Title, e.Color = connectionsSingleDisconnect, presentation.Red
+		e.Description = "**Disconnection – " + presentation.Timestamp(at, 'T') + "**\n`" + name + "` has disconnected"
+		if n.Session > 0 {
+			presentation.AppendFields(e, presentation.StatusField("Session time", formatSessionClock(n.Session), false))
+		}
+		if n.Position != nil {
+			presentation.AppendFields(e, presentation.StatusField("Location", formatLocation(*n.Position), false))
+		}
+		if cashKnown {
+			presentation.AppendFields(e, presentation.StatusField("Cash earned", formatAmount(cash), false))
+		}
+	}
+	presentation.StampEmbed(e, at)
+	return e
+}
+
+// formatSessionClock renders a session as "00H 33M 26S".
+func formatSessionClock(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	d = d.Round(time.Second)
+	h := int(d / time.Hour)
+	m := int(d/time.Minute) % 60
+	sec := int(d/time.Second) % 60
+	return fmt.Sprintf("%02dH %02dM %02dS", h, m, sec)
+}
+
+// formatLocation renders a position as the ADM prints it, "x;y;z" to one decimal.
+func formatLocation(p killfeed.Position) string {
+	return fmt.Sprintf("%.1f;%.1f;%.1f", p.X, p.Y, p.Z)
+}
+
 // buildConnectionsEmbed renders one message.
 //
-//	single:  🟢 CONNECTED / PlayerName joined the server.
-//	         🔴 DISCONNECTED / PlayerName left the server. / Session: 42m
+//	single:  buildConnectionEmbed (the card above, without the economy row).
 //	batch:   🔌 SERVER CONNECTIONS, one line per event, one player per line.
 //
 // Only the display name and (for a disconnect, when Champion observed the
-// connect) the session length are ever shown - never the ADM id, coordinates or
-// any Discord link state. A session under a minute is omitted.
+// connect) the session length are shown in a batch - never the ADM id.
 func buildConnectionsEmbed(batch []killfeed.ConnectionNotice, omitted int64) *discordgo.MessageEmbed {
 	if len(batch) == 1 && omitted == 0 {
-		n := batch[0]
-		name := connectionName(n.Name)
-		if n.Kind == killfeed.ConnectionConnected {
-			return &discordgo.MessageEmbed{Description: fmt.Sprintf("%s\n%s joined the server.", connectionsSingleConnected, name), Color: presentation.SuccessGreen}
-		}
-		desc := fmt.Sprintf("%s\n%s left the server.", connectionsSingleDisconnect, name)
-		if s := formatSession(n.Session); s != "" {
-			desc += "\nSession: " + s
-		}
-		return &discordgo.MessageEmbed{Description: desc, Color: presentation.Neutral} // leaving is not an error
+		return buildConnectionEmbed(batch[0], "", 0, false)
 	}
 
 	var b strings.Builder

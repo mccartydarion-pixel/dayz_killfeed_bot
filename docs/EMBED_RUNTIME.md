@@ -106,7 +106,7 @@ only values the event actually carries are provided; a value that is unknown is 
 | `HITFEED` | `attacker` (= `killer`) `victim` `weapon` `ammo` `distance` `hit_zone` `damage` (only when **every** hit in the encounter carried one) `hits` `server_name` |
 | `PVE_FEED` | `victim` `cause` (the parser-proven cause: today only `suicide`) `server_name` `timestamp` |
 | `BOUNTY_TRACKING` | `status` (`placed` `increased` `claimed` `expired` `cancelled`) `target` (= `victim`) `amount`; claims only: `hunter` (= `killer`) `total` `count` `weapon` `distance`; `server_name` |
-| `CONNECTIONS` | `player` `event` (`joined`/`left`) `event_type` (`connected`/`disconnected`) `session` (disconnects with an observed session >= 1 minute) `server_name` `timestamp` |
+| `CONNECTIONS` | `player` `event` (`joined`/`left`) `event_type` (`connected`/`disconnected`) `session` (disconnects with an observed session >= 1 minute) `session_time` (`00H 33M 26S`, observed disconnects) `location` (`x;y;z`, when the line carries a position) `cash_earned` (disconnects on servers with the economy) `time` (`<t:…:T>`, the line's own time) `server_name` `timestamp` |
 | `ECONOMY` | `player` `amount` `transaction_type` (`Bounty reward`, `Admin credit`, `Admin debit`, ...) `balance` (rewards only) `server_name` |
 
 `timestamp` is the runtime publish time in UTC (`2006-01-02 15:04:05 UTC`; the ADM log carries only a

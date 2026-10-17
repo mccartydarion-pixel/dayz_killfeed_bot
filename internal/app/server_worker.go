@@ -233,6 +233,7 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 		// presence tracking or persistence.
 		connectionsFeed := discord.NewConnectionsPublisher(a.feedSender(row.ID), a.ChannelRoutes, row.GuildID, row.ID)
 		connectionsFeed.SetCustomizer(a.embedCustomizer(), a.serverNameFunc())
+		connectionsFeed.SetEarnings(a.sessionEarningsFunc(row))
 		engine.SetConnectionPublisher(connectionsFeed)
 		go func() {
 			defer func() {

@@ -9,7 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bwmarrin/discordgo"
+
 	"github.com/yourname/dayz-killfeed/internal/killfeed"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/routing"
 )
 
@@ -69,8 +72,15 @@ func TestConnectionsPublishesConnect(t *testing.T) {
 	if len(msgs) != 1 || len(msgs[0].embeds) != 1 {
 		t.Fatalf("expected 1 message, got %+v", msgs)
 	}
-	if got, want := msgs[0].embeds[0].Description, "🟢 **Connected**\nAlice joined the server."; got != want {
-		t.Fatalf("unexpected card:\n%q\nwant\n%q", got, want)
+	e := msgs[0].embeds[0]
+	if e.Title != "🟢 Connection" || e.Color != presentation.Green {
+		t.Fatalf("unexpected header: %q #%06X", e.Title, e.Color)
+	}
+	if got := e.Description; !strings.HasPrefix(got, "**Connection – <t:") || !strings.HasSuffix(got, ":T>**\n`Alice` is connected") {
+		t.Fatalf("unexpected card:\n%q", got)
+	}
+	if len(e.Fields) != 0 || e.Timestamp == "" || e.Author == nil || e.Author.Name != presentation.BrandName+" Connections notification" {
+		t.Fatalf("a connect card has no rows, a timestamp and the author line: %+v", e)
 	}
 	if msgs[0].mention == nil || len(msgs[0].mention.Parse) != 0 {
 		t.Fatal("connection cards must not be able to ping anyone")
@@ -82,18 +92,101 @@ func TestConnectionsPublishesDisconnectWithSessionWhenKnown(t *testing.T) {
 	f.res.set(7, 1, "CONNECTIONS", "conn-chan")
 	p := f.publisher(1)
 
-	p.PublishConnection(disconnected("Alice", 42*time.Minute))
+	at := time.Date(2026, 10, 15, 17, 48, 58, 0, time.UTC)
+	n := disconnected("Alice", 33*time.Minute+26*time.Second)
+	n.At, n.Position = at, &killfeed.Position{X: 9047.2, Y: 11890, Z: 227.7}
+	p.PublishConnection(n)
 	p.tick(false)
-	if got, want := f.lastDescription("conn-chan"), "🔴 **Disconnected**\nAlice left the server.\nSession: 42m"; got != want {
+	msgs := f.sender.messages("conn-chan")
+	e := msgs[len(msgs)-1].embeds[0]
+	if e.Title != "🔴 Disconnection" || e.Color != presentation.Red {
+		t.Fatalf("unexpected header: %q #%06X", e.Title, e.Color)
+	}
+	if got, want := e.Description, "**Disconnection – "+presentation.Timestamp(at, 'T')+"**\n`Alice` has disconnected"; got != want {
 		t.Fatalf("unexpected card:\n%q\nwant\n%q", got, want)
 	}
+	if got, want := fieldValues(e), "Session time=00H 33M 26S|Location=9047.2;11890.0;227.7"; got != want {
+		t.Fatalf("rows %q, want %q", got, want)
+	}
+	if e.Timestamp != "2026-10-15T17:48:58.000Z" {
+		t.Fatalf("the embed timestamp is the line's own time, got %q", e.Timestamp)
+	}
 
-	// Unknown or sub-minute sessions are omitted, never invented.
-	for _, d := range []time.Duration{0, 30 * time.Second} {
-		p.PublishConnection(disconnected("Bob", d))
-		p.tick(false)
-		if got, want := f.lastDescription("conn-chan"), "🔴 **Disconnected**\nBob left the server."; got != want {
-			t.Fatalf("session %v must be omitted:\n%q\nwant\n%q", d, got, want)
+	// An unknown session and an unknown position are omitted, never invented.
+	p.PublishConnection(disconnected("Bob", 0))
+	p.tick(false)
+	msgs = f.sender.messages("conn-chan")
+	if e := msgs[len(msgs)-1].embeds[0]; len(e.Fields) != 0 || !strings.HasSuffix(e.Description, "`Bob` has disconnected") {
+		t.Fatalf("unknown session and position must be omitted: %+v", e)
+	}
+}
+
+func fieldValues(e *discordgo.MessageEmbed) string {
+	var parts []string
+	for _, f := range e.Fields {
+		parts = append(parts, f.Name+"="+f.Value)
+	}
+	return strings.Join(parts, "|")
+}
+
+// The "Cash earned" row: shown only when the server's earnings hook reports an economy, asked
+// for the window since the observed connect, and never for a connect.
+func TestConnectionsCashEarnedRow(t *testing.T) {
+	f := newConnFixture()
+	f.res.set(7, 1, "CONNECTIONS", "conn-chan")
+	p := f.publisher(1)
+	var askedID string
+	var askedSince time.Time
+	p.SetEarnings(func(ctx context.Context, playerID string, since time.Time) (int64, bool) {
+		askedID, askedSince = playerID, since
+		return 3500, playerID == "dayz-1"
+	})
+	at := time.Date(2026, 10, 15, 17, 48, 58, 0, time.UTC)
+	n := disconnected("Alice", 33*time.Minute+26*time.Second)
+	n.At, n.PlayerID = at, "dayz-1"
+	p.PublishConnection(n)
+	p.tick(false)
+	msgs := f.sender.messages("conn-chan")
+	if got, want := fieldValues(msgs[len(msgs)-1].embeds[0]), "Session time=00H 33M 26S|Cash earned=3,500"; got != want {
+		t.Fatalf("rows %q, want %q", got, want)
+	}
+	if askedID != "dayz-1" || !askedSince.Equal(at.Add(-(33*time.Minute + 26*time.Second))) {
+		t.Fatalf("asked for %q since %v", askedID, askedSince)
+	}
+	if d := msgs[len(msgs)-1].embeds[0].Description; strings.Contains(d, "dayz-1") {
+		t.Fatal("the ADM id is never shown")
+	}
+
+	// No economy: no row.
+	n.PlayerID = "dayz-2"
+	p.PublishConnection(n)
+	p.tick(false)
+	msgs = f.sender.messages("conn-chan")
+	if got, want := fieldValues(msgs[len(msgs)-1].embeds[0]), "Session time=00H 33M 26S"; got != want {
+		t.Fatalf("rows %q, want %q", got, want)
+	}
+
+	// A connect never asks.
+	askedID = ""
+	c := connected("Alice")
+	c.PlayerID = "dayz-1"
+	p.PublishConnection(c)
+	p.tick(false)
+	if askedID != "" {
+		t.Fatal("a connect card must not look up earnings")
+	}
+}
+
+func TestFormatSessionClock(t *testing.T) {
+	for d, want := range map[time.Duration]string{
+		0:                                   "00H 00M 00S",
+		26 * time.Second:                    "00H 00M 26S",
+		33*time.Minute + 26*time.Second:     "00H 33M 26S",
+		2*time.Hour + 5*time.Minute:         "02H 05M 00S",
+		27*time.Hour + 59*time.Minute + 999: "27H 59M 00S",
+	} {
+		if got := formatSessionClock(d); got != want {
+			t.Errorf("%v: got %q, want %q", d, got, want)
 		}
 	}
 }

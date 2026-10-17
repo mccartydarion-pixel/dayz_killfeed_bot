@@ -131,6 +131,9 @@ type App struct {
 	// history, admin adjustments). Its Discord notifier is optional: the economy is
 	// correct without any route or Discord connection.
 	EconomyService *economy.Service
+	// Economy is the economy's storage, for read-only look-ups outside the service (the
+	// CONNECTIONS card's "Cash earned" row).
+	Economy *repository.EconomyRepository
 	// EconomyAccounts is the installation-scoped web API over the economy (player balance and
 	// history, admin lookup and adjustments). It adds no storage; see docs/ECONOMY.md.
 	EconomyAccounts *economy.Accounts
@@ -541,7 +544,8 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.Bounties = repository.NewBountyRepository(db.Pool)
 			app.BountyService = bounties.NewService(app.Bounties, nil)
 			app.BountyService.SetPlacerNotifier(app.notifyBountyPlacer)
-			app.EconomyService = economy.NewService(repository.NewEconomyRepository(db.Pool), nil)
+			app.Economy = repository.NewEconomyRepository(db.Pool)
+			app.EconomyService = economy.NewService(app.Economy, nil)
 			app.EconomyAccounts = economy.NewAccounts(app.EconomyService, repository.NewEconomyRepository(db.Pool))
 			app.Shop = shop.NewService(repository.NewShopRepository(db.Pool), app.EconomyAccounts, app.EconomyService)
 			app.shopConfirmationRepo = repository.NewShopConfirmationRepository(db.Pool)

@@ -71,8 +71,19 @@ func cardTitles(cards []*discordgo.MessageEmbed) string {
 	return strings.Join(out, " | ")
 }
 
+// skipNearMidnightUTC skips a test whose "once a day" assertions step the clock by a minute: a
+// run that starts just before midnight UTC would step into the next day and pay again.
+func skipNearMidnightUTC(t *testing.T, now time.Time) {
+	t.Helper()
+	tod := now.Sub(now.Truncate(24 * time.Hour))
+	if tod < 10*time.Minute || tod > 24*time.Hour-10*time.Minute {
+		t.Skip("too close to midnight UTC for a day's passes")
+	}
+}
+
 func TestTerritoryCaptureIncomeAndMap(t *testing.T) {
 	pw := newProgressionWorld(t)
+	skipNearMidnightUTC(t, pw.now)
 	ctx := context.Background()
 	if code, body := pw.put(pw.a.handleSaveTerritory, "/territory", pw.f.OwnerDiscordID, repository.TerritorySettings{WindowDays: 0, MinKills: 2, IncomePoints: 100}); code != http.StatusBadRequest {
 		t.Fatalf("a zero window is refused: %d %v", code, body)
@@ -165,9 +176,7 @@ func TestChallengesCompletePayOnceAndGiveXP(t *testing.T) {
 	pw := newProgressionWorld(t)
 	ctx := context.Background()
 	now := time.Now().UTC()
-	if now.Sub(now.Truncate(24*time.Hour)) < 10*time.Minute {
-		t.Skip("too close to midnight UTC for a day's challenges")
-	}
+	skipNearMidnightUTC(t, now)
 	if code, _ := pw.put(pw.a.handleSaveChallenges, "/challenges", pw.f.OwnerDiscordID, repository.ChallengeSettings{Enabled: true, DailyCount: 9}); code != http.StatusBadRequest {
 		t.Fatalf("nine a day is refused: %d", code)
 	}
