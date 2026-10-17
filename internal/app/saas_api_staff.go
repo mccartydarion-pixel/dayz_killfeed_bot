@@ -84,9 +84,10 @@ func (a *App) requireOrganizationViewer(w http.ResponseWriter, r *http.Request, 
 }
 
 // organizationManager reports whether user may run the organization's servers: a member with
-// the OWNER or ADMIN role (their role is returned), or a non-member who staffs the installation
-// rawInstallationID names (any of the organization's installations when it is empty) at the
-// ADMINISTRATOR level or above (RoleStaff is returned). The plan is the owner's: billing uses
+// the OWNER or ADMIN role, or anyone (a MEMBER or a non-member) whose Discord role is mapped on
+// the installation rawInstallationID names (any of the organization's installations when it is
+// empty) at the ADMINISTRATOR level or above. A member's own role is returned; a non-member
+// gets RoleStaff. The plan is the owner's: billing uses
 // requireOrganizationOwner, never this.
 func (a *App) organizationManager(ctx context.Context, organizationID int64, user *repository.AppUser, rawInstallationID string) (role string, ok bool, err error) {
 	if a.SaaSOrganizations == nil {
@@ -96,8 +97,14 @@ func (a *App) organizationManager(ctx context.Context, organizationID int64, use
 	if err != nil {
 		return "", false, err
 	}
-	if member {
-		return role, role == repository.RoleOwner || role == repository.RoleAdmin, nil
+	if member && (role == repository.RoleOwner || role == repository.RoleAdmin) {
+		return role, true, nil
+	}
+	// A MEMBER, or a non-member, whose Discord role is mapped to ADMINISTRATOR or above on the
+	// installation runs it like the owner. A member keeps their own role; a non-member is STAFF.
+	granted := role
+	if !member {
+		granted = repository.RoleStaff
 	}
 	staffed, err := a.staffInstallationsForOrganization(ctx, organizationID, user)
 	if err != nil {
@@ -106,13 +113,13 @@ func (a *App) organizationManager(ctx context.Context, organizationID int64, use
 	if rawInstallationID != "" {
 		id, perr := strconv.ParseInt(rawInstallationID, 10, 64)
 		if perr == nil && staffed[id] >= permissions.LevelAdministrator {
-			return repository.RoleStaff, true, nil
+			return granted, true, nil
 		}
 		return "", false, nil
 	}
 	for _, level := range staffed {
 		if level >= permissions.LevelAdministrator {
-			return repository.RoleStaff, true, nil
+			return granted, true, nil
 		}
 	}
 	return "", false, nil
