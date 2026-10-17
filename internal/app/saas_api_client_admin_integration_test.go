@@ -508,3 +508,25 @@ func TestResetEveryoneStatsRequiresConfirmationAndStartsNewSeason(t *testing.T) 
 		t.Fatalf("expected the old season to be preserved alongside the new one, got %d seasons", len(history))
 	}
 }
+
+// The slash-command admin gate (internal/discord admin_gate.go) asks by Discord server, not by
+// installation: a role mapped to ADMINISTRATOR or OWNER there makes the member an admin; a
+// MODERATOR mapping, an unmapped role or another Discord server does not.
+func TestChampionAdminResolverFollowsRoleMappings(t *testing.T) {
+	w := newClientAdminWorld(t)
+	resolve := w.a.championAdminResolver()
+	if resolve == nil {
+		t.Fatal("the resolver needs the permissions repository")
+	}
+	w.mapRole("admin-user", "role-admin", "ADMINISTRATOR")
+	w.mapRole("mod-user", "role-mod", "MODERATOR")
+	if !resolve(w.f.DiscordGuildID, []string{"role-other", "role-admin"}) {
+		t.Fatal("an ADMINISTRATOR mapping makes the member an admin")
+	}
+	if resolve(w.f.DiscordGuildID, []string{"role-mod"}) || resolve(w.f.DiscordGuildID, []string{"role-other"}) || resolve(w.f.DiscordGuildID, nil) {
+		t.Fatal("a MODERATOR mapping or no mapping grants nothing")
+	}
+	if resolve("another-guild", []string{"role-admin"}) {
+		t.Fatal("a mapping belongs to its own Discord server")
+	}
+}

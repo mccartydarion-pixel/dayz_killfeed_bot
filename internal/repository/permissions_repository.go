@@ -105,3 +105,31 @@ func (r *PermissionsRepository) LevelsForRoles(ctx context.Context, installation
 	}
 	return out, rows.Err()
 }
+
+// LevelsForGuildRoles is LevelsForRoles for the installation whose Discord server is
+// discordGuildID (the Discord snowflake): the Champion levels the given Discord roles map to
+// there. Nothing is returned for a Discord server no installation uses.
+func (r *PermissionsRepository) LevelsForGuildRoles(ctx context.Context, discordGuildID string, discordRoleIDs []string) ([]string, error) {
+	if discordGuildID == "" || len(discordRoleIDs) == 0 {
+		return nil, nil
+	}
+	rows, err := r.pool.Query(ctx, `SELECT DISTINCT p.permission_level
+FROM installation_role_permissions p
+JOIN installations i ON i.id = p.installation_id
+JOIN discord_guild_connections c ON c.id = i.discord_guild_connection_id
+JOIN guilds g ON g.id = c.guild_id
+WHERE g.discord_guild_id = $1 AND p.discord_role_id = ANY($2)`, discordGuildID, discordRoleIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var level string
+		if err := rows.Scan(&level); err != nil {
+			return nil, err
+		}
+		out = append(out, level)
+	}
+	return out, rows.Err()
+}

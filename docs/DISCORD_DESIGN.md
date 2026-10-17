@@ -107,7 +107,7 @@ Every private answer to a command, button or form reads as one product
 | A button on an old message | This button is no longer valid. | `ReplyButtonExpired` |
 | The server is not set up | This server isn't set up yet. Run `/setup run` first. | `ReplyNotSetUp` |
 | No DayZ server picked | No DayZ server is selected for this Discord yet. | `ReplyNoServerSelected` |
-| Not allowed | You need the Administrator or Manage Server permission to *manage servers*. | `ReplyNeedsPermission(action)` |
+| Not allowed | You need the Administrator or Manage Server permission, or a Champion Administrator role, to *manage servers*. | `ReplyNeedsPermission(action)` |
 | Not linked | 🔗 **Account not linked** + the next step for that command | `ReplyNotLinked(nextStep)` |
 | A feature cannot be used | *Stats* are unavailable right now. Try again later. | `ReplyIsUnavailable` / `ReplyAreUnavailable` |
 | Loading or saving failed | Couldn't *load your stats* right now. Try again in a moment. | `ReplyCouldNot(action)` |

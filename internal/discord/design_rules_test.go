@@ -137,7 +137,7 @@ func TestReplyVoice(t *testing.T) {
 		unroutedCommandText != "This command is unavailable right now." || unroutedComponentText != "This button is no longer valid." {
 		t.Fatal("the router's three reference answers must not drift")
 	}
-	if got := ReplyNeedsPermission("run `/setup`"); got != "You need the Administrator or Manage Server permission to run `/setup`." {
+	if got := ReplyNeedsPermission("run `/setup`"); got != "You need the Administrator or Manage Server permission, or a Champion Administrator role, to run `/setup`." {
 		t.Fatalf("permission refusal: %q", got)
 	}
 	if got := ReplyCouldNotBecause("create the war", "  "); got != ReplyCouldNot("create the war") {
