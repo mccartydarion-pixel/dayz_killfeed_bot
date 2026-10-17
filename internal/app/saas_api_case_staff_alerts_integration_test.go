@@ -9,10 +9,12 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
-func TestCaseStaffAlertSettingsOwnerOnlyAndOffByDefault(t *testing.T) {
+func TestCaseStaffAlertSettingsAdministratorAndUpAndOffByDefault(t *testing.T) {
 	w := newClientAdminWorld(t)
 	admin := zoneActor(t, w, "case-alerts-admin")
 	w.mapRole(admin, "case-alerts-admin-role", "ADMINISTRATOR")
+	mod := zoneActor(t, w, "case-alerts-admin-mod")
+	w.mapRole(mod, "case-alerts-admin-mod-role", "MODERATOR")
 	path := w.path("/case/alerts/settings")
 	type view struct {
 		Settings          repository.CaseAlertSettings `json:"settings"`
@@ -21,8 +23,11 @@ func TestCaseStaffAlertSettingsOwnerOnlyAndOffByDefault(t *testing.T) {
 		Enforcement       string                       `json:"enforcement"`
 	}
 
-	if got := w.call(w.a.handleGetCaseStaffAlerts, http.MethodGet, path, admin, nil, nil); got.Code != http.StatusForbidden {
-		t.Fatalf("admin read staff alerts: %d", got.Code)
+	if got := w.call(w.a.handleGetCaseStaffAlerts, http.MethodGet, path, mod, nil, nil); got.Code != http.StatusForbidden {
+		t.Fatalf("moderator read staff alerts: %d", got.Code)
+	}
+	if got := w.call(w.a.handleGetCaseStaffAlerts, http.MethodGet, path, admin, nil, nil); got.Code != http.StatusOK {
+		t.Fatalf("administrator read staff alerts: %d %s", got.Code, got.Body.String())
 	}
 	got := w.call(w.a.handleGetCaseStaffAlerts, http.MethodGet, path, w.f.OwnerDiscordID, nil, nil)
 	if got.Code != http.StatusOK {
@@ -32,8 +37,8 @@ func TestCaseStaffAlertSettingsOwnerOnlyAndOffByDefault(t *testing.T) {
 	if initial.Settings.Enabled || len(initial.ReleasedDetectors) != 0 || len(initial.Recent) != 0 || initial.Enforcement != "DISABLED" {
 		t.Fatalf("unsafe default: %+v", initial)
 	}
-	if denied := w.call(w.a.handleSetCaseStaffAlerts, http.MethodPut, path, admin, map[string]any{"enabled": true}, nil); denied.Code != http.StatusForbidden {
-		t.Fatalf("admin turned staff alerts on: %d", denied.Code)
+	if denied := w.call(w.a.handleSetCaseStaffAlerts, http.MethodPut, path, mod, map[string]any{"enabled": true}, nil); denied.Code != http.StatusForbidden {
+		t.Fatalf("moderator turned staff alerts on: %d", denied.Code)
 	}
 	if bad := w.call(w.a.handleSetCaseStaffAlerts, http.MethodPut, path, w.f.OwnerDiscordID, map[string]any{"enabled": true, "detector": "CASE-LOGIN-001"}, nil); bad.Code != http.StatusBadRequest {
 		t.Fatalf("unknown field accepted: %d", bad.Code)

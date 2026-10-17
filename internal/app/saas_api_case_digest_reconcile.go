@@ -44,8 +44,8 @@ func (a *App) handleAntiCheatWatchDigestReconcile(w http.ResponseWriter, r *http
 	if !ok {
 		return
 	}
-	if ac.level != permissions.LevelOwner {
-		writeSaaSError(w, codeAdminForbidden, "only the organization owner can reconcile a delivery receipt")
+	if ac.level < permissions.LevelAdministrator {
+		writeSaaSError(w, codeAdminForbidden, "server administrator required to reconcile a delivery receipt")
 		return
 	}
 	if ac.scope.ServerID == nil || a.CaseDigestOutbox == nil {

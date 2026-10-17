@@ -9,18 +9,23 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
-func TestBaseRaidAlarmSettingsOwnerOnlyAndOffByDefault(t *testing.T) {
+func TestBaseRaidAlarmSettingsAdministratorAndUpAndOffByDefault(t *testing.T) {
 	w := newClientAdminWorld(t)
 	admin := zoneActor(t, w, "raid-alarm-admin")
 	w.mapRole(admin, "raid-alarm-admin-role", "ADMINISTRATOR")
+	mod := zoneActor(t, w, "raid-alarm-admin-mod")
+	w.mapRole(mod, "raid-alarm-admin-mod-role", "MODERATOR")
 	path := w.path("/case/raid-alarm")
 	type view struct {
 		Settings repository.BaseRaidAlarmSettings `json:"settings"`
 		Recent   []repository.BaseRaidAlert       `json:"recent"`
 	}
 
-	if got := w.call(w.a.handleGetBaseRaidAlarm, http.MethodGet, path, admin, nil, nil); got.Code != http.StatusForbidden {
-		t.Fatalf("admin read raid alarm: %d", got.Code)
+	if got := w.call(w.a.handleGetBaseRaidAlarm, http.MethodGet, path, mod, nil, nil); got.Code != http.StatusForbidden {
+		t.Fatalf("moderator read raid alarm: %d", got.Code)
+	}
+	if got := w.call(w.a.handleGetBaseRaidAlarm, http.MethodGet, path, admin, nil, nil); got.Code != http.StatusOK {
+		t.Fatalf("administrator read raid alarm: %d", got.Code)
 	}
 	got := w.call(w.a.handleGetBaseRaidAlarm, http.MethodGet, path, w.f.OwnerDiscordID, nil, nil)
 	if got.Code != http.StatusOK {
@@ -31,8 +36,8 @@ func TestBaseRaidAlarmSettingsOwnerOnlyAndOffByDefault(t *testing.T) {
 		t.Fatalf("unsafe default: %+v", initial)
 	}
 
-	if denied := w.call(w.a.handleSetBaseRaidAlarm, http.MethodPut, path, admin, map[string]any{"enabled": true}, nil); denied.Code != http.StatusForbidden {
-		t.Fatalf("admin turned alarm on: %d", denied.Code)
+	if denied := w.call(w.a.handleSetBaseRaidAlarm, http.MethodPut, path, mod, map[string]any{"enabled": true}, nil); denied.Code != http.StatusForbidden {
+		t.Fatalf("moderator turned alarm on: %d", denied.Code)
 	}
 	for _, bad := range []map[string]any{{"enabled": true, "cooldownSeconds": 10}, {"enabled": true, "price": 100}} {
 		if res := w.call(w.a.handleSetBaseRaidAlarm, http.MethodPut, path, w.f.OwnerDiscordID, bad, nil); res.Code != http.StatusBadRequest {
@@ -52,8 +57,8 @@ func TestBaseRaidAlarmSettingsOwnerOnlyAndOffByDefault(t *testing.T) {
 	}
 
 	offerPath := w.path("/case/raid-alarm/offer")
-	if denied := w.call(w.a.handleSetBaseRaidAlarmOffer, http.MethodPut, offerPath, admin, map[string]any{"enabled": true, "pricePoints": 500, "durationDays": 7}, nil); denied.Code != http.StatusForbidden {
-		t.Fatalf("admin set an offer: %d", denied.Code)
+	if denied := w.call(w.a.handleSetBaseRaidAlarmOffer, http.MethodPut, offerPath, mod, map[string]any{"enabled": true, "pricePoints": 500, "durationDays": 7}, nil); denied.Code != http.StatusForbidden {
+		t.Fatalf("moderator set an offer: %d", denied.Code)
 	}
 	for _, bad := range []map[string]any{{"enabled": true, "pricePoints": 0, "durationDays": 7}, {"enabled": true, "pricePoints": 500, "durationDays": 91}, {"enabled": true, "pricePoints": 500, "durationDays": 7, "autoRenew": true}} {
 		if res := w.call(w.a.handleSetBaseRaidAlarmOffer, http.MethodPut, offerPath, w.f.OwnerDiscordID, bad, nil); res.Code != http.StatusBadRequest {

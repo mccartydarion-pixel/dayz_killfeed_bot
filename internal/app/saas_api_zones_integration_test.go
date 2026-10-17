@@ -68,15 +68,26 @@ func TestZoneCreateRequiresZoneManageNotJustView(t *testing.T) {
 	}
 }
 
-func TestUAVZoneCreationRequiresOwnerEvenWithZoneManage(t *testing.T) {
+func TestUAVZoneCreationRequiresUAVManageAdministratorAndUp(t *testing.T) {
 	w := newZoneWorld(t)
+	mod := zoneActor(t, w, "mod")
+	w.mapRole(mod, "role-mod", "MODERATOR")
 	admin := zoneActor(t, w, "admin")
 	w.mapRole(admin, "role-admin", "ADMINISTRATOR")
 
 	body := createZoneRequest{Name: "UAV Watch", ZoneType: repository.ZoneTypeUAV, CenterX: 0, CenterZ: 0, Radius: 500}
-	rr := w.call(w.a.handleCreateZone, http.MethodPost, w.path("/zones"), admin, body, nil)
+	rr := w.call(w.a.handleCreateZone, http.MethodPost, w.path("/zones"), mod, body, nil)
 	if rr.Code != http.StatusForbidden {
-		t.Fatalf("an Administrator without UAV_MANAGE must not be able to create a UAV zone, got %d: %s", rr.Code, rr.Body.String())
+		t.Fatalf("a Moderator without UAV_MANAGE must not be able to create a UAV zone, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// An Administrator holds UAV_MANAGE exactly as the owner does.
+	rr = w.call(w.a.handleCreateZone, http.MethodPost, w.path("/zones"), admin, body, nil)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("an Administrator must be able to create a UAV zone, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if adminZone := decodeBody[zoneDTO](t, rr); adminZone.ZoneType != repository.ZoneTypeUAV {
+		t.Fatalf("unexpected zone type %q", adminZone.ZoneType)
 	}
 
 	rr = w.call(w.a.handleCreateZone, http.MethodPost, w.path("/zones"), w.f.OwnerDiscordID, body, nil)
@@ -89,9 +100,9 @@ func TestUAVZoneCreationRequiresOwnerEvenWithZoneManage(t *testing.T) {
 	}
 
 	// The same UAV zone must also require UAV_MANAGE to DELETE, not just ZONE_MANAGE.
-	del := w.call(w.a.handleDeleteZone, http.MethodDelete, w.path("/zones/x"), admin, nil, map[string]string{"zoneID": strconv.FormatInt(zone.ID, 10)})
+	del := w.call(w.a.handleDeleteZone, http.MethodDelete, w.path("/zones/x"), mod, nil, map[string]string{"zoneID": strconv.FormatInt(zone.ID, 10)})
 	if del.Code != http.StatusForbidden {
-		t.Fatalf("an Administrator without UAV_MANAGE must not be able to delete a UAV zone, got %d: %s", del.Code, del.Body.String())
+		t.Fatalf("a Moderator without UAV_MANAGE must not be able to delete a UAV zone, got %d: %s", del.Code, del.Body.String())
 	}
 }
 

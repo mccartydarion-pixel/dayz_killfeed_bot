@@ -66,7 +66,7 @@ shout-out with the perks and the month's top three supporters. The owner can swi
 
 - Plan: `perk_store` (not on Survivor when plan gating is enforced).
 - Client Hub: `PERKS_VIEW` (Administrator) sees offers and orders and marks custom perks done;
-  `PERKS_MANAGE` (Owner) changes offers and settings, refunds and ends purchases.
+  `PERKS_MANAGE` (Administrator) changes offers and settings, refunds and ends purchases.
 - Player Hub: any signed-in user can see the store; buying and gifting need a verified player link.
 
 ## API

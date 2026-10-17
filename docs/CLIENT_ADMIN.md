@@ -41,6 +41,8 @@ permission mapping granting a Level at or below their own resolved Level - enfor
 
 ## Capability -> Level table
 
+An ADMINISTRATOR runs the server exactly as the OWNER does: every capability below is held by Administrator and up, and no capability requires the OWNER level. The only things that stay the organization owner's are changing the organization's plan/billing (`docs/BILLING.md`, an organization-role check, not a capability) and granting the OWNER level itself (`CanGrant`).
+
 | Capability | Level | Notes |
 |---|---|---|
 | `PERMISSIONS_VIEW` | Moderator | list role mappings + read audit log |
@@ -52,14 +54,14 @@ permission mapping granting a Level at or below their own resolved Level - enfor
 | `FACTION_DISSOLVE` | Administrator | HIGH RISK, typed confirmation `"DISSOLVE"` |
 | `BOUNTY_MANAGE` | Moderator | reset (bulk-cancel) a target's active bounties |
 | `PLAYER_STATS_RESET` | Administrator | streak only this phase - see Deferred |
-| `SERVER_STATS_RESET` | Owner | HIGH RISK, typed confirmation `"RESET EVERYONE"` |
+| `SERVER_STATS_RESET` | Administrator | HIGH RISK, typed confirmation `"RESET EVERYONE"` |
 | `SERVER_RESTART` | Moderator | MEDIUM RISK, typed confirmation `"RESTART"`, 1/5min |
 | `SERVER_STOP` | Administrator | HIGH RISK, typed confirmation `"STOP"`, 1/min |
 | `SERVER_AUTOSTART` | Administrator | DB columns shipped; monitor loop deferred, see below |
 | `SERVER_NAME_EDIT` | Administrator | Champion display name only, never a Nitrado rename. A typed name is custom and is not replaced when the Nitrado name changes (`docs/SERVER_NAME_SYNC.md`) |
 | `WHITELIST_MANAGE` | Gatekeeper | |
 | `PRIORITY_MANAGE` | Administrator | Nitrado priority list; takes effect at the next server restart |
-| `SERVER_LOGS_VIEW` | Owner | Reading the game server log files (docs/SERVER_LOGS.md) |
+| `SERVER_LOGS_VIEW` | Administrator | Reading the game server log files (docs/SERVER_LOGS.md) |
 | `BANLIST_MANAGE` | Moderator | |
 | `PLAYER_LAST_ONLINE_VIEW` | Moderator | |
 | `FEED_LOCATION_MANAGE` | Moderator | per-route `show_location` toggle |
@@ -70,14 +72,14 @@ permission mapping granting a Level at or below their own resolved Level - enfor
 | `ZONE_VIEW` | Moderator | Phase 4, `docs/ZONES_UAV_RADAR.md` - list/read zones, ignore/authorized/ban lists, intruders/intrusions |
 | `ZONE_MANAGE` | Administrator | Phase 4 - zone CRUD (+ `UAV_MANAGE` for UAV/BASE_RADAR), authorized-entry CRUD, ban CRUD |
 | `ZONE_IGNORE_MANAGE` | Administrator | Phase 4 - ignore-entry CRUD, its own capability separate from `ZONE_MANAGE` |
-| `UAV_MANAGE` | Owner | Phase 4 - required in addition to `ZONE_MANAGE` for any UAV/BASE_RADAR zone |
+| `UAV_MANAGE` | Administrator | Phase 4 - required in addition to `ZONE_MANAGE` for any UAV/BASE_RADAR zone |
 | `INTRUSION_ACK` | Moderator | Phase 4 - acknowledge an active intrusion |
 | `HEATMAP_VIEW` | Moderator | Phase 5, `docs/HEATMAPS.md` - aggregate PvP/activity/intrusion heatmap queries |
 | `FEATURE_SETTINGS_VIEW` | Moderator | read the opt-in feature settings and the server's hot zones (`docs/HOT_ZONES.md`) |
 | `FEATURE_SETTINGS_MANAGE` | Administrator | change hot-zone and fight-replay settings (`docs/HOT_ZONES.md`, `docs/FIGHT_REPLAY.md`) |
-| `NETWORK_MANAGE` | Owner | list or unlist the server in the cross-server network (`docs/NETWORK.md`) |
-| `FEED_IDENTITY_MANAGE` | Owner | the name and avatar feeds post under (`docs/FEED_IDENTITY.md`) |
-| `MAP_ROTATION_MANAGE` | Owner | map rotation with a player vote: settings, the file check and the staff choice of the next map (`docs/MAP_ROTATION.md`) |
+| `NETWORK_MANAGE` | Administrator | list or unlist the server in the cross-server network (`docs/NETWORK.md`) |
+| `FEED_IDENTITY_MANAGE` | Administrator | the name and avatar feeds post under (`docs/FEED_IDENTITY.md`) |
+| `MAP_ROTATION_MANAGE` | Administrator | map rotation with a player vote: settings, the file check and the staff choice of the next map (`docs/MAP_ROTATION.md`) |
 | `SERVER_STATUS_VIEW` | Administrator | the owner-facing server status: is the feed working, Nitrado and Discord reachability, position logging (`docs/SERVER_STATUS.md`) |
 | `RETENTION_VIEW` | Administrator | retention dashboard and lapsed-player list (`docs/RETENTION.md`) |
 

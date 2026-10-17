@@ -12,7 +12,7 @@ import (
 
 // Owner switch for real C.A.S.E. staff alerts (case_staff_alert_worker.go).
 // GET shows the switch, which detectors are released and the latest alerts;
-// PUT turns alerts on or off. Server owner only.
+// PUT turns alerts on or off. Server administrator and up.
 
 type caseStaffAlertSettingsRequest struct {
 	Enabled bool `json:"enabled"`
@@ -23,8 +23,8 @@ func (a *App) caseStaffAlertActor(w http.ResponseWriter, r *http.Request) (admin
 	if !ok {
 		return adminActor{}, nil, false
 	}
-	if ac.level != permissions.LevelOwner {
-		writeSaaSError(w, codeAdminForbidden, "server owner required")
+	if ac.level < permissions.LevelAdministrator {
+		writeSaaSError(w, codeAdminForbidden, "server administrator required")
 		return adminActor{}, nil, false
 	}
 	if ac.scope.ServerID == nil {

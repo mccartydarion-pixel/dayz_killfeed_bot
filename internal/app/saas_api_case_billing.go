@@ -90,7 +90,7 @@ type caseServerDTO struct {
 }
 
 func (a *App) handleCaseBillingServers(w http.ResponseWriter, r *http.Request) {
-	br, ok := a.billingContext(w, r, false)
+	br, ok := a.billingContext(w, r, billingMember)
 	if !ok {
 		return
 	}
@@ -156,7 +156,7 @@ type caseCoverageEventDTO struct {
 // installation's add-on. Read-only, database only (no Stripe call), and no
 // Stripe identifiers leave the server.
 func (a *App) handleCaseBillingCoverage(w http.ResponseWriter, r *http.Request) {
-	br, ok := a.billingContext(w, r, true)
+	br, ok := a.billingContext(w, r, billingManager)
 	if !ok {
 		return
 	}
@@ -199,7 +199,7 @@ type caseCheckoutRequestBody struct {
 }
 
 func (a *App) handleCaseBillingCheckout(w http.ResponseWriter, r *http.Request) {
-	br, ok := a.billingContext(w, r, true)
+	br, ok := a.billingContext(w, r, billingOwner)
 	if !ok || !enforceRateLimit(w, a.saasBillingActionLimiter, rateLimitKey(r)) {
 		return
 	}
@@ -239,7 +239,7 @@ func (a *App) handleCaseBillingCheckout(w http.ResponseWriter, r *http.Request) 
 // Recover only an expired, unsubscribed Stripe Checkout Session for the
 // authenticated organization's installation. This route creates no charge.
 func (a *App) handleCaseBillingRecover(w http.ResponseWriter, r *http.Request) {
-	br, ok := a.billingContext(w, r, true)
+	br, ok := a.billingContext(w, r, billingManager)
 	if !ok || !enforceRateLimit(w, a.saasBillingActionLimiter, rateLimitKey(r)) {
 		return
 	}
@@ -286,7 +286,7 @@ func (a *App) handleCaseBillingReactivate(w http.ResponseWriter, r *http.Request
 // not the organization's base subscription. No purchase-release flag is
 // required for cancellation: operators must never strand paid subscribers.
 func (a *App) handleCaseBillingManage(w http.ResponseWriter, r *http.Request, cancel bool) {
-	br, ok := a.billingContext(w, r, true)
+	br, ok := a.billingContext(w, r, billingOwner)
 	if !ok || !enforceRateLimit(w, a.saasBillingActionLimiter, rateLimitKey(r)) {
 		return
 	}
@@ -366,7 +366,7 @@ func writeCaseTierError(w http.ResponseWriter, err error, event string) {
 }
 
 func (a *App) decodeCaseTierRequest(w http.ResponseWriter, r *http.Request) (billingRequest, *caseTierRequestBody, bool) {
-	br, ok := a.billingContext(w, r, true)
+	br, ok := a.billingContext(w, r, billingOwner)
 	if !ok || !enforceRateLimit(w, a.saasBillingActionLimiter, rateLimitKey(r)) {
 		return billingRequest{}, nil, false
 	}

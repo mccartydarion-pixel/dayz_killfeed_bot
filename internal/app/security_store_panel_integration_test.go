@@ -90,11 +90,16 @@ func TestSecurityStorePanelPublish(t *testing.T) {
 	if list, err := repo.Enabled(ctx); err != nil || len(list) < 1 {
 		t.Fatalf("enabled list: %+v %v", list, err)
 	}
-	// Owner only.
+	// Administrator and up.
 	admin := zoneActor(t, w, "panel-admin")
 	w.mapRole(admin, "panel-admin-role", "ADMINISTRATOR")
-	if rr := w.call(w.a.handleGetSecurityPanel, http.MethodGet, w.path("/case/security-panel"), admin, nil, nil); rr.Code != http.StatusForbidden {
-		t.Fatalf("admin read: %d", rr.Code)
+	mod := zoneActor(t, w, "panel-admin-mod")
+	w.mapRole(mod, "panel-admin-mod-role", "MODERATOR")
+	if rr := w.call(w.a.handleGetSecurityPanel, http.MethodGet, w.path("/case/security-panel"), mod, nil, nil); rr.Code != http.StatusForbidden {
+		t.Fatalf("moderator read: %d", rr.Code)
+	}
+	if rr := w.call(w.a.handleGetSecurityPanel, http.MethodGet, w.path("/case/security-panel"), admin, nil, nil); rr.Code != http.StatusOK {
+		t.Fatalf("administrator read: %d", rr.Code)
 	}
 	if rr := w.call(w.a.handleGetSecurityPanel, http.MethodGet, w.path("/case/security-panel"), w.f.OwnerDiscordID, nil, nil); rr.Code != http.StatusOK {
 		t.Fatalf("owner read: %d", rr.Code)

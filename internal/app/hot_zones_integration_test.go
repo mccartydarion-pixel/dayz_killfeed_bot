@@ -308,8 +308,8 @@ func TestFeatureSettingsDefaultsValidationAndPermissions(t *testing.T) {
 		t.Fatalf("audit rows = %d err=%v", audits, err)
 	}
 
-	// Permissions: no level sees nothing; a Moderator reads; an Administrator changes hot zones and
-	// replay but not the network listing or the feed identity (Owner only).
+	// Permissions: no level sees nothing; a Moderator reads; an Administrator changes hot zones,
+	// replay, the network listing and the feed identity, exactly as the Owner does.
 	stranger := syncUser(t, w.a, fmt.Sprintf("so-stranger-%d", standoutSeq.Add(1)), "Stranger")
 	mod := syncUser(t, w.a, fmt.Sprintf("so-mod-%d", standoutSeq.Add(1)), "Mod")
 	admin := syncUser(t, w.a, fmt.Sprintf("so-admin-%d", standoutSeq.Add(1)), "Admin")
@@ -328,10 +328,16 @@ func TestFeatureSettingsDefaultsValidationAndPermissions(t *testing.T) {
 	if code, _ := w.put(w.a.handlePutHotZoneSettings, "/features/hot-zones", admin.DiscordUserID, good); code != http.StatusOK {
 		t.Fatalf("administrator could not change hot zones: %d", code)
 	}
-	if code, _ := w.put(w.a.handlePutNetworkSettings, "/features/network", admin.DiscordUserID, networkSettingsDTO{Listed: false}); code != http.StatusForbidden {
-		t.Fatalf("administrator changed the network listing: %d", code)
+	if code, _ := w.put(w.a.handlePutNetworkSettings, "/features/network", mod.DiscordUserID, networkSettingsDTO{Listed: false}); code != http.StatusForbidden {
+		t.Fatalf("moderator changed the network listing: %d", code)
 	}
-	if code, _ := w.put(w.a.handlePutFeedIdentitySettings, "/features/feed-identity", admin.DiscordUserID, feedIdentitySettingsDTO{}); code != http.StatusForbidden {
-		t.Fatalf("administrator changed the feed identity: %d", code)
+	if code, _ := w.put(w.a.handlePutFeedIdentitySettings, "/features/feed-identity", mod.DiscordUserID, feedIdentitySettingsDTO{}); code != http.StatusForbidden {
+		t.Fatalf("moderator changed the feed identity: %d", code)
+	}
+	if code, _ := w.put(w.a.handlePutNetworkSettings, "/features/network", admin.DiscordUserID, networkSettingsDTO{Listed: false}); code != http.StatusOK {
+		t.Fatalf("administrator could not change the network listing: %d", code)
+	}
+	if code, _ := w.put(w.a.handlePutFeedIdentitySettings, "/features/feed-identity", admin.DiscordUserID, feedIdentitySettingsDTO{}); code != http.StatusOK {
+		t.Fatalf("administrator could not change the feed identity: %d", code)
 	}
 }

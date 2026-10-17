@@ -10,14 +10,19 @@ import (
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
-func TestCaseDetectorSensitivityOwnerConfigurationIsInert(t *testing.T) {
+func TestCaseDetectorSensitivityAdministratorConfigurationIsInert(t *testing.T) {
 	w := newClientAdminWorld(t)
 	admin := zoneActor(t, w, "case-settings-admin")
 	w.mapRole(admin, "case-settings-admin-role", "ADMINISTRATOR")
+	mod := zoneActor(t, w, "case-settings-admin-mod")
+	w.mapRole(mod, "case-settings-admin-mod-role", "MODERATOR")
 	listPath := w.path("/case/detector-settings")
-	denied := w.call(w.a.handleCaseListDetectorSettings, http.MethodGet, listPath, admin, nil, nil)
+	denied := w.call(w.a.handleCaseListDetectorSettings, http.MethodGet, listPath, mod, nil, nil)
 	if denied.Code != http.StatusForbidden {
-		t.Fatalf("non-owner read preferences: %d", denied.Code)
+		t.Fatalf("moderator read preferences: %d", denied.Code)
+	}
+	if allowed := w.call(w.a.handleCaseListDetectorSettings, http.MethodGet, listPath, admin, nil, nil); allowed.Code != http.StatusOK {
+		t.Fatalf("administrator read preferences: %d", allowed.Code)
 	}
 	listed := w.call(w.a.handleCaseListDetectorSettings, http.MethodGet, listPath, w.f.OwnerDiscordID, nil, nil)
 	if listed.Code != http.StatusOK {
@@ -32,10 +37,10 @@ func TestCaseDetectorSensitivityOwnerConfigurationIsInert(t *testing.T) {
 	}
 	path := w.path("/case/detector-settings/x")
 	pv := map[string]string{"moduleID": "CASE-LOGIN-001"}
-	denied = w.call(w.a.handleCaseSetDetectorSetting, http.MethodPut, path, admin,
+	denied = w.call(w.a.handleCaseSetDetectorSetting, http.MethodPut, path, mod,
 		caseSetDetectorSettingRequest{Sensitivity: caseintel.SensitivityStrict}, pv)
 	if denied.Code != http.StatusForbidden {
-		t.Fatalf("non-owner saved preference: %d", denied.Code)
+		t.Fatalf("moderator saved preference: %d", denied.Code)
 	}
 	saved := w.call(w.a.handleCaseSetDetectorSetting, http.MethodPut, path, w.f.OwnerDiscordID,
 		caseSetDetectorSettingRequest{Sensitivity: caseintel.SensitivityStrict}, pv)

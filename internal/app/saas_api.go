@@ -214,6 +214,21 @@ func (a *App) requireOrganizationRole(w http.ResponseWriter, r *http.Request, or
 	return role, true
 }
 
+// requireOrganizationOwner is requireOrganizationRole for what only the organization's OWNER may
+// do: change what the organization pays for (checkout, the billing portal, plan changes,
+// cancellation, add-on purchases). An ADMIN runs the servers; the plan is the owner's.
+func (a *App) requireOrganizationOwner(w http.ResponseWriter, r *http.Request, organizationID, userID int64) (role string, ok bool) {
+	role, ok = a.requireOrganizationMember(w, r, organizationID, userID)
+	if !ok {
+		return "", false
+	}
+	if role != repository.RoleOwner {
+		writeSaaSError(w, codeForbidden, "OWNER role required")
+		return "", false
+	}
+	return role, true
+}
+
 // pathInt64 parses a PathValue as a positive int64, writing an
 // INVALID_REQUEST response and returning ok=false on failure.
 func pathInt64(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {

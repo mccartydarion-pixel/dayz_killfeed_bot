@@ -15,9 +15,14 @@ func TestBaseBlackBoxOwnerSettings(t *testing.T) {
 	w := newClientAdminWorld(t)
 	admin := zoneActor(t, w, "black-box-admin")
 	w.mapRole(admin, "black-box-admin-role", "ADMINISTRATOR")
+	mod := zoneActor(t, w, "black-box-admin-mod")
+	w.mapRole(mod, "black-box-admin-mod-role", "MODERATOR")
 	path := w.path("/case/black-box")
-	if got := w.call(w.a.handleGetBaseBlackBox, http.MethodGet, path, admin, nil, nil); got.Code != http.StatusForbidden {
-		t.Fatalf("admin read: %d", got.Code)
+	if got := w.call(w.a.handleGetBaseBlackBox, http.MethodGet, path, mod, nil, nil); got.Code != http.StatusForbidden {
+		t.Fatalf("moderator read: %d", got.Code)
+	}
+	if got := w.call(w.a.handleGetBaseBlackBox, http.MethodGet, path, admin, nil, nil); got.Code != http.StatusOK {
+		t.Fatalf("administrator read: %d", got.Code)
 	}
 	type view struct {
 		Settings repository.BaseBlackBoxSettings `json:"settings"`
@@ -32,8 +37,8 @@ func TestBaseBlackBoxOwnerSettings(t *testing.T) {
 			t.Fatalf("bad %v accepted: %d", bad, rr.Code)
 		}
 	}
-	if rr := w.call(w.a.handleSetBaseBlackBox, http.MethodPut, path, admin, map[string]any{"enabled": true}, nil); rr.Code != http.StatusForbidden {
-		t.Fatalf("admin turned it on: %d", rr.Code)
+	if rr := w.call(w.a.handleSetBaseBlackBox, http.MethodPut, path, mod, map[string]any{"enabled": true}, nil); rr.Code != http.StatusForbidden {
+		t.Fatalf("moderator turned it on: %d", rr.Code)
 	}
 	on := w.call(w.a.handleSetBaseBlackBox, http.MethodPut, path, w.f.OwnerDiscordID, map[string]any{"enabled": true, "retentionDays": 7}, nil)
 	if s := decodeBody[view](t, on).Settings; on.Code != http.StatusOK || !s.Enabled || s.RetentionDays != 7 {

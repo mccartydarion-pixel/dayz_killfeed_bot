@@ -127,7 +127,8 @@ func (a *App) handleStartTrial(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, ok := a.requireOrganizationRole(w, r, orgID, user.ID); !ok {
+	// Starting a trial picks the organization's plan, which is the owner's decision.
+	if _, ok := a.requireOrganizationOwner(w, r, orgID, user.ID); !ok {
 		return
 	}
 	if a.SaaSSubscriptions == nil {

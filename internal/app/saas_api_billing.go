@@ -65,13 +65,22 @@ func (a *App) registerBillingRoutes() {
 type billingRequest struct {
 	user  *repository.AppUser
 	orgID int64
-	role  string // "" when the route only required membership, not requireOrganizationRole
+	role  string // the acting user's organization role (OWNER, ADMIN or MEMBER)
 }
 
-// billingContext runs the standard chain (service auth, acting user, organizationID) and, when
-// requireRole is true, additionally requires OWNER/ADMIN (docs/BILLING.md "Checkout authorization");
-// otherwise it only requires membership (read routes).
-func (a *App) billingContext(w http.ResponseWriter, r *http.Request, requireRole bool) (br billingRequest, ok bool) {
+// billingAccess is who a billing route admits.
+type billingAccess int
+
+const (
+	billingMember  billingAccess = iota // any member: read routes
+	billingManager                      // OWNER or ADMIN: reads that name Stripe state, recoveries that charge nothing
+	billingOwner                        // OWNER only: anything that changes what the organization pays for
+)
+
+// billingContext runs the standard chain (service auth, acting user, organizationID) and then
+// requires the organization role access names (docs/BILLING.md "Checkout authorization"):
+// billingOwner is the OWNER alone, billingManager OWNER or ADMIN, billingMember any member.
+func (a *App) billingContext(w http.ResponseWriter, r *http.Request, access billingAccess) (br billingRequest, ok bool) {
 	if !a.requireSaaSServiceAuth(w, r) {
 		return
 	}
@@ -88,9 +97,12 @@ func (a *App) billingContext(w http.ResponseWriter, r *http.Request, requireRole
 		return
 	}
 	var role string
-	if requireRole {
+	switch access {
+	case billingOwner:
+		role, ok = a.requireOrganizationOwner(w, r, orgID, user.ID)
+	case billingManager:
 		role, ok = a.requireOrganizationRole(w, r, orgID, user.ID)
-	} else {
+	default:
 		role, ok = a.requireOrganizationMember(w, r, orgID, user.ID)
 	}
 	if !ok {
@@ -177,7 +189,7 @@ type SubscriptionSummaryDTO struct {
 	Entitlements          []string `json:"entitlements"`
 	HasBillingCustomer    bool     `json:"hasBillingCustomer"`
 	HasActiveSubscription bool     `json:"hasActiveSubscription"`
-	CanManageBilling      bool     `json:"canManageBilling"` // the acting user is OWNER/ADMIN
+	CanManageBilling      bool     `json:"canManageBilling"` // the acting user is the organization OWNER
 	// Onboarding V2 (docs/BILLING.md "No-card trial").
 	IntendedPlan       *string `json:"intendedPlan"`
 	TrialStatus        string  `json:"trialStatus"`
@@ -224,7 +236,7 @@ func (a *App) handleBillingPlans(w http.ResponseWriter, r *http.Request) {
 
 // handleBillingSubscription is GET .../billing/subscription: any organization member.
 func (a *App) handleBillingSubscription(w http.ResponseWriter, r *http.Request) {
-	br, ok := a.billingContext(w, r, false)
+	br, ok := a.billingContext(w, r, billingMember)
 	if !ok {
 		return
 	}
@@ -235,7 +247,7 @@ func (a *App) handleBillingSubscription(w http.ResponseWriter, r *http.Request) 
 		billingFailed(w, "load subscription summary", err)
 		return
 	}
-	writeSaaSJSON(w, http.StatusOK, subscriptionSummaryDTO(sum, br.role == repository.RoleOwner || br.role == repository.RoleAdmin))
+	writeSaaSJSON(w, http.StatusOK, subscriptionSummaryDTO(sum, br.role == repository.RoleOwner))
 }
 
 // --- checkout / portal ------------------------------------------------------------------------------
@@ -251,7 +263,7 @@ type checkoutResponseDTO struct {
 
 // handleBillingCheckout is POST .../billing/checkout: organization OWNER/ADMIN only.
 func (a *App) handleBillingCheckout(w http.ResponseWriter, r *http.Request) {
-	br, ok := a.billingContext(w, r, true)
+	br, ok := a.billingContext(w, r, billingOwner)
 	if !ok || !enforceRateLimit(w, a.saasBillingActionLimiter, rateLimitKey(r)) {
 		return
 	}
@@ -288,7 +300,7 @@ type portalResponseDTO struct {
 
 // handleBillingPortal is POST .../billing/portal: organization OWNER/ADMIN only.
 func (a *App) handleBillingPortal(w http.ResponseWriter, r *http.Request) {
-	br, ok := a.billingContext(w, r, true)
+	br, ok := a.billingContext(w, r, billingOwner)
 	if !ok || !enforceRateLimit(w, a.saasBillingActionLimiter, rateLimitKey(r)) {
 		return
 	}
@@ -317,7 +329,7 @@ type changePlanRequestBody struct {
 // immediately with Stripe's default proration for both an upgrade and a downgrade
 // (docs/BILLING.md "Upgrade" / "Downgrade").
 func (a *App) handleBillingChangePlan(w http.ResponseWriter, r *http.Request) {
-	br, ok := a.billingContext(w, r, true)
+	br, ok := a.billingContext(w, r, billingOwner)
 	if !ok || !enforceRateLimit(w, a.saasBillingActionLimiter, rateLimitKey(r)) {
 		return
 	}
@@ -343,7 +355,7 @@ func (a *App) handleBillingChangePlan(w http.ResponseWriter, r *http.Request) {
 // cancellation at the end of the current billing period; the subscription (and every entitlement it
 // grants) stays fully active until then (docs/BILLING.md "Cancellation").
 func (a *App) handleBillingCancel(w http.ResponseWriter, r *http.Request) {
-	br, ok := a.billingContext(w, r, true)
+	br, ok := a.billingContext(w, r, billingOwner)
 	if !ok || !enforceRateLimit(w, a.saasBillingActionLimiter, rateLimitKey(r)) {
 		return
 	}
@@ -360,7 +372,7 @@ func (a *App) handleBillingCancel(w http.ResponseWriter, r *http.Request) {
 // handleBillingReactivate is POST .../billing/reactivate: organization OWNER/ADMIN only. Undoes a
 // scheduled cancellation while the subscription is still active (docs/BILLING.md "Reactivation").
 func (a *App) handleBillingReactivate(w http.ResponseWriter, r *http.Request) {
-	br, ok := a.billingContext(w, r, true)
+	br, ok := a.billingContext(w, r, billingOwner)
 	if !ok || !enforceRateLimit(w, a.saasBillingActionLimiter, rateLimitKey(r)) {
 		return
 	}

@@ -15,9 +15,14 @@ func TestSentinelProOwnerView(t *testing.T) {
 	w := newClientAdminWorld(t)
 	admin := zoneActor(t, w, "sentinel-admin")
 	w.mapRole(admin, "sentinel-admin-role", "ADMINISTRATOR")
+	mod := zoneActor(t, w, "sentinel-admin-mod")
+	w.mapRole(mod, "sentinel-admin-mod-role", "MODERATOR")
 	path := w.path("/case/sentinel-pro")
-	if rr := w.call(w.a.handleGetSentinelPro, http.MethodGet, path, admin, nil, nil); rr.Code != http.StatusForbidden {
-		t.Fatalf("admin read: %d", rr.Code)
+	if rr := w.call(w.a.handleGetSentinelPro, http.MethodGet, path, mod, nil, nil); rr.Code != http.StatusForbidden {
+		t.Fatalf("moderator read: %d", rr.Code)
+	}
+	if rr := w.call(w.a.handleGetSentinelPro, http.MethodGet, path, admin, nil, nil); rr.Code != http.StatusOK {
+		t.Fatalf("administrator read: %d", rr.Code)
 	}
 	type view struct {
 		Offer    repository.SecurityOffer `json:"offer"`
