@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -311,9 +312,12 @@ func TestRoutePanelsMissingAccessIsReportedOnceAndBackedOff(t *testing.T) {
 	_, _ = f.panels.Sync(ctx, f.guild, routeKeyLinkGamertag, []string{"chan-A"}, content, false, true)
 	msg := f.store.messageFor(f.guild, routeKeyLinkGamertag, "chan-A")
 
+	var reportedMu sync.Mutex
 	var reported []string
 	f.panels.SetFaultHandler(func(guildRowID int64, routeKey, channelID, class string) {
+		reportedMu.Lock()
 		reported = append(reported, fmt.Sprintf("%d/%s/%s/%s", guildRowID, routeKey, channelID, class))
+		reportedMu.Unlock()
 	})
 	now := time.Now()
 	f.panels.now = func() time.Time { return now }
@@ -326,9 +330,12 @@ func TestRoutePanelsMissingAccessIsReportedOnceAndBackedOff(t *testing.T) {
 			t.Fatalf("sync %d: a standing fault is neither an error count nor a new panel: %+v", i, res)
 		}
 	}
-	time.Sleep(10 * time.Millisecond) // the handler runs on its own goroutine
-	if len(reported) != 1 || !strings.HasSuffix(reported[0], "/"+CounterFaultMissingPermissions) {
-		t.Fatalf("expected one fault report, got %v", reported)
+	time.Sleep(20 * time.Millisecond) // the handler runs on its own goroutine
+	reportedMu.Lock()
+	got := append([]string(nil), reported...)
+	reportedMu.Unlock()
+	if len(got) != 1 || !strings.HasSuffix(got[0], "/"+CounterFaultMissingPermissions) {
+		t.Fatalf("expected one fault report, got %v", got)
 	}
 	if faults := f.panels.Faults(); len(faults) != 1 || faults[0].ChannelID != "chan-A" || faults[0].RouteKey != routeKeyLinkGamertag || faults[0].GuildRowID != f.guild {
 		t.Fatalf("Faults() = %+v", faults)
