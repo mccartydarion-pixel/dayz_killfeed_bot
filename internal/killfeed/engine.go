@@ -70,6 +70,8 @@ const (
 	// before the expensive full-discovery fallback, not how quickly it
 	// notices real activity.
 	staleGiveUpAfter = 8 * time.Minute
+	// staleBackoffMax caps staleWait for a source that stays quiet.
+	staleBackoffMax = 15 * time.Minute
 )
 
 // persistEnqueueTimeout bounds how long processLine waits for a persistence
@@ -367,6 +369,15 @@ type Engine struct {
 	candidateHistory       map[string]candidateObservation
 	staleMarks             map[string]staleMark
 	lastStaleRediscoveryAt time.Time
+	// staleBackoff is the current pause between quiet-source direct probes and rediscoveries
+	// (staleWait): it doubles each time a rediscovery finds no new evidence, up to
+	// staleBackoffMax, and resets when the source grows or the selection changes, so a dead
+	// server does not cost a full download plus a tree walk every minute for hours
+	// (docs/NITRADO_POLLING.md).
+	staleBackoff time.Duration
+	// failedBootHeaders remembers boot-header verifications that failed, keyed by the file as
+	// listed (verifyBootHeader), so an unverifiable file is not downloaded on every rescan.
+	failedBootHeaders map[string]string
 	// staleWarnedFile is the last file selected_stale was logged at warn level for.
 	staleWarnedFile string
 
@@ -785,3 +796,24 @@ func stringsFromEnv(name string) string {
 func admSampleDebugEnabled() bool {
 	return strings.EqualFold(strings.TrimSpace(os.Getenv("ADM_SAMPLE_DEBUG")), "true")
 }
+
+// staleWait is the current pause between quiet-source direct probes and rediscoveries.
+func (e *Engine) staleWait() time.Duration {
+	if e.staleBackoff < staleProbeInterval {
+		return staleProbeInterval
+	}
+	return e.staleBackoff
+}
+
+// growStaleBackoff doubles staleWait after a rediscovery that found nothing new, up to
+// staleBackoffMax. A newer boot is still caught by scanForNewerBoot on its own cadence.
+func (e *Engine) growStaleBackoff() {
+	next := 2 * e.staleWait()
+	if next > staleBackoffMax {
+		next = staleBackoffMax
+	}
+	e.staleBackoff = next
+}
+
+// resetStaleBackoff returns to the base cadence: the source grew or the selection changed.
+func (e *Engine) resetStaleBackoff() { e.staleBackoff = 0 }

@@ -3,8 +3,13 @@ package discord
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/routing"
 )
 
@@ -293,5 +298,53 @@ func TestSyncerTriggerIsNonBlockingAndNilSafe(t *testing.T) {
 	nilSyncer.SyncOnce(context.Background())
 	if nilSyncer.HasRoute("X") {
 		t.Fatal("nil syncer has no routes")
+	}
+}
+
+// A channel the bot may no longer see (403 Missing Access) is a configuration fault, not a
+// transient error: it is reported once through the fault handler, the channel is skipped until
+// its retry window passes instead of being verified on every sync, and a later success clears it.
+func TestRoutePanelsMissingAccessIsReportedOnceAndBackedOff(t *testing.T) {
+	f := newRoutedFixture(t)
+	content := PanelContent{Embed: LinkUsernameInfoEmbed()}
+	ctx := context.Background()
+	_, _ = f.panels.Sync(ctx, f.guild, routeKeyLinkGamertag, []string{"chan-A"}, content, false, true)
+	msg := f.store.messageFor(f.guild, routeKeyLinkGamertag, "chan-A")
+
+	var reported []string
+	f.panels.SetFaultHandler(func(guildRowID int64, routeKey, channelID, class string) {
+		reported = append(reported, fmt.Sprintf("%d/%s/%s/%s", guildRowID, routeKey, channelID, class))
+	})
+	now := time.Now()
+	f.panels.now = func() time.Time { return now }
+	forbidden := &discordgo.RESTError{Response: &http.Response{StatusCode: 403}, Message: &discordgo.APIErrorMessage{Code: discordCodeMissingAccess, Message: "Missing Access"}}
+	f.api.getErr["chan-A/"+msg] = forbidden
+
+	for i := 0; i < 5; i++ {
+		res, _ := f.panels.Sync(ctx, f.guild, routeKeyLinkGamertag, []string{"chan-A"}, content, false, true)
+		if res.Errors != 0 || res.Created != 0 {
+			t.Fatalf("sync %d: a standing fault is neither an error count nor a new panel: %+v", i, res)
+		}
+	}
+	time.Sleep(10 * time.Millisecond) // the handler runs on its own goroutine
+	if len(reported) != 1 || !strings.HasSuffix(reported[0], "/"+CounterFaultMissingPermissions) {
+		t.Fatalf("expected one fault report, got %v", reported)
+	}
+	if faults := f.panels.Faults(); len(faults) != 1 || faults[0].ChannelID != "chan-A" || faults[0].RouteKey != routeKeyLinkGamertag || faults[0].GuildRowID != f.guild {
+		t.Fatalf("Faults() = %+v", faults)
+	}
+	if n := f.api.getCount("chan-A/" + msg); n != 1 {
+		t.Fatalf("the faulted channel must not be re-verified inside the retry window, got %d lookups", n)
+	}
+
+	// After the retry window the channel is tried again; access restored clears the fault.
+	now = now.Add(routePanelFaultRetry + time.Second)
+	delete(f.api.getErr, "chan-A/"+msg)
+	res, _ := f.panels.Sync(ctx, f.guild, routeKeyLinkGamertag, []string{"chan-A"}, content, false, true)
+	if res.Errors != 0 || res.Created != 0 || len(f.panels.Faults()) != 0 {
+		t.Fatalf("a successful verify must clear the fault: %+v faults=%+v", res, f.panels.Faults())
+	}
+	if f.api.sendCount() != 1 {
+		t.Fatalf("the panel was never re-posted, sends=%d", f.api.sendCount())
 	}
 }

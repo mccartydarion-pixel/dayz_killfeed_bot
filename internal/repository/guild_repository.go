@@ -242,6 +242,15 @@ func (r *GuildRepository) SetFeaturesChannel(ctx context.Context, discordGuildID
 	return nil
 }
 
+// SetSelectedPublicServerByID is SetSelectedPublicServer by the guild's row id.
+func (r *GuildRepository) SetSelectedPublicServerByID(ctx context.Context, guildRowID, serverID int64) error {
+	_, err := r.pool.Exec(ctx, `UPDATE guilds SET selected_public_server_id=$2, updated_at=NOW() WHERE id=$1`, guildRowID, serverID)
+	if err != nil {
+		return fmt.Errorf("set selected public server: %w", err)
+	}
+	return nil
+}
+
 func (r *GuildRepository) SetSelectedPublicServer(ctx context.Context, discordGuildID string, serverID int64) error {
 	_, err := r.pool.Exec(ctx, `UPDATE guilds SET selected_public_server_id=$2, updated_at=NOW() WHERE discord_guild_id=$1`, discordGuildID, serverID)
 	if err != nil {

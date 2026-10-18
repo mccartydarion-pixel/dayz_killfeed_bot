@@ -450,19 +450,22 @@ func (a *App) evaluateOnlineCounter(ctx context.Context, counter *discord.VoiceC
 // a route lookup error keeps the current binding (not evidence the route is
 // gone). The primary guild is evaluateOnlineCounter's.
 func (a *App) evaluateGuildCounters(ctx context.Context) {
-	if a.allGuildServers == nil || a.ChannelRoutes == nil || a.voiceNamer == nil {
+	primaryGuild, allGuilds := a.counterProviders()
+	if primaryGuild == nil || allGuilds == nil || a.ChannelRoutes == nil || a.voiceNamer == nil {
 		return
 	}
-	guilds, err := a.allGuildServers(ctx)
+	guilds, err := allGuilds(ctx)
 	if err != nil {
 		slog.Warn("component=voice_counter", "event", "guild_list_failed", "err", err.Error())
 		return
 	}
-	primaryRowID := int64(0)
-	if a.guildServers != nil {
-		if id, _, listErr := a.guildServers(ctx); listErr == nil {
-			primaryRowID = id
-		}
+	// The primary guild is the public counter's; without its row id this pass cannot tell it
+	// apart from the others, so it keeps the current counters rather than building a second
+	// counter on the primary guild's channel (the same lookup-error rule as the routes).
+	primaryRowID, _, listErr := primaryGuild(ctx)
+	if listErr != nil || primaryRowID == 0 {
+		slog.Warn("component=voice_counter", "event", "primary_guild_lookup_failed", "err", fmt.Sprint(listErr))
+		return
 	}
 	l := a.counterLoop()
 	now := time.Now()
@@ -479,8 +482,21 @@ func (a *App) evaluateGuildCounters(ctx context.Context) {
 		case counterRouteFound:
 			if gc == nil {
 				gc = &guildCounter{guildRowID: g.GuildRowID, counter: discord.NewVoiceChannelCounter(a.voiceNamer, channelID)}
-				sid := serverID
-				gc.counter.OnPublish(func(count int, result string) { a.recordVoicePublishFor(sid, count, result) })
+				counter := gc
+				// The guild's public server can change later; report each publish on the
+				// server the counter shows at that moment.
+				gc.counter.OnPublish(func(count int, result string) {
+					l.mu.Lock()
+					sid := counter.serverID
+					l.mu.Unlock()
+					a.recordVoicePublishFor(sid, count, result)
+				})
+				gc.counter.OnFault(func(class, faultChannelID string) {
+					l.mu.Lock()
+					sid := counter.serverID
+					l.mu.Unlock()
+					a.alertChannelAccess(counter.guildRowID, sid, routing.RouteOnlineCounter, faultChannelID, class)
+				})
 				l.guilds[g.GuildRowID] = gc
 				slog.Info("component=voice_counter", "event", "guild_counter_started", "guild_row_id", g.GuildRowID, "server_id", serverID, "channel_id", channelID)
 			} else if gc.counter.ChannelID() != channelID {
@@ -490,6 +506,7 @@ func (a *App) evaluateGuildCounters(ctx context.Context) {
 		case counterRouteAbsent:
 			if gc != nil {
 				slog.Info("component=voice_counter", "event", "guild_counter_stopped", "guild_row_id", g.GuildRowID, "reason", "route removed")
+				gc.counter.Stop() // never rename a channel from a timer armed before the route went
 				delete(l.guilds, g.GuildRowID)
 				gc = nil
 			}
@@ -514,9 +531,10 @@ func (a *App) evaluateGuildCounters(ctx context.Context) {
 	}
 	// A guild whose last active server was removed loses its counter.
 	l.mu.Lock()
-	for id := range l.guilds {
+	for id, gc := range l.guilds {
 		if !seen[id] {
 			slog.Info("component=voice_counter", "event", "guild_counter_stopped", "guild_row_id", id, "reason", "no active server")
+			gc.counter.Stop()
 			delete(l.guilds, id)
 		}
 	}
@@ -586,4 +604,54 @@ func (a *App) knownPresenceCount(serverID int64) (int, bool) {
 		return 0, false
 	}
 	return st.Reading.Count, true
+}
+
+// counterProviders returns the guild providers the counter loop reads: the primary guild's
+// (row id and servers) and every guild's. They are set once routing starts, after the loop is
+// running, so the hand-off is synchronised.
+func (a *App) counterProviders() (func(context.Context) (int64, []int64, error), discord.AllGuildServersFunc) {
+	a.counterProvidersMu.RLock()
+	defer a.counterProvidersMu.RUnlock()
+	return a.guildServers, a.allGuildServers
+}
+
+// setCounterProviders publishes the guild providers to the counter loop.
+func (a *App) setCounterProviders(primary func(context.Context) (int64, []int64, error), all discord.AllGuildServersFunc) {
+	a.counterProvidersMu.Lock()
+	a.guildServers, a.allGuildServers = primary, all
+	a.counterProvidersMu.Unlock()
+	a.pokeOnlineCounter()
+}
+
+// alertChannelAccess tells a guild's admins that Champion lost the use of one of its routed
+// channels: an ADMIN_ALERTS card for the guild's server, once per fault (the publisher dedupes
+// nothing here; callers raise it on a fault transition only).
+func (a *App) alertChannelAccess(guildRowID, serverID int64, routeKey, channelID, class string) {
+	if a.AdminAlerts == nil {
+		return
+	}
+	if serverID == 0 {
+		if _, all := a.counterProviders(); all != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if guilds, err := all(ctx); err == nil {
+				for _, g := range guilds {
+					if g.GuildRowID == guildRowID && len(g.ServerIDs) > 0 {
+						serverID = g.ServerIDs[0]
+					}
+				}
+			}
+			cancel()
+		}
+	}
+	detail := "Champion can no longer post in <#" + channelID + ">. Give the Champion role access to the channel (or its category), or run Repair Champion Discord Layout in the Server Hub."
+	if class == discord.CounterFaultUnknownChannel {
+		detail = "The channel for " + routeKey + " was deleted. Run Repair Champion Discord Layout in the Server Hub to recreate it, or re-map the route."
+	}
+	a.AdminAlerts.Publish(discord.AdminAlert{
+		GuildRowID: guildRowID, ServerID: serverID,
+		Kind: discord.AlertKindChannelAccess, Severity: discord.AlertCritical,
+		Headline: "Champion lost access to a channel",
+		Detail:   detail,
+		Fields:   [][2]string{{"Route", routeKey}, {"Channel", "<#" + channelID + ">"}, {"Fault", class}},
+	})
 }

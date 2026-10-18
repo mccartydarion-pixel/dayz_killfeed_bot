@@ -132,7 +132,9 @@ func (a *App) handleNitradoConnect(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, ok := a.requireOrganizationManager(w, r, organizationID, user); !ok {
+	// Organization-wide: this replaces or adds what every server of the organization runs on,
+	// so it is the organization's own OWNER or ADMIN, never a staff Administrator of one server.
+	if _, ok := a.requireOrganizationRole(w, r, organizationID, user.ID); !ok {
 		return
 	}
 	if !enforceRateLimit(w, a.saasNitradoConnectLimiter, rateLimitKey(r)) {

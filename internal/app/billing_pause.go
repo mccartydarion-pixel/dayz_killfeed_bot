@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -146,6 +147,10 @@ func (a *App) runWorkerReconciler(ctx context.Context) {
 // tail-starting like a first /server connect so old log history is not replayed.
 func (a *App) startCustomerServer(ctx context.Context, serverID int64) {
 	if a.WorkerManager == nil || a.WorkerManager.Running(serverID) {
+		return
+	}
+	if paused, err := a.serverBillingPaused(ctx, serverID); err != nil || paused {
+		slog.Warn("component=servers", "event", "customer_worker_start_refused", "server_id", serverID, "paused", paused, "err", fmt.Sprint(err))
 		return
 	}
 	a.markFirstConnect(serverID)

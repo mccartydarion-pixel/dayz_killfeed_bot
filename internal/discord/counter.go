@@ -126,6 +126,7 @@ type VoiceChannelCounter struct {
 	lastPublishedAt   time.Time
 	lastPublishResult string
 	onPublish         func(count int, result string)
+	onFault           func(class, channelID string)
 
 	// guildID, when set, is the only guild whose channel this counter may
 	// rename (ownership validation on Reconcile).
@@ -516,6 +517,38 @@ func (c *VoiceChannelCounter) schedule(wait time.Duration) {
 	c.timer = time.AfterFunc(wait, func() { _ = c.flushNow() })
 }
 
+// Stop cancels any pending rename and makes the counter inert: a counter whose route was
+// removed, or whose guild lost its last server, must not rename the channel from a timer that
+// was armed before it was dropped (a debounce, a rename spacing wait or a 429 Retry-After can
+// be minutes long). A stopped counter ignores Publish and Reconcile until a channel is bound
+// again with SetChannelID.
+func (c *VoiceChannelCounter) Stop() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.timer != nil {
+		c.timer.Stop()
+		c.timer = nil
+	}
+	c.dirty = false
+	c.blocked = true
+	c.channelID = ""
+}
+
+// OnFault registers a callback for a permanent configuration fault (CounterFault* classes):
+// the channel is gone or the bot may not manage it. It runs once per fault transition, on the
+// counter's goroutine; it must not block.
+func (c *VoiceChannelCounter) OnFault(fn func(class, channelID string)) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.onFault = fn
+	c.mu.Unlock()
+}
+
 // flush performs the rename for the latest pending reading, if still due.
 func (c *VoiceChannelCounter) flush() { _ = c.flushNow() }
 
@@ -635,6 +668,9 @@ func (c *VoiceChannelCounter) recordFaultLocked(class, channelID string) {
 	}
 	slog.Error("component=voice_counter", "event", "config_fault", "fault_class", class, "channel_id", channelID,
 		"msg", "online counter renames stopped until the channel is repaired", "action", "run /setup repair or re-map the ONLINE_COUNTER route")
+	if fn := c.onFault; fn != nil {
+		go fn(class, channelID)
+	}
 }
 
 // handleRenameError classifies a rename failure and returns how long to wait

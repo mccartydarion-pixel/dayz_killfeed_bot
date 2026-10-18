@@ -50,6 +50,18 @@ Some calls always skip the cache and ask Nitrado:
 - Writes (upload token, upload, mkdir) clear the cache.
 - `ListEntries`, which shop deliveries use to read back what they wrote.
 
+## A quiet or dead source backs off (`Engine.staleWait`)
+
+Once the selected log has not changed for `staleGiveUpAfter` (8 min), each poll tick may run a
+direct download of the file (the stale probe) and a full directory rediscovery. Both wait
+`staleWait` between runs: 60 s at first, doubling after every rediscovery that finds no new
+evidence, up to 15 min. The backoff resets as soon as the source grows or a different file is
+selected. A game server that is down for hours therefore costs a handful of requests per
+quarter hour instead of a download plus a tree walk every minute. The newer-boot scan
+(`scanForNewerBoot`, every `rescanInterval`) is unchanged, so a restart is still noticed within
+seconds; a file it could read but could not verify (no header, header for another boot) is
+remembered by its listed size and modified time and is not downloaded again until it changes.
+
 ## Adaptive poll rate (`Engine.pollingInterval`)
 
 First match wins:

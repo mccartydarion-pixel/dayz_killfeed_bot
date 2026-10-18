@@ -41,11 +41,12 @@ func (e *Engine) pollSelected(ctx context.Context) error {
 			// Bound how often a still-stale selection re-runs the (expensive,
 			// full-tree) discovery walk: without this, every poll tick while
 			// stuck (as often as every couple seconds) would call ListLogs
-			// again even though nothing has changed. Reuses staleProbeInterval
-			// so there is one consistent cadence for "how often do we check a
-			// quiet source again," not a second magic number.
-			if e.lastStaleRediscoveryAt.IsZero() || time.Since(e.lastStaleRediscoveryAt) >= staleProbeInterval {
+			// again even though nothing has changed. staleWait starts at
+			// staleProbeInterval and backs off while nothing changes, so a server
+			// that is down for hours is not walked every minute.
+			if e.lastStaleRediscoveryAt.IsZero() || time.Since(e.lastStaleRediscoveryAt) >= e.staleWait() {
 				e.lastStaleRediscoveryAt = time.Now()
+				e.growStaleBackoff()
 				e.markSelectedStale(e.selected)
 				// A quiet server re-enters this branch every staleProbeInterval for as long
 				// as nobody is playing. Warn once per file; repeats are routine.

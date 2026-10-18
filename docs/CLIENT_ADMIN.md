@@ -152,7 +152,12 @@ website's Server Hub. Nobody is invited and nothing is stored per person:
   economy admin view and faction moderation admit them like an organization OWNER/ADMIN. A
   MODERATOR or GATEKEEPER staff member is refused there, and each client-admin route still
   checks the level's capability. Billing and trial start refuse `STAFF` of any level: the plan
-  is the owner's (`requireOrganizationOwner`).
+  is the owner's (`requireOrganizationOwner`). Three organization-wide routes stay with the
+  organization's own OWNER/ADMIN members (`requireOrganizationRole`), because they change what
+  every server of the organization runs on: connecting or replacing the Nitrado token
+  (`POST .../nitrado/connect`), connecting another Discord server, and creating an installation.
+  The installation recheck (`POST .../discord/verify-installation`) is a read that members of
+  any role and staff Administrators may run (`requireOrganizationViewer`).
 - Access follows the role: roles are re-read from Discord every 15 s, so removing the role in
   Discord removes the access.
 - `GET .../admin/discord-roles` (PERMISSIONS_VIEW) lists the guild's roles a member can hold,

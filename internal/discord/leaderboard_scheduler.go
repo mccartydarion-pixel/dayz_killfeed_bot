@@ -310,7 +310,9 @@ func (s *LeaderboardScheduler) refreshRouted(ctx context.Context, guilds []Guild
 		}
 	}
 	if !handled {
-		return false, nil
+		// The primary guild has no route (its legacy board, if any, is the caller's); another
+		// guild's failure is still a failure, so a guild first seen after boot is retried.
+		return false, firstErr
 	}
 	return true, firstErr
 }
