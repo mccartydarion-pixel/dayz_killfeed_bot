@@ -48,6 +48,9 @@ const (
 	AlertKindMapRotation = "MAP_ROTATION_FAILED"
 	// AlertKindServerDown: the game server's log files stopped growing (docs/SERVER_DOWN_ALERT.md).
 	AlertKindServerDown = "SERVER_DOWN"
+	// AlertKindChannelAccess: Champion can no longer see, post in or rename one of its routed
+	// channels (the channel was deleted, or the bot's role lost access to it).
+	AlertKindChannelAccess = "CHANNEL_ACCESS"
 	// AlertKindCaseWatchDigest labels the paid C.A.S.E. Watch digest embed. It is NOT an
 	// operational kind: the ADMIN_ALERTS publisher refuses it (operationalAdminAlertKind), and the
 	// durable digest outbox sends it only to the private C.A.S.E. status channel.
@@ -193,7 +196,7 @@ func (p *AdminAlertPublisher) ObserveDownload(guildRowID int64, report killfeed.
 func operationalAdminAlertKind(kind string) bool {
 	switch kind {
 	case AlertKindADMStale, AlertKindNitradoFailure, AlertKindZoneIntrusion,
-		AlertKindUAVIntrusion, AlertKindBaseRadar, AlertKindZoneBanViolated, AlertKindBaseRequest, AlertKindRentPaused, AlertKindSecurityDigest, AlertKindPlayerAppeal, AlertKindMapRotation, AlertKindServerDown:
+		AlertKindUAVIntrusion, AlertKindBaseRadar, AlertKindZoneBanViolated, AlertKindBaseRequest, AlertKindRentPaused, AlertKindSecurityDigest, AlertKindPlayerAppeal, AlertKindMapRotation, AlertKindServerDown, AlertKindChannelAccess:
 		return true
 	default:
 		return false

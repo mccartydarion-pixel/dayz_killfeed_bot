@@ -214,7 +214,9 @@ func (a *App) handleConnectDiscordGuild(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	if _, ok := a.requireOrganizationManager(w, r, organizationID, user); !ok {
+	// Organization-wide: this replaces or adds what every server of the organization runs on,
+	// so it is the organization's own OWNER or ADMIN, never a staff Administrator of one server.
+	if _, ok := a.requireOrganizationRole(w, r, organizationID, user.ID); !ok {
 		return
 	}
 	if a.Guilds == nil || a.SaaSGuildConnections == nil {
@@ -322,7 +324,9 @@ func (a *App) handleVerifyInstallation(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, ok := a.requireOrganizationMember(w, r, organizationID, user.ID); !ok {
+	// Members of any role, and staff Administrators of this installation, may ask whether
+	// Champion is installed: the Server Hub's "Recheck Champion" is a read, not a change.
+	if _, ok := a.requireOrganizationViewer(w, r, organizationID, user); !ok {
 		return
 	}
 	installationID, ok := pathInt64(w, r, "installationID")
@@ -356,8 +360,16 @@ func (a *App) handleVerifyInstallation(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	result := DiscordVerificationResult{
 		Installed:      verification.GuildFound,
-		GuildReachable: verification.GuildFound,
+		GuildReachable: verification.GuildFound || verification.GuildLookupFailed,
 		VerifiedAt:     now.UTC().Format(time.RFC3339),
+	}
+	if verification.GuildLookupFailed {
+		// Discord could not be asked: say so instead of answering "not installed", and leave
+		// the stored flag and the installation status exactly as they were.
+		slog.Warn("component=saas_api", "event", "saas_install_verify", "installation_id", installationID,
+			"discord_guild_id", discordGuildID, "bot_user_id", a.saasDiscordVerifier.BotID(), "guild_resolved", true, "lookup_failed", true)
+		writeSaaSError(w, codeDiscordUnavailable, "Discord could not be reached to check the installation; try again in a moment")
+		return
 	}
 	slog.Info("component=saas_api", "event", "saas_install_verify", "installation_id", installationID,
 		"discord_guild_id", discordGuildID, "bot_user_id", a.saasDiscordVerifier.BotID(),
@@ -470,7 +482,9 @@ func (a *App) handleVerifyPermissions(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, ok := a.requireOrganizationMember(w, r, organizationID, user.ID); !ok {
+	// Members of any role, and staff Administrators of this installation, may ask whether
+	// Champion is installed: the Server Hub's "Recheck Champion" is a read, not a change.
+	if _, ok := a.requireOrganizationViewer(w, r, organizationID, user); !ok {
 		return
 	}
 	installationID, ok := pathInt64(w, r, "installationID")

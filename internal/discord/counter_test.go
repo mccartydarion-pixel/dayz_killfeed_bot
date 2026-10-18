@@ -512,3 +512,55 @@ func TestCounterTransientRetriesAreBounded(t *testing.T) {
 		t.Fatal("a transient failure must never be recorded as a config fault")
 	}
 }
+
+// Stop drops a pending rename: a counter whose route was removed must not rename the channel
+// from a timer that was armed before it was dropped, and stays inert until a channel is bound.
+func TestCounterStopCancelsPendingRename(t *testing.T) {
+	namer := &fakeNamer{}
+	c := NewVoiceChannelCounter(namer, "vc-1")
+	c.SetDebounce(50 * time.Millisecond)
+	c.SetMinRenameInterval(0)
+	c.Publish(known(3))
+	c.Stop()
+	time.Sleep(120 * time.Millisecond)
+	if got := namer.recorded(); len(got) != 0 {
+		t.Fatalf("a stopped counter must not rename, got %v", got)
+	}
+	c.Publish(known(4))
+	time.Sleep(120 * time.Millisecond)
+	if got := namer.recorded(); len(got) != 0 {
+		t.Fatalf("a stopped counter ignores Publish until rebound, got %v", got)
+	}
+	// Binding a channel again revives it.
+	c.SetChannelID("vc-2")
+	c.Publish(known(5))
+	time.Sleep(120 * time.Millisecond)
+	if got := namer.recorded(); len(got) != 1 {
+		t.Fatalf("a rebound counter renames again, got %v", got)
+	}
+}
+
+// OnFault runs once per permanent fault transition.
+func TestCounterOnFaultReportsOnce(t *testing.T) {
+	namer := &fakeNamer{}
+	namer.err = &discordgo.RESTError{Response: &http.Response{StatusCode: 403}, Message: &discordgo.APIErrorMessage{Code: discordCodeMissingAccess, Message: "Missing Access"}}
+	c := NewVoiceChannelCounter(namer, "vc-1")
+	c.SetDebounce(0)
+	c.SetMinRenameInterval(0)
+	var mu sync.Mutex
+	var faults []string
+	c.OnFault(func(class, channelID string) {
+		mu.Lock()
+		faults = append(faults, class+"@"+channelID)
+		mu.Unlock()
+	})
+	for i := 0; i < 3; i++ {
+		c.Publish(known(i + 1))
+		time.Sleep(30 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(faults) != 1 || faults[0] != CounterFaultMissingPermissions+"@vc-1" {
+		t.Fatalf("expected one fault report, got %v", faults)
+	}
+}

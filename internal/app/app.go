@@ -201,6 +201,9 @@ type App struct {
 	// voiceNamer renames voice channels (the Discord session API); the
 	// per-guild counters are built on it.
 	voiceNamer discord.VoiceChannelNamer
+	// counterProvidersMu guards guildServers and allGuildServers, which routing start-up
+	// sets while the counter loop is already running (counterProviders / setCounterProviders).
+	counterProvidersMu sync.RWMutex
 	// buildActionsSeen counts ADM build/placement actions parsed by any server
 	// worker - the proof that some server's ADM carries BUILD_FEED lines.
 	buildActionsSeen     atomic.Int64

@@ -595,8 +595,7 @@ func (a *App) Run() error {
 				go a.singleton(ctx, "bounty_board", a.BountyBoard.Run)
 			}
 			if routingEnabled {
-				a.guildServers = guildServers
-				a.allGuildServers = allGuildServers
+				a.setCounterProviders(guildServers, allGuildServers)
 				// Completion announcements follow their guild's SERVER_STATUS route.
 				a.CompletionPublisher.SetRouting(a.ChannelRoutes, allGuildServers)
 				// SERVER_STATUS: one persistent status message per routed
@@ -610,6 +609,13 @@ func (a *App) Run() error {
 				// ADMIN_ALERTS: operational conditions reported by the server
 				// workers and the zone engine; with no route nothing is sent.
 				a.AdminAlerts = discord.NewAdminAlertPublisher(session, a.ChannelRoutes)
+				if routePanels != nil {
+					// A routed channel the bot can no longer see or post in is the guild's
+					// admins' problem to fix: tell them once, instead of logging every sync.
+					routePanels.SetFaultHandler(func(guildRowID int64, routeKey, channelID, class string) {
+						a.alertChannelAccess(guildRowID, 0, routeKey, channelID, class)
+					})
+				}
 				// Paid Watch messages use the durable outbox exclusively. The
 				// legacy in-memory queue has NO premium authorizer in production.
 				a.AdminAlerts.SetServerNames(a.serverNameFunc())
@@ -713,7 +719,10 @@ func (a *App) Run() error {
 					}
 				}
 				if paused, err := a.serverBillingPaused(workerCtx, workerServerID); err != nil {
+					// Unknown billing state is not a licence to run: the reconciler retries
+					// every workerReconcileInterval, so a transient error delays the start.
 					slog.Warn("component=servers", "event", "billing_check_failed", "server_id", workerServerID, "err", err.Error())
+					return fmt.Errorf("server worker %d: billing check failed: %w", workerServerID, err)
 				} else if paused {
 					slog.Warn("component=servers", "event", "server_paused_billing", "server_id", workerServerID, "guild_id", row.GuildID)
 					return errBillingPaused

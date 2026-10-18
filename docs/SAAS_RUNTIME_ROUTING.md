@@ -197,6 +197,16 @@ count of its own public server (its selected public server, else its first
 active server), with no legacy fallback (`online_counter.go`,
 `evaluateGuildCounters`).
 
+### A channel the bot can no longer use
+
+A routed channel that Discord answers with 403 (Missing Access / Missing Permissions) or 404
+(Unknown Channel) is a configuration fault, not a transient error: `RoutePanels` records it per
+(guild, route key, channel), retries that channel every 10 minutes instead of every sync, and
+reports the first occurrence through `SetFaultHandler`, which the app turns into one
+`CHANNEL_ACCESS` admin alert on the guild's `ADMIN_ALERTS` route. The online voice counter does
+the same through `VoiceChannelCounter.OnFault`. The layout health ("Recheck") still verifies the
+channel live and shows it as BROKEN until the role or channel is repaired.
+
 ### How persistent messages avoid duplicates
 
 Legacy state was one message id per guild in `GuildSetup`, which cannot describe

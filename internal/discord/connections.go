@@ -49,7 +49,9 @@ const (
 	connectionsSingleConnected  = "🟢 Connection"
 	connectionsSingleDisconnect = "🔴 Disconnection"
 	connectionsAuthor           = "Connections notification"
-	connectionsEarningsTimeout  = 3 * time.Second
+	// connectionsEarningsTimeout bounds the economy lookup per disconnect card; up to
+	// connectionsCardsPerTick cards share one 2s tick, so a slow database must not stall it.
+	connectionsEarningsTimeout = 400 * time.Millisecond
 )
 
 // SessionEarningsFunc reports how much a player earned (credits to their Champion Points

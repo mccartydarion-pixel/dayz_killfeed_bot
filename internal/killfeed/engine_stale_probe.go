@@ -20,7 +20,7 @@ func (e *Engine) probeStaleSource(ctx context.Context, current *nitrado.LogFile)
 	if e.lastLogChange.IsZero() || time.Since(e.lastLogChange) < staleProbeAfter {
 		return
 	}
-	if !e.lastStaleProbeAt.IsZero() && time.Since(e.lastStaleProbeAt) < staleProbeInterval {
+	if !e.lastStaleProbeAt.IsZero() && time.Since(e.lastStaleProbeAt) < e.staleWait() {
 		return
 	}
 	e.lastStaleProbeAt = time.Now()
@@ -87,7 +87,11 @@ func (e *Engine) probeStaleSource(ctx context.Context, current *nitrado.LogFile)
 // stale source merely re-selected by discovery never reaches here, so it is
 // never falsely healed.)
 func (e *Engine) noteSourceGrowth(bytes int64) {
-	if e == nil || bytes <= 0 || e.diagnostics == nil {
+	if e == nil || bytes <= 0 {
+		return
+	}
+	e.resetStaleBackoff()
+	if e.diagnostics == nil {
 		return
 	}
 	now := time.Now()
@@ -125,6 +129,7 @@ func (e *Engine) processProbeTail(ctx context.Context, current *nitrado.LogFile,
 	e.linesDiscovered += int64(len(lineChunks))
 	e.lastLogChange = time.Now()
 	e.lastDownloadAt = time.Now()
+	e.resetStaleBackoff()
 	e.tracker.UpdateCheckpoint(e.serviceID, current.Path, int64(len(content)), current.Modified, safeOffset)
 	checkpointOK := e.saveDurableCheckpoint(ctx, current, safeOffset)
 	if safeOffset > startOffset && e.diagnostics != nil {

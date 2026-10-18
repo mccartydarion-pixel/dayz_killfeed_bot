@@ -455,10 +455,11 @@ const (
 // preferring the public counter server's own route. A lookup error is
 // reported separately from a confirmed absence.
 func (a *App) onlineCounterRouteChannel(ctx context.Context) (string, string) {
-	if a.ChannelRoutes == nil || a.guildServers == nil {
+	primaryGuild, _ := a.counterProviders()
+	if a.ChannelRoutes == nil || primaryGuild == nil {
 		return "", counterRouteAbsent
 	}
-	guildRowID, serverIDs, err := a.guildServers(ctx)
+	guildRowID, serverIDs, err := primaryGuild(ctx)
 	if err != nil {
 		return "", counterRouteError
 	}

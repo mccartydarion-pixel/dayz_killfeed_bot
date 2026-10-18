@@ -201,6 +201,11 @@ type Verification struct {
 	GuildFound   bool
 	ChannelFound bool
 	Missing      []string
+	// GuildLookupFailed is set when the bot could not tell whether it is in the guild: the
+	// guild was not in the gateway cache and the REST lookup failed for a reason other than
+	// "not a member" (rate limit, timeout, outage). GuildFound is false then, but it is not
+	// evidence of anything and must not be stored as "not installed".
+	GuildLookupFailed bool
 }
 
 // Verify checks that the configured guild and killfeed channel exist and that
@@ -228,7 +233,8 @@ func (c *Client) Verify(guildID, channelID string) Verification {
 		} else {
 			restChecked = true
 			if _, err := c.session.Guild(guildID); err != nil {
-				slog.Error("component=discord", "msg", "configured guild not found or not accessible", "guild_id", guildID)
+				result.GuildLookupFailed = permanentCounterFault(err) == "" // 403/404 is a real answer; anything else is not
+				slog.Error("component=discord", "msg", "configured guild not found or not accessible", "guild_id", guildID, "lookup_failed", result.GuildLookupFailed, "err", err.Error())
 			} else {
 				result.GuildFound = true
 			}

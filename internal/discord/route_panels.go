@@ -5,7 +5,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/repository"
@@ -130,10 +132,116 @@ type RoutePanels struct {
 	// so SyncEach can skip an edit that would change nothing. In-memory only: after
 	// a restart the first pass re-edits once, which is harmless.
 	lastHash map[string]string
+	// faults records, per (guild, route key, channel), a permanent configuration fault
+	// (the channel is gone, or the bot may not see or post in it: 403 / 404). Retrying
+	// every sync cannot fix those; the channel is retried every routePanelFaultRetry
+	// instead, and onFault is told once per fault transition so the guild's admins hear
+	// about it (docs/SAAS_RUNTIME_ROUTING.md).
+	faults  map[string]panelFault
+	onFault func(guildRowID int64, routeKey, channelID, class string)
+	now     func() time.Time
 }
 
+// panelFault is one channel's standing configuration fault.
+type panelFault struct {
+	Class     string
+	Since     time.Time
+	LastTried time.Time
+}
+
+// routePanelFaultRetry is how often a channel with a standing fault is tried again.
+const routePanelFaultRetry = 10 * time.Minute
+
 func NewRoutePanels(api RoutePanelAPI, store RoutePanelStore) *RoutePanels {
-	return &RoutePanels{api: api, store: store, lastHash: make(map[string]string)}
+	return &RoutePanels{api: api, store: store, lastHash: make(map[string]string), faults: make(map[string]panelFault), now: time.Now}
+}
+
+// SetFaultHandler registers the callback for a new permanent fault on a routed channel. It
+// runs on the syncing goroutine and must not block.
+func (p *RoutePanels) SetFaultHandler(fn func(guildRowID int64, routeKey, channelID, class string)) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.onFault = fn
+	p.mu.Unlock()
+}
+
+// Faults lists the standing channel faults: channels the bot cannot see, post in or that no
+// longer exist, keyed by (guild row id, route key, channel id).
+func (p *RoutePanels) Faults() []PanelFault {
+	if p == nil {
+		return nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]PanelFault, 0, len(p.faults))
+	for key, f := range p.faults {
+		var guildRowID int64
+		var routeKey, channelID string
+		if _, err := fmt.Sscanf(key, "%d|%s", &guildRowID, &routeKey); err != nil {
+			continue
+		}
+		if i := strings.LastIndex(routeKey, "|"); i >= 0 {
+			channelID, routeKey = routeKey[i+1:], routeKey[:i]
+		}
+		out = append(out, PanelFault{GuildRowID: guildRowID, RouteKey: routeKey, ChannelID: channelID, Class: f.Class, Since: f.Since})
+	}
+	return out
+}
+
+// PanelFault is one entry of Faults.
+type PanelFault struct {
+	GuildRowID int64
+	RouteKey   string
+	ChannelID  string
+	Class      string
+	Since      time.Time
+}
+
+// faultSkip reports whether a channel with a standing fault is still inside its retry
+// backoff. Caller holds p.mu.
+func (p *RoutePanels) faultSkip(key string) bool {
+	f, ok := p.faults[key]
+	if !ok {
+		return false
+	}
+	if p.now().Sub(f.LastTried) < routePanelFaultRetry {
+		return true
+	}
+	f.LastTried = p.now()
+	p.faults[key] = f
+	return false
+}
+
+// noteFault classifies err; a permanent fault is recorded (first time: reported through
+// onFault) and true is returned. Caller holds p.mu.
+func (p *RoutePanels) noteFault(key string, guildRowID int64, routeKey, channelID string, err error) bool {
+	class := permanentCounterFault(err)
+	if class == "" {
+		return false
+	}
+	now := p.now()
+	if prev, ok := p.faults[key]; ok && prev.Class == class {
+		prev.LastTried = now
+		p.faults[key] = prev
+		return true
+	}
+	p.faults[key] = panelFault{Class: class, Since: now, LastTried: now}
+	slog.Error("component=discord", "event", "route_panel_channel_fault", "route_key", routeKey, "guild_id", guildRowID, "channel_id", channelID, "fault_class", class,
+		"msg", "panel syncing for this channel paused; retried every 10 minutes until the channel is repaired")
+	if p.onFault != nil {
+		go p.onFault(guildRowID, routeKey, channelID, class)
+	}
+	return true
+}
+
+// clearFault forgets a channel's standing fault after a successful Discord call. Caller holds p.mu.
+func (p *RoutePanels) clearFault(key string) {
+	if _, ok := p.faults[key]; ok {
+		delete(p.faults, key)
+		slog.Info("component=discord", "event", "route_panel_channel_fault_cleared", "key", key)
+	}
 }
 
 // Recorded lists the messages currently recorded for (guildRowID, routeKey).
@@ -195,6 +303,9 @@ func (p *RoutePanels) sync(ctx context.Context, guildRowID int64, routeKey strin
 	want := make(map[string]bool, len(desired))
 	for _, channelID := range desired {
 		want[channelID] = true
+		if p.faultSkip(hashKey(channelID)) {
+			continue // a channel the bot cannot use: retried on its own, slower cadence
+		}
 		content, contentErr := contentFor(channelID)
 		if contentErr != nil {
 			res.Errors++
@@ -215,23 +326,29 @@ func (p *RoutePanels) sync(ctx context.Context, guildRowID int64, routeKey strin
 				switch {
 				case editErr == nil:
 					res.Updated++
+					p.clearFault(hashKey(channelID))
 					if skipUnchanged {
 						p.lastHash[hashKey(channelID)] = hash
 					}
 					continue
 				case !isUnknownMessage(editErr):
-					res.Errors++
-					slog.Warn("component=discord", "event", "route_panel_update_failed", "route_key", routeKey, "guild_id", guildRowID, "channel_id", channelID, "err", editErr.Error())
+					if !p.noteFault(hashKey(channelID), guildRowID, routeKey, channelID, editErr) {
+						res.Errors++
+						slog.Warn("component=discord", "event", "route_panel_update_failed", "route_key", routeKey, "guild_id", guildRowID, "channel_id", channelID, "err", editErr.Error())
+					}
 					continue
 				}
 			} else {
 				_, getErr := p.api.ChannelMessage(channelID, messageID)
 				switch {
 				case getErr == nil:
+					p.clearFault(hashKey(channelID))
 					continue
 				case !isUnknownMessage(getErr):
-					res.Errors++
-					slog.Warn("component=discord", "event", "route_panel_verify_failed", "route_key", routeKey, "guild_id", guildRowID, "channel_id", channelID, "err", getErr.Error())
+					if !p.noteFault(hashKey(channelID), guildRowID, routeKey, channelID, getErr) {
+						res.Errors++
+						slog.Warn("component=discord", "event", "route_panel_verify_failed", "route_key", routeKey, "guild_id", guildRowID, "channel_id", channelID, "err", getErr.Error())
+					}
 					continue
 				}
 			}
@@ -239,12 +356,16 @@ func (p *RoutePanels) sync(ctx context.Context, guildRowID int64, routeKey strin
 		}
 		msg, sendErr := p.sendPanel(channelID, content)
 		if sendErr != nil || msg == nil {
+			if sendErr != nil && p.noteFault(hashKey(channelID), guildRowID, routeKey, channelID, sendErr) {
+				continue
+			}
 			res.Errors++
 			if sendErr != nil {
 				slog.Warn("component=discord", "event", "route_panel_send_failed", "route_key", routeKey, "guild_id", guildRowID, "channel_id", channelID, "err", sendErr.Error())
 			}
 			continue
 		}
+		p.clearFault(hashKey(channelID))
 		if upErr := p.store.Upsert(ctx, guildRowID, routeKey, channelID, msg.ID); upErr != nil {
 			// Not recorded: retire the message just posted, or the next sync
 			// would post another copy next to it.

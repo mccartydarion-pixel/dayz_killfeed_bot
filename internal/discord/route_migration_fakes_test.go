@@ -86,6 +86,7 @@ type fakeDiscord struct {
 	// editErr / getErr, when set for "channel/id", is returned instead of acting.
 	editErr map[string]error
 	getErr  map[string]error
+	gets    map[string]int
 	sendErr map[string]error // by channel
 	// lastEmbed is the description last sent/edited per channel (complex messages).
 	lastEmbed map[string]string
@@ -194,9 +195,20 @@ func (f *fakeDiscord) ChannelMessageEditEmbed(channelID, messageID string, _ *di
 	return f.edit(channelID, messageID)
 }
 
+// getCount is how many times ChannelMessage was asked for "channel/id".
+func (f *fakeDiscord) getCount(key string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.gets[key]
+}
+
 func (f *fakeDiscord) ChannelMessage(channelID, messageID string) (*discordgo.Message, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.gets == nil {
+		f.gets = map[string]int{}
+	}
+	f.gets[channelID+"/"+messageID]++
 	if err := f.getErr[channelID+"/"+messageID]; err != nil {
 		return nil, err
 	}

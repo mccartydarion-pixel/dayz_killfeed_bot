@@ -227,6 +227,9 @@ func (e *Engine) selectLog(lf nitrado.LogFile) bool {
 		previousPath = e.selected.Path
 	}
 	candidate := lf
+	if previousPath != lf.Path {
+		e.resetStaleBackoff() // a new selection is new evidence; probe it at the base cadence
+	}
 	e.selected = &candidate
 	if e.diagnostics != nil {
 		e.diagnostics.Update(func(s *RuntimeDiagnosticSnapshot) {
