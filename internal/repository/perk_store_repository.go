@@ -492,7 +492,7 @@ WHERE p.guild_id=$1 AND p.id=$2 AND p.status='ACTIVE' AND p.billing='MONTHLY' AN
 	if _, err := charge(ctx, tx, s, purchaseID, buyer, price, "RENEWAL", ref, name+" (monthly renewal)"); err != nil {
 		return PerkPurchase{}, err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE perk_purchases SET expires_at=$2,renewals=renewals+1,perks_applied_at=NULL,perk_attempts=0,perks_error=NULL WHERE id=$1`, purchaseID, perkstore.NextRenewal(expires, now)); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE perk_purchases SET expires_at=$2,renewals=renewals+1,perks_applied_at=NULL,perk_attempts=0,perks_error='' WHERE id=$1`, purchaseID, perkstore.NextRenewal(expires, now)); err != nil {
 		return PerkPurchase{}, err
 	}
 	p, err := scanPerkPurchase(tx.QueryRow(ctx, `SELECT `+perkPurchaseCols+perkPurchaseFrom+` WHERE p.id=$1`, purchaseID))
