@@ -62,18 +62,22 @@ type Subscription struct {
 	// OwnerGrantUntil/OwnerGrantReason are set when the platform owner granted this plan without
 	// Stripe (Owner Hub "Grant plan"); the grant lapses at OwnerGrantUntil (nil = open-ended) and
 	// a Stripe checkout always supersedes it.
-	OwnerGrantUntil      *time.Time
-	OwnerGrantReason     string
+	OwnerGrantUntil  *time.Time
+	OwnerGrantReason string
+	// PastDueSince is when the status first became PAST_DUE in the current failure (nil
+	// otherwise). The billing pause measures its grace from here, not from UpdatedAt or
+	// CurrentPeriodStart, which Stripe moves on every dunning retry.
+	PastDueSince         *time.Time
 	CreatedAt, UpdatedAt time.Time
 }
 
 const subscriptionCols = `id, organization_id, COALESCE(provider,''), COALESCE(provider_customer_id,''), COALESCE(provider_subscription_id,''), COALESCE(provider_price_id,''),
-plan, status, COALESCE(billing_interval,''), trial_ends_at, current_period_start, current_period_end, cancel_at_period_end, canceled_at, trial_consumed, COALESCE(intended_plan,''), owner_grant_until, COALESCE(owner_grant_reason,''), created_at, updated_at`
+plan, status, COALESCE(billing_interval,''), trial_ends_at, current_period_start, current_period_end, cancel_at_period_end, canceled_at, trial_consumed, COALESCE(intended_plan,''), owner_grant_until, COALESCE(owner_grant_reason,''), past_due_since, created_at, updated_at`
 
 func scanSubscription(row pgx.Row) (Subscription, error) {
 	var s Subscription
 	err := row.Scan(&s.ID, &s.OrganizationID, &s.Provider, &s.ProviderCustomerID, &s.ProviderSubscriptionID, &s.ProviderPriceID,
-		&s.Plan, &s.Status, &s.BillingInterval, &s.TrialEndsAt, &s.CurrentPeriodStart, &s.CurrentPeriodEnd, &s.CancelAtPeriodEnd, &s.CanceledAt, &s.TrialConsumed, &s.IntendedPlan, &s.OwnerGrantUntil, &s.OwnerGrantReason, &s.CreatedAt, &s.UpdatedAt)
+		&s.Plan, &s.Status, &s.BillingInterval, &s.TrialEndsAt, &s.CurrentPeriodStart, &s.CurrentPeriodEnd, &s.CancelAtPeriodEnd, &s.CanceledAt, &s.TrialConsumed, &s.IntendedPlan, &s.OwnerGrantUntil, &s.OwnerGrantReason, &s.PastDueSince, &s.CreatedAt, &s.UpdatedAt)
 	return s, err
 }
 
@@ -179,6 +183,7 @@ UPDATE subscriptions SET
   status=$7, billing_interval=CASE WHEN $8='' THEN billing_interval ELSE $8 END,
   trial_ends_at=$9, current_period_start=$10, current_period_end=$11, cancel_at_period_end=$12, canceled_at=$13,
   trial_consumed = trial_consumed OR ($4 <> ''),
+  past_due_since = CASE WHEN $7 = 'PAST_DUE' THEN COALESCE(past_due_since, NOW()) ELSE NULL END,
   updated_at=NOW()
 WHERE organization_id=$1
 RETURNING ` + subscriptionCols

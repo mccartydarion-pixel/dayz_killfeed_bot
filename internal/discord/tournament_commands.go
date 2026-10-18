@@ -170,6 +170,12 @@ func (h *TournamentCommandHandler) resolve(ctx context.Context, i *discordgo.Int
 // currentID is the tournament to act on: the button's, else the server's current one.
 func (h *TournamentCommandHandler) currentID(ctx context.Context, tc tournamentContext, fixed *int64) (int64, string) {
 	if fixed != nil && *fixed > 0 {
+		// A button's custom id names the tournament; ids are global, so the one named must be
+		// this server's before the press joins, leaves or checks in to it.
+		t, err := h.svc.Get(ctx, *fixed)
+		if err != nil || t == nil || t.ServerID != tc.serverID {
+			return 0, "That tournament no longer exists."
+		}
 		return *fixed, ""
 	}
 	id, err := h.current(ctx, tc.serverID)

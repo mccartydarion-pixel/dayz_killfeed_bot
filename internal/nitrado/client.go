@@ -39,6 +39,10 @@ type Client struct {
 	// poll tick makes against the same directory cost one request.
 	listMu    sync.Mutex
 	listCache map[string]cachedList
+
+	// accessLists serializes accessListChange per service and list (gameserver_actions.go): the
+	// change is a read-modify-write of the whole list, so two concurrent ones would lose one.
+	accessLists sync.Map // "serviceID/key" -> *sync.Mutex
 }
 
 // apiBaseOverride replaces DefaultBaseURL for every client in this process

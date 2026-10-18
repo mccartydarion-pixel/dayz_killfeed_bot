@@ -436,7 +436,7 @@ func TestIsAdminAcceptsMappedChampionAdministrator(t *testing.T) {
 	}
 	var askedGuild string
 	var askedRoles []string
-	SetChampionAdminResolver(func(guildID string, roles []string) bool {
+	SetChampionAdminResolver(func(guildID string, roles []string, serverID int64) bool {
 		askedGuild, askedRoles = guildID, roles
 		for _, r := range roles {
 			if r == "r-admin" {

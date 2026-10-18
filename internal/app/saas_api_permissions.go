@@ -472,6 +472,20 @@ func (a *App) handleSetPermission(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), adminTimeout)
 	defer cancel()
+	// Set upserts: re-mapping a role already mapped above the actor's ceiling would demote it,
+	// the same way deleting it would strip it. Both are refused.
+	existing, err := a.Permissions.GetByRole(ctx, ac.scope.InstallationID, discordRoleID)
+	if err != nil {
+		slog.Warn("component=saas_api", "msg", "get permission mapping failed", "err", err.Error())
+		writeSaaSError(w, codeInternalError, "could not resolve permission mapping")
+		return
+	}
+	if existing != nil {
+		if existingLevel, _ := permissions.ParseLevel(existing.Level); !permissions.CanGrant(ac.level, existingLevel) {
+			writeSaaSError(w, codeAdminEscalationDenied, "cannot change a permission level above your own")
+			return
+		}
+	}
 	mapping, err := a.Permissions.Set(ctx, ac.scope.InstallationID, discordRoleID, targetLevel.String(), ac.user.ID)
 	if err != nil {
 		slog.Warn("component=saas_api", "msg", "set permission failed", "err", err.Error())

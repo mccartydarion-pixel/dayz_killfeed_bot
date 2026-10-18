@@ -56,7 +56,22 @@ var migrations0126onward = []Migration{
 		Name: "0133_erase_keeps_billing_records",
 		SQL:  EraseKeepsBillingRecordsSQL,
 	},
+	{
+		// Billing pause (docs/BILLING.md "Payment failure handling"): when a subscription first
+		// became PAST_DUE, so the grace period is measured from the first failed payment and not
+		// from updated_at or current_period_start, which Stripe moves on every dunning retry.
+		Name: "0134_subscription_past_due_since",
+		SQL:  SubscriptionPastDueSinceSQL,
+	},
 }
+
+// SubscriptionPastDueSinceSQL adds subscriptions.past_due_since: set when the status becomes
+// PAST_DUE, kept while it stays PAST_DUE, cleared by any other status (ApplyProviderState). Rows
+// already PAST_DUE start their grace now.
+const SubscriptionPastDueSinceSQL = `
+ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS past_due_since TIMESTAMPTZ;
+UPDATE subscriptions SET past_due_since = NOW() WHERE status = 'PAST_DUE' AND past_due_since IS NULL;
+`
 
 // EraseKeepsBillingRecordsSQL keeps billing_transactions (needed for tax and accounting) and
 // trial_grants (one no-card trial per Discord account) when their organization is deleted: the

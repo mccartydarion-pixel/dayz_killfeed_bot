@@ -46,7 +46,10 @@ An ADMINISTRATOR runs the server exactly as the OWNER does: every capability bel
 In Discord as on the website: a member whose Discord role is mapped to ADMINISTRATOR (or OWNER) may
 run the admin slash commands (`/setup`, `/server`, `/admin`, `/features` and the admin subcommands)
 without Discord's own Administrator or Manage Server permission (`internal/discord/admin_gate.go`;
-those commands therefore carry no Discord default-member permission).
+those commands therefore carry no Discord default-member permission). The mapping is read per
+installation: a Discord server with several DayZ servers holds one installation each, and a role
+mapped on one of them is an admin for the guild's selected server (what the commands act on) and for
+the server a `/server select|disconnect|repair` names, never for the other installations.
 
 | Capability | Level | Notes |
 |---|---|---|

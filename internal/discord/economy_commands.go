@@ -201,7 +201,13 @@ func (h *EconomyCommandHandler) adjust(ctx context.Context, i *discordgo.Interac
 	if err != nil {
 		return ReplyPlayerNotFound
 	}
-	req := economy.Request{GuildID: guildRowID, PlayerID: playerID, Amount: optionInt(sub, "amount"), Description: optionString(sub, "reason"), Actor: i.Member.User.ID}
+	amount := optionInt(sub, "amount")
+	if amount > economy.MaxAdminAmount {
+		// The same ceiling as the website's admin adjustment: the ledger's 1e15 is not an
+		// amount one command should mint.
+		return fmt.Sprintf("Use an amount of at most %s.", formatAmount(economy.MaxAdminAmount))
+	}
+	req := economy.Request{GuildID: guildRowID, PlayerID: playerID, Amount: amount, Description: optionString(sub, "reason"), Actor: i.Member.User.ID}
 	var res economy.Result
 	if credit {
 		res, err = h.economy.AdminCredit(ctx, req)

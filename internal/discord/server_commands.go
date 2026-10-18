@@ -300,6 +300,12 @@ func (h *ServerCommandHandler) handleSelect(s *discordgo.Session, i *discordgo.I
 		respondEphemeral(s, i, ReplyNotSetUp)
 		return
 	}
+	// Reconnecting a known server is that server's installation to allow, not another's in the
+	// same Discord.
+	if known, err := h.servers.FindByGuildAndService(ctx, guildRowID, matched.ID); err == nil && known != nil && !isAdminForServer(i, known.ID) {
+		respondEphemeral(s, i, ReplyNeedsPermission("manage this server"))
+		return
+	}
 
 	// The name the periodic sync will read (nitrado.ServerName): the DayZ hostname setting when the
 	// gameserver read is possible, else the service list's name.
@@ -360,6 +366,10 @@ func (h *ServerCommandHandler) handleDisconnect(s *discordgo.Session, i *discord
 		respondEphemeral(s, i, "That server is not connected to this Discord.")
 		return
 	}
+	if !isAdminForServer(i, row.ID) {
+		respondEphemeral(s, i, ReplyNeedsPermission("manage this server"))
+		return
+	}
 	if err := h.servers.Deactivate(ctx, row.ID); err != nil {
 		respondEphemeral(s, i, ReplyCouldNot("disconnect the server"))
 		return
@@ -391,6 +401,10 @@ func (h *ServerCommandHandler) handleRepair(s *discordgo.Session, i *discordgo.I
 	row, err := h.servers.FindByGuildAndService(ctx, guildRowID, serviceID)
 	if err != nil || row == nil {
 		respondEphemeral(s, i, "That server is not known to this Discord. Run `/server select` instead.")
+		return
+	}
+	if !isAdminForServer(i, row.ID) {
+		respondEphemeral(s, i, ReplyNeedsPermission("manage this server"))
 		return
 	}
 

@@ -205,6 +205,20 @@ func TestModeratorCannotGrantOwnerEscalationDenied(t *testing.T) {
 	if escRR.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 ADMIN_ESCALATION_DENIED for a Moderator granting Owner, got %d: %s", escRR.Code, escRR.Body.String())
 	}
+
+	// Nor demote: re-mapping an ADMINISTRATOR role to GATEKEEPER is a change above the ceiling.
+	adminRole := "discord-role-admin-esc"
+	if rr := w.call(w.a.handleSetPermission, http.MethodPut, w.path("/permissions/"+adminRole), w.f.OwnerDiscordID, setPermissionRequest{Level: "ADMINISTRATOR"}, map[string]string{"discordRoleID": adminRole}); rr.Code != http.StatusOK {
+		t.Fatalf("owner setup failed: %d %s", rr.Code, rr.Body.String())
+	}
+	demoteRR := w.call(w.a.handleSetPermission, http.MethodPut, w.path("/permissions/"+adminRole), modUser.DiscordUserID, setPermissionRequest{Level: "GATEKEEPER"}, map[string]string{"discordRoleID": adminRole})
+	if demoteRR.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for a Moderator demoting an ADMINISTRATOR mapping, got %d: %s", demoteRR.Code, demoteRR.Body.String())
+	}
+	levels, err := w.a.Permissions.LevelsForRoles(context.Background(), w.f.InstallationID, []string{adminRole})
+	if err != nil || len(levels) != 1 || levels[0] != "ADMINISTRATOR" {
+		t.Fatalf("the ADMINISTRATOR mapping must be untouched, got %v %v", levels, err)
+	}
 }
 
 // --- audit log ---------------------------------------------------------------------------------
@@ -509,9 +523,10 @@ func TestResetEveryoneStatsRequiresConfirmationAndStartsNewSeason(t *testing.T) 
 	}
 }
 
-// The slash-command admin gate (internal/discord admin_gate.go) asks by Discord server, not by
-// installation: a role mapped to ADMINISTRATOR or OWNER there makes the member an admin; a
-// MODERATOR mapping, an unmapped role or another Discord server does not.
+// The slash-command admin gate (internal/discord admin_gate.go) asks by installation: a role
+// mapped to ADMINISTRATOR or OWNER on the installation of the server a command targets (the
+// guild's only one here, with 0) makes the member an admin; a MODERATOR mapping, an unmapped
+// role, another Discord server or another game server in the same Discord does not.
 func TestChampionAdminResolverFollowsRoleMappings(t *testing.T) {
 	w := newClientAdminWorld(t)
 	resolve := w.a.championAdminResolver()
@@ -520,13 +535,16 @@ func TestChampionAdminResolverFollowsRoleMappings(t *testing.T) {
 	}
 	w.mapRole("admin-user", "role-admin", "ADMINISTRATOR")
 	w.mapRole("mod-user", "role-mod", "MODERATOR")
-	if !resolve(w.f.DiscordGuildID, []string{"role-other", "role-admin"}) {
+	if !resolve(w.f.DiscordGuildID, []string{"role-other", "role-admin"}, 0) || !resolve(w.f.DiscordGuildID, []string{"role-admin"}, w.serverID) {
 		t.Fatal("an ADMINISTRATOR mapping makes the member an admin")
 	}
-	if resolve(w.f.DiscordGuildID, []string{"role-mod"}) || resolve(w.f.DiscordGuildID, []string{"role-other"}) || resolve(w.f.DiscordGuildID, nil) {
+	if resolve(w.f.DiscordGuildID, []string{"role-mod"}, 0) || resolve(w.f.DiscordGuildID, []string{"role-other"}, 0) || resolve(w.f.DiscordGuildID, nil, 0) {
 		t.Fatal("a MODERATOR mapping or no mapping grants nothing")
 	}
-	if resolve("another-guild", []string{"role-admin"}) {
+	if resolve("another-guild", []string{"role-admin"}, 0) {
 		t.Fatal("a mapping belongs to its own Discord server")
+	}
+	if resolve(w.f.DiscordGuildID, []string{"role-admin"}, w.serverID+1_000_000) {
+		t.Fatal("a mapping belongs to its own installation, not another server in the same Discord")
 	}
 }
