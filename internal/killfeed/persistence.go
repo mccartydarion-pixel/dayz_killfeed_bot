@@ -288,7 +288,15 @@ func (q *PersistenceQueue) QueueHealth() (depth, capacity, highWater int, droppe
 	return
 }
 
-// Run processes queued events in order until the queue is closed and drained.
+// persistDrainBudget bounds the flush of events still queued when Run's context is cancelled
+// (a shutdown or a worker restart): each one is written with this much time left, so a slow
+// database cannot hold the process past its shutdown budget, but a redeploy does not lose the
+// kills the ADM checkpoint has already advanced past.
+const persistDrainBudget = 10 * time.Second
+
+// Run processes queued events in order until the queue is closed and drained. A cancelled
+// context drains too: the events already accepted are written under persistDrainBudget rather
+// than dropped.
 func (q *PersistenceQueue) Run(ctx context.Context) {
 	defer close(q.done)
 	ticker := time.NewTicker(30 * time.Second)
@@ -313,21 +321,33 @@ func (q *PersistenceQueue) Run(ctx context.Context) {
 				_ = checkpointer.CheckpointConnected(ctx, q.guildID, q.serverID, time.Now().UTC())
 			}
 		case <-q.closed:
-			// Drain remaining queued events before exit.
-			for {
-				select {
-				case request := <-q.queue:
-					if request != nil && request.event != nil {
-						err := q.persistOne(ctx, request.event)
-						if request.ack != nil {
-							request.ack <- err
-						}
-					}
-				default:
-					return
+			q.drain(ctx)
+			return
+		case <-ctx.Done():
+			q.drain(ctx)
+			return
+		}
+	}
+}
+
+// drain writes everything still queued. The context may already be cancelled, so the writes
+// run under a fresh persistDrainBudget detached from it.
+func (q *PersistenceQueue) drain(ctx context.Context) {
+	drainCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), persistDrainBudget)
+	defer cancel()
+	for {
+		select {
+		case request := <-q.queue:
+			if request != nil && request.event != nil {
+				err := q.persistOne(drainCtx, request.event)
+				if request.ack != nil {
+					request.ack <- err
 				}
 			}
-		case <-ctx.Done():
+		default:
+			q.mu.Lock()
+			q.oldestAt = time.Time{}
+			q.mu.Unlock()
 			return
 		}
 	}

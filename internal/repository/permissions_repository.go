@@ -106,30 +106,43 @@ func (r *PermissionsRepository) LevelsForRoles(ctx context.Context, installation
 	return out, rows.Err()
 }
 
-// LevelsForGuildRoles is LevelsForRoles for the installation whose Discord server is
-// discordGuildID (the Discord snowflake): the Champion levels the given Discord roles map to
-// there. Nothing is returned for a Discord server no installation uses.
-func (r *PermissionsRepository) LevelsForGuildRoles(ctx context.Context, discordGuildID string, discordRoleIDs []string) ([]string, error) {
-	if discordGuildID == "" || len(discordRoleIDs) == 0 {
+// InstallationRoleLevel is one installation of a Discord server with the Champion level a set
+// of Discord roles maps to there (empty when none of them is mapped on it).
+type InstallationRoleLevel struct {
+	InstallationID int64
+	GameServerID   int64
+	Level          string
+}
+
+// InstallationLevelsForGuildRoles lists every installation whose Discord server is discordGuildID
+// (the Discord snowflake) with the levels the given Discord roles map to on each: one row per
+// installation and mapped level, and one row with an empty level for an installation none of the
+// roles is mapped on. A Discord server can hold one installation per DayZ server, so the caller
+// gates by the installation a command targets rather than by the Discord server alone.
+func (r *PermissionsRepository) InstallationLevelsForGuildRoles(ctx context.Context, discordGuildID string, discordRoleIDs []string) ([]InstallationRoleLevel, error) {
+	if discordGuildID == "" {
 		return nil, nil
 	}
-	rows, err := r.pool.Query(ctx, `SELECT DISTINCT p.permission_level
-FROM installation_role_permissions p
-JOIN installations i ON i.id = p.installation_id
+	if discordRoleIDs == nil {
+		discordRoleIDs = []string{}
+	}
+	rows, err := r.pool.Query(ctx, `SELECT i.id, COALESCE(i.game_server_id, 0), COALESCE(p.permission_level, '')
+FROM installations i
 JOIN discord_guild_connections c ON c.id = i.discord_guild_connection_id
 JOIN guilds g ON g.id = c.guild_id
-WHERE g.discord_guild_id = $1 AND p.discord_role_id = ANY($2)`, discordGuildID, discordRoleIDs)
+LEFT JOIN installation_role_permissions p ON p.installation_id = i.id AND p.discord_role_id = ANY($2)
+WHERE g.discord_guild_id = $1`, discordGuildID, discordRoleIDs)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []string
+	var out []InstallationRoleLevel
 	for rows.Next() {
-		var level string
-		if err := rows.Scan(&level); err != nil {
+		var row InstallationRoleLevel
+		if err := rows.Scan(&row.InstallationID, &row.GameServerID, &row.Level); err != nil {
 			return nil, err
 		}
-		out = append(out, level)
+		out = append(out, row)
 	}
 	return out, rows.Err()
 }

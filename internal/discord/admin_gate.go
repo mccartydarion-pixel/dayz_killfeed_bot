@@ -20,9 +20,10 @@ import (
 // member it refuses gets a private "not allowed" reply.
 
 // ChampionAdminResolver reports whether any of a member's Discord roles maps to the Champion
-// ADMINISTRATOR or OWNER level in the installation for discordGuildID. It is called on the
-// interaction goroutine, so it must be quick and must never block on Discord.
-type ChampionAdminResolver func(discordGuildID string, roleIDs []string) bool
+// ADMINISTRATOR or OWNER level on the installation for discordGuildID's game server gameServerID
+// (0: the command names no server, so the guild's selected one). It is called on the interaction
+// goroutine, so it must be quick and must never block on Discord.
+type ChampionAdminResolver func(discordGuildID string, roleIDs []string, gameServerID int64) bool
 
 var championAdminResolver atomic.Pointer[ChampionAdminResolver]
 
@@ -37,8 +38,13 @@ func SetChampionAdminResolver(f ChampionAdminResolver) {
 }
 
 // championAdminMember reports whether the interaction's member holds a mapped ADMINISTRATOR or
-// OWNER role. Without a resolver, a guild or roles it is false.
+// OWNER role on the guild's selected server. Without a resolver, a guild or roles it is false.
 func championAdminMember(i *discordgo.InteractionCreate) bool {
+	return championAdminMemberFor(i, 0)
+}
+
+// championAdminMemberFor is championAdminMember for the installation of game server gameServerID.
+func championAdminMemberFor(i *discordgo.InteractionCreate, gameServerID int64) bool {
 	if i == nil || i.Member == nil || i.GuildID == "" || len(i.Member.Roles) == 0 {
 		return false
 	}
@@ -46,5 +52,18 @@ func championAdminMember(i *discordgo.InteractionCreate) bool {
 	if f == nil {
 		return false
 	}
-	return (*f)(i.GuildID, i.Member.Roles)
+	return (*f)(i.GuildID, i.Member.Roles, gameServerID)
+}
+
+// isAdminForServer is isAdminInteraction for a command that targets game server gameServerID: a
+// Discord administrator always, a role-mapped administrator only when mapped on that server's
+// installation rather than another installation in the same Discord server.
+func isAdminForServer(i *discordgo.InteractionCreate, gameServerID int64) bool {
+	if i == nil || i.Member == nil {
+		return false
+	}
+	if i.Member.Permissions&(discordgo.PermissionAdministrator|discordgo.PermissionManageServer) != 0 {
+		return true
+	}
+	return championAdminMemberFor(i, gameServerID)
 }

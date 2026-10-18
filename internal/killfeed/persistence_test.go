@@ -505,3 +505,24 @@ func TestEnqueueAndWaitReturnsWhenQueueStopsWhileWaiting(t *testing.T) {
 		t.Fatal("still waiting 3s after the queue stopped")
 	}
 }
+
+// A cancelled context (shutdown, worker restart) drains the events already queued instead of
+// dropping them: the ADM checkpoint has advanced past them, so a drop loses the kill for good.
+func TestPersistenceQueueDrainsOnContextCancel(t *testing.T) {
+	store := newFakePersistenceStore()
+	pq := NewPersistenceQueue(store, 1, "sess-drain")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for i := 0; i < 5; i++ {
+		if !pq.Enqueue(killEvent("v", "k", "M4-A1", float64(10+i), "16:40:12")) {
+			t.Fatalf("enqueue %d rejected", i)
+		}
+	}
+	pq.Run(ctx)
+	if got := len(store.kills); got != 5 {
+		t.Fatalf("expected 5 kills persisted on cancelled drain, got %d", got)
+	}
+	if pq.Depth() != 0 {
+		t.Fatalf("queue not drained: depth %d", pq.Depth())
+	}
+}

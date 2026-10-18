@@ -509,9 +509,10 @@ func TestResetEveryoneStatsRequiresConfirmationAndStartsNewSeason(t *testing.T) 
 	}
 }
 
-// The slash-command admin gate (internal/discord admin_gate.go) asks by Discord server, not by
-// installation: a role mapped to ADMINISTRATOR or OWNER there makes the member an admin; a
-// MODERATOR mapping, an unmapped role or another Discord server does not.
+// The slash-command admin gate (internal/discord admin_gate.go) asks by installation: a role
+// mapped to ADMINISTRATOR or OWNER on the installation of the server a command targets (the
+// guild's only one here, with 0) makes the member an admin; a MODERATOR mapping, an unmapped
+// role, another Discord server or another game server in the same Discord does not.
 func TestChampionAdminResolverFollowsRoleMappings(t *testing.T) {
 	w := newClientAdminWorld(t)
 	resolve := w.a.championAdminResolver()
@@ -520,13 +521,16 @@ func TestChampionAdminResolverFollowsRoleMappings(t *testing.T) {
 	}
 	w.mapRole("admin-user", "role-admin", "ADMINISTRATOR")
 	w.mapRole("mod-user", "role-mod", "MODERATOR")
-	if !resolve(w.f.DiscordGuildID, []string{"role-other", "role-admin"}) {
+	if !resolve(w.f.DiscordGuildID, []string{"role-other", "role-admin"}, 0) || !resolve(w.f.DiscordGuildID, []string{"role-admin"}, w.serverID) {
 		t.Fatal("an ADMINISTRATOR mapping makes the member an admin")
 	}
-	if resolve(w.f.DiscordGuildID, []string{"role-mod"}) || resolve(w.f.DiscordGuildID, []string{"role-other"}) || resolve(w.f.DiscordGuildID, nil) {
+	if resolve(w.f.DiscordGuildID, []string{"role-mod"}, 0) || resolve(w.f.DiscordGuildID, []string{"role-other"}, 0) || resolve(w.f.DiscordGuildID, nil, 0) {
 		t.Fatal("a MODERATOR mapping or no mapping grants nothing")
 	}
-	if resolve("another-guild", []string{"role-admin"}) {
+	if resolve("another-guild", []string{"role-admin"}, 0) {
 		t.Fatal("a mapping belongs to its own Discord server")
+	}
+	if resolve(w.f.DiscordGuildID, []string{"role-admin"}, w.serverID+1_000_000) {
+		t.Fatal("a mapping belongs to its own installation, not another server in the same Discord")
 	}
 }
