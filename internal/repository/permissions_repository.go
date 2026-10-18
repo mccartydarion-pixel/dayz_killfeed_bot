@@ -77,6 +77,18 @@ func (r *PermissionsRepository) Get(ctx context.Context, installationID, mapping
 	return &p, nil
 }
 
+// GetByRole returns the installation's mapping for discordRoleID, nil when there is none.
+func (r *PermissionsRepository) GetByRole(ctx context.Context, installationID int64, discordRoleID string) (*RolePermission, error) {
+	p, err := scanRolePermission(r.pool.QueryRow(ctx, `SELECT `+rolePermissionCols+` FROM installation_role_permissions WHERE installation_id=$1 AND discord_role_id=$2`, installationID, discordRoleID))
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
 // Delete removes one mapping, scoped to installationID.
 func (r *PermissionsRepository) Delete(ctx context.Context, installationID, mappingID int64) error {
 	_, err := r.pool.Exec(ctx, `DELETE FROM installation_role_permissions WHERE installation_id=$1 AND id=$2`, installationID, mappingID)

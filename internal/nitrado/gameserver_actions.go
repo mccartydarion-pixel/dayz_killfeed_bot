@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 )
 
 // Champion Client Admin Control Plane Phase 1 (docs/CLIENT_ADMIN.md "DayZ capability audit"):
@@ -142,6 +143,10 @@ func (c *Client) accessListChange(ctx context.Context, serviceID, key, identifie
 	if !ValidPriorityName(identifier) {
 		return fmt.Errorf("identifier is required and must be a single line of at most 64 characters")
 	}
+	lock, _ := c.accessLists.LoadOrStore(serviceID+"/"+key, &sync.Mutex{})
+	mu := lock.(*sync.Mutex)
+	mu.Lock()
+	defer mu.Unlock()
 	names, err := c.generalListSetting(ctx, serviceID, key)
 	if err != nil {
 		return err

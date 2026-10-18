@@ -205,6 +205,20 @@ func TestModeratorCannotGrantOwnerEscalationDenied(t *testing.T) {
 	if escRR.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 ADMIN_ESCALATION_DENIED for a Moderator granting Owner, got %d: %s", escRR.Code, escRR.Body.String())
 	}
+
+	// Nor demote: re-mapping an ADMINISTRATOR role to GATEKEEPER is a change above the ceiling.
+	adminRole := "discord-role-admin-esc"
+	if rr := w.call(w.a.handleSetPermission, http.MethodPut, w.path("/permissions/"+adminRole), w.f.OwnerDiscordID, setPermissionRequest{Level: "ADMINISTRATOR"}, map[string]string{"discordRoleID": adminRole}); rr.Code != http.StatusOK {
+		t.Fatalf("owner setup failed: %d %s", rr.Code, rr.Body.String())
+	}
+	demoteRR := w.call(w.a.handleSetPermission, http.MethodPut, w.path("/permissions/"+adminRole), modUser.DiscordUserID, setPermissionRequest{Level: "GATEKEEPER"}, map[string]string{"discordRoleID": adminRole})
+	if demoteRR.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for a Moderator demoting an ADMINISTRATOR mapping, got %d: %s", demoteRR.Code, demoteRR.Body.String())
+	}
+	levels, err := w.a.Permissions.LevelsForRoles(context.Background(), w.f.InstallationID, []string{adminRole})
+	if err != nil || len(levels) != 1 || levels[0] != "ADMINISTRATOR" {
+		t.Fatalf("the ADMINISTRATOR mapping must be untouched, got %v %v", levels, err)
+	}
 }
 
 // --- audit log ---------------------------------------------------------------------------------
