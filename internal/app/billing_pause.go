@@ -38,10 +38,13 @@ func servicePaused(organizationID int64, sub *repository.Subscription, now time.
 		return true
 	}
 	if sub != nil && sub.Status == repository.SubscriptionPastDue {
-		// Stripe moves the period forward when it bills the renewal, so the failed invoice is
-		// as old as the current period.
+		// The grace runs from the first failed payment (past_due_since, kept by
+		// ApplyProviderState while the status stays PAST_DUE). UpdatedAt and
+		// CurrentPeriodStart both move on Stripe's dunning retries and would restart it.
 		since := sub.UpdatedAt
-		if sub.CurrentPeriodStart != nil {
+		if sub.PastDueSince != nil {
+			since = *sub.PastDueSince
+		} else if sub.CurrentPeriodStart != nil {
 			since = *sub.CurrentPeriodStart
 		}
 		return now.Sub(since) > pastDueGrace

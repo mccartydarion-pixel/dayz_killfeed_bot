@@ -299,6 +299,10 @@ suspended, no data is deleted, entitlements are unaffected (they already fully f
 grace period - a warning banner only, a feature downgrade, an installation suspension after N days - is an explicit product/commercial decision this phase does not make.** `PAST_DUE` is reported
 faithfully in the subscription summary and the admin list so the product can decide and a future phase can act on it.
 
+Decision taken since: the organization's server workers are paused once a subscription has been `PAST_DUE` for `pastDueGrace` (3 days, `internal/app/billing_pause.go`). The grace is measured
+from `subscriptions.past_due_since` (migration `0134`), which `ApplyProviderState` sets when the status first becomes `PAST_DUE`, keeps while it stays so, and clears on any other status. It is
+not measured from `updated_at` or `current_period_start`: Stripe moves both on every dunning retry, which would restart the clock and never pause the service.
+
 ## 18. Reconciliation
 
 `billing.Service.Reconcile(ctx, organizationID)` pulls the organization's subscription straight from Stripe (`GetSubscription`) and overwrites Champion's row with it - useful for a missed

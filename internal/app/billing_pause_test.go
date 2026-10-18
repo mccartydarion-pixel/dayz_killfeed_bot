@@ -24,6 +24,9 @@ func TestServicePaused(t *testing.T) {
 		{"paid and active", &repository.Subscription{Status: repository.SubscriptionActive, ProviderSubscriptionID: "sub_1"}, false},
 		{"payment failed within grace", &repository.Subscription{Status: repository.SubscriptionPastDue, ProviderSubscriptionID: "sub_1", CurrentPeriodStart: ago(2 * 24 * time.Hour)}, false},
 		{"payment failed past grace", &repository.Subscription{Status: repository.SubscriptionPastDue, ProviderSubscriptionID: "sub_1", CurrentPeriodStart: ago(4 * 24 * time.Hour)}, true},
+		// Stripe's dunning retries move current_period_start and updated_at; the first failure wins.
+		{"dunning retry does not restart the grace", &repository.Subscription{Status: repository.SubscriptionPastDue, ProviderSubscriptionID: "sub_1", PastDueSince: ago(4 * 24 * time.Hour), CurrentPeriodStart: ago(time.Hour), UpdatedAt: now.Add(-time.Hour)}, true},
+		{"first failure within grace", &repository.Subscription{Status: repository.SubscriptionPastDue, ProviderSubscriptionID: "sub_1", PastDueSince: ago(2 * 24 * time.Hour), CurrentPeriodStart: ago(30 * 24 * time.Hour)}, false},
 		{"canceled", &repository.Subscription{Status: repository.SubscriptionCanceled, ProviderSubscriptionID: "sub_1"}, true},
 		{"suspended", &repository.Subscription{Status: repository.SubscriptionSuspended, ProviderSubscriptionID: "sub_1"}, true},
 		{"owner grant open-ended", &repository.Subscription{Status: repository.SubscriptionActive}, false},
