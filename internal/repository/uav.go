@@ -189,11 +189,19 @@ func (r *UAVRepository) Buy(ctx context.Context, scope PerkScope, playerID, fact
 	price := int64(blocks) * s.Price(tier)
 	label := map[string]string{UAVBasic: "UAV", UAVPrecision: "Precision UAV", UAVGhost: "Ghost"}[tier]
 	desc := fmt.Sprintf("Live map %s · %d minutes", label, minutes)
-	ref := "uav:" + requestKey
+	// The ledger dedupes per guild; the pass is per server. The reference carries the server so a
+	// request key already spent on another server of the same guild is a new (paid) purchase
+	// there, never a free pass against the first server's debit.
+	ref := fmt.Sprintf("uav:%d:%s", scope.ServerID, requestKey)
 	entry, err := applyLedger(ctx, tx, LedgerParams{GuildID: scope.GuildID, PlayerID: playerID, ServerID: scope.ServerID, Type: TxUAVPurchase,
 		Amount: price, CreatedBy: "SYSTEM", ReferenceID: ref, Description: desc}, true)
 	if err != nil {
 		return UAVPass{}, 0, err
+	}
+	if entry.Duplicate {
+		// The debit was already applied but no pass exists for it: refuse rather than hand out a
+		// pass that was not paid for in this transaction.
+		return UAVPass{}, 0, ErrUAVInvalidRequest
 	}
 	var owner *int64
 	if id, ok, err := ownerPlayer(ctx, tx, scope); err != nil {

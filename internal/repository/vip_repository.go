@@ -215,6 +215,15 @@ WHERE guild_id=$1 AND revoked_at IS NULL AND expires_at IS NOT NULL AND expires_
 	return r.collect(r.pool.Query(ctx, `SELECT `+vipMemberCols+vipMemberFrom+` WHERE m.id = ANY($1)`, ids))
 }
 
+// RoleSyncRetries lists memberships whose last Discord role change failed (role_error set) and
+// was last tried before `before`: active ones still need their role added, revoked ones still
+// need it removed. Without this an expired tier whose removal hit a Discord error kept its role.
+func (r *VIPRepository) RoleSyncRetries(ctx context.Context, guildID int64, before time.Time, limit int) ([]VIPMember, error) {
+	return r.collect(r.pool.Query(ctx, `SELECT `+vipMemberCols+vipMemberFrom+`
+ WHERE m.guild_id=$1 AND m.role_error IS NOT NULL AND (m.role_synced_at IS NULL OR m.role_synced_at<$2)
+ ORDER BY m.role_synced_at NULLS FIRST LIMIT $3`, guildID, before, limit))
+}
+
 // RecordRoleSync stores the outcome of the last Discord role add/remove ("" = success).
 func (r *VIPRepository) RecordRoleSync(ctx context.Context, memberID int64, problem string) error {
 	_, err := r.pool.Exec(ctx, `UPDATE vip_members SET role_synced_at=NOW(),role_error=NULLIF($2,'') WHERE id=$1`, memberID, problem)

@@ -290,7 +290,24 @@ func (a *App) runVIPExpiry(ctx context.Context, guildID int64, now time.Time) {
 	for _, m := range expired {
 		a.syncVIPRole(ctx, m, false)
 	}
+	// Role changes Discord refused earlier (5xx, rate limit, bot outranked) are tried again,
+	// spaced by vipRoleRetryAfter, until they succeed: an expired tier must lose its role and a
+	// granted one must get it.
+	retries, err := a.VIP.RoleSyncRetries(ctx, guildID, now.Add(-vipRoleRetryAfter), vipRoleRetryBatch)
+	if err != nil {
+		slog.Warn("component=vip", "msg", "role retry sweep failed", "err", err.Error())
+		return
+	}
+	for _, m := range retries {
+		a.syncVIPRole(ctx, m, m.Active)
+	}
 }
+
+// vipRoleRetryAfter spaces retries of a failed Discord role change; vipRoleRetryBatch bounds one sweep.
+const (
+	vipRoleRetryAfter = 15 * time.Minute
+	vipRoleRetryBatch = 50
+)
 
 // buildVIPNotice is the direct message a player gets when they receive a tier.
 func buildVIPNotice(t repository.PlayerTier, serverName, hubURL string) *discordgo.MessageSend {
