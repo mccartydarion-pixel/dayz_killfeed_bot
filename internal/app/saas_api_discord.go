@@ -322,7 +322,9 @@ func (a *App) handleVerifyInstallation(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, ok := a.requireOrganizationMember(w, r, organizationID, user.ID); !ok {
+	// Members of any role, and staff Administrators of this installation, may ask whether
+	// Champion is installed: the Server Hub's "Recheck Champion" is a read, not a change.
+	if _, ok := a.requireOrganizationViewer(w, r, organizationID, user); !ok {
 		return
 	}
 	installationID, ok := pathInt64(w, r, "installationID")
@@ -470,7 +472,9 @@ func (a *App) handleVerifyPermissions(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, ok := a.requireOrganizationMember(w, r, organizationID, user.ID); !ok {
+	// Members of any role, and staff Administrators of this installation, may ask whether
+	// Champion is installed: the Server Hub's "Recheck Champion" is a read, not a change.
+	if _, ok := a.requireOrganizationViewer(w, r, organizationID, user); !ok {
 		return
 	}
 	installationID, ok := pathInt64(w, r, "installationID")
