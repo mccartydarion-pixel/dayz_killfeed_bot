@@ -95,6 +95,9 @@ type Qualification struct {
 	PlayerID, FactionID int64
 	BestDistance        *float64
 	BestStreak          int
+	// Best: the event ranks each player's single best Points (longest kill, longest streak), so
+	// a new kill keeps the higher score instead of adding to it.
+	Best bool
 }
 
 type Store interface {
@@ -252,6 +255,7 @@ func Qualify(event Event, kill KillInput) Qualification {
 		}
 		out.Points = *kill.Distance
 		out.BestDistance = kill.Distance
+		out.Best = true
 	case TypeKillStreak:
 		var c KillStreakConfig
 		if json.Unmarshal(event.Config, &c) != nil || kill.Streak < c.MinimumStreak {
@@ -259,6 +263,7 @@ func Qualify(event Event, kill KillInput) Qualification {
 		}
 		out.Points = float64(kill.Streak)
 		out.BestStreak = kill.Streak
+		out.Best = true
 	case TypeHeadshotHunt:
 		if !kill.Headshot {
 			return Qualification{}

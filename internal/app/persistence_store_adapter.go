@@ -409,7 +409,7 @@ func (p *persistenceStoreAdapter) ProcessPersistedKillStaged(ctx context.Context
 				}
 				eventID := stored.ID
 				eventScores = append(eventScores, func(ctx context.Context) {
-					if _, scoreErr := p.events.ScoreKill(ctx, eventID, killID, score.PlayerID, score.FactionID, score.Points, score.BestDistance, score.BestStreak); scoreErr != nil {
+					if _, scoreErr := p.events.ScoreKill(ctx, eventID, killID, score.PlayerID, score.FactionID, score.Points, score.Best, score.BestDistance, score.BestStreak); scoreErr != nil {
 						slog.Warn("component=events", "msg", "event scoring failed", "event_id", eventID, "err", scoreErr.Error())
 					}
 				})
