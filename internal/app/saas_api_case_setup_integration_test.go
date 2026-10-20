@@ -34,8 +34,8 @@ func TestCaseSetupChecklist(t *testing.T) {
 			t.Fatalf("step %d: %+v", i, got.Steps[i])
 		}
 	}
-	if got.Steps[2].State != setupWait || got.Steps[4].State != setupAction || got.Steps[5].State != setupTesting || len(got.Detectors) == 0 {
-		t.Fatalf("clock not learned, alerts off, detectors in testing: %+v", got.Steps)
+	if got.Steps[2].State != setupWait || got.Steps[4].State != setupAction || got.Steps[5].State != setupOK || len(got.Detectors) == 0 {
+		t.Fatalf("clock not learned, alerts off, Suspicious Logins ready: %+v", got.Steps)
 	}
 	if got.Evidence.Running || got.Evidence.SelfServe {
 		t.Fatalf("evidence: %+v", got.Evidence)

@@ -34,7 +34,9 @@ func TestCaseStaffAlertSettingsAdministratorAndUpAndOffByDefault(t *testing.T) {
 		t.Fatalf("owner read: %d %s", got.Code, got.Body.String())
 	}
 	initial := decodeBody[view](t, got)
-	if initial.Settings.Enabled || len(initial.ReleasedDetectors) != 0 || len(initial.Recent) != 0 || initial.Enforcement != "DISABLED" {
+	// Suspicious Logins is released, but the owner's switch stays off by default.
+	if initial.Settings.Enabled || len(initial.ReleasedDetectors) != 1 || initial.ReleasedDetectors[0] != caseAlertModuleID ||
+		len(initial.Recent) != 0 || initial.Enforcement != "DISABLED" {
 		t.Fatalf("unsafe default: %+v", initial)
 	}
 	if denied := w.call(w.a.handleSetCaseStaffAlerts, http.MethodPut, path, mod, map[string]any{"enabled": true}, nil); denied.Code != http.StatusForbidden {
@@ -44,7 +46,7 @@ func TestCaseStaffAlertSettingsAdministratorAndUpAndOffByDefault(t *testing.T) {
 		t.Fatalf("unknown field accepted: %d", bad.Code)
 	}
 	on := w.call(w.a.handleSetCaseStaffAlerts, http.MethodPut, path, w.f.OwnerDiscordID, map[string]any{"enabled": true}, nil)
-	if s := decodeBody[view](t, on); on.Code != http.StatusOK || !s.Settings.Enabled || len(s.ReleasedDetectors) != 0 {
+	if s := decodeBody[view](t, on); on.Code != http.StatusOK || !s.Settings.Enabled || len(s.ReleasedDetectors) != 1 {
 		t.Fatalf("turn on: %d %+v", on.Code, s)
 	}
 	off := w.call(w.a.handleSetCaseStaffAlerts, http.MethodPut, path, w.f.OwnerDiscordID, map[string]any{"enabled": false}, nil)

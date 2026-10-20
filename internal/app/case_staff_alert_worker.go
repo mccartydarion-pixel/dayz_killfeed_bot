@@ -23,8 +23,8 @@ import (
 //     with mentions disabled, rechecking the owner switch, the release and
 //     the channel's privacy right before each send.
 //
-// No detector is released today, so step 1 queues nothing. Nothing here bans,
-// kicks or changes a player.
+// Only Suspicious Logins is released. Nothing here bans, kicks or changes a
+// player.
 
 const (
 	caseAlertModuleID     = "CASE-LOGIN-001"

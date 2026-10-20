@@ -185,8 +185,8 @@ func TestCaseAlertBackoffAndReviewURL(t *testing.T) {
 	}
 }
 
-func TestNoDetectorIsReleasedYet(t *testing.T) {
-	if got := releasedCaseModules(); len(got) != 0 {
-		t.Fatalf("a detector was released without review: %v", got)
+func TestOnlySuspiciousLoginsIsReleasedForAlerts(t *testing.T) {
+	if got := releasedCaseModules(); len(got) != 1 || got[0] != caseAlertModuleID {
+		t.Fatalf("released detectors = %v, want only %s", got, caseAlertModuleID)
 	}
 }

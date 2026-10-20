@@ -56,8 +56,8 @@ func assertSafe(t *testing.T, name string, r Core8Result) {
 	if r.Enforcement != "DISABLED" || r.ViolationEstablished {
 		t.Fatalf("%s: enforcement or violation leaked: %+v", name, r)
 	}
-	// Every catalog module is BLOCKED/UNSUPPORTED, so nothing may notify.
-	if r.CanNotify {
+	// Only a released module (core8_release.go) may notify staff.
+	if r.CanNotify && !ModuleReleased(r.DetectorID) {
 		t.Fatalf("%s: unreleased module can notify: %+v", name, r)
 	}
 	for _, f := range r.Findings {
@@ -224,7 +224,7 @@ func TestTelemetryHealthSuspendsConclusions(t *testing.T) {
 		if len(RequiredTelemetry(d.ID)) == 0 {
 			t.Fatalf("%s has no telemetry contract", d.ID)
 		}
-		if got := AssessCore8Health(d.ID, true, healthyCtx().Telemetry); got.State == "ACTIVE" {
+		if got := AssessCore8Health(d.ID, true, healthyCtx().Telemetry); got.State == "ACTIVE" && !ModuleReleased(d.ID) {
 			t.Fatalf("%s became ACTIVE", d.ID)
 		}
 	}

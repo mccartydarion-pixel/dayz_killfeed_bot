@@ -2,8 +2,18 @@ package caseintel
 
 import "testing"
 
-func TestNoModuleIsReleasedWithoutReview(t *testing.T) {
+func TestOnlySuspiciousLoginsIsReleased(t *testing.T) {
+	if !ModuleReleased("CASE-LOGIN-001") {
+		t.Fatal("Suspicious Logins should be released to staff alerts")
+	}
+	got := ReleasedThresholds("CASE-LOGIN-001")
+	if got == nil || got.Strict != 2 || got.Balanced != 3 || got.Relaxed != 4 || got.MinimumEvidence != 2 {
+		t.Fatalf("Suspicious Logins thresholds = %+v", got)
+	}
 	for _, d := range ClientCatalog() {
+		if d.ID == "CASE-LOGIN-001" {
+			continue
+		}
 		if ModuleReleased(d.ID) || ReleasedThresholds(d.ID) != nil {
 			t.Fatalf("%s is released to staff alerts without a recorded review", d.ID)
 		}
