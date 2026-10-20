@@ -1,6 +1,7 @@
 package discord
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -97,5 +98,54 @@ func TestEmptyCommandBatchNeverWipesTheGuild(t *testing.T) {
 	}
 	if err := RegisterSetupCommand(NewCommandBatch(""), "guild"); err == nil {
 		t.Fatal("a batch without an application ID must not queue commands")
+	}
+}
+
+// rawCommandSession is a session that also makes raw requests, like *discordgo.Session.
+type rawCommandSession struct {
+	overwriteRecorder
+	existing string
+	puts     [][]map[string]any
+}
+
+func (r *rawCommandSession) RequestWithBucketID(method, urlStr string, data interface{}, _ string, _ ...discordgo.RequestOption) ([]byte, error) {
+	if urlStr != discordgo.EndpointApplicationGlobalCommands("app") {
+		return nil, errors.New("unexpected endpoint " + urlStr)
+	}
+	if method == "GET" {
+		return []byte(r.existing), nil
+	}
+	body, err := json.Marshal(data)
+	if err != nil {
+		return nil, err
+	}
+	var sent []map[string]any
+	if err := json.Unmarshal(body, &sent); err != nil {
+		return nil, err
+	}
+	r.puts = append(r.puts, sent)
+	return body, nil
+}
+
+func TestCommandBatchKeepsTheActivityEntryPointCommand(t *testing.T) {
+	rec := &rawCommandSession{existing: `[{"id":"77","type":4,"name":"launch","handler":2,"description":""},{"id":"78","type":1,"name":"old-command","description":"gone"}]`}
+	global, guild, err := queueTestCommands(t).Flush(rec, "primary", "setup")
+	if err != nil || global != 6 || guild != 1 {
+		t.Fatalf("global=%d guild=%d err=%v", global, guild, err)
+	}
+	if len(rec.puts) != 1 {
+		t.Fatalf("one global PUT, got %d", len(rec.puts))
+	}
+	sent := rec.puts[0]
+	if len(sent) != 7 || sent[0]["name"] != "launch" || sent[0]["id"] != "77" || sent[0]["handler"] != float64(2) {
+		t.Fatalf("the Entry Point command must be sent back untouched, first: %v (all %d)", sent[0], len(sent))
+	}
+	for _, c := range sent[1:] {
+		if c["name"] == "old-command" || c["name"] == "setup" {
+			t.Fatalf("only the Entry Point command is carried over, and primary-only commands stay out: %v", c)
+		}
+	}
+	if len(rec.calls) != 1 || rec.calls[0].guildID != "primary" {
+		t.Fatalf("the primary guild still gets its own list: %+v", rec.calls)
 	}
 }

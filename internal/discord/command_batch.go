@@ -1,6 +1,7 @@
 package discord
 
 import (
+	"encoding/json"
 	"fmt"
 	"sync"
 
@@ -58,7 +59,53 @@ type commandOverwriter interface {
 	ApplicationCommandBulkOverwrite(appID, guildID string, commands []*discordgo.ApplicationCommand, options ...discordgo.RequestOption) ([]*discordgo.ApplicationCommand, error)
 }
 
-// Flush registers the batch in at most two requests. Every command is global
+// rawCommandRequester is the session's raw REST call (*discordgo.Session), used to carry the
+// app's Entry Point command through a global overwrite untouched.
+type rawCommandRequester interface {
+	RequestWithBucketID(method, urlStr string, data interface{}, bucketID string, options ...discordgo.RequestOption) ([]byte, error)
+}
+
+// entryPointCommandType is Discord's PRIMARY_ENTRY_POINT command: the "Launch" command of the
+// app's Activity, which discordgo has no type (or handler field) for.
+const entryPointCommandType = 4
+
+// overwriteGlobal replaces the app's global commands with cmds. Discord refuses a bulk overwrite
+// that would drop the Activity's Entry Point command (error 50240), and discordgo cannot
+// represent its handler, so when the session can make raw requests the current Entry Point
+// command is read back and sent along exactly as Discord returned it.
+func overwriteGlobal(s commandOverwriter, appID string, cmds []*discordgo.ApplicationCommand) error {
+	raw, ok := s.(rawCommandRequester)
+	if !ok {
+		_, err := s.ApplicationCommandBulkOverwrite(appID, "", cmds)
+		return err
+	}
+	endpoint := discordgo.EndpointApplicationGlobalCommands(appID)
+	body, err := raw.RequestWithBucketID("GET", endpoint, nil, endpoint)
+	if err != nil {
+		return fmt.Errorf("read global commands: %w", err)
+	}
+	var existing []json.RawMessage
+	if err := json.Unmarshal(body, &existing); err != nil {
+		return fmt.Errorf("read global commands: %w", err)
+	}
+	payload := make([]any, 0, len(cmds)+1)
+	for _, c := range existing {
+		var head struct {
+			Type int `json:"type"`
+		}
+		if json.Unmarshal(c, &head) == nil && head.Type == entryPointCommandType {
+			payload = append(payload, c)
+		}
+	}
+	for _, c := range cmds {
+		payload = append(payload, c)
+	}
+	_, err = raw.RequestWithBucketID("PUT", endpoint, payload, endpoint)
+	return err
+}
+
+// Flush registers the batch with two bulk overwrites (plus one read that keeps
+// the Activity's Entry Point command, see overwriteGlobal). Every command is global
 // and usable in servers only (never in DMs), so every Discord server the bot
 // is in gets it; the commands named in primaryOnly become guild commands of
 // primaryGuildID instead, and that guild's list is replaced with just them,
@@ -91,7 +138,7 @@ func (b *CommandBatch) Flush(s commandOverwriter, primaryGuildID string, primary
 		cmd.Contexts = &serversOnly
 		everywhere = append(everywhere, cmd)
 	}
-	if _, err := s.ApplicationCommandBulkOverwrite(b.appID, "", everywhere); err != nil {
+	if err := overwriteGlobal(s, b.appID, everywhere); err != nil {
 		return 0, 0, fmt.Errorf("global commands: %w", err)
 	}
 	if primaryGuildID == "" {
