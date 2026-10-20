@@ -502,7 +502,7 @@ func (q *PersistenceQueue) persistOne(ctx context.Context, ev *Event) error {
 			seasonID = resolver.ResolveDeathSeason(ctx, q.guildID, eventTime(ev))
 		}
 		deathType := repository.DeathTypeUnknown
-		if ev.Type == EventSuicideAction {
+		if ev.Type == EventSuicideAction || ev.Cause == DeathCauseSuicide {
 			deathType = repository.DeathTypeSuicide
 		}
 		rec := repository.DeathRecord{
