@@ -2,6 +2,8 @@ package killfeed
 
 import (
 	"context"
+	"errors"
+	"github.com/yourname/dayz-killfeed/internal/repository"
 	"log/slog"
 	"time"
 )
@@ -99,9 +101,17 @@ func (e *Engine) processLineAt(line, sourcePath string, endOffset int64) (bool, 
 	// separate offsets remain independent evidence observations.
 	if e.evidenceStore != nil && sourcePath != "" {
 		if err := e.observeEvidence(ev, sourcePath, endOffset); err != nil {
-			slog.Warn("component=case", "event", "evidence_write_failed",
-				"server_id", e.serverID, "event_type", string(ev.Type), "err", err.Error())
-			return true, err
+			if errors.Is(err, repository.ErrCaseEvidenceConflict) {
+				// Deterministic: re-reading the line fails the same way on every poll, which held
+				// the whole server's killfeed at this line for good. The stored evidence stands;
+				// the line is processed without a new observation.
+				slog.Error("component=case", "event", "evidence_integrity_conflict",
+					"server_id", e.serverID, "event_type", string(ev.Type), "source", sourcePath, "offset", endOffset, "err", err.Error())
+			} else {
+				slog.Warn("component=case", "event", "evidence_write_failed",
+					"server_id", e.serverID, "event_type", string(ev.Type), "err", err.Error())
+				return true, err
+			}
 		}
 	}
 	if e.dedupe == nil {
