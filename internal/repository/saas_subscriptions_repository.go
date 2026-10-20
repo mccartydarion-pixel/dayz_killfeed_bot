@@ -186,10 +186,20 @@ UPDATE subscriptions SET
   past_due_since = CASE WHEN $7 = 'PAST_DUE' THEN COALESCE(past_due_since, NOW()) ELSE NULL END,
   updated_at=NOW()
 WHERE organization_id=$1
+  AND (COALESCE(provider_subscription_id,'') IN ('', $4)
+       OR $7 IN ('ACTIVE','PAST_DUE')
+       OR status NOT IN ('ACTIVE','PAST_DUE'))
 RETURNING ` + subscriptionCols
 	out, err := scanSubscription(r.pool.QueryRow(ctx, q, organizationID, s.Provider, s.ProviderCustomerID, s.ProviderSubscriptionID, s.ProviderPriceID,
 		s.Plan, s.Status, s.BillingInterval, s.TrialEndsAt, s.CurrentPeriodStart, s.CurrentPeriodEnd, s.CancelAtPeriodEnd, s.CanceledAt))
 	if errors.Is(err, pgx.ErrNoRows) {
+		// The row exists but holds a different, still-billing subscription and this event ends an
+		// older one (it ran out after the organization subscribed again): the older subscription's
+		// end must not take the live one's access away. The row is returned unchanged.
+		current, getErr := r.GetForOrganization(ctx, organizationID)
+		if getErr == nil && current != nil {
+			return current, nil
+		}
 		return nil, ErrSubscriptionNotFound
 	}
 	if err != nil {

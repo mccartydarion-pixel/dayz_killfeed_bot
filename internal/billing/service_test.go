@@ -954,3 +954,34 @@ func TestWebhookSubscriptionUpdatedTrustsBilledPriceOverStaleMetadata(t *testing
 		t.Fatalf("plan = %q, want PRO (from the billed price, not stale metadata)", after.Plan)
 	}
 }
+
+// An organization already paying through a live Stripe subscription cannot open a second
+// checkout: two subscriptions would bill it twice, and the older one's end would later overwrite
+// the newer one. A canceled or never-paid organization can check out again.
+func TestCheckoutRefusesASecondLiveSubscription(t *testing.T) {
+	svc, store, _ := newTestService(t, sampleCatalog)
+	ctx := context.Background()
+	sub := store.ensureInactiveLocked(9)
+	for _, tc := range []struct {
+		status string
+		subID  string
+		refuse bool
+	}{
+		{repository.SubscriptionActive, "sub_live", true},
+		{repository.SubscriptionPastDue, "sub_live", true},
+		{repository.SubscriptionCanceled, "sub_old", false},
+		{repository.SubscriptionInactive, "", false},
+	} {
+		store.mu.Lock()
+		store.byOrg[sub.OrganizationID].Status = tc.status
+		store.byOrg[sub.OrganizationID].ProviderSubscriptionID = tc.subID
+		store.mu.Unlock()
+		_, err := svc.Checkout(ctx, req(t), 9, OrgInfo{Name: "Org 9"}, CheckoutRequest{PlanKey: "PRO", Interval: "MONTHLY"})
+		if refused := errors.Is(err, ErrAlreadySubscribed); refused != tc.refuse {
+			t.Fatalf("status %s sub %q: refused=%t (err %v), want %t", tc.status, tc.subID, refused, err, tc.refuse)
+		}
+		if !tc.refuse && err != nil {
+			t.Fatalf("status %s: %v", tc.status, err)
+		}
+	}
+}

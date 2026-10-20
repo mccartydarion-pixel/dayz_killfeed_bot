@@ -22,6 +22,9 @@ var (
 	ErrNoBillingCustomer    = errors.New("organization has not started billing yet")
 	ErrInvalidReturnPath    = errors.New("invalid return path")
 	ErrInvalidSignature     = errors.New("invalid webhook signature")
+	// ErrAlreadySubscribed: the organization already pays through a live Stripe subscription; a
+	// second checkout would bill it twice. Plan changes go through ChangePlan or the Portal.
+	ErrAlreadySubscribed = errors.New("organization already has a live subscription")
 )
 
 // Store is the persistence Service needs; *repository.SubscriptionRepository implements it.
@@ -202,6 +205,9 @@ func (s *Service) Checkout(ctx context.Context, r *http.Request, organizationID 
 		if sub, err = s.store.EnsureInactive(ctx, organizationID); err != nil {
 			return nil, err
 		}
+	}
+	if liveProviderSubscription(sub) {
+		return nil, ErrAlreadySubscribed
 	}
 	customerID, err := s.provider.EnsureCustomer(ctx, CustomerInput{ExistingCustomerID: sub.ProviderCustomerID, OrganizationID: organizationID, Email: org.Email, Name: org.Name})
 	if err != nil {
@@ -438,4 +444,11 @@ func entitlementStrings(organizationID int64, plan string) []string {
 		out[i] = string(k)
 	}
 	return out
+}
+
+// liveProviderSubscription reports whether sub is backed by a Stripe subscription that is still
+// billing (ACTIVE or PAST_DUE).
+func liveProviderSubscription(sub *repository.Subscription) bool {
+	return sub != nil && sub.ProviderSubscriptionID != "" &&
+		(sub.Status == repository.SubscriptionActive || sub.Status == repository.SubscriptionPastDue)
 }

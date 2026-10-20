@@ -116,6 +116,8 @@ func billingFailed(w http.ResponseWriter, what string, err error) {
 	switch {
 	case errors.Is(err, billing.ErrUnknownPlan):
 		writeSaaSError(w, codeInvalidPlan, "unknown plan")
+	case errors.Is(err, billing.ErrAlreadySubscribed):
+		writeSaaSError(w, codeConflict, "this organization already has a paid plan; change it from Plan & billing instead of checking out again")
 	case errors.Is(err, billing.ErrPlanNotSold):
 		writeSaaSError(w, codeInvalidPlan, "this plan is not sold on the requested billing interval")
 	case errors.Is(err, billing.ErrNoActiveSubscription):
