@@ -28,12 +28,14 @@ type Bounds struct{ MinX, MaxX, MinZ, MaxZ float64 }
 
 func (m Map) Bounds() Bounds { return Bounds{MinX: 0, MaxX: m.SizeMetres, MinZ: 0, MaxZ: m.SizeMetres} }
 
-// supported lists only maps with verified terrain sizes: Chernarus+ (15360 m) and Livonia, whose
-// world name is "enoch" (12800 m). Sakhal and community maps are deliberately absent until their
+// supported lists only maps with verified terrain sizes: Chernarus+ (15360 m), Livonia, whose
+// world name is "enoch" (12800 m), and Nasdara, the Badlands map of update 1.30, whose mission
+// is dayzOffline.nasdara (16384 m). Sakhal and community maps are deliberately absent until their
 // bounds are verified - an installation on them cannot take coordinate deliveries.
 var supported = map[string]Map{
 	"chernarusplus": {Key: "chernarusplus", DisplayName: "Chernarus", SizeMetres: 15360},
 	"enoch":         {Key: "enoch", DisplayName: "Livonia", SizeMetres: 12800},
+	"nasdara":       {Key: "nasdara", DisplayName: "Nasdara", SizeMetres: 16384},
 }
 
 // Lookup resolves a map key (case-insensitive). ok is false for an unknown or unverified map.

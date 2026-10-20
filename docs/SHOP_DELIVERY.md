@@ -46,6 +46,7 @@ by OWNER/ADMIN** (`PUT .../shop/delivery-settings`). Only maps with verified bou
 |---|---|---|
 | `chernarusplus` | Chernarus | `0..15360` inclusive |
 | `enoch` | Livonia | `0..12800` inclusive |
+| `nasdara` | Nasdara (Badlands, update 1.30) | `0..16384` inclusive |
 
 Any other key - including `sakhal`, community maps, or display names such as `chernarus` - is `400 UNSUPPORTED_MAP`. Adding a map means adding its verified size to
 `internal/dayzmap`. A coordinate purchase on an installation without a supported map is `409 DELIVERY_MAP_UNRESOLVED` ("an admin must set this server's map ..."); pickup products keep
@@ -150,7 +151,7 @@ Base `/api/saas/organizations/{organizationID}/installations/{installationID}/sh
 | `GET /me/deliveries/{deliveryID}` | player | `{ delivery: ShopDelivery }`; another player's (or another installation's) is `404 DELIVERY_NOT_FOUND` |
 | `GET /delivery-settings` | player | `{ settings: ShopDeliverySettings }` - the map and bounds for coordinate input |
 | `GET /admin/delivery-settings` | admin | `{ settings: AdminShopDeliverySettings }` |
-| `PUT /delivery-settings` | admin | body `{ "mapKey": "chernarusplus" \| "enoch" \| null }` (null or `""` clears) -> `{ settings: AdminShopDeliverySettings }` |
+| `PUT /delivery-settings` | admin | body `{ "mapKey": "chernarusplus" \| "enoch" \| "nasdara" \| null }` (null or `""` clears) -> `{ settings: AdminShopDeliverySettings }` |
 | `GET /admin/deliveries?status=&policy=&playerId=&limit=&cursor=` | admin | `{ currency, items: AdminShopDelivery[], nextCursor, limit }`, newest first. `status` = `MANUAL_READY`/`FULFILLED`/`CANCELLED`; `policy` = `MANUAL_PICKUP`/`MANUAL_COORDINATE`; `playerId` = economy `accountId`; `limit` default 25, max 100; `cursor` = the previous `nextCursor` |
 | `GET /admin/deliveries/{deliveryID}` | admin | `{ delivery: AdminShopDelivery }` |
 | `GET /admin/purchases`, `GET /admin/purchases/{purchaseID}` | admin | purchases now carry `delivery` (admin view) |

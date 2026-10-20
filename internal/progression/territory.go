@@ -60,6 +60,9 @@ var mapZones = map[string][]Zone{
 		zone("Tarnow", 7000, 9000, 400),
 		zone("Bielawa", 3900, 10700, 400),
 	},
+	// Nasdara (Badlands) has no zones yet: its towns are not mapped, and borrowing Chernarus's
+	// would credit kills to places that are not there.
+	"nasdara": {},
 }
 
 // Zones returns the territory zones of a map; an unknown or unset map uses Chernarus, the same
