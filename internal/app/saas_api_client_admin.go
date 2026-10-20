@@ -53,6 +53,8 @@ func (a *App) registerClientAdminCapabilityRoutes(base string) {
 	h("GET "+base+"/priority", a.handleListPriority)
 	h("POST "+base+"/priority", a.handleAddPriority)
 	h("DELETE "+base+"/priority/{name}", a.handleRemovePriority)
+	h("GET "+base+"/game-settings", a.handleListGameSettings)
+	h("PUT "+base+"/game-settings/{id}", a.handleSetGameSetting)
 	h("GET "+base+"/server-logs", a.handleListServerLogs)
 	h("GET "+base+"/server-logs/content", a.handleReadServerLog)
 

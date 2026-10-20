@@ -1,10 +1,11 @@
 // Package permissions implements Champion's tenant administration permission model (Client Admin
 // Control Plane Phase 1, docs/CLIENT_ADMIN.md). This is a capability-based system with four fixed
 // levels (OWNER > ADMINISTRATOR > MODERATOR > GATEKEEPER), each level automatically holding every
-// capability the levels below it hold. An ADMINISTRATOR holds every capability: it runs the server
-// exactly as the OWNER does. The only things that stay the organization owner's are changing the
-// organization's plan/billing and granting the OWNER level itself (CanGrant), neither of which is
-// a capability here. A Client maps their own Discord roles to these levels
+// capability the levels below it hold. An ADMINISTRATOR holds every capability but one: it runs
+// the server exactly as the OWNER does, except wiping its storage (CapServerWipe, which destroys
+// every player's progress and is the OWNER's alone). The other things that stay the organization
+// owner's are changing the organization's plan/billing and granting the OWNER level itself
+// (CanGrant), neither of which is a capability here. A Client maps their own Discord roles to these levels
 // (internal/repository.PermissionsRepository); the level -> capability mapping itself is fixed by
 // Champion, not customer-configurable.
 //
@@ -147,6 +148,12 @@ const (
 	// The owner-facing server status (docs/SERVER_STATUS.md): is the feed working, is Nitrado
 	// reachable, are positions arriving. Read-only facts about the installation's own server.
 	CapServerStatusView Capability = "SERVER_STATUS_VIEW"
+	// Nitrado's own game switches (docs/CLIENT_ADMIN.md "Game settings"): base and container damage, whitelist,
+	// mouse & keyboard, respawn rules, multi-account mitigation. Administrator and up. The storage
+	// wipe ("wipe_on_next_restart") destroys every player's and the world's data, so enabling it
+	// ALSO needs SERVER_WIPE, the one capability reserved for the OWNER level.
+	CapServerSettingsManage Capability = "SERVER_SETTINGS_MANAGE"
+	CapServerWipe           Capability = "SERVER_WIPE"
 )
 
 // requiredLevel is the default minimum Level each capability needs (task's "DEFAULT ROLE
@@ -201,6 +208,8 @@ var requiredLevel = map[Capability]Level{
 	CapPerksManage:            LevelAdministrator,
 	CapMapRotationManage:      LevelAdministrator,
 	CapServerStatusView:       LevelAdministrator,
+	CapServerSettingsManage:   LevelAdministrator,
+	CapServerWipe:             LevelOwner,
 }
 
 // Allows reports whether actorLevel satisfies capability's required minimum Level. An unknown
