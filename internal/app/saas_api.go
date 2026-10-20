@@ -255,6 +255,9 @@ type saasRateLimiter struct {
 	window time.Duration
 	max    int
 	hits   map[string][]time.Time
+	// swept is when keys with no recent hit were last dropped: without it every key ever seen
+	// (each fallback key is a remote address with its port) stayed in memory for good.
+	swept time.Time
 }
 
 func newSaaSRateLimiter(window time.Duration, max int) *saasRateLimiter {
@@ -270,6 +273,14 @@ func (l *saasRateLimiter) Allow(key string) bool {
 	defer l.mu.Unlock()
 	now := time.Now()
 	cutoff := now.Add(-l.window)
+	if now.Sub(l.swept) >= l.window {
+		for k, ts := range l.hits {
+			if len(ts) == 0 || !ts[len(ts)-1].After(cutoff) {
+				delete(l.hits, k)
+			}
+		}
+		l.swept = now
+	}
 	kept := l.hits[key][:0]
 	for _, t := range l.hits[key] {
 		if t.After(cutoff) {
