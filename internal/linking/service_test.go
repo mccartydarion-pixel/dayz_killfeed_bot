@@ -109,7 +109,7 @@ type spyRoleAssigner struct {
 	err               error
 }
 
-func (a *spyRoleAssigner) AssignVerifiedRole(_ context.Context, discordUserID string) error {
+func (a *spyRoleAssigner) AssignVerifiedRole(_ context.Context, _ int64, discordUserID string) error {
 	a.calls++
 	a.lastDiscordUserID = discordUserID
 	return a.err

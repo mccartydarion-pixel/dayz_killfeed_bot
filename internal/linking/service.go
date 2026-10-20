@@ -159,7 +159,9 @@ const (
 // This app serves a single Discord guild per process (mirroring
 // KillfeedPublisher's binding), so no guild ID is needed per call.
 type RoleAssigner interface {
-	AssignVerifiedRole(ctx context.Context, discordUserID string) error
+	// AssignVerifiedRole gives discordUserID the Verified role of the Discord server whose guild
+	// row is guildID: each customer guild has its own role.
+	AssignVerifiedRole(ctx context.Context, guildID int64, discordUserID string) error
 }
 
 // Notifier tells the player their link finished verifying. Completion can
@@ -439,7 +441,7 @@ func plausibleUsername(name string) bool {
 // is VERIFIED but whose role failed stays FAILED (retried by ReconcileRoles),
 // never mistaken for assigned.
 func (s *LinkVerificationService) assignRole(ctx context.Context, guildID int64, discordUserID string) error {
-	err := s.roles.AssignVerifiedRole(ctx, discordUserID)
+	err := s.roles.AssignVerifiedRole(ctx, guildID, discordUserID)
 	status := RoleSyncAssigned
 	switch {
 	case err == nil:

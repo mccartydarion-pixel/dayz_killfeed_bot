@@ -19,27 +19,36 @@ import (
 // assignable, which is a common failure mode best left to an admin who
 // controls role order.
 type VerifiedRoleAssigner struct {
-	client  *Client
-	store   SetupStore
-	guildID string // Discord guild ID; this app serves a single guild per process
+	client *Client
+	store  SetupStore
+	// discordGuild resolves a guild row to its Discord guild ID: links are verified in every
+	// customer guild, and each has its own Verified role.
+	discordGuild func(ctx context.Context, guildRowID int64) (string, error)
 }
 
-// NewVerifiedRoleAssigner creates an assigner bound to the guild setup store.
-func NewVerifiedRoleAssigner(client *Client, store SetupStore, guildID string) *VerifiedRoleAssigner {
-	return &VerifiedRoleAssigner{client: client, store: store, guildID: guildID}
+// NewVerifiedRoleAssigner creates an assigner reading each guild's role from the setup store.
+func NewVerifiedRoleAssigner(client *Client, store SetupStore, discordGuild func(ctx context.Context, guildRowID int64) (string, error)) *VerifiedRoleAssigner {
+	return &VerifiedRoleAssigner{client: client, store: store, discordGuild: discordGuild}
 }
 
 // AssignVerifiedRole adds the configured verified role to discordUserID. If no
 // role is configured, this returns a clear error but callers must treat that
 // as non-fatal - a guild without a role set up still gets a verified link.
-func (a *VerifiedRoleAssigner) AssignVerifiedRole(ctx context.Context, discordUserID string) error {
+func (a *VerifiedRoleAssigner) AssignVerifiedRole(ctx context.Context, guildRowID int64, discordUserID string) error {
 	if a == nil || a.client == nil || a.client.Session() == nil {
 		return fmt.Errorf("discord client not ready")
 	}
-	if a.store == nil || a.guildID == "" {
+	if a.store == nil || a.discordGuild == nil {
 		return fmt.Errorf("verified role store not configured")
 	}
-	setup, err := a.store.Get(a.guildID)
+	discordGuildID, err := a.discordGuild(ctx, guildRowID)
+	if err != nil {
+		return fmt.Errorf("resolve guild %d: %w", guildRowID, err)
+	}
+	if discordGuildID == "" {
+		return fmt.Errorf("guild %d has no Discord server", guildRowID)
+	}
+	setup, err := a.store.Get(discordGuildID)
 	if err != nil {
 		return fmt.Errorf("load guild setup: %w", err)
 	}
@@ -47,7 +56,7 @@ func (a *VerifiedRoleAssigner) AssignVerifiedRole(ctx context.Context, discordUs
 		return fmt.Errorf("%w; run /setup verified-role", linking.ErrRoleNotConfigured)
 	}
 	if err := deliver("VERIFIED_ROLE", "", func() error {
-		return a.client.Session().GuildMemberRoleAdd(a.guildID, discordUserID, setup.VerifiedRoleID)
+		return a.client.Session().GuildMemberRoleAdd(discordGuildID, discordUserID, setup.VerifiedRoleID)
 	}); err != nil {
 		if isUnknownMember(err) {
 			return fmt.Errorf("assign verified role: %w: %v", linking.ErrMemberNotInGuild, err)

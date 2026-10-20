@@ -179,7 +179,7 @@ func TestPSNLinkRequestEndToEnd(t *testing.T) {
 
 type recordingRoles struct{ assigned []string }
 
-func (r *recordingRoles) AssignVerifiedRole(_ context.Context, discordUserID string) error {
+func (r *recordingRoles) AssignVerifiedRole(_ context.Context, _ int64, discordUserID string) error {
 	r.assigned = append(r.assigned, discordUserID)
 	return nil
 }
@@ -191,7 +191,7 @@ type scriptedRoles struct {
 	attempts map[string]int
 }
 
-func (r *scriptedRoles) AssignVerifiedRole(_ context.Context, discordUserID string) error {
+func (r *scriptedRoles) AssignVerifiedRole(_ context.Context, _ int64, discordUserID string) error {
 	if r.attempts == nil {
 		r.attempts = map[string]int{}
 	}
