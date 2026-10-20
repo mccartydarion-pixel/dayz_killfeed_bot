@@ -84,3 +84,20 @@ new name). Migration `0124_server_name_sync` marks a server custom when its curr
 name of a successful audited rename. Every other existing name is treated as a Nitrado name and
 follows Nitrado from the first pass. An audit row whose installation was deleted since cannot be
 matched; such a server is treated as not custom.
+
+## The server's map
+
+The same read carries the server's mission (`settings.config.mission`, e.g. `dayzOffline.nasdara`)
+and, while it answers queries, the map it reports (`query.map`). `dayzmap.ServerWorld` takes the
+world name after the mission's last dot, else the query map, and every installation on the server
+follows it (`ServerNameRepository.FollowServerMap`, the `shop_delivery_settings.map_key` that shop
+coordinate deliveries, bases, the stadium, territory and the live map read):
+
+| What Nitrado reports | What the sync does |
+|---|---|
+| A supported world (`chernarusplus`, `enoch`, `nasdara`) | Sets it, replacing a map an admin picked by hand |
+| A world Champion does not support (`sakhal`, community maps) | Clears the map: coordinate deliveries stop rather than use another map's coordinates |
+| No mission and no query map | Changes nothing |
+
+Only a real change is written (`updated_by_user_id` becomes `NULL`: Champion set it), and each one
+is logged as `map_followed`.

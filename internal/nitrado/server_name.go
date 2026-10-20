@@ -54,12 +54,14 @@ func CleanServerName(s string) string {
 	return strings.TrimSpace(b.String())
 }
 
-// GameserverName is the two name fields of GET /services/:id/gameservers. The same body carries
-// passwords; only these fields are decoded.
+// GameserverName is the name fields of GET /services/:id/gameservers, and the two that say which
+// map the server runs. The same body carries passwords; only these fields are decoded.
 type GameserverName struct {
 	ServiceID int64  // data.gameserver.service_id; 0 when Nitrado omitted it
 	Hostname  string // settings.config.hostname
 	QueryName string // query.server_name ("" while the server is not answering queries)
+	Mission   string // settings.config.mission, e.g. "dayzOffline.nasdara"
+	QueryMap  string // query.map, the world the running server reports ("" while it is not answering)
 }
 
 // BelongsTo reports whether the response is provably for serviceID.
@@ -110,13 +112,14 @@ func (c *Client) GameserverName(ctx context.Context, serviceID string) (Gameserv
 		return GameserverName{}, err
 	}
 	g := wire.Data.Gameserver
-	out := GameserverName{ServiceID: g.ServiceID, QueryName: jsonObjectString(g.Query, "server_name")}
+	out := GameserverName{ServiceID: g.ServiceID, QueryName: jsonObjectString(g.Query, "server_name"), QueryMap: jsonObjectString(g.Query, "map")}
 	if t := bytes.TrimSpace(g.Settings); len(t) > 0 && t[0] == '{' {
 		var settings struct {
 			Config json.RawMessage `json:"config"`
 		}
 		if err := json.Unmarshal(g.Settings, &settings); err == nil {
 			out.Hostname = jsonObjectString(settings.Config, "hostname")
+			out.Mission = jsonObjectString(settings.Config, "mission")
 		}
 	}
 	return out, nil
