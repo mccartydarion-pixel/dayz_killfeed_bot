@@ -58,18 +58,47 @@ type commandOverwriter interface {
 	ApplicationCommandBulkOverwrite(appID, guildID string, commands []*discordgo.ApplicationCommand, options ...discordgo.RequestOption) ([]*discordgo.ApplicationCommand, error)
 }
 
-// Flush replaces the guild's commands with the batch in one request. An
-// empty batch sends nothing, so a misconfigured start never wipes the guild.
-func (b *CommandBatch) Flush(s commandOverwriter, guildID string) (int, error) {
+// Flush registers the batch in at most two requests. Every command is global
+// and usable in servers only (never in DMs), so every Discord server the bot
+// is in gets it; the commands named in primaryOnly become guild commands of
+// primaryGuildID instead, and that guild's list is replaced with just them,
+// which also removes the copies registered there when every command was a
+// guild command. Without a primary guild nothing is guild-only. The global
+// list goes first: if it fails, the primary guild keeps the commands it has.
+// An empty batch sends nothing, so a misconfigured start never wipes anything.
+func (b *CommandBatch) Flush(s commandOverwriter, primaryGuildID string, primaryOnly ...string) (global, guild int, err error) {
 	cmds := b.Commands()
 	if len(cmds) == 0 {
-		return 0, nil
+		return 0, 0, nil
 	}
 	if b.appID == "" {
-		return 0, fmt.Errorf("discord application ID is not available")
+		return 0, 0, fmt.Errorf("discord application ID is not available")
 	}
-	if _, err := s.ApplicationCommandBulkOverwrite(b.appID, guildID, cmds); err != nil {
-		return 0, err
+	only := make(map[string]bool, len(primaryOnly))
+	if primaryGuildID != "" {
+		for _, name := range primaryOnly {
+			only[name] = true
+		}
 	}
-	return len(cmds), nil
+	serversOnly := []discordgo.InteractionContextType{discordgo.InteractionContextGuild}
+	everywhere := []*discordgo.ApplicationCommand{}
+	primary := []*discordgo.ApplicationCommand{}
+	for _, cmd := range cmds {
+		if only[cmd.Name] {
+			primary = append(primary, cmd)
+			continue
+		}
+		cmd.Contexts = &serversOnly
+		everywhere = append(everywhere, cmd)
+	}
+	if _, err := s.ApplicationCommandBulkOverwrite(b.appID, "", everywhere); err != nil {
+		return 0, 0, fmt.Errorf("global commands: %w", err)
+	}
+	if primaryGuildID == "" {
+		return len(everywhere), 0, nil
+	}
+	if _, err := s.ApplicationCommandBulkOverwrite(b.appID, primaryGuildID, primary); err != nil {
+		return len(everywhere), 0, fmt.Errorf("commands of guild %s: %w", primaryGuildID, err)
+	}
+	return len(everywhere), len(primary), nil
 }
