@@ -107,6 +107,9 @@ func TestZones(t *testing.T) {
 	if len(zs) == 0 || len(Zones("enoch")) == 0 || Zones("CHERNARUSPLUS")[0].Key != "chernogorsk" {
 		t.Fatal("zones")
 	}
+	if z := Zones("nasdara"); len(z) != 0 {
+		t.Fatalf("Nasdara must not borrow another map's zones: %+v", z)
+	}
 	keys := map[string]bool{}
 	for _, m := range mapZones {
 		for _, z := range m {
