@@ -110,6 +110,7 @@ func (r *EventRepository) EndDue(ctx context.Context, now time.Time) error {
 	_, err := r.pool.Exec(ctx, `UPDATE competitive_events SET status='ENDED',updated_at=NOW() WHERE status='ACTIVE' AND ends_at IS NOT NULL AND ends_at<=$1`, now)
 	return err
 }
+
 // ScoreKill adds kill killID to event eventID's scores once. best=true keeps the higher score
 // instead of adding (LONGEST_KILL and KILL_STREAK rank the single best kill or streak, not a sum).
 func (r *EventRepository) ScoreKill(ctx context.Context, eventID, killID, playerID, factionID int64, points float64, best bool, distance *float64, streak int) (bool, error) {
