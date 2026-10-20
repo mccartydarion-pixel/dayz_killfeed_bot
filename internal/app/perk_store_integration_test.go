@@ -493,3 +493,24 @@ func TestPerkChannelIsCreatedOnlyForAnOpenStore(t *testing.T) {
 		t.Fatal("opening the store should create and route the donations channel")
 	}
 }
+
+// A request key replayed for a different offer or recipient is refused: answering with the
+// earlier purchase told the player a gift went through when nothing was bought for the friend.
+func TestPerkReplayedKeyForAnotherRecipientIsRefused(t *testing.T) {
+	w := newPerkWorld(t)
+	buyer, buyerID := w.player("Giver", 1000)
+	_, friendID := w.player("Friend", 0)
+	offer := w.offer(perkstore.Offer{PricePoints: 100, Billing: perkstore.BillingOneTime, DurationDays: 30, VIPTierID: &w.tierID, Giftable: true})
+	if rr := w.buy(buyer, offer.ID, 0, "replay-key-1"); rr.Code != http.StatusCreated {
+		t.Fatalf("self purchase: %d %s", rr.Code, rr.Body.String())
+	}
+	if rr := w.buy(buyer, offer.ID, friendID, "replay-key-1"); rr.Code != http.StatusConflict {
+		t.Fatalf("same key for a gift must be refused, got %d %s", rr.Code, rr.Body.String())
+	}
+	if rr := w.buy(buyer, offer.ID, 0, "replay-key-1"); rr.Code != http.StatusOK {
+		t.Fatalf("the same request replayed is still answered as a duplicate, got %d", rr.Code)
+	}
+	if w.balance(buyerID) != 900 {
+		t.Fatalf("charged once, balance %d", w.balance(buyerID))
+	}
+}

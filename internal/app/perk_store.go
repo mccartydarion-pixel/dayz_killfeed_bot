@@ -526,7 +526,7 @@ func (a *App) handlePerkPurchase(w http.ResponseWriter, r *http.Request) {
 		writeSaaSError(w, codeNotFound, err.Error())
 		return
 	case errors.As(err, &unavailable), errors.Is(err, repository.ErrPerkStoreClosed), errors.Is(err, repository.ErrPerkNotGiftable),
-		errors.Is(err, repository.ErrPerkAlreadyActive), errors.Is(err, repository.ErrPerkTierConflict):
+		errors.Is(err, repository.ErrPerkAlreadyActive), errors.Is(err, repository.ErrPerkTierConflict), errors.Is(err, repository.ErrPerkIdempotencyConflict):
 		writeSaaSError(w, codeConflict, err.Error())
 		return
 	case err != nil:
