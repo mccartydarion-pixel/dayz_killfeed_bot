@@ -60,15 +60,7 @@ func TestFactionSecurityPlayerChoice(t *testing.T) {
 	guild, server := w.gameContext(w.a1)
 	pool := w.a.DB.Pool
 	scope := repository.SecurityScope{InstallationID: w.a1.InstallationID, GuildID: guild, ServerID: server}
-	var faction int64
-	if err := pool.QueryRow(ctx, `INSERT INTO factions(guild_id,name,tag,owner_player_id) VALUES($1,'Bears','BRS',$2) RETURNING id`, guild, owner).Scan(&faction); err != nil {
-		t.Fatal(err)
-	}
-	for p, role := range map[int64]string{owner: "OWNER", mate: "MEMBER"} {
-		if _, err := pool.Exec(ctx, `INSERT INTO faction_members(guild_id,faction_id,player_id,role) VALUES($1,$2,$3,$4)`, guild, faction, p, role); err != nil {
-			t.Fatal(err)
-		}
-	}
+	seedHubFaction(t, pool, guild, w.a1.InstallationID, "BRS", hubSeedMember{Player: owner, Role: "LEADER"}, hubSeedMember{Player: mate})
 	path := fmt.Sprintf("/api/saas/organizations/%d/installations/%d/security-marketplace/faction-security", w.a1.OrgID, w.a1.InstallationID)
 	get := func() map[string]any {
 		t.Helper()
@@ -78,7 +70,7 @@ func TestFactionSecurityPlayerChoice(t *testing.T) {
 	if v["available"] != false || v["reason"] != "OFF" || v["recipients"] != "ALL" {
 		t.Fatalf("off: %+v", v)
 	}
-	if f := v["faction"].(map[string]any); f["inFaction"] != true || f["factionName"] != "Bears" || f["linkedMembers"].(float64) != 1 || f["linkedLeaders"].(float64) != 0 {
+	if f := v["faction"].(map[string]any); f["inFaction"] != true || f["factionName"] != "BRS" || f["linkedMembers"].(float64) != 1 || f["linkedLeaders"].(float64) != 0 {
 		t.Fatalf("faction summary: %+v", f)
 	}
 	w.expect(w.do(http.MethodPut, path, ownerDiscord, map[string]any{"recipients": "LEADERS"}), http.StatusConflict, "can't choose while off")

@@ -192,8 +192,8 @@ func (r *BaseRentRepository) AllBases(ctx context.Context, s SecurityScope, limi
 
 // sameFactionSQL is true when player $5 and the base owner are active members
 // of the same faction.
-const sameFactionSQL = `EXISTS (SELECT 1 FROM faction_members me
-  JOIN faction_members fo ON fo.guild_id=me.guild_id AND fo.faction_id=me.faction_id AND fo.active
+const sameFactionSQL = `EXISTS (SELECT 1 FROM live_faction_members me
+  JOIN live_faction_members fo ON fo.guild_id=me.guild_id AND fo.faction_id=me.faction_id AND fo.active
   WHERE me.guild_id=b.guild_id AND me.player_id=$5 AND me.active AND fo.player_id=b.owner_player_id)`
 
 // payableBaseSQL finds a rented base the player may pay rent on: their own,

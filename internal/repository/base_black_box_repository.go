@@ -123,6 +123,9 @@ func (r *BaseBlackBoxRepository) SetSettings(ctx context.Context, installationID
 // $3 is the player's id; $6 is the extra reach past the circle.
 const blackBoxMatchSQL = `
 WITH who AS (
+ SELECT faction_id FROM live_faction_members WHERE guild_id=$1 AND player_id=$3 AND active
+), who_grant AS (
+ -- Faction grants on a base name a Discord-side faction (case_base_authorizations.faction_id).
  SELECT faction_id FROM faction_members WHERE guild_id=$1 AND player_id=$3 AND active
 )
 SELECT b.installation_id,b.guild_id,b.server_id,b.id,
@@ -133,14 +136,14 @@ JOIN base_black_box_settings s
 WHERE b.guild_id=$1 AND b.server_id=$2 AND b.state<>'REVOKED' AND b.owner_player_id<>$3 AND NOT base_rent_paused(b.id)
  AND (b.center_x-$4)*(b.center_x-$4)+(b.center_z-$5)*(b.center_z-$5) <= (b.radius+$6)*(b.radius+$6)
  AND NOT EXISTS (
-  SELECT 1 FROM faction_members ofm
+  SELECT 1 FROM live_faction_members ofm
   WHERE ofm.guild_id=b.guild_id AND ofm.active AND ofm.player_id=b.owner_player_id
    AND ofm.faction_id IN (SELECT faction_id FROM who))
  AND NOT EXISTS (
   SELECT 1 FROM case_base_authorizations a
   WHERE a.installation_id=b.installation_id AND a.guild_id=b.guild_id AND a.server_id=b.server_id AND a.base_id=b.id
    AND a.valid_from<=NOW() AND (a.valid_until IS NULL OR a.valid_until>NOW())
-   AND (a.player_id=$3 OR a.faction_id IN (SELECT faction_id FROM who)))
+   AND (a.player_id=$3 OR a.faction_id IN (SELECT faction_id FROM who_grant)))
  AND (NOT EXISTS (
   SELECT 1 FROM security_service_offers o
   WHERE o.installation_id=b.installation_id AND o.server_id=b.server_id
@@ -257,8 +260,8 @@ func (r *BaseBlackBoxRepository) TeamHistory(ctx context.Context, installationID
 	if limit < 1 || limit > 500 {
 		limit = 200
 	}
-	const team = `(SELECT $4::BIGINT UNION SELECT m2.player_id FROM faction_members m1
- JOIN faction_members m2 ON m2.faction_id=m1.faction_id AND m2.guild_id=m1.guild_id AND m2.active
+	const team = `(SELECT $4::BIGINT UNION SELECT m2.player_id FROM live_faction_members m1
+ JOIN live_faction_members m2 ON m2.faction_id=m1.faction_id AND m2.guild_id=m1.guild_id AND m2.active
  WHERE m1.guild_id=$2 AND m1.player_id=$4 AND m1.active)`
 	rows, err := r.pool.Query(ctx, `SELECT b.id,b.name FROM case_registered_bases b
  WHERE b.installation_id=$1 AND b.guild_id=$2 AND b.server_id=$3 AND b.owner_player_id IN `+team+` AND b.state<>'REVOKED' ORDER BY b.id`,

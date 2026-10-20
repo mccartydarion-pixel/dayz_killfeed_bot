@@ -17,15 +17,7 @@ func TestPerimeterWatchMatchCooldownAndSale(t *testing.T) {
 	if _, err := pool.Exec(ctx, `INSERT INTO player_links(guild_id,player_id,discord_user_id,status,verified_at) VALUES($1,$2,'pw-owner','VERIFIED',NOW())`, fx.GuildRowID, owner); err != nil {
 		t.Fatal(err)
 	}
-	var faction int64
-	if err := pool.QueryRow(ctx, `INSERT INTO factions(guild_id,name,tag,owner_player_id) VALUES($1,'PW','PW',$2) RETURNING id`, fx.GuildRowID, owner).Scan(&faction); err != nil {
-		t.Fatal(err)
-	}
-	for _, p := range []int64{owner, mate} {
-		if _, err := pool.Exec(ctx, `INSERT INTO faction_members(guild_id,faction_id,player_id,role) VALUES($1,$2,$3,'MEMBER')`, fx.GuildRowID, faction, p); err != nil {
-			t.Fatal(err)
-		}
-	}
+	seedHubFaction(t, pool, fx.GuildRowID, "PW", hubSeedMember{Player: owner, Role: "LEADER"}, hubSeedMember{Player: mate})
 	var baseID int64
 	if err := pool.QueryRow(ctx, `INSERT INTO case_registered_bases
  (installation_id,guild_id,server_id,owner_player_id,map_key,name,center_x,center_z,radius)

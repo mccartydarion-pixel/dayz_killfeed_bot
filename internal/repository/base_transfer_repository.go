@@ -73,8 +73,8 @@ func (r *BaseTransferRepository) ready() bool { return r != nil && r.pool != nil
 
 // mateSQL is true when player $2 is an active, verified member of the same
 // faction as player $1 (and not the same player). $3 is the guild.
-const mateSQL = `($1::BIGINT<>$2::BIGINT AND EXISTS (SELECT 1 FROM faction_members me
-  JOIN faction_members fo ON fo.guild_id=me.guild_id AND fo.faction_id=me.faction_id AND fo.active
+const mateSQL = `($1::BIGINT<>$2::BIGINT AND EXISTS (SELECT 1 FROM live_faction_members me
+  JOIN live_faction_members fo ON fo.guild_id=me.guild_id AND fo.faction_id=me.faction_id AND fo.active
   JOIN player_links l ON l.guild_id=fo.guild_id AND l.player_id=fo.player_id AND l.status='VERIFIED'
   WHERE me.guild_id=$3::BIGINT AND me.player_id=$1::BIGINT AND me.active AND fo.player_id=$2::BIGINT))`
 
@@ -129,8 +129,8 @@ func (r *BaseTransferRepository) Options(ctx context.Context, s BaseRequestScope
 		return nil, nil, err
 	}
 	rows, err = r.pool.Query(ctx, `SELECT DISTINCT fo.player_id,COALESCE(p.display_name,'')
- FROM faction_members me
- JOIN faction_members fo ON fo.guild_id=me.guild_id AND fo.faction_id=me.faction_id AND fo.active AND fo.player_id<>me.player_id
+ FROM live_faction_members me
+ JOIN live_faction_members fo ON fo.guild_id=me.guild_id AND fo.faction_id=me.faction_id AND fo.active AND fo.player_id<>me.player_id
  JOIN player_links l ON l.guild_id=fo.guild_id AND l.player_id=fo.player_id AND l.status='VERIFIED'
  LEFT JOIN players p ON p.guild_id=fo.guild_id AND p.id=fo.player_id
  WHERE me.guild_id=$1 AND me.player_id=$2 AND me.active

@@ -22,15 +22,8 @@ func TestBaseTransferLifecycle(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	var faction int64
-	if err := pool.QueryRow(ctx, `INSERT INTO factions(guild_id,name,tag,owner_player_id) VALUES($1,'Movers','MOV',$2) RETURNING id`, fx.GuildRowID, giver).Scan(&faction); err != nil {
-		t.Fatal(err)
-	}
-	for _, p := range []int64{giver, mate, unlinked, full} {
-		if _, err := pool.Exec(ctx, `INSERT INTO faction_members(guild_id,faction_id,player_id,role) VALUES($1,$2,$3,'MEMBER')`, fx.GuildRowID, faction, p); err != nil {
-			t.Fatal(err)
-		}
-	}
+	faction := seedHubFaction(t, pool, fx.GuildRowID, "MOV", hubSeedMember{Player: giver, Role: "LEADER"}, hubSeedMember{Player: mate},
+		hubSeedMember{Player: unlinked, Unlinked: true}, hubSeedMember{Player: full})
 	addBase := func(owner int64, name string, x float64) int64 {
 		var id int64
 		if err := pool.QueryRow(ctx, `INSERT INTO case_registered_bases
@@ -96,13 +89,18 @@ func TestBaseTransferLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE faction_members SET active=FALSE WHERE player_id=$1`, mate); err != nil {
+	var mateUser int64
+	if err := pool.QueryRow(ctx, `SELECT user_id FROM hub_faction_members WHERE faction_id=$1 AND player_id=$2`, faction, mate).Scan(&mateUser); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM hub_faction_members WHERE faction_id=$1 AND user_id=$2`, faction, mateUser); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := repo.Approve(ctx, s, tr.ID, nil); !errors.Is(err, ErrBaseTransferNotMate) {
 		t.Fatalf("approve after leaving: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE faction_members SET active=TRUE WHERE player_id=$1`, mate); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO hub_faction_members(faction_id,installation_id,user_id,player_id,role_key) VALUES($1,$2,$3,$4,'MEMBER')`,
+		faction, fx.InstallationID, mateUser, mate); err != nil {
 		t.Fatal(err)
 	}
 	before := time.Now().Add(-time.Second)

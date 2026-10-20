@@ -19,18 +19,9 @@ func TestBaseRentFactionPays(t *testing.T) {
 	if _, err := pool.Exec(ctx, `INSERT INTO player_links(guild_id,player_id,discord_user_id,status,verified_at) VALUES($1,$2,'rent-owner-d','VERIFIED',NOW())`, fx.GuildRowID, owner); err != nil {
 		t.Fatal(err)
 	}
-	var faction int64
-	if err := pool.QueryRow(ctx, `INSERT INTO factions(guild_id,name,tag,owner_player_id) VALUES($1,'Renters','RNT',$2) RETURNING id`, fx.GuildRowID, owner).Scan(&faction); err != nil {
-		t.Fatal(err)
-	}
-	for _, m := range []struct {
-		id     int64
-		active bool
-	}{{owner, true}, {mate, true}, {former, false}} {
-		if _, err := pool.Exec(ctx, `INSERT INTO faction_members(guild_id,faction_id,player_id,role,active) VALUES($1,$2,$3,'MEMBER',$4)`, fx.GuildRowID, faction, m.id, m.active); err != nil {
-			t.Fatal(err)
-		}
-	}
+	// The former member left the faction: no hub membership.
+	_ = former
+	seedHubFaction(t, pool, fx.GuildRowID, "RNT", hubSeedMember{Player: owner, Role: "LEADER"}, hubSeedMember{Player: mate})
 	reqs := NewCaseBaseRequestRepository(pool)
 	req, err := reqs.Create(ctx, BaseRequestScope(s), BaseRequestInput{PlayerID: owner, Name: "Clan Hall", CenterX: 100, CenterZ: 100, Radius: 50, PositionSeenAt: time.Now()})
 	if err != nil {

@@ -114,6 +114,9 @@ func (r *PerimeterWatchRepository) MatchPerimeter(ctx context.Context, guildID, 
 	}
 	rows, err := r.pool.Query(ctx, `
 WITH visitor_faction AS (
+ SELECT faction_id FROM live_faction_members WHERE guild_id=$1 AND player_id=$3 AND active
+), visitor_grant_faction AS (
+ -- Faction grants on a base name a Discord-side faction (case_base_authorizations.faction_id).
  SELECT faction_id FROM faction_members WHERE guild_id=$1 AND player_id=$3 AND active
 )
 SELECT b.installation_id,b.guild_id,b.server_id,b.id,b.name,b.owner_player_id,COALESCE(pl.discord_user_id,''),
@@ -125,14 +128,14 @@ LEFT JOIN player_links pl ON pl.guild_id=b.guild_id AND pl.player_id=b.owner_pla
 WHERE b.guild_id=$1 AND b.server_id=$2 AND b.state<>'REVOKED' AND b.owner_player_id<>$3 AND NOT base_rent_paused(b.id)
  AND (b.center_x-$4)*(b.center_x-$4)+(b.center_z-$5)*(b.center_z-$5) <= (b.radius+s.margin_meters)*(b.radius+s.margin_meters)
  AND NOT EXISTS (
-  SELECT 1 FROM faction_members ofm
+  SELECT 1 FROM live_faction_members ofm
   WHERE ofm.guild_id=b.guild_id AND ofm.active AND ofm.player_id=b.owner_player_id
    AND ofm.faction_id IN (SELECT faction_id FROM visitor_faction))
  AND NOT EXISTS (
   SELECT 1 FROM case_base_authorizations a
   WHERE a.installation_id=b.installation_id AND a.guild_id=b.guild_id AND a.server_id=b.server_id AND a.base_id=b.id
    AND a.valid_from<=NOW() AND (a.valid_until IS NULL OR a.valid_until>NOW())
-   AND (a.player_id=$3 OR a.faction_id IN (SELECT faction_id FROM visitor_faction)))
+   AND (a.player_id=$3 OR a.faction_id IN (SELECT faction_id FROM visitor_grant_faction)))
  AND (NOT EXISTS (
   SELECT 1 FROM security_service_offers o
   WHERE o.installation_id=b.installation_id AND o.server_id=b.server_id

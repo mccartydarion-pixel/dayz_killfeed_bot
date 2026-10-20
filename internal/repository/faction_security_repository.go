@@ -134,14 +134,14 @@ func (r *FactionSecurityRepository) Recipients(ctx context.Context, installation
 	}
 	rows, err := r.pool.Query(ctx, `
 WITH owner_faction AS (
- SELECT faction_id FROM faction_members WHERE guild_id=$2 AND player_id=$4 AND active
+ SELECT faction_id FROM live_faction_members WHERE guild_id=$2 AND player_id=$4 AND active
 ), owner_link AS (
  SELECT discord_user_id FROM player_links WHERE guild_id=$2 AND player_id=$4 AND status='VERIFIED'
 ), pref AS (
  SELECT COALESCE((SELECT recipients FROM faction_security_preferences WHERE installation_id=$1 AND player_id=$4),'ALL') AS who
 )
 SELECT DISTINCT pl.discord_user_id
-FROM faction_members fm
+FROM live_faction_members fm
 JOIN player_links pl ON pl.guild_id=fm.guild_id AND pl.player_id=fm.player_id AND pl.status='VERIFIED'
 CROSS JOIN pref
 WHERE fm.guild_id=$2 AND fm.active AND fm.player_id<>$4
@@ -219,7 +219,7 @@ func (r *FactionSecurityRepository) Summary(ctx context.Context, guildID, player
 		return out, ErrInvalidFactionSecurity
 	}
 	var factionID int64
-	err := r.pool.QueryRow(ctx, `SELECT f.id,f.name FROM faction_members fm JOIN factions f ON f.id=fm.faction_id
+	err := r.pool.QueryRow(ctx, `SELECT f.id,f.name FROM live_faction_members fm JOIN hub_factions f ON f.id=fm.faction_id
  WHERE fm.guild_id=$1 AND fm.player_id=$2 AND fm.active`, guildID, playerID).Scan(&factionID, &out.FactionName)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return out, nil
@@ -230,7 +230,7 @@ func (r *FactionSecurityRepository) Summary(ctx context.Context, guildID, player
 	out.InFaction = true
 	err = r.pool.QueryRow(ctx, `SELECT COUNT(DISTINCT fm.player_id),
   COUNT(DISTINCT fm.player_id) FILTER (WHERE fm.role IN ('OWNER','LEADER','OFFICER'))
- FROM faction_members fm
+ FROM live_faction_members fm
  JOIN player_links pl ON pl.guild_id=fm.guild_id AND pl.player_id=fm.player_id AND pl.status='VERIFIED'
  WHERE fm.guild_id=$1 AND fm.faction_id=$2 AND fm.active AND fm.player_id<>$3`, guildID, factionID, playerID).
 		Scan(&out.LinkedMembers, &out.LinkedLeaders)
