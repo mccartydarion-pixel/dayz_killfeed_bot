@@ -62,18 +62,41 @@ FROM player_links l ` + where
 	return &l, nil
 }
 
+// CreatePending records l as the Discord user's pending link and issues its challenge. In one
+// transaction it also closes the user's earlier challenges (so an old one, for another player,
+// can never complete this link) and releases the player from any other user's link that is not
+// VERIFIED: a stale, unlinked or abandoned claim must not block the player's real owner (one
+// player per guild is enforced by UNIQUE(guild_id, player_id)).
 func (r *LinkRepository) CreatePending(ctx context.Context, l linking.LinkRecord) error {
-	_, err := r.pool.Exec(ctx, `INSERT INTO player_links(guild_id,player_id,discord_user_id,status,requested_username) VALUES($1,$2,$3,$4,$5)
-ON CONFLICT(guild_id,discord_user_id) DO UPDATE SET player_id=EXCLUDED.player_id,status=EXCLUDED.status,requested_username=EXCLUDED.requested_username,updated_at=NOW()`, l.GuildID, l.PlayerID, l.DiscordUserID, l.Status, l.RequestedName)
+	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("create pending link: %w", err)
 	}
-	_, err = r.pool.Exec(ctx, `INSERT INTO link_verifications(guild_id,discord_user_id,player_id,challenge_hash,status,expires_at) VALUES($1,$2,$3,$4,$5,$6)`, l.GuildID, l.DiscordUserID, l.PlayerID, l.ChallengeHash, l.Status, l.ExpiresAt)
-	return err
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if _, err := tx.Exec(ctx, `UPDATE link_verifications SET status=$4 WHERE guild_id=$1 AND status=$3 AND (discord_user_id=$2 OR player_id=$5)`,
+		l.GuildID, l.DiscordUserID, linking.StatusPending, linking.StatusExpired, l.PlayerID); err != nil {
+		return fmt.Errorf("close earlier challenges: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM player_links WHERE guild_id=$1 AND player_id=$2 AND discord_user_id<>$3 AND status<>$4`,
+		l.GuildID, l.PlayerID, l.DiscordUserID, linking.StatusVerified); err != nil {
+		return fmt.Errorf("release stale claim: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO player_links(guild_id,player_id,discord_user_id,status,requested_username) VALUES($1,$2,$3,$4,$5)
+ON CONFLICT(guild_id,discord_user_id) DO UPDATE SET player_id=EXCLUDED.player_id,status=EXCLUDED.status,requested_username=EXCLUDED.requested_username,updated_at=NOW()`, l.GuildID, l.PlayerID, l.DiscordUserID, l.Status, l.RequestedName); err != nil {
+		return fmt.Errorf("create pending link: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO link_verifications(guild_id,discord_user_id,player_id,challenge_hash,status,expires_at) VALUES($1,$2,$3,$4,$5,$6)`, l.GuildID, l.DiscordUserID, l.PlayerID, l.ChallengeHash, l.Status, l.ExpiresAt); err != nil {
+		return fmt.Errorf("create challenge: %w", err)
+	}
+	return tx.Commit(ctx)
 }
 
+// Unlink marks the user's link UNLINKED and closes any challenge still open for it.
 func (r *LinkRepository) Unlink(ctx context.Context, guildID int64, discordUserID string) error {
-	_, err := r.pool.Exec(ctx, `UPDATE player_links SET status=$3,updated_at=NOW() WHERE guild_id=$1 AND discord_user_id=$2`, guildID, discordUserID, linking.StatusUnlinked)
+	if _, err := r.pool.Exec(ctx, `UPDATE player_links SET status=$3,updated_at=NOW() WHERE guild_id=$1 AND discord_user_id=$2`, guildID, discordUserID, linking.StatusUnlinked); err != nil {
+		return err
+	}
+	_, err := r.pool.Exec(ctx, `UPDATE link_verifications SET status=$4 WHERE guild_id=$1 AND discord_user_id=$2 AND status=$3`, guildID, discordUserID, linking.StatusPending, linking.StatusExpired)
 	return err
 }
 
@@ -89,6 +112,9 @@ func (r *LinkRepository) UnlinkAllForDiscordUser(ctx context.Context, discordUse
 	if err != nil {
 		return 0, fmt.Errorf("unlink all: %w", err)
 	}
+	if _, err := r.pool.Exec(ctx, `UPDATE link_verifications SET status=$3 WHERE discord_user_id=$1 AND status=$2`, discordUserID, linking.StatusPending, linking.StatusExpired); err != nil {
+		return 0, fmt.Errorf("unlink all: close challenges: %w", err)
+	}
 	return tag.RowsAffected(), nil
 }
 
@@ -98,11 +124,12 @@ func (r *LinkRepository) ExpirePending(ctx context.Context) error {
 	return err
 }
 
-// Verify promotes a guild's pending link for discordUserID to VERIFIED. Called
-// after the ADM disconnect/reconnect challenge completes, or an admin's
-// manual approval - see LinkVerificationService.complete.
-func (r *LinkRepository) Verify(ctx context.Context, guildID int64, discordUserID string) error {
-	_, err := r.pool.Exec(ctx, `UPDATE player_links SET status=$1,verified_at=NOW(),updated_at=NOW(),role_sync_status=$5 WHERE guild_id=$2 AND discord_user_id=$3 AND status=$4`, linking.StatusVerified, guildID, discordUserID, linking.StatusPending, linking.RoleSyncPending)
+// Verify promotes a guild's pending link for discordUserID to VERIFIED, only while it still
+// points at playerID (the player the challenge or the admin approved). Called after the ADM
+// disconnect/reconnect challenge completes, or an admin's manual approval - see
+// LinkVerificationService.complete.
+func (r *LinkRepository) Verify(ctx context.Context, guildID int64, discordUserID string, playerID int64) error {
+	_, err := r.pool.Exec(ctx, `UPDATE player_links SET status=$1,verified_at=NOW(),updated_at=NOW(),role_sync_status=$5 WHERE guild_id=$2 AND discord_user_id=$3 AND status=$4 AND player_id=$6`, linking.StatusVerified, guildID, discordUserID, linking.StatusPending, linking.RoleSyncPending, playerID)
 	return err
 }
 
@@ -171,13 +198,14 @@ func (r *LinkRepository) RoleSyncCounts(ctx context.Context, guildID int64) (map
 }
 
 // RecordChallengeDisconnect marks the first observed disconnect after a
-// pending link's challenge was issued. Only the first disconnect counts
+// pending link's challenge was issued (a disconnect logged before the request, read late from an
+// ADM backlog, does not count; 30 s allows for the game server's clock). Only the first disconnect counts
 // (challenge_disconnect_at IS NULL guard) - later disconnects before a
 // reconnect are no-ops, so a player can't "re-arm" the challenge by
 // disconnecting repeatedly.
 func (r *LinkRepository) RecordChallengeDisconnect(ctx context.Context, guildID, playerID int64, at time.Time) (bool, error) {
 	tag, err := r.pool.Exec(ctx, `UPDATE link_verifications SET challenge_disconnect_at=$3
-WHERE guild_id=$1 AND player_id=$2 AND status=$4 AND expires_at > $3 AND challenge_disconnect_at IS NULL`,
+WHERE guild_id=$1 AND player_id=$2 AND status=$4 AND expires_at > $3 AND created_at - INTERVAL '30 seconds' <= $3 AND challenge_disconnect_at IS NULL`,
 		guildID, playerID, at, linking.StatusPending)
 	if err != nil {
 		return false, err
@@ -210,9 +238,15 @@ RETURNING discord_user_id`,
 		return "", false, err
 	}
 
-	if _, err := tx.Exec(ctx, `UPDATE player_links SET status=$1,verified_at=NOW(),updated_at=NOW(),role_sync_status=$5 WHERE guild_id=$2 AND discord_user_id=$3 AND status=$4`,
-		linking.StatusVerified, guildID, discordUserID, linking.StatusPending, linking.RoleSyncPending); err != nil {
+	// The link must still point at the challenged player: a user who unlinked and requested
+	// another player since must not be verified as that one by the old player's reconnect.
+	tag, err := tx.Exec(ctx, `UPDATE player_links SET status=$1,verified_at=NOW(),updated_at=NOW(),role_sync_status=$5 WHERE guild_id=$2 AND discord_user_id=$3 AND status=$4 AND player_id=$6`,
+		linking.StatusVerified, guildID, discordUserID, linking.StatusPending, linking.RoleSyncPending, playerID)
+	if err != nil {
 		return "", false, err
+	}
+	if tag.RowsAffected() == 0 {
+		return "", false, nil
 	}
 
 	if err := tx.Commit(ctx); err != nil {

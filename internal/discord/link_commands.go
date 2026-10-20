@@ -122,8 +122,14 @@ func (h *LinkCommandHandler) serviceStatus(ctx context.Context, guildID int64, u
 }
 
 func statusLabel(status string) string {
-	if status == linking.StatusVerified {
+	switch status {
+	case linking.StatusVerified:
 		return "✅ Verified"
+	case linking.StatusPending:
+		return "🟡 Pending verification"
+	case linking.StatusExpired:
+		return "⌛ Expired: run `/link` again"
+	default:
+		return "Not linked: run `/link`"
 	}
-	return "🟡 Pending verification"
 }

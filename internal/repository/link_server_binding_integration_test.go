@@ -434,7 +434,7 @@ func TestLinkLifecycleAcrossRestartAndAdminFallback(t *testing.T) {
 		if _, err := svc.Request(ctx, f.GuildRowID, discordID, f.PlayerName); err != nil {
 			t.Fatal(err)
 		}
-		if err := svc.ApproveManually(ctx, f.GuildRowID, f.PlayerName); err != nil {
+		if _, err := svc.ApproveManually(ctx, f.GuildRowID, f.PlayerName); err != nil {
 			t.Fatalf("admin approval failed: %v", err)
 		}
 		link, _ := svc.Status(ctx, f.GuildRowID, discordID)
@@ -452,7 +452,7 @@ func TestLinkLifecycleAcrossRestartAndAdminFallback(t *testing.T) {
 		if _, err := svc.Request(ctx, f.GuildRowID, fmt.Sprintf("discord-%d", time.Now().UnixNano()), f.PlayerName); !errors.Is(err, linking.ErrPlaytimeRequired) {
 			t.Fatalf("expected the five-minute rule, got %v", err)
 		}
-		if err := svc.ApproveManually(ctx, f.GuildRowID, f.PlayerName); !errors.Is(err, linking.ErrPlayerNotFound) {
+		if _, err := svc.ApproveManually(ctx, f.GuildRowID, f.PlayerName); !errors.Is(err, linking.ErrPlayerNotFound) {
 			t.Fatalf("admin fallback must require a pending request, got %v", err)
 		}
 	})
