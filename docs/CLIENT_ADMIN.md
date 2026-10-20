@@ -41,7 +41,7 @@ permission mapping granting a Level at or below their own resolved Level - enfor
 
 ## Capability -> Level table
 
-An ADMINISTRATOR runs the server exactly as the OWNER does: every capability below is held by Administrator and up, and no capability requires the OWNER level. The only things that stay the organization owner's are changing the organization's plan/billing (`docs/BILLING.md`, an organization-role check, not a capability) and granting the OWNER level itself (`CanGrant`).
+An ADMINISTRATOR runs the server exactly as the OWNER does: every capability below is held by Administrator and up, with one exception - `SERVER_WIPE`, the Nitrado storage wipe that destroys every player's and the world's data, requires the OWNER level. The other things that stay the organization owner's are changing the organization's plan/billing (`docs/BILLING.md`, an organization-role check, not a capability) and granting the OWNER level itself (`CanGrant`).
 
 In Discord as on the website: a member whose Discord role is mapped to ADMINISTRATOR (or OWNER) may
 run the admin slash commands (`/setup`, `/server`, `/admin`, `/features` and the admin subcommands)
@@ -90,6 +90,8 @@ the server a `/server select|disconnect|repair` names, never for the other insta
 | `MAP_ROTATION_MANAGE` | Administrator | map rotation with a player vote: settings, the file check and the staff choice of the next map (`docs/MAP_ROTATION.md`) |
 | `SERVER_STATUS_VIEW` | Administrator | the owner-facing server status: is the feed working, Nitrado and Discord reachability, position logging (`docs/SERVER_STATUS.md`) |
 | `RETENTION_VIEW` | Administrator | retention dashboard and lapsed-player list (`docs/RETENTION.md`) |
+| `SERVER_SETTINGS_MANAGE` | Administrator | Nitrado's own game switches (storage wipe, mouse & keyboard, whitelist, base/container damage, respawn rules, multi-account mitigation); Nitrado applies them at the next server restart |
+| `SERVER_WIPE` | **Owner** | required IN ADDITION to `SERVER_SETTINGS_MANAGE` for the `wipe_on_next_restart` switch; enabling it is HIGH RISK, typed confirmation `"WIPE"` |
 
 ## Current Actor Client Admin Permissions (Phase 1 Part 2)
 
@@ -215,6 +217,8 @@ DELETE /banlist/{identifier}                   BANLIST_MANAGE
 GET    /priority                               PRIORITY_MANAGE      -> {"supported":bool,"items":["..."],"limit":500}
 POST   /priority                               PRIORITY_MANAGE      body: {"name":"...","reason":"..."}
 DELETE /priority/{name}                        PRIORITY_MANAGE
+GET    /game-settings                          SERVER_SETTINGS_MANAGE -> {"items":[{"id","label","help","supported","enabled","category","key","destructive","appliesOn":"restart"}]} (all 8 switches, catalogue order)
+PUT    /game-settings/{id}                     SERVER_SETTINGS_MANAGE body: {"enabled":bool,"reason":"...","confirm":"WIPE"} -> the item; wipe_on_next_restart also needs SERVER_WIPE and, when enabling, confirm "WIPE"; unknown id 404, switch absent on the service 400
 GET    /server-logs                            SERVER_LOGS_VIEW     -> {"files":[{"name","kind","size","modifiedAt","startedAt"}]}
 GET    /server-logs/content?file=&before=      SERVER_LOGS_VIEW     -> {"name","kind","size","start","end","hasEarlier","text"}
 
@@ -279,7 +283,8 @@ same standard `docs/NITRADO_DELTA_READS.md` applied to the seek/offset-count end
 | start (already-installed, currently-stopped server) | **UNVERIFIED** | No distinct endpoint found in the SDK separate from `restart`; `autoStart`'s design assumes `restart` also starts a stopped server (common in game panels) but this was not verified live - see Deferred |
 | priority queue | **NITRADO API (settings write)** | One setting, `settings.general.priority`, one name per line: read from `GET /services/{id}/gameservers`, replaced with `POST /services/{id}/gameservers/settings` (`category=general`, `key=priority`, `value`). Not in Nitrado's PHP SDK; the call shape is the one behind the web panel's "Prioritized players" field and the one community clients use. Champion reads before every write and refuses to write when the setting is absent (`internal/nitrado/priority.go`). Not yet exercised against a live service |
 | ban list *duration* | **DEFERRED** | Nitrado's banlist API takes only `identifier`, no duration/expiry - Champion's own `installation_access_entries.expires_at` records the intent, but nothing currently enforces an automatic un-ban when it passes (see Deferred) |
-| base damage / container damage / third-person / raid toggles | **UNSUPPORTED/DEFERRED** | No endpoint for any of these appears anywhere in Nitrado's official SDK; these are almost certainly DayZ `serverDZ.cfg`-style file settings, which would need the same unverified file-write capability as priority |
+| game settings (storage wipe, mouse & keyboard, whitelist on/off, base damage, container damage, respawn dialog, respawn in unconsciousness, multi-account mitigation) | **NITRADO API (settings write)** | The web panel's own switches, kept as `settings.<category>.<key>` of `GET /services/{id}/gameservers` and written with `POST /services/{id}/gameservers/settings` exactly like the priority list. The key and category of each switch are not documented, so Champion DISCOVERS them on every read (`internal/nitrado/game_settings.go`: every category, first candidate key, exact spelling before a case-insensitive match); a switch the service lacks is reported `supported:false` and never written. Values are strings (`"1"`/`"0"`). Not yet exercised against a live service |
+| third-person / raid toggles | **UNSUPPORTED/DEFERRED** | No endpoint for these appears in Nitrado's official SDK or panel settings seen so far |
 | generic `setConfig` (arbitrary allowlisted config writes) | **PARTIALLY DEFERRED** | Implemented for Champion-side settings that already exist in `server_configs`/`installation_channel_routes` (feed toggles, maintenance mode, location visibility) via their own dedicated endpoints above; a general DayZ-server-config-file writer is deferred with config writes generally |
 
 ## What changed (Faction Hub moderation)
@@ -380,10 +385,11 @@ Given the size of the original request (roughly fifteen distinct subsystems), th
 full permission/audit foundation plus every capability with a real, verifiable backing mechanism,
 and deferred the rest rather than ship unverified or fabricated plumbing:
 
-- **Base/container damage, third-person, raid, generic DayZ config
-  writes** - no documented Nitrado API endpoint exists for any of these (see the audit table
-  above); building blind file-patch logic against an unverified format was judged a correctness
-  risk this phase's own standard rules out, matching `docs/NITRADO_DELTA_READS.md`'s precedent.
+- **Third-person, raid, generic DayZ config writes** - no documented Nitrado API endpoint
+  exists for these (see the audit table above); building blind file-patch logic against an
+  unverified format was judged a correctness risk this phase's own standard rules out, matching
+  `docs/NITRADO_DELTA_READS.md`'s precedent. (Base and container damage now ship as Nitrado
+  game settings, `SERVER_SETTINGS_MANAGE`.)
 - **`resetPlayerStat` for kills/deaths/headshots** (implemented for streak only via the existing
   `StreakRepository.Reset`) - a genuine per-player, per-stat reset for an aggregate currently
   computed from immutable `kills`/`deaths` rows would need a new baseline-override column consulted
