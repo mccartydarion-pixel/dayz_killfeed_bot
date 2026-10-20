@@ -31,3 +31,16 @@ func TestRateLimiterDropsExpiredKeys(t *testing.T) {
 		t.Fatal("the limit still applies")
 	}
 }
+
+func TestRateLimiterUndoGivesTheSlotBack(t *testing.T) {
+	l := newSaaSRateLimiter(time.Hour, 1)
+	if !l.Allow("k") || l.Allow("k") {
+		t.Fatal("one per hour")
+	}
+	l.Undo("k")
+	if !l.Allow("k") {
+		t.Fatal("an undone attempt frees its slot")
+	}
+	l.Undo("missing")
+	(*saasRateLimiter)(nil).Undo("k")
+}

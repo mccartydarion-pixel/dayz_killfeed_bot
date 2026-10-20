@@ -660,14 +660,20 @@ func (r *FactionHubRepository) CreateFactionWithLimit(ctx context.Context, organ
 		base := factionhub.Slugify(in.Name)
 		var factionID int64
 		for n := 1; ; n++ {
-			if n > 50 {
+			if n > 60 {
 				return fmt.Errorf("hub faction slug: no free slug for %q", base)
+			}
+			candidate := factionhub.SlugCandidate(base, n)
+			if n > 50 {
+				// Every name with no ASCII letters ("Волки", "狼") slugs to the same base, so the
+				// numbered candidates can all be taken: fall back to a unique suffix.
+				candidate = factionhub.SlugCandidate(base, int(time.Now().UnixNano()%1_000_000_000))
 			}
 			err = tx.QueryRow(ctx, `
 INSERT INTO hub_factions(organization_id, installation_id, game_server_id, name, tag, slug, description, recruitment_status, created_by_user_id)
 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
 ON CONFLICT (installation_id, slug) DO NOTHING
-RETURNING id`, organizationID, installationID, gameServerID, in.Name, in.Tag, factionhub.SlugCandidate(base, n), in.Description, in.RecruitmentStatus, userID).Scan(&factionID)
+RETURNING id`, organizationID, installationID, gameServerID, in.Name, in.Tag, candidate, in.Description, in.RecruitmentStatus, userID).Scan(&factionID)
 			if errors.Is(err, pgx.ErrNoRows) {
 				continue // slug taken: try the next suffix
 			}

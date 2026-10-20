@@ -136,6 +136,9 @@ func (a *App) processOneCaseDigest(ctx context.Context) (bool, error) {
 		return block("STAFF_ROUTE_MISSING")
 	}
 	if err := a.caseWatchPrivateDestination(ctx, scope.DiscordGuildID, channel); err != nil {
+		if errors.Is(err, discord.ErrCaseStaffLookupTransient) {
+			return retry("STAFF_CHANNEL_LOOKUP_FAILED")
+		}
 		return block("STAFF_CHANNEL_NOT_PRIVATE")
 	}
 	// Recheck both the original actor and payment after potentially slow

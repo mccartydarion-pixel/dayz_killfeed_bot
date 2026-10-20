@@ -32,6 +32,8 @@ package mapswitch
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"strings"
 	"time"
@@ -85,6 +87,10 @@ type Result struct {
 	NeedsAttention bool
 	// Writes is how many upload requests were sent (restores included).
 	Writes int
+	// GameplayBefore and GameplayAfter are the SHA-256 of cfggameplay.json before and after this
+	// switch wrote it (both empty when it was not written), so Shop auto-delivery, which pins that
+	// file's digest, can follow Champion's own change.
+	GameplayBefore, GameplayAfter string
 }
 
 func failed(msg string) Result { return Result{Status: StatusFailed, Message: msg} }
@@ -290,5 +296,11 @@ func Apply(ctx context.Context, rm Remote, req Request, saveBackup func(context.
 			return rollback(true, "cfgplayerspawnpoints.xml could not be written and verified.")
 		}
 	}
-	return Result{Status: StatusApplied, Message: "Both files were written and verified.", Writes: s.writes}
+	res := Result{Status: StatusApplied, Message: "Both files were written and verified.", Writes: s.writes}
+	if needGameplay {
+		res.GameplayBefore, res.GameplayAfter = sha256Hex(liveGameplay), sha256Hex(edit.Out)
+	}
+	return res
 }
+
+func sha256Hex(b []byte) string { s := sha256.Sum256(b); return hex.EncodeToString(s[:]) }

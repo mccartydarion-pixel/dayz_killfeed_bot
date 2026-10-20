@@ -99,6 +99,8 @@ func (a *App) runPriorityRewards(ctx context.Context, guildID int64, s repositor
 	if err != nil {
 		return
 	}
+	unlock := nitrado.LockSetting(serviceID, nitrado.SettingPriority)
+	defer unlock()
 	list, err := client.PriorityList(ctx, serviceID)
 	if err != nil {
 		slog.Info("component=upgrades", "event", "priority_read_failed", "server_id", s.ServerID, "err", err.Error())

@@ -533,7 +533,7 @@ type RentDue struct {
 // after from and no later than to.
 func (r *UpgradeRepository) RentDueBetween(ctx context.Context, serverID int64, from, to time.Time) ([]RentDue, error) {
 	rows, err := r.pool.Query(ctx, `SELECT b.id,b.name,base_rent_due_at(b.id),rs.price_points,rs.period_days,b.guild_id,b.owner_player_id,
-COALESCE((SELECT array_agg(m2.player_id) FROM faction_members m1 JOIN faction_members m2 ON m2.faction_id=m1.faction_id AND m2.active AND m2.player_id<>b.owner_player_id
+COALESCE((SELECT array_agg(m2.player_id) FROM live_faction_members m1 JOIN live_faction_members m2 ON m2.faction_id=m1.faction_id AND m2.active AND m2.player_id<>b.owner_player_id
   WHERE m1.guild_id=b.guild_id AND m1.player_id=b.owner_player_id AND m1.active),'{}')
 FROM case_registered_bases b
 JOIN base_rent_settings rs ON rs.installation_id=b.installation_id AND rs.server_id=b.server_id AND rs.enabled

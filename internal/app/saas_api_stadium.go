@@ -272,14 +272,9 @@ func (a *App) handleStadiumPut(w http.ResponseWriter, r *http.Request) {
 		writeSaaSError(w, codeInternalError, "could not save the stadium")
 		return
 	}
-	row := repository.Stadium{InstallationID: sr.scope.InstallationID, OrganizationID: sr.scope.OrganizationID, Params: raw, Status: repository.StadiumDraft}
-	if before != nil {
-		row.FileSHA256, row.ObjectCount, row.BuiltAt, row.RemovedAt, row.LastOutcome = before.FileSHA256, before.ObjectCount, before.BuiltAt, before.RemovedAt, before.LastOutcome
-		if before.Status == repository.StadiumBuilt {
-			row.Status = repository.StadiumBuilt
-		}
-	}
-	if err := a.Stadium.Upsert(ctx, row); err != nil {
+	// Params only: a build running at the same moment records its own state (RecordOutcome), and
+	// neither write carries the other's columns back from an older read.
+	if err := a.Stadium.SaveParams(ctx, sr.scope.OrganizationID, sr.scope.InstallationID, raw); err != nil {
 		slog.Warn("component=stadium", "event", "save_failed", "installation_id", sr.scope.InstallationID, "err", err.Error())
 		writeSaaSError(w, codeInternalError, "could not save the stadium")
 		return
@@ -411,6 +406,14 @@ func (a *App) stadiumApply(w http.ResponseWriter, r *http.Request, build bool) {
 		return
 	}
 	defer a.stadiumBusy.Delete(sr.scope.InstallationID)
+	// A map switch rewrites the same cfggameplay.json: never both at once (each would write back
+	// its edit on top of the content it read before the other's write).
+	unlockGameplay, free := nitrado.TryLockSetting(target.NitradoServiceID, nitrado.FileGameplay)
+	if !free {
+		writeSaaSError(w, codeConflict, "the server's configuration is being changed right now (a map switch); try again in a few minutes")
+		return
+	}
+	defer unlockGameplay()
 	remote, err := a.stadiumRemote(ctx, *target)
 	if err != nil {
 		writeSaaSError(w, codeNitradoUnavailable, "could not open the server's Nitrado connection")
@@ -421,6 +424,9 @@ func (a *App) stadiumApply(w http.ResponseWriter, r *http.Request, build bool) {
 		action = "STADIUM_BUILD"
 	}
 	outcome := stadiumwrite.Apply(ctx, remote, req)
+	if outcome.Status == stadiumwrite.StatusBuilt {
+		a.followShopConfiguration(ctx, sr.scope.InstallationID, outcome.ConfigSHA256Before, outcome.ConfigSHA256)
+	}
 	slog.Info("component=stadium", "event", strings.ToLower(action), "installation_id", sr.scope.InstallationID, "status", outcome.Status,
 		"file_verified", outcome.FileVerified, "referenced", outcome.Referenced, "writes", outcome.Writes)
 
@@ -448,7 +454,7 @@ func (a *App) stadiumApply(w http.ResponseWriter, r *http.Request, build bool) {
 			next.FileSHA256, next.ObjectCount = &sha, outcome.ObjectCount
 		}
 	}
-	if err := a.Stadium.Upsert(rctx, next); err != nil {
+	if err := a.Stadium.RecordOutcome(rctx, next); err != nil {
 		slog.Warn("component=stadium", "event", "record_failed", "installation_id", sr.scope.InstallationID, "err", err.Error())
 	}
 	a.recordAudit(rctx, adminActor{user: sr.user, scope: sr.scope}, action, fmt.Sprintf("installation:%d", sr.scope.InstallationID), "", strings.ToLower(outcome.Status),

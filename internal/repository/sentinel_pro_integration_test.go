@@ -19,15 +19,7 @@ func TestSentinelProCoversEveryBaseService(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	var faction int64
-	if err := pool.QueryRow(ctx, `INSERT INTO factions(guild_id,name,tag,owner_player_id) VALUES($1,'SP','SP',$2) RETURNING id`, fx.GuildRowID, owner).Scan(&faction); err != nil {
-		t.Fatal(err)
-	}
-	for p, role := range map[int64]string{owner: "OWNER", mate: "MEMBER"} {
-		if _, err := pool.Exec(ctx, `INSERT INTO faction_members(guild_id,faction_id,player_id,role) VALUES($1,$2,$3,$4)`, fx.GuildRowID, faction, p, role); err != nil {
-			t.Fatal(err)
-		}
-	}
+	seedHubFaction(t, pool, fx.GuildRowID, "SP", hubSeedMember{Player: owner, Role: "LEADER"}, hubSeedMember{Player: mate})
 	if _, err := pool.Exec(ctx, `INSERT INTO case_registered_bases
  (installation_id,guild_id,server_id,owner_player_id,map_key,name,center_x,center_z,radius)
  VALUES($1,$2,$3,$4,'chernarusplus','Fort',1000,2000,50)`, fx.InstallationID, fx.GuildRowID, fx.ServerRowID, owner); err != nil {

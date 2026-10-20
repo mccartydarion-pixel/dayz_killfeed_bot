@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -14,6 +15,22 @@ var ErrCaseStaffChannelUnsafe = errors.New("C.A.S.E. staff destination is not ve
 // diagnostics. The reason names only the failed policy check.
 func caseStaffUnsafe(reason string) error {
 	return fmt.Errorf("%w: %s", ErrCaseStaffChannelUnsafe, reason)
+}
+
+// ErrCaseStaffLookupTransient: Discord could not be asked (rate limited, a 5xx or a network
+// failure), so the channel's privacy is unknown rather than unsafe. A caller retries later.
+var ErrCaseStaffLookupTransient = errors.New("C.A.S.E. staff channel check temporarily unavailable")
+
+// caseStaffLookupFailed is caseStaffUnsafe for a failed Discord read, except that a transient
+// failure is ErrCaseStaffLookupTransient: a 429 must not block a paid digest for good.
+func caseStaffLookupFailed(err error, reason string) error {
+	var rest *discordgo.RESTError
+	if errors.As(err, &rest) && rest.Response != nil {
+		if code := rest.Response.StatusCode; code != http.StatusTooManyRequests && code < http.StatusInternalServerError {
+			return caseStaffUnsafe(reason)
+		}
+	}
+	return fmt.Errorf("%w: %s: %v", ErrCaseStaffLookupTransient, reason, err)
 }
 
 // validateCaseStaffChannel is a conservative privacy gate, not a claim that
@@ -104,14 +121,14 @@ func (c *Client) VerifyCaseStaffChannel(ctx context.Context, guildID, channelID 
 	}
 	channel, err := c.session.Channel(channelID)
 	if err != nil {
-		return caseStaffUnsafe("Discord channel lookup failed; confirm bot membership and View Channel access")
+		return caseStaffLookupFailed(err, "Discord channel lookup failed; confirm bot membership and View Channel access")
 	}
 	if channel == nil || channel.GuildID != guildID {
 		return caseStaffUnsafe("channel is missing or does not belong to the expected guild")
 	}
 	guild, err := c.session.Guild(guildID)
 	if err != nil {
-		return caseStaffUnsafe("Discord guild lookup failed; confirm the QA bot was installed in this guild")
+		return caseStaffLookupFailed(err, "Discord guild lookup failed; confirm the QA bot was installed in this guild")
 	}
 	// A private parent is not sufficient: the child must itself explicitly
 	// deny @everyone view, preventing unsynced category permissions.
@@ -124,7 +141,7 @@ func (c *Client) VerifyCaseStaffChannel(ctx context.Context, guildID, channelID 
 	// user snowflake. @me is supported by other Discord routes, not this GET.
 	member, err := c.session.GuildMember(guildID, botID)
 	if err != nil {
-		return caseStaffUnsafe("Discord could not read QA bot guild membership; confirm installation and permissions")
+		return caseStaffLookupFailed(err, "Discord could not read QA bot guild membership; confirm installation and permissions")
 	}
 	if member == nil {
 		return caseStaffUnsafe("QA bot is not a guild member")

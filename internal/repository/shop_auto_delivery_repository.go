@@ -186,6 +186,17 @@ func (r *ShopAutoDeliveryRepository) AcceptConfiguration(ctx context.Context, or
  WHERE installation_id=$2 AND organization_id=$1 AND config_sha256 IS NULL`, org, inst, configSHA256, missionPath)
 }
 
+// FollowConfiguration moves the accepted cfggameplay.json digest from before to after when
+// Champion itself rewrote that file (a map switch, a stadium build), so auto-delivery does not
+// pause for Champion's own change. It only moves a digest that still equals before: any other
+// change still pauses delivery for a person to look at.
+func (r *ShopAutoDeliveryRepository) FollowConfiguration(ctx context.Context, inst int64, before, after string) error {
+	if r == nil || before == "" || after == "" || before == after {
+		return nil
+	}
+	return execShop(ctx, r.pool, `UPDATE shop_auto_delivery_settings SET config_sha256=$3, updated_at=NOW() WHERE installation_id=$1 AND config_sha256=$2`, inst, before, after)
+}
+
 // ShopDeliveryWrite is one journaled write to the Champion spawner file.
 type ShopDeliveryWrite struct {
 	ID, OrganizationID, InstallationID int64

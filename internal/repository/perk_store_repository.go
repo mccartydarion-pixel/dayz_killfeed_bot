@@ -43,6 +43,9 @@ var (
 	ErrPerkNotRefundable     = errors.New("there is no payment left to refund on this purchase")
 	ErrPerkOwnerCannotRefund = errors.New("the owner's balance cannot cover this refund")
 	ErrPerkInvalidRequest    = errors.New("invalid perk store request")
+	// ErrPerkIdempotencyConflict: the request key was already used for a different offer or
+	// recipient. Replaying the earlier purchase would report a gift that never happened.
+	ErrPerkIdempotencyConflict = errors.New("this request was already used for a different purchase; try again")
 )
 
 // PerkUnavailableError says why an offer cannot be bought (a perkstore.Unavailable* reason).
@@ -373,6 +376,9 @@ func (r *PerkStoreRepository) Purchase(ctx context.Context, s PerkScope, buyerID
 		p, err := scanPerkPurchase(tx.QueryRow(ctx, `SELECT `+perkPurchaseCols+perkPurchaseFrom+` WHERE p.id=$1`, existing))
 		if err != nil {
 			return out, err
+		}
+		if p.OfferID != offerID || p.RecipientPlayerID != recipientID {
+			return out, ErrPerkIdempotencyConflict
 		}
 		out.Purchase, out.Duplicate = p, true
 		_ = tx.QueryRow(ctx, `SELECT balance FROM player_points WHERE guild_id=$1 AND player_id=$2`, s.GuildID, buyerID).Scan(&out.BalanceAfter)

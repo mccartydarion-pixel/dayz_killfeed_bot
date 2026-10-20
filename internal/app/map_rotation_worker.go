@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"github.com/yourname/dayz-killfeed/internal/nitrado"
 	"log/slog"
 	"math/rand"
 	"strings"
@@ -33,8 +34,11 @@ import (
 // (mapRotationWipeRecover): it is started again whatever was switched off in the meantime.
 
 const (
-	mapRotationInterval    = time.Minute
-	mapRotationLease       = 5 * time.Minute
+	mapRotationInterval = time.Minute
+	// mapRotationLease must outlast a whole pass: the 4 min deadline, a restore that runs past it
+	// on its own 90 s budget, and the 15 s finish. A shorter lease let another process claim the
+	// installation and resume the same switch while this one was still rolling it back.
+	mapRotationLease       = 7 * time.Minute
 	mapRotationPassTimeout = 4 * time.Minute
 	mapRotationRestartTTL  = 5 * time.Minute
 	// mapRotationResumeFor: a switch interrupted by a crash is finished within this time, at most
@@ -387,9 +391,16 @@ func (a *App) mapRotationSwitch(ctx context.Context, t repository.MapRotationTar
 		}
 		req.Prior = &mapswitch.Backup{Gameplay: sw.PrevGameplay, Spawns: sw.PrevSpawns}
 	}
+	// The stadium builder edits the same cfggameplay.json; wait for one in progress (at most its
+	// 90 s) rather than write on top of the content it is about to replace.
+	unlockGameplay := nitrado.LockSetting(t.NitradoServiceID, nitrado.FileGameplay)
 	res := mapswitch.Apply(ctx, remote, req, func(ctx context.Context, b mapswitch.Backup) error {
 		return a.MapRotation.SaveSwitchBackup(ctx, sw.ID, b.Gameplay, b.Spawns, time.Now().UTC())
 	})
+	unlockGameplay()
+	if res.Status == mapswitch.StatusApplied {
+		a.followShopConfiguration(ctx, t.InstallationID, res.GameplayBefore, res.GameplayAfter)
+	}
 	// Fresh characters: only after both files are verified in place, only when the owner switched
 	// it on, and only once per switch (a switch that already began clearing never comes here: an
 	// interrupted one goes to mapRotationWipeRecover, a finished one is closed in mapRotationResume).
@@ -731,4 +742,18 @@ func buildMapChangedMessage(serverName, mapName string, at time.Time) *discordgo
 	}
 	presentation.StampEmbed(embed, at)
 	return &discordgo.MessageSend{Embeds: []*discordgo.MessageEmbed{presentation.FitEmbed(embed)}, AllowedMentions: noMentions()}
+}
+
+// followShopConfiguration lets Shop auto-delivery accept a cfggameplay.json Champion itself just
+// rewrote and verified (map switch, stadium build); without it every switch paused paid deliveries
+// until a person resumed them.
+func (a *App) followShopConfiguration(ctx context.Context, installationID int64, before, after string) {
+	if a.ShopAuto == nil {
+		return
+	}
+	fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	if err := a.ShopAuto.FollowConfiguration(fctx, installationID, before, after); err != nil {
+		slog.Warn("component=shop_delivery", "event", "follow_configuration_failed", "installation_id", installationID, "err", err.Error())
+	}
 }

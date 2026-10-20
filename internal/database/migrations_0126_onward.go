@@ -63,6 +63,12 @@ var migrations0126onward = []Migration{
 		Name: "0134_subscription_past_due_since",
 		SQL:  SubscriptionPastDueSinceSQL,
 	},
+	{
+		// Faction Hub membership in the shape of the old Discord faction_members table, for the
+		// base and security features that still asked that table (nothing writes it any more).
+		Name: "0135_live_faction_members_view",
+		SQL:  LiveFactionMembersViewSQL,
+	},
 }
 
 // SubscriptionPastDueSinceSQL adds subscriptions.past_due_since: set when the status becomes
@@ -85,4 +91,18 @@ ALTER TABLE trial_grants ALTER COLUMN organization_id DROP NOT NULL;
 ALTER TABLE trial_grants DROP CONSTRAINT IF EXISTS trial_grants_organization_id_fkey;
 ALTER TABLE trial_grants ADD CONSTRAINT trial_grants_organization_id_fkey
     FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE SET NULL;
+`
+
+// LiveFactionMembersViewSQL is live_faction_members: one row per Faction Hub member whose Discord
+// account has a VERIFIED link to a DayZ player on the installation's guild, as (guild_id,
+// installation_id, faction_id, player_id, role, active). faction_id is the hub faction; role is
+// LEADER, OFFICER or MEMBER; active is always TRUE (leaving deletes the hub row).
+const LiveFactionMembersViewSQL = `
+CREATE OR REPLACE VIEW live_faction_members AS
+SELECT c.guild_id, m.installation_id, m.faction_id, l.player_id, m.role_key AS role, TRUE AS active
+FROM hub_faction_members m
+JOIN installations i ON i.id = m.installation_id
+JOIN discord_guild_connections c ON c.id = i.discord_guild_connection_id
+JOIN app_users u ON u.id = m.user_id
+JOIN player_links l ON l.discord_user_id = u.discord_user_id AND l.guild_id = c.guild_id AND l.status = 'VERIFIED';
 `

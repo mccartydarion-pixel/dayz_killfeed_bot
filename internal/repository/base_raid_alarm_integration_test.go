@@ -27,7 +27,17 @@ func TestBaseRaidAlarmMatchAndCooldown(t *testing.T) {
  VALUES($1,$2,'raid-owner-discord','VERIFIED',NOW())`, fx.GuildRowID, owner); err != nil {
 		t.Fatal(err)
 	}
+	// The owner's faction is a Faction Hub faction (who counts as the owner's mate); a faction
+	// grant on a base names a Discord-side faction (case_base_authorizations.faction_id).
 	faction := func(name string, leader int64, members ...int64) int64 {
+		t.Helper()
+		seed := []hubSeedMember{{Player: leader, Role: "LEADER"}}
+		for _, m := range members {
+			seed = append(seed, hubSeedMember{Player: m})
+		}
+		return seedHubFaction(t, pool, fx.GuildRowID, name, seed...)
+	}
+	grantFaction := func(name string, leader int64, members ...int64) int64 {
 		t.Helper()
 		var id int64
 		if err := pool.QueryRow(ctx, `INSERT INTO factions(guild_id,name,tag,owner_player_id) VALUES($1,$2,$2,$3) RETURNING id`,
@@ -43,7 +53,7 @@ func TestBaseRaidAlarmMatchAndCooldown(t *testing.T) {
 		return id
 	}
 	faction("OWNR", owner, ownerMate)
-	allies := faction("ALLY", factionFriend)
+	allies := grantFaction("ALLY", factionFriend)
 
 	var baseID int64
 	if err := pool.QueryRow(ctx, `INSERT INTO case_registered_bases

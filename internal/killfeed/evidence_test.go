@@ -3,6 +3,7 @@ package killfeed
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/yourname/dayz-killfeed/internal/caseintel"
@@ -166,5 +167,18 @@ func TestCaseBuildEvidenceRequiresSecondOptIn(t *testing.T) {
 	}
 	if len(store.items) != 1 || store.items[0].Build == nil {
 		t.Fatalf("explicit build opt-in failed: %+v", store.items)
+	}
+}
+
+// A line whose stored evidence no longer matches it fails the same way on every retry, so it is
+// logged and processed instead of holding the server's checkpoint at that line for good. A
+// transient storage failure still stops the checkpoint (TestCaseEvidenceFailureStopsBeforeLegacyDedupe).
+func TestCaseEvidenceConflictDoesNotStopTheFeed(t *testing.T) {
+	e := NewEngine(nil, "svc", NewADMParser())
+	e.SetDurableCheckpoint(nil, 11, 22)
+	store := &caseEvidenceRecorder{err: fmt.Errorf("%w: replay evidence mismatch", repository.ErrCaseEvidenceConflict)}
+	e.SetEvidenceStore(store)
+	if _, err := e.processLineAt(caseTestHit, "/ftproot/dayzps/config/test.ADM", 500); err != nil {
+		t.Fatalf("an evidence conflict must not stop the line: %v", err)
 	}
 }

@@ -19,18 +19,9 @@ func TestFactionSecurityRecipientsPreferenceAndSale(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	var faction int64
-	if err := pool.QueryRow(ctx, `INSERT INTO factions(guild_id,name,tag,owner_player_id) VALUES($1,'Wolves','WLF',$2) RETURNING id`, fx.GuildRowID, owner).Scan(&faction); err != nil {
-		t.Fatal(err)
-	}
-	for p, role := range map[int64]string{owner: "OWNER", officer: "OFFICER", member: "MEMBER", unlinked: "MEMBER"} {
-		if _, err := pool.Exec(ctx, `INSERT INTO faction_members(guild_id,faction_id,player_id,role) VALUES($1,$2,$3,$4)`, fx.GuildRowID, faction, p, role); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := pool.Exec(ctx, `INSERT INTO faction_members(guild_id,faction_id,player_id,role,active) VALUES($1,$2,$3,'MEMBER',FALSE)`, fx.GuildRowID, faction, gone); err != nil {
-		t.Fatal(err)
-	}
+	// "gone" left the faction: linked, but no hub membership.
+	seedHubFaction(t, pool, fx.GuildRowID, "WLF", hubSeedMember{Player: owner, Role: "LEADER"}, hubSeedMember{Player: officer, Role: "OFFICER"},
+		hubSeedMember{Player: member}, hubSeedMember{Player: unlinked, Unlinked: true})
 	recipients := func() []string {
 		t.Helper()
 		ids, err := repo.Recipients(ctx, fx.InstallationID, fx.GuildRowID, fx.ServerRowID, owner)
@@ -67,7 +58,7 @@ func TestFactionSecurityRecipientsPreferenceAndSale(t *testing.T) {
 		t.Fatalf("leaders only: %v", ids)
 	}
 	sum, err := repo.Summary(ctx, fx.GuildRowID, owner)
-	if err != nil || !sum.InFaction || sum.FactionName != "Wolves" || sum.LinkedMembers != 2 || sum.LinkedLeaders != 1 {
+	if err != nil || !sum.InFaction || sum.FactionName != "WLF" || sum.LinkedMembers != 2 || sum.LinkedLeaders != 1 {
 		t.Fatalf("summary: %+v %v", sum, err)
 	}
 	if sum, err := repo.Summary(ctx, fx.GuildRowID, outsider); err != nil || sum.InFaction {

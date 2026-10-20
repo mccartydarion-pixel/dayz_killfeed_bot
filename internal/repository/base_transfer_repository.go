@@ -73,8 +73,8 @@ func (r *BaseTransferRepository) ready() bool { return r != nil && r.pool != nil
 
 // mateSQL is true when player $2 is an active, verified member of the same
 // faction as player $1 (and not the same player). $3 is the guild.
-const mateSQL = `($1::BIGINT<>$2::BIGINT AND EXISTS (SELECT 1 FROM faction_members me
-  JOIN faction_members fo ON fo.guild_id=me.guild_id AND fo.faction_id=me.faction_id AND fo.active
+const mateSQL = `($1::BIGINT<>$2::BIGINT AND EXISTS (SELECT 1 FROM live_faction_members me
+  JOIN live_faction_members fo ON fo.guild_id=me.guild_id AND fo.faction_id=me.faction_id AND fo.active
   JOIN player_links l ON l.guild_id=fo.guild_id AND l.player_id=fo.player_id AND l.status='VERIFIED'
   WHERE me.guild_id=$3::BIGINT AND me.player_id=$1::BIGINT AND me.active AND fo.player_id=$2::BIGINT))`
 
@@ -129,8 +129,8 @@ func (r *BaseTransferRepository) Options(ctx context.Context, s BaseRequestScope
 		return nil, nil, err
 	}
 	rows, err = r.pool.Query(ctx, `SELECT DISTINCT fo.player_id,COALESCE(p.display_name,'')
- FROM faction_members me
- JOIN faction_members fo ON fo.guild_id=me.guild_id AND fo.faction_id=me.faction_id AND fo.active AND fo.player_id<>me.player_id
+ FROM live_faction_members me
+ JOIN live_faction_members fo ON fo.guild_id=me.guild_id AND fo.faction_id=me.faction_id AND fo.active AND fo.player_id<>me.player_id
  JOIN player_links l ON l.guild_id=fo.guild_id AND l.player_id=fo.player_id AND l.status='VERIFIED'
  LEFT JOIN players p ON p.guild_id=fo.guild_id AND p.id=fo.player_id
  WHERE me.guild_id=$1 AND me.player_id=$2 AND me.active
@@ -178,6 +178,11 @@ func (r *BaseTransferRepository) Create(ctx context.Context, s BaseRequestScope,
 	}
 	if !owns || !mate {
 		return BaseTransfer{}, ErrBaseTransferNotMate
+	}
+	// The recipient's base count is checked under the same per-player lock base requests take, so
+	// two transfers (or a transfer and a request) to one player cannot both pass the limit.
+	if err := lockBaseRecipient(ctx, tx, s.InstallationID, toPlayerID); err != nil {
+		return BaseTransfer{}, err
 	}
 	var held int
 	if err := tx.QueryRow(ctx, heldSQL, s.InstallationID, s.ServerID, toPlayerID).Scan(&held); err != nil {
@@ -297,6 +302,9 @@ func (r *BaseTransferRepository) decide(ctx context.Context, s BaseRequestScope,
 		if !owns || !mate {
 			return out, ErrBaseTransferNotMate
 		}
+		if err := lockBaseRecipient(ctx, tx, s.InstallationID, t.ToPlayerID); err != nil {
+			return out, err
+		}
 		var held int
 		if err := tx.QueryRow(ctx, heldSQL, s.InstallationID, s.ServerID, t.ToPlayerID).Scan(&held); err != nil {
 			return out, err
@@ -332,4 +340,11 @@ func (r *BaseTransferRepository) Approve(ctx context.Context, s BaseRequestScope
 // Decline answers no, with an optional reason for the players.
 func (r *BaseTransferRepository) Decline(ctx context.Context, s BaseRequestScope, transferID int64, reason string, actorUserID *int64) (BaseTransferDecision, error) {
 	return r.decide(ctx, s, transferID, false, reason, actorUserID)
+}
+
+// lockBaseRecipient takes the per-player lock base requests take (CaseBaseRequestRepository.Create),
+// so every path that gives a player a base counts their bases one at a time.
+func lockBaseRecipient(ctx context.Context, tx pgx.Tx, installationID, playerID int64) error {
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('base_request:'||$1::BIGINT::TEXT||':'||$2::BIGINT::TEXT,0))`, installationID, playerID)
+	return err
 }

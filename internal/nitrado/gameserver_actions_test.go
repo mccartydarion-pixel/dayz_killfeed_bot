@@ -6,7 +6,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestRestartPostsToDocumentedEndpointWithMessage(t *testing.T) {
@@ -194,4 +196,62 @@ func TestDeleteFileSendsDeleteWithThePath(t *testing.T) {
 	if client.DeleteFile(context.Background(), "", file) == nil || client.DeleteFile(context.Background(), "12345", "") == nil {
 		t.Fatal("a service and a path are required")
 	}
+}
+
+// Two bans from two separate clients (each website request builds its own) at the same moment
+// both land: the read-modify-write of the whole list is serialized per service, process-wide.
+func TestConcurrentBansFromSeparateClientsBothLand(t *testing.T) {
+	var mu sync.Mutex
+	bans := "Old"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet:
+			mu.Lock()
+			current := bans
+			mu.Unlock()
+			time.Sleep(30 * time.Millisecond) // widen the read-to-write window
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"gameserver": map[string]any{"settings": map[string]any{"general": map[string]any{"bans": current}}}}})
+		case r.Method == http.MethodPost:
+			var body map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			mu.Lock()
+			bans = body["value"]
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	var wg sync.WaitGroup
+	for _, name := range []string{"Alpha", "Bravo", "Charlie"} {
+		wg.Add(1)
+		go func(name string) {
+			defer wg.Done()
+			if err := NewClient(srv.URL, "token", srv.Client()).BanlistAdd(context.Background(), "svc-race", name); err != nil {
+				t.Errorf("ban %s: %v", name, err)
+			}
+		}(name)
+	}
+	wg.Wait()
+	got := ParsePriorityList(bans)
+	if len(got) != 4 {
+		t.Fatalf("every ban must land, got %q", bans)
+	}
+}
+
+func TestTryLockSettingRefusesWhileHeld(t *testing.T) {
+	unlock := LockSetting("svc-try", FileGameplay)
+	if _, ok := TryLockSetting("svc-try", FileGameplay); ok {
+		t.Fatal("a held lock must refuse TryLockSetting")
+	}
+	if release, ok := TryLockSetting("svc-other", FileGameplay); !ok {
+		t.Fatal("another service's lock is independent")
+	} else {
+		release()
+	}
+	unlock()
+	release, ok := TryLockSetting("svc-try", FileGameplay)
+	if !ok {
+		t.Fatal("a released lock can be taken")
+	}
+	release()
 }

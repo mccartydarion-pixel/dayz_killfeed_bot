@@ -19,15 +19,8 @@ func TestBaseTransferPlayerRoutes(t *testing.T) {
 	giver := w.linkPlayer(w.a1, giverDiscord, "Giver")
 	mate := w.linkPlayer(w.a1, mateDiscord, "Mate")
 	guild, server := w.gameContext(w.a1)
-	var faction, hall int64
-	if err := pool.QueryRow(ctx, `INSERT INTO factions(guild_id,name,tag,owner_player_id) VALUES($1,'Xfer','XFR',$2) RETURNING id`, guild, giver).Scan(&faction); err != nil {
-		t.Fatal(err)
-	}
-	for _, p := range []int64{giver, mate} {
-		if _, err := pool.Exec(ctx, `INSERT INTO faction_members(guild_id,faction_id,player_id,role) VALUES($1,$2,$3,'MEMBER')`, guild, faction, p); err != nil {
-			t.Fatal(err)
-		}
-	}
+	var hall int64
+	seedHubFaction(t, pool, guild, w.a1.InstallationID, "XFR", hubSeedMember{Player: giver, Role: "LEADER"}, hubSeedMember{Player: mate})
 	if err := pool.QueryRow(ctx, `INSERT INTO case_registered_bases
  (installation_id,guild_id,server_id,owner_player_id,map_key,name,center_x,center_z,radius)
  VALUES($1,$2,$3,$4,'chernarusplus','Hall',100,100,50) RETURNING id`, w.a1.InstallationID, guild, server, giver).Scan(&hall); err != nil {
@@ -60,19 +53,14 @@ func TestBaseTransferOwnerRoutes(t *testing.T) {
 	mod := zoneActor(t, w, "xfer-admin-mod")
 	w.mapRole(mod, "xfer-admin-mod-role", "MODERATOR")
 	giver, mate := w.seedPlayer("Owner Giver"), w.seedPlayer("Owner Mate")
-	var faction, hall int64
-	if err := pool.QueryRow(ctx, `INSERT INTO factions(guild_id,name,tag,owner_player_id) VALUES($1,'OXfer','OXF',$2) RETURNING id`, w.guildID, giver).Scan(&faction); err != nil {
-		t.Fatal(err)
-	}
+	var hall int64
 	for i, p := range []int64{giver, mate} {
-		if _, err := pool.Exec(ctx, `INSERT INTO faction_members(guild_id,faction_id,player_id,role) VALUES($1,$2,$3,'MEMBER')`, w.guildID, faction, p); err != nil {
-			t.Fatal(err)
-		}
 		if _, err := pool.Exec(ctx, `INSERT INTO player_links(guild_id,player_id,discord_user_id,status,verified_at) VALUES($1,$2,$3,'VERIFIED',NOW())`,
 			w.guildID, p, fmt.Sprintf("oxfer-%d", i)); err != nil {
 			t.Fatal(err)
 		}
 	}
+	seedHubFaction(t, pool, w.guildID, w.f.InstallationID, "OXF", hubSeedMember{Player: giver, Role: "LEADER"}, hubSeedMember{Player: mate})
 	if err := pool.QueryRow(ctx, `INSERT INTO case_registered_bases
  (installation_id,guild_id,server_id,owner_player_id,map_key,name,center_x,center_z,radius)
  VALUES($1,$2,$3,$4,'chernarusplus','Owner Hall',100,100,50) RETURNING id`, w.f.InstallationID, w.guildID, w.serverID, giver).Scan(&hall); err != nil {

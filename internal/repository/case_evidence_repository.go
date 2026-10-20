@@ -17,6 +17,11 @@ import (
 // fingerprint used for Discord dedupe (which can collapse repeated real hits).
 type CaseEvidenceRepository struct{ pool *pgxpool.Pool }
 
+// ErrCaseEvidenceConflict: the ADM line at a recorded position no longer matches the evidence
+// stored for it (the file was rewritten there, or a newer parser classifies the line
+// differently). It never resolves by retrying, so the caller records it and moves on.
+var ErrCaseEvidenceConflict = errors.New("C.A.S.E. evidence conflict")
+
 func NewCaseEvidenceRepository(pool *pgxpool.Pool) *CaseEvidenceRepository {
 	return &CaseEvidenceRepository{pool: pool}
 }
@@ -144,10 +149,10 @@ func (r *CaseEvidenceRepository) RecordCaseEvidence(ctx context.Context, item Ca
 			return fmt.Errorf("verify replay: %w", err)
 		}
 		if priorHash != item.LineSHA256 {
-			return errors.New("C.A.S.E. source offset collision: changed ADM line at prior position")
+			return fmt.Errorf("%w: source offset collision: changed ADM line at prior position", ErrCaseEvidenceConflict)
 		}
 		if priorType != item.EventType || priorAction != build.Action || priorObject != build.Object || priorTarget != build.Target || priorTool != build.Tool {
-			return errors.New("C.A.S.E. replay evidence mismatch")
+			return fmt.Errorf("%w: replay evidence mismatch", ErrCaseEvidenceConflict)
 		}
 		return nil
 	}
