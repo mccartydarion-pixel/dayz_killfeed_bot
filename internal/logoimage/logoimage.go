@@ -128,6 +128,11 @@ func inspectWebP(data []byte) (Info, error) {
 	if riffSize+8 != len(data) && riffSize+9 != len(data) {
 		return Info{}, ErrCorrupt
 	}
+	// The size covers at least the "WEBP" tag: a smaller one made data[12:riffSize+8] an inverted
+	// slice and panicked the upload request.
+	if riffSize < 4 {
+		return Info{}, ErrCorrupt
+	}
 	body := data[12 : riffSize+8]
 	var w, h int
 	haveImage, extended := false, false

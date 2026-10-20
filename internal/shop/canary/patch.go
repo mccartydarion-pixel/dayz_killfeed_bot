@@ -59,6 +59,7 @@ type ConfigPatch struct {
 const (
 	PurposeShopReference   = "SHOP_REFERENCE"
 	PurposeLostCityRestore = "LOST_CITY_RESTORE"
+	PurposeShopRelocate    = "SHOP_REFERENCE_RELOCATE"
 )
 
 // AffectedFile is one file a gate touches.
@@ -73,13 +74,19 @@ type AffectedFile struct {
 // or corrected. The Champion file must already exist, empty, on the server (Gate A) before this patch
 // is applied (Gate B), so no restart can ever meet a reference to a missing file.
 func ProposePatch(current []byte) (ConfigPatch, error) {
+	return ProposePatchFor(current, nitradodelivery.ArtifactRelPath)
+}
+
+// ProposePatchFor appends entry (an approved Champion artifact path) - used with the legacy path
+// only to reproduce the historical Gate B.
+func ProposePatchFor(current []byte, entry string) (ConfigPatch, error) {
 	p, err := proposeArray(current, func(before []string) ([]string, []string) {
 		for _, e := range before {
-			if e == nitradodelivery.ArtifactRelPath {
+			if e == entry {
 				return before, nil
 			}
 		}
-		return append(append([]string{}, before...), nitradodelivery.ArtifactRelPath), []string{"add " + nitradodelivery.ArtifactRelPath}
+		return append(append([]string{}, before...), entry), []string{"add " + entry}
 	})
 	if err != nil {
 		return p, err
@@ -87,15 +94,65 @@ func ProposePatch(current []byte) (ConfigPatch, error) {
 	empty, emptySHA := EmptyArtifact()
 	p.Purpose = PurposeShopReference
 	p.AffectedFiles = []AffectedFile{
-		{Path: nitradodelivery.ArtifactRelPath, Change: "CREATE", Gate: GateA},
+		{Path: entry, Change: "CREATE", Gate: GateA},
 		{Path: ConfigRelPath, Change: "MODIFY", Gate: GateB},
 	}
 	p.Preconditions = []string{
-		"Gate A verified: " + nitradodelivery.ArtifactRelPath + " exists and reads back as the empty spawner file (" + fmt.Sprint(len(empty)) + " bytes, SHA-256 " + emptySHA + ")",
+		"verified: " + entry + " exists and reads back as the empty spawner file (" + fmt.Sprint(len(empty)) + " bytes, SHA-256 " + emptySHA + ")",
 		"re-read the Champion file immediately before this write: if it is missing or not the empty file, stop",
 	}
 	return p, nil
 }
+
+// ProposeRelocation is relocation Gate D: the one legacy champion/champion_shop_delivery.json entry
+// is replaced IN PLACE by custom/champion_shop_delivery.json. Every other entry (Lost City included)
+// and every other byte is kept. It refuses unless the legacy entry occurs exactly once and the new
+// one not at all.
+func ProposeRelocation(current []byte) (ConfigPatch, error) {
+	legacy, next := nitradodelivery.LegacyArtifactRelPath, nitradodelivery.ArtifactRelPath
+	var shapeErr error
+	p, err := proposeArray(current, func(before []string) ([]string, []string) {
+		n, m := 0, 0
+		for _, e := range before {
+			switch e {
+			case legacy:
+				n++
+			case next:
+				m++
+			}
+		}
+		if n != 1 || m != 0 {
+			shapeErr = ErrRelocationShape
+			return before, nil
+		}
+		after := make([]string, len(before))
+		for i, e := range before {
+			after[i] = e
+			if e == legacy {
+				after[i] = next
+			}
+		}
+		return after, []string{"replace " + legacy + " -> " + next}
+	})
+	if shapeErr != nil {
+		return ConfigPatch{}, shapeErr
+	}
+	if err != nil {
+		return p, err
+	}
+	p.Purpose = PurposeShopRelocate
+	p.AffectedFiles = []AffectedFile{{Path: ConfigRelPath, Change: "MODIFY", Gate: "D"}}
+	empty, emptySHA := EmptyArtifact()
+	p.Preconditions = []string{
+		"relocation Gate C verified: " + next + " exists and reads back as the empty spawner file (" + fmt.Sprint(len(empty)) + " bytes, SHA-256 " + emptySHA + ")",
+		"re-read it immediately before this write: if it is missing or not the empty file, stop",
+	}
+	return p, nil
+}
+
+// ErrRelocationShape: the configuration does not contain exactly one legacy Champion entry and no
+// custom/ Champion entry.
+var ErrRelocationShape = errors.New("the configuration does not have exactly one " + nitradodelivery.LegacyArtifactRelPath + " entry and no " + nitradodelivery.ArtifactRelPath + " entry")
 
 // ProposeLostCityRestore is the SEPARATE, optional owner change that re-enables the Lost City map:
 // a misspelled custom/The_Losst_City.json reference is corrected in place, otherwise
@@ -229,7 +286,7 @@ func proposeArray(current []byte, edit func([]string) ([]string, []string)) (Con
 
 // ConfigBackupPath is the mission-relative backup name for a configuration digest.
 func ConfigBackupPath(sha string) string {
-	return nitradodelivery.ArtifactDir + "/backup/" + ConfigRelPath + "." + sha[:12] + ".bak"
+	return nitradodelivery.BackupDir + "/" + ConfigRelPath + "." + sha[:12] + ".bak"
 }
 
 // spawnerArraySpan finds the byte span of the objectSpawnersArr array value inside WorldsData and the

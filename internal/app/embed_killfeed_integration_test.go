@@ -46,7 +46,7 @@ func (c *cardCapture) last() (*discordgo.MessageEmbed, *killfeed.Event) {
 	return c.cards[len(c.cards)-1], c.evs[len(c.evs)-1]
 }
 
-// server wires one game server's worker exactly as app.go does: a persistence queue that
+// server wires one game server's worker exactly as server_worker.go does: a persistence queue that
 // claims bounties and publishes kills, and a KillfeedPublisher bound to (guild, server) with
 // the renderer (nil = the flag is off: no customizer is wired at all).
 func (w *runtimeWorld) server(serverID int64, r *embedrender.Renderer) (*killfeed.PersistenceQueue, *cardCapture) {
@@ -290,7 +290,7 @@ func templateRows(t *testing.T, w *runtimeWorld) []string {
 // awards the points once, stacks the totals, and the KILLFEED bounty story is unchanged.
 func TestBountyClaimBehaviorUnchangedByCustomTemplates(t *testing.T) {
 	w := newRuntimeWorld(t, time.Hour)
-	tr := discord.NewBountyTracker(w.rich, w.a.ChannelRoutes, w.servers)
+	tr := discord.NewBountyTracker(w.rich, w.a.ChannelRoutes, discord.SingleGuild(w.servers))
 	tr.SetCustomizer(w.renderer, serverName)
 	w.a.BountyService.SetNotifier(discord.BountyEvents{Tracker: tr, Board: w.board})
 	w.save(w.fixture.InstallationID, "kf-A", map[string]string{"BOUNTY_TRACKING": "track-A"})

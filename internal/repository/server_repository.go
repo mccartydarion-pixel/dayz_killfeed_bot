@@ -2,10 +2,13 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/yourname/dayz-killfeed/internal/linking"
 )
 
 type GameServer struct {
@@ -18,6 +21,12 @@ type GameServer struct {
 	// SaaS onboarding flow claims this server - existing guild-scoped
 	// methods on ServerRepository never set or select it.
 	OrganizationID *int64
+	// ProviderName is the server's name on Nitrado (provider_display_name). On an upsert it is
+	// what the connect flow just read ("" = Nitrado reported none; the stored one is kept).
+	// DisplayNameCustom is true when the owner typed DisplayName in Champion; the upserts and the
+	// name sync then leave DisplayName alone. Both are only read back by SaaSServerRepository.
+	ProviderName      string
+	DisplayNameCustom bool
 }
 type NitradoConnection struct {
 	ID, GuildID                                   int64
@@ -41,9 +50,12 @@ type ServerConfig struct {
 type ServerRepository struct{ pool *pgxpool.Pool }
 
 func NewServerRepository(pool *pgxpool.Pool) *ServerRepository { return &ServerRepository{pool: pool} }
+
+// UpsertGameServer creates or reconnects a server. On a reconnect a name the owner typed in
+// Champion (display_name_custom) is kept, and an empty name never replaces a stored one.
 func (r *ServerRepository) UpsertGameServer(ctx context.Context, s GameServer) (*GameServer, error) {
 	var out GameServer
-	err := r.pool.QueryRow(ctx, `INSERT INTO game_servers(guild_id,provider,provider_service_id,game,platform,display_name,status,active) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(guild_id,provider,provider_service_id) DO UPDATE SET display_name=EXCLUDED.display_name,status=EXCLUDED.status,active=EXCLUDED.active,updated_at=NOW() RETURNING id,guild_id,provider,provider_service_id,game,platform,COALESCE(display_name,''),status,active,created_at,updated_at`, s.GuildID, s.Provider, s.ProviderServiceID, s.Game, s.Platform, s.DisplayName, s.Status, s.Active).Scan(&out.ID, &out.GuildID, &out.Provider, &out.ProviderServiceID, &out.Game, &out.Platform, &out.DisplayName, &out.Status, &out.Active, &out.CreatedAt, &out.UpdatedAt)
+	err := r.pool.QueryRow(ctx, `INSERT INTO game_servers(guild_id,provider,provider_service_id,game,platform,display_name,status,active,provider_display_name) VALUES($1,$2,$3,$4,$5,$6,$7,$8,NULLIF($9,'')) ON CONFLICT(guild_id,provider,provider_service_id) DO UPDATE SET display_name=CASE WHEN game_servers.display_name_custom THEN game_servers.display_name ELSE COALESCE(NULLIF(EXCLUDED.display_name,''),game_servers.display_name) END,provider_display_name=COALESCE(EXCLUDED.provider_display_name,game_servers.provider_display_name),status=EXCLUDED.status,active=EXCLUDED.active,updated_at=NOW() RETURNING id,guild_id,provider,provider_service_id,game,platform,COALESCE(display_name,''),status,active,created_at,updated_at`, s.GuildID, s.Provider, s.ProviderServiceID, s.Game, s.Platform, s.DisplayName, s.Status, s.Active, s.ProviderName).Scan(&out.ID, &out.GuildID, &out.Provider, &out.ProviderServiceID, &out.Game, &out.Platform, &out.DisplayName, &out.Status, &out.Active, &out.CreatedAt, &out.UpdatedAt)
 	return &out, err
 }
 func (r *ServerRepository) ListActive(ctx context.Context) ([]GameServer, error) {
@@ -62,30 +74,66 @@ func (r *ServerRepository) ListActive(ctx context.Context) ([]GameServer, error)
 	}
 	return out, rows.Err()
 }
-func (r *ServerRepository) ConnectedServerID(ctx context.Context, guildID int64) (int64, error) {
-	rows, err := r.pool.Query(ctx, `SELECT id FROM game_servers WHERE guild_id=$1 AND active AND LOWER(status) IN ('connected','ready','active') ORDER BY id`, guildID)
+
+// ActiveServerIDs returns the IDs of every active game_servers row for one
+// guild: exactly the set ListActiveByGuild starts ADM workers for, so readers
+// of player_server_activity see precisely the servers whose activity is
+// ingested. game_servers.status is deliberately not filtered: it is a display
+// label written with different vocabularies (/server connect writes
+// CONNECTED, the SaaS dashboard writes Nitrado power state ONLINE/OFFLINE),
+// and teardown (Deactivate) always clears active.
+func (r *ServerRepository) ActiveServerIDs(ctx context.Context, guildID int64) ([]int64, error) {
+	rows, err := r.pool.Query(ctx, `SELECT id FROM game_servers WHERE guild_id=$1 AND active ORDER BY id`, guildID)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	defer rows.Close()
 	var ids []int64
 	for rows.Next() {
 		var id int64
 		if err := rows.Scan(&id); err != nil {
-			return 0, err
+			return nil, err
 		}
 		ids = append(ids, id)
 	}
-	if err := rows.Err(); err != nil {
+	return ids, rows.Err()
+}
+
+// ConnectedServerID resolves the one server that single-server views (admin
+// diagnostics) describe, by the same rule as the public online counter: the
+// guild's selected public server while it is active, otherwise the guild's
+// only active server. Errors wrap linking.ErrNoConnectedServer /
+// linking.ErrMultipleConnectedServers. Account linking does not use this; it
+// evaluates every active server (ActiveServerIDs).
+func (r *ServerRepository) ConnectedServerID(ctx context.Context, guildID int64) (int64, error) {
+	var selected int64
+	if err := r.pool.QueryRow(ctx, `SELECT COALESCE(selected_public_server_id,0) FROM guilds WHERE id=$1`, guildID).Scan(&selected); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return 0, err
 	}
-	switch len(ids) {
+	ids, err := r.ActiveServerIDs(ctx, guildID)
+	if err != nil {
+		return 0, err
+	}
+	return resolveSingleServer(guildID, selected, ids)
+}
+
+// resolveSingleServer is ConnectedServerID's selection rule over loaded rows
+// (split out so it is unit-testable without a database).
+func resolveSingleServer(guildID, selected int64, activeIDs []int64) (int64, error) {
+	if selected > 0 {
+		for _, id := range activeIDs {
+			if id == selected {
+				return id, nil
+			}
+		}
+	}
+	switch len(activeIDs) {
 	case 0:
-		return 0, fmt.Errorf("no connected server for guild %d", guildID)
+		return 0, fmt.Errorf("%w for guild %d", linking.ErrNoConnectedServer, guildID)
 	case 1:
-		return ids[0], nil
+		return activeIDs[0], nil
 	default:
-		return 0, fmt.Errorf("multiple connected servers for guild %d; explicit server selection required", guildID)
+		return 0, fmt.Errorf("%w for guild %d; select the public server with /server select", linking.ErrMultipleConnectedServers, guildID)
 	}
 }
 
@@ -117,6 +165,34 @@ func (r *ServerRepository) GetByID(ctx context.Context, id int64) (*GameServer, 
 		return nil, err
 	}
 	return &s, nil
+}
+
+// OrganizationIDFor returns the SaaS organization that owns game server id, or nil for a
+// server no organization has claimed (a legacy /server connect server).
+func (r *ServerRepository) OrganizationIDFor(ctx context.Context, id int64) (*int64, error) {
+	var orgID *int64
+	if err := r.pool.QueryRow(ctx, `SELECT organization_id FROM game_servers WHERE id=$1`, id).Scan(&orgID); err != nil {
+		return nil, err
+	}
+	return orgID, nil
+}
+
+// ActiveServerIDsForOrganization lists the active game servers organization organizationID owns.
+func (r *ServerRepository) ActiveServerIDsForOrganization(ctx context.Context, organizationID int64) ([]int64, error) {
+	rows, err := r.pool.Query(ctx, `SELECT id FROM game_servers WHERE organization_id=$1 AND active ORDER BY id`, organizationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }
 
 // FindByGuildAndService looks up a game_servers row by its provider service ID

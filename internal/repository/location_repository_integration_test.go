@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -69,11 +70,14 @@ func newLocationWorld(t *testing.T) *locationWorld {
 	return &locationWorld{t: t, db: db, repo: repo, guildID: guildID, serverID: serverID, suffix: suffix}
 }
 
+// locationSeedSeq keeps seeded DayZ ids unique: the wall clock alone repeats on coarse timers.
+var locationSeedSeq atomic.Int64
+
 func (w *locationWorld) seedPlayer(name string) int64 {
 	w.t.Helper()
 	var id int64
 	if err := w.db.Pool.QueryRow(context.Background(), `INSERT INTO players(guild_id,dayz_player_id,display_name) VALUES($1,$2,$3) RETURNING id`,
-		w.guildID, fmt.Sprintf("dayz-%d-%d", w.suffix, time.Now().UnixNano()), name).Scan(&id); err != nil {
+		w.guildID, fmt.Sprintf("dayz-%d-%d", w.suffix, locationSeedSeq.Add(1)), name).Scan(&id); err != nil {
 		w.t.Fatal(err)
 	}
 	return id

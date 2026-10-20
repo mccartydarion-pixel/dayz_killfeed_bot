@@ -2,9 +2,9 @@ package discord
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/linking"
@@ -20,7 +20,7 @@ func NewLinkCommandHandler(service *linking.LinkVerificationService, guilds Guil
 	return &LinkCommandHandler{service: service, guilds: guilds}
 }
 
-func RegisterLinkCommands(session *discordgo.Session, guildID string) error {
+func RegisterLinkCommands(session CommandRegistrar, guildID string) error {
 	applicationID, err := ApplicationID(session)
 	if err != nil {
 		return err
@@ -43,12 +43,12 @@ func (h *LinkCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interacti
 		return
 	}
 	if h.service == nil || h.guilds == nil {
-		respondEphemeral(s, i, "Account linking requires the database to be configured.")
+		respondEphemeral(s, i, ReplyIsUnavailable("Account linking"))
 		return
 	}
 	_, guildID, err := h.guilds.GetGuild(context.Background(), i.GuildID)
 	if err != nil || guildID == 0 {
-		respondEphemeral(s, i, "Run `/setup` before linking your account.")
+		respondEphemeral(s, i, ReplyNotSetUp)
 		return
 	}
 	name := i.ApplicationCommandData().Name
@@ -60,43 +60,29 @@ func (h *LinkCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interacti
 				username = strings.TrimSpace(opt.StringValue())
 			}
 		}
-		link, err := h.service.Request(context.Background(), guildID, i.Member.User.ID, username)
+		deferEphemeral(s, i) // matches the name against every server's players
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		link, err := h.service.Request(ctx, guildID, i.Member.User.ID, username)
+		cancel()
 		if err != nil {
-			switch {
-			case errors.Is(err, linking.ErrLinkCheckUnavailable):
-				respondEphemeral(s, i, "⚠️ **LINK CHECK UNAVAILABLE**\nChampion is currently unable to verify server activity. Please try again shortly.")
-			case errors.Is(err, linking.ErrPlayerNotFound):
-				respondEphemeral(s, i, "❌ **PLAYER NOT FOUND**\nChampion has not seen that PlayStation username on the DayZ server yet.")
-			case errors.Is(err, linking.ErrPlaytimeRequired):
-				respondEphemeral(s, i, "⏱️ **MORE PLAYTIME REQUIRED**\nChampion has detected that account, but it has not been observed on the server for the required 5 minutes yet. Stay connected and try `/link` again.")
-			case errors.Is(err, linking.ErrAlreadyLinked):
-				respondEphemeral(s, i, "⚠️ **ACCOUNT ALREADY LINKED**\nUse `/unlink` before linking another account.")
-			case errors.Is(err, linking.ErrPlayerClaimed):
-				respondEphemeral(s, i, "❌ **ALREADY LINKED**\nThat PlayStation account is already linked to another Discord member.")
-			default:
-				respondEphemeral(s, i, "❌ Could not create a pending link right now.")
-			}
+			respondEphemeral(s, i, linkErrorMessage(err))
 			return
 		}
-		respondEphemeral(s, i, fmt.Sprintf("🟡 **PENDING VERIFICATION**\n\nPlayStation\n%s\n\nTo prove you're this account, **disconnect from the server and reconnect** before your request expires <t:%d:R>. Champion will verify it automatically within seconds of you reconnecting.\n\nCan't reconnect in time? Ask an admin to run `/admin verify-link`.", link.RequestedName, link.ExpiresAt.Unix()))
+		respondEphemeral(s, i, fmt.Sprintf("🟡 **Pending verification**\n\nPlayStation\n%s\n\nTo prove you're this account, **disconnect from the server and reconnect** before your request expires <t:%d:R>. Champion will verify it automatically within seconds of you reconnecting.\n\nCan't reconnect in time? Ask an admin to run `/admin verify-link`.", link.RequestedName, link.ExpiresAt.Unix()))
 	case "link-status":
 		link, err := h.serviceStatus(context.Background(), guildID, i.Member.User.ID)
 		if err != nil || link == nil {
 			respondEphemeral(s, i, "No Champion account link found.")
 			return
 		}
-		respondEphemeral(s, i, fmt.Sprintf("🏆 **CHAMPION ACCOUNT**\n\nPlayStation\n%s\n\nStatus\n%s", link.RequestedName, statusLabel(link.Status)))
+		respondEphemeral(s, i, fmt.Sprintf("🏆 **Champion account**\n\nPlayStation\n%s\n\nStatus\n%s", link.RequestedName, statusLabel(link.Status)))
 	case "unlink":
-		_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseChannelMessageWithSource,
-			Data: &discordgo.InteractionResponseData{
-				Flags:   discordgo.MessageFlagsEphemeral,
-				Content: "⚠️ Confirm unlinking your Champion account?\n\nThis removes account ownership only; historical stats remain.",
-				Components: []discordgo.MessageComponent{discordgo.ActionsRow{Components: []discordgo.MessageComponent{
-					discordgo.Button{Label: "Unlink Account", Style: discordgo.DangerButton, CustomID: "champion_unlink_confirm:" + i.Member.User.ID},
-					discordgo.Button{Label: "Cancel", Style: discordgo.SecondaryButton, CustomID: "champion_unlink_cancel:" + i.Member.User.ID},
-				}}},
-			},
+		respondPrivate(s, i, &discordgo.InteractionResponseData{
+			Content: "⚠️ Confirm unlinking your Champion account?\n\nThis removes account ownership only; historical stats remain.",
+			Components: []discordgo.MessageComponent{discordgo.ActionsRow{Components: []discordgo.MessageComponent{
+				discordgo.Button{Label: "Unlink account", Style: discordgo.DangerButton, CustomID: "champion_unlink_confirm:" + i.Member.User.ID},
+				discordgo.Button{Label: "Cancel", Style: discordgo.SecondaryButton, CustomID: "champion_unlink_cancel:" + i.Member.User.ID},
+			}}},
 		})
 	}
 }
@@ -109,7 +95,7 @@ func (h *LinkCommandHandler) HandleComponent(s *discordgo.Session, i *discordgo.
 	}
 	parts := strings.SplitN(i.MessageComponentData().CustomID, ":", 2)
 	if len(parts) != 2 || parts[1] != i.Member.User.ID {
-		respondEphemeral(s, i, "⛔ This confirmation belongs to another member.")
+		respondEphemeral(s, i, ReplyNotYourConfirmation)
 		return
 	}
 	if parts[0] == "champion_unlink_cancel" {
@@ -121,11 +107,11 @@ func (h *LinkCommandHandler) HandleComponent(s *discordgo.Session, i *discordgo.
 	}
 	_, guildID, err := h.guilds.GetGuild(context.Background(), i.GuildID)
 	if err != nil || guildID == 0 {
-		respondEphemeral(s, i, "This server is not configured.")
+		respondEphemeral(s, i, ReplyNotSetUp)
 		return
 	}
 	if err := h.service.Unlink(context.Background(), guildID, i.Member.User.ID); err != nil {
-		respondEphemeral(s, i, "❌ Could not unlink your account right now.")
+		respondEphemeral(s, i, ReplyCouldNot("unlink your account"))
 		return
 	}
 	respondEphemeral(s, i, "✅ Account unlinked. Historical stats were preserved.")
@@ -136,8 +122,14 @@ func (h *LinkCommandHandler) serviceStatus(ctx context.Context, guildID int64, u
 }
 
 func statusLabel(status string) string {
-	if status == linking.StatusVerified {
-		return "✅ VERIFIED"
+	switch status {
+	case linking.StatusVerified:
+		return "✅ Verified"
+	case linking.StatusPending:
+		return "🟡 Pending verification"
+	case linking.StatusExpired:
+		return "⌛ Expired: run `/link` again"
+	default:
+		return "Not linked: run `/link`"
 	}
-	return "🟡 PENDING VERIFICATION"
 }

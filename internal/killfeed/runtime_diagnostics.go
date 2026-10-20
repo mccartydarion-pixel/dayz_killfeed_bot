@@ -54,8 +54,12 @@ type RuntimeDiagnosticSnapshot struct {
 	ProbeContentChanged     bool
 	ProbeUnreadBytes        int64
 	ProbeClassification     string
-	RecentEvents            []string
-	CandidateCount          int
+	// LastSourceGrowthAt is the last time a read consumed new bytes from the
+	// selected ADM - direct evidence the source is live, independent of
+	// listing metadata (which can lag).
+	LastSourceGrowthAt time.Time
+	RecentEvents       []string
+	CandidateCount     int
 
 	LastVoicePublishResult string
 }
@@ -127,6 +131,10 @@ func (s RuntimeDiagnosticSnapshot) Classification() string {
 		return "WRONG_OR_INACTIVE_ADM_SOURCE"
 	case s.ProbeClassification == "NITRADO_METADATA_STALE":
 		return "NITRADO_METADATA_STALE"
+	// Direct read shows no new bytes, but not yet for long enough to call
+	// the source wrong: a server with nobody online writes little or nothing.
+	case s.ProbeClassification == ProbeSourceQuiet:
+		return ProbeSourceQuiet
 	case s.DownloadedBytes > 0 && s.CompleteLines > 0 && s.LastParsedEventType == "":
 		return "PARSER_FAILURE"
 	case !s.LastMetadataChanged && !s.LastMetadataCheck.IsZero() && time.Since(s.RemoteModified) > 10*time.Minute:
@@ -137,3 +145,9 @@ func (s RuntimeDiagnosticSnapshot) Classification() string {
 		return "HEALTHY"
 	}
 }
+
+// ProbeSourceQuiet is the stale-probe result for a selected ADM whose direct
+// content has not grown, before staleGiveUpAfter: quiet, not yet proven
+// wrong. Only a source still quiet past staleGiveUpAfter (when the engine
+// also demotes it and rediscovers) is WRONG_OR_INACTIVE_ADM_SOURCE.
+const ProbeSourceQuiet = "SOURCE_QUIET"

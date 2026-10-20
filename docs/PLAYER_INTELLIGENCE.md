@@ -4,8 +4,9 @@ This document is the design record for the authoritative player-directory and lo
 foundation required by Last Locations, Online Player Intelligence, Zones, UAV/Base Radar,
 Heatmaps, and intrusion history - all of which are explicitly **deferred** (`docs/CLIENT_ADMIN.md`
 "Deferred") because none of them had a real, persisted location-history data source to build on.
-This phase builds that source. **Zones, UAV, and heatmaps are still not built** - this is
-backend-first, foundation-only, matching the task's own explicit instruction.
+This phase builds that source. **Zones, UAV, and heatmaps were not built in this phase** - this is
+backend-first, foundation-only, matching the task's own explicit instruction. They were built
+afterwards: `docs/ZONES_UAV_RADAR.md` (Phase 4) and `docs/HEATMAPS.md` (Phase 5).
 
 ## Why this was safe to build now (and wasn't before)
 
@@ -46,7 +47,7 @@ Engine.processLine (after dedupe, same guard point as hit-publish)
     → Close(): drains and flushes whatever remains before returning (shutdown flush)
 ```
 
-One `LocationQueue` per server (`internal/app/app.go`'s `runServerWorker`, mirroring
+One `LocationQueue` per server (`internal/app/server_worker.go`'s `runServerWorker`, mirroring
 `PersistenceQueue`'s exact per-server scoping and `addPersistQueue`/`allPersistQueues` pattern via
 `addLocationQueue`/`allLocationQueues`), using the **same `persistenceStoreAdapter`** already
 passed into `NewPersistenceQueueWithServerID` - `InsertLocationEvents` was added to that adapter
@@ -153,6 +154,8 @@ pointer fields marshal as `null`/omitted, never a guessed default):
   "currentSessionStartedAt": "2026-09-23T03:40:00Z",
   "kills": 14,
   "deaths": 6,
+  "pvpDeaths": 4,
+  "pveDeaths": 2,
   "factionId": 9,
   "factionName": "The Wolves",
   "warningCount": 0,
@@ -250,7 +253,10 @@ frontend phase would consume. See `docs/CLIENT_ADMIN.md` and `docs/saas-openapi.
 route/response reference, matching the convention already established for every other Client Admin
 route.
 
-## Deferred (still, deliberately)
+## Deferred in this phase (built since)
+
+> Built since: zones and UAV/Base Radar in Phase 4 (`docs/ZONES_UAV_RADAR.md`), heatmap aggregation in Phase 5
+> (`docs/HEATMAPS.md`). The paragraph below is the position when Phase 3 shipped.
 
 Zones, zone-ignore, zone-ban, Base Radar/UAV intrusion detection, and heatmap aggregation are
 **not** built in this phase - the task's own instruction ("Do NOT build zones, UAV, or heatmaps

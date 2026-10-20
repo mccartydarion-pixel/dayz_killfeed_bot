@@ -191,8 +191,14 @@ func TestHeatmapJoinsKillsAndDeathsBySourceIdentity(t *testing.T) {
 	if err != nil || len(kc) != 1 || kc[0].CellX != 10 || kc[0].CellZ != 18 || kc[0].Count != 1 {
 		t.Fatalf("kill heatmap joins by source identity (killer's position): %+v %v", kc, err)
 	}
+	// Two deaths: the "died" line at its own position, and the kill's victim where the victim stood
+	// (the KILL location row written from the kill line). The positionless kill adds nothing.
 	dc, err := heat.AggregateDeaths(ctx, w.guildID, w.serverID, from, to, 250, 100)
-	if err != nil || len(dc) != 1 || dc[0].Count != 1 {
+	cells := map[[2]int64]int64{}
+	for _, c := range dc {
+		cells[[2]int64{c.CellX, c.CellZ}] = c.Count
+	}
+	if err != nil || len(cells) != 2 || cells[[2]int64{0, 0}] != 1 || cells[[2]int64{10, 18}] != 1 {
 		t.Fatalf("death heatmap joins by source identity: %+v %v", dc, err)
 	}
 	// Other tenants never match.

@@ -35,10 +35,16 @@ type ServerNameFunc func(serverID int64) string
 // customEmbed is the nil-safe call every publisher makes. The vars closure is only
 // evaluated when a customizer is wired, so the default path pays nothing.
 func customEmbed(c EmbedCustomizer, guildRowID, serverID int64, routeKey string, def *discordgo.MessageEmbed, vars func() map[string]string) *discordgo.MessageEmbed {
+	return customEmbedAt(c, guildRowID, serverID, routeKey, def, vars, time.Now())
+}
+
+// customEmbedAt is customEmbed with the card's own time (the template's timestamp), for a card
+// whose event carries one (Event.DisplayTime).
+func customEmbedAt(c EmbedCustomizer, guildRowID, serverID int64, routeKey string, def *discordgo.MessageEmbed, vars func() map[string]string, at time.Time) *discordgo.MessageEmbed {
 	if c == nil || def == nil || guildRowID <= 0 || serverID <= 0 {
 		return def
 	}
-	return c.Customize(context.Background(), guildRowID, serverID, routeKey, vars(), time.Now(), def)
+	return c.Customize(context.Background(), guildRowID, serverID, routeKey, vars(), at, def)
 }
 
 func serverNameOf(f ServerNameFunc, serverID int64) string {
@@ -67,7 +73,10 @@ func setIf(m map[string]string, k, v string) {
 
 // killfeedVars: only values the authoritative kill event carries.
 func killfeedVars(ev *killfeed.Event, serverName string) map[string]string {
+	// {{timestamp}} is documented as the publish time; {{time_ago}} is the kill's own time when the
+	// event carries one, else when it was read (Event.DisplayTime).
 	m := map[string]string{"timestamp": stampVar(time.Now())}
+	m["time_ago"] = presentation.Timestamp(ev.DisplayTimeOrNow(), 'R')
 	if ev.Killer != nil {
 		m["killer"] = nameVar(ev.Killer.Name)
 	} else {
@@ -87,7 +96,13 @@ func killfeedVars(ev *killfeed.Event, serverName string) map[string]string {
 		m["distance"] = fmt.Sprintf("%.1fm", math.Round(*ev.Distance*10)/10)
 	}
 	setIf(m, "range", presentation.RangeClass(ev.Distance, melee))
-	setIf(m, "ammo", ev.Ammo)
+	// The kill line rarely names the ammunition; the matched lethal hit usually does.
+	ammo := ev.Ammo
+	if strings.TrimSpace(ammo) == "" && ev.FinalHit != nil {
+		ammo = ev.FinalHit.Ammo
+	}
+	setIf(m, "ammo", ammo)
+	setIf(m, "weapon_with_ammo", weaponWithAmmo(ev.Weapon, ammo))
 	// Hit data: only when the event itself carries it, or when the lethal hit was reliably
 	// correlated with this kill (killfeed.FinalHit: the ADM line immediately before the kill, same
 	// boot file, same players, second, weapon and distance) - never inferred or approximated.
@@ -104,14 +119,24 @@ func killfeedVars(ev *killfeed.Event, serverName string) map[string]string {
 	if isHeadshot(ev) {
 		m["headshot"] = "HEADSHOT"
 	}
+	// {{hit_label}} names the lethal hit: CRITICAL HIT to the head, HIT anywhere else. Absent
+	// with no hit zone, so a line built on it disappears like one built on {{hit_zone}}.
+	if zone := m["hit_zone"]; zone != "" {
+		m["hit_label"] = "HIT"
+		if strings.EqualFold(strings.TrimSpace(zone), "Head") {
+			m["hit_label"] = "CRITICAL HIT"
+		}
+	}
 
 	// Stats and streaks were attached to the event after durable persistence
 	// (ProcessPersistedKill) - read here, never re-queried.
 	if s := ev.KillerStats; s != nil {
 		m["killer_kills"], m["killer_deaths"], m["killer_kd"] = presentation.FormatThousands(s.Kills), presentation.FormatThousands(s.Deaths), presentation.FormatKD(s.KD())
+		setDeathSplitVars(m, "killer", s)
 	}
 	if s := ev.VictimStats; s != nil {
 		m["victim_kills"], m["victim_deaths"], m["victim_kd"] = presentation.FormatThousands(s.Kills), presentation.FormatThousands(s.Deaths), presentation.FormatKD(s.KD())
+		setDeathSplitVars(m, "victim", s)
 	}
 	if ev.KillerStreak != nil && *ev.KillerStreak > 0 {
 		streak := strconv.Itoa(*ev.KillerStreak)
@@ -151,6 +176,7 @@ func killfeedVars(ev *killfeed.Event, serverName string) map[string]string {
 		m["bounty_claimed"] = "BOUNTY CLAIMED"
 	}
 	setIf(m, "season_name", ev.SeasonName)
+	setIf(m, "ranked_rp", ev.RankedTag)
 	setIf(m, "war_badge", ev.WarBadge)
 	var badges []string
 	for _, b := range ev.ActiveEventBadges {
@@ -214,12 +240,19 @@ func pveVars(n killfeed.PveDeathNotice, serverName string) map[string]string {
 
 // connectionVars: one connect/disconnect state change.
 func connectionVars(n killfeed.ConnectionNotice, serverName string) map[string]string {
-	m := map[string]string{"player": nameVar(n.Name), "timestamp": stampVar(time.Now())}
+	at := connectionTime(n)
+	m := map[string]string{"player": nameVar(n.Name), "timestamp": stampVar(at), "time": presentation.Timestamp(at, 'T')}
 	if n.Kind == killfeed.ConnectionConnected {
 		m["event"], m["event_type"] = "joined", "connected"
 	} else {
 		m["event"], m["event_type"] = "left", "disconnected"
 		setIf(m, "session", formatSession(n.Session))
+		if n.Session > 0 {
+			m["session_time"] = formatSessionClock(n.Session)
+		}
+	}
+	if n.Position != nil {
+		m["location"] = formatLocation(*n.Position)
 	}
 	setIf(m, "server_name", serverName)
 	return m
@@ -253,6 +286,32 @@ func economyVars(e economy.Event, serverName string) map[string]string {
 	if e.Type == economy.TypeBountyClaim || e.Type == economy.TypeSystemReward {
 		m["balance"] = formatAmount(e.BalanceAfter)
 	}
+	setIf(m, "reason", rewardReason(e.Reason))
 	setIf(m, "server_name", serverName)
 	return m
+}
+
+// setDeathSplitVars adds {{<who>_pvp_deaths}}, {{<who>_pve_deaths}} and {{<who>_pvp_kd}} (who is
+// "killer" or "victim"). They are new names beside {{<who>_deaths}} and {{<who>_kd}}, which keep
+// their meaning - every death and the overall K/D - so a saved template renders as it always has.
+// Absent when the record does not carry the split.
+func setDeathSplitVars(m map[string]string, who string, s *killfeed.CombatRecord) {
+	if !s.DeathSplitKnown {
+		return
+	}
+	m[who+"_pvp_deaths"] = presentation.FormatThousands(s.PvPDeaths)
+	m[who+"_pve_deaths"] = presentation.FormatThousands(s.PvEDeaths())
+	m[who+"_pvp_kd"] = presentation.FormatKD(s.PvPKD())
+}
+
+// weaponWithAmmo is the weapon followed by its ammunition in brackets when the ammunition is
+// known ("M4-A1 (556x45)"), and the weapon alone when it is not, so a template line built on it
+// never disappears for want of the ammunition. "" without a weapon.
+func weaponWithAmmo(weapon, ammo string) string {
+	weapon = strings.TrimSpace(weapon)
+	ammo = strings.TrimPrefix(strings.TrimSpace(ammo), "Bullet_")
+	if weapon == "" || ammo == "" {
+		return weapon
+	}
+	return weapon + " (" + ammo + ")"
 }

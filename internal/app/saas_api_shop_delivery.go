@@ -62,11 +62,11 @@ func shopDeliveryFailed(w http.ResponseWriter, err error) bool {
 	case errors.Is(err, repository.ErrShopDeliveryCoordinatesNotAccepted):
 		writeSaaSError(w, codeDeliveryCoordinatesNotAccepted, "this product is a manual pickup: remove the delivery coordinates")
 	case errors.Is(err, repository.ErrShopDeliveryMapUnresolved):
-		writeSaaSError(w, codeDeliveryMapUnresolved, "coordinate delivery is unavailable: an admin must set this server's map to a supported map (Chernarus or Livonia) in the shop delivery settings")
+		writeSaaSError(w, codeDeliveryMapUnresolved, "coordinate delivery is unavailable: an admin must set this server's map to a supported map (Chernarus, Livonia or Nasdara) in the shop delivery settings")
 	case errors.Is(err, repository.ErrShopDeliveryNotFound):
 		writeSaaSError(w, codeDeliveryNotFound, "delivery not found")
 	case errors.Is(err, shop.ErrUnsupportedMap):
-		writeSaaSError(w, codeUnsupportedMap, "unsupported map: only maps with verified bounds (chernarusplus, enoch) can be used for coordinate delivery")
+		writeSaaSError(w, codeUnsupportedMap, "unsupported map: only maps with verified bounds (chernarusplus, enoch, nasdara) can be used for coordinate delivery")
 	case errors.Is(err, shop.ErrInvalidDeliveryStatus):
 		writeSaaSError(w, codeInvalidRequest, "status must be MANUAL_READY, FULFILLED or CANCELLED")
 	case errors.Is(err, shop.ErrInvalidDeliveryPolicy):

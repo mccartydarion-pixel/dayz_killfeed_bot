@@ -118,9 +118,9 @@ func (p *OnlinePlayersPanel) render(players []string, online bool) {
 
 // OnlinePlayersEmbed renders the online-players embed, safely capping large lists.
 func OnlinePlayersEmbed(players []string, online bool) *discordgo.MessageEmbed {
-	status := "OFFLINE"
+	status := "Offline"
 	if online {
-		status = "ONLINE"
+		status = "Online"
 	}
 
 	shown := players
@@ -135,14 +135,18 @@ func OnlinePlayersEmbed(players []string, online bool) *discordgo.MessageEmbed {
 		list.WriteString("_No players online_")
 	}
 	for i, name := range shown {
-		fmt.Fprintf(&list, "%d. %s\n", i+1, name)
+		fmt.Fprintf(&list, "%d. %s\n", i+1, presentation.SafeName(name, presentation.MaxRankNameRunes))
 	}
 	if extra > 0 {
-		fmt.Fprintf(&list, "\n+ %d more players", extra)
+		list.WriteString("\n+ " + presentation.Plural(int64(extra), "more player", "more players"))
 	}
 
-	embed := presentation.NewChampionEmbed("LIVE PLAYERS", presentation.SuccessGreen)
-	embed.Description = fmt.Sprintf("**STATUS**\n%s\n\n**ONLINE PLAYERS**\n%d\n\n%s", status, len(players), list.String())
+	color := presentation.Green
+	if !online {
+		color = presentation.Neutral
+	}
+	embed := presentation.NewChampionEmbed("Live players", color)
+	embed.Description = fmt.Sprintf("**Status**\n%s\n\n**Online players**\n%s\n\n%s", status, presentation.FormatThousands(int64(len(players))), list.String())
 	embed.Footer = presentation.UpdatedFooter(time.Now())
 	presentation.StampEmbed(embed, time.Now())
 	return embed
@@ -151,25 +155,30 @@ func OnlinePlayersEmbed(players []string, online bool) *discordgo.MessageEmbed {
 // ServerStatusEmbed builds the persistent server-status embed using only values
 // we actually know. No ping/FPS/queue/map/restart data is fabricated.
 func ServerStatusPanel(nitradoConnected, admConnected bool, playersOnline int, killfeedActive bool) *discordgo.MessageEmbed {
-	nitrado := "DISCONNECTED"
+	nitrado := "Disconnected"
 	if nitradoConnected {
-		nitrado = "CONNECTED"
+		nitrado = "Connected"
 	}
-	adm := "DISCONNECTED"
+	adm := "Disconnected"
 	if admConnected {
-		adm = "CONNECTED"
+		adm = "Connected"
 	}
-	kf := "DEGRADED"
+	kf := "Degraded"
 	if killfeedActive {
-		kf = "HEALTHY"
+		kf = "Healthy"
 	}
 
-	embed := presentation.NewChampionEmbed("SERVER STATUS", presentation.InfoSteel)
+	// Green while everything is healthy, amber as soon as one part is not.
+	color := presentation.Green
+	if !nitradoConnected || !admConnected || !killfeedActive {
+		color = presentation.Amber
+	}
+	embed := presentation.NewChampionEmbed("Server status", color)
 	embed.Fields = []*discordgo.MessageEmbedField{
-		presentation.StatusField("NITRADO", nitrado, true),
-		presentation.StatusField("ADM LOG", adm, true),
-		presentation.StatusField("KILLFEED", kf, true),
-		presentation.StatusField("ONLINE PLAYERS", fmt.Sprintf("%d", playersOnline), true),
+		presentation.StatusField("Nitrado", nitrado, true),
+		presentation.StatusField("ADM log", adm, true),
+		presentation.StatusField("Killfeed", kf, true),
+		presentation.StatusField("Online players", presentation.FormatThousands(int64(playersOnline)), true),
 	}
 	embed.Footer = presentation.UpdatedFooter(time.Now())
 	presentation.StampEmbed(embed, time.Now())

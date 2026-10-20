@@ -7,7 +7,7 @@ import (
 )
 
 // RegisterServerCommand registers the /server slash command.
-func RegisterServerCommand(session *discordgo.Session, guildID string) error {
+func RegisterServerCommand(session CommandRegistrar, guildID string) error {
 	applicationID, err := ApplicationID(session)
 	if err != nil {
 		return err

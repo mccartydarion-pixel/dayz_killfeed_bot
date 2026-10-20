@@ -581,12 +581,12 @@ func TestFactionVisualKeysAreCatalogValidated(t *testing.T) {
 	leader, _, fp := w.leaderWithFaction("Colors And Flags", "CF")
 	put := func(body map[string]any) *apiResult { return w.do(http.MethodPut, w.path(w.a1, fp), leader, body) }
 
-	got := w.expect(put(map[string]any{"flagKey": "red", "armbandKey": " Orange ", "primaryColor": "#d4af37", "secondaryColor": "#2b2f33"}), http.StatusOK, "approved keys").JSON(t)
-	if got["flagKey"] != "RED" || got["armbandKey"] != "ORANGE" || got["primaryColor"] != "#D4AF37" || got["secondaryColor"] != "#2B2F33" {
+	got := w.expect(put(map[string]any{"flagKey": "cdf", "armbandKey": " Orange ", "primaryColor": "#d4af37", "secondaryColor": "#2b2f33"}), http.StatusOK, "approved keys").JSON(t)
+	if got["flagKey"] != "CDF" || got["armbandKey"] != "ORANGE" || got["primaryColor"] != "#D4AF37" || got["secondaryColor"] != "#2B2F33" {
 		t.Fatalf("normalized keys: %v", got)
 	}
 	dir := w.expect(w.do(http.MethodGet, w.path(w.a1, ""), w.players[5], nil), http.StatusOK, "directory").JSON(t)["items"].([]any)[0].(map[string]any)
-	if dir["flagKey"] != "RED" || dir["armbandKey"] != "ORANGE" {
+	if dir["flagKey"] != "CDF" || dir["armbandKey"] != "ORANGE" {
 		t.Fatalf("directory carries the keys: %v", dir)
 	}
 	for _, flag := range factionhub.DayzFlags {
@@ -597,7 +597,8 @@ func TestFactionVisualKeysAreCatalogValidated(t *testing.T) {
 	}
 	// Invalid catalog values, URLs and injection attempts are all 400 and change nothing.
 	for name, body := range map[string]map[string]any{
-		"unknown flag":      {"flagKey": "chernarus"},
+		"unknown flag":      {"flagKey": "blackflag"},
+		"class name as key": {"flagKey": "Flag_CDF"},
 		"flag url":          {"flagKey": "https://evil.example/flag.png"},
 		"armband as flag":   {"flagKey": "ORANGE"},
 		"unknown armband":   {"armbandKey": "PURPLE"},
@@ -622,7 +623,7 @@ func TestFactionVisualKeysAreCatalogValidated(t *testing.T) {
 		t.Fatalf("cleared: %v", got)
 	}
 	// Only the leader may set them.
-	w.expect(w.do(http.MethodPut, w.path(w.a1, fp), w.players[3], map[string]any{"flagKey": "RED"}), http.StatusForbidden, "outsider")
+	w.expect(w.do(http.MethodPut, w.path(w.a1, fp), w.players[3], map[string]any{"flagKey": "CDF"}), http.StatusForbidden, "outsider")
 }
 
 // --- leadership transfer -------------------------------------------------------------------------------------------
@@ -798,4 +799,62 @@ func TestFactionPhase4AuditEventsAreSafe(t *testing.T) {
 			t.Errorf("audit events must carry %s", id)
 		}
 	}
+}
+
+// --- exclusive flags and armbands ------------------------------------------------------------------------------
+
+func TestFactionFlagAndArmbandAreExclusivePerInstallation(t *testing.T) {
+	w := newFactionWorld(t)
+	leaderA, _, fpA := w.leaderWithFaction("Alpha Wolves", "AW")
+	fb := w.createFaction(w.a1, w.players[1], "Bravo Bears", "BB", "OPEN")
+	leaderB, fpB := w.players[1], fmt.Sprintf("/%d", idOf(fb))
+	put := func(fp, leader string, body map[string]any) *apiResult {
+		return w.do(http.MethodPut, w.path(w.a1, fp), leader, body)
+	}
+
+	// Before any claim every key is free.
+	br := w.expect(w.do(http.MethodGet, w.path(w.a1, "/branding"), w.players[5], nil), http.StatusOK, "branding").JSON(t)
+	flags := br["flags"].([]any)
+	if len(flags) != len(factionhub.DayzFlags) || len(br["armbands"].([]any)) != len(factionhub.Armbands) {
+		t.Fatalf("branding lists every approved key: %d flags", len(flags))
+	}
+	for _, f := range flags {
+		if f.(map[string]any)["takenBy"] != nil {
+			t.Fatalf("nothing is claimed yet: %v", f)
+		}
+	}
+
+	w.expect(put(fpA, leaderA, map[string]any{"flagKey": "WOLF", "armbandKey": "RED"}), http.StatusOK, "alpha claims")
+	// Bravo cannot take Alpha's flag or armband; the answer names the holder.
+	res := w.expect(put(fpB, leaderB, map[string]any{"flagKey": "wolf"}), http.StatusConflict, "flag taken")
+	if msg := res.JSON(t)["error"].(map[string]any)["message"].(string); !strings.Contains(msg, "Alpha Wolves [AW]") {
+		t.Fatalf("conflict names the holder: %s", msg)
+	}
+	w.expect(put(fpB, leaderB, map[string]any{"armbandKey": "RED"}), http.StatusConflict, "armband taken")
+	// A different key is fine, and re-saving your own key is not a conflict with yourself.
+	w.expect(put(fpB, leaderB, map[string]any{"flagKey": "BEAR", "armbandKey": "BLUE"}), http.StatusOK, "bravo claims others")
+	w.expect(put(fpA, leaderA, map[string]any{"flagKey": "WOLF", "primaryColor": "#112233"}), http.StatusOK, "alpha re-saves own flag")
+
+	br = w.expect(w.do(http.MethodGet, w.path(w.a1, "/branding"), w.players[5], nil), http.StatusOK, "branding after claims").JSON(t)
+	holders := map[string]string{}
+	for _, f := range br["flags"].([]any) {
+		m := f.(map[string]any)
+		if by, ok := m["takenBy"].(map[string]any); ok {
+			holders[m["key"].(string)] = by["tag"].(string)
+		}
+		if m["key"] == "WOLF" && m["className"] != "Flag_Wolf" {
+			t.Fatalf("class name: %v", m)
+		}
+	}
+	if holders["WOLF"] != "AW" || holders["BEAR"] != "BB" || len(holders) != 2 {
+		t.Fatalf("flag holders: %v", holders)
+	}
+
+	// Releasing frees the key for the other faction.
+	w.expect(put(fpA, leaderA, map[string]any{"flagKey": ""}), http.StatusOK, "alpha releases")
+	w.expect(put(fpB, leaderB, map[string]any{"flagKey": "WOLF"}), http.StatusOK, "bravo takes the freed flag")
+
+	// Exclusivity is per installation: the same keys are free on another server.
+	fc := w.createFaction(w.b1, w.players[4], "Charlie Crows", "CC", "OPEN")
+	w.expect(w.do(http.MethodPut, w.path(w.b1, fmt.Sprintf("/%d", idOf(fc))), w.players[4], map[string]any{"flagKey": "WOLF", "armbandKey": "RED"}), http.StatusOK, "other installation")
 }

@@ -50,8 +50,20 @@ func (a *App) registerClientAdminCapabilityRoutes(base string) {
 	h("POST "+base+"/banlist", a.handleAddBanlist)
 	h("DELETE "+base+"/banlist/{identifier}", a.handleRemoveBanlist)
 
+	h("GET "+base+"/priority", a.handleListPriority)
+	h("POST "+base+"/priority", a.handleAddPriority)
+	h("DELETE "+base+"/priority/{name}", a.handleRemovePriority)
+	h("GET "+base+"/game-settings", a.handleListGameSettings)
+	h("PUT "+base+"/game-settings/{id}", a.handleSetGameSetting)
+	h("GET "+base+"/server-logs", a.handleListServerLogs)
+	h("GET "+base+"/server-logs/content", a.handleReadServerLog)
+
 	h("POST "+base+"/stats/player/{playerID}/reset-streak", a.handleResetPlayerStreak)
 	h("POST "+base+"/stats/reset-season", a.handleResetEveryoneStats)
+	h("POST "+base+"/ranked/server-season", a.handleStartServerRankedSeason)
+	h("POST "+base+"/ranked/server-season/reset", a.handleResetServerRankedSeason)
+	h("PATCH "+base+"/ranked/server-season", a.handleChangeServerRankedSeasonWait)
+	h("GET "+base+"/ranked/server-season", a.handleGetServerRankedSeason)
 }
 
 // --- shared helpers ------------------------------------------------------------------------------
@@ -88,9 +100,13 @@ func (a *App) nitradoClientForOrg(ctx context.Context, w http.ResponseWriter, ac
 	return client, server.ProviderServiceID, true
 }
 
+// maxJSONBody bounds a JSON request body: the website's largest (embed designs, map rotations,
+// shop catalogues) are a few tens of kilobytes.
+const maxJSONBody = 1 << 20
+
 func decodeJSONBody[T any](w http.ResponseWriter, r *http.Request) (T, bool) {
 	var v T
-	if err := json.NewDecoder(r.Body).Decode(&v); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxJSONBody)).Decode(&v); err != nil {
 		writeSaaSError(w, codeInvalidRequest, "invalid request body")
 		return v, false
 	}
@@ -376,7 +392,13 @@ func (a *App) handleAdminEconomyAccounts(w http.ResponseWriter, r *http.Request)
 		economyFailed(w, "admin economy search", err)
 		return
 	}
-	writeSaaSJSON(w, http.StatusOK, map[string]any{"items": rows})
+	// The same wire shape as the economy admin search (accountId, gamertag, ...): the rows are a
+	// domain type with no JSON tags, so writing them directly would emit Go field names.
+	items := make([]adminEconomyAccountDTO, 0, len(rows))
+	for _, acc := range rows {
+		items = append(items, adminAccountDTO(acc))
+	}
+	writeSaaSJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
 // --- server name / feed location / maintenance mode -----------------------------------------------
@@ -394,8 +416,11 @@ func (a *App) handleSetServerName(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// An empty name gives the name back to Nitrado: the server shows its Nitrado name again and
+	// follows it (docs/SERVER_NAME_SYNC.md). It is refused, as before, while no Nitrado name is
+	// known for the server.
 	name := strings.TrimSpace(req.Name)
-	if name == "" || len(name) > 100 {
+	if len(name) > nitrado.MaxServerNameLen {
 		writeSaaSError(w, codeInvalidRequest, "name must be 1-100 characters")
 		return
 	}
@@ -408,13 +433,19 @@ func (a *App) handleSetServerName(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), adminTimeout)
 	defer cancel()
-	if err := a.ClientAdmin.SetServerDisplayName(ctx, ac.scope.GuildID, *ac.scope.ServerID, name); err != nil {
+	state, err := a.ClientAdmin.SetServerDisplayName(ctx, ac.scope.GuildID, *ac.scope.ServerID, name)
+	if errors.Is(err, repository.ErrNoProviderName) {
+		writeSaaSError(w, codeInvalidRequest, "name must be 1-100 characters")
+		return
+	}
+	if err != nil {
 		slog.Warn("component=saas_api", "msg", "set server name failed", "err", err.Error())
 		writeSaaSError(w, codeInternalError, "could not update server name")
 		return
 	}
-	a.recordAudit(ctx, ac, "SERVER_NAME_EDIT", "", "", "success", nil, map[string]string{"name": name})
-	writeSaaSJSON(w, http.StatusOK, map[string]string{"name": name})
+	a.forgetServerName(*ac.scope.ServerID)
+	a.recordAudit(ctx, ac, "SERVER_NAME_EDIT", "", "", "success", nil, map[string]any{"name": state.DisplayName, "custom": state.Custom})
+	writeSaaSJSON(w, http.StatusOK, map[string]any{"name": state.DisplayName, "displayNameCustom": state.Custom, "providerName": optionalString(state.ProviderName)})
 }
 
 type setFeedLocationRequest struct {

@@ -50,6 +50,23 @@ func (s *PostgresSetupStore) Save(setup GuildSetup) error {
 	return err
 }
 
+// panelMessageClearer is the optional repository surface that can NULL
+// retired panel message ids (UpsertGuild's COALESCE cannot).
+type panelMessageClearer interface {
+	ClearPanelMessageIDs(ctx context.Context, discordGuildID string, columns ...string) error
+}
+
+// ClearMessageIDs durably clears retired legacy panel message ids.
+func (s *PostgresSetupStore) ClearMessageIDs(guildID string, columns ...string) error {
+	c, ok := s.guilds.(panelMessageClearer)
+	if !ok || len(columns) == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
+	defer cancel()
+	return c.ClearPanelMessageIDs(ctx, guildID, columns...)
+}
+
 // Delete removes a guild's configuration by clearing stored IDs.
 func (s *PostgresSetupStore) Delete(guildID string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), s.timeout)

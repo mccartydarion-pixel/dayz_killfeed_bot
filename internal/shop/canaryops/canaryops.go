@@ -85,7 +85,18 @@ type Scopes interface {
 }
 
 // Gate is the canary execution lock: closed unless explicitly opened for an installation.
-type Gate struct{ installations map[int64]bool }
+type Gate struct {
+	installations map[int64]bool
+	// override, when set, answers first (Owner Hub per-installation feature flag): a decision
+	// for the installation wins over the environment list, ok=false falls through.
+	override func(installationID int64) (enabled, ok bool)
+}
+
+// WithOverride returns a copy of the gate that consults fn before the environment list.
+func (g Gate) WithOverride(fn func(installationID int64) (enabled, ok bool)) Gate {
+	g.override = fn
+	return g
+}
 
 // NewGate opens the lock for the listed installations only when enabled is true.
 func NewGate(enabled bool, installationIDs []int64) Gate {
@@ -102,7 +113,14 @@ func NewGate(enabled bool, installationIDs []int64) Gate {
 }
 
 // Allows reports whether mutating canary operations may run for the installation.
-func (g Gate) Allows(installationID int64) bool { return g.installations[installationID] }
+func (g Gate) Allows(installationID int64) bool {
+	if g.override != nil {
+		if enabled, ok := g.override(installationID); ok {
+			return enabled
+		}
+	}
+	return g.installations[installationID]
+}
 
 // Actor is the authenticated acting user.
 type Actor struct {
@@ -319,6 +337,8 @@ func (s *Service) CreateAttempt(ctx context.Context, org, inst int64, a Actor, r
 		OrganizationID: org, InstallationID: inst, DeliveryID: d.ID, Attempt: n, AttemptID: plan.AttemptID(), Fingerprint: plan.Fingerprint(),
 		ClassName: plan.ClassName(), Quantity: plan.Quantity(), PosX: pos[0], PosY: pos[1], PosZ: pos[2],
 		DropSourceFile: req.DropSourceFile, DropSourceOffset: req.DropSourceOffset,
+		// The file the attempt stages: custom/ (the only user folder the console host receives).
+		ArtifactPath: nitradodelivery.ArtifactRelPath,
 	}, a.DiscordID)
 	if err != nil {
 		return AttemptView{}, err

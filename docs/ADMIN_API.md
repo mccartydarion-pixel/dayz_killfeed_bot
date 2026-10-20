@@ -1,11 +1,12 @@
-# Champion platform-admin (founder) API - Phase 1, read-only
+# Champion platform-admin (founder) API
 
 The one HTTP surface that reads **across organizations**. It exists so the
-Founder Hub website (`/admin`: Overview, Customers, Subscriptions, Installations,
-Health) can show real data. It is **read-only**: only `GET` routes exist, so any
-other method is answered `405` by the router. Mutations (plan changes, trial
-extensions, suspensions, deletions, impersonation, billing, credential access) are
-Phase 2 and require audit logging first.
+Owner Hub website (`/admin`: Overview, Customers, Subscriptions, Installations,
+Health) can show real data. Phase 1 was read-only; Phase 2 adds the **Owner
+controls** below - the only `POST` routes under `/api/admin`, each requiring a
+reason and written to `platform_audit_log` before the response is sent.
+Credential access remains out of scope. The operations pages, the fleet monitor, broadcasts and
+the read-only "view as customer" session are documented in [`OWNER_OPS.md`](OWNER_OPS.md).
 
 Machine-readable contract: [`admin-openapi.yaml`](admin-openapi.yaml). The customer
 API (`/api/saas/...`, [`SAAS_HTTP_API.md`](SAAS_HTTP_API.md)) is unchanged and stays
@@ -13,20 +14,87 @@ strictly tenant-scoped.
 
 ## Authentication and authorization
 
-Every `/api/admin/*` request must pass **both** checks, in this order, in one place
-(`requirePlatformAdmin`, `internal/app/admin_api.go`; every route is registered
-through `adminRoute`, which calls it, so a handler cannot run without it):
+Every `/api/admin/*` request must pass these checks, in this order, in one place
+(`requirePlatformAdmin` and `adminRoute`, `internal/app/admin_api.go`; every route is
+registered through `adminHandle`, which wraps it in `adminRoute`, so a handler cannot run
+without them):
 
 | # | Check | Failure |
 |---|---|---|
 | 1 | `Authorization: Bearer <secret>` equals the bot's `WEBSITE_API_SECRET` (the same internal service secret every `/api/saas` route uses; constant-time compare). No secret configured = nothing authenticates. | `401 UNAUTHORIZED` |
 | 2 | `X-Champion-Acting-User: <discord user id>` present (the website sets it from its verified session; browsers can never reach these routes because the secret is server-side only) | `401 UNAUTHORIZED` |
-| 3 | that Discord user id is on the **platform-admin allowlist** | `403 FORBIDDEN` |
+| 3 | that Discord user id is a **platform owner** (on the allowlist) or **platform staff** (on the staff list) | `403 FORBIDDEN`, message `platform admin access required` |
+| 4 | the request is a read (`GET`), or the caller is a platform owner | `403 FORBIDDEN`, message `platform staff can view but not change this` |
+
+## Roles
+
+There are two kinds of privileged person, and only two.
+
+| Role | Who | May do |
+|---|---|---|
+| `OWNER` | A Discord account on `CHAMPION_ADMIN_DISCORD_IDS`. This env var is the only source of owners. | Everything under `/api/admin`. |
+| `STAFF` | A Discord account on the staff list (table `platform_staff`, migration `0125_platform_staff`), which an owner manages from the Owner Hub. | Every read under `/api/admin`. No write. |
+
+* **View only is enforced in one place.** `adminRoute` lets a staff identity through for
+  `GET` (and the `HEAD` the router answers for a `GET` route) and refuses every other
+  method before the handler runs. A handler never has to remember the rule, and a write
+  route added later is owner-only from the moment it is registered. No `GET` route under
+  `/api/admin` changes anything or returns a secret.
+* **Proved by a test that walks the routes.** `adminHandle` records every pattern it
+  registers; `TestEveryAdminWriteRouteRefusesPlatformStaff` sends each one as staff and
+  requires `403` with the message above for every non-`GET` route, and
+  `TestAdminRoutesAreRegisteredOnlyThroughAdminHandle` fails if any `/api/admin` route is
+  registered another way.
+* **An owner never depends on the staff list.** The allowlist is checked first and does
+  not touch the database. Being on both lists is still `OWNER`. If the staff list cannot
+  be read, owners keep working and everybody else is refused.
+* **Staff get nothing else.** Being staff grants no access to `/api/saas`, cannot start a
+  "view as customer" session (that is a `POST`), and unlocks nothing on any
+  organization. Staff access ends on the first request after removal.
+
+### `GET /api/admin/me`
+
+Who the caller is to the platform. Owner and staff: `200`
+
+```json
+{ "role": "OWNER", "discordId": "111111111111111111" }
+```
+
+`role` is `OWNER` or `STAFF`. Anyone else: `403 FORBIDDEN`.
+
+### The staff list
+
+| Route | Who | Body | Returns |
+|---|---|---|---|
+| `GET /api/admin/staff` | owner, staff | - | the list |
+| `POST /api/admin/staff` | owner | `discordId`, optional `note`, `reason` | `200` with the list |
+| `DELETE /api/admin/staff/{discordId}` | owner | `reason` | `200` with the list |
+
+Every one of them answers with the whole list in the same shape, oldest first:
+
+```json
+{ "staff": [ { "discordId": "222222222222222222", "note": "Support", "addedBy": "111111111111111111", "addedAt": "2026-10-04T09:30:00Z" } ] }
+```
+
+* `discordId` must be a Discord user id: digits only, 15 to 20 long. Otherwise `400`.
+* `note` is optional, at most 120 characters. Longer: `400`.
+* `reason` is required and validated like every other owner action (max 500 characters).
+* Adding someone who is already staff updates the note and keeps `addedBy` and `addedAt`.
+* Adding a platform owner's id is refused with `409 CONFLICT` and the message
+  `this account is a platform owner and already has full access; it cannot be added as staff`.
+* Removing an id that is not on the list is `404 NOT_FOUND`.
+* Each change writes one `platform_audit_log` row with the owner's reason: action
+  `staff.added`, `staff.note_updated` or `staff.removed`, `target_type` `platform_staff`,
+  and the member (`discordId`, `note`, `addedBy`, `addedAt`) in the before/after state.
+  `target_id` is left empty because a Discord id does not fit a JSON number safely; filter
+  the audit log with `targetType=platform_staff`.
 
 The website also sends `X-Champion-Admin: true`. The backend **ignores** it - a header
-a caller controls can never grant access; only the allowlist does.
+a caller controls can never grant access; only the allowlist does. It is, however, part of
+the signed identity (docs/SAAS_HTTP_API.md "Signed identity"), like `X-Champion-Acting-User`
+and `X-Champion-Impersonator`.
 
-### The platform-admin allowlist
+### The platform-owner allowlist
 
 `CHAMPION_ADMIN_DISCORD_IDS` on the bot service: a comma-separated list of Discord
 user ids, e.g. `CHAMPION_ADMIN_DISCORD_IDS=111111111111111111,222222222222222222`.
@@ -43,6 +111,8 @@ backend re-checks it independently.)
   `POST /api/saas/users/sync` row. Being on the allowlist grants **no** access to
   `/api/saas` (customer routes still require organization membership).
 * Rotate by changing the env var and redeploying.
+* Being on the allowlist also gives **platform owner access** to the organizations that
+  account owns: see "Platform owner access" below.
 
 Audit of what was (not) reusable: `internal/admin` is the runtime diagnostics service
 behind the Discord `/admin` command, which authorizes by Discord guild permission
@@ -146,7 +216,10 @@ the structured breakdown.
 ### `GET /api/admin/organizations`
 
 Params: `limit`, `cursor`, `search`, `plan`, `subscriptionStatus`, `installationStatus`
-(an organization matches when *any* of its installations has that status). The
+(an organization matches when *any* of its installations has that status), `noServer=true`
+(only organizations with no game server connected: no installation of theirs has a game
+server and no `game_servers` row is registered to them. This is how the Owner Hub finds
+communities created by accident). The
 website's customers filter sends `status`; on this endpoint it is an alias for
 `installationStatus` (an explicit `installationStatus` wins).
 
@@ -156,6 +229,7 @@ website's customers filter sends `status`; on this endpoint it is an alias for
   "owner": "Alice",
   "ownerUser": { "id": 3, "displayName": "Alice", "discordId": "111..." },
   "memberCount": 3, "installationCount": 1,
+  "serverCount": 1, "discordConnectionCount": 1,
   "discordGuild": "Alpha Guild", "dayzServer": "Alpha Server",
   "subscription": { "plan": "TRIAL", "status": "TRIAL", "trialEndsAt": "...", "currentPeriodEnd": null,
       "entitlements": ["killfeed", "..."], "createdAt": "...", "updatedAt": "..." },
@@ -166,6 +240,9 @@ website's customers filter sends `status`; on this endpoint it is an alias for
 * In a **list**, `installations` holds only the organization's *primary* installation
   (its `READY` one if any, otherwise its newest), first and only; `installationCount`
   is the total. `discordGuild`/`dayzServer` are that primary installation's names.
+* `serverCount` is the number of game servers connected (0 = no server connected);
+  `discordConnectionCount` is the number of Discord guilds connected, with or without an
+  installation.
 * `subscription` is `null` with no subscription row. `owner` is the owner's display
   name (the website's contract); `ownerUser` is the full reference.
 * One page = two statements (organizations, then the page's primary installations
@@ -291,7 +368,8 @@ pagination is already a stable ordering).
 
 Champion Live Sync phase 2 (docs/CHAMPION_LIVE_SYNC.md section 7.5). For every running server worker:
 per-family watcher freshness (`FRESH` / `LAGGING` / `FAILING` / `NO_SOURCE`), canonical source file,
-checkpoint, read vs listed size, last read / growth / failure, safe error class, record counts
+checkpoint, read vs listed size, last read / growth / failure, safe error class, whether the file
+was given up (`gaveUp`, `gaveUpAt`, `gaveUpReason`, `nextRetryAt`), record counts
 (live / backfill / unknown), rotations and a measured latency summary; the learned UTC offset;
 session-end evidence; the recorded ADM session; stored-record statistics and ADM latency for the
 last 6 hours. In-memory and stored state only - no live Nitrado call, no token, signed URL,
@@ -314,13 +392,226 @@ invented uptime percentages.
   "database": { "ok": true },
   "discord": { "configured": true, "ready": true },
   "summary": { "total": 14, "byStatus": { "READY": 8 }, "byHealth": { "HEALTHY": 8 }, "serversByStatus": { "ACTIVE": 12 },
-      "botNotInstalled": 0, "permissionsUnverified": 2, "readyNeverChecked": 1 } }
+      "botNotInstalled": 0, "permissionsUnverified": 2, "readyNeverChecked": 1 },
+  "embedRender": { "enabled": false, "templateCustomRender": 0, "templateDefaultRender": 120, "templateFallbackRender": 0, "templateRenderError": 0 },
+  "performance": {
+      "database": { "poolTotalConns": 3, "poolIdleConns": 2, "poolMaxConns": 25, "poolAcquiredConns": 1, "poolAcquireCount": 1042,
+          "poolEmptyAcquireCount": 0, "poolAcquireDurationMs": 12, "queryTotal": 8841, "querySlow": 0, "queryAvgDurationMs": 0.31 },
+      "routing": { "cacheHits": 512, "cacheMisses": 9, "cacheHitRate": 0.9826, "cacheEntries": 9 },
+      "tableSizes": [ { "table": "kills", "totalBytes": 734003200, "tableBytes": 402653184, "indexBytes": 331350016, "rowsEstimate": 1830211 } ] } }
 ```
 
 `installations` (the website's list) holds at most 50 installations needing attention:
 status `DEGRADED`, `DISCONNECTED` or `SUSPENDED`, never-checked first. Free-text error
 messages from components and workers are intentionally not exposed. `state`/`overall`
 use the runtime's `HEALTHY | DEGRADED | UNHEALTHY | UNKNOWN`.
+
+`performance` is the in-process counter snapshot (docs/PERFORMANCE.md section 11) plus
+`tableSizes`: the 15 largest tables on disk, biggest first, read from `pg_class` only -
+`totalBytes` = `tableBytes` (heap + TOAST) + `indexBytes`; `rowsEstimate` is the planner's
+estimate from the last ANALYZE, `null` when there has been none, never a `COUNT(*)`. No
+table is scanned and no row content is read; when the catalog read fails the list is
+empty and the response still succeeds. The Owner Hub can chart it to watch data growth
+(docs/PERFORMANCE.md section 17).
+
+## Platform owner access
+
+For an organization **owned by a platform owner**, every plan feature is unlocked and every
+feature switch is on, with no plan check and no per-server switch needed.
+
+**Which organizations.** The organization's owner (`organizations.owner_user_id`) is an
+account whose Discord id is on `CHAMPION_ADMIN_DISCORD_IDS`. A platform owner who is only
+an `ADMIN` or `MEMBER` of somebody else's organization does **not** unlock that
+organization. Platform staff unlock nothing. No customer organization gets anything it did
+not have before.
+
+**How it is resolved.** `internal/owneraccess` keeps the set of such organizations and
+their installations in memory and reloads it in the background every 60 seconds, so hot
+paths (a feed route per event, an embed per card) add no query. Creating an organization
+or an installation as a platform owner reloads it at once. Taking an id off the allowlist
+needs a redeploy anyway, after which the organization is an ordinary customer again.
+
+**Plan features.** `internal/entitlements` answers every question about a `Plan`, and a
+`Plan` can only be built with `entitlements.ForOrganization(organizationID, planKey)`. For
+a platform owner's organization that plan has every feature, whatever the plan key and
+whether or not `CHAMPION_PLAN_GATING_ENABLED` is on. Because `Has`, `Resolve`,
+`RouteAllowed` and `FactionLimit` no longer accept a plan string, a gate cannot be written
+without saying whose plan it is; a test fails on `ForOrganization` with a literal id.
+This covers the HTTP plan gate (`PLAN_FEATURE_REQUIRED`), the faction cap, fight replay,
+the shop order buttons, map rotation, feed channel routes, custom embed templates, hot
+zones and the feed identity, and the entitlement lists the billing and admin APIs return.
+
+**Billing state.** The organization's subscription row is left alone and reported as it
+is (plan, status, trial dates). What is overridden is the lock-out: `billingRequired` is
+`false` and the installation capacity is 1000, so an expired trial, a canceled or
+suspended subscription or a missing row never blocks the owner's own organization from
+setting up a service. The subscription and trial responses carry
+`platformOwnerAccess: true` for such an organization, and the admin read model's
+`subscription.platformOwnerAccess` says the same. Not covered: the separately billed
+C.A.S.E. add-on (`internal/casebilling`), which keeps its own access rules.
+
+**Feature switches.** For an installation of such an organization, a flag marked
+`ownerDefaultOn` is on when it has no override. An explicit override still wins, so the
+owner can switch a feature **off** for their own server from the Owner Hub.
+
+| Flag | On by owner access | Why |
+|---|---|---|
+| `custom_embeds` | yes | Only lets the installation's own saved templates render. Still needs the embed renderer to exist on the deployment. |
+| `map_rotation` | yes | Only makes the Map rotation page usable. Nothing is written to a game server until the owner saves a rotation and enables it there. |
+| `shop_canary` | no | Lets real shop deliveries change files on the game server, and the canary needs its own preparation. |
+| `case_evidence` | no | Starts collecting evidence by itself with high write volume, and only takes effect after a worker restart. |
+| `case_build_evidence` | no | Depends on `case_evidence`, adds more writes, and needs a worker restart. |
+
+The three "no" flags behave for an owner's installation exactly as for anyone else: the
+environment default, or an override set in the Owner Hub.
+
+**What it never does.** A suspended installation stays suspended. Nothing is enabled on a
+game server by itself. Platform owner access is not a subscription: no Stripe object and
+no subscription row is created or changed.
+
+## Owner controls (Phase 2, writes)
+
+Every write below is owner only (see "Roles"), goes through the same `adminRoute` gate as a read, takes a JSON body
+with a required `reason` (max 500 characters), returns `409 CONFLICT` when the target is
+already in the requested state, and records one `platform_audit_log` row (actor, action,
+target, reason, sanitized before/after). Nothing here reads or writes a Stripe id.
+
+| Route | Body | Effect |
+| --- | --- | --- |
+| `POST /organizations/{id}/trial` | `days` (1-365) or `until` | Start or extend a trial (`TRIAL`/`TRIAL`). Refused (`409`) when the organization is billed through Stripe. |
+| `POST /organizations/{id}/grant` | `plan`, optional `days` (max 3650) or `until` | Activate a plan without Stripe (`ACTIVE`/`plan`), open-ended or dated; a dated grant lapses on its own (`billingRequired`). Refused when billed through Stripe. |
+| `POST /organizations/{id}/revoke` | - | End a trial or grant: `INACTIVE`/`NONE`, billing required. Refused when billed through Stripe. |
+| `POST /organizations/{id}/billing/cancel` | - | Stripe-backed: cancel at period end (`billing.Service.Cancel`). |
+| `POST /organizations/{id}/billing/reactivate` | - | Stripe-backed: undo a scheduled cancellation. |
+| `POST /organizations/{id}/billing/reconcile` | - | Stripe-backed: re-pull the subscription from Stripe and overwrite the row. |
+| `POST /installations/{id}/suspend` | - | Status `SUSPENDED` (previous status remembered), the game server deactivated and its worker stopped. Data is kept. |
+| `POST /installations/{id}/reinstate` | - | Previous status restored, game server reactivated, worker restarted. |
+| `POST /installations/{id}/restart-worker` | - | Stop and start the ADM worker (no tail-start). Refused while suspended. |
+| `POST /users/{id}/ban` | - | `banned_at` set; every `/api/saas` route that resolves the acting user answers `403` from then on. Allowlisted platform admins cannot be banned. |
+| `POST /users/{id}/unban` | - | Clears the ban. |
+| `GET /audit` | query `organizationId`, `targetType`, `targetId`, `action`, `cursor`, `limit` | The platform audit log, newest first, cursor-paginated like every other list. |
+
+Responses carry the sanitized target: `{"subscription": {plan, status, trialEndsAt,
+currentPeriodEnd, cancelAtPeriodEnd, externallyBilled, ownerGrantUntil, ownerGrantReason,
+billingRequired, trialStatus}}`, `{"installation": {id, organizationId, status, suspendedAt,
+suspendedReason, statusBeforeSuspend, workerRunning}}` or `{"user": {id, discordUserId,
+username, globalName, avatar, createdAt, lastLoginAt, bannedAt, banReason}}`.
+
+The read model exposes the same state: `subscription.externallyBilled`,
+`subscription.ownerGrantUntil/ownerGrantReason` on organizations and installations,
+`installation.suspension` on the installation detail, and `members[].bannedAt`.
+
+## Deleting a community or an installation
+
+Owner only, like every write. These are the only routes that remove rows. Nothing under
+`/api/saas` reaches them, so an organization owner cannot delete anything this way. Code:
+`internal/app/admin_api_delete.go`, `internal/repository/platform_owner_delete.go`.
+
+| Route | Body | Effect |
+| --- | --- | --- |
+| `GET /organizations/{id}/delete-check` | - | What a delete would remove and every reason it would be refused. Changes nothing. |
+| `POST /organizations/{id}/delete` | `reason`, `confirm` (the organization's exact name) | Permanently deletes an **empty** organization. |
+| `GET /installations/{id}/delete-check` | - | The same check for one installation. |
+| `POST /installations/{id}/delete` | `reason`, `confirm` (the installation id, as text) | Removes the installation and its configuration; its game server is switched off and kept. |
+
+**Typed confirmation.** The server compares `confirm` itself, inside the transaction, against
+the locked row: surrounding spaces are ignored, everything else must match exactly (capital
+letters included). The website cannot skip it.
+
+**Errors.** `400 INVALID_REQUEST` no reason, no `confirm`, or `confirm` does not match;
+`401` / `403` as on every admin route (platform staff get `403` on the two POSTs);
+`404 NOT_FOUND` no such organization or installation; `409 CONFLICT` it is not safe to
+delete, with every reason in the message. Nothing is changed on any error.
+
+**An organization is empty when all of these hold** (checked in the same transaction as the
+delete, with the organization, its installations and its subscription row locked):
+
+1. no installation of it has a game server, and no `game_servers` row is registered to it;
+2. it has no live paid subscription: `provider_subscription_id` is empty, or the status is
+   `CANCELED` / `INACTIVE`. A trial or an owner grant is not a paid subscription;
+3. it has no payment records (`billing_transactions`);
+4. no table below it or its installations holds a row, other than the configuration tables
+   listed in `deleteConfigTables` (memberships, Discord connection, installation, setup
+   progress, settings, channel routes, embed templates, permissions, feature flags, zones,
+   shop catalogue, feature settings, subscription row, trial marker, organization audit log).
+
+Rule 4 is computed by walking the live foreign-key graph, not from a hand-kept list of
+"record" tables: a table added by a later migration blocks the delete until it is added to
+`deleteConfigTables`.
+
+**Deleting an empty organization removes** the organization, its memberships, its Discord
+connection(s), its installations (none has a game server) with their setup and configuration,
+its subscription row and trial marker (the owner may start a free trial again; a self-serve erase
+keeps the marker instead), its
+organization audit log, and a Nitrado credential stored for it that no game server uses.
+**It keeps** every user account (the owner simply has no organization any more, which the
+website shows as the player view), the `guilds` row and everything keyed by guild (players,
+player links, kills, stats), every other organization, and the `platform_audit_log`. The bot
+is not removed from the Discord server, and nothing is called in Stripe: an unused Stripe
+customer may remain there.
+
+**Removing an installation removes** the installation row and its configuration (the same
+configuration tables). **It keeps** the game server row, switched off exactly as a suspension
+switches it off (`active = FALSE`, `status = DISCONNECTED`, worker stopped) and released from
+the organization (`organization_id = NULL`), so no worker, scheduler or poster picks it up and
+the slot is gone from the hubs; all gameplay data (kills, deaths, players, player links,
+stats, seasons: keyed by guild and game server); the organization, its members, its Discord
+connection and its Nitrado credential. It is refused (`409`) while the organization has a
+live paid subscription (cancel it first; nothing here calls Stripe) and while the
+installation holds records that are not configuration (shop orders, factions, CASE cases or
+add-on billing, base security records): suspend such an installation instead. Once an
+organization's installations are removed it is empty and can be deleted.
+
+**Not implemented:** deleting gameplay data, deleting a game server row, and a one-step
+delete of an organization that has servers, payments or records.
+
+**Audit.** A delete writes its `platform_audit_log` row in the same transaction: action
+`organization.deleted` / `installation.deleted`, `actor_discord_id`, `target_id`,
+`organization_id`, `reason`, `created_at`, and `before_state` holding the snapshot (name,
+slug, owner Discord id and name, member / installation / game-server counts, Discord guild
+names, subscription plan and status, rows removed per table). A delete refused with `409`
+is recorded as `organization.delete_refused` / `installation.delete_refused` with result
+`REFUSED` and the blockers.
+
+## Operations console
+
+| Route | Body | Effect |
+| --- | --- | --- |
+| `GET /ops/status` | - | What the Discord `/admin status` and `/admin diagnostics` subcommands show: `runtime`, `health`, `workers`, `link_diagnostics`, `presence_diagnostics`, `pipeline_diagnostics`, plus `workerManager` (the ADM workers running per active game server). |
+| `POST /ops/leaderboard-refresh` | `reason` | The manual leaderboard refresh (`/admin leaderboard-refresh`). Audited as `ops.leaderboard_refreshed`. |
+| `POST /ops/adm-source-scan` | `reason` | The slow live scan of Nitrado ADM candidates (`/admin adm-source-scan`, ~30 s). Audited as `ops.adm_source_scanned`; the scan result is returned. |
+
+`GET /live-sync` (per-server watcher freshness, ADM session, boot authority, stored stats and
+latency) now goes through the same secret guard as every other admin response.
+
+## Feature flags
+
+Per-installation overrides of the environment rollout switches (internal/featureflags). A
+missing override means the environment default applies, exactly as before; an override
+wins. Consumers: custom embed rendering (`CHAMPION_CUSTOM_EMBEDS_ENABLED`), the shop canary
+gate (`CHAMPION_SHOP_CANARY_*`), C.A.S.E. evidence and build evidence (`CASE_*`; read when a
+worker starts, so a change takes effect on the installation's next worker restart) and map
+rotation (`map_rotation`, default `CHAMPION_MAP_ROTATION_ENABLED` = off, docs/MAP_ROTATION.md).
+
+| Route | Body | Effect |
+| --- | --- | --- |
+| `GET /flags` | - | The catalog: key, label, description, env var, restartRequired, the env value on this deployment, `ownerDefaultOn` and (when it is false) `ownerDefaultNote` saying why. |
+| `GET /installations/{id}/flags` | - | Each flag's `default` (env answer for this installation), `override` (stored decision or null), `effective`, `source`, `sourceLabel`, `ownerAccess`, reason, updatedBy/At. |
+| `PUT /installations/{id}/flags/{flag}` | `reason`, `enabled: true\|false` | Sets the override (audited `installation.flag_set`); without `enabled` clears it (`installation.flag_cleared`). Unknown flag: `404`. |
+
+`source` says where `effective` comes from: `override` (the stored decision),
+`owner_access` (no override, and the installation belongs to a platform owner's own
+organization, see "Platform owner access") or `default` (the environment). `sourceLabel`
+is the same in plain words for the page to show. `ownerAccess` is `true` whenever owner
+access applies to that flag for that installation, also while an override hides it, so
+the page can say what clearing the override would do.
+
+## Users
+
+| Route | Query | Returns |
+| --- | --- | --- |
+| `GET /users` | `search` (username / global name / Discord id), `banned=true\|false`, `cursor`, `limit` | Website accounts newest first: id, Discord id, username, global name, avatar, createdAt, lastLoginAt, bannedAt/banReason, trialUsed, organizations[{id,name,slug,role}]; plus `counts{total, banned, activeLast30d}`. |
+| `GET /users/{id}` | - | One account in the same shape; `404` when unknown. |
 
 ## Fields that are never returned
 
@@ -338,8 +629,10 @@ containing any configured secret is withheld with a `500` instead of being sent)
 ## Access logging
 
 Each admin read logs one line (`component=admin_api event=admin_read`) with
-`acting_admin_discord_id`, `route` (the route pattern, not the URL with its query),
-and `organization_id` / `installation_id` when the path has them. A rejected
+`acting_admin_discord_id`, `role` (`OWNER` or `STAFF`), `route` (the route pattern, not
+the URL with its query), and `organization_id` / `installation_id` when the path has
+them. A write logs the same line as `event=admin_write`. A write refused because the
+caller is staff logs `event=admin_write_denied` with the id, role and route. A rejected
 platform-admin check logs `event=admin_denied` with the presented id and the route.
 Never logged: the `Authorization` header or any token, query strings (search text),
 request or response bodies.
@@ -369,5 +662,6 @@ Where the website's types cannot be met authoritatively:
 
 1. Bot service: `WEBSITE_API_SECRET` (already set for the runtime/SaaS APIs) and
    `CHAMPION_ADMIN_DISCORD_IDS=<founder discord ids>`.
-2. Website: `CHAMPION_SAAS_API_URL` / `CHAMPION_SAAS_API_SECRET` (already used), and
-   keep `session.user.isAdmin` in step with the same ids.
+2. Website: `CHAMPION_SAAS_API_URL` / `CHAMPION_SAAS_API_SECRET` (already used). Ask
+   `GET /api/admin/me` for the role instead of keeping a second copy of the ids.
+3. Platform staff need no configuration: an owner adds them in the Owner Hub.

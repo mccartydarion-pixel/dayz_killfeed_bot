@@ -16,6 +16,7 @@ type StatsReader interface {
 	GetPlayerProfile(ctx context.Context, guildID int64, displayName string) (*repository.PlayerProfile, error)
 	TopByKills(ctx context.Context, guildID int64, limit int) ([]repository.LeaderboardEntry, error)
 	TopByKD(ctx context.Context, guildID int64, limit, minKills int) ([]repository.LeaderboardEntry, error)
+	TopByPvPKD(ctx context.Context, guildID int64, limit, minKills int) ([]repository.LeaderboardEntry, error)
 	TopLongestKill(ctx context.Context, guildID int64, limit int) ([]repository.LeaderboardEntry, error)
 }
 
@@ -33,7 +34,7 @@ func NewStatsCommandHandler(stats StatsReader, guilds GuildStore, guildID string
 }
 
 // RegisterStatsCommands registers /stats and /leaderboard.
-func RegisterStatsCommands(session *discordgo.Session, guildID string) error {
+func RegisterStatsCommands(session CommandRegistrar, guildID string) error {
 	applicationID, err := ApplicationID(session)
 	if err != nil {
 		return err
@@ -57,7 +58,7 @@ func RegisterStatsCommands(session *discordgo.Session, guildID string) error {
 		Options: []*discordgo.ApplicationCommandOption{{
 			Type:        discordgo.ApplicationCommandOptionString,
 			Name:        "type",
-			Description: "kills | kd | longest",
+			Description: "kills | kd | pvpkd | longest",
 			Required:    false,
 		}},
 	}
@@ -71,7 +72,7 @@ func RegisterStatsCommands(session *discordgo.Session, guildID string) error {
 // HandleStats processes /stats.
 func (h *StatsCommandHandler) HandleStats(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if i == nil || i.GuildID == "" || h.stats == nil || h.guilds == nil {
-		respondEphemeral(s, i, "Stats are unavailable until the database is connected.")
+		respondEphemeral(s, i, ReplyAreUnavailable("Stats"))
 		return
 	}
 	name := ""
@@ -87,14 +88,14 @@ func (h *StatsCommandHandler) HandleStats(s *discordgo.Session, i *discordgo.Int
 
 	_, guildRowID, err := h.guilds.GetGuild(context.Background(), i.GuildID)
 	if err != nil || guildRowID == 0 {
-		respondEphemeral(s, i, "This server is not configured. Run `/setup` first.")
+		respondEphemeral(s, i, ReplyNotSetUp)
 		return
 	}
 
 	prof, err := h.stats.GetPlayerProfile(context.Background(), guildRowID, name)
 	if err != nil {
 		slog.Warn("component=discord", "msg", "stats query failed", "err", err.Error())
-		respondEphemeral(s, i, "Could not load stats right now.")
+		respondEphemeral(s, i, ReplyCouldNot("load stats"))
 		return
 	}
 	if prof == nil {
@@ -107,27 +108,33 @@ func (h *StatsCommandHandler) HandleStats(s *discordgo.Session, i *discordgo.Int
 
 // formatPlayerProfile is the single authoritative rendering for a player
 // profile, shared by /stats and the public "My Stats"/"Search Player" panels.
+//
+// Deaths is every death, with the PvP/PvE split on the line below it. K/D (PvP) is kills per
+// death caused by another player; K/D (overall) is kills per death of any kind, the figure this
+// profile has always called K/D (internal/deathstats).
 func formatPlayerProfile(prof *repository.PlayerProfile) string {
 	longest := "—"
 	if prof.LongestKill != nil {
 		longest = fmt.Sprintf("%.1fm", *prof.LongestKill)
 	}
 	return fmt.Sprintf(
-		"🏆 **CHAMPION PLAYER PROFILE**\n\n"+
+		"🏆 **Champion player profile**\n\n"+
 			"**Player**\n%s\n\n"+
 			"**Kills**\n%d\n\n"+
-			"**Deaths**\n%d\n\n"+
-			"**K/D**\n%.2f\n\n"+
+			"**Deaths**\n%d\n%s\n\n"+
+			"**K/D (PvP)**\n%s\n\n"+
+			"**K/D (overall)**\n%.2f\n\n"+
 			"**Longest Kill**\n%s\n\n"+
 			"**Last Seen**\n<t:%d:R>",
-		prof.DisplayName, prof.Kills, prof.Deaths, prof.KD(), longest, prof.LastSeen.Unix(),
+		prof.DisplayName, prof.Kills, prof.Deaths, presentation.DeathSplit(prof.PvPDeaths, prof.PvEDeaths()),
+		presentation.FormatKD(prof.PvPKD()), prof.KD(), longest, prof.LastSeen.Unix(),
 	)
 }
 
 // HandleLeaderboard processes /leaderboard.
 func (h *StatsCommandHandler) HandleLeaderboard(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if i == nil || i.GuildID == "" || h.stats == nil || h.guilds == nil {
-		respondEphemeral(s, i, "Leaderboard is unavailable until the database is connected.")
+		respondEphemeral(s, i, ReplyIsUnavailable("The leaderboard"))
 		return
 	}
 	kind := "kills"
@@ -139,7 +146,7 @@ func (h *StatsCommandHandler) HandleLeaderboard(s *discordgo.Session, i *discord
 
 	_, guildRowID, err := h.guilds.GetGuild(context.Background(), i.GuildID)
 	if err != nil || guildRowID == 0 {
-		respondEphemeral(s, i, "This server is not configured. Run `/setup` first.")
+		respondEphemeral(s, i, ReplyNotSetUp)
 		return
 	}
 
@@ -149,6 +156,10 @@ func (h *StatsCommandHandler) HandleLeaderboard(s *discordgo.Session, i *discord
 	case "kd":
 		title = "K/D"
 		entries, err = h.stats.TopByKD(context.Background(), guildRowID, 10, h.minKillsKD)
+	case "pvpkd", "pvp-kd", "pvp_kd", "pvp kd", "pvp k/d":
+		// Kills per death caused by another player; "kd" stays kills per death of any kind.
+		title = "K/D (PvP)"
+		entries, err = h.stats.TopByPvPKD(context.Background(), guildRowID, 10, h.minKillsKD)
 	case "longest":
 		title = "Longest Kill"
 		entries, err = h.stats.TopLongestKill(context.Background(), guildRowID, 10)
@@ -169,5 +180,5 @@ func (h *StatsCommandHandler) HandleLeaderboard(s *discordgo.Session, i *discord
 }
 
 func respondLeaderboardEmbed(s *discordgo.Session, i *discordgo.InteractionCreate, embed *discordgo.MessageEmbed) {
-	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{Type: discordgo.InteractionResponseChannelMessageWithSource, Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral, Embeds: []*discordgo.MessageEmbed{embed}}})
+	respondPrivate(s, i, &discordgo.InteractionResponseData{Embeds: []*discordgo.MessageEmbed{embed}})
 }

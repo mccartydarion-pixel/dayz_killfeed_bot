@@ -13,6 +13,8 @@ import (
 // Client wraps the Discord session.
 type Client struct {
 	session *discordgo.Session
+	timer   *interactionTimer
+	router  *InteractionRouter
 }
 
 // New creates a Discord session using the minimally required intents for Phase 1.
@@ -24,11 +26,17 @@ func New(token string, membersIntent ...bool) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	session.Identify.Intents = discordgo.IntentsGuildMessages | discordgo.IntentsGuilds
+	// GuildInvites (not privileged) feeds invite tracking: INVITE_CREATE keeps the use counts current.
+	session.Identify.Intents = discordgo.IntentsGuildMessages | discordgo.IntentsGuilds | discordgo.IntentsGuildInvites
 	if len(membersIntent) > 0 && membersIntent[0] {
 		session.Identify.Intents |= discordgo.IntentsGuildMembers
 	}
-	return &Client{session: session}, nil
+	timer := newInteractionTimer()
+	session.Client.Transport = &timingTransport{base: session.Client.Transport, timer: timer}
+	router := newInteractionRouter(timer)
+	// The one interaction listener: everything else is a route on the router.
+	session.AddHandler(router.Dispatch)
+	return &Client{session: session, timer: timer, router: router}, nil
 }
 
 // Start connects the bot and registers the /server command.
@@ -119,12 +127,14 @@ func (c *Client) BotID() string {
 	return c.session.State.User.ID
 }
 
-// AddHandler registers an event handler on the underlying session.
-func (c *Client) AddHandler(fn func(*discordgo.Session, *discordgo.InteractionCreate)) {
-	if c == nil || c.session == nil {
-		return
+// Interactions returns the router every slash command, button, form and
+// autocomplete handler is registered on. Calls on a nil router are not
+// possible: a Client always has one.
+func (c *Client) Interactions() *InteractionRouter {
+	if c == nil {
+		return nil
 	}
-	c.session.AddHandler(fn)
+	return c.router
 }
 
 // AddMemberJoinHandler registers a GuildMemberAdd listener.
@@ -133,6 +143,41 @@ func (c *Client) AddMemberJoinHandler(fn func(*discordgo.Session, *discordgo.Gui
 		return
 	}
 	c.session.AddHandler(fn)
+}
+
+// AddInviteTracking feeds the invite tracker from the gateway: a snapshot when the bot sees a
+// guild, new invites as they are created, and member joins/leaves. Joins are handled off the
+// gateway goroutine because attributing one is a REST call.
+func (c *Client) AddInviteTracking(ctx context.Context, t *InviteTracker) {
+	if c == nil || c.session == nil || t == nil {
+		return
+	}
+	c.session.AddHandler(func(_ *discordgo.Session, g *discordgo.GuildCreate) {
+		if g != nil && g.Guild != nil {
+			go t.Snapshot(g.ID)
+		}
+	})
+	c.session.AddHandler(func(_ *discordgo.Session, e *discordgo.InviteCreate) { t.InviteCreated(e) })
+	c.session.AddHandler(func(_ *discordgo.Session, m *discordgo.GuildMemberAdd) {
+		if m == nil || m.Member == nil || m.User == nil {
+			return
+		}
+		go func() {
+			jctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+			defer cancel()
+			t.MemberJoined(jctx, m.GuildID, m.User.ID, m.User.Bot)
+		}()
+	})
+	c.session.AddHandler(func(_ *discordgo.Session, m *discordgo.GuildMemberRemove) {
+		if m == nil || m.Member == nil || m.User == nil {
+			return
+		}
+		go func() {
+			lctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			t.MemberLeft(lctx, m.GuildID, m.User.ID)
+		}()
+	})
 }
 
 // HasGuildCached reports whether guildID is present in this session's local
@@ -156,6 +201,11 @@ type Verification struct {
 	GuildFound   bool
 	ChannelFound bool
 	Missing      []string
+	// GuildLookupFailed is set when the bot could not tell whether it is in the guild: the
+	// guild was not in the gateway cache and the REST lookup failed for a reason other than
+	// "not a member" (rate limit, timeout, outage). GuildFound is false then, but it is not
+	// evidence of anything and must not be stored as "not installed".
+	GuildLookupFailed bool
 }
 
 // Verify checks that the configured guild and killfeed channel exist and that
@@ -183,7 +233,8 @@ func (c *Client) Verify(guildID, channelID string) Verification {
 		} else {
 			restChecked = true
 			if _, err := c.session.Guild(guildID); err != nil {
-				slog.Error("component=discord", "msg", "configured guild not found or not accessible", "guild_id", guildID)
+				result.GuildLookupFailed = permanentCounterFault(err) == "" // 403/404 is a real answer; anything else is not
+				slog.Error("component=discord", "msg", "configured guild not found or not accessible", "guild_id", guildID, "lookup_failed", result.GuildLookupFailed, "err", err.Error())
 			} else {
 				result.GuildFound = true
 			}
@@ -278,9 +329,16 @@ func (c *Client) Session() *discordgo.Session {
 	return c.session
 }
 
-func ApplicationID(s *discordgo.Session) (string, error) {
-	if s == nil || s.State == nil || s.State.User == nil || s.State.User.ID == "" {
-		return "", fmt.Errorf("discord application ID is not available")
+func ApplicationID(r CommandRegistrar) (string, error) {
+	switch v := r.(type) {
+	case *CommandBatch:
+		if v != nil && v.appID != "" {
+			return v.appID, nil
+		}
+	case *discordgo.Session:
+		if v != nil && v.State != nil && v.State.User != nil && v.State.User.ID != "" {
+			return v.State.User.ID, nil
+		}
 	}
-	return s.State.User.ID, nil
+	return "", fmt.Errorf("discord application ID is not available")
 }

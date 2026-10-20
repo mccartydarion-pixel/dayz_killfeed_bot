@@ -45,8 +45,11 @@ func TestStaleProbeReadsUnreadTailWhenMetadataIsStale(t *testing.T) {
 }
 
 // TestStaleProbeDetectsInactiveSource proves that an ADM whose direct content
-// is genuinely unchanged is reported as an inactive/wrong source rather than
-// being treated as healthy.
+// is genuinely unchanged is never treated as healthy. A few minutes without
+// new bytes is only SOURCE_QUIET (an empty server writes nothing); the
+// WRONG_OR_INACTIVE_ADM_SOURCE verdict is reserved for a source still silent
+// past staleGiveUpAfter (see TestEngineDoesNotHealStaleSourceReselectedAlone
+// and TestAllCandidatesStaleRetainsCurrentSource).
 func TestStaleProbeDetectsInactiveSource(t *testing.T) {
 	baseline := "historical line\n"
 	engine, _ := newFakeEngine(baseline, int64(len(baseline)))
@@ -68,8 +71,55 @@ func TestStaleProbeDetectsInactiveSource(t *testing.T) {
 	if snapshot.ProbeResult != "SUCCESS" {
 		t.Fatalf("expected a successful probe, got %q", snapshot.ProbeResult)
 	}
-	if snapshot.ProbeClassification != "WRONG_OR_INACTIVE_ADM_SOURCE" {
-		t.Fatalf("expected inactive source classification, got %q", snapshot.ProbeClassification)
+	if snapshot.ProbeClassification != ProbeSourceQuiet {
+		t.Fatalf("expected quiet source classification, got %q", snapshot.ProbeClassification)
+	}
+	if got := snapshot.Classification(); got == "HEALTHY" {
+		t.Fatal("a source with no observed growth must never classify as HEALTHY")
+	}
+}
+
+// TestSourceGrowthClearsStickyProbeClassification reproduces the production
+// symptom "selected ADM source becomes stale before subsequent growth is
+// detected": one quiet window used to leave ProbeClassification set forever,
+// so the pipeline kept reporting WRONG_OR_INACTIVE_ADM_SOURCE even while the
+// same source was growing and being read normally again.
+func TestSourceGrowthClearsStickyProbeClassification(t *testing.T) {
+	baseline := "historical line\n"
+	engine, fake := newFakeEngine(baseline, int64(len(baseline)))
+	ctx := context.Background()
+	if err := engine.PollOnce(ctx); err != nil { // discovery
+		t.Fatal(err)
+	}
+	if err := engine.PollOnce(ctx); err != nil { // baseline
+		t.Fatal(err)
+	}
+	// Quiet past the give-up threshold: the verdict is WRONG_OR_INACTIVE.
+	engine.lastLogChange = time.Now().Add(-(staleGiveUpAfter + time.Minute))
+	if err := engine.PollOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := engine.diagnostics.Snapshot().Classification(); got != "WRONG_OR_INACTIVE_ADM_SOURCE" {
+		t.Fatalf("setup: expected WRONG_OR_INACTIVE_ADM_SOURCE, got %q", got)
+	}
+	// The server becomes busy again: the file grows AND the listing reports it.
+	grown := baseline + "12:00:00 | Player \"A\" (id=abc pos=<1, 2, 3>) is connected\n"
+	fake.content = []byte(grown)
+	fake.logs[0].Size = int64(len(grown))
+	fake.logs[0].Modified = time.Now()
+	engine.lastStaleRediscoveryAt = time.Time{}
+	growthBefore := engine.diagnostics.Snapshot().LastSourceGrowthAt
+	for i := 0; i < 3 && !engine.diagnostics.Snapshot().LastSourceGrowthAt.After(growthBefore); i++ {
+		if err := engine.PollOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snap := engine.diagnostics.Snapshot()
+	if !snap.LastSourceGrowthAt.After(growthBefore) {
+		t.Fatal("expected the growth read to advance LastSourceGrowthAt")
+	}
+	if got := snap.Classification(); got == "WRONG_OR_INACTIVE_ADM_SOURCE" || got == ProbeSourceQuiet {
+		t.Fatalf("classification stayed stuck at %q after proven growth", got)
 	}
 }
 
@@ -139,5 +189,45 @@ func TestStaleProbeIsRateLimited(t *testing.T) {
 	}
 	if fake.reads != readsAfterFirstProbe {
 		t.Fatalf("expected the probe to be rate limited, got %d reads after %d", fake.reads, readsAfterFirstProbe)
+	}
+}
+
+// TestGiveUpBranchReadsListingVisibleGrowthWhileThrottled measures the
+// detection latency after a long quiet period: with the probe and the
+// rediscovery both inside their 60s throttle windows, growth that the
+// listing already reports must still be read on the very next poll - not
+// after the next probe window.
+func TestGiveUpBranchReadsListingVisibleGrowthWhileThrottled(t *testing.T) {
+	baseline := "historical line\n"
+	engine, fake := newFakeEngine(baseline, int64(len(baseline)))
+	ctx := context.Background()
+	if err := engine.PollOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.PollOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	engine.lastLogChange = time.Now().Add(-(staleGiveUpAfter + time.Minute))
+	if err := engine.PollOnce(ctx); err != nil { // probe + rediscovery, both now throttled
+		t.Fatal(err)
+	}
+	engine.lastLogChange = time.Now().Add(-(staleGiveUpAfter + time.Minute))
+	if engine.lastStaleProbeAt.IsZero() || engine.lastStaleRediscoveryAt.IsZero() {
+		t.Fatal("setup: expected both throttles armed")
+	}
+	grown := baseline + "new line\n"
+	fake.content = []byte(grown)
+	fake.logs[0].Size = int64(len(grown))
+	fake.logs[0].Modified = time.Now()
+
+	started := time.Now()
+	if err := engine.PollOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if engine.tracker.LastByteOffset != int64(len(grown)) {
+		t.Fatalf("growth visible in the listing was not read while throttled: offset %d, want %d", engine.tracker.LastByteOffset, len(grown))
+	}
+	if time.Since(engine.lastLogChange) > time.Since(started) {
+		t.Fatal("expected lastLogChange refreshed by the read, leaving the give-up state")
 	}
 }

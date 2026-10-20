@@ -188,8 +188,12 @@ func TestBillingSubscriptionSummaryDefaultsAndEntitlements(t *testing.T) {
 	if sum["trialStatus"] != "ACTIVE" || sum["billingRequired"] != false || sum["trialDaysRemaining"].(float64) != 14 || sum["intendedPlan"] != nil {
 		t.Fatalf("onboarding fields: %v", sum)
 	}
-	if sum["canManageBilling"] != true {
-		t.Fatal("an org ADMIN must be able to manage billing")
+	if sum["canManageBilling"] != false {
+		t.Fatal("an org ADMIN runs the servers, not the plan: it must not manage billing")
+	}
+	ownerSum := w.getJSON(w.billingPath(w.a1, "/subscription"), w.a1.OwnerDiscordID)
+	if ownerSum["canManageBilling"] != true {
+		t.Fatal("the org OWNER must be able to manage billing")
 	}
 	ents, ok := sum["entitlements"].([]any)
 	if !ok || len(ents) == 0 {
@@ -224,8 +228,12 @@ func TestBillingCheckoutAuthorizationAndValidation(t *testing.T) {
 		}
 	}
 	w.expect(w.do(http.MethodPost, w.billingPath(w.a1, "/checkout"), "", body), http.StatusUnauthorized, "no acting user")
+	// An org ADMIN runs the servers; what the organization pays for stays the OWNER's.
+	if r := w.do(http.MethodPost, w.billingPath(w.a1, "/checkout"), w.admin, body); r.Status != http.StatusForbidden || r.errCode(t) != codeForbidden || !strings.Contains(string(r.Body), "OWNER role required") {
+		t.Fatalf("org ADMIN checkout: expected 403 FORBIDDEN \"OWNER role required\", got %d %s", r.Status, r.Body)
+	}
 
-	// Validation, as OWNER/ADMIN.
+	// Validation, as OWNER.
 	for name, bad := range map[string]map[string]any{
 		"unknown plan":                         {"planKey": "NOPE", "interval": "MONTHLY"},
 		"private plan":                         {"planKey": "LEGACY", "interval": "MONTHLY"},
@@ -233,13 +241,13 @@ func TestBillingCheckoutAuthorizationAndValidation(t *testing.T) {
 		"unsafe return path (absolute)":        {"planKey": "PRO", "interval": "MONTHLY", "returnPath": "https://evil.example/steal"},
 		"unsafe return path (scheme-relative)": {"planKey": "PRO", "interval": "MONTHLY", "returnPath": "//evil.example"},
 	} {
-		r := w.do(http.MethodPost, w.billingPath(w.a1, "/checkout"), w.admin, bad)
+		r := w.do(http.MethodPost, w.billingPath(w.a1, "/checkout"), w.a1.OwnerDiscordID, bad)
 		if r.Status != http.StatusBadRequest {
 			t.Errorf("%s: expected 400, got %d %s", name, r.Status, r.Body)
 		}
 	}
 	// A successful checkout.
-	res := w.expect(w.do(http.MethodPost, w.billingPath(w.a1, "/checkout"), w.admin, body), http.StatusOK, "checkout").JSON(t)
+	res := w.expect(w.do(http.MethodPost, w.billingPath(w.a1, "/checkout"), w.a1.OwnerDiscordID, body), http.StatusOK, "checkout").JSON(t)
 	url, _ := res["checkoutUrl"].(string)
 	if url == "" || !strings.Contains(url, "checkout.stripe.example") {
 		t.Fatalf("checkoutUrl: %v", res)
@@ -249,7 +257,7 @@ func TestBillingCheckoutAuthorizationAndValidation(t *testing.T) {
 	if err != nil || sub == nil || sub.ProviderCustomerID == "" {
 		t.Fatalf("expected a persisted stripe customer: %+v %v", sub, err)
 	}
-	// The OWNER may also check out (not only ADMIN).
+	// A retried checkout by the OWNER reuses that customer.
 	w.expect(w.do(http.MethodPost, w.billingPath(w.a1, "/checkout"), w.a1.OwnerDiscordID, body), http.StatusOK, "owner checkout")
 }
 
@@ -258,8 +266,8 @@ func TestBillingCheckoutNeverGrantsAStripeTrial(t *testing.T) {
 	ctx := context.Background()
 	before, _ := w.a.SaaSSubscriptions.GetForOrganization(ctx, w.a1.OrgID)
 	body := map[string]any{"planKey": "PRO", "interval": "MONTHLY"} // PRO's catalog JSON says trialDays 14
-	w.expect(w.do(http.MethodPost, w.billingPath(w.a1, "/checkout"), w.admin, body), http.StatusOK, "first checkout")
-	w.expect(w.do(http.MethodPost, w.billingPath(w.a1, "/checkout"), w.admin, body), http.StatusOK, "retried checkout")
+	w.expect(w.do(http.MethodPost, w.billingPath(w.a1, "/checkout"), w.a1.OwnerDiscordID, body), http.StatusOK, "first checkout")
+	w.expect(w.do(http.MethodPost, w.billingPath(w.a1, "/checkout"), w.a1.OwnerDiscordID, body), http.StatusOK, "retried checkout")
 	n := 0
 	for _, c := range w.billingProvider.Calls {
 		if c.Method == "CreateCheckoutSession" {
@@ -381,12 +389,12 @@ func TestBillingWebhookInvoicePaymentFailedDoesNotDeleteAnything(t *testing.T) {
 
 func TestBillingPortalRequiresAnExistingCustomer(t *testing.T) {
 	w := newFactionWorld(t)
-	r := w.do(http.MethodPost, w.billingPath(w.a1, "/portal"), w.admin, map[string]any{})
+	r := w.do(http.MethodPost, w.billingPath(w.a1, "/portal"), w.a1.OwnerDiscordID, map[string]any{})
 	if r.Status != http.StatusConflict || r.errCode(t) != "NO_BILLING_CUSTOMER" {
 		t.Fatalf("%d %s", r.Status, r.Body)
 	}
-	w.expect(w.do(http.MethodPost, w.billingPath(w.a1, "/checkout"), w.admin, map[string]any{"planKey": "STARTER", "interval": "MONTHLY"}), http.StatusOK, "checkout")
-	res := w.expect(w.do(http.MethodPost, w.billingPath(w.a1, "/portal"), w.admin, map[string]any{}), http.StatusOK, "portal").JSON(t)
+	w.expect(w.do(http.MethodPost, w.billingPath(w.a1, "/checkout"), w.a1.OwnerDiscordID, map[string]any{"planKey": "STARTER", "interval": "MONTHLY"}), http.StatusOK, "checkout")
+	res := w.expect(w.do(http.MethodPost, w.billingPath(w.a1, "/portal"), w.a1.OwnerDiscordID, map[string]any{}), http.StatusOK, "portal").JSON(t)
 	if u, _ := res["portalUrl"].(string); u == "" {
 		t.Fatalf("%v", res)
 	}
@@ -397,7 +405,7 @@ func TestBillingPortalRequiresAnExistingCustomer(t *testing.T) {
 // activeOrgA drives org A to an ACTIVE PRO subscription through the real checkout + webhook path.
 func (w *factionWorld) activeOrgA(t *testing.T, plan, priceID string) {
 	t.Helper()
-	w.expect(w.do(http.MethodPost, w.billingPath(w.a1, "/checkout"), w.admin, map[string]any{"planKey": plan, "interval": "MONTHLY"}), http.StatusOK, "checkout")
+	w.expect(w.do(http.MethodPost, w.billingPath(w.a1, "/checkout"), w.a1.OwnerDiscordID, map[string]any{"planKey": plan, "interval": "MONTHLY"}), http.StatusOK, "checkout")
 	sub, _ := w.a.SaaSSubscriptions.GetForOrganization(context.Background(), w.a1.OrgID)
 	state := w.billingProvider.CompleteCheckout(sub.ProviderCustomerID, priceID, 0)
 	payload := checkoutCompletedPayload(uniqID("evt_active"), w.a1.OrgID, state.SubscriptionID, state.CustomerID)
@@ -407,10 +415,10 @@ func (w *factionWorld) activeOrgA(t *testing.T, plan, priceID string) {
 func TestBillingChangePlanCancelReactivate(t *testing.T) {
 	w := newFactionWorld(t)
 	// Before any Stripe subscription exists.
-	if r := w.do(http.MethodPost, w.billingPath(w.a1, "/plan"), w.admin, map[string]any{"planKey": "PRO", "interval": "MONTHLY"}); r.Status != http.StatusConflict || r.errCode(t) != "NO_ACTIVE_SUBSCRIPTION" {
+	if r := w.do(http.MethodPost, w.billingPath(w.a1, "/plan"), w.a1.OwnerDiscordID, map[string]any{"planKey": "PRO", "interval": "MONTHLY"}); r.Status != http.StatusConflict || r.errCode(t) != "NO_ACTIVE_SUBSCRIPTION" {
 		t.Fatalf("%d %s", r.Status, r.Body)
 	}
-	if r := w.do(http.MethodPost, w.billingPath(w.a1, "/cancel"), w.admin, nil); r.Status != http.StatusConflict {
+	if r := w.do(http.MethodPost, w.billingPath(w.a1, "/cancel"), w.a1.OwnerDiscordID, nil); r.Status != http.StatusConflict {
 		t.Fatalf("%d %s", r.Status, r.Body)
 	}
 
@@ -420,24 +428,24 @@ func TestBillingChangePlanCancelReactivate(t *testing.T) {
 		w.expect(w.do(http.MethodPost, w.billingPath(w.a1, path), w.member, map[string]any{"planKey": "PRO", "interval": "MONTHLY"}), http.StatusForbidden, "member "+path)
 	}
 	// Upgrade.
-	upd := w.expect(w.do(http.MethodPost, w.billingPath(w.a1, "/plan"), w.admin, map[string]any{"planKey": "PRO", "interval": "MONTHLY"}), http.StatusOK, "upgrade").JSON(t)
+	upd := w.expect(w.do(http.MethodPost, w.billingPath(w.a1, "/plan"), w.a1.OwnerDiscordID, map[string]any{"planKey": "PRO", "interval": "MONTHLY"}), http.StatusOK, "upgrade").JSON(t)
 	if upd["plan"] != "PRO" || upd["status"] != "ACTIVE" {
 		t.Fatalf("%v", upd)
 	}
 	// An unknown plan is rejected without touching anything.
-	w.expect(w.do(http.MethodPost, w.billingPath(w.a1, "/plan"), w.admin, map[string]any{"planKey": "NOPE", "interval": "MONTHLY"}), http.StatusBadRequest, "unknown plan")
+	w.expect(w.do(http.MethodPost, w.billingPath(w.a1, "/plan"), w.a1.OwnerDiscordID, map[string]any{"planKey": "NOPE", "interval": "MONTHLY"}), http.StatusBadRequest, "unknown plan")
 	// Downgrade back.
-	down := w.expect(w.do(http.MethodPost, w.billingPath(w.a1, "/plan"), w.admin, map[string]any{"planKey": "STARTER", "interval": "MONTHLY"}), http.StatusOK, "downgrade").JSON(t)
+	down := w.expect(w.do(http.MethodPost, w.billingPath(w.a1, "/plan"), w.a1.OwnerDiscordID, map[string]any{"planKey": "STARTER", "interval": "MONTHLY"}), http.StatusOK, "downgrade").JSON(t)
 	if down["plan"] != "STARTER" {
 		t.Fatalf("%v", down)
 	}
 	// Cancel at period end.
-	c := w.expect(w.do(http.MethodPost, w.billingPath(w.a1, "/cancel"), w.admin, nil), http.StatusOK, "cancel").JSON(t)
+	c := w.expect(w.do(http.MethodPost, w.billingPath(w.a1, "/cancel"), w.a1.OwnerDiscordID, nil), http.StatusOK, "cancel").JSON(t)
 	if c["cancelAtPeriodEnd"] != true || c["status"] != "ACTIVE" {
 		t.Fatalf("cancellation must keep the subscription active until period end: %v", c)
 	}
 	// Reactivate.
-	re := w.expect(w.do(http.MethodPost, w.billingPath(w.a1, "/reactivate"), w.admin, nil), http.StatusOK, "reactivate").JSON(t)
+	re := w.expect(w.do(http.MethodPost, w.billingPath(w.a1, "/reactivate"), w.a1.OwnerDiscordID, nil), http.StatusOK, "reactivate").JSON(t)
 	if re["cancelAtPeriodEnd"] != false {
 		t.Fatalf("%v", re)
 	}
@@ -446,7 +454,7 @@ func TestBillingChangePlanCancelReactivate(t *testing.T) {
 func TestBillingTenantIsolation(t *testing.T) {
 	w := newFactionWorld(t)
 	w.activeOrgA(t, "PRO", "price_test_pro_month")
-	// Org B's admin acting on org A's billing route.
+	// Org B's owner acting on org A's billing route.
 	for _, path := range []string{"/checkout", "/portal", "/plan", "/cancel", "/reactivate"} {
 		r := w.do(http.MethodPost, w.billingPath(w.a1, path), w.b1.OwnerDiscordID, map[string]any{"planKey": "PRO", "interval": "MONTHLY"})
 		if r.Status != http.StatusForbidden {
@@ -467,9 +475,9 @@ func TestBillingRateLimitsAdminActions(t *testing.T) {
 	w := newFactionWorld(t)
 	w.a.saasBillingActionLimiter = newSaaSRateLimiter(time.Hour, 2)
 	body := map[string]any{"planKey": "PRO", "interval": "MONTHLY"}
-	w.expect(w.do(http.MethodPost, w.billingPath(w.a1, "/checkout"), w.admin, body), http.StatusOK, "1")
-	w.expect(w.do(http.MethodPost, w.billingPath(w.a1, "/checkout"), w.admin, body), http.StatusOK, "2")
-	if r := w.do(http.MethodPost, w.billingPath(w.a1, "/checkout"), w.admin, body); r.Status != http.StatusTooManyRequests {
+	w.expect(w.do(http.MethodPost, w.billingPath(w.a1, "/checkout"), w.a1.OwnerDiscordID, body), http.StatusOK, "1")
+	w.expect(w.do(http.MethodPost, w.billingPath(w.a1, "/checkout"), w.a1.OwnerDiscordID, body), http.StatusOK, "2")
+	if r := w.do(http.MethodPost, w.billingPath(w.a1, "/checkout"), w.a1.OwnerDiscordID, body); r.Status != http.StatusTooManyRequests {
 		t.Fatalf("%d %s", r.Status, r.Body)
 	}
 	// Reads are never limited by the action limiter.
@@ -486,8 +494,8 @@ func TestBillingAuditLogsIdsOnly(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(old) })
 
 	w.activeOrgA(t, "PRO", "price_test_pro_month")
-	w.expect(w.do(http.MethodPost, w.billingPath(w.a1, "/cancel"), w.admin, nil), http.StatusOK, "cancel")
-	w.expect(w.do(http.MethodPost, w.billingPath(w.a1, "/reactivate"), w.admin, nil), http.StatusOK, "reactivate")
+	w.expect(w.do(http.MethodPost, w.billingPath(w.a1, "/cancel"), w.a1.OwnerDiscordID, nil), http.StatusOK, "cancel")
+	w.expect(w.do(http.MethodPost, w.billingPath(w.a1, "/reactivate"), w.a1.OwnerDiscordID, nil), http.StatusOK, "reactivate")
 
 	out := logs.String()
 	for _, want := range []string{"billing_checkout_created", "billing_subscription_activated", "billing_subscription_cancelled", "billing_subscription_reactivated", "organization_id="} {
@@ -505,7 +513,7 @@ func TestBillingAuditLogsIdsOnly(t *testing.T) {
 func TestBillingAdminVisibilityShowsIntervalAndCancellationNoPaymentDetail(t *testing.T) {
 	w := newFactionWorld(t)
 	w.activeOrgA(t, "PRO", "price_test_pro_month")
-	w.expect(w.do(http.MethodPost, w.billingPath(w.a1, "/cancel"), w.admin, nil), http.StatusOK, "cancel")
+	w.expect(w.do(http.MethodPost, w.billingPath(w.a1, "/cancel"), w.a1.OwnerDiscordID, nil), http.StatusOK, "cancel")
 
 	org, err := w.a.SaaSOrganizations.GetByID(context.Background(), w.a1.OrgID)
 	if err != nil || org == nil {
@@ -611,7 +619,7 @@ func TestApprovedPricingCatalogCheckoutResolvesPriceIDsServerSideOnly(t *testing
 	}
 	for _, c := range cases {
 		t.Run(c.key+"/MONTHLY", func(t *testing.T) {
-			w.expect(w.do(http.MethodPost, w.billingPath(w.a1, "/checkout"), w.admin, map[string]any{"planKey": c.key, "interval": "MONTHLY"}), http.StatusOK, "checkout")
+			w.expect(w.do(http.MethodPost, w.billingPath(w.a1, "/checkout"), w.a1.OwnerDiscordID, map[string]any{"planKey": c.key, "interval": "MONTHLY"}), http.StatusOK, "checkout")
 			var lastPriceID string
 			for _, call := range provider.Calls {
 				if call.Method == "CreateCheckoutSession" {
@@ -623,14 +631,14 @@ func TestApprovedPricingCatalogCheckoutResolvesPriceIDsServerSideOnly(t *testing
 			}
 		})
 		t.Run(c.key+"/YEARLY", func(t *testing.T) {
-			r := w.do(http.MethodPost, w.billingPath(w.a1, "/checkout"), w.admin, map[string]any{"planKey": c.key, "interval": "YEARLY"})
+			r := w.do(http.MethodPost, w.billingPath(w.a1, "/checkout"), w.a1.OwnerDiscordID, map[string]any{"planKey": c.key, "interval": "YEARLY"})
 			if r.Status != http.StatusBadRequest || r.errCode(t) != "INVALID_PLAN" {
 				t.Fatalf("%s YEARLY: expected 400 INVALID_PLAN (no annual pricing approved), got %d %s", c.key, r.Status, r.Body)
 			}
 		})
 	}
 	// An unknown plan key is rejected the same way.
-	r := w.do(http.MethodPost, w.billingPath(w.a1, "/checkout"), w.admin, map[string]any{"planKey": "ENTERPRISE", "interval": "MONTHLY"})
+	r := w.do(http.MethodPost, w.billingPath(w.a1, "/checkout"), w.a1.OwnerDiscordID, map[string]any{"planKey": "ENTERPRISE", "interval": "MONTHLY"})
 	if r.Status != http.StatusBadRequest || r.errCode(t) != "INVALID_PLAN" {
 		t.Fatalf("unknown plan: expected 400 INVALID_PLAN, got %d %s", r.Status, r.Body)
 	}

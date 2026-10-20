@@ -108,10 +108,18 @@ func fingerprint(ev *Event) string {
 	if ev.Distance != nil {
 		dist = fmt.Sprintf("%.4f", *ev.Distance)
 	}
+	// The date part is the session date only when a full date was read from the line itself. A
+	// Timestamp the engine derived from the clock (Event.TimestampDerived, event_time.go) is left
+	// out: every ADM line was fingerprinted with a zero Timestamp before the derivation existed,
+	// and the durable kill/death fingerprints must keep matching so a deploy never re-posts history.
+	date := ev.Timestamp
+	if ev.TimestampDerived {
+		date = time.Time{}
+	}
 	parts := []string{
 		string(ev.Type),
 		ev.TimeOfDay,
-		ev.Timestamp.UTC().Format("2006-01-02"), // session date when known
+		date.UTC().Format("2006-01-02"), // session date when known
 		victimID,
 		killerID,
 		attackerID,

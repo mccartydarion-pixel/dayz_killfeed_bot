@@ -7,7 +7,9 @@ This phase adds operator tooling for a **single, controlled, live Shop delivery 
 * The owner or operator performs each approved gate by hand; this service records what was verified, and the durable ledger enforces the rules.
 * The production adapter (`nitradodelivery.PrototypeAdapter`) stays `Enabled=false`, and no generic automatic-delivery worker exists.
 
-**Nothing was merged or deployed.** No production file, database row or server was touched.
+> **Status now:** written before this change was merged. It is merged: migration `0055_shop_delivery_attempt_evidence` is in the registry and the canary operator API (`/shop/canary/attempts`) is in the bot, locked unless `CHAMPION_SHOP_CANARY_EXECUTION=enabled` and the installation is listed. An automatic delivery worker was added later (`docs/SHOP_DELIVERY_WORKER.md`). Statements below such as "no worker exists" and the merge order describe the position at the time.
+
+**When written, nothing was merged or deployed.** No production file, database row or server was touched.
 
 ## 1. Dependencies (PR #95 → PR #97 → this PR)
 

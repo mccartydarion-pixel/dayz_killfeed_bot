@@ -48,6 +48,9 @@ type TrialState struct {
 	BillingRequired       bool
 	PaymentMethodRequired bool // always false: starting the trial never needs a payment method
 	Started               bool // this request started the trial
+	// PlatformOwnerAccess: a platform owner owns the organization, so BillingRequired is false
+	// whatever the subscription says (StateFor).
+	PlatformOwnerAccess bool
 }
 
 // StateOf derives the onboarding state from a subscription row (nil = no row yet).
@@ -85,10 +88,14 @@ func StateOf(sub *repository.Subscription, now time.Time) TrialState {
 		}
 	default:
 		// ACTIVE/PAST_DUE/CANCELED/SUSPENDED without a Stripe subscription id is not produced by
-		// the webhook path; treat it by status alone.
+		// the webhook path: it is an owner grant (Owner Hub "Grant plan") or a manual row; treat
+		// it by status alone, and let a dated grant lapse on its own.
 		st.TrialStatus = TrialConverted
 		st.SelectedPlan = sub.Plan
 		st.BillingRequired = sub.Status == repository.SubscriptionCanceled || sub.Status == repository.SubscriptionSuspended
+		if sub.OwnerGrantUntil != nil && !now.Before(*sub.OwnerGrantUntil) {
+			st.TrialStatus, st.BillingRequired = TrialExpired, true
+		}
 	}
 	return st
 }
@@ -142,7 +149,7 @@ func StartTrial(ctx context.Context, store TrialStore, catalog *Catalog, organiz
 			return TrialState{}, err
 		}
 	}
-	st := StateOf(sub, now)
+	st := StateFor(organizationID, sub, now)
 	st.Started = started
 	return st, nil
 }

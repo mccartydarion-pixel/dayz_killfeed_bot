@@ -121,7 +121,7 @@ func TestRuntimeMigratedRoutesTwoServersOneGuildEndToEnd(t *testing.T) {
 	board := newBoard()
 	servers := func(context.Context) (int64, []int64, error) { return guildRowID, []int64{serverA, serverB}, nil }
 	panels := discord.NewRoutePanels(board, discord.NewRoutePanelStore(a.GuildRoutePanels))
-	syncer := discord.NewRouteSyncer(a.ChannelRoutes, servers, panels, board, discord.NewInMemorySetupStore(), fixture.DiscordGuildID)
+	syncer := discord.NewRouteSyncer(a.ChannelRoutes, discord.SingleGuild(servers), panels, board, discord.NewInMemorySetupStore(), fixture.DiscordGuildID, guildRowID)
 	a.RouteSyncer = syncer // the route-write handlers Trigger it, exactly as in production
 
 	save(fixture.InstallationID, map[string]string{"KILLFEED": "kf-A", "LINK_GAMERTAG": "link-A", "STATS_LEADERBOARDS": "stats-S", "AUTO_LEADERBOARD": "lb-A", "ADMIN_LOGS": "adm-A"})

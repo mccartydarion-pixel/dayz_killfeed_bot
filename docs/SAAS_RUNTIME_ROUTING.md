@@ -7,18 +7,19 @@ fields. This document records the audit of that runtime, the shared resolver
 the publishers migrate onto, and how far the migration has got.
 
 **Migrated to runtime routes: `KILLFEED`, `LINK_GAMERTAG`, `STATS_LEADERBOARDS`,
-`AUTO_LEADERBOARD`, `ADMIN_LOGS`. Built and runtime routed: `HITFEED`, `CONNECTIONS`, `PVE_FEED` (explicit suicides only - see its section), `BOUNTY` and `BOUNTY_TRACKING` (see `docs/BOUNTY_SYSTEM.md`), `ECONOMY` (see `docs/ECONOMY_SYSTEM.md`).** Every other route either has no publisher at
-all (marked *Not implemented* below - nothing was built for them) or has no
-text-channel feed to route. See the table below and "Migrated features".
+`AUTO_LEADERBOARD`, `ADMIN_LOGS`. Built and runtime routed: `HITFEED`, `CONNECTIONS`, `PVE_FEED` (explicit suicides only - see its section), `BOUNTY` and `BOUNTY_TRACKING` (see `docs/BOUNTY_SYSTEM.md`), `ECONOMY` (see `docs/ECONOMY_SYSTEM.md`).** The table under "All routes" is the per-route record. Routes added after this audit are not in
+that table (for example `SERVER_RANKS`, `EVENTS`, `FACTION_RECRUITMENT`, `DONATION_PERKS` and the
+setup-only `CASE_*` cards); the code's own list of every route key and its producer is
+`routeProducerAudit` in `internal/app/saas_channel_layout.go`. See also "Migrated features".
 
 ## KILLFEED event path (audited)
 
 ```
 Nitrado ADM log poll                       internal/killfeed/engine.go (per-server Engine)
   -> parsed PLAYER_KILL event              internal/killfeed/parser.go
-  -> Engine.processLine                    engine.go processLine
+  -> Engine.processLine                    engine_process.go processLine
   -> PersistenceQueue.EnqueueAndWait       durable, non-duplicate insert
-  -> killPersistedHook (only AFTER a       engine.go SetPersistence
+  -> killPersistedHook (only AFTER a       engine_hooks.go SetPersistence
      successful non-duplicate insert)
   -> KillfeedPublisher.PublishKill         internal/discord/killfeed.go
   -> RotatingFeed.Enqueue                  internal/discord/rotating_feed.go
@@ -27,7 +28,7 @@ Nitrado ADM log poll                       internal/killfeed/engine.go (per-serv
 
 What the code actually knows at each point:
 
-- **Server identity**: `runServerWorker` (internal/app/app.go) receives the
+- **Server identity**: `runServerWorker` (internal/app/server_worker.go) receives the
   `repository.GameServer` row - `row.ID` (`game_servers.id`) and `row.GuildID`
   (internal `guilds.id`). One worker, one Engine, one `KillfeedPublisher`, one
   `RotatingFeed` per server. The publisher previously was never told which
@@ -114,7 +115,7 @@ installation is still `CONFIGURING`.
 | `ADMIN_ALERTS` | `AdminAlertPublisher` (`discord/admin_alerts.go`) - alert on entering a condition, resolution on leaving it | none - no fallback | per-server ADM snapshots and download reports; zone intrusion engine | **IMPLEMENTED / RUNTIME ROUTED** |
 | `ADMIN_LOGS` | `ADMMonitorPublisher` (`discord/adm_monitor.go`) | legacy `GuildSetup.ADMMonitorChannelID` | ADM snapshot/download callbacks | **MIGRATED TO RUNTIME ROUTES** (route -> legacy) |
 | `SERVER_STATUS` | `ServerStatusBoard` (`discord/server_status_board.go`) - one persistent message per routed channel; `LiveCompletionPublisher` season/war/event results | legacy `GuildSetup.ServerStatusChannelID` (completion announcements only) | per-server ADM snapshots | **IMPLEMENTED / RUNTIME ROUTED** |
-| `ONLINE_COUNTER` | `VoiceChannelCounter` (`discord/counter.go`) - binds to the routed voice channel | legacy `GuildSetup.OnlinePlayersChannelID` | the public counter server's presence tracker | **IMPLEMENTED / RUNTIME ROUTED** |
+| `ONLINE_COUNTER` | `VoiceChannelCounter` (`discord/counter.go`) - one per guild, bound to that guild's routed voice channel | legacy `GuildSetup.OnlinePlayersChannelID` (primary guild only) | the guild's public counter server: Nitrado live query, else its proven presence tracker | **IMPLEMENTED / RUNTIME ROUTED** |
 
 `DeathfeedPublisher` (non-PvP deaths) has no route key of its own: Channel
 System V2 sends it to the `KILLFEED` route (the combat feed), with
@@ -159,7 +160,52 @@ Exactly one destination is chosen, so nothing is ever published to both.
   are collected in server order, and one message is kept per channel. Two servers
   routing to different channels get a panel in each; two routing to the same
   channel share one. The legacy channel is used **only when no server of the
-  guild has a route**.
+  primary guild has a route**.
+
+### Every guild is served
+
+Champion is multi-tenant: a customer's installation lives in its own Discord
+guild, never in the bot's configured one (`DISCORD_GUILD_ID`, the *primary*
+guild). Every guild-level panel and feed therefore takes a
+`discord.AllGuildServersFunc` - every guild that has an active game server, with
+those servers, grouped from `game_servers` on each sync (`app_run.go`
+`allGuildServers`) - and serves each guild on its own `(guild, server)` routes:
+
+* `RouteSyncer` (`LINK_GAMERTAG`, `STATS_LEADERBOARDS` panels, keyed per guild
+  and route key), `LeaderboardScheduler` (`AUTO_LEADERBOARD`, one board per
+  guild from that guild's stats), `BountyBoard`, `HeatmapBoard`,
+  `ServerStatusBoard`, and `ServerRanksBoards` (`SERVER_RANKS`, one panel per
+  active server of every guild, re-listed on every sync so a server connected
+  from the website later is covered without a restart).
+* `BountyTracker`, `EconomyFeed` and the completion/event announcements
+  (`LiveCompletionPublisher`) resolve the routes of the event's **own** guild;
+  a guild-wide event (an admin credit, a guild bounty) goes to every route of
+  that guild only, never to another guild's channel.
+* `guild_route_panels` rows are keyed by guild, so each guild's panels are
+  recorded, moved and retired independently.
+
+Legacy `GuildSetup` channels exist for the primary guild only: its legacy
+panels are retired when it enters route mode and restored when its routes are
+removed; another guild without a route simply has no panel (and the
+announcement is dropped, never sent to the primary guild's legacy channel).
+`RouteSyncer.HasRoute` (the `SetupManager` gate) also answers for the primary
+guild only. The online voice counter (`ONLINE_COUNTER`) runs per guild: the
+primary guild's counter (`App.onlineCounter`, legacy fallback included) uses
+`App.guildServers`; every other guild with an active server and an
+`ONLINE_COUNTER` route gets its own counter on that channel, renamed from the
+count of its own public server (its selected public server, else its first
+active server), with no legacy fallback (`online_counter.go`,
+`evaluateGuildCounters`).
+
+### A channel the bot can no longer use
+
+A routed channel that Discord answers with 403 (Missing Access / Missing Permissions) or 404
+(Unknown Channel) is a configuration fault, not a transient error: `RoutePanels` records it per
+(guild, route key, channel), retries that channel every 10 minutes instead of every sync, and
+reports the first occurrence through `SetFaultHandler`, which the app turns into one
+`CHANNEL_ACCESS` admin alert on the guild's `ADMIN_ALERTS` route. The online voice counter does
+the same through `VoiceChannelCounter.OnFault`. The layout health ("Recheck") still verifies the
+channel live and shows it as BROKEN until the role or channel is repaired.
 
 ### How persistent messages avoid duplicates
 
@@ -198,6 +244,12 @@ never produce a second live copy:
   scheduler now exists whenever routing is available (not only when a legacy
   leaderboard channel was configured), so a route-only guild gets a leaderboard.
   Refreshes are serialised. Manual `/admin` refresh uses the same path.
+  Since Auto Leaderboard V3 the panel is ONE message carrying several embeds
+  (`PanelContent.Embeds`, sent/edited in one call through
+  `MultiEmbedMessageAPI`); it is still exactly one `guild_route_panels` row per
+  (guild, `AUTO_LEADERBOARD`, channel), so restart dedupe, route moves and
+  retirement are unchanged. Single-embed panels keep `PanelContent.Embed` and
+  the original send/edit path. See `docs/AUTO_LEADERBOARD_V3.md`.
 * **`ADMIN_LOGS`** - `activeChannel()` is re-evaluated on every snapshot and
   download (it previously cached the legacy channel forever). If the destination
   changes while a message exists elsewhere, the old message is deleted and a new

@@ -1,5 +1,7 @@
 # C.A.S.E. Phase 2G.5 — Evidence admissibility and console ADM coverage
 
+> **Reading note:** written as the description of a proposed change. The audit it describes (`caseintel.AuditAdmissibility`) is merged; the staging results below are as recorded at the time.
+
 **Status: separate current-main read-only evidence-quality candidate; no detector activation.** This branch starts from the deployed setup/Embed Designer main, not the older stacked 2G.4 branch. It adds bounded aggregate output to an existing protected integrity endpoint and a read-only repository query; no Railway configuration, database migration, new endpoint, scheduler, collector, Discord sender or sanction.
 
 ## What has been demonstrated

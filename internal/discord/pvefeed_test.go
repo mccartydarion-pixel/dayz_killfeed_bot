@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/killfeed"
 	"github.com/yourname/dayz-killfeed/internal/routing"
 )
@@ -68,7 +69,7 @@ func TestPveFeedPublishesSuicideAndClaimsIt(t *testing.T) {
 	if len(msgs) != 1 || len(msgs[0].embeds) != 1 {
 		t.Fatalf("expected 1 message with 1 card, got %+v", msgs)
 	}
-	if got, want := msgs[0].embeds[0].Description, "💀 **SUICIDE**\nAlice died by suicide."; got != want {
+	if got, want := msgs[0].embeds[0].Description, "💀 **Suicide**\nAlice died by suicide."; got != want {
 		t.Fatalf("unexpected card:\n%q\nwant\n%q", got, want)
 	}
 	if msgs[0].mention == nil || len(msgs[0].mention.Parse) != 0 {
@@ -84,9 +85,9 @@ func TestPveFeedRendersOnlyTheProvenCause(t *testing.T) {
 		cause killfeed.DeathCause
 		want  string
 	}{
-		{killfeed.DeathCauseInfected, "☣️ **PVE DEATH**\nBob was killed by an infected."},
-		{killfeed.DeathCauseAnimal, "🐺 **PVE DEATH**\nBob was killed by an animal."},
-		{killfeed.DeathCauseEnvironment, "⚠️ **PVE DEATH**\nBob died to the environment."},
+		{killfeed.DeathCauseInfected, "☣️ **PvE death**\nBob was killed by an infected."},
+		{killfeed.DeathCauseAnimal, "🐺 **PvE death**\nBob was killed by an animal."},
+		{killfeed.DeathCauseEnvironment, "⚠️ **PvE death**\nBob died to the environment."},
 	} {
 		if !p.PublishPveDeath(killfeed.PveDeathNotice{Cause: tc.cause, Name: "Bob"}) {
 			t.Fatalf("%s must be claimed", tc.cause)
@@ -428,4 +429,42 @@ func TestPveFeedNilSafety(t *testing.T) {
 		t.Fatal("an inactive feed claims nothing")
 	}
 	q.Flush()
+}
+
+func TestPveNoticesShareFiftyCardManagedDeathWindow(t *testing.T) {
+	freshLedger(t)
+	fixture := newPveFixture()
+	fixture.res.set(7, 1, "PVE_FEED", "pve-chan")
+	api := newLiveFeedAPI()
+	store := NewInMemorySetupStore()
+	if err := store.Save(GuildSetup{GuildID: "g1", DeathChannelID: "pve-chan"}); err != nil {
+		t.Fatal(err)
+	}
+	feed := NewRotatingFeed(api, store, "g1", func(s *GuildSetup) string { return s.DeathChannelID }, time.Hour, 50)
+	feed.SetRoute("DEATH_FEED")
+	feed.SetMode(FeedModeImmediate)
+	feed.EnqueueDetected(&discordgo.MessageEmbed{Title: "oldest-death"}, time.Time{})
+	feed.postImmediate()
+
+	p := fixture.publisher(1)
+	p.SetFeed(feed)
+	for i := 0; i < 50; i++ {
+		if !p.PublishPveDeath(suicide(fmt.Sprintf("Player%02d", i))) {
+			t.Fatal("configured PvE route should claim notice")
+		}
+		p.tick(false)
+		feed.postImmediate()
+	}
+	visible, posts := api.shown()
+	if posts != 51 || visible != 50 {
+		t.Fatalf("expected 51 delivered cards and exactly 50 visible, got posts=%d visible=%d", posts, visible)
+	}
+	for _, title := range api.visibleTitles() {
+		if title == "oldest-death" {
+			t.Error("oldest ordinary death must leave the shared PvE window")
+		}
+	}
+	if fixture.sender.total() != 0 {
+		t.Fatal("PvE notices must not bypass the managed 50-card window")
+	}
 }

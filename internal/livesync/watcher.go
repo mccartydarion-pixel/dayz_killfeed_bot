@@ -27,8 +27,10 @@ import (
 //   - each family reads when the listing shows growth AND, independently, on a direct-read probe
 //     interval, because Nitrado listing metadata can lag the file by many minutes (observed 25+
 //     minutes on 2026-09-24). New bytes are therefore found even when the listing is stale.
-//   - reads are full downloads parsed from the checkpoint: Nitrado ignores offset/count on the
-//     signed download URL (verified 2026-09-24), so no partial read is trusted.
+//   - reads are full downloads parsed from the checkpoint until a service's partial (seek) reads
+//     have matched full downloads byte for byte (tail.go); then only the bytes after the
+//     checkpoint are read. Nitrado ignores offset/count on the signed download URL (verified
+//     2026-09-24), so nothing partial is trusted without that comparison.
 //
 // Nothing here fabricates an observation: a record exists only for a complete line DayZ or Nitrado
 // wrote, times come only from the line (or the offset restart.log states), and a boot session is
@@ -46,18 +48,32 @@ type FamilyPolicy struct {
 	Family string
 	// ProbeEvery is the direct-read interval used even when the listing shows no growth.
 	ProbeEvery time.Duration
+	// GiveUpHistorical allows the watcher to give up on a file of this family that keeps failing
+	// AND belongs to a superseded boot (see familyWatcher.historical). It is off for the families
+	// whose records end boot sessions (RPT, restart.log): those are retried at the capped backoff
+	// for as long as they fail.
+	GiveUpHistorical bool
 }
 
 // DefaultPolicies: RPT and restart.log carry boot/shutdown evidence and are probed most often;
-// script logs change rarely; crash logs are written once per boot on Champions.
+// script logs change rarely; crash logs are written once per boot on Champions. Only script and
+// crash files may be given up, and only once their boot is over.
 func DefaultPolicies() []FamilyPolicy {
 	return []FamilyPolicy{
 		{Family: FamilyRPT, ProbeEvery: 30 * time.Second},
 		{Family: FamilyRestart, ProbeEvery: 30 * time.Second},
-		{Family: FamilyScript, ProbeEvery: 60 * time.Second},
-		{Family: FamilyCrash, ProbeEvery: 120 * time.Second},
+		{Family: FamilyScript, ProbeEvery: 60 * time.Second, GiveUpHistorical: true},
+		{Family: FamilyCrash, ProbeEvery: 120 * time.Second, GiveUpHistorical: true},
 	}
 }
+
+// Give-up defaults (Config.GiveUpAfter, Config.GiveUpRetryEvery).
+const (
+	DefaultGiveUpAfter      = 12
+	DefaultGiveUpRetryEvery = 6 * time.Hour
+	// maxGivenUpDrains bounds how many retired given-up files keep their rare retry.
+	maxGivenUpDrains = 4
+)
 
 // Config configures one server's supervisor.
 type Config struct {
@@ -69,8 +85,13 @@ type Config struct {
 	LateAfter         time.Duration // an event read this long after it happened is BACKFILL (default 10m)
 	MaxBackoff        time.Duration // failure backoff cap (default 10m)
 	HealthLogEvery    time.Duration // periodic source_health log (default 5m)
-	Policies          []FamilyPolicy
-	Now               func() time.Time
+	// GiveUpAfter: consecutive failures after which a historical file of a GiveUpHistorical family
+	// is given up (default 12). GiveUpRetryEvery: how often a given-up file is tried again
+	// (default 6h). Giving up is per file and ends with the first successful read.
+	GiveUpAfter      int
+	GiveUpRetryEvery time.Duration
+	Policies         []FamilyPolicy
+	Now              func() time.Time
 }
 
 func (c *Config) defaults() {
@@ -91,6 +112,12 @@ func (c *Config) defaults() {
 	}
 	if c.HealthLogEvery <= 0 {
 		c.HealthLogEvery = 5 * time.Minute
+	}
+	if c.GiveUpAfter <= 0 {
+		c.GiveUpAfter = DefaultGiveUpAfter
+	}
+	if c.GiveUpRetryEvery <= 0 {
+		c.GiveUpRetryEvery = DefaultGiveUpRetryEvery
 	}
 	if len(c.Policies) == 0 {
 		c.Policies = DefaultPolicies()
@@ -320,6 +347,22 @@ func (l *dirLister) candidates(family string) []listed {
 	return out
 }
 
+// newestBootStamp is the latest boot stamp in any listed file name of any family (ADM, RPT, script,
+// crash). Nil until a listing with a stamped file succeeded.
+func (l *dirLister) newestBootStamp() *time.Time {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	var newest *time.Time
+	for _, snap := range l.snaps {
+		for _, f := range snap.files {
+			if t := ClassifySource(f.Path).FileLocalStart; t != nil && (newest == nil || t.After(*newest)) {
+				newest = t
+			}
+		}
+	}
+	return newest
+}
+
 // newerThan orders by the filename's boot stamp (newest first); unstamped files sort last.
 func newerThan(a, b SourceInfo) bool {
 	switch {
@@ -345,6 +388,8 @@ type familyWatcher struct {
 	// draining: retired sources whose final bytes could not be read at rotation; retried on
 	// their own schedule until one read succeeds.
 	draining []*sourceRuntime
+	// fullReads / tailReads count how this family's reads were done (tail.go).
+	fullReads, tailReads int64
 }
 
 type sourceRuntime struct {
@@ -357,6 +402,13 @@ type sourceRuntime struct {
 	listingModified     time.Time
 	nextRead            time.Time
 	fails               int
+	// gaveUp: the file failed Config.GiveUpAfter times in a row after its boot was over. It is
+	// read only every Config.GiveUpRetryEvery until one read succeeds. In memory only: after a
+	// process restart the file is tried again from the normal backoff.
+	gaveUp bool
+	// lastByte is the byte just before the checkpoint, as last read: a tail read must start with it.
+	lastByte     byte
+	haveLastByte bool
 }
 
 func newFamilyWatcher(s *Supervisor, p FamilyPolicy, stored []SourceState) *familyWatcher {
@@ -434,9 +486,28 @@ func (w *familyWatcher) retryDrains(ctx context.Context, now time.Time) {
 			kept = append(kept, rt)
 			continue
 		}
-		if !w.read(ctx, rt, "rotation_drain_retry") && rt.fails < 10 {
+		if !w.read(ctx, rt, "rotation_drain_retry") && (rt.fails < 10 || rt.gaveUp) {
 			kept = append(kept, rt)
 		}
+	}
+	// Given-up files keep their rare retry, but only the newest few: the list never grows without
+	// bound on a service whose old files are all unreadable.
+	givenUp := 0
+	for _, rt := range kept {
+		if rt.gaveUp {
+			givenUp++
+		}
+	}
+	if givenUp > maxGivenUpDrains {
+		trimmed := kept[:0]
+		for _, rt := range kept {
+			if rt.gaveUp && givenUp > maxGivenUpDrains {
+				givenUp--
+				continue
+			}
+			trimmed = append(trimmed, rt)
+		}
+		kept = trimmed
 	}
 	w.draining = kept
 }
@@ -463,7 +534,8 @@ func (w *familyWatcher) attach(c listed, now time.Time) {
 // rotate drains the old file once (its last bytes), retires it, and attaches the newer file.
 func (w *familyWatcher) rotate(ctx context.Context, newer listed, now time.Time) {
 	old := w.active
-	drained := w.read(ctx, old, "rotation_drain")
+	// A given-up file is not read again here: it stays on its rare retry in the draining list.
+	drained := !old.gaveUp && w.read(ctx, old, "rotation_drain")
 	old.state.Active = false
 	opCtx, cancel := context.WithTimeout(ctx, w.sup.cfg.OpTimeout)
 	if _, err := w.sup.store.CommitSource(opCtx, w.sup.cfg.GuildID, w.sup.cfg.ServerID, old.state, nil); err != nil {
@@ -476,7 +548,15 @@ func (w *familyWatcher) rotate(ctx context.Context, newer listed, now time.Time)
 	}
 	slog.Info("component=livesync", "event", "source_rotated", "server_id", w.sup.cfg.ServerID, "family", w.policy.Family,
 		"from", old.state.SourceFile, "to", newer.info.CanonicalID, "drained_to", old.state.Checkpoint)
-	w.updateHealth(func(h *SourceHealth) { h.Rotations++ })
+	w.updateHealth(func(h *SourceHealth) {
+		h.Rotations++
+		// The health describes the current file: what was said about the old one no longer applies.
+		h.GaveUp, h.GaveUpAt, h.GaveUpReason, h.NextRetryAt = false, nil, "", nil
+		h.ConsecutiveFailures, h.LastError = 0, ""
+		if h.State == StateFailing {
+			h.State = StateLagging
+		}
+	})
 	w.attach(newer, now)
 }
 
@@ -485,28 +565,72 @@ func (w *familyWatcher) rotate(ctx context.Context, newer listed, now time.Time)
 func (w *familyWatcher) read(ctx context.Context, rt *sourceRuntime, why string) (ok bool) {
 	s := w.sup
 	current := rt == w.active
-	opCtx, cancel := context.WithTimeout(ctx, s.cfg.OpTimeout)
-	data, err := s.remote.ReadLog(opCtx, s.cfg.ServiceID, rt.state.RemotePath)
-	cancel()
-	now := s.cfg.Now()
-	if err != nil {
-		w.fail(rt, now, "read_failed: "+errorClass(err))
-		return false
-	}
 	st := rt.state // the working copy; rt.state changes only after a successful commit
-	size := int64(len(data))
+
+	// content is the file from st.Checkpoint onward; size is the whole file's size. A trusted
+	// service reads only the tail (tail.go); otherwise the whole file is downloaded as before.
+	var content []byte
+	var size int64
+	tailOnly, verify := false, false
+	tr, canTail := s.remote.(TailReader)
+	// A tail read needs the listing's size: Nitrado's seek fails when asked past the end of the file.
+	if canTail && st.Checkpoint > 0 && rt.haveLastByte && !rt.firstReadIsBackfill && rt.listingSize >= st.Checkpoint {
+		tailOnly, verify = nitrado.TailPlan(s.cfg.ServiceID)
+	}
+	if tailOnly {
+		// Start one byte early: a quiet file still returns that byte, and it must equal the last
+		// byte already read, so a replaced file is never stitched onto the old checkpoint.
+		opCtx, cancel := context.WithTimeout(ctx, s.cfg.OpTimeout)
+		tail, _, ok := nitrado.ReadTail(opCtx, tr, s.cfg.ServiceID, st.RemotePath, st.Checkpoint-1, rt.listingSize)
+		cancel()
+		if ok && len(tail) > 0 && tail[0] == rt.lastByte {
+			content, size = tail[1:], st.Checkpoint+int64(len(tail)-1)
+			w.tailReads++
+		} else {
+			nitrado.TailFailed(s.cfg.ServiceID)
+			tailOnly = false
+		}
+	}
+	truncated := false
+	var full []byte
+	if !tailOnly {
+		opCtx, cancel := context.WithTimeout(ctx, s.cfg.OpTimeout)
+		data, err := s.remote.ReadLog(opCtx, s.cfg.ServiceID, st.RemotePath)
+		cancel()
+		if err != nil {
+			w.fail(rt, s.cfg.Now(), "read_failed: "+errorClass(err))
+			return false
+		}
+		w.fullReads++
+		full = data
+		size = int64(len(data))
+		if verify && size >= st.Checkpoint {
+			opCtx, cancel := context.WithTimeout(ctx, s.cfg.OpTimeout)
+			tail, method, ok := nitrado.ReadTail(opCtx, tr, s.cfg.ServiceID, st.RemotePath, st.Checkpoint-1, size)
+			cancel()
+			if ok {
+				match, newBytes := nitrado.TailMatches(data, st.Checkpoint-1, tail)
+				nitrado.TailVerified(s.cfg.ServiceID, match, newBytes, method, "livesync")
+			}
+		}
+		truncated = size < st.Checkpoint
+		if truncated {
+			// Replaced or truncated in place: the old checkpoint no longer addresses these bytes.
+			slog.Warn("component=livesync", "event", "source_truncated", "server_id", s.cfg.ServerID, "family", w.policy.Family,
+				"file", st.SourceFile, "checkpoint", st.Checkpoint, "size", size)
+			st.Checkpoint, st.BackfillUntil = 0, 0
+		}
+		content = data[st.Checkpoint:]
+	}
+	now := s.cfg.Now()
 	prevRead, prevSize := st.LastReadAt, st.ReadSize
-	truncated := size < st.Checkpoint
 	if truncated {
-		// Replaced or truncated in place: the old checkpoint no longer addresses these bytes.
-		slog.Warn("component=livesync", "event", "source_truncated", "server_id", s.cfg.ServerID, "family", w.policy.Family,
-			"file", st.SourceFile, "checkpoint", st.Checkpoint, "size", size)
-		st.Checkpoint, st.BackfillUntil, prevSize = 0, 0, 0
+		prevSize = 0
 	}
 	if rt.firstReadIsBackfill {
 		st.BackfillUntil = size
 	}
-	res, consumed := w.parse(data[st.Checkpoint:], st)
+	res, consumed := w.parse(content, st)
 	recs := make([]StoredRecord, 0, len(res.Records))
 	var eventLags []time.Duration
 	var windows []time.Duration
@@ -537,7 +661,7 @@ func (w *familyWatcher) read(ctx context.Context, rt *sourceRuntime, why string)
 	if size > prevSize {
 		st.LastGrowthAt = &now
 	}
-	opCtx, cancel = context.WithTimeout(ctx, s.cfg.OpTimeout)
+	opCtx, cancel := context.WithTimeout(ctx, s.cfg.OpTimeout)
 	inserted, err := s.store.CommitSource(opCtx, s.cfg.GuildID, s.cfg.ServerID, st, recs)
 	cancel()
 	committed := s.cfg.Now()
@@ -546,8 +670,21 @@ func (w *familyWatcher) read(ctx context.Context, rt *sourceRuntime, why string)
 		return false
 	}
 	st.Records += int64(inserted)
+	switch {
+	case st.Checkpoint == 0:
+		rt.haveLastByte = false
+	case full != nil && st.Checkpoint <= int64(len(full)):
+		rt.lastByte, rt.haveLastByte = full[st.Checkpoint-1], true
+	case consumed > 0:
+		rt.lastByte, rt.haveLastByte = content[consumed-1], true
+	}
 	rt.state = st
 	rt.firstReadIsBackfill = false
+	if rt.gaveUp {
+		rt.gaveUp = false
+		slog.Info("component=livesync", "event", "source_recovered", "server_id", s.cfg.ServerID, "family", w.policy.Family,
+			"file", st.SourceFile, "failures", rt.fails)
+	}
 	rt.fails = 0
 	rt.nextRead = now.Add(w.policy.ProbeEvery)
 	w.stored[st.SourceFile] = st
@@ -582,6 +719,7 @@ func (w *familyWatcher) read(ctx context.Context, rt *sourceRuntime, why string)
 			return // a draining predecessor: counters only, the health describes the current file
 		}
 		h.State, h.LastError, h.ConsecutiveFailures = StateFresh, "", 0
+		h.GaveUp, h.GaveUpAt, h.GaveUpReason, h.NextRetryAt = false, nil, "", nil
 		h.SourceFile, h.RemotePath, h.FileLocalStart = st.SourceFile, st.RemotePath, st.FileLocalStart
 		h.Checkpoint, h.ReadSize, h.ListingSize = st.Checkpoint, st.ReadSize, rt.listingSize
 		if !rt.listingModified.IsZero() {
@@ -603,9 +741,24 @@ func (w *familyWatcher) read(ctx context.Context, rt *sourceRuntime, why string)
 	return true
 }
 
+// fail records one failed read or commit of rt. Repeated failures of the same file back off
+// (ProbeEvery doubling up to MaxBackoff). A file that has failed GiveUpAfter times in a row is given
+// up when its family allows it and its boot is over: it is then read only every GiveUpRetryEvery,
+// until a read succeeds.
 func (w *familyWatcher) fail(rt *sourceRuntime, now time.Time, msg string) {
+	cfg := w.sup.cfg
 	rt.fails++
-	rt.nextRead = now.Add(backoff(w.policy.ProbeEvery, rt.fails, w.sup.cfg.MaxBackoff))
+	givingUp := !rt.gaveUp && w.policy.GiveUpHistorical && rt.fails >= cfg.GiveUpAfter && w.historical(rt)
+	if givingUp {
+		rt.gaveUp = true
+	}
+	if rt.gaveUp {
+		rt.nextRead = now.Add(cfg.GiveUpRetryEvery)
+	} else {
+		rt.nextRead = now.Add(backoff(w.policy.ProbeEvery, rt.fails, cfg.MaxBackoff))
+	}
+	next := rt.nextRead
+	reason := fmt.Sprintf("gave up on %s after %d failures: %s", rt.state.SourceFile, rt.fails, msg)
 	if rt == w.active {
 		w.updateHealth(func(h *SourceHealth) {
 			h.ConsecutiveFailures, h.LastError = rt.fails, msg
@@ -613,12 +766,39 @@ func (w *familyWatcher) fail(rt *sourceRuntime, now time.Time, msg string) {
 			if rt.fails >= 3 {
 				h.State = StateFailing
 			}
+			if rt.gaveUp {
+				h.GaveUp, h.GaveUpReason, h.NextRetryAt = true, reason, &next
+				if givingUp || h.GaveUpAt == nil {
+					h.GaveUpAt = &now
+				}
+			}
 		})
 	}
-	if rt.fails == 1 || rt.fails%10 == 0 {
-		slog.Warn("component=livesync", "event", "source_read_failed", "server_id", w.sup.cfg.ServerID, "family", w.policy.Family,
+	switch {
+	case givingUp:
+		slog.Warn("component=livesync", "event", "source_gave_up", "server_id", cfg.ServerID, "family", w.policy.Family,
+			"file", rt.state.SourceFile, "failures", rt.fails, "err", msg, "retry_every", cfg.GiveUpRetryEvery.String())
+	case rt.gaveUp:
+		// The rare retry of a given-up file failed again: expected, so not a warning.
+		slog.Info("component=livesync", "event", "source_gave_up_retry_failed", "server_id", cfg.ServerID, "family", w.policy.Family,
+			"file", rt.state.SourceFile, "failures", rt.fails, "err", msg)
+	case rt.fails == 1 || rt.fails%10 == 0:
+		slog.Warn("component=livesync", "event", "source_read_failed", "server_id", cfg.ServerID, "family", w.policy.Family,
 			"file", rt.state.SourceFile, "failures", rt.fails, "err", msg)
 	}
+}
+
+// historical reports whether rt's file belongs to a boot that is over: its name carries a boot
+// stamp and the listing shows a file (of any family) stamped more than bootMargin later. DayZ
+// writes a new set of files for every boot, so such a file no longer grows. An unstamped file
+// (restart.log) and a file of the newest listed boot are never historical; with no listing yet
+// nothing is.
+func (w *familyWatcher) historical(rt *sourceRuntime) bool {
+	if rt.info.FileLocalStart == nil {
+		return false
+	}
+	newest := w.sup.lister.newestBootStamp()
+	return newest != nil && newest.After(rt.info.FileLocalStart.Add(bootMargin))
 }
 
 func (w *familyWatcher) parse(content []byte, st SourceState) (ParseResult, int64) {

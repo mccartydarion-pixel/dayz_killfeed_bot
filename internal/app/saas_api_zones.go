@@ -170,6 +170,9 @@ func (a *App) handleCreateZone(w http.ResponseWriter, r *http.Request) {
 		writeSaaSError(w, codeInternalError, "zones unavailable")
 		return
 	}
+	if req.AlertChannelID != nil && !a.requireOwnGuildChannel(w, ac.scope.DiscordGuildID, *req.AlertChannelID) {
+		return
+	}
 	if !enforceRateLimit(w, a.saasAdminActionLimiter, rateLimitKey(r)) {
 		return
 	}
@@ -274,6 +277,9 @@ func (a *App) handleUpdateZone(w http.ResponseWriter, r *http.Request) {
 	if raw, present := raw["alertChannelId"]; present {
 		var v *string
 		_ = json.Unmarshal(raw, &v)
+		if v != nil && !a.requireOwnGuildChannel(w, ac.scope.DiscordGuildID, *v) {
+			return
+		}
 		u.AlertChannelID = &v
 	}
 	if !enforceRateLimit(w, a.saasAdminActionLimiter, rateLimitKey(r)) {

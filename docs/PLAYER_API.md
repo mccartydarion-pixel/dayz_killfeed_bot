@@ -93,6 +93,9 @@ association (section 2) before computing or returning anything.
   "kills": 118,
   "deaths": 54,
   "kd": 2.185185185185185,
+  "pvpDeaths": 40,
+  "pveDeaths": 14,
+  "pvpKd": 2.95,
   "headshots": 31,
   "longshots": 6,
   "longestKillMeters": 412.7,
@@ -100,7 +103,8 @@ association (section 2) before computing or returning anything.
   "bountiesClaimed": 3,
   "bountyValue": 750,
   "faction": "Wolfpack",
-  "lastSeenAt": "2026-09-20T18:04:00Z"
+  "lastSeenAt": "2026-09-20T18:04:00Z",
+  "tournamentTitle": "Friday Champion"
 }
 ```
 
@@ -108,6 +112,8 @@ association (section 2) before computing or returning anything.
   `repository.PlayerProfile.KD()`).
 - `playtimeSeconds`: whole seconds, not a duration string - chosen deliberately over the task's
   looser suggested name `playtime` for unambiguous website-side formatting.
+- `tournamentTitle`: the title the player holds from winning a tournament on this installation
+  (`docs/TOURNAMENTS.md`), or `null`.
 - `faction`: the acting user's **current Faction Hub faction on this installation**
   (`hub_faction_members`, genuinely installation-scoped), or `null`. This is intentionally NOT the
   classic guild-wide faction system (`FactionRepository.GetActiveFactionForPlayer`) - see section 5.
@@ -177,3 +183,89 @@ shows only its own) and `TestPlayerStatsNoObservedActivityOnThisServerReturns404
 optional "if scope would expand too much") was not implemented this phase, to keep this already
 large phase reviewable. The player association/stats model above (section 2) is exactly what that
 endpoint would reuse when built.
+
+## 9. Map vote
+
+`GET` / `POST /api/saas/player/servers/{installationId}/map/vote` (docs/MAP_ROTATION.md) are the one
+exception to the association rule in section 2: any signed-in website user may read the vote of an
+installation (the link is posted publicly in the server's Discord), and the response says whether
+they are `linked`. Voting needs a verified link for the installation's guild (`403 NOT_LINKED`
+otherwise); it does not need observed activity on the server.
+
+## 10. Player home
+
+`GET /api/saas/player/home[?installationId=<id>]`
+
+Auth: service auth + acting user. No organization id in the request.
+
+The website's Player Hub asks this for a user who belongs to no organization (a plain player), to
+learn which servers the player can open and which one to show. Organization owners and members
+never need it.
+
+```json
+{
+  "server": {
+    "installationId": 42,
+    "organizationId": 7,
+    "organizationName": "Example Community",
+    "serverName": "DE #3 | 1PP | Chernarus",
+    "platform": "PLAYSTATION",
+    "serverStatus": "READY",
+    "discordGuildId": "123456789012345678",
+    "discordGuildName": "Example Community",
+    "linkStatus": "VERIFIED",
+    "observed": false
+  },
+  "servers": [
+    { "installationId": 42, "...": "same fields as server" },
+    { "installationId": 57, "...": "same fields as server" }
+  ],
+  "selected": "PREFERRED"
+}
+```
+
+`{"server":null,"servers":[],"selected":null}` (200) when the user has no home: a normal state, not
+an error. `servers` is always an array and `server`, when not null, is always one of its entries.
+
+Rule (`PlayerServerRepository.HomesForDiscordUser`, one query): the installations, with a game
+server, of every guild the user holds a `VERIFIED` `player_links` row in. Unlike section 2 this does
+**not** need observed activity: a player who has just linked and has not played yet has no
+`player_server_activity`, kill or death row, is therefore on no `GET /api/saas/player/servers`
+list, and must still get their hub. `observed` says whether that proof of play exists.
+
+Order of `servers`: observed servers first, then `player_server_activity.last_seen_at DESC NULLS
+LAST`, then installation id. The order never depends on `installationId`.
+
+Which entry is `server`:
+
+| `selected` | Rule |
+|------------|------|
+| `PREFERRED` | `?installationId=` names one of `servers`; that one. |
+| `DEFAULT` | Otherwise the first of `servers`. |
+| `null` | `servers` is empty. |
+
+`installationId` is a wish, not authority. Absent, empty, not a positive integer, unknown, or an
+installation the user holds no verified link for: all give the default, never an error and never a
+server outside `servers`. The website keeps the player's choice in a cookie and sends it here.
+
+Fields `servers` and `selected` and the query parameter were added later; a client that ignores
+them sees the original `{"server": ...}` behaviour.
+
+`linkStatus` is always `VERIFIED` today. The other `player_links` statuses never give a home:
+`PENDING` is an unconfirmed claim on a gamertag that expires after ten minutes, and `REJECTED`,
+`UNLINKED` and `EXPIRED` are not links.
+
+`organizationId` is returned here, and only here, because the organization-scoped **player** routes
+(economy "me", shop, Faction Hub, leaderboards: `docs/SAAS_API.md`) carry it in their path while
+needing no organization role. It grants nothing: every route authorizes the acting user again, and
+the routes of sections 3 and 4 still need observed activity, so for `observed:false` they answer
+`404` until the player has been seen on the server.
+
+## 11. Tournaments
+
+`GET` / `POST /api/saas/player/servers/{installationId}/tournaments[/{tid}/join|leave|checkin]`
+(docs/TOURNAMENTS.md): the installation's current tournament with the player's own entry and
+next match, and the latest past ones. Reading needs only a signed-in user; joining, leaving and
+checking in need a verified link for the installation's guild (`409 PLAYER_IDENTITY_REQUIRED`),
+not observed activity. The title a player wins is `tournamentTitle` on the stats route of
+section 4 and on the Champion Card data.

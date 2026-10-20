@@ -2,10 +2,13 @@ package nitrado
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestRestartPostsToDocumentedEndpointWithMessage(t *testing.T) {
@@ -70,49 +73,96 @@ func TestRestartRequiresServiceID(t *testing.T) {
 	}
 }
 
-func TestWhitelistAddAndRemoveUseDocumentedEndpoint(t *testing.T) {
-	var calls []string
+// accessListServer is a Nitrado stand-in holding settings.general: it serves the gameserver
+// details and applies settings writes, recording each written key and value.
+func accessListServer(t *testing.T, general map[string]any) (*httptest.Server, *[]string) {
+	t.Helper()
+	var writes []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls = append(calls, r.Method+" "+r.URL.Path+"?"+r.URL.RawQuery)
-		w.WriteHeader(http.StatusOK)
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/services/svc1/gameservers":
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"gameserver": map[string]any{"settings": map[string]any{"general": general}}}})
+		case r.Method == http.MethodPost && r.URL.Path == "/services/svc1/gameservers/settings":
+			var body map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if body["category"] != "general" {
+				t.Errorf("category: %q", body["category"])
+			}
+			general[body["key"]] = body["value"]
+			writes = append(writes, body["key"]+"="+body["value"])
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Errorf("unexpected call: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotImplemented)
+		}
 	}))
-	defer srv.Close()
-	client := NewClient(srv.URL, "token", srv.Client())
+	t.Cleanup(srv.Close)
+	return srv, &writes
+}
 
-	if err := client.WhitelistAdd(context.Background(), "svc1", "player-identifier-1"); err != nil {
-		t.Fatalf("WhitelistAdd: %v", err)
+func TestBanlistAddAndRemoveRewriteTheBansSetting(t *testing.T) {
+	general := map[string]any{"bans": "OldCheater\r\nAnother One", "whitelist": "", "admin_password": "secret"}
+	srv, writes := accessListServer(t, general)
+	client := NewClient(srv.URL, "token", srv.Client())
+	ctx := context.Background()
+
+	if err := client.BanlistAdd(ctx, "svc1", " Ch66ats "); err != nil {
+		t.Fatalf("BanlistAdd: %v", err)
 	}
-	if err := client.WhitelistRemove(context.Background(), "svc1", "player-identifier-1"); err != nil {
-		t.Fatalf("WhitelistRemove: %v", err)
+	if got := general["bans"]; got != "OldCheater\r\nAnother One\r\nCh66ats" {
+		t.Fatalf("bans after add: %q", got)
 	}
-	if len(calls) != 2 {
-		t.Fatalf("expected 2 calls, got %d: %v", len(calls), calls)
+	// Already banned (any letter case): nothing is written again.
+	if err := client.BanlistAdd(ctx, "svc1", "ch66ATS"); err != nil {
+		t.Fatalf("BanlistAdd again: %v", err)
 	}
-	if !strings.HasPrefix(calls[0], "POST /services/svc1/gameservers/games/whitelist?identifier=player-identifier-1") {
-		t.Errorf("unexpected add call: %s", calls[0])
+	if err := client.BanlistRemove(ctx, "svc1", "oldcheater"); err != nil {
+		t.Fatalf("BanlistRemove: %v", err)
 	}
-	if !strings.HasPrefix(calls[1], "DELETE /services/svc1/gameservers/games/whitelist?identifier=player-identifier-1") {
-		t.Errorf("unexpected remove call: %s", calls[1])
+	if got := general["bans"]; got != "Another One\r\nCh66ats" {
+		t.Fatalf("bans after remove: %q", got)
+	}
+	// Not on the list: nothing is written.
+	if err := client.BanlistRemove(ctx, "svc1", "Nobody"); err != nil {
+		t.Fatalf("BanlistRemove of an absent name: %v", err)
+	}
+	if len(*writes) != 2 {
+		t.Fatalf("expected 2 writes, got %v", *writes)
+	}
+	if general["whitelist"] != "" || general["admin_password"] != "secret" {
+		t.Fatalf("other settings were touched: %v", general)
 	}
 }
 
-func TestBanlistAddAndRemoveUseDocumentedEndpoint(t *testing.T) {
-	var calls []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls = append(calls, r.Method+" "+r.URL.Path)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
+func TestWhitelistAddAndRemoveRewriteTheWhitelistSetting(t *testing.T) {
+	general := map[string]any{"bans": "X", "whitelist": ""}
+	srv, writes := accessListServer(t, general)
 	client := NewClient(srv.URL, "token", srv.Client())
+	if err := client.WhitelistAdd(context.Background(), "svc1", "Friend One"); err != nil {
+		t.Fatalf("WhitelistAdd: %v", err)
+	}
+	if err := client.WhitelistRemove(context.Background(), "svc1", "Friend One"); err != nil {
+		t.Fatalf("WhitelistRemove: %v", err)
+	}
+	if want := []string{"whitelist=Friend One", "whitelist="}; len(*writes) != 2 || (*writes)[0] != want[0] || (*writes)[1] != want[1] {
+		t.Fatalf("writes: %v", *writes)
+	}
+	if general["bans"] != "X" {
+		t.Fatalf("bans touched: %v", general["bans"])
+	}
+}
 
-	if err := client.BanlistAdd(context.Background(), "svc1", "player-identifier-2"); err != nil {
-		t.Fatalf("BanlistAdd: %v", err)
+func TestAccessListIsNotWrittenWhenTheSettingIsMissing(t *testing.T) {
+	srv, writes := accessListServer(t, map[string]any{"whitelist": ""})
+	client := NewClient(srv.URL, "token", srv.Client())
+	if err := client.BanlistAdd(context.Background(), "svc1", "Ch66ats"); !errors.Is(err, ErrAccessListUnsupported) {
+		t.Fatalf("expected ErrAccessListUnsupported, got %v", err)
 	}
-	if err := client.BanlistRemove(context.Background(), "svc1", "player-identifier-2"); err != nil {
-		t.Fatalf("BanlistRemove: %v", err)
+	if len(*writes) != 0 {
+		t.Fatalf("nothing may be written: %v", *writes)
 	}
-	if calls[0] != "POST /services/svc1/gameservers/games/banlist" || calls[1] != "DELETE /services/svc1/gameservers/games/banlist" {
-		t.Errorf("unexpected calls: %v", calls)
+	if err := client.BanlistAdd(context.Background(), "svc1", "two\nlines"); err == nil {
+		t.Fatal("a name with a line break must be refused")
 	}
 }
 
@@ -121,4 +171,87 @@ func TestAccessListActionRequiresIdentifier(t *testing.T) {
 	if err := client.WhitelistAdd(context.Background(), "svc1", ""); err == nil {
 		t.Fatal("expected an error for an empty identifier")
 	}
+}
+
+func TestDeleteFileSendsDeleteWithThePath(t *testing.T) {
+	var sawPath, sawMethod, sawFile string
+	status := http.StatusOK
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawPath, sawMethod, sawFile = r.URL.Path, r.Method, r.URL.Query().Get("path")
+		w.WriteHeader(status)
+	}))
+	defer srv.Close()
+	client := NewClient(srv.URL, "token", srv.Client())
+	const file = "/games/ni1_1/noftp/dayzps/mpmissions/dayzOffline.chernarusplus/storage_1/players.db"
+	if err := client.DeleteFile(context.Background(), "12345", file); err != nil {
+		t.Fatalf("DeleteFile: %v", err)
+	}
+	if sawMethod != http.MethodDelete || sawPath != "/services/12345/gameservers/file_server/delete" || sawFile != file {
+		t.Fatalf("unexpected request: %s %s path=%q", sawMethod, sawPath, sawFile)
+	}
+	status = http.StatusForbidden
+	if err := client.DeleteFile(context.Background(), "12345", file); err == nil {
+		t.Fatal("a refused delete must be an error")
+	}
+	if client.DeleteFile(context.Background(), "", file) == nil || client.DeleteFile(context.Background(), "12345", "") == nil {
+		t.Fatal("a service and a path are required")
+	}
+}
+
+// Two bans from two separate clients (each website request builds its own) at the same moment
+// both land: the read-modify-write of the whole list is serialized per service, process-wide.
+func TestConcurrentBansFromSeparateClientsBothLand(t *testing.T) {
+	var mu sync.Mutex
+	bans := "Old"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet:
+			mu.Lock()
+			current := bans
+			mu.Unlock()
+			time.Sleep(30 * time.Millisecond) // widen the read-to-write window
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"gameserver": map[string]any{"settings": map[string]any{"general": map[string]any{"bans": current}}}}})
+		case r.Method == http.MethodPost:
+			var body map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			mu.Lock()
+			bans = body["value"]
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	var wg sync.WaitGroup
+	for _, name := range []string{"Alpha", "Bravo", "Charlie"} {
+		wg.Add(1)
+		go func(name string) {
+			defer wg.Done()
+			if err := NewClient(srv.URL, "token", srv.Client()).BanlistAdd(context.Background(), "svc-race", name); err != nil {
+				t.Errorf("ban %s: %v", name, err)
+			}
+		}(name)
+	}
+	wg.Wait()
+	got := ParsePriorityList(bans)
+	if len(got) != 4 {
+		t.Fatalf("every ban must land, got %q", bans)
+	}
+}
+
+func TestTryLockSettingRefusesWhileHeld(t *testing.T) {
+	unlock := LockSetting("svc-try", FileGameplay)
+	if _, ok := TryLockSetting("svc-try", FileGameplay); ok {
+		t.Fatal("a held lock must refuse TryLockSetting")
+	}
+	if release, ok := TryLockSetting("svc-other", FileGameplay); !ok {
+		t.Fatal("another service's lock is independent")
+	} else {
+		release()
+	}
+	unlock()
+	release, ok := TryLockSetting("svc-try", FileGameplay)
+	if !ok {
+		t.Fatal("a released lock can be taken")
+	}
+	release()
 }

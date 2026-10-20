@@ -5,10 +5,13 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"strings"
+	// The runtime image (alpine) carries no time zone database, and the heatmap API loads zones
+	// by name (time.LoadLocation): embed the database so that works wherever the binary runs.
+	_ "time/tzdata"
 
 	"github.com/yourname/dayz-killfeed/internal/app"
 	"github.com/yourname/dayz-killfeed/internal/config"
+	"github.com/yourname/dayz-killfeed/internal/logger"
 )
 
 func main() {
@@ -18,12 +21,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	level := slog.LevelInfo
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("LOG_LEVEL")), "debug") {
-		level = slog.LevelDebug
-	}
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
-	slog.SetDefault(logger)
+	// JSON by default so Railway parses `level`; LOG_LEVEL / LOG_FORMAT=text
+	// are read by internal/logger.
+	slog.SetDefault(logger.New())
 
 	application, err := app.New(context.Background(), cfg)
 	if err != nil {

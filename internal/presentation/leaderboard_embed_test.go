@@ -7,13 +7,13 @@ import (
 
 func TestPlayerLeaderboardIsOneCompactField(t *testing.T) {
 	e := BuildPlayerLeaderboardEmbed("kills", []RankedEntry{{1, "Player", "12"}, {2, "Other", "9"}}, "Season 3")
-	if len(e.Fields) != 1 || e.Fields[0].Name != "⚔️ TOP KILLERS" {
+	if len(e.Fields) != 1 || e.Fields[0].Name != "⚔️ Top killers" {
 		t.Fatalf("expected one category field: %+v", e.Fields)
 	}
-	if e.Fields[0].Value != "🥇 Player • **12 Kills**\n🥈 Other • **9 Kills**" {
+	if e.Fields[0].Value != "🥇 Player • **12 kills**\n🥈 Other • **9 kills**" {
 		t.Fatalf("rank rows: %q", e.Fields[0].Value)
 	}
-	if e.Description != "Season 3 Rankings" || e.Title != "🏆 PLAYER LEADERBOARD" {
+	if e.Description != "Season 3 rankings" || e.Title != "🏆 Player leaderboard" {
 		t.Fatalf("hero: %q / %q", e.Title, e.Description)
 	}
 	empty := BuildPlayerLeaderboardEmbed("kills", nil, "Lifetime")
@@ -31,7 +31,7 @@ func TestLeaderboardNamesSanitized(t *testing.T) {
 
 func TestUnknownCategoryHasNoGenericValueLabel(t *testing.T) {
 	e := BuildPlayerLeaderboardEmbed("Zombies", []RankedEntry{{1, "A", "42"}}, "")
-	if strings.Contains(e.Fields[0].Value, "Value") || e.Fields[0].Name != "🏆 ZOMBIES" {
+	if strings.Contains(e.Fields[0].Value, "Value") || e.Fields[0].Name != "🏆 Zombies" {
 		t.Fatalf("fallback: %q / %q", e.Fields[0].Name, e.Fields[0].Value)
 	}
 }

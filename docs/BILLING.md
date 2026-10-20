@@ -91,6 +91,48 @@ Any synced user (standard service-auth + acting-user chain; no organization cont
 
 Private (`isPublic:false`) plans never appear. With an empty catalog, `items` is `[]`.
 
+### 6a. Anonymous public pricing catalog (Phase 6.26I)
+
+```
+GET /api/saas/billing/public-plans
+```
+
+For anonymous website visitors. **Only** the website's server-to-server bearer
+(`Authorization: Bearer <WEBSITE_API_SECRET>`) is required - no acting user, no Discord login, no
+organization. The authenticated `GET /api/saas/billing/plans` above, checkout, subscription
+management and entitlements are unchanged (they still require a synced acting user).
+
+```json
+{ "version": 1,
+  "plans": [
+    { "key": "MEDIUM", "category": "BASE", "name": "Medium", "displayTier": "MEDIUM",
+      "description": "...", "features": ["..."],
+      "prices": [ {"interval":"MONTHLY","amountCents":999,"currency":"usd"},
+                  {"interval":"YEARLY","amountCents":9990,"currency":"usd"} ],
+      "availability": "AVAILABLE", "purchasable": true, "popular": true, "sortOrder": 2,
+      "perServer": false, "requiresBasePlan": false },
+    { "key": "CASE_WATCH", "category": "CASE_ADDON", "name": "C.A.S.E. Watch", "displayTier": "WATCH",
+      "description": "...", "features": ["..."],
+      "prices": [ {"interval":"MONTHLY","amountCents":499,"currency":"usd"} ],
+      "availability": "COMING_SOON", "purchasable": false, "popular": false, "sortOrder": 103,
+      "perServer": true, "requiresBasePlan": true } ] }
+```
+
+* Plans are sorted by `sortOrder`: public base plans (from `CHAMPION_BILLING_PLANS_JSON`) first, then
+  C.A.S.E. Watch and Pro. C.A.S.E. Command is omitted until its release gates pass.
+* `availability`: `AVAILABLE` (purchasable now), `UNAVAILABLE` (base plan listed but checkout is not
+  configured or no interval is priced), `COMING_SOON` (C.A.S.E. add-on whose sales flag, verified tier
+  or configured price is not open). `purchasable` is `true` only for `AVAILABLE`. With production's
+  C.A.S.E. flags off, Watch and Pro are always `COMING_SOON`.
+* `prices` only lists intervals that are actually sold; amounts are integer cents, currency lowercase.
+* Never included: Stripe price/product ids, customer or subscription ids, limits, trial settings,
+  private plans or any organization data.
+* Caching: `Cache-Control: public, max-age=300, stale-while-revalidate=600` and an `ETag`
+  (`If-None-Match` returns `304`). Rate limit: 120 requests per minute per caller.
+* Fail safe: without billing or with an empty base catalog the route returns `503 BILLING_UNAVAILABLE`
+  with `Cache-Control: no-store`; it never falls back to hard-coded prices. A missing or wrong
+  service bearer is `401`.
+
 ## 7. Current subscription
 
 ```
@@ -98,7 +140,7 @@ GET /api/saas/organizations/{organizationID}/billing/subscription
 ```
 
 Any organization member (read-only). Returns `SubscriptionSummaryDTO` (section 14) - plan, status, billing interval, trial/period dates, `cancelAtPeriodEnd`, the resolved `entitlements` (from
-`internal/entitlements.Resolve`, unchanged), whether a Stripe customer/subscription exists yet, and `canManageBilling` (true only for the acting user's OWNER/ADMIN role - the website uses this to
+`internal/entitlements.Resolve`, unchanged), whether a Stripe customer/subscription exists yet, and `canManageBilling` (true only when the acting user is the organization OWNER - the website uses this to
 show or hide the "Manage billing" button without a second permissions call). Onboarding V2 adds `intendedPlan`, `trialStatus`, `trialDaysRemaining` and `billingRequired` (section 28).
 Reading never grants a trial: an organization with no subscription row reads as `plan: "NONE"`, `status: "INACTIVE"`, `trialStatus: "NOT_STARTED"`, `billingRequired: true`, and nothing is
 written. The route never 404s for a fresh organization.
@@ -110,7 +152,7 @@ POST /api/saas/organizations/{organizationID}/billing/checkout
 { "planKey": "PRO", "interval": "MONTHLY", "returnPath": "/dashboard/subscription?checkout=success" }
 ```
 
-**Organization OWNER/ADMIN only** (`requireOrganizationRole` - the same check every other mutating SaaS route uses); a MEMBER or a faction role (even LEADER) gets `403`. Backend flow (all in
+**Organization OWNER only** (`requireOrganizationOwner` - changing what the organization pays for is the owner's decision; an ADMIN runs the servers); an ADMIN, a MEMBER or a faction role (even LEADER) gets `403 FORBIDDEN` ("OWNER role required"). Backend flow (all in
 `billing.Service.Checkout`):
 
 1. resolve the plan + price from the catalog (`400 INVALID_PLAN` if unknown/private/not sold on that interval);
@@ -138,14 +180,25 @@ raw body is read (capped at 512 KiB) **before** any parsing, exactly as HMAC ver
 **Events handled**: `checkout.session.completed` (`mode=subscription` only), `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.paid`,
 `invoice.payment_failed`. Every other event type is acknowledged (`200`) and otherwise ignored - Stripe stops retrying it.
 
+**C.A.S.E. reversal events (Phase 6.26B)**: `charge.refunded`, `charge.refund.updated`, `charge.dispute.created|updated|closed|funds_reinstated`, `invoice.voided` and
+`invoice.marked_uncollectible` are reconciled **only** against C.A.S.E. add-on invoice coverage (see `CASE_PHASE6_BILLING.md`, "Phase 6.26B"). They reach an add-on only through the
+verified chain PaymentIntent -> InvoicePayment -> live invoice -> a stored C.A.S.E. subscription id with the same customer. Anything else - including a refund of a base
+LOW/MEDIUM/HIGH invoice - falls through to the base handler, which records it in `billing_webhook_events` and ignores it: base access and `billing_transactions` are unchanged.
+
 **Idempotency** (section 19 of the task): `billing_webhook_events` has `UNIQUE (provider, event_id)`. `HandleWebhook` does `INSERT ... ON CONFLICT DO NOTHING RETURNING id` **before any
 processing**; if no row comes back, the event was already handled and the handler returns `200` immediately, unchanged. This is a database constraint, not a read-then-write check, so it is safe
 under concurrent redelivery (Stripe retries aggressively on anything but a clean `2xx`) - proven under `-race` with 20 concurrent deliveries of the same event
 (`TestConcurrentWebhookDeliveryIsRaceFree`).
 
-**Organization attribution** (`Service.resolveOrgID`), in order: (1) the event's own `champion_organization_id` metadata (cheapest - no query), (2) a lookup by Stripe customer id
-(`idx_subscriptions_provider_customer`), (3) a lookup by Stripe subscription id (`idx_subscriptions_provider_subscription`). An event that resolves to no organization is logged
-(`billing_webhook_unattributed`) and acknowledged - it changes nothing and never guesses.
+**Organization attribution** (`Service.resolveOrgID`) requires a binding Champion itself authored: (1) the `champion_organization_id` metadata Champion sets server-side on its
+Checkout Session's subscription (for invoices, the copy Stripe places on `parent.subscription_details.metadata`), or (2) the Stripe subscription id already stored on that
+organization's row (`idx_subscriptions_provider_subscription`). **A Stripe customer id alone never attributes an event** (changed in Phase 6.19.1): a subscription created outside
+Champion - for example from the Stripe Dashboard - on an organization's customer would otherwise overwrite that organization's base subscription. The customer id is a consistency
+check only: when the organization has a saved customer that differs from the event's, the event is refused (`reason=customer_mismatch`), and metadata that conflicts with the stored
+subscription is refused too. `checkout.session.completed` additionally requires `client_reference_id`; its `champion_organization_id` metadata (when present) must name the same
+organization and its customer must match the saved one. An event that resolves to no organization is logged (`billing_webhook_unattributed`, with a `reason`) and acknowledged -
+it changes nothing and never guesses. A session created outside Champion (no `client_reference_id`, empty metadata) is never bound to an organization, even if it was paid: pay
+the Champion-created session instead, and cancel the foreign subscription in Stripe.
 
 **A closed browser tab / an abandoned checkout never corrupts anything** (task section 20): Champion's subscription state changes *only* when a webhook (or an explicit `Reconcile`, section 18)
 applies it. `Checkout` itself never writes `plan`/`status`.
@@ -195,7 +248,7 @@ POST /api/saas/organizations/{organizationID}/billing/portal
 { "returnPath": "/dashboard/subscription" }
 ```
 
-Organization OWNER/ADMIN only. Requires an existing Stripe customer (`409 NO_BILLING_CUSTOMER` if the organization has never checked out). Returns `{ "portalUrl": "..." }`. The customer can change
+Organization OWNER only (`requireOrganizationOwner`). Requires an existing Stripe customer (`409 NO_BILLING_CUSTOMER` if the organization has never checked out). Returns `{ "portalUrl": "..." }`. The customer can change
 their payment method, view invoices, and (if the Stripe Customer Portal configuration allows it) cancel from there too - any change made through the portal reaches Champion the same way a
 checkout does: a webhook.
 
@@ -207,7 +260,7 @@ POST .../billing/cancel
 POST .../billing/reactivate
 ```
 
-All three: organization OWNER/ADMIN only; `409 NO_ACTIVE_SUBSCRIPTION` if the organization has never completed a checkout (`provider_subscription_id` empty).
+All three: organization OWNER only (`requireOrganizationOwner`); `409 NO_ACTIVE_SUBSCRIPTION` if the organization has never completed a checkout (`provider_subscription_id` empty).
 
 * **Upgrade and downgrade both apply immediately**, with Stripe's default proration (`ChangeSubscriptionPrice` swaps the subscription's single item to the new price; no `proration_behavior`
   override, so Stripe's default `create_prorations` applies and prorates the difference onto the next invoice). **This is a deliberate Phase 1 decision, stated explicitly rather than left
@@ -246,6 +299,10 @@ suspended, no data is deleted, entitlements are unaffected (they already fully f
 grace period - a warning banner only, a feature downgrade, an installation suspension after N days - is an explicit product/commercial decision this phase does not make.** `PAST_DUE` is reported
 faithfully in the subscription summary and the admin list so the product can decide and a future phase can act on it.
 
+Decision taken since: the organization's server workers are paused once a subscription has been `PAST_DUE` for `pastDueGrace` (3 days, `internal/app/billing_pause.go`). The grace is measured
+from `subscriptions.past_due_since` (migration `0134`), which `ApplyProviderState` sets when the status first becomes `PAST_DUE`, keeps while it stays so, and clears on any other status. It is
+not measured from `updated_at` or `current_period_start`: Stripe moves both on every dunning retry, which would restart the clock and never pause the service.
+
 ## 18. Reconciliation
 
 `billing.Service.Reconcile(ctx, organizationID)` pulls the organization's subscription straight from Stripe (`GetSubscription`) and overwrites Champion's row with it - useful for a missed
@@ -262,14 +319,14 @@ and the next reconciliation (another webhook, or an explicit `Reconcile`) settle
 
 ## 20. Security review (task section 33)
 
-* **IDOR / cross-organization access**: every route resolves `organizationID` from the path and checks membership (or OWNER/ADMIN) before touching `subscriptions` - proven with an org-B
+* **IDOR / cross-organization access**: every route resolves `organizationID` from the path and checks membership (or OWNER) before touching `subscriptions` - proven with an org-B
   OWNER acting on org A's routes (`403` everywhere) and org A's webhook events never touching org B's row (`TestBillingTenantIsolation`, `TestBillingWebhookNeverCrossesTenants`).
 - **Fake plan key / fake price id**: `Checkout`/`ChangePlan` resolve the Stripe price **only** from the server-side catalog by `planKey`; nothing in the request body is ever used as a price or a
   Stripe id.
 * **Redirect injection**: see section 11 - the origin is never client-supplied, only a root-relative path is accepted, validated before being appended.
 * **Webhook spoofing**: HMAC-verified before any parsing; an invalid signature never reaches business logic (`TestWebhookRejectsBadSignature`, `TestBillingWebhookRejectsBadSignatureAndIsIdempotent`).
 * **Duplicate webhooks**: section 9 (idempotency).
-* **Privilege escalation**: checkout/portal/plan-change/cancel/reactivate all require organization OWNER/ADMIN via the same `requireOrganizationRole` every other mutating SaaS route uses; a
+* **Privilege escalation**: checkout/portal/plan-change/cancel/reactivate all require the organization OWNER via `requireOrganizationOwner`; an ADMIN role or a
   faction role (including LEADER) grants nothing (`TestBillingCheckoutAuthorizationAndValidation`).
 * **No card data**: Champion never collects a card number, CVC or any raw payment credential - Checkout and the Customer Portal are Stripe-hosted surfaces; this backend only ever sees ids and
   status strings.
@@ -312,7 +369,7 @@ interface SubscriptionSummary {                                 // GET .../billi
   entitlements: string[];              // internal/entitlements keys
   hasBillingCustomer: boolean;         // a Portal session can be created
   hasActiveSubscription: boolean;      // checkout has completed at least once - plan/cancel/reactivate apply
-  canManageBilling: boolean;           // the acting user is this organization's OWNER/ADMIN
+  canManageBilling: boolean;           // the acting user is this organization's OWNER
   intendedPlan: string | null;         // Onboarding V2: plan picked before paying (a preference only)
   trialStatus: "NOT_STARTED" | "ACTIVE" | "EXPIRED" | "NOT_ELIGIBLE" | "CONVERTED";
   trialDaysRemaining: number;          // 0 unless trialStatus is ACTIVE
@@ -330,7 +387,7 @@ interface ChangePlanRequest { planKey: string; interval: "MONTHLY" | "YEARLY" } 
 ```
 
 Error codes (standard envelope): `INVALID_PLAN` (400), `NO_ACTIVE_SUBSCRIPTION` (409), `NO_BILLING_CUSTOMER` (409), `BILLING_UNAVAILABLE` (503, billing not configured on this environment),
-`INVALID_REQUEST` (400, e.g. a bad `returnPath`), `FORBIDDEN` (403, not OWNER/ADMIN), `UNAUTHORIZED` (401), `RATE_LIMITED` (429). Rate limit: 20 billing actions/minute per acting user
+`INVALID_REQUEST` (400, e.g. a bad `returnPath`), `FORBIDDEN` (403, not the OWNER), `UNAUTHORIZED` (401), `RATE_LIMITED` (429). Rate limit: 20 billing actions/minute per acting user
 (checkout/portal/plan/cancel/reactivate combined); reads are unlimited.
 
 UI notes: treat `plan`/`status`/`billingInterval` as open sets; show "Link billing" / a Checkout button when `hasBillingCustomer` is false; hide manage-billing controls entirely when
@@ -466,7 +523,7 @@ Champion already subscribes to. One row per processed event:
 | `organization_id` | resolved the same way every other webhook event is (`Service.resolveOrgID`) |
 | `provider_invoice_id` | the invoice event's own `id` |
 | `provider_payment_intent_id`, `provider_subscription_id` | the invoice event's `payment_intent`/`subscription` |
-| `status` | `PAID` for `invoice.paid`, `FAILED` for `invoice.payment_failed` - **never** `OPEN`/`VOID`/`REFUNDED`: Champion does not subscribe to `invoice.voided` or a refund event, so those states are never fabricated (task Part D.17) |
+| `status` | `PAID` for `invoice.paid`, `FAILED` for `invoice.payment_failed` - **never** `OPEN`/`VOID`/`REFUNDED`: base billing never records `invoice.voided` or refund/dispute events here, so those states are never fabricated (task Part D.17); since Phase 6.26B those events reconcile only C.A.S.E. add-on coverage (section 9) |
 | `amount_cents` | `amount_paid` (paid) or `amount_due` (failed) - never re-derived from subscription/price state |
 | `currency`, `period_start`, `period_end` | the invoice event's own currency and first line item's period (Stripe invoices carry period per line, not one top-level period - `internal/billing/webhook.go`'s `webhookInvoice.period()`) |
 | `paid_at` / `failed_at` | stamped at processing time, whichever this event type is |
@@ -528,6 +585,8 @@ plan grants nothing: `plan` stays `TRIAL` until a Stripe webhook sets the paid p
 Converting during the trial bills immediately, and the trial ends when the webhook applies `ACTIVE`.
 
 **Expiry.** When `trial_ends_at` passes without a paid subscription, `trialStatus` is `EXPIRED` and `billingRequired` is true. Setting up a new service returns `402 BILLING_REQUIRED`.
+
+**Platform owner access.** An organization owned by a platform owner (`CHAMPION_ADMIN_DISCORD_IDS`) is never locked out by its own billing state: `billingRequired` is always `false`, the installation capacity is 1000, `entitlements` is every feature, and the subscription and trial responses carry `platformOwnerAccess: true`. Its subscription row is not changed and `plan`, `status` and the trial fields are reported as they are (`billing.StateFor`, `billing.InstallationLimitFor`). Every other organization is unaffected. See `docs/ADMIN_API.md` "Platform owner access".
 Nothing is deleted, nothing is charged, and no checkout is created automatically. Existing installations, their configuration and all community data are kept.
 
 **Installation capacity** (`POST .../installations`, the "initial setup / new service" operation):
@@ -546,7 +605,7 @@ Nothing existing is modified or replaced. Reconfiguring a service stays on the e
 
 ```
 GET  /api/saas/organizations/{organizationID}/trial          any member; read-only
-POST /api/saas/organizations/{organizationID}/trial/start    OWNER/ADMIN; body { "planKey"?: "LOW" | "MEDIUM" | "HIGH" }
+POST /api/saas/organizations/{organizationID}/trial/start    OWNER only (`requireOrganizationOwner`); body { "planKey"?: "LOW" | "MEDIUM" | "HIGH" }
 ```
 
 ```ts
@@ -565,7 +624,7 @@ interface TrialState {
 }
 ```
 
-Errors: `INVALID_PLAN` (400, unknown or private plan), `FORBIDDEN` (403, not OWNER/ADMIN for `start`, not a member for `GET`), `BILLING_REQUIRED` (402) and
+Errors: `INVALID_PLAN` (400, unknown or private plan), `FORBIDDEN` (403, not the OWNER for `start`, not a member for `GET`), `BILLING_REQUIRED` (402) and
 `INSTALLATION_LIMIT_REACHED` (409) from installation creation.
 
 **Not enforced here.** Live runtime publishing (killfeed, feeds) for an existing installation is **not** suspended when a trial expires. `internal/entitlements.Resolve` still returns the

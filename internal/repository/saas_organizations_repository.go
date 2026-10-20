@@ -18,6 +18,10 @@ const (
 	RoleOwner  = "OWNER"
 	RoleAdmin  = "ADMIN"
 	RoleMember = "MEMBER"
+	// RoleStaff is never stored: it is the effective role of someone who is not a member but holds
+	// a Discord role mapped to a staff level on one of the organization's installations. It reads
+	// like MEMBER, limited to those installations.
+	RoleStaff = "STAFF"
 )
 
 // Organization is the customer/account tenant boundary - the primary scope

@@ -178,8 +178,8 @@ send and live events agree):
 Escapes are expanded in the **template** before variables are substituted, so a value can never
 become syntax: a player named `Bad\nPlayer` stays that name (sanitized, no extra line), and a
 real line break inside a value becomes a space. Description, field values and footer keep line
-breaks; title, author name and field names are single-line in Discord and fold breaks into a
-space. Discord limits are enforced after expansion and substitution - each `\n` counts as one
+breaks. The title keeps up to three lines (blank lines are dropped and further breaks fold into
+a space); author name and field names are single-line and fold breaks into a space. Discord limits are enforced after expansion and substitution - each `\n` counts as one
 rendered character.
 
 Example field (KILLFEED), label `KILLER STATS`:
@@ -215,10 +215,16 @@ Streak: 1
 | `killer_kills` | Killer Kills | Killer Stats | The killer's all-time kills after this kill. | `Event.KillerStats.Kills` | `9` | yes | integer | Present when Champion loaded the player's combat record for this kill. |
 | `killer_deaths` | Killer Deaths | Killer Stats | The killer's all-time deaths. | `Event.KillerStats.Deaths` | `0` | yes | integer | Present when Champion loaded the player's combat record for this kill. |
 | `killer_kd` | Killer K/D | Killer Stats | The killer's all-time K/D after the confirmed kill. | `Event.KillerStats.KD()` | `9.00` | yes | decimal | Present when Champion loaded the player's combat record for this kill. |
+| `killer_pvp_deaths` | Killer PvP Deaths | Killer Stats | The killer's all-time deaths caused by another player. | `Event.KillerStats.PvPDeaths` | `0` | yes | integer | Present when Champion loaded the player's combat record for this kill. PvP deaths and PvE deaths add up to the player's deaths. |
+| `killer_pve_deaths` | Killer PvE Deaths | Killer Stats | The killer's all-time deaths not caused by another player (environment, suicide, unknown cause). | `Event.KillerStats.PvEDeaths()` | `0` | yes | integer | Present when Champion loaded the player's combat record for this kill. PvP deaths and PvE deaths add up to the player's deaths. |
+| `killer_pvp_kd` | Killer PvP K/D | Killer Stats | The killer's all-time kills per PvP death after the confirmed kill. | `Event.KillerStats.PvPKD()` | `9.00` | yes | decimal | Present when Champion loaded the player's combat record for this kill. PvP deaths and PvE deaths add up to the player's deaths. |
 | `killer_streak` | Killer Streak | Killer Stats | The killer's current kill streak including this kill (same value as streak). | `Event.KillerStreak` | `1` | yes | integer | Present when the streak is known and above zero. |
 | `victim_kills` | Victim Kills | Victim Stats | The victim's all-time kills. | `Event.VictimStats.Kills` | `2` | yes | integer | Present when Champion loaded the player's combat record for this kill. |
 | `victim_deaths` | Victim Deaths | Victim Stats | The victim's all-time deaths after this death. | `Event.VictimStats.Deaths` | `2` | yes | integer | Present when Champion loaded the player's combat record for this kill. |
 | `victim_kd` | Victim K/D | Victim Stats | The victim's all-time K/D after this death. | `Event.VictimStats.KD()` | `1.00` | yes | decimal | Present when Champion loaded the player's combat record for this kill. |
+| `victim_pvp_deaths` | Victim PvP Deaths | Victim Stats | The victim's all-time deaths caused by another player, after this death. | `Event.VictimStats.PvPDeaths` | `2` | yes | integer | Present when Champion loaded the player's combat record for this kill. PvP deaths and PvE deaths add up to the player's deaths. |
+| `victim_pve_deaths` | Victim PvE Deaths | Victim Stats | The victim's all-time deaths not caused by another player (environment, suicide, unknown cause). | `Event.VictimStats.PvEDeaths()` | `0` | yes | integer | Present when Champion loaded the player's combat record for this kill. PvP deaths and PvE deaths add up to the player's deaths. |
+| `victim_pvp_kd` | Victim PvP K/D | Victim Stats | The victim's all-time kills per PvP death after this death. | `Event.VictimStats.PvPKD()` | `1.00` | yes | decimal | Present when Champion loaded the player's combat record for this kill. PvP deaths and PvE deaths add up to the player's deaths. |
 | `h2h_killer_wins` | H2H Killer Wins | Head To Head | How many times the killer has killed this victim. | `Event.Encounters.KillerWins` | `4` | yes | integer | Present when Champion loaded the head-to-head record. |
 | `h2h_victim_wins` | H2H Victim Wins | Head To Head | How many times this victim has killed the killer. | `Event.Encounters.VictimWins` | `0` | yes | integer | Present when Champion loaded the head-to-head record. |
 | `h2h_score` | H2H Score | Head To Head | The head-to-head record, killer first. | `Event.Encounters` | `4–0` | yes | text | Present when Champion loaded the head-to-head record. |
@@ -298,8 +304,12 @@ Streak: 1
 | `event` | Event | Activity | joined or left. | `connection notice kind` | `joined` | no | label | Always present. |
 | `event_type` | Event Type | Activity | connected or disconnected. | `connection notice kind` | `connected` | no | label | Always present. |
 | `session` | Session Length | Activity | How long the player was online. | `connection notice session` | `1h 12m` | yes | text | Only on disconnects when the session length is known. |
+| `session_time` | Session Time | Activity | The session as a clock. | `connection notice session` | `00H 33M 26S` | yes | text | Only on disconnects when the session length is known. |
+| `location` | Location | Activity | Where the player was, as the log prints it. | `connection notice position` | `9047.2;11890.0;227.7` | yes | text | When the log line carries a position. |
+| `cash_earned` | Cash Earned | Activity | Champion Points credited during the session. | `economy ledger` | `3,500` | yes | text | Only on disconnects, on servers with the economy. |
+| `time` | Time | Server | The moment of the line, in the reader's time zone. | `log line time` | `<t:1792194705:T>` | no | text | Always present. |
 | `server_name` | Server Name | Server | The DayZ server's display name. | `game server display name` | `Champions Deathmatch` | yes | text | Present when the server has a display name. |
-| `timestamp` | Timestamp | Server | When Champion published the card (UTC). | `publish time` | `2026-09-23 12:00:00 UTC` | no | timestamp | Always present. |
+| `timestamp` | Timestamp | Server | The moment of the line (UTC). | `log line time` | `2026-09-23 12:00:00 UTC` | no | timestamp | Always present. |
 
 
 ## Live publishing is unchanged
@@ -308,3 +318,12 @@ Publishers still build the Champion default card and pass it to `Customize`, whi
 default on any problem (no template, flag off, disabled, render error). Queueing, dedupe, routing,
 persistence, rate limits and ordering are untouched; the only change is that `Customize` calls the
 shared `RenderEvent`.
+
+## Emojis
+
+`GET .../installations/{installationID}/embed-emojis` returns the custom emojis uploaded to the
+bot's own application in the Discord Developer Portal, as `{"emojis":[{"id","name","animated"}]}`
+sorted by name. The Embed Designer's picker inserts one as `<:name:id>` (`<a:name:id>` when
+animated). They belong to the bot, so every installation sees the same list and they render in
+every server the bot posts to. Read-only, cached for two minutes; a failed refresh keeps the
+last list. Anyone who may open the Embed Designer may read it.

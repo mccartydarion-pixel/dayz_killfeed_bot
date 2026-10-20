@@ -1,6 +1,10 @@
 package killfeed
 
-import "time"
+import (
+	"time"
+
+	"github.com/yourname/dayz-killfeed/internal/deathstats"
+)
 
 // EventType describes the normalized event kind.
 type EventType string
@@ -91,10 +95,27 @@ type Event struct {
 	ServerID  int64
 	SessionID string
 	Type      EventType
+	// Timestamp is when the event happened, in UTC. For an ADM line it is derived by the engine
+	// (event_time.go): the file's boot date plus the line's clock, converted with the server's UTC
+	// offset. Zero when that cannot be done - never guessed.
 	Timestamp time.Time
+	// TimestampDerived marks a Timestamp the engine derived from TimeOfDay (see Timestamp) rather
+	// than one read from a full date on the line. The durable fingerprint (dedupe.go) ignores a
+	// derived Timestamp, so a line's identity is exactly what it was before the derivation existed.
+	TimestampDerived bool
 	// TimeOfDay preserves the raw HH:MM:SS clock from the ADM line when a full
 	// session date is not available (the date comes from the log filename).
 	TimeOfDay string
+	// DetectedAt is when Champion read and parsed this line (UTC wall clock).
+	// It is observability only (latency measurement), never persisted as the
+	// event's time: the in-game time is TimeOfDay, in the server's local zone.
+	DetectedAt time.Time `json:"-"`
+	// ReadAt is when Champion finished downloading the bytes that hold this line, and LoggedAt is
+	// the line's own time converted to UTC with the server's learned UTC offset (zero when the
+	// offset is unknown - never guessed). Both are latency measurement only (feed_latency.go):
+	// never persisted, never part of a fingerprint, never used for ordering.
+	ReadAt   time.Time `json:"-"`
+	LoggedAt time.Time `json:"-"`
 
 	// Player is the subject for connect/disconnect/death/suicide/unconscious/etc.
 	Player *PlayerRef
@@ -147,11 +168,16 @@ type Event struct {
 	BountyPoints      int64
 	ActiveEventBadges []string
 	WarBadge          string
-	SeasonName        string
+	// SupporterBadge is the killer's supporter / VIP tier badge ("" = none).
+	SupporterBadge string
+	// RankedTag is the RP this kill earned with its bonus icons ("+250 RP ⚡💀"), "" when the
+	// server does not show it or the kill earned no RP.
+	RankedTag  string
+	SeasonName string
 
 	// Stat fields below are populated post-persistence (see
 	// persistenceStoreAdapter.ProcessPersistedKill/ProcessPersistedDeath in
-	// app.go), same as the competitive context above - best-effort, never
+	// internal/app/persistence_store_adapter.go), same as the competitive context above - best-effort, never
 	// blocking publish, and rendered into the same embed rather than a
 	// separate message. Pointers distinguish "not available" from a real
 	// zero value; a guild without the stats/analytics repositories wired
@@ -171,12 +197,48 @@ type Event struct {
 	EndedStreakCount *int
 }
 
+// DisplayTime is the time a card or variable should show for ev: the event's own time when it is
+// known, otherwise when Champion read the line. Zero when neither is known, so a card built from
+// such an event carries no timestamp (as before this feature) rather than a made-up "now".
+func (ev *Event) DisplayTime() time.Time {
+	if ev == nil {
+		return time.Time{}
+	}
+	for _, t := range []time.Time{ev.Timestamp, ev.ReadAt, ev.DetectedAt} {
+		if !t.IsZero() {
+			return t.UTC()
+		}
+	}
+	return time.Time{}
+}
+
+// DisplayTimeOrNow is DisplayTime, or now when no time is known - for relative-time variables and
+// custom templates, where a zero time would render nonsense.
+func (ev *Event) DisplayTimeOrNow() time.Time {
+	if at := ev.DisplayTime(); !at.IsZero() {
+		return at
+	}
+	return time.Now().UTC()
+}
+
 // CombatRecord is a lightweight kills/deaths snapshot for the stat-rich kill
 // and death embeds.
 type CombatRecord struct {
 	Kills  int64
-	Deaths int64
+	Deaths int64 // every death
+	// PvPDeaths are the deaths caused by another player (internal/deathstats). It is only
+	// meaningful when DeathSplitKnown is set: a record built without the split (an older caller, a
+	// fixture) says nothing about it, and the cards and template variables then leave it out
+	// rather than report "0 PvP deaths".
+	PvPDeaths       int64
+	DeathSplitKnown bool
 }
+
+// PvEDeaths are the deaths not caused by another player.
+func (c CombatRecord) PvEDeaths() int64 { return deathstats.PvE(c.Deaths, c.PvPDeaths) }
+
+// PvPKD is Kills per PvP death, by the same zero rule as KD.
+func (c CombatRecord) PvPKD() float64 { return deathstats.KD(c.Kills, c.PvPDeaths) }
 
 // KD returns Kills/Deaths, or Kills if Deaths is zero (matches
 // repository.PlayerProfile.KD's convention).

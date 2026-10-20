@@ -22,19 +22,19 @@ const (
 	KillEmbedBountyClaim  KillEmbedStyle = "BOUNTY_CLAIM"
 )
 
-// Champion brand color palette. Named constants keep branding consistent; no
-// random per-message colors.
+// The names this package has for the palette (presentation/brand.go owns the six colours and
+// what each one means). No builder picks a colour of its own.
 const (
-	ColorChampionGold    = presentation.ChampionGold
-	ColorDangerRed       = presentation.ErrorRed
-	ColorSuccessGreen    = presentation.SuccessGreen
-	ColorInfoBlue        = presentation.InfoSteel
-	ColorWarningOrange   = presentation.WarningAmber
-	ColorHeadshotRed     = presentation.CombatRed
-	ColorLongRange       = presentation.Steel
-	ColorExtremeRange    = presentation.EventGold
-	ColorCloseRange      = presentation.CombatRed
-	ColorNeutralGraphite = presentation.NeutralGraphite
+	ColorChampionGold    = presentation.Gold
+	ColorDangerRed       = presentation.Red
+	ColorSuccessGreen    = presentation.Green
+	ColorInfoBlue        = presentation.Neutral
+	ColorWarningOrange   = presentation.Amber
+	ColorHeadshotRed     = presentation.Crimson
+	ColorLongRange       = presentation.Gold
+	ColorExtremeRange    = presentation.Gold
+	ColorCloseRange      = presentation.Crimson
+	ColorNeutralGraphite = presentation.Neutral
 )
 
 // Range thresholds (meters) for style selection. longRangeMin defers to the
@@ -51,13 +51,17 @@ const longRangeMin = presentation.LongshotDistanceMeters // 100–199.9m
 // primary story is the card's title and is never repeated as a badge.
 const (
 	badgeHeadshot      = "🎯 Headshot"
-	badgeCloseQuarters = "🔥 Close Range"
-	badgeLongShot      = "🎯 Long Shot"
-	badgeExtremeRange  = "👑 Extreme Range"
-	badgeMostWanted    = "🎯 Most Wanted"
-	badgeKillingSpree  = "🔥 Killing Spree"
-	badgeStreakEnded   = "💀 Streak Ended"
+	badgeCloseQuarters = "🔥 Close range"
+	badgeLongShot      = "🎯 Long shot"
+	badgeExtremeRange  = "👑 Extreme range"
+	badgeMostWanted    = "🎯 Most wanted"
+	badgeKillingSpree  = "🔥 Killing spree"
+	badgeStreakEnded   = "💀 Streak ended"
 )
+
+// heroDistanceLabel is the hero field of a long-range kill; the weapon strip leaves the
+// distance out when the hero field already shows it.
+const heroDistanceLabel = "Distance"
 
 // maxVisibleBadges caps the secondary badge row; more would be an emoji wall.
 const maxVisibleBadges = 3
@@ -162,6 +166,12 @@ func secondaryBadges(ev *killfeed.Event, story presentation.StoryType, d float64
 	if ev.BountyTarget && story != presentation.StoryBountyClaimed {
 		add(badgeMostWanted)
 	}
+	if b := strings.TrimSpace(ev.SupporterBadge); b != "" {
+		add(presentation.SafeName(b, 24))
+	}
+	if t := strings.TrimSpace(ev.RankedTag); t != "" {
+		add(t)
+	}
 	if headshot && story != presentation.StoryHeadshot {
 		add(badgeHeadshot)
 	}
@@ -186,7 +196,8 @@ func secondaryBadges(ev *killfeed.Event, story presentation.StoryType, d float64
 		}
 	}
 	if ev.WarBadge != "" && story != presentation.StoryWarKill {
-		add(ev.WarBadge)
+		// The stored badge stays as written ({{war_badge}} in owner templates); the card shows it calmly.
+		add(presentation.SentenceCase(ev.WarBadge))
 	}
 	if len(badges) > maxVisibleBadges {
 		badges = badges[:maxVisibleBadges]
@@ -241,17 +252,21 @@ func BuildKillEmbed(ev *killfeed.Event) *discordgo.MessageEmbed {
 
 // BuildKillEmbedWithOptions renders the Champion V2 kill card:
 //
-//	author  CHAMPIONS® KILLFEED
-//	title   <icon> <STORY>              ☠️ PLAYER ELIMINATED, 🎯 HEADSHOT, ...
+//	author  Champions® Killfeed
+//	title   <icon> <Story>              ☠️ Player eliminated, 🎯 Headshot, ...
 //	desc    **Killer** → **Victim**
 //	        <story line>                special stories only
 //	        <weapon flavor>
 //	        `WEAPON` • distance • range
 //	        <up to 3 secondary badges>
-//	fields  [hero metric]               DISTANCE / STREAK / REWARD (special only)
-//	        KILLER | VICTIM | H2H       inline, each only when data exists
-//	        FINAL HIT | LOCATION        inline, each only when data exists
-//	footer  EVERY KILL TELLS A STORY    season-prefixed when known
+//	fields  [hero metric]               Distance / Streak / Reward (special only)
+//	        Killer | Victim | Head to head   inline, each only when data exists
+//	        Final hit | Location        inline, each only when data exists
+//	footer  the season when known, else the slogan
+//
+// The story engine's labels stay in capitals where they are data (the {{kill_type}},
+// {{story_title}}, {{special_kill}} and {{range}} variables of owner templates); the built-in
+// card shows them in sentence case.
 //
 // What happened (title), who (matchup), how (weapon block), why it is notable
 // (story line, badges, hero), then the stats. Nothing absent is shown.
@@ -269,16 +284,16 @@ func BuildKillEmbedWithOptions(ev *killfeed.Event, options KillEmbedOptions) *di
 	if line := storyLine(ev, p); line != "" {
 		desc.WriteString("\n" + line)
 	}
-	if block := weaponBlock(ev, melee, hero != nil && hero.Name == "DISTANCE"); block != "" {
+	if block := weaponBlock(ev, melee, hero != nil && hero.Name == heroDistanceLabel); block != "" {
 		desc.WriteString("\n\n" + block)
 	}
 	if len(p.Badges) > 0 {
 		desc.WriteString("\n\n" + strings.Join(p.Badges, " • "))
 	}
 
-	embed := presentation.NewFeedEmbed(p.Title, p.AccentColor)
+	embed := presentation.NewFeedEmbed(presentation.SentenceCase(p.Title), p.AccentColor)
 	embed.Description = safeTrunc(desc.String(), maxDescLen)
-	embed.Footer.Text = safeTrunc(presentation.SeasonFooterText(ev.SeasonName), maxFooterLen)
+	embed.Footer = presentation.SeasonFooter(ev.SeasonName)
 	presentation.AppendFields(embed, hero)
 	presentation.AppendFields(embed, combatStatFields(ev, p.Story, killer, victim)...)
 	// A head hit is already the title or a badge; FINAL HIT would repeat it.
@@ -287,13 +302,15 @@ func BuildKillEmbedWithOptions(ev *killfeed.Event, options KillEmbedOptions) *di
 		if ev.Damage != nil {
 			value += fmt.Sprintf(" • %.1f dmg", *ev.Damage)
 		}
-		presentation.AppendFields(embed, presentation.MetricField("FINAL HIT", value, true))
+		presentation.AppendFields(embed, presentation.MetricField("Final hit", value, true))
 	}
 	if options.LocationMode == LocationCoordinates && ev.Killer != nil && ev.Killer.Position != nil {
 		pos := ev.Killer.Position
-		presentation.AppendFields(embed, presentation.MetricField("LOCATION", fmt.Sprintf("%.1f • %.1f • %.1f", pos.X, pos.Y, pos.Z), true))
+		presentation.AppendFields(embed, presentation.MetricField("Location", fmt.Sprintf("%.1f • %.1f • %.1f", pos.X, pos.Y, pos.Z), true))
 	}
-	presentation.StampEmbed(embed, ev.Timestamp)
+	// The kill's own time when the engine derived one, else when the line was read: Discord shows
+	// the embed timestamp in each viewer's own time zone.
+	presentation.StampEmbed(embed, ev.DisplayTime())
 	return presentation.FitEmbed(embed)
 }
 
@@ -306,7 +323,7 @@ func storyLine(ev *killfeed.Event, p KillPresentation) string {
 		return ""
 	}
 	if p.Story == presentation.StoryStreakEnded && ev.EndedStreakCount != nil && *ev.EndedStreakCount > 0 {
-		return fmt.Sprintf("Ended a **%d-kill streak**", *ev.EndedStreakCount)
+		return "Ended a **" + presentation.FormatThousands(int64(*ev.EndedStreakCount)) + "-kill streak**"
 	}
 	if p.Subtitle == "" {
 		return ""
@@ -326,7 +343,7 @@ func weaponBlock(ev *killfeed.Event, melee, distanceIsHero bool) string {
 		parts = append(parts, presentation.FormatDistance(*ev.Distance))
 	}
 	if rc := presentation.RangeClass(ev.Distance, melee); rc != "" {
-		parts = append(parts, presentation.TitleCase(rc))
+		parts = append(parts, presentation.SentenceCase(rc))
 	}
 	strip := strings.Join(parts, " • ")
 	story := ""
@@ -349,18 +366,30 @@ func heroField(ev *killfeed.Event, story presentation.StoryType) *discordgo.Mess
 	switch story {
 	case presentation.StoryLongRange, presentation.StoryExtremeRange:
 		if ev.Distance != nil {
-			return presentation.MetricField("DISTANCE", "**"+presentation.FormatDistance(*ev.Distance)+"**", false)
+			return presentation.MetricField(heroDistanceLabel, "**"+presentation.FormatDistance(*ev.Distance)+"**", false)
 		}
 	case presentation.StoryStreakMilestone:
 		if ev.KillerStreak != nil && *ev.KillerStreak > 0 {
-			return presentation.MetricField("STREAK", fmt.Sprintf("**%d**", *ev.KillerStreak), false)
+			return presentation.MetricField("Streak", "**"+presentation.FormatThousands(int64(*ev.KillerStreak))+"**", false)
 		}
 	case presentation.StoryBountyClaimed:
 		if ev.BountyPoints > 0 {
-			return presentation.MetricField("REWARD", "**"+presentation.FormatPoints(ev.BountyPoints)+"**", false)
+			return presentation.MetricField("Reward", "**"+presentation.FormatPoints(ev.BountyPoints)+"**", false)
 		}
 	}
 	return nil
+}
+
+// compactCombatStats is the stat strip of the kill and death cards. The first line is unchanged:
+// kills, every death and the overall K/D. A player who has also died to something other than a
+// player gets one more line with the PvP deaths and the PvP K/D (internal/deathstats); for
+// everyone else the two K/Ds are the same number, so the line is left out rather than repeated.
+func compactCombatStats(rec *killfeed.CombatRecord) string {
+	value := presentation.CompactStats(rec.Kills, rec.Deaths, rec.KD())
+	if rec.DeathSplitKnown && rec.PvEDeaths() > 0 {
+		value += "\n" + presentation.CompactPvPStats(rec.PvPDeaths, rec.PvPKD())
+	}
+	return value
 }
 
 // combatStatFields renders KILLER / VICTIM / H2H side by side (inline), each
@@ -370,26 +399,26 @@ func heroField(ev *killfeed.Event, story presentation.StoryType) *discordgo.Mess
 func combatStatFields(ev *killfeed.Event, story presentation.StoryType, killer, victim string) []*discordgo.MessageEmbedField {
 	var fields []*discordgo.MessageEmbedField
 	if ev.KillerStats != nil {
-		value := presentation.CompactStats(ev.KillerStats.Kills, ev.KillerStats.Deaths, ev.KillerStats.KD())
+		value := compactCombatStats(ev.KillerStats)
 		// The spree card already shows the streak as its hero metric.
 		if ev.KillerStreak != nil && *ev.KillerStreak > 0 && story != presentation.StoryStreakMilestone {
-			value += fmt.Sprintf("\n🔥 Streak **%d**", *ev.KillerStreak)
+			value += "\n🔥 Streak **" + presentation.FormatThousands(int64(*ev.KillerStreak)) + "**"
 		}
-		fields = append(fields, &discordgo.MessageEmbedField{Name: "KILLER", Value: value, Inline: true})
+		fields = append(fields, &discordgo.MessageEmbedField{Name: "Killer", Value: value, Inline: true})
 	}
 	if ev.VictimStats != nil {
-		value := presentation.CompactStats(ev.VictimStats.Kills, ev.VictimStats.Deaths, ev.VictimStats.KD())
-		fields = append(fields, &discordgo.MessageEmbedField{Name: "VICTIM", Value: value, Inline: true})
+		value := compactCombatStats(ev.VictimStats)
+		fields = append(fields, &discordgo.MessageEmbedField{Name: "Victim", Value: value, Inline: true})
 	}
 	if ev.Encounters != nil {
-		fields = append(fields, &discordgo.MessageEmbedField{Name: "H2H", Value: h2hValue(ev.Encounters, killer, victim), Inline: true})
+		fields = append(fields, &discordgo.MessageEmbedField{Name: "Head to head", Value: h2hValue(ev.Encounters, killer, victim), Inline: true})
 	}
 	return fields
 }
 
 // h2hValue: "**4–0**" plus who leads, names capped so the inline column holds.
 func h2hValue(h *killfeed.HeadToHead, killer, victim string) string {
-	score := fmt.Sprintf("**%d–%d**", h.KillerWins, h.VictimWins)
+	score := "**" + presentation.FormatThousands(h.KillerWins) + "–" + presentation.FormatThousands(h.VictimWins) + "**"
 	switch {
 	case h.KillerWins > h.VictimWins:
 		return score + "\n" + shortName(killer) + " leads"

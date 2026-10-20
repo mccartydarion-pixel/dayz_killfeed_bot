@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yourname/dayz-killfeed/internal/entitlements"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -38,6 +39,8 @@ func (a *App) handleCreateInstallation(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Organization-wide: this replaces or adds what every server of the organization runs on,
+	// so it is the organization's own OWNER or ADMIN, never a staff Administrator of one server.
 	if _, ok := a.requireOrganizationRole(w, r, organizationID, user.ID); !ok {
 		return
 	}
@@ -84,6 +87,9 @@ func (a *App) handleCreateInstallation(w http.ResponseWriter, r *http.Request) {
 		writeSaaSError(w, codeInternalError, "could not create installation")
 		return
 	}
+	if entitlements.OwnerOrganization(organizationID) {
+		a.refreshOwnerAccess(ctx) // so the new installation's feature switches default to on at once
+	}
 	writeSaaSJSON(w, http.StatusCreated, a.buildInstallationSummary(ctx, organizationID, *inst))
 }
 
@@ -101,7 +107,7 @@ func (a *App) handleGetInstallation(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, ok := a.requireOrganizationMember(w, r, organizationID, user.ID); !ok {
+	if _, ok := a.requireOrganizationViewer(w, r, organizationID, user); !ok {
 		return
 	}
 	installationID, ok := pathInt64(w, r, "installationID")
@@ -142,7 +148,7 @@ func (a *App) handleGetSetupProgress(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, ok := a.requireOrganizationMember(w, r, organizationID, user.ID); !ok {
+	if _, ok := a.requireOrganizationViewer(w, r, organizationID, user); !ok {
 		return
 	}
 	installationID, ok := pathInt64(w, r, "installationID")
@@ -230,7 +236,7 @@ func (a *App) handleUpdateSetupProgress(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	if _, ok := a.requireOrganizationRole(w, r, organizationID, user.ID); !ok {
+	if _, ok := a.requireOrganizationManager(w, r, organizationID, user); !ok {
 		return
 	}
 	installationID, ok := pathInt64(w, r, "installationID")

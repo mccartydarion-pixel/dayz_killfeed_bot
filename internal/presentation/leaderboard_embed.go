@@ -10,16 +10,15 @@ import (
 // category rendered as ONE field through the shared rank formatter - the same
 // scoreboard style as the persistent season board.
 func BuildPlayerLeaderboardEmbed(category string, entries []RankedEntry, subtitle string) *discordgo.MessageEmbed {
-	embed := NewFeedEmbed("🏆 PLAYER LEADERBOARD", ChampionGold)
-	embed.Footer = AutoRefreshFooter()
-	desc := "Competitive Rankings"
+	embed := NewFeedEmbed("🏆 Player leaderboard", ChampionGold)
+	desc := "Competitive rankings"
 	if s := strings.TrimSpace(subtitle); s != "" {
-		desc = CleanName(s, 60) + " Rankings"
+		desc = CleanName(s, 60) + " rankings"
 	}
 	cat := RankCategoryOf(category)
 	if f := RankingField(cat, entries, 0); f != nil {
 		if cat == RankOther && strings.TrimSpace(category) != "" {
-			f.Name = "🏆 " + strings.ToUpper(CleanName(category, 40))
+			f.Name = "🏆 " + CleanName(category, 40)
 		}
 		embed.Fields = append(embed.Fields, f)
 	} else {
@@ -30,7 +29,7 @@ func BuildPlayerLeaderboardEmbed(category string, entries []RankedEntry, subtitl
 }
 
 func BuildLeaderboardErrorEmbed(category string) *discordgo.MessageEmbed {
-	embed := NewFeedEmbed("⚠️ LEADERBOARD UNAVAILABLE", ErrorRed)
+	embed := NewFeedEmbed("⚠️ Leaderboard unavailable", ErrorRed)
 	embed.Description = "The **" + EscapeMarkdown(CleanName(category, 40)) + "** leaderboard is temporarily unavailable.\nTry again shortly."
 	return embed
 }

@@ -4,7 +4,7 @@
 
 **The Go backend (this repository) is the authoritative owner of the shared
 Champion production PostgreSQL schema**, including every table documented
-here. `internal/database/migrations.go` is the single migration history for
+here. `internal/database/migrations.go` (the registry, with its entries in the `migrations_NNNN_NNNN.go` files beside it) is the single migration history for
 the whole database - the website repository has no migration system and
 must never gain one against these tables.
 
@@ -13,13 +13,13 @@ server-side services (never client-side, never with a shared/static
 credential), but it must never run its own migrations against them, add
 columns directly, or introduce a conflicting schema for the same concepts.
 If the website needs a new field or table for these SaaS concerns, that
-change belongs in this repository's `internal/database/migrations.go`, in a
+change belongs in this repository's migration registry (`internal/database/migrations.go` and the `migrations_NNNN_NNNN.go` files beside it), in a
 PR reviewed the same way as any other Champion backend change.
 
 This split exists because the Go backend already owns the entire
 production migration history (schema_migrations, 24+ migrations covering
 kills/players/factions/seasons/links/servers/etc. - see
-`internal/database/migrations.go`) and the live runtime (ADM ingestion,
+`internal/database/migrations.go` and the `migrations_NNNN_NNNN.go` files beside it) and the live runtime (ADM ingestion,
 Discord bot, presence) that several of these tables also back. Splitting
 schema ownership between two migration systems against the same database
 would risk migration-order conflicts and duplicate-concept drift; centralizing
@@ -33,7 +33,7 @@ multi-tenant work (`0012_phase48_multitenant_servers_credentials`) and were
 
 | SaaS concept | Table | Notes |
 |---|---|---|
-| DayZ/Nitrado server connection | `game_servers` (existing) | Added `organization_id` (nullable FK to `organizations`, `ON DELETE SET NULL`). The guild-scoped bot runtime (`ServerRepository`) is untouched; SaaS-scoped access goes through `SaaSServerRepository` (`internal/repository/saas_server_connections_repository.go`). |
+| DayZ/Nitrado server connection | `game_servers` (existing) | Added `organization_id` (nullable FK to `organizations`, `ON DELETE SET NULL`). The guild-scoped bot runtime (`ServerRepository`) is untouched; SaaS-scoped access goes through `SaaSServerRepository` (`internal/repository/saas_server_connections_repository.go`). Migration 0124 adds `display_name_custom` and `provider_display_name`: `display_name` follows the Nitrado name unless the owner typed one (`docs/SERVER_NAME_SYNC.md`). |
 | Encrypted Nitrado credential envelope | `nitrado_connections` (existing) | Added `organization_id` (nullable FK, `ON DELETE SET NULL`). `credential_nonce` is the AES-GCM IV; the auth tag is embedded in `credential_ciphertext` (standard Go `crypto/cipher` `AEAD.Seal` output); the algorithm is a fixed constant (`AES-256-GCM`, `repository.CredentialAlgorithm`), not a column, since only one is supported. Guild-scoped access is unchanged (`ServerRepository.SaveConnection`/`GetConnection`); SaaS-scoped access goes through `CredentialRepository` (`internal/repository/saas_credentials_repository.go`). |
 
 Everything else below is new, added in `0024_saas_foundation`.
@@ -274,11 +274,32 @@ business decision for the billing-integration task, not this one. Call
 sites should key off the returned entitlement keys (not "is a plan
 configured"), so tightening this later needs no call-site changes.
 
+**Platform owner access.** The exported questions take an
+`entitlements.Plan`, built only by `entitlements.ForOrganization(organizationID, planKey)`:
+an organization owned by a platform owner (`CHAMPION_ADMIN_DISCORD_IDS`) has every key on
+any plan. See `docs/ADMIN_API.md` "Platform owner access".
+
+## Platform staff (migration 0125)
+
+`platform_staff`: Discord accounts that may read the Owner Hub and change nothing
+(`docs/ADMIN_API.md` "Roles"). Platform owners are never stored here.
+
+| Column | Notes |
+|---|---|
+| `discord_user_id` | TEXT primary key, `CHECK` digits only, 15 to 20 long |
+| `note` | TEXT, default `''`, `CHECK` at most 120 characters |
+| `added_by` | TEXT - Discord id of the owner who added the member |
+| `added_at` | TIMESTAMPTZ |
+
+Repository: `PlatformOwnerRepository` (`platform_staff_repository.go`) - `ListPlatformStaff`,
+`GetPlatformStaff`, `UpsertPlatformStaff`, `RemovePlatformStaff`, and `PlatformOwnerScope`
+(the organizations and installations owned by a platform owner).
+
 ## Enum/status convention
 
 No column in this schema uses a SQL `CHECK` constraint for enumerated
 values (matching the existing convention throughout
-`internal/database/migrations.go` - e.g. `game_servers.status`,
+the migrations in `internal/database` - e.g. `game_servers.status`,
 `competitive_events.status`). Every enumerated column is a plain `TEXT`
 column with allowed values enforced at the Go application layer via typed
 constants. This is deliberate: adding a new status/role/plan value later
@@ -368,8 +389,9 @@ facts. Index `(guild_id, player_id, id DESC)` serves history. The 0030 backfill 
 
 ## installation_embed_templates (migration 0031)
 
-Custom embed templates (Embed Designer Phase 2 - **storage only**: no Discord publisher reads
-this table; custom template runtime rendering is not enabled). One row per customized
+Custom embed templates (Embed Designer Phase 2 added storage only. Since Phase 4 the Discord
+publishers read this table for eligible routes when `CHAMPION_CUSTOM_EMBEDS_ENABLED` is on -
+default off; see `docs/EMBED_RUNTIME.md`). One row per customized
 `(installation, route)`; a route without a row uses the Champion default, and defaults are never
 copied into the table.
 

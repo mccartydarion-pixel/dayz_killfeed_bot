@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/yourname/dayz-killfeed/internal/billing"
+	"github.com/yourname/dayz-killfeed/internal/permissions"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -113,6 +114,9 @@ func (a *App) handleCreateOrganization(w http.ResponseWriter, r *http.Request) {
 		writeSaaSError(w, codeInternalError, "could not create organization")
 		return
 	}
+	if a.Config != nil && a.Config.IsPlatformAdmin(user.DiscordUserID) {
+		a.refreshOwnerAccess(ctx) // a platform owner's new organization is unlocked at once
+	}
 	// Onboarding V2: the creator's one no-card 14-day trial starts here if they
 	// have not used it yet (docs/BILLING.md "No-card trial"); a creator who
 	// already had a trial gets an INACTIVE row - billing required, never a
@@ -141,7 +145,7 @@ func (a *App) handleGetOrganization(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	role, ok := a.requireOrganizationMember(w, r, organizationID, user.ID)
+	role, ok := a.requireOrganizationViewer(w, r, organizationID, user)
 	if !ok {
 		return
 	}
@@ -236,6 +240,11 @@ type DayZServerSummary struct {
 	Game        string `json:"game"`
 	Platform    string `json:"platform"`
 	Status      string `json:"status"`
+	// DisplayNameCustom: the owner typed displayName in Champion, so it no longer follows the
+	// Nitrado name. ProviderName: the last name read from Nitrado, null until the first read
+	// (docs/SERVER_NAME_SYNC.md).
+	DisplayNameCustom bool    `json:"displayNameCustom"`
+	ProviderName      *string `json:"providerName"`
 }
 
 func toDayZServerSummary(s repository.GameServer) DayZServerSummary {
@@ -251,6 +260,9 @@ func toDayZServerSummary(s repository.GameServer) DayZServerSummary {
 		Game:        s.Game,
 		Platform:    s.Platform,
 		Status:      s.Status,
+
+		DisplayNameCustom: s.DisplayNameCustom,
+		ProviderName:      optionalString(s.ProviderName),
 	}
 }
 
@@ -342,7 +354,7 @@ func (a *App) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	role, ok := a.requireOrganizationMember(w, r, organizationID, user.ID)
+	role, ok := a.requireOrganizationViewer(w, r, organizationID, user)
 	if !ok {
 		return
 	}
@@ -379,8 +391,16 @@ func (a *App) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		writeSaaSError(w, codeInternalError, "could not load installations")
 		return
 	}
+	// Staff see only the installations they staff.
+	var staffed map[int64]permissions.Level
+	if role == repository.RoleStaff {
+		staffed, _ = a.staffInstallationsForOrganization(ctx, organizationID, user)
+	}
 	resp.Installations = make([]InstallationSummary, 0, len(installs))
 	for _, inst := range installs {
+		if role == repository.RoleStaff && staffed[inst.ID] == permissions.LevelNone {
+			continue
+		}
 		resp.Installations = append(resp.Installations, a.buildInstallationSummary(ctx, organizationID, inst))
 	}
 

@@ -18,7 +18,7 @@ type fakeIntrusionStore struct {
 
 	ignoredPlayers     map[zonePlayerKey]bool
 	ignoredFactions    map[int64]map[int64]bool // zoneID -> factionID -> ignored
-	discordRoleIgnores map[int64][]string        // zoneID -> role snowflakes
+	discordRoleIgnores map[int64][]string       // zoneID -> role snowflakes
 	authorized         map[zonePlayerKey]bool
 	bans               map[zonePlayerKey]*repository.ZoneBan
 
@@ -456,5 +456,31 @@ func TestIntrusionEngineNilAndEmptyInputsAreNoops(t *testing.T) {
 	engine.Evaluate(context.Background(), 5, nil)
 	if m := engine.Metrics(); m.LocationEventsEvaluated != 0 {
 		t.Fatalf("empty batch must evaluate nothing, got %+v", m)
+	}
+}
+
+// An older position arriving after a newer one (earlier ADM lines re-read after a checkpoint
+// rewind) is ignored: it must not fabricate an exit, nor a re-entry alert.
+func TestIntrusionEngineStalePositionIsIgnored(t *testing.T) {
+	store := newFakeIntrusionStore()
+	cache := NewZoneCache(&fakeZoneSource{zones: []repository.Zone{testZone(1, 5, repository.ZoneTypeRestricted, 0, 0, 10, 300, "chan-1")}})
+	pub := &fakePublisher{}
+	engine := NewIntrusionEngine(store, cache, nil, pub)
+	ctx := context.Background()
+	now := time.Now()
+
+	engine.Evaluate(ctx, 5, []locationRecord{{GuildID: 1, ServerID: 5, PlayerID: 10, Gamertag: "Bob", X: 0, Z: 0, ObservedAt: now}})
+	engine.Evaluate(ctx, 5, []locationRecord{{GuildID: 1, ServerID: 5, PlayerID: 10, Gamertag: "Bob", X: 500, Z: 500, ObservedAt: now.Add(10 * time.Second)}})
+	// Replayed: inside again, but observed before the exit.
+	engine.Evaluate(ctx, 5, []locationRecord{{GuildID: 1, ServerID: 5, PlayerID: 10, Gamertag: "Bob", X: 0, Z: 0, ObservedAt: now.Add(5 * time.Second)}})
+
+	if len(store.created) != 1 {
+		t.Fatalf("a replayed older position must not open a second intrusion, got %d", len(store.created))
+	}
+	if pub.count() != 2 {
+		t.Fatalf("expected entry+exit only, got %d events", pub.count())
+	}
+	if p := store.presence[zonePlayerKey{1, 10}]; p == nil || p.Status != repository.PresenceOutside {
+		t.Fatalf("presence must stay OUTSIDE, got %+v", p)
 	}
 }

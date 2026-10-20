@@ -44,6 +44,17 @@ func (r *Registry) Set(c Component) {
 	r.components[c.Name] = c
 	r.mu.Unlock()
 }
+
+// Remove forgets a component, e.g. a per-worker queue whose worker stopped, so
+// the snapshot stops reporting something that no longer exists.
+func (r *Registry) Remove(name string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	delete(r.components, name)
+	r.mu.Unlock()
+}
 func (r *Registry) Get(name string) (Component, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

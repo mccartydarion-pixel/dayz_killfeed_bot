@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -181,6 +182,73 @@ FROM guilds WHERE id=$1`
 		return nil, fmt.Errorf("get guild by id: %w", err)
 	}
 	return &s, nil
+}
+
+// Legacy panel message-id columns ClearPanelMessageIDs may null. UpsertGuild
+// COALESCEs every id, so an empty value there can never clear one.
+const (
+	GuildColumnLeaderboardMessage     = "leaderboard_message_id"
+	GuildColumnPlayerStatsInfoMessage = "player_stats_info_message_id"
+	GuildColumnLinkPanelMessage       = "link_panel_message_id"
+	GuildColumnServerStatusMessage    = "server_status_message_id"
+	GuildColumnOnlinePlayersMessage   = "online_players_message_id"
+)
+
+var clearablePanelMessageColumns = map[string]bool{
+	GuildColumnLeaderboardMessage: true, GuildColumnPlayerStatsInfoMessage: true, GuildColumnLinkPanelMessage: true,
+	GuildColumnServerStatusMessage: true, GuildColumnOnlinePlayersMessage: true,
+}
+
+// ClearPanelMessageIDs durably forgets retired legacy panel messages (sets the
+// named message-id columns to NULL). Only the whitelisted message-id columns
+// above are accepted; channel ids and every other column are never touched.
+func (r *GuildRepository) ClearPanelMessageIDs(ctx context.Context, discordGuildID string, columns ...string) error {
+	if len(columns) == 0 {
+		return nil
+	}
+	sets := make([]string, 0, len(columns))
+	for _, c := range columns {
+		if !clearablePanelMessageColumns[c] {
+			return fmt.Errorf("clear panel message ids: column %q is not a panel message id", c)
+		}
+		sets = append(sets, c+"=NULL")
+	}
+	_, err := r.pool.Exec(ctx, `UPDATE guilds SET `+strings.Join(sets, ",")+`, updated_at=NOW() WHERE discord_guild_id=$1`, discordGuildID)
+	if err != nil {
+		return fmt.Errorf("clear panel message ids: %w", err)
+	}
+	return nil
+}
+
+// FeaturesChannel returns the channel /features created for a guild, or "" when there is none.
+func (r *GuildRepository) FeaturesChannel(ctx context.Context, discordGuildID string) (string, error) {
+	var channelID string
+	err := r.pool.QueryRow(ctx, `SELECT COALESCE(features_channel_id,'') FROM guilds WHERE discord_guild_id=$1`, discordGuildID).Scan(&channelID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("get features channel: %w", err)
+	}
+	return channelID, nil
+}
+
+// SetFeaturesChannel records the channel /features created; "" forgets it.
+func (r *GuildRepository) SetFeaturesChannel(ctx context.Context, discordGuildID, channelID string) error {
+	_, err := r.pool.Exec(ctx, `UPDATE guilds SET features_channel_id=NULLIF($2,''), updated_at=NOW() WHERE discord_guild_id=$1`, discordGuildID, channelID)
+	if err != nil {
+		return fmt.Errorf("set features channel: %w", err)
+	}
+	return nil
+}
+
+// SetSelectedPublicServerByID is SetSelectedPublicServer by the guild's row id.
+func (r *GuildRepository) SetSelectedPublicServerByID(ctx context.Context, guildRowID, serverID int64) error {
+	_, err := r.pool.Exec(ctx, `UPDATE guilds SET selected_public_server_id=$2, updated_at=NOW() WHERE id=$1`, guildRowID, serverID)
+	if err != nil {
+		return fmt.Errorf("set selected public server: %w", err)
+	}
+	return nil
 }
 
 func (r *GuildRepository) SetSelectedPublicServer(ctx context.Context, discordGuildID string, serverID int64) error {

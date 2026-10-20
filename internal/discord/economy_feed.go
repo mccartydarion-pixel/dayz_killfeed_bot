@@ -24,9 +24,10 @@ const routeKeyEconomy = "ECONOMY"
 //
 // Routing is per (guild row, server): an event attributed to a server goes to that
 // server's ECONOMY route (a bounty payout: the server the kill happened on); a
-// guild-wide event (an admin adjustment) goes to every server's route, deduplicated
-// by channel. No route, or a failed lookup, is a no-op (throttled warning) - there
-// is no fallback to KILLFEED or any other channel.
+// guild-wide event (an admin adjustment) goes to every route of the event's own
+// guild, deduplicated by channel - never to another guild. No route, or a failed
+// lookup, is a no-op (throttled warning) - there is no fallback to KILLFEED or any
+// other channel.
 //
 // Notify only appends to a bounded queue; route lookups and Discord I/O run on
 // Run's goroutine, at most economyFeedEventsPerTick events per tick, in messages of
@@ -38,7 +39,7 @@ const routeKeyEconomy = "ECONOMY"
 type EconomyFeed struct {
 	sender   HitSender
 	resolver RouteResolver
-	servers  GuildServersFunc
+	servers  AllGuildServersFunc
 
 	// Optional custom embed templates (nil = the Champion default, always).
 	custom     EmbedCustomizer
@@ -59,7 +60,7 @@ const (
 	economyFeedEmbedsPerFrame = 10
 )
 
-func NewEconomyFeed(sender HitSender, resolver RouteResolver, servers GuildServersFunc) *EconomyFeed {
+func NewEconomyFeed(sender HitSender, resolver RouteResolver, servers AllGuildServersFunc) *EconomyFeed {
 	return &EconomyFeed{sender: sender, resolver: resolver, servers: servers, lastWarn: make(map[string]time.Time)}
 }
 
@@ -186,8 +187,12 @@ func (f *EconomyFeed) targetsFor(ctx context.Context, e economy.Event) []channel
 		if f.servers == nil {
 			return nil
 		}
-		guildRowID, ids, err := f.servers(ctx)
-		if err != nil || guildRowID != e.GuildID {
+		guilds, err := f.servers(ctx)
+		if err != nil {
+			return nil
+		}
+		ids, ok := serversOfGuild(guilds, e.GuildID)
+		if !ok {
 			return nil
 		}
 		serverIDs = ids
@@ -228,7 +233,7 @@ func (f *EconomyFeed) send(channel string, embeds []*discordgo.MessageEmbed) {
 	if f.sender == nil || len(embeds) == 0 {
 		return
 	}
-	_, err := f.sender.ChannelMessageSendComplex(channel, &discordgo.MessageSend{
+	_, err := deliverMessage(f.sender, "ECONOMY_FEED", channel, &discordgo.MessageSend{
 		Embeds:          embeds,
 		AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}}, // names never ping
 	})
@@ -240,6 +245,17 @@ func (f *EconomyFeed) send(channel string, embeds []*discordgo.MessageEmbed) {
 	}
 }
 
+// rewardReason is a reward's reason as one safe line: no mentions, links or markdown, at most 120
+// characters.
+func rewardReason(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	s = strings.NewReplacer("@", "@​", "<", "‹", ">", "›", "[", "(", "]", ")", "`", "'", "*", "", "_", " ", "~", "", "|", "").Replace(s)
+	if r := []rune(s); len(r) > 120 {
+		s = string(r[:119]) + "…"
+	}
+	return strings.TrimSpace(s)
+}
+
 // buildEconomyEmbed renders one card:
 //
 //	💰 BOUNTY REWARD            ➕ ADMIN CREDIT             ➖ ADMIN DEBIT
@@ -248,44 +264,52 @@ func (f *EconomyFeed) send(channel string, embeds []*discordgo.MessageEmbed) {
 //
 // Amounts are Champion Points. Only rewards show the resulting balance.
 func buildEconomyEmbed(e economy.Event) *discordgo.MessageEmbed {
-	name := bountyName(e.PlayerName) // the shared display-name sanitiser
+	name := presentation.EscapeMarkdown(bountyName(e.PlayerName)) // the shared display-name sanitiser, safe in markdown
 	amount := formatAmount(e.Amount) + " pts"
 	var b strings.Builder
-	color := presentation.EventGold
+	// Gold for a reward earned, green for points given back or granted, amber for points
+	// taken away, neutral for an ordinary purchase.
+	color := presentation.Neutral
 	switch e.Type {
 	case economy.TypeBountyClaim:
-		b.WriteString("💰 **BOUNTY REWARD**")
+		b.WriteString("💰 **Bounty reward**")
 		fmt.Fprintf(&b, "\n%s earned %s\nBalance: %s pts", name, amount, formatAmount(e.BalanceAfter))
-		color = presentation.SuccessGreen
+		color = presentation.Gold
 	case economy.TypeSystemReward:
-		b.WriteString("🎁 **REWARD**")
-		fmt.Fprintf(&b, "\n%s earned %s\nBalance: %s pts", name, amount, formatAmount(e.BalanceAfter))
-		color = presentation.SuccessGreen
+		b.WriteString("🎁 **Reward**")
+		fmt.Fprintf(&b, "\n%s earned %s", name, amount)
+		if reason := rewardReason(e.Reason); reason != "" {
+			fmt.Fprintf(&b, "\nFor: %s", reason)
+		}
+		fmt.Fprintf(&b, "\nBalance: %s pts", formatAmount(e.BalanceAfter))
+		color = presentation.Gold
 	case economy.TypeAdminCredit:
-		b.WriteString("➕ **ADMIN CREDIT**")
+		b.WriteString("➕ **Admin credit**")
 		fmt.Fprintf(&b, "\n%s received %s", name, amount)
+		color = presentation.Green
 	case economy.TypeAdminDebit:
-		b.WriteString("➖ **ADMIN DEBIT**")
+		b.WriteString("➖ **Admin debit**")
 		fmt.Fprintf(&b, "\n%s lost %s", name, amount)
 		color = presentation.WarningAmber
 	case economy.TypeShopPurchase:
-		b.WriteString("🛒 **SHOP PURCHASE**")
+		b.WriteString("🛒 **Shop purchase**")
 		if strings.TrimSpace(e.Item) != "" {
-			fmt.Fprintf(&b, "\n%s bought %s for %s", name, bountyName(e.Item), amount)
+			fmt.Fprintf(&b, "\n%s bought %s for %s", name, presentation.EscapeMarkdown(bountyName(e.Item)), amount)
 		} else {
 			fmt.Fprintf(&b, "\n%s spent %s", name, amount)
 		}
 	case economy.TypeShopRefund:
-		b.WriteString("↩️ **SHOP REFUND**")
+		b.WriteString("↩️ **Shop refund**")
 		fmt.Fprintf(&b, "\n%s was refunded %s", name, amount)
 		color = presentation.SuccessGreen
 	default:
 		verb := "received"
+		color = presentation.Green
 		if !e.Credit {
 			verb = "lost"
 			color = presentation.WarningAmber
 		}
-		b.WriteString("💠 **ECONOMY**")
+		b.WriteString("💠 **Economy**")
 		fmt.Fprintf(&b, "\n%s %s %s", name, verb, amount)
 	}
 	return &discordgo.MessageEmbed{Description: b.String(), Color: color}

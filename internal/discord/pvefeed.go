@@ -47,6 +47,7 @@ const (
 type PveFeedPublisher struct {
 	sender HitSender // the narrow Discord surface *discordgo.Session satisfies
 	route  *RouteBinding
+	feed   *RotatingFeed // optional shared 50-card PvE/death window
 
 	// Optional custom embed templates (nil = the Champion default, always).
 	// Presentation only: which deaths the feed owns is decided elsewhere.
@@ -79,6 +80,14 @@ func NewPveFeedPublisher(sender HitSender, resolver RouteResolver, guildRowID, s
 }
 
 // SetCustomizer enables custom embed templates for this server's PVE_FEED cards.
+// SetFeed shares the managed death/PvE window. It must be set before Run;
+// otherwise the standalone legacy batched publisher is retained for callers.
+func (p *PveFeedPublisher) SetFeed(feed *RotatingFeed) {
+	if p != nil {
+		p.feed = feed
+	}
+}
+
 func (p *PveFeedPublisher) SetCustomizer(c EmbedCustomizer, serverName ServerNameFunc) {
 	if p == nil {
 		return
@@ -225,7 +234,16 @@ func (p *PveFeedPublisher) send(channel string, batch []killfeed.PveDeathNotice,
 	if omitted > 0 {
 		embeds[0].Description += fmt.Sprintf("\n… %d earlier PvE deaths were not shown", omitted)
 	}
-	_, err := p.sender.ChannelMessageSendComplex(channel, &discordgo.MessageSend{
+	// Routed production feeds use one shared managed window with ordinary
+	// death/suicide cards. No untracked PvE messages can accumulate past its
+	// 50-card limit; the feed owns ordered journal/retry/delete-before-post.
+	if p.feed != nil {
+		for _, embed := range embeds {
+			p.feed.EnqueueDetected(embed, time.Time{})
+		}
+		return
+	}
+	_, err := deliverMessage(p.sender, "PVE_FEED", channel, &discordgo.MessageSend{
 		Embeds:          embeds,
 		AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}}, // player names never ping
 	})
@@ -241,29 +259,25 @@ func (p *PveFeedPublisher) send(channel string, batch []killfeed.PveDeathNotice,
 // the parser proved; there is no generic "unknown cause" card because an
 // unproven death is never claimed in the first place.
 //
-//	💀 SUICIDE        ☣️ PVE DEATH        🐺 PVE DEATH        ⚠️ PVE DEATH
+//	💀 Suicide        ☣️ PvE death        🐺 PvE death        ⚠️ PvE death
 //	Name died by      Name was killed     Name was killed     Name died to the
 //	suicide.          by an infected.     by an animal.       environment.
 //
 // Only the sanitised display name is shown - no id, coordinates or weapon (a
 // suicide's "weapon" is just the item held, not a cause).
 func buildPveEmbed(n killfeed.PveDeathNotice) *discordgo.MessageEmbed {
-	name := sanitizeName(n.Name)
-	if name == "" {
-		name = "Unknown"
-	}
-	name = safeTrunc(name, pveMaxNameLen)
+	name := presentation.SafeName(n.Name, pveMaxNameLen) // cleaned, capped, markdown-escaped
 
 	var text string
 	switch n.Cause {
 	case killfeed.DeathCauseSuicide:
-		text = fmt.Sprintf("💀 **SUICIDE**\n%s died by suicide.", name)
+		text = fmt.Sprintf("💀 **Suicide**\n%s died by suicide.", name)
 	case killfeed.DeathCauseInfected:
-		text = fmt.Sprintf("☣️ **PVE DEATH**\n%s was killed by an infected.", name)
+		text = fmt.Sprintf("☣️ **PvE death**\n%s was killed by an infected.", name)
 	case killfeed.DeathCauseAnimal:
-		text = fmt.Sprintf("🐺 **PVE DEATH**\n%s was killed by an animal.", name)
+		text = fmt.Sprintf("🐺 **PvE death**\n%s was killed by an animal.", name)
 	default: // DeathCauseEnvironment (the only other supported value)
-		text = fmt.Sprintf("⚠️ **PVE DEATH**\n%s died to the environment.", name)
+		text = fmt.Sprintf("⚠️ **PvE death**\n%s died to the environment.", name)
 	}
-	return &discordgo.MessageEmbed{Description: text, Color: presentation.WarningAmber}
+	return &discordgo.MessageEmbed{Description: text, Color: presentation.Neutral} // a quiet death, like the death card
 }

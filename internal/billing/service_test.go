@@ -26,6 +26,7 @@ type fakeStore struct {
 	txSeen       map[[2]string]bool // (provider, stripe_event_id) already recorded, mirrors the real UNIQUE constraint
 	grantsByUser map[int64]int64    // trial_grants: user -> organization
 	grantedOrgs  map[int64]bool
+	applyErr     error // non-nil: ApplyProviderState fails with it (simulates a database outage)
 }
 
 func newFakeStore() *fakeStore {
@@ -123,6 +124,9 @@ func (f *fakeStore) SetProviderCustomer(_ context.Context, organizationID int64,
 func (f *fakeStore) ApplyProviderState(_ context.Context, organizationID int64, st repository.ProviderState) (*repository.Subscription, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.applyErr != nil {
+		return nil, f.applyErr
+	}
 	s, ok := f.byOrg[organizationID]
 	if !ok {
 		return nil, repository.ErrSubscriptionNotFound
@@ -178,6 +182,13 @@ func (f *fakeStore) RecordWebhookEventOnce(_ context.Context, provider, eventID,
 	}
 	f.events[k] = true
 	return true, nil
+}
+
+func (f *fakeStore) ForgetWebhookEvent(_ context.Context, provider, eventID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.events, [2]string{provider, eventID})
+	return nil
 }
 
 func (f *fakeStore) RecordBillingTransaction(_ context.Context, t repository.BillingTransaction) error {
@@ -684,11 +695,14 @@ func TestWebhookUnknownEventTypeIsAcknowledgedAndIgnored(t *testing.T) {
 }
 
 func TestWebhookSubscriptionUpdatedResolvesOrgByCustomerWhenNoMetadata(t *testing.T) {
-	svc, store, _ := newTestService(t, sampleCatalog)
+	svc, store, provider := newTestService(t, sampleCatalog)
 	ctx := context.Background()
 	store.EnsureTrial(ctx, 55, time.Now().AddDate(0, 0, 14))
 	store.SetProviderCustomer(ctx, 55, repository.ProviderStripe, "cus_55")
 	store.ApplyProviderState(ctx, 55, repository.ProviderState{Provider: repository.ProviderStripe, ProviderCustomerID: "cus_55", ProviderSubscriptionID: "sub_55", Plan: "STARTER", Status: repository.SubscriptionActive})
+	// Stripe's current view of the subscription (the webhook re-fetches it rather than trusting the payload).
+	provider.Put(SubscriptionState{SubscriptionID: "sub_55", CustomerID: "cus_55", PriceID: "price_starter_month", StripeStatus: "past_due", StripeInterval: "month",
+		CurrentPeriodStart: time.Unix(1700000000, 0), CurrentPeriodEnd: time.Unix(1702592000, 0)})
 
 	payload := []byte(`{"id":"evt_200","type":"customer.subscription.updated","data":{"object":{
 		"id":"sub_55","status":"past_due","cancel_at_period_end":false,"customer":"cus_55","metadata":{},
@@ -916,5 +930,58 @@ func TestReconcileUnknownOrganization(t *testing.T) {
 	svc, _, _ := newTestService(t, sampleCatalog)
 	if _, err := svc.Reconcile(context.Background(), 99999); !errors.Is(err, ErrNoActiveSubscription) {
 		t.Fatalf("%v", err)
+	}
+}
+
+// A plan change swaps the Stripe price but leaves the subscription's champion_plan_key metadata as
+// it was at checkout. The customer.subscription.updated webhook that follows must keep the new
+// plan (resolved from the billed price), not revert to the stale metadata.
+func TestWebhookSubscriptionUpdatedTrustsBilledPriceOverStaleMetadata(t *testing.T) {
+	svc, store, provider := newTestService(t, sampleCatalog)
+	ctx := context.Background()
+	activeOrg(t, ctx, svc, store, provider, 62, "PRO", "price_pro_month")
+	sub, _ := store.GetForOrganization(ctx, 62)
+
+	payload := []byte(`{"id":"evt_600","type":"customer.subscription.updated","data":{"object":{
+		"id":"` + sub.ProviderSubscriptionID + `","status":"active","customer":"` + sub.ProviderCustomerID + `",
+		"metadata":{"champion_organization_id":"62","champion_plan_key":"LEGACY"},
+		"items":{"data":[{"current_period_start":1,"current_period_end":2,"price":{"id":"price_pro_month","recurring":{"interval":"month"}}}]}}}}`)
+	if err := svc.HandleWebhook(ctx, payload, sign(t, "whsec_test", payload)); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := store.GetForOrganization(ctx, 62)
+	if after.Plan != "PRO" {
+		t.Fatalf("plan = %q, want PRO (from the billed price, not stale metadata)", after.Plan)
+	}
+}
+
+// An organization already paying through a live Stripe subscription cannot open a second
+// checkout: two subscriptions would bill it twice, and the older one's end would later overwrite
+// the newer one. A canceled or never-paid organization can check out again.
+func TestCheckoutRefusesASecondLiveSubscription(t *testing.T) {
+	svc, store, _ := newTestService(t, sampleCatalog)
+	ctx := context.Background()
+	sub := store.ensureInactiveLocked(9)
+	for _, tc := range []struct {
+		status string
+		subID  string
+		refuse bool
+	}{
+		{repository.SubscriptionActive, "sub_live", true},
+		{repository.SubscriptionPastDue, "sub_live", true},
+		{repository.SubscriptionCanceled, "sub_old", false},
+		{repository.SubscriptionInactive, "", false},
+	} {
+		store.mu.Lock()
+		store.byOrg[sub.OrganizationID].Status = tc.status
+		store.byOrg[sub.OrganizationID].ProviderSubscriptionID = tc.subID
+		store.mu.Unlock()
+		_, err := svc.Checkout(ctx, req(t), 9, OrgInfo{Name: "Org 9"}, CheckoutRequest{PlanKey: "PRO", Interval: "MONTHLY"})
+		if refused := errors.Is(err, ErrAlreadySubscribed); refused != tc.refuse {
+			t.Fatalf("status %s sub %q: refused=%t (err %v), want %t", tc.status, tc.subID, refused, err, tc.refuse)
+		}
+		if !tc.refuse && err != nil {
+			t.Fatalf("status %s: %v", tc.status, err)
+		}
 	}
 }
