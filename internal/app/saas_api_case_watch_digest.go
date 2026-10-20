@@ -85,6 +85,10 @@ func (a *App) handleAntiCheatWatchDigest(w http.ResponseWriter, r *http.Request)
 		}})
 		return
 	}
+	if err != nil && !errors.Is(err, repository.ErrCaseDigestCooldown) {
+		// Nothing was stored: the request does not count against this replica's hourly slot.
+		a.caseWatchDigestLimiter.Undo(key)
+	}
 	if errors.Is(err, repository.ErrCaseDigestScope) {
 		writeSaaSError(w, codeCasePremiumRequired, "selected server binding has changed")
 		return

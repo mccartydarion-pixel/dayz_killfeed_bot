@@ -295,6 +295,19 @@ func (l *saasRateLimiter) Allow(key string) bool {
 	return true
 }
 
+// Undo gives back key's most recent attempt, for a request that was admitted but then failed
+// before doing anything (so a transient failure does not cost the caller their slot).
+func (l *saasRateLimiter) Undo(key string) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if hits := l.hits[key]; len(hits) > 0 {
+		l.hits[key] = hits[:len(hits)-1]
+	}
+}
+
 // rateLimitKey prefers the acting-user header (the real caller identity for
 // server-to-server traffic); falls back to remote address only for routes
 // reached before the acting user is known.
