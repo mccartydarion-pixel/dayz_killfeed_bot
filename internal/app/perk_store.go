@@ -627,6 +627,7 @@ func (a *App) changePerkPriority(ctx context.Context, installationID int64, name
 	if err != nil {
 		return false, err
 	}
+	defer nitrado.LockSetting(serviceID, nitrado.SettingPriority)()
 	list, err := client.PriorityList(ctx, serviceID)
 	if err != nil {
 		return false, err

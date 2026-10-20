@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 )
 
 // The priority list ("Prioritized players" in Nitrado's web panel): players who skip the queue
@@ -118,3 +119,21 @@ func (c *Client) SetPriorityList(ctx context.Context, serviceID string, names []
 	}
 	return nil
 }
+
+// settingLocks holds one mutex per service and list setting, for the whole process. A Client is
+// built per request (website calls) or per worker, so a lock kept on the Client never met the one
+// a concurrent request was holding.
+var settingLocks sync.Map // "serviceID/key" -> *sync.Mutex
+
+// LockSetting serializes a read-modify-write of one whole list setting (priority, whitelist,
+// bans) of serviceID: two concurrent ones would otherwise both read the old list and the second
+// write would drop the first's change. Call the returned func to release it.
+func LockSetting(serviceID, key string) (unlock func()) {
+	v, _ := settingLocks.LoadOrStore(serviceID+"/"+key, &sync.Mutex{})
+	mu := v.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
+// SettingPriority is the setting key of the priority list (see LockSetting).
+const SettingPriority = "priority"

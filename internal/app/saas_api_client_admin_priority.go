@@ -107,6 +107,8 @@ func (a *App) handleAddPriority(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Read and write the list under one lock: the perk store and the rewards pass edit it too.
+	defer nitrado.LockSetting(serviceID, nitrado.SettingPriority)()
 	list, ok := a.readPriorityList(ctx, w, client, serviceID)
 	if !ok {
 		return
@@ -149,6 +151,8 @@ func (a *App) handleRemovePriority(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Read and write the list under one lock: the perk store and the rewards pass edit it too.
+	defer nitrado.LockSetting(serviceID, nitrado.SettingPriority)()
 	list, ok := a.readPriorityList(ctx, w, client, serviceID)
 	if !ok {
 		return
