@@ -575,7 +575,16 @@ WHERE sd.purchase_id=$3 AND a.organization_id=$1 AND a.installation_id=$2`, org,
 	if err := setActor(ctx, tx, actor, "delivery closed before any file was prepared"); err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `UPDATE shop_delivery_attempts a SET state='ABANDONED' FROM shop_deliveries sd
+	tag, err := tx.Exec(ctx, `UPDATE shop_delivery_attempts a SET state='ABANDONED' FROM shop_deliveries sd
 WHERE sd.id = a.delivery_id AND sd.purchase_id=$3 AND a.organization_id=$1 AND a.installation_id=$2 AND a.state='PLAN_CREATED'`, org, inst, purchaseID)
-	return mapAttemptErr(err)
+	if err != nil {
+		return mapAttemptErr(err)
+	}
+	// The count above takes no row lock: the delivery worker can move a PLAN_CREATED attempt to
+	// FILE_PREPARED between it and this UPDATE, which then skips it. Closing the delivery anyway
+	// would refund (or fulfil) an item the worker goes on to stage, so the close is refused.
+	if int(tag.RowsAffected()) != planned {
+		return ErrShopDeliveryAttemptActive
+	}
+	return nil
 }
