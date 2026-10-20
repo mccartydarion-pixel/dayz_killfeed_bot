@@ -237,3 +237,21 @@ func TestConcurrentBansFromSeparateClientsBothLand(t *testing.T) {
 		t.Fatalf("every ban must land, got %q", bans)
 	}
 }
+
+func TestTryLockSettingRefusesWhileHeld(t *testing.T) {
+	unlock := LockSetting("svc-try", FileGameplay)
+	if _, ok := TryLockSetting("svc-try", FileGameplay); ok {
+		t.Fatal("a held lock must refuse TryLockSetting")
+	}
+	if release, ok := TryLockSetting("svc-other", FileGameplay); !ok {
+		t.Fatal("another service's lock is independent")
+	} else {
+		release()
+	}
+	unlock()
+	release, ok := TryLockSetting("svc-try", FileGameplay)
+	if !ok {
+		t.Fatal("a released lock can be taken")
+	}
+	release()
+}

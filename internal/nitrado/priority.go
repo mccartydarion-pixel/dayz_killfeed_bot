@@ -137,3 +137,17 @@ func LockSetting(serviceID, key string) (unlock func()) {
 
 // SettingPriority is the setting key of the priority list (see LockSetting).
 const SettingPriority = "priority"
+
+// FileGameplay is the LockSetting key for the server's cfggameplay.json, which the map switch and
+// the stadium builder both read, edit and write back whole.
+const FileGameplay = "file:cfggameplay.json"
+
+// TryLockSetting is LockSetting without waiting: ok is false when another holder has it.
+func TryLockSetting(serviceID, key string) (unlock func(), ok bool) {
+	v, _ := settingLocks.LoadOrStore(serviceID+"/"+key, &sync.Mutex{})
+	mu := v.(*sync.Mutex)
+	if !mu.TryLock() {
+		return func() {}, false
+	}
+	return mu.Unlock, true
+}

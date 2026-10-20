@@ -406,6 +406,14 @@ func (a *App) stadiumApply(w http.ResponseWriter, r *http.Request, build bool) {
 		return
 	}
 	defer a.stadiumBusy.Delete(sr.scope.InstallationID)
+	// A map switch rewrites the same cfggameplay.json: never both at once (each would write back
+	// its edit on top of the content it read before the other's write).
+	unlockGameplay, free := nitrado.TryLockSetting(target.NitradoServiceID, nitrado.FileGameplay)
+	if !free {
+		writeSaaSError(w, codeConflict, "the server's configuration is being changed right now (a map switch); try again in a few minutes")
+		return
+	}
+	defer unlockGameplay()
 	remote, err := a.stadiumRemote(ctx, *target)
 	if err != nil {
 		writeSaaSError(w, codeNitradoUnavailable, "could not open the server's Nitrado connection")

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"github.com/yourname/dayz-killfeed/internal/nitrado"
 	"log/slog"
 	"math/rand"
 	"strings"
@@ -390,9 +391,13 @@ func (a *App) mapRotationSwitch(ctx context.Context, t repository.MapRotationTar
 		}
 		req.Prior = &mapswitch.Backup{Gameplay: sw.PrevGameplay, Spawns: sw.PrevSpawns}
 	}
+	// The stadium builder edits the same cfggameplay.json; wait for one in progress (at most its
+	// 90 s) rather than write on top of the content it is about to replace.
+	unlockGameplay := nitrado.LockSetting(t.NitradoServiceID, nitrado.FileGameplay)
 	res := mapswitch.Apply(ctx, remote, req, func(ctx context.Context, b mapswitch.Backup) error {
 		return a.MapRotation.SaveSwitchBackup(ctx, sw.ID, b.Gameplay, b.Spawns, time.Now().UTC())
 	})
+	unlockGameplay()
 	if res.Status == mapswitch.StatusApplied {
 		a.followShopConfiguration(ctx, t.InstallationID, res.GameplayBefore, res.GameplayAfter)
 	}
