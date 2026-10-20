@@ -272,14 +272,9 @@ func (a *App) handleStadiumPut(w http.ResponseWriter, r *http.Request) {
 		writeSaaSError(w, codeInternalError, "could not save the stadium")
 		return
 	}
-	row := repository.Stadium{InstallationID: sr.scope.InstallationID, OrganizationID: sr.scope.OrganizationID, Params: raw, Status: repository.StadiumDraft}
-	if before != nil {
-		row.FileSHA256, row.ObjectCount, row.BuiltAt, row.RemovedAt, row.LastOutcome = before.FileSHA256, before.ObjectCount, before.BuiltAt, before.RemovedAt, before.LastOutcome
-		if before.Status == repository.StadiumBuilt {
-			row.Status = repository.StadiumBuilt
-		}
-	}
-	if err := a.Stadium.Upsert(ctx, row); err != nil {
+	// Params only: a build running at the same moment records its own state (RecordOutcome), and
+	// neither write carries the other's columns back from an older read.
+	if err := a.Stadium.SaveParams(ctx, sr.scope.OrganizationID, sr.scope.InstallationID, raw); err != nil {
 		slog.Warn("component=stadium", "event", "save_failed", "installation_id", sr.scope.InstallationID, "err", err.Error())
 		writeSaaSError(w, codeInternalError, "could not save the stadium")
 		return
@@ -448,7 +443,7 @@ func (a *App) stadiumApply(w http.ResponseWriter, r *http.Request, build bool) {
 			next.FileSHA256, next.ObjectCount = &sha, outcome.ObjectCount
 		}
 	}
-	if err := a.Stadium.Upsert(rctx, next); err != nil {
+	if err := a.Stadium.RecordOutcome(rctx, next); err != nil {
 		slog.Warn("component=stadium", "event", "record_failed", "installation_id", sr.scope.InstallationID, "err", err.Error())
 	}
 	a.recordAudit(rctx, adminActor{user: sr.user, scope: sr.scope}, action, fmt.Sprintf("installation:%d", sr.scope.InstallationID), "", strings.ToLower(outcome.Status),

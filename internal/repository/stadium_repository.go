@@ -94,6 +94,32 @@ WHERE stadiums.organization_id = EXCLUDED.organization_id`,
 	return err
 }
 
+// SaveParams stores new params for the installation's stadium and nothing else: the build state
+// (status BUILT/REMOVED, file digest, counts, timestamps, outcome) stays as the row holds it now,
+// so a save racing a build or remove never writes back a state read before it. A stadium that is
+// not BUILT becomes DRAFT.
+func (r *StadiumRepository) SaveParams(ctx context.Context, organizationID, installationID int64, params []byte) error {
+	_, err := r.pool.Exec(ctx, `
+INSERT INTO stadiums (installation_id, organization_id, params, status)
+VALUES ($1, $2, $3, '`+StadiumDraft+`')
+ON CONFLICT (installation_id) DO UPDATE SET
+    params = EXCLUDED.params,
+    status = CASE WHEN stadiums.status = '`+StadiumBuilt+`' THEN stadiums.status ELSE '`+StadiumDraft+`' END,
+    updated_at = NOW()
+WHERE stadiums.organization_id = EXCLUDED.organization_id`, installationID, organizationID, params)
+	return err
+}
+
+// RecordOutcome stores a build or remove result: the build state only, never params, so new
+// params saved while the build ran (it can take 90 s) are kept.
+func (r *StadiumRepository) RecordOutcome(ctx context.Context, s Stadium) error {
+	_, err := r.pool.Exec(ctx, `
+UPDATE stadiums SET status = $3, file_sha256 = $4, object_count = $5, built_at = $6, removed_at = $7, last_outcome = $8, updated_at = NOW()
+WHERE installation_id = $1 AND organization_id = $2`,
+		s.InstallationID, s.OrganizationID, s.Status, s.FileSHA256, s.ObjectCount, s.BuiltAt, s.RemovedAt, s.LastOutcome)
+	return err
+}
+
 // Target resolves the installation's server binding; nil when the installation is not in the
 // organization or has no game server.
 func (r *StadiumRepository) Target(ctx context.Context, organizationID, installationID int64) (*StadiumTarget, error) {

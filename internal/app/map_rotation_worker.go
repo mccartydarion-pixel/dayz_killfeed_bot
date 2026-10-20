@@ -33,8 +33,11 @@ import (
 // (mapRotationWipeRecover): it is started again whatever was switched off in the meantime.
 
 const (
-	mapRotationInterval    = time.Minute
-	mapRotationLease       = 5 * time.Minute
+	mapRotationInterval = time.Minute
+	// mapRotationLease must outlast a whole pass: the 4 min deadline, a restore that runs past it
+	// on its own 90 s budget, and the 15 s finish. A shorter lease let another process claim the
+	// installation and resume the same switch while this one was still rolling it back.
+	mapRotationLease       = 7 * time.Minute
 	mapRotationPassTimeout = 4 * time.Minute
 	mapRotationRestartTTL  = 5 * time.Minute
 	// mapRotationResumeFor: a switch interrupted by a crash is finished within this time, at most
