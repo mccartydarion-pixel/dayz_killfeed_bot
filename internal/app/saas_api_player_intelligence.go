@@ -232,7 +232,12 @@ func (a *App) handleOnlinePlayers(w http.ResponseWriter, r *http.Request) {
 	}
 	// Privacy/audit (task section 10): viewing online-player locations is privileged read access.
 	a.recordAudit(ctx, ac, "ONLINE_PLAYER_LOCATIONS_VIEWED", "", "", "success", nil, map[string]int{"count": len(out)})
-	writeSaaSJSON(w, http.StatusOK, map[string]any{"items": out})
+	// count is how many players are on the server right now, which can exceed the names listed:
+	// every restart of this process marks everyone disconnected until the server log next names
+	// them (ResetConnectedForRestart), so for a few minutes the list is short while Nitrado's own
+	// live count, the one the Discord counter and the live map show, is already right.
+	count := a.liveMapPlayersOnline(*ac.scope.ServerID, len(out), time.Now())
+	writeSaaSJSON(w, http.StatusOK, map[string]any{"items": out, "count": count})
 }
 
 // handleLatestLocation is GET .../admin/players/{playerID}/locations/latest (PLAYER_LAST_LOCATION_VIEW).
