@@ -7,8 +7,14 @@ package caseintel
 //  2. add its reviewed thresholds to releasedThresholds below.
 //
 // Until both are done EvaluateLoginsForAlert can never return CanNotify, so
-// the staff alert pipeline enqueues nothing. No detector is released today.
-var releasedThresholds = map[string]ValidatedThresholds{}
+// the staff alert pipeline enqueues nothing.
+//
+// Released: Suspicious Logins (CASE-LOGIN-001), on the owner's instruction.
+// Alerts go only to a server's private staff channel when its owner has staff
+// alerts on; nothing bans, kicks or changes a player.
+var releasedThresholds = map[string]ValidatedThresholds{
+	"CASE-LOGIN-001": {Approved: true, MinimumEvidence: 2, Strict: 2, Balanced: 3, Relaxed: 4},
+}
 
 // ReleasedThresholds returns a copy of a module's approved thresholds, or nil.
 func ReleasedThresholds(moduleID string) *ValidatedThresholds {

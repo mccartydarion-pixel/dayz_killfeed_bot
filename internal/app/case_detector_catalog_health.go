@@ -32,6 +32,7 @@ type caseTelemetryStatus struct {
 func caseAssessDetectorCatalogHealth(defs []caseintel.DetectorDefinition, s caseSourceIntegrity) []caseDetectorCatalogHealth {
 	out := make([]caseDetectorCatalogHealth, 0, len(defs))
 	for _, def := range defs {
+		released := caseintel.ModuleReleased(def.ID)
 		item := caseDetectorCatalogHealth{ModuleID: def.ID, State: "INSUFFICIENT_EVIDENCE",
 			Reasons: []string{}, ConclusionsSuspended: true}
 		// No trusted client-platform attestation exists in the ADM collector.
@@ -54,16 +55,26 @@ func caseAssessDetectorCatalogHealth(defs []caseintel.DetectorDefinition, s case
 			s.SelectedIsAccepted == nil || !*s.SelectedIsAccepted ||
 			*s.SelectedSourceRef != *s.AcceptedSourceRef {
 			item.Reasons = append(item.Reasons, "SOURCE_IDENTITY_UNVERIFIED")
+		} else if released {
+			item.Reasons = append(item.Reasons, "MODULE_RELEASED")
 		} else {
 			item.Reasons = append(item.Reasons, "MODULE_TELEMETRY_UNVALIDATED")
 		}
-		if (def.ID == "CASE-PC-XBOX-001" && def.Mode != "UNSUPPORTED") ||
-			(def.ID != "CASE-PC-XBOX-001" && def.Mode != "BLOCKED") {
+		expectedMode := "BLOCKED"
+		switch {
+		case def.ID == "CASE-PC-XBOX-001":
+			expectedMode = "UNSUPPORTED"
+		case released:
+			expectedMode = "VALIDATED_SHADOW" // released through core8_release.go
+		}
+		if def.Mode != expectedMode {
 			// A catalog change cannot silently promote this protected view.
 			item.State = "ERROR"
 			item.Reasons = append(item.Reasons, "UNEXPECTED_CATALOG_MODE")
 		}
-		item.Reasons = append(item.Reasons, "MODULE_NOT_RELEASED")
+		if !released {
+			item.Reasons = append(item.Reasons, "MODULE_NOT_RELEASED")
+		}
 		out = append(out, item)
 	}
 	return out

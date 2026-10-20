@@ -37,6 +37,9 @@ func TestClientCatalogIsEightUnavailableModulesWithReasons(t *testing.T) {
 		if def.ID == "CASE-PC-XBOX-001" {
 			expectedMode = "UNSUPPORTED"
 		}
+		if def.ID == "CASE-LOGIN-001" {
+			expectedMode = "VALIDATED_SHADOW" // released to staff alerts
+		}
 		if def.Name != want[i] || def.Mode != expectedMode || def.ID == "CASE-MOV-001" || seen[def.ID] || len(def.Capabilities) == 0 {
 			t.Fatalf("unexpected module: %+v", def)
 		}
