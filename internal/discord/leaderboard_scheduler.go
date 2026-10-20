@@ -42,6 +42,9 @@ type LeaderboardScheduler struct {
 	// syncer can all trigger one, and two concurrent refreshes must not race to
 	// create the same panel.
 	refreshMu sync.Mutex
+	// failed holds the guilds the last RefreshOnce could not publish (see RefreshFailed); written
+	// under refreshMu.
+	failed map[int64]bool
 
 	// Installation route model (see SetRouting). Unset -> legacy only.
 	routes        RouteResolver
@@ -221,13 +224,17 @@ func (s *LeaderboardScheduler) RefreshOnce(ctx context.Context) error {
 	}
 	s.refreshMu.Lock()
 	defer s.refreshMu.Unlock()
+	s.failed = map[int64]bool{}
 	guilds, listErr := s.listGuilds(ctx)
 	primaryServers, _ := serversOfGuild(guilds, s.guildRowID)
 	snapshot, err := s.loadSnapshot(ctx, s.guildRowID, primaryServers)
 	if err != nil {
+		// The primary guild's board cannot be built; every other guild's still is.
+		s.failed[s.guildRowID] = true
+		_, _ = s.refreshRouted(ctx, guilds, listErr, nil)
 		return err
 	}
-	if handled, routeErr := s.refreshRouted(ctx, guilds, listErr, snapshot); handled {
+	if handled, routeErr := s.refreshRouted(ctx, guilds, listErr, &snapshot); handled {
 		if routeErr == nil {
 			s.mu.Lock()
 			s.dirty = false
@@ -244,6 +251,7 @@ func (s *LeaderboardScheduler) RefreshOnce(ctx context.Context) error {
 	id, changed, err := s.panel.Update(snapshot)
 	if err != nil {
 		slog.Warn("component=discord", "msg", "leaderboard refresh failed", "err", err.Error())
+		s.failed[s.guildRowID] = true
 		return err
 	}
 	if id != "" {
@@ -279,7 +287,10 @@ func (s *LeaderboardScheduler) listGuilds(ctx context.Context) ([]GuildServers, 
 // failed - a failed lookup falls back to legacy and never tears down routed
 // panels). Another guild's failure is logged and retried next refresh; it
 // never decides the primary guild's mode.
-func (s *LeaderboardScheduler) refreshRouted(ctx context.Context, guilds []GuildServers, listErr error, primary LeaderboardSnapshot) (handled bool, err error) {
+//
+// primary is the primary guild's snapshot, nil when it could not be loaded: that guild is then
+// skipped (RefreshOnce reports its error) and the others are still refreshed.
+func (s *LeaderboardScheduler) refreshRouted(ctx context.Context, guilds []GuildServers, listErr error, primary *LeaderboardSnapshot) (handled bool, err error) {
 	if s.routes == nil || s.servers == nil || s.routePanels == nil {
 		return false, nil
 	}
@@ -289,11 +300,17 @@ func (s *LeaderboardScheduler) refreshRouted(ctx context.Context, guilds []Guild
 	}
 	var firstErr error
 	for _, g := range guilds {
-		snapshot := primary
-		if g.GuildRowID != s.guildRowID {
+		var snapshot LeaderboardSnapshot
+		if g.GuildRowID == s.guildRowID {
+			if primary == nil {
+				continue
+			}
+			snapshot = *primary
+		} else {
 			loaded, loadErr := s.loadSnapshot(ctx, g.GuildRowID, g.ServerIDs)
 			if loadErr != nil {
 				slog.Warn("component=discord", "msg", "routed leaderboard load failed", "guild_id", g.GuildRowID, "err", loadErr.Error())
+				s.failed[g.GuildRowID] = true
 				if firstErr == nil {
 					firstErr = loadErr
 				}
@@ -305,8 +322,11 @@ func (s *LeaderboardScheduler) refreshRouted(ctx context.Context, guilds []Guild
 		if g.GuildRowID == s.guildRowID {
 			handled = routed
 		}
-		if syncErr != nil && firstErr == nil {
-			firstErr = syncErr
+		if syncErr != nil {
+			s.failed[g.GuildRowID] = true
+			if firstErr == nil {
+				firstErr = syncErr
+			}
 		}
 	}
 	if !handled {
@@ -491,4 +511,16 @@ func (s *LeaderboardScheduler) Run(ctx context.Context) {
 func weekStartUTC(t time.Time) time.Time {
 	day := t.UTC().Truncate(24 * time.Hour)
 	return day.AddDate(0, 0, -((int(day.Weekday()) + 6) % 7))
+}
+
+// RefreshFailed reports whether the last RefreshOnce failed to publish guildRowID's board. The
+// route syncer records a changed guild's routes once its board is up, so one guild failing on
+// every pass does not make every other guild's board refresh again each time.
+func (s *LeaderboardScheduler) RefreshFailed(guildRowID int64) bool {
+	if s == nil {
+		return false
+	}
+	s.refreshMu.Lock()
+	defer s.refreshMu.Unlock()
+	return s.failed[guildRowID]
 }
