@@ -512,3 +512,31 @@ func (a *App) handleCreateDiscordChannel(w http.ResponseWriter, r *http.Request)
 		CanSend: true,
 	})
 }
+
+// requireOwnGuildChannel reports whether channelID is a channel of the installation's own Discord
+// server (discordGuildID), writing the refusal when it is not. Champion posts with one bot
+// session that sits in every customer's server, so a channel id taken from a request must be
+// checked: otherwise one customer could point zone alerts or tournament cards at another
+// customer's channel. An empty channelID (no channel) is always allowed.
+func (a *App) requireOwnGuildChannel(w http.ResponseWriter, discordGuildID, channelID string) bool {
+	channelID = strings.TrimSpace(channelID)
+	if channelID == "" {
+		return true
+	}
+	if a.saasDiscordVerifier == nil || discordGuildID == "" {
+		writeSaaSError(w, codeDiscordUnavailable, "Discord bot session is unavailable")
+		return false
+	}
+	channels, err := a.saasDiscordVerifier.ListGuildChannels(discordGuildID)
+	if err != nil {
+		writeSaaSError(w, codeDiscordUnavailable, "could not check your Discord channels")
+		return false
+	}
+	for _, c := range channels {
+		if c.ID == channelID {
+			return true
+		}
+	}
+	writeSaaSError(w, codeValidationError, "pick a text channel in this Discord server")
+	return false
+}

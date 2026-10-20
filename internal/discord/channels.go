@@ -224,7 +224,16 @@ type GuildRoleInfo struct {
 	Color    int
 	Position int
 	Managed  bool // bot or integration roles, which members cannot hold
+	// Permissions is the role's Discord permission bit set.
+	Permissions int64
 }
+
+// StaffPermissions are the Discord permissions that run a server: a role carrying any of them
+// is staff power, not a perk, and Champion never hands it out as one (VIP tiers).
+const StaffPermissions int64 = discordgo.PermissionAdministrator | discordgo.PermissionManageServer |
+	discordgo.PermissionManageRoles | discordgo.PermissionManageChannels | discordgo.PermissionBanMembers |
+	discordgo.PermissionKickMembers | discordgo.PermissionManageWebhooks | discordgo.PermissionModerateMembers |
+	discordgo.PermissionManageMessages
 
 // GuildRoleList returns guildID's roles (state cache first, one REST fallback), highest first,
 // without @everyone.
@@ -247,7 +256,7 @@ func (c *Client) GuildRoleList(guildID string) ([]GuildRoleInfo, error) {
 		if r == nil || r.ID == guildID { // @everyone shares the guild's ID
 			continue
 		}
-		out = append(out, GuildRoleInfo{ID: r.ID, Name: r.Name, Color: r.Color, Position: r.Position, Managed: r.Managed})
+		out = append(out, GuildRoleInfo{ID: r.ID, Name: r.Name, Color: r.Color, Position: r.Position, Managed: r.Managed, Permissions: r.Permissions})
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Position > out[j].Position })
 	return out, nil
