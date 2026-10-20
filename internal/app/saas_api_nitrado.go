@@ -205,6 +205,11 @@ func (a *App) handleNitradoConnect(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("component=saas_api", "msg", "advance setup progress after nitrado connect failed", "err", err.Error())
 	}
 
+	// Running workers still hold the previous token (often the one that expired, which is why the
+	// customer is reconnecting): restart them on the new one. Stopping waits for each worker, so
+	// it runs after the response.
+	go a.restartOrganizationWorkers(context.WithoutCancel(ctx), organizationID)
+
 	slog.Info("component=saas_api", "event", "saas_nitrado_connect", "organization_id", organizationID, "connected", true, "services_found", len(supported))
 	writeSaaSJSON(w, http.StatusOK, NitradoConnectResponse{Connected: true, ServicesFound: len(supported)})
 }

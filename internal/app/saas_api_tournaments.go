@@ -436,6 +436,9 @@ func (a *App) handleOwnerTournamentCreate(w http.ResponseWriter, r *http.Request
 	if !a.readTournamentBody(w, r, &body) {
 		return
 	}
+	if body.DiscordChannelID != nil && !a.requireOwnGuildChannel(w, sr.scope.DiscordGuildID, *body.DiscordChannelID) {
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), adminTimeout)
 	defer cancel()
 	p, err := a.tournamentParams(ctx, &body, nil, sr.scope.InstallationID)
@@ -479,6 +482,9 @@ func (a *App) handleOwnerTournamentPatch(w http.ResponseWriter, r *http.Request)
 	}
 	var body tournamentBody
 	if !a.readTournamentBody(w, r, &body) {
+		return
+	}
+	if body.DiscordChannelID != nil && !a.requireOwnGuildChannel(w, sr.scope.DiscordGuildID, *body.DiscordChannelID) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), adminTimeout)

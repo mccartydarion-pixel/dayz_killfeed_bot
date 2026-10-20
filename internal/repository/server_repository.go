@@ -177,6 +177,24 @@ func (r *ServerRepository) OrganizationIDFor(ctx context.Context, id int64) (*in
 	return orgID, nil
 }
 
+// ActiveServerIDsForOrganization lists the active game servers organization organizationID owns.
+func (r *ServerRepository) ActiveServerIDsForOrganization(ctx context.Context, organizationID int64) ([]int64, error) {
+	rows, err := r.pool.Query(ctx, `SELECT id FROM game_servers WHERE organization_id=$1 AND active ORDER BY id`, organizationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 // FindByGuildAndService looks up a game_servers row by its provider service ID
 // regardless of active state, for onboarding flows (disconnect/repair) that
 // need to find a server that may already be inactive.

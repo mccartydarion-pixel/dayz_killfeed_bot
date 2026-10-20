@@ -16,7 +16,7 @@ import (
 // linkApprover is the narrow surface admin_commands.go needs from
 // linking.LinkVerificationService, for the /admin verify-link fallback.
 type linkApprover interface {
-	ApproveManually(ctx context.Context, guildID int64, playerName string) error
+	ApproveManually(ctx context.Context, guildID int64, playerName string) (discordUserID string, err error)
 }
 
 type AdminCommandHandler struct {
@@ -160,7 +160,8 @@ func (h *AdminCommandHandler) handleVerifyLink(s *discordgo.Session, i *discordg
 		respondEphemeral(s, i, ReplyNotSetUp)
 		return
 	}
-	if err := h.links.ApproveManually(ctx, guildID, username); err != nil {
+	discordUserID, err := h.links.ApproveManually(ctx, guildID, username)
+	if err != nil {
 		switch {
 		case errors.Is(err, linking.ErrPlayerNotFound):
 			respondEphemeral(s, i, fmt.Sprintf("No pending /link request found for `%s`.", username))
@@ -169,7 +170,9 @@ func (h *AdminCommandHandler) handleVerifyLink(s *discordgo.Session, i *discordg
 		}
 		return
 	}
-	respondEphemeral(s, i, fmt.Sprintf("✅ Verified the pending link for `%s`.", username))
+	// Name the Discord member the link now belongs to: the pending request is whoever ran /link
+	// for that name, which is not always the person who asked the admin.
+	respondEphemeral(s, i, fmt.Sprintf("✅ Verified the pending link for `%s` to <@%s>.", username, discordUserID))
 }
 
 func buildADMSourceScanEmbed(values map[string]any, err error) *discordgo.MessageEmbed {

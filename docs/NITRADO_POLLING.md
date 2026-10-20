@@ -62,6 +62,16 @@ quarter hour instead of a download plus a tree walk every minute. The newer-boot
 seconds; a file it could read but could not verify (no header, header for another boot) is
 remembered by its listed size and modified time and is not downloaded again until it changes.
 
+## A rejected token ends the worker (`Engine.authExit`)
+
+Nitrado answering 401 means the access token is expired or revoked; no retry can succeed until
+the customer reconnects. Three cycles in a row ending in a 401 end the worker with that error, and
+the WorkerManager restarts it under its jittered backoff (1 s doubling to 5 min). Each restart
+re-reads the credential, so a token the customer has since replaced is picked up. Saving a new
+token on the website (`handleNitradoConnect`) also restarts the organization's running workers at
+once (`restartOrganizationWorkers`), keeping their checkpoints. Before this, an expired token was
+retried every 30 s indefinitely and a reconnect only took effect at the next deploy.
+
 ## Adaptive poll rate (`Engine.pollingInterval`)
 
 First match wins:

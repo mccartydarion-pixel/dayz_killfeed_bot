@@ -34,13 +34,27 @@ func (a *App) runRoleReconciler(ctx context.Context) {
 		}
 		if a.Guilds != nil && a.LinkService != nil && a.Config != nil {
 			runCtx, cancel := context.WithTimeout(ctx, time.Minute)
-			if _, guildRowID, err := a.Guilds.GetGuild(runCtx, a.Config.DiscordGuildID); err == nil && guildRowID > 0 {
+			// Every guild links its players, and each has its own Verified role.
+			_, primary, _ := a.Guilds.GetGuild(runCtx, a.Config.DiscordGuildID)
+			for _, guildRowID := range a.schedulerGuilds(runCtx, primary) {
 				if _, err := a.LinkService.ReconcileRoles(runCtx, guildRowID, roleReconcileBatch); err != nil {
-					slog.Warn("component=link", "event", "role_reconcile_failed", "err", err.Error())
+					slog.Warn("component=link", "event", "role_reconcile_failed", "guild_id", guildRowID, "err", err.Error())
 				}
 			}
 			cancel()
 		}
 		timer.Reset(roleReconcileInterval)
 	}
+}
+
+// discordGuildIDFor resolves a guild row to its Discord guild ID ("" when there is no such row).
+func (a *App) discordGuildIDFor(ctx context.Context, guildRowID int64) (string, error) {
+	if a.Guilds == nil {
+		return "", fmt.Errorf("guild repository unavailable")
+	}
+	rec, err := a.Guilds.GetGuildByID(ctx, guildRowID)
+	if err != nil || rec == nil {
+		return "", err
+	}
+	return rec.DiscordGuildID, nil
 }

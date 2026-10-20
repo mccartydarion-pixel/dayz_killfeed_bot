@@ -59,6 +59,22 @@ func TestVIPTiers(t *testing.T) {
 		tier := decodeBody[vip.Tier](t, rr)
 		return &tier
 	}
+	if w.verifier.guildRoles == nil {
+		w.verifier.guildRoles = map[string][]discordRoleFixture{}
+	}
+	w.verifier.guildRoles[w.f.DiscordGuildID] = append(w.verifier.guildRoles[w.f.DiscordGuildID],
+		discordRoleFixture{ID: "123456789012345678", Name: "Gold perk", Position: 3},
+		discordRoleFixture{ID: "223456789012345678", Name: "Admins", Position: 9, Permissions: discordgo.PermissionAdministrator},
+		discordRoleFixture{ID: "323456789012345678", Name: "Mods", Position: 7, Permissions: discordgo.PermissionBanMembers},
+		discordRoleFixture{ID: "423456789012345678", Name: "Hub staff", Position: 5},
+		discordRoleFixture{ID: "523456789012345678", Name: "Some bot", Position: 4, Managed: true})
+	w.mapRole("hub-staffer", "423456789012345678", "MODERATOR")
+	// The bot grants a tier's role with its own Administrator rights: staff power is never a perk.
+	for _, role := range []string{"223456789012345678", "323456789012345678", "423456789012345678", "523456789012345678", "999456789012345678"} {
+		if saveTier(map[string]any{"name": "Escalate " + role, "badge": "x", "color": "#E7B94A", "discordRoleId": role}) != nil {
+			t.Fatalf("role %s must not be accepted as a VIP perk", role)
+		}
+	}
 	if saveTier(map[string]any{"name": "Bad", "badge": "x", "color": "red"}) != nil {
 		t.Fatal("invalid colour accepted")
 	}

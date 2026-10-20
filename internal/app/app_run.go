@@ -131,7 +131,7 @@ func (a *App) Run() error {
 	a.factionRecruitAPI = api
 	setupManager := discord.NewSetupManager(api, setupStore, a.Discord.BotID())
 	if a.LinkService != nil && a.Config.DiscordGuildID != "" {
-		verifiedRole := discord.NewVerifiedRoleAssigner(a.Discord, setupStore, a.Config.DiscordGuildID)
+		verifiedRole := discord.NewVerifiedRoleAssigner(a.Discord, setupStore, a.discordGuildIDFor)
 		a.LinkService.SetRoleAssigner(verifiedRole)
 		a.LinkService.SetNotifier(verifiedRole)
 		go a.singleton(ctx, "verified_role_reconciler", a.runRoleReconciler)

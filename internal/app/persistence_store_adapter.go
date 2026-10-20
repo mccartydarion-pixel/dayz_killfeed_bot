@@ -248,7 +248,9 @@ func (p *persistenceStoreAdapter) ResolveKillAttribution(ctx context.Context, gu
 		victimFactionID = &v.FactionID
 	}
 	if killerFactionID != nil && victimFactionID != nil && *killerFactionID != *victimFactionID && p.wars != nil {
-		if w, err := p.wars.GetActivePair(ctx, guildID, *killerFactionID, *victimFactionID); err == nil && w != nil {
+		// A kill read late (an ADM backlog after a restart) from before the war started is not a
+		// war kill, even though the war is active by the time it is processed.
+		if w, err := p.wars.GetActivePair(ctx, guildID, *killerFactionID, *victimFactionID); err == nil && w != nil && warCovers(w.StartedAt, at) {
 			warID = &w.ID
 		}
 	}
@@ -409,7 +411,7 @@ func (p *persistenceStoreAdapter) ProcessPersistedKillStaged(ctx context.Context
 				}
 				eventID := stored.ID
 				eventScores = append(eventScores, func(ctx context.Context) {
-					if _, scoreErr := p.events.ScoreKill(ctx, eventID, killID, score.PlayerID, score.FactionID, score.Points, score.BestDistance, score.BestStreak); scoreErr != nil {
+					if _, scoreErr := p.events.ScoreKill(ctx, eventID, killID, score.PlayerID, score.FactionID, score.Points, score.Best, score.BestDistance, score.BestStreak); scoreErr != nil {
 						slog.Warn("component=events", "msg", "event scoring failed", "event_id", eventID, "err", scoreErr.Error())
 					}
 				})
@@ -570,4 +572,10 @@ func valueOfID(v *int64) int64 {
 		return 0
 	}
 	return *v
+}
+
+// warCovers reports whether a kill at at falls inside a war that started at startedAt (an
+// active war without a recorded start covers it; so does a kill with no known time).
+func warCovers(startedAt *time.Time, at time.Time) bool {
+	return startedAt == nil || at.IsZero() || !at.Before(*startedAt)
 }

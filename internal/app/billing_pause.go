@@ -146,6 +146,37 @@ func (a *App) runWorkerReconciler(ctx context.Context) {
 	}
 }
 
+// restartOrganizationWorkers restarts the running workers of organizationID's servers so they
+// read the organization's Nitrado credential again: a worker builds its Nitrado client once, at
+// start, and would otherwise keep sending a token the customer has just replaced. The restart
+// keeps each worker's checkpoint (no tail-start) and honours the billing pause. Workers that are
+// not running are left to the reconcile loop.
+func (a *App) restartOrganizationWorkers(ctx context.Context, organizationID int64) {
+	if a.WorkerManager == nil || a.Servers == nil {
+		return
+	}
+	ids, err := a.Servers.ActiveServerIDsForOrganization(ctx, organizationID)
+	if err != nil {
+		slog.Warn("component=servers", "event", "credential_restart_lookup_failed", "organization_id", organizationID, "err", err.Error())
+		return
+	}
+	for _, id := range ids {
+		if !a.WorkerManager.Running(id) {
+			continue
+		}
+		a.WorkerManager.Stop(id)
+		if paused, err := a.serverBillingPaused(ctx, id); err != nil || paused {
+			slog.Warn("component=servers", "event", "credential_restart_refused", "server_id", id, "paused", paused, "err", fmt.Sprint(err))
+			continue
+		}
+		if err := a.WorkerManager.Start(ctx, id); err != nil {
+			slog.Warn("component=servers", "event", "credential_restart_failed", "server_id", id, "err", err.Error())
+			continue
+		}
+		slog.Info("component=servers", "event", "credential_restart", "server_id", id, "organization_id", organizationID)
+	}
+}
+
 // startCustomerServer starts a server's worker after the customer selects it on the website,
 // tail-starting like a first /server connect so old log history is not replayed.
 func (a *App) startCustomerServer(ctx context.Context, serverID int64) {

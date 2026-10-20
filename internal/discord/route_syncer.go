@@ -197,7 +197,7 @@ func (s *RouteSyncer) SyncOnce(ctx context.Context) {
 			s.syncStaticPanel(ctx, g, spec)
 		}
 		if st, sig, moved := s.leaderboardRoutesMoved(ctx, g, booted); moved {
-			changed = append(changed, pendingLeaderboardSig{st, sig})
+			changed = append(changed, pendingLeaderboardSig{st, sig, g.GuildRowID})
 		}
 	}
 	s.mu.Lock()
@@ -207,11 +207,20 @@ func (s *RouteSyncer) SyncOnce(ctx context.Context) {
 		return
 	}
 	// One refresh covers every guild, so the changed guilds share it.
-	if err := s.leaderboard.RefreshOnce(ctx); err != nil {
+	err = s.leaderboard.RefreshOnce(ctx)
+	failed, perGuild := s.leaderboard.(interface{ RefreshFailed(int64) bool })
+	if err != nil {
 		slog.Warn("component=discord", "event", "route_leaderboard_refresh_failed", "err", err.Error())
-		return // keep the old signatures so the next pass retries
+		if !perGuild {
+			return // keep the old signatures so the next pass retries
+		}
 	}
+	// Record each changed guild whose board went up; a guild that failed keeps its old
+	// signature and is retried next pass, without holding the others back.
 	for _, c := range changed {
+		if err != nil && failed.RefreshFailed(c.guildRowID) {
+			continue
+		}
 		c.state.sig = c.sig
 	}
 }
@@ -219,8 +228,9 @@ func (s *RouteSyncer) SyncOnce(ctx context.Context) {
 // pendingLeaderboardSig is a guild whose AUTO_LEADERBOARD channels changed
 // and the signature to record once the refresh succeeded.
 type pendingLeaderboardSig struct {
-	state *routeSyncState
-	sig   string
+	state      *routeSyncState
+	sig        string
+	guildRowID int64
 }
 
 func (s *RouteSyncer) stateFor(guildRowID int64, routeKey string) *routeSyncState {

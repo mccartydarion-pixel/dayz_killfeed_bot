@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/yourname/dayz-killfeed/internal/discord"
 	"github.com/yourname/dayz-killfeed/internal/economy"
 	"github.com/yourname/dayz-killfeed/internal/entitlements"
 	"github.com/yourname/dayz-killfeed/internal/permissions"
@@ -97,6 +98,9 @@ func (a *App) handleSaveVIPTier(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), adminTimeout)
 	defer cancel()
+	if tier.DiscordRoleID != "" && !a.requirePerkRole(ctx, w, ac.scope, tier.DiscordRoleID) {
+		return
+	}
 	saved, err := a.VIP.SaveTier(ctx, ac.scope.GuildID, tier)
 	switch {
 	case errors.Is(err, repository.ErrVIPTierNotFound):
@@ -402,4 +406,46 @@ func (a *App) handleMyVIP(w http.ResponseWriter, r *http.Request) {
 		out["tier"] = tier
 	}
 	writeSaaSJSON(w, http.StatusOK, out)
+}
+
+// requirePerkRole reports whether roleID may be handed out as a VIP perk, writing the refusal when
+// it may not. The bot assigns it with its own (Administrator) rights to whoever is granted the
+// tier, including the staffer who set the tier up, so the role must be a plain role of this
+// Discord server: not managed by an integration, carrying no staff permission
+// (discord.StaffPermissions), and not mapped to a Champion level on the Staff page.
+func (a *App) requirePerkRole(ctx context.Context, w http.ResponseWriter, scope repository.AdminScope, roleID string) bool {
+	roles, err := a.guildRoleList(scope.DiscordGuildID)
+	if err != nil {
+		writeSaaSError(w, codeDiscordUnavailable, "could not check your Discord roles")
+		return false
+	}
+	var role *discord.GuildRoleInfo
+	for i := range roles {
+		if roles[i].ID == roleID {
+			role = &roles[i]
+		}
+	}
+	switch {
+	case role == nil:
+		writeSaaSError(w, codeValidationError, "pick a role in this Discord server")
+		return false
+	case role.Managed:
+		writeSaaSError(w, codeValidationError, "that role is managed by an integration and cannot be given out")
+		return false
+	case role.Permissions&discord.StaffPermissions != 0:
+		writeSaaSError(w, codeValidationError, "that role has staff permissions (such as Administrator, Manage Server or Ban Members); pick a perk role without them")
+		return false
+	}
+	if a.Permissions != nil {
+		levels, err := a.Permissions.LevelsForRoles(ctx, scope.InstallationID, []string{roleID})
+		if err != nil {
+			writeSaaSError(w, codeInternalError, "could not check the role")
+			return false
+		}
+		if len(levels) > 0 {
+			writeSaaSError(w, codeValidationError, "that role gives Champion staff access on the Staff page; pick a perk role instead")
+			return false
+		}
+	}
+	return true
 }

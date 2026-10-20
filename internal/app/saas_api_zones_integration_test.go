@@ -4,12 +4,14 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
 	"testing"
 	"time"
 
+	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -187,5 +189,35 @@ func TestAcknowledgeIntrusionRequiresCapabilityAndAudits(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("expected an INTRUSION_ACKNOWLEDGE audit entry")
+	}
+}
+
+// A zone's alert channel must be in the installation's own Discord server: the bot sits in every
+// customer's server, so a foreign channel id would let one customer post into another's.
+func TestZoneAlertChannelMustBeInTheInstallationsDiscord(t *testing.T) {
+	w := newZoneWorld(t)
+	seedGuildChannels(w.verifier, w.f.DiscordGuildID, fakeGuildChannel{ID: "own-alerts", Name: "alerts", Type: discordgo.ChannelTypeGuildText})
+	seedGuildChannels(w.verifier, "rival-guild", fakeGuildChannel{ID: "rival-general", Name: "general", Type: discordgo.ChannelTypeGuildText})
+
+	foreign := "rival-general"
+	rr := w.call(w.a.handleCreateZone, http.MethodPost, w.path("/zones"), w.f.OwnerDiscordID,
+		createZoneRequest{Name: "Trap", ZoneType: repository.ZoneTypeRestricted, Radius: 50, AlertChannelID: &foreign}, nil)
+	if rr.Code < 400 || rr.Code == http.StatusInternalServerError {
+		t.Fatalf("a channel of another Discord server must be refused, got %d: %s", rr.Code, rr.Body.String())
+	}
+	own := "own-alerts"
+	rr = w.call(w.a.handleCreateZone, http.MethodPost, w.path("/zones"), w.f.OwnerDiscordID,
+		createZoneRequest{Name: "Base", ZoneType: repository.ZoneTypeRestricted, Radius: 50, AlertChannelID: &own}, nil)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("the installation's own channel is accepted, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var zone zoneDTO
+	if err := json.Unmarshal(rr.Body.Bytes(), &zone); err != nil {
+		t.Fatal(err)
+	}
+	rr = w.call(w.a.handleUpdateZone, http.MethodPatch, w.path(fmt.Sprintf("/zones/%d", zone.ID)), w.f.OwnerDiscordID,
+		map[string]any{"alertChannelId": foreign}, map[string]string{"zoneID": strconv.FormatInt(zone.ID, 10)})
+	if rr.Code < 400 || rr.Code == http.StatusInternalServerError {
+		t.Fatalf("updating to another server's channel must be refused, got %d: %s", rr.Code, rr.Body.String())
 	}
 }

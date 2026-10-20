@@ -110,7 +110,10 @@ func (r *EventRepository) EndDue(ctx context.Context, now time.Time) error {
 	_, err := r.pool.Exec(ctx, `UPDATE competitive_events SET status='ENDED',updated_at=NOW() WHERE status='ACTIVE' AND ends_at IS NOT NULL AND ends_at<=$1`, now)
 	return err
 }
-func (r *EventRepository) ScoreKill(ctx context.Context, eventID, killID, playerID, factionID int64, points float64, distance *float64, streak int) (bool, error) {
+
+// ScoreKill adds kill killID to event eventID's scores once. best=true keeps the higher score
+// instead of adding (LONGEST_KILL and KILL_STREAK rank the single best kill or streak, not a sum).
+func (r *EventRepository) ScoreKill(ctx context.Context, eventID, killID, playerID, factionID int64, points float64, best bool, distance *float64, streak int) (bool, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return false, err
@@ -124,9 +127,9 @@ func (r *EventRepository) ScoreKill(ctx context.Context, eventID, killID, player
 		return false, nil
 	}
 	if playerID > 0 {
-		_, err = tx.Exec(ctx, `INSERT INTO event_scores(event_id,player_id,score,kills,best_distance,best_streak) VALUES($1,$2,$3,1,$4,$5) ON CONFLICT(event_id,player_id) WHERE player_id IS NOT NULL DO UPDATE SET score=event_scores.score+EXCLUDED.score,kills=event_scores.kills+1,best_distance=GREATEST(event_scores.best_distance,EXCLUDED.best_distance),best_streak=GREATEST(event_scores.best_streak,EXCLUDED.best_streak),updated_at=NOW()`, eventID, playerID, points, distance, streak)
+		_, err = tx.Exec(ctx, `INSERT INTO event_scores(event_id,player_id,score,kills,best_distance,best_streak) VALUES($1,$2,$3,1,$4,$5) ON CONFLICT(event_id,player_id) WHERE player_id IS NOT NULL DO UPDATE SET score=CASE WHEN $6 THEN GREATEST(event_scores.score,EXCLUDED.score) ELSE event_scores.score+EXCLUDED.score END,kills=event_scores.kills+1,best_distance=GREATEST(event_scores.best_distance,EXCLUDED.best_distance),best_streak=GREATEST(event_scores.best_streak,EXCLUDED.best_streak),updated_at=NOW()`, eventID, playerID, points, distance, streak, best)
 	} else {
-		_, err = tx.Exec(ctx, `INSERT INTO event_scores(event_id,faction_id,score,kills,best_distance,best_streak) VALUES($1,$2,$3,1,$4,$5) ON CONFLICT(event_id,faction_id) WHERE faction_id IS NOT NULL DO UPDATE SET score=event_scores.score+EXCLUDED.score,kills=event_scores.kills+1,best_distance=GREATEST(event_scores.best_distance,EXCLUDED.best_distance),best_streak=GREATEST(event_scores.best_streak,EXCLUDED.best_streak),updated_at=NOW()`, eventID, factionID, points, distance, streak)
+		_, err = tx.Exec(ctx, `INSERT INTO event_scores(event_id,faction_id,score,kills,best_distance,best_streak) VALUES($1,$2,$3,1,$4,$5) ON CONFLICT(event_id,faction_id) WHERE faction_id IS NOT NULL DO UPDATE SET score=CASE WHEN $6 THEN GREATEST(event_scores.score,EXCLUDED.score) ELSE event_scores.score+EXCLUDED.score END,kills=event_scores.kills+1,best_distance=GREATEST(event_scores.best_distance,EXCLUDED.best_distance),best_streak=GREATEST(event_scores.best_streak,EXCLUDED.best_streak),updated_at=NOW()`, eventID, factionID, points, distance, streak, best)
 	}
 	if err != nil {
 		return false, err

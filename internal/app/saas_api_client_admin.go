@@ -98,9 +98,13 @@ func (a *App) nitradoClientForOrg(ctx context.Context, w http.ResponseWriter, ac
 	return client, server.ProviderServiceID, true
 }
 
+// maxJSONBody bounds a JSON request body: the website's largest (embed designs, map rotations,
+// shop catalogues) are a few tens of kilobytes.
+const maxJSONBody = 1 << 20
+
 func decodeJSONBody[T any](w http.ResponseWriter, r *http.Request) (T, bool) {
 	var v T
-	if err := json.NewDecoder(r.Body).Decode(&v); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxJSONBody)).Decode(&v); err != nil {
 		writeSaaSError(w, codeInvalidRequest, "invalid request body")
 		return v, false
 	}

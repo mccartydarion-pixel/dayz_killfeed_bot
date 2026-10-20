@@ -240,6 +240,21 @@ func parseExplicitKill(line string) (*Event, bool) {
 	if !ok {
 		return nil, false
 	}
+	if killer.ID != "" && killer.ID == victim.ID {
+		// "killed by Player" naming the victim (own grenade, own explosive) is a suicide, not a
+		// kill: it must not count toward kills, K/D, streaks, bounties or events, and it is the
+		// only line DayZ writes for that death, so it becomes the death.
+		ev := &Event{
+			Type:      EventPlayerDeath,
+			TimeOfDay: parseTimeOfDay(line),
+			Player:    victim,
+			Weapon:    parseWeapon(line),
+			Dead:      true,
+			Cause:     DeathCauseSuicide,
+			Raw:       line,
+		}
+		return ev, true
+	}
 
 	ev := &Event{
 		Type:      EventPlayerKill,

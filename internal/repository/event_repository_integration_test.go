@@ -79,18 +79,18 @@ func TestScoreKillAccumulatesAgainstPartialUniqueIndexes(t *testing.T) {
 	f64 := func(v float64) *float64 { return &v }
 
 	// Two kills for the same player: the second must hit the upsert's DO UPDATE branch.
-	if ok, err := events.ScoreKill(ctx, ev.ID, kill1, playerID, 0, 10, f64(100), 2); err != nil || !ok {
+	if ok, err := events.ScoreKill(ctx, ev.ID, kill1, playerID, 0, 10, false, f64(100), 2); err != nil || !ok {
 		t.Fatalf("first player kill: ok=%v err=%v", ok, err)
 	}
-	if ok, err := events.ScoreKill(ctx, ev.ID, kill2, playerID, 0, 5, f64(50), 4); err != nil || !ok {
+	if ok, err := events.ScoreKill(ctx, ev.ID, kill2, playerID, 0, 5, false, f64(50), 4); err != nil || !ok {
 		t.Fatalf("second player kill: ok=%v err=%v", ok, err)
 	}
 	// One faction kill.
-	if ok, err := events.ScoreKill(ctx, ev.ID, kill3, 0, factionID, 7, f64(30), 1); err != nil || !ok {
+	if ok, err := events.ScoreKill(ctx, ev.ID, kill3, 0, factionID, 7, false, f64(30), 1); err != nil || !ok {
 		t.Fatalf("faction kill: ok=%v err=%v", ok, err)
 	}
 	// Replaying an already-scored kill must be a no-op.
-	if ok, err := events.ScoreKill(ctx, ev.ID, kill1, playerID, 0, 10, f64(100), 2); err != nil || ok {
+	if ok, err := events.ScoreKill(ctx, ev.ID, kill1, playerID, 0, 10, false, f64(100), 2); err != nil || ok {
 		t.Fatalf("replayed kill must be ignored: ok=%v err=%v", ok, err)
 	}
 
@@ -118,5 +118,19 @@ func TestScoreKillAccumulatesAgainstPartialUniqueIndexes(t *testing.T) {
 	}
 	if faction.Score != 7 || faction.Kills != 1 || faction.BestStreak != 1 || faction.BestDistance == nil || *faction.BestDistance != 30 {
 		t.Fatalf("faction accumulation wrong: %+v (best_distance=%v)", *faction, faction.BestDistance)
+	}
+	// A Longest Kill event keeps each player's best kill: ten short kills never beat one long one.
+	sniper, err := events.CreateEvent(ctx, CompetitiveEvent{GuildID: guildID, Type: "LONGEST_KILL", Name: "Sniper", Status: "ACTIVE", StartsAt: &now, Config: []byte(`{}`)}, "tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, d := range []float64{210, 900, 300} {
+		if ok, err := events.ScoreKill(ctx, sniper.ID, []int64{kill1, kill2, kill3}[i], playerID, 0, d, true, f64(d), 0); err != nil || !ok {
+			t.Fatalf("sniper kill %d: ok=%v err=%v", i, ok, err)
+		}
+	}
+	sb, err := events.Leaderboard(ctx, sniper.ID, 10)
+	if err != nil || len(sb) != 1 || sb[0].Score != 900 || sb[0].Kills != 3 {
+		t.Fatalf("a best-of event keeps the longest kill (900), got %+v err=%v", sb, err)
 	}
 }

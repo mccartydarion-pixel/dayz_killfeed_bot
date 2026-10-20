@@ -100,8 +100,9 @@ type Repository interface {
 	GetByPlayer(ctx context.Context, guildID, playerID int64) (*LinkRecord, error)
 	CreatePending(ctx context.Context, link LinkRecord) error
 	Unlink(ctx context.Context, guildID int64, discordUserID string) error
-	// Verify promotes a guild's pending link for discordUserID to VERIFIED.
-	Verify(ctx context.Context, guildID int64, discordUserID string) error
+	// Verify promotes a guild's pending link for discordUserID to VERIFIED, only while it still
+	// points at playerID.
+	Verify(ctx context.Context, guildID int64, discordUserID string, playerID int64) error
 }
 
 // ChallengeRepository backs the disconnect-then-reconnect ADM verification
@@ -158,7 +159,9 @@ const (
 // This app serves a single Discord guild per process (mirroring
 // KillfeedPublisher's binding), so no guild ID is needed per call.
 type RoleAssigner interface {
-	AssignVerifiedRole(ctx context.Context, discordUserID string) error
+	// AssignVerifiedRole gives discordUserID the Verified role of the Discord server whose guild
+	// row is guildID: each customer guild has its own role.
+	AssignVerifiedRole(ctx context.Context, guildID int64, discordUserID string) error
 }
 
 // Notifier tells the player their link finished verifying. Completion can
@@ -365,27 +368,28 @@ func (s *LinkVerificationService) ObserveConnect(ctx context.Context, guildID, p
 	if err != nil || !ok {
 		return err
 	}
-	return s.complete(ctx, guildID, discordUserID)
+	return s.complete(ctx, guildID, discordUserID, playerID)
 }
 
 // ApproveManually completes a pending link for the named player without
 // requiring the disconnect/reconnect challenge - the admin fallback for when
-// a player can't reconnect in time or the ADM pipeline is degraded.
-func (s *LinkVerificationService) ApproveManually(ctx context.Context, guildID int64, playerName string) error {
+// a player can't reconnect in time or the ADM pipeline is degraded. It returns the Discord user
+// whose link was verified, so the admin sees who they approved.
+func (s *LinkVerificationService) ApproveManually(ctx context.Context, guildID int64, playerName string) (string, error) {
 	if s == nil {
-		return ErrLinkCheckUnavailable
+		return "", ErrLinkCheckUnavailable
 	}
 	if s.challenge == nil {
-		return ErrLinkCheckUnavailable
+		return "", ErrLinkCheckUnavailable
 	}
-	discordUserID, _, ok, err := s.challenge.GetPendingLinkByPlayerName(ctx, guildID, strings.TrimSpace(playerName))
+	discordUserID, playerID, ok, err := s.challenge.GetPendingLinkByPlayerName(ctx, guildID, strings.TrimSpace(playerName))
 	if err != nil {
-		return ErrLinkCheckUnavailable
+		return "", ErrLinkCheckUnavailable
 	}
 	if !ok {
-		return ErrPlayerNotFound
+		return "", ErrPlayerNotFound
 	}
-	return s.complete(ctx, guildID, discordUserID)
+	return discordUserID, s.complete(ctx, guildID, discordUserID, playerID)
 }
 
 // complete promotes the link to VERIFIED, assigns the configured role, and
@@ -396,8 +400,8 @@ func (s *LinkVerificationService) ApproveManually(ctx context.Context, guildID i
 // ObserveConnect (CompletePendingChallenge already flipped player_links in
 // its own transaction) and required when reached via ApproveManually (which
 // never touches player_links itself).
-func (s *LinkVerificationService) complete(ctx context.Context, guildID int64, discordUserID string) error {
-	if err := s.repo.Verify(ctx, guildID, discordUserID); err != nil {
+func (s *LinkVerificationService) complete(ctx context.Context, guildID int64, discordUserID string, playerID int64) error {
+	if err := s.repo.Verify(ctx, guildID, discordUserID, playerID); err != nil {
 		return err
 	}
 	roleAssigned := false
@@ -437,7 +441,7 @@ func plausibleUsername(name string) bool {
 // is VERIFIED but whose role failed stays FAILED (retried by ReconcileRoles),
 // never mistaken for assigned.
 func (s *LinkVerificationService) assignRole(ctx context.Context, guildID int64, discordUserID string) error {
-	err := s.roles.AssignVerifiedRole(ctx, discordUserID)
+	err := s.roles.AssignVerifiedRole(ctx, guildID, discordUserID)
 	status := RoleSyncAssigned
 	switch {
 	case err == nil:

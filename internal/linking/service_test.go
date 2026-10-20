@@ -43,7 +43,7 @@ func (r *linkTestRepository) CreatePending(_ context.Context, link LinkRecord) e
 }
 func (r *linkTestRepository) Unlink(context.Context, int64, string) error { return nil }
 
-func (r *linkTestRepository) Verify(_ context.Context, guildID int64, discordUserID string) error {
+func (r *linkTestRepository) Verify(_ context.Context, guildID int64, discordUserID string, _ int64) error {
 	r.verifyCalls++
 	r.verifyDiscordUserID = discordUserID
 	if r.challengeGuildID == guildID && r.challengeDiscordID == discordUserID {
@@ -109,7 +109,7 @@ type spyRoleAssigner struct {
 	err               error
 }
 
-func (a *spyRoleAssigner) AssignVerifiedRole(_ context.Context, discordUserID string) error {
+func (a *spyRoleAssigner) AssignVerifiedRole(_ context.Context, _ int64, discordUserID string) error {
 	a.calls++
 	a.lastDiscordUserID = discordUserID
 	return a.err
@@ -371,8 +371,12 @@ func TestApproveManuallyCompletesRegardlessOfADMActivity(t *testing.T) {
 	roles := &spyRoleAssigner{}
 	service := NewService(repo, repo, roles)
 
-	if err := service.ApproveManually(context.Background(), 1, "tcp"); err != nil {
+	who, err := service.ApproveManually(context.Background(), 1, "tcp")
+	if err != nil {
 		t.Fatalf("ApproveManually: %v", err)
+	}
+	if who != "discord-1" {
+		t.Fatalf("the admin is told whose link was verified, got %q", who)
 	}
 	if repo.verifyCalls != 1 || repo.verifyDiscordUserID != "discord-1" {
 		t.Fatalf("expected Verify called once for discord-1, got calls=%d last=%q", repo.verifyCalls, repo.verifyDiscordUserID)
@@ -388,7 +392,7 @@ func TestApproveManuallyReportsPlayerNotFoundForNoPendingRequest(t *testing.T) {
 	repo := &linkTestRepository{players: []PlayerCandidate{{ID: 10, DisplayName: "TCP"}}}
 	service := NewService(repo, repo, &spyRoleAssigner{})
 
-	err := service.ApproveManually(context.Background(), 1, "tcp")
+	_, err := service.ApproveManually(context.Background(), 1, "tcp")
 	if !errors.Is(err, ErrPlayerNotFound) {
 		t.Fatalf("expected player-not-found, got %v", err)
 	}

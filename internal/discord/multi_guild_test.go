@@ -2,6 +2,7 @@ package discord
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 	"testing"
@@ -256,5 +257,46 @@ func TestServerStatusBoardServesEveryGuild(t *testing.T) {
 	}
 	if f.store.messageFor(customerGuild, routeKeyServerStatus, "status-8") == "" || f.store.messageFor(f.guild, routeKeyServerStatus, "status-7") == "" {
 		t.Fatal("each status message must be recorded under its own guild")
+	}
+}
+
+// failingGuildLeaderboard fails every refresh for one guild only.
+type failingGuildLeaderboard struct {
+	refreshes int
+	bad       int64
+}
+
+func (f *failingGuildLeaderboard) RefreshOnce(context.Context) error {
+	f.refreshes++
+	return errors.New("guild board failed")
+}
+func (f *failingGuildLeaderboard) RefreshFailed(guildRowID int64) bool { return guildRowID == f.bad }
+
+// One guild whose board fails on every refresh keeps being retried, but a guild whose board went
+// up is recorded: it no longer makes the syncer refresh every guild's board on every pass.
+func TestRouteSyncerRecordsGuildsWhoseBoardWentUp(t *testing.T) {
+	f := newRoutedFixture(t)
+	guilds := []GuildServers{{GuildRowID: 7, ServerIDs: []int64{1, 2}}}
+	syncer := NewRouteSyncer(f.resolver, func(context.Context) ([]GuildServers, error) { return guilds, nil }, f.panels, f.api, f.setup, "g1", f.guild)
+	lb := &failingGuildLeaderboard{bad: 99}
+	syncer.SetLeaderboard(lb)
+	ctx := context.Background()
+	syncer.SyncOnce(ctx) // startup
+	guilds = append(guilds, GuildServers{GuildRowID: customerGuild, ServerIDs: []int64{3}}, GuildServers{GuildRowID: 99, ServerIDs: []int64{9}})
+	f.resolver.set(customerGuild, 3, routeKeyAutoLeaderboard, "lb-8")
+	f.resolver.set(99, 9, routeKeyAutoLeaderboard, "lb-99")
+	syncer.SyncOnce(ctx)
+	if lb.refreshes != 1 {
+		t.Fatalf("two new guilds share one refresh, refreshes=%d", lb.refreshes)
+	}
+	if st := syncer.stateFor(customerGuild, routeKeyAutoLeaderboard); st.sig != "lb-8" {
+		t.Fatalf("the guild whose board went up is recorded, sig=%q", st.sig)
+	}
+	if st := syncer.stateFor(99, routeKeyAutoLeaderboard); st.sig == "lb-99" {
+		t.Fatal("the failing guild is not recorded, so it is retried")
+	}
+	syncer.SyncOnce(ctx)
+	if lb.refreshes != 2 {
+		t.Fatalf("the failing guild is retried, refreshes=%d", lb.refreshes)
 	}
 }

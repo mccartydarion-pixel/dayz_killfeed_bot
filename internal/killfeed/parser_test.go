@@ -190,3 +190,19 @@ func TestExplicitKillCheckedBeforeDeath(t *testing.T) {
 		t.Fatalf("expected explicit kill to win ordering, got %s", ev.Type)
 	}
 }
+
+// A kill line naming the victim as the killer is a suicide death, never a kill.
+func TestSelfKillParsesAsSuicideDeath(t *testing.T) {
+	line := `12:00:01 | Player "Bob" (DEAD) (id=ABC= pos=<100.0, 200.0, 10.0>) killed by Player "Bob" (id=ABC= pos=<100.0, 200.0, 10.0>) with M67 Grenade from 0.5 meters`
+	ev, ok := parseExplicitKill(line)
+	if !ok {
+		t.Fatal("self-kill line not parsed")
+	}
+	if ev.Type != EventPlayerDeath || ev.Cause != DeathCauseSuicide || ev.Player == nil || ev.Player.Name != "Bob" || ev.Killer != nil {
+		t.Fatalf("self-kill must be a suicide death of the victim, got %+v", ev)
+	}
+	other := `12:00:01 | Player "Bob" (DEAD) (id=ABC= pos=<100.0, 200.0, 10.0>) killed by Player "Al" (id=XYZ= pos=<100.0, 200.0, 10.0>) with M4-A1 from 50 meters`
+	if ev, ok := parseExplicitKill(other); !ok || ev.Type != EventPlayerKill {
+		t.Fatalf("a kill by another player stays a kill, got %+v", ev)
+	}
+}

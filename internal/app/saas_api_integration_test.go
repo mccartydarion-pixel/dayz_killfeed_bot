@@ -143,16 +143,17 @@ func (f *fakeDiscordVerifier) GuildPermissions(guildID string) (int64, error) {
 }
 
 type discordRoleFixture struct {
-	ID, Name string
-	Position int
-	Managed  bool
+	ID, Name    string
+	Position    int
+	Managed     bool
+	Permissions int64
 }
 
 // GuildRoleList returns the configured roles of guildID.
 func (f *fakeDiscordVerifier) GuildRoleList(guildID string) ([]discord.GuildRoleInfo, error) {
 	out := []discord.GuildRoleInfo{}
 	for _, r := range f.guildRoles[guildID] {
-		out = append(out, discord.GuildRoleInfo{ID: r.ID, Name: r.Name, Position: r.Position, Managed: r.Managed})
+		out = append(out, discord.GuildRoleInfo{ID: r.ID, Name: r.Name, Position: r.Position, Managed: r.Managed, Permissions: r.Permissions})
 	}
 	return out, nil
 }

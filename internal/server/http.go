@@ -48,8 +48,13 @@ func New(cfg *config.Config, state *State) (*Server, error) {
 		Handler:           mux,
 		ReadTimeout:       5 * time.Second,
 		ReadHeaderTimeout: 3 * time.Second,
-		WriteTimeout:      10 * time.Second,
-		IdleTimeout:       30 * time.Second,
+		// WriteTimeout bounds the whole response, counted from the end of the request headers.
+		// Some handlers legitimately run past 10 s (stadium build/remove 90 s, ADM source scan 90 s,
+		// organization erase 30 s, Nitrado ban/whitelist 20 s, Stripe 15 s): at 10 s their work
+		// finished but the response was dropped and the website retried it. Each handler bounds
+		// its own work with a context deadline; this only has to outlast the longest one.
+		WriteTimeout: 2 * time.Minute,
+		IdleTimeout:  30 * time.Second,
 	}
 
 	return &Server{httpServer: s, mux: mux, config: cfg, state: state}, nil
