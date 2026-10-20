@@ -303,14 +303,18 @@ func (a *App) Run() error {
 	routes.ComponentPrefix(discord.ShopOrderIssuePrefix, discord.AckSelf, a.HandleShopOrderInteraction)
 	routes.ModalPrefix(discord.ShopOrderPrefix, discord.AckUpdate, a.HandleShopOrderInteraction)
 
-	// Every handler is installed, so the commands can go live in one request.
+	// Every handler is installed, so the commands can go live. They are global,
+	// so every customer's Discord server has them (each handler works on the
+	// server it is used in); /admin reports on the platform itself (process
+	// health, the primary server's pipeline, every guild's leaderboards), so it
+	// stays a command of the primary guild only.
 	if a.Config.DiscordGuildID != "" && session != nil {
 		started := time.Now()
-		if n, err := commands.Flush(session, a.Config.DiscordGuildID); err != nil {
+		if global, guild, err := commands.Flush(session, a.Config.DiscordGuildID, "admin"); err != nil {
 			slog.Error("component=discord", "msg", "failed to register slash commands", "err", err.Error())
 			requiredCommandsOK = false
 		} else {
-			slog.Info("component=discord", "msg", "slash commands registered", "count", n, "duration_ms", time.Since(started).Milliseconds())
+			slog.Info("component=discord", "msg", "slash commands registered", "count", global+guild, "global", global, "primary_guild_only", guild, "duration_ms", time.Since(started).Milliseconds())
 		}
 	}
 
