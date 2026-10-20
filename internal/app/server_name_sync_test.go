@@ -18,6 +18,18 @@ type fakeNameStore struct {
 	provider map[int64]string
 	writes   int
 	listErr  error
+	maps     map[int64]string
+}
+
+func (s *fakeNameStore) FollowServerMap(_ context.Context, id int64, key string) (int64, error) {
+	if s.maps == nil {
+		s.maps = map[int64]string{}
+	}
+	if old, ok := s.maps[id]; ok && old == key {
+		return 0, nil
+	}
+	s.maps[id] = key
+	return 1, nil
 }
 
 func (s *fakeNameStore) ListSyncTargets(context.Context) ([]repository.ServerNameTarget, error) {
@@ -168,5 +180,32 @@ func TestDayZServerSummaryCarriesNameSource(t *testing.T) {
 	}
 	if s := toDayZServerSummary(repository.GameServer{ID: 1, DisplayName: "Followed"}); s.DisplayNameCustom || s.ProviderName != nil {
 		t.Fatalf("a never-read Nitrado name is null: %+v", s)
+	}
+}
+
+func TestServerNameSyncFollowsTheServersMap(t *testing.T) {
+	store, reader, clientFor, _ := nameSyncWorld()
+	store.targets = []repository.ServerNameTarget{nameTarget(1, 1, "101"), nameTarget(2, 1, "102"), nameTarget(3, 1, "103"), nameTarget(4, 1, "104")}
+	store.display = map[int64]string{1: "One", 2: "Two", 3: "Three", 4: "Four"}
+	store.maps = map[int64]string{1: "chernarusplus", 2: "chernarusplus", 3: "enoch", 4: "enoch"}
+	reader.names["101"] = nitrado.GameserverName{ServiceID: 101, Hostname: "One", Mission: "dayzOffline.nasdara"} // switched to Badlands
+	reader.names["102"] = nitrado.GameserverName{ServiceID: 102, Mission: "dayzOffline.sakhal"}                   // an unsupported world, and no name
+	reader.names["103"] = nitrado.GameserverName{ServiceID: 103, Hostname: "Three"}                               // Nitrado names no map
+	reader.names["104"] = nitrado.GameserverName{ServiceID: 104, Hostname: "Four", QueryMap: "enoch"}             // unchanged
+	res, err := syncServerNames(context.Background(), store, clientFor, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.maps[1] != "nasdara" {
+		t.Fatalf("server 1 must follow its mission to Nasdara, got %q", store.maps[1])
+	}
+	if store.maps[2] != "" {
+		t.Fatalf("an unsupported world clears the map rather than keep another map's, got %q", store.maps[2])
+	}
+	if store.maps[3] != "enoch" || store.maps[4] != "enoch" {
+		t.Fatalf("no map reported or the same map: nothing changes: %v", store.maps)
+	}
+	if res.MapsFollowed != 2 || res.NoName != 1 {
+		t.Fatalf("unexpected result %+v", res)
 	}
 }

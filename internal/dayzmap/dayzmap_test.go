@@ -48,3 +48,21 @@ func TestContains(t *testing.T) {
 		}
 	}
 }
+
+func TestServerWorld(t *testing.T) {
+	for _, c := range []struct{ mission, query, want string }{
+		{"dayzOffline.nasdara", "", "nasdara"},
+		{"dayzOffline.ChernarusPlus", "enoch", "chernarusplus"}, // the configured mission wins
+		{"dayzps_missions/dayzOffline.enoch", "", "enoch"},
+		{"empty.sakhal", "", "sakhal"}, // a world Champion does not support is still reported
+		{"", "Nasdara", "nasdara"},
+		{"dayzOffline", "chernarusplus", "chernarusplus"},
+		{"", "", ""},
+		{"dayzOffline.bad name", "", ""},
+		{"dayzOffline.", "not a world!", ""},
+	} {
+		if got := ServerWorld(c.mission, c.query); got != c.want {
+			t.Errorf("ServerWorld(%q, %q) = %q, want %q", c.mission, c.query, got, c.want)
+		}
+	}
+}

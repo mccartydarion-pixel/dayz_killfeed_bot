@@ -46,13 +46,13 @@ func TestCleanServerName(t *testing.T) {
 func TestGameserverNameReadsHostnameAndQueryOnly(t *testing.T) {
 	c := liveTestClient(t, 200, `{"status":"success","data":{"gameserver":{"service_id":19806451,"status":"started",
 		"username":"ni123_1","password":"never-decoded",
-		"settings":{"config":{"hostname":"Champions | PVP","password":"secret","admin-password":"secret2"}},
-		"query":{"server_name":"Champions (old)","player_current":2}}}}`)
+		"settings":{"config":{"hostname":"Champions | PVP","password":"secret","admin-password":"secret2","mission":"dayzOffline.nasdara"}},
+		"query":{"server_name":"Champions (old)","player_current":2,"map":"nasdara"}}}}`)
 	got, err := c.GameserverName(context.Background(), "19806451")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Hostname != "Champions | PVP" || got.QueryName != "Champions (old)" || !got.BelongsTo("19806451") || got.BelongsTo("1") {
+	if got.Hostname != "Champions | PVP" || got.QueryName != "Champions (old)" || got.Mission != "dayzOffline.nasdara" || got.QueryMap != "nasdara" || !got.BelongsTo("19806451") || got.BelongsTo("1") {
 		t.Fatalf("unexpected: %+v", got)
 	}
 }

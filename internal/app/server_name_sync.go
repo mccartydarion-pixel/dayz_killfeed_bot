@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"time"
 
+	"github.com/yourname/dayz-killfeed/internal/dayzmap"
 	"github.com/yourname/dayz-killfeed/internal/nitrado"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
@@ -20,6 +21,12 @@ import (
 //
 //   - always records the name as the last one seen from Nitrado;
 //   - makes it the display name, unless the owner typed a name in Champion (a custom name wins).
+//
+// The same read says which map the server runs (its mission, e.g. dayzOffline.nasdara), and every
+// installation on the server follows it (map_follow): shop coordinate deliveries, bases, the
+// stadium, territory and the live map then use the map players are actually on. A world Champion
+// does not support clears the map, so nothing is placed with another map's coordinates; a response
+// that names no map changes nothing.
 //
 // A failed read, a response for another service or an empty name changes nothing: a name is never
 // blanked. Servers whose installations are all suspended are skipped. After a failure with one
@@ -48,6 +55,7 @@ type serverNameReader interface {
 type serverNameStore interface {
 	ListSyncTargets(ctx context.Context) ([]repository.ServerNameTarget, error)
 	RecordProviderName(ctx context.Context, serverID int64, name string) (bool, error)
+	FollowServerMap(ctx context.Context, serverID int64, mapKey string) (int64, error)
 }
 
 // serverNameClientFunc returns the Nitrado reader for a target and a key that identifies the
@@ -57,6 +65,7 @@ type serverNameClientFunc func(ctx context.Context, t repository.ServerNameTarge
 // serverNameSyncResult counts one pass, for the log line and the tests.
 type serverNameSyncResult struct {
 	Servers, Renamed, Unchanged, NoName, NoCredential, Failed, Skipped int
+	MapsFollowed                                                       int
 }
 
 // syncServerNames runs one pass. onRenamed is called for every server whose display name changed.
@@ -101,6 +110,7 @@ func syncServerNames(ctx context.Context, store serverNameStore, clientFor serve
 			res.Failed++ // not provably this server's name
 			continue
 		}
+		followServerMap(ctx, store, t.ServerID, got, &res)
 		// The same precedence the connect flows use, minus the service list (not read here).
 		name := nitrado.ServerName(got, nitrado.Service{})
 		if name == "" {
@@ -126,6 +136,29 @@ func syncServerNames(ctx context.Context, store serverNameStore, clientFor serve
 		}
 	}
 	return res, nil
+}
+
+// followServerMap points the server's installations at the map its Nitrado mission runs.
+func followServerMap(ctx context.Context, store serverNameStore, serverID int64, got nitrado.GameserverName, res *serverNameSyncResult) {
+	world := dayzmap.ServerWorld(got.Mission, got.QueryMap)
+	if world == "" {
+		return
+	}
+	key := ""
+	if m, ok := dayzmap.Lookup(world); ok {
+		key = m.Key
+	}
+	n, err := store.FollowServerMap(ctx, serverID, key)
+	if err != nil {
+		if ctx.Err() == nil {
+			slog.Warn("component=server_name_sync", "event", "map_follow_failed", "server_id", serverID, "err", err.Error())
+		}
+		return
+	}
+	if n > 0 {
+		res.MapsFollowed += int(n)
+		slog.Info("component=server_name_sync", "event", "map_followed", "server_id", serverID, "world", world, "map_key", key, "supported", key != "", "installations", n)
+	}
 }
 
 // nitradoErrorKind is a failure's class for the log (never the message, which may carry a URL).
@@ -194,11 +227,11 @@ func (a *App) serverNameSyncPass(parent context.Context, store serverNameStore) 
 		return
 	}
 	level := slog.LevelDebug
-	if res.Renamed > 0 || res.Failed > 0 {
+	if res.Renamed > 0 || res.Failed > 0 || res.MapsFollowed > 0 {
 		level = slog.LevelInfo
 	}
 	slog.Log(ctx, level, "component=server_name_sync", "event", "pass_done", "servers", res.Servers, "renamed", res.Renamed, "unchanged", res.Unchanged,
-		"no_name", res.NoName, "no_credential", res.NoCredential, "failed", res.Failed, "skipped", res.Skipped)
+		"no_name", res.NoName, "no_credential", res.NoCredential, "failed", res.Failed, "skipped", res.Skipped, "maps_followed", res.MapsFollowed)
 }
 
 // serverNameSyncWait is the time until the next pass: the interval plus up to the jitter.

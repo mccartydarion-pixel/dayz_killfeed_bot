@@ -167,3 +167,50 @@ func TestServerNameSyncTargetsSkipSuspendedAndInactive(t *testing.T) {
 		t.Fatalf("changed=%v err=%v", changed, err)
 	}
 }
+
+func TestFollowServerMapSetsEveryInstallationOnTheServer(t *testing.T) {
+	db := saasIntegrationDB(t)
+	fx := newSaaSFixture(t, db)
+	ctx := context.Background()
+	names := NewServerNameRepository(db.Pool)
+	shop := NewShopRepository(db.Pool)
+	if _, err := db.Pool.Exec(ctx, `UPDATE installations SET game_server_id=$1 WHERE id=$2`, fx.ServerRowID, fx.InstallationID); err != nil {
+		t.Fatal(err)
+	}
+	mapOf := func() (string, string) {
+		t.Helper()
+		s, err := shop.GetDeliverySettings(ctx, fx.OrgID, fx.InstallationID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s.MapKey, s.UpdatedByDiscordID
+	}
+	// Never configured: the server's map is stored.
+	if n, err := names.FollowServerMap(ctx, fx.ServerRowID, "nasdara"); err != nil || n != 1 {
+		t.Fatalf("first follow: n=%d err=%v", n, err)
+	}
+	if key, _ := mapOf(); key != "nasdara" {
+		t.Fatalf("map: %q", key)
+	}
+	// The same map again changes nothing.
+	if n, err := names.FollowServerMap(ctx, fx.ServerRowID, "nasdara"); err != nil || n != 0 {
+		t.Fatalf("repeat: n=%d err=%v", n, err)
+	}
+	// An owner's hand-picked map gives way to the server's own mission.
+	if _, err := shop.SetDeliveryMap(ctx, fx.OrgID, fx.InstallationID, "enoch", fx.OwnerUserID); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := names.FollowServerMap(ctx, fx.ServerRowID, "nasdara"); err != nil || n != 1 {
+		t.Fatalf("follow over a hand-picked map: n=%d err=%v", n, err)
+	}
+	if key, by := mapOf(); key != "nasdara" || by != "" {
+		t.Fatalf("after follow: %q by %q", key, by)
+	}
+	// An unsupported world clears the map.
+	if n, err := names.FollowServerMap(ctx, fx.ServerRowID, ""); err != nil || n != 1 {
+		t.Fatalf("clear: n=%d err=%v", n, err)
+	}
+	if key, _ := mapOf(); key != "" {
+		t.Fatalf("cleared map: %q", key)
+	}
+}

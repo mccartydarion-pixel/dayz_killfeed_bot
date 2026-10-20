@@ -79,3 +79,20 @@ RETURNING (NOT old.display_name_custom AND old.display_name<>$2)`, serverID, nam
 	}
 	return changed, err
 }
+
+// FollowServerMap makes mapKey ("" for a world Champion does not support) the map of every
+// installation on the server: the map shop coordinate deliveries, bases, the stadium, territory
+// and the live map use. It reports how many installations changed. A map an owner picked by hand
+// is replaced too: the server's own mission is what players are actually on. Unchanged settings
+// are not touched, so their updated_at keeps saying when the map really changed.
+func (r *ServerNameRepository) FollowServerMap(ctx context.Context, serverID int64, mapKey string) (int64, error) {
+	tag, err := r.pool.Exec(ctx, `
+INSERT INTO shop_delivery_settings(installation_id, organization_id, map_key, updated_by_user_id)
+SELECT i.id, i.organization_id, NULLIF($2,''), NULL FROM installations i WHERE i.game_server_id=$1
+ON CONFLICT (installation_id) DO UPDATE SET map_key=EXCLUDED.map_key, updated_by_user_id=NULL, updated_at=NOW()
+WHERE shop_delivery_settings.map_key IS DISTINCT FROM EXCLUDED.map_key`, serverID, mapKey)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
