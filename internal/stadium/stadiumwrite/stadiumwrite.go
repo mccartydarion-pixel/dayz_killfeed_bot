@@ -102,6 +102,8 @@ type Outcome struct {
 	ConfigBackup string `json:"configBackup,omitempty"`
 	// ConfigSHA256 is the digest of cfggameplay.json after the build.
 	ConfigSHA256 string `json:"configSha256,omitempty"`
+	// ConfigSHA256Before is its digest before this build wrote it (empty when it was not written).
+	ConfigSHA256Before string `json:"configSha256Before,omitempty"`
 	// Writes is how many upload or mkdir requests were sent.
 	Writes int       `json:"writes"`
 	At     time.Time `json:"at"`
@@ -586,7 +588,7 @@ func (s *session) reference(cfg fileState, edit maprotation.GameplayEdit) (Outco
 		s.step("reference the file in cfggameplay.json", ResultUnverified, "cfggameplay.json could not be read back after the request")
 		return s.uncertain("cfggameplay.json could not be read back after the write. Check it in the Nitrado file browser before the next restart; a verified backup is at " + backup + "."), true
 	case after.equal(want):
-		out.Referenced, out.ConfigSHA256 = true, after.sha()
+		out.Referenced, out.ConfigSHA256, out.ConfigSHA256Before = true, after.sha(), cfg.sha()
 		s.step("reference the file in cfggameplay.json", ResultPass, fmt.Sprintf("read back %d bytes, SHA-256 %s; objectSpawnersArr = %q", len(after.data), after.sha(), edit.After))
 		return Outcome{}, false
 	case after.equal(cfg) && refused:

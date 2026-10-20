@@ -416,6 +416,9 @@ func (a *App) stadiumApply(w http.ResponseWriter, r *http.Request, build bool) {
 		action = "STADIUM_BUILD"
 	}
 	outcome := stadiumwrite.Apply(ctx, remote, req)
+	if outcome.Status == stadiumwrite.StatusBuilt {
+		a.followShopConfiguration(ctx, sr.scope.InstallationID, outcome.ConfigSHA256Before, outcome.ConfigSHA256)
+	}
 	slog.Info("component=stadium", "event", strings.ToLower(action), "installation_id", sr.scope.InstallationID, "status", outcome.Status,
 		"file_verified", outcome.FileVerified, "referenced", outcome.Referenced, "writes", outcome.Writes)
 

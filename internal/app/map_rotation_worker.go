@@ -393,6 +393,9 @@ func (a *App) mapRotationSwitch(ctx context.Context, t repository.MapRotationTar
 	res := mapswitch.Apply(ctx, remote, req, func(ctx context.Context, b mapswitch.Backup) error {
 		return a.MapRotation.SaveSwitchBackup(ctx, sw.ID, b.Gameplay, b.Spawns, time.Now().UTC())
 	})
+	if res.Status == mapswitch.StatusApplied {
+		a.followShopConfiguration(ctx, t.InstallationID, res.GameplayBefore, res.GameplayAfter)
+	}
 	// Fresh characters: only after both files are verified in place, only when the owner switched
 	// it on, and only once per switch (a switch that already began clearing never comes here: an
 	// interrupted one goes to mapRotationWipeRecover, a finished one is closed in mapRotationResume).
@@ -734,4 +737,18 @@ func buildMapChangedMessage(serverName, mapName string, at time.Time) *discordgo
 	}
 	presentation.StampEmbed(embed, at)
 	return &discordgo.MessageSend{Embeds: []*discordgo.MessageEmbed{presentation.FitEmbed(embed)}, AllowedMentions: noMentions()}
+}
+
+// followShopConfiguration lets Shop auto-delivery accept a cfggameplay.json Champion itself just
+// rewrote and verified (map switch, stadium build); without it every switch paused paid deliveries
+// until a person resumed them.
+func (a *App) followShopConfiguration(ctx context.Context, installationID int64, before, after string) {
+	if a.ShopAuto == nil {
+		return
+	}
+	fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	if err := a.ShopAuto.FollowConfiguration(fctx, installationID, before, after); err != nil {
+		slog.Warn("component=shop_delivery", "event", "follow_configuration_failed", "installation_id", installationID, "err", err.Error())
+	}
 }
