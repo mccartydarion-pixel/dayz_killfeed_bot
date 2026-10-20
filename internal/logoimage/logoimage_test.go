@@ -255,3 +255,12 @@ func TestInspectNeverPanicsOnGarbage(t *testing.T) {
 		}
 	}
 }
+
+// A RIFF header whose size is too small to hold the WEBP tag is corrupt, not a panic.
+func TestShortWebPHeaderIsCorruptNotAPanic(t *testing.T) {
+	for _, data := range [][]byte{[]byte("RIFF\x03\x00\x00\x00WEBP"), []byte("RIFF\x00\x00\x00\x00WEBP")} {
+		if _, err := Inspect(data); err == nil {
+			t.Fatalf("%q must be refused", data)
+		}
+	}
+}
