@@ -41,3 +41,7 @@ owner turned their own switch on **and** the platform allows self-serve.
 | --- | --- | --- | --- |
 | GET | `…/admin/case/setup` | | `{steps, evidence, detectors}` |
 | PUT | `…/admin/case/setup/evidence` | `{enabled}` | 409 unless self-serve is on and no Owner Hub flag is set. Audited `CASE_EVIDENCE_OPTIN_SAVED`. Applies after the next restart. |
+
+## Base Boosting
+
+The same response carries `baseBoost.steps`: build evidence, recent build lines, registered bases and the review score. See `docs/CASE_BASE_SHADOW_REVIEW.md` "Setup checklist".

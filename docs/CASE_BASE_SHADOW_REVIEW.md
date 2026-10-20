@@ -33,3 +33,16 @@ thresholds, and separate owner approval.
 ## Review buttons
 
 Each flagged finding on the dashboard card has **False alarm** and **Looks suspicious** buttons (optional short note). Verdicts are stored in `case_shadow_verdicts` (migration `0085_case_shadow_verdicts`), one per finding (changing your mind replaces it), and the card shows the score: reviewed, false alarms and percentage. API: `GET/PUT …/admin/case/shadow-verdicts` (`PLAYER_LOCATION_VIEW` for Suspicious Logins, `UAV_MANAGE` for Base Boosting), audited `CASE_SHADOW_VERDICT_SAVED`. Verdicts never release a detector, send an alert or act on a player.
+
+## Setup checklist
+
+`GET …/admin/case/setup` returns `baseBoost.steps`, shown under the anti-cheat setup checklist so an owner can see why the test run has nothing to show:
+
+| Step | OK when | Otherwise |
+| --- | --- | --- |
+| Build evidence | Build evidence is configured for the server and the collector is attached | Waiting (starts after Champion's next restart) or set by Champions |
+| Build lines from your game log | At least one Placed/Built line in the last 7 days (counted within the server's newest 20,000 evidence rows) | Needs you: turn on `adminLogBuildActions` and `adminLogPlacement` in Nitrado |
+| Registered bases | At least one non-withdrawn registered base | Needs you (`REGISTER_BASES`): register bases on the Bases tab |
+| Base Boosting review | The detector is released | In testing, with the review score from `case_shadow_verdicts` |
+
+It reads state only and changes nothing.

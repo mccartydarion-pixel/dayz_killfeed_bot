@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -32,7 +33,7 @@ type caseSetupStep struct {
 	Label  string `json:"label"`
 	State  string `json:"state"`
 	Detail string `json:"detail"`
-	Action string `json:"action,omitempty"` // a hint for the website: RUN_SETUP, TOGGLE_EVIDENCE, TOGGLE_ALERTS
+	Action string `json:"action,omitempty"` // a hint for the website: RUN_SETUP, TOGGLE_EVIDENCE, TOGGLE_ALERTS, REGISTER_BASES
 }
 
 type caseSetupEvidence struct {
@@ -54,7 +55,18 @@ type caseSetupResponse struct {
 	Steps     []caseSetupStep     `json:"steps"`
 	Evidence  caseSetupEvidence   `json:"evidence"`
 	Detectors []caseSetupDetector `json:"detectors"`
+	BaseBoost caseSetupBaseBoost  `json:"baseBoost"`
 }
+
+// caseSetupBaseBoost is what the Base Boosting test run needs on this server.
+type caseSetupBaseBoost struct {
+	Steps []caseSetupStep `json:"steps"`
+}
+
+const (
+	baseBoostDetectorID = "CASE-BASE-001"
+	baseBoostLookback   = 7 * 24 * time.Hour
+)
 
 func (a *App) handleGetCaseSetup(w http.ResponseWriter, r *http.Request) {
 	ac, _, ok := a.caseDetectorSettingsActor(w, r)
@@ -163,7 +175,86 @@ func (a *App) handleGetCaseSetup(w http.ResponseWriter, r *http.Request) {
 		det.State, det.Detail = setupOK, "Some detectors are ready. They use your evidence and alert settings above."
 	}
 	out.Steps = append(out.Steps, det)
+
+	// Base Boosting (docs/CASE_BASE_SHADOW_REVIEW.md "Setup checklist").
+	now := time.Now().UTC()
+	ready, err := repository.NewCaseBaseRegistrationRepository(a.DB.Pool).BaseBoostReadiness(ctx, ac.scope.InstallationID, ac.scope.GuildID, serverID, now.Add(-baseBoostLookback))
+	if err != nil {
+		slog.Warn("component=case", "event", "setup_base_boost_failed", "err", err.Error())
+		writeSaaSError(w, codeInternalError, "could not load the anti-cheat setup")
+		return
+	}
+	review, _, err := repository.NewCaseShadowVerdictRepository(a.DB.Pool).Summary(ctx,
+		repository.CaseVerdictScope{InstallationID: ac.scope.InstallationID, GuildID: ac.scope.GuildID, ServerID: serverID}, baseBoostDetectorID, 1)
+	if err != nil {
+		slog.Warn("component=case", "event", "setup_base_review_failed", "err", err.Error())
+		writeSaaSError(w, codeInternalError, "could not load the anti-cheat setup")
+		return
+	}
+	buildOn := caseBuildEvidenceEnabledForServer(serverID)
+	out.BaseBoost.Steps = caseBaseBoostSteps(buildOn, buildOn && caseCollectorAttached(serverID), ready, review,
+		caseintel.ModuleReleased(baseBoostDetectorID), now)
 	writeSaaSJSON(w, http.StatusOK, out)
+}
+
+// caseBaseBoostSteps turns Base Boosting readiness into owner steps.
+func caseBaseBoostSteps(buildConfigured, buildRunning bool, ready repository.BaseBoostReadiness, review repository.CaseVerdictSummary, released bool, now time.Time) []caseSetupStep {
+	steps := make([]caseSetupStep, 0, 4)
+
+	build := caseSetupStep{Key: "buildEvidence", Label: "Build evidence"}
+	switch {
+	case buildRunning:
+		build.State, build.Detail = setupOK, "On. Champion keeps build and placement lines from your game log for the Base Boosting test."
+	case buildConfigured:
+		build.State, build.Detail = setupWait, "On. It starts after Champion's next restart (usually within a day)."
+	default:
+		build.State, build.Detail = setupLocked, "Off. Champions turns this on for servers taking part in the Base Boosting test. Contact support if you'd like to take part."
+	}
+	steps = append(steps, build)
+
+	lines := caseSetupStep{Key: "buildLines", Label: "Build lines from your game log"}
+	switch {
+	case !buildRunning:
+		lines.State, lines.Detail = setupWait, "Checked once build evidence is on."
+	case ready.BuildLines > 0:
+		lines.State, lines.Detail = setupOK, fmt.Sprintf("%d build or placement %s in the last 7 days.", ready.BuildLines, plural(ready.BuildLines, "line", "lines"))
+	default:
+		lines.State = setupAction
+		lines.Detail = "None in the last 7 days. In your Nitrado server settings, turn on admin logging of build actions and placement (adminLogBuildActions and adminLogPlacement), then restart the server. If they're already on, nobody has built anything yet."
+		if ready.LastBuildAt != nil {
+			days := int(now.Sub(*ready.LastBuildAt).Hours() / 24)
+			lines.Detail = fmt.Sprintf("None in the last 7 days; the last one was %d days ago. Check that build and placement logging (adminLogBuildActions, adminLogPlacement) are still on in your Nitrado server settings.", days)
+		}
+	}
+	steps = append(steps, lines)
+
+	bases := caseSetupStep{Key: "bases", Label: "Registered bases", Action: "REGISTER_BASES"}
+	if ready.Bases > 0 {
+		bases.State, bases.Detail = setupOK, fmt.Sprintf("%d %s registered. Only building inside a registered base, after it was registered, is checked.", ready.Bases, plural(ready.Bases, "base", "bases"))
+	} else {
+		bases.State, bases.Detail = setupAction, "None yet. Register your players' bases on the Bases tab; Base Boosting only checks building inside a registered base."
+	}
+	steps = append(steps, bases)
+
+	rev := caseSetupStep{Key: "baseReview", Label: "Base Boosting review"}
+	switch {
+	case released:
+		rev.State, rev.Detail = setupOK, "Base Boosting is on. Its alerts go to your private staff channel."
+	case review.Reviewed == 0:
+		rev.State, rev.Detail = setupTesting, "In testing. Flags appear on the Bases tab; mark each one False alarm or Looks suspicious. About 30 over 14 days with few false alarms is enough to switch it on."
+	default:
+		rev.State = setupTesting
+		rev.Detail = fmt.Sprintf("In testing. %d reviewed, %d false %s, %d %s of reviewing. About 30 over 14 days with few false alarms is enough to switch it on.",
+			review.Reviewed, review.FalseAlarms, plural(review.FalseAlarms, "alarm", "alarms"), review.DaysReviewing, plural(review.DaysReviewing, "day", "days"))
+	}
+	return append(steps, rev)
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
 
 // caseFeedStep turns the ADM source state into owner words.
