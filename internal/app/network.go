@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -219,7 +220,7 @@ func (a *App) handleNetworkServer(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), networkTimeout)
 	defer cancel()
-	v, err := a.cachedNetwork("server|"+r.PathValue("installationID"), func() (any, error) {
+	v, err := a.cachedNetwork("server|"+strconv.FormatInt(installationID, 10), func() (any, error) {
 		s, err := a.Network.Server(ctx, time.Now(), installationID)
 		if err != nil || s == nil {
 			return (*networkServerDetailDTO)(nil), err
@@ -274,7 +275,9 @@ func (a *App) handleNetworkLeaderboard(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), networkTimeout)
 	defer cancel()
-	key := strings.Join([]string{"board", board, platform, r.URL.Query().Get("days"), r.URL.Query().Get("limit")}, "|")
+	// Keyed by the parsed values: "7", "07" and "007" are one entry, so spelling variants cannot
+	// fill (and so wipe) the cache.
+	key := strings.Join([]string{"board", board, platform, strconv.Itoa(days), strconv.Itoa(limit)}, "|")
 	v, err := a.cachedNetwork(key, func() (any, error) {
 		var since *time.Time
 		if days > 0 {
