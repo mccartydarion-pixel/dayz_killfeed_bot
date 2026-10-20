@@ -178,3 +178,39 @@ func TestStartRunsFirstCycleWithoutWaitingAWholeInterval(t *testing.T) {
 		t.Fatalf("no poll within %v of the start", firstPollDelay+2*time.Second)
 	}
 }
+
+type rejectedTokenSource struct{}
+
+func (rejectedTokenSource) ListLogs(context.Context, string) ([]nitrado.LogFile, error) {
+	return nil, &nitrado.RequestError{Op: "file server list", Kind: nitrado.KindAuthentication, StatusCode: 401, Message: "invalid or expired access token"}
+}
+func (rejectedTokenSource) ReadLog(context.Context, string, string) ([]byte, error) { return nil, nil }
+
+// A rejected token reaches the poll loop as an authentication failure, and three in a row end
+// the worker so its supervised restart re-reads the credential; anything else resets the count.
+func TestRejectedTokenEndsTheWorkerAfterThreeCycles(t *testing.T) {
+	e := NewEngine(rejectedTokenSource{}, "svc-auth", testParser{})
+	err := e.PollOnce(context.Background())
+	if !authenticationFailure(err) {
+		t.Fatalf("a 401 must surface as an authentication failure, got %v", err)
+	}
+	if e.authExit(err) != nil || e.authExit(err) != nil {
+		t.Fatal("the first two rejections keep the worker running")
+	}
+	if e.authExit(nil) != nil {
+		t.Fatal("a success never ends the worker")
+	}
+	for i := 0; i < 2; i++ {
+		if e.authExit(err) != nil {
+			t.Fatal("a success resets the count")
+		}
+	}
+	exit := e.authExit(err)
+	if exit == nil || !authenticationFailure(exit) {
+		t.Fatalf("the third rejection in a row ends the worker with the cause kept: %v", exit)
+	}
+	other := &nitrado.RequestError{Op: "list", Kind: nitrado.KindTemporary, StatusCode: 503}
+	if authenticationFailure(other) || e.authExit(other) != nil {
+		t.Fatal("a 503 is not a token rejection")
+	}
+}

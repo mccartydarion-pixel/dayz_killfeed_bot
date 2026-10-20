@@ -2,6 +2,8 @@ package killfeed
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"strings"
@@ -325,7 +327,9 @@ type Engine struct {
 	lastTransportClass string
 	// lastFailureOverload: the latest failed Nitrado call was a 429, a 5xx or a network failure.
 	lastFailureOverload bool
-	sourceHealth        ADMSourceHealth
+	// authStreak counts consecutive cycles Nitrado refused the token (see authFailuresBeforeExit).
+	authStreak   int
+	sourceHealth ADMSourceHealth
 
 	players   *PlayerTracker
 	onPlayers func(count int) // optional hook when the online player set changes
@@ -586,9 +590,39 @@ func (e *Engine) Start(ctx context.Context) error {
 				e.apiFailures++
 			}
 			e.firePollCycle(err)
+			if exit := e.authExit(err); exit != nil {
+				return exit
+			}
 			timer.Reset(e.nextDelay(time.Since(started)))
 		}
 	}
+}
+
+// authFailuresBeforeExit is how many consecutive cycles may end in a Nitrado authentication
+// failure before Start gives the worker up for a supervised restart.
+const authFailuresBeforeExit = 3
+
+// authenticationFailure reports whether err is Nitrado refusing the access token (401).
+func authenticationFailure(err error) bool {
+	var reqErr *nitrado.RequestError
+	return errors.As(err, &reqErr) && reqErr.Kind == nitrado.KindAuthentication
+}
+
+// authExit records a cycle's outcome and, after authFailuresBeforeExit consecutive token
+// rejections, returns the error Start ends the worker with. An expired or revoked token cannot
+// succeed on a retry every few seconds; ending the worker hands it to the WorkerManager, whose
+// restart re-reads the credential (a token the customer has since replaced is picked up) under
+// its jittered backoff of up to five minutes.
+func (e *Engine) authExit(err error) error {
+	if !authenticationFailure(err) {
+		e.authStreak = 0
+		return nil
+	}
+	e.authStreak++
+	if e.authStreak < authFailuresBeforeExit {
+		return nil
+	}
+	return fmt.Errorf("nitrado token rejected %d times in a row: %w", e.authStreak, err)
 }
 
 // nextInterval returns how long to wait before the next cycle based on state.
