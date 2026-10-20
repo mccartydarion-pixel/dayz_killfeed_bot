@@ -40,6 +40,11 @@ func TestCaseSetupChecklist(t *testing.T) {
 	if got.Evidence.Running || got.Evidence.SelfServe {
 		t.Fatalf("evidence: %+v", got.Evidence)
 	}
+	bb := got.BaseBoost.Steps
+	if len(bb) != 4 || bb[0].Key != "buildEvidence" || bb[0].State != setupLocked || bb[1].State != setupWait ||
+		bb[2].Key != "bases" || bb[2].State != setupAction || bb[2].Action != "REGISTER_BASES" || bb[3].State != setupTesting {
+		t.Fatalf("base boost steps: %+v", bb)
+	}
 
 	evPath := w.path("/case/setup/evidence")
 	t.Setenv("CASE_EVIDENCE_ENABLED", "true")

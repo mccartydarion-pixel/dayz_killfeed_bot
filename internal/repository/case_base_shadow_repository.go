@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/yourname/dayz-killfeed/internal/caseintel"
 )
@@ -47,6 +48,35 @@ func (r *CaseBaseRegistrationRepository) ListBaseShadowBuilds(ctx context.Contex
 		out = out[:limit]
 	}
 	return out, truncated, nil
+}
+
+// baseBoostReadinessWindow bounds the readiness scan to the server's newest
+// evidence rows (an index range on idx_case_evidence_server_id), so the setup
+// page never scans a server's whole history.
+const baseBoostReadinessWindow = 20000
+
+// BaseBoostReadiness is what the Base Boosting test run has to work with.
+type BaseBoostReadiness struct {
+	BuildLines  int        // Placed/Built lines since the cutoff, within the newest evidence rows
+	LastBuildAt *time.Time // newest Placed/Built line within the newest evidence rows
+	Bases       int        // registered, non-withdrawn bases
+}
+
+// BaseBoostReadiness counts recent retained build lines and the server's
+// registered bases, for the anti-cheat setup checklist.
+func (r *CaseBaseRegistrationRepository) BaseBoostReadiness(ctx context.Context, installationID, guildID, serverID int64, since time.Time) (BaseBoostReadiness, error) {
+	var out BaseBoostReadiness
+	if r == nil || r.pool == nil || installationID <= 0 || guildID <= 0 || serverID <= 0 {
+		return out, errors.New("invalid C.A.S.E. base scope")
+	}
+	err := r.pool.QueryRow(ctx, `SELECT
+  COUNT(*) FILTER (WHERE recent.event_type='BUILD_ACTION' AND recent.build_action IN ('Placed','Built') AND recent.ingested_at>=$4),
+  MAX(recent.ingested_at) FILTER (WHERE recent.event_type='BUILD_ACTION' AND recent.build_action IN ('Placed','Built')),
+  (SELECT COUNT(*) FROM case_registered_bases WHERE installation_id=$1 AND guild_id=$2 AND server_id=$3 AND state<>'REVOKED')
+ FROM (SELECT event_type,build_action,ingested_at FROM case_evidence_events
+  WHERE guild_id=$2 AND server_id=$3 ORDER BY id DESC LIMIT $5) recent`,
+		installationID, guildID, serverID, since, baseBoostReadinessWindow).Scan(&out.BuildLines, &out.LastBuildAt, &out.Bases)
+	return out, err
 }
 
 // ListBaseShadowBases returns this server's registered, non-withdrawn bases
