@@ -140,3 +140,56 @@ func TestPresenceSnapshotReportsCommittedLifecycle(t *testing.T) {
 		t.Fatalf("unexpected disconnect snapshot: %+v", snapshot)
 	}
 }
+
+// TestPresenceServerRestartClearsPreviousBoot is the phantom-player
+// regression: DayZ writes no disconnect lines when the server restarts, so a
+// switch to a verified NEWER boot's ADM must clear the previous boot's
+// players instead of counting them online forever.
+func TestPresenceServerRestartClearsPreviousBoot(t *testing.T) {
+	e := newPresenceEngine()
+	var changes []int
+	e.OnPlayersChanged(func(n int) { changes = append(changes, n) })
+	cleared := -1
+	e.OnNewBoot(func(n int) { cleared = n })
+
+	e.selectLog(nitrado.LogFile{Path: "/noftp/dayzps/config/DayZServer_PS4_x64_2026-09-24_08-08-14.ADM", Name: "DayZServer_PS4_x64_2026-09-24_08-08-14.ADM"})
+	e.processLines([]string{
+		`08:10:00 | Player "TCP" (id=a001) is connected`,
+		`08:11:00 | Player "PLAYER2" (id=b002) is connected`,
+	})
+	if got := e.players.OnlineCount(); got != 2 {
+		t.Fatalf("expected 2 online before restart, got %d", got)
+	}
+
+	// Server restarts: a newer boot's ADM appears; the old one never logged
+	// the disconnects.
+	e.selectLog(nitrado.LogFile{Path: "/noftp/dayzps/config/DayZServer_PS4_x64_2026-09-24_09-17-09.ADM", Name: "DayZServer_PS4_x64_2026-09-24_09-17-09.ADM"})
+	if got := e.players.OnlineCount(); got != 0 {
+		t.Fatalf("expected restart to clear phantom players, got %d online", got)
+	}
+	if cleared != 2 {
+		t.Fatalf("expected OnNewBoot to report 2 cleared players, got %d", cleared)
+	}
+	if len(changes) == 0 || changes[len(changes)-1] != 0 {
+		t.Fatalf("expected a players-changed notification to 0, got %v", changes)
+	}
+
+	// Players reconnecting on the new boot are counted normally.
+	e.processLines([]string{`09:20:00 | Player "TCP" (id=a001) is connected`})
+	if got := e.players.OnlineCount(); got != 1 {
+		t.Fatalf("expected 1 online after reconnect on the new boot, got %d", got)
+	}
+}
+
+// Re-selecting the SAME boot (e.g. through another mount) is not a restart.
+func TestPresenceSameBootReselectionRetainsPresence(t *testing.T) {
+	e := newPresenceEngine()
+	fired := false
+	e.OnNewBoot(func(int) { fired = true })
+	e.selectLog(nitrado.LogFile{Path: "/noftp/dayzps/config/DayZServer_PS4_x64_2026-09-24_08-08-14.ADM", Name: "DayZServer_PS4_x64_2026-09-24_08-08-14.ADM"})
+	e.processLines([]string{`08:10:00 | Player "TCP" (id=a001) is connected`})
+	e.selectLog(nitrado.LogFile{Path: "/ftproot/dayzps/config/DayZServer_PS4_x64_2026-09-24_08-08-14.ADM", Name: "DayZServer_PS4_x64_2026-09-24_08-08-14.ADM"})
+	if got := e.players.OnlineCount(); got != 1 || fired {
+		t.Fatalf("same boot must retain presence: online=%d newBootFired=%v", got, fired)
+	}
+}

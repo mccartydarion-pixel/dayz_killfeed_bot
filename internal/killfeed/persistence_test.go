@@ -257,7 +257,7 @@ func TestDeathPersistedHookFiresForDeathAndSuicideOnly(t *testing.T) {
 }
 
 // fakeDeathPostProcessor records calls and stamps a fixed CombatRecord onto
-// the event, mirroring how app.go's real implementation enriches it.
+// the event, mirroring how the real implementation in internal/app/persistence_store_adapter.go enriches it.
 type fakeDeathPostProcessor struct {
 	calls   int
 	lastRec repository.DeathRecord
@@ -438,5 +438,91 @@ func TestPlayerConnectPersistsServerActivity(t *testing.T) {
 	got := store.connects[0]
 	if got.guildID != 11 || got.serverID != 22 || got.playerID == 0 {
 		t.Fatalf("unexpected activity scope: %+v", got)
+	}
+}
+
+// At shutdown the queue's consumer stops with its context. An event handed to it after that (the
+// engine was in the middle of a batch) is never answered; the engine must be told at once instead
+// of waiting out the whole persistence timeout, which held the worker's shutdown for 30 seconds.
+func TestEnqueueAndWaitReturnsAtOnceWhenQueueHasStopped(t *testing.T) {
+	store := newFakePersistenceStore()
+	pq := NewPersistenceQueue(store, 1, "sess")
+	ctx, cancel := context.WithCancel(context.Background())
+	go pq.Run(ctx)
+	first := &Event{Type: EventPlayerKill, TimeOfDay: "10:00:00", Killer: &PlayerRef{Name: "K", ID: "k"}, Victim: &PlayerRef{Name: "V1", ID: "v1"}}
+	if err := pq.EnqueueAndWait(context.Background(), first); err != nil {
+		t.Fatalf("running queue: %v", err)
+	}
+	cancel()
+	<-pq.done
+
+	waitCtx, cancelWait := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelWait()
+	started := time.Now()
+	second := &Event{Type: EventPlayerKill, TimeOfDay: "10:00:01", Killer: &PlayerRef{Name: "K", ID: "k"}, Victim: &PlayerRef{Name: "V2", ID: "v2"}}
+	err := pq.EnqueueAndWait(waitCtx, second)
+	if !errors.Is(err, errPersistenceStopped) {
+		t.Fatalf("stopped queue: err = %v, want errPersistenceStopped", err)
+	}
+	if took := time.Since(started); took > time.Second {
+		t.Fatalf("waited %v for a queue that had already stopped", took)
+	}
+	if len(store.kills) != 1 {
+		t.Fatalf("stored kills = %d, want only the one handled before the stop", len(store.kills))
+	}
+}
+
+// The same when the consumer stops while the engine is already waiting for its answer.
+func TestEnqueueAndWaitReturnsWhenQueueStopsWhileWaiting(t *testing.T) {
+	release := make(chan struct{})
+	pq := NewPersistenceQueue(&hangingPersistenceStore{release: release}, 1, "sess")
+	ctx, cancel := context.WithCancel(context.Background())
+	go pq.Run(ctx)
+	hung := &Event{Type: EventPlayerKill, TimeOfDay: "10:00:00", Killer: &PlayerRef{Name: "K", ID: "k"}, Victim: &PlayerRef{Name: "V1", ID: "v1"}}
+	go func() { _ = pq.EnqueueAndWait(context.Background(), hung) }() // occupies the consumer
+	time.Sleep(50 * time.Millisecond)
+
+	result := make(chan error, 1)
+	waiting := &Event{Type: EventPlayerKill, TimeOfDay: "10:00:01", Killer: &PlayerRef{Name: "K", ID: "k"}, Victim: &PlayerRef{Name: "V2", ID: "v2"}}
+	go func() {
+		waitCtx, cancelWait := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancelWait()
+		result <- pq.EnqueueAndWait(waitCtx, waiting)
+	}()
+	time.Sleep(50 * time.Millisecond)
+	cancel()       // shutdown
+	close(release) // the hung database call returns; the consumer then sees the cancelled context
+	select {
+	case err := <-result:
+		if err == nil {
+			// The consumer may legitimately have taken the event before it saw the cancellation.
+			return
+		}
+		if !errors.Is(err, errPersistenceStopped) {
+			t.Fatalf("err = %v, want errPersistenceStopped", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("still waiting 3s after the queue stopped")
+	}
+}
+
+// A cancelled context (shutdown, worker restart) drains the events already queued instead of
+// dropping them: the ADM checkpoint has advanced past them, so a drop loses the kill for good.
+func TestPersistenceQueueDrainsOnContextCancel(t *testing.T) {
+	store := newFakePersistenceStore()
+	pq := NewPersistenceQueue(store, 1, "sess-drain")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for i := 0; i < 5; i++ {
+		if !pq.Enqueue(killEvent("v", "k", "M4-A1", float64(10+i), "16:40:12")) {
+			t.Fatalf("enqueue %d rejected", i)
+		}
+	}
+	pq.Run(ctx)
+	if got := len(store.kills); got != 5 {
+		t.Fatalf("expected 5 kills persisted on cancelled drain, got %d", got)
+	}
+	if pq.Depth() != 0 {
+		t.Fatalf("queue not drained: depth %d", pq.Depth())
 	}
 }

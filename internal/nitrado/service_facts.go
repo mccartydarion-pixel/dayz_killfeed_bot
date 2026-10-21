@@ -1,12 +1,14 @@
 package nitrado
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 )
 
 // Read-only, whitelist-decoded service facts (Shop Phase 2C.1 capability discovery,
@@ -44,12 +46,18 @@ type GameserverFacts struct {
 	LogFileCount                                               int
 	QueryMap                                                   string
 	QueryVersion                                               string
-	// Whitelisted DayZ settings (serverDZ.cfg as Nitrado manages it). Never password, admin-password,
-	// rcon-password or hostname.
+	// Whitelisted DayZ settings (serverDZ.cfg as Nitrado manages it). Never password, admin-password
+	// or rcon-password. The hostname is read separately, by GameserverName (server_name.go).
 	EnableCfgGameplayFile string
 	Mission               string
 	ExpertMode            string
 	AdminLogPlayerList    string
+	// In-game clock settings (serverDZ.cfg serverTime / serverTimeAcceleration /
+	// serverNightTimeAcceleration), empty when Nitrado does not expose them. The live map
+	// estimates the in-game time of day from them (docs/LIVE_MAP.md).
+	ServerTime                  string
+	ServerTimeAcceleration      string
+	ServerNightTimeAcceleration string
 }
 
 // TokenFacts are the non-sensitive facts of GET /token: the scopes only.
@@ -126,9 +134,12 @@ func (c *Client) GameserverFacts(ctx context.Context, serviceID string) (Gameser
 				} `json:"query"`
 				Settings struct {
 					Config struct {
-						EnableCfgGameplayFile string `json:"enableCfgGameplayFile"`
-						Mission               string `json:"mission"`
-						AdminLogPlayerList    string `json:"adminLogPlayerList"`
+						EnableCfgGameplayFile       string `json:"enableCfgGameplayFile"`
+						Mission                     string `json:"mission"`
+						AdminLogPlayerList          string `json:"adminLogPlayerList"`
+						ServerTime                  string `json:"serverTime"`
+						ServerTimeAcceleration      string `json:"serverTimeAcceleration"`
+						ServerNightTimeAcceleration string `json:"serverNightTimeAcceleration"`
 					} `json:"config"`
 					General struct {
 						ExpertMode string `json:"expertMode"`
@@ -149,7 +160,52 @@ func (c *Client) GameserverFacts(ctx context.Context, serviceID string) (Gameser
 		LogFileCount: len(g.GameSpecific.LogFiles), QueryMap: g.Query.Map, QueryVersion: g.Query.Version,
 		EnableCfgGameplayFile: g.Settings.Config.EnableCfgGameplayFile, Mission: g.Settings.Config.Mission,
 		ExpertMode: g.Settings.General.ExpertMode, AdminLogPlayerList: g.Settings.Config.AdminLogPlayerList,
+		ServerTime: g.Settings.Config.ServerTime, ServerTimeAcceleration: g.Settings.Config.ServerTimeAcceleration,
+		ServerNightTimeAcceleration: g.Settings.Config.ServerNightTimeAcceleration,
 	}, nil
+}
+
+// ScheduledTask is one entry of GET /services/:id/tasks (Nitrado's scheduled restarts, backups
+// and the like), whitelisted fields only. NextRun is Nitrado's own timestamp text, left for the
+// caller to parse defensively (its form is not pinned by the API documentation).
+type ScheduledTask struct {
+	ID           int64
+	ActionMethod string // e.g. "restart"
+	NextRun      string
+	LastRun      string
+	Minute, Hour string
+	Day, Month   string
+	Weekday      string
+}
+
+// ListScheduledTasks reads GET /services/:id/tasks. A body without a tasks list decodes as no
+// tasks rather than an error; any non-200 is an error.
+func (c *Client) ListScheduledTasks(ctx context.Context, serviceID string) ([]ScheduledTask, error) {
+	var wire struct {
+		Data struct {
+			Tasks []struct {
+				ID           json.Number `json:"id"`
+				ActionMethod string      `json:"action_method"`
+				NextRun      string      `json:"next_run"`
+				LastRun      string      `json:"last_run"`
+				Minute       string      `json:"minute"`
+				Hour         string      `json:"hour"`
+				Day          string      `json:"day"`
+				Month        string      `json:"month"`
+				Weekday      string      `json:"weekday"`
+			} `json:"tasks"`
+		} `json:"data"`
+	}
+	if err := c.getJSON(ctx, "/services/"+url.PathEscape(serviceID)+"/tasks", "scheduled tasks", &wire); err != nil {
+		return nil, err
+	}
+	out := make([]ScheduledTask, 0, len(wire.Data.Tasks))
+	for _, t := range wire.Data.Tasks {
+		id, _ := t.ID.Int64()
+		out = append(out, ScheduledTask{ID: id, ActionMethod: t.ActionMethod, NextRun: t.NextRun, LastRun: t.LastRun,
+			Minute: t.Minute, Hour: t.Hour, Day: t.Day, Month: t.Month, Weekday: t.Weekday})
+	}
+	return out, nil
 }
 
 // TokenFacts reads GET /token (scopes only; never the token, its id or its owner).
@@ -165,4 +221,78 @@ func (c *Client) TokenFacts(ctx context.Context) (TokenFacts, error) {
 		return TokenFacts{}, err
 	}
 	return TokenFacts{Scopes: wire.Data.Token.Scopes}, nil
+}
+
+// GameserverLive is the live occupancy Nitrado reports for a gameserver: its run
+// status and the game query's current/max player counts (GET
+// /services/:id/gameservers, whitelisted fields only - the same body carries
+// credentials, which are never decoded).
+//
+// PlayerCurrent is nil when Nitrado has no query result (server starting,
+// stopped, query not yet run, or the query block serialized as an empty
+// array). A nil PlayerCurrent is "unknown", never zero.
+type GameserverLive struct {
+	// ServiceID is the service the response describes (data.gameserver.
+	// service_id); 0 when Nitrado omitted it. Callers use BelongsTo to refuse
+	// a count that cannot be proven to be the requested service's.
+	ServiceID     int64
+	Status        string // e.g. "started", "stopped", "restarting"
+	Slots         int
+	PlayerCurrent *int
+	PlayerMax     int
+}
+
+// BelongsTo reports whether the response is provably for serviceID.
+func (g GameserverLive) BelongsTo(serviceID string) bool {
+	return g.ServiceID > 0 && strconv.FormatInt(g.ServiceID, 10) == serviceID
+}
+
+// Running reports whether Nitrado says the game process is up.
+func (g GameserverLive) Running() bool { return g.Status == "started" }
+
+// Stopped reports whether Nitrado says the game process is definitely down, so
+// no player can be connected.
+func (g GameserverLive) Stopped() bool { return g.Status == "stopped" || g.Status == "suspended" }
+
+// Capacity is the player slot count to display: the query's max when known,
+// else the service's slot count.
+func (g GameserverLive) Capacity() int {
+	if g.PlayerMax > 0 {
+		return g.PlayerMax
+	}
+	return g.Slots
+}
+
+// GameserverLive reads the live status and query player counts for a service.
+func (c *Client) GameserverLive(ctx context.Context, serviceID string) (GameserverLive, error) {
+	var wire struct {
+		Data struct {
+			Gameserver struct {
+				ServiceID int64           `json:"service_id"`
+				Status    string          `json:"status"`
+				Slots     int             `json:"slots"`
+				Query     json.RawMessage `json:"query"`
+			} `json:"gameserver"`
+		} `json:"data"`
+	}
+	if err := c.getJSON(ctx, "/services/"+url.PathEscape(serviceID)+"/gameservers", "gameserver status", &wire); err != nil {
+		return GameserverLive{}, err
+	}
+	g := wire.Data.Gameserver
+	out := GameserverLive{ServiceID: g.ServiceID, Status: g.Status, Slots: g.Slots}
+	// Nitrado serializes an empty query as [] rather than {}; only an object
+	// carries counts.
+	if q := bytes.TrimSpace(g.Query); len(q) > 0 && q[0] == '{' {
+		var query struct {
+			PlayerCurrent *int `json:"player_current"`
+			PlayerMax     int  `json:"player_max"`
+		}
+		if err := json.Unmarshal(q, &query); err == nil {
+			if query.PlayerCurrent != nil && *query.PlayerCurrent >= 0 {
+				out.PlayerCurrent = query.PlayerCurrent
+			}
+			out.PlayerMax = query.PlayerMax
+		}
+	}
+	return out, nil
 }

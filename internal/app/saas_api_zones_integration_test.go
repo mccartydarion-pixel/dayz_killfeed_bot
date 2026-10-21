@@ -4,12 +4,14 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
 	"testing"
 	"time"
 
+	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -68,15 +70,26 @@ func TestZoneCreateRequiresZoneManageNotJustView(t *testing.T) {
 	}
 }
 
-func TestUAVZoneCreationRequiresOwnerEvenWithZoneManage(t *testing.T) {
+func TestUAVZoneCreationRequiresUAVManageAdministratorAndUp(t *testing.T) {
 	w := newZoneWorld(t)
+	mod := zoneActor(t, w, "mod")
+	w.mapRole(mod, "role-mod", "MODERATOR")
 	admin := zoneActor(t, w, "admin")
 	w.mapRole(admin, "role-admin", "ADMINISTRATOR")
 
 	body := createZoneRequest{Name: "UAV Watch", ZoneType: repository.ZoneTypeUAV, CenterX: 0, CenterZ: 0, Radius: 500}
-	rr := w.call(w.a.handleCreateZone, http.MethodPost, w.path("/zones"), admin, body, nil)
+	rr := w.call(w.a.handleCreateZone, http.MethodPost, w.path("/zones"), mod, body, nil)
 	if rr.Code != http.StatusForbidden {
-		t.Fatalf("an Administrator without UAV_MANAGE must not be able to create a UAV zone, got %d: %s", rr.Code, rr.Body.String())
+		t.Fatalf("a Moderator without UAV_MANAGE must not be able to create a UAV zone, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// An Administrator holds UAV_MANAGE exactly as the owner does.
+	rr = w.call(w.a.handleCreateZone, http.MethodPost, w.path("/zones"), admin, body, nil)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("an Administrator must be able to create a UAV zone, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if adminZone := decodeBody[zoneDTO](t, rr); adminZone.ZoneType != repository.ZoneTypeUAV {
+		t.Fatalf("unexpected zone type %q", adminZone.ZoneType)
 	}
 
 	rr = w.call(w.a.handleCreateZone, http.MethodPost, w.path("/zones"), w.f.OwnerDiscordID, body, nil)
@@ -89,9 +102,9 @@ func TestUAVZoneCreationRequiresOwnerEvenWithZoneManage(t *testing.T) {
 	}
 
 	// The same UAV zone must also require UAV_MANAGE to DELETE, not just ZONE_MANAGE.
-	del := w.call(w.a.handleDeleteZone, http.MethodDelete, w.path("/zones/x"), admin, nil, map[string]string{"zoneID": strconv.FormatInt(zone.ID, 10)})
+	del := w.call(w.a.handleDeleteZone, http.MethodDelete, w.path("/zones/x"), mod, nil, map[string]string{"zoneID": strconv.FormatInt(zone.ID, 10)})
 	if del.Code != http.StatusForbidden {
-		t.Fatalf("an Administrator without UAV_MANAGE must not be able to delete a UAV zone, got %d: %s", del.Code, del.Body.String())
+		t.Fatalf("a Moderator without UAV_MANAGE must not be able to delete a UAV zone, got %d: %s", del.Code, del.Body.String())
 	}
 }
 
@@ -176,5 +189,35 @@ func TestAcknowledgeIntrusionRequiresCapabilityAndAudits(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("expected an INTRUSION_ACKNOWLEDGE audit entry")
+	}
+}
+
+// A zone's alert channel must be in the installation's own Discord server: the bot sits in every
+// customer's server, so a foreign channel id would let one customer post into another's.
+func TestZoneAlertChannelMustBeInTheInstallationsDiscord(t *testing.T) {
+	w := newZoneWorld(t)
+	seedGuildChannels(w.verifier, w.f.DiscordGuildID, fakeGuildChannel{ID: "own-alerts", Name: "alerts", Type: discordgo.ChannelTypeGuildText})
+	seedGuildChannels(w.verifier, "rival-guild", fakeGuildChannel{ID: "rival-general", Name: "general", Type: discordgo.ChannelTypeGuildText})
+
+	foreign := "rival-general"
+	rr := w.call(w.a.handleCreateZone, http.MethodPost, w.path("/zones"), w.f.OwnerDiscordID,
+		createZoneRequest{Name: "Trap", ZoneType: repository.ZoneTypeRestricted, Radius: 50, AlertChannelID: &foreign}, nil)
+	if rr.Code < 400 || rr.Code == http.StatusInternalServerError {
+		t.Fatalf("a channel of another Discord server must be refused, got %d: %s", rr.Code, rr.Body.String())
+	}
+	own := "own-alerts"
+	rr = w.call(w.a.handleCreateZone, http.MethodPost, w.path("/zones"), w.f.OwnerDiscordID,
+		createZoneRequest{Name: "Base", ZoneType: repository.ZoneTypeRestricted, Radius: 50, AlertChannelID: &own}, nil)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("the installation's own channel is accepted, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var zone zoneDTO
+	if err := json.Unmarshal(rr.Body.Bytes(), &zone); err != nil {
+		t.Fatal(err)
+	}
+	rr = w.call(w.a.handleUpdateZone, http.MethodPatch, w.path(fmt.Sprintf("/zones/%d", zone.ID)), w.f.OwnerDiscordID,
+		map[string]any{"alertChannelId": foreign}, map[string]string{"zoneID": strconv.FormatInt(zone.ID, 10)})
+	if rr.Code < 400 || rr.Code == http.StatusInternalServerError {
+		t.Fatalf("updating to another server's channel must be refused, got %d: %s", rr.Code, rr.Body.String())
 	}
 }

@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yourname/dayz-killfeed/internal/deathstats"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -43,9 +44,13 @@ const (
 // headshots, longshots, bountiesClaimed and achievementsUnlocked without another query; no
 // overall "skill score" exists.
 type Summary struct {
-	Kills              int64   `json:"kills"`
-	Deaths             int64   `json:"deaths"`
-	KDRatio            float64 `json:"kdRatio"`
+	Kills   int64   `json:"kills"`
+	Deaths  int64   `json:"deaths"`
+	KDRatio float64 `json:"kdRatio"`
+	// PvPDeaths + PvEDeaths = Deaths; PvPKDRatio is kills per PvP death (internal/deathstats).
+	PvPDeaths          int64   `json:"pvpDeaths"`
+	PvEDeaths          int64   `json:"pveDeaths"`
+	PvPKDRatio         float64 `json:"pvpKdRatio"`
 	Headshots          int64   `json:"headshots"`
 	Longshots          int64   `json:"longshots"`
 	CurrentKillStreak  int     `json:"currentKillStreak"`
@@ -63,19 +68,23 @@ type Summary struct {
 
 // MemberContribution is one member's (or former member's) share of the faction's figures.
 type MemberContribution struct {
-	MemberID           *int64  `json:"memberId"` // current membership id; null for a former member
-	DiscordUserID      string  `json:"discordUserId"`
-	DisplayName        string  `json:"displayName"`
-	Avatar             string  `json:"avatar,omitempty"`
-	Gamertag           *string `json:"gamertag"`
-	Role               *string `json:"role"` // null for a former member
-	Status             string  `json:"status"`
-	Identity           string  `json:"identity"`
-	StatsEligible      bool    `json:"statsEligible"`
-	JoinedAt           string  `json:"joinedAt"`
-	Kills              int64   `json:"kills"`
-	Deaths             int64   `json:"deaths"`
-	KDRatio            float64 `json:"kdRatio"`
+	MemberID      *int64  `json:"memberId"` // current membership id; null for a former member
+	DiscordUserID string  `json:"discordUserId"`
+	DisplayName   string  `json:"displayName"`
+	Avatar        string  `json:"avatar,omitempty"`
+	Gamertag      *string `json:"gamertag"`
+	Role          *string `json:"role"` // null for a former member
+	Status        string  `json:"status"`
+	Identity      string  `json:"identity"`
+	StatsEligible bool    `json:"statsEligible"`
+	JoinedAt      string  `json:"joinedAt"`
+	Kills         int64   `json:"kills"`
+	Deaths        int64   `json:"deaths"`
+	KDRatio       float64 `json:"kdRatio"`
+	// PvPDeaths + PvEDeaths = Deaths; PvPKDRatio is kills per PvP death (internal/deathstats).
+	PvPDeaths          int64   `json:"pvpDeaths"`
+	PvEDeaths          int64   `json:"pveDeaths"`
+	PvPKDRatio         float64 `json:"pvpKdRatio"`
 	Headshots          int64   `json:"headshots"`
 	Longshots          int64   `json:"longshots"`
 	CurrentKillStreak  int     `json:"currentKillStreak"`
@@ -93,7 +102,7 @@ type Stats struct {
 
 // KDRatio is kills per death, rounded to two decimals, following the project's existing
 // convention (StatsRepository: kills / max(deaths, 1)): with zero deaths the ratio is the kill
-// count itself - never a division by zero, never infinity.
+// count itself - never a division by zero, never infinity. Given PvP deaths it is the PvP K/D.
 func KDRatio(kills, deaths int64) float64 {
 	d := deaths
 	if d < 1 {
@@ -262,8 +271,11 @@ func buildStats(raw *repository.HubStatsResult, unlocked int, now time.Time) *St
 			mc.BountiesClaimed, mc.BountyValueClaimed = m.Bounties, m.BountyValue
 			mc.BestKillStreak, mc.CurrentKillStreak = m.BestStreak, m.CurrentStreak
 			mc.KDRatio = KDRatio(m.Kills, m.Deaths)
+			mc.PvPDeaths, mc.PvEDeaths = m.PvPDeaths, deathstats.PvE(m.Deaths, m.PvPDeaths)
+			mc.PvPKDRatio = KDRatio(m.Kills, m.PvPDeaths)
 			sum.Kills += m.Kills
 			sum.Deaths += m.Deaths
+			sum.PvPDeaths += m.PvPDeaths
 			sum.Headshots += m.Headshots
 			sum.Longshots += m.Longshots
 			sum.BountiesClaimed += m.Bounties
@@ -278,6 +290,8 @@ func buildStats(raw *repository.HubStatsResult, unlocked int, now time.Time) *St
 		members = append(members, mc)
 	}
 	sum.KDRatio = KDRatio(sum.Kills, sum.Deaths)
+	sum.PvEDeaths = deathstats.PvE(sum.Deaths, sum.PvPDeaths)
+	sum.PvPKDRatio = KDRatio(sum.Kills, sum.PvPDeaths)
 	return &Stats{Summary: sum, MemberContributions: members, UpdatedAt: now.UTC().Format(time.RFC3339)}
 }
 

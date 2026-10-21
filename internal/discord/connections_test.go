@@ -9,7 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bwmarrin/discordgo"
+
 	"github.com/yourname/dayz-killfeed/internal/killfeed"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/routing"
 )
 
@@ -69,8 +72,15 @@ func TestConnectionsPublishesConnect(t *testing.T) {
 	if len(msgs) != 1 || len(msgs[0].embeds) != 1 {
 		t.Fatalf("expected 1 message, got %+v", msgs)
 	}
-	if got, want := msgs[0].embeds[0].Description, "🟢 **CONNECTED**\nAlice joined the server."; got != want {
-		t.Fatalf("unexpected card:\n%q\nwant\n%q", got, want)
+	e := msgs[0].embeds[0]
+	if e.Title != "🟢 Connection" || e.Color != presentation.Green {
+		t.Fatalf("unexpected header: %q #%06X", e.Title, e.Color)
+	}
+	if got := e.Description; !strings.HasPrefix(got, "**Connection – <t:") || !strings.HasSuffix(got, ":T>**\n`Alice` is connected") {
+		t.Fatalf("unexpected card:\n%q", got)
+	}
+	if len(e.Fields) != 0 || e.Timestamp == "" || e.Author == nil || e.Author.Name != presentation.BrandName+" Connections notification" {
+		t.Fatalf("a connect card has no rows, a timestamp and the author line: %+v", e)
 	}
 	if msgs[0].mention == nil || len(msgs[0].mention.Parse) != 0 {
 		t.Fatal("connection cards must not be able to ping anyone")
@@ -82,18 +92,101 @@ func TestConnectionsPublishesDisconnectWithSessionWhenKnown(t *testing.T) {
 	f.res.set(7, 1, "CONNECTIONS", "conn-chan")
 	p := f.publisher(1)
 
-	p.PublishConnection(disconnected("Alice", 42*time.Minute))
+	at := time.Date(2026, 10, 15, 17, 48, 58, 0, time.UTC)
+	n := disconnected("Alice", 33*time.Minute+26*time.Second)
+	n.At, n.Position = at, &killfeed.Position{X: 9047.2, Y: 11890, Z: 227.7}
+	p.PublishConnection(n)
 	p.tick(false)
-	if got, want := f.lastDescription("conn-chan"), "🔴 **DISCONNECTED**\nAlice left the server.\nSession: 42m"; got != want {
+	msgs := f.sender.messages("conn-chan")
+	e := msgs[len(msgs)-1].embeds[0]
+	if e.Title != "🔴 Disconnection" || e.Color != presentation.Red {
+		t.Fatalf("unexpected header: %q #%06X", e.Title, e.Color)
+	}
+	if got, want := e.Description, "**Disconnection – "+presentation.Timestamp(at, 'T')+"**\n`Alice` has disconnected"; got != want {
 		t.Fatalf("unexpected card:\n%q\nwant\n%q", got, want)
 	}
+	if got, want := fieldValues(e), "Session time=00H 33M 26S|Location=9047.2;11890.0;227.7"; got != want {
+		t.Fatalf("rows %q, want %q", got, want)
+	}
+	if e.Timestamp != "2026-10-15T17:48:58.000Z" {
+		t.Fatalf("the embed timestamp is the line's own time, got %q", e.Timestamp)
+	}
 
-	// Unknown or sub-minute sessions are omitted, never invented.
-	for _, d := range []time.Duration{0, 30 * time.Second} {
-		p.PublishConnection(disconnected("Bob", d))
-		p.tick(false)
-		if got, want := f.lastDescription("conn-chan"), "🔴 **DISCONNECTED**\nBob left the server."; got != want {
-			t.Fatalf("session %v must be omitted:\n%q\nwant\n%q", d, got, want)
+	// An unknown session and an unknown position are omitted, never invented.
+	p.PublishConnection(disconnected("Bob", 0))
+	p.tick(false)
+	msgs = f.sender.messages("conn-chan")
+	if e := msgs[len(msgs)-1].embeds[0]; len(e.Fields) != 0 || !strings.HasSuffix(e.Description, "`Bob` has disconnected") {
+		t.Fatalf("unknown session and position must be omitted: %+v", e)
+	}
+}
+
+func fieldValues(e *discordgo.MessageEmbed) string {
+	var parts []string
+	for _, f := range e.Fields {
+		parts = append(parts, f.Name+"="+f.Value)
+	}
+	return strings.Join(parts, "|")
+}
+
+// The "Cash earned" row: shown only when the server's earnings hook reports an economy, asked
+// for the window since the observed connect, and never for a connect.
+func TestConnectionsCashEarnedRow(t *testing.T) {
+	f := newConnFixture()
+	f.res.set(7, 1, "CONNECTIONS", "conn-chan")
+	p := f.publisher(1)
+	var askedID string
+	var askedSince time.Time
+	p.SetEarnings(func(ctx context.Context, playerID string, since time.Time) (int64, bool) {
+		askedID, askedSince = playerID, since
+		return 3500, playerID == "dayz-1"
+	})
+	at := time.Date(2026, 10, 15, 17, 48, 58, 0, time.UTC)
+	n := disconnected("Alice", 33*time.Minute+26*time.Second)
+	n.At, n.PlayerID = at, "dayz-1"
+	p.PublishConnection(n)
+	p.tick(false)
+	msgs := f.sender.messages("conn-chan")
+	if got, want := fieldValues(msgs[len(msgs)-1].embeds[0]), "Session time=00H 33M 26S|Cash earned=3,500"; got != want {
+		t.Fatalf("rows %q, want %q", got, want)
+	}
+	if askedID != "dayz-1" || !askedSince.Equal(at.Add(-(33*time.Minute + 26*time.Second))) {
+		t.Fatalf("asked for %q since %v", askedID, askedSince)
+	}
+	if d := msgs[len(msgs)-1].embeds[0].Description; strings.Contains(d, "dayz-1") {
+		t.Fatal("the ADM id is never shown")
+	}
+
+	// No economy: no row.
+	n.PlayerID = "dayz-2"
+	p.PublishConnection(n)
+	p.tick(false)
+	msgs = f.sender.messages("conn-chan")
+	if got, want := fieldValues(msgs[len(msgs)-1].embeds[0]), "Session time=00H 33M 26S"; got != want {
+		t.Fatalf("rows %q, want %q", got, want)
+	}
+
+	// A connect never asks.
+	askedID = ""
+	c := connected("Alice")
+	c.PlayerID = "dayz-1"
+	p.PublishConnection(c)
+	p.tick(false)
+	if askedID != "" {
+		t.Fatal("a connect card must not look up earnings")
+	}
+}
+
+func TestFormatSessionClock(t *testing.T) {
+	for d, want := range map[time.Duration]string{
+		0:                                   "00H 00M 00S",
+		26 * time.Second:                    "00H 00M 26S",
+		33*time.Minute + 26*time.Second:     "00H 33M 26S",
+		2*time.Hour + 5*time.Minute:         "02H 05M 00S",
+		27*time.Hour + 59*time.Minute + 999: "27H 59M 00S",
+	} {
+		if got := formatSessionClock(d); got != want {
+			t.Errorf("%v: got %q, want %q", d, got, want)
 		}
 	}
 }
@@ -350,9 +443,9 @@ func TestConnectionsBurstIsBoundedAndKeepsPlayersSeparate(t *testing.T) {
 	}
 }
 
-// A small batch (>1 event) uses the batched card; players stay on separate lines,
-// mixed connects/disconnects keep their order.
-func TestConnectionsBatchFormat(t *testing.T) {
+// Several events in one tick are each their own card, in order: Nitrado delivers the log in
+// chunks, so events minutes apart arrive together and must not collapse into a list.
+func TestConnectionsEachEventIsItsOwnCard(t *testing.T) {
 	f := newConnFixture()
 	f.res.set(7, 1, "CONNECTIONS", "conn-chan")
 	p := f.publisher(1)
@@ -362,12 +455,49 @@ func TestConnectionsBatchFormat(t *testing.T) {
 	p.PublishConnection(disconnected("PlayerD", 0))
 	p.tick(false)
 
-	want := "🔌 **SERVER CONNECTIONS**\n🟢 PlayerA connected\n🟢 PlayerB connected\n🔴 PlayerC disconnected · 12m\n🔴 PlayerD disconnected"
-	if got := f.lastDescription("conn-chan"); got != want {
-		t.Fatalf("unexpected batch:\n%q\nwant\n%q", got, want)
+	msgs := f.sender.messages("conn-chan")
+	if len(msgs) != 4 {
+		t.Fatalf("four events must be four cards, got %d", len(msgs))
 	}
-	if f.sender.total() != 1 {
-		t.Fatalf("a small burst must be ONE message, got %d", f.sender.total())
+	wantTitles := []string{connectionsSingleConnected, connectionsSingleConnected, connectionsSingleDisconnect, connectionsSingleDisconnect}
+	wantNames := []string{"PlayerA", "PlayerB", "PlayerC", "PlayerD"}
+	for i, m := range msgs {
+		e := m.embeds[0]
+		if e.Title != wantTitles[i] || !strings.Contains(e.Description, "`"+wantNames[i]+"`") {
+			t.Fatalf("card %d: title %q description %q, want %q about %s", i, e.Title, e.Description, wantTitles[i], wantNames[i])
+		}
+		if strings.Contains(e.Description, connectionsBatchTitle) {
+			t.Fatalf("card %d is a summary list: %q", i, e.Description)
+		}
+	}
+}
+
+// More events than connectionsSummaryThreshold queued is a flood: that tick sends ONE
+// summary list (players on separate lines, order kept) instead of a card storm; once the
+// queue drains below the threshold, cards resume.
+func TestConnectionsFloodUsesSummaryList(t *testing.T) {
+	f := newConnFixture()
+	f.res.set(7, 1, "CONNECTIONS", "conn-chan")
+	p := f.publisher(1)
+	for i := 0; i < connectionsSummaryThreshold+2; i++ {
+		p.PublishConnection(connected(fmt.Sprintf("Player%02d", i)))
+	}
+	p.tick(false)
+	msgs := f.sender.messages("conn-chan")
+	if len(msgs) != 1 {
+		t.Fatalf("a flood tick must send one summary message, got %d", len(msgs))
+	}
+	desc := msgs[0].embeds[0].Description
+	if !strings.HasPrefix(desc, connectionsBatchTitle+"\n🟢 Player00 connected\n🟢 Player01 connected") {
+		t.Fatalf("unexpected summary: %q", desc)
+	}
+	if got := strings.Count(desc, "🟢"); got != connectionsSummaryThreshold+2 {
+		t.Fatalf("summary carried %d events, want %d", got, connectionsSummaryThreshold+2)
+	}
+	p.PublishConnection(disconnected("PlayerC", 12*time.Minute))
+	p.tick(false)
+	if got := f.lastDescription("conn-chan"); !strings.Contains(got, "`PlayerC` has disconnected") {
+		t.Fatalf("after the flood a lone event must be a card again, got %q", got)
 	}
 }
 
@@ -429,9 +559,15 @@ func TestConnectionsIgnoresUnknownKindsAndNeverInfersReconnect(t *testing.T) {
 	p.PublishConnection(disconnected("Alice", 3*time.Minute))
 	p.PublishConnection(connected("Alice"))
 	p.tick(false)
-	got := f.lastDescription("conn-chan")
-	if strings.Contains(strings.ToLower(got), "reconnect") || !strings.Contains(got, "🔴 Alice disconnected") || !strings.Contains(got, "🟢 Alice connected") {
-		t.Fatalf("expected plain disconnect + connect lines, got %q", got)
+	msgs := f.sender.messages("conn-chan")
+	if len(msgs) != 2 {
+		t.Fatalf("expected a disconnect card then a connect card, got %d messages", len(msgs))
+	}
+	first, second := msgs[0].embeds[0], msgs[1].embeds[0]
+	if strings.Contains(strings.ToLower(first.Description+second.Description), "reconnect") ||
+		first.Title != connectionsSingleDisconnect || !strings.Contains(first.Description, "`Alice` has disconnected") ||
+		second.Title != connectionsSingleConnected || !strings.Contains(second.Description, "`Alice` is connected") {
+		t.Fatalf("expected plain disconnect + connect cards, got %q then %q", first.Description, second.Description)
 	}
 }
 

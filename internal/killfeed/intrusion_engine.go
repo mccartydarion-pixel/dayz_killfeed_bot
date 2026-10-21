@@ -60,6 +60,10 @@ type IntrusionEvent struct {
 	IntrusionID int64
 	At          time.Time
 	Suppressed  bool
+	// Alertable is true when nothing but a missing alert channel kept this from alerting (the
+	// player is not authorized and the zone's cooldown has passed), so a direct-message alert
+	// (the zone's alert player, docs/FEATURE_UPGRADES.md) may still go out.
+	Alertable bool
 }
 
 // IntrusionPublisher is the consumer for intrusion engine events. Like HitPublisher/
@@ -189,6 +193,12 @@ func (e *IntrusionEngine) evaluateOne(ctx context.Context, zone repository.Zone,
 		return
 	}
 	wasInside := presence != nil && presence.Status == repository.PresenceInside
+	// A position older than the last one applied (a re-read of earlier ADM lines after a
+	// checkpoint rewind or rotation) is history, not movement: applying it would fabricate an
+	// exit or a re-entry alert.
+	if presence != nil && rec.ObservedAt.Before(presence.LastSeenAt) {
+		return
+	}
 
 	if !inside {
 		if wasInside {
@@ -212,16 +222,24 @@ func (e *IntrusionEngine) evaluateOne(ctx context.Context, zone repository.Zone,
 // EXITED - a stale/missing subsequent location update never fabricates one.
 func (e *IntrusionEngine) handleExit(ctx context.Context, zone repository.Zone, rec locationRecord) {
 	now := rec.ObservedAt
+	// The intrusion closes before the presence flips: a presence already OUTSIDE would never
+	// run this path again, and a failed MarkExited would leave the intrusion open for good.
+	intrusion, err := e.store.GetOpenIntrusion(ctx, zone.ID, rec.PlayerID)
+	if err != nil {
+		slog.Warn("component=intrusion_engine", "msg", "open intrusion lookup failed", "zone_id", zone.ID, "err", err.Error())
+		return
+	}
+	if intrusion != nil {
+		if err := e.store.MarkExited(ctx, intrusion.ID, now); err != nil {
+			slog.Warn("component=intrusion_engine", "msg", "mark exited failed", "intrusion_id", intrusion.ID, "err", err.Error())
+			return
+		}
+	}
 	if err := e.store.UpsertPresence(ctx, zone.ID, rec.PlayerID, repository.PresenceOutside, nil, now, rec.LocationEventID, nil); err != nil {
 		slog.Warn("component=intrusion_engine", "msg", "presence exit write failed", "zone_id", zone.ID, "err", err.Error())
 		return
 	}
-	intrusion, err := e.store.GetOpenIntrusion(ctx, zone.ID, rec.PlayerID)
-	if err != nil || intrusion == nil {
-		return
-	}
-	if err := e.store.MarkExited(ctx, intrusion.ID, now); err != nil {
-		slog.Warn("component=intrusion_engine", "msg", "mark exited failed", "intrusion_id", intrusion.ID, "err", err.Error())
+	if intrusion == nil {
 		return
 	}
 	e.metricsMu.Lock()
@@ -282,7 +300,10 @@ func (e *IntrusionEngine) handleEntry(ctx context.Context, zone repository.Zone,
 		newAlertAt = &now
 	}
 	if err := e.store.UpsertPresence(ctx, zone.ID, rec.PlayerID, repository.PresenceInside, &now, now, rec.LocationEventID, newAlertAt); err != nil {
+		// Without the presence row the next position would create and alert a second intrusion
+		// with no cooldown to hold it: nothing is published for this one.
 		slog.Warn("component=intrusion_engine", "msg", "presence entry write failed", "zone_id", zone.ID, "err", err.Error())
+		return
 	}
 
 	e.metricsMu.Lock()
@@ -305,7 +326,8 @@ func (e *IntrusionEngine) handleEntry(ctx context.Context, zone repository.Zone,
 	case repository.ZoneTypeBaseRadar:
 		kind = AlertBaseRadarIntrusion
 	}
-	e.publisher.PublishIntrusionEvent(IntrusionEvent{Kind: kind, Zone: zone, PlayerID: rec.PlayerID, Gamertag: rec.Gamertag, IntrusionID: intrusion.ID, At: now, Suppressed: !shouldAlert})
+	alertable := !authorized && !withinCooldown
+	e.publisher.PublishIntrusionEvent(IntrusionEvent{Kind: kind, Zone: zone, PlayerID: rec.PlayerID, Gamertag: rec.Gamertag, IntrusionID: intrusion.ID, At: now, Suppressed: !shouldAlert, Alertable: alertable})
 	if banned {
 		e.publisher.PublishIntrusionEvent(IntrusionEvent{Kind: AlertZoneBanViolation, Zone: zone, PlayerID: rec.PlayerID, Gamertag: rec.Gamertag, IntrusionID: intrusion.ID, At: now, Suppressed: !shouldAlert})
 	}

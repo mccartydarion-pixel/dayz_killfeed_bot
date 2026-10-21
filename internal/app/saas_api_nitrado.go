@@ -132,6 +132,8 @@ func (a *App) handleNitradoConnect(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Organization-wide: this replaces or adds what every server of the organization runs on,
+	// so it is the organization's own OWNER or ADMIN, never a staff Administrator of one server.
 	if _, ok := a.requireOrganizationRole(w, r, organizationID, user.ID); !ok {
 		return
 	}
@@ -202,6 +204,11 @@ func (a *App) handleNitradoConnect(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		slog.Warn("component=saas_api", "msg", "advance setup progress after nitrado connect failed", "err", err.Error())
 	}
+
+	// Running workers still hold the previous token (often the one that expired, which is why the
+	// customer is reconnecting): restart them on the new one. Stopping waits for each worker, so
+	// it runs after the response.
+	go a.restartOrganizationWorkers(context.WithoutCancel(ctx), organizationID)
 
 	slog.Info("component=saas_api", "event", "saas_nitrado_connect", "organization_id", organizationID, "connected", true, "services_found", len(supported))
 	writeSaaSJSON(w, http.StatusOK, NitradoConnectResponse{Connected: true, ServicesFound: len(supported)})
@@ -315,7 +322,7 @@ func (a *App) handleSelectDayZServer(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, ok := a.requireOrganizationRole(w, r, organizationID, user.ID); !ok {
+	if _, ok := a.requireOrganizationManager(w, r, organizationID, user); !ok {
 		return
 	}
 	installationID, ok := pathInt64(w, r, "installationID")
@@ -378,16 +385,16 @@ func (a *App) handleSelectDayZServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	name := matched.Details.Name
-	if name == "" {
-		name = matched.Details.ServerName
-	}
+	// The same name the periodic sync will read (nitrado.ServerName), so the first sync after
+	// connecting does not change it.
+	name := client.ResolveServerName(ctx, *matched)
 	server, err := a.SaaSServers.UpsertForInstallation(ctx, organizationID, loaded.mustGuildRowID(), repository.GameServer{
 		Provider:          "NITRADO",
 		ProviderServiceID: matched.ID,
 		Game:              "DayZ",
 		Platform:          string(platform),
 		DisplayName:       name,
+		ProviderName:      name,
 		Status:            nitradoServiceStatus(matched.Status),
 		Active:            true,
 	})
@@ -448,6 +455,9 @@ func (a *App) handleSelectDayZServer(w http.ResponseWriter, r *http.Request) {
 			slog.Warn("component=saas_api", "msg", "update installation status failed", "err", err.Error())
 		}
 	}
+
+	// Start the customer's killfeed now rather than waiting for the next reconcile.
+	a.startCustomerServer(context.WithoutCancel(ctx), server.ID)
 
 	if reused && resolvedInstallationID != installationID {
 		// Best-effort cleanup of the redundant, still-empty installation

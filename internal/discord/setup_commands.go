@@ -16,7 +16,7 @@ import (
 const adminPerms = discordgo.PermissionAdministrator | discordgo.PermissionManageServer
 
 // RegisterSetupCommand registers the admin-only /setup command with subcommands.
-func RegisterSetupCommand(session *discordgo.Session, guildID string) error {
+func RegisterSetupCommand(session CommandRegistrar, guildID string) error {
 	applicationID, err := ApplicationID(session)
 	if err != nil {
 		return err
@@ -25,11 +25,11 @@ func RegisterSetupCommand(session *discordgo.Session, guildID string) error {
 		return fmt.Errorf("discord session is nil")
 	}
 
-	defaultMemberPerms := int64(discordgo.PermissionManageServer) // hides it from normal members
+	// No default-member permission: a mapped Champion administrator must see it (admin_gate.go);
+	// isAdmin refuses everyone else.
 	cmd := &discordgo.ApplicationCommand{
-		Name:                     "setup",
-		Description:              "Configure Champion Killfeed for this server",
-		DefaultMemberPermissions: &defaultMemberPerms,
+		Name:        "setup",
+		Description: "Configure Champion Killfeed for this server",
 		Options: []*discordgo.ApplicationCommandOption{
 			{Name: "run", Description: "Set up Champion's Discord channels", Type: discordgo.ApplicationCommandOptionSubCommand},
 			{Name: "status", Description: "Show Champion Killfeed configuration status", Type: discordgo.ApplicationCommandOptionSubCommand},
@@ -90,7 +90,7 @@ func (h *SetupHandler) Handle(s *discordgo.Session, i *discordgo.InteractionCrea
 	}
 
 	if !isAdmin(s, i) {
-		respondEphemeral(s, i, "⛔ You need Administrator or Manage Server permission to run /setup.")
+		respondEphemeral(s, i, ReplyNeedsPermission("run `/setup`"))
 		return
 	}
 
@@ -122,17 +122,17 @@ func (h *SetupHandler) Handle(s *discordgo.Session, i *discordgo.InteractionCrea
 // challenge or an admin's manual approval).
 func (h *SetupHandler) handleVerifiedRole(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if !isAdmin(s, i) {
-		respondEphemeral(s, i, "⛔ You need Administrator or Manage Server permission to run /setup.")
+		respondEphemeral(s, i, ReplyNeedsPermission("run `/setup`"))
 		return
 	}
 	roleID := strings.TrimSpace(optionString(i.ApplicationCommandData().Options[0], "role_id"))
 	if roleID == "" {
-		respondEphemeral(s, i, "❌ role_id is required.")
+		respondEphemeral(s, i, "role_id is required.")
 		return
 	}
 	setup, err := h.manager.store.Get(i.GuildID)
 	if err != nil {
-		respondEphemeral(s, i, "❌ Could not load configuration.")
+		respondEphemeral(s, i, ReplyCouldNot("load the configuration"))
 		return
 	}
 	if setup == nil {
@@ -140,7 +140,7 @@ func (h *SetupHandler) handleVerifiedRole(s *discordgo.Session, i *discordgo.Int
 	}
 	setup.VerifiedRoleID = roleID
 	if err := h.manager.store.Save(*setup); err != nil {
-		respondEphemeral(s, i, "❌ Could not save the verified role.")
+		respondEphemeral(s, i, ReplyCouldNot("save the verified role"))
 		return
 	}
 	respondEphemeral(s, i, "✅ Verified role set. It will be assigned automatically when a /link request is verified.")
@@ -162,17 +162,14 @@ func (h *SetupHandler) handleSetup(s *discordgo.Session, i *discordgo.Interactio
 	}
 	slog.Info("component=setup", "action", action, "stage", "received", "guild_id", i.GuildID)
 
-	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral},
-	}); err != nil {
-		slog.Warn("component=setup", "action", action, "stage", "deferred", "error_class", "discord_unavailable", "err", err.Error())
+	if !deferEphemeral(s, i) {
+		slog.Warn("component=setup", "action", action, "stage", "deferred", "error_class", "discord_unavailable")
 		return
 	}
 	slog.Info("component=setup", "action", action, "stage", "deferred", "guild_id", i.GuildID)
 
 	if h.layout == nil {
-		h.editEphemeral(s, i, "❌ Channel setup is unavailable right now. Try again later or use Setup on the Champion website.")
+		h.editEphemeral(s, i, "Channel setup is unavailable right now. Try again later or use Setup on the Champion website.")
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), setupLayoutTimeout)
@@ -218,14 +215,14 @@ func setupErrorKind(err error) string {
 func (h *SetupHandler) editEphemeralEmbed(s *discordgo.Session, i *discordgo.InteractionCreate, embed *discordgo.MessageEmbed) {
 	empty := ""
 	embeds := []*discordgo.MessageEmbed{embed}
-	if _, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &empty, Embeds: &embeds}); err != nil {
+	if err := editDeferred(s, i, &discordgo.WebhookEdit{Content: &empty, Embeds: &embeds}); err != nil {
 		slog.Warn("component=setup", "msg", "response edit failed", "err", err.Error())
 	}
 }
 
 // editEphemeral edits a previously deferred ephemeral interaction response.
 func (h *SetupHandler) editEphemeral(s *discordgo.Session, i *discordgo.InteractionCreate, content string) {
-	if _, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &content}); err != nil {
+	if err := editDeferred(s, i, &discordgo.WebhookEdit{Content: &content}); err != nil {
 		slog.Warn("component=setup", "msg", "response edit failed", "err", err.Error())
 	}
 }
@@ -255,7 +252,7 @@ func (h *SetupHandler) syncWelcomeChannel(discordGuildID, channelID string) {
 func (h *SetupHandler) handleStatus(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	setup, err := h.manager.store.Get(i.GuildID)
 	if err != nil || setup == nil {
-		respondEphemeral(s, i, "Champion Killfeed is not configured. Run `/setup`.")
+		respondEphemeral(s, i, ReplyNotSetUp)
 		return
 	}
 
@@ -286,22 +283,15 @@ func (h *SetupHandler) handleStatus(s *discordgo.Session, i *discordgo.Interacti
 // handleReset requires an explicit confirmation button click before any deletion.
 // Without a confirmed interaction, nothing is removed.
 func (h *SetupHandler) handleReset(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Flags:   discordgo.MessageFlagsEphemeral,
-			Content: "⚠️ **Reset Champion Killfeed?**\nThis will remove the bot-created Champion Killfeed configuration.",
-			Components: []discordgo.MessageComponent{
-				discordgo.ActionsRow{Components: []discordgo.MessageComponent{
-					discordgo.Button{Label: "Confirm", Style: discordgo.DangerButton, CustomID: "champion_reset_confirm"},
-					discordgo.Button{Label: "Cancel", Style: discordgo.SecondaryButton, CustomID: "champion_reset_cancel"},
-				}},
-			},
+	respondPrivate(s, i, &discordgo.InteractionResponseData{
+		Content: "⚠️ **Reset Champion Killfeed?**\nThis will remove the bot-created Champion Killfeed configuration.",
+		Components: []discordgo.MessageComponent{
+			discordgo.ActionsRow{Components: []discordgo.MessageComponent{
+				discordgo.Button{Label: "Confirm", Style: discordgo.DangerButton, CustomID: "champion_reset_confirm"},
+				discordgo.Button{Label: "Cancel", Style: discordgo.SecondaryButton, CustomID: "champion_reset_cancel"},
+			}},
 		},
 	})
-	if err != nil {
-		slog.Warn("component=discord", "msg", "reset confirmation prompt failed", "err", err.Error())
-	}
 }
 
 // HandleResetConfirm processes the reset confirmation button. Only a confirmed
@@ -311,7 +301,7 @@ func (h *SetupHandler) HandleResetConfirm(s *discordgo.Session, i *discordgo.Int
 		return
 	}
 	if !isAdmin(s, i) {
-		respondEphemeral(s, i, "⛔ Admin only.")
+		respondEphemeral(s, i, ReplyNeedsManageServer)
 		return
 	}
 	customID := i.MessageComponentData().CustomID
@@ -323,7 +313,7 @@ func (h *SetupHandler) HandleResetConfirm(s *discordgo.Session, i *discordgo.Int
 		return
 	}
 	if err := h.manager.store.Delete(i.GuildID); err != nil {
-		respondEphemeral(s, i, "❌ Reset failed: "+err.Error())
+		respondEphemeral(s, i, ReplyCouldNotBecause("reset the configuration", err.Error()))
 		return
 	}
 	slog.Info("component=discord", "msg", "setup reset confirmed", "guild_id", i.GuildID)
@@ -335,7 +325,13 @@ func isAdmin(s *discordgo.Session, i *discordgo.InteractionCreate) bool {
 	if i.Member != nil && i.Member.Permissions&adminPerms != 0 {
 		return true
 	}
-	if i.Member == nil || i.GuildID == "" || s == nil {
+	if championAdminMember(i) {
+		return true
+	}
+	// Discord sends the member's permissions in this channel with every guild
+	// interaction, so a member who has any is simply not an admin. Only when
+	// they are missing altogether is Discord asked (which can take requests).
+	if i.Member == nil || i.Member.User == nil || i.Member.Permissions != 0 || i.GuildID == "" || s == nil {
 		return false
 	}
 	perms, err := s.UserChannelPermissions(i.Member.User.ID, i.ChannelID)
@@ -354,10 +350,7 @@ func writeLine(b *strings.Builder, label, id string) {
 }
 
 func respondEphemeral(s *discordgo.Session, i *discordgo.InteractionCreate, content string) {
-	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral, Content: content},
-	})
+	respondPrivate(s, i, &discordgo.InteractionResponseData{Content: content})
 }
 
 // RespondEphemeral is the exported ephemeral response helper for app-level routing.

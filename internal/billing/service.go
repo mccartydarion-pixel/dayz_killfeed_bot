@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yourname/dayz-killfeed/internal/casebilling"
 	"github.com/yourname/dayz-killfeed/internal/entitlements"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
@@ -21,6 +22,9 @@ var (
 	ErrNoBillingCustomer    = errors.New("organization has not started billing yet")
 	ErrInvalidReturnPath    = errors.New("invalid return path")
 	ErrInvalidSignature     = errors.New("invalid webhook signature")
+	// ErrAlreadySubscribed: the organization already pays through a live Stripe subscription; a
+	// second checkout would bill it twice. Plan changes go through ChangePlan or the Portal.
+	ErrAlreadySubscribed = errors.New("organization already has a live subscription")
 )
 
 // Store is the persistence Service needs; *repository.SubscriptionRepository implements it.
@@ -33,6 +37,7 @@ type Store interface {
 	GetByProviderCustomerID(ctx context.Context, provider, customerID string) (*repository.Subscription, error)
 	GetByProviderSubscriptionID(ctx context.Context, provider, subscriptionID string) (*repository.Subscription, error)
 	RecordWebhookEventOnce(ctx context.Context, provider, eventID, eventType string, organizationID *int64) (bool, error)
+	ForgetWebhookEvent(ctx context.Context, provider, eventID string) error
 	RecordBillingTransaction(ctx context.Context, t repository.BillingTransaction) error
 }
 
@@ -47,6 +52,12 @@ type Service struct {
 	successPath    string // default returnPath when the caller doesn't send one
 	cancelPath     string
 	portalPath     string
+	// Phase 6 optional C.A.S.E. state never writes the organization base row.
+	caseStore           CaseStore
+	casePrices          map[casebilling.Tier]string
+	caseEnabled         bool
+	caseAccessEnabled   bool
+	caseVerifiedThrough casebilling.Tier
 }
 
 // Options configures a Service. Every path defaults to a sane value if empty, so a caller only
@@ -92,6 +103,10 @@ func (s *Service) Catalog() *Catalog { return s.catalog }
 // Plans returns the public plan catalog exactly as the pricing page should render it.
 func (s *Service) Plans() []Plan { return s.catalog.PublicPlans() }
 
+// CheckoutConfigured reports whether a base checkout could be created at all (a Stripe provider is
+// configured). It is the same precondition Checkout enforces first; it never calls Stripe.
+func (s *Service) CheckoutConfigured() bool { return s != nil && s.provider != nil }
+
 // --- subscription summary -----------------------------------------------------------------------
 
 // Summary is the website's subscription view (docs/BILLING.md "Current subscription" /
@@ -112,6 +127,9 @@ type Summary struct {
 	TrialStatus        string
 	TrialDaysRemaining int
 	BillingRequired    bool
+	// PlatformOwnerAccess: a platform owner owns the organization. Entitlements is then every
+	// feature and BillingRequired is false, whatever Plan and Status say.
+	PlatformOwnerAccess bool
 }
 
 // Summary loads organizationID's subscription and folds in its entitlements and onboarding state.
@@ -124,21 +142,22 @@ func (s *Service) Summary(ctx context.Context, organizationID int64) (*Summary, 
 		return nil, err
 	}
 	if sub == nil {
-		st := StateOf(nil, time.Now())
-		return &Summary{Plan: repository.PlanNone, Status: repository.SubscriptionInactive, Entitlements: entitlementStrings(repository.PlanNone),
-			TrialStatus: st.TrialStatus, BillingRequired: st.BillingRequired}, nil
+		st := StateFor(organizationID, nil, time.Now())
+		return &Summary{Plan: repository.PlanNone, Status: repository.SubscriptionInactive, Entitlements: entitlementStrings(organizationID, repository.PlanNone),
+			TrialStatus: st.TrialStatus, BillingRequired: st.BillingRequired, PlatformOwnerAccess: st.PlatformOwnerAccess}, nil
 	}
 	return summaryOf(sub), nil
 }
 
 func summaryOf(sub *repository.Subscription) *Summary {
-	st := StateOf(sub, time.Now())
+	st := StateFor(sub.OrganizationID, sub, time.Now())
 	return &Summary{
 		Plan: sub.Plan, Status: sub.Status, BillingInterval: sub.BillingInterval,
 		TrialEndsAt: sub.TrialEndsAt, CurrentPeriodStart: sub.CurrentPeriodStart, CurrentPeriodEnd: sub.CurrentPeriodEnd,
-		CancelAtPeriodEnd: sub.CancelAtPeriodEnd, Entitlements: entitlementStrings(sub.Plan),
+		CancelAtPeriodEnd: sub.CancelAtPeriodEnd, Entitlements: entitlementStrings(sub.OrganizationID, sub.Plan),
 		HasBillingCustomer: sub.ProviderCustomerID != "", HasActiveSubscription: sub.ProviderSubscriptionID != "",
 		IntendedPlan: sub.IntendedPlan, TrialStatus: st.TrialStatus, TrialDaysRemaining: st.DaysRemaining, BillingRequired: st.BillingRequired,
+		PlatformOwnerAccess: st.PlatformOwnerAccess,
 	}
 }
 
@@ -186,6 +205,9 @@ func (s *Service) Checkout(ctx context.Context, r *http.Request, organizationID 
 		if sub, err = s.store.EnsureInactive(ctx, organizationID); err != nil {
 			return nil, err
 		}
+	}
+	if liveProviderSubscription(sub) {
+		return nil, ErrAlreadySubscribed
 	}
 	customerID, err := s.provider.EnsureCustomer(ctx, CustomerInput{ExistingCustomerID: sub.ProviderCustomerID, OrganizationID: organizationID, Email: org.Email, Name: org.Name})
 	if err != nil {
@@ -381,16 +403,20 @@ func (s *Service) Reconcile(ctx context.Context, organizationID int64) (*Summary
 }
 
 // applyState maps a normalized Stripe state into repository.ProviderState and persists it.
-// planKeyOverride wins when non-empty (a checkout/subscription-created event's own metadata, or an
-// explicit ChangePlan call); otherwise the plan key is reverse-resolved from the price id via the
-// catalog, and if that also fails the stored plan is left unchanged (repository.ApplyProviderState's
-// CASE ... WHEN ” THEN plan).
+// The plan key comes from the price Stripe is actually billing, reverse-resolved through the
+// catalog: that is the source of truth. planKeyOverride (a checkout/subscription event's
+// champion_plan_key metadata, or an explicit ChangePlan call) is only a fallback for a price the
+// catalog doesn't know. Metadata is written once at checkout and is NOT updated by a plan change,
+// so trusting it first let a customer.subscription.updated webhook put an upgraded organization
+// back on its original plan. If neither resolves, the stored plan is left unchanged
+// (repository.ApplyProviderState's CASE ... WHEN ” THEN plan).
 func (s *Service) applyState(ctx context.Context, organizationID int64, st *SubscriptionState, planKeyOverride string) (*repository.Subscription, error) {
-	plan := strings.ToUpper(strings.TrimSpace(planKeyOverride))
+	plan := ""
+	if p, _, ok := s.catalog.PlanForPrice(st.PriceID); ok {
+		plan = p.Key
+	}
 	if plan == "" {
-		if p, _, ok := s.catalog.PlanForPrice(st.PriceID); ok {
-			plan = p.Key
-		}
+		plan = strings.ToUpper(strings.TrimSpace(planKeyOverride))
 	}
 	ps := repository.ProviderState{
 		Provider: repository.ProviderStripe, ProviderCustomerID: st.CustomerID, ProviderSubscriptionID: st.SubscriptionID, ProviderPriceID: st.PriceID,
@@ -411,11 +437,18 @@ func zeroToNil(t time.Time) *time.Time {
 // entitlementStrings adapts internal/entitlements.Resolve to the []string the API/website expects
 // (docs/SAAS_SCHEMA.md "Entitlements": Resolve is the one place feature-by-plan logic lives -
 // billing never re-implements it).
-func entitlementStrings(plan string) []string {
-	keys := entitlements.Resolve(plan)
+func entitlementStrings(organizationID int64, plan string) []string {
+	keys := entitlements.Resolve(entitlements.ForOrganization(organizationID, plan))
 	out := make([]string, len(keys))
 	for i, k := range keys {
 		out[i] = string(k)
 	}
 	return out
+}
+
+// liveProviderSubscription reports whether sub is backed by a Stripe subscription that is still
+// billing (ACTIVE or PAST_DUE).
+func liveProviderSubscription(sub *repository.Subscription) bool {
+	return sub != nil && sub.ProviderSubscriptionID != "" &&
+		(sub.Status == repository.SubscriptionActive || sub.Status == repository.SubscriptionPastDue)
 }

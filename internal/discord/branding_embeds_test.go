@@ -17,11 +17,15 @@ func TestPublicPanelEmbedsUseChampionBranding(t *testing.T) {
 		if embed.Author == nil || embed.Author.Name != presentation.AuthorName {
 			t.Errorf("%s is not branded: %#v", name, embed.Author)
 		}
-		if strings.Contains(embed.Title, "CHAMPION") || embed.Title == "" {
+		if strings.Contains(strings.ToUpper(embed.Title), "CHAMPION") || embed.Title == "" {
 			t.Errorf("%s title should be the section only: %q", name, embed.Title)
 		}
-		if embed.Footer == nil || embed.Footer.Text != presentation.ChampionSlogan {
-			t.Errorf("%s footer is not standardized: %#v", name, embed.Footer)
+		// A static panel has no server and no context to name, so it carries no footer.
+		if embed.Footer != nil {
+			t.Errorf("%s has nothing to say in a footer: %#v", name, embed.Footer)
+		}
+		if problems := presentation.CheckEmbed(embed); len(problems) != 0 {
+			t.Errorf("%s breaks the design rules: %v", name, problems)
 		}
 	}
 }

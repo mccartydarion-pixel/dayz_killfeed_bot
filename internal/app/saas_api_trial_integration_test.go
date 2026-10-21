@@ -81,8 +81,12 @@ func TestTrialStartIsNoCardIdempotentAndRecordsThePlan(t *testing.T) {
 		st["installationLimit"].(float64) != 1 || st["installationCount"].(float64) != 1 {
 		t.Fatalf("%v", st)
 	}
-	// Changing the selection (as ADMIN) keeps the same clock.
-	st2 := w.expect(w.do(http.MethodPost, trialPath(w.a1.OrgID, "/start"), w.admin, map[string]any{"planKey": "PRO"}), http.StatusOK, "reselect").JSON(t)
+	// Picking the plan is the OWNER's decision: an org ADMIN is refused.
+	if r := w.do(http.MethodPost, trialPath(w.a1.OrgID, "/start"), w.admin, map[string]any{"planKey": "PRO"}); r.Status != http.StatusForbidden || r.errCode(t) != codeForbidden {
+		t.Fatalf("org ADMIN trial start: expected 403 FORBIDDEN, got %d %s", r.Status, r.Body)
+	}
+	// Changing the selection (as OWNER) keeps the same clock.
+	st2 := w.expect(w.do(http.MethodPost, trialPath(w.a1.OrgID, "/start"), w.a1.OwnerDiscordID, map[string]any{"planKey": "PRO"}), http.StatusOK, "reselect").JSON(t)
 	after, _ := w.a.SaaSSubscriptions.GetForOrganization(ctx, w.a1.OrgID)
 	if st2["selectedPlan"] != "PRO" || !after.TrialEndsAt.Equal(*before.TrialEndsAt) || after.Plan != repository.SubscriptionTrial || after.IntendedPlan != "PRO" {
 		t.Fatalf("state %v row %+v", st2, after)
@@ -97,8 +101,8 @@ func TestTrialStartIsNoCardIdempotentAndRecordsThePlan(t *testing.T) {
 	}
 	// MEMBER cannot start or change it; unknown and private plans are refused.
 	w.expect(w.do(http.MethodPost, trialPath(w.a1.OrgID, "/start"), w.member, map[string]any{"planKey": "PRO"}), http.StatusForbidden, "member")
-	w.expect(w.do(http.MethodPost, trialPath(w.a1.OrgID, "/start"), w.admin, map[string]any{"planKey": "LEGACY"}), http.StatusBadRequest, "private plan")
-	w.expect(w.do(http.MethodPost, trialPath(w.a1.OrgID, "/start"), w.admin, map[string]any{"planKey": "NOPE"}), http.StatusBadRequest, "unknown plan")
+	w.expect(w.do(http.MethodPost, trialPath(w.a1.OrgID, "/start"), w.a1.OwnerDiscordID, map[string]any{"planKey": "LEGACY"}), http.StatusBadRequest, "private plan")
+	w.expect(w.do(http.MethodPost, trialPath(w.a1.OrgID, "/start"), w.a1.OwnerDiscordID, map[string]any{"planKey": "NOPE"}), http.StatusBadRequest, "unknown plan")
 	w.expect(w.do(http.MethodGet, trialPath(w.a1.OrgID, ""), w.players[0], nil), http.StatusForbidden, "non-member")
 }
 

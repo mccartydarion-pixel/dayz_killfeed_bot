@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/yourname/dayz-killfeed/internal/repository"
@@ -28,7 +29,9 @@ func (a *App) registerPlayerRoutes() {
 	}
 	h := a.HTTPServer.Handle
 	h("GET /api/saas/player/servers", a.handlePlayerServers)
+	h("GET /api/saas/player/home", a.handlePlayerHome)
 	h("GET /api/saas/player/servers/{installationID}/stats", a.handlePlayerServerStats)
+	h("GET /api/saas/player/servers/{installationID}/ranked", a.handlePlayerServerRanked)
 }
 
 // --- DTOs (docs/PLAYER_API.md "Exact DTOs") -----------------------------------------------------
@@ -69,10 +72,14 @@ func playerServerSummary(p repository.PlayerInstallation) playerServerSummaryDTO
 // installation-scoped Faction Hub membership instead (hub_faction_members.installation_id) - null
 // when the player is not in a Faction Hub faction on this installation.
 type playerStatsDTO struct {
-	InstallationID    int64   `json:"installationId"`
-	Kills             int     `json:"kills"`
-	Deaths            int     `json:"deaths"`
-	KD                float64 `json:"kd"`
+	InstallationID int64   `json:"installationId"`
+	Kills          int     `json:"kills"`
+	Deaths         int     `json:"deaths"` // every death
+	KD             float64 `json:"kd"`     // overall: kills / deaths
+	// pvpDeaths + pveDeaths = deaths; pvpKd is kills / pvpDeaths (internal/deathstats).
+	PvPDeaths         int     `json:"pvpDeaths"`
+	PvEDeaths         int     `json:"pveDeaths"`
+	PvPKD             float64 `json:"pvpKd"`
 	Headshots         int     `json:"headshots"`
 	Longshots         int     `json:"longshots"`
 	LongestKillMeters float64 `json:"longestKillMeters"`
@@ -81,6 +88,20 @@ type playerStatsDTO struct {
 	BountyValue       int64   `json:"bountyValue"`
 	Faction           *string `json:"faction"` // Faction Hub faction name on THIS installation, or null
 	LastSeenAt        *string `json:"lastSeenAt"`
+	// TournamentTitle is the title the player holds from winning a tournament on this
+	// installation (docs/TOURNAMENTS.md), or null.
+	TournamentTitle *string `json:"tournamentTitle"`
+	// LastKill is the player's most recent kill on this server, or null when they have none.
+	LastKill *playerLastKillDTO `json:"lastKill"`
+}
+
+type playerLastKillDTO struct {
+	KillID         int64   `json:"killId"`
+	VictimName     string  `json:"victimName"`
+	Weapon         string  `json:"weapon"`
+	DistanceMeters float64 `json:"distanceMeters"`
+	Headshot       bool    `json:"headshot"`
+	At             string  `json:"at"`
 }
 
 func killsToKD(kills, deaths int) float64 {
@@ -127,6 +148,107 @@ func (a *App) handlePlayerServers(w http.ResponseWriter, r *http.Request) {
 		resp.DefaultInstallationID = &id
 	}
 	writeSaaSJSON(w, http.StatusOK, resp)
+}
+
+// playerHomeServerDTO is the server of GET /api/saas/player/home. Unlike playerServerSummaryDTO it
+// does carry organizationId: the website's Player Hub needs it to build the organization-scoped
+// PLAYER routes (wallet, shop, factions, leaderboards), which take an organization id in the path
+// but need no organization role. The id grants nothing by itself - every route authorizes again.
+type playerHomeServerDTO struct {
+	InstallationID   int64  `json:"installationId"`
+	OrganizationID   int64  `json:"organizationId"`
+	OrganizationName string `json:"organizationName"`
+	ServerName       string `json:"serverName"`
+	Platform         string `json:"platform"`
+	ServerStatus     string `json:"serverStatus"`
+	DiscordGuildID   string `json:"discordGuildId"`
+	DiscordGuildName string `json:"discordGuildName"`
+	LinkStatus       string `json:"linkStatus"`
+	Observed         bool   `json:"observed"`
+}
+
+// How playerHomeResponseDTO.Server was chosen.
+const (
+	playerHomeSelectedPreferred = "PREFERRED" // the caller's ?installationId=, one of the user's servers
+	playerHomeSelectedDefault   = "DEFAULT"   // the first server of the documented order
+)
+
+// playerHomeResponseDTO is GET /api/saas/player/home. Server and Selected are null (never
+// omitted) when the acting user has no verified link in any guild that has an installation with a
+// game server; Servers is then [] (never null).
+type playerHomeResponseDTO struct {
+	Server   *playerHomeServerDTO  `json:"server"`
+	Servers  []playerHomeServerDTO `json:"servers"`
+	Selected *string               `json:"selected"`
+}
+
+func playerHomeServer(home repository.PlayerHome) playerHomeServerDTO {
+	return playerHomeServerDTO{
+		InstallationID: home.InstallationID, OrganizationID: home.OrganizationID, OrganizationName: home.OrganizationName,
+		ServerName: home.ServerName, Platform: home.Platform, ServerStatus: home.ServerStatus,
+		DiscordGuildID: home.DiscordGuildID, DiscordGuildName: home.DiscordGuildName,
+		LinkStatus: home.LinkStatus, Observed: home.Observed,
+	}
+}
+
+// playerHomeResponse builds the response from the user's servers in default order. preferred is
+// the caller's wish (0 = none): it is honoured only when it is one of homes, so the answer can
+// never be a server the user is not linked on, whatever the browser sent.
+func playerHomeResponse(homes []repository.PlayerHome, preferred int64) playerHomeResponseDTO {
+	resp := playerHomeResponseDTO{Servers: make([]playerHomeServerDTO, 0, len(homes))}
+	chosen := -1
+	for i, home := range homes {
+		resp.Servers = append(resp.Servers, playerHomeServer(home))
+		if chosen < 0 && preferred > 0 && home.InstallationID == preferred {
+			chosen = i
+		}
+	}
+	if len(homes) == 0 {
+		return resp
+	}
+	selected := playerHomeSelectedPreferred
+	if chosen < 0 {
+		chosen, selected = 0, playerHomeSelectedDefault
+	}
+	server := resp.Servers[chosen]
+	resp.Server, resp.Selected = &server, &selected
+	return resp
+}
+
+// playerHomePreference reads the optional ?installationId=. Anything that is not a positive
+// integer is no preference (0) - the route never fails on it.
+func playerHomePreference(r *http.Request) int64 {
+	id, err := strconv.ParseInt(r.URL.Query().Get("installationId"), 10, 64)
+	if err != nil || id <= 0 {
+		return 0
+	}
+	return id
+}
+
+// handlePlayerHome is GET /api/saas/player/home: the servers the website's Player Hub can show for
+// the acting user and the one it shows now (docs/PLAYER_API.md "Player home"). It needs a VERIFIED
+// link but, unlike handlePlayerServers, no observed activity, so a player who has just linked gets
+// their hub. No server is a normal answer ({"server":null,"servers":[],"selected":null}).
+func (a *App) handlePlayerHome(w http.ResponseWriter, r *http.Request) {
+	if !a.requireSaaSServiceAuth(w, r) {
+		return
+	}
+	user := a.resolveActingUser(w, r)
+	if user == nil {
+		return
+	}
+	if a.SaaSPlayer == nil {
+		writeSaaSError(w, codeInternalError, "player service unavailable")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), playerTimeout)
+	defer cancel()
+	homes, err := a.SaaSPlayer.HomesForDiscordUser(ctx, user.DiscordUserID)
+	if err != nil {
+		playerFailed(w, "resolve player home", err)
+		return
+	}
+	writeSaaSJSON(w, http.StatusOK, playerHomeResponse(homes, playerHomePreference(r)))
 }
 
 // handlePlayerServerStats is GET .../player/servers/{installationID}/stats: the acting user's own
@@ -179,7 +301,7 @@ func (a *App) handlePlayerServerStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	kills, deaths, headshots, longshots, longest, err := a.SaaSPlayer.KillStats(ctx, scope.GuildID, scope.ServerID, scope.PlayerID)
+	combat, err := a.SaaSPlayer.CombatStats(ctx, scope.GuildID, scope.ServerID, scope.PlayerID)
 	if err != nil {
 		playerFailed(w, "load player kill stats", err)
 		return
@@ -206,11 +328,29 @@ func (a *App) handlePlayerServerStats(w http.ResponseWriter, r *http.Request) {
 		faction = &name
 	}
 
-	writeSaaSJSON(w, http.StatusOK, playerStatsDTO{
-		InstallationID: installationID, Kills: kills, Deaths: deaths, KD: killsToKD(kills, deaths),
-		Headshots: headshots, Longshots: longshots, LongestKillMeters: longest, PlaytimeSeconds: playtimeSeconds,
-		BountiesClaimed: claimed, BountyValue: bountyValue, Faction: faction, LastSeenAt: lastSeen,
-	})
+	dto := toPlayerStatsDTO(installationID, combat)
+	dto.PlaytimeSeconds, dto.BountiesClaimed, dto.BountyValue, dto.Faction, dto.LastSeenAt = playtimeSeconds, claimed, bountyValue, faction, lastSeen
+	if last, err := a.SaaSPlayer.LastKill(ctx, scope.GuildID, scope.ServerID, scope.PlayerID); err != nil {
+		slog.Warn("component=saas_api", "event", "player_last_kill_failed", "err", err.Error())
+	} else if last != nil {
+		dto.LastKill = &playerLastKillDTO{KillID: last.KillID, VictimName: last.VictimName, Weapon: last.Weapon, DistanceMeters: last.DistanceMeters, Headshot: last.Headshot, At: last.At.UTC().Format(time.RFC3339)}
+	}
+	if a.Tournaments != nil {
+		if title, err := a.Tournaments.Title(ctx, installationID, scope.PlayerID); err == nil && title != "" {
+			dto.TournamentTitle = &title
+		}
+	}
+	writeSaaSJSON(w, http.StatusOK, dto)
+}
+
+// toPlayerStatsDTO fills the combat figures: deaths and kd keep their meaning (every death, the
+// overall K/D); pvpDeaths, pveDeaths and pvpKd are the split.
+func toPlayerStatsDTO(installationID int64, c repository.PlayerCombatStats) playerStatsDTO {
+	return playerStatsDTO{
+		InstallationID: installationID, Kills: c.Kills, Deaths: c.Deaths, KD: killsToKD(c.Kills, c.Deaths),
+		PvPDeaths: c.PvPDeaths, PvEDeaths: c.PvEDeaths(), PvPKD: killsToKD(c.Kills, c.PvPDeaths),
+		Headshots: c.Headshots, Longshots: c.Longshots, LongestKillMeters: c.LongestMeters,
+	}
 }
 
 func playerFailed(w http.ResponseWriter, what string, err error) {

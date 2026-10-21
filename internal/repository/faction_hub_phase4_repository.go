@@ -329,7 +329,12 @@ func (s *PostgresAssetStore) List(ctx context.Context, prefix string, olderThan 
 		limit = 100
 	}
 	pattern := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(prefix) + "%"
-	rows, err := s.pool.Query(ctx, `SELECT storage_key FROM hub_asset_blobs WHERE storage_key LIKE $1 ESCAPE '\' AND created_at < $2 ORDER BY created_at, storage_key LIMIT $3`, pattern, olderThan, limit)
+	// Only keys no asset row references: the sweep deletes those. Listing referenced keys too let
+	// the oldest live logos fill every batch, so once there were more of them than one batch the
+	// sweep found nothing to delete and stopped for good.
+	rows, err := s.pool.Query(ctx, `SELECT b.storage_key FROM hub_asset_blobs b WHERE b.storage_key LIKE $1 ESCAPE '\' AND b.created_at < $2
+  AND NOT EXISTS (SELECT 1 FROM hub_faction_assets a WHERE a.storage_key = b.storage_key)
+ORDER BY b.created_at, b.storage_key LIMIT $3`, pattern, olderThan, limit)
 	if err != nil {
 		return nil, fmt.Errorf("asset list: %w", err)
 	}

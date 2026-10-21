@@ -22,6 +22,8 @@ const (
 	AlertWarning  AlertSeverity = "WARNING"
 	AlertCritical AlertSeverity = "CRITICAL"
 	AlertResolved AlertSeverity = "RESOLVED"
+	// AlertInfo is a staff notice that needs a decision, not an outage.
+	AlertInfo AlertSeverity = "INFO"
 )
 
 // Alert kinds the publisher emits today. Each one has a real source; kinds
@@ -34,6 +36,25 @@ const (
 	AlertKindUAVIntrusion    = "UAV_INTRUSION"
 	AlertKindBaseRadar       = "BASE_RADAR_INTRUSION"
 	AlertKindZoneBanViolated = "ZONE_BAN_VIOLATION"
+	// AlertKindBaseRequest: a player asked for a base to be registered.
+	AlertKindBaseRequest = "BASE_REQUEST"
+	// AlertKindRentPaused: the daily list of bases paused for unpaid rent.
+	AlertKindRentPaused = "BASE_RENT_PAUSED"
+	// AlertKindSecurityDigest: the weekly C.A.S.E. and base security summary (an automation).
+	AlertKindSecurityDigest = "SECURITY_WEEKLY_DIGEST"
+	// AlertKindPlayerAppeal: a player sent staff an appeal from the Player Hub.
+	AlertKindPlayerAppeal = "PLAYER_APPEAL"
+	// AlertKindMapRotation: Champion could not change the map (docs/MAP_ROTATION.md).
+	AlertKindMapRotation = "MAP_ROTATION_FAILED"
+	// AlertKindServerDown: the game server's log files stopped growing (docs/SERVER_DOWN_ALERT.md).
+	AlertKindServerDown = "SERVER_DOWN"
+	// AlertKindChannelAccess: Champion can no longer see, post in or rename one of its routed
+	// channels (the channel was deleted, or the bot's role lost access to it).
+	AlertKindChannelAccess = "CHANNEL_ACCESS"
+	// AlertKindCaseWatchDigest labels the paid C.A.S.E. Watch digest embed. It is NOT an
+	// operational kind: the ADMIN_ALERTS publisher refuses it (operationalAdminAlertKind), and the
+	// durable digest outbox sends it only to the private C.A.S.E. status channel.
+	AlertKindCaseWatchDigest = "CASE_WATCH_DIGEST"
 )
 
 // AdminAlert is one operational condition for one server.
@@ -41,7 +62,7 @@ type AdminAlert struct {
 	GuildRowID, ServerID int64
 	Kind                 string
 	Severity             AlertSeverity
-	Headline             string // e.g. "ADM STALE"
+	Headline             string // e.g. "ADM stale"
 	Detail               string
 	Fields               [][2]string // name, value - already safe text
 	At                   time.Time
@@ -58,11 +79,11 @@ const (
 	// nitradoFailureAlertAfter consecutive failed ADM downloads raise an alert
 	// (each single failure is already an ADM monitor diagnostic).
 	nitradoFailureAlertAfter = 3
-	adminAlertFooter         = "CHAMPION • STAFF INTELLIGENCE"
+	adminAlertFooter         = presentation.FooterStaffOnly
 )
 
 // A duplicated numeric server ID in another guild must have independent alert state.
-type alertScope struct { guildRowID, serverID int64 }
+type alertScope struct{ guildRowID, serverID int64 }
 
 type serverAlertState struct {
 	stale            bool
@@ -125,13 +146,13 @@ func (p *AdminAlertPublisher) ObserveSnapshot(guildRowID, serverID int64, snap k
 		return
 	}
 	if stale {
-		p.Publish(AdminAlert{GuildRowID: guildRowID, ServerID: serverID, Kind: AlertKindADMStale, Severity: AlertWarning, Headline: "ADM STALE",
+		p.Publish(AdminAlert{GuildRowID: guildRowID, ServerID: serverID, Kind: AlertKindADMStale, Severity: AlertWarning, Headline: "ADM stale",
 			Detail: "The ADM log has stopped updating while players are online.",
-			Fields: [][2]string{{"Last Log Change", fmt.Sprintf("<t:%d:R>", snap.LastLogChange.Unix())}, {"Players Online", fmt.Sprintf("%d", snap.OnlineCount)}},
+			Fields: [][2]string{{"Last log change", presentation.Timestamp(snap.LastLogChange, 'R')}, {"Players online", presentation.FormatThousands(int64(snap.OnlineCount))}},
 			At:     now})
 		return
 	}
-	p.Publish(AdminAlert{GuildRowID: guildRowID, ServerID: serverID, Kind: AlertKindADMStale, Severity: AlertResolved, Headline: "ADM STALE",
+	p.Publish(AdminAlert{GuildRowID: guildRowID, ServerID: serverID, Kind: AlertKindADMStale, Severity: AlertResolved, Headline: "ADM stale",
 		Detail: "ADM log updates resumed.", At: now})
 }
 
@@ -148,18 +169,18 @@ func (p *AdminAlertPublisher) ObserveDownload(guildRowID int64, report killfeed.
 		st.downloadFailures++
 		if st.downloadFailures >= nitradoFailureAlertAfter && !st.failing {
 			st.failing = true
-			fields := [][2]string{{"Consecutive Failures", fmt.Sprintf("%d", st.downloadFailures)}}
+			fields := [][2]string{{"Consecutive failures", presentation.FormatThousands(int64(st.downloadFailures))}}
 			if report.ErrorClass != "" {
 				fields = append(fields, [2]string{"Error", safeMonitorText(report.ErrorClass)})
 			}
-			alert = &AdminAlert{Kind: AlertKindNitradoFailure, Severity: AlertCritical, Headline: "NITRADO API FAILURE",
+			alert = &AdminAlert{Kind: AlertKindNitradoFailure, Severity: AlertCritical, Headline: "Nitrado API failure",
 				Detail: "ADM log downloads from Nitrado keep failing. Kills and events are delayed until they recover.", Fields: fields}
 		}
 	case "success", "success_no_new_events":
 		st.downloadFailures = 0
 		if st.failing {
 			st.failing = false
-			alert = &AdminAlert{Kind: AlertKindNitradoFailure, Severity: AlertResolved, Headline: "NITRADO API FAILURE",
+			alert = &AdminAlert{Kind: AlertKindNitradoFailure, Severity: AlertResolved, Headline: "Nitrado API failure",
 				Detail: "ADM log downloads recovered."}
 		}
 	}
@@ -173,14 +194,17 @@ func (p *AdminAlertPublisher) ObserveDownload(guildRowID int64, report killfeed.
 // operationalAdminAlertKind is an explicit boundary: C.A.S.E. diagnostics,
 // preview cards, or future finding events cannot enter the operational route.
 func operationalAdminAlertKind(kind string) bool {
- switch kind {
- case AlertKindADMStale, AlertKindNitradoFailure, AlertKindZoneIntrusion,
-  AlertKindUAVIntrusion, AlertKindBaseRadar, AlertKindZoneBanViolated:
-  return true
- default:
-  return false
- }
+	switch kind {
+	case AlertKindADMStale, AlertKindNitradoFailure, AlertKindZoneIntrusion,
+		AlertKindUAVIntrusion, AlertKindBaseRadar, AlertKindZoneBanViolated, AlertKindBaseRequest, AlertKindRentPaused, AlertKindSecurityDigest, AlertKindPlayerAppeal, AlertKindMapRotation, AlertKindServerDown, AlertKindChannelAccess:
+		return true
+	default:
+		return false
+	}
 }
+
+// OperationalAdminAlertKind reports whether the ADMIN_ALERTS publisher sends kind.
+func OperationalAdminAlertKind(kind string) bool { return operationalAdminAlertKind(kind) }
 
 // Publish enqueues an alert without blocking; a full queue drops it.
 func (p *AdminAlertPublisher) Publish(a AdminAlert) {
@@ -219,7 +243,9 @@ func (p *AdminAlertPublisher) Run(ctx context.Context) {
 }
 
 func (p *AdminAlertPublisher) send(ctx context.Context, a AdminAlert) {
-	if !operationalAdminAlertKind(a.Kind) { return }
+	if !operationalAdminAlertKind(a.Kind) {
+		return
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("component=admin_alerts", "msg", "send panic recovered", "panic", fmt.Sprint(r))
@@ -246,15 +272,17 @@ func (p *AdminAlertPublisher) send(ctx context.Context, a AdminAlert) {
 }
 
 // BuildAdminAlertEmbed renders one alert: amber for warnings, red for
-// critical conditions, green when resolved - always distinguishable from the
-// steel ADM diagnostics and gold build activity sharing admin-logs.
+// critical conditions, green when resolved, neutral for a notice - the
+// palette's meanings, so an alert reads the same wherever it is posted.
 func BuildAdminAlertEmbed(a AdminAlert, serverName string) *discordgo.MessageEmbed {
-	title, color := "🚨 ADMIN ALERT", presentation.WarningAmber
+	title, color := "🚨 Admin alert", presentation.WarningAmber
 	switch a.Severity {
 	case AlertCritical:
 		color = presentation.ErrorRed
 	case AlertResolved:
-		title, color = "✅ ALERT RESOLVED", presentation.SuccessGreen
+		title, color = "✅ Alert resolved", presentation.SuccessGreen
+	case AlertInfo:
+		title, color = "📍 Staff notice", presentation.InfoSteel
 	}
 	embed := presentation.NewChampionEmbed(title, color)
 	desc := "**" + a.Headline + "**"
@@ -262,8 +290,8 @@ func BuildAdminAlertEmbed(a AdminAlert, serverName string) *discordgo.MessageEmb
 		desc += "\n" + a.Detail
 	}
 	embed.Description = desc
-	if a.Severity != AlertResolved {
-		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Severity", Value: string(a.Severity), Inline: true})
+	if a.Severity != AlertResolved && a.Severity != AlertInfo {
+		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Severity", Value: presentation.EnumLabel(string(a.Severity)), Inline: true})
 	}
 	if strings.TrimSpace(serverName) != "" {
 		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Server", Value: presentation.SafeName(serverName, 60), Inline: true})
@@ -271,7 +299,7 @@ func BuildAdminAlertEmbed(a AdminAlert, serverName string) *discordgo.MessageEmb
 	for _, f := range a.Fields {
 		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: f[0], Value: f[1], Inline: true})
 	}
-	embed.Footer = &discordgo.MessageEmbedFooter{Text: adminAlertFooter}
+	embed.Footer = presentation.Footer("", adminAlertFooter) // the server is a field: staff read it first
 	presentation.StampEmbed(embed, a.At)
 	return embed
 }
@@ -286,13 +314,13 @@ func IntrusionAdminAlert(ev killfeed.IntrusionEvent) (AdminAlert, bool) {
 	severity := AlertWarning
 	switch ev.Kind {
 	case killfeed.AlertZoneIntrusion:
-		kind, headline = AlertKindZoneIntrusion, "ZONE INTRUSION"
+		kind, headline = AlertKindZoneIntrusion, "Zone intrusion"
 	case killfeed.AlertUAVIntrusion:
-		kind, headline = AlertKindUAVIntrusion, "UAV INTRUSION"
+		kind, headline = AlertKindUAVIntrusion, "UAV intrusion"
 	case killfeed.AlertBaseRadarIntrusion:
-		kind, headline = AlertKindBaseRadar, "BASE RADAR INTRUSION"
+		kind, headline = AlertKindBaseRadar, "Base radar intrusion"
 	case killfeed.AlertZoneBanViolation:
-		kind, headline, severity = AlertKindZoneBanViolated, "ZONE BAN VIOLATION", AlertCritical
+		kind, headline, severity = AlertKindZoneBanViolated, "Zone ban violation", AlertCritical
 	default:
 		return AdminAlert{}, false
 	}
@@ -309,10 +337,29 @@ func IntrusionAdminAlert(ev killfeed.IntrusionEvent) (AdminAlert, bool) {
 	}
 	var fields [][2]string
 	if strings.TrimSpace(ev.Zone.ZoneType) != "" {
-		fields = append(fields, [2]string{"Zone Type", presentation.SafeName(ev.Zone.ZoneType, 40)})
+		fields = append(fields, [2]string{"Zone type", presentation.EnumLabel(presentation.CleanName(ev.Zone.ZoneType, 40))})
 	}
 	return AdminAlert{
 		GuildRowID: ev.Zone.GuildID, ServerID: ev.Zone.ServerID, Kind: kind, Severity: severity, Headline: headline,
 		Detail: who + " entered " + zone + ".", Fields: fields, At: ev.At, SkipChannel: skip,
 	}, true
+}
+
+// BuildCaseWatchDigestEmbed is observational, never an accusation, score or
+// statement that no cheating occurred in a period without recorded evidence.
+func BuildCaseWatchDigestEmbed(a AdminAlert, serverName string) *discordgo.MessageEmbed {
+	embed := presentation.NewChampionEmbed("C.A.S.E. WATCH • OBSERVATION DIGEST", presentation.InfoSteel)
+	embed.Description = "Persisted ADM source observations from the selected server. Counts describe collected evidence only; they are not cheat alerts or gameplay verdicts."
+	if strings.TrimSpace(serverName) != "" {
+		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Server", Value: presentation.SafeName(serverName, 60), Inline: true})
+	}
+	for _, field := range a.Fields {
+		if strings.TrimSpace(field[0]) == "" || strings.TrimSpace(field[1]) == "" {
+			continue
+		}
+		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: presentation.SafeName(field[0], 70), Value: presentation.SafeName(field[1], 150), Inline: true})
+	}
+	embed.Footer = &discordgo.MessageEmbedFooter{Text: "C.A.S.E. • SOURCE OBSERVATION ONLY • NO ENFORCEMENT"}
+	presentation.StampEmbed(embed, a.At)
+	return embed
 }

@@ -71,6 +71,7 @@ var httpStatusForCode = map[string]int{
 	codeInstallationNotVerified: http.StatusUnprocessableEntity,
 	codeInternalError:           http.StatusInternalServerError,
 	codeNitradoUnavailable:      http.StatusServiceUnavailable,
+	codeSubscriptionActive:      http.StatusConflict,
 	codePayloadTooLarge:         http.StatusRequestEntityTooLarge,
 	codeUnsupportedMediaType:    http.StatusUnsupportedMediaType,
 	codeLeadershipTransfer:      http.StatusConflict,
@@ -116,6 +117,15 @@ func (a *App) requireSaaSServiceAuth(w http.ResponseWriter, r *http.Request) boo
 		writeSaaSError(w, codeUnauthorized, "missing or invalid service authentication")
 		return false
 	}
+	// The identity headers must carry a valid HMAC (identity_signature.go).
+	// Every /api/saas and /api/admin route reaches this before it reads them.
+	if !a.requireSignedIdentity(w, r) {
+		return false
+	}
+	// A "view as customer" session (docs/OWNER_OPS.md) may only read.
+	if a.rejectImpersonatedWrite(w, r) {
+		return false
+	}
 	return true
 }
 
@@ -125,6 +135,12 @@ func (a *App) requireSaaSServiceAuth(w http.ResponseWriter, r *http.Request) boo
 // never synced (POST /api/saas/users/sync must run at least once per user -
 // see saas_api_users.go).
 func (a *App) resolveActingUser(w http.ResponseWriter, r *http.Request) *repository.AppUser {
+	// Defense in depth: requireSaaSServiceAuth already checked the identity
+	// signature, but the acting user must never be trusted unsigned even if a
+	// handler forgets that call. Verifying twice is cheap and idempotent.
+	if !a.requireSignedIdentity(w, r) {
+		return nil
+	}
 	discordUserID := strings.TrimSpace(r.Header.Get(actingUserHeader))
 	if discordUserID == "" {
 		writeSaaSError(w, codeUnauthorized, "missing acting user")
@@ -144,6 +160,11 @@ func (a *App) resolveActingUser(w http.ResponseWriter, r *http.Request) *reposit
 	}
 	if user == nil {
 		writeSaaSError(w, codeUnauthorized, "acting user has not synced")
+		return nil
+	}
+	if user.Banned() {
+		// Banned by the platform owner (Owner Hub): refused everywhere an acting user is resolved.
+		writeSaaSError(w, codeForbidden, "this account has been suspended by Champion")
 		return nil
 	}
 	return user
@@ -193,6 +214,21 @@ func (a *App) requireOrganizationRole(w http.ResponseWriter, r *http.Request, or
 	return role, true
 }
 
+// requireOrganizationOwner is requireOrganizationRole for what only the organization's OWNER may
+// do: change what the organization pays for (checkout, the billing portal, plan changes,
+// cancellation, add-on purchases). An ADMIN runs the servers; the plan is the owner's.
+func (a *App) requireOrganizationOwner(w http.ResponseWriter, r *http.Request, organizationID, userID int64) (role string, ok bool) {
+	role, ok = a.requireOrganizationMember(w, r, organizationID, userID)
+	if !ok {
+		return "", false
+	}
+	if role != repository.RoleOwner {
+		writeSaaSError(w, codeForbidden, "OWNER role required")
+		return "", false
+	}
+	return role, true
+}
+
 // pathInt64 parses a PathValue as a positive int64, writing an
 // INVALID_REQUEST response and returning ok=false on failure.
 func pathInt64(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {
@@ -219,6 +255,9 @@ type saasRateLimiter struct {
 	window time.Duration
 	max    int
 	hits   map[string][]time.Time
+	// swept is when keys with no recent hit were last dropped: without it every key ever seen
+	// (each fallback key is a remote address with its port) stayed in memory for good.
+	swept time.Time
 }
 
 func newSaaSRateLimiter(window time.Duration, max int) *saasRateLimiter {
@@ -234,6 +273,14 @@ func (l *saasRateLimiter) Allow(key string) bool {
 	defer l.mu.Unlock()
 	now := time.Now()
 	cutoff := now.Add(-l.window)
+	if now.Sub(l.swept) >= l.window {
+		for k, ts := range l.hits {
+			if len(ts) == 0 || !ts[len(ts)-1].After(cutoff) {
+				delete(l.hits, k)
+			}
+		}
+		l.swept = now
+	}
 	kept := l.hits[key][:0]
 	for _, t := range l.hits[key] {
 		if t.After(cutoff) {
@@ -246,6 +293,19 @@ func (l *saasRateLimiter) Allow(key string) bool {
 	}
 	l.hits[key] = append(kept, now)
 	return true
+}
+
+// Undo gives back key's most recent attempt, for a request that was admitted but then failed
+// before doing anything (so a transient failure does not cost the caller their slot).
+func (l *saasRateLimiter) Undo(key string) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if hits := l.hits[key]; len(hits) > 0 {
+		l.hits[key] = hits[:len(hits)-1]
+	}
 }
 
 // rateLimitKey prefers the acting-user header (the real caller identity for
@@ -353,6 +413,8 @@ func (a *App) registerSaaSAPI() {
 	a.HTTPServer.Handle("POST /api/saas/organizations", a.handleCreateOrganization)
 	a.HTTPServer.Handle("GET /api/saas/organizations/{organizationID}", a.handleGetOrganization)
 	a.HTTPServer.Handle("GET /api/saas/organizations/{organizationID}/dashboard", a.handleDashboard)
+	a.HTTPServer.Handle("POST /api/saas/staff/installations", a.handleStaffInstallations)
+	a.HTTPServer.Handle("GET /api/saas/discord/bot-invite", a.handleBotInvite)
 
 	a.HTTPServer.Handle("POST /api/saas/organizations/{organizationID}/installations", a.handleCreateInstallation)
 	a.HTTPServer.Handle("GET /api/saas/organizations/{organizationID}/installations/{installationID}", a.handleGetInstallation)
@@ -383,6 +445,7 @@ func (a *App) registerSaaSAPI() {
 	a.HTTPServer.Handle("POST /api/saas/organizations/{organizationID}/installations/{installationID}/setup/complete", a.handleFinalizeSetup)
 	a.HTTPServer.Handle("GET /api/saas/organizations/{organizationID}/installations/{installationID}/hub", a.handleGetInstallationHub)
 	a.HTTPServer.Handle("GET /api/saas/organizations/{organizationID}/installations/{installationID}/embed-templates", a.handleListEmbedTemplates)
+	a.HTTPServer.Handle("GET /api/saas/organizations/{organizationID}/installations/{installationID}/embed-emojis", a.handleListEmbedEmojis)
 	a.HTTPServer.Handle("GET /api/saas/organizations/{organizationID}/installations/{installationID}/embed-templates/{routeKey}", a.handleGetEmbedTemplate)
 	a.HTTPServer.Handle("PUT /api/saas/organizations/{organizationID}/installations/{installationID}/embed-templates/{routeKey}", a.handlePutEmbedTemplate)
 	a.HTTPServer.Handle("DELETE /api/saas/organizations/{organizationID}/installations/{installationID}/embed-templates/{routeKey}", a.handleDeleteEmbedTemplate)
@@ -394,9 +457,18 @@ func (a *App) registerSaaSAPI() {
 	a.registerFactionHubRoutes()
 	a.registerEconomyRoutes()
 	a.registerShopRoutes()
+	a.registerSecurityMarketplaceRoutes()
+	a.registerPerkStoreRoutes()
+	a.registerStadiumRoutes()
+	a.registerTournamentRoutes()
+	a.HTTPServer.Handle("GET /api/saas/organizations/{organizationID}/installations/{installationID}/vip/me", a.handleMyVIP)
 	a.registerBillingRoutes()
 	a.registerTrialRoutes()
 	a.registerPlayerRoutes()
+	a.registerDataDeletionRoutes()
+	a.registerLifeRoutes()
+	a.registerCardRoutes()
+	a.registerNetworkRoutes()
 	a.registerClientAdminRoutes()
 	a.registerAntiCheatRoutes("/api/saas/organizations/{organizationID}/installations/{installationID}/admin")
 }

@@ -30,6 +30,25 @@ const (
 	// economy service never accepts them from Credit/Debit (only the shop's transaction may).
 	TypeShopPurchase = repository.TxShopPurchase
 	TypeShopRefund   = repository.TxShopRefund
+	// Security Marketplace purchases (Base Raid Alarm), written only by the
+	// security service repository through the same ledger path.
+	TypeSecurityPurchase = repository.TxSecurityPurchase
+	// Base rent, written only by the base rent repository through the same
+	// ledger path when a player pays ahead.
+	TypeBaseRent = repository.TxBaseRent
+	// Perk store payments, written only by the perk store repository through the same ledger
+	// path: what a player paid or got back, and what the owner received or gave back.
+	TypePerkPurchase   = repository.TxPerkPurchase
+	TypePerkRefund     = repository.TxPerkRefund
+	TypePerkSale       = repository.TxPerkSale
+	TypePerkSaleRefund = repository.TxPerkSaleRefund
+	// Battle pass premium payments, written only by the battle pass repository: what a player
+	// paid and what the owner received.
+	TypePassPurchase = repository.TxPassPurchase
+	TypePassSale     = repository.TxPassSale
+	// Live map UAV payments, written only by the UAV repository.
+	TypeUAVPurchase = repository.TxUAVPurchase
+	TypeUAVSale     = repository.TxUAVSale
 )
 
 const (
@@ -61,6 +80,9 @@ type Event struct {
 	Credit       bool  // true = points added, false = points removed
 	BalanceAfter int64
 	Item         string // shop events only: the public product name
+	// Reason is why a SYSTEM_REWARD was earned ("Daily play reward", "Challenge: Get 3 kills"),
+	// written by the system, never by an admin. Empty for every other type.
+	Reason string
 }
 
 // Notifier receives committed transactions. It must not block and cannot fail the
@@ -229,7 +251,11 @@ func (s *Service) apply(ctx context.Context, req Request, debit bool) (Result, e
 	res := Result{TransactionID: entry.ID, Balance: entry.BalanceAfter, Duplicate: entry.Duplicate, Amount: entry.Amount, CreatedAt: entry.CreatedAt}
 	if !entry.Duplicate {
 		// Only after the commit; a failing notifier can neither undo nor repeat it.
-		s.notify(Event{Type: req.Type, GuildID: req.GuildID, ServerID: req.ServerID, PlayerName: name, Amount: req.Amount, Credit: !debit, BalanceAfter: entry.BalanceAfter})
+		e := Event{Type: req.Type, GuildID: req.GuildID, ServerID: req.ServerID, PlayerName: name, Amount: req.Amount, Credit: !debit, BalanceAfter: entry.BalanceAfter}
+		if req.Type == TypeSystemReward {
+			e.Reason = params.Description
+		}
+		s.notify(e)
 	}
 	return res, nil
 }
@@ -301,6 +327,26 @@ func TypeLabel(t string) string {
 		return "Shop purchase"
 	case t == TypeShopRefund:
 		return "Shop refund"
+	case t == TypeSecurityPurchase:
+		return "Security purchase"
+	case t == TypeBaseRent:
+		return "Base rent"
+	case t == TypePerkPurchase:
+		return "Perk purchase"
+	case t == TypePerkRefund:
+		return "Perk refund"
+	case t == TypePerkSale:
+		return "Perk store sale"
+	case t == TypePerkSaleRefund:
+		return "Perk store refund"
+	case t == TypePassPurchase:
+		return "Battle pass premium"
+	case t == TypePassSale:
+		return "Battle pass sale"
+	case t == TypeUAVPurchase:
+		return "UAV"
+	case t == TypeUAVSale:
+		return "UAV sale"
 	case strings.HasPrefix(t, "EVENT_"):
 		return "Event prize"
 	}

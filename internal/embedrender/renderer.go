@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -85,6 +86,7 @@ type Renderer struct {
 	source  Source
 	ttl     time.Duration
 	enabled bool
+	gate    func(installationID int64) bool
 	now     func() time.Time
 
 	custom, dflt, fallback, errs atomic.Int64
@@ -101,7 +103,10 @@ type Options struct {
 	Source  Source
 	TTL     time.Duration // <= 0: DefaultTTL
 	Enabled bool
-	Now     func() time.Time // tests
+	// Gate, when set, decides per installation whether its template may render; a false
+	// answer yields the default card exactly as a missing template would.
+	Gate func(installationID int64) bool
+	Now  func() time.Time // tests
 }
 
 func New(o Options) *Renderer {
@@ -111,7 +116,7 @@ func New(o Options) *Renderer {
 	if o.Now == nil {
 		o.Now = time.Now
 	}
-	return &Renderer{source: o.Source, ttl: o.TTL, enabled: o.Enabled && o.Source != nil, now: o.Now,
+	return &Renderer{source: o.Source, ttl: o.TTL, enabled: o.Enabled && o.Source != nil, gate: o.Gate, now: o.Now,
 		entries: map[key]entry{}, inflight: map[key]*flight{}, lastWarn: map[string]time.Time{}}
 }
 
@@ -220,6 +225,11 @@ func (r *Renderer) Customize(ctx context.Context, guildRowID, serverID int64, ro
 		r.count(routeKey, 2)
 		return def
 	}
+	if r.gate != nil && !r.gate(e.installationID) {
+		// The owner (or the deployment default) has custom rendering off for this installation.
+		r.count(routeKey, 1)
+		return def
+	}
 	emb, err := RenderEvent(*e.cfg, routeKey, vars, at)
 	if err != nil {
 		if err == ErrNotRenderable {
@@ -257,12 +267,22 @@ func RenderEventWithReport(cfg embedtemplates.Config, routeKey string, vars map[
 	return RenderWithReport(cfg, routeKey, approvedOnly(routeKey, vars), at)
 }
 
+// discordRelativeTime is a Discord relative timestamp and nothing else: <t:1791646433:R>.
+var discordRelativeTime = regexp.MustCompile(`^<t:\d{1,12}:R>$`)
+
 // approvedOnly keeps only the variables the route approves and sanitizes each value,
 // so a publisher can neither pass an extra variable nor an unsanitized one.
 func approvedOnly(routeKey string, vars map[string]string) map[string]string {
 	out := make(map[string]string, len(vars))
 	for _, name := range embedtemplates.Variables(routeKey) {
 		if v, ok := vars[name]; ok {
+			// {{time_ago}} is Discord timestamp syntax, which sanitizing would escape into plain
+			// text. It is kept as written only when it is exactly that syntax; anything else
+			// under the name (a designer's sample text) is sanitized like every other value.
+			if name == "time_ago" && discordRelativeTime.MatchString(v) {
+				out[name] = v
+				continue
+			}
 			if s := SanitizeValue(v); s != "" {
 				out[name] = s
 			}

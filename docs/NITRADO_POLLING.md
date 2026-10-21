@@ -1,0 +1,194 @@
+# Nitrado polling: rate-limit telemetry and adaptive speed
+
+## What Nitrado offers
+
+Nitrado's REST API (`api.nitrado.net`) has no push, websocket or webhook for game logs. The ADM and
+RPT files are read through the gameserver file server:
+
+| Endpoint | What it does |
+| --- | --- |
+| `file_server/list` | List a directory, with each file's size and modified time. |
+| `file_server/stat` | Stat several files. |
+| `file_server/size` | Get one file's size. |
+| `file_server/download` | Get a signed URL for the whole file. |
+| `file_server/seek` | Get a signed URL for a byte range (`offset`, `length`, `mode=raw\|lines`). |
+
+Every API response carries `X-RateLimit-Limit`, `X-RateLimit-Remaining` and `X-RateLimit-Reset`
+for the token, and Nitrado answers `429` once the budget is spent. This is what Nitrado's official
+PHP client (`nitrado/NitrAPI-PHP`) reads.
+
+## Telemetry (`internal/nitrado/ratelimit.go`)
+
+The bot records the rate-limit headers from the requests it already makes. It never sends a
+request of its own just to measure, so measuring costs nothing.
+
+Each token is tracked under a 12-character SHA-256 prefix (`nitrado.TokenKey`). The token itself is
+never stored or logged.
+
+Kept per token:
+
+- the last limit, remaining count and reset time Nitrado reported;
+- API requests in the last hour, broken down by operation (`gameservers/file_server/list`, …);
+- `429` responses;
+- signed-URL downloads.
+
+Where to see it:
+
+- **Owner Hub API:** `GET /api/admin/nitrado-usage` (platform admins only). It returns every token
+  plus the poll settings in effect.
+- **Logs:** each token gets an `event=rate_budget` line at most every 5 minutes.
+- **Warning:** `event=rate_budget_low` is logged once when less than 20% of the budget is left.
+
+## Fewer requests per tick
+
+A poll tick can list the selected log's directory up to three times: the boot scan, the newer-log
+check, and the size/modified check. A listing is now reused for 750 ms, so those three cost one
+request.
+
+Some calls always skip the cache and ask Nitrado:
+
+- Writes (upload token, upload, mkdir) clear the cache.
+- `ListEntries`, which shop deliveries use to read back what they wrote.
+
+## A quiet or dead source backs off (`Engine.staleWait`)
+
+Once the selected log has not changed for `staleGiveUpAfter` (8 min), each poll tick may run a
+direct download of the file (the stale probe) and a full directory rediscovery. Both wait
+`staleWait` between runs: 60 s at first, doubling after every rediscovery that finds no new
+evidence, up to 15 min. The backoff resets as soon as the source grows or a different file is
+selected. A game server that is down for hours therefore costs a handful of requests per
+quarter hour instead of a download plus a tree walk every minute. The newer-boot scan
+(`scanForNewerBoot`, every `rescanInterval`) is unchanged, so a restart is still noticed within
+seconds; a file it could read but could not verify (no header, header for another boot) is
+remembered by its listed size and modified time and is not downloaded again until it changes.
+
+## A rejected token ends the worker (`Engine.authExit`)
+
+Nitrado answering 401 means the access token is expired or revoked; no retry can succeed until
+the customer reconnects. Three cycles in a row ending in a 401 end the worker with that error, and
+the WorkerManager restarts it under its jittered backoff (1 s doubling to 5 min). Each restart
+re-reads the credential, so a token the customer has since replaced is picked up. Saving a new
+token on the website (`handleNitradoConnect`) also restarts the organization's running workers at
+once (`restartOrganizationWorkers`), keeping their checkpoints. Before this, an expired token was
+retried every 30 s indefinitely and a reconnect only took effect at the next deploy.
+
+## Adaptive poll rate (`Engine.pollingInterval`)
+
+First match wins:
+
+| Situation | Poll rate |
+| --- | --- |
+| The last Nitrado call failed with a 429, a 5xx, a timeout or a network error | base rate, doubling per further failure, at most 60 s; a full wait after the failed attempt |
+| Token budget low (under 20% left, before the reset time) | `max(3 × base, 30s)` |
+| Server active, and the budget is known with at least half left | fast rate (`NITRADO_POLL_INTERVAL_FAST`, default `3s`; `off` disables it) |
+| Otherwise | base rate (`NITRADO_POLL_INTERVAL`, default `10s`) |
+
+Active means the log changed in the last 5 minutes, or players are online and it changed in the
+last 15 minutes. Requests per minute in each mode, and why: docs/PERFORMANCE.md section 20.
+
+The interval runs from the start of one poll to the start of the next, so a 2s interval polls every
+2s rather than every 2s plus the poll's own time (about 0.5–0.9s in production). After a slow poll
+the bot still waits at least 250 ms. The discovery backoff is unchanged: it is a full wait after
+each attempt.
+
+The fast rate is only used after Nitrado's headers have been seen. If Nitrado never sends them, the
+bot polls exactly as before.
+
+## Measuring a kill's trip to Discord (`internal/killfeed/poll_timing.go`)
+
+Per-card latency with percentiles, from the game's log line to Discord accepting the post, is
+`feedLatency[]` in the same response (docs/PERFORMANCE.md section 19). The three parts below are
+the older, coarser figures.
+
+These come from data the bot already has (Nitrado's modified time and the Discord delivery
+ledger), so measuring sends nothing extra. All three appear under `timing` and `delivery` in
+`GET /api/admin/nitrado-usage`, and each server logs an `event=adm_timing` line every 5 minutes.
+
+| Part | Field | What it tells you |
+| --- | --- | --- |
+| Nitrado writes the log | `timing[].writeGap` (p50/p90/max) | Time between two consecutive modified times seen for a server's log. If this stays well above the poll interval, Nitrado writes in batches, and polling faster cannot help. It can only resolve gaps down to the poll interval in effect. |
+| Bot notices the write | `timing[].detectLag` | Our clock when a change is noticed minus Nitrado's modified time. The modified time has 1-second resolution, and clock differences between Nitrado and us show up here too. Lags over 10 minutes (backlogs) are dropped. |
+| Bot posts to Discord | `delivery[]` | Noticed → posted per feed, from the existing delivery ledger. |
+
+The game writing the ADM line → Nitrado's file changing is not visible: ADM lines carry only the
+server's local time of day.
+
+## Where the delay comes from (measured 2026-10-02)
+
+Two temporary log lines (bot PRs #232 and #233, since removed) compared the `noftp` and `ftproot`
+copies of each log, and the lister's growth times, on the Champions server:
+
+- `ftproot` is never ahead of `noftp`. Older files show the same size and modified time in both;
+  a new boot's files appear in `noftp` first and in `ftproot` later. The killfeed reads `noftp`.
+- The game's logs reach the file API in steps of about 5 minutes: the RPT, which the game writes
+  continuously, grew in the listing only every ~5 minutes, and ADM write gaps were exactly 300 s.
+- A new boot's files first appeared about 8.5 minutes after the boot (twice, 19:32 and 20:40 UTC).
+  `restart.log`, which Nitrado writes itself, was seen within 9 seconds.
+
+So the 3-5 minutes between a kill and the bot seeing it are on Nitrado's side. Polling faster or
+switching mounts does not shorten it.
+
+## Verified tail reads (`internal/nitrado/tail_trust.go`)
+
+Live Sync (RPT, restart, script and crash logs) and the killfeed ADM reader both used to download
+each whole file on every change. They now read only the bytes after their checkpoint once that is
+proven safe. Trust is kept per Nitrado service and shared by both readers, so matches from either
+one count toward it.
+
+1. **Verifying:**
+   - Every read is the usual full download, plus a partial read (`file_server/seek`) from one byte
+     before the checkpoint.
+   - The overlapping bytes must match byte for byte. A file can grow between the two reads, so only
+     the bytes both reads cover are compared; extra bytes on one side are not a mismatch.
+   - After 3 matches that covered new bytes, the service is trusted (`event=tail_read_trusted`).
+   - For ADM, the partial read runs after the kills from the full download are posted, so verifying
+     never delays the feed.
+2. **Trusted:**
+   - Reads are partial only.
+   - The first returned byte must equal the last byte already read, so a replaced file is never
+     stitched onto the old checkpoint. Reading one byte early also means a quiet file returns that
+     byte, so an empty read at the end of the file never comes up.
+   - Every 20th read is a verifying read again.
+3. **Disabled:**
+   - Any mismatch switches tail reads off for that service until the bot restarts
+     (`event=tail_read_disabled`, with `source=livesync` or `source=adm`), and full downloads
+     continue.
+   - A failed partial read falls back to a full download and returns the service to verifying.
+
+Trust survives restarts. Each service's match count and trusted flag are saved in
+`nitrado_tail_trust` (migration `0110`) and restored at startup (`event=tail_trust_restored`).
+
+- A restored trusted service verifies its first read again before it goes back to tail-only reads.
+- Saved trust is dropped after 7 days unless a passed recheck refreshes it.
+- A disabled service is saved as untrusted, so it starts verifying again after a restart.
+
+Full downloads are always used for the first read of a file, a checkpoint of 0, a listing smaller
+than the checkpoint (replaced or truncated), and for ADM a log rotation or a checkpoint the reader
+did not itself write in this process.
+
+Tail reads use Nitrado's `file_server/seek` only, and each request asks for exactly the bytes the
+file is known to hold (up to the listing's size, or the full download's length when verifying).
+Production showed why (2026-10-02, one service):
+
+- the download URL ignores `offset`/`count` and a `Range` header, and returns the whole file, so
+  neither is a partial read;
+- `seek` answered HTTP 500 ("temporary Nitrado failure") when asked for 256 KiB from a checkpoint a
+  few KiB from the end of the file.
+
+Live Sync only tail-reads when the directory listing gave the file's size.
+
+A failed partial read logs `event=partial_read_failed` with the method and a reason (status, error
+kind, Nitrado's message, or the network error). It is logged at most once per service and method
+every 30 minutes and never includes a URL, since signed download URLs carry credentials. When every
+method has failed three times in a row, `event=partial_reads_paused` is logged and the service
+uses full downloads for 10 minutes before trying again.
+
+Request count is unchanged: a partial read is a token request plus a fetch, just like a download.
+What drops is the bytes per read, from the whole file to the new lines.
+
+## Not changed
+
+**ADM delta reads** (`NITRADO_DELTA_READ_MODE`) are a separate, older switch and stay off. When
+they are on, they take priority over the verified tail reads above. What each value does, the
+one-time check and what to set: docs/PERFORMANCE.md section 21. See also
+`docs/NITRADO_DELTA_READS.md` and `cmd/nitrado-delta-probe`.

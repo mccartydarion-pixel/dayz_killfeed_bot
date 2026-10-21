@@ -28,12 +28,12 @@ Defects found in the audit:
 | # | Finding | Effect | Phase 1 |
 |---|---|---|---|
 | A1 | ADM player-list blocks (`##### PlayerList log`, bare `Player "x" (id=… pos=<…>)`, `#####`) matched no sub-parser | Every five-minute position observation was dropped; presence never used them | **Fixed** |
-| A2 | `Event.Timestamp` is never set outside tests, so `observed_at` is Champion's ingestion time | The location dedupe key (player, server, type, observed_at) never matched a replay. Backlog lines looked "fresh" | **Fixed for new rows**: each row carries its physical source, and dedupe is by source |
+| A2 | `Event.Timestamp` was never set outside tests, so `observed_at` was Champion's ingestion time | The location dedupe key (player, server, type, observed_at) never matched a replay. Backlog lines looked "fresh" | **Fixed for new rows**: each row carries its physical source, and dedupe is by source. The engine now also derives `Event.Timestamp` (boot date + line clock + server UTC offset, `internal/killfeed/event_time.go`), so `observed_at` and `event_time` are the line's real UTC time when the offset is known |
 | A3 | "Current location" was `LatestLocation` across all history | An old-session position could be presented as current | **Fixed** (section 4) |
 | A4 | Only ADM is ingested. RPT, `script_*.log`, `crash_*.log` and `restart.log` are never read | Startup/shutdown, script errors and restart causes are invisible | Phase 1: parsers. **Phase 2: ingested continuously** (section 7) |
 | A5 | One selected ADM stands for the whole server's log state | A slow or failing source cannot be isolated | **Fixed (phase 2)**: one independent watcher per family, own timeouts and backoff |
 | A6 | No change notification: website data is polled request/response | The website cannot learn about committed changes | Not yet (phase 3) |
-| A8 | `kills.event_time` / `deaths.event_time` come from `Event.Timestamp` (never set, see A2), so they are NULL; the kill/death heatmaps join `player_location_events` on `observed_at = event_time` | Kill/death heatmaps can never match a row | **Fixed (phase 2)**: kills/deaths store the line's source file + offset; the heatmap joins on it (section 7.6) |
+| A8 | `kills.event_time` / `deaths.event_time` come from `Event.Timestamp` (never set at the time, see A2), so they were NULL; the kill/death heatmaps join `player_location_events` on `observed_at = event_time` | Kill/death heatmaps can never match a row | **Fixed (phase 2)**: kills/deaths store the line's source file + offset; the heatmap joins on it (section 7.6) |
 | A7 | The stale-source loop (`selected_stale` → same file re-selected) is bounded to one rediscovery per `staleProbeInterval`, with a direct-read probe first | Behaviour is correct but coarse; source-level freshness is not exposed per family | ADM loop unchanged; **per-family freshness exposed (phase 2)** |
 | A9 | Nitrado's signed download URL **ignores `offset`/`count`** and returns the whole file with a plain 200 (verified read-only on Champions, 2026-09-24). `tryOffsetQuery` accepted any response no larger than the request, and `cmd/nitrado-delta-probe` probed from byte 0 on a 124-byte file | With `NITRADO_DELTA_READ_MODE=offset_query/auto`, a small file would be parsed as if it started at the checkpoint (misaligned lines). Production runs with the mode unset (`off`), so nothing was affected | **Fixed (phase 2)**: offset/count responses are trusted only with a `Content-Range` stating the offset; the probe never tests from byte 0 |
 
@@ -205,7 +205,7 @@ Reads are **full downloads** parsed from the checkpoint: Nitrado ignores offset/
 * A trailing partial line is never consumed; a bare time-of-day line carries no observation and is not stored; a file smaller than its checkpoint (truncated or replaced) restarts from byte 0.
 * **Rotation:** when a newer boot's file is listed, the old file gets one final drain read (retried on its own schedule if it fails) and is retired (`active = false`); the new file is attached from byte 0.
 * **Resume:** a restarted Champion loads `live_sync_sources` and continues from each checkpoint (`TestResumeFromDurableCheckpoint`).
-* **Retention:** high-volume categories (`UNKNOWN`, model/engine/localization/config/CE/query noise, headers) 3 days; everything else 30 days. A live RPT is ≈ 4,100 lines per boot, 87% of them start-up noise (measured on the 05:51:41 boot).
+* **Retention:** high-volume categories (`UNKNOWN`, model/engine/localization/config/CE/query noise, headers) 3 days; everything else 14 days by default (`CHAMPION_RETENTION_DAYS_LIVE_SYNC_RECORDS`; was 30 until the query-hygiene pass, docs/PERFORMANCE.md section 17 - nothing reads a record older than the newest few hundred or the last six hours). A live RPT is ≈ 4,100 lines per boot, 87% of them start-up noise (measured on the 05:51:41 boot).
 
 ### 7.4 LIVE versus BACKFILL (never "new" just because it was read late)
 
@@ -216,13 +216,38 @@ The same principle now applies to locations: every `locationDTO` carries `occurr
 ### 7.5 Freshness and diagnostics per family
 
 `GET /api/admin/live-sync` (platform admin) returns, per running server:
-* per family: `state` (`FRESH` = last successful read within 2× its probe interval; `LAGGING`; `FAILING` = three consecutive failures; `NO_SOURCE`), current canonical file, checkpoint, read and listed size, `listingBehindBytes`, last read / growth / failure time, safe error class, counts (reads, records, live, backfill, unknown, rotations) and a latency summary;
+* per family: `state` (`FRESH` = last successful read within 2× its probe interval; `LAGGING`; `FAILING` = three consecutive failures; `NO_SOURCE`), current canonical file, checkpoint, read and listed size, `listingBehindBytes`, last read / growth / failure time, safe error class, `gaveUp` / `gaveUpAt` / `gaveUpReason` / `nextRetryAt` (section 7.5.1), counts (reads, records, live, backfill, unknown, rotations) and a latency summary;
 * the directory lister's last successful listing and error;
 * the learned UTC offset and the recent session-end evidence;
 * the recorded ADM session (file, start, `endedAt`, reason, evidence);
 * stored-record statistics for the last 6 hours per family, and ADM latency from stored location rows.
 
-`component=livesync` logs `source_attached`, `source_read`, `source_rotated`, `source_truncated`, `source_read_failed`, `adm_session_ended`, `server_clock_learned` and, every 5 minutes, one `source_health` line per family. No token, signed URL, physical path or raw line is logged or returned.
+`component=livesync` logs `source_attached`, `source_read`, `source_rotated`, `source_truncated`, `source_read_failed`, `source_gave_up`, `source_gave_up_retry_failed`, `source_recovered`, `adm_session_ended`, `server_clock_learned` and, every 5 minutes, one `source_health` line per family (with `gave_up=<reason>` while a file is given up). No token, signed URL, physical path or raw line is logged or returned.
+
+#### 7.5.1 A file that can never be read
+
+Observed 2026-09-30 to 2026-10-05: Nitrado answered 500 for one old crash log on every read, and the crash watcher retried it every 10 minutes for days.
+
+Every failed read or commit of a file backs off: the family's probe interval doubled per consecutive failure, capped at 10 minutes (crash: 2, 4, 8, 10, 10 … minutes; script: 1, 2, 4, 8, 10 …; RPT and restart.log: 30 s, 1, 2, 4, 8, 10 …). `source_read_failed` is logged for the first failure and every tenth. This applies to every family and is unchanged.
+
+On top of that a file is **given up** when all of these hold:
+
+* its family is **script** or **crash** (`FamilyPolicy.GiveUpHistorical`);
+* it has failed **12 times in a row** (`Config.GiveUpAfter`; about 1 h 35 min after the first failure for a crash log, 1 h 25 min for a script log);
+* it is **historical**: its name carries a boot stamp, and the directory listing shows a file of any family (ADM, RPT, script, crash) stamped more than two minutes later. DayZ writes a new set of files for every boot, so a file of an earlier boot no longer grows.
+
+A given-up file is read once every **6 hours** (`Config.GiveUpRetryEvery`) instead of every 10 minutes. Giving up is logged once at warn (`source_gave_up`, with the file, the failure count and the error class); the 6-hourly retries that fail log `source_gave_up_retry_failed` at info. The family's health keeps `state: FAILING` and adds `gaveUp: true`, `gaveUpAt`, `gaveUpReason` (`gave up on <file> after <N> failures: <error class>`) and `nextRetryAt`. The first read that succeeds clears all of it (`source_recovered`) and the file is read on its normal schedule again; nothing is lost, because the checkpoint never moved.
+
+What is **never** given up, however long it fails:
+
+* **RPT** and **restart.log**. Their records end boot sessions and restart.log states the server clock; they stay on the capped 10-minute retry.
+* a script or crash file of the **newest listed boot** - it may still be written. It is given up at its next failure once a later boot's files are listed.
+* anything while no directory listing has succeeded (nothing can be called historical then).
+* the ADM. It is not read by these watchers at all; the kill pipeline (`internal/killfeed`) is untouched.
+
+Giving up is **per file**. Other families of the same server are unaffected, and when a newer file of the same family is listed the watcher moves to it as on any rotation - without reading the given-up file again. The old file keeps its 6-hourly retry (at most four such files per family are kept), so a file Nitrado serves again later is still drained.
+
+The give-up state is held in memory only (no column was added to `live_sync_sources`). After a process restart the file is tried again from the normal backoff and is given up again after 12 failures.
 
 ### 7.6 Kill/death heatmaps (finding A8)
 
@@ -326,4 +351,4 @@ Event → detection therefore **includes** Nitrado's own delay in exposing the b
 3. **Still open from phase 2's list:** DB presence (`player_server_activity`) reconciled from complete ADM snapshots; per-installation request budgets across many servers.
 4. **Samples still needed:** persistence errors and non-VM fatal crashes (no real sample yet; they parse as UNKNOWN until one exists). `server.log` (ftproot only) is listed but its format has not been sampled, so it is not ingested.
 5. **Kills and deaths recorded before phase 2** have no source identity and cannot appear on kill/death heatmaps.
-6. **Automatic Shop spawning remains disabled** (docs/SHOP_DELIVERY_PHASE2B.md).
+6. **Automatic Shop spawning remains disabled** (docs/archive/SHOP_DELIVERY_PHASE2B.md).

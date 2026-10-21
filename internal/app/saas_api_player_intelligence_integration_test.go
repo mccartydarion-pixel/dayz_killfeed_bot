@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yourname/dayz-killfeed/internal/discord"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -111,6 +112,39 @@ func TestLatestLocationReturns404WhenNoObservedLocation(t *testing.T) {
 	rr := w.call(w.a.handleLatestLocation, http.MethodGet, w.path(fmt.Sprintf("/players/%d/locations/latest", playerID)), w.f.OwnerDiscordID, nil, map[string]string{"playerID": strconv.FormatInt(playerID, 10)})
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for a player with no location history, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// After a restart the activity rows say nobody is connected until the server log names them
+// again, while Nitrado's live count is already right: the response's count follows the fresh
+// counter reading, the way the live map does, and the names list stays what the log proved.
+func TestOnlinePlayersCountFollowsFreshNitradoReading(t *testing.T) {
+	w := newPlayerIntelWorld(t)
+	w.connectPlayer(w.seedPlayer("OnlyOneNamed"), time.Now())
+	l := w.a.counterLoop()
+	l.mu.Lock()
+	l.serverStatus[w.serverID] = onlineCounterStatus{ServerID: w.serverID, Reading: discord.CounterReading{Known: true, Count: 3}, EvaluatedAt: time.Now().Add(-time.Minute)}
+	l.mu.Unlock()
+
+	rr := w.call(w.a.handleOnlinePlayers, http.MethodGet, w.path("/players/online"), w.f.OwnerDiscordID, nil, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	body := decodeBody[map[string]any](t, rr)
+	if items, _ := body["items"].([]any); len(items) != 1 {
+		t.Fatalf("the names list stays what the log proved: got %d", len(items))
+	}
+	if count, _ := body["count"].(float64); count != 3 {
+		t.Fatalf("count should follow the fresh Nitrado reading: got %v", body["count"])
+	}
+
+	// A stale reading falls back to the names list.
+	l.mu.Lock()
+	l.serverStatus[w.serverID] = onlineCounterStatus{ServerID: w.serverID, Reading: discord.CounterReading{Known: true, Count: 3}, EvaluatedAt: time.Now().Add(-10 * time.Minute)}
+	l.mu.Unlock()
+	rr = w.call(w.a.handleOnlinePlayers, http.MethodGet, w.path("/players/online"), w.f.OwnerDiscordID, nil, nil)
+	if count, _ := decodeBody[map[string]any](t, rr)["count"].(float64); count != 1 {
+		t.Fatalf("a stale reading falls back to the names list: got %v", count)
 	}
 }
 

@@ -14,47 +14,49 @@ import (
 // Unlike a PLAYER_KILL there is no killer to credit, so this only ever reports
 // facts about the deceased player - never a fabricated cause:
 //
-//	author  CHAMPIONS® KILLFEED
-//	title   ☠️ PLAYER DEATH  |  💀 SUICIDE
+//	author  Champions® Killfeed
+//	title   ☠️ Player death  |  💀 Suicide
 //	desc    **Player**
-//	fields  CAUSE | WEAPON | FINAL HIT      inline, each only when proven
-//	        PLAYER STATS                    **1 K** • **50 D** • **0.02 K/D**
-//	footer  EVERY KILL TELLS A STORY
+//	fields  Cause | Weapon | Final hit      inline, each only when proven
+//	        Player stats                    **1 K** • **50 D** • **0.02 K/D**
+//	footer  the season when known, else the slogan
+//
+// A death is a quiet card (neutral): crimson is kept for kills.
 func BuildDeathEmbed(ev *killfeed.Event) *discordgo.MessageEmbed {
 	if ev == nil {
 		return nil
 	}
 
-	title := "☠️ PLAYER DEATH"
+	title := "☠️ Player death"
 	color := presentation.NeutralGraphite
 	suicide := ev.Type == killfeed.EventSuicideAction
 	if suicide {
-		title = "💀 SUICIDE"
-		color = presentation.WarningAmber
+		title = "💀 Suicide"
 	}
 
 	embed := presentation.NewFeedEmbed(title, color)
 	embed.Description = "**" + cardName(ev.Player) + "**"
-	embed.Footer.Text = safeTrunc(presentation.SeasonFooterText(ev.SeasonName), maxFooterLen)
+	embed.Footer = presentation.SeasonFooter(ev.SeasonName)
 
 	// A proven non-player cause (infected/animal/environment) is the cause. A
 	// suicide's weapon is the item used, so it is labelled as such; on any
 	// other death a weapon string is the cause the log reported.
 	if cause := deathCauseLabel(ev.Cause); cause != "" {
-		presentation.AppendFields(embed, presentation.MetricField("CAUSE", cause, true))
+		presentation.AppendFields(embed, presentation.MetricField("Cause", cause, true))
 	} else if w := strings.TrimSpace(ev.Weapon); w != "" && !suicide {
-		presentation.AppendFields(embed, presentation.MetricField("CAUSE", presentation.EscapeMarkdown(presentation.CleanName(w, maxWeaponLen)), true))
+		presentation.AppendFields(embed, presentation.MetricField("Cause", presentation.EscapeMarkdown(presentation.CleanName(w, maxWeaponLen)), true))
 	}
 	if w := strings.TrimSpace(ev.Weapon); w != "" && suicide {
-		presentation.AppendFields(embed, presentation.MetricField("WEAPON", "`"+strings.ReplaceAll(safeTrunc(w, maxWeaponLen), "`", "'")+"`", true))
+		presentation.AppendFields(embed, presentation.MetricField("Weapon", "`"+strings.ReplaceAll(safeTrunc(w, maxWeaponLen), "`", "'")+"`", true))
 	}
 	if ev.HitZone != "" {
-		presentation.AppendFields(embed, presentation.MetricField("FINAL HIT", presentation.EscapeMarkdown(presentation.TitleCase(presentation.CleanName(ev.HitZone, 40))), true))
+		presentation.AppendFields(embed, presentation.MetricField("Final hit", presentation.EscapeMarkdown(presentation.TitleCase(presentation.CleanName(ev.HitZone, 40))), true))
 	}
 	if ev.PlayerStats != nil {
-		presentation.AppendFields(embed, presentation.MetricField("PLAYER STATS", presentation.CompactStats(ev.PlayerStats.Kills, ev.PlayerStats.Deaths, ev.PlayerStats.KD()), false))
+		presentation.AppendFields(embed, presentation.MetricField("Player stats", compactCombatStats(ev.PlayerStats), false))
 	}
-	presentation.StampEmbed(embed, ev.Timestamp)
+	// The death's own time when the engine derived one, else when the line was read.
+	presentation.StampEmbed(embed, ev.DisplayTime())
 	return presentation.FitEmbed(embed)
 }
 
@@ -122,7 +124,7 @@ func (p *DeathfeedPublisher) PublishDeath(ev *killfeed.Event) error {
 	// death channel as fallback); see RotatingFeed. Without one configured,
 	// fall back to an immediate send to the legacy channel.
 	if p.feed != nil {
-		p.feed.Enqueue(embed)
+		p.feed.EnqueueTimed(embed, killfeed.TimingOf(ev))
 		slog.Debug("component=discord", "msg", "death feed queued", "type", string(ev.Type))
 		return nil
 	}
@@ -137,9 +139,9 @@ func (p *DeathfeedPublisher) PublishDeath(ev *killfeed.Event) error {
 			Parse: []discordgo.AllowedMentionType{},
 		},
 	}
-	if _, err := p.client.Session().ChannelMessageSendComplex(channelID, send); err != nil {
-		slog.Error("component=discord", "msg", "death feed publish failed", "err", err.Error())
-		return nil // never propagate; log processing must continue
+	if _, err := deliverMessage(p.client.Session(), "DEATH_FEED", channelID, send); err != nil {
+		slog.Error("component=discord", "msg", "death feed publish failed", "err", err.Error(), "class", ClassifyDeliveryError(err))
+		return nil // never propagate; log processing must continue (recorded in the delivery ledger)
 	}
 	slog.Debug("component=discord", "msg", "death feed published", "type", string(ev.Type))
 	return nil

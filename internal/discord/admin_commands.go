@@ -16,7 +16,7 @@ import (
 // linkApprover is the narrow surface admin_commands.go needs from
 // linking.LinkVerificationService, for the /admin verify-link fallback.
 type linkApprover interface {
-	ApproveManually(ctx context.Context, guildID int64, playerName string) error
+	ApproveManually(ctx context.Context, guildID int64, playerName string) (discordUserID string, err error)
 }
 
 type AdminCommandHandler struct {
@@ -40,23 +40,23 @@ func NewAdminCommandHandler(s *admin.Service, extras ...any) *AdminCommandHandle
 	}
 	return h
 }
-func RegisterAdminCommands(session *discordgo.Session, guildID string) error {
+func RegisterAdminCommands(session CommandRegistrar, guildID string) error {
 	applicationID, err := ApplicationID(session)
 	if err != nil {
 		return err
 	}
-	perms := int64(discordgo.PermissionAdministrator | discordgo.PermissionManageServer)
-	cmd := &discordgo.ApplicationCommand{Name: "admin", Description: "Champion operations and diagnostics", DefaultMemberPermissions: &perms, Options: []*discordgo.ApplicationCommandOption{{Name: "status", Description: "Show system status", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "diagnostics", Description: "Show sanitized diagnostics", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "link-diagnostics", Description: "Show account-link readiness", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "presence-diagnostics", Description: "Show live presence and voice counter state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "pipeline-diagnostics", Description: "Show live pipeline state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "pipeline-reset-diagnostics", Description: "Clear live pipeline diagnostics", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "leaderboard-refresh", Description: "Manually refresh the public leaderboard panel", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "adm-source-scan", Description: "Scan live Nitrado ADM candidates for the actual actively-written source", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "pipeline", Description: "Show kill pipeline state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "workers", Description: "Show worker state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "permissions", Description: "Show Discord permission state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "health", Description: "Show component health", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "logs", Description: "Show recent operational state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "checkpoint", Description: "Show checkpoint state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "resync", Description: "Refresh safe runtime state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "verify-link", Description: "Manually verify a pending /link request (fallback when ADM verification can't complete)", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "username", Description: "PlayStation username from the pending /link request", Type: discordgo.ApplicationCommandOptionString, Required: true}}}}}
+	// No default-member permission (admin_gate.go): isAdminInteraction decides.
+	cmd := &discordgo.ApplicationCommand{Name: "admin", Description: "Champion operations and diagnostics", Options: []*discordgo.ApplicationCommandOption{{Name: "status", Description: "Show system status", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "diagnostics", Description: "Show sanitized diagnostics", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "link-diagnostics", Description: "Show account-link readiness", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "presence-diagnostics", Description: "Show live presence and voice counter state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "pipeline-diagnostics", Description: "Show live pipeline state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "pipeline-reset-diagnostics", Description: "Clear live pipeline diagnostics", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "leaderboard-refresh", Description: "Manually refresh the public leaderboard panel", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "adm-source-scan", Description: "Scan live Nitrado ADM candidates for the actual actively-written source", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "pipeline", Description: "Show kill pipeline state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "workers", Description: "Show worker state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "permissions", Description: "Show Discord permission state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "health", Description: "Show component health", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "logs", Description: "Show recent operational state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "checkpoint", Description: "Show checkpoint state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "resync", Description: "Refresh safe runtime state", Type: discordgo.ApplicationCommandOptionSubCommand}, {Name: "verify-link", Description: "Manually verify a pending /link request (fallback when ADM verification can't complete)", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "username", Description: "PlayStation username from the pending /link request", Type: discordgo.ApplicationCommandOptionString, Required: true}}}}}
 	_, err = session.ApplicationCommandCreate(applicationID, guildID, cmd)
 	return err
 }
 func (h *AdminCommandHandler) Handle(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if h == nil || h.service == nil || i == nil {
-		respondEphemeral(s, i, "Admin diagnostics unavailable.")
+		respondEphemeral(s, i, ReplyAreUnavailable("Admin diagnostics"))
 		return
 	}
 	if !isAdminInteraction(i) {
-		respondEphemeral(s, i, "Administrator or Manage Server permission required.")
+		respondEphemeral(s, i, ReplyNeedsManageServer)
 		return
 	}
 	if len(i.ApplicationCommandData().Options) > 0 && i.ApplicationCommandData().Options[0].Name == "adm-source-scan" {
@@ -67,49 +67,59 @@ func (h *AdminCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interact
 		h.handleVerifyLink(s, i)
 		return
 	}
-	data := h.service.Status(context.Background())
-	if len(i.ApplicationCommandData().Options) > 0 && i.ApplicationCommandData().Options[0].Name == "checkpoint" {
-		runtime, _ := data["runtime"].(map[string]any)
-		respondEphemeral(s, i, fmt.Sprintf("📍 **CHECKPOINT**\nLoaded: %v\nOffset: %v", runtime["checkpoint_loaded"], runtime["checkpoint_offset"]))
-		return
+	// Each subcommand builds only the diagnostics it shows: the link, presence
+	// and pipeline sections query the database and Discord, so they reply
+	// "thinking..." first.
+	sub := ""
+	if len(i.ApplicationCommandData().Options) > 0 {
+		sub = i.ApplicationCommandData().Options[0].Name
 	}
-	if len(i.ApplicationCommandData().Options) > 0 && i.ApplicationCommandData().Options[0].Name == "resync" {
-		respondEphemeral(s, i, "🏆 **RESYNC REQUESTED**\nSafe runtime refresh is scheduled; history and checkpoints are unchanged.")
+	switch sub {
+	case "resync":
+		respondEphemeral(s, i, "🏆 **Resync requested**\nSafe runtime refresh is scheduled; history and checkpoints are unchanged.")
 		return
-	}
-	if i.ApplicationCommandData().Options[0].Name == "workers" {
-		respondEphemeral(s, i, fmt.Sprintf("⚙️ **CHAMPION WORKERS**\n%v", data["workers"]))
-		return
-	}
-	if i.ApplicationCommandData().Options[0].Name == "link-diagnostics" {
-		respondLinkDiagnostics(s, i, data["link_diagnostics"])
-		return
-	}
-	if i.ApplicationCommandData().Options[0].Name == "presence-diagnostics" {
-		respondPresenceDiagnostics(s, i, data["presence_diagnostics"])
-		return
-	}
-	if i.ApplicationCommandData().Options[0].Name == "pipeline-diagnostics" {
-		respondPipelineDiagnostics(s, i, data["pipeline_diagnostics"])
-		return
-	}
-	if i.ApplicationCommandData().Options[0].Name == "pipeline-reset-diagnostics" {
+	case "pipeline-reset-diagnostics":
 		respondEphemeral(s, i, "Pipeline diagnostics reset is available after the next runtime snapshot.")
 		return
-	}
-	if i.ApplicationCommandData().Options[0].Name == "leaderboard-refresh" {
+	case "leaderboard-refresh":
+		deferEphemeral(s, i)
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		if err := h.service.RefreshLeaderboard(ctx); err != nil {
-			respondEphemeral(s, i, "❌ Leaderboard refresh failed: "+err.Error())
+			respondEphemeral(s, i, ReplyCouldNotBecause("refresh the leaderboard", err.Error()))
 			return
 		}
 		respondEphemeral(s, i, "✅ Leaderboard refreshed.")
 		return
+	case "link-diagnostics", "presence-diagnostics", "pipeline-diagnostics":
+		deferEphemeral(s, i)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		section := strings.ReplaceAll(sub, "-", "_")
+		data := h.service.StatusWith(ctx, section)
+		switch sub {
+		case "link-diagnostics":
+			respondLinkDiagnostics(s, i, data[section])
+		case "presence-diagnostics":
+			respondPresenceDiagnostics(s, i, data[section])
+		default:
+			respondPipelineDiagnostics(s, i, data[section])
+		}
+		return
+	}
+	data := h.service.StatusWith(context.Background())
+	switch sub {
+	case "checkpoint":
+		runtime, _ := data["runtime"].(map[string]any)
+		respondEphemeral(s, i, fmt.Sprintf("📍 **Checkpoint**\nLoaded: %v\nOffset: %v", runtime["checkpoint_loaded"], runtime["checkpoint_offset"]))
+		return
+	case "workers":
+		respondEphemeral(s, i, fmt.Sprintf("⚙️ **Champion workers**\n%v", data["workers"]))
+		return
 	}
 	runtime, _ := data["runtime"].(map[string]any)
 	var b strings.Builder
-	b.WriteString("🏆 **CHAMPION SYSTEM STATUS**\n\n")
+	b.WriteString("🏆 **Champion system status**\n\n")
 	if runtime != nil {
 		fmt.Fprintf(&b, "Database: %v\nDiscord: %v\nNitrado: %v\nADM: %v\nOnline Players: %v\nPersistence Queue: %v\n", runtime["database_connected"], runtime["discord_connected"], runtime["nitrado_authenticated"], runtime["log_source_found"], runtime["online_players"], runtime["persistence_queue_depth"])
 	}
@@ -120,17 +130,14 @@ func (h *AdminCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interact
 // between discovery rounds to observe real content growth, which exceeds
 // Discord's initial interaction ack window.
 func (h *AdminCommandHandler) handleADMSourceScan(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral},
-	}); err != nil {
+	if !deferEphemeral(s, i) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	result, err := h.service.RunADMSourceScan(ctx)
 	embed := buildADMSourceScanEmbed(result, err)
-	_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Embeds: &[]*discordgo.MessageEmbed{embed}})
+	_ = editDeferred(s, i, &discordgo.WebhookEdit{Embeds: &[]*discordgo.MessageEmbed{embed}})
 }
 
 // handleVerifyLink is the admin fallback for completing a pending /link
@@ -138,37 +145,40 @@ func (h *AdminCommandHandler) handleADMSourceScan(s *discordgo.Session, i *disco
 // can't reconnect in time or the ADM pipeline is degraded.
 func (h *AdminCommandHandler) handleVerifyLink(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if h.links == nil || h.guilds == nil {
-		respondEphemeral(s, i, "❌ Manual link verification is unavailable.")
+		respondEphemeral(s, i, ReplyIsUnavailable("Manual link verification"))
 		return
 	}
 	username := strings.TrimSpace(optionString(i.ApplicationCommandData().Options[0], "username"))
 	if username == "" {
-		respondEphemeral(s, i, "❌ username is required.")
+		respondEphemeral(s, i, "username is required.")
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_, guildID, err := h.guilds.GetGuild(ctx, i.GuildID)
 	if err != nil || guildID == 0 {
-		respondEphemeral(s, i, "❌ Run `/setup run` before verifying links.")
+		respondEphemeral(s, i, ReplyNotSetUp)
 		return
 	}
-	if err := h.links.ApproveManually(ctx, guildID, username); err != nil {
+	discordUserID, err := h.links.ApproveManually(ctx, guildID, username)
+	if err != nil {
 		switch {
 		case errors.Is(err, linking.ErrPlayerNotFound):
-			respondEphemeral(s, i, fmt.Sprintf("❌ No pending /link request found for `%s`.", username))
+			respondEphemeral(s, i, fmt.Sprintf("No pending /link request found for `%s`.", username))
 		default:
-			respondEphemeral(s, i, "❌ Could not verify that link right now.")
+			respondEphemeral(s, i, ReplyCouldNot("verify that link"))
 		}
 		return
 	}
-	respondEphemeral(s, i, fmt.Sprintf("✅ Verified the pending link for `%s`.", username))
+	// Name the Discord member the link now belongs to: the pending request is whoever ran /link
+	// for that name, which is not always the person who asked the admin.
+	respondEphemeral(s, i, fmt.Sprintf("✅ Verified the pending link for `%s` to <@%s>.", username, discordUserID))
 }
 
 func buildADMSourceScanEmbed(values map[string]any, err error) *discordgo.MessageEmbed {
-	embed := presentation.NewChampionEmbed("LIVE ADM SOURCE SCAN", presentation.InfoSteel)
+	embed := presentation.NewChampionEmbed("Live ADM source scan", presentation.InfoSteel)
 	if err != nil {
-		embed.Fields = append(embed.Fields, presentation.StatusField("ERROR", err.Error(), false))
+		embed.Fields = append(embed.Fields, presentation.StatusField("Error", err.Error(), false))
 		return embed
 	}
 	add := func(label, key string) {
@@ -176,62 +186,62 @@ func buildADMSourceScanEmbed(values map[string]any, err error) *discordgo.Messag
 			embed.Fields = append(embed.Fields, presentation.StatusField(label, fmt.Sprint(value), true))
 		}
 	}
-	add("SERVER", "server")
-	add("CANDIDATES", "candidates")
-	add("CURRENT SELECTED", "current_selected")
-	add("CURRENT CLASSIFICATION", "current_classification")
-	add("ACTIVE SOURCE", "active_source")
+	add("Server", "server")
+	add("Candidates", "candidates")
+	add("Current selected", "current_selected")
+	add("Current classification", "current_classification")
+	add("Active source", "active_source")
 	if before, ok := values["active_size_before"]; ok {
 		after := values["active_size_after"]
-		embed.Fields = append(embed.Fields, presentation.StatusField("ACTIVE SOURCE SIZE", fmt.Sprintf("%v -> %v", before, after), true))
+		embed.Fields = append(embed.Fields, presentation.StatusField("Active source size", fmt.Sprintf("%v -> %v", before, after), true))
 	}
-	add("CONTENT CHANGED", "content_changed")
-	add("NEW ADM CREATED", "new_adm_created")
-	add("RECOMMENDATION", "recommendation")
-	add("ROOT CAUSE", "root_cause")
+	add("Content changed", "content_changed")
+	add("New ADM created", "new_adm_created")
+	add("Recommendation", "recommendation")
+	add("Root cause", "root_cause")
 	return embed
 }
 
 func respondPipelineDiagnostics(s *discordgo.Session, i *discordgo.InteractionCreate, raw any) {
 	values, _ := raw.(map[string]any)
-	embed := presentation.NewChampionEmbed("PIPELINE DIAGNOSTICS", presentation.InfoSteel)
+	embed := presentation.NewChampionEmbed("Pipeline diagnostics", presentation.InfoSteel)
 	for _, field := range []string{"worker", "server_id", "selected_adm", "newest_adm", "selection_match", "selection_reason", "metadata", "download", "reader", "parser", "persistence", "checkpoint", "presence", "voice", "kill", "source_freshness", "cold_start", "stale_source_probe", "last_failure", "classification", "timeline"} {
 		if value, ok := values[field]; ok {
-			embed.Fields = append(embed.Fields, presentation.StatusField(strings.ToUpper(field), fmt.Sprint(value), false))
+			embed.Fields = append(embed.Fields, presentation.StatusField(presentation.EnumLabel(field), fmt.Sprint(value), false))
 		}
 	}
-	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{Type: discordgo.InteractionResponseChannelMessageWithSource, Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral, Embeds: []*discordgo.MessageEmbed{embed}}})
+	respondPrivate(s, i, &discordgo.InteractionResponseData{Embeds: []*discordgo.MessageEmbed{embed}})
 }
 
 func respondPresenceDiagnostics(s *discordgo.Session, i *discordgo.InteractionCreate, raw any) {
-	embed := presentation.NewChampionEmbed("PRESENCE DIAGNOSTICS", presentation.InfoSteel)
+	embed := presentation.NewChampionEmbed("Presence diagnostics", presentation.InfoSteel)
 	values, _ := raw.(map[string]any)
 	add := func(label, key string) {
 		if value, ok := values[key]; ok {
 			embed.Fields = append(embed.Fields, presentation.StatusField(label, fmt.Sprint(value), true))
 		}
 	}
-	for _, field := range [][2]string{{"SELECTED SERVER", "selected_server_id"}, {"SELECTED SERVER RESOLVED", "selected_server_id_resolved"}, {"WORKER", "selected_server_worker_found"}, {"TRACKER COUNT", "tracker_count"}, {"TRACKED ENTRIES", "tracked_entries"}, {"LAST PRESENCE EVENT", "last_presence_event"}, {"LAST CONNECT", "last_connect_at"}, {"LAST DISCONNECT", "last_disconnect_at"}, {"LAST PERSISTENCE", "last_persistence_result"}, {"VOICE COUNTER PUBLISHED", "last_voice_publish_count"}, {"VOICE PUBLISH RESULT", "last_voice_publish_result"}, {"DISCORD VOICE CHANNEL", "discord_voice_channel"}, {"DISCORD VOICE COUNTER", "discord_voice_counter"}, {"CLASSIFICATION", "classification"}} {
+	for _, field := range [][2]string{{"Selected server", "selected_server_id"}, {"Selected server resolved", "selected_server_id_resolved"}, {"Worker", "selected_server_worker_found"}, {"Tracker count", "tracker_count"}, {"Tracked entries", "tracked_entries"}, {"Last presence event", "last_presence_event"}, {"Last connect", "last_connect_at"}, {"Last disconnect", "last_disconnect_at"}, {"Last persistence", "last_persistence_result"}, {"Voice counter published", "last_voice_publish_count"}, {"Voice publish result", "last_voice_publish_result"}, {"Discord voice channel", "discord_voice_channel"}, {"Discord voice counter", "discord_voice_counter"}, {"Classification", "classification"}} {
 		add(field[0], field[1])
 	}
-	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{Type: discordgo.InteractionResponseChannelMessageWithSource, Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral, Embeds: []*discordgo.MessageEmbed{embed}}})
+	respondPrivate(s, i, &discordgo.InteractionResponseData{Embeds: []*discordgo.MessageEmbed{embed}})
 }
 
 func respondLinkDiagnostics(s *discordgo.Session, i *discordgo.InteractionCreate, raw any) {
-	embed := presentation.NewChampionEmbed("LINK DIAGNOSTICS", presentation.InfoSteel)
+	embed := presentation.NewChampionEmbed("Link diagnostics", presentation.InfoSteel)
 	values, _ := raw.(map[string]any)
 	add := func(label, key string) {
 		if value, ok := values[key]; ok {
 			embed.Fields = append(embed.Fields, presentation.StatusField(label, fmt.Sprint(value), true))
 		}
 	}
-	add("DATABASE", "database")
-	add("PLAYER REPOSITORY", "player_repository")
-	add("ACTIVITY REPOSITORY", "activity_repository")
-	add("SELECTED SERVER", "selected_server")
-	add("OBSERVED PLAYERS", "observed_players")
-	add("LAST CONNECT PERSISTED", "last_player_connect_persisted")
-	add("LAST DISCONNECT", "last_player_disconnect")
-	add("PRESENCE EVENT", "last_presence_event")
-	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{Type: discordgo.InteractionResponseChannelMessageWithSource, Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral, Embeds: []*discordgo.MessageEmbed{embed}}})
+	add("Database", "database")
+	add("Player repository", "player_repository")
+	add("Activity repository", "activity_repository")
+	add("Selected server", "selected_server")
+	add("Observed players", "observed_players")
+	add("Last connect persisted", "last_player_connect_persisted")
+	add("Last disconnect", "last_player_disconnect")
+	add("Presence event", "last_presence_event")
+	respondPrivate(s, i, &discordgo.InteractionResponseData{Embeds: []*discordgo.MessageEmbed{embed}})
 }

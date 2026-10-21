@@ -17,6 +17,10 @@ const (
 	WarCancelled = "CANCELLED"
 )
 
+// ErrWarFactionNotInGuild means a war was asked for between factions that are not both factions
+// of the server the command was used on.
+var ErrWarFactionNotInGuild = errors.New("both factions must belong to this server")
+
 type War struct {
 	ID, GuildID, SeasonID, FactionAID, FactionBID int64
 	Status                                        string
@@ -67,7 +71,15 @@ func (r *PostgresWarRepository) Challenge(ctx context.Context, guildID, seasonID
 		return nil, err
 	}
 	var w War
-	err = r.pool.QueryRow(ctx, `INSERT INTO faction_wars(guild_id,season_id,faction_a_id,faction_b_id,status,created_by_player_id) VALUES($1,NULLIF($2,0),$3,$4,$5,$6) RETURNING id,guild_id,COALESCE(season_id,0),faction_a_id,faction_b_id,status,started_at,ended_at,faction_a_score,faction_b_score,winner_faction_id`, guildID, seasonID, a, b, WarPending, creator).Scan(&w.ID, &w.GuildID, &w.SeasonID, &w.FactionAID, &w.FactionBID, &w.Status, &w.StartedAt, &w.EndedAt, &w.ScoreA, &w.ScoreB, &w.WinnerFactionID)
+	// Both factions must be this guild's: the faction foreign keys alone would accept another
+	// server's faction ids.
+	err = r.pool.QueryRow(ctx, `INSERT INTO faction_wars(guild_id,season_id,faction_a_id,faction_b_id,status,created_by_player_id)
+SELECT $1,NULLIF($2,0),$3,$4,$5,NULLIF($6,0)
+WHERE (SELECT COUNT(*) FROM factions WHERE guild_id=$1 AND id IN ($3,$4)) = 2
+RETURNING id,guild_id,COALESCE(season_id,0),faction_a_id,faction_b_id,status,started_at,ended_at,faction_a_score,faction_b_score,winner_faction_id`, guildID, seasonID, a, b, WarPending, creator).Scan(&w.ID, &w.GuildID, &w.SeasonID, &w.FactionAID, &w.FactionBID, &w.Status, &w.StartedAt, &w.EndedAt, &w.ScoreA, &w.ScoreB, &w.WinnerFactionID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrWarFactionNotInGuild
+	}
 	if err != nil {
 		return nil, err
 	}

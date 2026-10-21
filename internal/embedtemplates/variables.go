@@ -51,6 +51,7 @@ func v(name, label, cat, desc, example, format, source, availability string, opt
 
 const (
 	statsAvail  = "Present when Champion loaded the player's combat record for this kill."
+	splitAvail  = "Present when Champion loaded the player's combat record for this kill. PvP deaths and PvE deaths add up to the player's deaths."
 	hitDataNote = "Only present when the kill event carries hit data. Standard ADM kill lines do not include a hit zone or damage, so this is usually absent."
 	// finalHitNote: the kill line itself has no hit data; Champion attaches the lethal hit only when
 	// the ADM hit line immediately before the kill agrees on every point (killfeed/final_hit.go).
@@ -66,18 +67,26 @@ var routeVariableDefinitions = map[string][]VariableDefinition{
 		v("victim", "Victim", CatPlayers, "The player who was killed.", "Semillita-azul-_", "text", "Event.Victim.Name", always, false),
 		v("weapon", "Weapon", CatCombat, "The weapon used.", "M4-A1", "text", "Event.Weapon", "Present when the kill line names a weapon.", true),
 		v("weapon_category", "Weapon Category", CatCombat, "The weapon's class from Champion's weapon classifier.", "Assault Rifle", "label", "presentation.WeaponCategory(Event.Weapon)", "Present when the classifier recognizes the weapon.", true),
-		v("ammo", "Ammo", CatCombat, "The ammunition type.", "5.56x45", "text", "Event.Ammo", "Present when the kill line names the ammunition.", true),
+		v("ammo", "Ammo", CatCombat, "The ammunition type.", "5.56x45", "text", "Event.Ammo, else the matched lethal hit", "Present when the kill line or the matched lethal hit names the ammunition. Often absent.", true),
+		v("weapon_with_ammo", "Weapon With Ammo", CatCombat, "The weapon, followed by the ammunition in brackets when it is known. Use it instead of {{weapon}} ({{ammo}}), which hides the whole line when the ammunition is unknown.", "M4-A1 (556x45)", "text", "Event.Weapon + ammunition", "Present when the kill line names a weapon.", true),
 		v("distance", "Distance", CatCombat, "Kill distance in meters.", "11.7m", "distance", "Event.Distance", "Present when the kill line has a distance.", true),
 		v("range", "Range", CatCombat, "Champion's range class for the kill.", "CLOSE QUARTERS", "label", "presentation.RangeClass(Event.Distance)", "Present when the distance is known or the kill was melee.", true),
 		v("hit_zone", "Hit Zone", CatCombat, "The body part of the lethal hit.", "Torso", "text", "correlated lethal hit (Event.FinalHit)", finalHitNote, true),
 		v("damage", "Damage", CatCombat, "Damage of the lethal hit (that one hit, not a total).", "28.7", "decimal", "correlated lethal hit (Event.FinalHit)", finalHitNote, true),
+		v("hit_label", "Hit Label", CatCombat, "CRITICAL HIT when the lethal hit was to the head, otherwise HIT.", "CRITICAL HIT", "label", "Event.HitZone / Event.FinalHit.Zone", finalHitNote, true),
 		v("killer_kills", "Killer Kills", CatKillerStats, "The killer's all-time kills after this kill.", "9", "integer", "Event.KillerStats.Kills", statsAvail, true),
 		v("killer_deaths", "Killer Deaths", CatKillerStats, "The killer's all-time deaths.", "0", "integer", "Event.KillerStats.Deaths", statsAvail, true),
 		v("killer_kd", "Killer K/D", CatKillerStats, "The killer's all-time K/D after the confirmed kill.", "9.00", "decimal", "Event.KillerStats.KD()", statsAvail, true),
+		v("killer_pvp_deaths", "Killer PvP Deaths", CatKillerStats, "The killer's all-time deaths caused by another player.", "0", "integer", "Event.KillerStats.PvPDeaths", splitAvail, true),
+		v("killer_pve_deaths", "Killer PvE Deaths", CatKillerStats, "The killer's all-time deaths not caused by another player (environment, suicide, unknown cause).", "0", "integer", "Event.KillerStats.PvEDeaths()", splitAvail, true),
+		v("killer_pvp_kd", "Killer PvP K/D", CatKillerStats, "The killer's all-time kills per PvP death after the confirmed kill.", "9.00", "decimal", "Event.KillerStats.PvPKD()", splitAvail, true),
 		v("killer_streak", "Killer Streak", CatKillerStats, "The killer's current kill streak including this kill (same value as streak).", "1", "integer", "Event.KillerStreak", "Present when the streak is known and above zero.", true),
 		v("victim_kills", "Victim Kills", CatVictimStats, "The victim's all-time kills.", "2", "integer", "Event.VictimStats.Kills", statsAvail, true),
 		v("victim_deaths", "Victim Deaths", CatVictimStats, "The victim's all-time deaths after this death.", "2", "integer", "Event.VictimStats.Deaths", statsAvail, true),
 		v("victim_kd", "Victim K/D", CatVictimStats, "The victim's all-time K/D after this death.", "1.00", "decimal", "Event.VictimStats.KD()", statsAvail, true),
+		v("victim_pvp_deaths", "Victim PvP Deaths", CatVictimStats, "The victim's all-time deaths caused by another player, after this death.", "2", "integer", "Event.VictimStats.PvPDeaths", splitAvail, true),
+		v("victim_pve_deaths", "Victim PvE Deaths", CatVictimStats, "The victim's all-time deaths not caused by another player (environment, suicide, unknown cause).", "0", "integer", "Event.VictimStats.PvEDeaths()", splitAvail, true),
+		v("victim_pvp_kd", "Victim PvP K/D", CatVictimStats, "The victim's all-time kills per PvP death after this death.", "1.00", "decimal", "Event.VictimStats.PvPKD()", splitAvail, true),
 		v("h2h_killer_wins", "H2H Killer Wins", CatHeadToHead, "How many times the killer has killed this victim.", "4", "integer", "Event.Encounters.KillerWins", "Present when Champion loaded the head-to-head record.", true),
 		v("h2h_victim_wins", "H2H Victim Wins", CatHeadToHead, "How many times this victim has killed the killer.", "0", "integer", "Event.Encounters.VictimWins", "Present when Champion loaded the head-to-head record.", true),
 		v("h2h_score", "H2H Score", CatHeadToHead, "The head-to-head record, killer first.", "4–0", "text", "Event.Encounters", "Present when Champion loaded the head-to-head record.", true),
@@ -93,8 +102,10 @@ var routeVariableDefinitions = map[string][]VariableDefinition{
 		v("bounty_target", "Bounty Target", CatBounty, "Set when the victim had an active bounty.", "MOST WANTED", "label", "Event.BountyTarget", "Only when the victim had an active bounty.", true),
 		v("bounty_claimed", "Bounty Claimed", CatBounty, "Set when this kill claimed a bounty.", "BOUNTY CLAIMED", "label", "Event.BountyClaimed", "Only when this kill claimed a bounty.", true),
 		v("season_name", "Season", CatCompetitive, "The active season.", "Season 3", "text", "Event.SeasonName", "Present while a season is active.", true),
+		v("ranked_rp", "Ranked RP", CatCompetitive, "The RP this kill earned, with icons for double RP and bonuses.", "+250 RP ⚡💀", "text", "Event.RankedTag", "Only when the server shows ranked tags and the kill earned RP.", true),
 		v("war_badge", "War Badge", CatCompetitive, "The faction war this kill counted for.", "WAR KILL", "label", "Event.WarBadge", "Only for kills in an active faction war.", true),
 		v("event_badges", "Event Badges", CatCompetitive, "Active competitive events this kill counted for, joined by •.", "Double Kill • NWAF Event", "text", "Event.ActiveEventBadges", "Only when the kill counted for an active event.", true),
+		v("time_ago", "Time Ago", CatServer, "When the kill happened as a live Discord time (\"2 minutes ago\"): it counts up by itself and shows in each reader's own time zone.", "2 minutes ago", "timestamp", "Event.Timestamp", always, false),
 		serverName(), timestamp(),
 	},
 	"HITFEED": {
@@ -132,6 +143,7 @@ var routeVariableDefinitions = map[string][]VariableDefinition{
 		v("amount", "Amount", CatEconomy, "Champion Points moved (a number - write {{amount}} pts).", "250", "points", "economy event amount", always, false),
 		v("balance", "Balance", CatEconomy, "The player's Champion Points balance afterwards (a number).", "1,250", "points", "economy event balance", "Only for rewards (bounty payouts, system rewards).", true),
 		v("transaction_type", "Transaction Type", CatEconomy, "What kind of transaction it was.", "Bounty reward", "label", "economy event type", always, false),
+		v("reason", "Reason", CatEconomy, "Why the reward was earned.", "Daily play reward (3 days in a row)", "text", "economy event reason", "Only for system rewards.", true),
 		serverName(),
 	},
 	"CONNECTIONS": {
@@ -160,7 +172,15 @@ var routeVariableDefinitions = map[string][]VariableDefinition{
 	"LINK_GAMERTAG":      {serverName(), timestamp()},
 	"STATS_LEADERBOARDS": {serverName(), timestamp()},
 	"AUTO_LEADERBOARD":   {serverName(), timestamp()},
+	"SERVER_RANKS":       {serverName(), timestamp()},
 	"SERVER_STATUS":      {serverName(), timestamp()},
+	"EVENTS":             {serverName(), timestamp()},
+	// Faction recruitment cards are designed by faction leaders on the website (their colours,
+	// logo and copy), so the channel carries no owner template variables beyond the basics.
+	"FACTION_RECRUITMENT": {serverName(), timestamp()},
+	// Perk store shout-outs are written by Champion (who bought what, and the month's top
+	// supporters), so the channel carries no owner template variables beyond the basics.
+	"DONATION_PERKS": {serverName(), timestamp()},
 	// C.A.S.E. templates can be saved and previewed, but no live C.A.S.E.
 	// publisher exists. The fields describe the contract for separately
 	// reviewed future aggregate/status and finding events. None is fetched

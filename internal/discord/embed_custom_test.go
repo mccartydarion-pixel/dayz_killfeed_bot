@@ -3,6 +3,7 @@ package discord
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"sync"
@@ -104,7 +105,7 @@ func TestKillCardUsesTheCustomCardAndProvenVariables(t *testing.T) {
 	story := BuildPresentation(ev)
 	want := map[string]string{"killer": "Alice", "victim": "Bob", "weapon": "M4-A1", "distance": "86.4m", "ammo": "Bullet_556x45", "streak": "3", "server_name": "Northstar",
 		// V2.1: derived from the same event through the default card's own helpers.
-		"killer_streak": "3", "weapon_category": presentation.WeaponCategory("M4-A1", false), "range": presentation.RangeClass(ev.Distance, false),
+		"killer_streak": "3", "weapon_with_ammo": "M4-A1 (556x45)", "weapon_category": presentation.WeaponCategory("M4-A1", false), "range": presentation.RangeClass(ev.Distance, false),
 		"kill_type": story.Title, "story_title": story.Icon + " " + story.Title}
 	for k, v := range want {
 		if c.vars[k] != v {
@@ -112,7 +113,7 @@ func TestKillCardUsesTheCustomCardAndProvenVariables(t *testing.T) {
 		}
 	}
 	for k := range c.vars {
-		if _, ok := want[k]; !ok && k != "timestamp" {
+		if _, ok := want[k]; !ok && k != "timestamp" && k != "time_ago" {
 			t.Errorf("unexpected variable %q (only authoritative values may be passed)", k)
 		}
 	}
@@ -334,16 +335,27 @@ func TestConnectionsSingleEventUsesTheTemplateAndBatchesKeepTheDefault(t *testin
 		t.Fatal("a connect has no session")
 	}
 
+	// Two events in one tick are two cards, each through the template.
 	before := stub.count()
 	p.PublishConnection(connected("C1"))
 	p.PublishConnection(connected("C2"))
 	p.tick(false)
+	if stub.count() != before+2 {
+		t.Fatalf("each event's card goes through the template, got %d renders for 2 events", stub.count()-before)
+	}
+	// A flood (more than connectionsSummaryThreshold queued) is a summary list, which the
+	// single-event template cannot describe: it keeps the default and skips the customizer.
+	before = stub.count()
+	for i := 0; i < connectionsSummaryThreshold+1; i++ {
+		p.PublishConnection(connected(fmt.Sprintf("F%02d", i)))
+	}
+	p.tick(false)
 	got := f.lastDescription("conn-chan")
-	if !strings.Contains(got, "C1") || !strings.Contains(got, "C2") || strings.HasPrefix(got, "CUSTOM") {
-		t.Fatalf("a multi-player batch is a summary list and keeps the default card: %q", got)
+	if !strings.Contains(got, "F00") || !strings.Contains(got, fmt.Sprintf("F%02d", connectionsSummaryThreshold)) || strings.HasPrefix(got, "CUSTOM") {
+		t.Fatalf("a flood batch is a summary list and keeps the default card: %q", got)
 	}
 	if stub.count() != before {
-		t.Fatal("the customizer is not consulted for a batch")
+		t.Fatal("the customizer is not consulted for a flood batch")
 	}
 	// A disconnect whose session is unknown or short leaves {{session}} absent.
 	p.PublishConnection(disconnected("D", 10*time.Second))
@@ -360,7 +372,7 @@ func TestBountyTrackingCardsUseTheTemplatePerServerAndEventKind(t *testing.T) {
 	res.set(7, 1, "BOUNTY_TRACKING", "track-1")
 	res.set(7, 2, "BOUNTY_TRACKING", "track-2")
 	sender := &fakeHitSender{fail: map[string]error{}}
-	tr := NewBountyTracker(sender, res, func(context.Context) (int64, []int64, error) { return 7, []int64{1, 2}, nil })
+	tr := NewBountyTracker(sender, res, SingleGuild(func(context.Context) (int64, []int64, error) { return 7, []int64{1, 2}, nil }))
 	stub := &stubCustomizer{}
 	tr.SetCustomizer(stub, names)
 
@@ -433,8 +445,9 @@ func TestPublishersUseTheDefaultWhenTheCustomizerReturnsIt(t *testing.T) {
 	f.feed.SetCustomizer(&stubCustomizer{passDflt: true}, names)
 	f.feed.Notify(economy.Event{Type: economy.TypeAdminCredit, GuildID: 7, ServerID: 1, PlayerName: "Alice", Amount: 50000, Credit: true})
 	f.feed.Flush()
-	if got := f.last("eco-chan"); got != "➕ **ADMIN CREDIT**\nAlice received 50,000 pts" {
-		t.Fatalf("the default card must be exactly the existing one: %q", got)
+	// The built-in card as buildEconomyEmbed writes it today (sentence-case header, docs/DISCORD_DESIGN.md).
+	if got := f.last("eco-chan"); got != "➕ **Admin credit**\nAlice received 50,000 pts" {
+		t.Fatalf("the default card must be exactly the built-in one: %q", got)
 	}
 }
 

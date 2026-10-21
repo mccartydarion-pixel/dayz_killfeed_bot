@@ -264,7 +264,7 @@ Request:
 guild, as a **decimal string** (Discord's own API shape). Eligible =
 `ADMINISTRATOR` (`8`) or `MANAGE_GUILD` (`32`) bit set.
 
-Response `200` (`[`[`DiscordGuildConnectionCandidate`](#discordguildsummary)`]`, named `DiscordGuildSummary` in code):
+Response `200` (`[`[`DiscordGuildConnectionCandidate`](#discordguildsummary-eligibility-candidate-result)`]`, named `DiscordGuildSummary` in code):
 ```json
 [{ "discordGuildId": "555666777888", "guildName": "My DayZ Server", "guildIcon": "abc123", "eligible": true, "botInstalled": false }]
 ```
@@ -292,7 +292,7 @@ redirect/query-string success. On success, if the installation is still
 `NOT_STARTED`, transitions it to `DISCORD_CONNECTED` (never further; never
 regresses an installation already past that point). No request body.
 
-Response `200`: [`DiscordInstallationVerification`](#discordinstallationverification) (named `DiscordVerificationResult` in code):
+Response `200`: [`DiscordInstallationVerification`](#discordinstallationverification-code-name-discordverificationresult) (named `DiscordVerificationResult` in code):
 ```json
 { "installed": true, "guildReachable": true, "verifiedAt": "2026-09-18T02:00:00Z" }
 ```
@@ -306,7 +306,7 @@ Request:
 ```json
 { "channelId": "999888777666" }
 ```
-Response `200`: [`DiscordPermissionVerification`](#discordpermissionverification) (named `PermissionVerificationResult` in code):
+Response `200`: [`DiscordPermissionVerification`](#discordpermissionverification-code-name-permissionverificationresult) (named `PermissionVerificationResult` in code):
 ```json
 {
   "capabilities": [
@@ -373,7 +373,7 @@ Request:
 ```json
 { "serviceId": 123456 }
 ```
-Response `200` ([`SelectDayZServerResponse`](#selectdayzserverresponse)):
+Response `200` ([`SelectDayZServerResponse`](#selectdayzserverresponse-response-of-16)):
 ```json
 {
   "server": { "id": 42, "serviceId": 123456, "displayName": "Champions PS", "game": "DayZ", "platform": "PLAYSTATION", "status": "ONLINE" },
@@ -425,7 +425,7 @@ text and announcement channels the bot can currently **view** are ever
 returned (voice/stage/category/forum/thread channels never appear). Any
 member may call it.
 
-Response `200` ([`DiscordChannelSummary[]`](#discordchannelsummary)):
+Response `200` ([`DiscordChannelSummary[]`](#discordchannelsummary-response-of-18-22)):
 ```json
 [
   { "id": "111", "name": "champion-killfeed", "type": "TEXT", "position": 0, "canSend": true },
@@ -442,7 +442,7 @@ Returns the installation's currently persisted channel selection. Any
 member may call it - this is what a page refresh in Customize mode uses to
 restore the form.
 
-Response `200` ([`InstallationChannelSettings`](#installationchannelsettings)):
+Response `200` ([`InstallationChannelSettings`](#installationchannelsettings-request-of-20-response-of-1920)):
 ```json
 { "killfeedChannelId": "111", "leaderboardChannelId": "111", "playerStatusChannelId": "", "adminLogChannelId": "222" }
 ```
@@ -527,7 +527,7 @@ categories that no route uses any more (for example a pre-V2 `casino`,
 `shop`, `build-feed` or the old `CHAMPION KILLFEED` category) are returned
 in `retirable` for the customer to remove.
 
-Response `200` on success ([`AutoSetupChannelsResponse`](#autosetupchannelsresponse)):
+Response `200` on success ([`AutoSetupChannelsResponse`](#autosetupchannelsresponse-response-of-21)):
 ```json
 {
   "configured": true,
@@ -618,7 +618,7 @@ The full routing model's read side (section 11) - returns every currently
 configured route, keyed by `route_key`. Any member may call it. Required for
 refresh persistence, same as `#19`.
 
-Response `200` ([`ChannelRoutesResponse`](#channelroutesresponse)):
+Response `200` ([`ChannelRoutesResponse`](#channelroutesresponse-response-of-2324)):
 ```json
 {
   "routes": {
@@ -693,7 +693,8 @@ legacy four-field surface) still work exactly as before.
 | | `💀・bounties` | `BOUNTY`, `BOUNTY_TRACKING` |
 | | `🟢・connections` | `CONNECTIONS` |
 | | `🗺️・heatmaps` | `HEATMAPS` (PvP heatmap summary) |
-| `🏆 CHAMPION • HUB` | `📡・server-status` | `SERVER_STATUS` (+ season/war/event results) |
+| `🏆 CHAMPION • HUB` | `📡・server-status` | `SERVER_STATUS` (+ season/war results) |
+| | `🏁・events` | `EVENTS`: event builder "upcoming" and "started" cards, and event results |
 | | `📊・leaderboards` | `AUTO_LEADERBOARD`, `STATS_LEADERBOARDS` |
 | | `🔗・player-link` | `LINK_GAMERTAG` |
 | | `💰・economy` | `ECONOMY`, `SHOP` |
@@ -711,7 +712,12 @@ channel is only the fallback for guilds without routes.
 `/setup run|repair` command all run the same planner
 (`championDestinations`). `/setup` applies it, with repair semantics, to
 every installation connected to the guild; a guild with no installation is
-told to connect on the website. The legacy `SetupManager` never creates a
+told to connect on the website. The installations share one run: every
+installation's channels and routes are written first, then the guild-wide panels
+sync once, then each installation is verified. Each channel is verified and read
+once (six at a time), and the guild's channel list and the bot's permissions are
+read once, except that an installation that created a channel or category makes
+the next one list the guild again. The legacy `SetupManager` never creates a
 channel any more - it only re-posts a missing legacy panel inside a legacy
 channel that still exists, for guilds whose feature is not routed.
 
@@ -731,6 +737,7 @@ instantiated in the process (routing disabled, service absent) is reported
 | `BOUNTY_TRACKING` | `BountyTracker` lifecycle feed | ACTIVE |
 | `CONNECTIONS` | `ConnectionsPublisher` - bounded, batched | ACTIVE |
 | `HEATMAPS` | `HeatmapBoard` persistent PvP summary from the Phase 5 aggregates (`docs/HEATMAPS.md`) | ACTIVE |
+| `EVENTS` | `LiveCompletionPublisher` - event builder cards (upcoming when scheduled, started when live) and event results. Falls back to the `SERVER_STATUS` channel on installations set up before this channel existed | ACTIVE |
 | `SERVER_STATUS` | `ServerStatusBoard` - one persistent message per routed channel, edited in place: Champion's ADM link (CONNECTED / LOCATING LOG / DEGRADED / WAITING FOR FIRST POLL), ADM log freshness and the tracked online count. No uptime, latency or game-server power state (not measured) | ACTIVE |
 | `ONLINE_COUNTER` | `VoiceChannelCounter` - a display-only voice channel renamed to the online count; created/reused by setup (recognized by its name prefix, never duplicated) | ACTIVE |
 | `AUTO_LEADERBOARD` | `LeaderboardScheduler` persistent leaderboard | ACTIVE |
@@ -743,10 +750,15 @@ instantiated in the process (routing disabled, service absent) is reported
 | `BUILD_FEED` | `BuildFeedPublisher` - ADM placement/build lines (`docs/ADMIN_LOGS.md`) | ACTIVE once a build line has been parsed in this process; otherwise BLOCKED - `SOURCE_BLOCKED` (the server must enable `adminLogPlacement` / `adminLogBuildActions`) |
 
 The runtime panel owners (`RouteSyncer`, `BountyBoard`, `HeatmapBoard`,
-`ServerStatusBoard`, `LeaderboardScheduler`, `EconomyFeed`, the voice counter) serve the bot's configured guild. An
-installation in any other guild will see its panel channels reported
-`BROKEN` (no visible panel) by auto-setup's verification, never silently
-passed.
+`ServerStatusBoard`, `ServerRanksBoards`, `LeaderboardScheduler`, `EconomyFeed`,
+`BountyTracker`, the completion announcements) serve **every guild with an
+active game server**, each on its own routes (`docs/SAAS_RUNTIME_ROUTING.md`
+"Every guild is served"), so an installation in a customer's guild gets its
+panels like the bot's configured guild does. The one exception is the voice
+counter, which still serves the configured guild only. A panel that is not
+visible is reported `BROKEN` by auto-setup's verification, never silently
+passed; the `saas_channel_layout_applied` log line lists the `broken_keys`
+and `blocked_keys`.
 
 **Backward-compatible backfill** (migration 0027, one-time, additive): any
 existing installation's legacy `installation_settings` values were copied
@@ -828,7 +840,7 @@ e.g. `"PvP Feed"` becomes `"pvp-feed"`. `400 INVALID_REQUEST` if the name
 normalizes to empty or exceeds 100 characters. `503 DISCORD_UNAVAILABLE` if
 the bot lacks Manage Channels.
 
-Response `201` ([`DiscordChannelSummary`](#discordchannelsummary)):
+Response `201` ([`DiscordChannelSummary`](#discordchannelsummary-response-of-18-22)):
 ```json
 { "id": "333", "name": "pvp-feed", "type": "TEXT", "position": 0, "canSend": true }
 ```
@@ -878,7 +890,7 @@ if it was still `NULL`) - both via the existing, already-idempotent
 this "stamp once" behavior since the setup-progress table was first
 introduced.
 
-Response `200` ([`FinalizeSetupResponse`](#finalizesetupresponse)):
+Response `200` ([`FinalizeSetupResponse`](#finalizesetupresponse-response-of-25)):
 ```json
 {
   "completed": true,
@@ -891,7 +903,7 @@ Everything the customer landing page needs in one call. Any member may
 read. Reuses existing DTOs/repositories throughout - never a duplicate
 installation/organization model.
 
-Response `200` ([`HubSummary`](#hubsummary)):
+Response `200` ([`HubSummary`](#hubsummary-response-of-26)):
 ```json
 {
   "organization": { "id": 1, "name": "...", "slug": "...", "role": "OWNER" },
@@ -918,7 +930,7 @@ deliberately separate from the channel-specific endpoints (`#19`/`#20`/
 `#23`/`#24`), never overloaded onto them. Any member may `GET`; OWNER/ADMIN
 only for `PUT`.
 
-Request/response `200` ([`InstallationGeneralSettings`](#installationgeneralsettings)):
+Request/response `200` ([`InstallationGeneralSettings`](#installationgeneralsettings-requestresponse-of-2728-embedded-in-hubsummarysettings)):
 ```json
 { "timezone": "America/New_York", "distanceUnit": "METERS", "onlineDisplayEnabled": true, "leaderboardEnabled": true }
 ```
@@ -1342,6 +1354,7 @@ plans API returns an empty list and checkout refuses every plan key instead of f
 | Route | Who | Notes |
 |---|---|---|
 | `GET /api/saas/billing/plans` | any synced user | public plan catalog; no organization context, no Stripe price id |
+| `GET /api/saas/billing/public-plans` | service token only (no acting user) | the same public catalog in the website's `PublicCatalogV1` shape (`{ version: 1, plans: [{ key, category: "BASE", name, displayTier, description, features, prices: [{ interval, amountCents, currency }], availability: "AVAILABLE", purchasable, popular, sortOrder, perServer: false, requiresBasePlan: false }] }`) for the anonymous pricing page and homepage price teaser. Sends `Cache-Control: public, max-age=300` and an `ETag`; `If-None-Match` -> `304`. `503 BILLING_UNAVAILABLE` when billing is not configured. Never includes a Stripe price id. |
 | `GET .../organizations/{organizationID}/billing/subscription` | any member | plan, status, billing interval, trial/period, `cancelAtPeriodEnd`, entitlements, `canManageBilling` |
 | `POST .../billing/checkout` | OWNER/ADMIN | `{ planKey, interval, returnPath? }` -> `{ checkoutUrl }` |
 | `POST .../billing/portal` | OWNER/ADMIN | `{ returnPath? }` -> `{ portalUrl }`; `409 NO_BILLING_CUSTOMER` before any checkout |
@@ -1395,6 +1408,7 @@ organization role at all; authorization comes entirely from a `VERIFIED` `player
 | Route | Who | Notes |
 |---|---|---|
 | `GET /api/saas/player/servers` | any synced user | installations the acting user is a proven player on, most-recently-active first; empty list (not an error) if unverified/never observed |
+| `GET /api/saas/player/home` | any synced user | the one server the website's Player Hub shows a non-member: needs a `VERIFIED` link only (no observed activity), returns `organizationId`; `{"server":null}` if none (`docs/PLAYER_API.md` section 10) |
 | `GET /api/saas/player/servers/{installationID}/stats` | any synced user, if associated | kills/deaths/kd/headshots/longshots/playtime/bounties/faction/lastSeenAt, scoped strictly to this installation's own server |
 
 New error codes: `PLAYER_IDENTITY_REQUIRED` (409, reused from the economy's `Me` endpoint - no `VERIFIED` link for this installation's guild). An unknown installation id AND a verified-but-never-
@@ -1596,7 +1610,7 @@ Example:
 | `health` | `"SETTING_UP"` \| `"HEALTHY"` \| `"DEGRADED"` \| `"OFFLINE"` - derived from `status`, not a stored field |
 | `setupProgress` | [`SetupProgress`](#setupprogress)? |
 | `discordConnection` | [`DiscordGuildConnectionSummary`](#discordguildconnectionsummary)? |
-| `dayzServer` | [`DayZServerSummary`](#dayzserversummary)? - present once a server is selected via `#16` |
+| `dayzServer` | [`DayZServerSummary`](#dayzserversummary-embedded-in-installationsummarydayzserver)? - present once a server is selected via `#16` |
 | `createdAt` | string (RFC3339) |
 | `setupCompletedAt` | string? - stamped once, the first time `status` reaches `READY` |
 | `lastHealthCheckAt` | string? |
@@ -1694,6 +1708,10 @@ re-select it via `#16`.
 | `game` | string |
 | `platform` | `"PLAYSTATION"` \| `"XBOX"` |
 | `status` | `"ONLINE"` \| `"OFFLINE"` |
+| `displayNameCustom` | boolean - the owner typed the name in Champion; it no longer follows Nitrado |
+| `providerName` | string \| null - the last name read from Nitrado |
+
+The name follows the server's Nitrado name unless it is custom (`docs/SERVER_NAME_SYNC.md`).
 
 #### `DayZServerValidation` (response of `#17`)
 | field | type |
@@ -1738,16 +1756,16 @@ expansion below.
 #### `ChannelRoutesResponse` (response of `#23`/`#24`)
 | field | type |
 |---|---|
-| `routes` | object - map of `route_key` -> [`ChannelRouteInfo`](#channelrouteinfo); a key absent from the map means that route isn't configured |
+| `routes` | object - map of `route_key` -> [`ChannelRouteInfo`](#channelrouteinfo-value-type-of-channelroutesresponseroutes-and-autosetupchannelsresponseroutes); a key absent from the map means that route isn't configured |
 
 #### `AutoSetupChannelsResponse` (response of `#21`)
 | field | type |
 |---|---|
 | `configured` | boolean |
 | `reason` | string? - `"MISSING_MANAGE_CHANNELS"` \| `"CUSTOM_CONFIGURATION_EXISTS"` \| `"KILLFEED_UNAVAILABLE"`, present only when `configured=false` |
-| `category` | [`ChannelCategorySummary`](#channelcategorysummary)? - the LIVE category, present only when `configured=true` |
-| `categories` | [`ChannelCategorySummary`](#channelcategorysummary)[]? - every V2 category used (`key` = `LIVE` \| `HUB` \| `STAFF`) |
-| `routes` | object? - map of `route_key` -> [`ChannelRouteInfo`](#channelrouteinfo) for every mapped route; routes of skipped destinations are absent |
+| `category` | [`ChannelCategorySummary`](#channelcategorysummary-embedded-in-21)? - the LIVE category, present only when `configured=true` |
+| `categories` | [`ChannelCategorySummary`](#channelcategorysummary-embedded-in-21)[]? - every V2 category used (`key` = `LIVE` \| `HUB` \| `STAFF`) |
+| `routes` | object? - map of `route_key` -> [`ChannelRouteInfo`](#channelrouteinfo-value-type-of-channelroutesresponseroutes-and-autosetupchannelsresponseroutes) for every mapped route; routes of skipped destinations are absent |
 | `destinations` | object[]? - one per V2 destination: `key`, `label`, `category`, `channelId?`, `channelName`, `health` (`ACTIVE` \| `DISABLED` \| `NOT_REQUIRED` \| `BLOCKED` \| `BROKEN`), `detail?`, `created`, `starterSent`, `routes[]` (`routeKey`, `health`, `detail?`), `checks?` (`channelExists`, `routeMapped`, `producerConnected`, `botCanSend`, `visibleContent`) |
 | `retirable` | object[]? - Champion-managed channels/categories no route uses any more: `channelId`, `channelName?`, `kind` (`CHANNEL` \| `CATEGORY`), `formerRoutes?`. Never deleted by Champion |
 
@@ -1770,10 +1788,10 @@ expansion below.
 | `organization` | [`OrganizationSummary`](#organizationsummary) |
 | `subscription` | [`SubscriptionSummary`](#subscriptionsummary)? |
 | `installation` | [`InstallationSummary`](#installationsummary) |
-| `discord` | [`HubDiscordSummary`](#hubdiscordsummary)? |
-| `dayzServer` | [`DayZServerSummary`](#dayzserversummary)? |
-| `channelRoutes` | object - map of `route_key` -> [`ChannelRouteInfo`](#channelrouteinfo) |
-| `settings` | [`InstallationGeneralSettings`](#installationgeneralsettings) |
+| `discord` | [`HubDiscordSummary`](#hubdiscordsummary-embedded-in-hubsummarydiscord)? |
+| `dayzServer` | [`DayZServerSummary`](#dayzserversummary-embedded-in-installationsummarydayzserver)? |
+| `channelRoutes` | object - map of `route_key` -> [`ChannelRouteInfo`](#channelrouteinfo-value-type-of-channelroutesresponseroutes-and-autosetupchannelsresponseroutes) |
+| `settings` | [`InstallationGeneralSettings`](#installationgeneralsettings-requestresponse-of-2728-embedded-in-hubsummarysettings) |
 
 #### `InstallationGeneralSettings` (request/response of `#27`/`#28`, embedded in `HubSummary.settings`)
 | field | type |

@@ -1,7 +1,11 @@
 // Package permissions implements Champion's tenant administration permission model (Client Admin
 // Control Plane Phase 1, docs/CLIENT_ADMIN.md). This is a capability-based system with four fixed
 // levels (OWNER > ADMINISTRATOR > MODERATOR > GATEKEEPER), each level automatically holding every
-// capability the levels below it hold. A Client maps their own Discord roles to these levels
+// capability the levels below it hold. An ADMINISTRATOR holds every capability but one: it runs
+// the server exactly as the OWNER does, except wiping its storage (CapServerWipe, which destroys
+// every player's progress and is the OWNER's alone). The other things that stay the organization
+// owner's are changing the organization's plan/billing and granting the OWNER level itself
+// (CanGrant), neither of which is a capability here. A Client maps their own Discord roles to these levels
 // (internal/repository.PermissionsRepository); the level -> capability mapping itself is fixed by
 // Champion, not customer-configurable.
 //
@@ -66,22 +70,27 @@ func ParseLevel(raw string) (Level, bool) {
 type Capability string
 
 const (
-	CapPermissionsView    Capability = "PERMISSIONS_VIEW"
-	CapPermissionsManage  Capability = "PERMISSIONS_MANAGE"
-	CapEconomyView        Capability = "ECONOMY_VIEW"
-	CapWarningsView       Capability = "WARNINGS_VIEW"
-	CapWarningsClear      Capability = "WARNINGS_CLEAR"
-	CapFactionModerate    Capability = "FACTION_MODERATE"
-	CapFactionDissolve    Capability = "FACTION_DISSOLVE"
-	CapBountyManage       Capability = "BOUNTY_MANAGE"
-	CapPlayerStatsReset   Capability = "PLAYER_STATS_RESET"
-	CapServerStatsReset   Capability = "SERVER_STATS_RESET"
-	CapServerRestart      Capability = "SERVER_RESTART"
-	CapServerStop         Capability = "SERVER_STOP"
-	CapServerAutostart    Capability = "SERVER_AUTOSTART"
-	CapServerNameEdit     Capability = "SERVER_NAME_EDIT"
-	CapWhitelistManage    Capability = "WHITELIST_MANAGE"
-	CapBanlistManage      Capability = "BANLIST_MANAGE"
+	CapPermissionsView   Capability = "PERMISSIONS_VIEW"
+	CapPermissionsManage Capability = "PERMISSIONS_MANAGE"
+	CapEconomyView       Capability = "ECONOMY_VIEW"
+	CapWarningsView      Capability = "WARNINGS_VIEW"
+	CapWarningsClear     Capability = "WARNINGS_CLEAR"
+	CapFactionModerate   Capability = "FACTION_MODERATE"
+	CapFactionDissolve   Capability = "FACTION_DISSOLVE"
+	CapBountyManage      Capability = "BOUNTY_MANAGE"
+	CapPlayerStatsReset  Capability = "PLAYER_STATS_RESET"
+	CapServerStatsReset  Capability = "SERVER_STATS_RESET"
+	CapServerRestart     Capability = "SERVER_RESTART"
+	CapServerStop        Capability = "SERVER_STOP"
+	CapServerAutostart   Capability = "SERVER_AUTOSTART"
+	CapServerNameEdit    Capability = "SERVER_NAME_EDIT"
+	CapWhitelistManage   Capability = "WHITELIST_MANAGE"
+	CapBanlistManage     Capability = "BANLIST_MANAGE"
+	// The Nitrado priority list ("Prioritized players"): who skips the queue when the server is full.
+	CapPriorityManage Capability = "PRIORITY_MANAGE"
+	// Reading the game server's own log files (docs/SERVER_LOGS.md). Administrator and up: the files name
+	// every player, their platform ids and where they were.
+	CapServerLogsView     Capability = "SERVER_LOGS_VIEW"
 	CapPlayerLastOnline   Capability = "PLAYER_LAST_ONLINE_VIEW"
 	CapFeedLocationManage Capability = "FEED_LOCATION_MANAGE"
 	CapMaintenanceMode    Capability = "MAINTENANCE_MODE"
@@ -105,6 +114,46 @@ const (
 	// heatmap queries. Aggregate-only, no player identity in the response, so it sits at the same
 	// floor as the other "view aggregate operational data" capabilities.
 	CapHeatmapView Capability = "HEATMAP_VIEW"
+	// Opt-in feature settings (installation_feature_settings). Viewing them and reading the
+	// features' own admin data is a Moderator floor; changing hot-zone or fight-replay settings is
+	// an Administrator decision. Listing the server in the public cross-server network and
+	// changing the name feeds post under are Owner-only: both change what people outside the
+	// staff team see.
+	CapFeatureSettingsView   Capability = "FEATURE_SETTINGS_VIEW"
+	CapFeatureSettingsManage Capability = "FEATURE_SETTINGS_MANAGE"
+	CapNetworkManage         Capability = "NETWORK_MANAGE"
+	CapFeedIdentityManage    Capability = "FEED_IDENTITY_MANAGE"
+	// CapRetentionView is the retention dashboard (docs/RETENTION.md): aggregate activity plus a
+	// list of lapsed players by name, so it sits with the other player-data views.
+	CapRetentionView Capability = "RETENTION_VIEW"
+	// Client Hub growth tools (docs/CLIENT_HUB_GROWTH.md). Events: staff read, Administrators
+	// schedule. Invite attribution names who joined through whom: Administrator. Rewards pay
+	// Champion Points automatically, so changing the rules is Owner-only. Staff activity summarises
+	// what other staff did: Administrator. VIP tiers: staff read, Administrators assign.
+	CapEventsView        Capability = "EVENTS_VIEW"
+	CapEventsManage      Capability = "EVENTS_MANAGE"
+	CapInvitesView       Capability = "INVITES_VIEW"
+	CapRewardsView       Capability = "REWARDS_VIEW"
+	CapRewardsManage     Capability = "REWARDS_MANAGE"
+	CapStaffActivityView Capability = "STAFF_ACTIVITY_VIEW"
+	CapVIPView           Capability = "VIP_VIEW"
+	CapVIPManage         Capability = "VIP_MANAGE"
+	// The perk store (docs/PERK_STORE.md): viewing orders and handing out custom perks, and
+	// changing offers, the store switch and refunds (points move, so Administrator and up).
+	CapPerksView   Capability = "PERKS_VIEW"
+	CapPerksManage Capability = "PERKS_MANAGE"
+	// Map rotation with a player vote (docs/MAP_ROTATION.md). It changes which map the server
+	// loads by writing two files on the game server, so it is Administrator and up.
+	CapMapRotationManage Capability = "MAP_ROTATION_MANAGE"
+	// The owner-facing server status (docs/SERVER_STATUS.md): is the feed working, is Nitrado
+	// reachable, are positions arriving. Read-only facts about the installation's own server.
+	CapServerStatusView Capability = "SERVER_STATUS_VIEW"
+	// Nitrado's own game switches (docs/CLIENT_ADMIN.md "Game settings"): base and container damage, whitelist,
+	// mouse & keyboard, respawn rules, multi-account mitigation. Administrator and up. The storage
+	// wipe ("wipe_on_next_restart") destroys every player's and the world's data, so enabling it
+	// ALSO needs SERVER_WIPE, the one capability reserved for the OWNER level.
+	CapServerSettingsManage Capability = "SERVER_SETTINGS_MANAGE"
+	CapServerWipe           Capability = "SERVER_WIPE"
 )
 
 // requiredLevel is the default minimum Level each capability needs (task's "DEFAULT ROLE
@@ -121,13 +170,15 @@ var requiredLevel = map[Capability]Level{
 	CapFactionDissolve:        LevelAdministrator,
 	CapBountyManage:           LevelModerator,
 	CapPlayerStatsReset:       LevelAdministrator,
-	CapServerStatsReset:       LevelOwner,
+	CapServerStatsReset:       LevelAdministrator,
 	CapServerRestart:          LevelModerator,
 	CapServerStop:             LevelAdministrator,
 	CapServerAutostart:        LevelAdministrator,
 	CapServerNameEdit:         LevelAdministrator,
 	CapWhitelistManage:        LevelGatekeeper,
 	CapBanlistManage:          LevelModerator,
+	CapPriorityManage:         LevelAdministrator,
+	CapServerLogsView:         LevelAdministrator,
 	CapPlayerLastOnline:       LevelModerator,
 	CapFeedLocationManage:     LevelModerator,
 	CapMaintenanceMode:        LevelAdministrator,
@@ -137,9 +188,28 @@ var requiredLevel = map[Capability]Level{
 	CapZoneView:               LevelModerator,
 	CapZoneManage:             LevelAdministrator,
 	CapZoneIgnoreManage:       LevelAdministrator,
-	CapUAVManage:              LevelOwner,
+	CapUAVManage:              LevelAdministrator,
 	CapIntrusionAck:           LevelModerator,
 	CapHeatmapView:            LevelModerator,
+	CapFeatureSettingsView:    LevelModerator,
+	CapFeatureSettingsManage:  LevelAdministrator,
+	CapNetworkManage:          LevelAdministrator,
+	CapFeedIdentityManage:     LevelAdministrator,
+	CapRetentionView:          LevelAdministrator,
+	CapEventsView:             LevelModerator,
+	CapEventsManage:           LevelAdministrator,
+	CapInvitesView:            LevelAdministrator,
+	CapRewardsView:            LevelAdministrator,
+	CapRewardsManage:          LevelAdministrator,
+	CapStaffActivityView:      LevelAdministrator,
+	CapVIPView:                LevelModerator,
+	CapVIPManage:              LevelAdministrator,
+	CapPerksView:              LevelAdministrator,
+	CapPerksManage:            LevelAdministrator,
+	CapMapRotationManage:      LevelAdministrator,
+	CapServerStatusView:       LevelAdministrator,
+	CapServerSettingsManage:   LevelAdministrator,
+	CapServerWipe:             LevelOwner,
 }
 
 // Allows reports whether actorLevel satisfies capability's required minimum Level. An unknown

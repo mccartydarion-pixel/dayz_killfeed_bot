@@ -44,7 +44,7 @@ func newHeatmapBoardFixture(t *testing.T) (*routedFixture, *heatmapFake, *Heatma
 	f := newRoutedFixture(t)
 	hm := &heatmapFake{results: map[int64]*heatmap.Result{}}
 	clock := time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
-	b := NewHeatmapBoard(f.resolver, func(context.Context) (int64, []int64, error) { return f.guild, f.servers, nil }, f.panels, hm, 30*time.Minute)
+	b := NewHeatmapBoard(f.resolver, SingleGuild(func(context.Context) (int64, []int64, error) { return f.guild, f.servers, nil }), f.panels, hm, 30*time.Minute)
 	b.now = func() time.Time { return clock }
 	return f, hm, b, &clock
 }
@@ -69,8 +69,8 @@ func TestHeatmapSummaryUsesRealAggregatesOnly(t *testing.T) {
 		{CellX: 1, CellZ: 1, CenterX: 375, CenterZ: 375, Count: 1},
 	}}
 	text := embedText(BuildHeatmapSummaryEmbed([]heatmapSection{{Result: res}}, 24*time.Hour, 250, time.Now()))
-	for _, want := range []string{"PVP HEATMAP UPDATE", "Window: Last 24 Hours", "Type: PvP Kills", "Resolution: 250m", "Activity: 247 Events",
-		"`#1` X: 7,375 • Z: 9,625 — **32 Kills**", "`#2` X: 4,625 • Z: 3,375 — **21 Kills**", "`#3` X: 10,625 • Z: 3,375 — **17 Kills**", "CHAMPION • LIVE SERVER INTELLIGENCE"} {
+	for _, want := range []string{"PvP heatmap update", "Window: Last 24 hours", "Type: PvP kills", "Resolution: 250m", "Activity: 247 events",
+		"`#1` X: 7,375 • Z: 9,625 — **32 kills**", "`#2` X: 4,625 • Z: 3,375 — **21 kills**", "`#3` X: 10,625 • Z: 3,375 — **17 kills**", "Updates automatically"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q in:\n%s", want, text)
 		}
@@ -80,7 +80,7 @@ func TestHeatmapSummaryUsesRealAggregatesOnly(t *testing.T) {
 	}
 
 	empty := embedText(BuildHeatmapSummaryEmbed([]heatmapSection{{Result: &heatmap.Result{Cells: []heatmap.Cell{}}}}, 24*time.Hour, 250, time.Now()))
-	if !strings.Contains(empty, "Activity: 0 Events") || !strings.Contains(empty, "No PvP kills recorded") || strings.Contains(empty, "#1") {
+	if !strings.Contains(empty, "Activity: 0 events") || !strings.Contains(empty, "No PvP kills recorded") || strings.Contains(empty, "#1") {
 		t.Fatalf("zero activity must be reported as zero, never invented:\n%s", empty)
 	}
 }
@@ -121,7 +121,7 @@ func TestHeatmapBoardOneMessagePerChannelEditedInPlace(t *testing.T) {
 	}
 
 	// A restart (new board, same durable store) edits the same message.
-	b2 := NewHeatmapBoard(f.resolver, func(context.Context) (int64, []int64, error) { return f.guild, f.servers, nil }, NewRoutePanels(f.api, f.store), hm, 30*time.Minute)
+	b2 := NewHeatmapBoard(f.resolver, SingleGuild(func(context.Context) (int64, []int64, error) { return f.guild, f.servers, nil }), NewRoutePanels(f.api, f.store), hm, 30*time.Minute)
 	b2.SyncOnce(ctx)
 	if f.api.sendCount() != 1 || f.api.liveIn("chan-heat") != 1 {
 		t.Fatalf("restart must not duplicate the summary, live=%v", f.api.live())

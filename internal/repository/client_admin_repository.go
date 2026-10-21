@@ -24,6 +24,17 @@ type AdminScope struct {
 	ServerID       *int64
 }
 
+// StaffInstallation is an installation that has at least one Discord role mapped to a staff
+// level: a candidate for website access by people holding one of those roles.
+type StaffInstallation struct {
+	OrganizationID   int64
+	OrganizationName string
+	InstallationID   int64
+	GuildID          int64
+	DiscordGuildID   string
+	GuildName        string
+}
+
 type ClientAdminRepository struct{ pool *pgxpool.Pool }
 
 func NewClientAdminRepository(pool *pgxpool.Pool) *ClientAdminRepository {
@@ -124,18 +135,49 @@ RETURNING `+warningCols, guildID, warningID, clearedByUserID))
 
 // --- server display name / feed location / maintenance mode ----------------------------------
 
-// SetServerDisplayName updates a game server's Champion-facing display name (task's
-// "setServerName" - explicitly NOT a Nitrado server rename, just the name Champion shows in its
-// own feeds/panels).
-func (r *ClientAdminRepository) SetServerDisplayName(ctx context.Context, guildID, serverID int64, name string) error {
-	tag, err := r.pool.Exec(ctx, `UPDATE game_servers SET display_name=$1,updated_at=NOW() WHERE id=$2 AND guild_id=$3`, name, serverID, guildID)
-	if err != nil {
-		return err
+// ServerNameState is a server's name as Champion shows it, whether the owner typed it in Champion
+// (Custom) and the last name read from Nitrado ("" until the first read).
+type ServerNameState struct {
+	DisplayName  string
+	Custom       bool
+	ProviderName string
+}
+
+// ErrNoProviderName is returned by SetServerDisplayName when the owner cleared the name but
+// Champion has not read a Nitrado name to go back to.
+var ErrNoProviderName = errors.New("no Nitrado name is known for this server")
+
+// SetServerDisplayName sets the name Champion shows for a game server (never a Nitrado rename).
+//
+// A typed name is the owner's custom name: the Nitrado name sync leaves it alone. Typing exactly
+// the current Nitrado name, or clearing the name (""), gives the name back to the sync - the
+// server then shows its Nitrado name and follows it again (docs/SERVER_NAME_SYNC.md).
+func (r *ClientAdminRepository) SetServerDisplayName(ctx context.Context, guildID, serverID int64, name string) (ServerNameState, error) {
+	var st ServerNameState
+	var err error
+	if name == "" {
+		err = r.pool.QueryRow(ctx, `UPDATE game_servers SET display_name=provider_display_name, display_name_custom=FALSE, updated_at=NOW()
+WHERE id=$1 AND guild_id=$2 AND COALESCE(provider_display_name,'')<>''
+RETURNING COALESCE(display_name,''), display_name_custom, COALESCE(provider_display_name,'')`, serverID, guildID).Scan(&st.DisplayName, &st.Custom, &st.ProviderName)
+		if errors.Is(err, pgx.ErrNoRows) {
+			var exists bool
+			if err := r.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM game_servers WHERE id=$1 AND guild_id=$2)`, serverID, guildID).Scan(&exists); err != nil {
+				return ServerNameState{}, err
+			}
+			if exists {
+				return ServerNameState{}, ErrNoProviderName
+			}
+			return ServerNameState{}, ErrInstallationScopeNotFound
+		}
+		return st, err
 	}
-	if tag.RowsAffected() == 0 {
-		return ErrInstallationScopeNotFound
+	err = r.pool.QueryRow(ctx, `UPDATE game_servers SET display_name=$1, display_name_custom=($1::text IS DISTINCT FROM provider_display_name), updated_at=NOW()
+WHERE id=$2 AND guild_id=$3
+RETURNING COALESCE(display_name,''), display_name_custom, COALESCE(provider_display_name,'')`, name, serverID, guildID).Scan(&st.DisplayName, &st.Custom, &st.ProviderName)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ServerNameState{}, ErrInstallationScopeNotFound
 	}
-	return nil
+	return st, err
 }
 
 // SetFeedShowLocation toggles whether a channel route's embeds include location fields (task's
@@ -303,6 +345,44 @@ FROM factions f WHERE f.guild_id=$1 ORDER BY f.created_at DESC LIMIT $2`, guildI
 	for rows.Next() {
 		var s FactionSummary
 		if err := rows.Scan(&s.ID, &s.Name, &s.Tag, &s.OwnerPlayerID, &s.Active, &s.CreatedAt, &s.MemberCount); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+const staffInstallationQuery = `
+SELECT o.id, o.name, i.id, g.id, g.discord_guild_id, COALESCE(c.guild_name, '')
+FROM installations i
+JOIN organizations o ON o.id = i.organization_id
+JOIN discord_guild_connections c ON c.id = i.discord_guild_connection_id
+JOIN guilds g ON g.id = c.guild_id
+WHERE EXISTS (SELECT 1 FROM installation_role_permissions p WHERE p.installation_id = i.id)`
+
+// StaffInstallationsInGuilds lists the staff-mapped installations in the given Discord guilds.
+func (r *ClientAdminRepository) StaffInstallationsInGuilds(ctx context.Context, discordGuildIDs []string) ([]StaffInstallation, error) {
+	if len(discordGuildIDs) == 0 {
+		return nil, nil
+	}
+	return r.staffInstallations(ctx, staffInstallationQuery+` AND g.discord_guild_id = ANY($1) ORDER BY o.id, i.id`, discordGuildIDs)
+}
+
+// StaffInstallationsForOrganization lists the organization's staff-mapped installations.
+func (r *ClientAdminRepository) StaffInstallationsForOrganization(ctx context.Context, organizationID int64) ([]StaffInstallation, error) {
+	return r.staffInstallations(ctx, staffInstallationQuery+` AND o.id = $1 ORDER BY i.id`, organizationID)
+}
+
+func (r *ClientAdminRepository) staffInstallations(ctx context.Context, query string, arg any) ([]StaffInstallation, error) {
+	rows, err := r.pool.Query(ctx, query, arg)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []StaffInstallation
+	for rows.Next() {
+		var s StaffInstallation
+		if err := rows.Scan(&s.OrganizationID, &s.OrganizationName, &s.InstallationID, &s.GuildID, &s.DiscordGuildID, &s.GuildName); err != nil {
 			return nil, err
 		}
 		out = append(out, s)

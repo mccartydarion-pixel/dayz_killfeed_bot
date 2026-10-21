@@ -64,16 +64,17 @@ func bountyName(s string) string {
 //
 // Routing is per (guild row, server): an event scoped to a server goes to that
 // server's route; a claim (or streak placement) goes to the server the kill
-// happened on; a guild-wide event with no server goes to every server's route
-// (deduplicated by channel). No route, or a failed lookup, is a no-op (with a
-// throttled warning) - there is no fallback to any other channel.
+// happened on; a guild-wide event with no server goes to every route of the
+// event's own guild (deduplicated by channel) - never to another guild. No
+// route, or a failed lookup, is a no-op (with a throttled warning) - there is
+// no fallback to any other channel.
 //
 // Notify only appends to a bounded queue; route lookups and Discord I/O run on
 // Run's goroutine, one message (up to 10 cards) per channel per tick.
 type BountyTracker struct {
 	sender   HitSender
 	resolver RouteResolver
-	servers  GuildServersFunc
+	servers  AllGuildServersFunc
 
 	// Optional custom embed templates for the lifecycle cards (nil = default). The
 	// persistent BOUNTY board is NOT customizable: it is a multi-row view, not a
@@ -96,7 +97,7 @@ const (
 	bountyEmbedsPerMessage     = 10
 )
 
-func NewBountyTracker(sender HitSender, resolver RouteResolver, servers GuildServersFunc) *BountyTracker {
+func NewBountyTracker(sender HitSender, resolver RouteResolver, servers AllGuildServersFunc) *BountyTracker {
 	return &BountyTracker{sender: sender, resolver: resolver, servers: servers, lastWarn: make(map[string]time.Time)}
 }
 
@@ -236,8 +237,12 @@ func (t *BountyTracker) targetsFor(ctx context.Context, e bounties.Event) []chan
 		if t.servers == nil {
 			return nil
 		}
-		guildRowID, ids, err := t.servers(ctx)
-		if err != nil || guildRowID != e.GuildID {
+		guilds, err := t.servers(ctx)
+		if err != nil {
+			return nil
+		}
+		ids, ok := serversOfGuild(guilds, e.GuildID)
+		if !ok {
 			return nil
 		}
 		serverIDs = ids
@@ -278,7 +283,7 @@ func (t *BountyTracker) send(channel string, embeds []*discordgo.MessageEmbed) {
 	if t.sender == nil || len(embeds) == 0 {
 		return
 	}
-	_, err := t.sender.ChannelMessageSendComplex(channel, &discordgo.MessageSend{
+	_, err := deliverMessage(t.sender, "BOUNTY_TRACKING", channel, &discordgo.MessageSend{
 		Embeds:          embeds,
 		AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}}, // names never ping
 	})
@@ -302,42 +307,43 @@ func buildBountyEventEmbed(e bounties.Event) *discordgo.MessageEmbed {
 	target := bountyBold(e.Target)
 	reward := "Reward **" + formatAmount(e.Amount) + " pts**"
 	var b strings.Builder
-	color := presentation.EventGold
+	// Crimson while the hunt is on, gold when it pays out, neutral when it simply ends.
+	color := presentation.Crimson
 	switch e.Kind {
 	case bounties.EventPlaced:
-		fmt.Fprintf(&b, "🎯 **BOUNTY PLACED**\n%s\n%s", target, reward)
+		fmt.Fprintf(&b, "🎯 **Bounty placed**\n%s\n%s", target, reward)
 		if e.Automatic {
 			b.WriteString("\nSource: kill streak")
 		}
 	case bounties.EventIncreased:
-		fmt.Fprintf(&b, "📈 **BOUNTY INCREASED**\n%s\n%s", target, reward)
+		fmt.Fprintf(&b, "📈 **Bounty increased**\n%s\n%s", target, reward)
 		if e.Automatic {
 			b.WriteString("\nSource: kill streak")
 		}
 	case bounties.EventClaimed:
-		color = presentation.SuccessGreen
-		fmt.Fprintf(&b, "👑 **BOUNTY CLAIMED**\n%s eliminated %s\n%s", bountyBold(e.Hunter), target, reward)
+		color = presentation.Gold
+		fmt.Fprintf(&b, "👑 **Bounty claimed**\n%s eliminated %s\n%s", bountyBold(e.Hunter), target, reward)
 		if e.Count > 1 {
-			fmt.Fprintf(&b, " • %d bounties", e.Count)
+			b.WriteString(" • " + presentation.Plural(int64(e.Count), "bounty", "bounties"))
 		}
 		var how []string
 		if w := strings.TrimSpace(e.Weapon); w != "" {
 			how = append(how, "`"+strings.ReplaceAll(safeTrunc(sanitizeName(w), maxWeaponLen), "`", "'")+"`")
 		}
 		if e.Distance != nil {
-			how = append(how, fmt.Sprintf("%.0fm", *e.Distance))
+			how = append(how, presentation.FormatWholeDistance(*e.Distance))
 		}
 		if len(how) > 0 {
 			b.WriteString("\n" + strings.Join(how, " • "))
 		}
 	case bounties.EventExpired:
-		color = presentation.WarningAmber
-		fmt.Fprintf(&b, "⌛ **BOUNTY EXPIRED**\n%s\n%s", target, reward)
+		color = presentation.Neutral
+		fmt.Fprintf(&b, "⌛ **Bounty expired**\n%s\n%s", target, reward)
 	case bounties.EventCancelled:
-		color = presentation.WarningAmber
-		fmt.Fprintf(&b, "🚫 **BOUNTY CANCELLED**\n%s\n%s", target, reward)
+		color = presentation.Neutral
+		fmt.Fprintf(&b, "🚫 **Bounty cancelled**\n%s\n%s", target, reward)
 	default:
-		fmt.Fprintf(&b, "🎯 **BOUNTY**\n%s", target)
+		fmt.Fprintf(&b, "🎯 **Bounty**\n%s", target)
 	}
 	return &discordgo.MessageEmbed{Description: b.String(), Color: color}
 }
@@ -360,15 +366,16 @@ type BoardLister interface {
 // cancel edits or moves the same board instead of posting a new one.
 //
 // Like every other guild-level routed panel it resolves BOUNTY per (guild row,
-// server) for each active server of the guild and keeps one board per distinct
-// channel; a channel shared by several servers shows the union of their bounties
-// (plus guild-wide ones), a server's own channel shows only its own. A bounty
-// scoped to another server never appears. No route -> no board (a previously
-// routed board is retired); a failed lookup leaves existing boards alone. The
-// database is the source of truth throughout - the board is a view of it.
+// server) for each active server of every guild and keeps one board per
+// distinct channel of each guild; a channel shared by several servers shows
+// the union of their bounties (plus guild-wide ones), a server's own channel
+// shows only its own. A bounty scoped to another server never appears. No
+// route -> no board (a previously routed board is retired); a failed lookup
+// leaves existing boards alone. The database is the source of truth
+// throughout - the board is a view of it.
 type BountyBoard struct {
 	resolver RouteResolver
-	servers  GuildServersFunc
+	servers  AllGuildServersFunc
 	panels   *RoutePanels
 	lister   BoardLister
 	trigger  chan struct{}
@@ -377,10 +384,10 @@ type BountyBoard struct {
 const (
 	bountyBoardInterval = 30 * time.Second // also picks up expiries and out-of-process changes
 	bountyBoardLimit    = 10
-	bountyBoardFooter   = "CHAMPION • BOUNTY BOARD"
+	bountyBoardFooter   = presentation.FooterAutoRefresh
 )
 
-func NewBountyBoard(resolver RouteResolver, servers GuildServersFunc, panels *RoutePanels, lister BoardLister) *BountyBoard {
+func NewBountyBoard(resolver RouteResolver, servers AllGuildServersFunc, panels *RoutePanels, lister BoardLister) *BountyBoard {
 	return &BountyBoard{resolver: resolver, servers: servers, panels: panels, lister: lister, trigger: make(chan struct{}, 1)}
 }
 
@@ -419,7 +426,7 @@ func (b *BountyBoard) Run(ctx context.Context) {
 	}
 }
 
-// SyncOnce reconciles every board once. Never fatal; panic-safe.
+// SyncOnce reconciles every guild's boards once. Never fatal; panic-safe.
 func (b *BountyBoard) SyncOnce(ctx context.Context) {
 	if b == nil || b.resolver == nil || b.servers == nil || b.panels == nil || b.lister == nil {
 		return
@@ -429,15 +436,23 @@ func (b *BountyBoard) SyncOnce(ctx context.Context) {
 			slog.Error("component=bounty_board", "msg", "sync panic recovered", "panic", fmt.Sprint(r))
 		}
 	}()
-	guildRowID, serverIDs, err := b.servers(ctx)
+	guilds, err := b.servers(ctx)
 	if err != nil {
 		slog.Warn("component=bounty_board", "event", "bounty_board_servers_failed", "err", err.Error())
 		return
 	}
+	for _, g := range guilds {
+		b.syncGuild(ctx, g)
+	}
+}
+
+// syncGuild reconciles one guild's boards, one per distinct routed channel.
+func (b *BountyBoard) syncGuild(ctx context.Context, g GuildServers) {
+	guildRowID := g.GuildRowID
 	byChannel := map[string][]int64{}
 	var order []string
 	lookupErrs := 0
-	for _, serverID := range serverIDs {
+	for _, serverID := range g.ServerIDs {
 		ch, found, rerr := b.resolver.Resolve(ctx, guildRowID, serverID, routeKeyBounty)
 		if rerr != nil {
 			lookupErrs++
@@ -463,27 +478,27 @@ func (b *BountyBoard) SyncOnce(ctx context.Context) {
 		return PanelContent{Embed: buildBountyBoardEmbed(entries)}, nil
 	}
 	if _, err := b.panels.SyncEach(ctx, guildRowID, routeKeyBounty, order, contentFor, lookupErrs == 0); err != nil {
-		slog.Warn("component=bounty_board", "event", "bounty_board_sync_failed", "err", err.Error())
+		slog.Warn("component=bounty_board", "event", "bounty_board_sync_failed", "guild_id", guildRowID, "err", err.Error())
 	}
 }
 
 // buildBountyBoardEmbed renders the board. Names only - no internal ids.
 func buildBountyBoardEmbed(entries []repository.BoardEntry) *discordgo.MessageEmbed {
 	var b strings.Builder
-	b.WriteString("🎯 **ACTIVE BOUNTIES**\n")
+	b.WriteString("🎯 **Active bounties**\n")
 	if len(entries) == 0 {
 		b.WriteString("\n_No active bounties._")
 	}
 	for i, e := range entries {
 		b.WriteString("\n" + presentation.RankLine(i+1, e.TargetName, presentation.FormatPoints(e.Total)))
 		if e.Count > 1 {
-			fmt.Fprintf(&b, " (%d bounties)", e.Count)
+			b.WriteString(" (" + presentation.Plural(e.Count, "bounty", "bounties") + ")")
 		}
 	}
 	return &discordgo.MessageEmbed{
 		Description: b.String(),
-		Color:       presentation.EventGold,
-		Footer:      &discordgo.MessageEmbedFooter{Text: bountyBoardFooter},
+		Color:       presentation.Gold,
+		Footer:      presentation.Footer("", bountyBoardFooter),
 	}
 }
 

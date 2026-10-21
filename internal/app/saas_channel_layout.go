@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/discord"
@@ -15,8 +16,8 @@ import (
 // Champion Channel System V2 (docs/SAAS_API.md "Channel layout").
 //
 // A route key names a feature (KILLFEED); a destination is the Discord
-// channel one or more routes share (combat-feed carries KILLFEED and
-// PVE_FEED). FEATURE ROUTE != DISCORD CHANNEL.
+// channel one or more routes share. KILLFEED and PVE_FEED now have
+// separate destinations. FEATURE ROUTE != DISCORD CHANNEL.
 //
 // NO BLANK CHANNEL policy: auto-setup creates a destination only when a
 // route anchoring it has a working producer, and after setup every created
@@ -98,13 +99,18 @@ type championDestination struct {
 var championDestinations = []championDestination{
 	{
 		Key: "COMBAT_FEED", Label: "Combat Feed", Category: categoryLive, ChannelName: "🔫・combat-feed",
-		Routes: []string{"KILLFEED", "PVE_FEED"}, Anchors: []string{"KILLFEED", "PVE_FEED"},
-		Starter: &starterCard{"🔫 COMBAT FEED", "Champion combat events will appear here.\n\n**Includes**\n• Player eliminations\n• Deaths\n• PvE events"},
+		Routes: []string{"KILLFEED"}, Anchors: []string{"KILLFEED"},
+		Starter: &starterCard{"🔫 Combat feed", "Player-versus-player eliminations will appear here."},
+	},
+	{
+		Key: "PVE_FEED", Label: "PvE & Death Feed", Category: categoryLive, ChannelName: "☠️・pve-feed",
+		Routes: []string{"PVE_FEED"}, Anchors: []string{"PVE_FEED"},
+		Starter: &starterCard{"☠️ PvE and death feed", "Deaths, suicides, and supported PvE events will appear here."},
 	},
 	{
 		Key: "HITFEED", Label: "Hitfeed", Category: categoryLive, ChannelName: "🎯・hitfeed",
 		Routes: []string{"HITFEED"}, Anchors: []string{"HITFEED"},
-		Starter: &starterCard{"🎯 HITFEED", "Champion hit reports will appear here."},
+		Starter: &starterCard{"🎯 Hitfeed", "Champion hit reports will appear here."},
 	},
 	{
 		Key: "BOUNTIES", Label: "Bounties", Category: categoryLive, ChannelName: "💀・bounties",
@@ -113,7 +119,7 @@ var championDestinations = []championDestination{
 	{
 		Key: "CONNECTIONS", Label: "Connections", Category: categoryLive, ChannelName: "🟢・connections",
 		Routes: []string{"CONNECTIONS"}, Anchors: []string{"CONNECTIONS"},
-		Starter: &starterCard{"🟢 CONNECTIONS", "Player connection and disconnection activity will appear here."},
+		Starter: &starterCard{"🟢 Connections", "Player connection and disconnection activity will appear here."},
 	},
 	{
 		Key: "HEATMAPS", Label: "Heatmaps", Category: categoryLive, ChannelName: "🗺️・heatmaps",
@@ -124,8 +130,22 @@ var championDestinations = []championDestination{
 		Routes: []string{"SERVER_STATUS"}, Anchors: []string{"SERVER_STATUS"},
 	},
 	{
+		Key: "EVENTS", Label: "Events", Category: categoryHub, ChannelName: "🏁・events",
+		Routes: []string{"EVENTS"}, Anchors: []string{"EVENTS"},
+		Starter: &starterCard{"🏁 Server events", "Server events are announced here: an **upcoming** card when an event is scheduled, a **started** card when it goes live, and the **results** when it ends."},
+	},
+	{
 		Key: "LEADERBOARDS", Label: "Leaderboards", Category: categoryHub, ChannelName: "📊・leaderboards",
 		Routes: []string{"AUTO_LEADERBOARD", "STATS_LEADERBOARDS"}, Anchors: []string{"AUTO_LEADERBOARD", "STATS_LEADERBOARDS"},
+	},
+	{
+		Key: "SERVER_RANKS", Label: "Server Ranks", Category: categoryHub, ChannelName: "🎖️・server-ranks",
+		Routes: []string{"SERVER_RANKS"}, Anchors: []string{"SERVER_RANKS"},
+	},
+	{
+		Key: "FACTION_RECRUITMENT", Label: "Faction Recruitment", Category: categoryHub, ChannelName: "🛡️・faction-recruitment",
+		Routes: []string{"FACTION_RECRUITMENT"}, Anchors: []string{"FACTION_RECRUITMENT"},
+		Starter: &starterCard{"🛡️ Faction recruitment", "Faction leaders post their recruitment cards here from the Champion website. Press **Join** on an open faction to join instantly, or **Apply** on an invite-only faction to send the leader a request."},
 	},
 	{
 		Key: "PLAYER_LINK", Label: "Player Link", Category: categoryHub, ChannelName: "🔗・player-link",
@@ -134,10 +154,15 @@ var championDestinations = []championDestination{
 	{
 		Key: "ECONOMY", Label: "Economy", Category: categoryHub, ChannelName: "💰・economy",
 		Routes: []string{"ECONOMY", "SHOP"}, Anchors: []string{"ECONOMY", "SHOP"},
-		Starter: &starterCard{"💰 CHAMPION ECONOMY", "Champion Points and shop activity will appear here."},
+		Starter: &starterCard{"💰 Champion economy", "Champion Points and shop activity will appear here."},
 	},
 	{
-		Key: "ONLINE_COUNTER", Label: "Players Online", Category: categoryHub, ChannelName: discord.OnlineCounterName(0),
+		Key: "DONATION_PERKS", Label: "Donations & Perks", Category: categoryHub, ChannelName: "💎・donations-perks",
+		Routes: []string{"DONATION_PERKS"}, Anchors: []string{"DONATION_PERKS"},
+		Starter: &starterCard{"💎 Donations and perks", "Supporters who pick up a perk in the Player Hub are thanked here, with this month's top supporters."},
+	},
+	{
+		Key: "ONLINE_COUNTER", Label: "Players Online", Category: categoryHub, ChannelName: discord.OnlineCounterName(0, 0),
 		Routes: []string{"ONLINE_COUNTER"}, Anchors: []string{"ONLINE_COUNTER"}, Voice: true,
 	},
 	{
@@ -158,7 +183,7 @@ var championDestinations = []championDestination{
 	{
 		Key: "ADMIN_LOGS", Label: "Admin Logs", Category: categoryStaff, ChannelName: "🛡️・admin-logs",
 		Routes: []string{"ADMIN_LOGS", "ADMIN_ALERTS", "BUILD_FEED"}, Anchors: []string{"ADMIN_LOGS", "ADMIN_ALERTS", "BUILD_FEED"},
-		Starter: &starterCard{"🛡️ ADMIN LOGS", "Champion staff operations will appear here.\n\n**Includes**\n• ADM log health\n• Operational alerts\n• Build activity, when the server logs it"},
+		Starter: &starterCard{"🛡️ Admin logs", "Champion staff operations will appear here.\n\n**Includes**\n• ADM log health\n• Operational alerts\n• Build activity, when the server logs it"},
 	},
 }
 
@@ -173,31 +198,35 @@ type routeProducer struct {
 // channelRouteProducers downgrades these to BROKEN when the producer is not
 // instantiated in this process.
 var routeProducerAudit = map[string]routeProducer{
-	"KILLFEED":           {HealthActive, "KillfeedPublisher (per server worker)"},
-	"PVE_FEED":           {HealthActive, "PveFeedPublisher (per server worker)"},
-	"HITFEED":            {HealthActive, "HitfeedPublisher (per server worker)"},
-	"BOUNTY":             {HealthActive, "BountyBoard persistent board"},
-	"BOUNTY_TRACKING":    {HealthActive, "BountyTracker lifecycle feed"},
-	"CONNECTIONS":        {HealthActive, "ConnectionsPublisher (per server worker)"},
-	"HEATMAPS":           {HealthActive, "HeatmapBoard PvP heatmap summary (Phase 5 aggregates)"},
-	"SERVER_STATUS":      {HealthActive, "ServerStatusBoard persistent server status (per-server ADM state)"},
-	"ONLINE_COUNTER":     {HealthActive, "VoiceChannelCounter online-player count"},
-	"AUTO_LEADERBOARD":   {HealthActive, "LeaderboardScheduler persistent leaderboard"},
-	"STATS_LEADERBOARDS": {HealthActive, "RouteSyncer player stats panel"},
-	"LINK_GAMERTAG":      {HealthActive, "RouteSyncer link panel"},
-	"ECONOMY":            {HealthActive, "EconomyFeed"},
-	"SHOP":               {HealthActive, "shop purchases/refunds, published by EconomyFeed on the ECONOMY route"},
-	"ADMIN_LOGS":         {HealthActive, "ADMMonitorPublisher ADM health (per server worker)"},
-	"ADMIN_ALERTS":       {HealthActive, "AdminAlertPublisher: ADM stale, Nitrado download failures, zone/UAV/base radar intrusions"},
+	"KILLFEED":            {HealthActive, "KillfeedPublisher (per server worker)"},
+	"PVE_FEED":            {HealthActive, "PveFeedPublisher (per server worker)"},
+	"HITFEED":             {HealthActive, "HitfeedPublisher (per server worker)"},
+	"BOUNTY":              {HealthActive, "BountyBoard persistent board"},
+	"BOUNTY_TRACKING":     {HealthActive, "BountyTracker lifecycle feed"},
+	"CONNECTIONS":         {HealthActive, "ConnectionsPublisher (per server worker)"},
+	"HEATMAPS":            {HealthActive, "HeatmapBoard PvP heatmap summary (Phase 5 aggregates)"},
+	"SERVER_STATUS":       {HealthActive, "ServerStatusBoard persistent server status (per-server ADM state)"},
+	"EVENTS":              {HealthActive, "Event builder announcements (upcoming, started, results) via LiveCompletionPublisher"},
+	"FACTION_RECRUITMENT": {HealthActive, "FactionRecruitment cards published by faction leaders from the website"},
+	"ONLINE_COUNTER":      {HealthActive, "VoiceChannelCounter online-player count"},
+	"AUTO_LEADERBOARD":    {HealthActive, "LeaderboardScheduler persistent leaderboard"},
+	"SERVER_RANKS":        {HealthActive, "ServerRanksBoard persistent per-server panel"},
+	"STATS_LEADERBOARDS":  {HealthActive, "RouteSyncer player stats panel"},
+	"LINK_GAMERTAG":       {HealthActive, "RouteSyncer link panel"},
+	"ECONOMY":             {HealthActive, "EconomyFeed"},
+	"SHOP":                {HealthActive, "shop purchases/refunds, published by EconomyFeed on the ECONOMY route"},
+	"DONATION_PERKS":      {HealthActive, "perk store purchase shout-outs with the month's top supporters"},
+	"ADMIN_LOGS":          {HealthActive, "ADMMonitorPublisher ADM health (per server worker)"},
+	"ADMIN_ALERTS":        {HealthActive, "AdminAlertPublisher: ADM stale, Nitrado download failures, zone/UAV/base radar intrusions"},
 	// BUILD_FEED's publisher runs per server, but its source only exists when
 	// the server logs build actions; channelRouteProducers reports it ACTIVE
 	// once one has actually been parsed.
 	"BUILD_FEED": {HealthBlocked, detailSourceBlocked + ": no build/placement line parsed yet - enable adminLogPlacement / adminLogBuildActions in the server config"},
 	// Setup itself posts these fixed informational cards. These are NOT live
 	// detector, evidence, or Discord finding publishers.
-	"CASE_STATUS": {HealthActive, "Setup-managed informational card only; live diagnostics remain in the authorized dashboard"},
+	"CASE_STATUS":   {HealthActive, "Setup-managed informational card; staff-requested paid Watch observation digests (privacy re-verified before every send); live diagnostics remain in the authorized dashboard"},
 	"CASE_EVIDENCE": {HealthActive, "Setup-managed staff guidance only; no private evidence is published"},
-	"CASE_ALERTS": {HealthActive, "Setup-managed disabled-alert notice only; no C.A.S.E. finding publisher"},
+	"CASE_ALERTS":   {HealthActive, "Setup-managed disabled-alert notice only; no C.A.S.E. finding publisher"},
 }
 
 // championRouteKeys is the fixed set of valid route_key values - never an
@@ -240,6 +269,9 @@ func (a *App) channelRouteProducers() map[string]routeProducer {
 	if a.HeatmapBoard == nil {
 		broken("heatmap publisher is not running", "HEATMAPS")
 	}
+	if a.CompletionPublisher == nil || a.ChannelRoutes == nil {
+		broken("event announcements are not running", "EVENTS")
+	}
 	if a.AdminAlerts == nil {
 		broken("admin alert publisher is not running", "ADMIN_ALERTS")
 	}
@@ -255,11 +287,17 @@ func (a *App) channelRouteProducers() map[string]routeProducer {
 	if a.LeaderboardScheduler == nil {
 		broken("leaderboard scheduler is not running", "AUTO_LEADERBOARD")
 	}
+	if a.ServerRanksBoards == nil {
+		broken("server ranks board is not running", "SERVER_RANKS")
+	}
 	if a.RouteSyncer == nil {
 		broken("route panel syncer is not running", "STATS_LEADERBOARDS", "LINK_GAMERTAG")
 	}
 	if a.EconomyService == nil {
 		broken("economy service is not running", "ECONOMY", "SHOP")
+	}
+	if a.Perks == nil || a.ChannelRoutes == nil {
+		broken("the perk store is not running", "DONATION_PERKS")
 	}
 	return out
 }
@@ -395,6 +433,174 @@ type channelLayoutInput struct {
 	// SyncPanels posts/restores persistent panels for the just-written
 	// routes before verification. Optional.
 	SyncPanels func(ctx context.Context)
+	// Run is shared by every installation of one guild-wide /setup run. Optional.
+	Run *layoutRun
+}
+
+// layoutRun is shared by the installations of one guild-wide /setup run. They point at the same
+// Discord channels, so each channel's live checks (can the bot send, has it posted) run once per
+// run, and the guild's channel list and permissions are read once. With deferSync the caller
+// writes every installation's routes first (prepareChannelLayout), syncs the guild-wide panels
+// once, then finishes each installation; otherwise the sync runs once unless a later installation
+// changed its routes. One run used to repeat all of that per installation: 11 installations took
+// about two minutes.
+type layoutRun struct {
+	mu           sync.Mutex
+	checks       map[string]channelLiveCheck // by channel ID, taken after the latest panel sync
+	preSync      map[string]bool             // by channel ID: had bot content before the panel sync
+	panelsSynced bool
+	deferSync    bool // the caller syncs panels once after every installation's routes are written
+
+	channels     []discord.RawGuildChannel // the guild's channels, valid while haveChannels
+	haveChannels bool
+	perms        int64
+	havePerms    bool
+}
+
+type channelLiveCheck struct {
+	botCanSend bool
+	has        bool
+	err        error
+}
+
+func newLayoutRun() *layoutRun {
+	return &layoutRun{checks: map[string]channelLiveCheck{}, preSync: map[string]bool{}}
+}
+
+// guildChannels lists the guild's channels once per run (every call outside a run).
+func (r *layoutRun) guildChannels(list func() ([]discord.RawGuildChannel, error)) ([]discord.RawGuildChannel, error) {
+	if r != nil {
+		r.mu.Lock()
+		if r.haveChannels {
+			out := append([]discord.RawGuildChannel(nil), r.channels...)
+			r.mu.Unlock()
+			return out, nil
+		}
+		r.mu.Unlock()
+	}
+	channels, err := list()
+	if err == nil && r != nil {
+		r.mu.Lock()
+		r.channels, r.haveChannels = append([]discord.RawGuildChannel(nil), channels...), true
+		r.mu.Unlock()
+	}
+	return channels, err
+}
+
+// forgetChannels makes the next installation list the guild again: this one created a category or
+// channel, whose Discord-side details (privacy, parent) only a fresh listing has.
+func (r *layoutRun) forgetChannels() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.channels, r.haveChannels = nil, false
+	r.mu.Unlock()
+}
+
+// guildPermissions reads the bot's guild permissions once per run.
+func (r *layoutRun) guildPermissions(read func() (int64, error)) (int64, error) {
+	if r != nil {
+		r.mu.Lock()
+		if r.havePerms {
+			perms := r.perms
+			r.mu.Unlock()
+			return perms, nil
+		}
+		r.mu.Unlock()
+	}
+	perms, err := read()
+	if err == nil && r != nil {
+		r.mu.Lock()
+		r.perms, r.havePerms = perms, true
+		r.mu.Unlock()
+	}
+	return perms, err
+}
+
+func (r *layoutRun) preSyncHas(channelID string) (has, ok bool) {
+	if r == nil {
+		return false, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	has, ok = r.preSync[channelID]
+	return has, ok
+}
+
+func (r *layoutRun) storePreSync(channelID string, has bool) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.preSync[channelID] = has
+}
+
+func (r *layoutRun) syncDeferred() bool {
+	if r == nil {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.deferSync
+}
+
+func (r *layoutRun) cached(channelID string) (channelLiveCheck, bool) {
+	if r == nil {
+		return channelLiveCheck{}, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	c, ok := r.checks[channelID]
+	return c, ok
+}
+
+func (r *layoutRun) store(channelID string, c channelLiveCheck) {
+	if r == nil || c.err != nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.checks[channelID] = c
+}
+
+// needsPanelSync reports whether this installation must run the guild-wide panel sync: always
+// outside a shared run, otherwise only the first time or when this installation changed routes.
+func (r *layoutRun) needsPanelSync(changed bool) bool {
+	if r == nil {
+		return true
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return !r.panelsSynced || changed
+}
+
+// synced records a panel sync: checks taken before it may be stale (a panel may now exist).
+func (r *layoutRun) synced() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.panelsSynced = true
+	r.checks = map[string]channelLiveCheck{}
+}
+
+// forEachLimited runs fn(i) for i in [0, n) with at most layoutCheckConcurrency at once.
+func forEachLimited(n int, fn func(i int)) {
+	var wg sync.WaitGroup
+	slots := make(chan struct{}, layoutCheckConcurrency)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			slots <- struct{}{}
+			defer func() { <-slots }()
+			fn(i)
+		}(i)
+	}
+	wg.Wait()
 }
 
 // LayoutSummary condenses one setup/repair run for the website and /setup.
@@ -430,6 +636,27 @@ var errKillfeedUnavailable = fmt.Errorf("killfeed producer unavailable")
 // neither exists, so repeat runs never duplicate. Nothing is ever deleted in
 // Discord.
 func applyChannelLayout(ctx context.Context, d channelLayoutDiscord, w channelRouteWriter, in channelLayoutInput) (*channelLayoutResult, error) {
+	draft, err := prepareChannelLayout(ctx, d, w, in)
+	if err != nil {
+		return nil, err
+	}
+	return draft.finish(ctx, d), nil
+}
+
+// layoutDraft is one installation's layout after its channels and routes are written (steps
+// 1-3) and its panel channels read, waiting for the panel sync and verification.
+type layoutDraft struct {
+	in              channelLayoutInput
+	result          *channelLayoutResult
+	byID            map[string]discord.RawGuildChannel
+	finalChannel    map[string]bool
+	customerChannel map[string]bool
+	panelWasBlank   map[string]bool
+	changed         bool
+}
+
+// prepareChannelLayout runs applyChannelLayout up to the panel sync.
+func prepareChannelLayout(ctx context.Context, d channelLayoutDiscord, w channelRouteWriter, in channelLayoutInput) (*layoutDraft, error) {
 	plans := planChannelLayout(in.Producers)
 	for _, p := range plans {
 		if p.Destination.Key == "COMBAT_FEED" && p.Health != HealthActive {
@@ -437,7 +664,7 @@ func applyChannelLayout(ctx context.Context, d channelLayoutDiscord, w channelRo
 		}
 	}
 
-	channels, err := d.ListAllGuildChannels(in.GuildID)
+	channels, err := in.Run.guildChannels(func() ([]discord.RawGuildChannel, error) { return d.ListAllGuildChannels(in.GuildID) })
 	if err != nil {
 		return nil, fmt.Errorf("list guild channels: %w", err)
 	}
@@ -498,6 +725,12 @@ func applyChannelLayout(ctx context.Context, d channelLayoutDiscord, w channelRo
 		}
 	}
 	categories := map[string]discord.RawGuildChannel{}
+	createdAny := false // a category or channel this installation created
+	defer func() {
+		if createdAny {
+			in.Run.forgetChannels()
+		}
+	}()
 	for _, cat := range championCategories {
 		if !needed[cat.Key] {
 			continue
@@ -506,12 +739,16 @@ func applyChannelLayout(ctx context.Context, d channelLayoutDiscord, w channelRo
 		if err != nil {
 			return nil, fmt.Errorf("category %s: %w", cat.Key, err)
 		}
+		if _, known := byID[resolved.ID]; !known {
+			createdAny = true
+		}
 		categories[cat.Key] = resolved
 	}
 
 	// 3. Channels, then routes.
 	result := &channelLayoutResult{Categories: categories, Routes: map[string]ChannelRouteInfo{}}
 	sum := &result.Summary
+	changed := false // a channel created or a route written or removed by this installation
 	finalChannel := map[string]bool{}
 	customerChannel := map[string]bool{} // destination keys served by a customer channel
 	for _, p := range plans {
@@ -526,6 +763,7 @@ func applyChannelLayout(ctx context.Context, d channelLayoutDiscord, w channelRo
 					if err := w.DeleteRoute(ctx, in.OrganizationID, in.InstallationID, key); err != nil {
 						return nil, fmt.Errorf("unmap route %s: %w", key, err)
 					}
+					changed = true
 				}
 			}
 			if p.Health == HealthBlocked || p.Health == HealthDisabled || p.Health == HealthNotRequired {
@@ -556,6 +794,7 @@ func applyChannelLayout(ctx context.Context, d channelLayoutDiscord, w channelRo
 			}
 			report.Created = created
 			if created {
+				changed, createdAny = true, true
 				sum.Created = append(sum.Created, ch.Name)
 				channels = append(channels, ch)
 				byID[ch.ID] = ch
@@ -601,6 +840,7 @@ func applyChannelLayout(ctx context.Context, d channelLayoutDiscord, w channelRo
 				if err := w.UpsertRoute(ctx, in.OrganizationID, in.InstallationID, key, ch.ID, true); err != nil {
 					return nil, fmt.Errorf("map route %s: %w", key, err)
 				}
+				changed = true
 			}
 			result.Routes[key] = ChannelRouteInfo{ChannelID: ch.ID, ChannelName: ch.Name, ManagedByChampion: true}
 		}
@@ -614,60 +854,121 @@ func applyChannelLayout(ctx context.Context, d channelLayoutDiscord, w channelRo
 			if err := w.DeleteRoute(ctx, in.OrganizationID, in.InstallationID, key); err != nil {
 				return nil, fmt.Errorf("unmap route %s: %w", key, err)
 			}
+			changed = true
 		}
 	}
 
 	// 4. Persistent panels first, so verification sees them. Which panel
 	//    channels had no Champion content before is remembered, to report
-	//    what the sync repaired.
-	panelWasBlank := map[string]bool{}
-	for _, rep := range result.Destinations {
+	//    what the sync repaired. The reads run together, a few at a time.
+	var panelChecks []int
+	for i, rep := range result.Destinations {
 		dest := destinationByKey(rep.Key)
 		if rep.Checks != nil && dest.Starter == nil && !dest.Voice && !customerChannel[rep.Key] {
-			if has, err := d.ChannelHasBotMessage(rep.ChannelID); err == nil && !has {
-				panelWasBlank[rep.Key] = true
-			}
+			panelChecks = append(panelChecks, i)
 		}
 	}
-	if in.SyncPanels != nil {
+	panelHas := make([]bool, len(panelChecks))
+	panelErr := make([]error, len(panelChecks))
+	forEachLimited(len(panelChecks), func(j int) {
+		channelID := result.Destinations[panelChecks[j]].ChannelID
+		if c, ok := in.Run.cached(channelID); ok {
+			panelHas[j] = c.has
+			return
+		}
+		if has, ok := in.Run.preSyncHas(channelID); ok {
+			panelHas[j] = has
+			return
+		}
+		panelHas[j], panelErr[j] = d.ChannelHasBotMessage(channelID)
+		if panelErr[j] == nil {
+			in.Run.storePreSync(channelID, panelHas[j])
+		}
+	})
+	panelWasBlank := map[string]bool{}
+	for j, i := range panelChecks {
+		if panelErr[j] == nil && !panelHas[j] {
+			panelWasBlank[result.Destinations[i].Key] = true
+		}
+	}
+	return &layoutDraft{in: in, result: result, byID: byID, finalChannel: finalChannel, customerChannel: customerChannel, panelWasBlank: panelWasBlank, changed: changed}, nil
+}
+
+// finish syncs the panels (unless the run's caller syncs them once for every installation),
+// verifies each channel and lists the retirable ones.
+func (dr *layoutDraft) finish(ctx context.Context, d channelLayoutDiscord) *channelLayoutResult {
+	in, result := dr.in, dr.result
+	sum := &result.Summary
+	byID, finalChannel, customerChannel, panelWasBlank := dr.byID, dr.finalChannel, dr.customerChannel, dr.panelWasBlank
+	if in.SyncPanels != nil && !in.Run.syncDeferred() && in.Run.needsPanelSync(dr.changed) {
 		in.SyncPanels(ctx)
+		in.Run.synced()
 	}
 
 	// 5. Verify, posting one starter card where a Champion feed channel is
-	//    blank. Customer channels are only read.
+	//    blank. Customer channels are only read. The Discord reads run
+	//    together, a few at a time (once per channel per /setup run); the
+	//    results are applied in layout order.
+	var liveChecks []int
 	for i := range result.Destinations {
 		rep := &result.Destinations[i]
 		if rep.Checks == nil {
 			continue
 		}
-		dest := destinationByKey(rep.Key)
-		if dest.Voice {
+		if destinationByKey(rep.Key).Voice {
 			// A counter's content is its name, kept by the counter itself;
 			// the bot only needs the channel to exist.
 			rep.Checks.BotCanSend, rep.Checks.VisibleContent = rep.Checks.ChannelExists, rep.Checks.ChannelExists
-		} else {
-			v := d.Verify(in.GuildID, rep.ChannelID)
-			rep.Checks.BotCanSend = v.ChannelFound && len(v.Missing) == 0
-			has, err := d.ChannelHasBotMessage(rep.ChannelID)
-			if err != nil {
-				slog.Warn("component=saas_api", "msg", "read channel content failed", "destination", rep.Key, "err", err.Error())
+			continue
+		}
+		liveChecks = append(liveChecks, i)
+	}
+	live := make([]channelLiveCheck, len(liveChecks))
+	fromRun := make([]bool, len(liveChecks))
+	forEachLimited(len(liveChecks), func(j int) {
+		channelID := result.Destinations[liveChecks[j]].ChannelID
+		if c, ok := in.Run.cached(channelID); ok {
+			live[j], fromRun[j] = c, true
+			return
+		}
+		v := d.Verify(in.GuildID, channelID)
+		has, err := d.ChannelHasBotMessage(channelID)
+		live[j] = channelLiveCheck{botCanSend: v.ChannelFound && len(v.Missing) == 0, has: has, err: err}
+	})
+	for j, i := range liveChecks {
+		rep := &result.Destinations[i]
+		dest := destinationByKey(rep.Key)
+		c := live[j]
+		rep.Checks.BotCanSend = c.botCanSend
+		if c.err != nil {
+			slog.Warn("component=saas_api", "msg", "read channel content failed", "destination", rep.Key, "err", c.err.Error())
+		}
+		// A result shared from an earlier installation of this run already
+		// had its starter card sent if it needed one.
+		if !fromRun[j] && c.err == nil && !c.has && dest.Starter != nil && c.botCanSend && !customerChannel[rep.Key] {
+			if serr := d.SendChannelEmbed(rep.ChannelID, starterEmbed(*dest.Starter)); serr != nil {
+				slog.Warn("component=saas_api", "msg", "starter card failed", "destination", rep.Key, "err", serr.Error())
+			} else {
+				c.has, rep.StarterSent = true, true
+				sum.StartersSent = append(sum.StartersSent, rep.Key)
 			}
-			if err == nil && !has && dest.Starter != nil && rep.Checks.BotCanSend && !customerChannel[rep.Key] {
-				if serr := d.SendChannelEmbed(rep.ChannelID, starterEmbed(*dest.Starter)); serr != nil {
-					slog.Warn("component=saas_api", "msg", "starter card failed", "destination", rep.Key, "err", serr.Error())
-				} else {
-					has, rep.StarterSent = true, true
-					sum.StartersSent = append(sum.StartersSent, rep.Key)
-				}
-			}
-			rep.Checks.VisibleContent = has
-			if has && panelWasBlank[rep.Key] {
-				sum.PanelsRepaired = append(sum.PanelsRepaired, rep.Key)
-			}
+		}
+		if !fromRun[j] {
+			in.Run.store(rep.ChannelID, c)
+		}
+		rep.Checks.VisibleContent = c.has
+		if c.has && panelWasBlank[rep.Key] {
+			sum.PanelsRepaired = append(sum.PanelsRepaired, rep.Key)
+		}
+	}
+	for i := range result.Destinations {
+		rep := &result.Destinations[i]
+		if rep.Checks == nil {
+			continue
 		}
 		if !rep.Checks.passed() {
 			rep.Health = HealthBroken
-			rep.Detail = brokenDetail(*rep.Checks, dest.Starter == nil)
+			rep.Detail = brokenDetail(*rep.Checks, destinationByKey(rep.Key).Starter == nil)
 			sum.Broken = append(sum.Broken, rep.Key)
 		}
 	}
@@ -676,7 +977,7 @@ func applyChannelLayout(ctx context.Context, d channelLayoutDiscord, w channelRo
 	//    never deleted.
 	result.Retirable = retirableRouteChannels(in.Existing, finalChannel, byID)
 	sum.Retirable = len(result.Retirable)
-	return result, nil
+	return result
 }
 
 // retirableRouteChannels lists channels that Champion-managed routes used to
@@ -721,6 +1022,16 @@ func inspectChannelLayout(d channelLayoutDiscord, guildID string, existingRoutes
 		existing[r.RouteKey] = r
 	}
 	var out []ChannelDestinationReport
+	// A text destination's live checks (can the bot send, has it posted) cost several Discord
+	// requests each. They are collected here and run together below: one after another, a full
+	// layout took longer than the website waits for an answer.
+	type liveCheck struct {
+		index     int
+		channelID string
+		active    bool
+		plain     bool // no starter embed: decides the wording of a failed check
+	}
+	var live []liveCheck
 	for _, p := range planChannelLayout(producers) {
 		dest := p.Destination
 		rep := ChannelDestinationReport{Key: dest.Key, Label: dest.Label, Category: dest.Category, ChannelName: dest.ChannelName, Health: p.Health, Detail: p.Detail, Routes: p.Routes, Voice: dest.Voice}
@@ -754,10 +1065,9 @@ func inspectChannelLayout(d channelLayoutDiscord, guildID string, existingRoutes
 		if exists && dest.Voice {
 			rep.Checks.BotCanSend, rep.Checks.VisibleContent = true, true
 		} else if exists {
-			v := d.Verify(guildID, route.ChannelID)
-			rep.Checks.BotCanSend = v.ChannelFound && len(v.Missing) == 0
-			has, err := d.ChannelHasBotMessage(route.ChannelID)
-			rep.Checks.VisibleContent = err == nil && has
+			live = append(live, liveCheck{index: len(out), channelID: route.ChannelID, active: p.Health == HealthActive, plain: dest.Starter == nil})
+			out = append(out, rep)
+			continue
 		}
 		if p.Health == HealthActive && !rep.Checks.passed() {
 			rep.Health = HealthBroken
@@ -769,8 +1079,33 @@ func inspectChannelLayout(d channelLayoutDiscord, guildID string, existingRoutes
 		}
 		out = append(out, rep)
 	}
+
+	var wg sync.WaitGroup
+	slots := make(chan struct{}, layoutCheckConcurrency)
+	for _, check := range live {
+		wg.Add(1)
+		go func(check liveCheck) {
+			defer wg.Done()
+			slots <- struct{}{}
+			defer func() { <-slots }()
+			// Each goroutine writes only its own report, so no lock is needed.
+			rep := &out[check.index]
+			v := d.Verify(guildID, check.channelID)
+			rep.Checks.BotCanSend = v.ChannelFound && len(v.Missing) == 0
+			has, err := d.ChannelHasBotMessage(check.channelID)
+			rep.Checks.VisibleContent = err == nil && has
+			if check.active && !rep.Checks.passed() {
+				rep.Health = HealthBroken
+				rep.Detail = brokenDetail(*rep.Checks, check.plain)
+			}
+		}(check)
+	}
+	wg.Wait()
 	return out, nil
 }
+
+// layoutCheckConcurrency bounds how many destinations are checked against Discord at once.
+const layoutCheckConcurrency = 6
 
 func destinationByKey(key string) championDestination {
 	for _, d := range championDestinations {
@@ -850,10 +1185,10 @@ func resolveLayoutChannel(d channelLayoutDiscord, guildID string, channels []dis
 
 // matches reports whether ch is this destination's channel: a text channel
 // with its exact name, or - for the voice counter, whose name changes with
-// the count - a voice channel with the counter prefix.
+// the count - a voice channel whose name is a counter name in any format.
 func (d championDestination) matches(ch discord.RawGuildChannel) bool {
 	if d.Voice {
-		return ch.Type == discordgo.ChannelTypeGuildVoice && strings.HasPrefix(ch.Name, discord.ChannelOnlinePlayersPrefix)
+		return ch.Type == discordgo.ChannelTypeGuildVoice && discord.IsOnlineCounterName(ch.Name)
 	}
 	return ch.Type == discordgo.ChannelTypeGuildText && strings.EqualFold(ch.Name, d.ChannelName)
 }

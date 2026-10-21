@@ -58,17 +58,26 @@ type Subscription struct {
 	TrialConsumed                                        bool
 	// IntendedPlan is the plan key picked while trialing (Onboarding V2). It is a preference only:
 	// it never grants anything and is never copied into Plan - Stripe webhooks set Plan.
-	IntendedPlan         string
+	IntendedPlan string
+	// OwnerGrantUntil/OwnerGrantReason are set when the platform owner granted this plan without
+	// Stripe (Owner Hub "Grant plan"); the grant lapses at OwnerGrantUntil (nil = open-ended) and
+	// a Stripe checkout always supersedes it.
+	OwnerGrantUntil  *time.Time
+	OwnerGrantReason string
+	// PastDueSince is when the status first became PAST_DUE in the current failure (nil
+	// otherwise). The billing pause measures its grace from here, not from UpdatedAt or
+	// CurrentPeriodStart, which Stripe moves on every dunning retry.
+	PastDueSince         *time.Time
 	CreatedAt, UpdatedAt time.Time
 }
 
 const subscriptionCols = `id, organization_id, COALESCE(provider,''), COALESCE(provider_customer_id,''), COALESCE(provider_subscription_id,''), COALESCE(provider_price_id,''),
-plan, status, COALESCE(billing_interval,''), trial_ends_at, current_period_start, current_period_end, cancel_at_period_end, canceled_at, trial_consumed, COALESCE(intended_plan,''), created_at, updated_at`
+plan, status, COALESCE(billing_interval,''), trial_ends_at, current_period_start, current_period_end, cancel_at_period_end, canceled_at, trial_consumed, COALESCE(intended_plan,''), owner_grant_until, COALESCE(owner_grant_reason,''), past_due_since, created_at, updated_at`
 
 func scanSubscription(row pgx.Row) (Subscription, error) {
 	var s Subscription
 	err := row.Scan(&s.ID, &s.OrganizationID, &s.Provider, &s.ProviderCustomerID, &s.ProviderSubscriptionID, &s.ProviderPriceID,
-		&s.Plan, &s.Status, &s.BillingInterval, &s.TrialEndsAt, &s.CurrentPeriodStart, &s.CurrentPeriodEnd, &s.CancelAtPeriodEnd, &s.CanceledAt, &s.TrialConsumed, &s.IntendedPlan, &s.CreatedAt, &s.UpdatedAt)
+		&s.Plan, &s.Status, &s.BillingInterval, &s.TrialEndsAt, &s.CurrentPeriodStart, &s.CurrentPeriodEnd, &s.CancelAtPeriodEnd, &s.CanceledAt, &s.TrialConsumed, &s.IntendedPlan, &s.OwnerGrantUntil, &s.OwnerGrantReason, &s.PastDueSince, &s.CreatedAt, &s.UpdatedAt)
 	return s, err
 }
 
@@ -174,12 +183,23 @@ UPDATE subscriptions SET
   status=$7, billing_interval=CASE WHEN $8='' THEN billing_interval ELSE $8 END,
   trial_ends_at=$9, current_period_start=$10, current_period_end=$11, cancel_at_period_end=$12, canceled_at=$13,
   trial_consumed = trial_consumed OR ($4 <> ''),
+  past_due_since = CASE WHEN $7 = 'PAST_DUE' THEN COALESCE(past_due_since, NOW()) ELSE NULL END,
   updated_at=NOW()
 WHERE organization_id=$1
+  AND (COALESCE(provider_subscription_id,'') IN ('', $4)
+       OR $7 IN ('ACTIVE','PAST_DUE')
+       OR status NOT IN ('ACTIVE','PAST_DUE'))
 RETURNING ` + subscriptionCols
 	out, err := scanSubscription(r.pool.QueryRow(ctx, q, organizationID, s.Provider, s.ProviderCustomerID, s.ProviderSubscriptionID, s.ProviderPriceID,
 		s.Plan, s.Status, s.BillingInterval, s.TrialEndsAt, s.CurrentPeriodStart, s.CurrentPeriodEnd, s.CancelAtPeriodEnd, s.CanceledAt))
 	if errors.Is(err, pgx.ErrNoRows) {
+		// The row exists but holds a different, still-billing subscription and this event ends an
+		// older one (it ran out after the organization subscribed again): the older subscription's
+		// end must not take the live one's access away. The row is returned unchanged.
+		current, getErr := r.GetForOrganization(ctx, organizationID)
+		if getErr == nil && current != nil {
+			return current, nil
+		}
 		return nil, ErrSubscriptionNotFound
 	}
 	if err != nil {
@@ -202,6 +222,17 @@ ON CONFLICT ON CONSTRAINT uq_billing_webhook_events DO NOTHING RETURNING id`, pr
 		return false, fmt.Errorf("record webhook event: %w", err)
 	}
 	return true, nil
+}
+
+// ForgetWebhookEvent removes a processed-event marker written by RecordWebhookEventOnce. The
+// webhook handler calls it when handling the event failed, so Stripe's retry of the same event is
+// processed instead of being acknowledged as an already-handled duplicate. Deleting a marker that
+// does not exist is not an error.
+func (r *SubscriptionRepository) ForgetWebhookEvent(ctx context.Context, provider, eventID string) error {
+	if _, err := r.pool.Exec(ctx, `DELETE FROM billing_webhook_events WHERE provider=$1 AND event_id=$2`, provider, eventID); err != nil {
+		return fmt.Errorf("forget webhook event: %w", err)
+	}
+	return nil
 }
 
 // Normalized payment statuses (Champion Access Model Phase 2, Part D). Only PAID and FAILED are
@@ -254,7 +285,8 @@ type BillingTransactionFilter struct {
 }
 
 // ListBillingTransactions pages through billing_transactions, newest first, joined to the owning
-// organization's name for display. next is 0 on the last page.
+// organization's name for display. A payment whose organization was erased is kept and listed
+// with OrganizationID 0 and an empty name. next is 0 on the last page.
 func (r *SubscriptionRepository) ListBillingTransactions(ctx context.Context, f BillingTransactionFilter) (rows []BillingTransactionRow, next int64, err error) {
 	limit := f.Limit
 	if limit <= 0 {
@@ -283,9 +315,9 @@ func (r *SubscriptionRepository) ListBillingTransactions(ctx context.Context, f 
 		where = "WHERE " + strings.Join(conds, " AND ")
 	}
 	q := `
-SELECT t.id, t.organization_id, o.name, t.provider, t.provider_invoice_id, t.provider_subscription_id,
+SELECT t.id, COALESCE(t.organization_id, 0), COALESCE(o.name, ''), t.provider, t.provider_invoice_id, t.provider_subscription_id,
        t.status, t.amount_cents, t.currency, t.period_start, t.period_end, t.paid_at, t.failed_at, t.created_at
-FROM billing_transactions t JOIN organizations o ON o.id = t.organization_id
+FROM billing_transactions t LEFT JOIN organizations o ON o.id = t.organization_id
 ` + where + ` ORDER BY t.id DESC LIMIT ` + arg(limit+1)
 	pgRows, err := r.pool.Query(ctx, q, args...)
 	if err != nil {

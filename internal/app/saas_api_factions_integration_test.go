@@ -88,6 +88,7 @@ func newFactionWorld(t *testing.T) *factionWorld {
 	a.saasShopPurchaseLimiter = newSaaSRateLimiter(time.Hour, 100000)
 	a.saasShopAdminLimiter = newSaaSRateLimiter(time.Hour, 100000)
 	a.registerShopRoutes()
+	a.registerSecurityMarketplaceRoutes()
 	billingCatalog, err := billing.LoadCatalog(billingTestCatalogJSON)
 	if err != nil {
 		t.Fatal(err)
@@ -100,6 +101,11 @@ func newFactionWorld(t *testing.T) *factionWorld {
 	a.ActivityRepository = repository.NewActivityRepository(a.DB.Pool)
 	a.SaaSPlayer = repository.NewPlayerServerRepository(a.DB.Pool)
 	a.registerPlayerRoutes()
+	a.Lives = repository.NewLifeRepository(a.DB.Pool)
+	a.registerLifeRoutes()
+	a.Cards = repository.NewCardRepository(a.DB.Pool)
+	a.Seasons = repository.NewSeasonRepository(a.DB.Pool)
+	a.registerCardRoutes()
 	// Platform-admin wiring (Champion Access Model Phase 2 Owner routes): additive, harmless to
 	// every other factionWorld-based test unless one explicitly acts as adminFounderID.
 	a.adminSaaS = adminrepo.New(a.DB.Pool)
@@ -427,7 +433,9 @@ func TestFactionAPIRecruitmentAndUpdate(t *testing.T) {
 	if req["minimumHours"].(float64) != 100 || req["minimumAge"].(float64) != 18 || req["pvpRequired"] != true || req["micRequired"] != true || req["builderNeeded"] != false || req["customRequirements"] != "Be active" {
 		t.Fatalf("requirements: %v", req)
 	}
-	w.expect(w.do(http.MethodPost, w.path(w.a1, fp+"/applications"), p1, nil), http.StatusConflict, "apply to INVITE_ONLY")
+	// INVITE_ONLY takes applications (the leader decides); instant join does not.
+	w.expect(w.do(http.MethodPost, w.path(w.a1, fp+"/join"), p1, nil), http.StatusConflict, "join INVITE_ONLY")
+	w.expect(w.do(http.MethodPost, w.path(w.a1, fp+"/applications"), w.players[5], nil), http.StatusCreated, "apply to INVITE_ONLY")
 	for _, body := range []map[string]any{
 		{"logoKey": "wolf"}, {"logoUrl": "https://evil.example/x.png"}, {"logo": "https://evil.example/x.png"}, {"logoAssetId": 1},
 		{"installationId": 999}, {"organizationId": 1}, {"gameServerId": 1}, {"slug": "hijack"}, {"answers": map[string]any{"q": "a"}},

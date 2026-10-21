@@ -12,6 +12,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/yourname/dayz-killfeed/internal/heatmap"
+	"github.com/yourname/dayz-killfeed/internal/heatmapimage"
 	"github.com/yourname/dayz-killfeed/internal/presentation"
 )
 
@@ -31,30 +32,75 @@ const (
 	heatmapWindow             = heatmap.DefaultWindow
 	heatmapResolution         = heatmap.DefaultResolution
 	heatmapHotZones           = 3
-	heatmapTitle              = "🗺️ PVP HEATMAP UPDATE"
+	heatmapTitle              = "🗺️ PvP heatmap update"
 )
 
 // HeatmapBoard keeps one persistent PvP heatmap summary per HEATMAPS-routed
-// channel, edited in place (never a new message per refresh). The message
-// is recorded through RoutePanels, so a restart edits the same message
-// instead of posting another.
+// channel of every guild, edited in place (never a new message per refresh).
+// The message is recorded through RoutePanels, so a restart edits the same
+// message instead of posting another.
 type HeatmapBoard struct {
 	resolver    RouteResolver
-	servers     GuildServersFunc
+	servers     AllGuildServersFunc
 	panels      *RoutePanels
 	heatmaps    HeatmapQuerier
 	serverNames ServerNameFunc
+	tiles       *heatmapimage.Tiles
+	mapOf       MapOfServer
 	interval    time.Duration
 	now         func() time.Time
 	trigger     chan struct{}
 
-	mu          sync.Mutex // serializes the Run loop with setup-time SyncOnce
-	lastSig     string
-	lastRefresh time.Time
+	mu   sync.Mutex // serializes the Run loop with setup-time SyncOnce
+	last map[int64]heatmapRefresh
 }
 
-func NewHeatmapBoard(resolver RouteResolver, servers GuildServersFunc, panels *RoutePanels, heatmaps HeatmapQuerier, interval time.Duration) *HeatmapBoard {
-	return &HeatmapBoard{resolver: resolver, servers: servers, panels: panels, heatmaps: heatmaps, interval: interval, now: time.Now, trigger: make(chan struct{}, 1)}
+// heatmapRefresh is what one guild's board was last refreshed for and when.
+type heatmapRefresh struct {
+	sig string
+	at  time.Time
+}
+
+func NewHeatmapBoard(resolver RouteResolver, servers AllGuildServersFunc, panels *RoutePanels, heatmaps HeatmapQuerier, interval time.Duration) *HeatmapBoard {
+	return &HeatmapBoard{resolver: resolver, servers: servers, panels: panels, heatmaps: heatmaps, interval: interval, now: time.Now, trigger: make(chan struct{}, 1), last: map[int64]heatmapRefresh{}}
+}
+
+// MapOfServer returns a server's DayZ map key and edge in metres (ok=false when unknown).
+type MapOfServer func(ctx context.Context, serverID int64) (mapKey string, sizeMetres float64, ok bool)
+
+// SetPicture turns on the map picture (docs/HEATMAPS.md "Picture"): tiles draws the background
+// and mapOf says which map each server runs.
+func (b *HeatmapBoard) SetPicture(tiles *heatmapimage.Tiles, mapOf MapOfServer) {
+	if b != nil {
+		b.tiles, b.mapOf = tiles, mapOf
+	}
+}
+
+const heatmapPictureName = "heatmap.png"
+
+// attachPicture draws the first server's cells on its map and shows the picture in the card. A
+// failure leaves the card as text.
+func (b *HeatmapBoard) attachPicture(ctx context.Context, content *PanelContent, serverIDs []int64, sections []heatmapSection) {
+	if b.mapOf == nil || len(serverIDs) == 0 || len(sections) == 0 || content.Embed == nil {
+		return
+	}
+	mapKey, size, ok := b.mapOf(ctx, serverIDs[0])
+	if !ok {
+		return
+	}
+	var points []heatmapimage.Point
+	if r := sections[0].Result; r != nil {
+		for _, c := range r.Cells {
+			points = append(points, heatmapimage.Point{X: c.CenterX, Z: c.CenterZ, Count: c.Count})
+		}
+	}
+	png, err := heatmapimage.Render(b.tiles.Background(ctx, mapKey), size, points)
+	if err != nil {
+		slog.Warn("component=heatmap_board", "event", "heatmap_picture_failed", "err", err.Error())
+		return
+	}
+	content.Files = []PanelFile{{Name: heatmapPictureName, ContentType: "image/png", Data: png}}
+	content.Embed.Image = &discordgo.MessageEmbedImage{URL: "attachment://" + heatmapPictureName}
 }
 
 // SetServerNames labels each server's section when several servers share
@@ -97,7 +143,7 @@ func (b *HeatmapBoard) Run(ctx context.Context) {
 	}
 }
 
-// SyncOnce refreshes every routed channel now.
+// SyncOnce refreshes every routed channel of every guild now.
 func (b *HeatmapBoard) SyncOnce(ctx context.Context) { b.sync(ctx, true) }
 
 func (b *HeatmapBoard) sync(ctx context.Context, force bool) {
@@ -111,15 +157,23 @@ func (b *HeatmapBoard) sync(ctx context.Context, force bool) {
 			slog.Error("component=heatmap_board", "msg", "sync panic recovered", "panic", fmt.Sprint(r))
 		}
 	}()
-	guildRowID, serverIDs, err := b.servers(ctx)
+	guilds, err := b.servers(ctx)
 	if err != nil {
 		slog.Warn("component=heatmap_board", "event", "heatmap_board_servers_failed", "err", err.Error())
 		return
 	}
+	for _, g := range guilds {
+		b.syncGuild(ctx, g, force)
+	}
+}
+
+// syncGuild refreshes one guild's routed channels (when due, unless forced).
+func (b *HeatmapBoard) syncGuild(ctx context.Context, g GuildServers, force bool) {
+	guildRowID := g.GuildRowID
 	byChannel := map[string][]int64{}
 	var order []string
 	lookupErrs := 0
-	for _, serverID := range serverIDs {
+	for _, serverID := range g.ServerIDs {
 		ch, found, rerr := b.resolver.Resolve(ctx, guildRowID, serverID, routeKeyHeatmaps)
 		if rerr != nil {
 			lookupErrs++
@@ -140,7 +194,7 @@ func (b *HeatmapBoard) sync(ctx context.Context, force bool) {
 
 	now := b.now()
 	sig := routeSignature(byChannel, order)
-	if !force && sig == b.lastSig && now.Sub(b.lastRefresh) < b.interval {
+	if last := b.last[guildRowID]; !force && sig == last.sig && now.Sub(last.at) < b.interval {
 		return
 	}
 
@@ -159,13 +213,15 @@ func (b *HeatmapBoard) sync(ctx context.Context, force bool) {
 			}
 			sections = append(sections, heatmapSection{ServerName: name, Result: res})
 		}
-		return PanelContent{Embed: BuildHeatmapSummaryEmbed(sections, heatmapWindow, heatmapResolution, to)}, nil
+		content := PanelContent{Embed: BuildHeatmapSummaryEmbed(sections, heatmapWindow, heatmapResolution, to)}
+		b.attachPicture(ctx, &content, byChannel[channelID], sections)
+		return content, nil
 	}
 	if _, err := b.panels.SyncEach(ctx, guildRowID, routeKeyHeatmaps, order, contentFor, lookupErrs == 0); err != nil {
-		slog.Warn("component=heatmap_board", "event", "heatmap_board_sync_failed", "err", err.Error())
+		slog.Warn("component=heatmap_board", "event", "heatmap_board_sync_failed", "guild_id", guildRowID, "err", err.Error())
 		return
 	}
-	b.lastSig, b.lastRefresh = sig, now
+	b.last[guildRowID] = heatmapRefresh{sig: sig, at: now}
 }
 
 func routeSignature(byChannel map[string][]int64, order []string) string {
@@ -191,8 +247,8 @@ func BuildHeatmapSummaryEmbed(sections []heatmapSection, window time.Duration, r
 	embed := presentation.NewChampionEmbed(heatmapTitle, presentation.CombatRed)
 	embed.Fields = []*discordgo.MessageEmbedField{
 		{Name: "Window", Value: heatmapWindowLabel(window), Inline: true},
-		{Name: "Type", Value: "PvP Kills", Inline: true},
-		{Name: "Resolution", Value: fmt.Sprintf("%dm", resolution), Inline: true},
+		{Name: "Type", Value: "PvP kills", Inline: true},
+		{Name: "Resolution", Value: presentation.FormatWholeDistance(float64(resolution)), Inline: true},
 	}
 	multi := len(sections) > 1
 	for _, s := range sections {
@@ -206,11 +262,11 @@ func BuildHeatmapSummaryEmbed(sections []heatmapSection, window time.Duration, r
 			prefix = presentation.SafeName(s.ServerName, 60) + " • "
 		}
 		embed.Fields = append(embed.Fields,
-			&discordgo.MessageEmbedField{Name: prefix + "Activity", Value: presentation.Plural(total, "Event", "Events")},
-			&discordgo.MessageEmbedField{Name: prefix + "Hot Zones", Value: hotZonesText(cells)},
+			&discordgo.MessageEmbedField{Name: prefix + "Activity", Value: presentation.Plural(total, "event", "events")},
+			&discordgo.MessageEmbedField{Name: prefix + "Hot zones", Value: hotZonesText(cells)},
 		)
 	}
-	embed.Footer = &discordgo.MessageEmbedFooter{Text: presentation.FooterLiveIntel}
+	embed.Footer = presentation.Footer("", presentation.FooterAutoRefresh)
 	presentation.StampEmbed(embed, at)
 	return embed
 }
@@ -239,14 +295,14 @@ func hotZonesText(cells []heatmap.Cell) string {
 		lines = append(lines, fmt.Sprintf("`#%d` X: %s • Z: %s — **%s**", i+1,
 			presentation.FormatThousands(int64(math.Round(c.CenterX))),
 			presentation.FormatThousands(int64(math.Round(c.CenterZ))),
-			presentation.Plural(c.Count, "Kill", "Kills")))
+			presentation.Plural(c.Count, "kill", "kills")))
 	}
 	return strings.Join(lines, "\n")
 }
 
 func heatmapWindowLabel(d time.Duration) string {
 	if h := int(d.Hours()); h > 0 && d%time.Hour == 0 {
-		return fmt.Sprintf("Last %d %s", h, map[bool]string{true: "Hour", false: "Hours"}[h == 1])
+		return "Last " + presentation.Plural(int64(h), "hour", "hours")
 	}
 	return "Last " + d.String()
 }

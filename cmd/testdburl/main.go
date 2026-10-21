@@ -1,3 +1,7 @@
+// Command testdburl builds a test-database URL from Railway's variables (PGUSER, PGPASSWORD,
+// PGDATABASE, RAILWAY_TCP_PROXY_DOMAIN, RAILWAY_TCP_PROXY_PORT), refuses to continue when it is the
+// same database as DATABASE_URL, and then runs the integration tests against it. The integration
+// tests migrate and write that database, so it must be disposable. See docs/TOOLS.md.
 package main
 
 import (

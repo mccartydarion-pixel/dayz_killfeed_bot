@@ -23,9 +23,18 @@ import (
 
 const (
 	liveSyncNoiseRetention = 3 * 24 * time.Hour
-	liveSyncRetention      = 30 * 24 * time.Hour
-	liveSyncSweepInterval  = time.Hour
+	// liveSyncRetentionDays is the default window for every other record. Nothing reads a record
+	// older than a few days (the diagnostics API shows the newest records and the last six
+	// hours), and live_sync_records is the highest-volume table there is - every RPT, script,
+	// crash and restart line. CHAMPION_RETENTION_DAYS_LIVE_SYNC_RECORDS overrides it.
+	liveSyncRetentionDays = defaultDiagnosticsRetentionDays
+	liveSyncSweepInterval = time.Hour
 )
+
+// liveSyncRetention is the configured window for non-noise records.
+func liveSyncRetention() time.Duration {
+	return time.Duration(retentionDays("live_sync_records", liveSyncRetentionDays)) * 24 * time.Hour
+}
 
 func liveSyncWatchersEnabled() bool {
 	return !strings.EqualFold(strings.TrimSpace(os.Getenv("LIVE_SYNC_WATCHERS")), "off")
@@ -64,6 +73,7 @@ func (a *App) startLiveSync(ctx context.Context, row repository.GameServer, clie
 				slog.Error("component=livesync", "event", "supervisor_panic", "server_id", row.ID, "panic", fmt.Sprint(r))
 			}
 		}()
+		go a.runServerDownWatch(ctx, row, sup)
 		sup.Run(ctx)
 	}()
 	return done
@@ -78,7 +88,7 @@ func (a *App) runLiveSyncRetention(ctx context.Context) {
 		now := time.Now()
 		var total int64
 		for i := 0; i < 200; i++ {
-			n, err := a.LiveSync.PruneRecords(ctx, now.Add(-liveSyncNoiseRetention), now.Add(-liveSyncRetention), 5000)
+			n, err := a.LiveSync.PruneRecords(ctx, now.Add(-liveSyncNoiseRetention), now.Add(-liveSyncRetention()), 5000)
 			if err != nil {
 				slog.Warn("component=livesync", "event", "retention_sweep_failed", "err", err.Error())
 				return
@@ -194,7 +204,7 @@ func (a *App) handleAdminLiveSync(w http.ResponseWriter, r *http.Request, _ admi
 		out = append(out, dto)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ServerID < out[j].ServerID })
-	writeSaaSJSON(w, http.StatusOK, map[string]any{"generatedAt": time.Now().UTC().Format(time.RFC3339), "enabled": liveSyncWatchersEnabled(), "servers": out})
+	a.writeAdminJSON(w, http.StatusOK, map[string]any{"generatedAt": time.Now().UTC().Format(time.RFC3339), "enabled": liveSyncWatchersEnabled(), "servers": out})
 }
 
 // admSourceComponents classifies every running ADM engine's source health (Live Sync phase 2.1):

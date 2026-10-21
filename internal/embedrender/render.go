@@ -143,9 +143,32 @@ func ExpandNewlines(s string) string {
 	return b.String()
 }
 
+// maxTitleLines is how many lines a title keeps; further breaks fold into spaces.
+const maxTitleLines = 3
+
+// titleLines keeps the line breaks of a title (Discord shows them), tidied: spaces inside a
+// line collapse, blank lines are dropped, and lines past maxTitleLines join the last one.
+func titleLines(s string) string {
+	if !strings.Contains(s, "\n") {
+		return s
+	}
+	var lines []string
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.Join(strings.Fields(line), " ")
+		if line == "" {
+			continue
+		}
+		if len(lines) == maxTitleLines {
+			lines[maxTitleLines-1] += " " + line
+			continue
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
 // singleLine folds line breaks into spaces for sections Discord shows on one line
-// (title, author name, field name), so they stay consistent however the template
-// was typed.
+// (author name, field name), so they stay consistent however the template was typed.
 func singleLine(s string) string {
 	if !strings.Contains(s, "\n") {
 		return s
@@ -303,7 +326,7 @@ func render(cfg embedtemplates.Config, routeKey string, vars map[string]string, 
 		if err != nil {
 			return nil, err
 		}
-		emb.Title = truncate(singleLine(s), MaxTitle)
+		emb.Title = truncate(titleLines(s), MaxTitle)
 	}
 	if cfg.Description.Enabled {
 		s, err := substituteLines(cfg.Description.Template, vars, approved, rep)

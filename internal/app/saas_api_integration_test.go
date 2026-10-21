@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -35,6 +36,7 @@ type fakeDiscordVerifier struct {
 	// verifyCalls counts live Verify calls, so tests can assert the
 	// zero-network-call eligible-guilds path never invokes it (section 7).
 	verifyCalls int
+	verifyMu    sync.Mutex
 
 	// channels backs ListGuildChannels/ListAllGuildChannels/Create* - an
 	// in-memory per-guild channel store standing in for a real Discord
@@ -50,6 +52,8 @@ type fakeDiscordVerifier struct {
 	// this map resolves to an empty role list (never an error), matching "this person is in the
 	// guild but holds no mapped role" rather than "lookup failed".
 	memberRoles map[string]map[string][]string
+	// guildRoles backs GuildRoleList.
+	guildRoles map[string][]discordRoleFixture
 	// botPosts counts bot messages per channel: starter cards sent through
 	// SendChannelEmbed, plus panels a test marks as posted.
 	botPosts map[string]int
@@ -67,13 +71,13 @@ type fakeSentMessage struct {
 }
 
 type fakeGuildChannel struct {
-	ID       string
-	Name     string
-	Type     discordgo.ChannelType
-	ParentID string
-	Private bool
+	ID                 string
+	Name               string
+	Type               discordgo.ChannelType
+	ParentID           string
+	Private            bool
 	PublicViewOverride bool
-	Position int
+	Position           int
 }
 
 // BotID returns a fixed fake bot user ID - only used for diagnostic log
@@ -88,7 +92,10 @@ func (f *fakeDiscordVerifier) HasGuildCached(guildID string) bool {
 }
 
 func (f *fakeDiscordVerifier) Verify(guildID, channelID string) discord.Verification {
+	// The layout status check verifies several channels at once.
+	f.verifyMu.Lock()
 	f.verifyCalls++
+	f.verifyMu.Unlock()
 	v := discord.Verification{GuildFound: f.guildFound[guildID]}
 	if channelID == "" {
 		return v
@@ -133,6 +140,22 @@ func (f *fakeDiscordVerifier) GuildPermissions(guildID string) (int64, error) {
 		return perms, nil
 	}
 	return discordgo.PermissionAll, nil
+}
+
+type discordRoleFixture struct {
+	ID, Name    string
+	Position    int
+	Managed     bool
+	Permissions int64
+}
+
+// GuildRoleList returns the configured roles of guildID.
+func (f *fakeDiscordVerifier) GuildRoleList(guildID string) ([]discord.GuildRoleInfo, error) {
+	out := []discord.GuildRoleInfo{}
+	for _, r := range f.guildRoles[guildID] {
+		out = append(out, discord.GuildRoleInfo{ID: r.ID, Name: r.Name, Position: r.Position, Managed: r.Managed, Permissions: r.Permissions})
+	}
+	return out, nil
 }
 
 // MemberRoles returns the configured role list for (guildID, userID), or an empty (non-nil) list
@@ -1429,13 +1452,13 @@ var championAllRouteKeys = []string{
 	"KILLFEED", "PVE_FEED", "LINK_GAMERTAG", "STATS_LEADERBOARDS", "AUTO_LEADERBOARD",
 	"HITFEED", "BOUNTY", "BOUNTY_TRACKING", "HEATMAPS", "ECONOMY", "SHOP",
 	"CONNECTIONS", "BUILD_FEED", "ADMIN_ALERTS", "ADMIN_LOGS", "SERVER_STATUS", "ONLINE_COUNTER",
-	"CASE_STATUS", "CASE_EVIDENCE", "CASE_ALERTS",
+	"CASE_STATUS", "CASE_EVIDENCE", "CASE_ALERTS", "FACTION_RECRUITMENT", "EVENTS",
 }
 
 // championActiveDestinationCount is how many channels auto-setup creates
 // with the audited producers (every destination: ten text channels and the
 // online-players voice counter).
-const championActiveDestinationCount = 14
+const championActiveDestinationCount = 17
 
 func listChannelRoutes(t *testing.T, a *App, orgID, installationID int64, actingDiscordID string) *httptest.ResponseRecorder {
 	t.Helper()
@@ -1540,7 +1563,7 @@ func TestAutoSetupChannelsIsIdempotent(t *testing.T) {
 		}
 	}
 	if total != championActiveDestinationCount {
-		t.Fatalf("expected exactly %d text channels after two auto-setup calls, got %d", championActiveDestinationCount, total)
+		t.Fatalf("expected exactly %d text/voice channels after two auto-setup calls, got %d", championActiveDestinationCount, total)
 	}
 }
 

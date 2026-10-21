@@ -139,6 +139,7 @@ interface FactionLeaderboardEntry {
   hasTrackedActivity: boolean;           // false => show "No tracked activity"
   stats: {                               // every metric, named like the faction profile's summary
     kills: number; deaths: number; kdRatio: number; headshots: number; longshots: number;
+    pvpDeaths: number; pveDeaths: number; pvpKdRatio: number;   // the deaths split and kills per PvP death; not a ranking metric
     bestKillStreak: number; bountiesClaimed: number; bountyValueClaimed: number; achievementsUnlocked: number;
   };
 }

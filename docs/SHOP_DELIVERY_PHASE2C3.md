@@ -1,5 +1,7 @@
 # Champion Shop Phase 2C.3 — Durable Delivery Attempt Ledger (migration 0054)
 
+> **Status now:** this was the description of the change that added the ledger. It is merged: migration `0054_shop_delivery_attempts` is in the registry (`internal/database/migrations.go`), and the ledger is used by the canary operator API and by the automatic delivery worker (`docs/SHOP_DELIVERY_WORKER.md`). The "does not do" list and section 7 describe the position at the time.
+
 This PR adds the durable ledger for automatic console delivery attempts and integrates it into the existing Shop refund and fulfilment paths.
 
 **What it does not do:**

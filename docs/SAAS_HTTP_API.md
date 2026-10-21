@@ -41,6 +41,38 @@ Every request goes through, in order:
 `POST /api/saas/users/sync` is the one exception to step 2 - it establishes
 the acting user's row, so it only requires service auth.
 
+### Signed identity
+
+The bearer secret proves the caller is the website; it does not prove WHO is
+acting. So the identity headers (`X-Champion-Acting-User`,
+`X-Champion-Impersonator`, `X-Champion-Admin`) are bound to the request with an
+HMAC. Every `/api/saas/*` and `/api/admin/*` route (and `/api/runtime/status`)
+checks it, centrally, right after the bearer token:
+
+```
+X-Champion-Timestamp: <unix seconds>
+X-Champion-Signature: v1=<lowercase hex HMAC-SHA256(key, canonical)>
+```
+
+* **key**: `WEBSITE_API_SECRET` (the same secret as the bearer token).
+* **canonical**: these seven lines joined with `\n`, no trailing newline:
+  `v1`, the timestamp exactly as sent, the HTTP method uppercased, the URL path
+  (no query string), then the values of `X-Champion-Acting-User`,
+  `X-Champion-Impersonator` and `X-Champion-Admin` (`""` for an absent header).
+* The timestamp must be within ±300 seconds of the server clock.
+
+| Request | Result |
+|---|---|
+| no identity header | no signature needed |
+| identity header + valid signature | allowed |
+| signature present but wrong or expired | `401 UNAUTHORIZED` |
+| identity header, no signature, `CHAMPION_REQUIRE_SIGNED_IDENTITY=true` | `401 UNAUTHORIZED` |
+| identity header, no signature, flag unset/false (rollout default) | allowed; the bot logs `component=saas_api event=unsigned_identity path=<path>` at most once a minute |
+
+Turn `CHAMPION_REQUIRE_SIGNED_IDENTITY=true` on once the website signs every
+request. The bot warns at startup (`component=config event=weak_website_secret`)
+when `WEBSITE_API_SECRET` is shorter than 32 bytes.
+
 ## Error contract
 
 Every non-2xx response is:
@@ -117,7 +149,8 @@ Auth: member. Response `200`: [`DashboardSummary`](#dashboardsummary) - organiza
 ### `POST /api/saas/organizations/{organizationID}/installations`
 Auth: **OWNER/ADMIN**. Creates an installation (with its setup-progress and
 settings child rows) referencing an already-connected guild connection.
-`game_server_id` starts unset - server selection is a later phase.
+`game_server_id` starts unset until a server is selected with
+`POST .../installations/{installationID}/dayz-server` (docs/SAAS_API.md, route 16).
 
 Request:
 ```json
@@ -235,6 +268,80 @@ cannot post without them). `Embed Links` and `Read Message History` are
 reduced presentation). If the guild or channel isn't reachable at all, every
 capability is `FAIL`.
 
+### `POST /api/saas/organizations/{organizationID}/erase`
+
+Erase an organization: OWNER only (ADMIN/MEMBER/non-member `403`; a "view as"
+session `403`; a platform owner's own organization `403`).
+
+Request: `{ "confirm": "DELETE" }` (exactly; anything else `400 INVALID_REQUEST`).
+
+Refused with `409 SUBSCRIPTION_ACTIVE` while the organization (or a C.A.S.E.
+add-on of it) has a live paid Stripe subscription (a provider subscription id
+and a status other than `CANCELED`/`INACTIVE`): cancel it first. An expired or
+never-started trial may erase. `409 CONFLICT` when it holds records the
+database keeps by design (C.A.S.E. review history, add-on billing records);
+nothing is changed then.
+
+What it does, in one transaction (its server workers are stopped first): its
+Nitrado credentials are deleted; its game servers are switched off and
+released; its installations (with their configuration and records), Discord
+guild connections, memberships, subscription row and organization audit log
+are deleted, then the organization itself. Gameplay data of a guild it
+connected (players, kills, deaths, links, stats) is deleted only when no other
+organization still uses that guild and it is not the bot's `DISCORD_GUILD_ID`.
+Payment records (`billing_transactions`, `billing_webhook_events`) and the
+one-trial-per-account marker are kept with their organization cleared (so an
+erase never grants a second free trial). Audited
+(`platform_audit_log` action `organization.erased`; log `event=organization_erased`).
+
+Response `200`: `{ "erased": true }`.
+
+### `POST /api/saas/player/identity/unlink`
+
+The acting user unlinks their own DayZ gamertag(s): every `VERIFIED` or
+`PENDING` link of theirs, on every server, becomes `UNLINKED` (the website
+equivalent of Discord `/unlink`). Gameplay stats are kept. No body. A "view as"
+session gets `403`.
+
+Response `200`: `{ "unlinked": <number of links changed> }`.
+
+### Live map (`docs/LIVE_MAP.md`)
+
+| Route | Auth | Purpose |
+|---|---|---|
+| `GET /api/saas/network/servers/{installationID}/map?sinceKillId=&window=5..180` | service bearer only | Public map state: recent kills (behind `liveMap.delaySeconds`), 500 m pressure grid, open hot zone, server clock. `404 NOT_FOUND` when the installation is missing, has no server, or `liveMap.public` is off. Cached 5 s per (installation, window). |
+| `GET /api/saas/network/servers/{installationID}/map-images/{mapID}` | service bearer only | The picture stored for a rotation map, as raw bytes (`image/jpeg`, `image/png` or `image/webp`) with `nosniff`, an immutable one-year `Cache-Control` and `ETag: "<imageVersion>"`. `404 NOT_FOUND` when the installation, map or picture is missing or the map belongs to another installation. See `MAP_ROTATION.md`. |
+| `GET /api/saas/player/servers/{installationID}/map/faction` | service + acting user, verified linked player of the server | The acting player's own hub faction members (latest position, 2 h trail), their bases and raid alerts of the last hour. Only members' positions are ever returned. `enabled:false` when `liveMap.factionLayer` is off. |
+| `GET .../admin/map/live` | `PLAYER_LAST_LOCATION_VIEW` | Every connected player's latest position with faction tag, enabled zones, active intrusions (+ zone centre). Audited `LIVE_MAP_VIEWED` once per actor per 10 min. |
+| `GET .../admin/map/history?from=&to=` | `PLAYER_LOCATION_VIEW` | Kills (<= 500) and every player's track (<= 20,000 points, newest kept, `truncated`) in a window of at most 6 h (default the last hour), intrusion history. Audited `LIVE_MAP_HISTORY_VIEWED`. |
+| `PUT .../admin/features/live-map` `{public, delaySeconds, factionLayer}` | `FEATURE_SETTINGS_MANAGE` | Saves the `liveMap` section of `GET .../admin/features` (`delaySeconds` 0..3600). Audited `LIVE_MAP_SETTINGS_UPDATED`. |
+
+Exact response shapes, with examples, are in [docs/LIVE_MAP.md](LIVE_MAP.md); the machine-readable
+version is in [saas-openapi.yaml](saas-openapi.yaml).
+
+### Stadium (`docs/STADIUM.md`)
+
+Base `/api/saas/organizations/{organizationID}/installations/{installationID}/stadium`, organization
+OWNER/ADMIN only (a view-as session may only `GET`).
+
+| Route | Purpose |
+|---|---|
+| `GET` | The saved arena configuration, its preview (object count, footprint, zones, classes, items, warnings) and build state. |
+| `PUT` | Save the configuration (`Params`); `400 VALIDATION_ERROR` with a plain message. |
+| `POST /position` | The owner's (or a named player's) latest ADM position with its recorded altitude, within 24 h; `404 NOT_FOUND` otherwise. |
+| `POST /build`, `POST /remove` | Write the spawner file to `custom/champion_stadium.json` and reference it (build), or write the empty file (remove). Returns the verified `Outcome`; the server still needs a restart. |
+| `GET /file` | The spawner file as a download, for a manual upload. |
+
+### Tournaments (`docs/TOURNAMENTS.md`)
+
+Base `/api/saas/organizations/{organizationID}/installations/{installationID}/tournaments`,
+organization OWNER/ADMIN only (a view-as session may only `GET`): `GET` (the newest 50), `POST`
+(create a draft), `GET /{tid}`, `PATCH /{tid}`, `POST /{tid}/open|start|pause|resume|cancel|call`,
+`POST /{tid}/matches/{mid}/result`, `POST /{tid}/matches/{mid}/replay`, `POST /{tid}/entries/{eid}/dq`.
+Public: `GET /api/saas/network/servers/{installationID}/tournament` (service bearer only, cached
+3 s; the website serves it at `/api/live/{installationID}/tournament`). Player routes are in
+`docs/PLAYER_API.md`.
+
 ## Response DTOs
 
 None of these ever include a Nitrado ciphertext/IV/auth tag, a Discord
@@ -276,7 +383,7 @@ credential (section 18) - see `TestNoSensitiveFieldsInAPIResponses` in
   health: "SETTING_UP"|"HEALTHY"|"DEGRADED"|"OFFLINE",  // derived from status, not a stored field
   setupProgress?: SetupProgress,
   discordConnection?: DiscordGuildConnectionSummary,
-  dayzServer?: DayZServerSummary,   // present only once a server is selected (a later phase)
+  dayzServer?: DayZServerSummary,   // present only once a server is selected
   createdAt: string,
   setupCompletedAt?: string,        // stamped once, the first time status reaches READY
   lastHealthCheckAt?: string
@@ -300,7 +407,8 @@ credential (section 18) - see `TestNoSensitiveFieldsInAPIResponses` in
 
 #### `DayZServerSummary`
 ```ts
-{ id: number, displayName?: string, game: string, platform: string, status: string }
+{ id: number, displayName?: string, game: string, platform: string, status: string,
+  displayNameCustom: boolean, providerName: string | null } // docs/SERVER_NAME_SYNC.md
 ```
 
 #### `DiscordGuildSummary`
