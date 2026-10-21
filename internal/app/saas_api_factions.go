@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"github.com/yourname/dayz-killfeed/internal/entitlements"
 	"io"
 	"log/slog"
 	"net/http"
@@ -49,6 +50,7 @@ func (a *App) registerFactionHubRoutes() {
 	h("GET "+base, a.handleFactionDirectory)
 	h("POST "+base, a.handleCreateFaction)
 	h("GET "+base+"/me", a.handleMyFaction)
+	h("GET "+base+"/branding", a.handleFactionBranding)
 	h("GET "+base+"/{factionID}", a.handleGetFaction)
 	h("PUT "+base+"/{factionID}", a.handleUpdateFaction)
 	h("POST "+base+"/{factionID}/applications", a.handleApplyToFaction)
@@ -62,6 +64,7 @@ func (a *App) registerFactionHubRoutes() {
 	h("DELETE "+base+"/{factionID}/members/{memberID}", a.handleRemoveFactionMember)
 	a.registerFactionPhase4Routes()
 	a.registerFactionStatsRoutes()
+	a.registerFactionRecruitRoutes(base)
 }
 
 // --- DTOs -------------------------------------------------------------------------------------
@@ -137,6 +140,8 @@ type factionProfileDTO struct {
 	// Stats is the faction's competitive summary (Phase 5), or null when it could not be
 	// computed. Only figures proven from real runtime data; see docs/FACTION_STATS.md.
 	Stats *factionstats.Summary `json:"stats"`
+	// RecruitPost is the faction's recruitment card in Discord, or null when none is posted.
+	RecruitPost *recruitPostDTO `json:"recruitPost"`
 }
 
 type factionApplicationDTO struct {
@@ -204,6 +209,20 @@ func decodeFactionCursor(s string) (int64, bool) {
 	return id, true
 }
 
+// factionBrandingDTO is the flag/armband availability on an installation: every approved key with
+// the faction that holds it (null = free). Class names let the website line keys up with server files.
+type factionBrandingDTO struct {
+	Flags     []brandingOptionDTO `json:"flags"`
+	Armbands  []brandingOptionDTO `json:"armbands"`
+	UpdatedAt string              `json:"updatedAt"`
+}
+
+type brandingOptionDTO struct {
+	Key       string         `json:"key"`
+	ClassName string         `json:"className,omitempty"`
+	TakenBy   *factionRefDTO `json:"takenBy"`
+}
+
 // --- shared request plumbing ------------------------------------------------------------------
 
 type factionRequest struct {
@@ -238,18 +257,15 @@ func (a *App) factionContext(w http.ResponseWriter, r *http.Request) (fr faction
 	return factionRequest{orgID: orgID, instID: instID, user: user}, true
 }
 
-// orgViewer reports whether the user is an OWNER/ADMIN of the organization (read-only
-// moderation visibility).
-func (a *App) orgViewer(ctx context.Context, orgID, userID int64) bool {
-	if a.SaaSOrganizations == nil {
-		return false
-	}
-	role, member, err := a.SaaSOrganizations.VerifyMembership(ctx, orgID, userID)
+// orgViewer reports whether the user may moderate factions for the installation: an OWNER or
+// ADMIN of the organization, or a staff Administrator of that installation (organizationManager).
+func (a *App) orgViewer(ctx context.Context, orgID, instID int64, user *repository.AppUser) bool {
+	_, ok, err := a.organizationManager(ctx, orgID, user, strconv.FormatInt(instID, 10))
 	if err != nil {
 		slog.Warn("component=saas_api", "msg", "faction moderation view membership check failed", "err", err.Error())
 		return false
 	}
-	return member && (role == repository.RoleOwner || role == repository.RoleAdmin)
+	return ok
 }
 
 // decodeFactionBody decodes exactly one JSON object with no unknown keys.
@@ -313,9 +329,13 @@ func factionCursor(w http.ResponseWriter, r *http.Request) (int64, bool) {
 // logged, never returned.
 func factionFailed(w http.ResponseWriter, what string, err error) {
 	var invalid *factionhub.ValidationError
+	var taken *factionhub.BrandingTakenError
 	switch {
 	case errors.As(err, &invalid):
 		writeSaaSError(w, codeInvalidRequest, "invalid faction input: "+strings.Join(invalid.Issues, "; "))
+	case errors.As(err, &taken):
+		// Exclusive branding: the message names the holder (public directory data, never private).
+		writeSaaSError(w, codeConflict, taken.Error())
 	case errors.Is(err, factionhub.ErrNotFound):
 		writeSaaSError(w, codeNotFound, "not found")
 	case errors.Is(err, factionhub.ErrForbidden):
@@ -330,7 +350,7 @@ func factionFailed(w http.ResponseWriter, what string, err error) {
 		errors.Is(err, factionhub.ErrNameTaken), errors.Is(err, factionhub.ErrTagTaken),
 		errors.Is(err, factionhub.ErrAlreadyInFaction), errors.Is(err, factionhub.ErrRecruitmentClosed),
 		errors.Is(err, factionhub.ErrAlreadyApplied), errors.Is(err, factionhub.ErrNotPending),
-		errors.Is(err, factionhub.ErrInvalidTransition):
+		errors.Is(err, factionhub.ErrInvalidTransition), errors.Is(err, factionhub.ErrJoinRequiresOpen):
 		// The typed errors carry fixed, safe messages.
 		writeSaaSError(w, codeConflict, err.Error())
 	default:
@@ -375,7 +395,7 @@ func (a *App) buildFactionProfile(ctx context.Context, fr factionRequest, f repo
 	}
 	out.Viewer.CanEdit = factionhub.CanEditFaction(viewerRole)
 	out.Viewer.CanManageApplications = factionhub.CanManageApplications(viewerRole)
-	out.Viewer.ModerationView = a.orgViewer(ctx, fr.orgID, fr.user.ID)
+	out.Viewer.ModerationView = a.orgViewer(ctx, fr.orgID, fr.instID, fr.user)
 	return out
 }
 
@@ -389,6 +409,9 @@ func (a *App) loadFactionProfile(ctx context.Context, fr factionRequest, faction
 		return factionProfileDTO{}, err
 	}
 	profile := a.buildFactionProfile(ctx, fr, *f, members)
+	if post, err := a.FactionHub.RecruitPost(ctx, fr.instID, factionID); err == nil && post != nil {
+		profile.RecruitPost = a.toRecruitPost(ctx, *f, post)
+	}
 	if a.FactionHubStats != nil {
 		if st, err := a.FactionHubStats.GetFactionStats(ctx, fr.orgID, fr.instID, factionID); err != nil {
 			slog.Warn("component=saas_api", "msg", "faction stats unavailable for profile", "err", err.Error())
@@ -442,6 +465,46 @@ func (a *App) handleFactionDirectory(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGetFaction is GET .../factions/{factionID}: the public profile.
+// handleFactionBranding lists every approved flag and armband with the faction holding it, so
+// the design picker can grey out taken keys. Any synced user on the installation may read it:
+// it exposes only names and tags that the public directory already shows.
+func (a *App) handleFactionBranding(w http.ResponseWriter, r *http.Request) {
+	fr, ok := a.factionContext(w, r)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), factionTimeout)
+	defer cancel()
+	if _, _, err := a.FactionHub.Directory(ctx, fr.orgID, fr.instID, repository.HubDirectoryQuery{Limit: 1}); err != nil {
+		factionFailed(w, "load branding", err) // a foreign installation is a 404 here as everywhere
+		return
+	}
+	claims, err := a.FactionHub.BrandingClaims(ctx, fr.orgID, fr.instID)
+	if err != nil {
+		factionFailed(w, "load branding", err)
+		return
+	}
+	flagHolder, armbandHolder := map[string]*factionRefDTO{}, map[string]*factionRefDTO{}
+	for _, c := range claims {
+		ref := &factionRefDTO{ID: c.ID, Name: c.Name, Tag: c.Tag}
+		if c.FlagKey != nil {
+			flagHolder[*c.FlagKey] = ref
+		}
+		if c.ArmbandKey != nil {
+			armbandHolder[*c.ArmbandKey] = ref
+		}
+	}
+	out := factionBrandingDTO{Flags: make([]brandingOptionDTO, 0, len(factionhub.DayzFlags)), Armbands: make([]brandingOptionDTO, 0, len(factionhub.Armbands)), UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
+	for _, k := range factionhub.DayzFlags {
+		cn, _ := factionhub.FlagClassName(k)
+		out.Flags = append(out.Flags, brandingOptionDTO{Key: k, ClassName: cn, TakenBy: flagHolder[k]})
+	}
+	for _, k := range factionhub.Armbands {
+		out.Armbands = append(out.Armbands, brandingOptionDTO{Key: k, TakenBy: armbandHolder[k]})
+	}
+	writeSaaSJSON(w, http.StatusOK, out)
+}
+
 func (a *App) handleGetFaction(w http.ResponseWriter, r *http.Request) {
 	fr, ok := a.factionContext(w, r)
 	if !ok {
@@ -526,7 +589,21 @@ func (a *App) handleCreateFaction(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), factionTimeout)
 	defer cancel()
-	created, err := a.FactionHub.CreateFaction(ctx, fr.orgID, fr.instID, fr.user.ID, in)
+	limit := 0
+	if entitlements.Enforced() {
+		plan, perr := a.organizationPlan(ctx, fr.orgID)
+		if perr != nil {
+			slog.Warn("component=entitlements", "event", "plan_lookup_failed", "organization_id", fr.orgID, "err", perr.Error())
+			writeSaaSError(w, codeInternalError, "could not verify your plan")
+			return
+		}
+		limit = entitlements.FactionLimit(plan)
+	}
+	created, err := a.FactionHub.CreateFactionWithLimit(ctx, fr.orgID, fr.instID, fr.user.ID, in, limit)
+	if errors.Is(err, factionhub.ErrFactionLimitReached) {
+		writeSaaSError(w, codeFactionLimitReached, factionLimitMessage(limit))
+		return
+	}
 	if err != nil {
 		factionFailed(w, "create faction", err)
 		return
@@ -757,7 +834,7 @@ func (a *App) handleListFactionApplications(w http.ResponseWriter, r *http.Reque
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), factionTimeout)
 	defer cancel()
-	access := repository.HubAccess{UserID: fr.user.ID, OrgViewer: a.orgViewer(ctx, fr.orgID, fr.user.ID)}
+	access := repository.HubAccess{UserID: fr.user.ID, OrgViewer: a.orgViewer(ctx, fr.orgID, fr.instID, fr.user)}
 	items, more, err := a.FactionHub.ListApplications(ctx, fr.orgID, fr.instID, factionID, access, status, limit, before)
 	if err != nil {
 		factionFailed(w, "load applications", err)

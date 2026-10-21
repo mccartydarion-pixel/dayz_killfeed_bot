@@ -10,12 +10,14 @@ import (
 )
 
 // RankCategory is the semantic kind of a ranking; it decides how raw values
-// are displayed ("20 Kills", "98.3m", "4.25 K/D", "12,500 pts").
+// are displayed ("20 kills", "98.3m", "4.25 K/D", "12,500 pts").
 type RankCategory string
 
 const (
-	RankKills   RankCategory = "kills"
-	RankKD      RankCategory = "kd"
+	RankKills RankCategory = "kills"
+	RankKD    RankCategory = "kd"
+	// RankPvPKD is kills per death caused by another player; RankKD is kills per death of any kind.
+	RankPvPKD   RankCategory = "pvpkd"
 	RankLongest RankCategory = "longest"
 	RankPoints  RankCategory = "points"
 	RankStreak  RankCategory = "streak"
@@ -27,6 +29,8 @@ const (
 func RankCategoryOf(label string) RankCategory {
 	l := strings.ToLower(strings.TrimSpace(label))
 	switch {
+	case l == "pvpkd" || strings.Contains(l, "pvp") && (strings.Contains(l, "k/d") || strings.Contains(l, "kd")):
+		return RankPvPKD
 	case l == "kd" || l == "k/d" || strings.Contains(l, "k/d") || l == "kdr":
 		return RankKD
 	case strings.Contains(l, "longest") || strings.Contains(l, "distance"):
@@ -46,17 +50,19 @@ func RankCategoryOf(label string) RankCategory {
 func RankHeading(c RankCategory) string {
 	switch c {
 	case RankKills:
-		return "⚔️ TOP KILLERS"
+		return "⚔️ Top killers"
 	case RankKD:
-		return "📈 BEST K/D"
+		return "📈 Best K/D"
+	case RankPvPKD:
+		return "📈 Best K/D (PvP)"
 	case RankLongest:
-		return "🎯 LONGEST KILLS"
+		return "🎯 Longest kills"
 	case RankPoints:
-		return "🏆 CHAMPION POINTS"
+		return "🏆 Champion Points"
 	case RankStreak:
-		return "🔥 BEST STREAKS"
+		return "🔥 Best streaks"
 	default:
-		return "🏆 RANKINGS"
+		return "🏆 Rankings"
 	}
 }
 
@@ -68,13 +74,13 @@ func FormatLeaderboardValue(c RankCategory, raw string) string {
 	switch c {
 	case RankKills, RankStreak:
 		if n, err := strconv.ParseInt(raw, 10, 64); err == nil {
-			return Plural(n, "Kill", "Kills")
+			return Plural(n, "kill", "kills")
 		}
 	case RankPoints:
 		if n, err := strconv.ParseInt(raw, 10, 64); err == nil {
 			return FormatPoints(n)
 		}
-	case RankKD:
+	case RankKD, RankPvPKD:
 		if f, err := strconv.ParseFloat(raw, 64); err == nil {
 			return FormatKD(f) + " K/D"
 		}
@@ -100,7 +106,7 @@ func RankMarker(rank int) string {
 	}
 }
 
-// RankLine is one scoreboard row: "🥇 PlayerOne • **20 Kills**". Plain
+// RankLine is one scoreboard row: "🥇 PlayerOne • **20 kills**". Plain
 // rank • name • value survives mobile and desktop widths alike; no fake
 // whitespace columns.
 func RankLine(rank int, name, value string) string {

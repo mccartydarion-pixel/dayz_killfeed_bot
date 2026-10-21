@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/bwmarrin/discordgo"
@@ -15,16 +16,20 @@ import (
 
 // layoutGuildFake is an in-memory Discord guild for applyChannelLayout.
 type layoutGuildFake struct {
-	channels    []discord.RawGuildChannel
-	private     map[string]bool // category IDs created private
-	botMessages map[string]int  // channel ID -> bot messages present
-	starters    map[string]int  // channel ID -> starter cards sent
+	channels      []discord.RawGuildChannel
+	private       map[string]bool // category IDs created private
+	botMessages   map[string]int  // channel ID -> bot messages present
+	starters      map[string]int  // channel ID -> starter cards sent
 	starterEmbeds map[string]*discordgo.MessageEmbed
-	missing     map[string][]string
-	seq         int
-	createCalls int
-	listErr     error
-	failCreate  string // a text channel name whose creation fails
+	missing       map[string][]string
+	seq           int
+	createCalls   int
+	listErr       error
+	failCreate    string // a text channel name whose creation fails
+	// Live checks run concurrently, so these count atomically.
+	listCalls   int
+	verifyCalls atomic.Int32
+	hasCalls    atomic.Int32
 }
 
 func newLayoutGuildFake(seed ...discord.RawGuildChannel) *layoutGuildFake {
@@ -32,6 +37,7 @@ func newLayoutGuildFake(seed ...discord.RawGuildChannel) *layoutGuildFake {
 }
 
 func (f *layoutGuildFake) ListAllGuildChannels(string) ([]discord.RawGuildChannel, error) {
+	f.listCalls++
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
@@ -64,6 +70,7 @@ func (f *layoutGuildFake) CreateGuildVoiceCounter(_, name, parent string) (*disc
 	return f.create(name, discordgo.ChannelTypeGuildVoice, parent), nil
 }
 func (f *layoutGuildFake) Verify(_, channelID string) discord.Verification {
+	f.verifyCalls.Add(1)
 	for _, ch := range f.channels {
 		if ch.ID == channelID {
 			return discord.Verification{GuildFound: true, ChannelFound: true, Missing: f.missing[channelID]}
@@ -78,6 +85,7 @@ func (f *layoutGuildFake) SendChannelEmbed(channelID string, embed *discordgo.Me
 	return nil
 }
 func (f *layoutGuildFake) ChannelHasBotMessage(channelID string) (bool, error) {
+	f.hasCalls.Add(1)
 	return f.botMessages[channelID] > 0, nil
 }
 func (f *layoutGuildFake) byName(name string) (discord.RawGuildChannel, int) {
@@ -125,13 +133,16 @@ func auditProducers() map[string]routeProducer {
 	for k, v := range routeProducerAudit {
 		out[k] = v
 	}
+	// The layout fixture has no running Ranked board. Production activates
+	// this route only after the panel producer is instantiated.
+	out["SERVER_RANKS"] = routeProducer{HealthBlocked, "server ranks board is not running"}
 	return out
 }
 
 // panelsPosted simulates the panel owners posting into every panel channel.
 func panelsPosted(g *layoutGuildFake, w *layoutRoutesFake) func(context.Context) {
 	return func(context.Context) {
-		for _, key := range []string{"BOUNTY", "HEATMAPS", "SERVER_STATUS", "AUTO_LEADERBOARD", "STATS_LEADERBOARDS", "LINK_GAMERTAG"} {
+		for _, key := range []string{"BOUNTY", "HEATMAPS", "SERVER_STATUS", "AUTO_LEADERBOARD", "SERVER_RANKS", "STATS_LEADERBOARDS", "LINK_GAMERTAG"} {
 			if ch := w.routes[key]; ch != "" {
 				g.botMessages[ch] = 1
 			}
@@ -184,8 +195,8 @@ func TestRouteVocabularyHasNoCasinoAndEveryRouteOneDestination(t *testing.T) {
 		}
 	}
 	want := map[string]string{
-		"KILLFEED": "COMBAT_FEED", "PVE_FEED": "COMBAT_FEED", "HITFEED": "HITFEED", "BOUNTY": "BOUNTIES", "BOUNTY_TRACKING": "BOUNTIES",
-		"CONNECTIONS": "CONNECTIONS", "HEATMAPS": "HEATMAPS", "AUTO_LEADERBOARD": "LEADERBOARDS", "STATS_LEADERBOARDS": "LEADERBOARDS",
+		"KILLFEED": "COMBAT_FEED", "PVE_FEED": "PVE_FEED", "HITFEED": "HITFEED", "BOUNTY": "BOUNTIES", "BOUNTY_TRACKING": "BOUNTIES",
+		"CONNECTIONS": "CONNECTIONS", "HEATMAPS": "HEATMAPS", "AUTO_LEADERBOARD": "LEADERBOARDS", "SERVER_RANKS": "SERVER_RANKS", "STATS_LEADERBOARDS": "LEADERBOARDS",
 		"LINK_GAMERTAG": "PLAYER_LINK", "ECONOMY": "ECONOMY", "SHOP": "ECONOMY", "ADMIN_LOGS": "ADMIN_LOGS", "ADMIN_ALERTS": "ADMIN_LOGS", "BUILD_FEED": "ADMIN_LOGS",
 		"SERVER_STATUS": "SERVER_STATUS", "ONLINE_COUNTER": "ONLINE_COUNTER",
 	}
@@ -202,10 +213,13 @@ func TestPlanChannelLayoutSkipsDestinationsWithoutProducers(t *testing.T) {
 	for _, p := range plans {
 		health[p.Destination.Key] = p.Health
 	}
-	for _, key := range []string{"COMBAT_FEED", "HITFEED", "BOUNTIES", "CONNECTIONS", "HEATMAPS", "SERVER_STATUS", "LEADERBOARDS", "PLAYER_LINK", "ECONOMY", "ONLINE_COUNTER", "ADMIN_LOGS"} {
+	for _, key := range []string{"COMBAT_FEED", "PVE_FEED", "HITFEED", "BOUNTIES", "CONNECTIONS", "HEATMAPS", "SERVER_STATUS", "LEADERBOARDS", "PLAYER_LINK", "ECONOMY", "ONLINE_COUNTER", "ADMIN_LOGS"} {
 		if health[key] != HealthActive {
 			t.Fatalf("%s want ACTIVE, got %s", key, health[key])
 		}
+	}
+	if health["SERVER_RANKS"] != HealthBlocked {
+		t.Fatalf("server ranks without a running board must be blocked, got %s", health["SERVER_RANKS"])
 	}
 
 	// A source-blocked BUILD_FEED never justifies admin-logs on its own.
@@ -216,6 +230,22 @@ func TestPlanChannelLayoutSkipsDestinationsWithoutProducers(t *testing.T) {
 		if p.Destination.Key == "ADMIN_LOGS" && p.Health != HealthBroken {
 			t.Fatalf("admin-logs with only a blocked source must not be ACTIVE, got %s", p.Health)
 		}
+	}
+}
+
+func TestSetupCreatesServerRanksOnlyWithPanelProducer(t *testing.T) {
+	blocked := auditProducers()
+	for _, p := range planChannelLayout(blocked) {
+		if p.Destination.Key == "SERVER_RANKS" && p.Health != HealthBlocked {
+			t.Fatal("server ranks must remain blocked without its panel producer")
+		}
+	}
+	blocked["SERVER_RANKS"] = routeProducer{HealthActive, "test panel producer"}
+	g := newLayoutGuildFake()
+	w := &layoutRoutesFake{routes: map[string]string{}}
+	res := runLayout(t, g, w, blocked, panelsPosted(g, w))
+	if route := w.routes["SERVER_RANKS"]; route == "" || report(res, "SERVER_RANKS").Health != HealthActive || g.botMessages[route] == 0 {
+		t.Fatalf("server ranks setup did not create a populated route: %+v", report(res, "SERVER_RANKS"))
 	}
 }
 
@@ -254,8 +284,9 @@ func TestApplyChannelLayoutFreshGuild(t *testing.T) {
 		t.Fatal("SHOP and ECONOMY must share the economy channel")
 	}
 	combat, _ := g.byName("🔫・combat-feed")
-	if w.routes["KILLFEED"] != combat.ID || w.routes["PVE_FEED"] != combat.ID {
-		t.Fatal("KILLFEED and PVE_FEED must share combat-feed")
+	pve, n := g.byName("☠️・pve-feed")
+	if n != 1 || pve.ID == combat.ID || w.routes["KILLFEED"] != combat.ID || w.routes["PVE_FEED"] != pve.ID {
+		t.Fatal("/setup must route kills and deaths/PvE to separate destinations")
 	}
 	heat, _ := g.byName("🗺️・heatmaps")
 	live, _ := g.byName("🏆 CHAMPION • LIVE")
@@ -423,7 +454,7 @@ func TestApplyChannelLayoutNameRecoveryStaysInCategory(t *testing.T) {
 
 func TestChannelRouteProducersDowngradeMissingRuntime(t *testing.T) {
 	got := (&App{}).channelRouteProducers()
-	for _, key := range []string{"KILLFEED", "BOUNTY", "HEATMAPS", "AUTO_LEADERBOARD", "LINK_GAMERTAG", "ECONOMY", "SHOP", "ADMIN_ALERTS"} {
+	for _, key := range []string{"KILLFEED", "BOUNTY", "HEATMAPS", "AUTO_LEADERBOARD", "SERVER_RANKS", "LINK_GAMERTAG", "ECONOMY", "SHOP", "ADMIN_ALERTS"} {
 		if got[key].Health != HealthBroken {
 			t.Fatalf("%s must be BROKEN when its runtime is absent, got %+v", key, got[key])
 		}
@@ -466,102 +497,266 @@ func TestApplyChannelLayoutKeepsCustomerRouteOfSkippedDestination(t *testing.T) 
 }
 
 func TestCASESetupCreatesPrivateInformationalDestinationsIdempotently(t *testing.T) {
- g:=newLayoutGuildFake()
- w:=&layoutRoutesFake{routes:map[string]string{}}
- first:=runLayout(t,g,w,auditProducers(),panelsPosted(g,w))
- cat,n:=g.byName("🔒 CHAMPION • C.A.S.E.")
- if n!=1||!cat.Private||!g.private[cat.ID]{t.Fatalf("CASE category must be private, count=%d category=%+v",n,cat)}
- want:=map[string]string{"CASE_STATUS":"🛡️・case-status","CASE_EVIDENCE":"📁・case-evidence","CASE_ALERTS":"🚨・case-alerts"}
- for route,name:=range want {
-  ch,count:=g.byName(name)
-  if count!=1||ch.ParentID!=cat.ID||w.routes[route]!=ch.ID {t.Fatalf("%s not routed under CASE: channel=%+v count=%d route=%q",route,ch,count,w.routes[route])}
-  rep:=report(first,route)
-  if rep.Health!=HealthActive||rep.Checks==nil||!rep.Checks.passed()||!rep.StarterSent {t.Fatalf("%s has no verified setup notice: %+v",route,rep)}
-  if g.starters[ch.ID]!=1 {t.Fatalf("%s starter count=%d",route,g.starters[ch.ID])}
-  embed:=g.starterEmbeds[ch.ID]
-  if embed==nil||embed.Title==""||embed.Description=="" {t.Fatalf("%s must receive an actual Discord embed, got %+v",route,embed)}
-  if route=="CASE_ALERTS" && (!strings.Contains(embed.Title,"NOT ENABLED") || !strings.Contains(embed.Description,"No live detection")) {
-   t.Fatalf("alert starter must not imply a live finding: %+v",embed)
-  }
- }
- before:=g.createCalls
- second:=runLayout(t,g,w,auditProducers(),panelsPosted(g,w))
- if g.createCalls!=before {t.Fatalf("repeat setup created %d duplicate channels",g.createCalls-before)}
- for route,name:=range want {
-  ch,_:=g.byName(name)
-  if g.starters[ch.ID]!=1||report(second,route).StarterSent {t.Fatalf("%s posted duplicate starter",route)}
- }
+	g := newLayoutGuildFake()
+	w := &layoutRoutesFake{routes: map[string]string{}}
+	first := runLayout(t, g, w, auditProducers(), panelsPosted(g, w))
+	cat, n := g.byName("🔒 CHAMPION • C.A.S.E.")
+	if n != 1 || !cat.Private || !g.private[cat.ID] {
+		t.Fatalf("CASE category must be private, count=%d category=%+v", n, cat)
+	}
+	want := map[string]string{"CASE_STATUS": "🛡️・case-status", "CASE_EVIDENCE": "📁・case-evidence", "CASE_ALERTS": "🚨・case-alerts"}
+	for route, name := range want {
+		ch, count := g.byName(name)
+		if count != 1 || ch.ParentID != cat.ID || w.routes[route] != ch.ID {
+			t.Fatalf("%s not routed under CASE: channel=%+v count=%d route=%q", route, ch, count, w.routes[route])
+		}
+		rep := report(first, route)
+		if rep.Health != HealthActive || rep.Checks == nil || !rep.Checks.passed() || !rep.StarterSent {
+			t.Fatalf("%s has no verified setup notice: %+v", route, rep)
+		}
+		if g.starters[ch.ID] != 1 {
+			t.Fatalf("%s starter count=%d", route, g.starters[ch.ID])
+		}
+		embed := g.starterEmbeds[ch.ID]
+		if embed == nil || embed.Title == "" || embed.Description == "" {
+			t.Fatalf("%s must receive an actual Discord embed, got %+v", route, embed)
+		}
+		if route == "CASE_ALERTS" && (!strings.Contains(embed.Title, "NOT ENABLED") || !strings.Contains(embed.Description, "No live detection")) {
+			t.Fatalf("alert starter must not imply a live finding: %+v", embed)
+		}
+	}
+	before := g.createCalls
+	second := runLayout(t, g, w, auditProducers(), panelsPosted(g, w))
+	if g.createCalls != before {
+		t.Fatalf("repeat setup created %d duplicate channels", g.createCalls-before)
+	}
+	for route, name := range want {
+		ch, _ := g.byName(name)
+		if g.starters[ch.ID] != 1 || report(second, route).StarterSent {
+			t.Fatalf("%s posted duplicate starter", route)
+		}
+	}
 }
 
 func TestCASESetupRejectsPublicCategoryAndChannelReuse(t *testing.T) {
- publicCat:=discord.RawGuildChannel{ID:"public-cat",Name:"🔒 CHAMPION • C.A.S.E.",Type:discordgo.ChannelTypeGuildCategory}
- publicAlert:=discord.RawGuildChannel{ID:"public-alert",Name:"🚨・case-alerts",Type:discordgo.ChannelTypeGuildText,ParentID:publicCat.ID}
- g:=newLayoutGuildFake(publicCat,publicAlert)
- w:=&layoutRoutesFake{routes:map[string]string{"CASE_ALERTS":publicAlert.ID}}
- res:=runLayout(t,g,w,auditProducers(),panelsPosted(g,w))
- caseCat:=res.Categories[categoryCASE]
- if caseCat.ID==publicCat.ID||!caseCat.Private||!g.private[caseCat.ID]{t.Fatalf("public category was adopted: %+v",caseCat)}
- newAlert:=report(res,"CASE_ALERTS")
- if newAlert.ChannelID==publicAlert.ID||newAlert.ChannelID==""||w.routes["CASE_ALERTS"]!=newAlert.ChannelID {
-  t.Fatalf("public alert channel reused: %+v",newAlert)
- }
- ch,_:=g.byName("🚨・case-alerts")
- _=ch // Existing customer-visible channel is preserved, never modified or deleted.
- if len(g.channels)<5 {t.Fatalf("expected private category plus three channels, got %d",len(g.channels))}
- // A private category with a channel explicitly allowing @everyone is also refused.
- g2:=newLayoutGuildFake(discord.RawGuildChannel{ID:"private-cat",Name:"🔒 CHAMPION • C.A.S.E.",Type:discordgo.ChannelTypeGuildCategory,Private:true},
-  discord.RawGuildChannel{ID:"public-override",Name:"🚨・case-alerts",Type:discordgo.ChannelTypeGuildText,ParentID:"private-cat",PublicViewOverride:true})
- w2:=&layoutRoutesFake{routes:map[string]string{"CASE_ALERTS":"public-override"}}
- res2:=runLayout(t,g2,w2,auditProducers(),panelsPosted(g2,w2))
- if report(res2,"CASE_ALERTS").ChannelID=="public-override" {t.Fatal("publicly overridden CASE channel was reused")}
+	publicCat := discord.RawGuildChannel{ID: "public-cat", Name: "🔒 CHAMPION • C.A.S.E.", Type: discordgo.ChannelTypeGuildCategory}
+	publicAlert := discord.RawGuildChannel{ID: "public-alert", Name: "🚨・case-alerts", Type: discordgo.ChannelTypeGuildText, ParentID: publicCat.ID}
+	g := newLayoutGuildFake(publicCat, publicAlert)
+	w := &layoutRoutesFake{routes: map[string]string{"CASE_ALERTS": publicAlert.ID}}
+	res := runLayout(t, g, w, auditProducers(), panelsPosted(g, w))
+	caseCat := res.Categories[categoryCASE]
+	if caseCat.ID == publicCat.ID || !caseCat.Private || !g.private[caseCat.ID] {
+		t.Fatalf("public category was adopted: %+v", caseCat)
+	}
+	newAlert := report(res, "CASE_ALERTS")
+	if newAlert.ChannelID == publicAlert.ID || newAlert.ChannelID == "" || w.routes["CASE_ALERTS"] != newAlert.ChannelID {
+		t.Fatalf("public alert channel reused: %+v", newAlert)
+	}
+	ch, _ := g.byName("🚨・case-alerts")
+	_ = ch // Existing customer-visible channel is preserved, never modified or deleted.
+	if len(g.channels) < 5 {
+		t.Fatalf("expected private category plus three channels, got %d", len(g.channels))
+	}
+	// A private category with a channel explicitly allowing @everyone is also refused.
+	g2 := newLayoutGuildFake(discord.RawGuildChannel{ID: "private-cat", Name: "🔒 CHAMPION • C.A.S.E.", Type: discordgo.ChannelTypeGuildCategory, Private: true},
+		discord.RawGuildChannel{ID: "public-override", Name: "🚨・case-alerts", Type: discordgo.ChannelTypeGuildText, ParentID: "private-cat", PublicViewOverride: true})
+	w2 := &layoutRoutesFake{routes: map[string]string{"CASE_ALERTS": "public-override"}}
+	res2 := runLayout(t, g2, w2, auditProducers(), panelsPosted(g2, w2))
+	if report(res2, "CASE_ALERTS").ChannelID == "public-override" {
+		t.Fatal("publicly overridden CASE channel was reused")
+	}
 }
-
 
 func TestCASESetupCardsCannotImplyLiveFindings(t *testing.T) {
- for _,key:=range []string{"CASE_STATUS","CASE_EVIDENCE","CASE_ALERTS"} {
-  dest:=destinationByKey(key)
-  if dest.Category!=categoryCASE||dest.Starter==nil||len(dest.Routes)!=1||dest.Routes[0]!=key {
-   t.Fatalf("%s must have a dedicated setup-only destination: %+v",key,dest)
-  }
-  if dest.Starter.Body=="" || !strings.Contains(strings.ToUpper(dest.Starter.Title),map[string]string{
-   "CASE_STATUS":"INFORMATION ONLY","CASE_EVIDENCE":"STAFF GUIDE","CASE_ALERTS":"NOT ENABLED",
-  }[key]) {t.Fatalf("%s missing clear informational status: %+v",key,dest.Starter)}
- }
- alerts:=destinationByKey("CASE_ALERTS").Starter.Body
- for _,s:=range []string{"No live detection","BLOCKED","no scores","not evidence about any player"} {
-  if !strings.Contains(strings.ToLower(alerts),strings.ToLower(s)) {t.Fatalf("alerts notice missing %q",s)}
- }
- if routeProducerAudit["CASE_ALERTS"].Detail=="" {t.Fatal("setup-only route must advertise its limitation")}
+	for _, key := range []string{"CASE_STATUS", "CASE_EVIDENCE", "CASE_ALERTS"} {
+		dest := destinationByKey(key)
+		if dest.Category != categoryCASE || dest.Starter == nil || len(dest.Routes) != 1 || dest.Routes[0] != key {
+			t.Fatalf("%s must have a dedicated setup-only destination: %+v", key, dest)
+		}
+		if dest.Starter.Body == "" || !strings.Contains(strings.ToUpper(dest.Starter.Title), map[string]string{
+			"CASE_STATUS": "INFORMATION ONLY", "CASE_EVIDENCE": "STAFF GUIDE", "CASE_ALERTS": "NOT ENABLED",
+		}[key]) {
+			t.Fatalf("%s missing clear informational status: %+v", key, dest.Starter)
+		}
+	}
+	alerts := destinationByKey("CASE_ALERTS").Starter.Body
+	for _, s := range []string{"No live detection", "BLOCKED", "no scores", "not evidence about any player"} {
+		if !strings.Contains(strings.ToLower(alerts), strings.ToLower(s)) {
+			t.Fatalf("alerts notice missing %q", s)
+		}
+	}
+	if routeProducerAudit["CASE_ALERTS"].Detail == "" {
+		t.Fatal("setup-only route must advertise its limitation")
+	}
 }
 
-
 func TestCASESetupDoesNotApprovePublicCustomerRoute(t *testing.T) {
- publicCat:=discord.RawGuildChannel{ID:"public",Name:"custom",Type:discordgo.ChannelTypeGuildCategory}
- publicChan:=discord.RawGuildChannel{ID:"public-alert",Name:"custom-case",Type:discordgo.ChannelTypeGuildText,ParentID:publicCat.ID}
- g:=newLayoutGuildFake(publicCat,publicChan)
- w:=&layoutRoutesFake{routes:map[string]string{"CASE_ALERTS":publicChan.ID}}
- existing:=[]repository.ChannelRoute{{RouteKey:"CASE_ALERTS",ChannelID:publicChan.ID,ManagedByChampion:false}}
- res,err:=applyChannelLayout(context.Background(),g,w,channelLayoutInput{OrganizationID:1,InstallationID:2,GuildID:"g",Existing:existing,Producers:auditProducers(),Preserve:true,SyncPanels:panelsPosted(g,w)})
- if err!=nil{t.Fatal(err)}
- rep:=report(res,"CASE_ALERTS")
- if rep.Health!=HealthBroken||rep.ChannelID!=publicChan.ID||!strings.Contains(rep.Detail,"not in a private category") {
-  t.Fatalf("public manual route was approved: %+v",rep)
- }
- status,err:=inspectChannelLayout(g,"g",existing,auditProducers())
- if err!=nil{t.Fatal(err)}
- var observed ChannelDestinationReport
- for _,item:=range status {if item.Key=="CASE_ALERTS"{observed=item;break}}
- if observed.Health!=HealthBroken||!strings.Contains(observed.Detail,"not staff-private") {t.Fatalf("read-only layout status approved public route: %+v",observed)}
- if w.routes["CASE_ALERTS"]!=publicChan.ID||g.starters[publicChan.ID]!=0 {
-  t.Fatal("setup changed or posted into customer's public channel")
- }
+	publicCat := discord.RawGuildChannel{ID: "public", Name: "custom", Type: discordgo.ChannelTypeGuildCategory}
+	publicChan := discord.RawGuildChannel{ID: "public-alert", Name: "custom-case", Type: discordgo.ChannelTypeGuildText, ParentID: publicCat.ID}
+	g := newLayoutGuildFake(publicCat, publicChan)
+	w := &layoutRoutesFake{routes: map[string]string{"CASE_ALERTS": publicChan.ID}}
+	existing := []repository.ChannelRoute{{RouteKey: "CASE_ALERTS", ChannelID: publicChan.ID, ManagedByChampion: false}}
+	res, err := applyChannelLayout(context.Background(), g, w, channelLayoutInput{OrganizationID: 1, InstallationID: 2, GuildID: "g", Existing: existing, Producers: auditProducers(), Preserve: true, SyncPanels: panelsPosted(g, w)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep := report(res, "CASE_ALERTS")
+	if rep.Health != HealthBroken || rep.ChannelID != publicChan.ID || !strings.Contains(rep.Detail, "not in a private category") {
+		t.Fatalf("public manual route was approved: %+v", rep)
+	}
+	status, err := inspectChannelLayout(g, "g", existing, auditProducers())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var observed ChannelDestinationReport
+	for _, item := range status {
+		if item.Key == "CASE_ALERTS" {
+			observed = item
+			break
+		}
+	}
+	if observed.Health != HealthBroken || !strings.Contains(observed.Detail, "not staff-private") {
+		t.Fatalf("read-only layout status approved public route: %+v", observed)
+	}
+	if w.routes["CASE_ALERTS"] != publicChan.ID || g.starters[publicChan.ID] != 0 {
+		t.Fatal("setup changed or posted into customer's public channel")
+	}
 }
 
 func TestCASESetupRejectsCategoryWithPublicViewOverride(t *testing.T) {
- cat:=discord.RawGuildChannel{ID:"unsafe",Name:"🔒 CHAMPION • C.A.S.E.",Type:discordgo.ChannelTypeGuildCategory,Private:true,PublicViewOverride:true}
- g:=newLayoutGuildFake(cat)
- w:=&layoutRoutesFake{routes:map[string]string{}}
- res:=runLayout(t,g,w,auditProducers(),panelsPosted(g,w))
- if res.Categories[categoryCASE].ID==cat.ID {t.Fatal("category with explicit @everyone allow was reused")}
- if !res.Categories[categoryCASE].Private {t.Fatal("replacement category is not private")}
+	cat := discord.RawGuildChannel{ID: "unsafe", Name: "🔒 CHAMPION • C.A.S.E.", Type: discordgo.ChannelTypeGuildCategory, Private: true, PublicViewOverride: true}
+	g := newLayoutGuildFake(cat)
+	w := &layoutRoutesFake{routes: map[string]string{}}
+	res := runLayout(t, g, w, auditProducers(), panelsPosted(g, w))
+	if res.Categories[categoryCASE].ID == cat.ID {
+		t.Fatal("category with explicit @everyone allow was reused")
+	}
+	if !res.Categories[categoryCASE].Private {
+		t.Fatal("replacement category is not private")
+	}
+}
+
+// A repair runs the layout once per installation in the guild. Sharing one
+// layoutRun means the later installations reuse the first one's channel
+// checks and panel sync instead of repeating every Discord call.
+func TestSharedLayoutRunChecksEachChannelOnce(t *testing.T) {
+	g := newLayoutGuildFake()
+	w := &layoutRoutesFake{routes: map[string]string{}}
+	syncs := 0
+	posted := panelsPosted(g, w)
+	sync := func(ctx context.Context) { syncs++; posted(ctx) }
+	run := newLayoutRun()
+	apply := func(inst int64) *channelLayoutResult {
+		t.Helper()
+		res, err := applyChannelLayout(context.Background(), g, w, channelLayoutInput{OrganizationID: 1, InstallationID: inst, GuildID: "g", Existing: w.existing(), Producers: auditProducers(), Preserve: true, SyncPanels: sync, Run: run})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	// The first installation creates the layout, then a second pass settles it.
+	apply(2)
+	settled := apply(3)
+	verifies, has := g.verifyCalls.Load(), g.hasCalls.Load()
+	again := apply(4)
+	if d := g.verifyCalls.Load() - verifies; d != 0 {
+		t.Fatalf("the third installation re-verified %d channels", d)
+	}
+	if d := g.hasCalls.Load() - has; d != 0 {
+		t.Fatalf("the third installation re-read %d channels", d)
+	}
+	if syncs > 2 {
+		t.Fatalf("panels synced %d times, want at most once per changed run", syncs)
+	}
+	for ch, n := range g.starters {
+		if n != 1 {
+			t.Fatalf("channel %s got %d starter cards", ch, n)
+		}
+	}
+	for _, d := range again.Destinations {
+		before := report(settled, d.Key)
+		if d.Health != before.Health || d.ChannelID != before.ChannelID {
+			t.Fatalf("%s: reused checks changed the report: %+v vs %+v", d.Key, d, before)
+		}
+	}
+}
+
+// /setup repair writes every installation's routes first, syncs the guild-wide panels once, then
+// verifies each installation against the shared checks.
+func TestDeferredLayoutRunSyncsPanelsOnce(t *testing.T) {
+	g := newLayoutGuildFake()
+	w := &layoutRoutesFake{routes: map[string]string{}}
+	// Settle the guild first, as an earlier setup would have.
+	runLayout(t, g, w, auditProducers(), panelsPosted(g, w))
+	g.listCalls = 0
+	verifies, has := g.verifyCalls.Load(), g.hasCalls.Load()
+
+	syncs := 0
+	posted := panelsPosted(g, w)
+	sync := func(ctx context.Context) { syncs++; posted(ctx) }
+	run := newLayoutRun()
+	run.deferSync = true
+	var drafts []*layoutDraft
+	for inst := int64(2); inst <= 4; inst++ {
+		draft, err := prepareChannelLayout(context.Background(), g, w, channelLayoutInput{OrganizationID: 1, InstallationID: inst, GuildID: "g", Existing: w.existing(), Producers: auditProducers(), Preserve: true, SyncPanels: sync, Run: run})
+		if err != nil {
+			t.Fatal(err)
+		}
+		drafts = append(drafts, draft)
+	}
+	sync(context.Background())
+	run.synced()
+	var results []*channelLayoutResult
+	for _, draft := range drafts {
+		results = append(results, draft.finish(context.Background(), g))
+	}
+	if syncs != 1 {
+		t.Fatalf("panels synced %d times, want once for the whole run", syncs)
+	}
+	if g.listCalls != 1 {
+		t.Fatalf("guild channels listed %d times, want once", g.listCalls)
+	}
+	channels := 0
+	for _, d := range results[0].Destinations {
+		if d.Checks != nil && !destinationByKey(d.Key).Voice {
+			channels++
+		}
+	}
+	if got := int(g.verifyCalls.Load() - verifies); got != channels {
+		t.Fatalf("verified %d channels, want each of the %d once", got, channels)
+	}
+	if got := int(g.hasCalls.Load() - has); got > 2*channels {
+		t.Fatalf("read channel content %d times for %d channels", got, channels)
+	}
+	for _, res := range results[1:] {
+		for _, d := range res.Destinations {
+			if before := report(results[0], d.Key); d.Health != before.Health || d.ChannelID != before.ChannelID {
+				t.Fatalf("%s differs between installations: %+v vs %+v", d.Key, d, before)
+			}
+		}
+	}
+}
+
+// A category or channel created by one installation is listed afresh by the next, never taken
+// from the run's cached list.
+func TestLayoutRunRelistsAfterCreating(t *testing.T) {
+	g := newLayoutGuildFake()
+	w := &layoutRoutesFake{routes: map[string]string{}}
+	run := newLayoutRun()
+	run.deferSync = true
+	for inst := int64(2); inst <= 3; inst++ {
+		if _, err := prepareChannelLayout(context.Background(), g, w, channelLayoutInput{OrganizationID: 1, InstallationID: inst, GuildID: "g", Existing: w.existing(), Producers: auditProducers(), Preserve: true, Run: run}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if g.listCalls != 2 {
+		t.Fatalf("listed %d times; the installation after one that created channels must list again", g.listCalls)
+	}
+	creates := g.createCalls
+	if _, err := prepareChannelLayout(context.Background(), g, w, channelLayoutInput{OrganizationID: 1, InstallationID: 4, GuildID: "g", Existing: w.existing(), Producers: auditProducers(), Preserve: true, Run: run}); err != nil {
+		t.Fatal(err)
+	}
+	if g.createCalls != creates {
+		t.Fatalf("a later installation created %d duplicate channels", g.createCalls-creates)
+	}
 }

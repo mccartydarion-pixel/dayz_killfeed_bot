@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/yourname/dayz-killfeed/internal/deathstats"
 )
 
 // PlayerServerRepository backs the player-facing SaaS API (docs/PLAYER_API.md): given a Discord-
@@ -82,6 +83,78 @@ ORDER BY psa.last_seen_at DESC NULLS LAST, i.id`
 	return out, rows.Err()
 }
 
+// PlayerHome is one server the website's Player Hub can show for a Discord user who is not an
+// organization member (docs/PLAYER_API.md "Player home").
+type PlayerHome struct {
+	InstallationID   int64
+	OrganizationID   int64
+	OrganizationName string
+	ServerName       string
+	Platform         string
+	ServerStatus     string // installations.status
+	DiscordGuildID   string // guilds.discord_guild_id (the Discord snowflake)
+	DiscordGuildName string
+	LinkStatus       string // player_links.status; always VERIFIED today
+	Observed         bool   // the player has a session, a kill or a death on this installation's server
+}
+
+// HomesForDiscordUser returns every installation the Player Hub may open for discordUserID, in
+// one query; the first row is the default. Unlike ListForDiscordUser it needs only the VERIFIED
+// player_links row for the installation's guild, NOT observed activity: a player who has just
+// linked and has not played yet must still reach their hub. It therefore proves less than
+// ListForDiscordUser does, and is only used to tell the website which servers to offer - every
+// player route keeps its own authorization.
+//
+// Only VERIFIED links count: PENDING is an unconfirmed claim that expires after ten minutes, and
+// REJECTED / UNLINKED / EXPIRED are not links.
+//
+// Order (one guild backing several installations, or links in several guilds): servers the player
+// was observed on first, most recently seen first, then installation id.
+func (r *PlayerServerRepository) HomesForDiscordUser(ctx context.Context, discordUserID string) ([]PlayerHome, error) {
+	const q = `
+SELECT i.id, i.organization_id, COALESCE(o.name, ''), COALESCE(gs.display_name, ''), COALESCE(gs.platform, ''), i.status,
+       g.discord_guild_id, COALESCE(c.guild_name, ''), pl.status, obs.observed
+FROM player_links pl
+JOIN guilds g ON g.id = pl.guild_id
+JOIN discord_guild_connections c ON c.guild_id = pl.guild_id
+JOIN installations i ON i.discord_guild_connection_id = c.id AND i.game_server_id IS NOT NULL
+JOIN game_servers gs ON gs.id = i.game_server_id
+JOIN organizations o ON o.id = i.organization_id
+LEFT JOIN player_server_activity psa ON psa.guild_id = pl.guild_id AND psa.server_id = i.game_server_id AND psa.player_id = pl.player_id
+CROSS JOIN LATERAL (SELECT (
+    psa.player_id IS NOT NULL
+    OR EXISTS (SELECT 1 FROM kills k WHERE k.guild_id = pl.guild_id AND k.server_id = i.game_server_id AND k.killer_player_id = pl.player_id)
+    OR EXISTS (SELECT 1 FROM deaths d WHERE d.guild_id = pl.guild_id AND d.server_id = i.game_server_id AND d.player_id = pl.player_id)
+  ) AS observed) obs
+WHERE pl.discord_user_id = $1 AND pl.status = 'VERIFIED'
+ORDER BY obs.observed DESC, psa.last_seen_at DESC NULLS LAST, i.id`
+	rows, err := r.pool.Query(ctx, q, discordUserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PlayerHome
+	for rows.Next() {
+		var home PlayerHome
+		if err := rows.Scan(&home.InstallationID, &home.OrganizationID, &home.OrganizationName,
+			&home.ServerName, &home.Platform, &home.ServerStatus, &home.DiscordGuildID, &home.DiscordGuildName, &home.LinkStatus, &home.Observed); err != nil {
+			return nil, err
+		}
+		out = append(out, home)
+	}
+	return out, rows.Err()
+}
+
+// HomeForDiscordUser returns the default server of HomesForDiscordUser (its first row), or
+// found=false.
+func (r *PlayerServerRepository) HomeForDiscordUser(ctx context.Context, discordUserID string) (home PlayerHome, found bool, err error) {
+	homes, err := r.HomesForDiscordUser(ctx, discordUserID)
+	if err != nil || len(homes) == 0 {
+		return PlayerHome{}, false, err
+	}
+	return homes[0], true, nil
+}
+
 // PlayerInstallationScope is what installationID resolves to for a stats lookup.
 type PlayerInstallationScope struct {
 	InstallationID    int64
@@ -144,15 +217,69 @@ SELECT EXISTS(SELECT 1 FROM player_server_activity WHERE guild_id=$1 AND server_
 // installation's OWN server (never the guild's other servers) - a genuinely new query, since the
 // existing Discord-facing GetPlayerProfile is guild-wide only (docs/PLAYER_API.md "Scoping").
 func (r *PlayerServerRepository) KillStats(ctx context.Context, guildID, serverID, playerID int64) (kills, deaths, headshots, longshots int, longestMeters float64, err error) {
+	s, err := r.CombatStats(ctx, guildID, serverID, playerID)
+	return s.Kills, s.Deaths, s.Headshots, s.Longshots, s.LongestMeters, err
+}
+
+// PlayerCombatStats is one player's combat figures on one installation's server. Deaths is every
+// death; PvPDeaths are the ones caused by another player (internal/deathstats).
+type PlayerCombatStats struct {
+	Kills, Deaths, PvPDeaths, Headshots, Longshots int
+	LongestMeters                                  float64
+}
+
+// PvEDeaths are the deaths not caused by another player.
+func (s PlayerCombatStats) PvEDeaths() int {
+	return int(deathstats.PvE(int64(s.Deaths), int64(s.PvPDeaths)))
+}
+
+// CombatStats is KillStats with the deaths split into PvP and PvE. Both death figures come from one
+// read of the same rows, so they always add up.
+func (r *PlayerServerRepository) CombatStats(ctx context.Context, guildID, serverID, playerID int64) (PlayerCombatStats, error) {
+	// The player's kills are read once (the four kill figures used to be four scans of the same rows).
 	const q = `
-SELECT
-  (SELECT COUNT(*) FROM kills WHERE guild_id=$1 AND server_id=$2 AND killer_player_id=$3),
-  (SELECT COUNT(*) FROM deaths WHERE guild_id=$1 AND server_id=$2 AND player_id=$3),
-  (SELECT COUNT(*) FROM kills WHERE guild_id=$1 AND server_id=$2 AND killer_player_id=$3 AND headshot),
-  (SELECT COUNT(*) FROM kills WHERE guild_id=$1 AND server_id=$2 AND killer_player_id=$3 AND longshot),
-  (SELECT COALESCE(MAX(distance),0) FROM kills WHERE guild_id=$1 AND server_id=$2 AND killer_player_id=$3)`
-	err = r.pool.QueryRow(ctx, q, guildID, serverID, playerID).Scan(&kills, &deaths, &headshots, &longshots, &longestMeters)
-	return
+SELECT k.kills, d.deaths, d.pvp_deaths, k.headshots, k.longshots, k.longest
+FROM (SELECT COUNT(*) AS kills,
+             COUNT(*) FILTER (WHERE headshot) AS headshots,
+             COUNT(*) FILTER (WHERE longshot) AS longshots,
+             COALESCE(MAX(distance),0) AS longest
+      FROM kills WHERE guild_id=$1 AND server_id=$2 AND killer_player_id=$3) k,
+     (SELECT COUNT(*) AS deaths, ` + deathstats.PvPCount + ` AS pvp_deaths
+      FROM deaths WHERE guild_id=$1 AND server_id=$2 AND player_id=$3) d`
+	var s PlayerCombatStats
+	err := r.pool.QueryRow(ctx, q, guildID, serverID, playerID).Scan(&s.Kills, &s.Deaths, &s.PvPDeaths, &s.Headshots, &s.Longshots, &s.LongestMeters)
+	return s, err
+}
+
+// PlayerLastKill is the most recent kill a player made on one installation's server.
+type PlayerLastKill struct {
+	KillID         int64
+	VictimName     string
+	Weapon         string
+	DistanceMeters float64
+	Headshot       bool
+	At             time.Time
+}
+
+// LastKill returns the player's most recent kill on the server, or nil when they have none.
+func (r *PlayerServerRepository) LastKill(ctx context.Context, guildID, serverID, playerID int64) (*PlayerLastKill, error) {
+	const q = `
+SELECT k.id, COALESCE(v.display_name, ''), COALESCE(NULLIF(k.weapon_display, ''), k.weapon_raw, ''),
+       COALESCE(k.distance, 0), k.headshot, COALESCE(k.event_time, k.created_at)
+FROM kills k
+LEFT JOIN players v ON v.id = k.victim_player_id
+WHERE k.guild_id=$1 AND k.server_id=$2 AND k.killer_player_id=$3
+ORDER BY COALESCE(k.event_time, k.created_at) DESC, k.id DESC
+LIMIT 1`
+	var k PlayerLastKill
+	err := r.pool.QueryRow(ctx, q, guildID, serverID, playerID).Scan(&k.KillID, &k.VictimName, &k.Weapon, &k.DistanceMeters, &k.Headshot, &k.At)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &k, nil
 }
 
 // BountyStats aggregates claimed bounties for one player, scoped to one installation's server. A

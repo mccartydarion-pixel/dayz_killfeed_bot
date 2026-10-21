@@ -42,6 +42,9 @@ RETURNING id, guild_id, provider, provider_service_id, game, platform, COALESCE(
 	return &s, nil
 }
 
+// A name the owner typed in Champion (display_name_custom) survives a re-selection of the same
+// service, and an empty name never replaces a stored one (docs/SERVER_NAME_SYNC.md).
+//
 // UpsertForInstallation creates or updates a game_servers row for a
 // customer-selected DayZ console service (section 7 of the console DayZ
 // backend task): guildID is the installation's own resolved guilds.id (via
@@ -60,12 +63,14 @@ func (r *SaaSServerRepository) UpsertForInstallation(ctx context.Context, organi
 	// treat a mismatch as a conflict (never silently proceed with a server
 	// owned by someone else - section 6 of the console DayZ backend task).
 	const q = `
-INSERT INTO game_servers(guild_id, provider, provider_service_id, game, platform, display_name, status, active, organization_id)
-VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
+INSERT INTO game_servers(guild_id, provider, provider_service_id, game, platform, display_name, status, active, organization_id, provider_display_name)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,NULLIF($10,''))
 ON CONFLICT(guild_id,provider,provider_service_id) DO UPDATE SET
     game=EXCLUDED.game,
     platform=EXCLUDED.platform,
-    display_name=EXCLUDED.display_name,
+    display_name=CASE WHEN game_servers.display_name_custom THEN game_servers.display_name
+        ELSE COALESCE(NULLIF(EXCLUDED.display_name,''), game_servers.display_name) END,
+    provider_display_name=COALESCE(EXCLUDED.provider_display_name, game_servers.provider_display_name),
     status=EXCLUDED.status,
     active=EXCLUDED.active,
     organization_id=CASE
@@ -74,10 +79,10 @@ ON CONFLICT(guild_id,provider,provider_service_id) DO UPDATE SET
         ELSE game_servers.organization_id
     END,
     updated_at=NOW()
-RETURNING id, guild_id, provider, provider_service_id, game, platform, COALESCE(display_name,''), status, active, created_at, updated_at, organization_id`
+RETURNING id, guild_id, provider, provider_service_id, game, platform, COALESCE(display_name,''), status, active, created_at, updated_at, organization_id, display_name_custom, COALESCE(provider_display_name,'')`
 	var out GameServer
-	err := r.pool.QueryRow(ctx, q, guildID, s.Provider, s.ProviderServiceID, s.Game, s.Platform, s.DisplayName, s.Status, s.Active, organizationID).
-		Scan(&out.ID, &out.GuildID, &out.Provider, &out.ProviderServiceID, &out.Game, &out.Platform, &out.DisplayName, &out.Status, &out.Active, &out.CreatedAt, &out.UpdatedAt, &out.OrganizationID)
+	err := r.pool.QueryRow(ctx, q, guildID, s.Provider, s.ProviderServiceID, s.Game, s.Platform, s.DisplayName, s.Status, s.Active, organizationID, s.ProviderName).
+		Scan(&out.ID, &out.GuildID, &out.Provider, &out.ProviderServiceID, &out.Game, &out.Platform, &out.DisplayName, &out.Status, &out.Active, &out.CreatedAt, &out.UpdatedAt, &out.OrganizationID, &out.DisplayNameCustom, &out.ProviderName)
 	if err != nil {
 		return nil, fmt.Errorf("upsert server for installation: %w", err)
 	}
@@ -105,10 +110,10 @@ func (r *SaaSServerRepository) ListByOrganization(ctx context.Context, organizat
 // GetScoped returns one game_servers row, requiring it belong to
 // organizationID (section 15 tenant isolation).
 func (r *SaaSServerRepository) GetScoped(ctx context.Context, organizationID, serverID int64) (*GameServer, error) {
-	const q = `SELECT id, guild_id, provider, provider_service_id, game, platform, COALESCE(display_name,''), status, active, created_at, updated_at, organization_id FROM game_servers WHERE organization_id=$1 AND id=$2`
+	const q = `SELECT id, guild_id, provider, provider_service_id, game, platform, COALESCE(display_name,''), status, active, created_at, updated_at, organization_id, display_name_custom, COALESCE(provider_display_name,'') FROM game_servers WHERE organization_id=$1 AND id=$2`
 	var s GameServer
 	err := r.pool.QueryRow(ctx, q, organizationID, serverID).
-		Scan(&s.ID, &s.GuildID, &s.Provider, &s.ProviderServiceID, &s.Game, &s.Platform, &s.DisplayName, &s.Status, &s.Active, &s.CreatedAt, &s.UpdatedAt, &s.OrganizationID)
+		Scan(&s.ID, &s.GuildID, &s.Provider, &s.ProviderServiceID, &s.Game, &s.Platform, &s.DisplayName, &s.Status, &s.Active, &s.CreatedAt, &s.UpdatedAt, &s.OrganizationID, &s.DisplayNameCustom, &s.ProviderName)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}

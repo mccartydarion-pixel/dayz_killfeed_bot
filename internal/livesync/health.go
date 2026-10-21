@@ -35,13 +35,21 @@ type SourceHealth struct {
 	LastFailureAt       *time.Time `json:"lastFailureAt,omitempty"`
 	ConsecutiveFailures int        `json:"consecutiveFailures"`
 	LastError           string     `json:"lastError,omitempty"`
-	Reads               int64      `json:"reads"`
-	ReadBytes           int64      `json:"readBytes"`
-	Records             int64      `json:"records"`
-	Live                int64      `json:"live"`
-	Backfill            int64      `json:"backfill"`
-	Unknown             int64      `json:"unknown"`
-	Rotations           int64      `json:"rotations"`
+	// GaveUp: the current file failed too often after its boot was over and is now read only at
+	// NextRetryAt intervals (watcher.go, fail). GaveUpReason is "gave up on <file> after N
+	// failures: <error class>". All four are cleared by the first successful read, and when the
+	// family moves to a newer file. The state stays FAILING while a file is given up.
+	GaveUp       bool       `json:"gaveUp"`
+	GaveUpAt     *time.Time `json:"gaveUpAt,omitempty"`
+	GaveUpReason string     `json:"gaveUpReason,omitempty"`
+	NextRetryAt  *time.Time `json:"nextRetryAt,omitempty"`
+	Reads        int64      `json:"reads"`
+	ReadBytes    int64      `json:"readBytes"`
+	Records      int64      `json:"records"`
+	Live         int64      `json:"live"`
+	Backfill     int64      `json:"backfill"`
+	Unknown      int64      `json:"unknown"`
+	Rotations    int64      `json:"rotations"`
 	// ListingBehindBytes: how far the listing's size is behind what a direct read found (bytes
 	// seen directly but not yet in the listing) - evidence of stale Nitrado metadata.
 	ListingBehindBytes int64          `json:"listingBehindBytes"`
@@ -196,6 +204,9 @@ func (s *Supervisor) logHealthLoop(ctx context.Context) {
 			}
 			if h.LastError != "" {
 				attrs = append(attrs, "last_error", h.LastError)
+			}
+			if h.GaveUp {
+				attrs = append(attrs, "gave_up", h.GaveUpReason)
 			}
 			slog.Info("component=livesync", attrs...)
 		}

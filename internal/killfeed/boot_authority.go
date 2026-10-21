@@ -2,6 +2,7 @@ package killfeed
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"regexp"
 	"sort"
@@ -55,8 +56,8 @@ type BootAuthorityStats struct {
 	RejectedOlder        int64 // older-boot candidates filtered out or refused
 	UnverifiedCandidates int64 // newer-stamped candidates whose header did not confirm the stamp (yet)
 	LastRejectedFile     string
-	LastCandidateFile string // canonical newer boot being verified
-	LastCandidateReason string // reason a newer candidate could not be verified; empty on acceptance
+	LastCandidateFile    string // canonical newer boot being verified
+	LastCandidateReason  string // reason a newer candidate could not be verified; empty on acceptance
 	LastCandidateCheckAt time.Time
 }
 
@@ -191,8 +192,24 @@ func (e *Engine) verifyBootHeader(ctx context.Context, lf nitrado.LogFile, stamp
 	if e.verifiedBoots[id] {
 		return true, ""
 	}
+	// A verification that read the file and rejected it is remembered for the file as listed
+	// (path, size, modified): the same bytes give the same answer, and re-downloading a
+	// mismatched or empty file on every rescan (every rescanInterval, per mount alias) wastes
+	// the Nitrado budget. A file that grows or is rewritten is read again.
+	failKey := fmt.Sprintf("%s|%d|%d", lf.Path, lf.Size, lf.Modified.Unix())
+	if reason, known := e.failedBootHeaders[failKey]; known {
+		return false, reason
+	}
+	fail := func(reason string) (bool, string) {
+		if e.failedBootHeaders == nil || len(e.failedBootHeaders) > 64 {
+			e.failedBootHeaders = map[string]string{}
+		}
+		e.failedBootHeaders[failKey] = reason
+		return false, reason
+	}
 	content, err := e.client.ReadLog(ctx, e.serviceID, lf.Path)
 	if err != nil {
+		// A failed download says nothing about the file: it is tried again next rescan.
 		return false, "read_failed:" + safeDownloadErrorClass(err)
 	}
 	if len(content) > bootHeaderReadLimit {
@@ -200,14 +217,14 @@ func (e *Engine) verifyBootHeader(ctx context.Context, lf nitrado.LogFile, stamp
 	}
 	m := admHeaderRe.FindSubmatch(content)
 	if m == nil {
-		return false, "no_adminlog_header"
+		return fail("no_adminlog_header")
 	}
 	header, err := time.Parse("2006-01-02 15:04:05", string(m[1])+" "+string(m[2]))
 	if err != nil {
-		return false, "unparseable_header"
+		return fail("unparseable_header")
 	}
 	if d := header.Sub(stamp); d > bootVerifyWindow || d < -bootVerifyWindow {
-		return false, "header_does_not_match_filename"
+		return fail("header_does_not_match_filename")
 	}
 	if e.verifiedBoots == nil {
 		e.verifiedBoots = map[string]bool{}
@@ -269,6 +286,9 @@ func (e *Engine) acceptBoot(lf nitrado.LogFile) {
 		return
 	}
 	file := canonicalADMID(lf.Path)
+	// A boot strictly newer than an already-accepted one is a server
+	// restart observed live: the restart disconnected everyone.
+	restart := !e.acceptedBoot.IsZero() && st.After(e.acceptedBoot)
 	if st.After(e.acceptedBoot) || e.acceptedFile == nil {
 		e.acceptedBoot = st
 		now := time.Now()
@@ -286,5 +306,8 @@ func (e *Engine) acceptBoot(lf nitrado.LogFile) {
 	if !st.Before(e.acceptedBoot) {
 		c := lf
 		e.acceptedFile = &c
+	}
+	if restart {
+		e.resetPresenceForNewBoot(st)
 	}
 }

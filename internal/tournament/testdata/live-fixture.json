@@ -1,0 +1,51 @@
+{
+  "installationId": 7,
+  "server": { "name": "Champions® 1v1 Tournament | M4 Only | PvP", "platform": "PLAYSTATION", "map": "chernarusplus", "discordInvite": "https://discord.gg/ASD43MQs7M", "onlinePlayers": 38 },
+  "tournament": {
+    "id": 12, "name": "Friday Night 1v1", "status": "LIVE",
+    "format": "SINGLE_ELIM", "teamSize": 1, "bracketSize": 8, "bestOf": 3, "seeding": "RANKED",
+    "startsAt": "2026-10-10T19:00:00Z", "signupOpensAt": "2026-10-08T19:00:00Z", "checkinMinutes": 30, "startedAt": "2026-10-10T19:02:11Z", "finishedAt": null,
+    "rules": { "allowedWeapons": ["M4-A1"], "arenas": [ { "no": 1, "name": "Arena 1", "x": 4618, "z": 10439, "radius": 150 } ], "matchTimerMinutes": 10, "readyMinutes": 2 },
+    "prizes": [ { "place": 1, "points": 1000, "title": "Friday Champion" }, { "place": 2, "points": 500, "title": null }, { "place": 3, "points": 250, "title": null } ],
+    "entries": [
+      { "id": 1, "seed": 1, "teamNo": 1, "checkedIn": true, "status": "ACTIVE", "players": [ { "playerId": 55, "name": "Ceiyxe", "rankTier": "GOLD", "faction": { "tag": "NEX", "name": "Nex", "color": "#E0162A" } } ] },
+      { "id": 2, "seed": 8, "teamNo": 2, "checkedIn": true, "status": "ELIMINATED", "players": [ { "playerId": 61, "name": "Varg", "rankTier": "SILVER", "faction": null } ] },
+      { "id": 3, "seed": 4, "teamNo": 3, "checkedIn": true, "status": "ACTIVE", "players": [ { "playerId": 72, "name": "Kestrel", "rankTier": "PLATINUM", "faction": { "tag": "WLF", "name": "Wolves", "color": "#4F8DFF" } } ] },
+      { "id": 4, "seed": 5, "teamNo": 4, "checkedIn": true, "status": "ELIMINATED", "players": [ { "playerId": 80, "name": "Saint", "rankTier": "BRONZE", "faction": null } ] },
+      { "id": 5, "seed": 2, "teamNo": 5, "checkedIn": true, "status": "ACTIVE", "players": [ { "playerId": 90, "name": "Tusk", "rankTier": "DIAMOND", "faction": { "tag": "NEX", "name": "Nex", "color": "#E0162A" } } ] },
+      { "id": 6, "seed": 7, "teamNo": 6, "checkedIn": false, "status": "DQ", "players": [ { "playerId": 91, "name": "Ghost", "rankTier": "ROOKIE", "faction": null } ] },
+      { "id": 7, "seed": 3, "teamNo": 7, "checkedIn": true, "status": "ACTIVE", "players": [ { "playerId": 95, "name": "Bishop", "rankTier": "GOLD", "faction": null } ] },
+      { "id": 8, "seed": 6, "teamNo": 8, "checkedIn": true, "status": "ACTIVE", "players": [ { "playerId": 99, "name": "Lynx", "rankTier": "SILVER", "faction": { "tag": "WLF", "name": "Wolves", "color": "#4F8DFF" } } ] }
+    ],
+    "matches": [
+      { "id": 101, "round": 1, "position": 1, "roundName": "Quarter-final", "a": 1, "b": 2, "status": "DONE", "scoreA": 2, "scoreB": 0, "winner": 1, "arena": 1, "calledAt": "2026-10-10T19:02:11Z", "startedAt": "2026-10-10T19:04:00Z", "endedAt": "2026-10-10T19:09:40Z", "nextMatchId": 105,
+        "rounds": [ { "n": 1, "winner": 1, "killerName": "Ceiyxe", "victimName": "Varg", "weapon": "M4-A1", "distance": 42, "at": "2026-10-10T19:06:02Z", "counted": true, "flag": null }, { "n": 2, "winner": 1, "killerName": "Ceiyxe", "victimName": "Varg", "weapon": "M4-A1", "distance": 87, "at": "2026-10-10T19:09:40Z", "counted": true, "flag": null } ] },
+      { "id": 102, "round": 1, "position": 2, "roundName": "Quarter-final", "a": 3, "b": 4, "status": "DONE", "scoreA": 2, "scoreB": 1, "winner": 3, "arena": 1, "calledAt": "2026-10-10T19:10:00Z", "startedAt": "2026-10-10T19:12:00Z", "endedAt": "2026-10-10T19:21:15Z", "nextMatchId": 105,
+        "rounds": [ { "n": 1, "winner": 4, "killerName": "Saint", "victimName": "Kestrel", "weapon": "M4-A1", "distance": 23, "at": "2026-10-10T19:14:10Z", "counted": true, "flag": null }, { "n": 2, "winner": 3, "killerName": "Kestrel", "victimName": "Saint", "weapon": "M4-A1", "distance": 61, "at": "2026-10-10T19:17:30Z", "counted": true, "flag": null }, { "n": 3, "winner": 3, "killerName": "Kestrel", "victimName": "Saint", "weapon": "M4-A1", "distance": 55, "at": "2026-10-10T19:21:15Z", "counted": true, "flag": null } ] },
+      { "id": 103, "round": 1, "position": 3, "roundName": "Quarter-final", "a": 5, "b": 6, "status": "FORFEIT", "scoreA": 0, "scoreB": 0, "winner": 5, "arena": 1, "calledAt": "2026-10-10T19:22:00Z", "startedAt": null, "endedAt": "2026-10-10T19:24:00Z", "nextMatchId": 106, "rounds": [] },
+      { "id": 104, "round": 1, "position": 4, "roundName": "Quarter-final", "a": 7, "b": 8, "status": "LIVE", "scoreA": 1, "scoreB": 1, "winner": null, "arena": 1, "calledAt": "2026-10-10T19:24:30Z", "startedAt": "2026-10-10T19:26:00Z", "endedAt": null, "nextMatchId": 106,
+        "rounds": [ { "n": 1, "winner": 7, "killerName": "Bishop", "victimName": "Lynx", "weapon": "M4-A1", "distance": 38, "at": "2026-10-10T19:28:05Z", "counted": true, "flag": null }, { "n": 2, "winner": 8, "killerName": "Lynx", "victimName": "Bishop", "weapon": "KA-M", "distance": 44, "at": "2026-10-10T19:31:12Z", "counted": true, "flag": "WEAPON" } ] },
+      { "id": 105, "round": 2, "position": 1, "roundName": "Semi-final", "a": 1, "b": 3, "status": "PENDING", "scoreA": 0, "scoreB": 0, "winner": null, "arena": null, "calledAt": null, "startedAt": null, "endedAt": null, "nextMatchId": 107, "rounds": [] },
+      { "id": 106, "round": 2, "position": 2, "roundName": "Semi-final", "a": 5, "b": null, "status": "PENDING", "scoreA": 0, "scoreB": 0, "winner": null, "arena": null, "calledAt": null, "startedAt": null, "endedAt": null, "nextMatchId": 107, "rounds": [] },
+      { "id": 107, "round": 3, "position": 1, "roundName": "Final", "a": null, "b": null, "status": "PENDING", "scoreA": 0, "scoreB": 0, "winner": null, "arena": null, "calledAt": null, "startedAt": null, "endedAt": null, "nextMatchId": null, "rounds": [] }
+    ],
+    "current": { "matchId": 104, "timerEndsAt": "2026-10-10T19:36:00Z" },
+    "results": [
+      { "matchId": 104, "n": 2, "winner": 8, "killerName": "Lynx", "victimName": "Bishop", "weapon": "KA-M", "distance": 44, "at": "2026-10-10T19:31:12Z", "counted": true, "flag": "WEAPON" },
+      { "matchId": 104, "n": 1, "winner": 7, "killerName": "Bishop", "victimName": "Lynx", "weapon": "M4-A1", "distance": 38, "at": "2026-10-10T19:28:05Z", "counted": true, "flag": null },
+      { "matchId": 102, "n": 3, "winner": 3, "killerName": "Kestrel", "victimName": "Saint", "weapon": "M4-A1", "distance": 55, "at": "2026-10-10T19:21:15Z", "counted": true, "flag": null }
+    ],
+    "champion": null
+  },
+  "fighters": {
+    "55": { "kills": 89, "deaths": 243, "kd": 0.37, "headshots": 0, "longestKillMeters": 130, "favouriteWeapon": "M4-A1", "record": { "wins": 1, "losses": 0, "roundsWon": 2, "roundsLost": 0 } },
+    "61": { "kills": 40, "deaths": 51, "kd": 0.78, "headshots": 9, "longestKillMeters": 212, "favouriteWeapon": "M4-A1", "record": { "wins": 0, "losses": 1, "roundsWon": 0, "roundsLost": 2 } },
+    "72": { "kills": 1284, "deaths": 211, "kd": 6.09, "headshots": 402, "longestKillMeters": 812, "favouriteWeapon": "M4-A1", "record": { "wins": 1, "losses": 0, "roundsWon": 2, "roundsLost": 1 } },
+    "80": { "kills": 37, "deaths": 52, "kd": 0.71, "headshots": 9, "longestKillMeters": 412, "favouriteWeapon": "KA-M", "record": { "wins": 0, "losses": 1, "roundsWon": 1, "roundsLost": 2 } },
+    "90": { "kills": 2450, "deaths": 300, "kd": 8.17, "headshots": 900, "longestKillMeters": 1012, "favouriteWeapon": "M4-A1", "record": { "wins": 1, "losses": 0, "roundsWon": 0, "roundsLost": 0 } },
+    "91": { "kills": 4, "deaths": 19, "kd": 0.21, "headshots": 1, "longestKillMeters": 68, "favouriteWeapon": "BK-18", "record": { "wins": 0, "losses": 1, "roundsWon": 0, "roundsLost": 0 } },
+    "95": { "kills": 310, "deaths": 190, "kd": 1.63, "headshots": 77, "longestKillMeters": 388, "favouriteWeapon": "M4-A1", "record": { "wins": 0, "losses": 0, "roundsWon": 1, "roundsLost": 1 } },
+    "99": { "kills": 150, "deaths": 160, "kd": 0.94, "headshots": 30, "longestKillMeters": 240, "favouriteWeapon": "KA-M", "record": { "wins": 0, "losses": 0, "roundsWon": 1, "roundsLost": 1 } }
+  },
+  "generatedAt": "2026-10-10T19:31:20Z"
+}

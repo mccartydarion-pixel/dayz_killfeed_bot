@@ -2,8 +2,10 @@ package server
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/yourname/dayz-killfeed/internal/config"
@@ -30,7 +32,11 @@ func New(cfg *config.Config, state *State) (*Server, error) {
 	mux.HandleFunc("/health", HealthHandler)
 	mux.HandleFunc("/live", LiveHandler)
 	mux.HandleFunc("/ready", state.ReadyHandler)
-	mux.HandleFunc("/api/v1/status", state.StatusHandler)
+	// /api/v1/status exposes runtime internals (bot name, log paths, DB pool
+	// stats, Nitrado status), so it needs the same WEBSITE_API_SECRET bearer
+	// as /api/runtime/status. /health, /live and /ready stay open: Railway's
+	// healthcheck and readiness probes carry no credentials.
+	mux.HandleFunc("/api/v1/status", requireWebsiteBearer(cfg, state.StatusHandler))
 
 	addr := "0.0.0.0:" + cfg.Port
 	if cfg.Port == "" {
@@ -42,8 +48,13 @@ func New(cfg *config.Config, state *State) (*Server, error) {
 		Handler:           mux,
 		ReadTimeout:       5 * time.Second,
 		ReadHeaderTimeout: 3 * time.Second,
-		WriteTimeout:      10 * time.Second,
-		IdleTimeout:       30 * time.Second,
+		// WriteTimeout bounds the whole response, counted from the end of the request headers.
+		// Some handlers legitimately run past 10 s (stadium build/remove 90 s, ADM source scan 90 s,
+		// organization erase 30 s, Nitrado ban/whitelist 20 s, Stripe 15 s): at 10 s their work
+		// finished but the response was dropped and the website retried it. Each handler bounds
+		// its own work with a context deadline; this only has to outlast the longest one.
+		WriteTimeout: 2 * time.Minute,
+		IdleTimeout:  30 * time.Second,
 	}
 
 	return &Server{httpServer: s, mux: mux, config: cfg, state: state}, nil
@@ -59,6 +70,37 @@ func (s *Server) Handle(pattern string, handler http.HandlerFunc) {
 	s.mux.HandleFunc(pattern, handler)
 }
 
+// Handler returns the server's mux, so tests can drive the registered routes without a listener.
+func (s *Server) Handler() http.Handler {
+	if s == nil || s.mux == nil {
+		return http.NotFoundHandler()
+	}
+	return s.mux
+}
+
+// requireWebsiteBearer wraps next so it runs only for a request carrying
+// "Authorization: Bearer <WEBSITE_API_SECRET>" (constant-time compare, the
+// same rule as app.validBearerToken). An unset secret refuses everything.
+func requireWebsiteBearer(cfg *config.Config, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if cfg == nil || !validBearer(r.Header.Get("Authorization"), cfg.WebsiteAPISecret) {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "unauthorized"})
+			return
+		}
+		next(w, r)
+	}
+}
+
+// validBearer reports whether header is exactly "Bearer <secret>", compared
+// in constant time. An empty secret never matches.
+func validBearer(header, secret string) bool {
+	const prefix = "Bearer "
+	if secret == "" || !strings.HasPrefix(header, prefix) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(strings.TrimPrefix(header, prefix)), []byte(secret)) == 1
+}
+
 func configLoadError() error {
 	return nil
 }
@@ -70,16 +112,28 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	}
 	go func() {
 		<-ctx.Done()
-		_ = s.Shutdown(context.Background())
+		// ctx is already done here, so derive the drain deadline from a fresh
+		// context: in-flight requests get shutdownTimeout to finish, then the
+		// listener is closed regardless.
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		_ = s.Shutdown(shutdownCtx)
 	}()
 	return s.httpServer.ListenAndServe()
 }
 
-// Shutdown gracefully stops the HTTP server.
+// shutdownTimeout bounds how long a graceful Shutdown waits for in-flight
+// requests before the server is closed anyway.
+const shutdownTimeout = 10 * time.Second
+
+// Shutdown gracefully stops the HTTP server. It waits at most shutdownTimeout
+// for in-flight requests even when ctx has no deadline of its own.
 func (s *Server) Shutdown(ctx context.Context) error {
 	if s == nil || s.httpServer == nil {
 		return nil
 	}
+	ctx, cancel := context.WithTimeout(ctx, shutdownTimeout)
+	defer cancel()
 	return s.httpServer.Shutdown(ctx)
 }
 

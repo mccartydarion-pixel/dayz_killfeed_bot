@@ -22,8 +22,8 @@ func (a *App) registerAdminBillingRoutes() {
 	if a.HTTPServer == nil {
 		return
 	}
-	a.HTTPServer.Handle("GET /api/admin/billing/plans", a.adminRoute(a.handleAdminBillingPlans))
-	a.HTTPServer.Handle("GET /api/admin/billing/payments", a.adminRoute(a.handleAdminBillingPayments))
+	a.adminHandle("GET /api/admin/billing/plans", a.handleAdminBillingPlans)
+	a.adminHandle("GET /api/admin/billing/payments", a.handleAdminBillingPayments)
 }
 
 // --- plan catalog (Part C) ------------------------------------------------------------------------

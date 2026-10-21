@@ -14,3 +14,12 @@ The category is created with an `@everyone` view deny and explicit bot view/send
 The category is created when an installation is connected to the guild and the normal setup permissions and available channel system are satisfied. No bot production deployment or actual Discord channel mutation is performed by this PR. Before any future real C.A.S.E. notifications, separately review detector eligibility, real ADM acceptance, staff authorization, private route permissions, deduplication and evidence privacy.
 
 A customer-manually-selected C.A.S.E. channel is never overwritten. If it is public, setup and the read-only layout status report it as BROKEN rather than treating it as a private staff destination or posting a card into it. Similarly, a category with an explicit public view override is not eligible for automatic reuse even if it also contains an explicit deny. This does not attempt to audit every Discord role permission; staff access still requires guild-owner review.
+
+## Send test alert
+
+`POST .../installations/{installationID}/admin/case/alerts/test` (server owner only; used by the dashboard's **Send test alert** button) posts one sample staff alert card into the installation's `CASE_ALERTS` channel so owners can see what alerts will look like.
+
+- The card is built by the real alert code from made-up sample data ("Sample Player (not real)"). It is marked **TEST** in the message text, the title and the footer. Mentions are disabled.
+- It is sent only when the `CASE_ALERTS` route resolves to a channel in the installation's own guild, under a category that denies `@everyone` with no public override on the category or the channel, and the bot can view, send and embed there. Otherwise nothing is sent and the owner sees why.
+- It is limited to one test every 30 seconds per installation and audited as `CASE_TEST_ALERT_SENT`.
+- It never reads player data or evidence and enables no detector or publisher.

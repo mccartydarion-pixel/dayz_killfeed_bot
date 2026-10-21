@@ -133,3 +133,38 @@ func TestCapabilitiesForLevelNoneIsEmpty(t *testing.T) {
 		t.Fatalf("expected zero capabilities for LevelNone, got %v", got)
 	}
 }
+
+// An ADMINISTRATOR runs the server exactly as the OWNER does: every capability is held by
+// Administrator and up, with one stated exception - wiping the server's storage (SERVER_WIPE)
+// destroys every player's progress and stays the OWNER's. Only granting the OWNER level itself
+// stays the owner's otherwise (billing is an organization-role check outside this package).
+func TestAdministratorHoldsEveryCapabilityButTheWipe(t *testing.T) {
+	owner := CapabilitiesForLevel(LevelOwner)
+	admin := CapabilitiesForLevel(LevelAdministrator)
+	if len(owner) == 0 || len(owner) != len(admin)+1 {
+		t.Fatalf("owner holds %d capabilities, administrator %d; expected the owner to hold exactly one more", len(owner), len(admin))
+	}
+	adminSet := make(map[Capability]bool, len(admin))
+	for _, c := range admin {
+		adminSet[c] = true
+	}
+	for _, c := range owner {
+		if !adminSet[c] && c != CapServerWipe {
+			t.Fatalf("%s is held by the owner but not the administrator; only SERVER_WIPE may be", c)
+		}
+	}
+	if adminSet[CapServerWipe] || !Allows(LevelOwner, CapServerWipe) {
+		t.Fatal("SERVER_WIPE must be the owner's alone")
+	}
+	if !Allows(LevelAdministrator, CapServerSettingsManage) || Allows(LevelModerator, CapServerSettingsManage) {
+		t.Fatal("SERVER_SETTINGS_MANAGE is an Administrator-and-up capability")
+	}
+	for capability, need := range requiredLevel {
+		if need > LevelAdministrator && capability != CapServerWipe {
+			t.Errorf("%s requires %s; nothing but SERVER_WIPE may require more than ADMINISTRATOR", capability, need)
+		}
+	}
+	if CanGrant(LevelAdministrator, LevelOwner) {
+		t.Fatal("an administrator must still not grant the OWNER level")
+	}
+}

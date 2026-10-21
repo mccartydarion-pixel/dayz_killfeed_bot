@@ -67,11 +67,11 @@ type EmbedActivationDTO struct {
 }
 
 // embedActivationStatus derives the status of one route from its stored template and mode.
-func (a *App) embedActivationStatus(routeKey string, stored *embedtemplates.Stored, mode string) EmbedActivationDTO {
+func (a *App) embedActivationStatus(instID int64, routeKey string, stored *embedtemplates.Stored, mode string) EmbedActivationDTO {
 	if mode != repository.EmbedModeCustom {
 		mode = repository.EmbedModeDefault
 	}
-	st := EmbedActivationDTO{RouteKey: routeKey, Mode: mode, RouteSupported: embedrender.RouteSupported(routeKey), GlobalEnabled: a.EmbedRenderer.Enabled()}
+	st := EmbedActivationDTO{RouteKey: routeKey, Mode: mode, RouteSupported: embedrender.RouteSupported(routeKey), GlobalEnabled: a.customEmbedsFor(instID)}
 	if stored != nil {
 		st.TemplateSaved = true
 		st.TemplateEnabled = stored.Config.Enabled
@@ -147,7 +147,7 @@ func (a *App) handlePutEmbedActivation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Mode == repository.EmbedModeCustom {
-		if st := a.embedActivationStatus(routeKey, stored, req.Mode); !st.CanActivate {
+		if st := a.embedActivationStatus(instID, routeKey, stored, req.Mode); !st.CanActivate {
 			code := codeConflict
 			if st.ActivationUnavailable == embedReasonRouteUnsupported {
 				code = codeEmbedCustomNotSupported
@@ -163,5 +163,5 @@ func (a *App) handlePutEmbedActivation(w http.ResponseWriter, r *http.Request) {
 	a.EmbedRenderer.Invalidate(instID, routeKey) // the next event uses the new selection
 	slog.Info("component=saas_api", "event", "embed_activation_changed", "organization_id", orgID, "installation_id", instID,
 		"route_key", routeKey, "mode", req.Mode, "acting_user_id", userID)
-	writeSaaSJSON(w, http.StatusOK, a.embedActivationStatus(routeKey, stored, req.Mode))
+	writeSaaSJSON(w, http.StatusOK, a.embedActivationStatus(instID, routeKey, stored, req.Mode))
 }

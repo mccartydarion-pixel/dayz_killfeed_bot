@@ -19,10 +19,10 @@ import (
 
 type deltaLogSource struct {
 	fakeLogSource
-	deltaReads  int
-	deltaFail   bool // force every ReadDelta call to report ok=false, to test the full-read fallback
-	sawFrom     []int64
-	sawTarget   []int64
+	deltaReads int
+	deltaFail  bool // force every ReadDelta call to report ok=false, to test the full-read fallback
+	sawFrom    []int64
+	sawTarget  []int64
 }
 
 func (f *deltaLogSource) ReadDelta(ctx context.Context, serviceID, path string, fromOffset, targetSize int64, mode nitrado.DeltaMode) (*nitrado.PartialReadResult, bool) {
@@ -48,7 +48,7 @@ func (f *deltaLogSource) ReadDelta(ctx context.Context, serviceID, path string, 
 // oracleParser recognizes any non-empty line as one PLAYER_HIT event, carrying the exact line text
 // in Weapon so a test can compare recognized events by identity/order without depending on the real
 // ADM grammar - deliberately dependency-free (never touches persistence/publisher, both nil in these
-// tests - see engine.go's processLine: a PLAYER_HIT event is never persisted or published, so
+// tests - see engine_process.go's processLine: a PLAYER_HIT event is never persisted or published, so
 // processLine's only side effects are dedupe/counters, safe with no other engine wiring).
 type oracleParser struct{}
 
@@ -279,7 +279,9 @@ type memCheckpointStore struct {
 func newMemCheckpointStore() *memCheckpointStore {
 	return &memCheckpointStore{saved: map[string]DurableCheckpoint{}}
 }
-func (m *memCheckpointStore) key(guildID, serverID int64) string { return fmt.Sprintf("%d:%d", guildID, serverID) }
+func (m *memCheckpointStore) key(guildID, serverID int64) string {
+	return fmt.Sprintf("%d:%d", guildID, serverID)
+}
 func (m *memCheckpointStore) LoadADMCheckpoint(ctx context.Context, guildID, serverID int64) (*DurableCheckpoint, error) {
 	c, ok := m.saved[m.key(guildID, serverID)]
 	if !ok {
@@ -299,7 +301,7 @@ func (m *memCheckpointStore) SaveADMCheckpoint(ctx context.Context, guildID, ser
 //
 // engine1 deliberately has NO checkpoint store attached before its first poll: attaching an empty
 // store to a brand-new engine is itself the "first-ever-connect" case, which correctly triggers the
-// cold-start-at-tail protection (engine.go's startAtTail/cold_start_baseline_required branch) and
+// cold-start-at-tail protection (engine_discovery.go's startAtTail/cold_start_baseline_required branch) and
 // skips existing content - that is desired behavior (section 22), not what this test exercises. So
 // engine1 stands in for "the process that already has an established, in-memory tracked offset" and
 // its resulting checkpoint is persisted directly into the store, exactly as saveDurableCheckpoint
@@ -336,9 +338,8 @@ func TestEngineDeltaCheckpointRestartResumesSafely(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// "Restart": a brand-new Engine, same checkpoint store, same file now grown. Modified must
-	// advance too - ShouldReadAgain (tracker.go) detects growth from a changed Modified timestamp,
-	// not size alone, matching how Nitrado's real directory-listing metadata signals a live file.
+	// "Restart": a brand-new Engine, same checkpoint store, same file now grown (Modified advances
+	// too, as Nitrado's listing does when a write lands in a later second).
 	grown := initial + "line three\n"
 	engine2, fake2 := newDeltaEngine(nitrado.DeltaModeAuto, grown, int64(len(grown)))
 	fake2.logs[0].Modified = modified.Add(time.Minute)
@@ -436,7 +437,7 @@ func TestEngineDeltaByteForByteOracle(t *testing.T) {
 func TestEngineDeltaLoadComparisonBytesTransferred(t *testing.T) {
 	const polls = 1000
 	const growthPerPoll = 7 // bytes/poll, deliberately not a clean divisor of maxChunkBytes
-	base := "S" // 1-byte seed, no newline - never parsed as a line until later growth adds one
+	base := "S"             // 1-byte seed, no newline - never parsed as a line until later growth adds one
 
 	fullEngine, fakeFull := newDeltaEngine(nitrado.DeltaModeOff, base, int64(len(base)))
 	deltaEngine, fakeDelta := newDeltaEngine(nitrado.DeltaModeAuto, base, int64(len(base)))

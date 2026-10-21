@@ -25,7 +25,9 @@ type caseReviewHistoryPage struct {
 // It cannot return notes/evidence/player data or mutate review state.
 func (a *App) handleAntiCheatCaseHistory(w http.ResponseWriter, r *http.Request) {
 	ac, ok := a.requireCapability(w, r, permissions.CapPlayerLocationView)
-	if !ok { return }
+	if !ok {
+		return
+	}
 	if ac.scope.ServerID == nil || *ac.scope.ServerID <= 0 {
 		writeSaaSError(w, codeInvalidRequest, "no DayZ server selected")
 		return
@@ -34,7 +36,9 @@ func (a *App) handleAntiCheatCaseHistory(w http.ResponseWriter, r *http.Request)
 		writeSaaSError(w, codeInternalError, "C.A.S.E. review unavailable")
 		return
 	}
-	if !enforceRateLimit(w, a.saasAdminReadLimiter, rateLimitKey(r)) { return }
+	if !enforceRateLimit(w, a.saasAdminReadLimiter, rateLimitKey(r)) {
+		return
+	}
 	caseID, err := strconv.ParseInt(r.PathValue("caseID"), 10, 64)
 	if err != nil || caseID <= 0 {
 		writeSaaSError(w, codeInvalidRequest, "invalid case ID")
@@ -76,6 +80,6 @@ func (a *App) handleAntiCheatCaseHistory(w http.ResponseWriter, r *http.Request)
 		out.NextCursor = &cursor
 	}
 	a.recordAudit(ctx, ac, "CASE_REVIEW_HISTORY_VIEWED", "", "", "success", nil,
-		map[string]any{"caseId":caseID,"count":len(items)})
+		map[string]any{"caseId": caseID, "count": len(items)})
 	writeSaaSJSON(w, http.StatusOK, out)
 }

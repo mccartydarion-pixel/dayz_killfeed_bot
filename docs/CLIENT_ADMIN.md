@@ -41,6 +41,16 @@ permission mapping granting a Level at or below their own resolved Level - enfor
 
 ## Capability -> Level table
 
+An ADMINISTRATOR runs the server exactly as the OWNER does: every capability below is held by Administrator and up, with one exception - `SERVER_WIPE`, the Nitrado storage wipe that destroys every player's and the world's data, requires the OWNER level. The other things that stay the organization owner's are changing the organization's plan/billing (`docs/BILLING.md`, an organization-role check, not a capability) and granting the OWNER level itself (`CanGrant`).
+
+In Discord as on the website: a member whose Discord role is mapped to ADMINISTRATOR (or OWNER) may
+run the admin slash commands (`/setup`, `/server`, `/admin`, `/features` and the admin subcommands)
+without Discord's own Administrator or Manage Server permission (`internal/discord/admin_gate.go`;
+those commands therefore carry no Discord default-member permission). The mapping is read per
+installation: a Discord server with several DayZ servers holds one installation each, and a role
+mapped on one of them is an admin for the guild's selected server (what the commands act on) and for
+the server a `/server select|disconnect|repair` names, never for the other installations.
+
 | Capability | Level | Notes |
 |---|---|---|
 | `PERMISSIONS_VIEW` | Moderator | list role mappings + read audit log |
@@ -52,12 +62,14 @@ permission mapping granting a Level at or below their own resolved Level - enfor
 | `FACTION_DISSOLVE` | Administrator | HIGH RISK, typed confirmation `"DISSOLVE"` |
 | `BOUNTY_MANAGE` | Moderator | reset (bulk-cancel) a target's active bounties |
 | `PLAYER_STATS_RESET` | Administrator | streak only this phase - see Deferred |
-| `SERVER_STATS_RESET` | Owner | HIGH RISK, typed confirmation `"RESET EVERYONE"` |
+| `SERVER_STATS_RESET` | Administrator | HIGH RISK, typed confirmation `"RESET EVERYONE"` |
 | `SERVER_RESTART` | Moderator | MEDIUM RISK, typed confirmation `"RESTART"`, 1/5min |
 | `SERVER_STOP` | Administrator | HIGH RISK, typed confirmation `"STOP"`, 1/min |
 | `SERVER_AUTOSTART` | Administrator | DB columns shipped; monitor loop deferred, see below |
-| `SERVER_NAME_EDIT` | Administrator | Champion display name only, never a Nitrado rename |
+| `SERVER_NAME_EDIT` | Administrator | Champion display name only, never a Nitrado rename. A typed name is custom and is not replaced when the Nitrado name changes (`docs/SERVER_NAME_SYNC.md`) |
 | `WHITELIST_MANAGE` | Gatekeeper | |
+| `PRIORITY_MANAGE` | Administrator | Nitrado priority list; takes effect at the next server restart |
+| `SERVER_LOGS_VIEW` | Administrator | Reading the game server log files (docs/SERVER_LOGS.md) |
 | `BANLIST_MANAGE` | Moderator | |
 | `PLAYER_LAST_ONLINE_VIEW` | Moderator | |
 | `FEED_LOCATION_MANAGE` | Moderator | per-route `show_location` toggle |
@@ -68,9 +80,18 @@ permission mapping granting a Level at or below their own resolved Level - enfor
 | `ZONE_VIEW` | Moderator | Phase 4, `docs/ZONES_UAV_RADAR.md` - list/read zones, ignore/authorized/ban lists, intruders/intrusions |
 | `ZONE_MANAGE` | Administrator | Phase 4 - zone CRUD (+ `UAV_MANAGE` for UAV/BASE_RADAR), authorized-entry CRUD, ban CRUD |
 | `ZONE_IGNORE_MANAGE` | Administrator | Phase 4 - ignore-entry CRUD, its own capability separate from `ZONE_MANAGE` |
-| `UAV_MANAGE` | Owner | Phase 4 - required in addition to `ZONE_MANAGE` for any UAV/BASE_RADAR zone |
+| `UAV_MANAGE` | Administrator | Phase 4 - required in addition to `ZONE_MANAGE` for any UAV/BASE_RADAR zone |
 | `INTRUSION_ACK` | Moderator | Phase 4 - acknowledge an active intrusion |
 | `HEATMAP_VIEW` | Moderator | Phase 5, `docs/HEATMAPS.md` - aggregate PvP/activity/intrusion heatmap queries |
+| `FEATURE_SETTINGS_VIEW` | Moderator | read the opt-in feature settings and the server's hot zones (`docs/HOT_ZONES.md`) |
+| `FEATURE_SETTINGS_MANAGE` | Administrator | change hot-zone and fight-replay settings (`docs/HOT_ZONES.md`, `docs/FIGHT_REPLAY.md`) |
+| `NETWORK_MANAGE` | Administrator | list or unlist the server in the cross-server network (`docs/NETWORK.md`) |
+| `FEED_IDENTITY_MANAGE` | Administrator | the name and avatar feeds post under (`docs/FEED_IDENTITY.md`) |
+| `MAP_ROTATION_MANAGE` | Administrator | map rotation with a player vote: settings, the file check and the staff choice of the next map (`docs/MAP_ROTATION.md`) |
+| `SERVER_STATUS_VIEW` | Administrator | the owner-facing server status: is the feed working, Nitrado and Discord reachability, position logging (`docs/SERVER_STATUS.md`) |
+| `RETENTION_VIEW` | Administrator | retention dashboard and lapsed-player list (`docs/RETENTION.md`) |
+| `SERVER_SETTINGS_MANAGE` | Administrator | Nitrado's own game switches (storage wipe, mouse & keyboard, whitelist, base/container damage, respawn rules, multi-account mitigation); Nitrado applies them at the next server restart |
+| `SERVER_WIPE` | **Owner** | required IN ADDITION to `SERVER_SETTINGS_MANAGE` for the `wipe_on_next_restart` switch; enabling it is HIGH RISK, typed confirmation `"WIPE"` |
 
 ## Current Actor Client Admin Permissions (Phase 1 Part 2)
 
@@ -116,6 +137,38 @@ calls with the same Level always return byte-identical `capabilities`). `discord
 live role list Discord returned during resolution - omitted (not fabricated as empty) when the
 organization-owner bootstrap resolved the Level without a Discord lookup at all.
 
+## Staff access to the Server Hub
+
+The Staff page maps Discord roles to levels, and that mapping is also how staff reach the
+website's Server Hub. Nobody is invited and nothing is stored per person:
+
+- `POST /api/saas/staff/installations` with `{"guilds": [...]}` (the Discord guild IDs from the
+  user's Discord sign-in) returns every installation in those guilds where the acting user holds
+  a mapped role, with the level: `organizationId`, `organizationName`, `installationId`,
+  `discordGuildId`, `guildName`, `level`. Organizations the user is a member of are left out:
+  they come from `GET /api/saas/organizations`.
+- The organization read routes the Server Hub needs (organization, dashboard, installation,
+  setup progress, hub, settings, channel routes and settings, channel layout, embed templates,
+  trial, broadcasts) accept such a user with the effective role `STAFF`, only for the
+  installations they staff. The dashboard lists only those installations.
+- A staff member at the ADMINISTRATOR level (or OWNER) is an organization manager for the
+  installations they staff (`requireOrganizationManager`): the Discord and channel set-up,
+  Nitrado, server selection, setup completion, embed templates, tournaments, stadium, the
+  economy admin view and faction moderation admit them like an organization OWNER/ADMIN. A
+  MODERATOR or GATEKEEPER staff member is refused there, and each client-admin route still
+  checks the level's capability. Billing and trial start refuse `STAFF` of any level: the plan
+  is the owner's (`requireOrganizationOwner`). Three organization-wide routes stay with the
+  organization's own OWNER/ADMIN members (`requireOrganizationRole`), because they change what
+  every server of the organization runs on: connecting or replacing the Nitrado token
+  (`POST .../nitrado/connect`), connecting another Discord server, and creating an installation.
+  The installation recheck (`POST .../discord/verify-installation`) is a read that members of
+  any role and staff Administrators may run (`requireOrganizationViewer`).
+- Access follows the role: roles are re-read from Discord every 15 s, so removing the role in
+  Discord removes the access.
+- `GET .../admin/discord-roles` (PERMISSIONS_VIEW) lists the guild's roles a member can hold,
+  highest first, for the Staff page's role picker; `GET .../admin/permissions` items carry
+  `discordRoleName`.
+
 ## Routes
 
 All under `/api/saas/organizations/{organizationID}/installations/{installationID}/admin`, same
@@ -135,13 +188,18 @@ POST   /warnings/{playerID}/{warningID}/clear  WARNINGS_CLEAR
 
 POST   /bounties/{playerID}/reset              BOUNTY_MANAGE
 
-GET    /factions                               FACTION_MODERATE
+GET    /factions                               FACTION_MODERATE     (legacy Discord-side factions)
 POST   /factions/{factionID}/dissolve          FACTION_DISSOLVE     body: {"confirm":"DISSOLVE"}
+GET    /hub-factions                           FACTION_MODERATE     Faction Hub (website) factions: leader, branding, pending count
+PUT    /hub-factions/{factionID}               FACTION_MODERATE     body: {name?, tag?, description?, recruitmentStatus?, releaseFlag?, releaseArmband?, reason}
+DELETE /hub-factions/{factionID}/members/{id}  FACTION_MODERATE     body: {reason}; the leader is protected (transfer first)
+POST   /hub-factions/{factionID}/transfer-leadership FACTION_MODERATE body: {memberId, reason}
+POST   /hub-factions/{factionID}/dissolve      FACTION_DISSOLVE     body: {"confirm":"DISSOLVE", reason}
 
 GET    /players/{playerID}/last-online         PLAYER_LAST_ONLINE_VIEW
 GET    /economy/accounts?q=                    ECONOMY_VIEW
 
-PUT    /server/name                            SERVER_NAME_EDIT     body: {"name":"..."}
+PUT    /server/name                            SERVER_NAME_EDIT     body: {"name":"..."}  ("" = follow the Nitrado name again)
 PUT    /feeds/{routeKey}/location              FEED_LOCATION_MANAGE body: {"showLocation":bool}
 PUT    /maintenance-mode                       MAINTENANCE_MODE     body: {"enabled":bool}
 
@@ -155,6 +213,14 @@ DELETE /whitelist/{identifier}                 WHITELIST_MANAGE
 GET    /banlist                                BANLIST_MANAGE
 POST   /banlist                                BANLIST_MANAGE       body: (same shape as whitelist)
 DELETE /banlist/{identifier}                   BANLIST_MANAGE
+
+GET    /priority                               PRIORITY_MANAGE      -> {"supported":bool,"items":["..."],"limit":500}
+POST   /priority                               PRIORITY_MANAGE      body: {"name":"...","reason":"..."}
+DELETE /priority/{name}                        PRIORITY_MANAGE
+GET    /game-settings                          SERVER_SETTINGS_MANAGE -> {"items":[{"id","label","help","supported","enabled","category","key","destructive","appliesOn":"restart"}]} (all 8 switches, catalogue order)
+PUT    /game-settings/{id}                     SERVER_SETTINGS_MANAGE body: {"enabled":bool,"reason":"...","confirm":"WIPE"} -> the item; wipe_on_next_restart also needs SERVER_WIPE and, when enabling, confirm "WIPE"; unknown id 404, switch absent on the service 400
+GET    /server-logs                            SERVER_LOGS_VIEW     -> {"files":[{"name","kind","size","modifiedAt","startedAt"}]}
+GET    /server-logs/content?file=&before=      SERVER_LOGS_VIEW     -> {"name","kind","size","start","end","hasEarlier","text"}
 
 POST   /stats/player/{playerID}/reset-streak   PLAYER_STATS_RESET
 POST   /stats/reset-season                     SERVER_STATS_RESET   body: {"name":"Season 2","confirm":"RESET EVERYONE"}
@@ -185,6 +251,17 @@ GET    /intrusions/history                      ZONE_VIEW                ?zoneId
 POST   /intrusions/{intrusionID}/acknowledge    INTRUSION_ACK
 
 GET    /heatmap                                 HEATMAP_VIEW              ?type=&from=&to=&resolution=&zoneId=  (Phase 5, docs/HEATMAPS.md)
+
+GET    /features                                FEATURE_SETTINGS_VIEW     every opt-in feature's settings
+PUT    /features/hot-zones                      FEATURE_SETTINGS_MANAGE   docs/HOT_ZONES.md
+PUT    /features/fight-replay                   FEATURE_SETTINGS_MANAGE   docs/FIGHT_REPLAY.md
+PUT    /features/network                        NETWORK_MANAGE            docs/NETWORK.md
+PUT    /features/feed-identity                  FEED_IDENTITY_MANAGE      docs/FEED_IDENTITY.md
+GET    /hot-zones                               FEATURE_SETTINGS_VIEW     recent hot zones with standings
+GET    /retention                               RETENTION_VIEW            ?days=&tz=  (docs/RETENTION.md)
+GET    /retention/lapsed                        RETENTION_VIEW            ?minDays=&maxDays=&limit=
+GET    /fights                                  PLAYER_LOCATION_VIEW      ?hours=&minKills=  (docs/FIGHT_REPLAY.md)
+GET    /fights/{killID}                         PLAYER_LOCATION_VIEW      the replay of the fight containing that kill
 ```
 
 Error codes added: `ADMIN_FORBIDDEN` (403, missing capability), `ADMIN_ESCALATION_DENIED` (403,
@@ -201,13 +278,26 @@ same standard `docs/NITRADO_DELTA_READS.md` applied to the seek/offset-count end
 |---|---|---|
 | restart | **NITRADO API** | `POST /services/{id}/gameservers/restart` (optional `message`) |
 | stop | **NITRADO API** | `POST /services/{id}/gameservers/stop` (optional `message`) |
-| whitelist add/remove | **NITRADO API** | `POST`/`DELETE /services/{id}/gameservers/games/whitelist` (`identifier`) |
-| banlist add/remove | **NITRADO API** | `POST`/`DELETE /services/{id}/gameservers/games/banlist` (`identifier`) |
+| whitelist add/remove | **NITRADO API** | read `settings.general.whitelist` from `GET /services/{id}/gameservers`, write the whole list back with `POST /services/{id}/gameservers/settings` (`category: general`, `key: whitelist`); one player name per line |
+| banlist add/remove | **NITRADO API** | the same, with `key: bans`. The earlier `/gameservers/games/banlist` call was answered 501 by live Nitrado |
 | start (already-installed, currently-stopped server) | **UNVERIFIED** | No distinct endpoint found in the SDK separate from `restart`; `autoStart`'s design assumes `restart` also starts a stopped server (common in game panels) but this was not verified live - see Deferred |
-| priority queue | **FILE-BASED, DEFERRED** | Community docs describe a `priority.txt` file on the server install, not a dedicated API endpoint; this codebase has zero Nitrado file-**write** capability (only reads - `internal/nitrado` is read-only), and the task's own "never replace entire config blindly" instruction rules out guessing at an unverified file format |
+| priority queue | **NITRADO API (settings write)** | One setting, `settings.general.priority`, one name per line: read from `GET /services/{id}/gameservers`, replaced with `POST /services/{id}/gameservers/settings` (`category=general`, `key=priority`, `value`). Not in Nitrado's PHP SDK; the call shape is the one behind the web panel's "Prioritized players" field and the one community clients use. Champion reads before every write and refuses to write when the setting is absent (`internal/nitrado/priority.go`). Not yet exercised against a live service |
 | ban list *duration* | **DEFERRED** | Nitrado's banlist API takes only `identifier`, no duration/expiry - Champion's own `installation_access_entries.expires_at` records the intent, but nothing currently enforces an automatic un-ban when it passes (see Deferred) |
-| base damage / container damage / third-person / raid toggles | **UNSUPPORTED/DEFERRED** | No endpoint for any of these appears anywhere in Nitrado's official SDK; these are almost certainly DayZ `serverDZ.cfg`-style file settings, which would need the same unverified file-write capability as priority |
+| game settings (storage wipe, mouse & keyboard, whitelist on/off, base damage, container damage, respawn dialog, respawn in unconsciousness, multi-account mitigation) | **NITRADO API (settings write)** | The web panel's own switches, kept as `settings.<category>.<key>` of `GET /services/{id}/gameservers` and written with `POST /services/{id}/gameservers/settings` exactly like the priority list. The key and category of each switch are not documented, so Champion DISCOVERS them on every read (`internal/nitrado/game_settings.go`: every category, first candidate key, exact spelling before a case-insensitive match); a switch the service lacks is reported `supported:false` and never written. Values are strings (`"1"`/`"0"`). Not yet exercised against a live service |
+| third-person / raid toggles | **UNSUPPORTED/DEFERRED** | No endpoint for these appears in Nitrado's official SDK or panel settings seen so far |
 | generic `setConfig` (arbitrary allowlisted config writes) | **PARTIALLY DEFERRED** | Implemented for Champion-side settings that already exist in `server_configs`/`installation_channel_routes` (feed toggles, maintenance mode, location visibility) via their own dedicated endpoints above; a general DayZ-server-config-file writer is deferred with config writes generally |
+
+## What changed (Faction Hub moderation)
+
+The `/hub-factions` routes let server staff moderate the **website** Faction Hub (`hub_factions`, what players see in the
+Player Hub), which the older `/factions` routes never touched (those act on the Discord-side `factions` table). A Moderator can
+rename/re-tag a faction, rewrite its description, force recruiting closed, release a claimed flag or armband, remove any
+non-leader member and hand leadership to another member; an Administrator can dissolve a faction behind typed `DISSOLVE`
+confirmation. Every write requires a `reason` (<= 300 chars, audit log only, never shown to the faction) and records an
+`admin_audit_log` row (`FACTION_MODERATED`, `FACTION_MEMBER_REMOVED`, `FACTION_LEADERSHIP_TRANSFERRED`, `FACTION_HUB_DISSOLVED`)
+with a safe before/after snapshot (ids, name, tag, recruitment, branding keys, member count). Staff correct what players wrote;
+they never assign branding or colors for them (those fields are ignored on the moderation PUT). Dissolving deletes the faction
+row; members, applications, settings, history and logo metadata cascade and logo bytes are reclaimed by the asset sweeper.
 
 ## What changed (Phase 5: PvP / activity / intrusion heatmaps)
 
@@ -295,10 +385,11 @@ Given the size of the original request (roughly fifteen distinct subsystems), th
 full permission/audit foundation plus every capability with a real, verifiable backing mechanism,
 and deferred the rest rather than ship unverified or fabricated plumbing:
 
-- **Priority list enforcement, base/container damage, third-person, raid, generic DayZ config
-  writes** - no documented Nitrado API endpoint exists for any of these (see the audit table
-  above); building blind file-patch logic against an unverified format was judged a correctness
-  risk this phase's own standard rules out, matching `docs/NITRADO_DELTA_READS.md`'s precedent.
+- **Third-person, raid, generic DayZ config writes** - no documented Nitrado API endpoint
+  exists for these (see the audit table above); building blind file-patch logic against an
+  unverified format was judged a correctness risk this phase's own standard rules out, matching
+  `docs/NITRADO_DELTA_READS.md`'s precedent. (Base and container damage now ship as Nitrado
+  game settings, `SERVER_SETTINGS_MANAGE`.)
 - **`resetPlayerStat` for kills/deaths/headshots** (implemented for streak only via the existing
   `StreakRepository.Reset`) - a genuine per-player, per-stat reset for an aggregate currently
   computed from immutable `kills`/`deaths` rows would need a new baseline-override column consulted
@@ -322,8 +413,8 @@ and deferred the rest rather than ship unverified or fabricated plumbing:
   (`PLAYER_LAST_LOCATION_VIEW`/`PLAYER_LOCATION_VIEW`).
 - **~~Zones, zone-ignore, zone-ban, Base Radar/UAV~~ - built in Phase 4** (`docs/ZONES_UAV_RADAR.md`):
   a stateful intrusion engine consuming `player_location_events`, sharing one engine for every zone
-  type (no duplicated UAV/Base Radar logic). **Heatmap aggregation is still deferred** - it was not
-  part of Phase 4's scope either.
+  type (no duplicated UAV/Base Radar logic). Heatmap aggregation was not part of Phase 4's scope; it was
+  built in Phase 5 (`docs/HEATMAPS.md`, see "What changed (Phase 5" above).
 - **Discord kick/ban/timeout/bulk message clear** - discordgo has direct, well-documented support
   for all four; deferred purely to keep this phase's already-large surface bounded, not because of
   any capability gap.

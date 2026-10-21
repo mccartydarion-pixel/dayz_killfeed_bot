@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/yourname/dayz-killfeed/internal/deathstats"
 	"github.com/yourname/dayz-killfeed/internal/factionhub"
 )
 
@@ -126,6 +127,8 @@ WHERE f.game_server_id = $2 AND pl.player_id = ANY($3)`, guildID, serverID, play
 //	dv       COUNTED deaths (the project's death definition: rows of the deaths table)
 //	vv       PvP kills in which a member was the victim (only used to break kill streaks)
 //	bc       claimed bounties earned by a counted kill
+//
+// dv.pvp marks a death caused by another player (the shared definition in internal/deathstats).
 const hubStatsCTE = `
 windows AS (
   SELECT h.id AS wid, h.faction_id, f.game_server_id AS server_id, h.user_id, h.joined_at, h.left_at, pl.player_id
@@ -152,7 +155,8 @@ fk AS (
     WHERE v.faction_id = w.faction_id AND v.player_id = ka.victim_player_id AND ka.at >= v.joined_at AND (v.left_at IS NULL OR ka.at < v.left_at))
 ),
 dv AS (
-  SELECT d.id AS death_id, w.wid, w.faction_id, w.user_id, COALESCE(d.event_time, d.created_at) AS at
+  SELECT d.id AS death_id, w.wid, w.faction_id, w.user_id, COALESCE(d.event_time, d.created_at) AS at,
+         (` + deathstats.PvPPredicateD + `) AS pvp
   FROM deaths d
   JOIN windows w ON w.player_id = d.player_id AND w.server_id = d.server_id
    AND COALESCE(d.event_time, d.created_at) >= w.joined_at AND (w.left_at IS NULL OR COALESCE(d.event_time, d.created_at) < w.left_at)
@@ -199,6 +203,7 @@ type HubMemberStats struct {
 	Gamertag                                    *string
 	JoinedAt                                    time.Time // start of the current (or latest) membership period
 	Kills, Deaths, Headshots, Longshots         int64
+	PvPDeaths                                   int64 // the deaths caused by another player
 	Bounties, BountyValue                       int64
 	BestStreak, CurrentStreak                   int
 }
@@ -217,7 +222,7 @@ type HubStatsResult struct {
 func (r *HubStatsRepository) ComputeStats(ctx context.Context, s HubStatsScope) (*HubStatsResult, error) {
 	rows, err := r.pool.Query(ctx, `WITH `+hubStatsCTE+hubStreakCTE+`,
 uk AS (SELECT user_id, COUNT(*) AS kills, COUNT(*) FILTER (WHERE headshot) AS hs, COUNT(*) FILTER (WHERE longshot) AS ls FROM fk GROUP BY user_id),
-ud AS (SELECT user_id, COUNT(*) AS deaths FROM dv GROUP BY user_id),
+ud AS (SELECT user_id, COUNT(*) AS deaths, COUNT(*) FILTER (WHERE pvp) AS pvp_deaths FROM dv GROUP BY user_id),
 ub AS (SELECT user_id, COUNT(*) AS n, COALESCE(SUM(reward_points),0) AS v FROM bc GROUP BY user_id),
 us AS (SELECT w.user_id, MAX(sl.len) AS best FROM sl JOIN windows w ON w.wid = sl.wid GROUP BY w.user_id),
 uc AS (SELECT w.user_id, MAX(cur.len) AS cur FROM cur JOIN windows w ON w.wid = cur.wid GROUP BY w.user_id),
@@ -228,7 +233,7 @@ SELECT u.id, u.discord_user_id, u.discord_username, COALESCE(u.discord_global_na
        (pl.player_id IS NOT NULL) AS linked, p.display_name,
        COALESCE(m.joined_at, uw.last_joined, $4::timestamptz) AS joined_at,
        COALESCE(uk.kills,0), COALESCE(ud.deaths,0), COALESCE(uk.hs,0), COALESCE(uk.ls,0),
-       COALESCE(ub.n,0), COALESCE(ub.v,0), COALESCE(us.best,0), COALESCE(uc.cur,0)
+       COALESCE(ub.n,0), COALESCE(ub.v,0), COALESCE(us.best,0), COALESCE(uc.cur,0), COALESCE(ud.pvp_deaths,0)
 FROM everyone e
 JOIN app_users u ON u.id = e.user_id
 LEFT JOIN hub_faction_members m ON m.faction_id = $3 AND m.user_id = e.user_id
@@ -251,7 +256,7 @@ ORDER BY COALESCE(uk.kills,0) DESC, COALESCE(ud.deaths,0) ASC, m.id ASC NULLS LA
 	for rows.Next() {
 		var m HubMemberStats
 		if err := rows.Scan(&m.UserID, &m.DiscordUserID, &m.Username, &m.GlobalName, &m.Avatar, &m.MemberID, &m.Role, &m.Active, &m.Linked, &m.Gamertag,
-			&m.JoinedAt, &m.Kills, &m.Deaths, &m.Headshots, &m.Longshots, &m.Bounties, &m.BountyValue, &m.BestStreak, &m.CurrentStreak); err != nil {
+			&m.JoinedAt, &m.Kills, &m.Deaths, &m.Headshots, &m.Longshots, &m.Bounties, &m.BountyValue, &m.BestStreak, &m.CurrentStreak, &m.PvPDeaths); err != nil {
 			return nil, fmt.Errorf("hub faction stats scan: %w", err)
 		}
 		if m.Active {
@@ -510,6 +515,7 @@ type HubLeaderboardRow struct {
 	Logo                                                       *factionhub.Asset
 	MemberCount                                                int
 	Kills, Deaths, Headshots, Longshots, Bounties, BountyValue int64
+	PvPDeaths                                                  int64 // the deaths caused by another player
 	BestStreak                                                 int
 	Achievements                                               int
 	TrackingSince                                              *time.Time
@@ -542,7 +548,7 @@ WHERE i.id = $1 AND i.organization_id = $2`, installationID, organizationID).Sca
 	}
 	rows, err := r.pool.Query(ctx, `WITH `+hubStatsCTE+hubStreakCTE+`,
 fa AS (SELECT faction_id, COUNT(*) AS kills, COUNT(*) FILTER (WHERE headshot) AS hs, COUNT(*) FILTER (WHERE longshot) AS ls FROM fk GROUP BY faction_id),
-da AS (SELECT faction_id, COUNT(*) AS n FROM dv GROUP BY faction_id),
+da AS (SELECT faction_id, COUNT(*) AS n, COUNT(*) FILTER (WHERE pvp) AS pvp FROM dv GROUP BY faction_id),
 ba AS (SELECT faction_id, COUNT(*) AS n, COALESCE(SUM(reward_points),0) AS v FROM bc GROUP BY faction_id),
 sa AS (SELECT w.faction_id, MAX(sl.len) AS best FROM sl JOIN windows w ON w.wid = sl.wid GROUP BY w.faction_id),
 ma AS (SELECT faction_id, COUNT(*) AS n FROM hub_faction_members WHERE installation_id = $1 GROUP BY faction_id),
@@ -551,7 +557,7 @@ ta AS (SELECT faction_id, MIN(joined_at) AS t FROM hub_faction_membership_histor
 SELECT f.id, f.name, f.tag, f.slug, f.flag_key, f.armband_key, f.primary_color, f.secondary_color,
        la.id, la.public_id::text, la.storage_key, la.content_type, la.size_bytes, la.width, la.height, la.original_filename, la.created_at,
        COALESCE(ma.n,0), COALESCE(fa.kills,0), COALESCE(da.n,0), COALESCE(fa.hs,0), COALESCE(fa.ls,0),
-       COALESCE(ba.n,0), COALESCE(ba.v,0), COALESCE(sa.best,0), COALESCE(ua.n,0), ta.t
+       COALESCE(ba.n,0), COALESCE(ba.v,0), COALESCE(sa.best,0), COALESCE(ua.n,0), ta.t, COALESCE(da.pvp,0)
 FROM hub_factions f
 LEFT JOIN hub_faction_assets la ON la.id = f.logo_asset_id
 LEFT JOIN ma ON ma.faction_id = f.id
@@ -577,7 +583,7 @@ ORDER BY f.id`, installationID, out.GuildID, int64(0), organizationID)
 		}
 		if err := rows.Scan(&lr.FactionID, &lr.Name, &lr.Tag, &lr.Slug, &lr.FlagKey, &lr.ArmbandKey, &lr.PrimaryColor, &lr.SecondaryColor,
 			&la.id, &la.publicID, &la.storageKey, &la.contentType, &la.size, &la.width, &la.height, &la.name, &la.created,
-			&lr.MemberCount, &lr.Kills, &lr.Deaths, &lr.Headshots, &lr.Longshots, &lr.Bounties, &lr.BountyValue, &lr.BestStreak, &lr.Achievements, &lr.TrackingSince); err != nil {
+			&lr.MemberCount, &lr.Kills, &lr.Deaths, &lr.Headshots, &lr.Longshots, &lr.Bounties, &lr.BountyValue, &lr.BestStreak, &lr.Achievements, &lr.TrackingSince, &lr.PvPDeaths); err != nil {
 			return nil, fmt.Errorf("hub leaderboard scan: %w", err)
 		}
 		if la.id != nil {

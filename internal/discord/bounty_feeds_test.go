@@ -42,7 +42,7 @@ type trackerFixture struct {
 
 func newTrackerFixture() *trackerFixture {
 	f := &trackerFixture{res: newKeyedResolver(), sender: &fakeHitSender{fail: map[string]error{}}}
-	f.t = NewBountyTracker(f.sender, f.res, func(context.Context) (int64, []int64, error) { return 7, []int64{1, 2}, nil })
+	f.t = NewBountyTracker(f.sender, f.res, SingleGuild(func(context.Context) (int64, []int64, error) { return 7, []int64{1, 2}, nil }))
 	return f
 }
 
@@ -71,21 +71,21 @@ func TestBountyTrackerCards(t *testing.T) {
 		want string
 	}{
 		{"placed", bounties.Event{Kind: bounties.EventPlaced, GuildID: 7, ServerID: 1, Target: "PlayerA", Amount: 100000},
-			"🎯 **BOUNTY PLACED**\n**PlayerA**\nReward **100,000 pts**"},
+			"🎯 **Bounty placed**\n**PlayerA**\nReward **100,000 pts**"},
 		{"placed by streak", bounties.Event{Kind: bounties.EventPlaced, GuildID: 7, KillServerID: 1, Target: "PlayerA", Amount: 500, Automatic: true},
-			"🎯 **BOUNTY PLACED**\n**PlayerA**\nReward **500 pts**\nSource: kill streak"},
+			"🎯 **Bounty placed**\n**PlayerA**\nReward **500 pts**\nSource: kill streak"},
 		{"increased", bounties.Event{Kind: bounties.EventIncreased, GuildID: 7, ServerID: 1, Target: "PlayerA", Amount: 150000},
-			"📈 **BOUNTY INCREASED**\n**PlayerA**\nReward **150,000 pts**"},
+			"📈 **Bounty increased**\n**PlayerA**\nReward **150,000 pts**"},
 		{"claimed with weapon and distance", bounties.Event{Kind: bounties.EventClaimed, GuildID: 7, KillServerID: 1, Hunter: "PlayerB", Target: "PlayerA", Amount: 100000, Count: 1, Weapon: "M4-A1", Distance: dist(86.4)},
-			"👑 **BOUNTY CLAIMED**\n**PlayerB** eliminated **PlayerA**\nReward **100,000 pts**\n`M4-A1` • 86m"},
+			"👑 **Bounty claimed**\n**PlayerB** eliminated **PlayerA**\nReward **100,000 pts**\n`M4-A1` • 86m"},
 		{"claimed without weapon or distance", bounties.Event{Kind: bounties.EventClaimed, GuildID: 7, KillServerID: 1, Hunter: "PlayerB", Target: "PlayerA", Amount: 100000, Count: 1},
-			"👑 **BOUNTY CLAIMED**\n**PlayerB** eliminated **PlayerA**\nReward **100,000 pts**"},
+			"👑 **Bounty claimed**\n**PlayerB** eliminated **PlayerA**\nReward **100,000 pts**"},
 		{"claimed stacked", bounties.Event{Kind: bounties.EventClaimed, GuildID: 7, KillServerID: 1, Hunter: "PlayerB", Target: "PlayerA", Amount: 150000, Count: 2},
-			"👑 **BOUNTY CLAIMED**\n**PlayerB** eliminated **PlayerA**\nReward **150,000 pts** • 2 bounties"},
+			"👑 **Bounty claimed**\n**PlayerB** eliminated **PlayerA**\nReward **150,000 pts** • 2 bounties"},
 		{"expired", bounties.Event{Kind: bounties.EventExpired, GuildID: 7, ServerID: 1, Target: "PlayerA", Amount: 100000},
-			"⌛ **BOUNTY EXPIRED**\n**PlayerA**\nReward **100,000 pts**"},
+			"⌛ **Bounty expired**\n**PlayerA**\nReward **100,000 pts**"},
 		{"cancelled", bounties.Event{Kind: bounties.EventCancelled, GuildID: 7, ServerID: 1, Target: "PlayerA", Amount: 100000},
-			"🚫 **BOUNTY CANCELLED**\n**PlayerA**\nReward **100,000 pts**"},
+			"🚫 **Bounty cancelled**\n**PlayerA**\nReward **100,000 pts**"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -383,7 +383,7 @@ type boardFixture struct {
 func newBoardFixture(t *testing.T) *boardFixture {
 	t.Helper()
 	f := &boardFixture{routedFixture: newRoutedFixture(t), lister: &fakeBoardLister{}}
-	f.board = NewBountyBoard(f.resolver, func(context.Context) (int64, []int64, error) { return f.guild, f.servers, nil }, f.panels, f.lister)
+	f.board = NewBountyBoard(f.resolver, SingleGuild(func(context.Context) (int64, []int64, error) { return f.guild, f.servers, nil }), f.panels, f.lister)
 	return f
 }
 
@@ -412,7 +412,7 @@ func TestBountyBoardShowsTopBountiesWithoutInternalIDs(t *testing.T) {
 	f.lister.set(boardRow{1, "PlayerC", 75000}, boardRow{1, "PlayerA", 250000}, boardRow{1, "PlayerB", 125000}, boardRow{1, "PlayerB", 1000})
 	f.sync()
 
-	want := "🎯 **ACTIVE BOUNTIES**\n\n🥇 PlayerA • **250,000 pts**\n🥈 PlayerB • **126,000 pts** (2 bounties)\n🥉 PlayerC • **75,000 pts**"
+	want := "🎯 **Active bounties**\n\n🥇 PlayerA • **250,000 pts**\n🥈 PlayerB • **126,000 pts** (2 bounties)\n🥉 PlayerC • **75,000 pts**"
 	if got := f.boardText("board-1"); got != want {
 		t.Fatalf("unexpected board:\n%q\nwant\n%q", got, want)
 	}
@@ -497,7 +497,7 @@ func TestBountyBoardRestartEditsTheRecordedMessage(t *testing.T) {
 
 	// "Restart": brand-new panels/board over the SAME durable store and Discord.
 	f.lister.set(boardRow{1, "PlayerA", 100}, boardRow{1, "PlayerZ", 999})
-	restarted := NewBountyBoard(f.resolver, func(context.Context) (int64, []int64, error) { return f.guild, f.servers, nil }, NewRoutePanels(f.api, f.store), f.lister)
+	restarted := NewBountyBoard(f.resolver, SingleGuild(func(context.Context) (int64, []int64, error) { return f.guild, f.servers, nil }), NewRoutePanels(f.api, f.store), f.lister)
 	restarted.SyncOnce(context.Background())
 
 	if f.api.sendCount() != 1 || f.api.liveIn("board-1") != 1 || f.store.messageFor(f.guild, "BOUNTY", "board-1") != msg {

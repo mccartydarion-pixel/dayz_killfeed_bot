@@ -62,12 +62,17 @@ func newRuntimeWorld(t *testing.T, ttl time.Duration) *runtimeWorld {
 	t.Helper()
 	ew := newEconomyWorld(t, "eco-A", "eco-B")
 	repo := repository.NewEmbedTemplateRepository(ew.a.DB.Pool)
-	r := embedrender.New(embedrender.Options{Source: repo, Enabled: true, TTL: ttl})
+	// The deployment switch (CHAMPION_CUSTOM_EMBEDS_ENABLED) is on for this world; the renderer
+	// itself is always wired and asks the app per installation.
+	if ew.a.Config != nil {
+		ew.a.Config.CustomEmbedsEnabled = true
+	}
+	r := embedrender.New(embedrender.Options{Source: repo, Enabled: true, TTL: ttl, Gate: ew.a.customEmbedsFor})
 	ew.a.EmbedTemplates = embedtemplates.NewService(repo)
 	ew.a.EmbedActivations = repo
 	ew.a.EmbedRenderer = r
 	rich := &richSender{cards: map[string][]string{}}
-	feed := discord.NewEconomyFeed(rich, ew.a.ChannelRoutes, ew.servers) // the real feed, delivering to the recording sender
+	feed := discord.NewEconomyFeed(rich, ew.a.ChannelRoutes, discord.SingleGuild(ew.servers)) // the real feed, delivering to the recording sender
 	feed.SetCustomizer(r, serverName)
 	ew.svc.SetNotifier(feed)
 	ew.feed = feed
@@ -123,7 +128,7 @@ func TestEmbedRuntimeStoreRenderResetAndChangeAgainstRealPostgres(t *testing.T) 
 		t.Fatal(err)
 	}
 	got := w.publish("eco-A")
-	if len(got) != 1 || got[0] != "➕ **ADMIN CREDIT**\nHunter received 50,000 pts" {
+	if len(got) != 1 || got[0] != "➕ **Admin credit**\nHunter received 50,000 pts" {
 		t.Fatalf("no template = the default card: %q", got)
 	}
 
@@ -164,7 +169,7 @@ func TestEmbedRuntimeStoreRenderResetAndChangeAgainstRealPostgres(t *testing.T) 
 	if _, err := w.adminCredit(w.hunter, 5, ""); err != nil {
 		t.Fatal(err)
 	}
-	if c := w.publish("eco-A"); len(c) != 1 || c[0] != "➕ **ADMIN CREDIT**\nHunter received 5 pts" {
+	if c := w.publish("eco-A"); len(c) != 1 || c[0] != "➕ **Admin credit**\nHunter received 5 pts" {
 		t.Fatalf("after DELETE the default card returns: %q", c)
 	}
 }
@@ -184,7 +189,7 @@ func TestEmbedRuntimeMultiServerIsolation(t *testing.T) {
 	if len(a) != 1 || !strings.Contains(a[0], "SERVER-A-STYLE") {
 		t.Fatalf("server A uses its template: %q", a)
 	}
-	if len(b) != 1 || b[0] != "➕ **ADMIN CREDIT**\nHunter received 900 pts" {
+	if len(b) != 1 || b[0] != "➕ **Admin credit**\nHunter received 900 pts" {
 		t.Fatalf("server B (same guild) must keep the default: %q", b)
 	}
 }
@@ -268,7 +273,7 @@ func TestEmbedRuntimeDatabaseFailureFallsBackToTheDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := w.publish("eco-A")
-	if len(c) != 1 || c[0] != "➕ **ADMIN CREDIT**\nHunter received 333 pts" {
+	if len(c) != 1 || c[0] != "➕ **Admin credit**\nHunter received 333 pts" {
 		t.Fatalf("a failing template lookup must publish the Champion default: %q", c)
 	}
 	if w.balance(w.hunter) != before+333 {
@@ -301,7 +306,7 @@ func TestEmbedRuntimeMalformedStoredTemplateFallsBack(t *testing.T) {
 	if _, err := w.adminCredit(w.hunter, 8, ""); err != nil {
 		t.Fatal(err)
 	}
-	if c := w.publish("eco-A"); len(c) != 1 || c[0] != "➕ **ADMIN CREDIT**\nHunter received 8 pts" {
+	if c := w.publish("eco-A"); len(c) != 1 || c[0] != "➕ **Admin credit**\nHunter received 8 pts" {
 		t.Fatalf("a malformed stored template must fall back: %q", c)
 	}
 	if s := w.renderer.Stats(); s.FallbackRender != 1 || s.CustomRender != 0 {
@@ -312,7 +317,7 @@ func TestEmbedRuntimeMalformedStoredTemplateFallsBack(t *testing.T) {
 // BOUNTY_TRACKING lifecycle cards through the real renderer + tracker.
 func TestEmbedRuntimeBountyTrackingLifecycle(t *testing.T) {
 	w := newRuntimeWorld(t, time.Hour)
-	tr := discord.NewBountyTracker(w.rich, w.a.ChannelRoutes, w.servers)
+	tr := discord.NewBountyTracker(w.rich, w.a.ChannelRoutes, discord.SingleGuild(w.servers))
 	tr.SetCustomizer(w.renderer, serverName)
 	w.a.BountyService.SetNotifier(discord.BountyEvents{Tracker: tr, Board: w.board})
 

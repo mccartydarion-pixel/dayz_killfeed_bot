@@ -7,7 +7,7 @@ import (
 )
 
 // State is the shared, sanitized runtime status of the application.
-// It never contains secrets and is safe to expose via /api/v1/status.
+// It never contains secrets and is served via /api/v1/status, which requires the WEBSITE_API_SECRET bearer.
 type State struct {
 	mu sync.RWMutex
 

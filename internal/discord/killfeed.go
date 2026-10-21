@@ -31,8 +31,9 @@ type KillfeedPublisher struct {
 	lastRouteErrLog             time.Time
 
 	// Optional custom embed templates (nil = the Champion default, always).
-	custom     EmbedCustomizer
-	serverName string
+	custom       EmbedCustomizer
+	serverName   string
+	serverNameFn ServerNameFunc
 }
 
 // SetCustomizer enables custom embed templates for this server's KILLFEED cards.
@@ -43,6 +44,23 @@ func (p *KillfeedPublisher) SetCustomizer(c EmbedCustomizer, serverName string) 
 	}
 	p.custom = c
 	p.serverName = serverName
+}
+
+// SetServerNameFunc makes {{server_name}} follow the server's current name (an owner rename or a
+// Nitrado name change) instead of the name given to SetCustomizer when the worker started. A nil
+// function, or one that returns "", keeps that name.
+func (p *KillfeedPublisher) SetServerNameFunc(f ServerNameFunc) {
+	if p == nil {
+		return
+	}
+	p.serverNameFn = f
+}
+
+func (p *KillfeedPublisher) currentServerName() string {
+	if name := serverNameOf(p.serverNameFn, p.routeServerID); name != "" {
+		return name
+	}
+	return p.serverName
 }
 
 // killCard is the embed for one kill: the Champion default, or - when the installation
@@ -56,9 +74,9 @@ func (p *KillfeedPublisher) killCard(ev *killfeed.Event) *discordgo.MessageEmbed
 // default, custom, fallback - can be exercised without a Discord session).
 func (p *KillfeedPublisher) Card(ev *killfeed.Event) *discordgo.MessageEmbed {
 	def := BuildKillEmbed(ev)
-	return customEmbed(p.custom, p.routeGuildID, p.routeServerID, routeKeyKillfeed, def, func() map[string]string {
-		return killfeedVars(ev, p.serverName)
-	})
+	return customEmbedAt(p.custom, p.routeGuildID, p.routeServerID, routeKeyKillfeed, def, func() map[string]string {
+		return killfeedVars(ev, p.currentServerName())
+	}, ev.DisplayTimeOrNow())
 }
 
 // RouteResolver resolves a feature route key to the Discord channel an
@@ -211,7 +229,7 @@ func (p *KillfeedPublisher) PublishKill(ev *killfeed.Event) error {
 	// The rotating feed batches embeds and posts them on its own cycle; see
 	// RotatingFeed. Without one configured, fall back to an immediate send.
 	if p.feed != nil {
-		p.feed.Enqueue(embed)
+		p.feed.EnqueueTimed(embed, killfeed.TimingOf(ev))
 		slog.Debug("component=discord", "msg", "killfeed queued", "victim", victim, "killer", killer)
 		return nil
 	}
@@ -223,9 +241,12 @@ func (p *KillfeedPublisher) PublishKill(ev *killfeed.Event) error {
 			Parse: []discordgo.AllowedMentionType{}, // parse nothing
 		},
 	}
-	if _, err := p.client.Session().ChannelMessageSendComplex(channelID, send); err != nil {
-		slog.Error("component=discord", "msg", "killfeed publish failed", "err", err.Error())
-		return nil // never propagate; log processing must continue
+	if _, err := deliverMessage(p.client.Session(), "KILLFEED", channelID, send); err != nil {
+		// Returned so the engine counts a publish error rather than a
+		// published kill; the persistence hook never stops log processing
+		// on it. The kill itself is already durable in the database.
+		slog.Error("component=discord", "msg", "killfeed publish failed", "err", err.Error(), "class", ClassifyDeliveryError(err))
+		return fmt.Errorf("killfeed delivery failed: %w", err)
 	}
 	slog.Debug("component=discord", "msg", "killfeed published", "victim", victim, "killer", killer)
 	return nil

@@ -2,7 +2,13 @@ package discord
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
+
+	"github.com/bwmarrin/discordgo"
+	"github.com/yourname/dayz-killfeed/internal/linking"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 )
 
 // VerifiedRoleAssigner adds the guild's configured @Verified role to a member
@@ -13,37 +19,59 @@ import (
 // assignable, which is a common failure mode best left to an admin who
 // controls role order.
 type VerifiedRoleAssigner struct {
-	client  *Client
-	store   SetupStore
-	guildID string // Discord guild ID; this app serves a single guild per process
+	client *Client
+	store  SetupStore
+	// discordGuild resolves a guild row to its Discord guild ID: links are verified in every
+	// customer guild, and each has its own Verified role.
+	discordGuild func(ctx context.Context, guildRowID int64) (string, error)
 }
 
-// NewVerifiedRoleAssigner creates an assigner bound to the guild setup store.
-func NewVerifiedRoleAssigner(client *Client, store SetupStore, guildID string) *VerifiedRoleAssigner {
-	return &VerifiedRoleAssigner{client: client, store: store, guildID: guildID}
+// NewVerifiedRoleAssigner creates an assigner reading each guild's role from the setup store.
+func NewVerifiedRoleAssigner(client *Client, store SetupStore, discordGuild func(ctx context.Context, guildRowID int64) (string, error)) *VerifiedRoleAssigner {
+	return &VerifiedRoleAssigner{client: client, store: store, discordGuild: discordGuild}
 }
 
 // AssignVerifiedRole adds the configured verified role to discordUserID. If no
 // role is configured, this returns a clear error but callers must treat that
 // as non-fatal - a guild without a role set up still gets a verified link.
-func (a *VerifiedRoleAssigner) AssignVerifiedRole(ctx context.Context, discordUserID string) error {
+func (a *VerifiedRoleAssigner) AssignVerifiedRole(ctx context.Context, guildRowID int64, discordUserID string) error {
 	if a == nil || a.client == nil || a.client.Session() == nil {
 		return fmt.Errorf("discord client not ready")
 	}
-	if a.store == nil || a.guildID == "" {
+	if a.store == nil || a.discordGuild == nil {
 		return fmt.Errorf("verified role store not configured")
 	}
-	setup, err := a.store.Get(a.guildID)
+	discordGuildID, err := a.discordGuild(ctx, guildRowID)
+	if err != nil {
+		return fmt.Errorf("resolve guild %d: %w", guildRowID, err)
+	}
+	if discordGuildID == "" {
+		return fmt.Errorf("guild %d has no Discord server", guildRowID)
+	}
+	setup, err := a.store.Get(discordGuildID)
 	if err != nil {
 		return fmt.Errorf("load guild setup: %w", err)
 	}
 	if setup == nil || setup.VerifiedRoleID == "" {
-		return fmt.Errorf("verified role not configured; run /setup verified-role")
+		return fmt.Errorf("%w; run /setup verified-role", linking.ErrRoleNotConfigured)
 	}
-	if err := a.client.Session().GuildMemberRoleAdd(a.guildID, discordUserID, setup.VerifiedRoleID); err != nil {
+	if err := deliver("VERIFIED_ROLE", "", func() error {
+		return a.client.Session().GuildMemberRoleAdd(discordGuildID, discordUserID, setup.VerifiedRoleID)
+	}); err != nil {
+		if isUnknownMember(err) {
+			return fmt.Errorf("assign verified role: %w: %v", linking.ErrMemberNotInGuild, err)
+		}
 		return fmt.Errorf("assign verified role: %w", err)
 	}
 	return nil
+}
+
+// discordCodeUnknownMember is Discord's "Unknown Member" (the user left the guild).
+const discordCodeUnknownMember = 10007
+
+func isUnknownMember(err error) bool {
+	var restErr *discordgo.RESTError
+	return errors.As(err, &restErr) && restErr.Message != nil && restErr.Message.Code == discordCodeUnknownMember
 }
 
 // NotifyVerified DMs the player that their link finished verifying. Link
@@ -58,12 +86,20 @@ func (a *VerifiedRoleAssigner) NotifyVerified(ctx context.Context, discordUserID
 	if err != nil {
 		return fmt.Errorf("open DM channel: %w", err)
 	}
-	message := "✅ **VERIFICATION COMPLETE**\n\nYour PlayStation account is now verified with Champion."
-	if roleAssigned {
-		message += " Your Verified role has been assigned."
-	}
-	if _, err := a.client.Session().ChannelMessageSend(channel.ID, message); err != nil {
+	if err := deliver("VERIFICATION_DM", "", func() error {
+		_, err := a.client.Session().ChannelMessageSendComplex(channel.ID, VerifiedMessage(roleAssigned, time.Now()))
+		return err
+	}); err != nil {
 		return fmt.Errorf("send verification DM: %w", err)
 	}
 	return nil
+}
+
+// VerifiedMessage is the "your link is verified" DM: a success card, mentions disabled.
+func VerifiedMessage(roleAssigned bool, at time.Time) *discordgo.MessageSend {
+	body := "Your PlayStation account is now verified with Champion."
+	if roleAssigned {
+		body += " Your Verified role has been assigned."
+	}
+	return presentation.NoticeMessage(presentation.NoticeEmbed("✅ Verification complete", body, presentation.NoticeSuccess, at))
 }

@@ -2,6 +2,7 @@ package billing
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -25,10 +26,35 @@ func (s *Service) HandleWebhook(ctx context.Context, payload []byte, sigHeader s
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidSignature, err)
 	}
-	// Dedupe BEFORE any processing: the (provider, event_id) UNIQUE constraint makes this race-safe
-	// even if Stripe redelivers the same event to two concurrent requests. organization_id is filled
-	// in below on a best-effort basis for the admin-visible log; it is never required for the dedupe
-	// itself.
+	// Classify signed events BEFORE the legacy base-subscription dedupe and
+	// reconciler: a C.A.S.E. subscription must never replace LOW/MEDIUM/HIGH.
+	parsed, err := ParseEvent(event)
+	if err != nil {
+		slog.Warn("component=billing", "event", "billing_webhook_parse_failed", "stripe_event_id", event.ID, "type", string(event.Type), "err", err.Error())
+		return nil
+	}
+	// Refunds, disputes and voids reach C.A.S.E. only through a verified invoice -> stored C.A.S.E.
+	// subscription chain; anything else falls through to base handling (acknowledged, ignored).
+	if isCaseReversalEvent(parsed.Type) {
+		handled, err := s.handleCaseReversal(ctx, parsed)
+		if err != nil {
+			return fmt.Errorf("reconcile C.A.S.E. payment reversal: %w", err)
+		}
+		if handled {
+			return nil
+		}
+	}
+	isCase, err := s.classifyCaseEvent(ctx, parsed)
+	if err != nil {
+		return fmt.Errorf("classify Stripe subscription kind: %w", err)
+	}
+	if isCase {
+		return s.applyCaseEvent(ctx, parsed)
+	}
+	// Base billing continues through its existing idempotency and event logic. The processed-event
+	// marker is written before handling (so a concurrent redelivery of the same event is a no-op)
+	// and removed again if handling fails: the 5xx makes Stripe retry, and that retry must be
+	// processed rather than acknowledged as a duplicate - otherwise the change is lost for good.
 	inserted, err := s.store.RecordWebhookEventOnce(ctx, repository.ProviderStripe, event.ID, string(event.Type), nil)
 	if err != nil {
 		return fmt.Errorf("record webhook event: %w", err)
@@ -37,14 +63,19 @@ func (s *Service) HandleWebhook(ctx context.Context, payload []byte, sigHeader s
 		slog.Info("component=billing", "event", "billing_webhook_duplicate", "stripe_event_id", event.ID, "type", string(event.Type))
 		return nil
 	}
-	parsed, err := ParseEvent(event)
-	if err != nil {
-		// The signature was valid but the payload for a type we do parse didn't match its expected
-		// shape - log and acknowledge (200) rather than let Stripe retry a payload that will never
-		// parse differently.
-		slog.Warn("component=billing", "event", "billing_webhook_parse_failed", "stripe_event_id", event.ID, "type", string(event.Type), "err", err.Error())
-		return nil
+	if err := s.dispatchBaseEvent(ctx, parsed); err != nil {
+		// WithoutCancel: a cancelled request context must not stop the marker from being released.
+		if ferr := s.store.ForgetWebhookEvent(context.WithoutCancel(ctx), repository.ProviderStripe, event.ID); ferr != nil {
+			slog.Error("component=billing", "event", "billing_webhook_release_failed", "stripe_event_id", event.ID, "type", string(event.Type), "err", ferr.Error())
+		}
+		return err
 	}
+	return nil
+}
+
+// dispatchBaseEvent routes one already-deduped base-billing event to its handler. A non-nil error
+// means the event was NOT (fully) applied and must be retried by Stripe.
+func (s *Service) dispatchBaseEvent(ctx context.Context, parsed ParsedEvent) error {
 	switch parsed.Type {
 	case EventCheckoutCompleted:
 		return s.onCheckoutCompleted(ctx, parsed)
@@ -59,7 +90,7 @@ func (s *Service) HandleWebhook(ctx context.Context, payload []byte, sigHeader s
 	case EventInvoicePaymentFailed:
 		return s.onInvoice(ctx, parsed, "billing_payment_failed")
 	default:
-		slog.Info("component=billing", "event", "billing_webhook_ignored", "stripe_event_id", event.ID, "type", string(event.Type))
+		slog.Info("component=billing", "event", "billing_webhook_ignored", "stripe_event_id", parsed.ID, "type", parsed.Type)
 		return nil
 	}
 }
@@ -71,7 +102,25 @@ func (s *Service) onCheckoutCompleted(ctx context.Context, e ParsedEvent) error 
 	}
 	orgID, err := strconv.ParseInt(e.Session.ClientReferenceID, 10, 64)
 	if err != nil || orgID <= 0 {
-		slog.Warn("component=billing", "event", "billing_webhook_unattributed", "stripe_event_id", e.ID, "type", e.Type, "reason", "missing or invalid client_reference_id")
+		// Every Champion Checkout Session carries client_reference_id; one without it was created
+		// outside Champion (e.g. the Stripe Dashboard) and is never bound to an organization.
+		slog.Warn("component=billing", "event", "billing_webhook_unattributed", "stripe_event_id", e.ID, "type", e.Type,
+			"checkout_session_id", e.Session.ID, "reason", "missing or invalid client_reference_id (session not created by Champion)")
+		return nil
+	}
+	// Verify the session's organization binding before trusting it: Champion's own metadata (when
+	// present) must name the same organization, and Champion stores the organization's Stripe
+	// customer before creating any session, so a different customer means a foreign session.
+	if meta := strings.TrimSpace(e.Session.Metadata["champion_organization_id"]); meta != "" && meta != strconv.FormatInt(orgID, 10) {
+		slog.Warn("component=billing", "event", "billing_webhook_unattributed", "stripe_event_id", e.ID, "type", e.Type,
+			"checkout_session_id", e.Session.ID, "reason", "client_reference_id conflicts with champion_organization_id")
+		return nil
+	}
+	if row, err := s.store.GetForOrganization(ctx, orgID); err != nil {
+		return fmt.Errorf("load organization subscription: %w", err)
+	} else if row != nil && row.ProviderCustomerID != "" && e.Session.Customer != "" && row.ProviderCustomerID != string(e.Session.Customer) {
+		slog.Warn("component=billing", "event", "billing_webhook_unattributed", "stripe_event_id", e.ID, "type", e.Type,
+			"checkout_session_id", e.Session.ID, "organization_id", orgID, "reason", "customer_mismatch")
 		return nil
 	}
 	// checkout.session.completed does not carry period/price detail - fetch the full subscription
@@ -95,16 +144,20 @@ func (s *Service) onSubscriptionEvent(ctx context.Context, e ParsedEvent, auditE
 	if e.Sub == nil {
 		return nil
 	}
-	orgID, err := s.resolveOrgID(ctx, e.Sub.Metadata["champion_organization_id"], string(e.Sub.Customer), e.Sub.ID)
+	orgID, reason, err := s.resolveOrgID(ctx, e.Sub.Metadata["champion_organization_id"], string(e.Sub.Customer), e.Sub.ID)
 	if err != nil {
 		return err
 	}
 	if orgID == 0 {
-		slog.Warn("component=billing", "event", "billing_webhook_unattributed", "stripe_event_id", e.ID, "type", e.Type, "stripe_subscription_id", e.Sub.ID)
+		slog.Warn("component=billing", "event", "billing_webhook_unattributed", "stripe_event_id", e.ID, "type", e.Type, "stripe_subscription_id", e.Sub.ID, "reason", reason)
 		return nil
 	}
+	st, err := s.currentSubscriptionState(ctx, e)
+	if err != nil {
+		return err
+	}
 	planKey := e.Sub.Metadata["champion_plan_key"]
-	if _, err := s.applyState(ctx, orgID, e.Sub.state(), planKey); err != nil {
+	if _, err := s.applyState(ctx, orgID, st, planKey); err != nil {
 		return fmt.Errorf("apply subscription event: %w", err)
 	}
 	slog.Info("component=billing", "event", auditEvent, "organization_id", orgID, "stripe_event_id", e.ID)
@@ -115,21 +168,46 @@ func (s *Service) onSubscriptionDeleted(ctx context.Context, e ParsedEvent) erro
 	if e.Sub == nil {
 		return nil
 	}
-	orgID, err := s.resolveOrgID(ctx, e.Sub.Metadata["champion_organization_id"], string(e.Sub.Customer), e.Sub.ID)
+	orgID, reason, err := s.resolveOrgID(ctx, e.Sub.Metadata["champion_organization_id"], string(e.Sub.Customer), e.Sub.ID)
 	if err != nil {
 		return err
 	}
 	if orgID == 0 {
-		slog.Warn("component=billing", "event", "billing_webhook_unattributed", "stripe_event_id", e.ID, "type", e.Type, "stripe_subscription_id", e.Sub.ID)
+		slog.Warn("component=billing", "event", "billing_webhook_unattributed", "stripe_event_id", e.ID, "type", e.Type, "stripe_subscription_id", e.Sub.ID, "reason", reason)
 		return nil
 	}
-	st := e.Sub.state()
+	st, err := s.currentSubscriptionState(ctx, e)
+	if errors.Is(err, ErrSubscriptionNotFound) {
+		st, err = e.Sub.state(), nil // gone at Stripe: the deletion event itself is the only state left
+	}
+	if err != nil {
+		return err
+	}
 	st.StripeStatus = "canceled" // the event name IS the fact; trust it over whatever status string Stripe attached
 	if _, err := s.applyState(ctx, orgID, st, ""); err != nil {
 		return fmt.Errorf("apply subscription deletion: %w", err)
 	}
 	slog.Info("component=billing", "event", "billing_subscription_cancelled", "organization_id", orgID, "stripe_event_id", e.ID, "reason", "deleted_on_provider")
 	return nil
+}
+
+// currentSubscriptionState re-fetches the subscription a customer.subscription.* event names and
+// returns Stripe's CURRENT state, never the event's snapshot. Stripe does not deliver events in
+// order, so applying e.Sub directly let an older event (say, a delayed "updated: active") overwrite
+// newer state already stored from a later one ("deleted"); the fetched state is always the latest,
+// whichever delivery triggers it - the same reason onInvoice and onCheckoutCompleted fetch.
+func (s *Service) currentSubscriptionState(ctx context.Context, e ParsedEvent) (*SubscriptionState, error) {
+	if s.provider == nil {
+		return nil, fmt.Errorf("%w: cannot fetch stripe subscription for webhook", ErrProviderNotConfigured)
+	}
+	st, err := s.provider.GetSubscription(ctx, e.Sub.ID)
+	if err != nil {
+		return nil, fmt.Errorf("get stripe subscription after subscription event: %w", err)
+	}
+	if st.CustomerID == "" {
+		st.CustomerID = string(e.Sub.Customer)
+	}
+	return st, nil
 }
 
 // onInvoice reconciles the full subscription on any invoice event that names one (both a successful
@@ -142,12 +220,12 @@ func (s *Service) onInvoice(ctx context.Context, e ParsedEvent, auditEvent strin
 	if e.Invoice == nil || e.Invoice.Subscription == "" {
 		return nil // a one-off invoice with no subscription - not this table's concern
 	}
-	orgID, err := s.resolveOrgID(ctx, "", string(e.Invoice.Customer), string(e.Invoice.Subscription))
+	orgID, reason, err := s.resolveOrgID(ctx, e.Invoice.Parent.SubscriptionDetails.Metadata["champion_organization_id"], string(e.Invoice.Customer), string(e.Invoice.Subscription))
 	if err != nil {
 		return err
 	}
 	if orgID == 0 {
-		slog.Warn("component=billing", "event", "billing_webhook_unattributed", "stripe_event_id", e.ID, "type", e.Type, "stripe_subscription_id", string(e.Invoice.Subscription))
+		slog.Warn("component=billing", "event", "billing_webhook_unattributed", "stripe_event_id", e.ID, "type", e.Type, "stripe_subscription_id", string(e.Invoice.Subscription), "reason", reason)
 		return nil
 	}
 	st, err := s.provider.GetSubscription(ctx, string(e.Invoice.Subscription))
@@ -198,31 +276,45 @@ func (s *Service) recordTransaction(ctx context.Context, orgID int64, e ParsedEv
 	return s.store.RecordBillingTransaction(ctx, t)
 }
 
-// resolveOrgID finds which organization a webhook event belongs to: the metadata Champion itself
-// set at checkout time first (cheapest, no extra query), then a lookup by Stripe customer id, then
-// by Stripe subscription id. Returns 0 (not an error) when none resolve - the caller logs and acks
-// rather than failing the whole delivery over one unattributable event.
-func (s *Service) resolveOrgID(ctx context.Context, metaOrgID, customerID, subscriptionID string) (int64, error) {
-	if id, err := strconv.ParseInt(metaOrgID, 10, 64); err == nil && id > 0 {
-		return id, nil
-	}
-	if customerID != "" {
-		sub, err := s.store.GetByProviderCustomerID(ctx, repository.ProviderStripe, customerID)
-		if err != nil {
-			return 0, fmt.Errorf("resolve organization by stripe customer: %w", err)
-		}
-		if sub != nil {
-			return sub.OrganizationID, nil
-		}
-	}
+// resolveOrgID finds which organization a webhook event belongs to. Attribution requires a binding
+// Champion itself authored: the champion_organization_id metadata Champion sets server-side on its
+// Checkout Session's subscription, or the subscription id already stored on that organization's row.
+// A Stripe customer id alone NEVER attributes an event: a subscription created outside Champion (for
+// example from the Stripe Dashboard) on an organization's customer would otherwise overwrite that
+// organization's base subscription. The customer id is only a consistency check - a stored customer
+// that differs from the event's refuses the event. Returns 0 plus a reason (not an error) when the
+// event cannot be attributed; the caller logs and acknowledges it.
+func (s *Service) resolveOrgID(ctx context.Context, metaOrgID, customerID, subscriptionID string) (int64, string, error) {
+	var bySub *repository.Subscription
 	if subscriptionID != "" {
-		sub, err := s.store.GetByProviderSubscriptionID(ctx, repository.ProviderStripe, subscriptionID)
+		row, err := s.store.GetByProviderSubscriptionID(ctx, repository.ProviderStripe, subscriptionID)
 		if err != nil {
-			return 0, fmt.Errorf("resolve organization by stripe subscription: %w", err)
+			return 0, "", fmt.Errorf("resolve organization by stripe subscription: %w", err)
 		}
-		if sub != nil {
-			return sub.OrganizationID, nil
+		bySub = row
+	}
+	metaID, err := strconv.ParseInt(strings.TrimSpace(metaOrgID), 10, 64)
+	if err != nil || metaID <= 0 {
+		metaID = 0
+	}
+	if bySub != nil && metaID != 0 && bySub.OrganizationID != metaID {
+		return 0, "metadata_conflicts_with_stored_subscription", nil
+	}
+	row := bySub
+	orgID := metaID
+	if bySub != nil {
+		orgID = bySub.OrganizationID
+	}
+	if orgID == 0 {
+		return 0, "no_champion_binding", nil // customer-only matches are deliberately not used
+	}
+	if row == nil {
+		if row, err = s.store.GetForOrganization(ctx, orgID); err != nil {
+			return 0, "", fmt.Errorf("load organization subscription: %w", err)
 		}
 	}
-	return 0, nil
+	if row != nil && customerID != "" && row.ProviderCustomerID != "" && row.ProviderCustomerID != customerID {
+		return 0, "customer_mismatch", nil
+	}
+	return orgID, "", nil
 }

@@ -27,7 +27,7 @@ func TestBuildADMDownloadEmbedUsesBasenameAndOffsets(t *testing.T) {
 	for _, field := range embed.Fields {
 		joined += field.Name + "=" + field.Value + "\n"
 	}
-	for _, want := range []string{"FILE=DayZ.ADM", "NEW DATA=1.4 KB", "EVENTS PARSED=3", "PROCESSED OFFSET=19.0 KB → 20.4 KB", "RESULT=SUCCESS"} {
+	for _, want := range []string{"File=DayZ.ADM", "New data=1.4 KB", "Events parsed=3", "Processed offset=19.0 KB → 20.4 KB", "Result=Success"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("missing %q in %s", want, joined)
 		}
@@ -38,7 +38,7 @@ func TestBuildADMDownloadEmbedNoNewEventsIsActionable(t *testing.T) {
 	embed := BuildADMDownloadEmbed(killfeed.DownloadReport{File: "DayZ.ADM", NewBytes: 842, Result: "success_no_new_events"})
 	found := false
 	for _, field := range embed.Fields {
-		if field.Name == "RESULT" && strings.Contains(field.Value, "WAITING FOR COMPLETE ADM LINE") {
+		if field.Name == "Result" && strings.Contains(field.Value, "Waiting for complete ADM line") {
 			found = true
 		}
 	}

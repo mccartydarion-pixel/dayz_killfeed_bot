@@ -43,7 +43,7 @@ func TestFactionLeaderboardShapeAndPublicAccess(t *testing.T) {
 	}
 	w.insertKill(w.a1, pb, soon, true)
 	w.insertKill(w.a1, pb, soon.Add(time.Minute), true)
-	w.expect(w.do(http.MethodPut, w.path(w.a1, fmt.Sprintf("/%d", idOf(fa))), leaderA, map[string]any{"flagKey": "RED", "armbandKey": "BLUE"}), http.StatusOK, "branding")
+	w.expect(w.do(http.MethodPut, w.path(w.a1, fmt.Sprintf("/%d", idOf(fa))), leaderA, map[string]any{"flagKey": "WOLF", "armbandKey": "BLUE"}), http.StatusOK, "branding")
 	w.a.FactionHubStats.InvalidateLeaderboard(w.a1.OrgID, w.a1.InstallationID)
 
 	// Any synced user - not a member, not in the organization - may read it.
@@ -65,7 +65,7 @@ func TestFactionLeaderboardShapeAndPublicAccess(t *testing.T) {
 			t.Errorf("entry is missing %q: %v", k, first)
 		}
 	}
-	if first["rank"].(float64) != 1 || int64(first["factionId"].(float64)) != idOf(fa) || first["tag"] != "ALP" || first["flagKey"] != "RED" || first["armbandKey"] != "BLUE" ||
+	if first["rank"].(float64) != 1 || int64(first["factionId"].(float64)) != idOf(fa) || first["tag"] != "ALP" || first["flagKey"] != "WOLF" || first["armbandKey"] != "BLUE" ||
 		first["value"].(float64) != 3 || first["memberCount"].(float64) != 1 || first["hasTrackedActivity"] != true || first["logo"] != nil {
 		t.Fatalf("first entry: %v", first)
 	}
@@ -268,8 +268,8 @@ func TestFactionLeaderboardInvalidationThroughHandlers(t *testing.T) {
 		t.Fatalf("a new faction appears immediately: %v", got)
 	}
 	// A branding change through the API shows immediately.
-	w.expect(w.do(http.MethodPut, w.path(w.a1, fmt.Sprintf("/%d", fid)), leader, map[string]any{"name": "Living Board II", "flagKey": "GREEN"}), http.StatusOK, "rename")
-	if e := entry(); e["name"] != "Living Board II" || e["flagKey"] != "GREEN" {
+	w.expect(w.do(http.MethodPut, w.path(w.a1, fmt.Sprintf("/%d", fid)), leader, map[string]any{"name": "Living Board II", "flagKey": "BEAR"}), http.StatusOK, "rename")
+	if e := entry(); e["name"] != "Living Board II" || e["flagKey"] != "BEAR" {
 		t.Fatalf("editing the faction must invalidate the leaderboard: %v", e)
 	}
 	// A kill announced by the killfeed hook shows immediately.

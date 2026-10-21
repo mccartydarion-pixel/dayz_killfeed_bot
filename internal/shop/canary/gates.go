@@ -1,5 +1,7 @@
 package canary
 
+import "github.com/yourname/dayz-killfeed/internal/shop/nitradodelivery"
+
 // Owner gates, in execution order. Each is a separate, explicit approval; approving one never implies
 // another. Nothing in this package performs a gate - it only describes it.
 //
@@ -46,7 +48,7 @@ type Gate struct {
 
 // Gates returns the canary gates in execution order (the Lost City decision is separate: LostCityGate).
 func Gates() []Gate {
-	art := "champion/champion_shop_delivery.json"
+	art := nitradodelivery.ArtifactRelPath
 	return []Gate{
 		{ID: GateA, Title: "Create the empty Champion spawner file", Writes: true, Paths: []string{art},
 			Action: "upload the empty spawner file (EmptyArtifact) to " + art + "; nothing references it yet",

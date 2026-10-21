@@ -86,13 +86,18 @@ type fakeDiscord struct {
 	// editErr / getErr, when set for "channel/id", is returned instead of acting.
 	editErr map[string]error
 	getErr  map[string]error
+	gets    map[string]int
 	sendErr map[string]error // by channel
 	// lastEmbed is the description last sent/edited per channel (complex messages).
 	lastEmbed map[string]string
+	// lastEmbeds is the full embed array last sent/edited per channel, and
+	// multiCalls counts multi-embed sends/edits (one call per whole package).
+	lastEmbeds map[string][]*discordgo.MessageEmbed
+	multiCalls int
 }
 
 func newFakeDiscord() *fakeDiscord {
-	return &fakeDiscord{messages: map[string]map[string]bool{}, editErr: map[string]error{}, getErr: map[string]error{}, sendErr: map[string]error{}, lastEmbed: map[string]string{}}
+	return &fakeDiscord{messages: map[string]map[string]bool{}, editErr: map[string]error{}, getErr: map[string]error{}, sendErr: map[string]error{}, lastEmbed: map[string]string{}, lastEmbeds: map[string][]*discordgo.MessageEmbed{}}
 }
 
 func (f *fakeDiscord) send(channelID string) (*discordgo.Message, error) {
@@ -150,6 +155,38 @@ func (f *fakeDiscord) ChannelMessageEditComplex(channelID, messageID string, emb
 	return msg, err
 }
 
+func (f *fakeDiscord) recordAll(channelID string, embeds []*discordgo.MessageEmbed) {
+	f.mu.Lock()
+	f.multiCalls++
+	f.lastEmbeds[channelID] = embeds
+	f.mu.Unlock()
+	if len(embeds) > 0 {
+		f.record(channelID, embeds[0])
+	}
+}
+
+func (f *fakeDiscord) ChannelMessageSendEmbeds(channelID string, embeds []*discordgo.MessageEmbed, _ []discordgo.MessageComponent) (*discordgo.Message, error) {
+	msg, err := f.send(channelID)
+	if err == nil {
+		f.recordAll(channelID, embeds)
+	}
+	return msg, err
+}
+
+func (f *fakeDiscord) ChannelMessageEditEmbeds(channelID, messageID string, embeds []*discordgo.MessageEmbed, _ []discordgo.MessageComponent) (*discordgo.Message, error) {
+	msg, err := f.edit(channelID, messageID)
+	if err == nil {
+		f.recordAll(channelID, embeds)
+	}
+	return msg, err
+}
+
+func (f *fakeDiscord) embedsIn(channelID string) []*discordgo.MessageEmbed {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastEmbeds[channelID]
+}
+
 func (f *fakeDiscord) ChannelMessageSendEmbed(channelID string, _ *discordgo.MessageEmbed) (*discordgo.Message, error) {
 	return f.send(channelID)
 }
@@ -158,9 +195,20 @@ func (f *fakeDiscord) ChannelMessageEditEmbed(channelID, messageID string, _ *di
 	return f.edit(channelID, messageID)
 }
 
+// getCount is how many times ChannelMessage was asked for "channel/id".
+func (f *fakeDiscord) getCount(key string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.gets[key]
+}
+
 func (f *fakeDiscord) ChannelMessage(channelID, messageID string) (*discordgo.Message, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.gets == nil {
+		f.gets = map[string]int{}
+	}
+	f.gets[channelID+"/"+messageID]++
 	if err := f.getErr[channelID+"/"+messageID]; err != nil {
 		return nil, err
 	}
@@ -305,6 +353,6 @@ func newRoutedFixture(t *testing.T) *routedFixture {
 	t.Helper()
 	f := &routedFixture{t: t, guild: 7, servers: []int64{1, 2}, resolver: newKeyedResolver(), api: newFakeDiscord(), store: newMemPanelStore(), setup: NewInMemorySetupStore()}
 	f.panels = NewRoutePanels(f.api, f.store)
-	f.syncer = NewRouteSyncer(f.resolver, func(context.Context) (int64, []int64, error) { return f.guild, f.servers, nil }, f.panels, f.api, f.setup, "g1")
+	f.syncer = NewRouteSyncer(f.resolver, SingleGuild(func(context.Context) (int64, []int64, error) { return f.guild, f.servers, nil }), f.panels, f.api, f.setup, "g1", f.guild)
 	return f
 }

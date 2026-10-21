@@ -32,9 +32,10 @@ const (
 	Unsupported   = "UNSUPPORTED"
 )
 
-// ChampionArtifact is the proposed Champion spawner file, relative to the mission folder
-// (nitradodelivery.ArtifactRelPath). Discovery only looks for it; it never adds it anywhere.
-const ChampionArtifact = "champion/champion_shop_delivery.json"
+// ChampionArtifact is the Champion spawner file, relative to the mission folder
+// (nitradodelivery.ArtifactRelPath; custom/ is the only user folder the Nitrado console host
+// receives). Discovery only looks for it; it never adds it anywhere.
+const ChampionArtifact = "custom/champion_shop_delivery.json"
 
 // Reader is every Nitrado call discovery may make. All are reads (GET / signed download).
 type Reader interface {

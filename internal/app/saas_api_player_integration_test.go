@@ -142,10 +142,14 @@ func TestPlayerStatsFieldsComputeCorrectly(t *testing.T) {
 	actor := w.players[4]
 	player := w.linkPlayer(w.a1, actor, "StatsPlayer")
 
-	w.insertKill(w.a1, player, time.Now(), true)  // headshot
-	w.insertKill(w.a1, player, time.Now(), false) // not a headshot
 	w.insertDeath(w.a1, player, time.Now())
-	w.claimBounty(w.a1, player, 250, 0) // guild-wide claim
+	if before := w.getJSON(w.playerStatsPath(w.a1.InstallationID), actor); before["lastKill"] != nil {
+		t.Fatalf("lastKill must be null before any kill: %v", before)
+	}
+
+	w.insertKill(w.a1, player, time.Now().Add(-time.Hour), true) // headshot, older
+	w.insertKill(w.a1, player, time.Now(), false)                // not a headshot, most recent
+	w.claimBounty(w.a1, player, 250, 0)                          // guild-wide claim
 
 	resp := w.getJSON(w.playerStatsPath(w.a1.InstallationID), actor)
 	if int(resp["kills"].(float64)) != 2 {
@@ -165,6 +169,19 @@ func TestPlayerStatsFieldsComputeCorrectly(t *testing.T) {
 	}
 	if resp["installationId"] == nil || int64(resp["installationId"].(float64)) != w.a1.InstallationID {
 		t.Fatalf("%v", resp)
+	}
+	last, ok := resp["lastKill"].(map[string]any)
+	if !ok {
+		t.Fatalf("lastKill missing: %v", resp)
+	}
+	if last["victimName"] != "Some Victim" || last["weapon"] != "M4-A1" || last["distanceMeters"].(float64) != 80 {
+		t.Fatalf("lastKill fields: %v", last)
+	}
+	if last["headshot"] != false {
+		t.Fatalf("lastKill must be the most recent (non-headshot) kill: %v", last)
+	}
+	if at, err := time.Parse(time.RFC3339, last["at"].(string)); err != nil || time.Since(at) > 10*time.Minute {
+		t.Fatalf("lastKill at: %v (%v)", last["at"], err)
 	}
 }
 
@@ -240,4 +257,171 @@ func TestPlayerServersUnauthenticated(t *testing.T) {
 	w := newFactionWorld(t)
 	w.expect(w.do(http.MethodGet, w.playerServersPath(), "", nil), http.StatusUnauthorized, "no acting user")
 	w.expect(w.do(http.MethodGet, w.playerStatsPath(w.a1.InstallationID), "", nil), http.StatusUnauthorized, "no acting user")
+}
+
+// --- GET /api/saas/player/home -------------------------------------------------------------------
+
+func (w *factionWorld) playerHome(actor string) map[string]any {
+	w.t.Helper()
+	resp := w.getJSON("/api/saas/player/home", actor)
+	if _, present := resp["server"]; !present {
+		w.t.Fatalf("server must always be present (null when there is none): %v", resp)
+	}
+	server, _ := resp["server"].(map[string]any)
+	return server
+}
+
+// The reason the route exists: a player who has linked but has not played yet is on no
+// /player/servers list, and must still be told which server their Player Hub shows.
+func TestPlayerHomeLinkedPlayerWithoutActivityGetsTheirServer(t *testing.T) {
+	w := newFactionWorld(t)
+	actor := w.players[0]
+	w.linkPlayer(w.a1, actor, "FreshLink")
+
+	if items := w.getJSON(w.playerServersPath(), actor)["items"].([]any); len(items) != 0 {
+		t.Fatalf("/player/servers must keep requiring observed activity, got %v", items)
+	}
+	server := w.playerHome(actor)
+	if server == nil {
+		t.Fatal("expected a home server for a verified, never-observed player")
+	}
+	if int64(server["installationId"].(float64)) != w.a1.InstallationID || int64(server["organizationId"].(float64)) != w.a1.OrgID {
+		t.Fatalf("%v", server)
+	}
+	if server["discordGuildId"] != w.a1.DiscordGuildID {
+		t.Fatalf("discordGuildId must be the Discord snowflake: %v", server)
+	}
+	if server["linkStatus"] != "VERIFIED" || server["observed"] != false {
+		t.Fatalf("%v", server)
+	}
+	if name, _ := server["organizationName"].(string); name == "" {
+		t.Fatalf("organizationName missing: %v", server)
+	}
+}
+
+func TestPlayerHomeWithoutVerifiedLinkIsNull(t *testing.T) {
+	w := newFactionWorld(t)
+	if server := w.playerHome(w.players[1]); server != nil {
+		t.Fatalf("a never-linked user has no home, got %v", server)
+	}
+	// A link that is not VERIFIED is not a link.
+	actor := w.players[2]
+	player := w.linkPlayer(w.a1, actor, "Unconfirmed")
+	for _, status := range []string{"PENDING", "REJECTED", "UNLINKED", "EXPIRED"} {
+		if _, err := w.a.DB.Pool.Exec(context.Background(), `UPDATE player_links SET status=$2 WHERE player_id=$1`, player, status); err != nil {
+			t.Fatal(err)
+		}
+		if server := w.playerHome(actor); server != nil {
+			t.Fatalf("status %s must not give a home, got %v", status, server)
+		}
+	}
+}
+
+// Observed servers win over never-played ones, whatever the installation ids are.
+func TestPlayerHomePrefersTheServerThePlayerWasObservedOn(t *testing.T) {
+	w := newFactionWorld(t)
+	actor := w.players[3]
+	second := w.secondInstallation(w.a1) // higher installation id, same guild
+	player := w.linkPlayer(w.a1, actor, "PlaysOnSecond")
+
+	if server := w.playerHome(actor); server == nil || int64(server["installationId"].(float64)) != w.a1.InstallationID {
+		t.Fatalf("with no activity anywhere the lowest installation id is the home, got %v", server)
+	}
+	w.insertKill(second, player, time.Now(), false)
+	server := w.playerHome(actor)
+	if server == nil || int64(server["installationId"].(float64)) != second.InstallationID || server["observed"] != true {
+		t.Fatalf("expected the observed server, got %v", server)
+	}
+}
+
+func TestPlayerHomeNeverReturnsAnotherTenantsServer(t *testing.T) {
+	w := newFactionWorld(t)
+	actor := w.players[4]
+	w.linkPlayer(w.a1, actor, "OnlyOnAHome")
+	server := w.playerHome(actor)
+	if server == nil || int64(server["installationId"].(float64)) == w.b1.InstallationID || int64(server["organizationId"].(float64)) != w.a1.OrgID {
+		t.Fatalf("%v", server)
+	}
+}
+
+// --- GET /api/saas/player/home: servers + ?installationId= ---------------------------------------
+
+func homeInstallationIDs(t *testing.T, resp map[string]any) []int64 {
+	t.Helper()
+	list, ok := resp["servers"].([]any)
+	if !ok {
+		t.Fatalf("servers must always be an array: %v", resp)
+	}
+	ids := make([]int64, 0, len(list))
+	for _, item := range list {
+		ids = append(ids, int64(item.(map[string]any)["installationId"].(float64)))
+	}
+	return ids
+}
+
+func homeSelected(t *testing.T, resp map[string]any) (int64, string) {
+	t.Helper()
+	server, _ := resp["server"].(map[string]any)
+	if server == nil {
+		t.Fatalf("expected a server: %v", resp)
+	}
+	selected, _ := resp["selected"].(string)
+	return int64(server["installationId"].(float64)), selected
+}
+
+func TestPlayerHomeListsEveryServerAndHonoursThePreference(t *testing.T) {
+	w := newFactionWorld(t)
+	actor := w.players[5]
+	second := w.secondInstallation(w.a1) // same guild, higher installation id
+	w.linkPlayer(w.a1, actor, "TwoServers")
+	path := func(q string) string { return "/api/saas/player/home" + q }
+
+	resp := w.getJSON(path(""), actor)
+	if ids := homeInstallationIDs(t, resp); len(ids) != 2 || ids[0] != w.a1.InstallationID || ids[1] != second.InstallationID {
+		t.Fatalf("servers %v", ids)
+	}
+	if id, selected := homeSelected(t, resp); id != w.a1.InstallationID || selected != "DEFAULT" {
+		t.Fatalf("default: %d %s", id, selected)
+	}
+
+	resp = w.getJSON(path(fmt.Sprintf("?installationId=%d", second.InstallationID)), actor)
+	if id, selected := homeSelected(t, resp); id != second.InstallationID || selected != "PREFERRED" {
+		t.Fatalf("preferred: %d %s", id, selected)
+	}
+	if ids := homeInstallationIDs(t, resp); len(ids) != 2 || ids[0] != w.a1.InstallationID {
+		t.Fatalf("a preference must not reorder the list: %v", ids)
+	}
+
+	// Another tenant's installation, an unknown id and garbage: the default, never an error.
+	for _, q := range []string{fmt.Sprintf("?installationId=%d", w.b1.InstallationID), "?installationId=999999999", "?installationId=abc", "?installationId=-1", "?installationId="} {
+		resp = w.getJSON(path(q), actor)
+		if id, selected := homeSelected(t, resp); id != w.a1.InstallationID || selected != "DEFAULT" {
+			t.Fatalf("%s: %d %s", q, id, selected)
+		}
+		for _, id := range homeInstallationIDs(t, resp) {
+			if id == w.b1.InstallationID {
+				t.Fatalf("%s leaked another tenant's server", q)
+			}
+		}
+	}
+}
+
+func TestPlayerHomeSingleAndNoServer(t *testing.T) {
+	w := newFactionWorld(t)
+	actor := w.players[0]
+	resp := w.getJSON(fmt.Sprintf("/api/saas/player/home?installationId=%d", w.a1.InstallationID), actor)
+	if resp["server"] != nil || resp["selected"] != nil || len(homeInstallationIDs(t, resp)) != 0 {
+		t.Fatalf("an unlinked user gets nothing, even when asking for a real installation: %v", resp)
+	}
+	if _, present := resp["selected"]; !present {
+		t.Fatalf("selected must be present: %v", resp)
+	}
+	w.linkPlayer(w.b1, actor, "OneServer")
+	resp = w.getJSON("/api/saas/player/home", actor)
+	if ids := homeInstallationIDs(t, resp); len(ids) != 1 || ids[0] != w.b1.InstallationID {
+		t.Fatalf("servers %v", ids)
+	}
+	if id, selected := homeSelected(t, resp); id != w.b1.InstallationID || selected != "DEFAULT" {
+		t.Fatalf("%d %s", id, selected)
+	}
 }

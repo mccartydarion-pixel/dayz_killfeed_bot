@@ -120,7 +120,7 @@ func TestShopCoordinateDeliveryValidatesMapAndBounds(t *testing.T) {
 		t.Fatalf("member: %d %s", r.Status, r.Body)
 	}
 	adm := w.expect(w.setMap(w.a1, "ChernarusPlus"), http.StatusOK, "set map").JSON(t)["settings"].(map[string]any)
-	if adm["mapKey"] != "chernarusplus" || len(adm["supportedMaps"].([]any)) != 2 || adm["updatedByDiscordUserId"] != w.admin {
+	if adm["mapKey"] != "chernarusplus" || len(adm["supportedMaps"].([]any)) != 3 || adm["updatedByDiscordUserId"] != w.admin {
 		t.Fatalf("admin settings: %v", adm)
 	}
 	s = w.getJSON(w.shopPath(w.a1, "/delivery-settings"), player)["settings"].(map[string]any)

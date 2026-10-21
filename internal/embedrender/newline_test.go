@@ -60,8 +60,11 @@ func TestNewlinesRenderInEverySection(t *testing.T) {
 	if e.Fields[1].Value != `path\nM4-A1` {
 		t.Fatalf(`an escaped \\n stays literal: %q`, e.Fields[1].Value)
 	}
-	if e.Title != "Alice eliminated" || e.Fields[0].Name != "KILLER STATS" {
-		t.Fatalf("single-line sections fold breaks: title %q, name %q", e.Title, e.Fields[0].Name)
+	if e.Title != "Alice\neliminated" {
+		t.Fatalf("a title keeps its line break: %q", e.Title)
+	}
+	if e.Fields[0].Name != "KILLER STATS" {
+		t.Fatalf("a field name folds breaks: %q", e.Fields[0].Name)
 	}
 }
 
@@ -126,5 +129,19 @@ func TestLimitsApplyAfterNewlineExpansion(t *testing.T) {
 	}
 	if utf8.RuneCountInString(e.Description) > MaxDescription || utf8.RuneCountInString(e.Fields[0].Value) > MaxFieldValue || TotalText(e) > MaxTotal {
 		t.Fatalf("limits after expansion: desc %d value %d total %d", utf8.RuneCountInString(e.Description), utf8.RuneCountInString(e.Fields[0].Value), TotalText(e))
+	}
+}
+
+func TestTitleLines(t *testing.T) {
+	for in, want := range map[string]string{
+		"PLAYER ELIMINATED":                      "PLAYER ELIMINATED",
+		"PLAYER ELIMINATED\nJust now":            "PLAYER ELIMINATED\nJust now",
+		"  PLAYER   ELIMINATED \n\n\n Just now ": "PLAYER ELIMINATED\nJust now",
+		"a\nb\nc\nd\ne":                          "a\nb\nc d e",
+		"\n\n":                                   "",
+	} {
+		if got := titleLines(in); got != want {
+			t.Errorf("titleLines(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

@@ -447,62 +447,76 @@ func TestAcceptedLaterBootClearsStaleListedCandidate(t *testing.T) {
 	if stats := e.BootAuthority(); stats.AcceptedFile != later || stats.LastNewBootFile != "" || !stats.LastNewBootSeenAt.IsZero() {
 		t.Fatalf("accepted later boot kept obsolete pending listing: %+v", stats)
 	}
-	if e.lastNewBootFile != "" { t.Fatal("obsolete engine candidate was not cleared") }
+	if e.lastNewBootFile != "" {
+		t.Fatal("obsolete engine candidate was not cleared")
+	}
 	// An older listing in a pre-existing snapshot must not win over an
 	// accepted later boot, while a genuinely newer candidate still does.
 	now := time.Now()
 	h := ADMSourceHealth{LastCycleAt: now, LastChangeAt: now, AcceptedFile: later,
 		NewestListedFile: old, NewestListedSince: now.Add(-time.Hour)}
-	if state, _ := ClassifyADMSourceHealth(h, now); state != ADMHealthy { t.Fatalf("older listing marked lagging: %s", state) }
+	if state, _ := ClassifyADMSourceHealth(h, now); state != ADMHealthy {
+		t.Fatalf("older listing marked lagging: %s", state)
+	}
 	h.AcceptedFile, h.NewestListedFile = old, later
-	if state, _ := ClassifyADMSourceHealth(h, now); state != ADMSourceLagging { t.Fatalf("newer unaccepted boot was missed: %s", state) }
+	if state, _ := ClassifyADMSourceHealth(h, now); state != ADMSourceLagging {
+		t.Fatalf("newer unaccepted boot was missed: %s", state)
+	}
 }
 
 func TestNewerBootFallbackToReadableMountAlias(t *testing.T) {
- f:=newBootFake()
- now:=time.Date(2026,9,24,12,8,14,0,time.UTC)
- f.put(noftpCfg+"/"+bootAName,quietADM("2026-09-24","08:08:14"),now)
- e,_:=bootEngine(t,f)
- mainPath:=noftpCfg+"/"+bootBName
- backupPath:=ftpCfg+"/"+bootBName
- header:=quietADM("2026-09-24","09:17:09")
- f.put(mainPath,header,now.Add(time.Hour))
- f.put(backupPath,header,now.Add(time.Hour))
- // A boot scan visits previously discovered directories; the alternate
- // mount must actually have been discovered before it may be consulted.
- e.rememberADMDirs([]nitrado.LogFile{{Path:backupPath,Directory:ftpCfg}})
- f.readFail[mainPath]=2
- // The newer boot is still authoritative if the noftp representation is
- // listed but temporarily cannot be read. A verified ftproot alias is safe.
- forceScan(e,false)
- if err:=e.PollOnce(context.Background());err!=nil {t.Fatal(err)}
- if e.selected==nil||canonicalADMID(e.selected.Path)!=canonicalADMID(backupPath)||
-  e.selected.Path!=backupPath {t.Fatalf("verified fallback alias not promoted: %+v",e.selected)}
- if got:=e.BootAuthority();got.LastCandidateReason!=""||got.AcceptedFile!=canonicalADMID(backupPath){
-  t.Fatalf("wrong verification/authority diagnostics: %+v",got)
- }
- if f.readCount(mainPath)!=1||f.readCount(backupPath)!=1 {
-  t.Fatalf("unexpected mount probe count: primary=%d secondary=%d",f.readCount(mainPath),f.readCount(backupPath))
- }
- if e.selectLog(nitrado.LogFile{Name:oldName,Path:ftpCfg+"/"+oldName}) {
-  t.Fatal("fallback must not permit regression to an older boot")
- }
+	f := newBootFake()
+	now := time.Date(2026, 9, 24, 12, 8, 14, 0, time.UTC)
+	f.put(noftpCfg+"/"+bootAName, quietADM("2026-09-24", "08:08:14"), now)
+	e, _ := bootEngine(t, f)
+	mainPath := noftpCfg + "/" + bootBName
+	backupPath := ftpCfg + "/" + bootBName
+	header := quietADM("2026-09-24", "09:17:09")
+	f.put(mainPath, header, now.Add(time.Hour))
+	f.put(backupPath, header, now.Add(time.Hour))
+	// A boot scan visits previously discovered directories; the alternate
+	// mount must actually have been discovered before it may be consulted.
+	e.rememberADMDirs([]nitrado.LogFile{{Path: backupPath, Directory: ftpCfg}})
+	f.readFail[mainPath] = 2
+	// The newer boot is still authoritative if the noftp representation is
+	// listed but temporarily cannot be read. A verified ftproot alias is safe.
+	forceScan(e, false)
+	if err := e.PollOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if e.selected == nil || canonicalADMID(e.selected.Path) != canonicalADMID(backupPath) ||
+		e.selected.Path != backupPath {
+		t.Fatalf("verified fallback alias not promoted: %+v", e.selected)
+	}
+	if got := e.BootAuthority(); got.LastCandidateReason != "" || got.AcceptedFile != canonicalADMID(backupPath) {
+		t.Fatalf("wrong verification/authority diagnostics: %+v", got)
+	}
+	if f.readCount(mainPath) != 1 || f.readCount(backupPath) != 1 {
+		t.Fatalf("unexpected mount probe count: primary=%d secondary=%d", f.readCount(mainPath), f.readCount(backupPath))
+	}
+	if e.selectLog(nitrado.LogFile{Name: oldName, Path: ftpCfg + "/" + oldName}) {
+		t.Fatal("fallback must not permit regression to an older boot")
+	}
 }
 
 func TestNewerBootUnverifiedAliasesNeverPromote(t *testing.T) {
- f:=newBootFake()
- now:=time.Date(2026,9,24,12,8,14,0,time.UTC)
- f.put(noftpCfg+"/"+bootAName,quietADM("2026-09-24","08:08:14"),now)
- e,_:=bootEngine(t,f)
- primary:=noftpCfg+"/"+bootBName
- secondary:=ftpCfg+"/"+bootBName
- f.put(primary,quietADM("2026-09-23","01:00:00"),now.Add(time.Hour))
- f.put(secondary,quietADM("2026-09-23","01:00:00"),now.Add(time.Hour))
- forceScan(e,false)
- if err:=e.PollOnce(context.Background());err!=nil {t.Fatal(err)}
- if e.selected.Name!=bootAName {t.Fatalf("unverified boot promoted: %+v",e.selected)}
- st:=e.BootAuthority()
- if st.LastCandidateFile!=canonicalADMID(primary)||st.LastCandidateReason!="header_does_not_match_filename"||st.LastCandidateCheckAt.IsZero(){
-  t.Fatalf("missing failure provenance: %+v",st)
- }
+	f := newBootFake()
+	now := time.Date(2026, 9, 24, 12, 8, 14, 0, time.UTC)
+	f.put(noftpCfg+"/"+bootAName, quietADM("2026-09-24", "08:08:14"), now)
+	e, _ := bootEngine(t, f)
+	primary := noftpCfg + "/" + bootBName
+	secondary := ftpCfg + "/" + bootBName
+	f.put(primary, quietADM("2026-09-23", "01:00:00"), now.Add(time.Hour))
+	f.put(secondary, quietADM("2026-09-23", "01:00:00"), now.Add(time.Hour))
+	forceScan(e, false)
+	if err := e.PollOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if e.selected.Name != bootAName {
+		t.Fatalf("unverified boot promoted: %+v", e.selected)
+	}
+	st := e.BootAuthority()
+	if st.LastCandidateFile != canonicalADMID(primary) || st.LastCandidateReason != "header_does_not_match_filename" || st.LastCandidateCheckAt.IsZero() {
+		t.Fatalf("missing failure provenance: %+v", st)
+	}
 }

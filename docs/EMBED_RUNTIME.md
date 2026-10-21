@@ -21,7 +21,7 @@ Performed against the code BEFORE any integration; a route key alone never count
 | `PVE_FEED` | yes | yes (explicit suicides only today) | embeds, up to 10 per message | **yes** (presentation only) | Champion PvE card |
 | `BOUNTY_TRACKING` | yes | yes (`BountyTracker`) | embeds, up to 10 per message | **yes** (placed / increased / claimed / expired / cancelled) | Champion lifecycle card |
 | `ECONOMY` | yes | yes (`EconomyFeed`: bounty rewards, admin credit/debit) | embeds, up to 10 per message | **yes** | Champion economy card |
-| `CONNECTIONS` | yes | yes (`ConnectionsPublisher`) | one embed per message: a single event, or a batched summary list | **single-event cards only**; a batched summary (several players / "earlier events not shown") keeps the default | Champion connection card |
+| `CONNECTIONS` | yes | yes (`ConnectionsPublisher`) | one card per event; a flood (more than 12 queued, or events dropped) sends one summary list instead | **single-event cards only**; a flood summary keeps the default | Champion connection card |
 | `BOUNTY` | yes | yes (`BountyBoard`) | **persistent board** (one edited message per channel, top-N rows) | **no - INCOMPATIBLE**: a multi-row board reconciled from the database is not a single-event card; left untouched | Champion board |
 | `ADMIN_LOGS` | yes | yes (`ADMMonitorPublisher`) | **persistent live diagnostic panel** (edited in place) plus per-download report embeds, with a fixed diagnostic field model | **no - INCOMPATIBLE** | Champion ADM monitor |
 | `LINK_GAMERTAG` | yes | yes (`RouteSyncer` panel) | **persistent interactive panel** (buttons, modals) | **no - INCOMPATIBLE** (panel, not an event card) | Champion panel |
@@ -102,11 +102,11 @@ only values the event actually carries are provided; a value that is unknown is 
 
 | Route | Variables provided |
 |---|---|
-| `KILLFEED` | `killer` `victim` `weapon` `distance` (`86.4m`) `ammo` `streak` (when > 0) `special_kill` (the default card's own hero label, only for a special kill) `bounty_amount` (only when the kill claimed a bounty) `server_name` `timestamp` |
+| `KILLFEED` | `killer` `victim` `weapon` `distance` (`86.4m`) `ammo` `streak` (when > 0) `special_kill` (the default card's own hero label, only for a special kill) `bounty_amount` (only when the kill claimed a bounty) `ranked_rp` (only when the server shows ranked tags and the kill earned RP) `weapon_with_ammo` (the weapon, plus the ammunition in brackets when it is known: use it instead of `{{weapon}} ({{ammo}})`, which loses the whole line when the ammunition is unknown; `ammo` itself now also comes from the matched lethal hit when the kill line names none) `hit_label` (`CRITICAL HIT` for a head hit, `HIT` otherwise; only when the hit zone is known) `time_ago` (a Discord relative time such as "2 minutes ago", live and in each reader's time zone; the one value passed to Discord unescaped, and only when it is exactly `<t:N:R>`) `server_name` `timestamp` |
 | `HITFEED` | `attacker` (= `killer`) `victim` `weapon` `ammo` `distance` `hit_zone` `damage` (only when **every** hit in the encounter carried one) `hits` `server_name` |
 | `PVE_FEED` | `victim` `cause` (the parser-proven cause: today only `suicide`) `server_name` `timestamp` |
 | `BOUNTY_TRACKING` | `status` (`placed` `increased` `claimed` `expired` `cancelled`) `target` (= `victim`) `amount`; claims only: `hunter` (= `killer`) `total` `count` `weapon` `distance`; `server_name` |
-| `CONNECTIONS` | `player` `event` (`joined`/`left`) `event_type` (`connected`/`disconnected`) `session` (disconnects with an observed session >= 1 minute) `server_name` `timestamp` |
+| `CONNECTIONS` | `player` `event` (`joined`/`left`) `event_type` (`connected`/`disconnected`) `session` (disconnects with an observed session >= 1 minute) `session_time` (`00H 33M 26S`, observed disconnects) `location` (`x;y;z`, when the line carries a position) `cash_earned` (disconnects on servers with the economy) `time` (`<t:…:T>`, the line's own time) `server_name` `timestamp` |
 | `ECONOMY` | `player` `amount` `transaction_type` (`Bounty reward`, `Admin credit`, `Admin debit`, ...) `balance` (rewards only) `server_name` |
 
 `timestamp` is the runtime publish time in UTC (`2006-01-02 15:04:05 UTC`; the ADM log carries only a

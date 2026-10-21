@@ -70,7 +70,7 @@ Immutable and append-only (see `ECONOMY_SYSTEM.md`): `id`, `guild_id`, `player_i
 |---|---|---|
 | `BOUNTY_CLAIM` | CREDIT | bounty claim (inside its transaction) |
 | `EVENT_FIRST_PLACE` / `EVENT_SECOND_PLACE` / `EVENT_THIRD_PLACE` | CREDIT | event finalization |
-| `SYSTEM_REWARD` | CREDIT | reserved for automatic rewards (e.g. kill rewards); **no amounts are configured - nothing pays automatically** |
+| `SYSTEM_REWARD` | CREDIT | automatic rewards. Used by the progression systems (challenges, battle pass: `docs/PROGRESSION.md`) and the season rewards automation (`docs/FEATURE_UPGRADES.md`), all off until an owner switches them on. There is still no per-kill reward |
 | `ADMIN_CREDIT` | CREDIT | admin grant (web `grant`, Discord `/economy credit`); spendable balance only |
 | `ADMIN_DEBIT` | DEBIT | admin debit |
 | `SHOP_PURCHASE` | DEBIT | a Shop purchase, written by the shop's own transaction (`docs/SHOP.md`); reference `purchase:<id>` |
@@ -154,7 +154,7 @@ It never changes anything and a normal read never "fixes" a drift. A repair is a
 
 * **Bounties** are unchanged: the claim already pays each bounty through the ledger inside its own transaction with reference `bounty:<id>` (exactly once, replay-safe). The bounty suites
   run unchanged and pass.
-* **Kill rewards**: not enabled. `SYSTEM_REWARD` exists for a future configured reward; no amount is hardcoded anywhere.
+* **Kill rewards**: not built. `SYSTEM_REWARD` is used by the later progression and season rewards (see the table above); no per-kill amount exists anywhere.
 * **ECONOMY Discord route** (`discord.EconomyFeed`): the web admin endpoints call the same `economy.Service`, which hands committed transactions to the existing feed *after commit*. Discord is an
   **optional notification channel**: no `ECONOMY` route = nothing is sent (never a fallback); a Discord failure or a panicking notifier cannot undo or repeat a transaction; replays, refusals and
   balance reads never notify. Cards never show the admin or the reason. The website remains the primary UI. Custom embed templates keep their variables

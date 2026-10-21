@@ -49,30 +49,43 @@ type LiveCompletionPublisher struct {
 	guilds         *repository.GuildRepository
 	discordGuildID string
 	// routes/servers resolve the SERVER_STATUS route, where completion
-	// announcements live in Channel System V2. Optional.
+	// announcements live in Channel System V2, for the announcement's own
+	// guild. Optional.
 	routes  RouteResolver
-	servers GuildServersFunc
+	servers AllGuildServersFunc
 }
 
-// SetRouting sends announcements to the guild's SERVER_STATUS route first;
-// the legacy GuildSetup channels remain the fallback.
-func (p *LiveCompletionPublisher) SetRouting(routes RouteResolver, servers GuildServersFunc) {
+// routeKeyEvents mirrors routing.RouteEvents: the dedicated events channel.
+const routeKeyEvents = "EVENTS"
+
+// SetRouting sends announcements to their guild's SERVER_STATUS route first
+// (event cards and results to its EVENTS route before that); the legacy
+// GuildSetup channels remain the fallback for the primary guild only.
+func (p *LiveCompletionPublisher) SetRouting(routes RouteResolver, servers AllGuildServersFunc) {
 	if p != nil {
 		p.routes, p.servers = routes, servers
 	}
 }
 
-func (p *LiveCompletionPublisher) routedChannel(ctx context.Context) string {
+// routedChannel is the first routed channel among routeKeys, in order, on any
+// server of guildID (the announcement's own guild, never another one).
+func (p *LiveCompletionPublisher) routedChannel(ctx context.Context, guildID int64, routeKeys ...string) string {
 	if p.routes == nil || p.servers == nil {
 		return ""
 	}
-	guildRowID, serverIDs, err := p.servers(ctx)
+	guilds, err := p.servers(ctx)
 	if err != nil {
 		return ""
 	}
-	for _, serverID := range serverIDs {
-		if ch, found, err := p.routes.Resolve(ctx, guildRowID, serverID, routeKeyServerStatus); err == nil && found && ch != "" {
-			return ch
+	serverIDs, ok := serversOfGuild(guilds, guildID)
+	if !ok {
+		return ""
+	}
+	for _, key := range routeKeys {
+		for _, serverID := range serverIDs {
+			if ch, found, err := p.routes.Resolve(ctx, guildID, serverID, key); err == nil && found && ch != "" {
+				return ch
+			}
 		}
 	}
 	return ""
@@ -111,13 +124,37 @@ func (p *LiveCompletionPublisher) channel() string {
 	}
 	return s.LeaderboardsChannelID
 }
-func (p *LiveCompletionPublisher) send(ctx context.Context, embed *discordgo.MessageEmbed) error {
+
+// legacyChannel is the GuildSetup fallback, which belongs to the primary
+// guild alone: another guild's announcement must never land in the primary
+// guild's channels, so without a route it has nowhere to go.
+func (p *LiveCompletionPublisher) legacyChannel(ctx context.Context, guildID int64) string {
+	if p.guilds != nil {
+		_, primaryRowID, err := p.guilds.GetGuild(ctx, p.discordGuildID)
+		if err != nil || primaryRowID != guildID {
+			return ""
+		}
+	}
+	return p.channel()
+}
+
+func (p *LiveCompletionPublisher) send(ctx context.Context, guildID int64, embed *discordgo.MessageEmbed) error {
+	return p.sendVia(ctx, guildID, embed, routeKeyServerStatus)
+}
+
+// sendEvent posts to the EVENTS channel, falling back to where other announcements go, so an
+// installation set up before the events channel existed keeps receiving event cards.
+func (p *LiveCompletionPublisher) sendEvent(ctx context.Context, guildID int64, embed *discordgo.MessageEmbed) error {
+	return p.sendVia(ctx, guildID, embed, routeKeyEvents, routeKeyServerStatus)
+}
+
+func (p *LiveCompletionPublisher) sendVia(ctx context.Context, guildID int64, embed *discordgo.MessageEmbed, routeKeys ...string) error {
 	if p.api == nil {
 		return fmt.Errorf("discord API unavailable")
 	}
-	channel := p.routedChannel(ctx)
+	channel := p.routedChannel(ctx, guildID, routeKeys...)
 	if channel == "" {
-		channel = p.channel()
+		channel = p.legacyChannel(ctx, guildID)
 	}
 	if channel == "" {
 		return fmt.Errorf("announcement channel unavailable")
@@ -131,7 +168,7 @@ func (p *LiveCompletionPublisher) PublishPendingSeasonCompletion(ctx context.Con
 		if err != nil {
 			return err
 		}
-		return p.send(ctx, embed)
+		return p.send(ctx, guildID, embed)
 	})
 	return err
 }
@@ -174,7 +211,7 @@ func (p *LiveCompletionPublisher) PublishPendingWarCompletion(ctx context.Contex
 		if err != nil {
 			return err
 		}
-		return p.send(ctx, embed)
+		return p.send(ctx, guildID, embed)
 	})
 	return err
 }
@@ -236,7 +273,7 @@ func (p *LiveCompletionPublisher) PublishPendingEventCompletion(ctx context.Cont
 		if err != nil {
 			return err
 		}
-		return p.send(ctx, embed)
+		return p.sendEvent(ctx, guildID, embed)
 	})
 	return err
 }

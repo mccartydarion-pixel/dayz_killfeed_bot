@@ -19,6 +19,15 @@ func (emptyStats) TopByKills(context.Context, int64, int) ([]repository.Leaderbo
 func (emptyStats) TopByKD(context.Context, int64, int, int) ([]repository.LeaderboardEntry, error) {
 	return nil, nil
 }
+func (emptyStats) TopByPvPKD(context.Context, int64, int, int) ([]repository.LeaderboardEntry, error) {
+	return nil, nil
+}
+func (emptyStats) TopByBestStreak(context.Context, int64, int) ([]repository.LeaderboardEntry, error) {
+	return nil, nil
+}
+func (emptyStats) TopByDeaths(context.Context, int64, int) ([]repository.LeaderboardEntry, error) {
+	return nil, nil
+}
 func (emptyStats) TopLongestKill(context.Context, int64, int) ([]repository.LeaderboardEntry, error) {
 	return nil, nil
 }
@@ -46,7 +55,7 @@ func newLeaderboardFixture(t *testing.T) *leaderboardFixture {
 			_ = f.setup.Save(*gs)
 		}
 	})
-	f.sched.SetRouting(f.resolver, func(context.Context) (int64, []int64, error) { return f.guild, f.servers, nil }, f.panels,
+	f.sched.SetRouting(f.resolver, SingleGuild(func(context.Context) (int64, []int64, error) { return f.guild, f.servers, nil }), f.panels,
 		NewLegacyLeaderboardRetirer(f.api, f.setup, "g1"))
 	f.syncer.SetLeaderboard(f.sched)
 	return f
@@ -109,7 +118,7 @@ func TestLeaderboardRoutedMessageIsPersistentAcrossRefreshesAndRestart(t *testin
 	// recorded message instead of posting another.
 	panel := NewLeaderboardPanel(f.api, "legacy-chan", "", DefaultLeaderboardConfig())
 	restarted := NewLeaderboardScheduler(panel, emptyStats{}, f.guild, DefaultLeaderboardConfig(), func(string) {})
-	restarted.SetRouting(f.resolver, func(context.Context) (int64, []int64, error) { return f.guild, f.servers, nil }, f.panels,
+	restarted.SetRouting(f.resolver, SingleGuild(func(context.Context) (int64, []int64, error) { return f.guild, f.servers, nil }), f.panels,
 		NewLegacyLeaderboardRetirer(f.api, f.setup, "g1"))
 	if err := restarted.RefreshOnce(context.Background()); err != nil {
 		t.Fatal(err)

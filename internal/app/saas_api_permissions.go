@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yourname/dayz-killfeed/internal/discord"
 	"github.com/yourname/dayz-killfeed/internal/permissions"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
@@ -247,9 +248,12 @@ func requireConfirmation(w http.ResponseWriter, got, expected string) bool {
 type rolePermissionDTO struct {
 	ID            int64  `json:"id"`
 	DiscordRoleID string `json:"discordRoleId"`
-	Level         string `json:"level"`
-	CreatedAt     string `json:"createdAt"`
-	UpdatedAt     string `json:"updatedAt"`
+	// DiscordRoleName is the role's current name in Discord; empty when it no longer exists or
+	// Discord could not be read.
+	DiscordRoleName string `json:"discordRoleName,omitempty"`
+	Level           string `json:"level"`
+	CreatedAt       string `json:"createdAt"`
+	UpdatedAt       string `json:"updatedAt"`
 }
 
 func toRolePermissionDTO(p repository.RolePermission) rolePermissionDTO {
@@ -275,18 +279,45 @@ func (a *App) registerClientAdminRoutes() {
 	if a.saasServerStopLimiter == nil {
 		a.saasServerStopLimiter = newSaaSRateLimiter(time.Minute, 1)
 	}
+	if a.saasLiveMapLimiter == nil {
+		a.saasLiveMapLimiter = newSaaSRateLimiter(time.Minute, 60)
+	}
 	const base = "/api/saas/organizations/{organizationID}/installations/{installationID}/admin"
 	h := a.HTTPServer.Handle
 	h("GET "+base+"/me", a.handleClientAdminMe)
 	h("GET "+base+"/permissions", a.handleListPermissions)
+	h("GET "+base+"/discord-roles", a.handleListDiscordRoles)
 	h("PUT "+base+"/permissions/{discordRoleID}", a.handleSetPermission)
 	h("DELETE "+base+"/permissions/{mappingID}", a.handleDeletePermission)
 	h("GET "+base+"/audit-log", a.handleListAuditLog)
+	h("GET "+base+"/server-status", a.handleServerStatus)
 
 	a.registerClientAdminCapabilityRoutes(base)
+	a.registerClientAdminFactionHubRoutes(base)
 	a.registerPlayerIntelligenceRoutes(base)
 	a.registerZoneRoutes(base)
+	a.registerCaseBaseRoutes(base)
+	a.registerCaseDetectorSettingRoutes(base)
 	a.registerHeatmapRoutes(base)
+	a.registerFeatureSettingsRoutes(base)
+	a.registerHotZoneRoutes(base)
+	a.registerRetentionRoutes(base)
+	a.registerPlannerRoutes(base)
+	a.registerEventBuilderRoutes(base)
+	a.registerSeasonPlannerRoutes(base)
+	a.registerInviteRoutes(base)
+	a.registerRewardRoutes(base)
+	a.registerPlayerTimelineRoutes(base)
+	a.registerStaffActivityRoutes(base)
+	a.registerVIPRoutes(base)
+	a.registerPerkStoreAdminRoutes(base)
+	a.registerRPBoostRoutes(base)
+	a.registerRankedBonusRoutes(base)
+	a.registerUpgradeRoutes(base)
+	a.registerFightRoutes(base)
+	a.registerLiveMapRoutes(base)
+	a.registerMapRotationRoutes(base)
+	a.registerProgressionRoutes(base)
 }
 
 // clientAdminMeResponse is the current actor's resolved Champion bot permission Level and exact
@@ -343,11 +374,65 @@ func (a *App) handleListPermissions(w http.ResponseWriter, r *http.Request) {
 		writeSaaSError(w, codeInternalError, "could not list permissions")
 		return
 	}
+	names := map[string]string{}
+	if roles, err := a.guildRoleList(ac.scope.DiscordGuildID); err == nil {
+		for _, role := range roles {
+			names[role.ID] = role.Name
+		}
+	}
 	out := make([]rolePermissionDTO, 0, len(rows))
 	for _, p := range rows {
-		out = append(out, toRolePermissionDTO(p))
+		dto := toRolePermissionDTO(p)
+		dto.DiscordRoleName = names[p.DiscordRoleID]
+		out = append(out, dto)
 	}
 	writeSaaSJSON(w, http.StatusOK, map[string]any{"items": out, "actorLevel": ac.level.String()})
+}
+
+// guildRoleLister is the optional Discord surface for the Staff page's role picker.
+type guildRoleLister interface {
+	GuildRoleList(guildID string) ([]discord.GuildRoleInfo, error)
+}
+
+func (a *App) guildRoleList(guildID string) ([]discord.GuildRoleInfo, error) {
+	lister, ok := a.saasDiscordVerifier.(guildRoleLister)
+	if !ok {
+		return nil, errors.New("discord roles unavailable")
+	}
+	return lister.GuildRoleList(guildID)
+}
+
+type discordRoleDTO struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Color    int    `json:"color"`
+	Position int    `json:"position"`
+}
+
+// handleListDiscordRoles is GET .../admin/discord-roles (PERMISSIONS_VIEW): the guild's roles a
+// member can hold, highest first, for picking which roles get Server Hub access.
+func (a *App) handleListDiscordRoles(w http.ResponseWriter, r *http.Request) {
+	ac, ok := a.requireCapability(w, r, permissions.CapPermissionsView)
+	if !ok {
+		return
+	}
+	if !enforceRateLimit(w, a.saasAdminReadLimiter, rateLimitKey(r)) {
+		return
+	}
+	roles, err := a.guildRoleList(ac.scope.DiscordGuildID)
+	if err != nil {
+		slog.Warn("component=saas_api", "msg", "list discord roles failed", "err", err.Error())
+		writeSaaSError(w, codeAdminDiscordUnavailable, "could not read Discord roles")
+		return
+	}
+	out := make([]discordRoleDTO, 0, len(roles))
+	for _, role := range roles {
+		if role.Managed {
+			continue
+		}
+		out = append(out, discordRoleDTO{ID: role.ID, Name: role.Name, Color: role.Color, Position: role.Position})
+	}
+	writeSaaSJSON(w, http.StatusOK, map[string]any{"items": out})
 }
 
 type setPermissionRequest struct {
@@ -387,6 +472,20 @@ func (a *App) handleSetPermission(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), adminTimeout)
 	defer cancel()
+	// Set upserts: re-mapping a role already mapped above the actor's ceiling would demote it,
+	// the same way deleting it would strip it. Both are refused.
+	existing, err := a.Permissions.GetByRole(ctx, ac.scope.InstallationID, discordRoleID)
+	if err != nil {
+		slog.Warn("component=saas_api", "msg", "get permission mapping failed", "err", err.Error())
+		writeSaaSError(w, codeInternalError, "could not resolve permission mapping")
+		return
+	}
+	if existing != nil {
+		if existingLevel, _ := permissions.ParseLevel(existing.Level); !permissions.CanGrant(ac.level, existingLevel) {
+			writeSaaSError(w, codeAdminEscalationDenied, "cannot change a permission level above your own")
+			return
+		}
+	}
 	mapping, err := a.Permissions.Set(ctx, ac.scope.InstallationID, discordRoleID, targetLevel.String(), ac.user.ID)
 	if err != nil {
 		slog.Warn("component=saas_api", "msg", "set permission failed", "err", err.Error())

@@ -23,14 +23,14 @@ const (
 )
 
 // ServerStatusBoard keeps one persistent server-status message per
-// SERVER_STATUS-routed channel, edited in place through RoutePanels (so
-// restarts and route changes never duplicate it). It shows only what the
-// server workers actually observe - Champion's ADM link, log freshness and
-// the tracked online count. There is no uptime, latency or game-server
-// power state: Champion does not measure them.
+// SERVER_STATUS-routed channel of every guild, edited in place through
+// RoutePanels (so restarts and route changes never duplicate it). It shows
+// only what the server workers actually observe - Champion's ADM link, log
+// freshness and the tracked online count. There is no uptime, latency or
+// game-server power state: Champion does not measure them.
 type ServerStatusBoard struct {
 	resolver    RouteResolver
-	servers     GuildServersFunc
+	servers     AllGuildServersFunc
 	panels      *RoutePanels
 	serverNames ServerNameFunc
 	now         func() time.Time
@@ -38,10 +38,42 @@ type ServerStatusBoard struct {
 
 	mu        sync.Mutex
 	snapshots map[int64]killfeed.AdmSnapshot
+	games     map[int64]GameServerStatus
 	syncMu    sync.Mutex
 }
 
-func NewServerStatusBoard(resolver RouteResolver, servers GuildServersFunc, panels *RoutePanels) *ServerStatusBoard {
+// GameServerStatus is what Champion can tell about the game process itself from its log files
+// (docs/SERVER_DOWN_ALERT.md). The zero value means "nothing known" and adds nothing to the board.
+type GameServerStatus struct {
+	// State is "ONLINE", "RESTARTING" or "DOWN"; anything else is shown as unknown.
+	State string
+	// StartedAt is when the current run started; NextRestart is about when the next start is
+	// expected. Both are zero when unknown.
+	StartedAt   time.Time
+	NextRestart time.Time
+	// DownSince is when the logs stopped, while State is "DOWN".
+	DownSince time.Time
+}
+
+// ObserveGame records one server's game status and refreshes the board when it changed. The
+// board is one message edited in place, so a restart never adds a message.
+func (b *ServerStatusBoard) ObserveGame(serverID int64, g GameServerStatus) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	if b.games == nil {
+		b.games = map[int64]GameServerStatus{}
+	}
+	changed := b.games[serverID] != g
+	b.games[serverID] = g
+	b.mu.Unlock()
+	if changed {
+		b.Trigger()
+	}
+}
+
+func NewServerStatusBoard(resolver RouteResolver, servers AllGuildServersFunc, panels *RoutePanels) *ServerStatusBoard {
 	return &ServerStatusBoard{resolver: resolver, servers: servers, panels: panels, now: time.Now, trigger: make(chan struct{}, 1), snapshots: map[int64]killfeed.AdmSnapshot{}}
 }
 
@@ -94,7 +126,8 @@ func (b *ServerStatusBoard) Run(ctx context.Context) {
 	}
 }
 
-// SyncOnce places or refreshes the status message in every routed channel.
+// SyncOnce places or refreshes the status message in every routed channel of
+// every guild.
 func (b *ServerStatusBoard) SyncOnce(ctx context.Context) {
 	if b == nil || b.resolver == nil || b.servers == nil || b.panels == nil {
 		return
@@ -106,15 +139,23 @@ func (b *ServerStatusBoard) SyncOnce(ctx context.Context) {
 			slog.Error("component=server_status", "msg", "sync panic recovered", "panic", fmt.Sprint(r))
 		}
 	}()
-	guildRowID, serverIDs, err := b.servers(ctx)
+	guilds, err := b.servers(ctx)
 	if err != nil {
 		slog.Warn("component=server_status", "event", "server_status_servers_failed", "err", err.Error())
 		return
 	}
+	for _, g := range guilds {
+		b.syncGuild(ctx, g)
+	}
+}
+
+// syncGuild places or refreshes one guild's status messages.
+func (b *ServerStatusBoard) syncGuild(ctx context.Context, g GuildServers) {
+	guildRowID := g.GuildRowID
 	byChannel := map[string][]int64{}
 	var order []string
 	lookupErrs := 0
-	for _, serverID := range serverIDs {
+	for _, serverID := range g.ServerIDs {
 		ch, found, rerr := b.resolver.Resolve(ctx, guildRowID, serverID, routeKeyServerStatus)
 		if rerr != nil {
 			lookupErrs++
@@ -142,13 +183,13 @@ func (b *ServerStatusBoard) SyncOnce(ctx context.Context) {
 			if b.serverNames != nil {
 				name = b.serverNames(serverID)
 			}
-			sections = append(sections, ServerStatusSection{ServerName: name, Seen: seen, Snapshot: snap})
+			sections = append(sections, ServerStatusSection{ServerName: name, Seen: seen, Snapshot: snap, Game: b.games[serverID]})
 		}
 		b.mu.Unlock()
 		return PanelContent{Embed: BuildServerStatusEmbed(sections, now)}, nil
 	}
 	if _, err := b.panels.SyncEach(ctx, guildRowID, routeKeyServerStatus, order, contentFor, lookupErrs == 0); err != nil {
-		slog.Warn("component=server_status", "event", "server_status_sync_failed", "err", err.Error())
+		slog.Warn("component=server_status", "event", "server_status_sync_failed", "guild_id", guildRowID, "err", err.Error())
 	}
 }
 
@@ -157,27 +198,93 @@ type ServerStatusSection struct {
 	ServerName string
 	Seen       bool // a worker has reported at least one snapshot
 	Snapshot   killfeed.AdmSnapshot
+	Game       GameServerStatus
 }
+
+// gameServerLines are the board's lines about the game process: its state, when it last
+// restarted and about when the next restart is due. Discord timestamps keep the text the same
+// between refreshes, so the message is edited only when something changed.
+func gameServerLines(g GameServerStatus) []string {
+	var lines []string
+	switch g.State {
+	case "ONLINE":
+		lines = append(lines, "**Game server:** 🟢 Online")
+	case "RESTARTING":
+		lines = append(lines, "**Game server:** 🔄 Restarting")
+	case "DOWN":
+		line := "**Game server:** 🔴 Not running"
+		if !g.DownSince.IsZero() {
+			line += " since " + presentation.Timestamp(g.DownSince, 't') + " (" + presentation.Timestamp(g.DownSince, 'R') + ")"
+		}
+		lines = append(lines, line)
+	default:
+		return nil
+	}
+	if !g.StartedAt.IsZero() {
+		lines = append(lines, "**Last restart:** "+presentation.Timestamp(g.StartedAt, 't')+" ("+presentation.Timestamp(g.StartedAt, 'R')+")")
+	}
+	if g.State == "ONLINE" && !g.NextRestart.IsZero() {
+		lines = append(lines, "**Next restart:** about "+presentation.Timestamp(g.NextRestart, 't')+" ("+presentation.Timestamp(g.NextRestart, 'R')+")")
+	}
+	return lines
+}
+
+// The four states of Champion's link to a server's ADM logs, as the board words them.
+const (
+	ServerLinkWaiting   = "Waiting for first poll"
+	ServerLinkDegraded  = "Degraded"
+	ServerLinkLocating  = "Locating log"
+	ServerLinkConnected = "Connected"
+)
 
 // ServerStatusLink classifies Champion's link to a server's ADM logs.
 func ServerStatusLink(s ServerStatusSection, now time.Time) string {
 	switch {
 	case !s.Seen || s.Snapshot.LastPoll.IsZero():
-		return "WAITING FOR FIRST POLL"
+		return ServerLinkWaiting
 	case now.Sub(s.Snapshot.LastPoll) > serverStatusLinkStale:
-		return "DEGRADED"
+		return ServerLinkDegraded
 	case s.Snapshot.State != killfeed.StatePolling:
-		return "LOCATING LOG"
+		return ServerLinkLocating
 	default:
-		return "CONNECTED"
+		return ServerLinkConnected
 	}
+}
+
+// serverStatusColor is the board's colour, by meaning: red when a game server is not running,
+// amber while one restarts or as soon as one server's link is degraded, green when every server is connected, neutral while there is nothing to judge yet
+// (no server, or still waiting for a first poll or for the log).
+func serverStatusColor(sections []ServerStatusSection, now time.Time) int {
+	if len(sections) == 0 {
+		return presentation.Neutral
+	}
+	color := presentation.Green
+	for _, s := range sections {
+		if s.Game.State == "DOWN" {
+			return presentation.ErrorRed
+		}
+	}
+	for _, s := range sections {
+		if s.Game.State == "RESTARTING" {
+			return presentation.Amber
+		}
+	}
+	for _, s := range sections {
+		switch ServerStatusLink(s, now) {
+		case ServerLinkDegraded:
+			return presentation.Amber
+		case ServerLinkWaiting, ServerLinkLocating:
+			color = presentation.Neutral
+		}
+	}
+	return color
 }
 
 // BuildServerStatusEmbed renders the status message from observed values
 // only. Relative Discord timestamps keep the text stable between refreshes,
 // so an unchanged server is never re-edited.
 func BuildServerStatusEmbed(sections []ServerStatusSection, now time.Time) *discordgo.MessageEmbed {
-	embed := presentation.NewChampionEmbed("📡 SERVER STATUS", presentation.Steel)
+	embed := presentation.NewChampionEmbed("📡 Server status", serverStatusColor(sections, now))
 	if len(sections) == 0 {
 		embed.Description = "No server is connected to this channel yet."
 	}
@@ -186,15 +293,15 @@ func BuildServerStatusEmbed(sections []ServerStatusSection, now time.Time) *disc
 		if strings.TrimSpace(s.ServerName) != "" {
 			title = presentation.SafeName(s.ServerName, 60)
 		}
-		lines := []string{"**Champion Link:** " + ServerStatusLink(s, now)}
+		lines := append(gameServerLines(s.Game), "**Champion link:** "+ServerStatusLink(s, now))
 		if s.Seen {
 			if !s.Snapshot.LastLogChange.IsZero() {
-				lines = append(lines, fmt.Sprintf("**ADM Log:** updated <t:%d:R>", s.Snapshot.LastLogChange.Unix()))
+				lines = append(lines, "**ADM log:** updated "+presentation.Timestamp(s.Snapshot.LastLogChange, 'R'))
 			}
-			lines = append(lines, "**Players Online:** "+presentation.FormatThousands(int64(s.Snapshot.OnlineCount)))
+			lines = append(lines, "**Players online:** "+presentation.FormatThousands(int64(s.Snapshot.OnlineCount)))
 		}
 		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: title, Value: strings.Join(lines, "\n")})
 	}
-	embed.Footer = &discordgo.MessageEmbedFooter{Text: presentation.FooterLiveIntel}
+	embed.Footer = presentation.Footer("", presentation.FooterAutoRefresh)
 	return embed
 }

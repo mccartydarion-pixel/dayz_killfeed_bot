@@ -49,14 +49,16 @@ func TestClassifyNitradoErrNeverLeaksDetail(t *testing.T) {
 	}
 }
 
-func TestDisplayNameFromServicePrefersServerName(t *testing.T) {
-	svc := nitrado.Service{Game: "DayZ (PS4)", Details: nitrado.ServiceDetails{ServerName: "My Server", Name: "fallback"}}
+// One precedence for both connect flows and the name sync (nitrado.ServerName): of the service
+// list's two fields details.name wins, as the website's connect flow always had it.
+func TestDisplayNameFromServiceFollowsSharedPrecedence(t *testing.T) {
+	svc := nitrado.Service{Game: "DayZ (PS4)", Details: nitrado.ServiceDetails{ServerName: "legacy", Name: "My Server"}}
 	if got := displayNameFromService(svc); got != "My Server" {
-		t.Fatalf("expected server_name to win, got %q", got)
+		t.Fatalf("expected details.name to win, got %q", got)
 	}
-	svc2 := nitrado.Service{Game: "DayZ (PS4)", Details: nitrado.ServiceDetails{Name: "fallback name"}}
-	if got := displayNameFromService(svc2); got != "fallback name" {
-		t.Fatalf("expected details.name fallback, got %q", got)
+	svc2 := nitrado.Service{Game: "DayZ (PS4)", Details: nitrado.ServiceDetails{ServerName: "legacy name"}}
+	if got := displayNameFromService(svc2); got != "legacy name" {
+		t.Fatalf("expected details.server_name fallback, got %q", got)
 	}
 	svc3 := nitrado.Service{Game: "DayZ (PS4)"}
 	if got := displayNameFromService(svc3); got != "DayZ (PS4)" {
