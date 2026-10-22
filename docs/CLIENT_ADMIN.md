@@ -188,8 +188,6 @@ POST   /warnings/{playerID}/{warningID}/clear  WARNINGS_CLEAR
 
 POST   /bounties/{playerID}/reset              BOUNTY_MANAGE
 
-GET    /factions                               FACTION_MODERATE     (legacy Discord-side factions)
-POST   /factions/{factionID}/dissolve          FACTION_DISSOLVE     body: {"confirm":"DISSOLVE"}
 GET    /hub-factions                           FACTION_MODERATE     Faction Hub (website) factions: leader, branding, pending count
 PUT    /hub-factions/{factionID}               FACTION_MODERATE     body: {name?, tag?, description?, recruitmentStatus?, releaseFlag?, releaseArmband?, reason}
 DELETE /hub-factions/{factionID}/members/{id}  FACTION_MODERATE     body: {reason}; the leader is protected (transfer first)
@@ -290,7 +288,7 @@ same standard `docs/NITRADO_DELTA_READS.md` applied to the seek/offset-count end
 ## What changed (Faction Hub moderation)
 
 The `/hub-factions` routes let server staff moderate the **website** Faction Hub (`hub_factions`, what players see in the
-Player Hub), which the older `/factions` routes never touched (those act on the Discord-side `factions` table). A Moderator can
+Player Hub). The older `/factions` routes for the retired Discord-side `factions` table are removed. A Moderator can
 rename/re-tag a faction, rewrite its description, force recruiting closed, release a claimed flag or armband, remove any
 non-leader member and hand leadership to another member; an Administrator can dissolve a faction behind typed `DISSOLVE`
 confirmation. Every write requires a `reason` (<= 300 chars, audit log only, never shown to the faction) and records an

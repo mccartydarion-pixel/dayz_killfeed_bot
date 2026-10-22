@@ -12,8 +12,7 @@ import (
 )
 
 // Faction Hub moderation for server staff (docs/CLIENT_ADMIN.md "Factions"). These act on the
-// web Faction Hub (hub_factions) - the factions players see in the Player Hub - as opposed to
-// the legacy Discord-side factions behind GET .../admin/factions. Every write takes a required
+// web Faction Hub (hub_factions) - the factions players see in the Player Hub. Every write takes a required
 // reason and records an admin_audit_log row; FACTION_MODERATE (Moderator) covers edits, member
 // removal, leadership transfer and releasing a claimed flag/armband; FACTION_DISSOLVE
 // (Administrator) is the only route that deletes a faction, behind typed confirmation.
