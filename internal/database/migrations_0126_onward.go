@@ -75,6 +75,11 @@ var migrations0126onward = []Migration{
 		Name: "0136_installation_server_switch",
 		SQL:  InstallationServerSwitchSQL,
 	},
+	{
+		// Zone FACTION entries now name Faction Hub factions; old entries named old-system ids.
+		Name: "0137_zone_faction_entries_hub",
+		SQL:  ZoneFactionEntriesHubSQL,
+	},
 }
 
 // SubscriptionPastDueSinceSQL adds subscriptions.past_due_since: set when the status becomes
@@ -161,4 +166,14 @@ BEGIN
       r.tblname || '_current_server', r.tbl);
   END LOOP;
 END $$;
+`
+
+// ZoneFactionEntriesHubSQL clears the zone ignore and authorized-list FACTION entries written for
+// the old Discord faction system. From now on a FACTION entry names a Faction Hub faction of the
+// zone's installation (checked when it is added). The old entries named ids of the retired
+// factions table, which nothing has written for a long time, so they matched no one; read as Hub
+// ids they would match whichever unrelated Hub faction happens to share the number.
+const ZoneFactionEntriesHubSQL = `
+DELETE FROM zone_ignore_entries WHERE entry_type = 'FACTION';
+DELETE FROM zone_authorized_entries WHERE entry_type = 'FACTION';
 `

@@ -437,10 +437,12 @@ func (r *ZoneRepository) DiscordGuildID(ctx context.Context, guildID int64) (str
 	return id, err
 }
 
-// PlayerFactionID returns playerID's current active faction id, or nil if none.
-func (r *ZoneRepository) PlayerFactionID(ctx context.Context, guildID, playerID int64) (*int64, error) {
+// PlayerFactionID returns the Faction Hub faction playerID belongs to on installationID (through
+// their verified gamertag link), or nil if none.
+func (r *ZoneRepository) PlayerFactionID(ctx context.Context, installationID, playerID int64) (*int64, error) {
 	var id *int64
-	err := r.pool.QueryRow(ctx, `SELECT faction_id FROM faction_members WHERE guild_id=$1 AND player_id=$2 AND active`, guildID, playerID).Scan(&id)
+	err := r.pool.QueryRow(ctx, `SELECT faction_id FROM live_faction_members WHERE installation_id=$1 AND player_id=$2
+ORDER BY faction_id LIMIT 1`, installationID, playerID).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -771,4 +773,12 @@ func (r *ZoneRepository) GetIntrusion(ctx context.Context, installationID, intru
 		return nil, ErrZoneNotFound
 	}
 	return it, err
+}
+
+// IsInstallationHubFaction reports whether factionID is a Faction Hub faction of installationID:
+// the only faction a zone's FACTION entry may name.
+func (r *ZoneRepository) IsInstallationHubFaction(ctx context.Context, installationID, factionID int64) (bool, error) {
+	var ok bool
+	err := r.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM hub_factions WHERE id=$2 AND installation_id=$1)`, installationID, factionID).Scan(&ok)
+	return ok, err
 }

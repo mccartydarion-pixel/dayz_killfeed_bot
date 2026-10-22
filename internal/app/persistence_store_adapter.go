@@ -151,11 +151,11 @@ func (p *persistenceStoreAdapter) PlayerDiscordUserID(ctx context.Context, guild
 	return p.zones.PlayerDiscordUserID(ctx, guildID, playerID)
 }
 
-func (p *persistenceStoreAdapter) PlayerFactionID(ctx context.Context, guildID, playerID int64) (*int64, error) {
+func (p *persistenceStoreAdapter) PlayerFactionID(ctx context.Context, installationID, playerID int64) (*int64, error) {
 	if p.zones == nil {
 		return nil, nil
 	}
-	return p.zones.PlayerFactionID(ctx, guildID, playerID)
+	return p.zones.PlayerFactionID(ctx, installationID, playerID)
 }
 
 func (p *persistenceStoreAdapter) DiscordGuildID(ctx context.Context, guildID int64) (string, error) {
