@@ -45,7 +45,8 @@ func (r *CaseEvidenceOptinRepository) Get(ctx context.Context, installationID in
 	return out, nil
 }
 
-// Set stores the owner's choice; the foreign key rejects a mismatched server.
+// Set stores the owner's choice for the installation's current server (the caller passes it from
+// the request scope); the choice stays with the installation if it later moves server.
 func (r *CaseEvidenceOptinRepository) Set(ctx context.Context, installationID, serverID int64, enabled bool, actorUserID *int64) (CaseEvidenceOptin, error) {
 	if !r.ready() || installationID <= 0 || serverID <= 0 {
 		return CaseEvidenceOptin{}, ErrInvalidCaseEvidenceOptin
