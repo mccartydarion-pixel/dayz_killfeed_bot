@@ -207,11 +207,10 @@ func TestSeasonCompletionOmitsUnresolvedHolders(t *testing.T) {
 }
 
 func TestWarCompletionResolvesFactionsWinnerAndRecords(t *testing.T) {
-	winner := int64(80201)
 	p := &LiveCompletionPublisher{
 		seasons: &completionSeasonFake{seasons: map[int64]*repository.Season{5: {ID: 5, Name: "Season 3"}}},
 		wars: &completionWarFake{
-			war:    repository.War{ID: 9, SeasonID: 5, FactionAID: 80201, FactionBID: 80202, WinnerFactionID: &winner},
+			war:    repository.War{ID: 9, SeasonID: 5, FactionAID: 80201, FactionBID: 80202, FactionALabel: "[WOLF] Wolfpack", FactionBLabel: "[RVN] Ravens", WinnerSide: "A"},
 			scoreA: 14, scoreB: 9,
 			topID: 70101, topKill: 7,
 			longID: 70103, longest: 312.6,
@@ -249,7 +248,7 @@ func TestWarCompletionResolvesFactionsWinnerAndRecords(t *testing.T) {
 
 func TestWarCompletionWithoutKillsIsADrawWithNoRecords(t *testing.T) {
 	p := &LiveCompletionPublisher{
-		wars:     &completionWarFake{war: repository.War{ID: 9, FactionAID: 80201, FactionBID: 80202}, noKills: true},
+		wars:     &completionWarFake{war: repository.War{ID: 9, FactionAID: 80201, FactionBID: 80202, FactionALabel: "[WOLF] Wolfpack", FactionBLabel: "[RVN] Ravens"}, noKills: true},
 		players:  testPlayers,
 		factions: testFactions,
 	}

@@ -95,6 +95,11 @@ var migrations0126onward = []Migration{
 		Name: "0140_event_hub_factions",
 		SQL:  EventHubFactionsSQL,
 	},
+	{
+		// Faction wars are fought between Faction Hub factions.
+		Name: "0141_war_hub_factions",
+		SQL:  WarHubFactionsSQL,
+	},
 }
 
 // SubscriptionPastDueSinceSQL adds subscriptions.past_due_since: set when the status becomes
@@ -316,4 +321,37 @@ CREATE TABLE IF NOT EXISTS hub_faction_event_results (
  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
  PRIMARY KEY (event_id, placement)
 );
+`
+
+// WarHubFactionsSQL moves faction wars to the Faction Hub. A war names its installation and its
+// two Hub factions; the challenger is side A (no id ordering, so the challenged faction is always
+// side B). Each side keeps its "[TAG] Name" label and the winner is a side, so a war's history
+// still reads after a faction is dissolved (its id becomes NULL). One war at a time, pending or
+// active, per pair of factions. Wars of the retired Discord faction system keep their columns,
+// which become optional.
+const WarHubFactionsSQL = `
+ALTER TABLE faction_wars
+ ADD COLUMN IF NOT EXISTS installation_id BIGINT REFERENCES installations(id) ON DELETE CASCADE,
+ ADD COLUMN IF NOT EXISTS hub_faction_a_id BIGINT REFERENCES hub_factions(id) ON DELETE SET NULL,
+ ADD COLUMN IF NOT EXISTS hub_faction_b_id BIGINT REFERENCES hub_factions(id) ON DELETE SET NULL,
+ ADD COLUMN IF NOT EXISTS faction_a_label TEXT,
+ ADD COLUMN IF NOT EXISTS faction_b_label TEXT,
+ ADD COLUMN IF NOT EXISTS winner_side TEXT;
+
+ALTER TABLE faction_wars ALTER COLUMN faction_a_id DROP NOT NULL, ALTER COLUMN faction_b_id DROP NOT NULL;
+
+ALTER TABLE faction_wars DROP CONSTRAINT IF EXISTS ck_faction_wars_sides;
+ALTER TABLE faction_wars ADD CONSTRAINT ck_faction_wars_sides CHECK (
+ (faction_a_id IS NOT NULL AND faction_b_id IS NOT NULL AND installation_id IS NULL)
+ OR (faction_a_id IS NULL AND faction_b_id IS NULL AND installation_id IS NOT NULL
+     AND faction_a_label IS NOT NULL AND faction_b_label IS NOT NULL
+     AND (hub_faction_a_id IS NULL OR hub_faction_a_id IS DISTINCT FROM hub_faction_b_id)));
+ALTER TABLE faction_wars DROP CONSTRAINT IF EXISTS ck_faction_wars_winner_side;
+ALTER TABLE faction_wars ADD CONSTRAINT ck_faction_wars_winner_side CHECK (winner_side IS NULL OR winner_side IN ('A','B'));
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_open_hub_war_pair ON faction_wars
+ (installation_id, LEAST(hub_faction_a_id, hub_faction_b_id), GREATEST(hub_faction_a_id, hub_faction_b_id))
+ WHERE status IN ('PENDING','ACTIVE') AND hub_faction_a_id IS NOT NULL AND hub_faction_b_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_faction_wars_hub_a ON faction_wars(hub_faction_a_id) WHERE hub_faction_a_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_faction_wars_hub_b ON faction_wars(hub_faction_b_id) WHERE hub_faction_b_id IS NOT NULL;
 `

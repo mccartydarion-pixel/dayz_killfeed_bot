@@ -29,9 +29,6 @@ func (a *App) registerClientAdminCapabilityRoutes(base string) {
 
 	h("POST "+base+"/bounties/{playerID}/reset", a.handleResetBounties)
 
-	h("GET "+base+"/factions", a.handleListFactionsAdmin)
-	h("POST "+base+"/factions/{factionID}/dissolve", a.handleDissolveFaction)
-
 	h("GET "+base+"/players/{playerID}/last-online", a.handleLastOnline)
 	h("GET "+base+"/economy/accounts", a.handleAdminEconomyAccounts)
 
@@ -256,82 +253,6 @@ func (a *App) handleResetBounties(w http.ResponseWriter, r *http.Request) {
 	}
 	a.recordAudit(ctx, ac, "BOUNTY_RESET", playerTarget(playerID), "", "success", nil, map[string]int{"cancelled": cancelled})
 	writeSaaSJSON(w, http.StatusOK, map[string]int{"cancelled": cancelled})
-}
-
-// --- faction admin (task's "FACTION ADMINISTRATION") ----------------------------------------------
-
-type factionAdminDTO struct {
-	ID            int64  `json:"id"`
-	Name          string `json:"name"`
-	Tag           string `json:"tag"`
-	OwnerPlayerID int64  `json:"ownerPlayerId"`
-	Active        bool   `json:"active"`
-	MemberCount   int    `json:"memberCount"`
-	CreatedAt     string `json:"createdAt"`
-}
-
-func (a *App) handleListFactionsAdmin(w http.ResponseWriter, r *http.Request) {
-	ac, ok := a.requireCapability(w, r, permissions.CapFactionModerate)
-	if !ok {
-		return
-	}
-	if !enforceRateLimit(w, a.saasAdminReadLimiter, rateLimitKey(r)) {
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), adminTimeout)
-	defer cancel()
-	rows, err := a.ClientAdmin.ListFactionsForAdmin(ctx, ac.scope.GuildID, 200)
-	if err != nil {
-		slog.Warn("component=saas_api", "msg", "list factions failed", "err", err.Error())
-		writeSaaSError(w, codeInternalError, "could not list factions")
-		return
-	}
-	out := make([]factionAdminDTO, 0, len(rows))
-	for _, f := range rows {
-		out = append(out, factionAdminDTO{ID: f.ID, Name: f.Name, Tag: f.Tag, OwnerPlayerID: f.OwnerPlayerID, Active: f.Active, MemberCount: f.MemberCount, CreatedAt: f.CreatedAt.UTC().Format(time.RFC3339)})
-	}
-	writeSaaSJSON(w, http.StatusOK, map[string]any{"items": out})
-}
-
-type dissolveFactionRequest struct {
-	Confirm string `json:"confirm"`
-}
-
-// handleDissolveFaction is FACTION_DISSOLVE (Administrator) - a HIGH RISK action distinct from
-// FACTION_MODERATE's read-only listing default. Requires typed confirmation (task's "HIGH RISK"
-// tier example: "dissolve faction").
-func (a *App) handleDissolveFaction(w http.ResponseWriter, r *http.Request) {
-	ac, ok := a.requireCapability(w, r, permissions.CapFactionDissolve)
-	if !ok {
-		return
-	}
-	factionID, good := pathInt64(w, r, "factionID")
-	if !good {
-		return
-	}
-	req, ok := decodeJSONBody[dissolveFactionRequest](w, r)
-	if !ok {
-		return
-	}
-	if !requireConfirmation(w, req.Confirm, "DISSOLVE") {
-		return
-	}
-	if a.Factions == nil {
-		writeSaaSError(w, codeInternalError, "faction system unavailable")
-		return
-	}
-	if !enforceRateLimit(w, a.saasAdminActionLimiter, rateLimitKey(r)) {
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), adminTimeout)
-	defer cancel()
-	if err := a.Factions.Disband(ctx, ac.scope.GuildID, factionID); err != nil {
-		slog.Warn("component=saas_api", "msg", "faction dissolve failed", "err", err.Error())
-		writeSaaSError(w, codeInternalError, "could not dissolve faction")
-		return
-	}
-	a.recordAudit(ctx, ac, "FACTION_DISSOLVE", factionTarget(factionID), "", "success", nil, nil)
-	writeSaaSJSON(w, http.StatusOK, map[string]bool{"dissolved": true})
 }
 
 // --- last online / economy view aliases ------------------------------------------------------------

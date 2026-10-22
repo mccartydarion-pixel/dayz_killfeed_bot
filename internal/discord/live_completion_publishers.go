@@ -222,7 +222,7 @@ func (p *LiveCompletionPublisher) PublishPendingWarCompletion(ctx context.Contex
 	return err
 }
 
-// buildWarCompletion resolves both factions, the winner, the war's top killer
+// buildWarCompletion names both factions, the winner, the war's top killer
 // and longest kill, and the season. Anything the data does not hold is left
 // empty so the card omits it.
 func (p *LiveCompletionPublisher) buildWarCompletion(ctx context.Context, guildID, warID int64) (*discordgo.MessageEmbed, error) {
@@ -243,28 +243,20 @@ func (p *LiveCompletionPublisher) buildWarCompletion(ctx context.Context, guildI
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, err
 	}
-	ids := []int64{war.FactionAID, war.FactionBID}
-	if war.WinnerFactionID != nil {
-		ids = append(ids, *war.WinnerFactionID)
-	}
-	factions, err := p.factionsByID(ctx, guildID, ids...)
-	if err != nil {
-		return nil, err
-	}
 	names, err := p.playerNames(ctx, guildID, topID, longID)
 	if err != nil {
 		return nil, err
 	}
+	// Each side keeps its faction's name, so the card reads after a faction is dissolved.
 	card := WarCompletionCard{
-		FactionA: factionLabel(factions[war.FactionAID]), ScoreA: a,
-		FactionB: factionLabel(factions[war.FactionBID]), ScoreB: b,
+		FactionA: war.FactionALabel, ScoreA: a,
+		FactionB: war.FactionBLabel, ScoreB: b,
 		TopKiller: names[topID], TopKills: topKills,
 		LongestKiller: names[longID], Longest: longest,
+		Winner: war.WinnerLabel(),
 	}
-	if war.WinnerFactionID != nil {
-		card.Winner = factionLabel(factions[*war.WinnerFactionID])
-	} else if a == b {
-		// End() stores no winner exactly when the kill counts tie.
+	if war.WinnerSide == "" && a == b {
+		// EndWar stores no winner exactly when the kill counts tie.
 		card.Draw = true
 	}
 	if card.Season, err = p.seasonName(ctx, guildID, war.SeasonID); err != nil {

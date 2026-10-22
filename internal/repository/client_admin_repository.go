@@ -315,43 +315,6 @@ func (r *ClientAdminRepository) ListAccessEntries(ctx context.Context, installat
 
 // --- faction admin (task's "FACTION ADMINISTRATION") --------------------------------------------
 
-// FactionSummary is the admin-console view of one faction - enough to list, judge activity, and
-// decide whether to dissolve, without pulling in the full Faction Hub stats aggregation.
-type FactionSummary struct {
-	ID            int64
-	Name, Tag     string
-	OwnerPlayerID int64
-	Active        bool
-	MemberCount   int
-	CreatedAt     time.Time
-}
-
-// ListFactionsForAdmin lists every faction in a guild (active and dissolved), newest first, with a
-// live member count - the admin console's own list, separate from any player-facing faction
-// browse endpoint.
-func (r *ClientAdminRepository) ListFactionsForAdmin(ctx context.Context, guildID int64, limit int) ([]FactionSummary, error) {
-	if limit <= 0 || limit > 200 {
-		limit = 100
-	}
-	rows, err := r.pool.Query(ctx, `
-SELECT f.id,f.name,f.tag,f.owner_player_id,f.active,f.created_at,
-       (SELECT COUNT(*) FROM faction_members m WHERE m.guild_id=f.guild_id AND m.faction_id=f.id AND m.active)
-FROM factions f WHERE f.guild_id=$1 ORDER BY f.created_at DESC LIMIT $2`, guildID, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []FactionSummary
-	for rows.Next() {
-		var s FactionSummary
-		if err := rows.Scan(&s.ID, &s.Name, &s.Tag, &s.OwnerPlayerID, &s.Active, &s.CreatedAt, &s.MemberCount); err != nil {
-			return nil, err
-		}
-		out = append(out, s)
-	}
-	return out, rows.Err()
-}
-
 const staffInstallationQuery = `
 SELECT o.id, o.name, i.id, g.id, g.discord_guild_id, COALESCE(c.guild_name, '')
 FROM installations i
