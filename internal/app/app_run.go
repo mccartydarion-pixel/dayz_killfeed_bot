@@ -699,7 +699,7 @@ func (a *App) Run() error {
 				setupManager.SetRouteGate(a.RouteSyncer.HasRoute)
 				go a.singleton(ctx, "route_syncer", a.RouteSyncer.Run)
 			}
-			store := &persistenceStoreAdapter{players: a.Players, kills: a.Kills, deaths: a.Deaths, seasons: a.Seasons, ranked: a.Ranked, factions: a.Factions, wars: a.Wars, events: a.Events, vip: a.VIP, bounties: a.Bounties, bountySvc: a.BountyService, streaks: a.Streaks, anomalies: a.Anomalies, activity: a.ActivityRepository, servers: a.Servers, stats: a.Stats, analytics: a.AnalyticsRepository, factionStats: a.FactionHubStats, locations: a.Locations, zones: a.Zones, lives: a.Lives, lifeRecap: a.LifeRecap, tournaments: a.TournamentService, rankedTags: a.killfeedRankedTagsOn, panelDirty: func() {
+			store := &persistenceStoreAdapter{players: a.Players, kills: a.Kills, deaths: a.Deaths, seasons: a.Seasons, ranked: a.Ranked, factions: a.Factions, hubFactions: a.HubMembership, wars: a.Wars, events: a.Events, vip: a.VIP, bounties: a.Bounties, bountySvc: a.BountyService, streaks: a.Streaks, anomalies: a.Anomalies, activity: a.ActivityRepository, servers: a.Servers, stats: a.Stats, analytics: a.AnalyticsRepository, factionStats: a.FactionHubStats, locations: a.Locations, zones: a.Zones, lives: a.Lives, lifeRecap: a.LifeRecap, tournaments: a.TournamentService, rankedTags: a.killfeedRankedTagsOn, panelDirty: func() {
 				if a.LeaderboardScheduler != nil {
 					a.LeaderboardScheduler.MarkDirty()
 				}

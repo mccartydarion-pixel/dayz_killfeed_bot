@@ -21,23 +21,25 @@ import (
 // persistenceStoreAdapter adapts the repositories to the killfeed.PersistenceStore
 // interface used by the persistence queue worker.
 type persistenceStoreAdapter struct {
-	players   *repository.PlayerRepository
-	kills     *repository.KillRepository
-	deaths    *repository.DeathRepository
-	seasons   *repository.SeasonRepository
-	ranked    *repository.RankedRepository
-	factions  *repository.FactionRepository
-	vip       *repository.VIPRepository
-	wars      *repository.PostgresWarRepository
-	events    *repository.EventRepository
-	bounties  *repository.BountyRepository
-	bountySvc *bounties.Service
-	streaks   *repository.StreakRepository
-	anomalies *repository.AnomalyRepository
-	activity  *repository.ActivityRepository
-	servers   *repository.ServerRepository
-	stats     *repository.StatsRepository
-	analytics *repository.AnalyticsRepository
+	players  *repository.PlayerRepository
+	kills    *repository.KillRepository
+	deaths   *repository.DeathRepository
+	seasons  *repository.SeasonRepository
+	ranked   *repository.RankedRepository
+	factions *repository.FactionRepository
+	// hubFactions resolves the killer's and victim's Faction Hub factions for a kill.
+	hubFactions *repository.FactionHubMembershipRepository
+	vip         *repository.VIPRepository
+	wars        *repository.PostgresWarRepository
+	events      *repository.EventRepository
+	bounties    *repository.BountyRepository
+	bountySvc   *bounties.Service
+	streaks     *repository.StreakRepository
+	anomalies   *repository.AnomalyRepository
+	activity    *repository.ActivityRepository
+	servers     *repository.ServerRepository
+	stats       *repository.StatsRepository
+	analytics   *repository.AnalyticsRepository
 	// locations backs killfeed.LocationStore (Phase 3, docs/PLAYER_INTELLIGENCE.md) - nil-safe
 	// (InsertLocationEvents/UpsertPlayer below no-op if unset, matching this adapter's existing
 	// defensive-nil style for every other optional dependency).
@@ -230,29 +232,35 @@ func (p *persistenceStoreAdapter) ResolveDeathSeason(ctx context.Context, guildI
 	return &s.ID
 }
 
-func (p *persistenceStoreAdapter) ResolveKillAttribution(ctx context.Context, guildID, killerID, victimID int64, at time.Time) (killerFactionID, victimFactionID, seasonID, warID *int64) {
+// ResolveKillAttribution snapshots a kill's season and the killer's and victim's Faction Hub
+// factions on the kill's server (both in one query). Faction wars are not attributed until they
+// move to the Faction Hub: the old war table names factions of the retired Discord system, whose
+// ids are not Hub ids.
+func (p *persistenceStoreAdapter) ResolveKillAttribution(ctx context.Context, guildID, serverID, killerID, victimID int64, at time.Time) (killerFactionID, victimFactionID, seasonID, warID *int64) {
 	if p.seasons != nil {
 		if s, err := p.seasons.ResolveAt(ctx, guildID, at); err == nil && s != nil {
 			seasonID = &s.ID
 		}
 	}
-	if p.factions == nil {
+	if p.hubFactions == nil {
 		return
 	}
-	k, kErr := p.factions.GetActiveFactionForPlayer(ctx, guildID, killerID)
-	v, vErr := p.factions.GetActiveFactionForPlayer(ctx, guildID, victimID)
-	if kErr == nil {
-		killerFactionID = &k.FactionID
-	}
-	if vErr == nil {
-		victimFactionID = &v.FactionID
-	}
-	if killerFactionID != nil && victimFactionID != nil && *killerFactionID != *victimFactionID && p.wars != nil {
-		// A kill read late (an ADM backlog after a restart) from before the war started is not a
-		// war kill, even though the war is active by the time it is processed.
-		if w, err := p.wars.GetActivePair(ctx, guildID, *killerFactionID, *victimFactionID); err == nil && w != nil && warCovers(w.StartedAt, at) {
-			warID = &w.ID
+	ids := []int64{}
+	for _, id := range []int64{killerID, victimID} {
+		if id > 0 {
+			ids = append(ids, id)
 		}
+	}
+	factions, err := p.hubFactions.FactionsOnServer(ctx, guildID, serverID, ids)
+	if err != nil {
+		slog.Warn("component=persistence", "msg", "kill faction lookup failed", "guild_id", guildID, "server_id", serverID, "err", err.Error())
+		return
+	}
+	if f, ok := factions[killerID]; ok {
+		killerFactionID = &f
+	}
+	if f, ok := factions[victimID]; ok {
+		victimFactionID = &f
 	}
 	return
 }
@@ -401,7 +409,9 @@ func (p *persistenceStoreAdapter) ProcessPersistedKillStaged(ctx context.Context
 			}
 			for _, stored := range active {
 				competitive := competitiveevents.Event{ID: stored.ID, GuildID: stored.GuildID, SeasonID: stored.SeasonID, Type: stored.Type, Name: stored.Name, Description: stored.Description, Status: stored.Status, StartsAt: stored.StartsAt, EndsAt: stored.EndsAt, Config: stored.Config}
-				input := competitiveevents.KillInput{KillID: killID, KillerPlayerID: record.KillerPlayerID, VictimPlayerID: record.VictimPlayerID, KillerFactionID: record.KillerFactionID, VictimFactionID: record.VictimFactionID, WarID: record.WarID, WeaponDisplay: record.WeaponDisplay, Distance: record.Distance, Headshot: record.Headshot, Streak: streak.Current, EventTime: at, ServerID: record.ServerID, KillerPos: killerPos, VictimPos: victimPos}
+				// No faction ids yet: FACTION events still score into tables keyed to the retired
+				// Discord faction system, whose ids are not the Hub ids this kill carries.
+				input := competitiveevents.KillInput{KillID: killID, KillerPlayerID: record.KillerPlayerID, VictimPlayerID: record.VictimPlayerID, WarID: record.WarID, WeaponDisplay: record.WeaponDisplay, Distance: record.Distance, Headshot: record.Headshot, Streak: streak.Current, EventTime: at, ServerID: record.ServerID, KillerPos: killerPos, VictimPos: victimPos}
 				score := competitiveevents.Qualify(competitive, input)
 				if !score.Qualifies {
 					continue

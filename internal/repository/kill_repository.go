@@ -27,8 +27,8 @@ type KillRecord struct {
 	Fingerprint     string
 	KillerPlayerID  int64
 	VictimPlayerID  int64
-	KillerFactionID *int64
-	VictimFactionID *int64
+	KillerFactionID *int64 // Faction Hub faction at kill time (kills.killer_hub_faction_id)
+	VictimFactionID *int64 // Faction Hub faction at kill time (kills.victim_hub_faction_id)
 	SeasonID        *int64
 	WarID           *int64
 	WeaponRaw       string
@@ -79,7 +79,7 @@ func (r *KillRepository) InsertKillReturning(ctx context.Context, k KillRecord) 
 	const q = `
 	WITH k AS (
 	INSERT INTO kills (guild_id, server_id, session_id, event_fingerprint, killer_player_id, victim_player_id,
-	killer_faction_id, victim_faction_id, season_id, war_id, weapon_raw, weapon_display, distance, headshot, longshot, kill_style, event_time,
+	killer_hub_faction_id, victim_hub_faction_id, season_id, war_id, weapon_raw, weapon_display, distance, headshot, longshot, kill_style, event_time,
 	killing_spree, killer_streak_after, streak_ended, ended_streak_count, source_file, source_offset, source_local_time)
 	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
 	RETURNING id

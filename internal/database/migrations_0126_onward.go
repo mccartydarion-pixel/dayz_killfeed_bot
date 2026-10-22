@@ -85,6 +85,11 @@ var migrations0126onward = []Migration{
 		Name: "0138_base_grant_hub_faction",
 		SQL:  BaseGrantHubFactionSQL,
 	},
+	{
+		// Kills and season results record Faction Hub factions.
+		Name: "0139_kill_hub_factions",
+		SQL:  KillHubFactionsSQL,
+	},
 }
 
 // SubscriptionPastDueSinceSQL adds subscriptions.past_due_since: set when the status becomes
@@ -254,4 +259,19 @@ BEGIN
  RETURN NEW;
 END;
 $$;
+`
+
+// KillHubFactionsSQL records Faction Hub factions on kills and season results. The old
+// kills.killer_faction_id / victim_faction_id and season_results.top_faction_id reference the
+// retired Discord factions table, whose ids are not Hub ids, so new columns hold the Hub ids:
+//   - kills.killer_hub_faction_id / victim_hub_faction_id: a snapshot of each player's faction at
+//     kill time. No foreign key and no index: kills is the largest table, adding a nullable column
+//     without them is a catalog change only, and a dissolved faction must not rewrite history.
+//   - season_results.top_hub_faction_id and top_faction_label ("[TAG] Name" as it was when the
+//     season ended, so the season card still names a faction dissolved later).
+const KillHubFactionsSQL = `
+ALTER TABLE kills ADD COLUMN IF NOT EXISTS killer_hub_faction_id BIGINT;
+ALTER TABLE kills ADD COLUMN IF NOT EXISTS victim_hub_faction_id BIGINT;
+ALTER TABLE season_results ADD COLUMN IF NOT EXISTS top_hub_faction_id BIGINT REFERENCES hub_factions(id) ON DELETE SET NULL;
+ALTER TABLE season_results ADD COLUMN IF NOT EXISTS top_faction_label TEXT;
 `

@@ -297,9 +297,11 @@ type App struct {
 	// zone CRUD mutation in saas_api_zones.go); Intrusion is a single, process-wide engine instance -
 	// every server's LocationQueue shares both, since neither carries per-server state of its own
 	// (the cache keys internally by server id; the engine is stateless besides its metrics counters).
-	Zones     *repository.ZoneRepository
-	ZoneCache *killfeed.ZoneCache
-	Intrusion *killfeed.IntrusionEngine
+	Zones *repository.ZoneRepository
+	// HubMembership resolves players' Faction Hub factions (kill attribution).
+	HubMembership *repository.FactionHubMembershipRepository
+	ZoneCache     *killfeed.ZoneCache
+	Intrusion     *killfeed.IntrusionEngine
 	// Lives records one row per ended life and derives lives in progress (docs/LIVES.md); LifeRecap
 	// DMs the opt-in death recap. Both nil-safe.
 	Lives     *repository.LifeRepository
@@ -690,6 +692,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			go app.runLiveSyncRetention(ctx)
 			go app.runDataRetention(ctx)
 			app.Zones = repository.NewZoneRepository(db.Pool)
+			app.HubMembership = repository.NewFactionHubMembershipRepository(db.Pool)
 			app.ZoneCache = killfeed.NewZoneCache(app.Zones)
 			app.Intrusion = killfeed.NewIntrusionEngine(app.Zones, app.ZoneCache, intrusionRoleChecker{app: app}, intrusionPublisher{app: app})
 			app.Heatmap = heatmap.NewService(repository.NewHeatmapRepository(db.Pool), heatmap.NewCache(heatmapCacheTTL), heatmap.NewMetrics())
