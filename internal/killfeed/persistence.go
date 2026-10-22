@@ -21,7 +21,7 @@ type PersistenceStore interface {
 }
 
 type KillAttributionResolver interface {
-	ResolveKillAttribution(ctx context.Context, guildID, killerID, victimID int64, at time.Time) (killerFactionID, victimFactionID, seasonID, warID *int64)
+	ResolveKillAttribution(ctx context.Context, guildID, serverID, killerID, victimID int64, at time.Time) (killerFactionID, victimFactionID, seasonID, warID *int64)
 }
 
 type DeathSeasonResolver interface {
@@ -404,7 +404,7 @@ func (q *PersistenceQueue) persistOne(ctx context.Context, ev *Event) error {
 		}
 		var killerFactionID, victimFactionID, seasonID, warID *int64
 		if resolver, ok := q.store.(KillAttributionResolver); ok {
-			killerFactionID, victimFactionID, seasonID, warID = resolver.ResolveKillAttribution(ctx, q.guildID, killerID, victimID, eventTime(ev))
+			killerFactionID, victimFactionID, seasonID, warID = resolver.ResolveKillAttribution(ctx, q.guildID, q.serverID, killerID, victimID, eventTime(ev))
 		}
 		// Streak context is captured here, BEFORE the kill row is persisted and
 		// BEFORE combat stats are mutated (mutation still happens afterward, in

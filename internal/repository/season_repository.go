@@ -24,7 +24,9 @@ type Season struct {
 }
 type SeasonResult struct {
 	SeasonID                        int64
-	TopPlayerID, TopFactionID       int64
+	TopPlayerID                     int64
+	TopFactionID                    int64  // a faction of the retired Discord system (seasons finalized before the Faction Hub)
+	TopFactionLabel                 string // "[TAG] Name" of the season's top Faction Hub faction, kept as it was at the end
 	TopPlayerKills, TopFactionKills int64
 	LongestKillPlayerID             int64
 	LongestKillValue                float64
@@ -144,6 +146,7 @@ func (r *SeasonRepository) FinalizeSeason(ctx context.Context, guildID, seasonID
 	}
 	defer tx.Rollback(ctx)
 	var result SeasonResult
+	var topHubFaction int64
 	err = tx.QueryRow(ctx, `SELECT id FROM seasons WHERE guild_id=$1 AND id=$2 FOR UPDATE`, guildID, seasonID).Scan(&result.SeasonID)
 	if err != nil {
 		return nil, err
@@ -152,14 +155,19 @@ func (r *SeasonRepository) FinalizeSeason(ctx context.Context, guildID, seasonID
 	if err != nil {
 		return nil, err
 	}
-	err = tx.QueryRow(ctx, `SELECT COALESCE(top_player_id,0),COALESCE(top_faction_id,0),COALESCE(top_player_kills,0),COALESCE(top_faction_kills,0),COALESCE(longest_kill_player_id,0),COALESCE(longest_kill_value,0),COALESCE(best_streak_player_id,0),COALESCE(best_streak_value,0),finalized_at FROM season_results WHERE season_id=$1`, seasonID).Scan(&result.TopPlayerID, &result.TopFactionID, &result.TopPlayerKills, &result.TopFactionKills, &result.LongestKillPlayerID, &result.LongestKillValue, &result.BestStreakPlayerID, &result.BestStreakValue, &result.FinalizedAt)
+	err = tx.QueryRow(ctx, `SELECT COALESCE(top_player_id,0),COALESCE(top_faction_id,0),COALESCE(top_faction_label,''),COALESCE(top_player_kills,0),COALESCE(top_faction_kills,0),COALESCE(longest_kill_player_id,0),COALESCE(longest_kill_value,0),COALESCE(best_streak_player_id,0),COALESCE(best_streak_value,0),finalized_at FROM season_results WHERE season_id=$1`, seasonID).Scan(&result.TopPlayerID, &result.TopFactionID, &result.TopFactionLabel, &result.TopPlayerKills, &result.TopFactionKills, &result.LongestKillPlayerID, &result.LongestKillValue, &result.BestStreakPlayerID, &result.BestStreakValue, &result.FinalizedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
-		err = tx.QueryRow(ctx, `WITH player_kills AS (SELECT killer_player_id,COUNT(*) kills FROM kills WHERE guild_id=$1 AND season_id=$2 GROUP BY killer_player_id), faction_kills AS (SELECT killer_faction_id,COUNT(*) kills FROM kills WHERE guild_id=$1 AND season_id=$2 AND killer_faction_id IS NOT NULL GROUP BY killer_faction_id), longest AS (SELECT killer_player_id,distance FROM kills WHERE guild_id=$1 AND season_id=$2 AND distance IS NOT NULL ORDER BY distance DESC LIMIT 1), streak AS (SELECT killer_player_id AS player_id,MAX(killer_streak_after) AS best_streak FROM kills WHERE guild_id=$1 AND season_id=$2 AND killer_streak_after IS NOT NULL GROUP BY killer_player_id ORDER BY best_streak DESC,killer_player_id LIMIT 1) SELECT COALESCE((SELECT killer_player_id FROM player_kills ORDER BY kills DESC,killer_player_id LIMIT 1),0),COALESCE((SELECT killer_faction_id FROM faction_kills ORDER BY kills DESC,killer_faction_id LIMIT 1),0),COALESCE((SELECT kills FROM player_kills ORDER BY kills DESC,killer_player_id LIMIT 1),0),COALESCE((SELECT kills FROM faction_kills ORDER BY kills DESC,killer_faction_id LIMIT 1),0),COALESCE((SELECT killer_player_id FROM longest),0),COALESCE((SELECT distance FROM longest),0),COALESCE((SELECT player_id FROM streak),0),COALESCE((SELECT best_streak FROM streak),0)`, guildID, seasonID).Scan(&result.TopPlayerID, &result.TopFactionID, &result.TopPlayerKills, &result.TopFactionKills, &result.LongestKillPlayerID, &result.LongestKillValue, &result.BestStreakPlayerID, &result.BestStreakValue)
+		err = tx.QueryRow(ctx, `WITH player_kills AS (SELECT killer_player_id,COUNT(*) kills FROM kills WHERE guild_id=$1 AND season_id=$2 GROUP BY killer_player_id), faction_kills AS (SELECT killer_hub_faction_id,COUNT(*) kills FROM kills WHERE guild_id=$1 AND season_id=$2 AND killer_hub_faction_id IS NOT NULL GROUP BY killer_hub_faction_id), longest AS (SELECT killer_player_id,distance FROM kills WHERE guild_id=$1 AND season_id=$2 AND distance IS NOT NULL ORDER BY distance DESC LIMIT 1), streak AS (SELECT killer_player_id AS player_id,MAX(killer_streak_after) AS best_streak FROM kills WHERE guild_id=$1 AND season_id=$2 AND killer_streak_after IS NOT NULL GROUP BY killer_player_id ORDER BY best_streak DESC,killer_player_id LIMIT 1) SELECT COALESCE((SELECT killer_player_id FROM player_kills ORDER BY kills DESC,killer_player_id LIMIT 1),0),COALESCE((SELECT killer_hub_faction_id FROM faction_kills ORDER BY kills DESC,killer_hub_faction_id LIMIT 1),0),COALESCE((SELECT kills FROM player_kills ORDER BY kills DESC,killer_player_id LIMIT 1),0),COALESCE((SELECT kills FROM faction_kills ORDER BY kills DESC,killer_hub_faction_id LIMIT 1),0),COALESCE((SELECT killer_player_id FROM longest),0),COALESCE((SELECT distance FROM longest),0),COALESCE((SELECT player_id FROM streak),0),COALESCE((SELECT best_streak FROM streak),0)`, guildID, seasonID).Scan(&result.TopPlayerID, &topHubFaction, &result.TopPlayerKills, &result.TopFactionKills, &result.LongestKillPlayerID, &result.LongestKillValue, &result.BestStreakPlayerID, &result.BestStreakValue)
 		if err != nil {
 			return nil, err
 		}
+		if topHubFaction > 0 {
+			if err = tx.QueryRow(ctx, `SELECT COALESCE((SELECT '[' || tag || '] ' || name FROM hub_factions WHERE id=$1),'')`, topHubFaction).Scan(&result.TopFactionLabel); err != nil {
+				return nil, err
+			}
+		}
 		result.FinalizedAt = at
-		_, err = tx.Exec(ctx, `INSERT INTO season_results(season_id,top_player_id,top_faction_id,top_player_kills,top_faction_kills,longest_kill_player_id,longest_kill_value,best_streak_player_id,best_streak_value,finalized_at) VALUES($1,NULLIF($2,0),NULLIF($3,0),$4,$5,NULLIF($6,0),$7,NULLIF($8,0),$9,$10) ON CONFLICT(season_id) DO NOTHING`, seasonID, result.TopPlayerID, result.TopFactionID, result.TopPlayerKills, result.TopFactionKills, result.LongestKillPlayerID, result.LongestKillValue, result.BestStreakPlayerID, result.BestStreakValue, result.FinalizedAt)
+		_, err = tx.Exec(ctx, `INSERT INTO season_results(season_id,top_player_id,top_hub_faction_id,top_faction_label,top_player_kills,top_faction_kills,longest_kill_player_id,longest_kill_value,best_streak_player_id,best_streak_value,finalized_at) VALUES($1,NULLIF($2,0),NULLIF($3,0),NULLIF($4,''),$5,$6,NULLIF($7,0),$8,NULLIF($9,0),$10,$11) ON CONFLICT(season_id) DO NOTHING`, seasonID, result.TopPlayerID, topHubFaction, result.TopFactionLabel, result.TopPlayerKills, result.TopFactionKills, result.LongestKillPlayerID, result.LongestKillValue, result.BestStreakPlayerID, result.BestStreakValue, result.FinalizedAt)
 		if err != nil {
 			return nil, err
 		}
@@ -174,7 +182,7 @@ func (r *SeasonRepository) FinalizeSeason(ctx context.Context, guildID, seasonID
 
 func (r *SeasonRepository) GetSeasonResults(ctx context.Context, guildID, seasonID int64) (*SeasonResult, error) {
 	var out SeasonResult
-	err := r.pool.QueryRow(ctx, `SELECT sr.season_id,COALESCE(sr.top_player_id,0),COALESCE(sr.top_faction_id,0),COALESCE(sr.top_player_kills,0),COALESCE(sr.top_faction_kills,0),COALESCE(sr.longest_kill_player_id,0),COALESCE(sr.longest_kill_value,0),COALESCE(sr.best_streak_player_id,0),COALESCE(sr.best_streak_value,0),sr.finalized_at FROM season_results sr JOIN seasons s ON s.id=sr.season_id WHERE s.guild_id=$1 AND sr.season_id=$2`, guildID, seasonID).Scan(&out.SeasonID, &out.TopPlayerID, &out.TopFactionID, &out.TopPlayerKills, &out.TopFactionKills, &out.LongestKillPlayerID, &out.LongestKillValue, &out.BestStreakPlayerID, &out.BestStreakValue, &out.FinalizedAt)
+	err := r.pool.QueryRow(ctx, `SELECT sr.season_id,COALESCE(sr.top_player_id,0),COALESCE(sr.top_faction_id,0),COALESCE(sr.top_faction_label,''),COALESCE(sr.top_player_kills,0),COALESCE(sr.top_faction_kills,0),COALESCE(sr.longest_kill_player_id,0),COALESCE(sr.longest_kill_value,0),COALESCE(sr.best_streak_player_id,0),COALESCE(sr.best_streak_value,0),sr.finalized_at FROM season_results sr JOIN seasons s ON s.id=sr.season_id WHERE s.guild_id=$1 AND sr.season_id=$2`, guildID, seasonID).Scan(&out.SeasonID, &out.TopPlayerID, &out.TopFactionID, &out.TopFactionLabel, &out.TopPlayerKills, &out.TopFactionKills, &out.LongestKillPlayerID, &out.LongestKillValue, &out.BestStreakPlayerID, &out.BestStreakValue, &out.FinalizedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}

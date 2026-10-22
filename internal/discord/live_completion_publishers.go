@@ -194,13 +194,19 @@ func (p *LiveCompletionPublisher) buildSeasonCompletion(ctx context.Context, gui
 	if err != nil {
 		return nil, err
 	}
-	factions, err := p.factionsByID(ctx, guildID, result.TopFactionID)
-	if err != nil {
-		return nil, err
+	// The top Faction Hub faction's name was kept when the season ended; a season finalized
+	// before the Faction Hub names a faction of the old system instead.
+	topFaction := result.TopFactionLabel
+	if topFaction == "" && result.TopFactionID > 0 {
+		factions, err := p.factionsByID(ctx, guildID, result.TopFactionID)
+		if err != nil {
+			return nil, err
+		}
+		topFaction = factionLabel(factions[result.TopFactionID])
 	}
 	return BuildSeasonCompletionEmbed(season.Name,
 		names[result.TopPlayerID], result.TopPlayerKills,
-		factionLabel(factions[result.TopFactionID]), result.TopFactionKills,
+		topFaction, result.TopFactionKills,
 		names[result.LongestKillPlayerID], result.LongestKillValue,
 		names[result.BestStreakPlayerID], result.BestStreakValue), nil
 }
@@ -299,7 +305,11 @@ func (p *LiveCompletionPublisher) buildEventCompletion(ctx context.Context, guil
 	}
 	placements := make([]EventPlacement, 0, len(rows))
 	for i, row := range rows {
-		placements = append(placements, EventPlacement{Rank: i + 1, Name: names[row.PlayerID], Score: row.Score})
+		name := names[row.PlayerID]
+		if row.FactionID > 0 {
+			name = row.FactionLabel
+		}
+		placements = append(placements, EventPlacement{Rank: i + 1, Name: name, Score: row.Score})
 	}
 	season, err := p.seasonName(ctx, guildID, event.SeasonID)
 	if err != nil {

@@ -85,6 +85,16 @@ var migrations0126onward = []Migration{
 		Name: "0138_base_grant_hub_faction",
 		SQL:  BaseGrantHubFactionSQL,
 	},
+	{
+		// Kills and season results record Faction Hub factions.
+		Name: "0139_kill_hub_factions",
+		SQL:  KillHubFactionsSQL,
+	},
+	{
+		// FACTION events score and rank Faction Hub factions.
+		Name: "0140_event_hub_factions",
+		SQL:  EventHubFactionsSQL,
+	},
 }
 
 // SubscriptionPastDueSinceSQL adds subscriptions.past_due_since: set when the status becomes
@@ -254,4 +264,56 @@ BEGIN
  RETURN NEW;
 END;
 $$;
+`
+
+// KillHubFactionsSQL records Faction Hub factions on kills and season results. The old
+// kills.killer_faction_id / victim_faction_id and season_results.top_faction_id reference the
+// retired Discord factions table, whose ids are not Hub ids, so new columns hold the Hub ids:
+//   - kills.killer_hub_faction_id / victim_hub_faction_id: a snapshot of each player's faction at
+//     kill time. No foreign key and no index: kills is the largest table, adding a nullable column
+//     without them is a catalog change only, and a dissolved faction must not rewrite history.
+//   - season_results.top_hub_faction_id and top_faction_label ("[TAG] Name" as it was when the
+//     season ended, so the season card still names a faction dissolved later).
+const KillHubFactionsSQL = `
+ALTER TABLE kills ADD COLUMN IF NOT EXISTS killer_hub_faction_id BIGINT;
+ALTER TABLE kills ADD COLUMN IF NOT EXISTS victim_hub_faction_id BIGINT;
+ALTER TABLE season_results ADD COLUMN IF NOT EXISTS top_hub_faction_id BIGINT REFERENCES hub_factions(id) ON DELETE SET NULL;
+ALTER TABLE season_results ADD COLUMN IF NOT EXISTS top_faction_label TEXT;
+`
+
+// EventHubFactionsSQL lets FACTION events score Faction Hub factions. event_scores gets
+// hub_faction_id (with its own unique key per event) and a score row names exactly one subject; an
+// event's winner gets event_results.winner_hub_faction_id; and a faction's placement goes to
+// hub_faction_event_results with its "[TAG] Name" kept, so a faction dissolved later still shows
+// (faction_event_results is keyed by a faction of the retired Discord system and cannot hold Hub
+// ids). Rows naming old-system factions stay as they are.
+const EventHubFactionsSQL = `
+ALTER TABLE event_scores ADD COLUMN IF NOT EXISTS hub_faction_id BIGINT REFERENCES hub_factions(id) ON DELETE CASCADE;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_event_hub_faction_score ON event_scores(event_id,hub_faction_id) WHERE hub_faction_id IS NOT NULL;
+-- The one-subject check was created without a name.
+DO $$
+DECLARE r RECORD;
+BEGIN
+ FOR r IN SELECT conname FROM pg_constraint
+  WHERE conrelid = 'event_scores'::regclass AND contype = 'c'
+   AND pg_get_constraintdef(oid) LIKE '%player_id IS NOT NULL%<>%faction_id IS NOT NULL%'
+ LOOP
+  EXECUTE format('ALTER TABLE event_scores DROP CONSTRAINT %I', r.conname);
+ END LOOP;
+END $$;
+ALTER TABLE event_scores ADD CONSTRAINT ck_event_scores_one_subject
+ CHECK (num_nonnulls(player_id, faction_id, hub_faction_id) = 1);
+
+ALTER TABLE event_results ADD COLUMN IF NOT EXISTS winner_hub_faction_id BIGINT REFERENCES hub_factions(id) ON DELETE SET NULL;
+
+CREATE TABLE IF NOT EXISTS hub_faction_event_results (
+ event_id BIGINT NOT NULL REFERENCES competitive_events(id) ON DELETE CASCADE,
+ hub_faction_id BIGINT REFERENCES hub_factions(id) ON DELETE SET NULL,
+ faction_label TEXT NOT NULL,
+ placement INTEGER NOT NULL,
+ score DOUBLE PRECISION NOT NULL,
+ reward_points INTEGER NOT NULL DEFAULT 0,
+ created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+ PRIMARY KEY (event_id, placement)
+);
 `
