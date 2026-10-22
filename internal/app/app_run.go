@@ -227,7 +227,7 @@ func (a *App) Run() error {
 		routes.Command("points", discord.AckPrivate, pointsHandler.Handle)
 	}
 	if a.Wars != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
-		warHandler := discord.NewWarCommandHandler(a.Wars, a.Guilds, a.Seasons, a.Factions, a.Links, a.FactionStats, a.FactionPresentation, a.Players)
+		warHandler := discord.NewWarCommandHandler(a.Wars, a.Guilds, a.Seasons, a.Links, a.HubMembership, a.FactionHubStats, a.Players)
 		if err := discord.RegisterWarCommands(commands, a.Config.DiscordGuildID); err != nil {
 			slog.Warn("component=discord", "msg", "failed to register faction war commands", "err", err.Error())
 		}

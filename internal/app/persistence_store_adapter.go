@@ -232,10 +232,8 @@ func (p *persistenceStoreAdapter) ResolveDeathSeason(ctx context.Context, guildI
 	return &s.ID
 }
 
-// ResolveKillAttribution snapshots a kill's season and the killer's and victim's Faction Hub
-// factions on the kill's server (both in one query). Faction wars are not attributed until they
-// move to the Faction Hub: the old war table names factions of the retired Discord system, whose
-// ids are not Hub ids.
+// ResolveKillAttribution snapshots a kill's season, the killer's and victim's Faction Hub
+// factions on the kill's server (both in one query) and the active war between those factions.
 func (p *persistenceStoreAdapter) ResolveKillAttribution(ctx context.Context, guildID, serverID, killerID, victimID int64, at time.Time) (killerFactionID, victimFactionID, seasonID, warID *int64) {
 	if p.seasons != nil {
 		if s, err := p.seasons.ResolveAt(ctx, guildID, at); err == nil && s != nil {
@@ -261,6 +259,14 @@ func (p *persistenceStoreAdapter) ResolveKillAttribution(ctx context.Context, gu
 	}
 	if f, ok := factions[victimID]; ok {
 		victimFactionID = &f
+	}
+	if p.wars != nil && killerFactionID != nil && victimFactionID != nil && *killerFactionID != *victimFactionID {
+		id, err := p.wars.ActiveWarOnServer(ctx, serverID, *killerFactionID, *victimFactionID)
+		if err != nil {
+			slog.Warn("component=persistence", "msg", "kill war lookup failed", "guild_id", guildID, "server_id", serverID, "err", err.Error())
+		} else if id > 0 {
+			warID = &id
+		}
 	}
 	return
 }
