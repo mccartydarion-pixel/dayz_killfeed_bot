@@ -69,6 +69,12 @@ var migrations0126onward = []Migration{
 		Name: "0135_live_faction_members_view",
 		SQL:  LiveFactionMembersViewSQL,
 	},
+	{
+		// An installation can move to another game server: per-server C.A.S.E., base and
+		// security rows stay with the server they were recorded for instead of blocking the move.
+		Name: "0136_installation_server_switch",
+		SQL:  InstallationServerSwitchSQL,
+	},
 }
 
 // SubscriptionPastDueSinceSQL adds subscriptions.past_due_since: set when the status becomes
@@ -105,4 +111,54 @@ JOIN installations i ON i.id = m.installation_id
 JOIN discord_guild_connections c ON c.id = i.discord_guild_connection_id
 JOIN app_users u ON u.id = m.user_id
 JOIN player_links l ON l.discord_user_id = u.discord_user_id AND l.guild_id = c.guild_id AND l.status = 'VERIFIED';
+`
+
+// InstallationServerSwitchSQL lets an installation change game servers. Seventeen per-server
+// tables (C.A.S.E. settings, cases, verdicts, alerts, bases and their requests, rent, Black Box,
+// raid alarm, Perimeter Watch, Faction Security and the security store) referenced
+// installations(id, game_server_id) together, so once any of them had a row, pointing the
+// installation at another server failed on the foreign key and the server switch answered 500.
+//
+// Each such key becomes a plain installation key, and the guard it gave on writes stays as a
+// trigger: a row is written (or re-pointed) only for the installation's current server (and, for
+// C.A.S.E. cases, its current Discord connection), still as a foreign_key_violation. Rows already
+// stored are not checked again, so they stay with the server they were recorded for: queries
+// scoped to the installation's current server no longer see them, and switching back shows them
+// again. Constraints are found in the catalog because one of them was created without a name.
+const InstallationServerSwitchSQL = `
+CREATE OR REPLACE FUNCTION installation_current_server_guard() RETURNS trigger AS $$
+DECLARE conn TEXT;
+BEGIN
+  IF TG_OP = 'UPDATE' AND NEW.installation_id IS NOT DISTINCT FROM OLD.installation_id
+     AND NEW.server_id IS NOT DISTINCT FROM OLD.server_id THEN
+    RETURN NEW;
+  END IF;
+  conn := to_jsonb(NEW) ->> 'discord_guild_connection_id';
+  IF NOT EXISTS (SELECT 1 FROM installations i
+                 WHERE i.id = NEW.installation_id AND i.game_server_id = NEW.server_id
+                   AND (conn IS NULL OR i.discord_guild_connection_id = conn::bigint)) THEN
+    RAISE EXCEPTION 'server % is not the current server of installation %', NEW.server_id, NEW.installation_id
+      USING ERRCODE = 'foreign_key_violation';
+  END IF;
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
+
+DO $$
+DECLARE r RECORD;
+BEGIN
+  FOR r IN
+    SELECT c.conname, c.conrelid::regclass AS tbl, c.conrelid::regclass::text AS tblname
+    FROM pg_constraint c
+    WHERE c.contype = 'f' AND c.confrelid = 'installations'::regclass
+      AND EXISTS (SELECT 1 FROM unnest(c.confkey) AS k(attnum)
+                  JOIN pg_attribute a ON a.attrelid = c.confrelid AND a.attnum = k.attnum
+                  WHERE a.attname = 'game_server_id')
+  LOOP
+    EXECUTE format('ALTER TABLE %s DROP CONSTRAINT %I', r.tbl, r.conname);
+    EXECUTE format('ALTER TABLE %s ADD CONSTRAINT %I FOREIGN KEY (installation_id) REFERENCES installations(id) ON DELETE CASCADE',
+      r.tbl, r.tblname || '_installation_fkey');
+    EXECUTE format('CREATE TRIGGER %I BEFORE INSERT OR UPDATE OF installation_id, server_id ON %s FOR EACH ROW EXECUTE FUNCTION installation_current_server_guard()',
+      r.tblname || '_current_server', r.tbl);
+  END LOOP;
+END $$;
 `
