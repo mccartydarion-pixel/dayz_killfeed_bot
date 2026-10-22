@@ -409,9 +409,7 @@ func (p *persistenceStoreAdapter) ProcessPersistedKillStaged(ctx context.Context
 			}
 			for _, stored := range active {
 				competitive := competitiveevents.Event{ID: stored.ID, GuildID: stored.GuildID, SeasonID: stored.SeasonID, Type: stored.Type, Name: stored.Name, Description: stored.Description, Status: stored.Status, StartsAt: stored.StartsAt, EndsAt: stored.EndsAt, Config: stored.Config}
-				// No faction ids yet: FACTION events still score into tables keyed to the retired
-				// Discord faction system, whose ids are not the Hub ids this kill carries.
-				input := competitiveevents.KillInput{KillID: killID, KillerPlayerID: record.KillerPlayerID, VictimPlayerID: record.VictimPlayerID, WarID: record.WarID, WeaponDisplay: record.WeaponDisplay, Distance: record.Distance, Headshot: record.Headshot, Streak: streak.Current, EventTime: at, ServerID: record.ServerID, KillerPos: killerPos, VictimPos: victimPos}
+				input := competitiveevents.KillInput{KillID: killID, KillerPlayerID: record.KillerPlayerID, VictimPlayerID: record.VictimPlayerID, KillerFactionID: record.KillerFactionID, VictimFactionID: record.VictimFactionID, WarID: record.WarID, WeaponDisplay: record.WeaponDisplay, Distance: record.Distance, Headshot: record.Headshot, Streak: streak.Current, EventTime: at, ServerID: record.ServerID, KillerPos: killerPos, VictimPos: victimPos}
 				score := competitiveevents.Qualify(competitive, input)
 				if !score.Qualifies {
 					continue

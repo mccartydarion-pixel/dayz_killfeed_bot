@@ -87,11 +87,11 @@ LIMIT $2`, guildID, clampLimit(limit, 50, 200))
 	lrows, err := r.pool.Query(ctx, `
 SELECT t.event_id, COALESCE(p.display_name, f.name, 'Unknown'), t.score, t.kills
 FROM (
-  SELECT s.id, s.event_id, s.player_id, s.faction_id, s.score, s.kills,
+  SELECT s.id, s.event_id, s.player_id, s.hub_faction_id, s.score, s.kills,
          ROW_NUMBER() OVER (PARTITION BY s.event_id ORDER BY s.score DESC, s.kills DESC, s.id) AS rn
-  FROM event_scores s WHERE s.event_id = ANY($1)
+  FROM event_scores s WHERE s.event_id = ANY($1) AND (s.player_id IS NOT NULL OR s.hub_faction_id IS NOT NULL)
 ) t
-LEFT JOIN players p ON p.id=t.player_id LEFT JOIN factions f ON f.id=t.faction_id
+LEFT JOIN players p ON p.id=t.player_id LEFT JOIN hub_factions f ON f.id=t.hub_faction_id
 WHERE t.rn <= 3
 ORDER BY t.event_id, t.rn`, scored)
 	if err != nil {

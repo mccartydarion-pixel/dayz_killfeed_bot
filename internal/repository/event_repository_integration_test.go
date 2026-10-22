@@ -38,15 +38,12 @@ func TestScoreKillAccumulatesAgainstPartialUniqueIndexes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	guilds := NewGuildRepository(db.Pool)
 	players := NewPlayerRepository(db.Pool)
 	events := NewEventRepository(db.Pool)
 
 	suffix := time.Now().UnixNano()
-	guildID, err := guilds.UpsertGuild(ctx, GuildRecord{DiscordGuildID: fmt.Sprintf("integration-event-score-%d", suffix)})
-	if err != nil {
-		t.Fatal(err)
-	}
+	// A guild with an installation: faction events score Faction Hub factions.
+	guildID := newSaaSFixture(t, db).GuildRowID
 	defer func() {
 		// Cascades to events, scores, kills, factions and players.
 		_, _ = db.Pool.Exec(ctx, `DELETE FROM guilds WHERE id=$1`, guildID)
@@ -56,10 +53,7 @@ func TestScoreKillAccumulatesAgainstPartialUniqueIndexes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var factionID int64
-	if err := db.Pool.QueryRow(ctx, `INSERT INTO factions(guild_id,name,tag,owner_player_id) VALUES($1,$2,$3,$4) RETURNING id`, guildID, fmt.Sprintf("Faction %d", suffix), fmt.Sprintf("F%d", suffix), playerID).Scan(&factionID); err != nil {
-		t.Fatal(err)
-	}
+	factionID := seedHubFaction(t, db.Pool, guildID, "EVF", hubSeedMember{Player: playerID, Role: "LEADER"})
 	insertKill := func(n int) int64 {
 		t.Helper()
 		var id int64
@@ -118,6 +112,22 @@ func TestScoreKillAccumulatesAgainstPartialUniqueIndexes(t *testing.T) {
 	}
 	if faction.Score != 7 || faction.Kills != 1 || faction.BestStreak != 1 || faction.BestDistance == nil || *faction.BestDistance != 30 {
 		t.Fatalf("faction accumulation wrong: %+v (best_distance=%v)", *faction, faction.BestDistance)
+	}
+	if faction.FactionLabel != "[EVF] EVF" {
+		t.Fatalf("faction row is labelled %q, want the Hub faction's tag and name", faction.FactionLabel)
+	}
+	// Finalizing keeps the faction's placement with its name.
+	if err := events.FinalizeEvent(ctx, ev.ID, EventResult{EventID: ev.ID, WinnerPlayerID: playerID, WinningScore: 15, FinalizedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	var placedFaction int64
+	var placedLabel string
+	var placement int
+	if err := db.Pool.QueryRow(ctx, `SELECT hub_faction_id,faction_label,placement FROM hub_faction_event_results WHERE event_id=$1`, ev.ID).Scan(&placedFaction, &placedLabel, &placement); err != nil {
+		t.Fatalf("faction placement: %v", err)
+	}
+	if placedFaction != factionID || placedLabel != "[EVF] EVF" || placement != 2 {
+		t.Fatalf("faction placement = (%d,%q,%d), want (%d,\"[EVF] EVF\",2)", placedFaction, placedLabel, placement, factionID)
 	}
 	// A Longest Kill event keeps each player's best kill: ten short kills never beat one long one.
 	sniper, err := events.CreateEvent(ctx, CompetitiveEvent{GuildID: guildID, Type: "LONGEST_KILL", Name: "Sniper", Status: "ACTIVE", StartsAt: &now, Config: []byte(`{}`)}, "tester")

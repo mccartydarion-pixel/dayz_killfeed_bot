@@ -380,13 +380,16 @@ ORDER BY SUM(a.amount) DESC, a.attacker_key::BIGINT ASC LIMIT $2`, seasonID, lim
 
 // --- 5. live event scoreboard ----------------------------------------------------------------------
 
-// FactionNames maps faction ids to "[TAG] Name".
+// FactionNames maps Faction Hub faction ids (of an installation on guildID) to "[TAG] Name".
 func (r *UpgradeRepository) FactionNames(ctx context.Context, guildID int64, ids []int64) (map[int64]string, error) {
 	out := map[int64]string{}
 	if len(ids) == 0 {
 		return out, nil
 	}
-	rows, err := r.pool.Query(ctx, `SELECT id,'['||tag||'] '||name FROM factions WHERE guild_id=$1 AND id=ANY($2)`, guildID, ids)
+	rows, err := r.pool.Query(ctx, `SELECT hf.id,'['||hf.tag||'] '||hf.name FROM hub_factions hf
+JOIN installations i ON i.id=hf.installation_id
+JOIN discord_guild_connections c ON c.id=i.discord_guild_connection_id
+WHERE c.guild_id=$1 AND hf.id=ANY($2)`, guildID, ids)
 	if err != nil {
 		return nil, err
 	}

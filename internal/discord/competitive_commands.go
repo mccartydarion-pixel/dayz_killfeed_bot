@@ -104,7 +104,10 @@ func (h *EventCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interact
 		for n, row := range rows {
 			who := strconv.FormatInt(row.PlayerID, 10)
 			if row.FactionID > 0 {
-				who = "faction " + strconv.FormatInt(row.FactionID, 10)
+				who = row.FactionLabel
+				if who == "" {
+					who = "faction " + strconv.FormatInt(row.FactionID, 10)
+				}
 			}
 			fmt.Fprintf(&b, "%d. %s — %.1f\n", n+1, who, row.Score)
 		}

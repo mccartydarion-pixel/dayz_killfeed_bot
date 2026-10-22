@@ -305,7 +305,11 @@ func (p *LiveCompletionPublisher) buildEventCompletion(ctx context.Context, guil
 	}
 	placements := make([]EventPlacement, 0, len(rows))
 	for i, row := range rows {
-		placements = append(placements, EventPlacement{Rank: i + 1, Name: names[row.PlayerID], Score: row.Score})
+		name := names[row.PlayerID]
+		if row.FactionID > 0 {
+			name = row.FactionLabel
+		}
+		placements = append(placements, EventPlacement{Rank: i + 1, Name: name, Score: row.Score})
 	}
 	season, err := p.seasonName(ctx, guildID, event.SeasonID)
 	if err != nil {

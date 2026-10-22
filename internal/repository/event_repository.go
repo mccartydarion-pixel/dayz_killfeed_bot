@@ -18,7 +18,8 @@ type CompetitiveEvent struct {
 	Config                          json.RawMessage
 }
 type EventScore struct {
-	PlayerID, FactionID int64
+	PlayerID, FactionID int64  // FactionID is a Faction Hub faction
+	FactionLabel        string // "[TAG] Name" of FactionID, "" when it is a player row or the faction is gone
 	Score               float64
 	Kills               int64
 	BestDistance        *float64
@@ -129,7 +130,7 @@ func (r *EventRepository) ScoreKill(ctx context.Context, eventID, killID, player
 	if playerID > 0 {
 		_, err = tx.Exec(ctx, `INSERT INTO event_scores(event_id,player_id,score,kills,best_distance,best_streak) VALUES($1,$2,$3,1,$4,$5) ON CONFLICT(event_id,player_id) WHERE player_id IS NOT NULL DO UPDATE SET score=CASE WHEN $6 THEN GREATEST(event_scores.score,EXCLUDED.score) ELSE event_scores.score+EXCLUDED.score END,kills=event_scores.kills+1,best_distance=GREATEST(event_scores.best_distance,EXCLUDED.best_distance),best_streak=GREATEST(event_scores.best_streak,EXCLUDED.best_streak),updated_at=NOW()`, eventID, playerID, points, distance, streak, best)
 	} else {
-		_, err = tx.Exec(ctx, `INSERT INTO event_scores(event_id,faction_id,score,kills,best_distance,best_streak) VALUES($1,$2,$3,1,$4,$5) ON CONFLICT(event_id,faction_id) WHERE faction_id IS NOT NULL DO UPDATE SET score=CASE WHEN $6 THEN GREATEST(event_scores.score,EXCLUDED.score) ELSE event_scores.score+EXCLUDED.score END,kills=event_scores.kills+1,best_distance=GREATEST(event_scores.best_distance,EXCLUDED.best_distance),best_streak=GREATEST(event_scores.best_streak,EXCLUDED.best_streak),updated_at=NOW()`, eventID, factionID, points, distance, streak, best)
+		_, err = tx.Exec(ctx, `INSERT INTO event_scores(event_id,hub_faction_id,score,kills,best_distance,best_streak) VALUES($1,$2,$3,1,$4,$5) ON CONFLICT(event_id,hub_faction_id) WHERE hub_faction_id IS NOT NULL DO UPDATE SET score=CASE WHEN $6 THEN GREATEST(event_scores.score,EXCLUDED.score) ELSE event_scores.score+EXCLUDED.score END,kills=event_scores.kills+1,best_distance=GREATEST(event_scores.best_distance,EXCLUDED.best_distance),best_streak=GREATEST(event_scores.best_streak,EXCLUDED.best_streak),updated_at=NOW()`, eventID, factionID, points, distance, streak, best)
 	}
 	if err != nil {
 		return false, err
@@ -137,7 +138,12 @@ func (r *EventRepository) ScoreKill(ctx context.Context, eventID, killID, player
 	return true, tx.Commit(ctx)
 }
 func (r *EventRepository) Leaderboard(ctx context.Context, eventID int64, limit int) ([]EventScore, error) {
-	rows, err := r.pool.Query(ctx, `SELECT COALESCE(player_id,0),COALESCE(faction_id,0),score,kills,best_distance,COALESCE(best_streak,0) FROM event_scores WHERE event_id=$1 ORDER BY score DESC,kills DESC,id LIMIT $2`, eventID, limit)
+	// Rows naming a faction of the retired Discord system (event_scores.faction_id) are left out:
+	// faction ids here are Faction Hub ids.
+	rows, err := r.pool.Query(ctx, `SELECT COALESCE(s.player_id,0),COALESCE(s.hub_faction_id,0),COALESCE('['||hf.tag||'] '||hf.name,''),s.score,s.kills,s.best_distance,COALESCE(s.best_streak,0)
+FROM event_scores s LEFT JOIN hub_factions hf ON hf.id=s.hub_faction_id
+WHERE s.event_id=$1 AND (s.player_id IS NOT NULL OR s.hub_faction_id IS NOT NULL)
+ORDER BY s.score DESC,s.kills DESC,s.id LIMIT $2`, eventID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +151,7 @@ func (r *EventRepository) Leaderboard(ctx context.Context, eventID int64, limit 
 	var out []EventScore
 	for rows.Next() {
 		var s EventScore
-		if err := rows.Scan(&s.PlayerID, &s.FactionID, &s.Score, &s.Kills, &s.BestDistance, &s.BestStreak); err != nil {
+		if err := rows.Scan(&s.PlayerID, &s.FactionID, &s.FactionLabel, &s.Score, &s.Kills, &s.BestDistance, &s.BestStreak); err != nil {
 			return nil, err
 		}
 		out = append(out, s)
@@ -175,11 +181,13 @@ func (r *EventRepository) FinalizeEvent(ctx context.Context, eventID int64, resu
 	if already {
 		return tx.Commit(ctx)
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO event_results(event_id,winner_player_id,winner_faction_id,winning_score,finalized_at) VALUES($1,NULLIF($2,0),NULLIF($3,0),$4,$5)`, eventID, result.WinnerPlayerID, result.WinnerFactionID, result.WinningScore, result.FinalizedAt)
+	_, err = tx.Exec(ctx, `INSERT INTO event_results(event_id,winner_player_id,winner_hub_faction_id,winning_score,finalized_at)
+VALUES($1,NULLIF($2,0),(SELECT id FROM hub_factions WHERE id=NULLIF($3,0)),$4,$5)`, eventID, result.WinnerPlayerID, result.WinnerFactionID, result.WinningScore, result.FinalizedAt)
 	if err != nil {
 		return err
 	}
-	rows, err := tx.Query(ctx, `SELECT COALESCE(player_id,0),COALESCE(faction_id,0),score FROM event_scores WHERE event_id=$1 ORDER BY score DESC,kills DESC,id`, eventID)
+	rows, err := tx.Query(ctx, `SELECT COALESCE(player_id,0),COALESCE(hub_faction_id,0),score FROM event_scores
+WHERE event_id=$1 AND (player_id IS NOT NULL OR hub_faction_id IS NOT NULL) ORDER BY score DESC,kills DESC,id`, eventID)
 	if err != nil {
 		return err
 	}
@@ -230,7 +238,11 @@ func (r *EventRepository) FinalizeEvent(ctx context.Context, eventID int64, resu
 				}
 			}
 		} else if factionID > 0 {
-			if _, err = tx.Exec(ctx, `INSERT INTO faction_event_results(event_id,faction_id,placement,score,reward_points) VALUES($1,$2,$3,$4,$5) ON CONFLICT(event_id,faction_id) DO NOTHING`, eventID, factionID, placement, score, reward); err != nil {
+			// The faction's name is kept with its placement, so a faction dissolved later still
+			// shows in the event's history.
+			if _, err = tx.Exec(ctx, `INSERT INTO hub_faction_event_results(event_id,hub_faction_id,faction_label,placement,score,reward_points)
+SELECT $1,hf.id,'['||hf.tag||'] '||hf.name,$3,$4,$5 FROM hub_factions hf WHERE hf.id=$2
+ON CONFLICT(event_id,placement) DO NOTHING`, eventID, factionID, placement, score, reward); err != nil {
 				return err
 			}
 		}
