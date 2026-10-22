@@ -416,6 +416,9 @@ func (a *App) handleAddIgnoreEntry(w http.ResponseWriter, r *http.Request) {
 		writeSaaSError(w, codeNotFound, "zone not found")
 		return
 	}
+	if !a.validZoneFactionEntry(ctx, w, ac.scope.InstallationID, req.EntryType, req.EntryValue) {
+		return
+	}
 	if !enforceRateLimit(w, a.saasAdminActionLimiter, rateLimitKey(r)) {
 		return
 	}
@@ -506,6 +509,9 @@ func (a *App) handleAddAuthorizedEntry(w http.ResponseWriter, r *http.Request) {
 	zone, err := a.Zones.GetZone(ctx, ac.scope.InstallationID, zoneID)
 	if err != nil {
 		writeSaaSError(w, codeNotFound, "zone not found")
+		return
+	}
+	if !a.validZoneFactionEntry(ctx, w, ac.scope.InstallationID, req.EntryType, req.EntryValue) {
 		return
 	}
 	if !enforceRateLimit(w, a.saasAdminActionLimiter, rateLimitKey(r)) {
@@ -865,4 +871,28 @@ func (a *App) handleAcknowledgeIntrusion(w http.ResponseWriter, r *http.Request)
 	}
 	a.recordAudit(ctx, ac, "INTRUSION_ACKNOWLEDGE", zoneTarget(it.ZoneID), "", "success", nil, toZoneIntrusionDTO(*it, false))
 	writeSaaSJSON(w, http.StatusOK, toZoneIntrusionDTO(*it, false))
+}
+
+// validZoneFactionEntry checks a FACTION entry names one of this installation's Faction Hub
+// factions (the faction a player is matched against), and writes the refusal when it does not.
+// Other entry types pass through.
+func (a *App) validZoneFactionEntry(ctx context.Context, w http.ResponseWriter, installationID int64, entryType, value string) bool {
+	if entryType != repository.ZoneEntryFaction {
+		return true
+	}
+	id, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || id <= 0 {
+		writeSaaSError(w, codeInvalidRequest, "a FACTION entry's value is the Faction Hub faction id")
+		return false
+	}
+	ok, err := a.Zones.IsInstallationHubFaction(ctx, installationID, id)
+	if err != nil {
+		writeSaaSError(w, codeInternalError, "could not check the faction")
+		return false
+	}
+	if !ok {
+		writeSaaSError(w, codeNotFound, "no such faction on this server")
+		return false
+	}
+	return true
 }

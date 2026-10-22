@@ -409,14 +409,19 @@ SELECT p.id, p.display_name,
        (SELECT COUNT(*) FROM kills k WHERE k.guild_id=$1 AND k.server_id=$2 AND k.killer_player_id=p.id),
        (SELECT COUNT(*) FROM deaths d WHERE d.guild_id=$1 AND d.server_id=$2 AND d.player_id=p.id),
        (SELECT COUNT(*) FROM deaths d WHERE d.guild_id=$1 AND d.server_id=$2 AND d.player_id=p.id AND ` + deathstats.PvPPredicateD + `),
-       fm.faction_id, f.name,
+       fh.faction_id, fh.name,
        (SELECT COUNT(*) FROM player_warnings w WHERE w.guild_id=$1 AND w.cleared=false AND w.player_id=p.id)
 FROM players p
 LEFT JOIN player_links pl ON pl.guild_id=p.guild_id AND pl.player_id=p.id AND pl.status='VERIFIED'
 LEFT JOIN app_users u ON u.discord_user_id=pl.discord_user_id
 LEFT JOIN player_server_activity a ON a.guild_id=p.guild_id AND a.server_id=$2 AND a.player_id=p.id
-LEFT JOIN faction_members fm ON fm.guild_id=p.guild_id AND fm.player_id=p.id AND fm.active
-LEFT JOIN factions f ON f.id=fm.faction_id
+LEFT JOIN LATERAL (
+  SELECT lfm.faction_id, hf.name
+  FROM live_faction_members lfm
+  JOIN installations i ON i.id=lfm.installation_id AND i.game_server_id=$2
+  JOIN hub_factions hf ON hf.id=lfm.faction_id
+  WHERE lfm.guild_id=p.guild_id AND lfm.player_id=p.id
+  ORDER BY lfm.faction_id LIMIT 1) fh ON TRUE
 WHERE p.guild_id=$1`
 	args := []any{guildID, serverID}
 	if f.Query != "" {

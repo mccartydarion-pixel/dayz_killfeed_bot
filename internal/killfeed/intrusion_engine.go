@@ -19,7 +19,7 @@ type IntrusionStore interface {
 	DiscordRoleIgnoreEntries(ctx context.Context, zoneID int64) ([]string, error)
 	IsAuthorized(ctx context.Context, zoneID, playerID int64, factionID *int64) (bool, error)
 	PlayerDiscordUserID(ctx context.Context, guildID, playerID int64) (*string, error)
-	PlayerFactionID(ctx context.Context, guildID, playerID int64) (*int64, error)
+	PlayerFactionID(ctx context.Context, installationID, playerID int64) (*int64, error)
 	DiscordGuildID(ctx context.Context, guildID int64) (string, error)
 	ActiveZoneBan(ctx context.Context, zoneID, playerID int64) (*repository.ZoneBan, error)
 	GetPresence(ctx context.Context, zoneID, playerID int64) (*repository.ZonePresence, error)
@@ -276,7 +276,7 @@ func (e *IntrusionEngine) handleEntry(ctx context.Context, zone repository.Zone,
 	// never applies to any other zone type, and never bypasses a ban.
 	authorized := false
 	if !banned && repository.IsUAVOrRadar(zone.ZoneType) {
-		factionID, _ := e.store.PlayerFactionID(ctx, rec.GuildID, rec.PlayerID)
+		factionID, _ := e.store.PlayerFactionID(ctx, zone.InstallationID, rec.PlayerID)
 		if a, err := e.store.IsAuthorized(ctx, zone.ID, rec.PlayerID, factionID); err == nil {
 			authorized = a
 		}
@@ -339,7 +339,7 @@ func (e *IntrusionEngine) handleEntry(ctx context.Context, zone repository.Zone,
 // failure fails OPEN (ignored=false): suppressing a genuine intrusion because a role check errored
 // would be a silent false-negative safety gap; a spurious alert is the safer failure direction.
 func (e *IntrusionEngine) checkIgnored(ctx context.Context, zone repository.Zone, rec locationRecord) (bool, error) {
-	factionID, _ := e.store.PlayerFactionID(ctx, rec.GuildID, rec.PlayerID)
+	factionID, _ := e.store.PlayerFactionID(ctx, zone.InstallationID, rec.PlayerID)
 	ignored, err := e.store.IsIgnored(ctx, zone.ID, rec.PlayerID, factionID)
 	if err != nil {
 		return false, err

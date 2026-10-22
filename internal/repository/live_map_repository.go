@@ -374,6 +374,7 @@ WHERE b.installation_id=$1 AND b.guild_id=$2 AND b.server_id=$3 AND b.state <> '
     OR EXISTS (SELECT 1 FROM case_base_authorizations a
                WHERE a.base_id=b.id AND a.installation_id=b.installation_id AND a.valid_from <= $5 AND (a.valid_until IS NULL OR a.valid_until > $5)
                  AND (a.player_id = ANY($4)
+                   OR a.hub_faction_id IN (SELECT lfm.faction_id FROM live_faction_members lfm WHERE lfm.installation_id=$1 AND lfm.player_id = ANY($4))
                    OR a.faction_id IN (SELECT fm.faction_id FROM faction_members fm WHERE fm.guild_id=$2 AND fm.player_id = ANY($4) AND fm.active))))
 ORDER BY b.id`, installationID, guildID, serverID, playerIDs, now)
 	if err != nil {

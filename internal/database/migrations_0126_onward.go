@@ -75,6 +75,16 @@ var migrations0126onward = []Migration{
 		Name: "0136_installation_server_switch",
 		SQL:  InstallationServerSwitchSQL,
 	},
+	{
+		// Zone FACTION entries now name Faction Hub factions; old entries named old-system ids.
+		Name: "0137_zone_faction_entries_hub",
+		SQL:  ZoneFactionEntriesHubSQL,
+	},
+	{
+		// Base faction grants name a Faction Hub faction of the base's installation.
+		Name: "0138_base_grant_hub_faction",
+		SQL:  BaseGrantHubFactionSQL,
+	},
 }
 
 // SubscriptionPastDueSinceSQL adds subscriptions.past_due_since: set when the status becomes
@@ -161,4 +171,87 @@ BEGIN
       r.tblname || '_current_server', r.tbl);
   END LOOP;
 END $$;
+`
+
+// ZoneFactionEntriesHubSQL clears the zone ignore and authorized-list FACTION entries written for
+// the old Discord faction system. From now on a FACTION entry names a Faction Hub faction of the
+// zone's installation (checked when it is added). The old entries named ids of the retired
+// factions table, which nothing has written for a long time, so they matched no one; read as Hub
+// ids they would match whichever unrelated Hub faction happens to share the number.
+const ZoneFactionEntriesHubSQL = `
+DELETE FROM zone_ignore_entries WHERE entry_type = 'FACTION';
+DELETE FROM zone_authorized_entries WHERE entry_type = 'FACTION';
+`
+
+// BaseGrantHubFactionSQL lets a base grant name a Faction Hub faction: case_base_authorizations
+// gets hub_faction_id, keyed to hub_factions(id, installation_id) so a grant can only name a
+// faction of the base's own installation (dissolving the faction removes its grants). A grant
+// names exactly one subject: a player, a Hub faction, or (rows written before this change) a
+// faction of the retired Discord system, whose column and foreign key stay for those rows. The
+// grant trigger's immutability and overlap rules now cover the new column too.
+const BaseGrantHubFactionSQL = `
+ALTER TABLE case_base_authorizations ADD COLUMN IF NOT EXISTS hub_faction_id BIGINT;
+ALTER TABLE case_base_authorizations ADD CONSTRAINT fk_case_base_grant_hub_faction
+ FOREIGN KEY (hub_faction_id, installation_id) REFERENCES hub_factions(id, installation_id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS idx_case_base_grants_hub_faction
+ ON case_base_authorizations(hub_faction_id) WHERE hub_faction_id IS NOT NULL;
+
+-- The one-subject check was created without a name.
+DO $$
+DECLARE r RECORD;
+BEGIN
+ FOR r IN SELECT conname FROM pg_constraint
+  WHERE conrelid = 'case_base_authorizations'::regclass AND contype = 'c'
+   AND pg_get_constraintdef(oid) LIKE '%player_id IS NOT NULL%<>%faction_id IS NOT NULL%'
+ LOOP
+  EXECUTE format('ALTER TABLE case_base_authorizations DROP CONSTRAINT %I', r.conname);
+ END LOOP;
+END $$;
+ALTER TABLE case_base_authorizations ADD CONSTRAINT ck_case_base_grant_one_subject
+ CHECK (num_nonnulls(player_id, faction_id, hub_faction_id) = 1);
+
+CREATE OR REPLACE FUNCTION case_base_grant_requires_draft()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+ IF TG_OP='UPDATE' THEN
+  IF ROW(NEW.installation_id,NEW.guild_id,NEW.server_id,NEW.base_id,
+         NEW.player_id,NEW.faction_id,NEW.hub_faction_id,NEW.valid_from,NEW.created_at)
+     IS DISTINCT FROM
+     ROW(OLD.installation_id,OLD.guild_id,OLD.server_id,OLD.base_id,
+         OLD.player_id,OLD.faction_id,OLD.hub_faction_id,OLD.valid_from,OLD.created_at) THEN
+   RAISE EXCEPTION 'C.A.S.E. base grant identity and start are immutable'
+    USING ERRCODE='23514';
+  END IF;
+  IF OLD.valid_until IS NOT NULL AND
+     (NEW.valid_until IS NULL OR NEW.valid_until>OLD.valid_until) THEN
+   RAISE EXCEPTION 'C.A.S.E. base grant end cannot be reopened or extended'
+    USING ERRCODE='23514';
+  END IF;
+ END IF;
+ PERFORM 1 FROM case_registered_bases b
+ WHERE b.installation_id=NEW.installation_id AND b.guild_id=NEW.guild_id
+   AND b.server_id=NEW.server_id AND b.id=NEW.base_id AND b.state='DRAFT'
+ FOR UPDATE;
+ IF NOT FOUND THEN
+  RAISE EXCEPTION 'C.A.S.E. base draft unavailable for grant'
+   USING ERRCODE='23514';
+ END IF;
+ -- Intervals are half-open. The base row lock serializes concurrent grants
+ -- for the same claim; no two intervals for one subject may overlap.
+ PERFORM 1 FROM case_base_authorizations a
+ WHERE a.installation_id=NEW.installation_id AND a.guild_id=NEW.guild_id
+   AND a.server_id=NEW.server_id AND a.base_id=NEW.base_id
+   AND a.id<>NEW.id
+   AND ((NEW.player_id IS NOT NULL AND a.player_id=NEW.player_id)
+     OR (NEW.faction_id IS NOT NULL AND a.faction_id=NEW.faction_id)
+     OR (NEW.hub_faction_id IS NOT NULL AND a.hub_faction_id=NEW.hub_faction_id))
+   AND (a.valid_until IS NULL OR NEW.valid_from<a.valid_until)
+   AND (NEW.valid_until IS NULL OR a.valid_from<NEW.valid_until);
+ IF FOUND THEN
+  RAISE EXCEPTION 'C.A.S.E. base grant overlaps an existing subject interval'
+   USING ERRCODE='23P01';
+ END IF;
+ RETURN NEW;
+END;
+$$;
 `

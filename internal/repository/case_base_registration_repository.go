@@ -38,12 +38,14 @@ type CaseRegisteredBase struct {
 }
 
 type CaseBaseAuthorization struct {
-	ID         int64      `json:"id"`
-	BaseID     int64      `json:"baseId"`
-	PlayerID   *int64     `json:"playerId,omitempty"`
-	FactionID  *int64     `json:"factionId,omitempty"`
-	ValidFrom  time.Time  `json:"validFrom"`
-	ValidUntil *time.Time `json:"validUntil,omitempty"`
+	ID        int64  `json:"id"`
+	BaseID    int64  `json:"baseId"`
+	PlayerID  *int64 `json:"playerId,omitempty"`
+	FactionID *int64 `json:"factionId,omitempty"` // a Faction Hub faction of the installation
+	// LegacyFactionID is set on grants written for the retired Discord faction system.
+	LegacyFactionID *int64     `json:"legacyFactionId,omitempty"`
+	ValidFrom       time.Time  `json:"validFrom"`
+	ValidUntil      *time.Time `json:"validUntil,omitempty"`
 }
 
 func (r *CaseBaseRegistrationRepository) ListBases(ctx context.Context, installationID, guildID, serverID, beforeID int64, limit int) ([]CaseRegisteredBase, error) {
@@ -79,7 +81,7 @@ func (r *CaseBaseRegistrationRepository) ListAuthorizations(ctx context.Context,
 	if r == nil || r.pool == nil || installationID <= 0 || guildID <= 0 || serverID <= 0 || baseID <= 0 {
 		return nil, errors.New("invalid C.A.S.E. base scope")
 	}
-	rows, err := r.pool.Query(ctx, `SELECT a.id,a.base_id,a.player_id,a.faction_id,a.valid_from,a.valid_until
+	rows, err := r.pool.Query(ctx, `SELECT a.id,a.base_id,a.player_id,a.hub_faction_id,a.faction_id,a.valid_from,a.valid_until
  FROM case_base_authorizations a
  JOIN case_registered_bases b ON
   b.installation_id=a.installation_id AND b.guild_id=a.guild_id AND
@@ -93,7 +95,7 @@ func (r *CaseBaseRegistrationRepository) ListAuthorizations(ctx context.Context,
 	out := make([]CaseBaseAuthorization, 0)
 	for rows.Next() {
 		var a CaseBaseAuthorization
-		if err = rows.Scan(&a.ID, &a.BaseID, &a.PlayerID, &a.FactionID, &a.ValidFrom, &a.ValidUntil); err != nil {
+		if err = rows.Scan(&a.ID, &a.BaseID, &a.PlayerID, &a.FactionID, &a.LegacyFactionID, &a.ValidFrom, &a.ValidUntil); err != nil {
 			return nil, err
 		}
 		out = append(out, a)
@@ -142,6 +144,7 @@ func (r *CaseBaseRegistrationRepository) CreateDraft(ctx context.Context, in Cas
 
 // AddDraftGrant records a proposed player or faction authorization beginning
 // at the server-side time. It cannot backdate a grant or alter a reviewed base.
+// factionID is a Faction Hub faction of the base's installation.
 func (r *CaseBaseRegistrationRepository) AddDraftGrant(ctx context.Context,
 	installationID, guildID, serverID, baseID int64, playerID, factionID *int64, validUntil *time.Time) (CaseBaseAuthorization, error) {
 	if r == nil || r.pool == nil || installationID <= 0 || guildID <= 0 || serverID <= 0 || baseID <= 0 ||
@@ -154,17 +157,17 @@ func (r *CaseBaseRegistrationRepository) AddDraftGrant(ctx context.Context,
 	}
 	var a CaseBaseAuthorization
 	err := r.pool.QueryRow(ctx, `INSERT INTO case_base_authorizations
- (installation_id,guild_id,server_id,base_id,player_id,faction_id,valid_from,valid_until)
+ (installation_id,guild_id,server_id,base_id,player_id,hub_faction_id,valid_from,valid_until)
  SELECT b.installation_id,b.guild_id,b.server_id,b.id,$5,$6,$7,$8
  FROM case_registered_bases b
  WHERE b.installation_id=$1 AND b.guild_id=$2 AND b.server_id=$3 AND b.id=$4 AND b.state='DRAFT'
  AND (($5::BIGINT IS NOT NULL AND EXISTS(
    SELECT 1 FROM players p WHERE p.guild_id=$2 AND p.id=$5))
   OR ($6::BIGINT IS NOT NULL AND EXISTS(
-   SELECT 1 FROM factions f WHERE f.guild_id=$2 AND f.id=$6 AND f.active)))
- RETURNING id,base_id,player_id,faction_id,valid_from,valid_until`,
+   SELECT 1 FROM hub_factions f WHERE f.installation_id=b.installation_id AND f.id=$6)))
+ RETURNING id,base_id,player_id,hub_faction_id,faction_id,valid_from,valid_until`,
 		installationID, guildID, serverID, baseID, playerID, factionID, now, validUntil).
-		Scan(&a.ID, &a.BaseID, &a.PlayerID, &a.FactionID, &a.ValidFrom, &a.ValidUntil)
+		Scan(&a.ID, &a.BaseID, &a.PlayerID, &a.FactionID, &a.LegacyFactionID, &a.ValidFrom, &a.ValidUntil)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return CaseBaseAuthorization{}, ErrCaseBaseNotFound
 	}
@@ -206,9 +209,9 @@ func (r *CaseBaseRegistrationRepository) EndDraftGrant(ctx context.Context,
  AND a.installation_id=b.installation_id AND a.guild_id=b.guild_id AND
   a.server_id=b.server_id AND a.base_id=b.id AND a.id=$5
  AND a.valid_from<$6 AND (a.valid_until IS NULL OR a.valid_until>$6)
- RETURNING a.id,a.base_id,a.player_id,a.faction_id,a.valid_from,a.valid_until`,
+ RETURNING a.id,a.base_id,a.player_id,a.hub_faction_id,a.faction_id,a.valid_from,a.valid_until`,
 		installationID, guildID, serverID, baseID, grantID, now).
-		Scan(&a.ID, &a.BaseID, &a.PlayerID, &a.FactionID, &a.ValidFrom, &a.ValidUntil)
+		Scan(&a.ID, &a.BaseID, &a.PlayerID, &a.FactionID, &a.LegacyFactionID, &a.ValidFrom, &a.ValidUntil)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return CaseBaseAuthorization{}, ErrCaseBaseNotFound
 	}
