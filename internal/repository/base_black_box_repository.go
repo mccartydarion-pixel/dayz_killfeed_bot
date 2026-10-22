@@ -125,7 +125,7 @@ const blackBoxMatchSQL = `
 WITH who AS (
  SELECT faction_id FROM live_faction_members WHERE guild_id=$1 AND player_id=$3 AND active
 ), who_grant AS (
- -- Faction grants on a base name a Discord-side faction (case_base_authorizations.faction_id).
+ -- Grants written for the retired Discord faction system (case_base_authorizations.faction_id).
  SELECT faction_id FROM faction_members WHERE guild_id=$1 AND player_id=$3 AND active
 )
 SELECT b.installation_id,b.guild_id,b.server_id,b.id,
@@ -143,7 +143,8 @@ WHERE b.guild_id=$1 AND b.server_id=$2 AND b.state<>'REVOKED' AND b.owner_player
   SELECT 1 FROM case_base_authorizations a
   WHERE a.installation_id=b.installation_id AND a.guild_id=b.guild_id AND a.server_id=b.server_id AND a.base_id=b.id
    AND a.valid_from<=NOW() AND (a.valid_until IS NULL OR a.valid_until>NOW())
-   AND (a.player_id=$3 OR a.faction_id IN (SELECT faction_id FROM who_grant)))
+   AND (a.player_id=$3 OR a.hub_faction_id IN (SELECT faction_id FROM who)
+     OR a.faction_id IN (SELECT faction_id FROM who_grant)))
  AND (NOT EXISTS (
   SELECT 1 FROM security_service_offers o
   WHERE o.installation_id=b.installation_id AND o.server_id=b.server_id

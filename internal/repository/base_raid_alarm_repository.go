@@ -135,7 +135,7 @@ WITH raider AS (
  SELECT fm.faction_id FROM live_faction_members fm, raider
  WHERE fm.guild_id=$1 AND fm.active AND fm.player_id=raider.id
 ), raider_grant_faction AS (
- -- Faction grants on a base name a Discord-side faction (case_base_authorizations.faction_id).
+ -- Grants written for the retired Discord faction system (case_base_authorizations.faction_id).
  SELECT fm.faction_id FROM faction_members fm, raider
  WHERE fm.guild_id=$1 AND fm.active AND fm.player_id=raider.id
 )
@@ -160,6 +160,7 @@ WHERE b.guild_id=$1 AND b.server_id=$2 AND b.state<>'REVOKED' AND NOT base_rent_
    AND a.server_id=b.server_id AND a.base_id=b.id
    AND a.valid_from<=NOW() AND (a.valid_until IS NULL OR a.valid_until>NOW())
    AND (a.player_id IN (SELECT id FROM raider)
+     OR a.hub_faction_id IN (SELECT faction_id FROM raider_faction)
      OR a.faction_id IN (SELECT faction_id FROM raider_grant_faction)))
  -- When the owner sells the alarm, only base owners with paid time get it.
  AND (NOT EXISTS (

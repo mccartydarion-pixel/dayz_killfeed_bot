@@ -23,7 +23,11 @@ func (r *CaseBaseRegistrationRepository) ListBaseShadowBuilds(ctx context.Contex
 	rows, err := r.pool.Query(ctx, `SELECT e.id,e.source_id,e.source_end_offset,e.event_type,e.adm_clock,e.ingested_at,
   e.subject_player_id,e.subject_name,e.subject_x,e.subject_z,e.subject_altitude,e.build_action,e.build_object,fm.faction_id
  FROM case_evidence_events e
- LEFT JOIN faction_members fm ON fm.guild_id=e.guild_id AND fm.player_id=e.subject_player_id AND fm.active
+ LEFT JOIN LATERAL (
+  SELECT lfm.faction_id FROM live_faction_members lfm
+  JOIN installations i ON i.id=lfm.installation_id AND i.game_server_id=e.server_id
+  WHERE lfm.guild_id=e.guild_id AND lfm.player_id=e.subject_player_id
+  ORDER BY lfm.faction_id LIMIT 1) fm ON TRUE
  WHERE e.guild_id=$1 AND e.server_id=$2 AND e.event_type='BUILD_ACTION' AND e.build_action IN ('Placed','Built')
  ORDER BY e.id DESC LIMIT $3`, guildID, serverID, limit+1)
 	if err != nil {
@@ -88,7 +92,10 @@ func (r *CaseBaseRegistrationRepository) ListBaseShadowBases(ctx context.Context
 	}
 	rows, err := r.pool.Query(ctx, `SELECT b.id,b.owner_player_id,b.center_x,b.center_z,b.radius,b.created_at,ofm.faction_id
  FROM case_registered_bases b
- LEFT JOIN faction_members ofm ON ofm.guild_id=b.guild_id AND ofm.player_id=b.owner_player_id AND ofm.active
+ LEFT JOIN LATERAL (
+  SELECT lfm.faction_id FROM live_faction_members lfm
+  WHERE lfm.installation_id=b.installation_id AND lfm.player_id=b.owner_player_id
+  ORDER BY lfm.faction_id LIMIT 1) ofm ON TRUE
  WHERE b.installation_id=$1 AND b.guild_id=$2 AND b.server_id=$3 AND b.state<>'REVOKED'
  ORDER BY b.id`, installationID, guildID, serverID)
 	if err != nil {
@@ -114,7 +121,9 @@ func (r *CaseBaseRegistrationRepository) ListBaseShadowBases(ctx context.Context
 	if len(out) == 0 {
 		return out, nil
 	}
-	grants, err := r.pool.Query(ctx, `SELECT base_id,player_id,faction_id FROM case_base_authorizations
+	// Faction grants compare against Faction Hub factions; grants left from the retired Discord
+	// faction system name ids of another table and cannot match.
+	grants, err := r.pool.Query(ctx, `SELECT base_id,player_id,hub_faction_id FROM case_base_authorizations
  WHERE installation_id=$1 AND guild_id=$2 AND server_id=$3
   AND valid_from<=NOW() AND (valid_until IS NULL OR valid_until>NOW())`, installationID, guildID, serverID)
 	if err != nil {
