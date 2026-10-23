@@ -172,6 +172,7 @@ func (a *App) Run() error {
 	}
 	if a.Servers != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
 		serverHandler := discord.NewServerCommandHandler(a.Servers, a.Guilds, a.CredentialCipher, a)
+		serverHandler.SetOrganizationNitrado(a.guildOrganizationNitrado)
 		if err := discord.RegisterServerCommands(commands, a.Config.DiscordGuildID); err != nil {
 			slog.Error("component=discord", "msg", "failed to register server commands", "err", err.Error())
 			requiredCommandsOK = false

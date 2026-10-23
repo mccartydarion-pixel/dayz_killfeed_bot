@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/jackc/pgx/v5"
 	"github.com/yourname/dayz-killfeed/internal/nitrado"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 	"github.com/yourname/dayz-killfeed/internal/security"
@@ -42,6 +43,10 @@ type ServerCommandHandler struct {
 	runtime ServerRuntime
 	// panel serves /server panel, which staff below Administrator may use too (server_panel.go).
 	panel *ServerPanelHandler
+	// orgNitrado returns the Nitrado client of the organization that connected a Discord server
+	// (guilds.id) on the Champion website, nil when there is none: website customers connect
+	// Nitrado for their organization, not with /server connect.
+	orgNitrado func(ctx context.Context, guildRowID int64) (*nitrado.Client, error)
 
 	// Autocomplete runs on every keystroke and cannot reply "thinking...",
 	// so it reuses a guild's Nitrado service list for a minute.
@@ -58,6 +63,14 @@ const serviceSuggestTTL = time.Minute
 
 func NewServerCommandHandler(s *repository.ServerRepository, g GuildStore, cipher *security.AESGCM, runtime ServerRuntime) *ServerCommandHandler {
 	return &ServerCommandHandler{servers: s, guilds: g, cipher: cipher, runtime: runtime}
+}
+
+// SetOrganizationNitrado attaches the lookup of a Discord server's website Nitrado connection,
+// used when the Discord server has none of its own.
+func (h *ServerCommandHandler) SetOrganizationNitrado(f func(ctx context.Context, guildRowID int64) (*nitrado.Client, error)) {
+	if h != nil {
+		h.orgNitrado = f
+	}
 }
 
 // SetPanel attaches the /server panel handler.
@@ -582,20 +595,42 @@ func (h *ServerCommandHandler) dayZServicesAndClient(ctx context.Context, discor
 	if h.cipher == nil {
 		return nil, nil, fmt.Errorf("credential encryption is not configured")
 	}
-	conn, err := h.servers.GetConnection(ctx, guildRowID)
-	if err != nil || conn == nil {
-		return nil, nil, fmt.Errorf("no Nitrado connection; run `/server connect` first")
-	}
-	plaintext, err := h.cipher.Decrypt(conn.Ciphertext, conn.Nonce, conn.KeyVersion)
+	client, err := h.nitradoClient(ctx, guildRowID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("stored Nitrado token could not be decrypted; run `/server connect` again")
+		return nil, nil, err
 	}
-	client := nitrado.NewClient(nitrado.DefaultBaseURL, string(plaintext), nil)
 	services, err := client.GetServices(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("Nitrado request failed: %s", classifyNitradoErr(err))
 	}
 	return nitrado.FindDayZServices(services), client, nil
+}
+
+// nitradoClient is the Discord server's own Nitrado connection (/server connect), else the one its
+// organization connected on the Champion website.
+func (h *ServerCommandHandler) nitradoClient(ctx context.Context, guildRowID int64) (*nitrado.Client, error) {
+	conn, err := h.servers.GetConnection(ctx, guildRowID)
+	if err == nil && conn != nil {
+		plaintext, err := h.cipher.Decrypt(conn.Ciphertext, conn.Nonce, conn.KeyVersion)
+		if err != nil {
+			return nil, fmt.Errorf("stored Nitrado token could not be decrypted; run `/server connect` again")
+		}
+		return nitrado.NewClient(nitrado.DefaultBaseURL, string(plaintext), nil), nil
+	}
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		slog.Warn("component=discord", "msg", "load nitrado connection failed", "guild_row_id", guildRowID, "err", err.Error())
+	}
+	if h.orgNitrado != nil {
+		client, orgErr := h.orgNitrado(ctx, guildRowID)
+		if orgErr != nil {
+			slog.Warn("component=discord", "msg", "load organization nitrado connection failed", "guild_row_id", guildRowID, "err", orgErr.Error())
+			return nil, fmt.Errorf("the Nitrado connection could not be loaded; try again shortly")
+		}
+		if client != nil {
+			return client, nil
+		}
+	}
+	return nil, fmt.Errorf("no Nitrado connection; connect Nitrado on the Champion website or run `/server connect` first")
 }
 
 func (h *ServerCommandHandler) editResponse(s *discordgo.Session, i *discordgo.InteractionCreate, content string) {
