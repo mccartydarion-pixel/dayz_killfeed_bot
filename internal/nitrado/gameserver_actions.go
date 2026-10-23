@@ -85,6 +85,18 @@ const (
 	settingBans      = "bans"
 )
 
+// Whitelist reads the names on the server's whitelist. ErrAccessListUnsupported: the service has
+// no whitelist setting.
+func (c *Client) Whitelist(ctx context.Context, serviceID string) ([]string, error) {
+	return c.generalListSetting(ctx, serviceID, settingWhitelist)
+}
+
+// Banlist reads the names on the server's ban list. ErrAccessListUnsupported: the service has no
+// ban list setting.
+func (c *Client) Banlist(ctx context.Context, serviceID string) ([]string, error) {
+	return c.generalListSetting(ctx, serviceID, settingBans)
+}
+
 func (c *Client) WhitelistAdd(ctx context.Context, serviceID, identifier string) error {
 	return c.accessListChange(ctx, serviceID, settingWhitelist, identifier, true)
 }

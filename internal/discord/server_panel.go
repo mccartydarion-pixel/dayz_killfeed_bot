@@ -26,13 +26,15 @@ import (
 // confirmation form start with ServerPanelAskPrefix (a form cannot be deferred); the forms
 // themselves are ServerPanelPrefix + "do:".
 const (
-	ServerPanelPrefix    = "srvpanel:"
-	ServerPanelAskPrefix = "srvpanel:ask:"
-	serverPanelDoPrefix  = "srvpanel:do:"
-	serverPanelPickID    = "srvpanel:pick"
+	ServerPanelPrefix     = "srvpanel:"
+	ServerPanelAskPrefix  = "srvpanel:ask:"
+	serverPanelDoPrefix   = "srvpanel:do:"
+	serverPanelPickID     = "srvpanel:pick"
+	serverPanelListPrefix = "srvpanel:list:"
 
 	serverPanelReasonInput  = "reason"
 	serverPanelConfirmInput = "confirm"
+	serverPanelNameInput    = "name"
 )
 
 // PanelAction is a power action the panel sends to Nitrado.
@@ -56,6 +58,50 @@ var panelActionCapability = map[PanelAction]permissions.Capability{
 func PanelActionCapability(action PanelAction) (permissions.Capability, bool) {
 	c, ok := panelActionCapability[action]
 	return c, ok
+}
+
+// PanelList is a player list the panel edits on Nitrado.
+type PanelList string
+
+const (
+	PanelWhitelist PanelList = "whitelist"
+	PanelBanlist   PanelList = "banlist"
+	PanelPriority  PanelList = "priority"
+)
+
+// panelListCapability is the staff capability each list needs, as on the website: the whitelist is
+// a Gatekeeper's job, bans a Moderator's, the priority queue an Administrator's.
+var panelListCapability = map[PanelList]permissions.Capability{
+	PanelWhitelist: permissions.CapWhitelistManage,
+	PanelBanlist:   permissions.CapBanlistManage,
+	PanelPriority:  permissions.CapPriorityManage,
+}
+
+// PanelListCapability is the staff capability list needs.
+func PanelListCapability(list PanelList) (permissions.Capability, bool) {
+	c, ok := panelListCapability[list]
+	return c, ok
+}
+
+// panelListText is how each list is named in the panel.
+type panelListText struct {
+	title, button, emoji  string
+	empty                 string
+	addTitle, removeTitle string
+	added, removed        string // "%s" is the player
+	addReasonRequired     bool
+}
+
+var panelLists = map[PanelList]panelListText{
+	PanelWhitelist: {title: "Whitelist", button: "Whitelist", emoji: "📋", empty: "Nobody is on the whitelist yet.",
+		addTitle: "Add to the whitelist", removeTitle: "Remove from the whitelist",
+		added: "✅ Added **%s** to the whitelist.", removed: "✅ Removed **%s** from the whitelist."},
+	PanelBanlist: {title: "Ban list", button: "Ban list", emoji: "🚫", empty: "Nobody is banned.",
+		addTitle: "Ban a player", removeTitle: "Unban a player",
+		added: "🚫 Banned **%s**.", removed: "✅ Unbanned **%s**.", addReasonRequired: true},
+	PanelPriority: {title: "Priority queue", button: "Priority queue", emoji: "⭐", empty: "Nobody is on the priority queue yet.",
+		addTitle: "Add to the priority queue", removeTitle: "Remove from the priority queue",
+		added: "⭐ Added **%s** to the priority queue.", removed: "✅ Removed **%s** from the priority queue."},
 }
 
 // PanelCaller is the member pressing a panel button.
@@ -95,13 +141,22 @@ type ServerPanelBackend interface {
 	// PanelAct checks the caller's level and rate limit, sends the action to Nitrado and records
 	// it in the audit log.
 	PanelAct(ctx context.Context, c PanelCaller, installationID int64, action PanelAction, reason string) error
+	// PanelListNames reads a player list from Nitrado, after checking the caller may edit it.
+	PanelListNames(ctx context.Context, c PanelCaller, installationID int64, list PanelList) ([]string, error)
+	// PanelListChange adds name to or removes it from a list on Nitrado, with the same checks, rate
+	// limit, records and audit log as the website. Adding a name already there, or removing one
+	// that isn't, changes nothing and is not an error.
+	PanelListChange(ctx context.Context, c PanelCaller, installationID int64, list PanelList, name, reason string, add bool) error
 }
 
 var (
-	ErrPanelServerNotFound = errors.New("server panel: server not found")
-	ErrPanelForbidden      = errors.New("server panel: staff level too low")
-	ErrPanelRateLimited    = errors.New("server panel: rate limited")
-	ErrPanelNitrado        = errors.New("server panel: nitrado refused")
+	ErrPanelServerNotFound  = errors.New("server panel: server not found")
+	ErrPanelForbidden       = errors.New("server panel: staff level too low")
+	ErrPanelRateLimited     = errors.New("server panel: rate limited")
+	ErrPanelNitrado         = errors.New("server panel: nitrado refused")
+	ErrPanelListUnsupported = errors.New("server panel: the server has no such list")
+	ErrPanelListFull        = errors.New("server panel: the list is full")
+	ErrPanelBadName         = errors.New("server panel: not a player name")
 )
 
 // panelPowerLock is how long the power buttons stay locked after a restart, start or stop, so two
@@ -271,6 +326,20 @@ func (h *ServerPanelHandler) HandleComponent(s *discordgo.Session, i *discordgo.
 		h.refresh(ctx, s, i, caller, installationID, false, nil)
 		return
 	}
+	if target, ok := strings.CutPrefix(customID, serverPanelDoPrefix); ok {
+		if list, add, installationID, ok := parseListTarget(target); ok {
+			data := i.ModalSubmitData()
+			h.changeList(ctx, s, i, caller, installationID, list, add, strings.TrimSpace(modalValue(data, serverPanelNameInput)), strings.TrimSpace(modalValue(data, serverPanelReasonInput)))
+			return
+		}
+	}
+	if target, ok := strings.CutPrefix(customID, serverPanelListPrefix); ok {
+		list, installationID, ok := parseListShow(target)
+		if ok {
+			h.showList(ctx, s, i, caller, installationID, list, respondPrivate)
+		}
+		return
+	}
 	if strings.HasPrefix(customID, serverPanelDoPrefix) {
 		action, installationID, ok := parsePanelTarget(strings.TrimPrefix(customID, serverPanelDoPrefix))
 		if !ok || action == PanelStart {
@@ -310,6 +379,21 @@ func (h *ServerPanelHandler) refresh(ctx context.Context, s *discordgo.Session, 
 // handleAsk opens the confirmation form of a restart or stop. A form must be the first answer, so
 // only quick checks run first.
 func (h *ServerPanelHandler) handleAsk(s *discordgo.Session, i *discordgo.InteractionCreate, caller PanelCaller, target string) {
+	if list, add, installationID, ok := parseListTarget(target); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+		defer cancel()
+		level, err := h.backend.PanelLevel(ctx, caller, installationID)
+		if err != nil {
+			h.reportError(s, i, err)
+			return
+		}
+		if !permissions.Allows(level, panelListCapability[list]) {
+			h.reportError(s, i, ErrPanelForbidden)
+			return
+		}
+		_ = respondModalData(s, i, BuildPanelListForm(list, add, installationID))
+		return
+	}
 	action, installationID, ok := parsePanelTarget(target)
 	if !ok || action == PanelStart {
 		return
@@ -374,15 +458,178 @@ func (h *ServerPanelHandler) reportError(s *discordgo.Session, i *discordgo.Inte
 	case errors.Is(err, ErrPanelServerNotFound):
 		text = panelGoneText
 	case errors.Is(err, ErrPanelForbidden):
-		text = "Your staff level doesn't allow that. Restart and Start need Moderator, Stop needs Administrator. The server owner sets staff levels on the Champion website (Server Hub › Staff)."
+		text = "Your staff level doesn't allow that. The whitelist needs Gatekeeper; Restart, Start and bans need Moderator; Stop and the priority queue need Administrator. The server owner sets staff levels on the Champion website (Server Hub › Staff)."
 	case errors.Is(err, ErrPanelRateLimited):
-		text = "Slow down: each person can restart once every 5 minutes and start or stop once a minute."
+		text = "Slow down: each person can restart once every 5 minutes, start or stop once a minute, and change lists 20 times a minute."
+	case errors.Is(err, ErrPanelListUnsupported):
+		text = "This server has no such list in its Nitrado settings."
+	case errors.Is(err, ErrPanelListFull):
+		text = "The priority queue is full. Remove someone first."
+	case errors.Is(err, ErrPanelBadName):
+		text = "Enter one player name, on one line, up to 64 characters."
 	case errors.Is(err, ErrPanelNitrado):
 		text = "Nitrado didn't accept the request. Check the server in the Nitrado web interface, then try again."
 	default:
 		slog.Warn("component=discord", "msg", "server panel action failed", "err", err.Error())
 	}
 	respondPrivate(s, i, &discordgo.InteractionResponseData{Content: text})
+}
+
+// showList answers with a list's names and its Add / Remove buttons (send: a new private message,
+// or an update of the list message a form was opened from).
+func (h *ServerPanelHandler) showList(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, caller PanelCaller, installationID int64, list PanelList,
+	send func(*discordgo.Session, *discordgo.InteractionCreate, *discordgo.InteractionResponseData)) {
+	data, err := h.listMessage(ctx, caller, installationID, list)
+	if err != nil {
+		h.reportError(s, i, err)
+		return
+	}
+	send(s, i, data)
+}
+
+func (h *ServerPanelHandler) listMessage(ctx context.Context, caller PanelCaller, installationID int64, list PanelList) (*discordgo.InteractionResponseData, error) {
+	servers, err := h.backend.PanelServers(ctx, caller.DiscordGuildID)
+	if err != nil {
+		return nil, err
+	}
+	name := ""
+	for _, srv := range servers {
+		if srv.InstallationID == installationID {
+			name = srv.Name
+		}
+	}
+	names, err := h.backend.PanelListNames(ctx, caller, installationID, list)
+	if err != nil {
+		return nil, err
+	}
+	return BuildPanelList(list, installationID, name, names), nil
+}
+
+// changeList adds or removes one name, then shows the list again with a private note.
+func (h *ServerPanelHandler) changeList(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, caller PanelCaller, installationID int64, list PanelList, add bool, name, reason string) {
+	deferAs(s, i, AckUpdate)
+	text := panelLists[list]
+	if add && text.addReasonRequired && reason == "" {
+		respondPrivate(s, i, &discordgo.InteractionResponseData{Content: "A reason is needed. It is saved in the audit log."})
+		return
+	}
+	if err := h.backend.PanelListChange(ctx, caller, installationID, list, name, reason, add); err != nil {
+		h.reportError(s, i, err)
+		return
+	}
+	// The change is made; a list that can't be read again just stays as it was shown.
+	if data, err := h.listMessage(ctx, caller, installationID, list); err == nil {
+		respondUpdate(s, i, data)
+	}
+	done := text.removed
+	if add {
+		done = text.added
+	}
+	respondPrivate(s, i, &discordgo.InteractionResponseData{
+		Content:         fmt.Sprintf(done, presentation.SafeName(name, 64)) + " Nitrado applies it when the server next restarts.",
+		AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}},
+	})
+}
+
+// parseListShow reads "<list>:<installation id>".
+func parseListShow(s string) (PanelList, int64, bool) {
+	name, id, ok := strings.Cut(s, ":")
+	list := PanelList(name)
+	if _, known := panelListCapability[list]; !ok || !known {
+		return "", 0, false
+	}
+	installationID, err := strconv.ParseInt(id, 10, 64)
+	if err != nil || installationID <= 0 {
+		return "", 0, false
+	}
+	return list, installationID, true
+}
+
+// parseListTarget reads "<list>-add:<installation id>" or "<list>-remove:<installation id>".
+func parseListTarget(s string) (list PanelList, add bool, installationID int64, ok bool) {
+	op, id, found := strings.Cut(s, ":")
+	if !found {
+		return "", false, 0, false
+	}
+	name, verb, found := strings.Cut(op, "-")
+	if !found || (verb != "add" && verb != "remove") {
+		return "", false, 0, false
+	}
+	list, installationID, ok = parseListShow(name + ":" + id)
+	return list, verb == "add", installationID, ok
+}
+
+func listTargetID(prefix string, list PanelList, add bool, installationID int64) string {
+	verb := "remove"
+	if add {
+		verb = "add"
+	}
+	return prefix + string(list) + "-" + verb + ":" + strconv.FormatInt(installationID, 10)
+}
+
+// panelListShown is how many names a list message shows.
+const panelListShown = 40
+
+// BuildPanelList is a list's message: its names and the Add / Remove buttons.
+func BuildPanelList(list PanelList, installationID int64, serverName string, names []string) *discordgo.InteractionResponseData {
+	text := panelLists[list]
+	var b strings.Builder
+	switch len(names) {
+	case 0:
+		b.WriteString(text.empty)
+	case 1:
+		b.WriteString("**1** player\n")
+	default:
+		fmt.Fprintf(&b, "**%d** players\n", len(names))
+	}
+	for idx, n := range names {
+		if idx == panelListShown {
+			fmt.Fprintf(&b, "…and %d more. The full list is in the Nitrado web interface.\n", len(names)-panelListShown)
+			break
+		}
+		b.WriteString("• " + presentation.SafeName(n, 64) + "\n")
+	}
+	b.WriteString("\nNitrado applies changes when the server next restarts.")
+	embed := &discordgo.MessageEmbed{
+		Author:      presentation.BrandAuthor(""),
+		Title:       text.emoji + " " + text.title,
+		Description: b.String(),
+		Color:       presentation.Neutral,
+		Footer:      presentation.Footer(serverName, "Staff only"),
+	}
+	add := discordgo.Button{Label: "Add", Emoji: &discordgo.ComponentEmoji{Name: "➕"}, Style: discordgo.SuccessButton, CustomID: listTargetID(ServerPanelAskPrefix, list, true, installationID)}
+	remove := discordgo.Button{Label: "Remove", Emoji: &discordgo.ComponentEmoji{Name: "➖"}, Style: discordgo.SecondaryButton, CustomID: listTargetID(ServerPanelAskPrefix, list, false, installationID), Disabled: len(names) == 0}
+	if list == PanelBanlist {
+		add.Label, add.Style, remove.Label = "Ban", discordgo.DangerButton, "Unban"
+	}
+	return &discordgo.InteractionResponseData{
+		Embeds:          []*discordgo.MessageEmbed{embed},
+		Components:      []discordgo.MessageComponent{discordgo.ActionsRow{Components: []discordgo.MessageComponent{add, remove}}},
+		AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}},
+	}
+}
+
+// BuildPanelListForm is the form that adds a player to, or removes one from, a list.
+func BuildPanelListForm(list PanelList, add bool, installationID int64) *discordgo.InteractionResponseData {
+	text := panelLists[list]
+	title := text.removeTitle
+	if add {
+		title = text.addTitle
+	}
+	rows := []discordgo.MessageComponent{discordgo.ActionsRow{Components: []discordgo.MessageComponent{discordgo.TextInput{
+		CustomID: serverPanelNameInput, Label: "Player name (as it shows in game)", Style: discordgo.TextInputShort,
+		Placeholder: "e.g. RustyAxe_77", Required: true, MaxLength: 64,
+	}}}}
+	if add {
+		label := "Reason (optional, saved in the audit log)"
+		if text.addReasonRequired {
+			label = "Reason (saved in the audit log)"
+		}
+		rows = append(rows, discordgo.ActionsRow{Components: []discordgo.MessageComponent{discordgo.TextInput{
+			CustomID: serverPanelReasonInput, Label: label, Style: discordgo.TextInputShort, Required: text.addReasonRequired, MaxLength: 200,
+		}}})
+	}
+	return &discordgo.InteractionResponseData{CustomID: listTargetID(serverPanelDoPrefix, list, add, installationID), Title: title, Components: rows}
 }
 
 // parsePanelTarget reads "<action>:<installation id>".
@@ -516,6 +763,13 @@ func BuildServerPanel(servers []PanelServer, current PanelServer, st PanelStatus
 		}})
 	}
 	components = append(components, discordgo.ActionsRow{Components: []discordgo.MessageComponent{power, stop, refresh}})
+	lists := []discordgo.MessageComponent{}
+	for _, list := range []PanelList{PanelWhitelist, PanelBanlist, PanelPriority} {
+		text := panelLists[list]
+		lists = append(lists, discordgo.Button{Label: text.button, Emoji: &discordgo.ComponentEmoji{Name: text.emoji}, Style: discordgo.SecondaryButton,
+			CustomID: serverPanelListPrefix + string(list) + ":" + strconv.FormatInt(id, 10), Disabled: !allowed(panelListCapability[list])})
+	}
+	components = append(components, discordgo.ActionsRow{Components: lists})
 	return &discordgo.InteractionResponseData{
 		Embeds:          []*discordgo.MessageEmbed{embed},
 		Components:      components,

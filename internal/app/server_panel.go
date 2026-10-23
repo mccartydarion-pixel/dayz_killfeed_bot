@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,7 +27,7 @@ type serverPanelBackend struct {
 	mu       sync.Mutex
 	statuses map[int64]panelStatusEntry
 	// Used only when the website API (which owns the shared limiters) is not running.
-	ownRestartLimiter, ownStopLimiter *saasRateLimiter
+	ownRestartLimiter, ownStopLimiter, ownActionLimiter *saasRateLimiter
 }
 
 type panelStatusEntry struct {
@@ -43,7 +44,8 @@ const (
 
 func newServerPanelBackend(a *App) *serverPanelBackend {
 	return &serverPanelBackend{a: a, now: time.Now, statuses: map[int64]panelStatusEntry{},
-		ownRestartLimiter: newSaaSRateLimiter(5*time.Minute, 1), ownStopLimiter: newSaaSRateLimiter(time.Minute, 1)}
+		ownRestartLimiter: newSaaSRateLimiter(5*time.Minute, 1), ownStopLimiter: newSaaSRateLimiter(time.Minute, 1),
+		ownActionLimiter: newSaaSRateLimiter(time.Minute, 20)}
 }
 
 // limiter is the rate limit of action: the website's own, keyed by the acting Discord user as
@@ -224,7 +226,7 @@ func (b *serverPanelBackend) PanelAct(ctx context.Context, c discord.PanelCaller
 		// Nitrado's restart also starts a stopped server.
 		err = client.Restart(ctx, row.ServiceID, reason)
 	}
-	b.audit(ctx, c, row, panelAuditAction[action], reason, err == nil)
+	b.audit(ctx, c, row, panelAuditAction[action], "", reason, err == nil, nil)
 	b.mu.Lock()
 	delete(b.statuses, installationID)
 	b.mu.Unlock()
@@ -235,8 +237,21 @@ func (b *serverPanelBackend) PanelAct(ctx context.Context, c discord.PanelCaller
 	return nil
 }
 
-// audit records a panel action in the admin audit log, best-effort, as the website does.
-func (b *serverPanelBackend) audit(ctx context.Context, c discord.PanelCaller, row repository.PanelServer, action, reason string, ok bool) {
+// account is the Champion account of a Discord user, or nil when they have none.
+func (b *serverPanelBackend) account(ctx context.Context, discordUserID string) *int64 {
+	if b.a.SaaSUsers == nil {
+		return nil
+	}
+	user, err := b.a.SaaSUsers.GetByDiscordID(ctx, discordUserID)
+	if err != nil || user == nil {
+		return nil
+	}
+	return &user.ID
+}
+
+// audit records a panel action in the admin audit log, best-effort, as the website does. extra
+// joins the after-state, which always names the panel as the source.
+func (b *serverPanelBackend) audit(ctx context.Context, c discord.PanelCaller, row repository.PanelServer, action, target, reason string, ok bool, extra map[string]any) {
 	if b.a.AdminAudit == nil {
 		return
 	}
@@ -246,23 +261,197 @@ func (b *serverPanelBackend) audit(ctx context.Context, c discord.PanelCaller, r
 	entry := repository.AuditEntry{
 		OrganizationID: row.OrganizationID,
 		InstallationID: &installationID,
+		ActorUserID:    b.account(writeCtx, c.DiscordUserID),
 		ActorDiscordID: c.DiscordUserID,
 		Action:         action,
+		Target:         target,
 		Reason:         reason,
 		Result:         "success",
 	}
 	if !ok {
 		entry.Result = "failure"
 	}
-	if after, err := json.Marshal(map[string]string{"source": "discord_panel"}); err == nil {
-		entry.AfterState = after
+	after := map[string]any{"source": "discord_panel"}
+	for k, v := range extra {
+		after[k] = v
 	}
-	if b.a.SaaSUsers != nil {
-		if user, err := b.a.SaaSUsers.GetByDiscordID(writeCtx, c.DiscordUserID); err == nil && user != nil {
-			entry.ActorUserID = &user.ID
-		}
+	if raw, err := json.Marshal(after); err == nil {
+		entry.AfterState = raw
 	}
 	if err := b.a.AdminAudit.Record(writeCtx, entry); err != nil {
 		slog.Warn("component=discord", "msg", "server panel audit write failed", "action", action, "err", err.Error())
 	}
+}
+
+// listServer is installationID's row when the caller may edit list there.
+func (b *serverPanelBackend) listServer(ctx context.Context, c discord.PanelCaller, installationID int64, list discord.PanelList) (repository.PanelServer, error) {
+	capability, ok := discord.PanelListCapability(list)
+	if !ok {
+		return repository.PanelServer{}, errors.New("unknown server panel list")
+	}
+	row, err := b.server(ctx, c.DiscordGuildID, installationID)
+	if err != nil {
+		return repository.PanelServer{}, err
+	}
+	level, err := b.PanelLevel(ctx, c, installationID)
+	if err != nil {
+		return repository.PanelServer{}, err
+	}
+	if !permissions.Allows(level, capability) {
+		return repository.PanelServer{}, discord.ErrPanelForbidden
+	}
+	return row, nil
+}
+
+// readPanelList reads one of the three lists from Nitrado.
+func readPanelList(ctx context.Context, client *nitrado.Client, serviceID string, list discord.PanelList) ([]string, error) {
+	var names []string
+	var err error
+	switch list {
+	case discord.PanelWhitelist:
+		names, err = client.Whitelist(ctx, serviceID)
+	case discord.PanelBanlist:
+		names, err = client.Banlist(ctx, serviceID)
+	default:
+		names, err = client.PriorityList(ctx, serviceID)
+	}
+	if errors.Is(err, nitrado.ErrAccessListUnsupported) || errors.Is(err, nitrado.ErrPriorityUnsupported) {
+		return nil, discord.ErrPanelListUnsupported
+	}
+	if err != nil {
+		slog.Warn("component=discord", "msg", "server panel list read failed", "list", string(list), "err", err.Error())
+		return nil, discord.ErrPanelNitrado
+	}
+	return names, nil
+}
+
+func (b *serverPanelBackend) PanelListNames(ctx context.Context, c discord.PanelCaller, installationID int64, list discord.PanelList) ([]string, error) {
+	row, err := b.listServer(ctx, c, installationID, list)
+	if err != nil {
+		return nil, err
+	}
+	client, err := b.client(ctx, row)
+	if err != nil {
+		return nil, err
+	}
+	return readPanelList(ctx, client, row.ServiceID, list)
+}
+
+// panelListAudit is the audit log action of each list change (the website writes the same).
+var panelListAudit = map[discord.PanelList][2]string{
+	discord.PanelWhitelist: {"WHITELIST_ADD", "WHITELIST_REMOVE"},
+	discord.PanelBanlist:   {"BANLIST_ADD", "BANLIST_REMOVE"},
+	discord.PanelPriority:  {"PRIORITY_ADD", "PRIORITY_REMOVE"},
+}
+
+func (b *serverPanelBackend) PanelListChange(ctx context.Context, c discord.PanelCaller, installationID int64, list discord.PanelList, name, reason string, add bool) error {
+	name = strings.TrimSpace(name)
+	if !nitrado.ValidPriorityName(name) {
+		return discord.ErrPanelBadName
+	}
+	row, err := b.listServer(ctx, c, installationID, list)
+	if err != nil {
+		return err
+	}
+	// The website's admin-action limit, keyed by the acting Discord user as there.
+	limiter := b.a.saasAdminActionLimiter
+	if limiter == nil {
+		limiter = b.ownActionLimiter
+	}
+	if !limiter.Allow(c.DiscordUserID) {
+		return discord.ErrPanelRateLimited
+	}
+	client, err := b.client(ctx, row)
+	if err != nil {
+		return err
+	}
+	action := panelListAudit[list][1]
+	if add {
+		action = panelListAudit[list][0]
+	}
+	if list == discord.PanelPriority {
+		return b.changePriority(ctx, c, row, client, name, reason, add, action)
+	}
+	// Names are matched without regard to case, as Nitrado and the game do. A change that would do
+	// nothing does nothing, and a removal uses the name as the list holds it, so Champion's record
+	// (kept per exact name) stays in step with Nitrado's list.
+	current, err := readPanelList(ctx, client, row.ServiceID, list)
+	if err != nil {
+		return err
+	}
+	at := priorityIndex(current, name)
+	if add == (at >= 0) {
+		return nil
+	}
+	if !add {
+		name = current[at]
+	}
+	switch {
+	case list == discord.PanelWhitelist && add:
+		err = client.WhitelistAdd(ctx, row.ServiceID, name)
+	case list == discord.PanelWhitelist:
+		err = client.WhitelistRemove(ctx, row.ServiceID, name)
+	case add:
+		err = client.BanlistAdd(ctx, row.ServiceID, name)
+	default:
+		err = client.BanlistRemove(ctx, row.ServiceID, name)
+	}
+	if errors.Is(err, nitrado.ErrAccessListUnsupported) {
+		return discord.ErrPanelListUnsupported
+	}
+	if err != nil {
+		b.audit(ctx, c, row, action, name, reason, false, nil)
+		slog.Warn("component=discord", "msg", "server panel list change refused by nitrado", "list", string(list), "err", err.Error())
+		return discord.ErrPanelNitrado
+	}
+	// Champion's own record of the entry, as the website keeps it. Nitrado's list is what counts,
+	// so a record that can't be written (the name was already recorded, or was added outside
+	// Champion) doesn't fail the change.
+	if b.a.ClientAdmin != nil {
+		listType := "WHITELIST"
+		if list == discord.PanelBanlist {
+			listType = "BANLIST"
+		}
+		actor := b.account(ctx, c.DiscordUserID)
+		var recErr error
+		if add {
+			_, recErr = b.a.ClientAdmin.AddAccessEntry(ctx, installationID, listType, name, reason, "", nil, actor)
+		} else if _, recErr = b.a.ClientAdmin.RemoveAccessEntry(ctx, installationID, listType, name, actor); errors.Is(recErr, repository.ErrAccessEntryNotFound) {
+			recErr = nil
+		}
+		if recErr != nil {
+			slog.Info("component=discord", "msg", "server panel access record not written", "list", listType, "err", recErr.Error())
+		}
+	}
+	b.audit(ctx, c, row, action, name, reason, true, nil)
+	return nil
+}
+
+// changePriority edits the priority queue the way the website does: read the list, change one
+// name and write it back, under the lock the perk store and rewards pass also take.
+func (b *serverPanelBackend) changePriority(ctx context.Context, c discord.PanelCaller, row repository.PanelServer, client *nitrado.Client, name, reason string, add bool, action string) error {
+	defer nitrado.LockSetting(row.ServiceID, nitrado.SettingPriority)()
+	current, err := readPanelList(ctx, client, row.ServiceID, discord.PanelPriority)
+	if err != nil {
+		return err
+	}
+	at := priorityIndex(current, name)
+	var updated []string
+	switch {
+	case add && at >= 0, !add && at < 0:
+		return nil
+	case add && len(current) >= nitrado.MaxPriorityEntries:
+		return discord.ErrPanelListFull
+	case add:
+		updated = append(append(make([]string, 0, len(current)+1), current...), name)
+	default:
+		updated = append(append(make([]string, 0, len(current)), current[:at]...), current[at+1:]...)
+	}
+	if err := client.SetPriorityList(ctx, row.ServiceID, updated); err != nil {
+		b.audit(ctx, c, row, action, name, reason, false, nil)
+		slog.Warn("component=discord", "msg", "server panel priority write refused by nitrado", "err", err.Error())
+		return discord.ErrPanelNitrado
+	}
+	b.audit(ctx, c, row, action, name, reason, true, map[string]any{"count": len(updated)})
+	return nil
 }

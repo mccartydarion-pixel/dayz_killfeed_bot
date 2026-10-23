@@ -610,7 +610,7 @@ func (a *App) addAccessEntry(w http.ResponseWriter, r *http.Request, cap permiss
 		writeSaaSError(w, codeNitradoUnavailable, "Nitrado rejected this request")
 		return
 	}
-	entry, err := a.ClientAdmin.AddAccessEntry(ctx, ac.scope.InstallationID, listType, identifier, req.Reason, req.Notes, req.ExpiresAt, ac.user.ID)
+	entry, err := a.ClientAdmin.AddAccessEntry(ctx, ac.scope.InstallationID, listType, identifier, req.Reason, req.Notes, req.ExpiresAt, &ac.user.ID)
 	if err != nil {
 		slog.Warn("component=saas_api", "msg", "access entry persist failed", "err", err.Error())
 		writeSaaSError(w, codeInternalError, "Nitrado accepted the request but Champion could not save its record - it may not reflect in the list below")
@@ -656,7 +656,7 @@ func (a *App) removeAccessEntry(w http.ResponseWriter, r *http.Request, cap perm
 		writeSaaSError(w, codeNitradoUnavailable, "Nitrado rejected this request")
 		return
 	}
-	entry, err := a.ClientAdmin.RemoveAccessEntry(ctx, ac.scope.InstallationID, listType, identifier, ac.user.ID)
+	entry, err := a.ClientAdmin.RemoveAccessEntry(ctx, ac.scope.InstallationID, listType, identifier, &ac.user.ID)
 	if errors.Is(err, repository.ErrAccessEntryNotFound) {
 		// Nitrado-side removal already succeeded above; Champion simply had no matching active
 		// record (e.g. it was added outside Champion). Report success either way - the
