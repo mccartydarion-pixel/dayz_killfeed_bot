@@ -195,8 +195,10 @@ func (r *ClientAdminRepository) SetFeedShowLocation(ctx context.Context, install
 
 // SetMaintenanceMode toggles a server's maintenance flag (task's "SERVER MAINTENANCE MODE" -
 // Champion-side state only; this deliberately never touches the Nitrado server itself).
+// A server with no server_configs row yet gets one.
 func (r *ClientAdminRepository) SetMaintenanceMode(ctx context.Context, serverID int64, enabled bool) error {
-	tag, err := r.pool.Exec(ctx, `UPDATE server_configs SET maintenance_mode=$1,updated_at=NOW() WHERE server_id=$2`, enabled, serverID)
+	tag, err := r.pool.Exec(ctx, `INSERT INTO server_configs(server_id, maintenance_mode) SELECT id, $1 FROM game_servers WHERE id=$2
+ON CONFLICT (server_id) DO UPDATE SET maintenance_mode=EXCLUDED.maintenance_mode, updated_at=NOW()`, enabled, serverID)
 	if err != nil {
 		return err
 	}

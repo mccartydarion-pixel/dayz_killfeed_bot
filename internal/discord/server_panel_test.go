@@ -108,7 +108,7 @@ func TestServerPanelPicksAmongServers(t *testing.T) {
 	a := PanelServer{InstallationID: 1, Name: "Chernarus #1", MapName: "Chernarus"}
 	b := PanelServer{InstallationID: 2, Name: "Livonia PvE", MapName: "Livonia"}
 	one := BuildServerPanel([]PanelServer{a}, a, PanelStatus{State: "started"}, permissions.LevelOwner, nil, time.Now())
-	if len(one.Components) != 2 {
+	if len(one.Components) != 3 {
 		t.Fatalf("one server needs no picker: %d rows", len(one.Components))
 	}
 	two := BuildServerPanel([]PanelServer{a, b}, b, PanelStatus{State: "started"}, permissions.LevelOwner, nil, time.Now())

@@ -432,6 +432,7 @@ func (a *App) handleSetMaintenanceMode(w http.ResponseWriter, r *http.Request) {
 		writeSaaSError(w, codeInternalError, "could not update maintenance mode")
 		return
 	}
+	a.maintenanceChanged(*ac.scope.ServerID)
 	a.recordAudit(ctx, ac, "MAINTENANCE_MODE_CHANGE", "", "", "success", nil, map[string]bool{"enabled": req.Enabled})
 	writeSaaSJSON(w, http.StatusOK, map[string]bool{"enabled": req.Enabled})
 }

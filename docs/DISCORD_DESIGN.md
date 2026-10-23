@@ -334,6 +334,7 @@ these rules were applied. C = crimson, G = gold, Gr = green, A = amber, R = red,
 | 91 | `/server connect, services, select, disconnect, repair, status` | `discord/server_commands.go` | text | voice helpers | yes |
 | 91a | `/server panel`: the private server control panel (status, Restart / Start / Stop / Refresh, the restart and stop forms) | `discord/server_panel.go` | yes | G online, Rd stopped, A between states, N unknown, `🎛️ Server control` | yes |
 | 91b | `/server panel` lists: whitelist, ban list and priority queue (names, Add / Remove, their forms) | `discord/server_panel.go` | yes | N, `📋 Whitelist` `🚫 Ban list` `⭐ Priority queue` | yes |
+| 91c | `/server panel` tools: game settings, newest ADM log (with the file), restart schedule, maintenance switch, a panel posted in a channel (refreshed every 2 minutes) | `discord/server_panel_tools.go` | yes | N, maintenance A, `⚙️ Game settings` `📜 Newest ADM log` `⏰ Restart schedule` `🛠️ Maintenance` | yes |
 | 92 | `/setup run, repair, reset, verified-role` | `discord/setup_commands.go` | text + #85 | voice helpers | yes |
 | 93 | `/faction war` (challenge, accept, decline, cancel, status, history) | `discord/war_commands.go` | text | voice helpers | yes |
 | 94 | `/faction info, rivalry, leaderboard` | same | text | bold headers, sentence case | yes |

@@ -160,7 +160,7 @@ func editOriginal(s *discordgo.Session, i *discordgo.InteractionCreate, data *di
 	if embeds == nil {
 		embeds = []*discordgo.MessageEmbed{}
 	}
-	edit := &discordgo.WebhookEdit{Content: &content, Embeds: &embeds, AllowedMentions: data.AllowedMentions}
+	edit := &discordgo.WebhookEdit{Content: &content, Embeds: &embeds, AllowedMentions: data.AllowedMentions, Files: data.Files}
 	if data.Components != nil {
 		components := data.Components
 		edit.Components = &components
@@ -172,7 +172,7 @@ func editOriginal(s *discordgo.Session, i *discordgo.InteractionCreate, data *di
 
 func followUpPrivate(s *discordgo.Session, i *discordgo.InteractionCreate, data *discordgo.InteractionResponseData) {
 	_, err := s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
-		Content: data.Content, Embeds: data.Embeds, Components: data.Components,
+		Content: data.Content, Embeds: data.Embeds, Components: data.Components, Files: data.Files,
 		AllowedMentions: data.AllowedMentions, Flags: discordgo.MessageFlagsEphemeral,
 	})
 	if err != nil {

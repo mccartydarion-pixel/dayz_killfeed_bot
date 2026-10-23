@@ -33,6 +33,8 @@ type ServerStatusBoard struct {
 	servers     AllGuildServersFunc
 	panels      *RoutePanels
 	serverNames ServerNameFunc
+	// maintenance reports a server whose maintenance switch is on; nil: none is.
+	maintenance func(serverID int64) bool
 	now         func() time.Time
 	trigger     chan struct{}
 
@@ -54,6 +56,10 @@ type GameServerStatus struct {
 	// DownSince is when the logs stopped, while State is "DOWN".
 	DownSince time.Time
 }
+
+// SetMaintenance sets the check for servers under maintenance, which the board says. Call before
+// Run.
+func (b *ServerStatusBoard) SetMaintenance(f func(serverID int64) bool) { b.maintenance = f }
 
 // ObserveGame records one server's game status and refreshes the board when it changed. The
 // board is one message edited in place, so a restart never adds a message.
@@ -176,6 +182,13 @@ func (b *ServerStatusBoard) syncGuild(ctx context.Context, g GuildServers) {
 	now := b.now()
 	contentFor := func(channelID string) (PanelContent, error) {
 		sections := make([]ServerStatusSection, 0, len(byChannel[channelID]))
+		// Read outside the lock: the check may go to the database.
+		maintenance := map[int64]bool{}
+		if b.maintenance != nil {
+			for _, serverID := range byChannel[channelID] {
+				maintenance[serverID] = b.maintenance(serverID)
+			}
+		}
 		b.mu.Lock()
 		for _, serverID := range byChannel[channelID] {
 			snap, seen := b.snapshots[serverID]
@@ -183,7 +196,7 @@ func (b *ServerStatusBoard) syncGuild(ctx context.Context, g GuildServers) {
 			if b.serverNames != nil {
 				name = b.serverNames(serverID)
 			}
-			sections = append(sections, ServerStatusSection{ServerName: name, Seen: seen, Snapshot: snap, Game: b.games[serverID]})
+			sections = append(sections, ServerStatusSection{ServerName: name, Seen: seen, Snapshot: snap, Game: b.games[serverID], Maintenance: maintenance[serverID]})
 		}
 		b.mu.Unlock()
 		return PanelContent{Embed: BuildServerStatusEmbed(sections, now)}, nil
@@ -199,6 +212,8 @@ type ServerStatusSection struct {
 	Seen       bool // a worker has reported at least one snapshot
 	Snapshot   killfeed.AdmSnapshot
 	Game       GameServerStatus
+	// Maintenance is on while staff have paused the server's public feeds.
+	Maintenance bool
 }
 
 // gameServerLines are the board's lines about the game process: its state, when it last
@@ -252,7 +267,7 @@ func ServerStatusLink(s ServerStatusSection, now time.Time) string {
 }
 
 // serverStatusColor is the board's colour, by meaning: red when a game server is not running,
-// amber while one restarts or as soon as one server's link is degraded, green when every server is connected, neutral while there is nothing to judge yet
+// amber while one restarts or is under maintenance, or as soon as one server's link is degraded, green when every server is connected, neutral while there is nothing to judge yet
 // (no server, or still waiting for a first poll or for the log).
 func serverStatusColor(sections []ServerStatusSection, now time.Time) int {
 	if len(sections) == 0 {
@@ -265,7 +280,7 @@ func serverStatusColor(sections []ServerStatusSection, now time.Time) int {
 		}
 	}
 	for _, s := range sections {
-		if s.Game.State == "RESTARTING" {
+		if s.Game.State == "RESTARTING" || s.Maintenance {
 			return presentation.Amber
 		}
 	}
@@ -293,7 +308,11 @@ func BuildServerStatusEmbed(sections []ServerStatusSection, now time.Time) *disc
 		if strings.TrimSpace(s.ServerName) != "" {
 			title = presentation.SafeName(s.ServerName, 60)
 		}
-		lines := append(gameServerLines(s.Game), "**Champion link:** "+ServerStatusLink(s, now))
+		var lines []string
+		if s.Maintenance {
+			lines = append(lines, "🛠️ **Under maintenance:** Champion's public feeds for this server are paused.")
+		}
+		lines = append(append(lines, gameServerLines(s.Game)...), "**Champion link:** "+ServerStatusLink(s, now))
 		if s.Seen {
 			if !s.Snapshot.LastLogChange.IsZero() {
 				lines = append(lines, "**ADM log:** updated "+presentation.Timestamp(s.Snapshot.LastLogChange, 'R'))

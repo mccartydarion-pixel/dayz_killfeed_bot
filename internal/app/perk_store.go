@@ -867,7 +867,8 @@ func (a *App) announcePerkPurchase(ctx context.Context, p repository.PerkPurchas
 		a.perkAnnouncer(p, embed)
 		return
 	}
-	if a.ChannelRoutes == nil || a.Discord == nil {
+	// A server in maintenance posts no public shout-outs (maintenance_mode.go).
+	if a.ChannelRoutes == nil || a.Discord == nil || a.serverInMaintenance(p.ServerID) {
 		return
 	}
 	channelID, found, err := a.ChannelRoutes.Resolve(ctx, p.GuildID, p.ServerID, routing.RoutePerkStore)

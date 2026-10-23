@@ -103,7 +103,8 @@ func (a *App) openHotZone(ctx context.Context, inst repository.HotZoneInstallati
 
 func (a *App) announceHotZone(ctx context.Context, inst repository.HotZoneInstallation, event repository.CompetitiveEvent) {
 	slog.Info("component=hotzone", "event", "opened", "server_id", inst.ServerID, "event_id", event.ID, "name", event.Name)
-	if a.CompletionPublisher == nil {
+	// A server in maintenance posts no public announcements (maintenance_mode.go).
+	if a.CompletionPublisher == nil || a.serverInMaintenance(inst.ServerID) {
 		return
 	}
 	var c competitiveevents.HotZoneConfig

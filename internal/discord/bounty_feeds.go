@@ -72,6 +72,8 @@ func bountyName(s string) string {
 // Notify only appends to a bounded queue; route lookups and Discord I/O run on
 // Run's goroutine, one message (up to 10 cards) per channel per tick.
 type BountyTracker struct {
+	// paused reports a game server whose public feeds are paused (maintenance); nil: none are.
+	paused   func(serverID int64) bool
 	sender   HitSender
 	resolver RouteResolver
 	servers  AllGuildServersFunc
@@ -103,6 +105,10 @@ func NewBountyTracker(sender HitSender, resolver RouteResolver, servers AllGuild
 
 // Notify implements bounties.Notifier. It never blocks and never fails.
 // SetCustomizer enables custom embed templates for BOUNTY_TRACKING cards.
+// SetPaused sets the check for game servers whose public feeds are paused (maintenance): their
+// cards are not posted. Call before Run.
+func (t *BountyTracker) SetPaused(paused func(serverID int64) bool) { t.paused = paused }
+
 func (t *BountyTracker) SetCustomizer(c EmbedCustomizer, serverName ServerNameFunc) {
 	if t == nil {
 		return
@@ -250,6 +256,9 @@ func (t *BountyTracker) targetsFor(ctx context.Context, e bounties.Event) []chan
 	seen := map[string]bool{}
 	var out []channelTarget
 	for _, id := range serverIDs {
+		if t.paused != nil && t.paused(id) {
+			continue
+		}
 		ch, found, err := t.resolver.Resolve(ctx, e.GuildID, id, routeKeyBountyTracking)
 		if err != nil {
 			t.warnLookup(e.GuildID, id, err)

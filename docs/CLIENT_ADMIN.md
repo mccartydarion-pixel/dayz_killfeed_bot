@@ -73,7 +73,7 @@ the server a `/server select|disconnect|repair` names, never for the other insta
 | `BANLIST_MANAGE` | Moderator | |
 | `PLAYER_LAST_ONLINE_VIEW` | Moderator | |
 | `FEED_LOCATION_MANAGE` | Moderator | per-route `show_location` toggle |
-| `MAINTENANCE_MODE` | Administrator | Champion-side flag only |
+| `MAINTENANCE_MODE` | Administrator | Champion-side switch: while on, the server's public feeds (killfeed, death and PvE feed, hit feed, connections, build feed, economy and bounty feeds, hot zone, RP boost and perk store posts) are paused and the status board says "Under maintenance"; stats, staff alerts and DMs keep going (`internal/app/maintenance_mode.go`). Also on the Discord `/server panel`. |
 | `PLAYER_DIRECTORY_VIEW` | Moderator | Phase 3, `docs/PLAYER_INTELLIGENCE.md` - the authoritative player directory |
 | `PLAYER_LAST_LOCATION_VIEW` | Administrator | Phase 3 - a player's current location; online-players-with-location |
 | `PLAYER_LOCATION_VIEW` | Administrator | Phase 3 - full location history |
