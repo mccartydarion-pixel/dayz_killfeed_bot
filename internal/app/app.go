@@ -302,6 +302,8 @@ type App struct {
 	HubMembership *repository.FactionHubMembershipRepository
 	// ServerPanels lists a Discord server's game servers for /server panel.
 	ServerPanels *repository.ServerPanelRepository
+	// Traders stores each installation's Discord Trader (/trader, docs/TRADER.md).
+	Traders *repository.TraderRepository
 	// maintenance caches each game server's maintenance switch (maintenance_mode.go).
 	maintenance maintenanceCache
 	ZoneCache   *killfeed.ZoneCache
@@ -698,6 +700,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.Zones = repository.NewZoneRepository(db.Pool)
 			app.HubMembership = repository.NewFactionHubMembershipRepository(db.Pool)
 			app.ServerPanels = repository.NewServerPanelRepository(db.Pool)
+			app.Traders = repository.NewTraderRepository(db.Pool)
 			app.ZoneCache = killfeed.NewZoneCache(app.Zones)
 			app.Intrusion = killfeed.NewIntrusionEngine(app.Zones, app.ZoneCache, intrusionRoleChecker{app: app}, intrusionPublisher{app: app})
 			app.Heatmap = heatmap.NewService(repository.NewHeatmapRepository(db.Pool), heatmap.NewCache(heatmapCacheTTL), heatmap.NewMetrics())

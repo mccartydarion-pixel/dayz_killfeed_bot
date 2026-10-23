@@ -73,6 +73,7 @@ given; it runs in every process. "Not safe" = still assumes one process.
 | Server ranks boards (one per active server of every guild) | `discord.ServerRanksBoards` | **Gated.** Same. |
 | Bounty board, server status board, heatmap board | `discord.BountyBoard`, `ServerStatusBoard`, `HeatmapBoard` | **Gated.** Same. |
 | Posted server panels (`/server panel` › Post here, every 2 min) | `discord.ServerPanelHandler.RunSharedRefresh` | **Gated.** Edits the same messages; one process is enough. |
+| Trader posts, panels and status voice channels (every 2 min) | `discord.TraderHandler.RunRefresh` | **Gated.** Edits the same messages and renames the same channels; one process is enough. |
 | Route syncer (guild-level routed panels) | `discord.RouteSyncer` | **Gated.** Same. |
 | Security Store panel refresh (10 min) | `security_store_panel.go` | **Gated.** Two processes would both post a panel that has no message yet. |
 | Security service expiry DMs (5 min) | `security_expiry_worker.go` | **Gated.** The DM is sent before the row is marked. |

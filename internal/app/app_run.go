@@ -194,6 +194,21 @@ func (a *App) Run() error {
 			go a.singleton(ctx, "server_panel_refresh", panel.RunSharedRefresh(session))
 		}
 	}
+	if a.Traders != nil && a.ServerPanels != nil && a.Shop != nil && a.EconomyAccounts != nil && a.Config.DiscordGuildID != "" {
+		trader := discord.NewTraderHandler(newTraderBackend(a))
+		if err := discord.RegisterTraderCommands(commands, a.Config.DiscordGuildID); err != nil {
+			slog.Warn("component=discord", "msg", "failed to register trader commands", "err", err.Error())
+		}
+		routes.Command("trader", discord.AckPrivate, trader.HandleCommand)
+		routes.Autocomplete("trader", trader.HandleCommand)
+		routes.ComponentPrefix(discord.TraderPrefix, discord.AckUpdate, trader.HandleComponent)
+		routes.ComponentPrefix(discord.TraderPrivatePrefix, discord.AckPrivate, trader.HandleComponent)
+		// The drop point form, which Discord cannot defer.
+		routes.ComponentPrefix(discord.TraderFormPrefix, discord.AckSelf, trader.HandleComponent)
+		routes.ModalPrefix(discord.TraderPrefix, discord.AckUpdate, trader.HandleComponent)
+		// Trader posts, panels and status channels are kept current by one process.
+		go a.singleton(ctx, "trader_refresh", trader.RunRefresh(session))
+	}
 	if a.AnnouncementService != nil && a.Config.DiscordGuildID != "" {
 		a.CompletionPublisher = discord.NewLiveCompletionPublisher(a.AnnouncementService, api, setupStore, a.Seasons, a.Wars, a.Events, a.Players, a.Factions, a.Guilds, a.Config.DiscordGuildID)
 	}

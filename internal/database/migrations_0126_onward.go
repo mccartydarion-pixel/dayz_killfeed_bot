@@ -105,6 +105,11 @@ var migrations0126onward = []Migration{
 		Name: "0142_server_panel_posts",
 		SQL:  ServerPanelPostsSQL,
 	},
+	{
+		// The Discord Trader: its category, channels, role, posts and open/closed state.
+		Name: "0143_trader_hubs",
+		SQL:  TraderHubsSQL,
+	},
 }
 
 // SubscriptionPastDueSinceSQL adds subscriptions.past_due_since: set when the status becomes
@@ -373,4 +378,32 @@ CREATE TABLE IF NOT EXISTS server_panel_posts (
  posted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
  UNIQUE (installation_id, channel_id)
 );
+`
+
+// TraderHubsSQL is one Discord Trader per installation (docs/TRADER.md): the category, channels and
+// role /trader setup made, the trader post and panel messages, and whether the trader is open.
+// voice_name_applied is the status name the voice channel was last renamed to, so a rename Discord
+// rate-limited is retried until it matches.
+const TraderHubsSQL = `
+CREATE TABLE IF NOT EXISTS trader_hubs (
+ installation_id BIGINT PRIMARY KEY REFERENCES installations(id) ON DELETE CASCADE,
+ organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+ discord_guild_id TEXT NOT NULL,
+ category_id TEXT NOT NULL DEFAULT '',
+ voice_channel_id TEXT NOT NULL DEFAULT '',
+ trader_channel_id TEXT NOT NULL DEFAULT '',
+ deals_channel_id TEXT NOT NULL DEFAULT '',
+ panel_channel_id TEXT NOT NULL DEFAULT '',
+ orders_channel_id TEXT NOT NULL DEFAULT '',
+ trader_role_id TEXT NOT NULL DEFAULT '',
+ post_message_id TEXT NOT NULL DEFAULT '',
+ panel_message_id TEXT NOT NULL DEFAULT '',
+ is_open BOOLEAN NOT NULL DEFAULT TRUE,
+ voice_name_applied TEXT NOT NULL DEFAULT '',
+ open_changed_at TIMESTAMPTZ,
+ open_changed_by_discord_id TEXT NOT NULL DEFAULT '',
+ created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+ updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_trader_hubs_guild ON trader_hubs(discord_guild_id);
 `

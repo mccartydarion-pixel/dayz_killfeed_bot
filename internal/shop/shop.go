@@ -488,6 +488,9 @@ type PurchaseRequest struct {
 	Quantity       int
 	IdempotencyKey string
 	Delivery       *DeliveryInput // nil = no delivery object in the request
+	// Quiet leaves the purchase out of the public ECONOMY feed (Discord Trader orders are private
+	// to the buyer and the Trader role).
+	Quiet bool
 }
 
 // DeliveryInput is the request's delivery object: X/Z map coordinates (no altitude).
@@ -540,7 +543,7 @@ func (s *Service) Purchase(ctx context.Context, scope repository.EconomyScope, u
 	if err != nil {
 		return nil, err
 	}
-	if !res.Duplicate && s.announce != nil {
+	if !res.Duplicate && !req.Quiet && s.announce != nil {
 		s.announce.Announce(economy.Event{Type: economy.TypeShopPurchase, GuildID: scope.GuildID, ServerID: scope.ServerID, PlayerName: res.PlayerName,
 			Amount: res.Purchase.TotalPoints, Credit: false, BalanceAfter: res.BalanceAfter, Item: res.ItemName})
 	}
