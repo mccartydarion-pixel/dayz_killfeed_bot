@@ -268,8 +268,9 @@ func scanAccessEntry(row pgx.Row) (AccessEntry, error) {
 // AddAccessEntry records a new active whitelist/banlist entry. The caller must call the matching
 // internal/nitrado enforcement method (WhitelistAdd/BanlistAdd) and only persist this record once
 // that call succeeds (task: "Audit enforcement mechanism first" - Champion's record must never
-// claim an entry is enforced when Nitrado rejected it).
-func (r *ClientAdminRepository) AddAccessEntry(ctx context.Context, installationID int64, listType, identifier, reason, notes string, expiresAt *time.Time, createdByUserID int64) (AccessEntry, error) {
+// claim an entry is enforced when Nitrado rejected it). createdByUserID is nil for a staff member
+// with no Champion account (the Discord server panel).
+func (r *ClientAdminRepository) AddAccessEntry(ctx context.Context, installationID int64, listType, identifier, reason, notes string, expiresAt *time.Time, createdByUserID *int64) (AccessEntry, error) {
 	return scanAccessEntry(r.pool.QueryRow(ctx, `
 INSERT INTO installation_access_entries(installation_id,list_type,identifier,reason,notes,expires_at,created_by_user_id)
 VALUES($1,$2,$3,NULLIF($4,''),NULLIF($5,''),$6,$7)
@@ -281,7 +282,8 @@ RETURNING `+accessEntryCols, installationID, listType, identifier, reason, notes
 var ErrAccessEntryNotFound = errors.New("access entry not found")
 
 // RemoveAccessEntry soft-removes the currently-active entry for identifier (preserving history).
-func (r *ClientAdminRepository) RemoveAccessEntry(ctx context.Context, installationID int64, listType, identifier string, removedByUserID int64) (AccessEntry, error) {
+// removedByUserID is nil for a staff member with no Champion account.
+func (r *ClientAdminRepository) RemoveAccessEntry(ctx context.Context, installationID int64, listType, identifier string, removedByUserID *int64) (AccessEntry, error) {
 	e, err := scanAccessEntry(r.pool.QueryRow(ctx, `
 UPDATE installation_access_entries SET removed_at=NOW(), removed_by_user_id=$4
 WHERE installation_id=$1 AND list_type=$2 AND identifier=$3 AND removed_at IS NULL

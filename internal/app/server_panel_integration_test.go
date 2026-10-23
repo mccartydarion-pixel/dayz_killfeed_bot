@@ -108,3 +108,95 @@ WHERE installation_id=$1 AND action='SERVER_RESTART' ORDER BY id DESC LIMIT 1`, 
 		t.Fatalf("status: %v", err)
 	}
 }
+
+// The panel's whitelist, ban list and priority queue edit Nitrado's lists, keep Champion's records
+// and write the website's audit actions, each at its own staff level.
+func TestServerPanelEditsPlayerLists(t *testing.T) {
+	w := newClientAdminWorld(t)
+	withFakeNitradoActions(t, w.a)
+	connectNitrado(t, w.a, w.f.OrgID, w.f.OwnerDiscordID)
+	w.a.ServerPanels = repository.NewServerPanelRepository(w.a.DB.Pool)
+	ctx := context.Background()
+	b := newServerPanelBackend(w.a)
+	inst := w.f.InstallationID
+
+	gateRole := fmt.Sprintf("panel-gate-%d", time.Now().UnixNano())
+	if _, err := w.a.DB.Pool.Exec(ctx, `INSERT INTO installation_role_permissions(installation_id,discord_role_id,permission_level) VALUES($1,$2,'GATEKEEPER')`, inst, gateRole); err != nil {
+		t.Fatal(err)
+	}
+	gate := discord.PanelCaller{DiscordGuildID: w.f.DiscordGuildID, DiscordUserID: "panel-gatekeeper", RoleIDs: []string{gateRole}}
+	owner := discord.PanelCaller{DiscordGuildID: w.f.DiscordGuildID, DiscordUserID: w.f.OwnerDiscordID}
+
+	if err := b.PanelListChange(ctx, gate, inst, discord.PanelWhitelist, "RustyAxe_77", "", true); err != nil {
+		t.Fatal(err)
+	}
+	if names, err := b.PanelListNames(ctx, gate, inst, discord.PanelWhitelist); err != nil || len(names) != 1 || names[0] != "RustyAxe_77" {
+		t.Fatalf("whitelist after add: %v %v", names, err)
+	}
+	var recorded int
+	if err := w.a.DB.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM installation_access_entries WHERE installation_id=$1 AND list_type='WHITELIST' AND identifier='RustyAxe_77' AND removed_at IS NULL AND created_by_user_id IS NULL`, inst).Scan(&recorded); err != nil || recorded != 1 {
+		t.Fatalf("Champion's record of a whitelist add by staff without an account: %d %v", recorded, err)
+	}
+	// Adding again changes nothing and is not an error.
+	if err := b.PanelListChange(ctx, gate, inst, discord.PanelWhitelist, "rustyaxe_77", "", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.PanelListChange(ctx, gate, inst, discord.PanelBanlist, "Griefer", "raiding spawns", true); !errors.Is(err, discord.ErrPanelForbidden) {
+		t.Fatalf("a Gatekeeper banning: %v", err)
+	}
+	if _, err := b.PanelListNames(ctx, gate, inst, discord.PanelPriority); !errors.Is(err, discord.ErrPanelForbidden) {
+		t.Fatalf("a Gatekeeper reading the priority queue: %v", err)
+	}
+	if err := b.PanelListChange(ctx, gate, inst, discord.PanelWhitelist, "two\nlines", "", true); !errors.Is(err, discord.ErrPanelBadName) {
+		t.Fatalf("a name on two lines: %v", err)
+	}
+	// Removed by any capitalisation: the list's own spelling is removed, and so is Champion's record.
+	if err := b.PanelListChange(ctx, gate, inst, discord.PanelWhitelist, "RUSTYAXE_77", "", false); err != nil {
+		t.Fatal(err)
+	}
+	if names, _ := b.PanelListNames(ctx, gate, inst, discord.PanelWhitelist); len(names) != 0 {
+		t.Fatalf("whitelist after remove: %v", names)
+	}
+	if err := w.a.DB.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM installation_access_entries WHERE installation_id=$1 AND list_type='WHITELIST' AND removed_at IS NULL`, inst).Scan(&recorded); err != nil || recorded != 0 {
+		t.Fatalf("Champion's record after remove: %d %v", recorded, err)
+	}
+
+	if err := b.PanelListChange(ctx, owner, inst, discord.PanelBanlist, "Griefer", "raiding spawns", true); err != nil {
+		t.Fatal(err)
+	}
+	if names, _ := b.PanelListNames(ctx, owner, inst, discord.PanelBanlist); len(names) != 1 || names[0] != "Griefer" {
+		t.Fatalf("ban list: %v", names)
+	}
+	for _, name := range []string{"VIP_One", "VIP_Two"} {
+		if err := b.PanelListChange(ctx, owner, inst, discord.PanelPriority, name, "supporter", true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := b.PanelListChange(ctx, owner, inst, discord.PanelPriority, "vip_one", "", false); err != nil {
+		t.Fatal(err)
+	}
+	if names, _ := b.PanelListNames(ctx, owner, inst, discord.PanelPriority); len(names) != 1 || names[0] != "VIP_Two" {
+		t.Fatalf("priority queue: %v", names)
+	}
+
+	want := map[string]int{"WHITELIST_ADD": 1, "WHITELIST_REMOVE": 1, "BANLIST_ADD": 1, "PRIORITY_ADD": 2, "PRIORITY_REMOVE": 1}
+	rows, err := w.a.DB.Pool.Query(ctx, `SELECT action,COUNT(*) FROM admin_audit_log WHERE installation_id=$1 AND after_state->>'source'='discord_panel' AND result='success' GROUP BY action`, inst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	got := map[string]int{}
+	for rows.Next() {
+		var action string
+		var n int
+		if err := rows.Scan(&action, &n); err != nil {
+			t.Fatal(err)
+		}
+		got[action] = n
+	}
+	for action, n := range want {
+		if got[action] != n {
+			t.Errorf("audit %s: %d rows, want %d (all: %v)", action, got[action], n, got)
+		}
+	}
+}

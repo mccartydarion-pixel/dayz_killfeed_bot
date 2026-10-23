@@ -1,6 +1,7 @@
 package discord
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -107,7 +108,7 @@ func TestServerPanelPicksAmongServers(t *testing.T) {
 	a := PanelServer{InstallationID: 1, Name: "Chernarus #1", MapName: "Chernarus"}
 	b := PanelServer{InstallationID: 2, Name: "Livonia PvE", MapName: "Livonia"}
 	one := BuildServerPanel([]PanelServer{a}, a, PanelStatus{State: "started"}, permissions.LevelOwner, nil, time.Now())
-	if len(one.Components) != 1 {
+	if len(one.Components) != 2 {
 		t.Fatalf("one server needs no picker: %d rows", len(one.Components))
 	}
 	two := BuildServerPanel([]PanelServer{a, b}, b, PanelStatus{State: "started"}, permissions.LevelOwner, nil, time.Now())
@@ -164,5 +165,88 @@ func TestPanelActionCapabilities(t *testing.T) {
 		if !ok || !permissions.Allows(want, c) || permissions.Allows(want-1, c) {
 			t.Errorf("%s needs %s", action, levelLabel(want))
 		}
+	}
+}
+
+func TestServerPanelListButtonsFollowStaffLevel(t *testing.T) {
+	srv := PanelServer{InstallationID: 7, Name: "S"}
+	for _, c := range []struct {
+		level                     permissions.Level
+		whitelist, bans, priority bool
+	}{
+		{permissions.LevelGatekeeper, true, false, false},
+		{permissions.LevelModerator, true, true, false},
+		{permissions.LevelAdministrator, true, true, true},
+	} {
+		b := panelButtons(t, BuildServerPanel([]PanelServer{srv}, srv, PanelStatus{State: "started"}, c.level, nil, time.Now()))
+		if !b["Whitelist"].Disabled != c.whitelist || !b["Ban list"].Disabled != c.bans || !b["Priority queue"].Disabled != c.priority {
+			t.Errorf("%s: whitelist=%v bans=%v priority=%v", levelLabel(c.level), !b["Whitelist"].Disabled, !b["Ban list"].Disabled, !b["Priority queue"].Disabled)
+		}
+		if b["Whitelist"].CustomID != "srvpanel:list:whitelist:7" || b["Ban list"].CustomID != "srvpanel:list:banlist:7" || b["Priority queue"].CustomID != "srvpanel:list:priority:7" {
+			t.Fatalf("list custom ids: %+v", b)
+		}
+	}
+}
+
+func TestServerPanelListMessage(t *testing.T) {
+	names := make([]string, 45)
+	for i := range names {
+		names[i] = "Player_" + strconv.Itoa(i)
+	}
+	names[0] = "*Bold*Name"
+	data := BuildPanelList(PanelWhitelist, 7, "Champion Chernarus", names)
+	e := data.Embeds[0]
+	if e.Title != "📋 Whitelist" || !strings.Contains(e.Description, "**45** players") || !strings.Contains(e.Description, "\\*Bold\\*Name") ||
+		!strings.Contains(e.Description, "…and 5 more") || strings.Contains(e.Description, "Player_44") {
+		t.Fatalf("list message: %q", e.Description)
+	}
+	b := panelButtons(t, data)
+	if b["Add"].CustomID != "srvpanel:ask:whitelist-add:7" || b["Remove"].CustomID != "srvpanel:ask:whitelist-remove:7" || b["Remove"].Disabled {
+		t.Fatalf("list buttons: %+v", b)
+	}
+	empty := BuildPanelList(PanelBanlist, 7, "S", nil)
+	if eb := panelButtons(t, empty); !eb["Unban"].Disabled || eb["Ban"].Disabled || eb["Ban"].Style != discordgo.DangerButton || !strings.Contains(empty.Embeds[0].Description, "Nobody is banned.") {
+		t.Fatalf("empty ban list: %+v %q", eb, empty.Embeds[0].Description)
+	}
+}
+
+func TestServerPanelListForms(t *testing.T) {
+	reasonInput := func(f *discordgo.InteractionResponseData) *discordgo.TextInput {
+		for _, row := range f.Components {
+			for _, c := range row.(discordgo.ActionsRow).Components {
+				if in := c.(discordgo.TextInput); in.CustomID == serverPanelReasonInput {
+					return &in
+				}
+			}
+		}
+		return nil
+	}
+	ban := BuildPanelListForm(PanelBanlist, true, 4)
+	if ban.CustomID != "srvpanel:do:banlist-add:4" || ban.Title != "Ban a player" || reasonInput(ban) == nil || !reasonInput(ban).Required {
+		t.Fatalf("ban form: %+v", ban)
+	}
+	if wl := BuildPanelListForm(PanelWhitelist, true, 4); reasonInput(wl) == nil || reasonInput(wl).Required {
+		t.Fatalf("a whitelist reason is optional: %+v", wl)
+	}
+	if rm := BuildPanelListForm(PanelPriority, false, 4); rm.CustomID != "srvpanel:do:priority-remove:4" || reasonInput(rm) != nil || len([]rune(rm.Title)) > 45 {
+		t.Fatalf("priority remove form: %+v", rm)
+	}
+	for _, l := range []PanelList{PanelWhitelist, PanelBanlist, PanelPriority} {
+		for _, add := range []bool{true, false} {
+			if f := BuildPanelListForm(l, add, 1); len([]rune(f.Title)) > 45 {
+				t.Errorf("form title over 45 characters: %q", f.Title)
+			}
+		}
+	}
+	for in, want := range map[string]bool{"whitelist-add:3": true, "banlist-remove:3": true, "priority-add:9": true, "whitelist-wipe:3": false, "ops-add:3": false, "whitelist-add:x": false, "whitelist:3": false} {
+		if _, _, _, ok := parseListTarget(in); ok != want {
+			t.Errorf("parseListTarget(%q) ok=%v", in, ok)
+		}
+	}
+	if l, add, id, ok := parseListTarget("banlist-remove:12"); !ok || l != PanelBanlist || add || id != 12 {
+		t.Fatalf("parse: %v %v %v %v", l, add, id, ok)
+	}
+	if _, _, ok := parseListShow("restart:3"); ok {
+		t.Fatal("a power action is not a list")
 	}
 }
