@@ -40,6 +40,8 @@ type ServerCommandHandler struct {
 	guilds  GuildStore
 	cipher  *security.AESGCM
 	runtime ServerRuntime
+	// panel serves /server panel, which staff below Administrator may use too (server_panel.go).
+	panel *ServerPanelHandler
 
 	// Autocomplete runs on every keystroke and cannot reply "thinking...",
 	// so it reuses a guild's Nitrado service list for a minute.
@@ -56,6 +58,13 @@ const serviceSuggestTTL = time.Minute
 
 func NewServerCommandHandler(s *repository.ServerRepository, g GuildStore, cipher *security.AESGCM, runtime ServerRuntime) *ServerCommandHandler {
 	return &ServerCommandHandler{servers: s, guilds: g, cipher: cipher, runtime: runtime}
+}
+
+// SetPanel attaches the /server panel handler.
+func (h *ServerCommandHandler) SetPanel(p *ServerPanelHandler) {
+	if h != nil {
+		h.panel = p
+	}
 }
 
 func RegisterServerCommands(s CommandRegistrar, guildID string) error {
@@ -78,6 +87,7 @@ func RegisterServerCommands(s CommandRegistrar, guildID string) error {
 			{Name: "disconnect", Description: "Disconnect a server (keeps history)", Type: discordgo.ApplicationCommandOptionSubCommand, Options: serviceIDOption},
 			{Name: "repair", Description: "Re-validate and reattach a server's killfeed worker", Type: discordgo.ApplicationCommandOptionSubCommand, Options: serviceIDOption},
 			{Name: "status", Description: "Show connected server status", Type: discordgo.ApplicationCommandOptionSubCommand},
+			{Name: "panel", Description: "Open the control panel: status, restart, start and stop (staff)", Type: discordgo.ApplicationCommandOptionSubCommand},
 		},
 	}
 	_, err = s.ApplicationCommandCreate(applicationID, guildID, cmd)
@@ -111,6 +121,16 @@ func (h *ServerCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interac
 	case discordgo.InteractionApplicationCommand:
 		// falls through below
 	default:
+		return
+	}
+
+	// /server panel checks the member's staff level itself: Moderators and Gatekeepers use it too.
+	if opts := i.ApplicationCommandData().Options; len(opts) > 0 && opts[0].Name == "panel" {
+		if h.panel == nil {
+			respondEphemeral(s, i, ReplyIsUnavailable("The server panel"))
+			return
+		}
+		h.panel.HandleCommand(s, i)
 		return
 	}
 
