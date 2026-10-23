@@ -56,7 +56,7 @@ func newClientAdminWorld(t *testing.T) *clientAdminWorld {
 		t.Fatal(err)
 	}
 	providerServiceID := fmt.Sprintf("ca-%d", time.Now().UnixNano())
-	if err := a.DB.Pool.QueryRow(ctx, `INSERT INTO game_servers(guild_id, provider, provider_service_id, game, platform, status, organization_id) VALUES($1,'nitrado',$2,'dayz','PLAYSTATION','ACTIVE',$3) RETURNING id`,
+	if err := a.DB.Pool.QueryRow(ctx, `INSERT INTO game_servers(guild_id, provider, provider_service_id, game, platform, status, organization_id) VALUES($1,'NITRADO',$2,'dayz','PLAYSTATION','ACTIVE',$3) RETURNING id`,
 		guildID, providerServiceID, f.OrgID).Scan(&serverID); err != nil {
 		t.Fatal(err)
 	}

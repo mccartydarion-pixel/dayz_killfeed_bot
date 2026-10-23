@@ -40,7 +40,7 @@ func (r *ServerPanelRepository) Servers(ctx context.Context, discordGuildID stri
 FROM installations i
 JOIN discord_guild_connections c ON c.id = i.discord_guild_connection_id
 JOIN guilds g ON g.id = c.guild_id
-JOIN game_servers gs ON gs.id = i.game_server_id AND gs.provider = 'nitrado'
+JOIN game_servers gs ON gs.id = i.game_server_id AND UPPER(gs.provider) = 'NITRADO'
 JOIN organizations o ON o.id = i.organization_id
 LEFT JOIN app_users u ON u.id = o.owner_user_id
 LEFT JOIN shop_delivery_settings sd ON sd.installation_id = i.id

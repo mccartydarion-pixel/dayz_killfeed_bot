@@ -72,6 +72,23 @@ func (a *App) organizationCredentialForServer(ctx context.Context, serverID int6
 	return a.SaaSCredentials.GetForOrganizationOnly(ctx, *orgID)
 }
 
+// guildOrganizationNitrado returns the Nitrado client of the organization that connected Discord
+// server guildRowID (guilds.id) on the website, or nil when it has none.
+func (a *App) guildOrganizationNitrado(ctx context.Context, guildRowID int64) (*nitrado.Client, error) {
+	if a.SaaSGuildConnections == nil || a.SaaSCredentials == nil {
+		return nil, nil
+	}
+	conn, err := a.SaaSGuildConnections.GetByGuildID(ctx, guildRowID)
+	if err != nil || conn == nil {
+		return nil, err
+	}
+	envelope, err := a.SaaSCredentials.GetForOrganizationOnly(ctx, conn.OrganizationID)
+	if err != nil || envelope == nil {
+		return nil, err
+	}
+	return a.nitradoClientFromEnvelope(*envelope)
+}
+
 func (a *App) verifyNitrado(ctx context.Context) (authenticated, verified bool, game, serviceType, status string) {
 	if !a.nitradoEnabled() {
 		slog.Warn("component=nitrado", "msg", "NITRADO_TOKEN not configured; operating in degraded mode without live service verification")

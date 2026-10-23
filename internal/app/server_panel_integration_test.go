@@ -348,3 +348,29 @@ AND action IN ('GAME_SETTING_SET','MAINTENANCE_MODE_CHANGE','SERVER_PANEL_POSTED
 		t.Fatalf("audit rows: %d %v", audits, err)
 	}
 }
+
+// /server repair, services and select use the Nitrado account the organization connected on the
+// website when the Discord server has no /server connect token of its own.
+func TestServerCommandsUseWebsiteNitrado(t *testing.T) {
+	w := newClientAdminWorld(t)
+	withFakeNitradoActions(t, w.a)
+	ctx := context.Background()
+	var guildRowID int64
+	if err := w.a.DB.Pool.QueryRow(ctx, `SELECT id FROM guilds WHERE discord_guild_id=$1`, w.f.DiscordGuildID).Scan(&guildRowID); err != nil {
+		t.Fatal(err)
+	}
+	if client, err := w.a.guildOrganizationNitrado(ctx, guildRowID); err != nil || client != nil {
+		t.Fatalf("before the website connects Nitrado: %v %v", client, err)
+	}
+	connectNitrado(t, w.a, w.f.OrgID, w.f.OwnerDiscordID)
+	client, err := w.a.guildOrganizationNitrado(ctx, guildRowID)
+	if err != nil || client == nil {
+		t.Fatalf("website connection: %v %v", client, err)
+	}
+	if services, err := client.GetServices(ctx); err != nil || len(nitrado.FindDayZServices(services)) == 0 {
+		t.Fatalf("services through the website connection: %+v %v", services, err)
+	}
+	if client, err := w.a.guildOrganizationNitrado(ctx, guildRowID+1_000_000); err != nil || client != nil {
+		t.Fatalf("a Discord server no organization connected: %v %v", client, err)
+	}
+}
