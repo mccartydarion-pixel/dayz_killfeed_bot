@@ -182,6 +182,14 @@ func (a *App) Run() error {
 		routes.Command("server", discord.AckPrivate, serverHandler.Handle, discord.SubAck{Path: "connect", Ack: discord.AckSelf})
 		routes.Autocomplete("server", serverHandler.Handle)
 		routes.ModalPrefix("champion_server_", discord.AckPrivate, serverHandler.Handle)
+		if a.ServerPanels != nil {
+			panel := discord.NewServerPanelHandler(newServerPanelBackend(a))
+			serverHandler.SetPanel(panel)
+			routes.ComponentPrefix(discord.ServerPanelPrefix, discord.AckUpdate, panel.HandleComponent)
+			// Restart and Stop open a confirmation form, which Discord cannot defer.
+			routes.ComponentPrefix(discord.ServerPanelAskPrefix, discord.AckSelf, panel.HandleComponent)
+			routes.ModalPrefix(discord.ServerPanelPrefix, discord.AckUpdate, panel.HandleComponent)
+		}
 	}
 	if a.AnnouncementService != nil && a.Config.DiscordGuildID != "" {
 		a.CompletionPublisher = discord.NewLiveCompletionPublisher(a.AnnouncementService, api, setupStore, a.Seasons, a.Wars, a.Events, a.Players, a.Factions, a.Guilds, a.Config.DiscordGuildID)

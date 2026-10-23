@@ -300,8 +300,10 @@ type App struct {
 	Zones *repository.ZoneRepository
 	// HubMembership resolves players' Faction Hub factions (kill attribution).
 	HubMembership *repository.FactionHubMembershipRepository
-	ZoneCache     *killfeed.ZoneCache
-	Intrusion     *killfeed.IntrusionEngine
+	// ServerPanels lists a Discord server's game servers for /server panel.
+	ServerPanels *repository.ServerPanelRepository
+	ZoneCache    *killfeed.ZoneCache
+	Intrusion    *killfeed.IntrusionEngine
 	// Lives records one row per ended life and derives lives in progress (docs/LIVES.md); LifeRecap
 	// DMs the opt-in death recap. Both nil-safe.
 	Lives     *repository.LifeRepository
@@ -693,6 +695,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			go app.runDataRetention(ctx)
 			app.Zones = repository.NewZoneRepository(db.Pool)
 			app.HubMembership = repository.NewFactionHubMembershipRepository(db.Pool)
+			app.ServerPanels = repository.NewServerPanelRepository(db.Pool)
 			app.ZoneCache = killfeed.NewZoneCache(app.Zones)
 			app.Intrusion = killfeed.NewIntrusionEngine(app.Zones, app.ZoneCache, intrusionRoleChecker{app: app}, intrusionPublisher{app: app})
 			app.Heatmap = heatmap.NewService(repository.NewHeatmapRepository(db.Pool), heatmap.NewCache(heatmapCacheTTL), heatmap.NewMetrics())
