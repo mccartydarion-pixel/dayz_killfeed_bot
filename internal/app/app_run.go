@@ -189,6 +189,8 @@ func (a *App) Run() error {
 			// Restart and Stop open a confirmation form, which Discord cannot defer.
 			routes.ComponentPrefix(discord.ServerPanelAskPrefix, discord.AckSelf, panel.HandleComponent)
 			routes.ModalPrefix(discord.ServerPanelPrefix, discord.AckUpdate, panel.HandleComponent)
+			// Panels posted in a channel are kept current by one process.
+			go a.singleton(ctx, "server_panel_refresh", panel.RunSharedRefresh(session))
 		}
 	}
 	if a.AnnouncementService != nil && a.Config.DiscordGuildID != "" {
@@ -587,6 +589,7 @@ func (a *App) Run() error {
 				// shared resolver, no fallback. Fed only after a transaction committed
 				// (admin adjustments and bounty payouts).
 				economyFeed := discord.NewEconomyFeed(session, a.ChannelRoutes, allGuildServers)
+				economyFeed.SetPaused(a.serverInMaintenance)
 				economyFeed.SetCustomizer(a.embedCustomizer(), a.serverNameFunc())
 				a.EconomyService.SetNotifier(economyFeed)
 				if a.BountyService != nil {
@@ -600,6 +603,7 @@ func (a *App) Run() error {
 				// through the shared resolver. They only report state that is already
 				// committed; with no routes they are no-ops and the database is unaffected.
 				bountyTracker := discord.NewBountyTracker(session, a.ChannelRoutes, allGuildServers)
+				bountyTracker.SetPaused(a.serverInMaintenance)
 				bountyTracker.SetCustomizer(a.embedCustomizer(), a.serverNameFunc())
 				a.BountyBoard = discord.NewBountyBoard(a.ChannelRoutes, allGuildServers, routePanels, a.Bounties)
 				a.BountyService.SetNotifier(discord.BountyEvents{Tracker: bountyTracker, Board: a.BountyBoard})
@@ -614,6 +618,7 @@ func (a *App) Run() error {
 				// channel, from what the server workers observe.
 				a.ServerStatusBoard = discord.NewServerStatusBoard(a.ChannelRoutes, allGuildServers, routePanels)
 				a.ServerStatusBoard.SetServerNames(a.serverNameFunc())
+				a.ServerStatusBoard.SetMaintenance(a.serverInMaintenance)
 				go a.singleton(ctx, "server_status_board", a.ServerStatusBoard.Run)
 				a.syncOnlineCounterRoute(ctx)
 			}

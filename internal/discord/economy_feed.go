@@ -37,6 +37,8 @@ const routeKeyEconomy = "ECONOMY"
 // only) the resulting balance. It never shows internal ids, Discord ids, the acting
 // admin or an adjustment's reason.
 type EconomyFeed struct {
+	// paused reports a game server whose public feeds are paused (maintenance); nil: none are.
+	paused   func(serverID int64) bool
 	sender   HitSender
 	resolver RouteResolver
 	servers  AllGuildServersFunc
@@ -65,6 +67,10 @@ func NewEconomyFeed(sender HitSender, resolver RouteResolver, servers AllGuildSe
 }
 
 // SetCustomizer enables custom embed templates for ECONOMY cards.
+// SetPaused sets the check for game servers whose public feeds are paused (maintenance): their
+// cards are not posted. Call before Run.
+func (f *EconomyFeed) SetPaused(paused func(serverID int64) bool) { f.paused = paused }
+
 func (f *EconomyFeed) SetCustomizer(c EmbedCustomizer, serverName ServerNameFunc) {
 	if f == nil {
 		return
@@ -200,6 +206,9 @@ func (f *EconomyFeed) targetsFor(ctx context.Context, e economy.Event) []channel
 	seen := map[string]bool{}
 	var out []channelTarget
 	for _, id := range serverIDs {
+		if f.paused != nil && f.paused(id) {
+			continue
+		}
 		ch, found, err := f.resolver.Resolve(ctx, e.GuildID, id, routeKeyEconomy)
 		if err != nil {
 			f.warnLookup(e.GuildID, id, err)

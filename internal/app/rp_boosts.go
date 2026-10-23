@@ -241,7 +241,8 @@ func (a *App) runRPBoostAnnouncements(ctx context.Context, guildID int64, now ti
 
 // postRPBoostCard sends the card to the server's events channel, else its server ranks channel.
 func (a *App) postRPBoostCard(ctx context.Context, guildID, serverID int64, embed *discordgo.MessageEmbed) {
-	if a.ChannelRoutes == nil || a.Discord == nil {
+	// A server in maintenance posts no public announcements (maintenance_mode.go).
+	if a.ChannelRoutes == nil || a.Discord == nil || a.serverInMaintenance(serverID) {
 		return
 	}
 	for _, route := range []string{routing.RouteEvents, routing.RouteServerRanks} {

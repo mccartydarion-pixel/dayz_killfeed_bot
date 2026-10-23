@@ -302,8 +302,10 @@ type App struct {
 	HubMembership *repository.FactionHubMembershipRepository
 	// ServerPanels lists a Discord server's game servers for /server panel.
 	ServerPanels *repository.ServerPanelRepository
-	ZoneCache    *killfeed.ZoneCache
-	Intrusion    *killfeed.IntrusionEngine
+	// maintenance caches each game server's maintenance switch (maintenance_mode.go).
+	maintenance maintenanceCache
+	ZoneCache   *killfeed.ZoneCache
+	Intrusion   *killfeed.IntrusionEngine
 	// Lives records one row per ended life and derives lives in progress (docs/LIVES.md); LifeRecap
 	// DMs the opt-in death recap. Both nil-safe.
 	Lives     *repository.LifeRepository

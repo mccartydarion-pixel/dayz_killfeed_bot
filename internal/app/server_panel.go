@@ -92,7 +92,7 @@ func (b *serverPanelBackend) PanelServers(ctx context.Context, discordGuildID st
 	}
 	out := make([]discord.PanelServer, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, discord.PanelServer{InstallationID: row.InstallationID, Name: row.Name, MapName: panelMapName(row.MapKey)})
+		out = append(out, discord.PanelServer{InstallationID: row.InstallationID, Name: row.Name, MapName: panelMapName(row.MapKey), Maintenance: row.Maintenance})
 	}
 	return out, nil
 }
@@ -454,4 +454,210 @@ func (b *serverPanelBackend) changePriority(ctx context.Context, c discord.Panel
 	}
 	b.audit(ctx, c, row, action, name, reason, true, map[string]any{"count": len(updated)})
 	return nil
+}
+
+// leveledServer is installationID's row when the caller holds at least min there.
+func (b *serverPanelBackend) leveledServer(ctx context.Context, c discord.PanelCaller, installationID int64, min permissions.Level) (repository.PanelServer, error) {
+	row, err := b.server(ctx, c.DiscordGuildID, installationID)
+	if err != nil {
+		return repository.PanelServer{}, err
+	}
+	level, err := b.PanelLevel(ctx, c, installationID)
+	if err != nil {
+		return repository.PanelServer{}, err
+	}
+	if level < min {
+		return repository.PanelServer{}, discord.ErrPanelForbidden
+	}
+	return row, nil
+}
+
+// capableServer is installationID's row when the caller's level allows capability there.
+func (b *serverPanelBackend) capableServer(ctx context.Context, c discord.PanelCaller, installationID int64, capability permissions.Capability) (repository.PanelServer, error) {
+	min, ok := permissions.RequiredLevel(capability)
+	if !ok {
+		min = permissions.LevelOwner
+	}
+	return b.leveledServer(ctx, c, installationID, min)
+}
+
+// allowAction spends one of the caller's website admin actions (20 a minute).
+func (b *serverPanelBackend) allowAction(discordUserID string) bool {
+	limiter := b.a.saasAdminActionLimiter
+	if limiter == nil {
+		limiter = b.ownActionLimiter
+	}
+	return limiter.Allow(discordUserID)
+}
+
+func (b *serverPanelBackend) PanelSettings(ctx context.Context, c discord.PanelCaller, installationID int64) ([]discord.PanelSetting, error) {
+	row, err := b.capableServer(ctx, c, installationID, permissions.CapServerSettingsManage)
+	if err != nil {
+		return nil, err
+	}
+	client, err := b.client(ctx, row)
+	if err != nil {
+		return nil, err
+	}
+	items, err := client.GameSettings(ctx, row.ServiceID)
+	if err != nil {
+		slog.Warn("component=discord", "msg", "server panel game settings read failed", "err", err.Error())
+		return nil, discord.ErrPanelNitrado
+	}
+	var out []discord.PanelSetting
+	for _, spec := range nitrado.GameSettingCatalogue {
+		// The storage wipe stays on the website, behind the Owner's typed confirmation.
+		if spec.Destructive {
+			continue
+		}
+		if st, ok := findGameSetting(items, spec.ID); ok && st.Supported {
+			out = append(out, discord.PanelSetting{ID: spec.ID, Label: spec.Label, Help: spec.Help, Enabled: st.Enabled})
+		}
+	}
+	return out, nil
+}
+
+func (b *serverPanelBackend) PanelSetSetting(ctx context.Context, c discord.PanelCaller, installationID int64, id string, enabled bool) error {
+	spec, known := nitrado.GameSettingSpecByID(id)
+	if !known || spec.Destructive {
+		return discord.ErrPanelUnsupported
+	}
+	row, err := b.capableServer(ctx, c, installationID, permissions.CapServerSettingsManage)
+	if err != nil {
+		return err
+	}
+	if !b.allowAction(c.DiscordUserID) {
+		return discord.ErrPanelRateLimited
+	}
+	client, err := b.client(ctx, row)
+	if err != nil {
+		return err
+	}
+	// As on the website, the read guards the write: the write uses the category and key the read
+	// found, and nothing is written to a service whose setting could not be read.
+	items, err := client.GameSettings(ctx, row.ServiceID)
+	if err != nil {
+		return discord.ErrPanelNitrado
+	}
+	current, _ := findGameSetting(items, spec.ID)
+	if !current.Supported {
+		return discord.ErrPanelUnsupported
+	}
+	if current.Enabled == enabled {
+		return nil
+	}
+	unlock := nitrado.LockSetting(row.ServiceID, current.Key)
+	err = client.SetGameSetting(ctx, row.ServiceID, current.Category, current.Key, enabled)
+	unlock()
+	b.audit(ctx, c, row, "GAME_SETTING_SET", spec.ID, "", err == nil, map[string]any{"enabled": enabled})
+	if err != nil {
+		slog.Warn("component=discord", "msg", "server panel game setting write refused by nitrado", "setting", spec.ID, "err", err.Error())
+		return discord.ErrPanelNitrado
+	}
+	return nil
+}
+
+func (b *serverPanelBackend) PanelLog(ctx context.Context, c discord.PanelCaller, installationID int64) (discord.PanelLog, error) {
+	row, err := b.capableServer(ctx, c, installationID, permissions.CapServerLogsView)
+	if err != nil {
+		return discord.PanelLog{}, err
+	}
+	client, err := b.client(ctx, row)
+	if err != nil {
+		return discord.PanelLog{}, err
+	}
+	files, err := listServerLogs(ctx, client, row.ServiceID)
+	if err != nil {
+		slog.Warn("component=discord", "msg", "server panel log list failed", "err", err.Error())
+		return discord.PanelLog{}, discord.ErrPanelNitrado
+	}
+	for _, f := range files {
+		if serverLogKind(f.Name) != "adm" {
+			continue
+		}
+		window, err := readServerLogWindow(ctx, client, row.ServiceID, f, 0)
+		if err != nil {
+			slog.Warn("component=discord", "msg", "server panel log read failed", "err", err.Error())
+			return discord.PanelLog{}, discord.ErrPanelNitrado
+		}
+		return discord.PanelLog{Name: f.Name, Size: f.Size, Text: window.Text, Earlier: window.HasEarlier}, nil
+	}
+	return discord.PanelLog{}, discord.ErrPanelNoLog
+}
+
+func (b *serverPanelBackend) PanelSchedule(ctx context.Context, c discord.PanelCaller, installationID int64) ([]discord.PanelTask, error) {
+	row, err := b.leveledServer(ctx, c, installationID, permissions.LevelGatekeeper)
+	if err != nil {
+		return nil, err
+	}
+	client, err := b.client(ctx, row)
+	if err != nil {
+		return nil, err
+	}
+	tasks, err := client.ListScheduledTasks(ctx, row.ServiceID)
+	if err != nil {
+		slog.Warn("component=discord", "msg", "server panel schedule read failed", "err", err.Error())
+		return nil, discord.ErrPanelNitrado
+	}
+	out := make([]discord.PanelTask, 0, len(tasks))
+	for _, t := range tasks {
+		task := discord.PanelTask{Action: t.ActionMethod}
+		if at, ok := livemap.ParseTaskTime(t.NextRun); ok {
+			task.Next = &at
+		}
+		out = append(out, task)
+	}
+	return out, nil
+}
+
+func (b *serverPanelBackend) PanelSetMaintenance(ctx context.Context, c discord.PanelCaller, installationID int64, on bool) error {
+	row, err := b.capableServer(ctx, c, installationID, permissions.CapMaintenanceMode)
+	if err != nil {
+		return err
+	}
+	if b.a.ClientAdmin == nil {
+		return errors.New("client admin repository unavailable")
+	}
+	if !b.allowAction(c.DiscordUserID) {
+		return discord.ErrPanelRateLimited
+	}
+	err = b.a.ClientAdmin.SetMaintenanceMode(ctx, row.GameServerID, on)
+	b.audit(ctx, c, row, "MAINTENANCE_MODE_CHANGE", "", "", err == nil, map[string]any{"enabled": on})
+	if err != nil {
+		return err
+	}
+	b.a.maintenanceChanged(row.GameServerID)
+	return nil
+}
+
+func (b *serverPanelBackend) PanelPosted(ctx context.Context, c discord.PanelCaller, installationID int64, channelID, messageID string) (string, error) {
+	row, err := b.leveledServer(ctx, c, installationID, permissions.LevelAdministrator)
+	if err != nil {
+		return "", err
+	}
+	replaced, err := b.a.ServerPanels.RecordPost(ctx, installationID, channelID, messageID, c.DiscordUserID)
+	b.audit(ctx, c, row, "SERVER_PANEL_POSTED", channelID, "", err == nil, nil)
+	return replaced, err
+}
+
+func (b *serverPanelBackend) PanelPosts(ctx context.Context) ([]discord.PanelPost, error) {
+	if b.a.ServerPanels == nil {
+		return nil, nil
+	}
+	rows, err := b.a.ServerPanels.Posts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]discord.PanelPost, 0, len(rows))
+	for _, p := range rows {
+		out = append(out, discord.PanelPost{MessageID: p.MessageID, ChannelID: p.ChannelID, DiscordGuildID: p.DiscordGuildID, InstallationID: p.InstallationID})
+	}
+	return out, nil
+}
+
+func (b *serverPanelBackend) PanelPostGone(ctx context.Context, messageID string) error {
+	if b.a.ServerPanels == nil {
+		return nil
+	}
+	return b.a.ServerPanels.DeletePost(ctx, messageID)
 }

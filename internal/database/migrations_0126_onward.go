@@ -100,6 +100,11 @@ var migrations0126onward = []Migration{
 		Name: "0141_war_hub_factions",
 		SQL:  WarHubFactionsSQL,
 	},
+	{
+		// Shared Discord server panels to keep up to date.
+		Name: "0142_server_panel_posts",
+		SQL:  ServerPanelPostsSQL,
+	},
 }
 
 // SubscriptionPastDueSinceSQL adds subscriptions.past_due_since: set when the status becomes
@@ -354,4 +359,18 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_open_hub_war_pair ON faction_wars
  WHERE status IN ('PENDING','ACTIVE') AND hub_faction_a_id IS NOT NULL AND hub_faction_b_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_faction_wars_hub_a ON faction_wars(hub_faction_a_id) WHERE hub_faction_a_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_faction_wars_hub_b ON faction_wars(hub_faction_b_id) WHERE hub_faction_b_id IS NOT NULL;
+`
+
+// ServerPanelPostsSQL records the server control panels staff posted in a channel
+// (/server panel › Post here), so the bot keeps their status current, also after a restart. One
+// panel per installation and channel: posting again replaces the earlier one.
+const ServerPanelPostsSQL = `
+CREATE TABLE IF NOT EXISTS server_panel_posts (
+ message_id TEXT PRIMARY KEY,
+ installation_id BIGINT NOT NULL REFERENCES installations(id) ON DELETE CASCADE,
+ channel_id TEXT NOT NULL,
+ posted_by_discord_id TEXT NOT NULL,
+ posted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+ UNIQUE (installation_id, channel_id)
+);
 `

@@ -117,6 +117,8 @@ type PanelServer struct {
 	InstallationID int64
 	Name           string
 	MapName        string
+	// Maintenance is on while Champion's public feeds for the server are paused.
+	Maintenance bool
 }
 
 // PanelStatus is what Nitrado says about the server.
@@ -147,6 +149,21 @@ type ServerPanelBackend interface {
 	// limit, records and audit log as the website. Adding a name already there, or removing one
 	// that isn't, changes nothing and is not an error.
 	PanelListChange(ctx context.Context, c PanelCaller, installationID int64, list PanelList, name, reason string, add bool) error
+	// PanelSettings reads Nitrado's on/off game settings the panel may change (Administrator).
+	PanelSettings(ctx context.Context, c PanelCaller, installationID int64) ([]PanelSetting, error)
+	PanelSetSetting(ctx context.Context, c PanelCaller, installationID int64, id string, enabled bool) error
+	// PanelLog reads the end of the newest ADM log (Administrator).
+	PanelLog(ctx context.Context, c PanelCaller, installationID int64) (PanelLog, error)
+	// PanelSchedule reads the server's scheduled tasks from Nitrado (any staff level).
+	PanelSchedule(ctx context.Context, c PanelCaller, installationID int64) ([]PanelTask, error)
+	// PanelSetMaintenance switches the server's maintenance on or off (Administrator).
+	PanelSetMaintenance(ctx context.Context, c PanelCaller, installationID int64, on bool) error
+	// PanelPosted records a panel an Administrator posted in a channel; replaced is the message id
+	// of the panel it replaces in that channel, "" when none.
+	PanelPosted(ctx context.Context, c PanelCaller, installationID int64, channelID, messageID string) (replaced string, err error)
+	// PanelPosts lists every posted panel; PanelPostGone forgets one whose message is gone.
+	PanelPosts(ctx context.Context) ([]PanelPost, error)
+	PanelPostGone(ctx context.Context, messageID string) error
 }
 
 var (
@@ -157,6 +174,8 @@ var (
 	ErrPanelListUnsupported = errors.New("server panel: the server has no such list")
 	ErrPanelListFull        = errors.New("server panel: the list is full")
 	ErrPanelBadName         = errors.New("server panel: not a player name")
+	ErrPanelUnsupported     = errors.New("server panel: nitrado does not offer it")
+	ErrPanelNoLog           = errors.New("server panel: no log yet")
 )
 
 // panelPowerLock is how long the power buttons stay locked after a restart, start or stop, so two
@@ -289,7 +308,10 @@ func (h *ServerPanelHandler) show(ctx context.Context, s *discordgo.Session, i *
 	if l, ok := h.lockOf(installationID); ok {
 		lock = &l
 	}
-	send(s, i, BuildServerPanel(servers, *current, status, level, lock, h.now()))
+	// A panel posted in a channel is shared: everyone sees the same buttons, and each click is
+	// checked against the clicker's own level.
+	shared := i.Message != nil && i.Message.Flags&discordgo.MessageFlagsEphemeral == 0
+	send(s, i, buildServerPanel(servers, *current, status, level, lock, shared))
 }
 
 // HandleComponent handles every panel button, the server picker and the two confirmation forms.
@@ -355,6 +377,9 @@ func (h *ServerPanelHandler) HandleComponent(s *discordgo.Session, i *discordgo.
 		return
 	}
 	rest := strings.TrimPrefix(customID, ServerPanelPrefix)
+	if h.handleTool(ctx, s, i, caller, rest) {
+		return
+	}
 	if id, ok := strings.CutPrefix(rest, "refresh:"); ok {
 		installationID, err := strconv.ParseInt(id, 10, 64)
 		if err == nil {
@@ -458,11 +483,15 @@ func (h *ServerPanelHandler) reportError(s *discordgo.Session, i *discordgo.Inte
 	case errors.Is(err, ErrPanelServerNotFound):
 		text = panelGoneText
 	case errors.Is(err, ErrPanelForbidden):
-		text = "Your staff level doesn't allow that. The whitelist needs Gatekeeper; Restart, Start and bans need Moderator; Stop and the priority queue need Administrator. The server owner sets staff levels on the Champion website (Server Hub › Staff)."
+		text = "Your staff level doesn't allow that. The whitelist needs Gatekeeper; Restart, Start and bans need Moderator; Stop, the priority queue, game settings, logs, maintenance and posting the panel need Administrator. The server owner sets staff levels on the Champion website (Server Hub › Staff)."
 	case errors.Is(err, ErrPanelRateLimited):
 		text = "Slow down: each person can restart once every 5 minutes, start or stop once a minute, and change lists 20 times a minute."
 	case errors.Is(err, ErrPanelListUnsupported):
 		text = "This server has no such list in its Nitrado settings."
+	case errors.Is(err, ErrPanelUnsupported):
+		text = "Nitrado doesn't offer that setting on this server."
+	case errors.Is(err, ErrPanelNoLog):
+		text = "Nitrado lists no ADM log for this server yet. The server writes one while it runs."
 	case errors.Is(err, ErrPanelListFull):
 		text = "The priority queue is full. Remove someone first."
 	case errors.Is(err, ErrPanelBadName):
@@ -700,6 +729,16 @@ func levelLabel(l permissions.Level) string {
 // BuildServerPanel renders the panel: the server's status and the buttons level may use (the
 // others are shown greyed out). A figure Nitrado did not give is left out.
 func BuildServerPanel(servers []PanelServer, current PanelServer, st PanelStatus, level permissions.Level, lock *panelLock, now time.Time) *discordgo.InteractionResponseData {
+	return buildServerPanel(servers, current, st, level, lock, false)
+}
+
+// BuildSharedServerPanel is the panel as posted in a channel: no staff level or picker, every
+// button shown usable (a click is checked against the clicker's level), and no Post button.
+func BuildSharedServerPanel(current PanelServer, st PanelStatus, lock *panelLock) *discordgo.InteractionResponseData {
+	return buildServerPanel([]PanelServer{current}, current, st, permissions.LevelNone, lock, true)
+}
+
+func buildServerPanel(servers []PanelServer, current PanelServer, st PanelStatus, level permissions.Level, lock *panelLock, shared bool) *discordgo.InteractionResponseData {
 	view := panelState(st.State)
 	embed := &discordgo.MessageEmbed{
 		Author: presentation.BrandAuthor(""),
@@ -707,7 +746,13 @@ func BuildServerPanel(servers []PanelServer, current PanelServer, st PanelStatus
 		Color:  view.color,
 		Footer: presentation.Footer(current.Name, "Staff only"),
 	}
+	if shared {
+		embed.Footer = presentation.Footer(current.Name, "Staff only · updates every 2 minutes")
+	}
 	var lines []string
+	if current.Maintenance {
+		lines = append(lines, "🛠️ **Maintenance is on.** Champion's public feeds for this server are paused.")
+	}
 	if view.label == "" {
 		lines = append(lines, "Nitrado didn't answer, so the server's status is unknown. Press **Refresh** to try again.")
 	} else {
@@ -726,7 +771,9 @@ func BuildServerPanel(servers []PanelServer, current PanelServer, st PanelStatus
 	if st.NextRestart != nil {
 		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Next scheduled restart", Value: presentation.TimestampWithRelative(*st.NextRestart)})
 	}
-	embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Your staff level", Value: levelLabel(level) + " · greyed-out buttons need a higher level"})
+	if !shared {
+		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Your staff level", Value: levelLabel(level) + " · greyed-out buttons need a higher level"})
+	}
 	locked := lock != nil
 	if locked {
 		lines = append(lines, fmt.Sprintf("⏳ A %s was sent %s. The power buttons unlock %s.", lock.action, presentation.Timestamp(lock.at, 'R'), presentation.Timestamp(lock.at.Add(panelPowerLock), 'R')))
@@ -734,7 +781,7 @@ func BuildServerPanel(servers []PanelServer, current PanelServer, st PanelStatus
 	embed.Description = strings.Join(lines, "\n")
 	presentation.StampEmbed(embed, st.ReadAt)
 
-	allowed := func(c permissions.Capability) bool { return permissions.Allows(level, c) }
+	allowed := func(c permissions.Capability) bool { return shared || permissions.Allows(level, c) }
 	id := current.InstallationID
 	var power discordgo.Button
 	if view.stopped {
@@ -749,7 +796,7 @@ func BuildServerPanel(servers []PanelServer, current PanelServer, st PanelStatus
 	// "↻" is not an emoji Discord accepts, so it is part of the label.
 	refresh := discordgo.Button{Label: "↻ Refresh", Style: discordgo.SecondaryButton, CustomID: ServerPanelPrefix + "refresh:" + strconv.FormatInt(id, 10)}
 	components := []discordgo.MessageComponent{}
-	if len(servers) > 1 {
+	if len(servers) > 1 && !shared {
 		options := make([]discordgo.SelectMenuOption, 0, len(servers))
 		for idx, srv := range servers {
 			if idx == 25 {
@@ -770,6 +817,21 @@ func BuildServerPanel(servers []PanelServer, current PanelServer, st PanelStatus
 			CustomID: serverPanelListPrefix + string(list) + ":" + strconv.FormatInt(id, 10), Disabled: !allowed(panelListCapability[list])})
 	}
 	components = append(components, discordgo.ActionsRow{Components: lists})
+	idStr := strconv.FormatInt(id, 10)
+	maintenance := "Maintenance: Off"
+	if current.Maintenance {
+		maintenance = "Maintenance: On"
+	}
+	tools := []discordgo.MessageComponent{
+		discordgo.Button{Label: "Game settings", Emoji: &discordgo.ComponentEmoji{Name: "⚙️"}, Style: discordgo.SecondaryButton, CustomID: ServerPanelPrefix + "settings:" + idStr, Disabled: !allowed(permissions.CapServerSettingsManage)},
+		discordgo.Button{Label: "Logs", Emoji: &discordgo.ComponentEmoji{Name: "📜"}, Style: discordgo.SecondaryButton, CustomID: ServerPanelPrefix + "logs:" + idStr, Disabled: !allowed(permissions.CapServerLogsView)},
+		discordgo.Button{Label: "Schedule", Emoji: &discordgo.ComponentEmoji{Name: "⏰"}, Style: discordgo.SecondaryButton, CustomID: ServerPanelPrefix + "schedule:" + idStr},
+		discordgo.Button{Label: maintenance, Emoji: &discordgo.ComponentEmoji{Name: "🛠️"}, Style: discordgo.SecondaryButton, CustomID: ServerPanelPrefix + "maint:" + idStr, Disabled: !allowed(permissions.CapMaintenanceMode)},
+	}
+	if !shared {
+		tools = append(tools, discordgo.Button{Label: "Post here", Emoji: &discordgo.ComponentEmoji{Name: "📌"}, Style: discordgo.SecondaryButton, CustomID: ServerPanelPrefix + "post:" + idStr, Disabled: level < permissions.LevelAdministrator})
+	}
+	components = append(components, discordgo.ActionsRow{Components: tools})
 	return &discordgo.InteractionResponseData{
 		Embeds:          []*discordgo.MessageEmbed{embed},
 		Components:      components,

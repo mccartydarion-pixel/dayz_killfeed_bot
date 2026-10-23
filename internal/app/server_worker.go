@@ -166,7 +166,8 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 		buildFeed := discord.NewBuildFeedPublisher(a.feedSender(row.ID), a.ChannelRoutes, row.GuildID, row.ID)
 		buildFeed.SetServerName(a.serverNameFunc())
 		buildFeed.OnSeen(func() { a.buildActionsSeen.Add(1) })
-		var buildPublisher killfeed.BuildPublisher = buildFeed
+		gate := maintenanceGate{a: a, serverID: row.ID}
+		var buildPublisher killfeed.BuildPublisher = gatedBuildPublisher{gate, buildFeed}
 		if a.DB != nil && a.DB.Pool != nil {
 			// Base Raid Alarm: DMs a base owner when someone else dismantles part of
 			// their registered base. Off until the server owner turns it on.
@@ -174,7 +175,7 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 			raidAlarm.SetServerName(a.serverNameFunc())
 			raidAlarm.SetFactionSecurity(repository.NewFactionSecurityRepository(a.DB.Pool))
 			raidAlarm.SetBlackBoxURL(a.siteURL() + "/dashboard/player/security-store#black-box")
-			buildPublisher = buildPublisherFanout{buildFeed, raidAlarm, blackBox}
+			buildPublisher = buildPublisherFanout{gatedBuildPublisher{gate, buildFeed}, raidAlarm, blackBox}
 			go func() {
 				defer func() {
 					if r := recover(); r != nil {
@@ -205,7 +206,9 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 	}
 	publisher.SetCustomizer(a.embedCustomizer(), row.DisplayName)
 	publisher.SetServerNameFunc(a.serverNameFunc())
-	engine.SetKillPublisher(publisher)
+	// While the server is in maintenance its public feeds take no events (maintenance_mode.go).
+	feedGate := maintenanceGate{a: a, serverID: row.ID}
+	engine.SetKillPublisher(gatedKillPublisher{feedGate, publisher})
 
 	if a.ChannelRoutes != nil && a.Discord != nil && a.Discord.Session() != nil {
 		// HITFEED: only published when this server's installation has a HITFEED
@@ -214,7 +217,7 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 		// so a Discord/DB failure can never stall ADM parsing or kill processing.
 		hitFeed := discord.NewHitfeedPublisher(a.feedSender(row.ID), a.ChannelRoutes, row.GuildID, row.ID)
 		hitFeed.SetCustomizer(a.embedCustomizer(), a.serverNameFunc())
-		engine.SetHitPublisher(hitFeed)
+		engine.SetHitPublisher(gatedHitPublisher{feedGate, hitFeed})
 		go func() {
 			defer func() {
 				if r := recover(); r != nil {
@@ -234,7 +237,7 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 		connectionsFeed := discord.NewConnectionsPublisher(a.feedSender(row.ID), a.ChannelRoutes, row.GuildID, row.ID)
 		connectionsFeed.SetCustomizer(a.embedCustomizer(), a.serverNameFunc())
 		connectionsFeed.SetEarnings(a.sessionEarningsFunc(row))
-		engine.SetConnectionPublisher(connectionsFeed)
+		engine.SetConnectionPublisher(gatedConnectionPublisher{feedGate, connectionsFeed})
 		go func() {
 			defer func() {
 				if r := recover(); r != nil {
@@ -255,11 +258,11 @@ func (a *App) runServerWorker(workerCtx context.Context, row repository.GameServ
 		// persistence, ADM parsing or the other feeds.
 		pveFeed = discord.NewPveFeedPublisher(a.feedSender(row.ID), a.ChannelRoutes, row.GuildID, row.ID)
 		pveFeed.SetCustomizer(a.embedCustomizer(), a.serverNameFunc())
-		engine.SetPveDeathPublisher(pveFeed)
+		engine.SetPveDeathPublisher(gatedPveDeathPublisher{feedGate, pveFeed})
 	}
 
 	deathPublisher := discord.NewDeathfeedPublisher(a.Discord, setupStore, a.Config.DiscordGuildID)
-	engine.SetDeathPublisher(deathPublisher)
+	engine.SetDeathPublisher(gatedDeathPublisher{feedGate, deathPublisher})
 
 	killFeed := discord.NewRotatingFeed(a.feedSender(row.ID), setupStore, a.Config.DiscordGuildID, func(s *discord.GuildSetup) string { return s.KillfeedChannelID }, rotatingFeedInterval, rotatingFeedBatchSize)
 	killFeed.SetRouteChannelResolver(publisher.RouteChannelID)

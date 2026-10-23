@@ -4,12 +4,17 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/yourname/dayz-killfeed/internal/discord"
+	"github.com/yourname/dayz-killfeed/internal/nitrado"
 	"github.com/yourname/dayz-killfeed/internal/permissions"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
@@ -198,5 +203,148 @@ func TestServerPanelEditsPlayerLists(t *testing.T) {
 		if got[action] != n {
 			t.Errorf("audit %s: %d rows, want %d (all: %v)", action, got[action], n, got)
 		}
+	}
+}
+
+// withFakeNitradoSettings serves the connect-time services list, game settings (with their
+// writes) and scheduled tasks.
+func withFakeNitradoSettings(t *testing.T, a *App, tasksJSON string) *[]string {
+	t.Helper()
+	writes := &[]string{}
+	config := map[string]string{"disableBaseDamage": "0", "wipe_on_next_restart": "0", "enableMouseAndKeyboard": "1"}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/services":
+			_, _ = w.Write([]byte(psServiceJSON))
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/gameservers"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"gameserver": map[string]any{"settings": map[string]any{"config": config}}}})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/gameservers/settings"):
+			var body map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			config[body["key"]] = body["value"]
+			*writes = append(*writes, body["category"]+"."+body["key"]+"="+body["value"])
+			_, _ = w.Write([]byte(`{"status":"success"}`))
+		case strings.HasSuffix(r.URL.Path, "/tasks"):
+			_, _ = w.Write([]byte(tasksJSON))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	a.saasNitradoClientFactory = func(token string) *nitrado.Client { return nitrado.NewClient(srv.URL, token, nil) }
+	return writes
+}
+
+// The panel's tools: game settings (never the storage wipe), the restart schedule, maintenance
+// and posted panels, each at its staff level.
+func TestServerPanelTools(t *testing.T) {
+	w := newClientAdminWorld(t)
+	next := time.Now().Add(3 * time.Hour).UTC().Format("2006-01-02T15:04:05Z")
+	writes := withFakeNitradoSettings(t, w.a, `{"data":{"tasks":[{"id":1,"action_method":"restart","next_run":"`+next+`"}]}}`)
+	connectNitrado(t, w.a, w.f.OrgID, w.f.OwnerDiscordID)
+	w.a.ServerPanels = repository.NewServerPanelRepository(w.a.DB.Pool)
+	ctx := context.Background()
+	b := newServerPanelBackend(w.a)
+	inst := w.f.InstallationID
+
+	modRole := fmt.Sprintf("panel-tools-mod-%d", time.Now().UnixNano())
+	if _, err := w.a.DB.Pool.Exec(ctx, `INSERT INTO installation_role_permissions(installation_id,discord_role_id,permission_level) VALUES($1,$2,'MODERATOR')`, inst, modRole); err != nil {
+		t.Fatal(err)
+	}
+	mod := discord.PanelCaller{DiscordGuildID: w.f.DiscordGuildID, DiscordUserID: "panel-tools-mod", RoleIDs: []string{modRole}}
+	owner := discord.PanelCaller{DiscordGuildID: w.f.DiscordGuildID, DiscordUserID: w.f.OwnerDiscordID}
+
+	// Game settings: Administrator and up; the storage wipe is never offered or written.
+	if _, err := b.PanelSettings(ctx, mod, inst); !errors.Is(err, discord.ErrPanelForbidden) {
+		t.Fatalf("a Moderator reading game settings: %v", err)
+	}
+	settings, err := b.PanelSettings(ctx, owner, inst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, s := range settings {
+		got[s.ID] = s.Enabled
+	}
+	if len(got) != 2 || got["disable_base_damage"] || !got["mouse_and_keyboard"] {
+		t.Fatalf("settings: %+v", settings)
+	}
+	if err := b.PanelSetSetting(ctx, owner, inst, "wipe_on_next_restart", true); !errors.Is(err, discord.ErrPanelUnsupported) {
+		t.Fatalf("the storage wipe from Discord: %v", err)
+	}
+	if err := b.PanelSetSetting(ctx, owner, inst, "disable_base_damage", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.PanelSetSetting(ctx, owner, inst, "disable_base_damage", true); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(*writes, ",") != "config.disableBaseDamage=1" {
+		t.Fatalf("setting writes (a repeat writes nothing): %v", *writes)
+	}
+
+	// The restart schedule: any staff level.
+	tasks, err := b.PanelSchedule(ctx, mod, inst)
+	if err != nil || len(tasks) != 1 || tasks[0].Action != "restart" || tasks[0].Next == nil {
+		t.Fatalf("schedule: %+v %v", tasks, err)
+	}
+
+	// Maintenance: Administrator and up; the switch takes effect at once.
+	if err := b.PanelSetMaintenance(ctx, mod, inst, true); !errors.Is(err, discord.ErrPanelForbidden) {
+		t.Fatalf("a Moderator switching maintenance: %v", err)
+	}
+	if w.a.serverInMaintenance(w.serverID) {
+		t.Fatal("not in maintenance yet")
+	}
+	if err := b.PanelSetMaintenance(ctx, owner, inst, true); err != nil {
+		t.Fatal(err)
+	}
+	if !w.a.serverInMaintenance(w.serverID) {
+		t.Fatal("maintenance is on at once")
+	}
+	if servers, _ := b.PanelServers(ctx, w.f.DiscordGuildID); len(servers) != 1 || !servers[0].Maintenance {
+		t.Fatalf("the panel shows maintenance: %+v", servers)
+	}
+	if err := b.PanelSetMaintenance(ctx, owner, inst, false); err != nil || w.a.serverInMaintenance(w.serverID) {
+		t.Fatalf("maintenance off: %v", err)
+	}
+
+	// Posted panels: Administrator and up; posting again in a channel replaces the earlier one.
+	if _, err := b.PanelPosted(ctx, mod, inst, "chan-1", "msg-0"); !errors.Is(err, discord.ErrPanelForbidden) {
+		t.Fatalf("a Moderator posting the panel: %v", err)
+	}
+	if replaced, err := b.PanelPosted(ctx, owner, inst, "chan-1", "msg-1"); err != nil || replaced != "" {
+		t.Fatalf("first post: %q %v", replaced, err)
+	}
+	if replaced, err := b.PanelPosted(ctx, owner, inst, "chan-1", "msg-2"); err != nil || replaced != "msg-1" {
+		t.Fatalf("second post in the channel: %q %v", replaced, err)
+	}
+	if _, err := b.PanelPosted(ctx, owner, inst, "chan-2", "msg-3"); err != nil {
+		t.Fatal(err)
+	}
+	posts, err := b.PanelPosts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mine := map[string]string{}
+	for _, p := range posts {
+		if p.InstallationID == inst {
+			mine[p.MessageID] = p.ChannelID + "@" + p.DiscordGuildID
+		}
+	}
+	if len(mine) != 2 || mine["msg-2"] != "chan-1@"+w.f.DiscordGuildID || mine["msg-3"] != "chan-2@"+w.f.DiscordGuildID {
+		t.Fatalf("posts: %v", mine)
+	}
+	if err := b.PanelPostGone(ctx, "msg-3"); err != nil {
+		t.Fatal(err)
+	}
+	if posts, _ = b.PanelPosts(ctx); len(posts) != 1 || posts[0].MessageID != "msg-2" {
+		t.Fatalf("posts after one is gone: %+v", posts)
+	}
+
+	var audits int
+	if err := w.a.DB.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM admin_audit_log WHERE installation_id=$1 AND after_state->>'source'='discord_panel'
+AND action IN ('GAME_SETTING_SET','MAINTENANCE_MODE_CHANGE','SERVER_PANEL_POSTED') AND result='success'`, inst).Scan(&audits); err != nil || audits != 6 {
+		t.Fatalf("audit rows: %d %v", audits, err)
 	}
 }
