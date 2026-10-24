@@ -105,7 +105,7 @@ func TestTraderBuysThroughTheShop(t *testing.T) {
 
 	// The Trader role, the Owner and Administrators (a mapped staff role or Discord's Administrator)
 	// open and close it; a Moderator without the Trader role can't. Closed takes no orders.
-	if _, _, err := b.TraderSetOpen(ctx, buyer.PanelCaller, inst, false); !errors.Is(err, discord.ErrTraderForbidden) {
+	if _, _, err := b.TraderSetOpen(ctx, buyer.PanelCaller, inst, false, ""); !errors.Is(err, discord.ErrTraderForbidden) {
 		t.Fatalf("a player closed the trader: %v", err)
 	}
 	for role, level := range map[string]string{"role-admins": "ADMINISTRATOR", "role-mods": "MODERATOR"} {
@@ -115,22 +115,22 @@ func TestTraderBuysThroughTheShop(t *testing.T) {
 	}
 	w.a.Permissions = repository.NewPermissionsRepository(w.a.DB.Pool)
 	mod := discord.PanelCaller{DiscordGuildID: guild, DiscordUserID: w.players[3], RoleIDs: []string{"role-mods"}}
-	if _, _, err := b.TraderSetOpen(ctx, mod, inst, false); !errors.Is(err, discord.ErrTraderForbidden) {
+	if _, _, err := b.TraderSetOpen(ctx, mod, inst, false, ""); !errors.Is(err, discord.ErrTraderForbidden) {
 		t.Fatalf("a Moderator closed the trader: %v", err)
 	}
 	if staff, err := b.TraderStaff(ctx, guild, inst); err != nil || len(staff.RoleIDs) != 1 || staff.RoleIDs[0] != "role-admins" || staff.OwnerDiscordID != w.a1.OwnerDiscordID {
 		t.Fatalf("staff: %+v %v", staff, err)
 	}
 	withRole := discord.PanelCaller{DiscordGuildID: guild, DiscordUserID: w.players[3], RoleIDs: []string{"role-mods", "role-trader"}}
-	if _, changed, err := b.TraderSetOpen(ctx, withRole, inst, true); err != nil || changed {
+	if _, changed, err := b.TraderSetOpen(ctx, withRole, inst, true, ""); err != nil || changed {
 		t.Fatalf("the Trader role opened an open trader: %v %v", changed, err)
 	}
 	trader := discord.PanelCaller{DiscordGuildID: guild, DiscordUserID: w.players[2], RoleIDs: []string{"role-admins"}}
-	closed, changed, err := b.TraderSetOpen(ctx, trader, inst, false)
+	closed, changed, err := b.TraderSetOpen(ctx, trader, inst, false, "")
 	if err != nil || !changed || closed.Open || closed.OpenChangedByDiscordID != w.players[2] {
 		t.Fatalf("close: %+v %v %v", closed, changed, err)
 	}
-	if _, changed, err := b.TraderSetOpen(ctx, trader, inst, false); err != nil || changed {
+	if _, changed, err := b.TraderSetOpen(ctx, trader, inst, false, ""); err != nil || changed {
 		t.Fatalf("closing a closed trader changed it: %v %v", changed, err)
 	}
 	w.grant(w.a1, pid, 1000)

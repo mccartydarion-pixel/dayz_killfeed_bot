@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -29,8 +30,11 @@ const (
 	TraderPrivatePrefix = "trader:p:"
 	TraderFormPrefix    = "trader:m:"
 	traderCoordsPrefix  = "trader:coords:"
-	traderCoordsX       = "trader_x"
-	traderCoordsZ       = "trader_z"
+	// traderModalPrefix is a submitted form other than the drop point: it updates the message its
+	// button was on.
+	traderModalPrefix = "trader:f:"
+	traderCoordsX     = "trader_x"
+	traderCoordsZ     = "trader_z"
 )
 
 // The voice channel's name in each state.
@@ -69,6 +73,13 @@ type TraderHub struct {
 	VoiceNameApplied                string
 	OpenChangedAt                   *time.Time
 	OpenChangedByDiscordID          string
+	// DealsRoleID is the opt-in role pinged for new deals and sales.
+	DealsRoleID string
+	// ClosedNote is what players see while the trader is closed.
+	ClosedNote string
+	// Opening hours: open at HoursOpen and close at HoursClose (HH:MM in HoursTZ) every day; ""
+	// for none.
+	HoursOpen, HoursClose, HoursTZ string
 }
 
 // TraderCategory is a shop category with its number of items on sale.
@@ -88,11 +99,16 @@ const (
 
 // TraderProduct is a shop item as the trader shows it.
 type TraderProduct struct {
-	ID           int64
-	CategoryID   int64
-	Name         string
-	Description  string
+	ID          int64
+	CategoryID  int64
+	Name        string
+	Description string
+	// Price is what the item costs now; with a deal or sale running, ListPrice is the price
+	// before it (0 otherwise), PercentOff how much is off and OfferEnds when it ends.
 	Price        int64
+	ListPrice    int64
+	PercentOff   int
+	OfferEnds    *time.Time
 	Stock        string
 	Limit        *int
 	Featured     bool
@@ -114,6 +130,8 @@ type TraderCatalog struct {
 	OrdersWaiting int
 	// MapName is the delivery map coordinates are on; "" when staff haven't set one.
 	MapName string
+	// Offers are the deals and sales running now, soonest ending first.
+	Offers []TraderOffer
 }
 
 // TraderWallet is a player's Champion Points.
@@ -168,6 +186,8 @@ type TraderReceipt struct {
 	X, Z      *float64
 	MapName   string
 	Duplicate bool
+	// Saved is how much a deal or sale took off.
+	Saved int64
 }
 
 // TraderStaff is who runs a Trader besides the Trader role: the Discord roles the server maps to
@@ -196,9 +216,9 @@ type TraderBackend interface {
 	TraderStaff(ctx context.Context, discordGuildID string, installationID int64) (TraderStaff, error)
 	// TraderSaveHub stores what /trader setup made (Administrator; the plan must include the shop).
 	TraderSaveHub(ctx context.Context, c PanelCaller, hub TraderHub) (TraderHub, error)
-	// TraderSetOpen opens or closes the trader (the Trader role, Administrator or Owner). changed is
-	// false when it already was.
-	TraderSetOpen(ctx context.Context, c PanelCaller, installationID int64, open bool) (hub TraderHub, changed bool, err error)
+	// TraderSetOpen opens or closes the trader (the Trader role, Administrator or Owner); note is
+	// what players see while it is closed. changed is false when it already was.
+	TraderSetOpen(ctx context.Context, c PanelCaller, installationID int64, open bool, note string) (hub TraderHub, changed bool, err error)
 	TraderSetMessages(ctx context.Context, installationID int64, postMessageID, panelMessageID string) error
 	TraderVoiceApplied(ctx context.Context, installationID int64, name string) error
 	TraderCatalog(ctx context.Context, discordGuildID string, installationID int64) (TraderCatalog, error)
@@ -209,6 +229,32 @@ type TraderBackend interface {
 	TraderOrders(ctx context.Context, c TraderCaller, installationID int64) ([]TraderOrder, error)
 	// TraderBuy places an order through the shop, after checking the trader is open.
 	TraderBuy(ctx context.Context, c TraderCaller, installationID int64, req TraderBuy) (TraderReceipt, error)
+
+	// TraderAllowed is nil when the caller runs the trader (the Trader role, Administrator or
+	// Owner), ErrTraderForbidden otherwise.
+	TraderAllowed(ctx context.Context, c PanelCaller, installationID int64) error
+	// TraderDeliver marks an order delivered; TraderRefund gives the points back (a reason is
+	// required). Both are the shop's own, and ErrTraderOrderDone when the order is no longer waiting.
+	TraderDeliver(ctx context.Context, c TraderCaller, installationID, orderID int64) (TraderOrder, error)
+	TraderRefund(ctx context.Context, c TraderCaller, installationID, orderID int64, reason string) (TraderOrder, error)
+	// TraderStartOffer starts a deal or sale now; TraderEndOffer and TraderEndAllOffers stop them.
+	TraderStartOffer(ctx context.Context, c PanelCaller, installationID int64, in TraderOfferInput) (TraderOffer, error)
+	TraderEndOffer(ctx context.Context, c PanelCaller, installationID, offerID int64) (TraderOffer, error)
+	TraderEndAllOffers(ctx context.Context, c PanelCaller, installationID int64) ([]TraderOffer, error)
+	TraderOffers(ctx context.Context, discordGuildID string, installationID int64) ([]TraderOffer, error)
+	// TraderOfferPosted records an offer's post in #deals; TraderOfferPostsToEnd lists the offers
+	// that are over while their post still shows them, and TraderOfferPostEnded marks one updated.
+	TraderOfferPosted(ctx context.Context, installationID, offerID int64, channelID, messageID string) error
+	TraderOfferPostsToEnd(ctx context.Context, installationID int64) ([]TraderOffer, error)
+	TraderOfferPostEnded(ctx context.Context, installationID, offerID int64) error
+	// TraderAnnounced checks the caller may post an announcement and records it.
+	TraderAnnounced(ctx context.Context, c PanelCaller, installationID int64, title string) error
+	// TraderSetHours sets the opening hours ("" open and close for none) and opens or closes the
+	// trader to match them now; changed is whether it did.
+	TraderSetHours(ctx context.Context, c PanelCaller, installationID int64, open, close, tz string) (hub TraderHub, changed bool, err error)
+	// TraderApplyHours opens or closes the trader when an opening or closing time has passed since
+	// the last one applied.
+	TraderApplyHours(ctx context.Context, installationID int64) (hub TraderHub, changed bool, err error)
 }
 
 var (
@@ -227,6 +273,11 @@ var (
 	ErrTraderSuspended   = errors.New("trader: service paused")
 	ErrTraderNoServer    = errors.New("trader: no game server selected")
 	ErrTraderBanned      = errors.New("trader: account banned")
+	ErrTraderOrderDone   = errors.New("trader: order already handled")
+	ErrTraderOrderGone   = errors.New("trader: order not found")
+	ErrTraderOfferBad    = errors.New("trader: invalid deal or sale")
+	ErrTraderHoursBad    = errors.New("trader: invalid opening hours")
+	ErrTraderReason      = errors.New("trader: a reason is required")
 )
 
 // TraderHandler serves /trader and every trader button and form.
@@ -424,11 +475,14 @@ func (h *TraderHandler) HandleComponent(s *discordgo.Session, i *discordgo.Inter
 	var rest string
 	private := strings.HasPrefix(customID, TraderPrivatePrefix)
 	form := strings.HasPrefix(customID, TraderFormPrefix)
+	submitted := strings.HasPrefix(customID, traderModalPrefix)
 	switch {
 	case private:
 		rest = strings.TrimPrefix(customID, TraderPrivatePrefix)
 	case form:
 		rest = strings.TrimPrefix(customID, TraderFormPrefix)
+	case submitted:
+		rest = strings.TrimPrefix(customID, traderModalPrefix)
 	default:
 		rest = strings.TrimPrefix(customID, TraderPrefix+"u:")
 	}
@@ -444,6 +498,9 @@ func (h *TraderHandler) HandleComponent(s *discordgo.Session, i *discordgo.Inter
 	args := parts[2:]
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
+	if form && h.openForm(ctx, s, i, action, installationID, args, values) {
+		return
+	}
 	hub, err := h.backend.TraderHub(ctx, caller.DiscordGuildID, installationID)
 	if err != nil {
 		h.reportError(s, i, err)
@@ -452,6 +509,13 @@ func (h *TraderHandler) HandleComponent(s *discordgo.Session, i *discordgo.Inter
 	send := respondUpdate
 	if private {
 		send = respondPrivate
+	}
+	if submitted {
+		h.submitForm(ctx, s, i, caller, hub, action, args)
+		return
+	}
+	if h.staffAction(ctx, s, i, caller, hub, action, args, values, send) {
+		return
 	}
 	switch action {
 	case "browse":
@@ -481,13 +545,19 @@ func (h *TraderHandler) HandleComponent(s *discordgo.Session, i *discordgo.Inter
 		} else if len(args) == 1 {
 			categoryID, _ = strconv.ParseInt(args[0], 10, 64)
 		}
-		h.category(ctx, s, i, caller, hub, categoryID)
+		h.category(ctx, s, i, caller, hub, categoryID, send)
 	case "item":
-		if len(values) != 1 {
+		var productID int64
+		switch {
+		case len(values) == 1:
+			productID, _ = strconv.ParseInt(values[0], 10, 64)
+		case len(args) == 1:
+			productID, _ = strconv.ParseInt(args[0], 10, 64)
+		}
+		if productID <= 0 {
 			return
 		}
-		productID, _ := strconv.ParseInt(values[0], 10, 64)
-		h.item(ctx, s, i, caller, hub, productID)
+		h.item(ctx, s, i, caller, hub, productID, send)
 	case "qty", "buy":
 		if len(args) < 1 {
 			return
@@ -520,7 +590,7 @@ func (h *TraderHandler) HandleComponent(s *discordgo.Session, i *discordgo.Inter
 	case "cancel":
 		send(s, i, &discordgo.InteractionResponseData{Content: "Cancelled. No points were taken.", Embeds: []*discordgo.MessageEmbed{}, Components: []discordgo.MessageComponent{}})
 	case "open", "close":
-		h.setOpen(ctx, s, i, caller, hub, action == "open")
+		h.setOpen(ctx, s, i, caller, hub, action == "open", "")
 	case "panel":
 		h.refreshPanel(ctx, s, i, hub)
 	}
@@ -567,9 +637,9 @@ func validTraderNonce(s string) bool {
 
 func traderOrderKey(nonce string) string { return "discord-trader." + nonce }
 
-func (h *TraderHandler) category(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, caller TraderCaller, hub TraderHub, categoryID int64) {
+func (h *TraderHandler) category(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, caller TraderCaller, hub TraderHub, categoryID int64, send traderSend) {
 	if !hub.Open {
-		respondUpdate(s, i, BuildTraderClosed(hub))
+		send(s, i, BuildTraderClosed(hub))
 		return
 	}
 	wallet, err := h.backend.TraderWallet(ctx, caller, hub.InstallationID)
@@ -593,12 +663,12 @@ func (h *TraderHandler) category(ctx context.Context, s *discordgo.Session, i *d
 			name = c.Name
 		}
 	}
-	respondUpdate(s, i, BuildTraderCategory(hub, categoryID, name, products, wallet.Balance))
+	send(s, i, BuildTraderCategory(hub, categoryID, name, products, wallet.Balance))
 }
 
-func (h *TraderHandler) item(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, caller TraderCaller, hub TraderHub, productID int64) {
+func (h *TraderHandler) item(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, caller TraderCaller, hub TraderHub, productID int64, send traderSend) {
 	if !hub.Open {
-		respondUpdate(s, i, BuildTraderClosed(hub))
+		send(s, i, BuildTraderClosed(hub))
 		return
 	}
 	wallet, err := h.backend.TraderWallet(ctx, caller, hub.InstallationID)
@@ -616,7 +686,7 @@ func (h *TraderHandler) item(ctx context.Context, s *discordgo.Session, i *disco
 		h.reportError(s, i, err)
 		return
 	}
-	respondUpdate(s, i, BuildTraderItem(hub, p, wallet.Balance, cat.MapName))
+	send(s, i, BuildTraderItem(hub, p, wallet.Balance, cat.MapName))
 }
 
 func (h *TraderHandler) confirm(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, caller TraderCaller, hub TraderHub, productID int64, qty int) {
@@ -704,8 +774,8 @@ func (h *TraderHandler) place(ctx context.Context, s *discordgo.Session, i *disc
 	h.publish(context.WithoutCancel(ctx), api, hub)
 }
 
-func (h *TraderHandler) setOpen(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, caller TraderCaller, hub TraderHub, open bool) {
-	updated, changed, err := h.backend.TraderSetOpen(ctx, caller.PanelCaller, hub.InstallationID, open)
+func (h *TraderHandler) setOpen(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, caller TraderCaller, hub TraderHub, open bool, note string) {
+	updated, changed, err := h.backend.TraderSetOpen(ctx, caller.PanelCaller, hub.InstallationID, open, note)
 	if err != nil {
 		h.reportError(s, i, err)
 		return
@@ -717,7 +787,7 @@ func (h *TraderHandler) setOpen(ctx context.Context, s *discordgo.Session, i *di
 		return
 	}
 	respondUpdate(s, i, BuildTraderPanel(updated, cat, h.now()))
-	if !changed || api == nil {
+	if api == nil || !changed && (open || note == hub.ClosedNote) {
 		return
 	}
 	h.publish(context.WithoutCancel(ctx), api, updated)
@@ -770,6 +840,18 @@ func (h *TraderHandler) reportError(s *discordgo.Session, i *discordgo.Interacti
 		text = "This Discord server has no game server selected on the Champion website yet."
 	case errors.Is(err, ErrTraderBanned):
 		text = "Your Champion account can't use the shop. Contact the server's staff."
+	case errors.Is(err, ErrTraderOrderDone):
+		text = "That order was already delivered or refunded."
+	case errors.Is(err, ErrTraderOrderGone):
+		text = "That order no longer exists."
+	case errors.Is(err, ErrTraderOfferBad):
+		text = fmt.Sprintf("Enter a percentage off from 1 to %d and a length from 1 to %d hours. Nothing was changed.", TraderMaxPercentOff, TraderMaxOfferHours)
+	case errors.Is(err, ErrTraderHoursBad):
+		text = traderHoursHelp
+	case errors.Is(err, ErrTraderReason):
+		text = "Write a reason for the refund. Nothing was refunded."
+	case errors.Is(err, ErrPanelRateLimited):
+		text = "Slow down a little and try again in a minute."
 	default:
 		slog.Warn("component=discord", "msg", "trader action failed", "err", err.Error())
 	}

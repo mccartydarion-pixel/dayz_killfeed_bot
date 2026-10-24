@@ -1462,6 +1462,15 @@ components:
         isFeatured: { type: boolean }
         stockState: { type: string, enum: [UNLIMITED, IN_STOCK, LOW_STOCK, OUT_OF_STOCK] }
         purchaseLimit: { type: integer, nullable: true, description: "Units per player." }
+        sale:
+          type: object
+          nullable: true
+          description: "The deal or sale running on the item (docs/TRADER.md); checkout charges its pricePoints. null when none."
+          properties:
+            kind: { type: string, enum: [DEAL, SALE] }
+            pricePoints: { type: integer, format: int64 }
+            percentOff: { type: integer, minimum: 1, maximum: 75 }
+            endsAt: { type: string, format: date-time }
     AdminShopProduct:
       allOf:
         - $ref: "#/components/schemas/ShopProduct"
@@ -1612,6 +1621,8 @@ components:
         unitPricePoints: { type: integer, format: int64 }
         quantity: { type: integer }
         lineTotalPoints: { type: integer, format: int64 }
+        discountPercent: { type: integer, description: "The deal or sale it was bought under; 0 for none." }
+        listUnitPricePoints: { type: integer, format: int64, nullable: true, description: "The unit price before the deal or sale; null for none." }
     ShopPurchase:
       type: object
       properties:

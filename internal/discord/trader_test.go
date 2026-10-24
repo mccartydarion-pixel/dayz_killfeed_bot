@@ -77,8 +77,14 @@ func TestTraderPanelShowsStateAndAlerts(t *testing.T) {
 		!strings.Contains(text, "SVD · Sold out") || !strings.Contains(text, "Opened by <@42>") {
 		t.Fatalf("panel fields: %s", text)
 	}
-	if b := traderButtons(t, data); b["Close trader"].CustomID != "trader:u:close:7" || b["↻ Refresh"].CustomID != "trader:u:panel:7" {
+	b := traderButtons(t, data)
+	if b["Close trader"].CustomID != "trader:m:close:7" || b["↻ Refresh"].CustomID != "trader:u:panel:7" || b["Post deal"].CustomID != "trader:p:deal:7" ||
+		b["Start sale"].CustomID != "trader:p:sale:7" || b["Announce"].CustomID != "trader:m:announce:7" || b["Opening hours"].CustomID != "trader:m:hours:7" ||
+		b["End deals"].CustomID != "trader:p:offers:7" || !b["End deals"].Disabled {
 		t.Fatalf("panel buttons: %+v", b)
+	}
+	if !strings.Contains(text, "Opening hours=Not set") {
+		t.Fatalf("no opening hours: %s", text)
 	}
 	hub.Open = false
 	hub.VoiceNameApplied = TraderVoiceClosed
@@ -173,6 +179,7 @@ type traderAPIFake struct {
 	created     []discordgo.GuildChannelCreateData
 	roles       []*discordgo.Role
 	rolesMade   int
+	memberRoles []string
 	sent        map[string][]*discordgo.MessageSend
 	edited      []string
 	deleted     map[string]bool
@@ -198,6 +205,14 @@ func (f *traderAPIFake) GuildRoleCreate(_ string, data *discordgo.RoleParams) (*
 	r := &discordgo.Role{ID: f.id(), Name: data.Name}
 	f.roles = append(f.roles, r)
 	return r, nil
+}
+func (f *traderAPIFake) GuildMemberRoleAdd(_, userID, roleID string) error {
+	f.memberRoles = append(f.memberRoles, "+"+userID+"="+roleID)
+	return nil
+}
+func (f *traderAPIFake) GuildMemberRoleRemove(_, userID, roleID string) error {
+	f.memberRoles = append(f.memberRoles, "-"+userID+"="+roleID)
+	return nil
 }
 func (f *traderAPIFake) GuildChannelCreateComplex(_ string, data discordgo.GuildChannelCreateData) (*discordgo.Channel, error) {
 	if f.forbidden {
@@ -247,7 +262,7 @@ func TestTraderSetupCreatesAndReusesChannels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if api.rolesMade != 1 || len(api.created) != 6 || !made.voice || hub.TraderRoleID == "" || hub.PanelChannelID == "" || hub.OrdersChannelID == "" {
+	if api.rolesMade != 2 || len(api.created) != 6 || !made.voice || hub.TraderRoleID == "" || hub.DealsRoleID == "" || hub.PanelChannelID == "" || hub.OrdersChannelID == "" {
 		t.Fatalf("first setup: %+v %+v roles made %d", made, hub, api.rolesMade)
 	}
 	role := hub.TraderRoleID
@@ -276,7 +291,7 @@ func TestTraderSetupCreatesAndReusesChannels(t *testing.T) {
 	// private channels.
 	before := len(api.created)
 	made, err = h.ensureChannels(api, &hub, "", staff)
-	if err != nil || len(api.created) != before || made.voice || len(made.names) != 0 || api.rolesMade != 1 || hub.TraderRoleID != role {
+	if err != nil || len(api.created) != before || made.voice || len(made.names) != 0 || api.rolesMade != 2 || hub.TraderRoleID != role {
 		t.Fatalf("second setup created again: %+v %v", made, err)
 	}
 	if len(api.permSet) != 6 || api.permSet[0] != hub.PanelChannelID+"="+role || api.permSet[1] != hub.PanelChannelID+"=admins" || api.permSet[2] != hub.PanelChannelID+"=owner" {
@@ -298,7 +313,7 @@ func TestTraderSetupCreatesAndReusesChannels(t *testing.T) {
 	// role is never taken off.
 	api.permDeleted = nil
 	hub.TraderRoleID = "gone"
-	if _, err := h.ensureChannels(api, &hub, "", staff); err != nil || api.rolesMade != 2 || hub.TraderRoleID == "gone" {
+	if _, err := h.ensureChannels(api, &hub, "", staff); err != nil || api.rolesMade != 3 || hub.TraderRoleID == "gone" {
 		t.Fatalf("deleted role: %+v %v", hub, err)
 	}
 	if _, err := h.ensureChannels(api, &hub, "admins", staff); err != nil || hub.TraderRoleID != "admins" {
@@ -321,6 +336,26 @@ type traderBackendFake struct {
 	messages map[int64][2]string
 	voice    map[int64]string
 	receipt  TraderReceipt
+	// Phase 2: offers whose posts are to end, those marked ended, and opening hours to apply.
+	toEnd      []TraderOffer
+	postsEnded []int64
+	hoursHub   *TraderHub
+}
+
+func (f *traderBackendFake) TraderOfferPostsToEnd(context.Context, int64) ([]TraderOffer, error) {
+	out := f.toEnd
+	f.toEnd = nil
+	return out, nil
+}
+func (f *traderBackendFake) TraderOfferPostEnded(_ context.Context, _, id int64) error {
+	f.postsEnded = append(f.postsEnded, id)
+	return nil
+}
+func (f *traderBackendFake) TraderApplyHours(context.Context, int64) (TraderHub, bool, error) {
+	if f.hoursHub == nil {
+		return TraderHub{}, false, nil
+	}
+	return *f.hoursHub, true, nil
 }
 
 func (f *traderBackendFake) TraderHubs(context.Context) ([]TraderHub, error) { return f.hubs, nil }
@@ -394,6 +429,10 @@ func TestTraderOrderCardGoesToTheOrdersChannelOnce(t *testing.T) {
 	if e.Title != "🛒 New order #1043" || !strings.Contains(e.Fields[0].Value, `RustyAxe\_77 (<@555>)`) || e.Fields[3].Value != "Handed over in game" ||
 		cards[0].AllowedMentions == nil || len(cards[0].AllowedMentions.Parse) != 0 {
 		t.Fatalf("order card: %+v %+v", e, e.Fields)
+	}
+	card := traderButtons(t, &discordgo.InteractionResponseData{Components: cards[0].Components})
+	if card["Mark delivered"].CustomID != "trader:u:deliver:7:1043" || card["Refund"].CustomID != "trader:m:refund:7:1043" {
+		t.Fatalf("order card buttons: %+v", card)
 	}
 	backend.receipt.Duplicate = true
 	h.place(context.Background(), nil, nil, caller, hub, TraderBuy{ProductID: 9, Quantity: 1, Key: traderOrderKey(traderNonce())})

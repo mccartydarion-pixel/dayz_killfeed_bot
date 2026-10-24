@@ -64,7 +64,7 @@ Indexes: catalog `(installation_id, is_active, is_featured DESC, sort_order, id)
 1. **idempotency pre-check** - a committed purchase with this `(installation, user, key)` is returned as-is (even if the product has since sold out or been disabled);
 2. lock the **product row** (`FOR UPDATE`): every buyer of a product serializes here, so stock, price and limit are decided against locked, committed state;
 3. re-check the key under the lock (a request that waited finds the winner's purchase);
-4. validate: active (and category active), stock, purchase limit, `unit price x quantity` in overflow-safe integer math (`<= 10^15`);
+4. validate: active (and category active), stock, purchase limit, `unit price x quantity` in overflow-safe integer math (`<= 10^15`). The unit price is the product's price less the biggest deal or sale running for it (`shop_discounts`, `docs/TRADER.md`), read under the lock; the item snapshot records the deal's id and percentage and the price before it;
 5. insert the purchase (status `PENDING_FULFILLMENT`, `paid_at`) - the unique key is the backstop against a concurrent duplicate;
 6. **debit Champion Points through the economy ledger path** (`applyLedger`): type `SHOP_PURCHASE`, reference `purchase:<id>`, atomic `balance >= amount` guard, `created_by` = the buyer;
 7. decrement stock, insert the item snapshot, commit.
@@ -199,4 +199,4 @@ UI notes: show `stockState` (never an exact count) and disable Buy for `OUT_OF_S
 ## 12. Not built
 
 Cart / multi-item orders, unpaid checkout sessions (payment is immediate), automatic role delivery (in-game automatic delivery was added later and is off by default, see `docs/SHOP_DELIVERY_WORKER.md`),
-Discord Shop UI or SHOP embeds, product images, coupons/discounts, player-to-player transfers.
+product images, coupons, player-to-player transfers. (The Discord Trader, deals and sales came later: `docs/TRADER.md`.)

@@ -207,6 +207,15 @@ type shopProductDTO struct {
 	IsFeatured     bool                `json:"isFeatured"`
 	StockState     string              `json:"stockState"`
 	PurchaseLimit  *int                `json:"purchaseLimit"`
+	// Sale is the deal or sale running on the item (docs/TRADER.md): checkout charges its price.
+	Sale *shopSaleDTO `json:"sale"`
+}
+
+type shopSaleDTO struct {
+	Kind        string `json:"kind"`
+	PricePoints int64  `json:"pricePoints"`
+	PercentOff  int    `json:"percentOff"`
+	EndsAt      string `json:"endsAt"`
 }
 
 type adminShopProductDTO struct {
@@ -225,6 +234,10 @@ type shopPurchaseItemDTO struct {
 	UnitPricePoints int64  `json:"unitPricePoints"`
 	Quantity        int    `json:"quantity"`
 	LineTotalPoints int64  `json:"lineTotalPoints"`
+	// DiscountPercent is the deal or sale it was bought under (0: none); ListUnitPricePoints is the
+	// price before it.
+	DiscountPercent     int    `json:"discountPercent"`
+	ListUnitPricePoints *int64 `json:"listUnitPricePoints"`
 }
 
 type shopPurchaseDTO struct {
@@ -287,6 +300,32 @@ func productDTO(p repository.ShopProduct) shopProductDTO {
 	return d
 }
 
+// withSale adds the deal or sale running on p (one of running) to its DTO.
+func withSale(d shopProductDTO, p repository.ShopProduct, running []repository.ShopDiscount) shopProductDTO {
+	best := repository.BestDiscount(running, p.ID, p.CategoryID, time.Now())
+	if best == nil {
+		return d
+	}
+	if price := repository.DiscountedPrice(p.PricePoints, best.PercentOff); price < p.PricePoints {
+		d.Sale = &shopSaleDTO{Kind: best.Kind, PricePoints: price, PercentOff: best.PercentOff, EndsAt: best.EndsAt.UTC().Format(time.RFC3339)}
+	}
+	return d
+}
+
+// runningDiscounts is the installation's running deals and sales; none when they can't be read
+// (listing the shop never fails over them: checkout decides the price).
+func (a *App) runningDiscounts(ctx context.Context, installationID int64) []repository.ShopDiscount {
+	if a.ShopDiscounts == nil {
+		return nil
+	}
+	running, err := a.ShopDiscounts.Running(ctx, installationID)
+	if err != nil {
+		slog.Warn("component=saas_api", "msg", "shop deals unavailable", "installation_id", installationID, "err", err.Error())
+		return nil
+	}
+	return running
+}
+
 func adminProductDTO(p repository.ShopProduct) adminShopProductDTO {
 	return adminShopProductDTO{shopProductDTO: productDTO(p), IsActive: p.IsActive, StockMode: p.StockMode, StockQuantity: p.StockQuantity, SortOrder: p.SortOrder,
 		CreatedAt: p.CreatedAt.UTC().Format(time.RFC3339), UpdatedAt: p.UpdatedAt.UTC().Format(time.RFC3339)}
@@ -296,7 +335,8 @@ func purchaseDTO(p repository.ShopPurchase) shopPurchaseDTO {
 	d := shopPurchaseDTO{ID: p.ID, Status: p.Status, TotalPoints: p.TotalPoints, DeliveryType: p.DeliveryType, Items: make([]shopPurchaseItemDTO, 0, len(p.Items)),
 		CreatedAt: p.CreatedAt.UTC().Format(time.RFC3339), PaidAt: nullableTimeStr(p.PaidAt), FulfilledAt: nullableTimeStr(p.FulfilledAt), RefundedAt: nullableTimeStr(p.RefundedAt)}
 	for _, it := range p.Items {
-		d.Items = append(d.Items, shopPurchaseItemDTO{ProductID: it.ProductID, ProductName: it.ProductName, UnitPricePoints: it.UnitPricePoints, Quantity: it.Quantity, LineTotalPoints: it.LineTotalPoints})
+		d.Items = append(d.Items, shopPurchaseItemDTO{ProductID: it.ProductID, ProductName: it.ProductName, UnitPricePoints: it.UnitPricePoints, Quantity: it.Quantity, LineTotalPoints: it.LineTotalPoints,
+			DiscountPercent: it.DiscountPercent, ListUnitPricePoints: it.ListUnitPricePoints})
 	}
 	if p.Delivery != nil {
 		dd := deliveryDTO(*p.Delivery)
@@ -383,17 +423,20 @@ func (a *App) listProducts(w http.ResponseWriter, r *http.Request, admin bool) {
 		shopFailed(w, "list shop products", err)
 		return
 	}
+	running := a.runningDiscounts(ctx, er.scope.InstallationID)
 	if admin {
 		out := shopPage[adminShopProductDTO]{Currency: economy.ChampionPoints, Items: make([]adminShopProductDTO, 0, len(page.Items)), NextCursor: optStr(page.NextCursor), Limit: page.Limit}
 		for _, p := range page.Items {
-			out.Items = append(out.Items, adminProductDTO(p))
+			d := adminProductDTO(p)
+			d.shopProductDTO = withSale(d.shopProductDTO, p, running)
+			out.Items = append(out.Items, d)
 		}
 		writeSaaSJSON(w, http.StatusOK, out)
 		return
 	}
 	out := shopPage[shopProductDTO]{Currency: economy.ChampionPoints, Items: make([]shopProductDTO, 0, len(page.Items)), NextCursor: optStr(page.NextCursor), Limit: page.Limit}
 	for _, p := range page.Items {
-		out.Items = append(out.Items, productDTO(p))
+		out.Items = append(out.Items, withSale(productDTO(p), p, running))
 	}
 	writeSaaSJSON(w, http.StatusOK, out)
 }
@@ -419,17 +462,20 @@ func (a *App) getProduct(w http.ResponseWriter, r *http.Request, admin bool) {
 		shopFailed(w, "load shop product", err)
 		return
 	}
+	running := a.runningDiscounts(ctx, er.scope.InstallationID)
 	if admin {
+		d := adminProductDTO(*p)
+		d.shopProductDTO = withSale(d.shopProductDTO, *p, running)
 		writeSaaSJSON(w, http.StatusOK, struct {
 			Currency economy.Currency    `json:"currency"`
 			Product  adminShopProductDTO `json:"product"`
-		}{economy.ChampionPoints, adminProductDTO(*p)})
+		}{economy.ChampionPoints, d})
 		return
 	}
 	writeSaaSJSON(w, http.StatusOK, struct {
 		Currency economy.Currency `json:"currency"`
 		Product  shopProductDTO   `json:"product"`
-	}{economy.ChampionPoints, productDTO(*p)})
+	}{economy.ChampionPoints, withSale(productDTO(*p), *p, running)})
 }
 
 func (a *App) handleShopProduct(w http.ResponseWriter, r *http.Request) { a.getProduct(w, r, false) }

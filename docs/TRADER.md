@@ -6,9 +6,11 @@ catalog through the website shop's own purchase, so prices, stock, purchase limi
 Champion Points debit, idempotency and the delivery record are exactly the website's
 (`docs/SHOP.md`, `docs/SHOP_DELIVERY.md`).
 
-Code: `internal/discord/trader.go` (commands, buttons, forms), `trader_setup.go` (channels, role,
-shared messages, refresher), `trader_views.go` (messages), `internal/app/trader.go` (backend),
-`internal/repository/trader_repository.go`, migration `0143_trader_hubs`.
+Code: `internal/discord/trader.go` (commands, buttons, forms), `trader_setup.go` (channels, roles,
+shared messages, refresher), `trader_views.go` (messages), `trader_offers.go` and
+`trader_offer_views.go` (deals, sales, announcements, hours, order cards, deal pings),
+`internal/app/trader.go` and `trader_offers.go` (backend), `internal/repository/trader_repository.go`
+and `shop_discount_repository.go`, migrations `0143_trader_hubs` and `0144_trader_deals`.
 
 ## Setup
 
@@ -20,10 +22,11 @@ repairs, one Trader per game server:
 | `🛒 Trader` category | everyone | holds the rest |
 | `🟢 Trader: Open` / `🔴 Trader: Closed` voice channel | everyone; nobody can join | the trader's state, by name |
 | `#trader` | everyone reads; only Champion posts | the trader post: state, featured items, categories, Browse / My wallet / My orders |
-| `#deals` | everyone reads; only Champion posts | deals, sales and trader news (phase 2) |
-| `#trader-panel` | the Trader role, the Owner and Administrators | the Trader panel: Open / Close trader, Refresh, orders waiting, stock alerts |
+| `#deals` | everyone reads; only Champion posts | deals, sales and trader news |
+| `#trader-panel` | the Trader role, the Owner and Administrators | the Trader panel (below) |
 | `#trader-orders` | the Trader role, the Owner and Administrators (can talk there) | a card for every new order |
 | `@Trader` role | (created only when no role is given and none exists) | the people who run the trader |
+| `@Deals` role | players give it to themselves with **Deal pings** | pinged by every new deal and sale |
 
 "Administrators" are the Discord roles mapped to Administrator or Owner on the Champion website
 (Server Hub › Staff), plus Discord administrators, who see every channel. Setup gives the Trader
@@ -31,7 +34,7 @@ role, those roles and the organization owner access to the two private channels;
 new staff role, run `/trader setup` again. Choosing a different `role` moves the private channels
 to it (the old Trader role is taken off them unless it is also an Administrator role).
 
-Running setup again reuses every channel and the role that still exist, makes the missing ones,
+Running setup again reuses every channel and role that still exists, makes the missing ones,
 re-grants access, and refreshes the post and panel. It never changes whether the trader is open. Champion needs the
 Manage Channels and Manage Roles permissions; without them setup says so and changes nothing more.
 
@@ -45,8 +48,9 @@ Everything after Browse is private to the player (`/trader browse` opens the sam
    places one order.
 3. A drop-off item (`MANUAL_COORDINATE`) asks for X and Z on the server's delivery map. The shop
    checks the position against the map.
-4. The receipt; the Trader role and staff get a card in `#trader-orders`. The buyer's DM on delivery and the
-   Received / Issue with order question are the shop's (`docs/SHOP_ORDER_CONFIRMATION.md`).
+4. The receipt (with what a deal saved); the Trader role and staff get a card in `#trader-orders`
+   with **Mark delivered** and **Refund**. The buyer's DM on delivery and the Received / Issue with
+   order question are the shop's (`docs/SHOP_ORDER_CONFIRMATION.md`).
 
 Rules:
 
@@ -58,19 +62,74 @@ Rules:
 - Items delivered automatically at the buyer's logged position stay on the website shop: Discord
   can't check the position at checkout.
 - Orders share the website's per-person purchase rate limit.
-- The trader is marked delivered or refunded on the website (Shop › Orders) in phase 1.
+
+## Order cards
+
+**Mark delivered** is the shop's own fulfilment and **Refund** its refund (a reason is required,
+shown to staff only), exactly as on the website (Shop › Orders), which still works too. Both need
+the Trader role, Administrator or Owner, work once (a second press says it was already handled),
+and turn the card into its handled state with who did it. A refund of a Discord order isn't
+announced in the public economy feed either. The person pressing gets a Champion account on first
+use, as a buyer does, because the shop records who delivered or refunded by account. Audited as
+`TRADER_ORDER_DELIVERED` and `TRADER_ORDER_REFUNDED`.
+
+## Deals and sales
+
+A **deal** takes a percentage off one item; a **sale** takes it off one category, or off every
+item. Both run from now for a number of hours (1 to 720), at most 75% off, and are the shop's
+price everywhere: the trader, the website shop (its product list gains `sale`) and checkout. When
+several cover an item, the biggest percentage counts. The price is decided in the purchase
+transaction under the product lock, so a deal that ends while a player is on the confirm screen
+is not charged. Points taken off round down and an item always costs at least 1 point. The order
+records the deal or sale (`shop_purchase_items.discount_id`, `discount_percent`,
+`list_unit_price_points`).
+
+From the panel: **Post deal** (pick a category, then the item, then the percentage, hours and an
+optional message), **Start sale** (everything or a category), **End deals** (end one or all now).
+Each is announced in `#deals` with a button to the item or the sale, and pings `@Deals`, the only
+role the post may mention. When it ends, early or on time, the refresher marks the post ended.
+Prices show struck through in the trader post, the item lists and the item card. Audited as
+`TRADER_DEAL_START`, `TRADER_SALE_START` and `TRADER_OFFER_END`.
+
+**Deal pings** (on the trader post and every deal post) gives or takes `@Deals`. Champion needs
+Manage Roles and a role above `@Deals`, which setup creates.
+
+## Announcements
+
+**Announce** posts a title and message in `#deals` (no ping). Audited as `TRADER_ANNOUNCE`.
 
 ## Open and closed
 
 The Trader role, the Owner and Administrators press Open trader / Close trader on the panel (a
-Moderator without the Trader role can't). Setting up the trader stays Administrator or Owner. Each
+Moderator without the Trader role can't). Setting up the trader stays Administrator or Owner.
+Close trader asks for an optional message to players, shown on the trader post and to anyone who
+tries to shop while it is closed; opening clears it.
+
+**Opening hours** open the trader at one time and close it at another every day, in a time zone
+(an IANA name such as `Europe/London`, or `UTC`); closing after midnight works. Saving them opens
+or closes the trader to match at once. The refresher applies each opening and closing time once
+(`hours_applied_at`), so opening or closing by hand lasts until the next one. Leaving both times
+empty turns them off. Audited as `TRADER_HOURS`; a change the hours make has no person. Each
 change is in the admin audit log (`TRADER_OPEN`, `TRADER_CLOSE`, `TRADER_SETUP`, after-state
 `source: discord_trader`). The trader post and panel change at once. Discord lets a bot rename a
 channel only twice every 10 minutes, so the voice channel can lag; `voice_name_applied` records
 the last name it got, and the refresher (every 2 minutes, one process) retries until it matches.
 
+## Panel
+
+| Button | What it does |
+| --- | --- |
+| Open trader / Close trader | as above; closing asks for the optional message |
+| Post deal, Start sale | private screens, then a form |
+| Announce | a form; posts in `#deals` |
+| Opening hours | a form with the current hours |
+| End deals | the running deals and sales, to end one or all |
+| Refresh | redraws the panel |
+
+The panel also shows orders waiting, the status channel, the last change, the closing message,
+the opening hours, what's on sale and stock alerts.
+
 ## Later phases
 
-Phase 2: Mark delivered and Refund on the order cards, deals, sales, announcements, opening hours,
-opt-in @Deals pings. Phase 3: daily deal, VIP discounts, bundles, gifts, sales stats, player trade
-board. The plan and preview: the Trader Hub artifact.
+Phase 3: daily deal, VIP discounts, bundles, gifts, sales stats, player trade board. The plan and
+preview: the Trader Hub artifact.
