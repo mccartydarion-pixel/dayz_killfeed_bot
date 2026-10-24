@@ -9,7 +9,7 @@ Champion Points debit, idempotency and the delivery record are exactly the websi
 Code: `internal/discord/trader.go` (commands, buttons, forms), `trader_setup.go` (channels, roles,
 shared messages, refresher), `trader_views.go` (messages), `trader_offers.go` and
 `trader_offer_views.go` (deals, sales, announcements, hours, order cards, deal pings),
-`internal/app/trader.go` and `trader_offers.go` (backend), `internal/repository/trader_repository.go`
+`trader_items.go` (items), `internal/app/trader.go`, `trader_offers.go` and `trader_items.go` (backend), `internal/repository/trader_repository.go`
 and `shop_discount_repository.go`, migrations `0143_trader_hubs` and `0144_trader_deals`.
 
 ## Setup
@@ -94,6 +94,24 @@ Prices show struck through in the trader post, the item lists and the item card.
 **Deal pings** (on the trader post and every deal post) gives or takes `@Deals`. Champion needs
 Manage Roles and a role above `@Deals`, which setup creates.
 
+## Items
+
+**Items** on the panel is the shop's catalog for the Trader role, Administrators and the Owner:
+the same items, categories and validation as the website (Shop › Products), so a change shows on
+both at once and on the trader post within 2 minutes (straight away for the panel and post when
+made from Discord).
+
+- The list: pick a category, see every item including ones turned off (on/off, price, stock), pick
+  one to change, or **Add item** (name, price, stock with empty meaning unlimited, category,
+  description). A category is matched by name whatever its capitals, and made when there is none;
+  one turned off on the website is refused, not turned back on.
+- An item: **Edit** (name, price, category, limit per player, description), **Stock** (a count, or
+  empty for unlimited), **Turn off / Turn on**, **Feature** (on the trader post), **Drop-off**
+  (buyers give map coordinates; the card warns while the delivery map isn't set).
+- Adding sets the product type to ITEM and manual delivery; the website edits everything else
+  (product type, sort order, automatic delivery). Audited as `TRADER_ITEM_ADD` and
+  `TRADER_ITEM_EDIT`.
+
 ## Announcements
 
 **Announce** posts a title and message in `#deals` (no ping). Audited as `TRADER_ANNOUNCE`.
@@ -124,6 +142,7 @@ the last name it got, and the refresher (every 2 minutes, one process) retries u
 | Announce | a form; posts in `#deals` |
 | Opening hours | a form with the current hours |
 | End deals | the running deals and sales, to end one or all |
+| Items | add and change the shop's items (above) |
 | Refresh | redraws the panel |
 
 The panel also shows orders waiting, the status channel, the last change, the closing message,

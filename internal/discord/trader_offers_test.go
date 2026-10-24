@@ -230,3 +230,90 @@ func TestTraderFormsFitDiscordLimits(t *testing.T) {
 		}
 	}
 }
+
+func TestTraderItemScreens(t *testing.T) {
+	hub := TraderHub{InstallationID: 7}
+	stock := int64(3)
+	limit := 2
+	items := []TraderItem{{ID: 9, Name: "M4-A1 Kit", Price: 1800, Active: true, Stock: &stock, CategoryID: 2, CategoryName: "Weapons"},
+		{ID: 10, Name: "Olga 24", Price: 25000, Active: false}}
+	list := BuildTraderItems(hub, []TraderCategory{{ID: 2, Name: "Weapons", Count: 1}}, 2, items, "")
+	menus := traderMenus(list)
+	if len(menus) != 2 || menus[0].CustomID != "trader:u:items:7" || !menus[0].Options[1].Default || menus[1].CustomID != "trader:u:itemedit:7" ||
+		menus[1].Options[1].Description != "Off · 25,000 pts · Unlimited" || traderButtons(t, list)["Add item"].CustomID != "trader:m:additem:7" {
+		t.Fatalf("item list: %+v", menus)
+	}
+	if !strings.Contains(list.Embeds[0].Description, "🟢 **M4-A1 Kit** · 1,800 pts · 3 left") || !strings.Contains(list.Embeds[0].Description, "⚫ **Olga 24**") {
+		t.Fatalf("item list text: %s", list.Embeds[0].Description)
+	}
+	it := items[0]
+	it.Limit, it.DropOff, it.NeedsMap = &limit, true, true
+	card := BuildTraderItemManage(hub, it, "✅ Saved.")
+	b := traderButtons(t, card)
+	if b["Edit"].CustomID != "trader:m:edititem:7:9" || b["Stock"].CustomID != "trader:m:stockitem:7:9" || b["Turn off"].CustomID != "trader:u:itemactive:7:9:0" ||
+		b["Feature"].CustomID != "trader:u:itemfeat:7:9:1" || b["Drop-off: on"].CustomID != "trader:u:itemdrop:7:9:0" || b["Items"].CustomID != "trader:u:items:7:2" {
+		t.Fatalf("item card buttons: %+v", b)
+	}
+	text := card.Embeds[0].Description
+	for _, f := range card.Embeds[0].Fields {
+		text += "\n" + f.Name + "=" + f.Value
+	}
+	if !strings.Contains(text, "✅ Saved.") || !strings.Contains(text, "Limit=2 per player") || !strings.Contains(text, "Can't be bought yet") {
+		t.Fatalf("item card: %s", text)
+	}
+	if b := traderButtons(t, BuildTraderItemManage(hub, items[1], "")); b["Turn on"].CustomID != "trader:u:itemactive:7:10:1" {
+		t.Fatalf("an item that's off: %+v", b)
+	}
+	edit := BuildTraderEditItemForm(7, it)
+	if edit.CustomID != "trader:f:edititem:7:9" || edit.Components[1].(discordgo.ActionsRow).Components[0].(discordgo.TextInput).Value != "1800" ||
+		edit.Components[3].(discordgo.ActionsRow).Components[0].(discordgo.TextInput).Value != "2" {
+		t.Fatalf("edit form: %+v", edit)
+	}
+	if f := BuildTraderStockForm(7, it); f.Components[0].(discordgo.ActionsRow).Components[0].(discordgo.TextInput).Value != "3" {
+		t.Fatalf("stock form: %+v", f)
+	}
+	if f := BuildTraderStockForm(7, items[1]); f.Components[0].(discordgo.ActionsRow).Components[0].(discordgo.TextInput).Value != "" {
+		t.Fatal("unlimited stock is an empty field")
+	}
+	for _, f := range []*discordgo.InteractionResponseData{BuildTraderAddItemForm(1 << 40), BuildTraderEditItemForm(1<<40, TraderItem{ID: 1 << 40}), BuildTraderStockForm(1<<40, TraderItem{ID: 1 << 40})} {
+		if len([]rune(f.Title)) > 45 || len(f.CustomID) > 100 || len(f.Components) > 5 {
+			t.Errorf("form %q", f.Title)
+		}
+		for _, row := range f.Components {
+			if in := row.(discordgo.ActionsRow).Components[0].(discordgo.TextInput); len([]rune(in.Label)) > 45 {
+				t.Errorf("label %q", in.Label)
+			}
+		}
+	}
+	panel := traderButtons(t, BuildTraderPanel(hub, TraderCatalog{}, time.Now()))
+	if panel["Items"].CustomID != "trader:p:items:7" {
+		t.Fatalf("panel items button: %+v", panel)
+	}
+}
+
+func TestTraderItemParsing(t *testing.T) {
+	for in, want := range map[string]int64{"1500": 1500, "1,500": 1500, " 1500 pts": 1500, "2 500 points": 2500} {
+		if got, err := parseTraderPoints(in); err != nil || got != want {
+			t.Errorf("price %q: %d %v", in, got, err)
+		}
+	}
+	if _, err := parseTraderPoints("lots"); err == nil {
+		t.Fatal("words are not a price")
+	}
+	for in, want := range map[string]int64{"25": 25, "1,000": 1000, "0": 0} {
+		if got, err := parseTraderStock(in); err != nil || got == nil || *got != want {
+			t.Errorf("stock %q: %v %v", in, got, err)
+		}
+	}
+	for _, in := range []string{"", " ", "Unlimited", "∞"} {
+		if got, err := parseTraderStock(in); err != nil || got != nil {
+			t.Errorf("unlimited %q: %v %v", in, got, err)
+		}
+	}
+	if _, err := parseTraderStock("some"); err == nil {
+		t.Fatal("words are not stock")
+	}
+	if !errors.As(error(&TraderItemInvalid{Reason: "x"}), new(*TraderItemInvalid)) {
+		t.Fatal("an item refusal is matched by type")
+	}
+}

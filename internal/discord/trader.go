@@ -255,6 +255,15 @@ type TraderBackend interface {
 	// TraderApplyHours opens or closes the trader when an opening or closing time has passed since
 	// the last one applied.
 	TraderApplyHours(ctx context.Context, installationID int64) (hub TraderHub, changed bool, err error)
+
+	// Items, for the people who run the trader: every category, the items of categoryID (0: all,
+	// including ones turned off, at most 25), one item, a new item and a change to one. A refused
+	// item is a *TraderItemInvalid; one that no longer exists ErrTraderItemGone.
+	TraderItemCategories(ctx context.Context, c PanelCaller, installationID int64) ([]TraderCategory, error)
+	TraderItems(ctx context.Context, c PanelCaller, installationID, categoryID int64) ([]TraderItem, error)
+	TraderItem(ctx context.Context, c PanelCaller, installationID, productID int64) (TraderItem, error)
+	TraderAddItem(ctx context.Context, c PanelCaller, installationID int64, in TraderItemInput) (TraderItem, error)
+	TraderEditItem(ctx context.Context, c PanelCaller, installationID, productID int64, in TraderItemEdit) (TraderItem, error)
 }
 
 var (
@@ -278,6 +287,7 @@ var (
 	ErrTraderOfferBad    = errors.New("trader: invalid deal or sale")
 	ErrTraderHoursBad    = errors.New("trader: invalid opening hours")
 	ErrTraderReason      = errors.New("trader: a reason is required")
+	ErrTraderItemGone    = errors.New("trader: item not found")
 )
 
 // TraderHandler serves /trader and every trader button and form.
@@ -514,7 +524,7 @@ func (h *TraderHandler) HandleComponent(s *discordgo.Session, i *discordgo.Inter
 		h.submitForm(ctx, s, i, caller, hub, action, args)
 		return
 	}
-	if h.staffAction(ctx, s, i, caller, hub, action, args, values, send) {
+	if h.staffAction(ctx, s, i, caller, hub, action, args, values, send) || h.itemAction(ctx, s, i, caller, hub, action, args, values, send) {
 		return
 	}
 	switch action {
@@ -805,6 +815,7 @@ func (h *TraderHandler) refreshPanel(ctx context.Context, s *discordgo.Session, 
 
 func (h *TraderHandler) reportError(s *discordgo.Session, i *discordgo.InteractionCreate, err error) {
 	text := ReplyCouldNot("reach the trader")
+	var invalid *TraderItemInvalid
 	switch {
 	case errors.Is(err, ErrTraderNotSetUp):
 		text = traderNotSetUpText
@@ -850,6 +861,10 @@ func (h *TraderHandler) reportError(s *discordgo.Session, i *discordgo.Interacti
 		text = traderHoursHelp
 	case errors.Is(err, ErrTraderReason):
 		text = "Write a reason for the refund. Nothing was refunded."
+	case errors.Is(err, ErrTraderItemGone):
+		text = "That item no longer exists."
+	case errors.As(err, &invalid):
+		text = invalid.Reason + " Nothing was changed."
 	case errors.Is(err, ErrPanelRateLimited):
 		text = "Slow down a little and try again in a minute."
 	default:
