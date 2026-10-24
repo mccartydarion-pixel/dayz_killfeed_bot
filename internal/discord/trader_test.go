@@ -170,9 +170,8 @@ func TestTraderConfirmCarriesOneOrderKey(t *testing.T) {
 // traderAPIFake records what setup and the shared messages did.
 type traderAPIFake struct {
 	channels    []*discordgo.Channel
-	roles       []*discordgo.Role
 	created     []discordgo.GuildChannelCreateData
-	rolesMade   int
+	rolesMade   int // stays 0: setup creates no role
 	sent        map[string][]*discordgo.MessageSend
 	edited      []string
 	deleted     map[string]bool
@@ -191,13 +190,6 @@ func (f *traderAPIFake) id() string {
 func (f *traderAPIFake) BotID() string { return "bot" }
 func (f *traderAPIFake) GuildChannels(string) ([]*discordgo.Channel, error) {
 	return f.channels, nil
-}
-func (f *traderAPIFake) GuildRoles(string) ([]*discordgo.Role, error) { return f.roles, nil }
-func (f *traderAPIFake) GuildRoleCreate(_ string, data *discordgo.RoleParams) (*discordgo.Role, error) {
-	f.rolesMade++
-	r := &discordgo.Role{ID: f.id(), Name: data.Name}
-	f.roles = append(f.roles, r)
-	return r, nil
 }
 func (f *traderAPIFake) GuildChannelCreateComplex(_ string, data discordgo.GuildChannelCreateData) (*discordgo.Channel, error) {
 	if f.forbidden {
@@ -242,12 +234,13 @@ func TestTraderSetupCreatesAndReusesChannels(t *testing.T) {
 	api := &traderAPIFake{}
 	h := NewTraderHandler(nil)
 	hub := TraderHub{InstallationID: 7, DiscordGuildID: "g", Open: true}
-	made, err := h.ensureChannels(api, &hub, "")
+	staff := TraderStaff{RoleIDs: []string{"admins"}, OwnerDiscordID: "owner"}
+	made, err := h.ensureChannels(api, &hub, staff)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if api.rolesMade != 1 || len(api.created) != 6 || !made.voice || hub.TraderRoleID == "" || hub.PanelChannelID == "" || hub.OrdersChannelID == "" {
-		t.Fatalf("first setup: %+v %+v", made, hub)
+	if api.rolesMade != 0 || len(api.created) != 6 || !made.voice || hub.TraderRoleID != "" || hub.PanelChannelID == "" || hub.OrdersChannelID == "" {
+		t.Fatalf("first setup: %+v %+v roles made %d", made, hub, api.rolesMade)
 	}
 	byName := map[string]discordgo.GuildChannelCreateData{}
 	for _, c := range api.created {
@@ -261,30 +254,32 @@ func TestTraderSetupCreatesAndReusesChannels(t *testing.T) {
 	if public.PermissionOverwrites[0].ID != "g" || public.PermissionOverwrites[0].Allow&discordgo.PermissionViewChannel == 0 || public.PermissionOverwrites[0].Deny&discordgo.PermissionSendMessages == 0 {
 		t.Fatalf("#trader is readable and closed to posting: %+v", public.PermissionOverwrites[0])
 	}
-	panel := byName["trader-panel"]
-	if panel.PermissionOverwrites[0].Deny&discordgo.PermissionViewChannel == 0 || panel.PermissionOverwrites[1].ID != hub.TraderRoleID ||
-		panel.PermissionOverwrites[1].Allow&discordgo.PermissionViewChannel == 0 || panel.PermissionOverwrites[2].ID != "bot" {
-		t.Fatalf("#trader-panel is the Trader role's: %+v", panel.PermissionOverwrites)
+	panel := byName["trader-panel"].PermissionOverwrites
+	if panel[0].Deny&discordgo.PermissionViewChannel == 0 || panel[1].ID != "admins" || panel[1].Type != discordgo.PermissionOverwriteTypeRole ||
+		panel[1].Allow&discordgo.PermissionViewChannel == 0 || panel[2].ID != "owner" || panel[2].Type != discordgo.PermissionOverwriteTypeMember || panel[3].ID != "bot" {
+		t.Fatalf("#trader-panel is the Owner's and Administrators': %+v", panel)
 	}
 	if orders := byName["trader-orders"]; orders.PermissionOverwrites[1].Allow&discordgo.PermissionSendMessages == 0 {
-		t.Fatalf("the Trader role can talk in #trader-orders: %+v", orders.PermissionOverwrites)
+		t.Fatalf("staff can talk in #trader-orders: %+v", orders.PermissionOverwrites)
 	}
 
-	// Run again: everything exists, nothing is created.
+	// Run again: everything exists, nothing is created; staff are (re)granted the private channels.
 	before := len(api.created)
-	made, err = h.ensureChannels(api, &hub, "")
-	if err != nil || len(api.created) != before || api.rolesMade != 1 || made.voice || len(made.names) != 0 {
+	made, err = h.ensureChannels(api, &hub, staff)
+	if err != nil || len(api.created) != before || made.voice || len(made.names) != 0 {
 		t.Fatalf("second setup created again: %+v %v", made, err)
 	}
-	// A deleted channel is made again; a role given in the command is used as is.
-	api.channels = api.channels[1:]
-	made, err = h.ensureChannels(api, &hub, "chosen-role")
-	if err != nil || len(api.created) != before+1 || hub.TraderRoleID != "chosen-role" || api.rolesMade != 1 {
-		t.Fatalf("repair: %+v %+v %v", made, hub, err)
+	if len(api.permSet) != 4 || api.permSet[0] != hub.PanelChannelID+"=admins" || api.permSet[1] != hub.PanelChannelID+"=owner" {
+		t.Fatalf("staff access on existing channels: %v", api.permSet)
 	}
-	// The private channels move to the chosen role.
-	if len(api.permSet) != 2 || api.permSet[0] != hub.PanelChannelID+"=chosen-role" || len(api.permDeleted) != 2 || !strings.HasSuffix(api.permDeleted[0], "=id1") {
-		t.Fatalf("role change: set=%v deleted=%v", api.permSet, api.permDeleted)
+	// A Trader role from before is taken off the private channels; a deleted channel is made again.
+	hub.TraderRoleID = "old-trader-role"
+	api.channels = api.channels[1:]
+	if _, err := h.ensureChannels(api, &hub, staff); err != nil || len(api.created) != before+1 || hub.TraderRoleID != "" {
+		t.Fatalf("repair: %+v %v", hub, err)
+	}
+	if len(api.permDeleted) != 2 || api.permDeleted[0] != hub.PanelChannelID+"=old-trader-role" {
+		t.Fatalf("old role removal: %v", api.permDeleted)
 	}
 	if !strings.Contains(traderSetupFailedText(&discordgo.RESTError{Response: &http.Response{StatusCode: http.StatusForbidden}}), "Manage Channels") {
 		t.Fatal("a missing permission names it")

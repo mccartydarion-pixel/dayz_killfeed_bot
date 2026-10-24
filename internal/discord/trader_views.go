@@ -102,14 +102,14 @@ func BuildTraderPost(hub TraderHub, cat TraderCatalog) *discordgo.InteractionRes
 	return &discordgo.InteractionResponseData{Embeds: []*discordgo.MessageEmbed{embed}, Components: []discordgo.MessageComponent{row}, AllowedMentions: traderNoPings}
 }
 
-// BuildTraderPanel is the Trader role's panel in #trader-panel.
+// BuildTraderPanel is the staff panel in #trader-panel.
 func BuildTraderPanel(hub TraderHub, cat TraderCatalog, now time.Time) *discordgo.InteractionResponseData {
 	color := presentation.Green
 	if !hub.Open {
 		color = presentation.Red
 	}
 	embed := &discordgo.MessageEmbed{Author: presentation.BrandAuthor("Trader"), Title: "🧰 Trader panel", Color: color,
-		Footer: presentation.Footer(hub.ServerName, "Trader role, Administrators and the Owner")}
+		Footer: presentation.Footer(hub.ServerName, "Owner and Administrators")}
 	state := "🟢 Open"
 	if !hub.Open {
 		state = "🔴 Closed"
@@ -363,7 +363,7 @@ func BuildTraderReceipt(hub TraderHub, r TraderReceipt) *discordgo.InteractionRe
 	return traderPrivate(embed, row)
 }
 
-// BuildTraderOrderCard tells the Trader role about a new order.
+// BuildTraderOrderCard tells staff about a new order.
 func BuildTraderOrderCard(hub TraderHub, buyerDiscordID string, r TraderReceipt) *discordgo.MessageSend {
 	embed := &discordgo.MessageEmbed{Author: presentation.BrandAuthor("Trader"), Title: fmt.Sprintf("🛒 New order #%d", r.OrderID), Color: presentation.Amber,
 		Footer: presentation.Footer(hub.ServerName, "Mark it delivered on the Champion website: Shop › Orders")}
@@ -450,9 +450,9 @@ func BuildTraderSetupDone(hub TraderHub, made []string, isNew bool) *discordgo.I
 	}
 	lines = append(lines,
 		"• Players shop in "+traderMention(hub.TraderChannelID)+".",
-		"• The <@&"+hub.TraderRoleID+"> role opens and closes the trader in "+traderMention(hub.PanelChannelID)+" and gets new orders in "+traderMention(hub.OrdersChannelID)+".",
+		"• The Owner and Administrators open and close the trader in "+traderMention(hub.PanelChannelID)+" and get new orders in "+traderMention(hub.OrdersChannelID)+".",
 		"• Items, prices and stock are edited on the Champion website (Shop).",
-		"Give the Trader role to the people who run your trader.")
+		"Gave someone the Administrator staff level since? Run `/trader setup` again so they see the private channels.")
 	embed.Description = strings.Join(lines, "\n")
 	return &discordgo.InteractionResponseData{Embeds: []*discordgo.MessageEmbed{embed}, AllowedMentions: traderNoPings}
 }

@@ -28,7 +28,7 @@ func TestTraderBuysThroughTheShop(t *testing.T) {
 	}
 	player := w.players[0]
 	setup := discord.TraderHub{InstallationID: inst, CategoryID: "cat", VoiceChannelID: "voice", TraderChannelID: "trader", DealsChannelID: "deals",
-		PanelChannelID: "panel", OrdersChannelID: "orders", TraderRoleID: "role-trader"}
+		PanelChannelID: "panel", OrdersChannelID: "orders"}
 	if _, err := b.TraderSaveHub(ctx, discord.PanelCaller{DiscordGuildID: guild, DiscordUserID: player}, setup); !errors.Is(err, discord.ErrPanelForbidden) {
 		t.Fatalf("a player set up the trader: %v", err)
 	}
@@ -102,11 +102,25 @@ func TestTraderBuysThroughTheShop(t *testing.T) {
 		t.Fatalf("catalog: %+v %v", cat, err)
 	}
 
-	// Only the Trader role (or an Administrator) opens and closes it; closed takes no orders.
+	// Only the Owner and Administrators (a mapped staff role or Discord's Administrator) open and
+	// close it; a Moderator can't. Closed takes no orders.
 	if _, _, err := b.TraderSetOpen(ctx, buyer.PanelCaller, inst, false); !errors.Is(err, discord.ErrTraderForbidden) {
 		t.Fatalf("a player closed the trader: %v", err)
 	}
-	trader := discord.PanelCaller{DiscordGuildID: guild, DiscordUserID: w.players[2], RoleIDs: []string{"role-trader"}}
+	for role, level := range map[string]string{"role-admins": "ADMINISTRATOR", "role-mods": "MODERATOR"} {
+		if _, err := w.a.DB.Pool.Exec(ctx, `INSERT INTO installation_role_permissions(installation_id,discord_role_id,permission_level) VALUES($1,$2,$3)`, inst, role, level); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w.a.Permissions = repository.NewPermissionsRepository(w.a.DB.Pool)
+	mod := discord.PanelCaller{DiscordGuildID: guild, DiscordUserID: w.players[3], RoleIDs: []string{"role-mods"}}
+	if _, _, err := b.TraderSetOpen(ctx, mod, inst, false); !errors.Is(err, discord.ErrTraderForbidden) {
+		t.Fatalf("a Moderator closed the trader: %v", err)
+	}
+	if staff, err := b.TraderStaff(ctx, guild, inst); err != nil || len(staff.RoleIDs) != 1 || staff.RoleIDs[0] != "role-admins" || staff.OwnerDiscordID != w.a1.OwnerDiscordID {
+		t.Fatalf("staff: %+v %v", staff, err)
+	}
+	trader := discord.PanelCaller{DiscordGuildID: guild, DiscordUserID: w.players[2], RoleIDs: []string{"role-admins"}}
 	closed, changed, err := b.TraderSetOpen(ctx, trader, inst, false)
 	if err != nil || !changed || closed.Open || closed.OpenChangedByDiscordID != w.players[2] {
 		t.Fatalf("close: %+v %v %v", closed, changed, err)
