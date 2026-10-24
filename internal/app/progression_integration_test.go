@@ -101,8 +101,15 @@ func TestTerritoryCaptureIncomeAndMap(t *testing.T) {
 	if holds, _ := pw.a.Territory.Holds(ctx, pw.serverID); len(holds) != 0 {
 		t.Fatalf("one kill takes nothing: %+v", holds)
 	}
-	// A second kill by the same pair in the same hour does not count; Mate's kill does.
-	pw.killAt(pw.deelo, pw.stranger, now.Add(-49*time.Minute), 4500, 10450)
+	// A second kill by the same pair in the same clock hour does not count; Mate's kill does. The
+	// world's kill is 50 minutes ago; the second one stays in its clock hour whatever the time
+	// (at 49 minutes past, "a minute later" is the next hour).
+	seeded := now.Add(-50 * time.Minute)
+	second := seeded.Add(time.Minute)
+	if second.Truncate(time.Hour) != seeded.Truncate(time.Hour) {
+		second = seeded.Add(-time.Minute)
+	}
+	pw.killAt(pw.deelo, pw.stranger, second, 4500, 10450)
 	pw.fresh()
 	pw.a.runTerritory(ctx, pw.guildID, now)
 	if holds, _ := pw.a.Territory.Holds(ctx, pw.serverID); len(holds) != 0 {
