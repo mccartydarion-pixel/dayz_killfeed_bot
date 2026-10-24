@@ -170,6 +170,13 @@ type TraderReceipt struct {
 	Duplicate bool
 }
 
+// TraderStaff is who runs a Trader: the Discord roles the server maps to Administrator or Owner on
+// the Champion website, and the organization owner's Discord account.
+type TraderStaff struct {
+	RoleIDs        []string
+	OwnerDiscordID string
+}
+
 // TraderCaller is the member using the trader, with what the shop needs to know them by.
 type TraderCaller struct {
 	PanelCaller
@@ -185,9 +192,11 @@ type TraderBackend interface {
 	// TraderHub is installationID's Trader; ErrTraderNotSetUp when it has none.
 	TraderHub(ctx context.Context, discordGuildID string, installationID int64) (TraderHub, error)
 	TraderHubs(ctx context.Context) ([]TraderHub, error)
+	// TraderStaff is who may see and use the private trader channels.
+	TraderStaff(ctx context.Context, discordGuildID string, installationID int64) (TraderStaff, error)
 	// TraderSaveHub stores what /trader setup made (Administrator; the plan must include the shop).
 	TraderSaveHub(ctx context.Context, c PanelCaller, hub TraderHub) (TraderHub, error)
-	// TraderSetOpen opens or closes the trader (the Trader role, Administrator or Owner). changed is
+	// TraderSetOpen opens or closes the trader (Administrator or Owner). changed is
 	// false when it already was.
 	TraderSetOpen(ctx context.Context, c PanelCaller, installationID int64, open bool) (hub TraderHub, changed bool, err error)
 	TraderSetMessages(ctx context.Context, installationID int64, postMessageID, panelMessageID string) error
@@ -205,7 +214,7 @@ type TraderBackend interface {
 var (
 	ErrTraderNotSetUp    = errors.New("trader: not set up")
 	ErrTraderClosed      = errors.New("trader: closed")
-	ErrTraderForbidden   = errors.New("trader: not the trader role")
+	ErrTraderForbidden   = errors.New("trader: not an administrator")
 	ErrTraderPlan        = errors.New("trader: the plan does not include the shop")
 	ErrTraderNotLinked   = errors.New("trader: no verified gamertag link")
 	ErrTraderFunds       = errors.New("trader: not enough points")
@@ -260,9 +269,8 @@ func RegisterTraderCommands(s CommandRegistrar, guildID string) error {
 		Description: "Buy from the trader with Champion Points",
 		Options: []*discordgo.ApplicationCommandOption{
 			{Type: discordgo.ApplicationCommandOptionSubCommand, Name: "browse", Description: "Open the trader (only you see it)"},
-			{Type: discordgo.ApplicationCommandOptionSubCommand, Name: "setup", Description: "Create or repair the Trader category, channels and role (Administrator)",
+			{Type: discordgo.ApplicationCommandOptionSubCommand, Name: "setup", Description: "Create or repair the Trader category and channels (Administrator)",
 				Options: []*discordgo.ApplicationCommandOption{
-					{Type: discordgo.ApplicationCommandOptionRole, Name: "role", Description: "The Trader role (leave empty to create one)"},
 					{Type: discordgo.ApplicationCommandOptionInteger, Name: "server", Description: "Game server (when this Discord has several)", Autocomplete: true},
 				}},
 		},
@@ -292,17 +300,13 @@ func (h *TraderHandler) HandleCommand(s *discordgo.Session, i *discordgo.Interac
 	defer cancel()
 	switch sub.Name {
 	case "setup":
-		var roleID string
 		var installationID int64
 		for _, opt := range sub.Options {
-			switch opt.Name {
-			case "role":
-				roleID, _ = opt.Value.(string)
-			case "server":
+			if opt.Name == "server" {
 				installationID = opt.IntValue()
 			}
 		}
-		h.setup(ctx, s, i, caller, installationID, roleID)
+		h.setup(ctx, s, i, caller, installationID)
 	default:
 		hub, err := h.hubFor(ctx, caller.DiscordGuildID, i.ChannelID)
 		if err != nil {
@@ -670,8 +674,7 @@ func parseTraderCoordinate(s string) (float64, error) {
 	return v, nil
 }
 
-// place buys the order and, the first time it goes through, tells the Trader role in
-// #trader-orders.
+// place buys the order and, the first time it goes through, tells staff in #trader-orders.
 func (h *TraderHandler) place(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, caller TraderCaller, hub TraderHub, req TraderBuy) {
 	receipt, err := h.backend.TraderBuy(ctx, caller, hub.InstallationID, req)
 	if err != nil {
@@ -734,7 +737,7 @@ func (h *TraderHandler) reportError(s *discordgo.Session, i *discordgo.Interacti
 	case errors.Is(err, ErrTraderClosed):
 		text = "🔴 The trader is closed. Nothing was bought and no points were taken. Watch the Trader voice channel for when it opens."
 	case errors.Is(err, ErrTraderForbidden):
-		text = "Only the Trader role, Administrators and the Owner can use the trader panel."
+		text = "Only the server's Owner and Administrators can use the trader panel."
 	case errors.Is(err, ErrPanelForbidden):
 		text = traderSetupForbid
 	case errors.Is(err, ErrTraderPlan):

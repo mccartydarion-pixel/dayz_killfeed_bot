@@ -105,9 +105,9 @@ func TestLinkResolvesServerConnectedThroughDashboard(t *testing.T) {
 
 			link, err := f.service.Request(f.ctx, f.guildID, "discord-"+status, f.name)
 			if err != nil {
-				t.Fatalf("Request = %v; want a pending link for an observed player on an active %s server", err, status)
+				t.Fatalf("Request = %v; want a link for an observed player on an active %s server", err, status)
 			}
-			if link.PlayerID != f.playerID || link.Status != linking.StatusPending {
+			if link.PlayerID != f.playerID || link.Status != linking.StatusVerified {
 				t.Fatalf("link = %+v", link)
 			}
 		})
@@ -227,15 +227,15 @@ func TestLinkRequestSucceedsForSaaSOnboardedServer(t *testing.T) {
 		t.Fatalf("expected a playtime shortfall of ~2m, got %v", err)
 	}
 
-	// Six minutes of checkpointed activity: the pending link is created.
+	// Six minutes of checkpointed activity: the link is made and verified.
 	if _, err := db.Pool.Exec(ctx, `UPDATE player_server_activity SET total_observed_seconds=360, last_observed_at=$4 WHERE guild_id=$1 AND server_id=$2 AND player_id=$3`, guildID, srv.ID, playerID, now); err != nil {
 		t.Fatal(err)
 	}
 	link, err := service.Request(ctx, guildID, "discord-user", "ChampionTCP")
 	if err != nil {
-		t.Fatalf("expected a pending link after 6 observed minutes, got %v", err)
+		t.Fatalf("expected a link after 6 observed minutes, got %v", err)
 	}
-	if link.PlayerID != playerID || link.Status != linking.StatusPending {
+	if link.PlayerID != playerID || link.Status != linking.StatusVerified {
 		t.Fatalf("unexpected link %+v", link)
 	}
 

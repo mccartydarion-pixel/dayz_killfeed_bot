@@ -1,7 +1,7 @@
 # Discord Trader
 
-The Trader is the Champion Shop in Discord. Players browse and buy with Champion Points, and the
-people with the Trader role open and close it and hand orders over. It sells the website shop's
+The Trader is the Champion Shop in Discord. Players browse and buy with Champion Points; the server's
+Owner and Administrators open and close it and hand orders over. There is no separate Trader role. It sells the website shop's
 catalog through the website shop's own purchase, so prices, stock, purchase limits, the single
 Champion Points debit, idempotency and the delivery record are exactly the website's
 (`docs/SHOP.md`, `docs/SHOP_DELIVERY.md`).
@@ -12,7 +12,7 @@ shared messages, refresher), `trader_views.go` (messages), `internal/app/trader.
 
 ## Setup
 
-`/trader setup [role] [server]` (Administrator or Owner; the plan must include the shop) creates, or
+`/trader setup [server]` (Administrator or Owner; the plan must include the shop) creates, or
 repairs, one Trader per game server:
 
 | Made | Who sees it | What it is |
@@ -21,12 +21,16 @@ repairs, one Trader per game server:
 | `🟢 Trader: Open` / `🔴 Trader: Closed` voice channel | everyone; nobody can join | the trader's state, by name |
 | `#trader` | everyone reads; only Champion posts | the trader post: state, featured items, categories, Browse / My wallet / My orders |
 | `#deals` | everyone reads; only Champion posts | deals, sales and trader news (phase 2) |
-| `#trader-panel` | the Trader role | the Trader panel: Open / Close trader, Refresh, orders waiting, stock alerts |
-| `#trader-orders` | the Trader role (can talk there) | a card for every new order |
-| `@Trader` role | (created only when no role is given) | who runs the trader |
+| `#trader-panel` | the Owner and Administrators | the Trader panel: Open / Close trader, Refresh, orders waiting, stock alerts |
+| `#trader-orders` | the Owner and Administrators (can talk there) | a card for every new order |
 
-Running setup again reuses every channel and the role that still exist, makes the missing ones,
-and refreshes the post and panel. It never changes whether the trader is open. Champion needs the
+"Administrators" are the Discord roles mapped to Administrator or Owner on the Champion website
+(Server Hub › Staff), plus Discord administrators, who see every channel. Setup gives those roles
+and the organization owner access to the two private channels; after mapping a new role, run
+`/trader setup` again. A Trader role from before this change is taken off the channels.
+
+Running setup again reuses every channel that still exists, makes the missing ones, re-grants
+staff access, and refreshes the post and panel. It never changes whether the trader is open. Champion needs the
 Manage Channels and Manage Roles permissions; without them setup says so and changes nothing more.
 
 ## Buying
@@ -39,7 +43,7 @@ Everything after Browse is private to the player (`/trader browse` opens the sam
    places one order.
 3. A drop-off item (`MANUAL_COORDINATE`) asks for X and Z on the server's delivery map. The shop
    checks the position against the map.
-4. The receipt; the Trader role gets a card in `#trader-orders`. The buyer's DM on delivery and the
+4. The receipt; staff get a card in `#trader-orders`. The buyer's DM on delivery and the
    Received / Issue with order question are the shop's (`docs/SHOP_ORDER_CONFIRMATION.md`).
 
 Rules:
@@ -56,7 +60,7 @@ Rules:
 
 ## Open and closed
 
-The Trader role, Administrators and the Owner press Open trader / Close trader on the panel. Each
+The Owner and Administrators press Open trader / Close trader on the panel (a Moderator can't). Each
 change is in the admin audit log (`TRADER_OPEN`, `TRADER_CLOSE`, `TRADER_SETUP`, after-state
 `source: discord_trader`). The trader post and panel change at once. Discord lets a bot rename a
 channel only twice every 10 minutes, so the voice channel can lag; `voice_name_applied` records

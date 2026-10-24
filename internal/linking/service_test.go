@@ -26,6 +26,7 @@ type linkTestRepository struct {
 
 	verifyCalls         int
 	verifyDiscordUserID string
+	unlinked            []string
 }
 
 func (r *linkTestRepository) FindPlayers(context.Context, int64, string) ([]PlayerCandidate, error) {
@@ -39,13 +40,21 @@ func (r *linkTestRepository) GetByPlayer(context.Context, int64, int64) (*LinkRe
 }
 func (r *linkTestRepository) CreatePending(_ context.Context, link LinkRecord) error {
 	r.pending = &link
+	stored := link
+	r.byDiscord = &stored
 	return nil
 }
-func (r *linkTestRepository) Unlink(context.Context, int64, string) error { return nil }
+func (r *linkTestRepository) Unlink(_ context.Context, _ int64, discordUserID string) error {
+	r.unlinked = append(r.unlinked, discordUserID)
+	return nil
+}
 
 func (r *linkTestRepository) Verify(_ context.Context, guildID int64, discordUserID string, _ int64) error {
 	r.verifyCalls++
 	r.verifyDiscordUserID = discordUserID
+	if r.byDiscord != nil && r.byDiscord.DiscordUserID == discordUserID {
+		r.byDiscord.Status = StatusVerified
+	}
 	if r.challengeGuildID == guildID && r.challengeDiscordID == discordUserID {
 		r.challengeStatus = StatusVerified
 	}
@@ -166,14 +175,56 @@ func TestRequestRequiresFiveMinutesOfObservedPlaytime(t *testing.T) {
 	}
 }
 
-func TestRequestCreatesPendingLinkAtFiveMinutes(t *testing.T) {
-	repo := &linkTestRepository{players: []PlayerCandidate{{ID: 10, DayZID: "tcp-id", DisplayName: "TCP"}}}
-	link, err := newLinkTestService(repo, 300*time.Second).Request(context.Background(), 1, "discord", "tcp")
-	if err != nil {
-		t.Fatalf("expected eligible player to create pending link: %v", err)
+type spyNicknamer struct{ names map[string]string }
+
+func (n *spyNicknamer) SetLinkedNickname(_ context.Context, _ int64, discordUserID, gamertag string) error {
+	if n.names == nil {
+		n.names = map[string]string{}
 	}
-	if link == nil || repo.pending == nil || repo.pending.PlayerID != 10 {
-		t.Fatalf("expected pending link for player 10, got link=%+v pending=%+v", link, repo.pending)
+	n.names[discordUserID] = gamertag
+	return nil
+}
+
+// Five minutes on the server is the verification: the link is verified at once, with the role,
+// the DM and the nickname, and no reconnect challenge left open.
+func TestRequestVerifiesAtFiveMinutes(t *testing.T) {
+	repo := &linkTestRepository{players: []PlayerCandidate{{ID: 10, DayZID: "tcp-id", DisplayName: "TCP_Gamer"}}}
+	svc := newLinkTestService(repo, 300*time.Second)
+	roles, notifier, nick := &spyRoleAssigner{}, &spyNotifier{}, &spyNicknamer{}
+	svc.SetRoleAssigner(roles)
+	svc.SetNotifier(notifier)
+	svc.SetNicknamer(nick)
+	link, err := svc.Request(context.Background(), 1, "discord", "tcp_gamer")
+	if err != nil {
+		t.Fatalf("expected eligible player to be linked: %v", err)
+	}
+	if link == nil || link.Status != StatusVerified || repo.pending == nil || repo.pending.PlayerID != 10 || repo.verifyCalls != 1 {
+		t.Fatalf("expected a verified link for player 10, got link=%+v pending=%+v verify=%d", link, repo.pending, repo.verifyCalls)
+	}
+	if repo.pending.ExpiresAt.After(time.Now()) {
+		t.Fatalf("the reconnect challenge is written already expired, got %v", repo.pending.ExpiresAt)
+	}
+	if nick.names["discord"] != "TCP_Gamer" {
+		t.Fatalf("nickname: %v", nick.names)
+	}
+	if _, err := svc.Request(context.Background(), 1, "discord", "tcp_gamer"); !errors.Is(err, ErrAlreadyLinked) {
+		t.Fatalf("a second /link on a verified account: %v", err)
+	}
+}
+
+func TestUnlinkPlayer(t *testing.T) {
+	ctx := context.Background()
+	if _, err := newLinkTestService(&linkTestRepository{}, 0).UnlinkPlayer(ctx, 1, "Nobody"); !errors.Is(err, ErrPlayerNotFound) {
+		t.Fatalf("unknown player: %v", err)
+	}
+	known := []PlayerCandidate{{ID: 10, DisplayName: "TCP"}}
+	if _, err := newLinkTestService(&linkTestRepository{players: known}, 0).UnlinkPlayer(ctx, 1, "TCP"); !errors.Is(err, ErrPlayerNotLinked) {
+		t.Fatalf("unlinked player: %v", err)
+	}
+	repo := &linkTestRepository{players: known, claimed: &LinkRecord{DiscordUserID: "squatter", PlayerID: 10, Status: StatusVerified}}
+	who, err := newLinkTestService(repo, 0).UnlinkPlayer(ctx, 1, " TCP ")
+	if err != nil || who != "squatter" || len(repo.unlinked) != 1 || repo.unlinked[0] != "squatter" {
+		t.Fatalf("unlink: %q %v %v", who, err, repo.unlinked)
 	}
 }
 

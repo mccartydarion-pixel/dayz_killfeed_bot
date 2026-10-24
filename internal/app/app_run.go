@@ -134,6 +134,7 @@ func (a *App) Run() error {
 		verifiedRole := discord.NewVerifiedRoleAssigner(a.Discord, setupStore, a.discordGuildIDFor)
 		a.LinkService.SetRoleAssigner(verifiedRole)
 		a.LinkService.SetNotifier(verifiedRole)
+		a.LinkService.SetNicknamer(verifiedRole)
 		go a.singleton(ctx, "verified_role_reconciler", a.runRoleReconciler)
 	}
 	// Every command, button and form is a route on this router; each route
@@ -143,6 +144,9 @@ func (a *App) Run() error {
 	// /setup runs the same Channel System V2 layout engine as the website's
 	// one-click setup and repair - there is one channel blueprint.
 	setupHandler.SetLayout(a.DiscordSetupLayout)
+	if a.LinkService != nil {
+		setupHandler.SetPlayerUnlinker(a.LinkService)
+	}
 	welcomeHandler := discord.NewPersistentWelcomeHandler(setupStore, a.WelcomeRepository, a.Guilds)
 	if a.WelcomeRepository != nil && a.Guilds != nil && a.Config.DiscordGuildID != "" {
 		welcomeCommands := discord.NewWelcomeCommandHandler(a.WelcomeRepository, a.Guilds, setupStore)

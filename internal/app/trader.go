@@ -149,24 +149,40 @@ func (b *traderBackend) TraderSaveHub(ctx context.Context, c discord.PanelCaller
 	if err != nil {
 		return discord.TraderHub{}, err
 	}
-	b.audit(ctx, c, row, "TRADER_SETUP", map[string]any{"trader_role_id": saved.TraderRoleID, "category_id": saved.CategoryID})
+	b.audit(ctx, c, row, "TRADER_SETUP", map[string]any{"category_id": saved.CategoryID})
 	return toDiscordTraderHub(*saved, row.Name), nil
 }
 
-// isTrader: the caller has the Trader role, or is an Administrator or the Owner.
+// isTrader: the caller is the server's Owner or an Administrator.
 func (b *traderBackend) isTrader(ctx context.Context, c discord.PanelCaller, hub repository.TraderHub) (bool, error) {
-	if hub.TraderRoleID != "" {
-		for _, r := range c.RoleIDs {
-			if r == hub.TraderRoleID {
-				return true, nil
-			}
-		}
-	}
 	level, err := b.panel.PanelLevel(ctx, c, hub.InstallationID)
 	if err != nil {
 		return false, err
 	}
 	return level >= permissions.LevelAdministrator, nil
+}
+
+// TraderStaff is the Discord roles mapped to Administrator or Owner on the website, and the
+// organization owner.
+func (b *traderBackend) TraderStaff(ctx context.Context, discordGuildID string, installationID int64) (discord.TraderStaff, error) {
+	row, err := b.panel.server(ctx, discordGuildID, installationID)
+	if err != nil {
+		return discord.TraderStaff{}, err
+	}
+	staff := discord.TraderStaff{OwnerDiscordID: row.OwnerDiscordID}
+	if b.a.Permissions == nil {
+		return staff, nil
+	}
+	mapped, err := b.a.Permissions.List(ctx, installationID)
+	if err != nil {
+		return discord.TraderStaff{}, err
+	}
+	for _, m := range mapped {
+		if l, ok := permissions.ParseLevel(m.Level); ok && l >= permissions.LevelAdministrator && m.DiscordRoleID != "" && m.DiscordRoleID != discordGuildID {
+			staff.RoleIDs = append(staff.RoleIDs, m.DiscordRoleID)
+		}
+	}
+	return staff, nil
 }
 
 func (b *traderBackend) TraderSetOpen(ctx context.Context, c discord.PanelCaller, installationID int64, open bool) (discord.TraderHub, bool, error) {

@@ -33,18 +33,28 @@ Each server's observed playtime is judged **on its own**, and the best single se
 | Database or activity read failed | `ErrActivityUnavailable` / `ErrLinkCheckUnavailable` | LINK CHECK UNAVAILABLE |
 | Discord account already verified | `ErrAlreadyLinked` | ACCOUNT ALREADY LINKED |
 | PSN account claimed by someone else | `ErrPlayerClaimed` | ALREADY LINKED |
-| 5 minutes or more | none | PENDING VERIFICATION |
+| 5 minutes or more | none | LINKED (verified at once) |
 
 **LINK CHECK UNAVAILABLE now means only a real backend failure.** A missing server is a configuration state.
 
-### Verification is unchanged
+### Verification: the playtime check is the verification
 
-A pending link still completes only in one of two ways:
+A request that passes the checks above is VERIFIED at once: the Verified role is assigned and the
+player gets the "Verification complete" DM. There is no disconnect-then-reconnect challenge any
+more (the owner's decision: players kept failing it). The challenge row is still written, already
+expired, so a later reconnect can never complete it a second time; `/admin verify-link` only
+matters for links left pending from before this change.
 
-* the **disconnect-then-reconnect challenge**, observed in ADM within the expiry window;
-* an admin's **`/admin verify-link`** manual approval.
+What this means: a gamertag with 5 minutes on the server can be claimed by whoever links it first.
+A VERIFIED claim still blocks everyone else (`ErrPlayerClaimed`); staff undo a wrong claim with
+`/setup unlink-player player:<gamertag>` (or the player with `/unlink`), after which the owner can
+link it.
 
-The ownership rules are also unchanged: `UNIQUE(guild_id, player_id)` and `UNIQUE(guild_id, discord_user_id)`.
+A verified link also renames the member to their gamertag (cut to Discord's 32 characters).
+Discord refuses to rename the server owner or a member whose top role is above Champion's, and
+Champion needs Manage Nicknames; a refused rename is logged and the link stands.
+
+The ownership rules are unchanged: `UNIQUE(guild_id, player_id)` and `UNIQUE(guild_id, discord_user_id)`.
 
 ### Verified role delivery (migration 0056)
 
@@ -52,7 +62,7 @@ A VERIFIED link and an assigned Discord role are separate facts. Before this cha
 
 The migration adds nullable columns only (`role_sync_status`, `role_sync_attempts`, `role_sync_last_attempt_at`, `role_synced_at`, `role_sync_error`). No row is rewritten.
 
-* The statement that makes a link VERIFIED (challenge or admin approval) also sets `role_sync_status = PENDING`.
+* The statement that makes a link VERIFIED (the link request itself, or an admin approval of a link left pending) also sets `role_sync_status = PENDING`.
 * The link becomes `ASSIGNED` only after Discord confirms the role add.
 * A failure sets `FAILED` and counts the attempt. Unknown Member (10007) sets `MEMBER_GONE`, which is terminal.
 * With no Verified role configured, the link stays `PENDING` and no attempt is used up.

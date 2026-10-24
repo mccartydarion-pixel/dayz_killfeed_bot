@@ -178,7 +178,7 @@ func (h *PublicPanelHandler) handleLink(s *discordgo.Session, i *discordgo.Inter
 		respondEphemeral(s, i, linkErrorMessage(err))
 		return
 	}
-	respondEphemeral(s, i, fmt.Sprintf("🟡 **Pending verification**\n\nPlayStation\n%s\n\nTo prove you're this account, **disconnect from the server and reconnect** before your request expires <t:%d:R>. Champion will verify it automatically within seconds of you reconnecting.\n\nCan't reconnect in time? Ask an admin to run `/admin verify-link`.", link.RequestedName, link.ExpiresAt.Unix()))
+	respondEphemeral(s, i, linkedMessage(link))
 }
 
 func (h *PublicPanelHandler) handleMyStats(s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -232,6 +232,12 @@ func respondModal(s *discordgo.Session, i *discordgo.InteractionCreate, customID
 			discordgo.TextInput{CustomID: inputID, Label: label, Style: discordgo.TextInputShort, Placeholder: placeholder, Required: true, MaxLength: 64},
 		}}},
 	})
+}
+
+// linkedMessage answers a /link or Link button that went through: the playtime check is the
+// verification, so the account is linked at once.
+func linkedMessage(link *linking.LinkRecord) string {
+	return fmt.Sprintf("✅ **Linked**\n\nPlayStation\n%s\n\nYour Discord account is now linked to this player. Wrong account? Use `/unlink`.", presentation.EscapeMarkdown(link.RequestedName))
 }
 
 func linkErrorMessage(err error) string {

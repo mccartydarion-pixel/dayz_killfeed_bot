@@ -32,47 +32,43 @@ func secondPlayer(t *testing.T, ctx context.Context, f linkBindingFixture, name 
 	return id
 }
 
-// Unlink then /link another player: the old player's challenge is closed, so reconnecting on
-// one's own account can never verify the link as somebody else's.
-func TestRelinkCannotBeVerifiedByTheOldPlayersChallenge(t *testing.T) {
+// Unlink then /link another player: the link moves to the new player, and the old player's
+// disconnect and reconnect change nothing (there is no reconnect step any more).
+func TestRelinkPointsAtTheNewPlayer(t *testing.T) {
 	ctx := context.Background()
 	f := newLinkBindingFixture(t, "ONLINE", 6*time.Minute)
-	victimName := fmt.Sprintf("Victim%d", time.Now().UnixNano()%100000)
-	victim := secondPlayer(t, ctx, f, victimName)
+	otherName := fmt.Sprintf("Other%d", time.Now().UnixNano()%100000)
+	other := secondPlayer(t, ctx, f, otherName)
 	db := saasIntegrationDB(t)
 	links := NewLinkRepository(db.Pool)
 	svc := linking.NewService(links, NewActivityRepository(db.Pool), NewServerRepository(db.Pool), links)
-	attacker := fmt.Sprintf("discord-att-%d", time.Now().UnixNano())
+	user := fmt.Sprintf("discord-relink-%d", time.Now().UnixNano())
 
-	if _, err := svc.Request(ctx, f.GuildRowID, attacker, f.PlayerName); err != nil {
+	if link, err := svc.Request(ctx, f.GuildRowID, user, f.PlayerName); err != nil || link.Status != linking.StatusVerified {
+		t.Fatalf("first link: %+v %v", link, err)
+	}
+	if err := svc.Unlink(ctx, f.GuildRowID, user); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.Unlink(ctx, f.GuildRowID, attacker); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := svc.Request(ctx, f.GuildRowID, attacker, victimName); err != nil {
-		t.Fatal(err)
+	if link, err := svc.Request(ctx, f.GuildRowID, user, otherName); err != nil || link.Status != linking.StatusVerified || link.PlayerID != other {
+		t.Fatalf("relink: %+v %v", link, err)
 	}
 	now := time.Now()
-	// The attacker's own account disconnects and reconnects.
 	if err := svc.ObserveDisconnect(ctx, f.GuildRowID, f.PlayerID, now.Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.ObserveConnect(ctx, f.GuildRowID, f.PlayerID, now.Add(2*time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	link, err := svc.Status(ctx, f.GuildRowID, attacker)
-	if err != nil || link == nil {
-		t.Fatal(err)
-	}
-	if link.Status == linking.StatusVerified {
-		t.Fatalf("the link to %d was verified by player %d's reconnect", victim, f.PlayerID)
+	link, err := svc.Status(ctx, f.GuildRowID, user)
+	if err != nil || link == nil || link.PlayerID != other || link.Status != linking.StatusVerified {
+		t.Fatalf("after the old player reconnected: %+v %v", link, err)
 	}
 }
 
-// A claim another Discord user abandoned (still pending, or unlinked) does not block the
-// player's owner from requesting the link; a VERIFIED one still does.
-func TestStaleClaimDoesNotBlockTheOwner(t *testing.T) {
+// A claim another Discord user gave up (unlinked) does not block the player's owner; a
+// VERIFIED one does.
+func TestUnlinkedClaimDoesNotBlockTheOwner(t *testing.T) {
 	ctx := context.Background()
 	f := newLinkBindingFixture(t, "ONLINE", 6*time.Minute)
 	db := saasIntegrationDB(t)
@@ -84,24 +80,19 @@ func TestStaleClaimDoesNotBlockTheOwner(t *testing.T) {
 	if _, err := svc.Request(ctx, f.GuildRowID, squatter, f.PlayerName); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.Request(ctx, f.GuildRowID, owner, f.PlayerName); err != nil {
-		t.Fatalf("a pending claim by someone else must not block the owner: %v", err)
+	if _, err := svc.Request(ctx, f.GuildRowID, owner, f.PlayerName); err == nil {
+		t.Fatal("a VERIFIED link blocks everyone else")
 	}
-	// The owner completes the challenge; it is the owner who is verified.
-	now := time.Now()
-	if err := svc.ObserveDisconnect(ctx, f.GuildRowID, f.PlayerID, now.Add(time.Second)); err != nil {
+	if err := svc.Unlink(ctx, f.GuildRowID, squatter); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.ObserveConnect(ctx, f.GuildRowID, f.PlayerID, now.Add(2*time.Second)); err != nil {
-		t.Fatal(err)
-	}
-	if link, _ := svc.Status(ctx, f.GuildRowID, owner); link == nil || link.Status != linking.StatusVerified {
-		t.Fatalf("the owner's link should be verified, got %+v", link)
+	if link, err := svc.Request(ctx, f.GuildRowID, owner, f.PlayerName); err != nil || link.Status != linking.StatusVerified {
+		t.Fatalf("an unlinked claim must not block the owner: %+v %v", link, err)
 	}
 	if link, _ := svc.Status(ctx, f.GuildRowID, squatter); link != nil && link.Status == linking.StatusVerified {
-		t.Fatal("the squatter must not be verified")
+		t.Fatal("the squatter is no longer linked")
 	}
 	if _, err := svc.Request(ctx, f.GuildRowID, squatter, f.PlayerName); err == nil {
-		t.Fatal("a VERIFIED link still blocks everyone else")
+		t.Fatal("the owner's VERIFIED link blocks everyone else")
 	}
 }

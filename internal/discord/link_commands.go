@@ -68,7 +68,7 @@ func (h *LinkCommandHandler) Handle(s *discordgo.Session, i *discordgo.Interacti
 			respondEphemeral(s, i, linkErrorMessage(err))
 			return
 		}
-		respondEphemeral(s, i, fmt.Sprintf("🟡 **Pending verification**\n\nPlayStation\n%s\n\nTo prove you're this account, **disconnect from the server and reconnect** before your request expires <t:%d:R>. Champion will verify it automatically within seconds of you reconnecting.\n\nCan't reconnect in time? Ask an admin to run `/admin verify-link`.", link.RequestedName, link.ExpiresAt.Unix()))
+		respondEphemeral(s, i, linkedMessage(link))
 	case "link-status":
 		link, err := h.serviceStatus(context.Background(), guildID, i.Member.User.ID)
 		if err != nil || link == nil {

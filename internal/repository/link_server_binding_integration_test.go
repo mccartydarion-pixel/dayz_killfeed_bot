@@ -111,17 +111,37 @@ func TestConnectedServerIDExcludesDeactivatedAndOtherGuilds(t *testing.T) {
 func TestPSNLinkRequestEndToEnd(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("five minutes observed creates pending link", func(t *testing.T) {
+	t.Run("five minutes observed links and verifies at once", func(t *testing.T) {
 		f := newLinkBindingFixture(t, "ONLINE", 6*time.Minute)
 		db := saasIntegrationDB(t)
 		links := NewLinkRepository(db.Pool)
+		roles := &recordingRoles{}
 		svc := linking.NewService(links, NewActivityRepository(db.Pool), NewServerRepository(db.Pool), links)
-		link, err := svc.Request(ctx, f.GuildRowID, fmt.Sprintf("discord-%d", time.Now().UnixNano()), strings.ToLower(f.PlayerName))
+		svc.SetRoleAssigner(roles)
+		discordID := fmt.Sprintf("discord-%d", time.Now().UnixNano())
+		link, err := svc.Request(ctx, f.GuildRowID, discordID, strings.ToLower(f.PlayerName))
 		if err != nil {
-			t.Fatalf("expected a pending link, got %v", err)
+			t.Fatalf("expected a link, got %v", err)
 		}
-		if link.Status != linking.StatusPending || link.PlayerID != f.PlayerID {
+		if link.Status != linking.StatusVerified || link.PlayerID != f.PlayerID {
 			t.Fatalf("unexpected link %+v", link)
+		}
+		if stored, err := svc.Status(ctx, f.GuildRowID, discordID); err != nil || stored == nil || stored.Status != linking.StatusVerified {
+			t.Fatalf("stored link: %+v %v", stored, err)
+		}
+		if len(roles.assigned) != 1 || roles.assigned[0] != discordID {
+			t.Fatalf("expected the verified role assigned once to %s, got %v", discordID, roles.assigned)
+		}
+		// A later disconnect and reconnect completes nothing a second time.
+		now := time.Now()
+		if err := svc.ObserveDisconnect(ctx, f.GuildRowID, f.PlayerID, now.Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		if err := svc.ObserveConnect(ctx, f.GuildRowID, f.PlayerID, now.Add(2*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		if len(roles.assigned) != 1 {
+			t.Fatalf("a reconnect assigned the role again: %v", roles.assigned)
 		}
 	})
 
@@ -133,33 +153,6 @@ func TestPSNLinkRequestEndToEnd(t *testing.T) {
 		_, err := svc.Request(ctx, f.GuildRowID, fmt.Sprintf("discord-%d", time.Now().UnixNano()), f.PlayerName)
 		if !errors.Is(err, linking.ErrPlaytimeRequired) {
 			t.Fatalf("expected ErrPlaytimeRequired, got %v", err)
-		}
-	})
-
-	t.Run("challenge completes, verifies and assigns the role", func(t *testing.T) {
-		f := newLinkBindingFixture(t, "ONLINE", 6*time.Minute)
-		db := saasIntegrationDB(t)
-		links := NewLinkRepository(db.Pool)
-		roles := &recordingRoles{}
-		svc := linking.NewService(links, NewActivityRepository(db.Pool), NewServerRepository(db.Pool), links)
-		svc.SetRoleAssigner(roles)
-		discordID := fmt.Sprintf("discord-%d", time.Now().UnixNano())
-		if _, err := svc.Request(ctx, f.GuildRowID, discordID, f.PlayerName); err != nil {
-			t.Fatal(err)
-		}
-		now := time.Now()
-		if err := svc.ObserveDisconnect(ctx, f.GuildRowID, f.PlayerID, now.Add(time.Second)); err != nil {
-			t.Fatal(err)
-		}
-		if err := svc.ObserveConnect(ctx, f.GuildRowID, f.PlayerID, now.Add(2*time.Second)); err != nil {
-			t.Fatal(err)
-		}
-		link, err := svc.Status(ctx, f.GuildRowID, discordID)
-		if err != nil || link == nil || link.Status != linking.StatusVerified {
-			t.Fatalf("expected VERIFIED link, got %+v %v", link, err)
-		}
-		if len(roles.assigned) != 1 || roles.assigned[0] != discordID {
-			t.Fatalf("expected the verified role assigned once to %s, got %v", discordID, roles.assigned)
 		}
 	})
 
@@ -213,18 +206,11 @@ func roleSyncStatus(t *testing.T, ctx context.Context, f linkBindingFixture, dis
 	return *status, attempts
 }
 
-// verifyViaChallenge runs Request + disconnect/reconnect for a fresh Discord user.
+// verifyViaChallenge links f's player to a fresh Discord user (verified at once).
 func verifyViaChallenge(t *testing.T, ctx context.Context, svc *linking.LinkVerificationService, f linkBindingFixture) string {
 	t.Helper()
 	discordID := fmt.Sprintf("discord-%d", time.Now().UnixNano())
 	if _, err := svc.Request(ctx, f.GuildRowID, discordID, f.PlayerName); err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now()
-	if err := svc.ObserveDisconnect(ctx, f.GuildRowID, f.PlayerID, now.Add(time.Second)); err != nil {
-		t.Fatal(err)
-	}
-	if err := svc.ObserveConnect(ctx, f.GuildRowID, f.PlayerID, now.Add(2*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	return discordID
@@ -400,49 +386,32 @@ func TestLinkLifecycleAcrossRestartAndAdminFallback(t *testing.T) {
 		return svc
 	}
 
-	t.Run("pending challenge survives an application restart", func(t *testing.T) {
+	t.Run("a link made before a restart stays verified with its role", func(t *testing.T) {
 		f := newLinkBindingFixture(t, "ONLINE", 6*time.Minute)
 		discordID := fmt.Sprintf("discord-%d", time.Now().UnixNano())
-		first := newService(t, &scriptedRoles{})
+		roles := &scriptedRoles{}
+		first := newService(t, roles)
 		if _, err := first.Request(ctx, f.GuildRowID, discordID, f.PlayerName); err != nil {
 			t.Fatal(err)
 		}
-		now := time.Now()
-		if err := first.ObserveDisconnect(ctx, f.GuildRowID, f.PlayerID, now.Add(time.Second)); err != nil {
-			t.Fatal(err)
-		}
-		// Process restarts between the disconnect and the reconnect.
-		roles := &scriptedRoles{}
-		second := newService(t, roles)
-		if err := second.ObserveConnect(ctx, f.GuildRowID, f.PlayerID, now.Add(2*time.Second)); err != nil {
-			t.Fatal(err)
-		}
+		second := newService(t, &scriptedRoles{})
 		link, err := second.Status(ctx, f.GuildRowID, discordID)
 		if err != nil || link == nil || link.Status != linking.StatusVerified || roles.attempts[discordID] != 1 {
-			t.Fatalf("expected VERIFIED with the role assigned after restart, got %+v err=%v attempts=%v", link, err, roles.attempts)
+			t.Fatalf("expected VERIFIED with the role assigned, got %+v err=%v attempts=%v", link, err, roles.attempts)
 		}
 		if st, _ := roleSyncStatus(t, ctx, f, discordID); st != linking.RoleSyncAssigned {
 			t.Fatalf("expected ASSIGNED, got %q", st)
 		}
 	})
 
-	t.Run("admin manual fallback verifies and assigns the role", func(t *testing.T) {
+	t.Run("admin approval has nothing pending once links verify at once", func(t *testing.T) {
 		f := newLinkBindingFixture(t, "ONLINE", 6*time.Minute)
-		discordID := fmt.Sprintf("discord-%d", time.Now().UnixNano())
-		roles := &scriptedRoles{}
-		svc := newService(t, roles)
-		if _, err := svc.Request(ctx, f.GuildRowID, discordID, f.PlayerName); err != nil {
+		svc := newService(t, &scriptedRoles{})
+		if _, err := svc.Request(ctx, f.GuildRowID, fmt.Sprintf("discord-%d", time.Now().UnixNano()), f.PlayerName); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := svc.ApproveManually(ctx, f.GuildRowID, f.PlayerName); err != nil {
-			t.Fatalf("admin approval failed: %v", err)
-		}
-		link, _ := svc.Status(ctx, f.GuildRowID, discordID)
-		if link == nil || link.Status != linking.StatusVerified || roles.attempts[discordID] != 1 {
-			t.Fatalf("expected VERIFIED with role via admin fallback, got %+v attempts=%v", link, roles.attempts)
-		}
-		if st, _ := roleSyncStatus(t, ctx, f, discordID); st != linking.RoleSyncAssigned {
-			t.Fatalf("expected ASSIGNED, got %q", st)
+		if _, err := svc.ApproveManually(ctx, f.GuildRowID, f.PlayerName); !errors.Is(err, linking.ErrPlayerNotFound) {
+			t.Fatalf("a verified link leaves nothing to approve, got %v", err)
 		}
 	})
 
