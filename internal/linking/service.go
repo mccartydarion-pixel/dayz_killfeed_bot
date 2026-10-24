@@ -17,6 +17,9 @@ var ErrPlayerNotFound = errors.New("player not found")
 var ErrAlreadyLinked = errors.New("account already linked")
 var ErrPlayerClaimed = errors.New("player already linked")
 var ErrPlaytimeRequired = errors.New("minimum observed playtime required")
+
+// ErrPlayerNotLinked means the player is known but no Discord account is linked to it.
+var ErrPlayerNotLinked = errors.New("player not linked")
 var ErrLinkCheckUnavailable = errors.New("link check unavailable")
 
 // ErrNoConnectedServer means the guild has no active DayZ server: a
@@ -158,6 +161,12 @@ const (
 // RoleAssigner assigns the configured @Verified role after a link completes.
 // This app serves a single Discord guild per process (mirroring
 // KillfeedPublisher's binding), so no guild ID is needed per call.
+// Nicknamer sets a linked member's Discord nickname to their gamertag. Optional: unset means
+// nicknames are left alone.
+type Nicknamer interface {
+	SetLinkedNickname(ctx context.Context, guildID int64, discordUserID, gamertag string) error
+}
+
 type RoleAssigner interface {
 	// AssignVerifiedRole gives discordUserID the Verified role of the Discord server whose guild
 	// row is guildID: each customer guild has its own role.
@@ -178,13 +187,13 @@ type Notifier interface {
 // disconnect-then-reconnect, or an admin's manual approval).
 type LinkVerificationService struct {
 	repo      Repository
-	expires   time.Duration
 	activity  ActivityReader
 	serverID  ServerResolver
 	challenge ChallengeRepository
 	roles     RoleAssigner
 	notifier  Notifier
 	roleSync  RoleSyncRepository
+	nick      Nicknamer
 }
 
 type ActivityReader interface {
@@ -207,6 +216,15 @@ func (s *LinkVerificationService) SetRoleAssigner(r RoleAssigner) {
 	s.roles = r
 }
 
+// SetNicknamer attaches the nickname setter: a verified link renames the member to their
+// gamertag.
+func (s *LinkVerificationService) SetNicknamer(n Nicknamer) {
+	if s == nil {
+		return
+	}
+	s.nick = n
+}
+
 // SetNotifier attaches the notifier after construction, for the same
 // late-binding reason as SetRoleAssigner. Optional: unset means the player
 // is not messaged when their link completes.
@@ -218,7 +236,7 @@ func (s *LinkVerificationService) SetNotifier(n Notifier) {
 }
 
 func NewService(repo Repository, extras ...any) *LinkVerificationService {
-	s := &LinkVerificationService{repo: repo, expires: 10 * time.Minute}
+	s := &LinkVerificationService{repo: repo}
 	for _, extra := range extras {
 		if v, ok := extra.(ActivityReader); ok {
 			s.activity = v
@@ -260,8 +278,6 @@ func (s *LinkVerificationService) Request(ctx context.Context, guildID int64, di
 		return nil, ErrLinkCheckUnavailable
 	} else if existing != nil && existing.Status == StatusVerified {
 		return existing, ErrAlreadyLinked
-	} else if existing != nil && existing.Status == StatusPending && time.Now().Before(existing.ExpiresAt) {
-		return existing, nil
 	}
 
 	candidates, err := s.repo.FindPlayers(ctx, guildID, username)
@@ -316,6 +332,9 @@ func (s *LinkVerificationService) Request(ctx context.Context, guildID int64, di
 		return nil, ErrPlayerClaimed
 	}
 
+	// The playtime check is the verification: the link is verified at once, with no
+	// disconnect/reconnect challenge. The challenge row is written already expired so a later
+	// reconnect can never complete it a second time.
 	challenge := make([]byte, 24)
 	if _, err := rand.Read(challenge); err != nil {
 		return nil, err
@@ -327,11 +346,15 @@ func (s *LinkVerificationService) Request(ctx context.Context, guildID int64, di
 		RequestedName: candidate.DisplayName,
 		Status:        StatusPending,
 		ChallengeHash: hex.EncodeToString(challenge),
-		ExpiresAt:     time.Now().Add(s.expires),
+		ExpiresAt:     time.Now(),
 	}
 	if err := s.repo.CreatePending(ctx, link); err != nil {
 		return nil, err
 	}
+	if err := s.complete(ctx, guildID, discordUserID, candidate.ID); err != nil {
+		return nil, err
+	}
+	link.Status = StatusVerified
 	return &link, nil
 }
 
@@ -371,6 +394,33 @@ func (s *LinkVerificationService) ObserveConnect(ctx context.Context, guildID, p
 	return s.complete(ctx, guildID, discordUserID, playerID)
 }
 
+// UnlinkPlayer removes whichever Discord account is linked to the named player: staff undoing a
+// wrong claim (links are verified on request, so anyone with the gamertag's 5 minutes can claim
+// it first). It returns the Discord user that was unlinked.
+func (s *LinkVerificationService) UnlinkPlayer(ctx context.Context, guildID int64, playerName string) (string, error) {
+	if s == nil || s.repo == nil {
+		return "", ErrLinkCheckUnavailable
+	}
+	candidates, err := s.repo.FindPlayers(ctx, guildID, strings.TrimSpace(playerName))
+	if err != nil {
+		return "", ErrLinkCheckUnavailable
+	}
+	if len(candidates) != 1 {
+		return "", ErrPlayerNotFound
+	}
+	link, err := s.repo.GetByPlayer(ctx, guildID, candidates[0].ID)
+	if err != nil {
+		return "", ErrLinkCheckUnavailable
+	}
+	if link == nil || (link.Status != StatusVerified && link.Status != StatusPending) {
+		return "", ErrPlayerNotLinked
+	}
+	if err := s.repo.Unlink(ctx, guildID, link.DiscordUserID); err != nil {
+		return "", err
+	}
+	return link.DiscordUserID, nil
+}
+
 // ApproveManually completes a pending link for the named player without
 // requiring the disconnect/reconnect challenge - the admin fallback for when
 // a player can't reconnect in time or the ADM pipeline is degraded. It returns the Discord user
@@ -407,6 +457,13 @@ func (s *LinkVerificationService) complete(ctx context.Context, guildID int64, d
 	roleAssigned := false
 	if s.roles != nil {
 		roleAssigned = s.assignRole(ctx, guildID, discordUserID) == nil
+	}
+	if s.nick != nil {
+		if link, err := s.repo.GetByDiscord(ctx, guildID, discordUserID); err == nil && link != nil && strings.TrimSpace(link.RequestedName) != "" {
+			if err := s.nick.SetLinkedNickname(ctx, guildID, discordUserID, link.RequestedName); err != nil {
+				slog.Warn("component=link", "msg", "nickname not changed", "err", err.Error())
+			}
+		}
 	}
 	if s.notifier != nil {
 		if err := s.notifier.NotifyVerified(ctx, discordUserID, roleAssigned); err != nil {

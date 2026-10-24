@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/yourname/dayz-killfeed/internal/linking"
+	"github.com/yourname/dayz-killfeed/internal/presentation"
 	"github.com/yourname/dayz-killfeed/internal/repository"
 )
 
@@ -36,6 +38,7 @@ func RegisterSetupCommand(session CommandRegistrar, guildID string) error {
 			{Name: "repair", Description: "Repair Champion's Discord channel layout", Type: discordgo.ApplicationCommandOptionSubCommand},
 			{Name: "reset", Description: "Remove Champion Killfeed configuration (requires confirmation)", Type: discordgo.ApplicationCommandOptionSubCommand},
 			{Name: "verified-role", Description: "Set the role auto-assigned when a /link request is verified", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "role_id", Description: "Discord role ID", Type: discordgo.ApplicationCommandOptionString, Required: true}}},
+			{Name: "unlink-player", Description: "Remove the Discord account linked to a gamertag (a wrong claim)", Type: discordgo.ApplicationCommandOptionSubCommand, Options: []*discordgo.ApplicationCommandOption{{Name: "player", Description: "The gamertag, exactly as in game", Type: discordgo.ApplicationCommandOptionString, Required: true}}},
 		},
 	}
 	_, err = session.ApplicationCommandCreate(applicationID, guildID, cmd)
@@ -60,6 +63,19 @@ type SetupHandler struct {
 	guilds      GuildStore
 	welcomeRepo *repository.WelcomeRepository
 	layout      SetupLayoutFunc
+	unlinker    PlayerUnlinker
+}
+
+// PlayerUnlinker removes the link to a gamertag (*linking.LinkVerificationService).
+type PlayerUnlinker interface {
+	UnlinkPlayer(ctx context.Context, guildID int64, playerName string) (string, error)
+}
+
+// SetPlayerUnlinker attaches /setup unlink-player.
+func (h *SetupHandler) SetPlayerUnlinker(u PlayerUnlinker) {
+	if h != nil {
+		h.unlinker = u
+	}
 }
 
 // SetLayout attaches the V2 layout engine. Without it /setup creates nothing.
@@ -112,14 +128,46 @@ func (h *SetupHandler) Handle(s *discordgo.Session, i *discordgo.InteractionCrea
 		h.handleReset(s, i)
 	case "verified-role":
 		h.handleVerifiedRole(s, i)
+	case "unlink-player":
+		h.handleUnlinkPlayer(s, i)
 	default:
 		h.handleSetup(s, i, false)
 	}
 }
 
+// handleUnlinkPlayer removes whichever Discord account claimed a gamertag, so its owner can link it.
+func (h *SetupHandler) handleUnlinkPlayer(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	if h.unlinker == nil || h.guilds == nil {
+		respondEphemeral(s, i, ReplyIsUnavailable("Unlinking"))
+		return
+	}
+	name := strings.TrimSpace(optionString(i.ApplicationCommandData().Options[0], "player"))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, guildRowID, err := h.guilds.GetGuild(ctx, i.GuildID)
+	if err != nil || guildRowID == 0 {
+		respondEphemeral(s, i, ReplyNotSetUp)
+		return
+	}
+	discordUserID, err := h.unlinker.UnlinkPlayer(ctx, guildRowID, name)
+	switch {
+	case errors.Is(err, linking.ErrPlayerNotFound):
+		respondEphemeral(s, i, "No player called **"+presentation.EscapeMarkdown(name)+"** has been seen on this Discord's servers. Check the spelling.")
+	case errors.Is(err, linking.ErrPlayerNotLinked):
+		respondEphemeral(s, i, "**"+presentation.EscapeMarkdown(name)+"** isn't linked to anyone.")
+	case err != nil:
+		respondEphemeral(s, i, ReplyCouldNot("unlink that player"))
+	default:
+		slog.Info("component=discord", "msg", "player unlinked by staff", "guild_id", i.GuildID, "by", i.Member.User.ID, "unlinked_discord_id", discordUserID)
+		respondPrivate(s, i, &discordgo.InteractionResponseData{
+			Content:         "✅ Unlinked **" + presentation.EscapeMarkdown(name) + "** from <@" + discordUserID + ">. The gamertag's owner can link it now. Remove the Verified role from that member if they shouldn't keep it.",
+			AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}},
+		})
+	}
+}
+
 // handleVerifiedRole stores the Discord role ID auto-assigned when a /link
-// request completes verification (either the ADM disconnect/reconnect
-// challenge or an admin's manual approval).
+// request is verified.
 func (h *SetupHandler) handleVerifiedRole(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if !isAdmin(s, i) {
 		respondEphemeral(s, i, ReplyNeedsPermission("run `/setup`"))

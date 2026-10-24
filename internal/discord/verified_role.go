@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -64,6 +65,38 @@ func (a *VerifiedRoleAssigner) AssignVerifiedRole(ctx context.Context, guildRowI
 		return fmt.Errorf("assign verified role: %w", err)
 	}
 	return nil
+}
+
+// SetLinkedNickname renames discordUserID to their gamertag in the Discord server of guildRowID.
+// Discord refuses to rename the server owner and members whose top role is above Champion's;
+// the error says so and the link stands.
+func (a *VerifiedRoleAssigner) SetLinkedNickname(ctx context.Context, guildRowID int64, discordUserID, gamertag string) error {
+	if a == nil || a.client == nil || a.client.Session() == nil || a.discordGuild == nil {
+		return fmt.Errorf("discord client not ready")
+	}
+	nick := linkedNickname(gamertag)
+	if nick == "" {
+		return nil
+	}
+	discordGuildID, err := a.discordGuild(ctx, guildRowID)
+	if err != nil || discordGuildID == "" {
+		return fmt.Errorf("resolve guild %d: %v", guildRowID, err)
+	}
+	if err := deliver("LINK_NICKNAME", "", func() error {
+		return a.client.Session().GuildMemberNickname(discordGuildID, discordUserID, nick)
+	}); err != nil {
+		return fmt.Errorf("set nickname (needs Manage Nicknames, and Champion's role above the member's): %w", err)
+	}
+	return nil
+}
+
+// linkedNickname is a gamertag as a Discord nickname: trimmed, at most Discord's 32 characters.
+func linkedNickname(gamertag string) string {
+	r := []rune(strings.TrimSpace(gamertag))
+	if len(r) > 32 {
+		r = r[:32]
+	}
+	return string(r)
 }
 
 // discordCodeUnknownMember is Discord's "Unknown Member" (the user left the guild).
