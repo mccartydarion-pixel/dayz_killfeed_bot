@@ -36,6 +36,7 @@ func TestEveryRegisteredCommandHasAnAcknowledgedRoute(t *testing.T) {
 		"RegisterPointsCommands":     func() error { return discord.RegisterPointsCommands(batch, "g") },
 		"RegisterSeasonCommands":     func() error { return discord.RegisterSeasonCommands(batch, "g") },
 		"RegisterServerCommands":     func() error { return discord.RegisterServerCommands(batch, "g") },
+		"RegisterTraderCommands":     func() error { return discord.RegisterTraderCommands(batch, "g") },
 		"RegisterSetupCommand":       func() error { return discord.RegisterSetupCommand(batch, "g") },
 		"RegisterStatsCommands":      func() error { return discord.RegisterStatsCommands(batch, "g") },
 		"RegisterTournamentCommands": func() error { return discord.RegisterTournamentCommands(batch, "g") },
