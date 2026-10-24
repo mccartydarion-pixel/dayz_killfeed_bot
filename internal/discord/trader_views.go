@@ -198,6 +198,7 @@ func BuildTraderPanel(hub TraderHub, cat TraderCatalog, now time.Time) *discordg
 	row2 := discordgo.ActionsRow{Components: []discordgo.MessageComponent{
 		discordgo.Button{Label: "Opening hours", Emoji: &discordgo.ComponentEmoji{Name: "🕒"}, Style: discordgo.SecondaryButton, CustomID: traderFormID("hours", hub.InstallationID)},
 		discordgo.Button{Label: "End deals", Emoji: &discordgo.ComponentEmoji{Name: "🛑"}, Style: discordgo.SecondaryButton, CustomID: traderPrivateID("offers", hub.InstallationID), Disabled: len(cat.Offers) == 0},
+		discordgo.Button{Label: "Items", Emoji: &discordgo.ComponentEmoji{Name: "📦"}, Style: discordgo.PrimaryButton, CustomID: traderPrivateID("items", hub.InstallationID)},
 		discordgo.Button{Label: "↻ Refresh", Style: discordgo.SecondaryButton, CustomID: traderID("panel", hub.InstallationID)},
 	}}
 	return &discordgo.InteractionResponseData{Embeds: []*discordgo.MessageEmbed{embed}, Components: []discordgo.MessageComponent{row, row2}, AllowedMentions: traderNoPings}

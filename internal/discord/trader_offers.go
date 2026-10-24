@@ -116,7 +116,14 @@ func (h *TraderHandler) openForm(ctx context.Context, s *discordgo.Session, i *d
 		}
 		form = BuildTraderOfferForm(TraderOfferSale, installationID, categoryID)
 	default:
-		return false
+		itemForm, ok := h.openItemForm(ctx, s, i, action, installationID, args)
+		if !ok {
+			return false
+		}
+		if itemForm == nil {
+			return true
+		}
+		form = itemForm
 	}
 	if err := respondModalData(s, i, form); err != nil {
 		slog.Warn("component=discord", "msg", "trader form failed", "action", action, "err", err.Error())
@@ -177,6 +184,8 @@ func (h *TraderHandler) submitForm(ctx context.Context, s *discordgo.Session, i 
 			return
 		}
 		h.startOffer(ctx, s, i, caller, hub, in)
+	default:
+		h.submitItemForm(ctx, s, i, caller, hub, action, args)
 	}
 }
 
