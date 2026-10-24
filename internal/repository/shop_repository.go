@@ -105,6 +105,10 @@ type ShopPurchaseItem struct {
 	UnitPricePoints int64
 	Quantity        int
 	LineTotalPoints int64
+	// DiscountPercent is the deal or sale it was bought under (0: none); ListUnitPricePoints is
+	// then the price before it.
+	DiscountPercent     int
+	ListUnitPricePoints *int64
 }
 
 type ShopPurchase struct {
@@ -584,7 +588,8 @@ func loadItems(ctx context.Context, q shopQuerier, purchases []ShopPurchase) err
 		ids[i] = p.ID
 		idx[p.ID] = i
 	}
-	rows, err := q.Query(ctx, `SELECT purchase_id, product_id, product_name, unit_price_points, quantity, line_total_points FROM shop_purchase_items WHERE purchase_id = ANY($1) ORDER BY id`, ids)
+	rows, err := q.Query(ctx, `SELECT purchase_id, product_id, product_name, unit_price_points, quantity, line_total_points, discount_percent, list_unit_price_points
+FROM shop_purchase_items WHERE purchase_id = ANY($1) ORDER BY id`, ids)
 	if err != nil {
 		return err
 	}
@@ -592,7 +597,7 @@ func loadItems(ctx context.Context, q shopQuerier, purchases []ShopPurchase) err
 	for rows.Next() {
 		var pid int64
 		var it ShopPurchaseItem
-		if err := rows.Scan(&pid, &it.ProductID, &it.ProductName, &it.UnitPricePoints, &it.Quantity, &it.LineTotalPoints); err != nil {
+		if err := rows.Scan(&pid, &it.ProductID, &it.ProductName, &it.UnitPricePoints, &it.Quantity, &it.LineTotalPoints, &it.DiscountPercent, &it.ListUnitPricePoints); err != nil {
 			return err
 		}
 		purchases[idx[pid]].Items = append(purchases[idx[pid]].Items, it)
@@ -745,7 +750,16 @@ WHERE sp.installation_id = $1 AND sp.player_id = $2 AND pi.product_id = $3 AND s
 			return nil, ErrShopLimitReached
 		}
 	}
-	total, ok := mulSafe(prod.PricePoints, int64(p.Quantity))
+	// The best deal or sale running for the item (docs/TRADER.md), decided under the product lock.
+	discount, err := runningDiscountFor(ctx, tx, p.InstallationID, prod.ID, prod.CategoryID)
+	if err != nil {
+		return nil, err
+	}
+	unit := prod.PricePoints
+	if discount != nil {
+		unit = DiscountedPrice(prod.PricePoints, discount.PercentOff)
+	}
+	total, ok := mulSafe(unit, int64(p.Quantity))
 	if !ok || total > MaxLedgerAmount {
 		return nil, ErrInvalidLedgerAmount
 	}
@@ -772,7 +786,11 @@ ON CONFLICT ON CONSTRAINT uq_shop_purchases_idempotency DO NOTHING RETURNING id`
 		return nil, err
 	}
 	// 5. Debit Champion Points through the one economy write path. Insufficient funds aborts everything.
-	desc := clipText(fmt.Sprintf("Shop: %s x%d", prod.Name, p.Quantity), 200)
+	desc := fmt.Sprintf("Shop: %s x%d", prod.Name, p.Quantity)
+	if discount != nil {
+		desc += fmt.Sprintf(" (%d%% off)", discount.PercentOff)
+	}
+	desc = clipText(desc, 200)
 	entry, err := applyLedger(ctx, tx, LedgerParams{GuildID: p.GuildID, PlayerID: p.PlayerID, ServerID: p.ServerID, Type: TxShopPurchase, Amount: total,
 		ReferenceID: ShopPurchaseRef(purchaseID), SourceID: purchaseID, Description: desc, CreatedBy: p.ActorDiscordID}, true)
 	if err != nil {
@@ -784,8 +802,14 @@ ON CONFLICT ON CONSTRAINT uq_shop_purchases_idempotency DO NOTHING RETURNING id`
 			return nil, err
 		}
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO shop_purchase_items(purchase_id, product_id, product_name, unit_price_points, quantity, line_total_points) VALUES($1,$2,$3,$4,$5,$6)`,
-		purchaseID, p.ProductID, prod.Name, prod.PricePoints, p.Quantity, total); err != nil {
+	var discountID, listUnit any
+	discountPercent := 0
+	if discount != nil {
+		discountID, listUnit, discountPercent = discount.ID, prod.PricePoints, discount.PercentOff
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO shop_purchase_items(purchase_id, product_id, product_name, unit_price_points, quantity, line_total_points,
+ discount_id, discount_percent, list_unit_price_points) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+		purchaseID, p.ProductID, prod.Name, unit, p.Quantity, total, discountID, discountPercent, listUnit); err != nil {
 		return nil, err
 	}
 	// 7. The delivery record, with the policy/map/coordinates snapshotted: editing the product or the

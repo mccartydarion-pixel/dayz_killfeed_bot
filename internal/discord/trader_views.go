@@ -18,8 +18,8 @@ func traderID(action string, installationID int64, args ...string) string {
 	return TraderPrefix + "u:" + action + ":" + strconv.FormatInt(installationID, 10) + traderArgs(args)
 }
 
-func traderPrivateID(action string, installationID int64) string {
-	return TraderPrivatePrefix + action + ":" + strconv.FormatInt(installationID, 10)
+func traderPrivateID(action string, installationID int64, args ...string) string {
+	return TraderPrivatePrefix + action + ":" + strconv.FormatInt(installationID, 10) + traderArgs(args)
 }
 
 func traderFormID(action string, installationID int64, args ...string) string {
@@ -73,7 +73,13 @@ func BuildTraderPost(hub TraderHub, cat TraderCatalog) *discordgo.InteractionRes
 		lines = append(lines, "Spend the Champion Points you earn in game. Press **Browse** to shop; everything after that is private to you.")
 	} else {
 		color = presentation.Red
+		if note := strings.TrimSpace(hub.ClosedNote); note != "" {
+			lines = append(lines, "> "+presentation.EscapeMarkdown(presentation.CleanName(note, traderMaxNoteRunes)))
+		}
 		lines = append(lines, "The trader is closed. You can still check your wallet and orders, and orders already placed are still delivered.")
+	}
+	if hours := traderHoursText(hub); hours != "" {
+		lines = append(lines, "🕒 Open every day "+hours+".")
 	}
 	embed := &discordgo.MessageEmbed{Author: presentation.BrandAuthor("Trader"), Title: "🛒 Trader", Color: color, Description: strings.Join(lines, "\n\n"),
 		Footer: presentation.Footer(hub.ServerName, "Updates when the trader changes")}
@@ -83,9 +89,12 @@ func BuildTraderPost(hub TraderHub, cat TraderCatalog) *discordgo.InteractionRes
 			if idx == 8 {
 				break
 			}
-			b = append(b, fmt.Sprintf("**%s** · %s · %s", traderName(p.Name), presentation.FormatPoints(p.Price), traderStockText(p.Stock)))
+			b = append(b, fmt.Sprintf("**%s** · %s · %s", traderName(p.Name), traderPriceText(p), traderStockText(p.Stock)))
 		}
 		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "⭐ Featured", Value: strings.Join(b, "\n")})
+	}
+	if len(cat.Offers) > 0 {
+		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "🏷️ On sale now", Value: traderOfferLines(cat.Offers, 6)})
 	}
 	if len(cat.Categories) > 0 {
 		var names []string
@@ -99,7 +108,24 @@ func BuildTraderPost(hub TraderHub, cat TraderCatalog) *discordgo.InteractionRes
 		discordgo.Button{Label: "My wallet", Emoji: &discordgo.ComponentEmoji{Name: "💰"}, Style: discordgo.SecondaryButton, CustomID: traderPrivateID("wallet", hub.InstallationID)},
 		discordgo.Button{Label: "My orders", Emoji: &discordgo.ComponentEmoji{Name: "📦"}, Style: discordgo.SecondaryButton, CustomID: traderPrivateID("orders", hub.InstallationID)},
 	}}
+	if hub.DealsRoleID != "" {
+		row.Components = append(row.Components, discordgo.Button{Label: "Deal pings", Emoji: &discordgo.ComponentEmoji{Name: "🔔"}, Style: discordgo.SecondaryButton,
+			CustomID: traderPrivateID("pings", hub.InstallationID)})
+	}
 	return &discordgo.InteractionResponseData{Embeds: []*discordgo.MessageEmbed{embed}, Components: []discordgo.MessageComponent{row}, AllowedMentions: traderNoPings}
+}
+
+// traderOfferLines lists up to max running deals and sales.
+func traderOfferLines(offers []TraderOffer, max int) string {
+	var b []string
+	for idx, o := range offers {
+		if idx == max {
+			b = append(b, fmt.Sprintf("…and %d more", len(offers)-idx))
+			break
+		}
+		b = append(b, traderOfferLine(o))
+	}
+	return strings.Join(b, "\n")
 }
 
 // BuildTraderPanel is the staff panel in #trader-panel.
@@ -132,6 +158,19 @@ func BuildTraderPanel(hub TraderHub, cat TraderCatalog, now time.Time) *discordg
 		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Last change",
 			Value: fmt.Sprintf("%s by <@%s> %s", verb, hub.OpenChangedByDiscordID, presentation.Timestamp(*hub.OpenChangedAt, 'R'))})
 	}
+	if !hub.Open && strings.TrimSpace(hub.ClosedNote) != "" {
+		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Message to players", Value: presentation.EscapeMarkdown(presentation.CleanName(hub.ClosedNote, traderMaxNoteRunes))})
+	}
+	hours := traderHoursText(hub)
+	if hours == "" {
+		hours = "Not set: open and close by hand"
+	} else {
+		hours = "Every day " + hours
+	}
+	embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Opening hours", Value: hours})
+	if len(cat.Offers) > 0 {
+		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "On sale now", Value: traderOfferLines(cat.Offers, 10)})
+	}
 	if len(cat.StockAlerts) > 0 {
 		var b []string
 		for idx, p := range cat.StockAlerts {
@@ -144,22 +183,38 @@ func BuildTraderPanel(hub TraderHub, cat TraderCatalog, now time.Time) *discordg
 		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Stock alerts", Value: strings.Join(b, "\n")})
 	}
 	if hub.OrdersChannelID != "" {
-		embed.Description = "New orders arrive in " + traderMention(hub.OrdersChannelID) + ". Hand them over in game, then mark them delivered on the Champion website (Shop › Orders)."
+		embed.Description = "New orders arrive in " + traderMention(hub.OrdersChannelID) + ". Hand them over in game, then press **Mark delivered** on the order's card."
 	}
 	presentation.StampEmbed(embed, now)
-	power := discordgo.Button{Label: "Close trader", Emoji: &discordgo.ComponentEmoji{Name: "🔴"}, Style: discordgo.DangerButton, CustomID: traderID("close", hub.InstallationID)}
+	power := discordgo.Button{Label: "Close trader", Emoji: &discordgo.ComponentEmoji{Name: "🔴"}, Style: discordgo.DangerButton, CustomID: traderFormID("close", hub.InstallationID)}
 	if !hub.Open {
 		power = discordgo.Button{Label: "Open trader", Emoji: &discordgo.ComponentEmoji{Name: "🟢"}, Style: discordgo.SuccessButton, CustomID: traderID("open", hub.InstallationID)}
 	}
 	row := discordgo.ActionsRow{Components: []discordgo.MessageComponent{power,
-		discordgo.Button{Label: "↻ Refresh", Style: discordgo.SecondaryButton, CustomID: traderID("panel", hub.InstallationID)}}}
-	return &discordgo.InteractionResponseData{Embeds: []*discordgo.MessageEmbed{embed}, Components: []discordgo.MessageComponent{row}, AllowedMentions: traderNoPings}
+		discordgo.Button{Label: "Post deal", Emoji: &discordgo.ComponentEmoji{Name: "🏷️"}, Style: discordgo.PrimaryButton, CustomID: traderPrivateID("deal", hub.InstallationID)},
+		discordgo.Button{Label: "Start sale", Emoji: &discordgo.ComponentEmoji{Name: "🔥"}, Style: discordgo.PrimaryButton, CustomID: traderPrivateID("sale", hub.InstallationID)},
+		discordgo.Button{Label: "Announce", Emoji: &discordgo.ComponentEmoji{Name: "📣"}, Style: discordgo.SecondaryButton, CustomID: traderFormID("announce", hub.InstallationID)},
+	}}
+	row2 := discordgo.ActionsRow{Components: []discordgo.MessageComponent{
+		discordgo.Button{Label: "Opening hours", Emoji: &discordgo.ComponentEmoji{Name: "🕒"}, Style: discordgo.SecondaryButton, CustomID: traderFormID("hours", hub.InstallationID)},
+		discordgo.Button{Label: "End deals", Emoji: &discordgo.ComponentEmoji{Name: "🛑"}, Style: discordgo.SecondaryButton, CustomID: traderPrivateID("offers", hub.InstallationID), Disabled: len(cat.Offers) == 0},
+		discordgo.Button{Label: "↻ Refresh", Style: discordgo.SecondaryButton, CustomID: traderID("panel", hub.InstallationID)},
+	}}
+	return &discordgo.InteractionResponseData{Embeds: []*discordgo.MessageEmbed{embed}, Components: []discordgo.MessageComponent{row, row2}, AllowedMentions: traderNoPings}
 }
 
 // BuildTraderClosed answers a player while the trader is closed.
 func BuildTraderClosed(hub TraderHub) *discordgo.InteractionResponseData {
 	embed := traderEmbed(hub, "🔴 The trader is closed", presentation.Red)
-	embed.Description = "Watch the Trader voice channel for when it opens. You can still check **My wallet** and **My orders**."
+	var lines []string
+	if note := strings.TrimSpace(hub.ClosedNote); note != "" {
+		lines = append(lines, "> "+presentation.EscapeMarkdown(presentation.CleanName(note, traderMaxNoteRunes)))
+	}
+	if hours := traderHoursText(hub); hours != "" {
+		lines = append(lines, "🕒 Open every day "+hours+".")
+	}
+	lines = append(lines, "Watch the Trader voice channel for when it opens. You can still check **My wallet** and **My orders**.")
+	embed.Description = strings.Join(lines, "\n\n")
 	return traderPrivate(embed)
 }
 
@@ -206,8 +261,8 @@ func BuildTraderCategory(hub TraderHub, categoryID int64, name string, products 
 		if idx == 25 {
 			break
 		}
-		lines = append(lines, fmt.Sprintf("**%s** · %s · %s", traderName(p.Name), presentation.FormatPoints(p.Price), traderStockText(p.Stock)))
-		desc := presentation.FormatPoints(p.Price) + " · " + traderStockText(p.Stock)
+		lines = append(lines, fmt.Sprintf("**%s** · %s · %s", traderName(p.Name), traderPriceText(p), traderStockText(p.Stock)))
+		desc := panelClip(traderPricePlain(p)+" · "+traderStockText(p.Stock), 100)
 		options = append(options, discordgo.SelectMenuOption{Label: panelClip(presentation.CleanName(p.Name, 100), 100), Value: strconv.FormatInt(p.ID, 10), Description: desc})
 	}
 	embed.Description = strings.Join(lines, "\n") + "\n\nYour balance: **" + presentation.FormatPoints(balance) + "**"
@@ -247,10 +302,13 @@ func BuildTraderItem(hub TraderHub, p TraderProduct, balance int64, mapName stri
 		embed.Description = presentation.CleanName(d, 1000)
 	}
 	embed.Fields = append(embed.Fields,
-		&discordgo.MessageEmbedField{Name: "Price", Value: presentation.FormatPoints(p.Price), Inline: true},
+		&discordgo.MessageEmbedField{Name: "Price", Value: traderPriceText(p), Inline: true},
 		&discordgo.MessageEmbedField{Name: "Stock", Value: traderStockText(p.Stock), Inline: true})
 	if p.Limit != nil {
 		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "Limit", Value: strconv.Itoa(*p.Limit) + " per player", Inline: true})
+	}
+	if p.OfferEnds != nil && p.PercentOff > 0 {
+		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{Name: "🏷️ Deal", Value: fmt.Sprintf("%d%% off until %s", p.PercentOff, presentation.Timestamp(*p.OfferEnds, 'R'))})
 	}
 	embed.Fields = append(embed.Fields,
 		&discordgo.MessageEmbedField{Name: "Delivery", Value: traderDeliveryText(p, mapName)},
@@ -355,6 +413,9 @@ func BuildTraderReceipt(hub TraderHub, r TraderReceipt) *discordgo.InteractionRe
 		{Name: "Balance", Value: presentation.FormatPoints(r.Balance), Inline: true},
 		{Name: "Delivery", Value: traderDropText(r.X, r.Z, r.MapName)},
 	}
+	if r.Saved > 0 {
+		embed.Fields = append(embed.Fields[:2], append([]*discordgo.MessageEmbedField{{Name: "Saved", Value: presentation.FormatPoints(r.Saved), Inline: true}}, embed.Fields[2:]...)...)
+	}
 	embed.Description = "The trader has your order. You'll get a DM when it's delivered."
 	row := discordgo.ActionsRow{Components: []discordgo.MessageComponent{
 		discordgo.Button{Label: "My orders", Emoji: &discordgo.ComponentEmoji{Name: "📦"}, Style: discordgo.SecondaryButton, CustomID: traderID("orders", hub.InstallationID)},
@@ -366,7 +427,7 @@ func BuildTraderReceipt(hub TraderHub, r TraderReceipt) *discordgo.InteractionRe
 // BuildTraderOrderCard tells staff about a new order.
 func BuildTraderOrderCard(hub TraderHub, buyerDiscordID string, r TraderReceipt) *discordgo.MessageSend {
 	embed := &discordgo.MessageEmbed{Author: presentation.BrandAuthor("Trader"), Title: fmt.Sprintf("🛒 New order #%d", r.OrderID), Color: presentation.Amber,
-		Footer: presentation.Footer(hub.ServerName, "Mark it delivered on the Champion website: Shop › Orders")}
+		Footer: presentation.Footer(hub.ServerName, "Hand it over in game, then mark it delivered")}
 	player := traderName(r.Gamertag)
 	if buyerDiscordID != "" {
 		player += " (<@" + buyerDiscordID + ">)"
@@ -378,7 +439,12 @@ func BuildTraderOrderCard(hub TraderHub, buyerDiscordID string, r TraderReceipt)
 		{Name: "Delivery", Value: traderDropText(r.X, r.Z, r.MapName)},
 	}
 	embed.Timestamp = time.Now().UTC().Format(time.RFC3339)
-	return &discordgo.MessageSend{Embeds: []*discordgo.MessageEmbed{embed}, AllowedMentions: traderNoPings}
+	order := strconv.FormatInt(r.OrderID, 10)
+	row := discordgo.ActionsRow{Components: []discordgo.MessageComponent{
+		discordgo.Button{Label: "Mark delivered", Emoji: &discordgo.ComponentEmoji{Name: "✅"}, Style: discordgo.SuccessButton, CustomID: traderID("deliver", hub.InstallationID, order)},
+		discordgo.Button{Label: "Refund", Emoji: &discordgo.ComponentEmoji{Name: "↩️"}, Style: discordgo.SecondaryButton, CustomID: traderFormID("refund", hub.InstallationID, order)},
+	}}
+	return &discordgo.MessageSend{Embeds: []*discordgo.MessageEmbed{embed}, Components: []discordgo.MessageComponent{row}, AllowedMentions: traderNoPings}
 }
 
 // BuildTraderWallet is the player's balance and latest points history.
@@ -451,8 +517,16 @@ func BuildTraderSetupDone(hub TraderHub, made []string, isNew bool) *discordgo.I
 	lines = append(lines,
 		"• Players shop in "+traderMention(hub.TraderChannelID)+".",
 		"• The "+traderRoleMention(hub.TraderRoleID)+" role, the Owner and Administrators open and close the trader in "+traderMention(hub.PanelChannelID)+" and get new orders in "+traderMention(hub.OrdersChannelID)+".",
+		"• Deals, sales and news go in "+traderMention(hub.DealsChannelID)+traderDealsRoleLine(hub)+".",
 		"• Items, prices and stock are edited on the Champion website (Shop).",
 		"Give the Trader role to the people who run your trader. Gave someone the Administrator staff level since? Run `/trader setup` again so they see the private channels.")
 	embed.Description = strings.Join(lines, "\n")
 	return &discordgo.InteractionResponseData{Embeds: []*discordgo.MessageEmbed{embed}, AllowedMentions: traderNoPings}
+}
+
+func traderDealsRoleLine(hub TraderHub) string {
+	if hub.DealsRoleID == "" {
+		return ""
+	}
+	return "; players who press **Deal pings** get <@&" + hub.DealsRoleID + "> and are pinged for new ones"
 }

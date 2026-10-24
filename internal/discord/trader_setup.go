@@ -19,6 +19,8 @@ type TraderGuildAPI interface {
 	GuildChannels(guildID string) ([]*discordgo.Channel, error)
 	GuildRoles(guildID string) ([]*discordgo.Role, error)
 	GuildRoleCreate(guildID string, data *discordgo.RoleParams) (*discordgo.Role, error)
+	GuildMemberRoleAdd(guildID, userID, roleID string) error
+	GuildMemberRoleRemove(guildID, userID, roleID string) error
 	GuildChannelCreateComplex(guildID string, data discordgo.GuildChannelCreateData) (*discordgo.Channel, error)
 	// ChannelRename returns a *discordgo.RateLimitError instead of waiting out Discord's limit of
 	// two renames per channel every 10 minutes.
@@ -54,6 +56,12 @@ func (t traderSession) GuildRoles(guildID string) ([]*discordgo.Role, error) {
 }
 func (t traderSession) GuildRoleCreate(guildID string, data *discordgo.RoleParams) (*discordgo.Role, error) {
 	return t.s.GuildRoleCreate(guildID, data)
+}
+func (t traderSession) GuildMemberRoleAdd(guildID, userID, roleID string) error {
+	return t.s.GuildMemberRoleAdd(guildID, userID, roleID)
+}
+func (t traderSession) GuildMemberRoleRemove(guildID, userID, roleID string) error {
+	return t.s.GuildMemberRoleRemove(guildID, userID, roleID)
 }
 func (t traderSession) GuildChannelCreateComplex(guildID string, data discordgo.GuildChannelCreateData) (*discordgo.Channel, error) {
 	return t.s.GuildChannelCreateComplex(guildID, data)
@@ -237,30 +245,44 @@ func (h *TraderHandler) ensureChannels(api TraderGuildAPI, hub *TraderHub, roleI
 		exists[c.ID] = true
 	}
 	oldRole := hub.TraderRoleID
-	switch {
-	case roleID != "":
+	if roleID != "" {
 		hub.TraderRoleID = roleID
-	case hub.TraderRoleID != "":
+	}
+	// Roles made before are kept while they still exist in Discord.
+	if hub.TraderRoleID != "" && roleID == "" || hub.DealsRoleID != "" {
 		roles, err := api.GuildRoles(guildID)
 		if err != nil {
 			return made, fmt.Errorf("list roles: %w", err)
 		}
-		found := false
+		has := map[string]bool{}
 		for _, r := range roles {
-			found = found || r.ID == hub.TraderRoleID
+			has[r.ID] = true
 		}
-		if !found {
+		if roleID == "" && !has[hub.TraderRoleID] {
 			hub.TraderRoleID = ""
 		}
-	}
-	if hub.TraderRoleID == "" {
-		mentionable := false
-		role, err := api.GuildRoleCreate(guildID, &discordgo.RoleParams{Name: traderRoleName, Mentionable: &mentionable})
-		if err != nil {
-			return made, fmt.Errorf("create role: %w", err)
+		if !has[hub.DealsRoleID] {
+			hub.DealsRoleID = ""
 		}
-		hub.TraderRoleID = role.ID
-		made.names = append(made.names, "the @"+traderRoleName+" role")
+	}
+	makeRole := func(id *string, name string, mentionable bool) error {
+		if *id != "" {
+			return nil
+		}
+		role, err := api.GuildRoleCreate(guildID, &discordgo.RoleParams{Name: name, Mentionable: &mentionable})
+		if err != nil {
+			return fmt.Errorf("create role: %w", err)
+		}
+		*id = role.ID
+		made.names = append(made.names, "the @"+name+" role")
+		return nil
+	}
+	if err := makeRole(&hub.TraderRoleID, traderRoleName, false); err != nil {
+		return made, err
+	}
+	// @Deals is pinged by Champion's deal posts; players give it to themselves with Deal pings.
+	if err := makeRole(&hub.DealsRoleID, traderDealsRoleName, true); err != nil {
+		return made, err
 	}
 	isStaffRole := func(id string) bool {
 		for _, r := range staff.RoleIDs {
@@ -421,7 +443,8 @@ func (h *TraderHandler) syncVoice(ctx context.Context, api TraderGuildAPI, hub T
 }
 
 // traderRefreshEvery is how often every trader post, panel and voice channel is brought up to date
-// (shop edits on the website, a rename Discord delayed).
+// (shop edits on the website, a rename Discord delayed), opening hours are applied and the posts
+// of deals and sales that ended are marked over.
 const traderRefreshEvery = 2 * time.Minute
 
 // RunRefresh keeps every Trader current. Run it on one process (the singleton leader).
@@ -453,6 +476,7 @@ func (h *TraderHandler) refreshAll(ctx context.Context, api TraderGuildAPI) {
 		if ctx.Err() != nil {
 			return
 		}
+		hub = h.refreshOffersAndHours(ctx, api, hub)
 		hub = h.publish(ctx, api, hub)
 		h.syncVoice(ctx, api, hub)
 	}

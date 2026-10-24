@@ -110,6 +110,11 @@ var migrations0126onward = []Migration{
 		Name: "0143_trader_hubs",
 		SQL:  TraderHubsSQL,
 	},
+	{
+		// Trader phase 2: shop deals and sales, @Deals pings, opening hours, a closing note.
+		Name: "0144_trader_deals",
+		SQL:  TraderDealsSQL,
+	},
 }
 
 // SubscriptionPastDueSinceSQL adds subscriptions.past_due_since: set when the status becomes
@@ -406,4 +411,53 @@ CREATE TABLE IF NOT EXISTS trader_hubs (
  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_trader_hubs_guild ON trader_hubs(discord_guild_id);
+`
+
+// TraderDealsSQL is Trader phase 2 (docs/TRADER.md).
+//
+// shop_discounts are the shop's deals (one item) and sales (a category, or every item when
+// category_id is NULL): a percentage off from starts_at until ends_at, or until ended_at when staff
+// end it early. A purchase pays the best one running for its item, under the product lock, and the
+// purchase item records which one and how much off. The Discord post announcing it is edited when
+// it ends (post_ended).
+//
+// trader_hubs gains the opt-in @Deals role, the note players see while the trader is closed, and
+// opening hours: open at hours_open and close at hours_close (HH:MM, local to hours_tz) every day.
+// hours_applied_at is the last opening or closing time already applied, so each is applied once and
+// a manual open or close lasts until the next one.
+const TraderDealsSQL = `
+CREATE TABLE IF NOT EXISTS shop_discounts (
+ id BIGSERIAL PRIMARY KEY,
+ organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+ installation_id BIGINT NOT NULL REFERENCES installations(id) ON DELETE CASCADE,
+ kind TEXT NOT NULL CHECK (kind IN ('DEAL','SALE')),
+ product_id BIGINT REFERENCES shop_products(id) ON DELETE CASCADE,
+ category_id BIGINT REFERENCES shop_categories(id) ON DELETE CASCADE,
+ percent_off INTEGER NOT NULL CHECK (percent_off BETWEEN 1 AND 75),
+ title TEXT NOT NULL DEFAULT '',
+ starts_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+ ends_at TIMESTAMPTZ NOT NULL,
+ ended_at TIMESTAMPTZ,
+ ended_by_discord_id TEXT NOT NULL DEFAULT '',
+ created_by_discord_id TEXT NOT NULL DEFAULT '',
+ post_channel_id TEXT NOT NULL DEFAULT '',
+ post_message_id TEXT NOT NULL DEFAULT '',
+ post_ended BOOLEAN NOT NULL DEFAULT FALSE,
+ created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+ CHECK (ends_at > starts_at),
+ CHECK ((kind = 'DEAL' AND product_id IS NOT NULL AND category_id IS NULL) OR (kind = 'SALE' AND product_id IS NULL))
+);
+CREATE INDEX IF NOT EXISTS idx_shop_discounts_running ON shop_discounts(installation_id, ends_at) WHERE ended_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_shop_discounts_posts ON shop_discounts(installation_id) WHERE post_message_id <> '' AND NOT post_ended;
+
+ALTER TABLE shop_purchase_items ADD COLUMN IF NOT EXISTS discount_id BIGINT REFERENCES shop_discounts(id) ON DELETE SET NULL;
+ALTER TABLE shop_purchase_items ADD COLUMN IF NOT EXISTS discount_percent INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE shop_purchase_items ADD COLUMN IF NOT EXISTS list_unit_price_points BIGINT;
+
+ALTER TABLE trader_hubs ADD COLUMN IF NOT EXISTS deals_role_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE trader_hubs ADD COLUMN IF NOT EXISTS closed_note TEXT NOT NULL DEFAULT '';
+ALTER TABLE trader_hubs ADD COLUMN IF NOT EXISTS hours_open TEXT NOT NULL DEFAULT '';
+ALTER TABLE trader_hubs ADD COLUMN IF NOT EXISTS hours_close TEXT NOT NULL DEFAULT '';
+ALTER TABLE trader_hubs ADD COLUMN IF NOT EXISTS hours_tz TEXT NOT NULL DEFAULT '';
+ALTER TABLE trader_hubs ADD COLUMN IF NOT EXISTS hours_applied_at TIMESTAMPTZ;
 `

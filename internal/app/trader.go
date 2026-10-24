@@ -66,7 +66,8 @@ func toDiscordTraderHub(h repository.TraderHub, serverName string) discord.Trade
 		CategoryID: h.CategoryID, VoiceChannelID: h.VoiceChannelID, TraderChannelID: h.TraderChannelID, DealsChannelID: h.DealsChannelID,
 		PanelChannelID: h.PanelChannelID, OrdersChannelID: h.OrdersChannelID, TraderRoleID: h.TraderRoleID,
 		PostMessageID: h.PostMessageID, PanelMessageID: h.PanelMessageID, Open: h.Open, VoiceNameApplied: h.VoiceNameApplied,
-		OpenChangedAt: h.OpenChangedAt, OpenChangedByDiscordID: h.OpenChangedByDiscordID}
+		OpenChangedAt: h.OpenChangedAt, OpenChangedByDiscordID: h.OpenChangedByDiscordID,
+		DealsRoleID: h.DealsRoleID, ClosedNote: h.ClosedNote, HoursOpen: h.HoursOpen, HoursClose: h.HoursClose, HoursTZ: h.HoursTZ}
 }
 
 func (b *traderBackend) TraderHub(ctx context.Context, discordGuildID string, installationID int64) (discord.TraderHub, error) {
@@ -145,11 +146,11 @@ func (b *traderBackend) TraderSaveHub(ctx context.Context, c discord.PanelCaller
 	saved, err := b.a.Traders.Save(ctx, repository.TraderHub{InstallationID: hub.InstallationID, OrganizationID: row.OrganizationID, DiscordGuildID: c.DiscordGuildID,
 		CategoryID: hub.CategoryID, VoiceChannelID: hub.VoiceChannelID, TraderChannelID: hub.TraderChannelID, DealsChannelID: hub.DealsChannelID,
 		PanelChannelID: hub.PanelChannelID, OrdersChannelID: hub.OrdersChannelID, TraderRoleID: hub.TraderRoleID,
-		PostMessageID: hub.PostMessageID, PanelMessageID: hub.PanelMessageID})
+		PostMessageID: hub.PostMessageID, PanelMessageID: hub.PanelMessageID, DealsRoleID: hub.DealsRoleID})
 	if err != nil {
 		return discord.TraderHub{}, err
 	}
-	b.audit(ctx, c, row, "TRADER_SETUP", map[string]any{"trader_role_id": saved.TraderRoleID, "category_id": saved.CategoryID})
+	b.audit(ctx, c, row, "TRADER_SETUP", map[string]any{"trader_role_id": saved.TraderRoleID, "deals_role_id": saved.DealsRoleID, "category_id": saved.CategoryID})
 	return toDiscordTraderHub(*saved, row.Name), nil
 }
 
@@ -192,7 +193,7 @@ func (b *traderBackend) TraderStaff(ctx context.Context, discordGuildID string, 
 	return staff, nil
 }
 
-func (b *traderBackend) TraderSetOpen(ctx context.Context, c discord.PanelCaller, installationID int64, open bool) (discord.TraderHub, bool, error) {
+func (b *traderBackend) TraderSetOpen(ctx context.Context, c discord.PanelCaller, installationID int64, open bool, note string) (discord.TraderHub, bool, error) {
 	row, hub, err := b.hub(ctx, c.DiscordGuildID, installationID)
 	if err != nil {
 		return discord.TraderHub{}, false, err
@@ -207,7 +208,7 @@ func (b *traderBackend) TraderSetOpen(ctx context.Context, c discord.PanelCaller
 	if !ok {
 		return discord.TraderHub{}, false, discord.ErrTraderForbidden
 	}
-	updated, changed, err := b.a.Traders.SetOpen(ctx, installationID, open, c.DiscordUserID)
+	updated, changed, err := b.a.Traders.SetOpen(ctx, installationID, open, c.DiscordUserID, note)
 	if err != nil {
 		return discord.TraderHub{}, false, err
 	}
@@ -219,7 +220,11 @@ func (b *traderBackend) TraderSetOpen(ctx context.Context, c discord.PanelCaller
 		if !open {
 			action = "TRADER_CLOSE"
 		}
-		b.audit(ctx, c, row, action, nil)
+		var extra map[string]any
+		if note != "" {
+			extra = map[string]any{"note": note}
+		}
+		b.audit(ctx, c, row, action, extra)
 	}
 	return toDiscordTraderHub(*updated, row.Name), changed, nil
 }
@@ -248,11 +253,19 @@ func (b *traderBackend) scope(ctx context.Context, discordGuildID string, instal
 	return b.a.EconomyAccounts.Scope(ctx, row.OrganizationID, installationID)
 }
 
-func (b *traderBackend) toProduct(ctx context.Context, scope repository.EconomyScope, p repository.ShopProduct) discord.TraderProduct {
+// toProduct is p as the trader shows it, priced with the best of offers (the running deals and
+// sales) that covers it: the price the shop charges.
+func (b *traderBackend) toProduct(ctx context.Context, scope repository.EconomyScope, p repository.ShopProduct, offers []repository.ShopDiscount) discord.TraderProduct {
 	out := discord.TraderProduct{ID: p.ID, Name: p.Name, Description: p.Description, Price: p.PricePoints, Limit: p.PurchaseLimit,
 		Featured: p.IsFeatured, CategoryName: p.CategoryName, Coordinates: p.DeliveryPolicy == repository.DeliveryPolicyManualCoordinate}
 	if p.CategoryID != nil {
 		out.CategoryID = *p.CategoryID
+	}
+	if d := repository.BestDiscount(offers, p.ID, p.CategoryID, time.Now()); d != nil {
+		if price := repository.DiscountedPrice(p.PricePoints, d.PercentOff); price < p.PricePoints {
+			ends := d.EndsAt
+			out.ListPrice, out.Price, out.PercentOff, out.OfferEnds = p.PricePoints, price, d.PercentOff, &ends
+		}
 	}
 	switch shop.StockState(p) {
 	case "OUT_OF_STOCK":
@@ -296,12 +309,19 @@ func (b *traderBackend) TraderCatalog(ctx context.Context, discordGuildID string
 			out.Categories = append(out.Categories, discord.TraderCategory{ID: c.ID, Name: c.Name, Count: c.ProductCount})
 		}
 	}
+	offers, err := b.runningOffers(ctx, installationID)
+	if err != nil {
+		return discord.TraderCatalog{}, err
+	}
+	for _, o := range offers {
+		out.Offers = append(out.Offers, toTraderOffer(o))
+	}
 	page, err := b.a.Shop.Products(ctx, scope, shop.ProductList{Limit: shop.MaxLimit}, false)
 	if err != nil {
 		return discord.TraderCatalog{}, err
 	}
 	for _, p := range page.Items {
-		tp := b.toProduct(ctx, scope, p)
+		tp := b.toProduct(ctx, scope, p, offers)
 		if tp.Featured {
 			out.Featured = append(out.Featured, tp)
 		}
@@ -341,9 +361,13 @@ func (b *traderBackend) TraderProducts(ctx context.Context, discordGuildID strin
 	if err != nil {
 		return nil, err
 	}
+	offers, err := b.runningOffers(ctx, installationID)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]discord.TraderProduct, 0, len(page.Items))
 	for _, p := range page.Items {
-		out = append(out, b.toProduct(ctx, scope, p))
+		out = append(out, b.toProduct(ctx, scope, p, offers))
 	}
 	return out, nil
 }
@@ -360,7 +384,11 @@ func (b *traderBackend) TraderProduct(ctx context.Context, discordGuildID string
 	if p == nil || !p.IsActive {
 		return discord.TraderProduct{}, discord.ErrTraderUnavailable
 	}
-	return b.toProduct(ctx, scope, *p), nil
+	offers, err := b.runningOffers(ctx, installationID)
+	if err != nil {
+		return discord.TraderProduct{}, err
+	}
+	return b.toProduct(ctx, scope, *p, offers), nil
 }
 
 func (b *traderBackend) TraderWallet(ctx context.Context, c discord.TraderCaller, installationID int64) (discord.TraderWallet, error) {
@@ -464,7 +492,11 @@ func (b *traderBackend) TraderBuy(ctx context.Context, c discord.TraderCaller, i
 	r := discord.TraderReceipt{OrderID: res.Purchase.ID, Item: res.ItemName, Quantity: req.Quantity, Total: res.Purchase.TotalPoints,
 		Balance: res.BalanceAfter, Gamertag: res.PlayerName, Duplicate: res.Duplicate}
 	if len(res.Purchase.Items) > 0 {
-		r.Item, r.Quantity = res.Purchase.Items[0].ProductName, res.Purchase.Items[0].Quantity
+		it := res.Purchase.Items[0]
+		r.Item, r.Quantity = it.ProductName, it.Quantity
+		if it.ListUnitPricePoints != nil && *it.ListUnitPricePoints > it.UnitPricePoints {
+			r.Saved = (*it.ListUnitPricePoints - it.UnitPricePoints) * int64(it.Quantity)
+		}
 	}
 	if d := res.Purchase.Delivery; d != nil {
 		r.X, r.Z = d.X, d.Z

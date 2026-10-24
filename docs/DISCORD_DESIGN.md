@@ -338,6 +338,8 @@ these rules were applied. C = crimson, G = gold, Gr = green, A = amber, R = red,
 | 91d | Trader: the post in #trader and the Trader panel in #trader-panel (refreshed every 2 minutes) | `discord/trader_views.go` | yes | post Gd open / Rd closed, `🛒 Trader`; panel Gr open / Rd closed, `🧰 Trader panel` | yes |
 | 91e | Trader, private: categories, an item, confirm, the drop point form, receipt, wallet, orders, closed | `discord/trader_views.go` | yes | Gd, confirm A, receipt Gr, closed Rd | yes |
 | 91f | Trader: a new order in #trader-orders, `/trader setup` done | `discord/trader_views.go` | yes | order A `🛒 New order #<id>`, setup Gr | yes |
+| 91g | Trader: an order card once handled, a deal or sale in #deals and once ended, an announcement | `discord/trader_offer_views.go` | yes | delivered Gr `✅ Order #<id> delivered`, refunded N; deal/sale Gd `🏷️ Deal:` / `🔥 Sale:`, ended N `⌛`; announcement C `📣` | yes |
+| 91h | Trader staff, private: post a deal, start a sale, running deals and sales, started; forms for closing, announcing, hours, refunds and deals | `discord/trader_offer_views.go` | yes | Gd, started Gr | yes |
 | 92 | `/setup run, repair, reset, verified-role` | `discord/setup_commands.go` | text + #85 | voice helpers | yes |
 | 93 | `/faction war` (challenge, accept, decline, cancel, status, history) | `discord/war_commands.go` | text | voice helpers | yes |
 | 94 | `/faction info, rivalry, leaderboard` | same | text | bold headers, sentence case | yes |

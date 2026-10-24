@@ -644,6 +644,16 @@ func (s *Service) Fulfill(ctx context.Context, scope repository.EconomyScope, ac
 // Refund credits a purchase back as a compensating SHOP_REFUND transaction (admin only, reason
 // required, once per purchase). The reason is stored for admins and never shown to the player.
 func (s *Service) Refund(ctx context.Context, scope repository.EconomyScope, actorUserID int64, actorDiscordID string, purchaseID int64, reason string) (*repository.RefundResult, error) {
+	return s.refund(ctx, scope, actorUserID, actorDiscordID, purchaseID, reason, false)
+}
+
+// RefundQuiet is Refund without the public ECONOMY feed announcement (a Discord Trader order was
+// never announced, so neither is its refund).
+func (s *Service) RefundQuiet(ctx context.Context, scope repository.EconomyScope, actorUserID int64, actorDiscordID string, purchaseID int64, reason string) (*repository.RefundResult, error) {
+	return s.refund(ctx, scope, actorUserID, actorDiscordID, purchaseID, reason, true)
+}
+
+func (s *Service) refund(ctx context.Context, scope repository.EconomyScope, actorUserID int64, actorDiscordID string, purchaseID int64, reason string, quiet bool) (*repository.RefundResult, error) {
 	reason = cleanLine(reason)
 	if reason == "" {
 		return nil, ErrReasonRequired
@@ -659,7 +669,7 @@ func (s *Service) Refund(ctx context.Context, scope repository.EconomyScope, act
 	if err != nil {
 		return nil, err
 	}
-	if s.announce != nil {
+	if !quiet && s.announce != nil {
 		s.announce.Announce(economy.Event{Type: economy.TypeShopRefund, GuildID: scope.GuildID, ServerID: scope.ServerID, PlayerName: res.PlayerName,
 			Amount: res.Purchase.TotalPoints, Credit: true, BalanceAfter: res.BalanceAfter, Item: res.ItemName})
 	}

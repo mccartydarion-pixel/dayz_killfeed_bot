@@ -304,6 +304,8 @@ type App struct {
 	ServerPanels *repository.ServerPanelRepository
 	// Traders stores each installation's Discord Trader (/trader, docs/TRADER.md).
 	Traders *repository.TraderRepository
+	// ShopDiscounts stores the shop's deals and sales (docs/TRADER.md).
+	ShopDiscounts *repository.ShopDiscountRepository
 	// maintenance caches each game server's maintenance switch (maintenance_mode.go).
 	maintenance maintenanceCache
 	ZoneCache   *killfeed.ZoneCache
@@ -701,6 +703,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.HubMembership = repository.NewFactionHubMembershipRepository(db.Pool)
 			app.ServerPanels = repository.NewServerPanelRepository(db.Pool)
 			app.Traders = repository.NewTraderRepository(db.Pool)
+			app.ShopDiscounts = repository.NewShopDiscountRepository(db.Pool)
 			app.ZoneCache = killfeed.NewZoneCache(app.Zones)
 			app.Intrusion = killfeed.NewIntrusionEngine(app.Zones, app.ZoneCache, intrusionRoleChecker{app: app}, intrusionPublisher{app: app})
 			app.Heatmap = heatmap.NewService(repository.NewHeatmapRepository(db.Pool), heatmap.NewCache(heatmapCacheTTL), heatmap.NewMetrics())
