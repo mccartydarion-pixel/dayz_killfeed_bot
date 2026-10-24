@@ -109,7 +109,7 @@ func BuildTraderPanel(hub TraderHub, cat TraderCatalog, now time.Time) *discordg
 		color = presentation.Red
 	}
 	embed := &discordgo.MessageEmbed{Author: presentation.BrandAuthor("Trader"), Title: "🧰 Trader panel", Color: color,
-		Footer: presentation.Footer(hub.ServerName, "Owner and Administrators")}
+		Footer: presentation.Footer(hub.ServerName, "Trader role, Owner and Administrators")}
 	state := "🟢 Open"
 	if !hub.Open {
 		state = "🔴 Closed"
@@ -450,9 +450,9 @@ func BuildTraderSetupDone(hub TraderHub, made []string, isNew bool) *discordgo.I
 	}
 	lines = append(lines,
 		"• Players shop in "+traderMention(hub.TraderChannelID)+".",
-		"• The Owner and Administrators open and close the trader in "+traderMention(hub.PanelChannelID)+" and get new orders in "+traderMention(hub.OrdersChannelID)+".",
+		"• The "+traderRoleMention(hub.TraderRoleID)+" role, the Owner and Administrators open and close the trader in "+traderMention(hub.PanelChannelID)+" and get new orders in "+traderMention(hub.OrdersChannelID)+".",
 		"• Items, prices and stock are edited on the Champion website (Shop).",
-		"Gave someone the Administrator staff level since? Run `/trader setup` again so they see the private channels.")
+		"Give the Trader role to the people who run your trader. Gave someone the Administrator staff level since? Run `/trader setup` again so they see the private channels.")
 	embed.Description = strings.Join(lines, "\n")
 	return &discordgo.InteractionResponseData{Embeds: []*discordgo.MessageEmbed{embed}, AllowedMentions: traderNoPings}
 }
