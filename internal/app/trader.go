@@ -149,12 +149,19 @@ func (b *traderBackend) TraderSaveHub(ctx context.Context, c discord.PanelCaller
 	if err != nil {
 		return discord.TraderHub{}, err
 	}
-	b.audit(ctx, c, row, "TRADER_SETUP", map[string]any{"category_id": saved.CategoryID})
+	b.audit(ctx, c, row, "TRADER_SETUP", map[string]any{"trader_role_id": saved.TraderRoleID, "category_id": saved.CategoryID})
 	return toDiscordTraderHub(*saved, row.Name), nil
 }
 
-// isTrader: the caller is the server's Owner or an Administrator.
+// isTrader: the caller has the Trader role, or is the server's Owner or an Administrator.
 func (b *traderBackend) isTrader(ctx context.Context, c discord.PanelCaller, hub repository.TraderHub) (bool, error) {
+	if hub.TraderRoleID != "" {
+		for _, r := range c.RoleIDs {
+			if r == hub.TraderRoleID {
+				return true, nil
+			}
+		}
+	}
 	level, err := b.panel.PanelLevel(ctx, c, hub.InstallationID)
 	if err != nil {
 		return false, err

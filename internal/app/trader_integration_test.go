@@ -12,7 +12,8 @@ import (
 )
 
 // The Discord Trader buys through the website shop: the same debit, stock, limit, idempotency and
-// delivery record. Its open/closed switch is the Trader role's, and it is audited.
+// delivery record. Its open/closed switch is the Trader role's, the Owner's and Administrators',
+// and it is audited.
 func TestTraderBuysThroughTheShop(t *testing.T) {
 	w := newFactionWorld(t)
 	w.a.ServerPanels = repository.NewServerPanelRepository(w.a.DB.Pool)
@@ -28,12 +29,12 @@ func TestTraderBuysThroughTheShop(t *testing.T) {
 	}
 	player := w.players[0]
 	setup := discord.TraderHub{InstallationID: inst, CategoryID: "cat", VoiceChannelID: "voice", TraderChannelID: "trader", DealsChannelID: "deals",
-		PanelChannelID: "panel", OrdersChannelID: "orders"}
+		PanelChannelID: "panel", OrdersChannelID: "orders", TraderRoleID: "role-trader"}
 	if _, err := b.TraderSaveHub(ctx, discord.PanelCaller{DiscordGuildID: guild, DiscordUserID: player}, setup); !errors.Is(err, discord.ErrPanelForbidden) {
 		t.Fatalf("a player set up the trader: %v", err)
 	}
 	hub, err := b.TraderSaveHub(ctx, owner, setup)
-	if err != nil || !hub.Open || hub.TraderChannelID != "trader" || hub.ServerName == "" {
+	if err != nil || !hub.Open || hub.TraderChannelID != "trader" || hub.TraderRoleID != "role-trader" || hub.ServerName == "" {
 		t.Fatalf("setup: %+v %v", hub, err)
 	}
 	if _, err := b.TraderHub(ctx, "another-discord-server", inst); !errors.Is(err, discord.ErrPanelServerNotFound) {
@@ -102,8 +103,8 @@ func TestTraderBuysThroughTheShop(t *testing.T) {
 		t.Fatalf("catalog: %+v %v", cat, err)
 	}
 
-	// Only the Owner and Administrators (a mapped staff role or Discord's Administrator) open and
-	// close it; a Moderator can't. Closed takes no orders.
+	// The Trader role, the Owner and Administrators (a mapped staff role or Discord's Administrator)
+	// open and close it; a Moderator without the Trader role can't. Closed takes no orders.
 	if _, _, err := b.TraderSetOpen(ctx, buyer.PanelCaller, inst, false); !errors.Is(err, discord.ErrTraderForbidden) {
 		t.Fatalf("a player closed the trader: %v", err)
 	}
@@ -119,6 +120,10 @@ func TestTraderBuysThroughTheShop(t *testing.T) {
 	}
 	if staff, err := b.TraderStaff(ctx, guild, inst); err != nil || len(staff.RoleIDs) != 1 || staff.RoleIDs[0] != "role-admins" || staff.OwnerDiscordID != w.a1.OwnerDiscordID {
 		t.Fatalf("staff: %+v %v", staff, err)
+	}
+	withRole := discord.PanelCaller{DiscordGuildID: guild, DiscordUserID: w.players[3], RoleIDs: []string{"role-mods", "role-trader"}}
+	if _, changed, err := b.TraderSetOpen(ctx, withRole, inst, true); err != nil || changed {
+		t.Fatalf("the Trader role opened an open trader: %v %v", changed, err)
 	}
 	trader := discord.PanelCaller{DiscordGuildID: guild, DiscordUserID: w.players[2], RoleIDs: []string{"role-admins"}}
 	closed, changed, err := b.TraderSetOpen(ctx, trader, inst, false)

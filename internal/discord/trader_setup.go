@@ -17,6 +17,8 @@ import (
 type TraderGuildAPI interface {
 	BotID() string
 	GuildChannels(guildID string) ([]*discordgo.Channel, error)
+	GuildRoles(guildID string) ([]*discordgo.Role, error)
+	GuildRoleCreate(guildID string, data *discordgo.RoleParams) (*discordgo.Role, error)
 	GuildChannelCreateComplex(guildID string, data discordgo.GuildChannelCreateData) (*discordgo.Channel, error)
 	// ChannelRename returns a *discordgo.RateLimitError instead of waiting out Discord's limit of
 	// two renames per channel every 10 minutes.
@@ -47,6 +49,12 @@ func (t traderSession) BotID() string {
 func (t traderSession) GuildChannels(guildID string) ([]*discordgo.Channel, error) {
 	return t.s.GuildChannels(guildID)
 }
+func (t traderSession) GuildRoles(guildID string) ([]*discordgo.Role, error) {
+	return t.s.GuildRoles(guildID)
+}
+func (t traderSession) GuildRoleCreate(guildID string, data *discordgo.RoleParams) (*discordgo.Role, error) {
+	return t.s.GuildRoleCreate(guildID, data)
+}
 func (t traderSession) GuildChannelCreateComplex(guildID string, data discordgo.GuildChannelCreateData) (*discordgo.Channel, error) {
 	return t.s.GuildChannelCreateComplex(guildID, data)
 }
@@ -69,6 +77,7 @@ func (t traderSession) ChannelMessageEditComplex(m *discordgo.MessageEdit) (*dis
 // Channel names /trader setup creates.
 const (
 	traderCategoryName = "🛒 Trader"
+	traderRoleName     = "Trader"
 )
 
 // Permission sets of the Trader channels.
@@ -94,8 +103,8 @@ func traderPublicOverwrites(guildID, botID string) []*discordgo.PermissionOverwr
 		traderBotOverwrite(botID, traderBotPerms)...)
 }
 
-// traderStaffOverwrites: hidden from everyone but the server's Owner and Administrators (their
-// mapped staff roles, and Discord administrators, who see every channel).
+// traderStaffOverwrites: hidden from everyone but the Trader role and the server's Owner and
+// Administrators (their mapped staff roles, and Discord administrators, who see every channel).
 func traderStaffOverwrites(guildID, botID string, staff TraderStaff, allow int64) []*discordgo.PermissionOverwrite {
 	out := []*discordgo.PermissionOverwrite{{ID: guildID, Type: discordgo.PermissionOverwriteTypeRole, Deny: discordgo.PermissionViewChannel}}
 	for _, roleID := range staff.RoleIDs {
@@ -107,7 +116,7 @@ func traderStaffOverwrites(guildID, botID string, staff TraderStaff, allow int64
 	return append(out, traderBotOverwrite(botID, traderBotPerms)...)
 }
 
-// The Owner and Administrators read #trader-panel and also talk in #trader-orders.
+// The Trader role, the Owner and Administrators read #trader-panel and also talk in #trader-orders.
 const (
 	traderPanelAllow  = traderReadPerms
 	traderOrdersAllow = traderReadPerms | discordgo.PermissionSendMessages
@@ -120,10 +129,10 @@ func traderVoiceOverwrites(guildID, botID string) []*discordgo.PermissionOverwri
 		traderBotOverwrite(botID, discordgo.PermissionViewChannel|discordgo.PermissionManageChannels)...)
 }
 
-// setup creates (or repairs) the Trader category and channels, and posts the trader and its panel.
-// Channels it made before are reused while they exist, and the private channels are opened to the
-// server's current Owner and Administrators.
-func (h *TraderHandler) setup(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, caller TraderCaller, installationID int64) {
+// setup creates (or repairs) the Trader category, channels and role, and posts the trader and its
+// panel. Channels and the role it made before are reused while they exist, and the private channels
+// are opened to the Trader role and the server's current Owner and Administrators.
+func (h *TraderHandler) setup(ctx context.Context, s *discordgo.Session, i *discordgo.InteractionCreate, caller TraderCaller, installationID int64, roleID string) {
 	servers, err := h.backend.TraderServers(ctx, caller.DiscordGuildID)
 	if err != nil {
 		h.reportError(s, i, err)
@@ -156,6 +165,10 @@ func (h *TraderHandler) setup(ctx context.Context, s *discordgo.Session, i *disc
 		respondPrivate(s, i, &discordgo.InteractionResponseData{Content: traderSetupForbid})
 		return
 	}
+	if roleID != "" && roleID == caller.DiscordGuildID {
+		respondPrivate(s, i, &discordgo.InteractionResponseData{Content: "Pick a role for the people who run the trader, not @everyone."})
+		return
+	}
 	// The plan and the shop are checked before anything is created in Discord.
 	if _, err := h.backend.TraderCatalog(ctx, caller.DiscordGuildID, server.InstallationID); err != nil {
 		h.reportError(s, i, err)
@@ -180,7 +193,7 @@ func (h *TraderHandler) setup(ctx context.Context, s *discordgo.Session, i *disc
 		h.reportError(s, i, err)
 		return
 	}
-	made, err := h.ensureChannels(api, &hub, staff)
+	made, err := h.ensureChannels(api, &hub, roleID, staff)
 	if err != nil {
 		slog.Warn("component=discord", "msg", "trader setup failed", "installation_id", hub.InstallationID, "err", err.Error())
 		respondPrivate(s, i, &discordgo.InteractionResponseData{Content: traderSetupFailedText(err)})
@@ -209,9 +222,10 @@ type traderMade struct {
 	names []string
 }
 
-// ensureChannels reuses the hub's channels that still exist, creates the rest, and opens the
-// private channels that already existed to staff (a Trader role from before is taken off them).
-func (h *TraderHandler) ensureChannels(api TraderGuildAPI, hub *TraderHub, staff TraderStaff) (traderMade, error) {
+// ensureChannels reuses the hub's channels and role that still exist, creates the rest, and opens
+// the private channels that already existed to the Trader role and staff (a Trader role replaced by
+// another is taken off them).
+func (h *TraderHandler) ensureChannels(api TraderGuildAPI, hub *TraderHub, roleID string, staff TraderStaff) (traderMade, error) {
 	var made traderMade
 	guildID := hub.DiscordGuildID
 	channels, err := api.GuildChannels(guildID)
@@ -221,6 +235,43 @@ func (h *TraderHandler) ensureChannels(api TraderGuildAPI, hub *TraderHub, staff
 	exists := map[string]bool{}
 	for _, c := range channels {
 		exists[c.ID] = true
+	}
+	oldRole := hub.TraderRoleID
+	switch {
+	case roleID != "":
+		hub.TraderRoleID = roleID
+	case hub.TraderRoleID != "":
+		roles, err := api.GuildRoles(guildID)
+		if err != nil {
+			return made, fmt.Errorf("list roles: %w", err)
+		}
+		found := false
+		for _, r := range roles {
+			found = found || r.ID == hub.TraderRoleID
+		}
+		if !found {
+			hub.TraderRoleID = ""
+		}
+	}
+	if hub.TraderRoleID == "" {
+		mentionable := false
+		role, err := api.GuildRoleCreate(guildID, &discordgo.RoleParams{Name: traderRoleName, Mentionable: &mentionable})
+		if err != nil {
+			return made, fmt.Errorf("create role: %w", err)
+		}
+		hub.TraderRoleID = role.ID
+		made.names = append(made.names, "the @"+traderRoleName+" role")
+	}
+	isStaffRole := func(id string) bool {
+		for _, r := range staff.RoleIDs {
+			if r == id {
+				return true
+			}
+		}
+		return false
+	}
+	if !isStaffRole(hub.TraderRoleID) {
+		staff.RoleIDs = append([]string{hub.TraderRoleID}, staff.RoleIDs...)
 	}
 	for _, ch := range []struct {
 		id    string
@@ -239,13 +290,12 @@ func (h *TraderHandler) ensureChannels(api TraderGuildAPI, hub *TraderHub, staff
 				return made, fmt.Errorf("open the trader channels to the owner: %w", err)
 			}
 		}
-		if hub.TraderRoleID != "" {
-			if err := api.ChannelPermissionDelete(ch.id, hub.TraderRoleID); err != nil && !isUnknownMessage(err) {
-				slog.Warn("component=discord", "msg", "trader role overwrite removal failed", "channel_id", ch.id, "err", err.Error())
+		if oldRole != "" && oldRole != hub.TraderRoleID && !isStaffRole(oldRole) {
+			if err := api.ChannelPermissionDelete(ch.id, oldRole); err != nil && !isUnknownMessage(err) {
+				slog.Warn("component=discord", "msg", "trader old role overwrite removal failed", "channel_id", ch.id, "err", err.Error())
 			}
 		}
 	}
-	hub.TraderRoleID = ""
 	botID := api.BotID()
 	create := func(id *string, data discordgo.GuildChannelCreateData, label string) error {
 		if *id != "" && exists[*id] {
@@ -279,11 +329,11 @@ func (h *TraderHandler) ensureChannels(api TraderGuildAPI, hub *TraderHub, staff
 	if err := text(&hub.DealsChannelID, "deals", "Deals, sales and trader news.", traderPublicOverwrites(guildID, botID)); err != nil {
 		return made, err
 	}
-	if err := text(&hub.PanelChannelID, "trader-panel", "Owner and Administrators: open and close the trader.",
+	if err := text(&hub.PanelChannelID, "trader-panel", "Trader role, Owner and Administrators: open and close the trader.",
 		traderStaffOverwrites(guildID, botID, staff, traderPanelAllow)); err != nil {
 		return made, err
 	}
-	if err := text(&hub.OrdersChannelID, "trader-orders", "Owner and Administrators: new orders to hand over.",
+	if err := text(&hub.OrdersChannelID, "trader-orders", "Trader role, Owner and Administrators: new orders to hand over.",
 		traderStaffOverwrites(guildID, botID, staff, traderOrdersAllow)); err != nil {
 		return made, err
 	}
@@ -293,7 +343,7 @@ func (h *TraderHandler) ensureChannels(api TraderGuildAPI, hub *TraderHub, staff
 func traderSetupFailedText(err error) string {
 	var rest *discordgo.RESTError
 	if errors.As(err, &rest) && rest.Response != nil && rest.Response.StatusCode == http.StatusForbidden {
-		return "Champion couldn't create the Trader channels: it needs the **Manage Channels** and **Manage Roles** permissions (Manage Roles to set who sees the private channels). Give its role those permissions, then run `/trader setup` again. Anything already created is reused."
+		return "Champion couldn't create the Trader channels or role: it needs the **Manage Channels** and **Manage Roles** permissions. Give its role those permissions, then run `/trader setup` again. Anything already created is reused."
 	}
 	return "Champion couldn't finish setting up the Trader. Run `/trader setup` again; anything already created is reused."
 }
@@ -414,4 +464,12 @@ func traderMention(channelID string) string {
 		return ""
 	}
 	return "<#" + channelID + ">"
+}
+
+// traderRoleMention is a role mention, or "Trader" when there is no role.
+func traderRoleMention(roleID string) string {
+	if strings.TrimSpace(roleID) == "" {
+		return traderRoleName
+	}
+	return "<@&" + roleID + ">"
 }
